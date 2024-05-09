@@ -1,5 +1,8 @@
 package crossbyte.crypto;
+import cpp.vm.Gc;
 import crossbyte.io.ByteArray;
+import haxe.crypto.Sha1;
+import haxe.crypto.Sha256;
 import haxe.io.Bytes;
 
 import cpp.NativeSys;
@@ -9,23 +12,27 @@ import cpp.NativeSys;
  */
 class Random 
 {	
-	public static function getSecureRandomBytes(length:Int):ByteArray{		
-		var seed:String = "ABCDEF" + Std.string(NativeSys.sys_get_pid()) + Std.string(Sys.time()) + Std.string(Date.now().getTime());
-		
-		var seedBytes:Bytes = Bytes.ofString(seed);
-		
-		var randomBytes:ByteArray = new ByteArray(length);
+    private static var _counter:Float = 0;
 	
-		var seedLength:Int = seedBytes.length;
+    public static function getSecureRandomBytes(length:Int):ByteArray {
+		//Dont use environment variables for this
+        var salt:String = #if more_secure_random_bytes Sys.getEnv(RANDOM_BYTES_SALT) #else "ABCDEF";
+        var seed:String = salt + Std.string(NativeSys.sys_get_pid()) + Std.string(Sys.cpuTime()) + Gc.memInfo(Gc.MEM_INFO_USAGE);
+        var rng:String = _getRandomWithHardwareEntropy(seed);
+		        
+        var digest:Bytes = Bytes.ofString(rng);
 		
-		for (i in 0...length){
-			var randomIndex:Int = Std.int(Math.random() * seedLength);
-			var byte:Int = seedBytes.get(randomIndex);
-			
-			randomBytes.writeByte(byte);
-		}
-		
-		return randomBytes;		
-	}
+        return digest;
+    }
 	
+    private static function _getRandomWithHardwareEntropy(seed:String):String {
+        var pTime:Float = Sys.cpuTime();
+        var delta:Float = 0.0;
+        while (delta < 0.001) {
+			_counter++;
+            seed = Sha256.encode(seed + _counter + delta);
+            delta = Sys.cpuTime() - pTime;
+        }
+        return seed;
+    }
 }
