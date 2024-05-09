@@ -66,7 +66,7 @@ import format.amf3.Writer as AMF3Writer;
 	* Supporting new binary file formats.
 **/
 @:access(haxe.io.Bytes)
-@:access(openfl.utils.ByteArrayData)
+@:access(crossbyte.utils.ByteArrayData)
 // TODO: Remove if bug that breaks `byteArray.endian = BIG_ENDIAN` is fixed
 #if !doc_gen
 @:forward(endian, objectEncoding)
