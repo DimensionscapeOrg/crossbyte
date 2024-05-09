@@ -11,28 +11,29 @@ import cpp.NativeSys;
  * @author Christopher Speciale
  */
 class Random 
-{	
+{    
     private static var _counter:Float = 0;
-	
-    public static function getSecureRandomBytes(length:Int):ByteArray {
-		//Dont use environment variables for this
-        var salt:String = #if more_secure_random_bytes Sys.getEnv(RANDOM_BYTES_SALT) #else "ABCDEF";
-        var seed:String = salt + Std.string(NativeSys.sys_get_pid()) + Std.string(Sys.cpuTime()) + Gc.memInfo(Gc.MEM_INFO_USAGE);
-        var rng:String = _getRandomWithHardwareEntropy(seed);
-		        
+    
+    public static function getSecureRandomBytes(length:Int, level:Int = 0, ?seed:Null<String>, ):ByteArray {
+        var salt:String = seed == null ? Math.random * 2147483647 : seed;
+        var seed:String = salt + Std.string(NativeSys.sys_get_pid()) + Std.string(Sys.time()) + Gc.memInfo(Gc.MEM_INFO_USAGE);
+        var rng:String = _getRandomWithHardwareEntropy(seed, level);
+                
         var digest:Bytes = Bytes.ofString(rng);
-		
+        
         return digest;
     }
-	
-    private static function _getRandomWithHardwareEntropy(seed:String):String {
+    
+    private static function _getRandomWithHardwareEntropy(seed:String, level:Int):String { 
+        var hash:String = seed;
         var pTime:Float = Sys.cpuTime();
         var delta:Float = 0.0;
-        while (delta < 0.001) {
-			_counter++;
-            seed = Sha256.encode(seed + _counter + delta);
+        var lv:Float = 0.0001 * level;
+        while (delta < lv) {             
+            hash = Sha1.encode(hash + delta + counter);
             delta = Sys.cpuTime() - pTime;
+           _counter++;
         }
-        return seed;
+        return Sha256.encode(seed + hash + delta + _counter);
     }
 }
