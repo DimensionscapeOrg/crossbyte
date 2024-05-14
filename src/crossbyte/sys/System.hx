@@ -1,19 +1,31 @@
 package crossbyte.sys;
 import cpp.vm.Gc;
 import crossbyte.core.CrossByte;
+import crossbyte._internal.native.sys.NativeSystem;
 import sys.io.Process;
 
 /**
  * ...
  * @author Christopher Speciale
  */
+@:access(crossbyte._internal.native.sys.NativeSystem)
 class System
 {
 	public static inline var PLATFORM:String =
 		#if windows
 		"windows";
 		#end
-
+		
+	/**
+	 * Returns an array of Bool representing a full list of processors that are accessible to the process.
+	 */
+	public static var processAffinity(get, never):Array<Bool>;
+	
+	/**
+	 * Returns the number of processors, including logical processors, that are available to the system.
+	 */
+	public static var processorCount(get, never):Int;
+	
 	public static inline function setTicksPerSecond(value:Int):Void
 	{
 		CrossByte.current.tps = value;
@@ -76,6 +88,30 @@ class System
 
 		return availableMemory;
 
+	}		
+	
+	/**
+	 * Sets the affinity of a specific processor by it's index from 0 to processorCount
+	 * 
+	 * Returns false if polling fails to retrieve a value
+	 */
+	public static inline function setProcessAffinity(index:Int, value:Bool):Bool{
+		return NativeSystem.setProcessAffinity(index, value);
 	}
+	
+	/**
+	 * Returns an a Boolean that reflects whether or not the processor at the supplied index is accessible to the process.
+	 */
+	public static inline function hasProcessAffinity(index:Int):Bool{
+		return NativeSystem.hasProcessAffinity(index);
+	}
+	
+	private static inline function get_processAffinity():Array<Bool>{
+		return NativeSystem.getProcessAffinity();
+	}
+	
+	private static inline function get_processorCount():Int{
+		return NativeSystem.getProcessorCount();
+	}	
 
 }
