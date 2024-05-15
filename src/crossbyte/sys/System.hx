@@ -1,19 +1,29 @@
 package crossbyte.sys;
 import cpp.vm.Gc;
 import crossbyte.core.CrossByte;
-import crossbyte._internal.native.sys.NativeSystem;
+#if windows
+import crossbyte._internal.native.sys.win.NativeSystem;
+#elseif linux
+import crossbyte._internal.native.sys.linux.NativeSystem;
+#end
 import sys.io.Process;
 
 /**
  * ...
  * @author Christopher Speciale
  */
-@:access(crossbyte._internal.native.sys.NativeSystem)
+#if windows
+@:access(crossbyte._internal.native.sys.win.NativeSystem)
+#elseif linux
+@:access(crossbyte._internal.native.sys.linux.NativeSystem)
+#end
 class System
 {
 	public static inline var PLATFORM:String =
 		#if windows
 		"windows";
+		#elseif linux
+		"linux";
 		#end
 		
 	/**
@@ -51,6 +61,8 @@ class System
 		var cmd:String;
 		#if windows
 		cmd = "wmic computersystem get totalphysicalmemory";
+		#elseif linux
+		cmd = "grep MemTotal /proc/meminfo";
 		#end
 		var process:Process = new Process(cmd);
 		var output:String = process.stdout.readAll().toString();
@@ -62,7 +74,21 @@ class System
 		}
 
 		var lines = output.split("\n");
+		#if windows		
 		return Std.parseFloat(lines[1]);
+		#elseif linux
+		var memLine = lines[0]; // On Linux, the total memory info is in the first line
+    	var parts = memLine.split(":");
+    	if (parts.length != 2) {
+        	return 0;
+    	}
+
+    	// Extract memory size in kB and convert to bytes
+    	var memoryInKB = Std.parseFloat(StringTools.trim(parts[1]));
+    	var memoryInBytes = memoryInKB * 1024; 
+
+    	return memoryInBytes;
+			#end
 	}
 
 	public static inline function freeSystemMemory():Float
@@ -70,6 +96,8 @@ class System
 		var cmd: String;
 		#if windows
 		cmd = "wmic OS get FreePhysicalMemory";
+		#elseif linux
+		cmd = "grep MemAvailable /proc/meminfo";
 		#end
 		var process: Process = new Process(cmd);
 		var output: String = process.stdout.readAll().toString();
@@ -81,12 +109,26 @@ class System
 		}
 
 		var lines = output.split("\n");
+
+		#if windows
 		var availableMemory: Float = Std.parseFloat(lines[1]);
 
-		// Convert available memory to bytes (assuming the value is in kilobytes)
 		availableMemory *= 1024;
 
 		return availableMemory;
+		#elseif linux
+		var memLine = lines[0];
+		var parts = memLine.split(":");
+
+		if (parts.length != 2) {
+			return 0;
+		}
+	
+		var availableMemoryInKB = Std.parseFloat(StringTools.trim(parts[1]));
+		var availableMemoryInBytes = availableMemoryInKB * 1024; 
+	
+		return availableMemoryInBytes;
+		#end
 
 	}		
 	
