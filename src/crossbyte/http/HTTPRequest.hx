@@ -65,6 +65,7 @@ class HTTPRequest
 				_origin.flush();
 			}			
         }	
+		_origin.close();
 	}
 	
 	private function readLine(buffer:ByteArray):Null<String> {
