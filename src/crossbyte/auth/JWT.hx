@@ -1,4 +1,4 @@
-package src.crossbyte.auth;
+package crossbyte.auth;
 
 import haxe.crypto.Base64;
 import haxe.crypto.Sha256;
