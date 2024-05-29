@@ -4,7 +4,7 @@ package src.crossbyte.http;
  * ...
  * @author Christopher Speciale
  */
-class HTTPResponse 
+class Middleware 
 {
 
 	public function new() 
