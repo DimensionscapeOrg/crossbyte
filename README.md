@@ -6,3 +6,15 @@ With a focus on modularity and interoperability, CrossByte offers a range of fun
 Whether you're building applications with rendering capabilities or focusing on server-side and headless environments, CrossByte serves as a foundational layer, augmenting your projects with essential features and facilitating seamless integration with other libraries and frameworks.
 
 Empower your development workflow with CrossByte and unlock new possibilities for creating cross-platform applications with ease and efficiency.
+
+
+## 2024 Q1 Roadmap
+- [x] Native Websocket Client
+- [x] Native Websocket Server
+- [x] Basic HTTP Server
+- [x] OAuth
+- [ ] rUDP
+- [ ] webRTC
+- [ ] Quic/HTTP3
+- [ ] MongoDB support
+
