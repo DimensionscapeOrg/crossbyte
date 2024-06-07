@@ -31,11 +31,11 @@ class Stack<T>
 		return __top;
 	}
 
-	 /**
-     * Creates a new stack.
-     *
-     * @param length Optional. The initial size of the internal array used to store elements.
-     */
+	/**
+	* Creates a new stack.
+	*
+	* @param length Optional. The initial size of the internal array used to store elements.
+	*/
 	public function new(?length:Int)
 	{
 		__items = new Array();
@@ -46,12 +46,12 @@ class Stack<T>
 
 		__top = 0;
 	}
-	
+
 	/**
-     * Pushes an element onto the top of the stack.
-     *
-     * @param item The element to push onto the stack.
-     */
+	 * Pushes an element onto the top of the stack.
+	 *
+	 * @param item The element to push onto the stack.
+	 */
 	public inline function push(item:T):Void
 	{
 		if (__top >= __items.length)
@@ -62,10 +62,10 @@ class Stack<T>
 	}
 
 	/**
-     * Pops an element from the top of the stack.
-     *
-     * @return The element at the top of the stack, or `null` if the stack is empty.
-     */
+	 * Pops an element from the top of the stack.
+	 *
+	 * @return The element at the top of the stack, or `null` if the stack is empty.
+	 */
 	public inline function pop():Null<T>
 	{
 		/*if (__top == 0)
@@ -76,12 +76,12 @@ class Stack<T>
 
 		return __top > 0 ? __items[--__top] : null;
 	}
-	
+
 	/**
-     * Clears all elements from the stack.
-     *
-     * @param dispose Optional. If `true`, the internal array is resized to zero.
-     */
+	 * Clears all elements from the stack.
+	 *
+	 * @param dispose Optional. If `true`, the internal array is resized to zero.
+	 */
 	public inline function clear(dispose:Bool = false):Void
 	{
 		__top = 0;
@@ -92,10 +92,10 @@ class Stack<T>
 	}
 
 	/**
-     * Retrieves the element at the top of the stack without removing it.
-     *
-     * @return The element at the top of the stack, or `null` if the stack is empty.
-     */
+	 * Retrieves the element at the top of the stack without removing it.
+	 *
+	 * @return The element at the top of the stack, or `null` if the stack is empty.
+	 */
 	public inline function last():Null<T>
 	{
 		/*if (__top == 0)
