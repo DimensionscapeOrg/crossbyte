@@ -25,11 +25,11 @@ class ObjectPool<T>
 	public var objectFactory:Void->T;
 
 	/**
-     * A function to reset objects before they are released back to the pool.
-     * This function can be used to clear or initialize the state of objects.
-     */
+	 * A function to reset objects before they are released back to the pool.
+	 * This function can be used to clear or initialize the state of objects.
+	 */
 	public var resetFunction:T->Void;
-	
+
 	/**
 	 * Creates a new object pool.
 	 *
@@ -41,10 +41,7 @@ class ObjectPool<T>
 		__pool = [];
 		this.objectFactory = objectFactory;
 
-		if (resetFunction != null)
-		{
-			this.resetFunction = resetFunction;
-		}
+		this.resetFunction = resetFunction;
 
 		__free = new Stack();
 
@@ -118,7 +115,10 @@ class ObjectPool<T>
 		__available.push(index);
 		__pool[index].value = obj;
 
-		resetFunction(obj);
+		if (resetFunction != null)
+		{
+			resetFunction(obj);
+		}
 	}
 }
 
