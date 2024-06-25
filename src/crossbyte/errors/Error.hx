@@ -1,11 +1,11 @@
 package crossbyte.errors;
+
 import haxe.CallStack;
 
 /**
  * ...
  * @author Christopher Speciale
  */
-
 /**
 	The Error class contains information about an error that occurred in a script. In
 	developing ActionScript 3.0 applications, when you run your compiled code in the
@@ -53,8 +53,7 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 		@param	message	A string associated with the Error object; this parameter is optional.
 		@param	id	A reference number to associate with the specific error message.
 	**/
-	public function new(message:String = "", id:Int = 0)
-	{
+	public function new(message:String = "", id:Int = 0) {
 		#if (haxe_ver >= "4.1.0")
 		super(message);
 		#else
@@ -94,26 +93,20 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 		method returns `null`.
 		@returns	A string representation of the call stack.
 	**/
-	public function getStackTrace():String
-	{
+	public function getStackTrace():String {
 		return CallStack.toString(CallStack.exceptionStack());
 	}
 
 	// @:noCompletion @:dox(hide) public static function throwError (type:Class<Dynamic>, index:UInt, ?p1:Dynamic, ?p2:Dynamic, ?p3:Dynamic, ?p4:Dynamic, ?p5:Dynamic):Dynamic;
-
 	/**
 		Returns the string "Error" by default or the value contained in the `Error.message`
 		property, if defined.
 		@returns	The error message.
 	**/
-	public #if (haxe_ver >= "4.1.0") override #end function toString():String
-	{
-		if (message != null)
-		{
+	public #if (haxe_ver >= "4.1.0") override #end function toString():String {
+		if (message != null) {
 			return message;
-		}
-		else
-		{
+		} else {
 			return DEFAULT_TO_STRING;
 		}
 	}

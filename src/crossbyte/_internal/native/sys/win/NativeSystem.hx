@@ -6,14 +6,9 @@ package crossbyte._internal.native.sys.win;
  */
 @:cppInclude("Windows.h")
 @:cppInclude("Winbase.h")
-
-class NativeSystem
-{
-
-	private static function getProcessorCount():Int
-	{
-		untyped __cpp__ 
-		("
+class NativeSystem {
+	private static function getProcessorCount():Int {
+		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 			SYSTEM_INFO systemInfo;
 			GetSystemInfo(&systemInfo);
@@ -22,10 +17,8 @@ class NativeSystem
 		return untyped __cpp__("systemInfo.dwNumberOfProcessors;");
 	};
 
-	private static function getProcessAffinity():Array<Bool>
-	{
-		untyped __cpp__
-		("
+	private static function getProcessAffinity():Array<Bool> {
+		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 
 			DWORD_PTR processAffinityMask;
@@ -34,18 +27,15 @@ class NativeSystem
 			BOOL success = GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask);
 		");
 
-		if (!untyped __cpp__ ("success"))
-		{
+		if (!untyped __cpp__("success")) {
 			return [];
 		}
-		//TODO: only get hProcess once for all functions and cache it
-		untyped __cpp__	("Array<BOOL> affinity = Array_obj<BOOL>::__new(0);");
+		// TODO: only get hProcess once for all functions and cache it
+		untyped __cpp__("Array<BOOL> affinity = Array_obj<BOOL>::__new(0);");
 
 		var numCores:Int = getProcessorCount();
-		for (i in 0...numCores)
-		{
-			untyped __cpp__
-			("
+		for (i in 0...numCores) {
+			untyped __cpp__("
 				DWORD bit = 1 << i;
 				BOOL isSet = (processAffinityMask & bit) != 0;
 
@@ -53,13 +43,11 @@ class NativeSystem
 			");
 		}
 
-		return untyped __cpp__ ("affinity");
+		return untyped __cpp__("affinity");
 	}
 
-	private static function hasProcessAffinity(index:Int):Bool
-	{
-		untyped __cpp__
-		("
+	private static function hasProcessAffinity(index:Int):Bool {
+		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 			DWORD_PTR processAffinityMask;
 			DWORD_PTR systemAffinityMask;
@@ -67,14 +55,12 @@ class NativeSystem
 			BOOL success = GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask);
 		");
 
-		//TODO: throw an error if success is false instead
-		if (!untyped __cpp__("success"))
-		{
+		// TODO: throw an error if success is false instead
+		if (!untyped __cpp__("success")) {
 			return false;
 		}
 
-		untyped __cpp__
-		("
+		untyped __cpp__("
 			DWORD bit = 1 << index;
 			BOOL isSet = (processAffinityMask & bit) != 0;
 		");
@@ -82,11 +68,8 @@ class NativeSystem
 		return untyped __cpp__("isSet");
 	}
 
-	private static function setProcessAffinity(index:Int, value:Bool):Bool
-	{
-
-		untyped __cpp__
-		("
+	private static function setProcessAffinity(index:Int, value:Bool):Bool {
+		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 			DWORD_PTR processAffinityMask;
 			DWORD_PTR systemAffinityMask;
@@ -94,13 +77,11 @@ class NativeSystem
 			BOOL success = GetProcessAffinityMask(hProcess, &processAffinityMask, &systemAffinityMask);
 		");
 
-		if (!untyped __cpp__("success"))
-		{
+		if (!untyped __cpp__("success")) {
 			return false;
 		}
 
-		untyped __cpp__
-		("
+		untyped __cpp__("
 			DWORD_PTR affinityMask;
 			DWORD bit = 1 << index;
 			if (value) {

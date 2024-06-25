@@ -43,13 +43,10 @@ import sys.net.Socket;
 	@event close    Dispatched when the operating system closes this socket.
 	@event connect  Dispatched when a remote socket seeks to connect to this server socket.
 **/
-
-//@:fileXml('tags="haxe,release"')
-//@:noDebug
-
+// @:fileXml('tags="haxe,release"')
+// @:noDebug
 @:access(crossbyte.net.Socket)
-class ServerSocket extends EventDispatcher
-{
+class ServerSocket extends EventDispatcher {
 	/**
 		Indicates whether the socket is bound to a local address and port.
 	**/
@@ -83,14 +80,13 @@ class ServerSocket extends EventDispatcher
 		@throws  SecurityError This error occurs ff the calling content is running outside the AIR
 				application security sandbox.
 	**/
-	public function new()
-	{
+	public function new() {
 		super();
 
 		__init();
 	}
-	
-	private function __init():Void{
+
+	private function __init():Void {
 		trace("init");
 		__serverSocket = new sys.net.Socket();
 		__serverSocket.setBlocking(false);
@@ -123,24 +119,18 @@ class ServerSocket extends EventDispatcher
 							  this ServerSocket object is already bound. (Call close() before binding to a different socket.)
 							  when localAddress is not a valid local address.
 	**/
-	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void
-	{
-		if (localPort > 65535 || localPort < 0)
-		{
+	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
+		if (localPort > 65535 || localPort < 0) {
 			throw new RangeError("Invalid socket port number specified.");
 		}
-		try
-		{
+		try {
 			this.localAddress = localAddress;
 			this.localPort = localPort;
 			var host:Host = new Host(localAddress);
 			__serverSocket.bind(host, localPort);
 			bound = true;
-		}
-		catch (e:Dynamic)
-		{
-			switch (e)
-			{
+		} catch (e:Dynamic) {
+			switch (e) {
 				case "Bind failed":
 					throw new IOError("Operation attempted on invalid socket.");
 				case "Unresolved host":
@@ -154,14 +144,10 @@ class ServerSocket extends EventDispatcher
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
-	public function close():Void
-	{
-		try
-		{
+	public function close():Void {
+		try {
 			__serverSocket.close();
-		}
-		catch (e:Dynamic)
-		{
+		} catch (e:Dynamic) {
 			throw new CBError("Operation attempted on invalid socket.");
 		}
 		listening = false;
@@ -190,27 +176,21 @@ class ServerSocket extends EventDispatcher
 							This error also occurs if the call to listen() fails for any
 							other reason.
 	**/
-	public function listen(backlog:Int = 0):Void
-	{
-		if (__closed)
-		{
+	public function listen(backlog:Int = 0):Void {
+		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
-		if (backlog < 0)
-		{
+		if (backlog < 0) {
 			throw new RangeError("The supplied index is out of bounds.");
-		} else if (backlog == 0) 
-		{
+		} else if (backlog == 0) {
 			backlog = 0x7FFFFFFF;
 		}
-		
-		
+
 		__serverSocket.listen(backlog);
 		listening = true;
 	}
 
-	@:noCompletion private function __fromSocket(socket:sys.net.Socket):CBSocket
-	{
+	@:noCompletion private function __fromSocket(socket:sys.net.Socket):CBSocket {
 		socket.setFastSend(true);
 		socket.setBlocking(false);
 
@@ -233,53 +213,40 @@ class ServerSocket extends EventDispatcher
 		return cbSocket;
 	}
 
-	@:noCompletion private function this_onTick(e:TickEvent):Void
-	{
+	@:noCompletion private function this_onTick(e:TickEvent):Void {
 		var sysSocket = null;
 
-		try
-		{
+		try {
 			sysSocket = __serverSocket.accept();
-		}
-		catch (e:Error)
-		{
+		} catch (e:Error) {
 			close();
 			dispatchEvent(new Event(Event.CLOSE));
-		}
-		catch (e:Dynamic)
-		{
+		} catch (e:Dynamic) {
 			// Do nothing.
 		}
 
-		if (sysSocket != null)
-		{
+		if (sysSocket != null) {
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, __fromSocket(sysSocket)));
 		}
 	}
 
-	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void
-	{
+	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
 
-		if (type == Event.CONNECT)
-		{
+		if (type == Event.CONNECT) {
 			CrossByte.current.addEventListener(TickEvent.TICK, this_onTick);
 		}
 	}
 
-	override public function removeEventListener(type:String, listener:Dynamic->Void):Void
-	{
+	override public function removeEventListener(type:String, listener:Dynamic->Void):Void {
 		super.removeEventListener(type, listener);
 
-		if (type == Event.CONNECT)
-		{
+		if (type == Event.CONNECT) {
 			CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
 		}
 	}
 
-	private function get_isSupported():Bool
-	{
-	return true;
+	private function get_isSupported():Bool {
+		return true;
 	}
 }
-
