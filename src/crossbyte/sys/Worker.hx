@@ -1,4 +1,5 @@
 package crossbyte.sys;
+
 import cpp.Function;
 import crossbyte.core.CrossByte;
 import crossbyte.events.ThreadEvent;
@@ -11,8 +12,7 @@ import crossbyte.events.EventDispatcher;
  * ...
  * @author Christopher Speciale
  */
-class Worker extends EventDispatcher{
-
+class Worker extends EventDispatcher {
 	private static var MESSAGE_COMPLETE = "__COMPLETE__";
 	private static var MESSAGE_ERROR = "__ERROR__";
 
@@ -25,48 +25,41 @@ class Worker extends EventDispatcher{
 	@:noCompletion private var __messageQueue:Deque<Dynamic>;
 	@:noCompletion private var __workerThread:Thread;
 
-	public function new()
-	{
+	public function new() {
 		super();
 	}
 
-	public function cancel(doClean:Bool = true):Void
-	{
+	public function cancel(doClean:Bool = true):Void {
 		canceled = true;
 
 		__workerThread = null;
 		CrossByte.current.removeEventListener(TickEvent.TICK, __update);
 
-		if (doClean)
-		{
+		if (doClean) {
 			clean();
 		}
 	}
 
-	public function clean():Void
-	{
-		if (!canceled)
-		{
+	public function clean():Void {
+		if (!canceled) {
 			cancel();
 			canceled = false;
 		} else {
 			__workerThread = null;
 		}
-		
+
 		completed = false;
 		__runMessage = null;
 		__messageQueue = null;
 		doWork = null;
 	}
 
-	public function run(message:Dynamic = null):Void
-	{
+	public function run(message:Dynamic = null):Void {
 		canceled = false;
 		completed = false;
 		__runMessage = message;
 
 		#if (cpp || neko)
-
 		__messageQueue = new Deque<Dynamic>();
 		__workerThread = Thread.create(__doWork);
 
@@ -76,54 +69,46 @@ class Worker extends EventDispatcher{
 		#end
 	}
 
-	public function sendComplete(message:Dynamic = null):Void
-	{
+	public function sendComplete(message:Dynamic = null):Void {
 		completed = true;
 
 		#if (cpp || neko)
 		__messageQueue.add(MESSAGE_COMPLETE);
 		__messageQueue.add(message);
 		#else
-		if (!canceled)
-		{
+		if (!canceled) {
 			canceled = true;
 			dispatchEvent(new ThreadEvent(ThreadEvent.COMPLETE, message));
 		}
 		#end
 	}
 
-	public function sendError(message:Dynamic = null):Void
-	{
+	public function sendError(message:Dynamic = null):Void {
 		#if (cpp || neko)
 		__messageQueue.add(MESSAGE_ERROR);
 		__messageQueue.add(message);
 		#else
-		if (!canceled)
-		{
+		if (!canceled) {
 			canceled = true;
 			dispatchEvent(new ThreadEvent(ThreadEvent.ERROR, message));
 		}
 		#end
 	}
 
-	public function sendProgress(message:Dynamic = null):Void
-	{
+	public function sendProgress(message:Dynamic = null):Void {
 		#if (cpp || neko)
 		__messageQueue.add(message);
 		#else
-		if (!canceled)
-		{
+		if (!canceled) {
 			dispatchEvent(new ThreadEvent(ThreadEvent.PROGRESS, message));
 		}
 		#end
 	}
 
-	@:noCompletion private function __doWork():Void
-	{
-		//doWork.dispatch(__runMessage);
+	@:noCompletion private function __doWork():Void {
+		// doWork.dispatch(__runMessage);
 
-		if (doWork != null)
-		{
+		if (doWork != null) {
 			doWork(__runMessage);
 		}
 		// #if (cpp || neko)
@@ -142,41 +127,31 @@ class Worker extends EventDispatcher{
 		// #end
 	}
 
-	@:noCompletion private function __update(dt:Float):Void
-	{
+	@:noCompletion private function __update(dt:Float):Void {
 		var deltaTime:Int = Std.int(dt * 1000);
 		#if (cpp || neko)
 		var message = __messageQueue.pop(false);
 
-		if (message != null)
-		{
-			if (message == MESSAGE_ERROR)
-			{
+		if (message != null) {
+			if (message == MESSAGE_ERROR) {
 				CrossByte.current.removeEventListener(TickEvent.TICK, __update);
 
-				if (!canceled)
-				{
+				if (!canceled) {
 					canceled = true;
-					//onError.dispatch(__messageQueue.pop(false));
+					// onError.dispatch(__messageQueue.pop(false));
 					dispatchEvent(new ThreadEvent(ThreadEvent.ERROR, __messageQueue.pop(false)));
 				}
-			}
-			else if (message == MESSAGE_COMPLETE)
-			{
+			} else if (message == MESSAGE_COMPLETE) {
 				CrossByte.current.removeEventListener(TickEvent.TICK, __update);
 
-				if (!canceled)
-				{
+				if (!canceled) {
 					canceled = true;
-					//onComplete.dispatch(__messageQueue.pop(false));
+					// onComplete.dispatch(__messageQueue.pop(false));
 					dispatchEvent(new ThreadEvent(ThreadEvent.COMPLETE, __messageQueue.pop(false)));
 				}
-			}
-			else
-			{
-				if (!canceled)
-				{
-					//onProgress.dispatch(message);
+			} else {
+				if (!canceled) {
+					// onProgress.dispatch(message);
 					dispatchEvent(new ThreadEvent(ThreadEvent.PROGRESS, message));
 				}
 			}

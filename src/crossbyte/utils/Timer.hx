@@ -2,26 +2,22 @@ package crossbyte.utils;
 
 import haxe.ds.Map;
 import haxe.Timer as HxTimer;
+
 /**
  * ...
  * @author Christopher Speciale
  */
-class Timer
-{
-
-	
+class Timer {
 	@:noCompletion private static var __lastTimerID:UInt = 0;
 	@:noCompletion private static var __timers:Map<UInt, HxTimer> = new Map();
 
 	/**
-		Cancels a specified `setInterval()` call.
-	@param	id	The ID of the `setInterval()` call, which you set to a variable, as
-		in the following:
-		**/
-	public static function clearInterval(id:UInt):Void
-	{
-		if (__timers.exists(id))
-		{
+			Cancels a specified `setInterval()` call.
+		@param	id	The ID of the `setInterval()` call, which you set to a variable, as
+			in the following:
+	**/
+	public static function clearInterval(id:UInt):Void {
+		if (__timers.exists(id)) {
 			var timer = __timers[id];
 			timer.stop();
 			__timers.remove(id);
@@ -33,10 +29,8 @@ class Timer
 		@param	id	The ID of the `setTimeout()` call, which you set to a variable, as in
 		the following
 	**/
-	public static function clearTimeout(id:UInt):Void
-	{
-		if (__timers.exists(id))
-		{
+	public static function clearTimeout(id:UInt):Void {
+		if (__timers.exists(id)) {
 			var timer:HxTimer = __timers[id];
 			timer.stop();
 			__timers.remove(id);
@@ -62,8 +56,7 @@ class Timer
 		@returns	Unique numeric identifier for the timed process. Use this identifier
 		to cancel the process, by calling the `clearInterval()` method.
 	**/
-	public static function setInterval(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt
-	{
+	public static function setInterval(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
 		var id = ++__lastTimerID;
 		var timer = new HxTimer(delay);
 		__timers[id] = timer;
@@ -91,70 +84,43 @@ class Timer
 		@returns	Unique numeric identifier for the timed process. Use this identifier to
 		cancel the process, by calling the `clearTimeout()` method.
 	**/
-
-	public static inline function setTimeout(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt
-	{
-
+	public static inline function setTimeout(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
 		var id = ++__lastTimerID;
 		__timers[id] = HxTimer.delay(__onTimeout.bind(id, closure, args), delay);
 
 		return id;
-	}	
+	}
 
-	@:noCompletion private static inline function __onTimeout(id:UInt, closure:Function, args:Array<Dynamic>):Void
-	{
+	@:noCompletion private static inline function __onTimeout(id:UInt, closure:Function, args:Array<Dynamic>):Void {
 		__timers.remove(id);
 
-		if (args == null)
-		{
+		if (args == null) {
 			closure();
-		}
-		else if (args.length > 4)
-		{
+		} else if (args.length > 4) {
 			Reflect.callMethod(closure, closure, args == null ? [] : args);
-		}
-		else if (args.length == 1)
-		{
+		} else if (args.length == 1) {
 			closure(args[0]);
-		}
-		else if (args.length == 2)
-		{
+		} else if (args.length == 2) {
 			closure(args[0], args[1]);
-		}
-		else if (args.length == 3)
-		{
+		} else if (args.length == 3) {
 			closure(args[0], args[1], args[2]);
-		}
-		else if (args.length == 4)
-		{
+		} else if (args.length == 4) {
 			closure(args[0], args[1], args[2], args[3]);
 		}
 	}
-	
-	@:noCompletion private static inline function __onInterval(id:UInt, closure:Function, args:Array<Dynamic>):Void
-	{
-		if (args == null)
-		{
+
+	@:noCompletion private static inline function __onInterval(id:UInt, closure:Function, args:Array<Dynamic>):Void {
+		if (args == null) {
 			closure();
-		}
-		else if (args.length > 4)
-		{
+		} else if (args.length > 4) {
 			Reflect.callMethod(closure, closure, args == null ? [] : args);
-		}
-		else if (args.length == 1)
-		{
+		} else if (args.length == 1) {
 			closure(args[0]);
-		}
-		else if (args.length == 2)
-		{
+		} else if (args.length == 2) {
 			closure(args[0], args[1]);
-		}
-		else if (args.length == 3)
-		{
+		} else if (args.length == 3) {
 			closure(args[0], args[1], args[2]);
-		}
-		else if (args.length == 4)
-		{
+		} else if (args.length == 4) {
 			closure(args[0], args[1], args[2], args[3]);
 		}
 	}

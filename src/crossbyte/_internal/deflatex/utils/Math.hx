@@ -6,9 +6,9 @@ class Math {
 	public inline static function bitCount(v:Int) {
 		var c:Int = v - ((v >> 1) & 0x55555555);
 		c = ((c >> 2) & 0x33333333) + (c & 0x33333333);
-    	c = ((c >> 4) + c) & 0x0F0F0F0F;
+		c = ((c >> 4) + c) & 0x0F0F0F0F;
 		c = ((c >> 8) + c) & 0x00FF00FF;
-    	c = ((c >> 16) + c) & 0x0000FFFF;
+		c = ((c >> 16) + c) & 0x0000FFFF;
 		return c;
 	}
 
@@ -23,8 +23,7 @@ class Math {
 			var bit:Int = (n >> shift) & 1;
 			if (bit == 1) {
 				binary.add("1");
-			}
-			else {
+			} else {
 				binary.add("0");
 			}
 			shift--;

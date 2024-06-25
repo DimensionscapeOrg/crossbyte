@@ -4,8 +4,7 @@ package crossbyte.url;
  * ...
  * @author Christopher Speciale
  */
-enum abstract URLLoaderDataFormat(Null<Int>)
-{
+enum abstract URLLoaderDataFormat(Null<Int>) {
 	/**
 		Specifies that downloaded data is received as raw binary data.
 	**/
@@ -21,10 +20,8 @@ enum abstract URLLoaderDataFormat(Null<Int>)
 	**/
 	public var VARIABLES = 2;
 
-	@:from private static function fromString(value:String):URLLoaderDataFormat
-	{
-		return switch (value)
-		{
+	@:from private static function fromString(value:String):URLLoaderDataFormat {
+		return switch (value) {
 			case "binary": BINARY;
 			case "text": TEXT;
 			case "variables": VARIABLES;
@@ -32,10 +29,8 @@ enum abstract URLLoaderDataFormat(Null<Int>)
 		}
 	}
 
-	@:to private function toString():String
-	{
-		return switch (cast this : URLLoaderDataFormat)
-		{
+	@:to private function toString():String {
+		return switch (cast this : URLLoaderDataFormat) {
 			case URLLoaderDataFormat.BINARY: "binary";
 			case URLLoaderDataFormat.TEXT: "text";
 			case URLLoaderDataFormat.VARIABLES: "variables";
