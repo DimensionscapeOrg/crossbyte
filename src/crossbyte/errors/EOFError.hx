@@ -1,10 +1,9 @@
 package crossbyte.errors;
+
 /**
  * ...
  * @author Christopher Speciale
  */
-
-
 /**
 	An EOFError exception is thrown when you attempt to read past the end of
 	the available data. For example, an EOFError is thrown when one of the read
@@ -15,14 +14,12 @@ package crossbyte.errors;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class EOFError extends IOError
-{
+class EOFError extends IOError {
 	/**
 		Creates a new EOFError object.
 		@param message A string associated with the error object.
 	**/
-	public function new(message:String = null, id:Int = 0)
-	{
+	public function new(message:String = null, id:Int = 0) {
 		super("End of file was encountered");
 
 		name = "EOFError";

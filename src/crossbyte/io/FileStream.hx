@@ -36,12 +36,12 @@ import sys.io.FileOutput;
 import sys.io.FileSeek;
 import sys.thread.Mutex;
 #if format
-	import format.amf.Reader as AMFReader;
-	import format.amf.Writer as AMFWriter;
-	import format.amf.Tools as AMFTools;
-	import format.amf3.Reader as AMF3Reader;
-	import format.amf3.Writer as AMF3Writer;
-	import format.amf3.Tools as AMF3Tools;
+import format.amf.Reader as AMFReader;
+import format.amf.Writer as AMFWriter;
+import format.amf.Tools as AMFTools;
+import format.amf3.Reader as AMF3Reader;
+import format.amf3.Writer as AMF3Writer;
+import format.amf3.Tools as AMF3Tools;
 #end
 
 /**
@@ -73,8 +73,7 @@ import sys.thread.Mutex;
 @:access(crossbyte.io.ByteArray)
 @:access(crossbyte.io.ByteArrayData)
 @:access(crossbyte.io.File)
-class FileStream extends EventDispatcher implements IDataInput implements IDataOutput
-{
+class FileStream extends EventDispatcher implements IDataInput implements IDataOutput {
 	/**
 		Returns the number of bytes of data available for reading in the input buffer. User code
 		must call bytesAvailable to ensure that sufficient data is available before trying to read
@@ -167,8 +166,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	/**
 		Creates a FileStream object. Use the open() or openAsync() method to open a file.
 	**/
-	public function new()
-	{
+	public function new() {
 		super();
 		__isOpen = false;
 		isWriting = false;
@@ -208,19 +206,15 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 		@event close    			The file, which was opened asynchronously, is closed.
 	**/
-	public function close():Void
-	{
-		if (!__isOpen || __pendingClose)
-		{
+	public function close():Void {
+		if (!__isOpen || __pendingClose) {
 			return;
 		}
 
 		var async = __isAsync;
-		if (async)
-		{
+		if (async) {
 			__fileStreamMutex.acquire();
-			if (__fileStreamWorker != null && !__fileStreamWorker.canceled)
-			{
+			if (__fileStreamWorker != null && !__fileStreamWorker.canceled) {
 				__pendingClose = true;
 				__fileStreamMutex.release();
 				return;
@@ -232,27 +226,22 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__pendingClose = false;
 		__buffer = null;
 
-		if (__isWrite)
-		{
+		if (__isWrite) {
 			__output.close();
 			__output = null;
-		}
-		else
-		{
+		} else {
 			__input.close();
 			__input = null;
 		}
 
-		if (async)
-		{
+		if (async) {
 			__fileStreamMutex.release();
 		}
 
 		position = 0;
 		__positionDirty = false;
 
-		if (__fileStreamWorker != null)
-		{
+		if (__fileStreamWorker != null) {
 			__disposeFileStreamWorker();
 			dispatchEvent(new Event(Event.CLOSE));
 		}
@@ -281,18 +270,15 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		@throws 	SecurityError The file location is in the application directory, and the
 		fileMode parameter is set to "append", "update", or "write" mode.
 	 */
-	public function open(file:File, fileMode:FileMode):Void
-	{
+	public function open(file:File, fileMode:FileMode):Void {
 		__file = file;
 		__fileMode = fileMode;
 
 		__openFile();
 	}
 
-	@:noCompletion private function __disposeFileStreamWorker():Void
-	{
-		if (__fileStreamWorker == null)
-		{
+	@:noCompletion private function __disposeFileStreamWorker():Void {
+		if (__fileStreamWorker == null) {
 			return;
 		}
 
@@ -334,8 +320,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		@throws 	SecurityError The file location is in the application directory, and the
 		fileMode parameter is set to "append", "update", or "write" mode.
 	 */
-	public function openAsync(file:File, fileMode:FileMode):Void
-	{
+	public function openAsync(file:File, fileMode:FileMode):Void {
 		__isAsync = true;
 
 		__fileStreamMutex = new Mutex();
@@ -347,19 +332,15 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 		open(file, fileMode);
 
-		if (fileMode == READ)
-		{
+		if (fileMode == READ) {
 			__buffer = new ByteArray(file.size);
-			__fileStreamWorker.doWork = function(m:Dynamic)
-			{
+			__fileStreamWorker.doWork = function(m:Dynamic) {
 				var inputBytesAvailable:Int = 0;
 				var tempPos:Int = 0;
 				var bytesLoaded:Int = 0;
 
-				while ((inputBytesAvailable = __getStreamBytesAvailable()) > 0)
-				{
-					if (__pendingClose)
-					{
+				while ((inputBytesAvailable = __getStreamBytesAvailable()) > 0) {
+					if (__pendingClose) {
 						// close() was called
 						__fileStreamWorker.sendComplete();
 						return;
@@ -367,10 +348,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 					var oldBytesLoaded = bytesLoaded;
 					__fileStreamMutex.acquire();
-					if (__buffer.bytesAvailable < readAhead)
-					{
-						try
-						{
+					if (__buffer.bytesAvailable < readAhead) {
+						try {
 							var maxBytes:Int = Std.int(Math.min(__pageSize, inputBytesAvailable));
 
 							var chunkBytes:Bytes = Bytes.alloc(maxBytes);
@@ -380,9 +359,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 							__buffer.writeBytes(ByteArray.fromBytes(chunkBytes), 0, chunkBytes.length);
 							__buffer.position = tempPos;
 							bytesLoaded += maxBytes;
-						}
-						catch (e:Dynamic)
-						{
+						} catch (e:Dynamic) {
 							__fileStreamMutex.release();
 							__fileStreamWorker.sendError(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Index is out of bounds."));
 							return;
@@ -390,34 +367,26 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 					}
 					__fileStreamMutex.release();
 
-					if (oldBytesLoaded != bytesLoaded)
-					{
+					if (oldBytesLoaded != bytesLoaded) {
 						__fileStreamWorker.sendProgress(new ProgressEvent(ProgressEvent.PROGRESS, bytesLoaded, __file.size));
 					}
 				}
 
 				__fileStreamWorker.sendComplete(new Event(Event.COMPLETE));
 			}
-		}
-		else
-		{
+		} else {
 			__buffer = new ByteArray();
 
-			__fileStreamWorker.doWork = function(m:Dynamic)
-			{
+			__fileStreamWorker.doWork = function(m:Dynamic) {
 				var bytesLoaded:Int = 0;
 
-				while (__fileStreamWorker != null)
-				{
+				while (__fileStreamWorker != null) {
 					Sys.sleep(.001);
 
 					__fileStreamMutex.acquire();
-					while (isWriting)
-					{
-						while (__buffer.length > bytesLoaded || __isZeroLength)
-						{
-							try
-							{
+					while (isWriting) {
+						while (__buffer.length > bytesLoaded || __isZeroLength) {
+							try {
 								var maxBytes:Int = Std.int(Math.min(__pageSize, __buffer.length - bytesLoaded));
 
 								__output.writeBytes(__buffer, bytesLoaded, maxBytes);
@@ -426,11 +395,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 								__file.__fileStatsDirty = true;
 								__isZeroLength = false;
 
-								__fileStreamWorker.sendProgress(new OutputProgressEvent(OutputProgressEvent.OUTPUT_PROGRESS,
-								__buffer.length - bytesLoaded, __buffer.length));
-							}
-							catch (e:Dynamic)
-							{
+								__fileStreamWorker.sendProgress(new OutputProgressEvent(OutputProgressEvent.OUTPUT_PROGRESS, __buffer.length - bytesLoaded,
+									__buffer.length));
+							} catch (e:Dynamic) {
 								__fileStreamWorker.sendError(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Index is out of bounds."));
 								break;
 							}
@@ -439,8 +406,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 						isWriting = false;
 					}
 					__fileStreamMutex.release();
-					if (__pendingClose)
-					{
+					if (__pendingClose) {
 						// close() was called
 						__fileStreamWorker.sendComplete();
 						return;
@@ -452,42 +418,35 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__fileStreamWorker.run();
 	}
 
-	private function __onFileStreamWorkerComplete(e:ThreadEvent):Void
-	{
+	private function __onFileStreamWorkerComplete(e:ThreadEvent):Void {
 		var event:Event = e.message;
 
 		// close() checks the canceled property to determine if it should
 		// actually close or wait for the worker to finish
 		__fileStreamWorker.cancel();
-		if (e != null)
-		{
+		if (e != null) {
 			dispatchEvent(e);
 		}
-		if (__pendingClose)
-		{
+		if (__pendingClose) {
 			__pendingClose = false;
 			close();
 		}
 	}
 
-	private function __onFileStreamWorkerProgress(e:ThreadEvent):Void
-	{
+	private function __onFileStreamWorkerProgress(e:ThreadEvent):Void {
 		var event:Event = e.message;
 		dispatchEvent(event);
 	}
 
-	private function __onFileStreamWorkerError(e:ThreadEvent):Void
-	{
+	private function __onFileStreamWorkerError(e:ThreadEvent):Void {
 		var event:Event = e.message;
 		// close() checks the canceled property to determine if it should
 		// actually close or wait for the worker to finish
 		__fileStreamWorker.cancel();
-		if (e != null)
-		{
+		if (e != null) {
 			dispatchEvent(e);
 		}
-		if (__pendingClose)
-		{
+		if (__pendingClose) {
 			__pendingClose = false;
 			close();
 		}
@@ -506,12 +465,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readBoolean():Bool
-	{
+	public function readBoolean():Bool {
 		__checkIfReadable();
 		__positionDirty = true;
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readBoolean();
 			__fileStreamMutex.release();
@@ -532,13 +489,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 			EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readByte():Int
-	{
+	public function readByte():Int {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readByte();
 			__fileStreamMutex.release();
@@ -564,12 +519,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void
-	{
+	public function readBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
 		__checkIfReadable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.readBytes(bytes, offset, length);
 			__fileStreamMutex.release();
@@ -577,8 +530,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			return;
 		}
 
-		if (length == 0)
-		{
+		if (length == 0) {
 			__input.seek(0, FileSeek.SeekEnd);
 			length = __input.tell();
 			__input.seek(position, FileSeek.SeekBegin);
@@ -606,13 +558,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readDouble():Float
-	{
+	public function readDouble():Float {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readDouble();
 			__fileStreamMutex.release();
@@ -634,13 +584,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readFloat():Float
-	{
+	public function readFloat():Float {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readFloat();
 			__fileStreamMutex.release();
@@ -662,13 +610,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readInt():Int
-	{
+	public function readInt():Int {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readInt();
 			__fileStreamMutex.release();
@@ -694,13 +640,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readMultiByte(length:Int, charSet:String):String
-	{
+	public function readMultiByte(length:Int, charSet:String):String {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readMultiByte(length, charSet);
 			__fileStreamMutex.release();
@@ -722,12 +666,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readObject():Dynamic
-	{
+	public function readObject():Dynamic {
 		__checkIfReadable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__positionDirty = true;
 			__fileStreamMutex.acquire();
 			var result = __buffer.readObject();
@@ -735,9 +677,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			return result;
 		}
 
-		switch (objectEncoding)
-		{
-				#if format
+		switch (objectEncoding) {
+			#if format
 			case AMF0:
 				var bytes:Bytes = Bytes.alloc(bytesAvailable);
 				__input.readBytes(bytes, 0, bytesAvailable);
@@ -757,7 +698,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				var data = ByteArrayData.unwrapAMF3Value(reader.read());
 				__positionDirty = true;
 				return data;
-				#end
+			#end
 
 			case HXSF:
 				var data = readUTF();
@@ -787,13 +728,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readShort():Int
-	{
+	public function readShort():Int {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readShort();
 			__fileStreamMutex.release();
@@ -815,13 +754,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readUnsignedByte():UInt
-	{
+	public function readUnsignedByte():UInt {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readUnsignedByte();
 			__fileStreamMutex.release();
@@ -843,13 +780,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readUnsignedInt():UInt
-	{
+	public function readUnsignedInt():UInt {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readUnsignedInt();
 			__fileStreamMutex.release();
@@ -870,13 +805,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readUnsignedShort():UInt
-	{
+	public function readUnsignedShort():UInt {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readUnsignedShort();
 			__fileStreamMutex.release();
@@ -900,13 +833,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		* @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 		* (specified by the bytesAvailable property).
 	 */
-	public function readUTF():String
-	{
+	public function readUTF():String {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readUTF();
 			__fileStreamMutex.release();
@@ -929,13 +860,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * @throws 		EOFError The position specfied for reading data exceeds the number of bytes available
 	 * (specified by the bytesAvailable property).
 	 */
-	public function readUTFBytes(length:Int):String
-	{
+	public function readUTFBytes(length:Int):String {
 		__checkIfReadable();
 		__positionDirty = true;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			var result = __buffer.readUTFBytes(length);
 			__fileStreamMutex.release();
@@ -952,8 +881,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * The file must be open for writing.
 	 * @throws 		IllegalOperationError The file is not open for writing.
 	 */
-	public function truncate():Void
-	{
+	public function truncate():Void {
 		__checkIfOpen();
 
 		var fileMode:FileMode = __fileMode;
@@ -970,12 +898,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		var pos:Int = truncatedBytes.length;
 		fileBytes = null;
 
-		if (isAsync)
-		{
+		if (isAsync) {
 			openAsync(__file, fileMode);
-		}
-		else
-		{
+		} else {
 			open(__file, fileMode);
 		}
 		position = pos;
@@ -996,12 +921,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeBoolean(value:Bool):Void
-	{
+	public function writeBoolean(value:Bool):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeBoolean(value);
 			isWriting = true;
@@ -1026,12 +949,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeByte(value:Int):Void
-	{
+	public function writeByte(value:Int):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeByte(value);
 			isWriting = true;
@@ -1065,24 +986,22 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void
-	{
+	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeBytes(bytes, offset, length);
 
-			if (length == 0) __isZeroLength = true;
+			if (length == 0)
+				__isZeroLength = true;
 			isWriting = true;
 			__fileStreamMutex.release();
 
 			return;
 		}
 
-		if (length == 0)
-		{
+		if (length == 0) {
 			length = bytes.length - offset;
 		}
 
@@ -1103,12 +1022,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeDouble(value:Float):Void
-	{
+	public function writeDouble(value:Float):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeDouble(value);
 			isWriting = true;
@@ -1133,12 +1050,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeFloat(value:Float):Void
-	{
+	public function writeFloat(value:Float):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeFloat(value);
 			isWriting = true;
@@ -1163,12 +1078,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeInt(value:Int):Void
-	{
+	public function writeInt(value:Int):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeInt(value);
 			isWriting = true;
@@ -1196,12 +1109,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeMultiByte(value:String, charSet:String):Void
-	{
+	public function writeMultiByte(value:String, charSet:String):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeMultiByte(value, charSet);
 			isWriting = true;
@@ -1227,12 +1138,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeObject(object:Dynamic):Void
-	{
+	public function writeObject(object:Dynamic):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeObject(object);
 			isWriting = true;
@@ -1257,12 +1166,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeShort(value:Int):Void
-	{
+	public function writeShort(value:Int):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeShort(value);
 			isWriting = true;
@@ -1287,12 +1194,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeUnsignedInt(value:UInt):Void
-	{
+	public function writeUnsignedInt(value:UInt):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeUnsignedInt(value);
 			isWriting = true;
@@ -1319,12 +1224,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeUTF(value:String):Void
-	{
+	public function writeUTF(value:String):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeUTF(value);
 			isWriting = true;
@@ -1351,12 +1254,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	 * with write capabilities; or for a file that has been opened for synchronous operations (by
 	 * using the open() method), the file cannot be written (for example, because the file is missing).
 	 */
-	public function writeUTFBytes(value:String):Void
-	{
+	public function writeUTFBytes(value:String):Void {
 		__checkIfWritable();
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			__buffer.writeUTFBytes(value);
 			isWriting = true;
@@ -1370,42 +1271,33 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__positionDirty = true;
 	}
 
-	@:noCompletion private function __checkIfOpen():Void
-	{
-		if (!__isOpen)
-		{
+	@:noCompletion private function __checkIfOpen():Void {
+		if (!__isOpen) {
 			throw new Error("This FileStream object does not have a stream opened.", 2092);
 		}
 	}
 
-	@:noCompletion private function __checkIfReadable():Void
-	{
+	@:noCompletion private function __checkIfReadable():Void {
 		__checkIfOpen();
 
-		if (__isWrite)
-		{
+		if (__isWrite) {
 			throw new Error("This FileStream object does not have a input stream opened.", 2092);
 		}
 	}
 
-	@:noCompletion private function __checkIfWritable():Void
-	{
+	@:noCompletion private function __checkIfWritable():Void {
 		__checkIfOpen();
 
-		if (!__isWrite)
-		{
+		if (!__isWrite) {
 			throw new Error("This FileStream object does not have a output stream opened.", 2092);
 		}
 	}
 
-	@:noCompletion private function __getStreamBytesAvailable():Int
-	{
-		if (__isWrite)
-		{
+	@:noCompletion private function __getStreamBytesAvailable():Int {
+		if (__isWrite) {
 			var pos:Int = position;
 
-			if (__isAsync)
-			{
+			if (__isAsync) {
 				__fileStreamMutex.acquire();
 				pos = __output.tell();
 			}
@@ -1414,8 +1306,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			var length = __output.tell();
 			__output.seek(pos, FileSeek.SeekBegin);
 
-			if (__isAsync)
-			{
+			if (__isAsync) {
 				__fileStreamMutex.release();
 			}
 
@@ -1424,8 +1315,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 		var pos:Int = position;
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.acquire();
 			pos = __input.tell();
 		}
@@ -1434,20 +1324,16 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		var length = __input.tell();
 		__input.seek(pos, FileSeek.SeekBegin);
 
-		if (__isAsync)
-		{
+		if (__isAsync) {
 			__fileStreamMutex.release();
 		}
 
 		return length - pos;
 	}
 
-	@:noCompletion private function __openFile():Void
-	{
-		if (__isOpen)
-		{
-			if (__fileStreamWorker != null)
-			{
+	@:noCompletion private function __openFile():Void {
+		if (__isOpen) {
+			if (__fileStreamWorker != null) {
 				// when opening a new file, if an existing file is already open,
 				// we should not dispatch Event.CLOSE, so dispose the worker
 				// right away
@@ -1458,69 +1344,52 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 		__isOpen = true;
 
-		switch (__fileMode)
-		{
+		switch (__fileMode) {
 			case READ:
-				try
-				{
+				try {
 					__input = HaxeFile.read(__file.nativePath, true);
 					__input.seek(0, FileSeek.SeekBegin);
 					__isWrite = false;
-				}
-				catch (e:Dynamic)
-				{
+				} catch (e:Dynamic) {
 					throw new IOError("Invalid parameters.");
 				}
 			case WRITE:
-				try
-				{
+				try {
 					var dirPath:String = Path.directory(__file.nativePath);
-					if (!FileSystem.exists(dirPath)) FileSystem.createDirectory(dirPath);
+					if (!FileSystem.exists(dirPath))
+						FileSystem.createDirectory(dirPath);
 					__output = HaxeFile.write(__file.nativePath, true);
 					__isWrite = true;
-				}
-				catch (e:Dynamic)
-				{
+				} catch (e:Dynamic) {
 					throw new IOError("Invalid parameters.");
 				}
 			case APPEND:
-				try
-				{
+				try {
 					__output = HaxeFile.append(__file.nativePath, true);
 					__isWrite = true;
-				}
-				catch (d:Dynamic)
-				{
+				} catch (d:Dynamic) {
 					throw new IOError("Invalid parameters.");
 				}
 			case UPDATE:
-				try
-				{
+				try {
 					__output = HaxeFile.update(__file.nativePath, true);
 					__output.seek(0, sys.io.FileSeek.SeekBegin);
 					__isWrite = true;
-				}
-				catch (d:Dynamic)
-				{
+				} catch (d:Dynamic) {
 					throw new IOError("Invalid parameters.");
 				}
 		}
 
-		if (__isWrite)
-		{
+		if (__isWrite) {
 			__output.bigEndian = true;
-		}
-		else
-		{
+		} else {
 			__input.bigEndian = true;
 		}
 	}
 
-	@:noCompletion private function __writeObject(object:Dynamic):Void
-	{
-		switch (objectEncoding)
-		{
-				#if format
+	@:noCompletion private function __writeObject(object:Dynamic):Void {
+		switch (objectEncoding) {
+			#if format
 			case AMF0:
 				var value = AMFTools.encode(object);
 				var output:BytesOutput = new BytesOutput();
@@ -1536,7 +1405,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				writer.write(value);
 				var bytes:Bytes = output.getBytes();
 				__output.writeBytes(bytes, 0, bytes.length);
-				#end
+			#end
 
 			case HXSF:
 				var value = Serializer.run(object);
@@ -1551,20 +1420,16 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 	}
 
-	@:noCompletion private function get_endian():Endian
-	{
-		if (__isWrite)
-		{
+	@:noCompletion private function get_endian():Endian {
+		if (__isWrite) {
 			return __output.bigEndian ? BIG_ENDIAN : LITTLE_ENDIAN;
 		}
 
 		return __input.bigEndian ? BIG_ENDIAN : LITTLE_ENDIAN;
 	}
 
-	@:noCompletion private function set_endian(value:Endian):Endian
-	{
-		if (__isWrite)
-		{
+	@:noCompletion private function set_endian(value:Endian):Endian {
+		if (__isWrite) {
 			__output.bigEndian = value == BIG_ENDIAN ? true : false;
 			return value;
 		}
@@ -1573,21 +1438,16 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		return value;
 	}
 
-	@:noCompletion private function get_bytesAvailable():Int
-	{
-		if (__isOpen)
-		{
-			if (!__isAsync)
-			{
+	@:noCompletion private function get_bytesAvailable():Int {
+		if (__isOpen) {
+			if (!__isAsync) {
 				return __getStreamBytesAvailable();
 			}
 
-			if (__fileMode == READ)
-			{
+			if (__fileMode == READ) {
 				__fileStreamMutex.acquire();
 				var result = 0;
-				if (__buffer != null)
-				{
+				if (__buffer != null) {
 					result = __buffer.bytesAvailable;
 				}
 				__fileStreamMutex.release();
@@ -1598,22 +1458,17 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		return 0;
 	}
 
-	@:noCompletion private function get_position():UInt
-	{
-		if (__positionDirty)
-		{
-			if (!__isAsync)
-			{
+	@:noCompletion private function get_position():UInt {
+		if (__positionDirty) {
+			if (!__isAsync) {
 				__positionDirty = false;
-				if (__isWrite)
-				{
+				if (__isWrite) {
 					return position = __output.tell();
 				}
 
 				return position = __input.tell();
 			}
-			if (__fileMode == READ)
-			{
+			if (__fileMode == READ) {
 				__fileStreamMutex.acquire();
 				position = __buffer.position;
 				__fileStreamMutex.release();
@@ -1623,23 +1478,15 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		return position;
 	}
 
-	@:noCompletion private function set_position(value:UInt):UInt
-	{
-		if (__isOpen)
-		{
-			if (!__isAsync)
-			{
-				if (__isWrite)
-				{
+	@:noCompletion private function set_position(value:UInt):UInt {
+		if (__isOpen) {
+			if (!__isAsync) {
+				if (__isWrite) {
 					__output.seek(value, FileSeek.SeekBegin);
-				}
-				else
-				{
+				} else {
 					__input.seek(value, FileSeek.SeekBegin);
 				}
-			}
-			else
-			{
+			} else {
 				__fileStreamMutex.acquire();
 				__buffer.position = value;
 				__fileStreamMutex.release();

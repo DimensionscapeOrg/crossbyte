@@ -10,8 +10,7 @@ import crossbyte.net.Socket;
 	for subsequent communication between the server and the client. To deny the connection, call
 	the Socket close() method.
 **/
-class ServerSocketConnectEvent extends Event
-{
+class ServerSocketConnectEvent extends Event {
 	public static inline var CONNECT:String = "connect";
 
 	public var socket:Socket;
@@ -25,8 +24,7 @@ class ServerSocketConnectEvent extends Event
 			   false.
 		@param socket (default = null) The socket for the new connection.
 	**/
-	public function new(type:String, socket:Socket = null)
-	{
+	public function new(type:String, socket:Socket = null) {
 		super(type);
 		this.socket = socket;
 	}
@@ -36,8 +34,7 @@ class ServerSocketConnectEvent extends Event
 		of the original.
 		@return Event A new ServerSocketConnectEvent object with property values that match those of the original.
 	**/
-	public override function clone():Event
-	{
+	public override function clone():Event {
 		return new ServerSocketConnectEvent(type, socket);
 	}
 
@@ -47,8 +44,7 @@ class ServerSocketConnectEvent extends Event
 		[ServerSocketConnectEvent type=value bubbles=value cancelable=value socket=value]
 		@return A string that contains all the properties of the ProgressEvent object.
 	**/
-	override public function toString():String
-	{
+	override public function toString():String {
 		return '[ServerSocketConnectEvent type=$type socket=$socket]';
 	}
 }
