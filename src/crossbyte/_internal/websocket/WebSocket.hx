@@ -1,5 +1,7 @@
 package crossbyte._internal.websocket;
 
+import haxe.Int64;
+import haxe.Int64Helper;
 import crossbyte.Function;
 import crossbyte.Object;
 import crossbyte.core.CrossByte;
@@ -30,10 +32,8 @@ class WebSocket {
 
 	// Max payload size in bytes
 	public static var MAX_PAYLOAD:Int = 65536;
-
-	// The mask pool size. A socket should have its own unique mask and each connection will
-	// create and return a mask to the pool if it exceeds this size, but it is a good practice
-	// match your max expected connections. The Default value is 64.
+	
+	//Each message needs to have its own mask!
 	public static var MASK_POOL_SIZE:Int = 64;
 
 	// The default ping interval. Set to 0 to disable pings.
@@ -71,7 +71,11 @@ class WebSocket {
 
 	private var __socket:FlexSocket;
 	private var __buffer:Bytes;
+	// TODO: Use frame buffer for partial frames
+	// private var __frameBuffer:ByteArray;
+	private var __inputPosition:Int = 0;
 	private var __input:ByteArray;
+	private var __incomingMessageBuffer:ByteArray;
 	private var __output:ByteArray;
 	private var __connected:Bool = false;
 	private var __timestamp:Float;
@@ -90,7 +94,7 @@ class WebSocket {
 
 	private var __mask:ByteArray;
 	private var __maskedPayload:ByteArray;
-	private var __fragmentBuffer:ByteArray;
+	private var __outgoingMessageBuffer:ByteArray;
 
 	private var __heartbeatDelay:Int;
 	private var __hasTimeoutPotential:Bool = false;
@@ -102,12 +106,7 @@ class WebSocket {
 		__key = Base64.encode(Random.getSecureRandomBytes(16));
 
 		__mask = __getMask();
-		__maskedPayload = new ByteArray();
-		__maskedPayload.endian = BIG_ENDIAN;
-
-		__fragmentBuffer = new ByteArray();
-		__maskedPayload.endian = BIG_ENDIAN;
-
+		
 		__heartbeatDelay = PING_INTERVAL;
 
 		if (__isClient == null) {
@@ -153,6 +152,16 @@ class WebSocket {
 		__input.endian = BIG_ENDIAN;
 		__output = new ByteArray();
 		__output.endian = BIG_ENDIAN;
+
+		__incomingMessageBuffer = new ByteArray();
+		__incomingMessageBuffer.endian = BIG_ENDIAN;
+
+		__outgoingMessageBuffer = new ByteArray();
+		__outgoingMessageBuffer.endian = BIG_ENDIAN;
+
+		__maskedPayload = new ByteArray();
+		__maskedPayload.endian = BIG_ENDIAN;
+		
 		__timestamp = Sys.time();
 
 		if (socket == null) {
@@ -195,22 +204,29 @@ class WebSocket {
 		var doClose:Bool = false;
 		var currentBytes:Int = 0;
 		var totalBytes:Int = 0;
-
+		__input.position = __input.length;
 		while (__connected) {
 			try {
 				var nBytes:Int = __socket.input.readBytes(__buffer, currentBytes, 1024);
 				currentBytes += nBytes;
 				totalBytes += nBytes;
+
 				if (currentBytes > 3072) {
 					__input.writeBytes(__buffer, 0, currentBytes);
 					currentBytes = 0;
 				}
+				/*	else if (totalBytes < 1024) {
+					__input.writeBytes(__buffer, 0, currentBytes);
+					__input.position = 0;
+
+					hasData = true;
+					break;
+				}*/
 			} catch (e:Error) {
 				if (totalBytes > 0) {
 					if (currentBytes > 0) {
 						__input.writeBytes(__buffer, 0, currentBytes);
 					}
-					__input.position = 0;
 
 					hasData = true;
 				}
@@ -228,6 +244,7 @@ class WebSocket {
 		}
 
 		if (hasData) {
+			__input.position = __inputPosition;
 			__onData();
 		} else if (doClose) {
 			__close(1006);
@@ -270,89 +287,124 @@ class WebSocket {
 			__close(1000);
 		}
 	}
-
+	
 	private function __onData():Void {
+		trace("/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\", __input.length, __input.position, __input.bytesAvailable, __inputPosition);
 		if (readyState == OPEN) {
 			while (__input.bytesAvailable > 0) {
-				try {
-					// Parse the first byte
-					var firstByte:Int = __input.readUnsignedByte();
-					var isFinal:Bool = (firstByte & 0x80) != 0;
-					var opCode:Int = firstByte & 0x0F;
-
-					// Parse the second byte
-					var secondByte:Int = __input.readUnsignedByte();
-					var isMasked:Bool = (secondByte & 0x80) != 0;
-					var payloadLength:UInt = secondByte & 0x7F;
-					var lengthBytes:Int = 2;
-
-					if (opCode > 0x02) {
-						__handleControlFrame(opCode);
-						break;
-					}
-
-					// Parse extended payload length if necessary
-					if (payloadLength == 126) {
-						lengthBytes = 6;
-						payloadLength = __input.readUnsignedShort();
-					} else if (payloadLength == 127) {
-						// only an extra 4 bytes
-						lengthBytes = 12;
-						payloadLength = __input.readUnsignedInt();
-					}
-
-					if (payloadLength > __input.bytesAvailable) {
-						// If our frame is incomplete, we rewind the buffer position so the rest of
-						// it can be written in order.
-						// maybe we should create a state system here so that we dont need to re-read
-						// frames that were once partial
-						__input.position -= lengthBytes;
-						break;
-					}
-
-					if (payloadLength > MAX_PAYLOAD) {
-						throw("Payload too large");
-					}
-
-					// Parse masking key if necessary
-					var maskingKey:Int = 0;
-					if (isMasked) {
-						maskingKey = __input.readUnsignedInt();
-					}
-
-					// Parse the payload
-					var payload:ByteArray = new ByteArray(payloadLength);
-
-					if (payloadLength > 0) {
-						if (isMasked) {
-							var maskBytes:ByteArray = new ByteArray(4);
-							maskBytes.writeUnsignedInt(maskingKey);
-							__input.readBytes(payload, 0, payloadLength);
-							for (i in 0...payloadLength) {
-								// Is the arrayaccess slower than manually positioning and calling readByte()?
-								payload[i] ^= maskBytes[i & 0x03]; // use bitwise AND instead of modulo
-							}
-						} else {
-							__input.readBytes(payload, 0, payloadLength);
-						}
-					}
-					// trace(payload.toString());
-					var messageEvent:WebsocketEvent = new WebsocketEvent(WebsocketEvent.MESSAGE, this,
-						opCode == WebSocketOpcode.BINARY ? payload : payload.readUTFBytes(payload.length));
-					onmessage(messageEvent);
-				} catch (e:Error) {
-					// Handle errors here
-					// TODO: some kind of error handling here
+				// try {
+				// keep track of our header bytes
+				// maybe we can rewind our buffer position based on a some different method like comparing start position
+				if (__input.bytesAvailable < 2) {
+					trace('first break');
+					break;
 				}
+
+				var lengthBytes:Int = 0;
+				// Parse the first byte
+				var firstByte:Int = __input.readUnsignedByte();
+				var isFinal:Bool = (firstByte & 0x80) != 0;
+				var opCode:Int = firstByte & 0x0F;
+				lengthBytes = 1;
+				// Parse the second byte
+				var secondByte:Int = __input.readUnsignedByte();
+				var isMasked:Bool = (secondByte & 0x80) != 0;
+				var payloadLength:UInt = secondByte & 0x7F;
+				lengthBytes = 2;
+
+				if (opCode > 0x02) {
+					__handleControlFrame(opCode);
+					trace('second break');
+					break;
+				}
+
+				// Parse extended payload length if necessary
+				if (payloadLength == 126) {					
+					if (__input.bytesAvailable < 2) {
+						__input.position -= lengthBytes;
+						trace('third break');
+						break;
+					}
+					lengthBytes = 4;
+					payloadLength = __input.readUnsignedShort();
+				} else if (payloadLength == 127) {
+					
+					if (__input.bytesAvailable < 8) {
+						__input.position -= lengthBytes;
+						trace('fourth break');
+						break;
+					}
+					lengthBytes = 10;
+					var i64Val:Int64 = __input.readInt64();
+					payloadLength = Int64.toInt(i64Val);
+				}
+
+				trace("Payload length:" + Std.string(payloadLength));
+				if (payloadLength > __input.bytesAvailable) {
+					// If our frame is incomplete, we rewind the buffer position so the rest of
+					// it can be written in order.
+					// lets use a frame buffer here in the future
+					// perhaps we can switch between implementations based on the network conditions.
+					// a frame buffer might add overhead if network conditions are solid, while
+					// rewinding adds a lot of overhead if incomplete payloads are frequently received
+					__input.position -= lengthBytes;
+					break;
+				}
+
+				// if (payloadLength > MAX_PAYLOAD) {
+				//	throw("Payload too large");
+				// }
+
+				// Parse masking key if necessary
+				var maskingKey:ByteArray = new ByteArray(4);
+				if (isMasked) {
+					__input.readBytes(maskingKey, 0, 4);
+				}
+
+				// Parse the payload
+				if (__incomingMessageBuffer.length == 0) {
+					__incomingMessageBuffer.length = payloadLength;
+					// var frameBytes:ByteArray = new ByteArray(PayloadLength)?
+				}
+
+				// if (payloadLength > 0) {
+				__input.readBytes(__incomingMessageBuffer, __incomingMessageBuffer.position, payloadLength);
+				if (isMasked) {
+					for (i in 0...payloadLength) {
+						// Is the arrayaccess slower than manually positioning and calling readByte()?
+						// we can avoid using the position as an offset by adding an addition buffer potentially having less
+						// overhead.
+						// frameBytes[i] ^= maskingKey[i & 0x03];
+						__incomingMessageBuffer[i + __incomingMessageBuffer.position] ^= maskingKey[i & 0x03]; // use bitwise AND instead of modulo
+					}
+				}
+				// handle some error?
+				// }
+
+				if (isFinal) {			
+					var messageEvent:WebsocketEvent = new WebsocketEvent(WebsocketEvent.MESSAGE, this, __incomingMessageBuffer);
+					onmessage(messageEvent);
+					__incomingMessageBuffer.clear();
+					
+					__validateInputPosition();
+				}
+				// }
+				// catch (e:Error)
+				// {
+				// Handle errors here
+				// TODO: some kind of error handling here
+				//	trace('wrror');
+				// }
 			}
 		} else if (readyState == CONNECTING) {
 			var headerData:String = __input.readUTFBytes(__input.length);
-
-			if (headerData.indexOf(CRLFCRLF) > -1) {
+			var endIndex:Int = headerData.lastIndexOf(CRLFCRLF);
+			var headerLength = endIndex + 4;
+			if (endIndex > -1) {
 				// received entire header
 				if (__handshakeBuffer.length > 0) {
 					headerData = __handshakeBuffer + headerData;
-					__handshakeBuffer == "";
+					__handshakeBuffer = "";
 				}
 				var lines:Array<String> = headerData.split(CRLF);
 				var headers:StringMap<String>;
@@ -376,9 +428,18 @@ class WebSocket {
 						// handshake complete, is ready
 						readyState = OPEN;
 						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
+
+						if (__input.length > headerLength) {
+							__input.position = headerLength;
+							__onData();
+						}
+
 						if (__heartbeatDelay > 0) {
 							__initHeartbeat();
 						}
+						
+						__validateInputPosition();
+
 					} else {
 						__close(1002);
 					}
@@ -389,29 +450,23 @@ class WebSocket {
 				// received partial header, buffer it and wait.
 				__handshakeBuffer += headerData;
 			}
-		}
-
-		// rewind the input buffer? maybe a a state system is more appropriate here
-		// so we dont have to do the work twice in case of a patial frame.
-		if (__input.length != __input.position) {
-			var len:Int = __input.length - __input.position;
-
-			var input:ByteArray = new ByteArray(len);
-			input.endian = BIG_ENDIAN;
-			input.writeBytes(__input, __input.position, len);
-
-			__input = input;
-			__input.position = 0;
-		} else {
-			__input.clear();
-		}
+		}		
 	}
 
+	private inline function __validateInputPosition():Void{
+		if(__input.bytesAvailable > 0){
+			__inputPosition = __input.position;
+		} else {
+			trace("CLEAR");
+			__input.clear();
+			__inputPosition = 0;
+		}
+	}
 	private function __generateResponseHandshake(headers:StringMap<String>):Bytes {
 		var responseHeadersBytes:Bytes = Bytes.ofString([
 			"HTTPS/1.1 101 Switching Protocols",
-			"Upgrade: websocket",
-			"Connection: Upgrade",
+			"upgrade: websocket",
+			"Connection: upgrade",
 			"Sec-WebSocket-Accept: " + __generateWebSocketAccept(headers.get("Sec-WebSocket-Key")),
 			"",
 			""
@@ -452,6 +507,7 @@ class WebSocket {
 	}
 
 	private function __validateResponseHandshake(headers:StringMap<String>):Bool {
+		trace(headers.get('Status'));
 		// Check if the response status code is 101
 		if (headers.get("Status") != "101") {
 			// The server failed to switch protocols, close the connection with code 1002 (protocol error)
@@ -459,20 +515,20 @@ class WebSocket {
 		}
 
 		// Check if the "Upgrade" header is set to "websocket"
-		if (headers.get("Upgrade") != "websocket") {
+		if (headers.get("upgrade") != "websocket") {
 			// The server does not support WebSockets, close the connection with code 1002 (protocol error)
 			return false;
 		}
 
 		// Check if the "Connection" header is set to "Upgrade"
-		if (headers.get("Connection") != "Upgrade") {
+		if (headers.get("Connection") != "upgrade") {
 			// The server failed to switch protocols, close the connection with code 1002 (protocol error)
 			return false;
 		}
 
 		// Check if the "Sec-WebSocket-Accept" header matches the expected value
 		var expected:String = __generateWebSocketAccept(__key);
-		if (headers.get("Sec-WebSocket-Accept") != expected) {
+		if (headers.get("sec-websocket-accept") != expected) {
 			// The server sent an invalid response, close the connection with code 1002 (protocol error)
 			return false;
 		}
@@ -569,6 +625,7 @@ class WebSocket {
 			}
 		}
 
+		trace(code, reason);
 		onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
 
 		__socket = null;
@@ -616,12 +673,12 @@ class WebSocket {
 					fragmentOpcode = opcode;
 				}
 
-				__fragmentBuffer.length = length;
-				__fragmentBuffer.position = 0;
+				__outgoingMessageBuffer.length = length;
+				__outgoingMessageBuffer.position = 0;
 
-				data.readBytes(__fragmentBuffer, 0, length);
+				data.readBytes(__outgoingMessageBuffer, 0, length);
 
-				__sendFrame(__fragmentBuffer, fragmentOpcode, fin);
+				__sendFrame(__outgoingMessageBuffer, fragmentOpcode, fin);
 			}
 		} else {
 			__sendFrame(data, opcode, true);
@@ -755,10 +812,6 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 	public static inline var PING:Int = 0x09;
 	public static inline var PONG:Int = 0x0A;
 }
-
-@:forward
-@:enum(WebSocketOpcode.TEXT, WebSocketOpcode.BINARY)
-abstract TextOrBinary(WebSocketOpcode) to Int {}
 
 @:private @:noCompletion class AcceptedWebSocket extends WebSocket {
 	private function new() {
