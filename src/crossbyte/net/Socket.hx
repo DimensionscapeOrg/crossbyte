@@ -32,7 +32,9 @@ import sys.net.Socket as SysSocket;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class Socket extends EventDispatcher implements IDataInput implements IDataOutput {
+class Socket extends EventDispatcher implements IDataInput implements IDataOutput
+{
+	
 	/**
 		The number of bytes of data available for reading in the input buffer.
 		Your code must access `bytesAvailable` to ensure that sufficient data
@@ -71,28 +73,28 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 * The IP address this socket is bound to on the local machine.
 	**/
 	public var localAddress(get, never):String;
-
+	
 	/**
 		The port this socket is bound to on the local machine.
 	 */
 	public var localPort(get, never):Int;
-
+	
 	/**
 		Controls the version of AMF used when writing or reading an object.
 	**/
 	public var objectEncoding:ObjectEncoding;
-
+	
 	/**
 		The IP address of the remote machine to which this socket is connected.
-
+		
 		You can use this property to determine the IP address of a client socket 
 		dispatched in a ServerSocketConnectEvent by a ServerSocket object.
 	 */
 	public var remoteAddress(get, never):String;
-
+	
 	/**
 		The port on the remote machine to which this socket is connected.
-
+		
 		You can use this property to determine the port number of a client socket 
 		dispatched in a ServerSocketConnectEvent by a ServerSocket object.
 	 */
@@ -117,7 +119,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __port:Int;
 	@:noCompletion private var __socket:#if sys SysSocket #else Dynamic #end;
 	@:noCompletion private var __timestamp:Float;
-
+	
 	/**
 		Creates a new Socket object. If no parameters are specified, an
 		initially disconnected socket is created. If parameters are specified,
@@ -171,7 +173,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 							 href="http://www.adobe.com/go/devnet_security_en"
 							 scope="external">Security</a>.
 	**/
-	public function new(host:String = null, port:Int = 0) {
+	public function new(host:String = null, port:Int = 0)
+	{
 		super();
 
 		endian = Endian.BIG_ENDIAN;
@@ -179,11 +182,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		__buffer = Bytes.alloc(4096);
 
-		if (port > 0 && port < 65535) {
+		if (port > 0 && port < 65535)
+		{
 			connect(host, port);
 		}
 	}
-
+	
 	/**
 		Closes the socket. You cannot read or write any data after the
 		`close()` method has been called.
@@ -194,10 +198,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError The socket could not be closed, or the socket was not
 						open.
 	**/
-	public function close():Void {
-		if (__socket != null) {
+	public function close():Void
+	{
+		if (__socket != null)
+		{
 			__cleanSocket();
-		} else {
+		}
+		else
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 	}
@@ -245,12 +253,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 							 href="http://www.adobe.com/go/devnet_security_en"
 							 scope="external">Security</a>.
 	**/
-	public function connect(host:String = null, port:Int = 0):Void {
-		if (__socket != null) {
+	public function connect(host:String = null, port:Int = 0):Void
+	{
+		if (__socket != null)
+		{
 			close();
 		}
 
-		if (port < 0 || port > 65535) {
+		if (port < 0 || port > 65535)
+		{
 			throw new SecurityError("Invalid socket port number specified.");
 		}
 
@@ -259,9 +270,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#else
 		var h:Host = null;
 
-		try {
+		try
+		{
 			h = new Host(host);
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
 			return;
 		}
@@ -279,7 +293,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__input.endian = __endian;
 
 		#if (js && html5)
-		if (Browser.location.protocol == "https:") {
+		if (Browser.location.protocol == "https:")
+		{
 			secure = true;
 		}
 
@@ -298,11 +313,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#else
 		__socket = new SysSocket();
 
-		try {
+		try
+		{
 			__socket.setBlocking(false);
 			__socket.connect(h, port);
 			__socket.setFastSend(true);
-		} catch (e:Dynamic) {}
+		}
+		catch (e:Dynamic) {}
 		#end
 
 		CrossByte.current.addEventListener(TickEvent.TICK, this_onTick);
@@ -319,32 +336,39 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function flush():Void {
-		if (__socket == null) {
+	public function flush():Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		if (__output.length > 0) {
-			try {
+		if (__output.length > 0)
+		{
+			try
+			{
 				#if (js && html5)
 				var buffer:ArrayBuffer = __output;
-				if (buffer.byteLength > __output.length)
-					buffer = buffer.slice(0, __output.length);
+				if (buffer.byteLength > __output.length) buffer = buffer.slice(0, __output.length);
 				__socket.send(buffer);
 				#else
 				__socket.output.writeBytes(__output, 0, __output.length);
 				#end
 				__output = new ByteArray();
 				__output.endian = __endian;
-			} catch (e:Dynamic) {
+			}
+			catch (e:Dynamic)
+			{
 				var throwError = false;
-				switch (e) {
+				switch (e)
+				{
 					case Error.Blocked:
 					case Error.Custom(Error.Blocked):
 					default:
 						throwError = true;
 				}
-				if (throwError) {
+				if (throwError)
+				{
 					throw new IOError("Operation attempted on invalid socket.");
 				}
 			}
@@ -361,8 +385,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readBoolean():Bool {
-		if (__socket == null) {
+	public function readBoolean():Bool
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -376,8 +402,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readByte():Int {
-		if (__socket == null) {
+	public function readByte():Int
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -397,8 +425,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
-		if (__socket == null) {
+	public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -413,8 +443,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readDouble():Float {
-		if (__socket == null) {
+	public function readDouble():Float
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -429,8 +461,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readFloat():Float {
-		if (__socket == null) {
+	public function readFloat():Float
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -444,8 +478,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readInt():Int {
-		if (__socket == null) {
+	public function readInt():Int
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -474,8 +510,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@return A UTF-8 encoded string.
 		@throws EOFError There is insufficient data available to read.
 	**/
-	public function readMultiByte(length:Int, charSet:String):String {
-		if (__socket == null) {
+	public function readMultiByte(length:Int, charSet:String):String
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -489,10 +527,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readObject():Dynamic {
-		if (objectEncoding == HXSF) {
+	public function readObject():Dynamic
+	{
+		if (objectEncoding == HXSF)
+		{
 			return Unserializer.run(readUTF());
-		} else {
+		}
+		else
+		{
 			// TODO: Add support for AMF if haxelib "format" is included
 			return null;
 		}
@@ -505,8 +547,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readShort():Int {
-		if (__socket == null) {
+	public function readShort():Int
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -520,8 +564,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readUnsignedByte():Int {
-		if (__socket == null) {
+	public function readUnsignedByte():Int
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 		return __input.readUnsignedByte();
@@ -534,8 +580,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readUnsignedInt():Int {
-		if (__socket == null) {
+	public function readUnsignedInt():Int
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -549,8 +597,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readUnsignedShort():Int {
-		if (__socket == null) {
+	public function readUnsignedShort():Int
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -566,8 +616,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readUTF():String {
-		if (__socket == null) {
+	public function readUTF():String
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -583,8 +635,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	public function readUTFBytes(length:Int):String {
-		if (__socket == null) {
+	public function readUTFBytes(length:Int):String
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -599,8 +653,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeBoolean(value:Bool):Void {
-		if (__socket == null) {
+	public function writeBoolean(value:Bool):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -614,8 +670,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeByte(value:Int):Void {
-		if (__socket == null) {
+	public function writeByte(value:Int):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -641,8 +699,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						   data specified to be written by `offset` plus
 						   `length` exceeds the data available.
 	**/
-	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
-		if (__socket == null) {
+	public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -656,8 +716,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeDouble(value:Float):Void {
-		if (__socket == null) {
+	public function writeDouble(value:Float):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -671,8 +733,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeFloat(value:Float):Void {
-		if (__socket == null) {
+	public function writeFloat(value:Float):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -685,8 +749,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeInt(value:Int):Void {
-		if (__socket == null) {
+	public function writeInt(value:Int):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -704,8 +770,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					   href="../../charset-codes.html">Supported Character
 					   Sets</a>.
 	**/
-	public function writeMultiByte(value:String, charSet:String):Void {
-		if (__socket == null) {
+	public function writeMultiByte(value:String, charSet:String):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -718,10 +786,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeObject(object:Dynamic):Void {
-		if (objectEncoding == HXSF) {
+	public function writeObject(object:Dynamic):Void
+	{
+		if (objectEncoding == HXSF)
+		{
 			__output.writeUTF(Serializer.run(object));
-		} else {
+		}
+		else
+		{
 			// TODO: Add support for AMF if haxelib "format" is included
 		}
 	}
@@ -738,8 +810,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeShort(value:Int):Void {
-		if (__socket == null) {
+	public function writeShort(value:Int):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -752,8 +826,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeUnsignedInt(value:Int):Void {
-		if (__socket == null) {
+	public function writeUnsignedInt(value:Int):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -771,8 +847,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						   is not open.
 		@throws RangeError The length is larger than 65535.
 	**/
-	public function writeUTF(value:String):Void {
-		if (__socket == null) {
+	public function writeUTF(value:String):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -785,74 +863,94 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	public function writeUTFBytes(value:String):Void {
-		if (__socket == null) {
+	public function writeUTFBytes(value:String):Void
+	{
+		if (__socket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
 		__output.writeUTFBytes(value);
 	}
 
-	@:noCompletion private function __cleanSocket():Void {
-		try {
+	@:noCompletion private function __cleanSocket():Void
+	{
+		try
+		{
 			__socket.close();
-		} catch (e:Dynamic) {}
+		}
+		catch (e:Dynamic) {}
 		__socket = null;
 		__connected = false;
 		CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
 	}
 
 	// Event Handlers
-	@:noCompletion private function socket_onClose(_):Void {
+	@:noCompletion private function socket_onClose(_):Void
+	{
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 
-	@:noCompletion private function socket_onError(e):Void {
+	@:noCompletion private function socket_onError(e):Void
+	{
 		dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
 	}
 
-	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
+	@:noCompletion private function socket_onMessage(msg:Dynamic):Void
+	{
 		#if (js && html5)
-		if (__input.position == __input.length) {
+		if (__input.position == __input.length)
+		{
 			__input.clear();
 		}
 
-		if ((msg.data is String)) {
+		if ((msg.data is String))
+		{
 			__input.position = __input.length;
 			var cachePosition = __input.position;
 			__input.writeUTFBytes(msg.data);
 			__input.position = cachePosition;
-		} else {
+		}
+		else
+		{
 			var newData:ByteArray = (msg.data : ArrayBuffer);
 			newData.readBytes(__input, __input.length);
 		}
 
-		if (__input.bytesAvailable > 0) {
+		if (__input.bytesAvailable > 0)
+		{
 			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, false, false, __input.bytesAvailable, 0));
 		}
 		#end
 	}
 
-	@:noCompletion private function socket_onOpen(_):Void {
+	@:noCompletion private function socket_onOpen(_):Void
+	{
 		__connected = true;
 		dispatchEvent(new Event(Event.CONNECT));
 	}
 
-	@:noCompletion private function this_onTick(event:TickEvent):Void {
+	@:noCompletion private function this_onTick(event:TickEvent):Void
+	{
 		#if (js && html5)
-		if (__socket != null) {
+		if (__socket != null)
+		{
 			flush();
 		}
 		#else
 		var doConnect = false;
 		var doClose = false;
 
-		if (!connected) {
+		if (!connected)
+		{
 			var r = SysSocket.select(null, [__socket], null, 0);
 
-			if (r.write[0] == __socket) {
+			if (r.write[0] == __socket)
+			{
 				doConnect = true;
-			} else if (Sys.time() - __timestamp > timeout / 1000) {
+			}
+			else if (Sys.time() - __timestamp > timeout / 1000)
+			{
 				doClose = true;
 			}
 		}
@@ -860,117 +958,143 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var b = new BytesBuffer();
 		var bLength = 0;
 
-		if (connected || doConnect) {
-			try {
+		if (connected || doConnect)
+		{
+			try
+			{
 				var l:Int;
 
-				do {
+				do
+				{
 					l = __socket.input.readBytes(__buffer, 0, __buffer.length);
 
-					if (l > 0) {
+					if (l > 0)
+					{
 						b.addBytes(__buffer, 0, l);
 						bLength += l;
 					}
-				} while (l == __buffer.length);
-			} catch (e:Eof) {
+				}
+				while (l == __buffer.length);
+			}
+			catch (e:Eof)
+			{
 				doClose = true;
-			} catch (e:Error) {
-				switch (e) {
+			}
+			catch (e:Error)
+			{
+				switch (e)
+				{
 					case Error.Blocked:
 					case Error.Custom(Error.Blocked):
 					default:
 						doClose = true;
 				}
-			} catch (e:Dynamic) {
+			}
+			catch (e:Dynamic)
+			{
 				doClose = true;
 			}
 		}
 
-		if (doClose && connected) {
+		if (doClose && connected)
+		{
 			__cleanSocket();
 
 			dispatchEvent(new Event(Event.CLOSE));
-		} else if (doClose) {
+		}
+		else if (doClose)
+		{
 			__cleanSocket();
 
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
-		} else if (doConnect) {
+		}
+		else if (doConnect)
+		{
 			__connected = true;
 			dispatchEvent(new Event(Event.CONNECT));
 		}
 
-		if (bLength > 0) {
+		if (bLength > 0)
+		{
 			var newData = b.getBytes();
 
 			var rl = __input.length - __input.position;
-			if (rl < 0)
-				rl = 0;
+			if (rl < 0) rl = 0;
 
 			var newInput = Bytes.alloc(rl + newData.length);
-			if (rl > 0)
-				newInput.blit(0, __input, __input.position, rl);
+			if (rl > 0) newInput.blit(0, __input, __input.position, rl);
 			newInput.blit(rl, newData, 0, newData.length);
 			__input = newInput;
 			__input.endian = __endian;
-
+			
 			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, newData.length, 0));
 		}
 
-		if (__socket != null) {
-			try {
+		if (__socket != null)
+		{
+			try
+			{
 				flush();
-			} catch (e:IOError) {
+			}
+			catch (e:IOError)
+			{
 				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, e.message));
 			}
 		}
 		#end
 	}
-
-	override public function dispatchEvent(event:Event):Bool {
+	override public function dispatchEvent(event:Event):Bool 
+	{
 		return super.dispatchEvent(event);
 	}
-
 	// Get & Set Methods
-	@:noCompletion private function get_bytesAvailable():Int {
+	@:noCompletion private function get_bytesAvailable():Int
+	{
 		return __input.bytesAvailable;
 	}
 
-	@:noCompletion private function get_bytesPending():Int {
+	@:noCompletion private function get_bytesPending():Int
+	{
 		return __output.length;
 	}
 
-	@:noCompletion private function get_connected():Bool {
+	@:noCompletion private function get_connected():Bool
+	{
 		return __connected;
 	}
 
-	@:noCompletion private function get_endian():Endian {
+	@:noCompletion private function get_endian():Endian
+	{
 		return __endian;
 	}
 
-	@:noCompletion private function set_endian(value:Endian):Endian {
+	@:noCompletion private function set_endian(value:Endian):Endian
+	{
 		__endian = value;
 
-		if (__input != null)
-			__input.endian = value;
-		if (__output != null)
-			__output.endian = value;
+		if (__input != null) __input.endian = value;
+		if (__output != null) __output.endian = value;
 
 		return __endian;
 	}
-
-	@:noCompletion private function get_localAddress():String {
+	
+	@:noCompletion private function get_localAddress():String
+	{
 		return __socket.host().host.host;
 	}
-
-	@:noCompletion private function get_localPort():Int {
+	
+	@:noCompletion private function get_localPort():Int
+	{
 		return __socket.host().port;
 	}
-
-	@:noCompletion private function get_remoteAddress():String {
+	
+	@:noCompletion private function get_remoteAddress():String
+	{
 		return __socket.peer().host.host;
 	}
-
-	@:noCompletion private function get_remotePort():Int {
+	
+	@:noCompletion private function get_remotePort():Int
+	{
 		return __socket.peer().port;
 	}
 }

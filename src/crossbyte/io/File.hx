@@ -1,5 +1,4 @@
 package crossbyte.io;
-
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.ThreadEvent;
 import haxe.io.Path;
@@ -15,11 +14,12 @@ import sys.FileSystem;
 import sys.io.File as HaxeFile;
 import sys.io.Process;
 
-// @:noCompletion private typedef HaxeFile = sys.io.File;
+//@:noCompletion private typedef HaxeFile = sys.io.File;
 /**
  * ...
  * @author Christopher Speciale
  */
+
 /**
 	A File object represents a path to a file or directory. This can be an existing file
 	or directory, or it can be one that does not yet exist; for instance, it can represent
@@ -76,9 +76,9 @@ import sys.io.Process;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class File extends EventDispatcher {
+class File extends EventDispatcher
+{
 	private static inline var APPLICATION_DIR:String = "Crossbyte";
-
 	/**
 		The creation date of the file on the local disk. If the object is was
 		not populated, a call to get the value of this property returns
@@ -503,15 +503,20 @@ class File extends EventDispatcher {
 		of backslashes in a String literal represent a single backslash in the
 		String.
 	**/
-	public static inline var seperator:String = #if windows "\\" #else "/" #end;
+	public static inline var seperator:String =
+		#if windows
+		"\\"
+		#else
+		"/"
+		#end
+		;
 
 	public var spaceAvailable(get, null):Float;
-
-	// TODO
-	// public static var systemCharset:String;
-	// TODO: platorm specific code?
-	// public var url:String;
-	// TODO
+// TODO
+// public static var systemCharset:String;
+// TODO: platorm specific code?
+// public var url:String;
+// TODO
 
 	/**
 		The user's directory.
@@ -540,10 +545,11 @@ class File extends EventDispatcher {
 	**/
 	public static var userDirectory(get, never):File;
 
-	@:noCompletion private static var __driveLetters:Array<String> = [
-		"A:\\", "B:\\", "C:\\", "D:\\", "E:\\", "F:\\", "G:\\", "H:\\", "I:\\", "J:\\", "K:\\", "L:\\", "M:\\", "N:\\", "O:\\", "P:\\", "Q:\\", "R:\\",
-		"S:\\", "T:\\", "U:\\", "V:\\", "W:\\", "X:\\", "Y:\\", "Z:\\"
-	];
+	@:noCompletion private static var __driveLetters:Array<String> =
+		[
+			"A:\\", "B:\\", "C:\\", "D:\\", "E:\\", "F:\\", "G:\\", "H:\\", "I:\\", "J:\\", "K:\\", "L:\\", "M:\\", "N:\\", "O:\\", "P:\\", "Q:\\", "R:\\",
+			"S:\\", "T:\\", "U:\\", "V:\\", "W:\\", "X:\\", "Y:\\", "Z:\\"
+		];
 
 	@:noCompletion private var __fileWorker:Worker;
 	@:noCompletion private var __fileStatsDirty:Bool = false;
@@ -577,16 +583,19 @@ class File extends EventDispatcher {
 		notation.
 		@throws ArgumentError The syntax of the path parameter is invalid.
 	**/
-	public function new(path:String = null) {
+	public function new(path:String = null)
+	{
 		super();
 
-		if (path == null) {
+		if (path == null)
+		{
 			return;
 		}
 
 		nativePath = path;
 
-		if (name.length == 0) {
+		if (name.length == 0)
+		{
 			var dirs:Array<String> = Path.directory(__path).split(seperator);
 			name = dirs[dirs.length - 1];
 		}
@@ -595,7 +604,8 @@ class File extends EventDispatcher {
 	/**
 		Cancels any pending asynchronous operation.
 	**/
-	public function cancel():Void {
+	public function cancel():Void
+	{
 		__fileWorker.cancel();
 		dispatchEvent(new Event(Event.CANCEL));
 	}
@@ -622,18 +632,21 @@ class File extends EventDispatcher {
 		trace(path.nativePath); // ...\AIR Test
 		```
 	**/
-	public function canonicalize():Void {
+	public function canonicalize():Void
+	{
 		var segs:Array<String> = __path.split(seperator);
 
 		var cPath:String = __driveLetters[__driveLetters.indexOf(segs[0].toUpperCase() + seperator)];
 		var start:Int = 1;
-		if (cPath == null) {
+		if (cPath == null)
+		{
 			// fall back to unix paths
 			cPath = seperator + segs[1] + seperator;
 			start = 2;
 		}
 
-		for (i in start...segs.length) {
+		for (i in start...segs.length)
+		{
 			cPath += __canonicalize(cPath, segs[i]) + seperator;
 		}
 
@@ -646,16 +659,20 @@ class File extends EventDispatcher {
 		Note: This method does not copy the file itself. It simply makes a copy of the instance of the Haxe
 		File object. To copy a file, use the copyTo() method.
 	**/
-	public function clone():File {
+	public function clone():File
+	{
 		var fileClass:Class<File> = File;
 
 		var fileClone:Dynamic = Type.createEmptyInstance(fileClass);
 
 		var fields:Array<String> = Type.getInstanceFields(fileClass);
-		for (field in fields) {
-			try {
+		for (field in fields)
+		{
+			try
+			{
 				Reflect.setProperty(fileClone, field, Reflect.getProperty(this, field));
-			} catch (e:Dynamic) {}
+			}
+			catch (e:Dynamic) {}
 		}
 		return fileClone;
 	}
@@ -715,8 +732,10 @@ class File extends EventDispatcher {
 		}
 		```
 	**/
-	public function copyTo(newLocation:File, overwrite:Bool = false):Void {
-		if (!overwrite && FileSystem.exists(newLocation.__path)) {
+	public function copyTo(newLocation:File, overwrite:Bool = false):Void
+	{
+		if (!overwrite && FileSystem.exists(newLocation.__path))
+		{
 			throw new Error("Overwrite is false.");
 		}
 		var newPath:String = newLocation.__path;
@@ -743,22 +762,30 @@ class File extends EventDispatcher {
 				}
 		}*/
 
-		try {
-			if (isDirectory) {
+		try
+		{
+			if (isDirectory)
+			{
 				FileSystem.createDirectory(newPath);
 				var files:Array<File> = getDirectoryListing();
-				for (file in files) {
+				for (file in files)
+				{
 					var newFile = new File(Path.join([newPath, file.name]));
 					file.copyTo(newFile);
 				}
-			} else {
+			}
+			else
+			{
 				var newDirectory:String = Path.directory(newPath);
-				if (!FileSystem.exists(newDirectory)) {
+				if (!FileSystem.exists(newDirectory))
+				{
 					FileSystem.createDirectory(newDirectory);
 				}
 				HaxeFile.copy(__path, newPath);
 			}
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			throw new Error("File or directory does not exist.", 3003);
 		}
 		// TODO: Error handing
@@ -804,29 +831,36 @@ class File extends EventDispatcher {
 		}
 		```
 	**/
-	public function copyToAsync(newLocation:File, overwrite:Bool = false):Void {
+	public function copyToAsync(newLocation:File, overwrite:Bool = false):Void
+	{
 		__fileWorker = new Worker();
 		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
 		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
 
 		__fileWorker.doWork = __asyncCopyWork;
-		__fileWorker.run({"newLocation": newLocation, "overwrite": overwrite});
+		__fileWorker.run({"newLocation":newLocation, "overwrite":overwrite});
 	}
 
-	private function __onWorkerError(e:ThreadEvent):Void {
+	private function __onWorkerError(e:ThreadEvent):Void
+	{
 		__disposeFileWorker();
 		__dispatchIoError(e.message);
 	}
 
-	private function __onWorkerComplete(e:ThreadEvent):Void {
+	private function __onWorkerComplete(e:ThreadEvent):Void
+	{
 		__disposeFileWorker();
 		dispatchEvent(new Event(Event.COMPLETE));
 	}
 
-	private function __asyncCopyWork(m:Dynamic) {
-		try {
+	private function __asyncCopyWork(m:Dynamic)
+	{
+		try
+		{
 			copyTo(m.newLocation, m.overwrite);
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			__fileWorker.sendError(e);
 			return;
 		}
@@ -834,7 +868,8 @@ class File extends EventDispatcher {
 		__fileWorker.sendComplete();
 	}
 
-	private function __disposeFileWorker():Void {
+	private function __disposeFileWorker():Void
+	{
 		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
 		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onWorkerError);
 		__fileWorker.cancel();
@@ -863,7 +898,8 @@ class File extends EventDispatcher {
 		```
 
 	**/
-	public function createDirectory():Void {
+	public function createDirectory():Void
+	{
 		FileSystem.createDirectory(__path);
 	}
 
@@ -889,18 +925,24 @@ class File extends EventDispatcher {
 		trace(directory.exists); // false
 		```
 	**/
-	public function deleteDirectory(deleteDirectoryContents:Bool = false):Void {
-		if (deleteDirectoryContents) {
+	public function deleteDirectory(deleteDirectoryContents:Bool = false):Void
+	{
+		if (deleteDirectoryContents)
+		{
 			var files:Array<File> = getDirectoryListing();
 
-			for (file in files) {
+			for (file in files)
+			{
 				file.deleteFile();
 			}
 		}
 
-		try {
+		try
+		{
 			FileSystem.deleteDirectory(__path);
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			throw new Error("Folder is not empty.", 3010);
 		}
 	}
@@ -917,7 +959,8 @@ class File extends EventDispatcher {
 		@throws SecurityError The application does not have the necessary permissions to delete the directory.
 
 	**/
-	public function deleteDirectoryAsync(deleteDirectoryContents:Bool = false):Void {
+	public function deleteDirectoryAsync(deleteDirectoryContents:Bool = false):Void
+	{
 		__fileWorker = new Worker();
 		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
 		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
@@ -926,10 +969,14 @@ class File extends EventDispatcher {
 		__fileWorker.run(deleteDirectoryContents);
 	}
 
-	private function __asyncDeleteDirWork(deleteDirectoryContents:Bool):Void {
-		try {
+	private function __asyncDeleteDirWork(deleteDirectoryContents:Bool):Void
+	{
+		try
+		{
 			deleteDirectory(deleteDirectoryContents);
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			__fileWorker.sendError(e);
 			return;
 		}
@@ -955,7 +1002,8 @@ class File extends EventDispatcher {
 		trace(file.exists); // false
 		```
 	**/
-	public function deleteFile():Void {
+	public function deleteFile():Void
+	{
 		FileSystem.deleteFile(__path);
 	}
 
@@ -967,7 +1015,8 @@ class File extends EventDispatcher {
 		directory that contains a file that is open.
 		@throws SecurityError The application does not have the necessary permissions to delete the directory.
 	**/
-	public function deleteFileAsync():Void {
+	public function deleteFileAsync():Void
+	{
 		__fileWorker = new Worker();
 		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
 		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
@@ -976,10 +1025,14 @@ class File extends EventDispatcher {
 		__fileWorker.run();
 	}
 
-	private function __asyncDeleteFileWork(m:Dynamic):Void {
-		try {
+	private function __asyncDeleteFileWork(m:Dynamic):Void
+	{
+		try
+		{
 			deleteFile();
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			__fileWorker.sendError(e);
 			return;
 		}
@@ -1005,15 +1058,18 @@ class File extends EventDispatcher {
 		}
 		```
 	**/
-	public function getDirectoryListing():Array<File> {
-		if (!isDirectory) {
+	public function getDirectoryListing():Array<File>
+	{
+		if (!isDirectory)
+		{
 			throw new Error("Not a directory.", 3007);
 		}
 
 		var directories:Array<String> = FileSystem.readDirectory(__path);
 		var files:Array<File> = [];
 
-		for (directory in directories) {
+		for (directory in directories)
+		{
 			files.push(new File(__path + seperator + directory));
 		}
 
@@ -1048,8 +1104,10 @@ class File extends EventDispatcher {
 		}
 		```
 	**/
-	public function getDirectoryListingAsync():Void {
-		if (!isDirectory) {
+	public function getDirectoryListingAsync():Void
+	{
+		if (!isDirectory)
+		{
 			throw new Error("Not a directory.", 3007);
 		}
 
@@ -1061,41 +1119,48 @@ class File extends EventDispatcher {
 		__fileWorker.run();
 	}
 
-	private function __asyncGetDirectoryListingWork(m:Dynamic):Void {
+	private function __asyncGetDirectoryListingWork(m:Dynamic):Void
+	{
 		var files:Array<File> = [];
 
-		try {
+		try{
 			var directoryItems:Array<String> = FileSystem.readDirectory(__path);
 
-			for (item in directoryItems) {
+			for (item in directoryItems)
+			{
 				files.push(new File(__path + item));
 			}
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			__fileWorker.sendError(e);
 		}
 
 		__fileWorker.sendComplete(files);
+
 	}
 
-	private function __onAsyncGetDirectoryListingWorkerError(e:ThreadEvent):Void {
+	private function __onAsyncGetDirectoryListingWorkerError(e:ThreadEvent):Void
+	{
 		__disposeAsyncGetDirectoryListingWorker();
 		__dispatchIoError(e.message);
 	}
 
-	private function __onAsyncGetDirectoryListingWorkerComplete(e:ThreadEvent):Void {
+	private function __onAsyncGetDirectoryListingWorkerComplete(e:ThreadEvent):Void
+	{
 		var files:Array<File> = e.message;
 
 		__disposeAsyncGetDirectoryListingWorker();
 		dispatchEvent(new FileListEvent(FileListEvent.DIRECTORY_LISTING, files));
 	}
 
-	private function __disposeAsyncGetDirectoryListingWorker():Void {
+	private function __disposeAsyncGetDirectoryListingWorker():Void
+	{
 		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onAsyncGetDirectoryListingWorkerComplete);
 		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onAsyncGetDirectoryListingWorkerError);
 		__fileWorker.cancel();
 		__fileWorker = null;
 	}
-
 	/**
 		Finds the relative path between two File paths.
 
@@ -1112,7 +1177,8 @@ class File extends EventDispatcher {
 		@throws	ArgumentError The reference is null.
 		@throws SecurityError The caller is not in the application security sandbox.
 	**/
-	public function getRelativePath(ref:File, useDotDot:Bool = false):Null<String> {
+	public function getRelativePath(ref:File, useDotDot:Bool = false):Null<String>
+	{
 		var thisPath:Array<String> = __path.split(seperator);
 		var refPath:Array<String> = ref.__path.split(seperator);
 
@@ -1122,21 +1188,25 @@ class File extends EventDispatcher {
 		var commonSegments:Int = 0;
 
 		// Count the number of common segments
-		while (commonSegments < minLength && thisPath[commonSegments] == refPath[commonSegments]) {
+		while (commonSegments < minLength && thisPath[commonSegments] == refPath[commonSegments])
+		{
 			commonSegments++;
 		}
 
-		if (useDotDot) {
+		if (useDotDot)
+		{
 			// Add ".." for each segment beyond the common segments
 			var numUpSegments:Int = thisPath.length - commonSegments;
 
-			for (i in 0...numUpSegments) {
+			for (i in 0...numUpSegments)
+			{
 				relatives.push("..");
 			}
 		}
 
 		// Add remaining segments from the refPath
-		for (j in commonSegments...refPath.length) {
+		for (j in commonSegments...refPath.length)
+		{
 			relatives.push(refPath[j]);
 		}
 
@@ -1148,7 +1218,9 @@ class File extends EventDispatcher {
 	/**
 		Loads a file synchronously. The data is loaded into the data property of the File instance.
 	**/
-	public function load():Void {
+
+	public function load():Void
+	{
 		data = HaxeFile.getBytes(__path);
 	}
 
@@ -1198,14 +1270,19 @@ class File extends EventDispatcher {
 		}
 		```
 	**/
-	public function moveTo(newLocation:File, overwrite:Bool = false):Void {
-		if (!overwrite && FileSystem.exists(newLocation.__path)) {
+	public function moveTo(newLocation:File, overwrite:Bool = false):Void
+	{
+		if (!overwrite && FileSystem.exists(newLocation.__path))
+		{
 			throw new Error("Overwrite is set to false");
 		}
 		copyTo(newLocation, overwrite);
-		if (isDirectory) {
+		if (isDirectory)
+		{
 			deleteDirectory(true);
-		} else {
+		}
+		else
+		{
 			deleteFile();
 		}
 	}
@@ -1255,19 +1332,23 @@ class File extends EventDispatcher {
 			}
 		```
 	**/
-	public function moveToAsync(newLocation:File, overwrite:Bool = false):Void {
+	public function moveToAsync(newLocation:File, overwrite:Bool = false):Void
+	{
 		__fileWorker = new Worker();
 		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
 		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
 
 		__fileWorker.doWork = __asyncMoveWork;
-		__fileWorker.run({"newLocation": newLocation, "overwrite": overwrite});
+		__fileWorker.run({"newLocation":newLocation, "overwrite":overwrite});
 	}
 
-	private function __asyncMoveWork(m:Dynamic):Void {
-		try {
+	private function __asyncMoveWork(m:Dynamic):Void
+	{
+		try{
 			moveTo(m.newLocation, m.overwrite);
-		} catch (e:Dynamic) {
+		}
+		catch (e:Dynamic)
+		{
 			__fileWorker.sendError(e);
 			return;
 		}
@@ -1278,8 +1359,9 @@ class File extends EventDispatcher {
 	/**
 		Opens the file in the application registered by the operating system to open this file type.
 	**/
-	public function openWithDefaultApplication():Void {
-		// System.openFile(__path);
+	public function openWithDefaultApplication():Void
+	{
+		//System.openFile(__path);
 	}
 
 	/**
@@ -1313,20 +1395,21 @@ class File extends EventDispatcher {
 		the path to return (if the path parameter is an absolute path).
 		@returns File A new File object pointing to the resulting path.
 	**/
-	public function resolvePath(path:String):File {
+	public function resolvePath(path:String):File
+	{
 		var directoryPath:String = Path.removeTrailingSlashes(__path);
 		return new File('$directoryPath$seperator$path');
 	}
-
 	/**
 		Saves the data parameter passed to the location of the file.
 	**/
-	public function save(data:ByteArray, overwrite:Bool = false):Void {
-		if (exists && overwrite == false) {
+	public function save(data:ByteArray, overwrite:Bool = false):Void
+	{
+		if (exists && overwrite == false){
 			throw "File exists at this location and overwrite param is false";
 			return;
 		}
-
+		
 		HaxeFile.saveBytes(__path, data);
 	}
 
@@ -1354,7 +1437,8 @@ class File extends EventDispatcher {
 
 		Each time you run this code, a new (unique) file is created.
 	**/
-	public static function createTempDirectory():File {
+	public static function createTempDirectory():File
+	{
 		return new File(__getTempPath(true));
 	}
 
@@ -1379,7 +1463,8 @@ class File extends EventDispatcher {
 		trace(temp.nativePath);
 		```
 	**/
-	public static function createTempFile():File {
+	public static function createTempFile():File
+	{
 		return new File(__getTempPath(false));
 	}
 
@@ -1407,29 +1492,37 @@ class File extends EventDispatcher {
 		}
 		```
 	**/
-	public static function getRootDirectories():Array<File> {
+	public static function getRootDirectories():Array<File>
+	{
 		#if windows
 		var rootDirs:Array<File> = [];
-		for (letter in __driveLetters) {
-			if (FileSystem.exists(letter)) {
+		for (letter in __driveLetters)
+		{
+			if (FileSystem.exists(letter))
+			{
 				rootDirs.push(new File(letter));
 			}
 		}
 
 		return rootDirs;
 		#else
+
 		return [seperator];
 		#end
 	}
 
-	@:noCompletion private function __canonicalize(cpath:String, seg:String):String {
+	@:noCompletion private function __canonicalize(cpath:String, seg:String):String
+	{
 		seg = seg.toLowerCase();
 		var items:Array<String> = FileSystem.readDirectory(Path.directory(cpath));
-		if (items == null) {
+		if (items == null)
+		{
 			return "";
 		}
-		for (item in items) {
-			if (item.toLowerCase() == seg) {
+		for (item in items)
+		{
+			if (item.toLowerCase() == seg)
+			{
 				seg = item;
 				break;
 			}
@@ -1438,68 +1531,86 @@ class File extends EventDispatcher {
 		return seg;
 	}
 
-	@:noCompletion private function __dispatchIoError(e:Dynamic):Void {
-		if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-			if (#if (haxe_ver >= 4.2) Std.isOfType #else Std.is #end (e, Error)) {
-				var error = (e : Error);
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, error.message, error.errorID));
-			} else {
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR));
-			}
-		} else {
+	@:noCompletion private function __dispatchIoError(e:Dynamic):Void
+	{
+		if (hasEventListener(IOErrorEvent.IO_ERROR))
+		{
+			if (#if (haxe_ver >= 4.2) Std.isOfType #else Std.is #end (e, Error))
+					{
+						var error = (e : Error);
+						dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, error.message, error.errorID));
+					}
+				else
+				{
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR));
+				}
+		}
+		else
+		{
 			// if there's no listener, throw it again
 			throw e;
 		}
 	}
 
-	@:noCompletion private function __formatPath(path:String):String {
+	@:noCompletion private function __formatPath(path:String):String
+	{
 		var dirs:Array<String> = [];
 		var lastBreak:Int = 0;
 
-		for (i in 0...path.length) {
+		for (i in 0...path.length)
+		{
 			var char:String = path.charAt(i);
 
-			if (path.charAt(i) == "\\" || char == "/") {
-				if (lastBreak != i) {
+			if (path.charAt(i) == "\\" || char == "/")
+			{
+				if (lastBreak != i)
+				{
 					dirs.push(path.substring(lastBreak, i));
 				}
 				lastBreak = i + 1;
 			}
 		}
 
-		if (path.length != lastBreak) {
+		if (path.length != lastBreak)
+		{
 			dirs.push(path.substring(lastBreak, path.length));
 		}
 
 		path = "";
 
-		for (dir in dirs) {
+		for (dir in dirs)
+		{
 			path += '$dir$seperator';
 		}
 
 		return Path.removeTrailingSlashes(path);
 	}
 
-	@:noCompletion private static function __getTempPath(dir:Bool):String {
+	@:noCompletion private static function __getTempPath(dir:Bool):String
+	{
 		var path:String;
 
 		#if windows
 		path = Sys.getEnv("TEMP");
 		#else
+
 		path = Sys.getEnv("TMPDIR");
 
-		if (path == null) {
+		if (path == null)
+		{
 			path = "/tmp";
 		}
 		#end
 
 		var tempPath = "";
 
-		while (FileSystem.exists(tempPath = Path.join([path, "ofl" + Math.round(0xFFFFFF * Math.random())]))) {
+		while (FileSystem.exists(tempPath = Path.join([path, "ofl" + Math.round(0xFFFFFF * Math.random())])))
+		{
 			// repeat
 		}
 
-		if (dir) {
+		if (dir)
+		{
 			return Path.addTrailingSlash(tempPath);
 		}
 
@@ -1507,14 +1618,16 @@ class File extends EventDispatcher {
 	}
 
 	#if windows
-	@:noCompletion private function __replaceWindowsEnvVars(path:String):String {
+	@:noCompletion private function __replaceWindowsEnvVars(path:String):String
+	{
 		// Define the regular expression to match the path component to be replaced
 		var pattern:EReg = ~/%(.+?)%/;
 
 		// Find the first match of the regular expression in the path
 		var match:Bool = pattern.match(path);
 
-		if (match) {
+		if (match)
+		{
 			// Extract the matched path component
 			var matchedPath:String = pattern.matched(0);
 
@@ -1524,7 +1637,8 @@ class File extends EventDispatcher {
 			// Get the value of the environment variable
 			var envVarValue:Null<String> = Sys.getEnv(envVar);
 
-			if (envVarValue == null) {
+			if (envVarValue == null)
+			{
 				return path;
 			}
 			// Replace the matched path component with the environment variable value
@@ -1534,7 +1648,8 @@ class File extends EventDispatcher {
 	}
 	#end
 
-	@:noCompletion private function __winGetHiddenAttr():Bool {
+	@:noCompletion private function __winGetHiddenAttr():Bool
+	{
 		// TODO don't use the command line for this.... instead we should add support in Lime to use
 		// the win api.
 		var process:Process = new Process('attrib "$nativePath"');
@@ -1548,17 +1663,22 @@ class File extends EventDispatcher {
 		return flag;
 	}
 
-	@:noCompletion private function __updateFileStats(?path:String):Void {
-		if (path == null) {
+	@:noCompletion private function __updateFileStats(?path:String):Void
+	{
+		if (path == null)
+		{
 			path = __path;
 		}
 
-		if (FileSystem.exists(path)) {
+		if (FileSystem.exists(path))
+		{
 			var fileInfo = FileSystem.stat(path);
 			creationDate = fileInfo.ctime;
 			modificationDate = fileInfo.mtime;
 			size = fileInfo.size;
-		} else {
+		}
+		else
+		{
 			creationDate = null;
 			modificationDate = null;
 			size = 0;
@@ -1568,11 +1688,13 @@ class File extends EventDispatcher {
 		name = Path.withoutDirectory(path);
 	}
 
-	@:noCompletion private static function get_applicationDirectory():File {
+	@:noCompletion private static function get_applicationDirectory():File
+	{
 		return new File(Path.removeTrailingSlashes(Sys.getCwd()));
 	}
 
-	@:noCompletion private static function get_applicationStorageDirectory():File {
+	@:noCompletion private static function get_applicationStorageDirectory():File
+	{
 		var path:String;
 		#if windows
 		path = Sys.getEnv("APPDATA");
@@ -1583,7 +1705,8 @@ class File extends EventDispatcher {
 		return new File(Path.removeTrailingSlashes(path) + seperator + APPLICATION_DIR);
 	}
 
-	@:noCompletion private static function get_documentsDirectory():File {
+	@:noCompletion private static function get_documentsDirectory():File
+	{
 		var path:String;
 		#if windows
 		path = Sys.getEnv("USERPROFILE");
@@ -1593,7 +1716,8 @@ class File extends EventDispatcher {
 		return new File(path + seperator + "Documents");
 	}
 
-	@:noCompletion private static function get_desktopDirectory():File {
+	@:noCompletion private static function get_desktopDirectory():File
+	{
 		var path:String;
 		#if windows
 		path = Sys.getEnv("USERPROFILE");
@@ -1603,7 +1727,8 @@ class File extends EventDispatcher {
 		return new File(path + seperator + "Desktop");
 	}
 
-	@:noCompletion private static function get_userDirectory():File {
+	@:noCompletion private static function get_userDirectory():File
+	{
 		var path:String;
 		#if windows
 		path = Sys.getEnv("USERPROFILE");
@@ -1613,14 +1738,17 @@ class File extends EventDispatcher {
 		return new File(path);
 	}
 
-	@:noCompletion private function get_creationDate():Date {
-		if (__fileStatsDirty) {
+	@:noCompletion private function get_creationDate():Date
+	{
+		if (__fileStatsDirty)
+		{
 			__updateFileStats();
 		}
 		return creationDate;
 	}
 
-	@:noCompletion private static function get_lineEnding():String {
+	@:noCompletion private static function get_lineEnding():String
+	{
 		#if windows
 		return "\r\n";
 		#else
@@ -1628,21 +1756,26 @@ class File extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private function get_modificationDate():Date {
-		if (__fileStatsDirty) {
+	@:noCompletion private function get_modificationDate():Date
+	{
+		if (__fileStatsDirty)
+		{
 			__updateFileStats();
 		}
 		return modificationDate;
 	}
 
-	@:noCompletion private function get_name():String {
-		if (__fileStatsDirty) {
+	@:noCompletion private function get_name():String
+	{
+		if (__fileStatsDirty)
+		{
 			__updateFileStats();
 		}
 		return name;
 	}
 
-	@:noCompletion private static function get_separator():String {
+	@:noCompletion private static function get_separator():String
+	{
 		#if windows
 		return "\\";
 		#else
@@ -1650,34 +1783,43 @@ class File extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private function get_size():Int {
-		if (__fileStatsDirty) {
+	@:noCompletion private function get_size():Int
+	{
+		if (__fileStatsDirty)
+		{
 			__updateFileStats();
 		}
 		return size;
 	}
 
-	@:noCompletion private function get_type():String {
-		if (__fileStatsDirty) {
+	@:noCompletion private function get_type():String
+	{
+		if (__fileStatsDirty)
+		{
 			__updateFileStats();
 		}
 		return type;
 	}
 
-	@:noCompletion private function get_nativePath():String {
+	@:noCompletion private function get_nativePath():String
+	{
 		return __path;
 	}
 
-	@:noCompletion private function set_nativePath(path:String):String {
+	@:noCompletion private function set_nativePath(path:String):String
+	{
 		#if windows
-		if (path.indexOf("%") > -1) {
+		if (path.indexOf("%") > -1)
+		{
 			path = __replaceWindowsEnvVars(path);
 		}
 		#end
-		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/) {
+		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/)
+		{
 			path = Path.addTrailingSlash(path);
 		}
-		if (Path.directory(path).length == 0) {
+		if (Path.directory(path).length == 0)
+		{
 			throw new ArgumentError("One of the parameters is invalid.");
 		}
 
@@ -1686,11 +1828,13 @@ class File extends EventDispatcher {
 		return __path = path.indexOf(#if windows "/" #else "\\" #end) > 0 ? __formatPath(path) : path;
 	}
 
-	@:noCompletion private function get_exists():Bool {
+	@:noCompletion private function get_exists():Bool
+	{
 		return FileSystem.exists(__path);
 	}
 
-	@:noCompletion private function get_isHidden():Bool {
+	@:noCompletion private function get_isHidden():Bool
+	{
 		#if windows
 		return __winGetHiddenAttr();
 		#else
@@ -1698,24 +1842,29 @@ class File extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private function get_isDirectory():Bool {
+	@:noCompletion private function get_isDirectory():Bool
+	{
 		// isDirectory throws an exception if the file doesn't exist
 		return FileSystem.exists(__path) && FileSystem.isDirectory(__path);
 	}
 
-	@:noCompletion private function get_parent():File {
+	@:noCompletion private function get_parent():File
+	{
 		// TODO:Can we optimize this?
 		var path:String = Path.removeTrailingSlashes(__path);
 
 		var lastIndex:Int = path.lastIndexOf(seperator);
-		if (lastIndex == path.indexOf(seperator)) {
+		if (lastIndex == path.indexOf(seperator))
+		{
 			lastIndex += 1;
 		}
 		return lastIndex != -1 ? new File(__path.substring(0, (lastIndex - path.length) + path.length)) : null;
 	}
 
-	// #if desktop
-	@:noCompletion private function get_spaceAvailable():Float {
+	//#if desktop
+	@:noCompletion private function get_spaceAvailable():Float
+	{
+
 		var cmd:String;
 		var args:Array<String>;
 		#if windows
@@ -1731,7 +1880,8 @@ class File extends EventDispatcher {
 		var output:String = process.stdout.readAll().toString();
 		process.close();
 
-		if (process.exitCode() > 0) {
+		if (process.exitCode() > 0)
+		{
 			return 0;
 		}
 
@@ -1739,28 +1889,37 @@ class File extends EventDispatcher {
 		var availableSpace:Float = 0.0;
 		var parts:Array<String>;
 
-		for (line in lines) {
-			try {
+		for (line in lines)
+		{
+			try
+			{
 				// Parse the output to extract the available space
 				#if windows
-				if (line.indexOf("Total bytes") >= 0) {
+				if (line.indexOf("Total bytes") >= 0)
+				{
 					parts = line.split(":");
-					availableSpace = Std.parseFloat(StringTools.replace(StringTools.trim(parts[1]), ",", ""));
+					availableSpace = Std.parseFloat(StringTools.replace(StringTools.trim(parts[1]),",",""));
 					break;
 				}
 				#else
 				parts = EReg("\\s+", "").split(line);
-				if (parts.length >= 4 && parts[0] == __path) {
+				if (parts.length >= 4 && parts[0] == __path)
+				{
 					availableSpace = Std.parseFloat(parts[3]);
 					break;
 				}
 				#end
-			} catch (e:Dynamic) {
+			}
+
+			catch (e:Dynamic)
+			{
 				return 0;
 			}
+
 		}
 		return availableSpace;
 	}
+	//#end
 
-	// #end
 }
+

@@ -16,7 +16,8 @@ import crossbyte.net.ObjectEncoding;
 	* Use `IDataOutput.writeShort()` with `IDataInput.readUnsignedShort()` and
 	`IDataInput.readShort()`.
 **/
-interface IDataOutput {
+interface IDataOutput
+{
 	/**
 		The byte order for the data, either the `BIG_ENDIAN` or `LITTLE_ENDIAN` constant
 		from the Endian class.

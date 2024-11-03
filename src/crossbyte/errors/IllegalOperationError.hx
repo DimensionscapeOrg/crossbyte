@@ -6,7 +6,8 @@ import crossbyte.events.Event;
  * ...
  * @author Christopher Speciale
  */
-/**
+
+ /**
 	The IllegalOperationError exception is thrown when a method is not
 	implemented or the implementation doesn't cover the current usage.
 
@@ -26,13 +27,15 @@ import crossbyte.events.Event;
 	* An attempt is made to set the name of a Timeline-placed
 	object
 **/
-class IllegalOperationError extends Error {
+class IllegalOperationError extends Error
+{
 	/**
 		Creates a new IllegalOperationError object.
 
 		@param message A string associated with the error object.
 	**/
-	public function new(message:String = "") {
+	public function new(message:String = "")
+	{
 		super(message, 0);
 
 		name = "IllegalOperationError";
