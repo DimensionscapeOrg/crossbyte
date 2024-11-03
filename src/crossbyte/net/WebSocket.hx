@@ -1,5 +1,4 @@
 package crossbyte.net;
-
 import crossbyte._internal.websocket.FlexSocket;
 import crossbyte._internal.websocket.WebSocket as InternalWS;
 import crossbyte._internal.websocket.WebsocketEvent;
@@ -16,41 +15,49 @@ import haxe.Serializer;
 import haxe.Timer;
 import haxe.Unserializer;
 import haxe.io.Error;
-
 /**
  * ...
  * @author Christopher Speciale
  */
-class WebSocket extends Socket {
-	public static function toWebSocket(socket:FlexSocket, server:ServerWebSocket):WebSocket {
+
+class WebSocket extends Socket
+{
+
+	public static function toWebSocket(socket:FlexSocket, server:ServerWebSocket):WebSocket
+	{
 		var webSocket:WebSocket = new WebSocket();
 
 		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
 		webSocket.__init();
 
 		webSocket.__server = server;
-
+		
 		return webSocket;
 	}
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
 	private var __server:ServerWebSocket;
-
-	public function new(host:String = null, port:Int = 0) {
-		super(host, port);
+	
+	public function new()
+	{
+		super();
 	}
 
-	override public function close():Void {
+	override public function close():Void
+	{
 		super.close();
 	}
 
-	override public function connect(host:String = null, port:Int = 0):Void {
-		if (__socket != null) {
+	override public function connect(host:String = null, port:Int = 0):Void
+	{
+		if (__socket != null)
+		{
 			close();
 		}
 
-		if (port < 0 || port > 65535) {
-			throw new SecurityError("Invalid socket port number specified.");
+		if (port < 0 || port > 65535)
+		{
+			throw new SecurityError("Invalid socket port number specified."); 
 		}
 
 		__timestamp = Timer.stamp();
@@ -66,7 +73,7 @@ class WebSocket extends Socket {
 
 		var schema = secure ? "wss" : "ws";
 		var urlReg = ~/^(.*:\/\/)?([A-Za-z0-9\-\.]+)\/?(.*)/g;
-		urlReg.match(host);
+		urlReg.match(__host);
 		var __webHost = urlReg.matched(2);
 		var __webPath = urlReg.matched(3);
 
@@ -74,31 +81,34 @@ class WebSocket extends Socket {
 		__init();
 	}
 
-	override public function flush():Void {
-		if (__webSocket == null) {
+	override public function flush():Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		if (__output.length > 0) {
-			// try
-			// {
-			__webSocket.sendBytes(__output);
-			__output.clear();
-			// }
-			// catch (e:Dynamic)
-			// {
-			// switch (e)
-			// {
-			// case Error.Blocked:
-			// case Error.Custom(Error.Blocked):
-			// default:
-			// throw new IOError("Operation attempted on invalid socket.");
-			// }
-			//
-			// }
+		if (__output.length > 0)
+		{
+			//try
+			//{		
+				__webSocket.sendBytes(__output);
+				__output.clear();
+			//}
+			//catch (e:Dynamic)
+			//{
+				//switch (e)
+				//{
+					//case Error.Blocked:
+					//case Error.Custom(Error.Blocked):
+					//default:
+						//throw new IOError("Operation attempted on invalid socket.");
+				//}
+				//
+			//}
 		}
 	}
-
+	
 	/**
 		Reads a Boolean value from the socket. After reading a single byte,
 		the method returns `true` if the byte is nonzero, and `false`
@@ -109,8 +119,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readBoolean():Bool {
-		if (__webSocket == null) {
+	override public function readBoolean():Bool
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -124,8 +136,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readByte():Int {
-		if (__webSocket == null) {
+	override public function readByte():Int
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -145,8 +159,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
-		if (__webSocket == null) {
+	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -161,8 +177,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readDouble():Float {
-		if (__webSocket == null) {
+	override public function readDouble():Float
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -177,8 +195,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readFloat():Float {
-		if (__webSocket == null) {
+	override public function readFloat():Float
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -192,8 +212,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readInt():Int {
-		if (__webSocket == null) {
+	override public function readInt():Int
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -222,8 +244,10 @@ class WebSocket extends Socket {
 		@return A UTF-8 encoded string.
 		@throws EOFError There is insufficient data available to read.
 	**/
-	override public function readMultiByte(length:Int, charSet:String):String {
-		if (__webSocket == null) {
+	override public function readMultiByte(length:Int, charSet:String):String
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -237,10 +261,14 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readObject():Dynamic {
-		if (objectEncoding == HXSF) {
+	override public function readObject():Dynamic
+	{
+		if (objectEncoding == HXSF)
+		{
 			return Unserializer.run(readUTF());
-		} else {
+		}
+		else
+		{
 			// TODO: Add support for AMF if haxelib "format" is included
 			return null;
 		}
@@ -253,8 +281,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readShort():Int {
-		if (__webSocket == null) {
+	override public function readShort():Int
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -268,8 +298,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readUnsignedByte():Int {
-		if (__webSocket == null) {
+	override public function readUnsignedByte():Int
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 		return __input.readUnsignedByte();
@@ -282,8 +314,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readUnsignedInt():Int {
-		if (__webSocket == null) {
+	override public function readUnsignedInt():Int
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -297,8 +331,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readUnsignedShort():Int {
-		if (__webSocket == null) {
+	override public function readUnsignedShort():Int
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -314,8 +350,10 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readUTF():String {
-		if (__webSocket == null) {
+	override public function readUTF():String
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -331,14 +369,16 @@ class WebSocket extends Socket {
 		@throws IOError  An I/O error occurred on the socket, or the socket is
 						 not open.
 	**/
-	override public function readUTFBytes(length:Int):String {
-		if (__webSocket == null) {
+	override public function readUTFBytes(length:Int):String
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
 		return __input.readUTFBytes(length);
 	}
-
+	
 	/**
 		Writes a Boolean value to the socket. This method writes a single
 		byte, with either a value of 1 (`true`) or 0 (`false`).
@@ -347,8 +387,10 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override function writeBoolean(value:Bool):Void {
-		if (__webSocket == null) {
+	override function writeBoolean(value:Bool):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -362,8 +404,10 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeByte(value:Int):Void {
-		if (__webSocket == null) {
+	override public function writeByte(value:Int):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -389,8 +433,10 @@ class WebSocket extends Socket {
 						   data specified to be written by `offset` plus
 						   `length` exceeds the data available.
 	**/
-	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
-		if (__webSocket == null) {
+	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -404,8 +450,10 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeDouble(value:Float):Void {
-		if (__webSocket == null) {
+	override public function writeDouble(value:Float):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -419,8 +467,10 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeFloat(value:Float):Void {
-		if (__webSocket == null) {
+	override public function writeFloat(value:Float):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -433,8 +483,10 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeInt(value:Int):Void {
-		if (__webSocket == null) {
+	override public function writeInt(value:Int):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -452,28 +504,35 @@ class WebSocket extends Socket {
 					   href="../../charset-codes.html">Supported Character
 					   Sets</a>.
 	**/
-	override public function writeMultiByte(value:String, charSet:String):Void {
-		if (__webSocket == null) {
+	override public function writeMultiByte(value:String, charSet:String):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
 		__output.writeUTFBytes(value);
 	}
-
+	
 	/**
 		Write an object to the socket in AMF serialized format.
 		@param object The object to be serialized.
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeObject(object:Dynamic):Void {
-		if (__webSocket == null) {
+	override public function writeObject(object:Dynamic):Void
+	{		
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
-
-		if (objectEncoding == HXSF) {
+		
+		if (objectEncoding == HXSF)
+		{
 			__output.writeUTF(Serializer.run(object));
-		} else {
+		}
+		else
+		{
 			// TODO: Add support for AMF if haxelib "format" is included
 		}
 	}
@@ -490,8 +549,10 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeShort(value:Int):Void {
-		if (__webSocket == null) {
+	override public function writeShort(value:Int):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -504,8 +565,10 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeUnsignedInt(value:Int):Void {
-		if (__webSocket == null) {
+	override public function writeUnsignedInt(value:Int):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -523,8 +586,10 @@ class WebSocket extends Socket {
 						   is not open.
 		@throws RangeError The length is larger than 65535.
 	**/
-	override public function writeUTF(value:String):Void {
-		if (__webSocket == null) {
+	override public function writeUTF(value:String):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
@@ -537,67 +602,80 @@ class WebSocket extends Socket {
 		@throws IOError An I/O error occurred on the socket, or the socket is
 						not open.
 	**/
-	override public function writeUTFBytes(value:String):Void {
-		if (__webSocket == null) {
+	override public function writeUTFBytes(value:String):Void
+	{
+		if (__webSocket == null)
+		{
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
 		__output.writeUTFBytes(value);
 	}
 
-	@:noCompletion override private function __cleanSocket():Void {
-		try {
+	@:noCompletion override private function __cleanSocket():Void
+	{
+		try
+		{
 			__webSocket.close();
-		} catch (e:Dynamic) {}
+		}
+		catch (e:Dynamic) {}
 
 		__webSocket = null;
 		__connected = false;
 	}
 
-	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {
-		if (__input.position == __input.length) {
+	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void
+	{
+		if (__input.position == __input.length)
+		{
 			__input.clear();
 		}
 
 		/*if ((msg.data is String))
-			{
-				__input.position = __input.length;
-				var cachePosition = __input.position;
-				__input.writeUTFBytes(msg.data);
-				__input.position = cachePosition;
-			}
-			else
-			{ */
-		var newData:ByteArray = msg.data;
-		newData.readBytes(__input, __input.length);
-		// }
+		{
+			__input.position = __input.length;
+			var cachePosition = __input.position;
+			__input.writeUTFBytes(msg.data);
+			__input.position = cachePosition;
+		}
+		else
+		{*/
+			var newData:ByteArray = msg.data;
+			
+			newData.readBytes(__input, __input.length);
+		//}
 
-		if (__input.bytesAvailable > 0) {
+		if (__input.bytesAvailable > 0)
+		{
 			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, __input.bytesAvailable, 0));
 		}
 	}
 
-	@:noCompletion override private function socket_onOpen(_):Void {
+	@:noCompletion override private function socket_onOpen(_):Void
+	{
 		__connected = true;
 		dispatchEvent(new Event(Event.CONNECT));
-
-		if (__server != null) {
+		
+		if (__server != null){
 			__server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
 			__server = null;
 		}
+		
 	}
-
-	private function __init():Void {
+	
+	private function __init():Void
+	{
 		__output = new ByteArray();
 		__output.endian = __endian;
 
 		__input = new ByteArray();
 		__input.endian = __endian;
-
+		
 		__webSocket.binaryType = "arraybuffer";
 		__webSocket.onopen = socket_onOpen;
 		__webSocket.onmessage = socket_onMessage;
 		__webSocket.onclose = socket_onClose;
 		__webSocket.onerror = socket_onError;
 	}
+
 }

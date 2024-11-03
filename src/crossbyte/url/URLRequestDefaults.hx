@@ -4,7 +4,8 @@ package crossbyte.url;
  * ...
  * @author Christopher Speciale
  */
-class URLRequestDefaults {
+class URLRequestDefaults 
+{
 	/**
 		The default setting for the `followRedirects` property of URLRequest objects.
 		Setting the `followRedirects` property in a URLRequest object overrides this
@@ -47,4 +48,5 @@ class URLRequestDefaults {
 		`userAgent` property in a URLRequest object overrides this default setting.
 	**/
 	public static var userAgent:String;
+	
 }

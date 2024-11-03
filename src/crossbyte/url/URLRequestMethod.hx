@@ -4,9 +4,10 @@ package crossbyte.url;
  * ...
  * @author Christopher Speciale
  */
-enum abstract URLRequestMethod(String) from String to String {
+enum abstract URLRequestMethod(String) from String to String
+{
 	/**
-		Specifies that the URLRequest object is a `DELETE`.
+			Specifies that the URLRequest object is a `DELETE`.
 	**/
 	public var DELETE = "DELETE";
 

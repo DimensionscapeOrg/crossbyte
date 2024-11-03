@@ -1,22 +1,16 @@
 package crossbyte._internal.websocket;
 
 import haxe.Int64;
-import haxe.Int64Helper;
 import crossbyte.Function;
-import crossbyte.Object;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.Random;
 import crossbyte.events.Event;
 import crossbyte.io.ByteArray;
 import crossbyte.utils.Timer;
-import haxe.Constraints.FlatEnum;
 import haxe.crypto.Base64;
 import haxe.crypto.Sha1;
-import haxe.ds.Either;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
-import haxe.io.BytesBuffer;
-import haxe.io.Eof;
 import haxe.io.Error;
 import haxe.io.Output;
 
@@ -32,8 +26,10 @@ class WebSocket {
 
 	// Max payload size in bytes
 	public static var MAX_PAYLOAD:Int = 65536;
-	
-	//Each message needs to have its own mask!
+
+	// The mask pool size. A socket should have its own unique mask and each connection will
+	// create and return a mask to the pool if it exceeds this size, but it is a good practice
+	// match your max expected connections. The Default value is 64.
 	public static var MASK_POOL_SIZE:Int = 64;
 
 	// The default ping interval. Set to 0 to disable pings.
@@ -53,18 +49,10 @@ class WebSocket {
 	public var binaryType:BinaryType = ARRAYBUFFER;
 	public var bufferdAmount(default, null):Int = 0;
 	public var extensions(default, null):String = "";
-	public var onclose:Function = (e:WebsocketEvent) -> {
-		trace("close");
-	};
-	public var onerror:Function = (e:WebsocketEvent) -> {
-		trace("onerror");
-	};
-	public var onmessage:Function = (e:WebsocketEvent) -> {
-		trace("onmessage");
-	};
-	public var onopen:Function = (e:WebsocketEvent) -> {
-		trace("open");
-	};
+	public var onclose:Function = (e:WebsocketEvent) -> {};
+	public var onerror:Function = (e:WebsocketEvent) -> {};
+	public var onmessage:Function = (e:WebsocketEvent) -> {};
+	public var onopen:Function = (e:WebsocketEvent) -> {};
 	public var protocol(default, null):String;
 	public var readyState(default, null):Int = CONNECTING;
 	public var url(default, null):String;
@@ -96,7 +84,7 @@ class WebSocket {
 	private var __maskedPayload:ByteArray;
 	private var __outgoingMessageBuffer:ByteArray;
 
-	private var __heartbeatDelay:Int;
+	private var __heartbeatDelay:Int = 0;
 	private var __hasTimeoutPotential:Bool = false;
 	private var __heartbeatID:UInt = 0;
 
@@ -106,8 +94,6 @@ class WebSocket {
 		__key = Base64.encode(Random.getSecureRandomBytes(16));
 
 		__mask = __getMask();
-		
-		__heartbeatDelay = PING_INTERVAL;
 
 		if (__isClient == null) {
 			this.url = url;
@@ -143,6 +129,8 @@ class WebSocket {
 				origin = "http://127.0.0.1/";
 			}
 			__initSocket();
+		} else {
+			__heartbeatDelay = PING_INTERVAL;
 		}
 	}
 
@@ -161,7 +149,7 @@ class WebSocket {
 
 		__maskedPayload = new ByteArray();
 		__maskedPayload.endian = BIG_ENDIAN;
-		
+
 		__timestamp = Sys.time();
 
 		if (socket == null) {
@@ -238,6 +226,7 @@ class WebSocket {
 				}
 				break;
 			} catch (e:Dynamic) {
+				trace("Error Reason:", e);
 				doClose = true;
 				break;
 			}
@@ -247,6 +236,7 @@ class WebSocket {
 			__input.position = __inputPosition;
 			__onData();
 		} else if (doClose) {
+			trace('closed from remote host');
 			__close(1006);
 		}
 	}
@@ -278,25 +268,25 @@ class WebSocket {
 		}
 	}
 
-	private function __handleControlFrame(opCode:Int):Void {
-		if (opCode == WebSocketOpcode.PING) {
-			__pong();
-		} else if (opCode == WebSocketOpcode.PONG) {
-			__hasTimeoutPotential = false;
-		} else if (opCode == WebSocketOpcode.CLOSE) {
-			__close(1000);
+	private function __handleControlFrame(opcode:WebSocketOpcode):Void {
+		switch (opcode) {
+			case PING:
+				__pong();
+			case PONG:
+				__hasTimeoutPotential = false;
+			case CLOSE:
+				__close(1000);
 		}
 	}
-	
+
 	private function __onData():Void {
-		trace("/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\", __input.length, __input.position, __input.bytesAvailable, __inputPosition);
+		// trace("/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\", __input.length, __input.position, __input.bytesAvailable, __inputPosition);
 		if (readyState == OPEN) {
 			while (__input.bytesAvailable > 0) {
 				// try {
 				// keep track of our header bytes
 				// maybe we can rewind our buffer position based on a some different method like comparing start position
 				if (__input.bytesAvailable < 2) {
-					trace('first break');
 					break;
 				}
 
@@ -314,24 +304,21 @@ class WebSocket {
 
 				if (opCode > 0x02) {
 					__handleControlFrame(opCode);
-					trace('second break');
+					__validateInputPosition();
 					break;
 				}
 
 				// Parse extended payload length if necessary
-				if (payloadLength == 126) {					
+				if (payloadLength == 126) {
 					if (__input.bytesAvailable < 2) {
 						__input.position -= lengthBytes;
-						trace('third break');
 						break;
 					}
 					lengthBytes = 4;
 					payloadLength = __input.readUnsignedShort();
 				} else if (payloadLength == 127) {
-					
 					if (__input.bytesAvailable < 8) {
 						__input.position -= lengthBytes;
-						trace('fourth break');
 						break;
 					}
 					lengthBytes = 10;
@@ -339,7 +326,6 @@ class WebSocket {
 					payloadLength = Int64.toInt(i64Val);
 				}
 
-				trace("Payload length:" + Std.string(payloadLength));
 				if (payloadLength > __input.bytesAvailable) {
 					// If our frame is incomplete, we rewind the buffer position so the rest of
 					// it can be written in order.
@@ -381,11 +367,11 @@ class WebSocket {
 				// handle some error?
 				// }
 
-				if (isFinal) {			
+				if (isFinal) {
 					var messageEvent:WebsocketEvent = new WebsocketEvent(WebsocketEvent.MESSAGE, this, __incomingMessageBuffer);
 					onmessage(messageEvent);
 					__incomingMessageBuffer.clear();
-					
+
 					__validateInputPosition();
 				}
 				// }
@@ -437,9 +423,8 @@ class WebSocket {
 						if (__heartbeatDelay > 0) {
 							__initHeartbeat();
 						}
-						
-						__validateInputPosition();
 
+						__validateInputPosition();
 					} else {
 						__close(1002);
 					}
@@ -450,18 +435,18 @@ class WebSocket {
 				// received partial header, buffer it and wait.
 				__handshakeBuffer += headerData;
 			}
-		}		
+		}
 	}
 
-	private inline function __validateInputPosition():Void{
-		if(__input.bytesAvailable > 0){
+	private inline function __validateInputPosition():Void {
+		if (__input.bytesAvailable > 0) {
 			__inputPosition = __input.position;
 		} else {
-			trace("CLEAR");
 			__input.clear();
 			__inputPosition = 0;
 		}
 	}
+
 	private function __generateResponseHandshake(headers:StringMap<String>):Bytes {
 		var responseHeadersBytes:Bytes = Bytes.ofString([
 			"HTTPS/1.1 101 Switching Protocols",
@@ -637,6 +622,7 @@ class WebSocket {
 
 	private function __heartbeatInterval() {
 		if (__hasTimeoutPotential) {
+			trace("heartbeat close");
 			__close(1006);
 			return;
 		}
