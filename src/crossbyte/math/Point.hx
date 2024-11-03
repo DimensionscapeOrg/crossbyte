@@ -4,7 +4,8 @@ package crossbyte.math;
  * ...
  * @author Christopher Speciale
  */
-class Point {
+class Point
+{
 	/**
 		The length of the line segment from(0,0) to this point.
 	**/
@@ -27,7 +28,8 @@ class Point {
 		@param x The horizontal coordinate.
 		@param y The vertical coordinate.
 	**/
-	public function new(x:Float = 0, y:Float = 0) {
+	public function new(x:Float = 0, y:Float = 0)
+	{
 		this.x = x;
 		this.y = y;
 	}
@@ -39,7 +41,8 @@ class Point {
 		@param v The point to be added.
 		@return The new point.
 	**/
-	public function add(v:Point):Point {
+	public function add(v:Point):Point
+	{
 		return new Point(v.x + x, v.y + y);
 	}
 
@@ -48,7 +51,8 @@ class Point {
 
 		@return The new Point object.
 	**/
-	public function clone():Point {
+	public function clone():Point
+	{
 		return new Point(x, y);
 	}
 
@@ -58,7 +62,8 @@ class Point {
 
 		@param	sourcePoint	The Point object from which to copy the data.
 	**/
-	public function copyFrom(sourcePoint:Point):Void {
+	public function copyFrom(sourcePoint:Point):Void
+	{
 		x = sourcePoint.x;
 		y = sourcePoint.y;
 	}
@@ -70,7 +75,8 @@ class Point {
 		@param pt2 The second point.
 		@return The distance between the first and second points.
 	**/
-	public static function distance(pt1:Point, pt2:Point):Float {
+	public static function distance(pt1:Point, pt2:Point):Float
+	{
 		var dx = pt1.x - pt2.x;
 		var dy = pt1.y - pt2.y;
 		return Math.sqrt(dx * dx + dy * dy);
@@ -84,7 +90,8 @@ class Point {
 		@return A value of `true` if the object is equal to this Point
 				object; `false` if it is not equal.
 	**/
-	public function equals(toCompare:Point):Bool {
+	public function equals(toCompare:Point):Bool
+	{
 		return toCompare != null && toCompare.x == x && toCompare.y == y;
 	}
 
@@ -107,7 +114,8 @@ class Point {
 				   `pt2` is returned.
 		@return The new, interpolated point.
 	**/
-	public static function interpolate(pt1:Point, pt2:Point, f:Float):Point {
+	public static function interpolate(pt1:Point, pt2:Point, f:Float):Point
+	{
 		return new Point(pt2.x + f * (pt1.x - pt2.x), pt2.y + f * (pt1.y - pt2.y));
 	}
 
@@ -120,10 +128,14 @@ class Point {
 						 at(0,1).
 		@return The normalized point.
 	**/
-	public function normalize(thickness:Float):Void {
-		if (x == 0 && y == 0) {
+	public function normalize(thickness:Float):Void
+	{
+		if (x == 0 && y == 0)
+		{
 			return;
-		} else {
+		}
+		else
+		{
 			var norm = thickness / Math.sqrt(x * x + y * y);
 			x *= norm;
 			y *= norm;
@@ -140,7 +152,8 @@ class Point {
 				  _x_.
 		@param dy The amount by which to offset the vertical coordinate, _y_.
 	**/
-	public function offset(dx:Float, dy:Float):Void {
+	public function offset(dx:Float, dy:Float):Void
+	{
 		x += dx;
 		y += dy;
 	}
@@ -152,7 +165,8 @@ class Point {
 		@param angle The angle, in radians, of the polar pair.
 		@return The Cartesian point.
 	**/
-	public static function polar(len:Float, angle:Float):Point {
+	public static function polar(len:Float, angle:Float):Point
+	{
 		return new Point(len * Math.cos(angle), len * Math.sin(angle));
 	}
 
@@ -162,7 +176,8 @@ class Point {
 		@param	xa	the values to set the point to.
 		@param	ya
 	**/
-	public function setTo(xa:Float, ya:Float):Void {
+	public function setTo(xa:Float, ya:Float):Void
+	{
 		x = xa;
 		y = ya;
 	}
@@ -174,7 +189,8 @@ class Point {
 		@param v The point to be subtracted.
 		@return The new point.
 	**/
-	public function subtract(v:Point):Point {
+	public function subtract(v:Point):Point
+	{
 		return new Point(x - v.x, y - v.y);
 	}
 
@@ -186,12 +202,14 @@ class Point {
 
 		@return The string representation of the coordinates.
 	**/
-	public function toString():String {
+	public function toString():String
+	{
 		return '(x=$x, y=$y)';
 	}
 
 	// Getters & Setters
-	@:noCompletion private function get_length():Float {
+	@:noCompletion private function get_length():Float
+	{
 		return Math.sqrt(x * x + y * y);
 	}
 }

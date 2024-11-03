@@ -4,6 +4,7 @@ package crossbyte.errors;
  * ...
  * @author Christopher Speciale
  */
+
 /**
 	The IOError exception is thrown when some type of input or output failure
 	occurs. For example, an IOError exception is thrown if a read/write
@@ -14,12 +15,14 @@ package crossbyte.errors;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class IOError extends Error {
+class IOError extends Error
+{
 	/**
 		Creates a new IOError object.
 		@param message A string associated with the error object.
 	**/
-	public function new(message:String = "") {
+	public function new(message:String = "")
+	{
 		super(message);
 
 		name = "IOError";
