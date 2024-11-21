@@ -67,7 +67,7 @@ class CrossByte extends EventDispatcher
 		__current = this;
 		tps = DEFAULT_TICKS_PER_SECOND;		
 		
-		#if precisionTick
+		#if precision_tick
 		__getSleepAccuracy();
 		#end
 		
@@ -80,7 +80,7 @@ class CrossByte extends EventDispatcher
 		return Math.min(Math.floor((100 - free) * 100) / 100, 100);
 	}
 	
-	#if precisionTick
+	#if precision_tick
 	@:noCompletion private function __getSleepAccuracy():Void{
 		var time:Float = Timer.stamp();
 		var dtTotal:Float = 0.0;
@@ -106,12 +106,12 @@ class CrossByte extends EventDispatcher
 
 			dispatchEvent(e);
 			__cpuTime = __dt = Timer.stamp() - currentTime;
-			#if precisionTick
+			#if precision_tick
 			var minSleep = 0.001;
 			#end
 			while (__dt < __tickInterval)
 			{
-				#if precisionTick
+				#if precision_tick
 				if (__dt + __sleepAccuracy > __tickInterval){
 					minSleep = 0;
 				}				
