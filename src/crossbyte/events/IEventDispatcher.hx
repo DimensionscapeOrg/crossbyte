@@ -5,5 +5,5 @@ package crossbyte.events;
  */
 interface IEventDispatcher 
 {
-  public function dispatchEvent(event:Event):Bool;
+  public function dispatchEvent<T:Event>(event:T):Bool;
 }

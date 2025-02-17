@@ -13,6 +13,8 @@ class Event
 	public static inline var CONNECT:String = "connect";
 	public static inline var COMPLETE:String = "complete";
 	public static inline var CANCEL:String = "cancel";
+	public static inline var EXIT:String = "exit";
+	public static inline var INIT:String = "init";
 	
 	public var currentTarget(default, null):Object;
 	public var target(default, null):Object;

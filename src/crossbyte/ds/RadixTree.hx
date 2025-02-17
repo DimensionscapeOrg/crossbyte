@@ -114,7 +114,7 @@ class RadixTree<T> {
      * @return The common prefix of the two strings.
      */
     private function getCommonPrefix(str1: String, str2: String): String {
-        var minLength = Math.min(str1.length, str2.length);
+        var minLength:Int = Std.int(Math.min(str1.length, str2.length));
         var prefix = "";
         for (i in 0...minLength) {
             if (str1.charAt(i) != str2.charAt(i)) {

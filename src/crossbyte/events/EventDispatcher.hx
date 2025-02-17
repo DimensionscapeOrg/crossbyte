@@ -55,7 +55,7 @@ class EventDispatcher  implements IEventDispatcher
 		}
 	}
 
-	public function dispatchEvent(event:Event):Bool
+	public function dispatchEvent<T:Event>(event:T):Bool
 	{
 		if (__targetDispatcher != null)
 		{
@@ -72,6 +72,10 @@ class EventDispatcher  implements IEventDispatcher
 	public function hasEventListener(type:String):Bool
 	{
 		return __eventMap.exists(type);
+	}
+
+	public function removeAllListeners():Void{
+		__eventMap.clear();
 	}
 
 	private function __dispatchEvent(event:Event):Bool

@@ -159,7 +159,7 @@ class WebSocket {
 			}
 			__socket.output.bigEndian = true;
 			__connect();
-			CrossByte.current.addEventListener(Event.TICK, __onTickConnect);
+			CrossByte.current().addEventListener(Event.TICK, __onTickConnect);
 		} else {
 			__socket = socket;
 			__openConnection(null);
@@ -531,7 +531,7 @@ class WebSocket {
 
 	private function __openConnection(tickListener:Event->Void):Void {
 		__connected = true;
-		var crossByte:CrossByte = CrossByte.current;
+		var crossByte:CrossByte = CrossByte.current();
 		crossByte.addEventListener(Event.TICK, __onTickProcess);
 		if (tickListener != null) {
 			crossByte.removeEventListener(Event.TICK, tickListener);
@@ -543,7 +543,7 @@ class WebSocket {
 		__timeout = 3000;
 		__timestamp = Sys.time();
 
-		var crossByte:CrossByte = CrossByte.current;
+		var crossByte:CrossByte = CrossByte.current();
 		crossByte.removeEventListener(Event.TICK, __onTickConnect);
 		crossByte.addEventListener(Event.TICK, __onTickSSLHandshake);
 	}
@@ -601,12 +601,12 @@ class WebSocket {
 
 			readyState = CLOSED;
 			__connected = false;
-			CrossByte.current.removeEventListener(Event.TICK, __onTickProcess);
+			CrossByte.current().removeEventListener(Event.TICK, __onTickProcess);
 		} else {
-			CrossByte.current.removeEventListener(Event.TICK, __onTickConnect);
+			CrossByte.current().removeEventListener(Event.TICK, __onTickConnect);
 
 			if (__secure) {
-				CrossByte.current.removeEventListener(Event.TICK, __onTickSSLHandshake);
+				CrossByte.current().removeEventListener(Event.TICK, __onTickSSLHandshake);
 			}
 		}
 
