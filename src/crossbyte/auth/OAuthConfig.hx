@@ -4,8 +4,7 @@ package crossbyte.auth;
  * ...
  * @author Christopher Speciale
  */
-package crossbyte.auth;
-
+ 
 /**
  * OAuth configuration class.
  */

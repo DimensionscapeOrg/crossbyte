@@ -43,13 +43,10 @@ import sys.net.Socket;
 	@event close    Dispatched when the operating system closes this socket.
 	@event connect  Dispatched when a remote socket seeks to connect to this server socket.
 **/
-
-//@:fileXml('tags="haxe,release"')
-//@:noDebug
-
+// @:fileXml('tags="haxe,release"')
+// @:noDebug
 @:access(crossbyte.net.Socket)
-class ServerSocket extends EventDispatcher
-{
+class ServerSocket extends EventDispatcher {
 	/**
 		Indicates whether the socket is bound to a local address and port.
 	**/
@@ -60,10 +57,10 @@ class ServerSocket extends EventDispatcher
 	**/
 	public static var isSupported(default, null):Bool = #if !html5 true #else false #end;
 
-/**
-	Indicates whether the server socket is listening for incoming connections.
-**/
-public var listening(default, null):Bool;
+	/**
+		Indicates whether the server socket is listening for incoming connections.
+	**/
+	public var listening(default, null):Bool;
 
 	/**
 		The IP address on which the socket is listening.
@@ -77,21 +74,21 @@ public var listening(default, null):Bool;
 
 	@:noCompletion private var __serverSocket:Socket;
 	@:noCompletion private var __closed:Bool;
+	@:noCompletion private var __cbInstance:CrossByte;
+	@:noCompletion private var __hasListener:Bool = false;
 
 	/**
 		Creates a ServerSocket object.
 		@throws  SecurityError This error occurs ff the calling content is running outside the AIR
 				application security sandbox.
 	**/
-	public function new()
-	{
+	public function new() {
 		super();
 
 		__init();
 	}
 
-	private function __init():Void
-	{
+	private function __init():Void {
 		__serverSocket = new sys.net.Socket();
 		__serverSocket.setBlocking(false);
 		__serverSocket.setFastSend(true);
@@ -123,27 +120,20 @@ public var listening(default, null):Bool;
 							  this ServerSocket object is already bound. (Call close() before binding to a different socket.)
 							  when localAddress is not a valid local address.
 	**/
-	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void
-	{
-		if (localPort > 65535 || localPort < 0)
-		{
+	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
+		if (localPort > 65535 || localPort < 0) {
 			throw new RangeError("Invalid socket port number specified.");
 		}
-		
-		try
-		{
-			
+
+		try {
 			var host:Host = new Host(localAddress);
 			__serverSocket.bind(host, localPort);
-			
+
 			this.localAddress = localAddress;
 			this.localPort = localPort == 0 ? __serverSocket.host().port : localPort;
 			bound = true;
-		}
-		catch (e:Dynamic)
-		{
-			switch (e)
-			{
+		} catch (e:Dynamic) {
+			switch (e) {
 				case "Bind failed":
 					throw new IOError("Operation attempted on invalid socket.");
 				case "Unresolved host":
@@ -157,20 +147,17 @@ public var listening(default, null):Bool;
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
-	public function close():Void
-	{
-		try
-		{
+	public function close():Void {
+		try {
 			__serverSocket.close();
-		}
-		catch (e:Dynamic)
-		{
+		} catch (e:Dynamic) {
 			throw new CBError("Operation attempted on invalid socket.");
 		}
 		listening = false;
 		bound = false;
 		__closed = true;
-		CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
+		__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+		__cbInstance = null;
 	}
 
 	/**
@@ -193,27 +180,29 @@ public var listening(default, null):Bool;
 							This error also occurs if the call to listen() fails for any
 							other reason.
 	**/
-	public function listen(backlog:Int = 0):Void
-	{
-		if (__closed)
-		{
-			throw new IOError("Operation attempted on invalid socket.");
-		}
-		if (backlog < 0)
-		{
-			throw new RangeError("The supplied index is out of bounds.");
-		}
-		else if (backlog == 0)
-		{
-			backlog = 0x7FFFFFFF;
-		}
+	public function listen(backlog:Int = 0):Void {
+		__cbInstance = CrossByte.current();
+		if (__cbInstance == null) {
+			throw "ServerSocket can only be initiated in a CrossByte threaded instance";
+		} else {
+			if (__closed) {
+				throw new IOError("Operation attempted on invalid socket.");
+			}
+			if (backlog < 0) {
+				throw new RangeError("The supplied index is out of bounds.");
+			} else if (backlog == 0) {
+				backlog = 0x7FFFFFFF;
+			}
 
-		__serverSocket.listen(backlog);
-		listening = true;
+			__serverSocket.listen(backlog);
+			listening = true;
+			if(__hasListener){
+				__cbInstance.addEventListener(Event.TICK, this_onTick);
+			}
+		}
 	}
 
-	@:noCompletion private function __fromSocket(socket:sys.net.Socket):CBSocket
-	{
+	@:noCompletion private function __fromSocket(socket:sys.net.Socket):CBSocket {
 		socket.setFastSend(true);
 		socket.setBlocking(false);
 
@@ -231,58 +220,57 @@ public var listening(default, null):Bool;
 		cbSocket.__input = new ByteArray();
 		cbSocket.__input.endian = cbSocket.__endian;
 
-		CrossByte.current.addEventListener(TickEvent.TICK, cbSocket.this_onTick);
+		socket.custom = cbSocket;
+
+		@:privateAccess
+		__cbInstance.beginSocketPolling();
+		@:privateAccess
+		__cbInstance.registerSocket(socket);
 
 		return cbSocket;
 	}
 
-	@:noCompletion private function this_onTick(e:TickEvent):Void
-	{
+	@:noCompletion private function this_onTick(e:TickEvent):Void {
 		var sysSocket = null;
 
-		try
-		{
+		try {
 			sysSocket = __serverSocket.accept();
-		}
-		catch (e:Error)
-		{
+		} catch (e:Error) {
 			close();
 			dispatchEvent(new Event(Event.CLOSE));
-		}
-		catch (e:Dynamic)
-		{
+		} catch (e:Dynamic) {
 			// Do nothing.
 		}
 
-		if (sysSocket != null)
-		{
-			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, __fromSocket(sysSocket)));
+		if (sysSocket != null) {
+			var socket:CBSocket = __fromSocket(sysSocket);
+			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 		}
 	}
 
-	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void
-	{
+	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
 
-		if (type == Event.CONNECT)
-		{
-			CrossByte.current.addEventListener(TickEvent.TICK, this_onTick);
+		if (type == Event.CONNECT) {
+			__hasListener = true;
+			if(listening){
+				__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+			}
 		}
 	}
 
-	override public function removeEventListener(type:String, listener:Dynamic->Void):Void
-	{
+	override public function removeEventListener(type:String, listener:Dynamic->Void):Void {
 		super.removeEventListener(type, listener);
 
-		if (type == Event.CONNECT)
-		{
-			CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
+		if (type == Event.CONNECT) {
+			__hasListener = false;
+			if(__cbInstance != null){
+				__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+			}
 		}
 	}
 
-	private function get_isSupported():Bool
-	{
+	private function get_isSupported():Bool {
 		return true;
 	}
 }
-

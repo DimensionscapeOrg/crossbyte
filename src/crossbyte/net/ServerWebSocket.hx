@@ -152,7 +152,7 @@ class ServerWebSocket extends ServerSocket
 		listening = false;
 		bound = false;
 		__closed = true;
-		CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
+		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 	}
 
 	/**
@@ -215,7 +215,7 @@ class ServerWebSocket extends ServerSocket
 		cbSocket.__input = new ByteArray();
 		cbSocket.__input.endian = cbSocket.__endian;*/
 
-		//CrossByte.current.addEventListener(TickEvent.TICK, cbSocket.this_onTick);
+		//CrossByte.current().addEventListener(TickEvent.TICK, cbSocket.this_onTick);
 
 		return webSocket;
 	}
