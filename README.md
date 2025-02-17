@@ -8,11 +8,8 @@ Whether you're building applications with rendering capabilities or focusing on 
 Empower your development workflow with CrossByte and unlock new possibilities for creating cross-platform applications with ease and efficiency.
 
 
-## 2024 Q1 Roadmap
-- [x] Native Websocket Client
-- [x] Native Websocket Server
-- [x] Basic HTTP Server
-- [x] OAuth
+## 2025 Roadmap
+- [ ] RPC
 - [ ] rUDP
 - [ ] webRTC
 - [ ] Quic/HTTP3
