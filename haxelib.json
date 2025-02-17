@@ -1,0 +1,16 @@
+{
+	"name": "crossbyte",
+	"url": "https://github.com/dimensionscape-llc/crossbyte",
+	"license": "Apache",
+	"tags": [ "crossbyte", "server", "headless", "tools"],
+	"description": "Cross platform library for networking and application development tools",
+	"version": "0.0.1",
+	"releasenote": "Initial Haxelib Release",
+	"contributors": [		
+		"Dimensionscape"
+	],
+	"dependencies": {
+		"aedifex":""
+	},
+	"classPath": "src"
+}
