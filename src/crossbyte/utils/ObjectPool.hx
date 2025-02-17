@@ -12,6 +12,7 @@ import crossbyte.ds.Stack;
 *
 * @param T The type of objects to be pooled.
 */
+@:generic
 class ObjectPool<T>
 {
 	private var __pool:Array<ObjectBucket<T>>;
@@ -34,6 +35,7 @@ class ObjectPool<T>
 	 * Creates a new object pool.
 	 *
 	 * @param objectFactory The function to create new instances of the pooled objects.
+	 * @param resetFunction Optional The function used to reset our object.
 	 * @param length Optional initial size of the pool.
 	 */
 	public function new(objectFactory:Void->T, ?resetFunction:T->Void, ?length:Int)
@@ -43,15 +45,15 @@ class ObjectPool<T>
 
 		this.resetFunction = resetFunction;
 
-		__free = new Stack();
-
 		if (length != null)
 		{
-			__populate(length);
+			__free = new Stack(length);
 			__available = new Stack(length);
+			__populate(length);
 			return;
 		}
-
+		
+		__free = new Stack();
 		__available = new Stack();
 	}
 
@@ -59,17 +61,17 @@ class ObjectPool<T>
 	{
 		for (i in 0...len)
 		{
-			var object:T = factory();
+			var object:T = objectFactory();
 			__newElement(object);
-			__available.push(len);
+			__available.push(i);
 
 		}
 	}
 
-	private function __newElement(obj:T):Void
+	private inline function __newElement(obj:T):Void
 	{
 		var len:Int = __pool.length;
-		var element:ObjectBucket = new ObjectBucket(obj, len);
+		var element:ObjectBucket<T> = new ObjectBucket(obj, len);
 		__pool.push(element);
 	}
 
@@ -79,28 +81,29 @@ class ObjectPool<T>
 	 *
 	 * @return The acquired object.
 	 */
-	public function acquire():T
+	public inline function acquire():T
 	{
-		var nextAvailableIndex:Null<Int> = __available.pop();
-		if (nextAvailableIndex != null)
+		var obj:T = null;
+		if (__available.length > 0)
 		{
-			return __getObject(nextAvailableIndex);
+			obj = __getObject(__available.pop());
 		}
 		else {
 			// Handle case where no objects are available
 			// Example: Expand pool
-			var newObj:T = objectFactory();
-			__newElement(newObj);
+			obj = objectFactory();
+			__newElement(obj);
 			__free.push(__pool.length - 1);
-
-			return newObj();
 		}
+
+		return obj;
 	}
 
 	private function __getObject(index:Int):T
 	{
-		var element:ObjectBucket = __pool[index];
+		var element:ObjectBucket<T> = __pool[index];
 		__free.push(index);
+
 		return element.value;
 	}
 
@@ -122,12 +125,13 @@ class ObjectPool<T>
 	}
 }
 
-class ObjectBucket<T>
+@:generic
+private class ObjectBucket<T>
 {
 	public var index:Int;
 	public var value:T;
 
-	private function new(value:T, index:Int)
+	private inline function new(value:T, index:Int)
 	{
 		this.index = index;
 		this.value = value;
