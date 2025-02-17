@@ -60,10 +60,10 @@ class ServerSocket extends EventDispatcher
 	**/
 	public static var isSupported(default, null):Bool = #if !html5 true #else false #end;
 
-	/**
-		Indicates whether the server socket is listening for incoming connections.
-	**/
-	public var listening(default, null):Bool;
+/**
+	Indicates whether the server socket is listening for incoming connections.
+**/
+public var listening(default, null):Bool;
 
 	/**
 		The IP address on which the socket is listening.
@@ -89,9 +89,9 @@ class ServerSocket extends EventDispatcher
 
 		__init();
 	}
-	
-	private function __init():Void{
-		trace("init");
+
+	private function __init():Void
+	{
 		__serverSocket = new sys.net.Socket();
 		__serverSocket.setBlocking(false);
 		__serverSocket.setFastSend(true);
@@ -129,12 +129,15 @@ class ServerSocket extends EventDispatcher
 		{
 			throw new RangeError("Invalid socket port number specified.");
 		}
+		
 		try
 		{
-			this.localAddress = localAddress;
-			this.localPort = localPort;
+			
 			var host:Host = new Host(localAddress);
 			__serverSocket.bind(host, localPort);
+			
+			this.localAddress = localAddress;
+			this.localPort = localPort == 0 ? __serverSocket.host().port : localPort;
 			bound = true;
 		}
 		catch (e:Dynamic)
@@ -199,12 +202,12 @@ class ServerSocket extends EventDispatcher
 		if (backlog < 0)
 		{
 			throw new RangeError("The supplied index is out of bounds.");
-		} else if (backlog == 0) 
+		}
+		else if (backlog == 0)
 		{
 			backlog = 0x7FFFFFFF;
 		}
-		
-		
+
 		__serverSocket.listen(backlog);
 		listening = true;
 	}
@@ -279,7 +282,7 @@ class ServerSocket extends EventDispatcher
 
 	private function get_isSupported():Bool
 	{
-	return true;
+		return true;
 	}
 }
 
