@@ -1,7 +1,7 @@
 package crossbyte.auth;
 
+import haxe.io.Bytes;
 import haxe.crypto.Base64;
-import haxe.crypto.Sha256;
 import haxe.Json;
 import haxe.crypto.Hmac;
 
@@ -49,7 +49,7 @@ class JWT {
      * @param payload The payload to be included in the token.
      * @return The generated JWT token.
      */
-    public function generateToken(payload: JWTPayload): String {
+     public function generateToken(payload: JWTPayload): String {
         var header: JWTHeader = { alg: "HS256", typ: "JWT" };
         var headerEncoded = base64UrlEncode(Json.stringify(header));
         var payloadEncoded = base64UrlEncode(Json.stringify(payload));
@@ -63,38 +63,44 @@ class JWT {
      * @param token The JWT token to be verified.
      * @return The payload if the token is valid, null otherwise.
      */
-    public function verifyToken(token: String): Null<JWTPayload> {
+     public function verifyToken(token: String): Null<JWTPayload> {
         var parts = token.split('.');
         if (parts.length != 3) return null;
 
-        var headerEncoded = parts[0];
-        var payloadEncoded = parts[1];
-        var signature = parts[2];
+        var header: JWTHeader = Json.parse(base64UrlDecode(parts[0]));
+        if (header.alg != "HS256") return null;
 
-        var expectedSignature = createSignature(headerEncoded, payloadEncoded);
-        if (signature != expectedSignature) return null;
+        var expectedSignature = createSignature(parts[0], parts[1]);
+        if (!secureCompare(parts[2], expectedSignature)) return null;
 
-        var payload: JWTPayload = Json.parse(base64UrlDecode(payloadEncoded));
-
-        // Verify expiration
-        if (payload.exp < Date.now().getTime() / 1000) {
-            return null; // Token has expired
+        var payload: JWTPayload = Json.parse(base64UrlDecode(parts[1]));
+        if (Std.int(payload.exp) < Std.int(Date.now().getTime() / 1000)) {
+            return null;
         }
-
         return payload;
     }
 
     private function createSignature(headerEncoded: String, payloadEncoded: String): String {
         var data = '${headerEncoded}.${payloadEncoded}';
-        var hash = Hmac.sha256(secret, data);
-        return base64UrlEncode(hash);
+        var hash = new Hmac(HashMethod.SHA256).make(Bytes.ofString(secret), Bytes.ofString(data));
+        return base64UrlEncode(Base64.encode(hash));
+    }
+
+    private static function secureCompare(a: String, b: String): Bool {
+        if (a.length != b.length) return false;
+        var result = 0;
+        for (i in 0...a.length) {
+            result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+        }
+        return result == 0;
     }
 
     private static function base64UrlEncode(data: String): String {
-        return Base64.encode(data).replace('+', '-').replace('/', '_').replace('=', '');
+        return StringTools.replace(StringTools.replace(StringTools.replace(Base64.encode(Bytes.ofString(data)), "+", "-"), "/", "_"),"=", "");
     }
 
     private static function base64UrlDecode(data: String): String {
-        return Base64.decode(data.replace('-', '+').replace('_', '/'));
+        var padded = data + "===".substr(0, (4 - data.length % 4) % 4);
+        return Base64.decode(StringTools.replace(StringTools.replace(padded, "-", "+"), "_", "/")).toString();
     }
 }
