@@ -37,7 +37,7 @@ class Worker extends EventDispatcher
 		canceled = true;
 
 		__workerThread = null;
-		CrossByte.current.removeEventListener(TickEvent.TICK, __update);
+		CrossByte.current().removeEventListener(TickEvent.TICK, __update);
 
 		if (doClean)
 		{
@@ -73,7 +73,7 @@ class Worker extends EventDispatcher
 		__messageQueue = new Deque<Dynamic>();
 		__workerThread = Thread.create(__doWork);
 
-		CrossByte.current.addEventListener(TickEvent.TICK, __update);
+		CrossByte.current().addEventListener(TickEvent.TICK, __update);
 		#else
 		__doWork();
 		#end
@@ -159,7 +159,7 @@ class Worker extends EventDispatcher
 		{
 			if (message == MESSAGE_ERROR)
 			{
-				CrossByte.current.removeEventListener(TickEvent.TICK, __update);
+				CrossByte.current().removeEventListener(TickEvent.TICK, __update);
 
 				if (!canceled)
 				{
@@ -170,7 +170,7 @@ class Worker extends EventDispatcher
 			}
 			else if (message == MESSAGE_COMPLETE)
 			{
-				CrossByte.current.removeEventListener(TickEvent.TICK, __update);
+				CrossByte.current().removeEventListener(TickEvent.TICK, __update);
 
 				if (!canceled)
 				{

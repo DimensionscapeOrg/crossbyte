@@ -1,5 +1,11 @@
 package crossbyte.net;
 
+import haxe.ds.StringMap;
+import haxe.ds.IntMap;
+#if cpp
+import cpp.net.Poll;
+#end
+
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
 import haxe.io.Bytes;
@@ -112,6 +118,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private var __buffer:Bytes;
 	@:noCompletion private var __connected:Bool;
+	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __endian:Endian;
 	@:noCompletion private var __host:String;
 	@:noCompletion private var __input:ByteArray;
@@ -119,6 +126,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __port:Int;
 	@:noCompletion private var __socket:#if sys SysSocket #else Dynamic #end;
 	@:noCompletion private var __timestamp:Float;
+	@:noCompletion private var __cbInstance:CrossByte;	
 	
 	/**
 		Creates a new Socket object. If no parameters are specified, an
@@ -179,6 +187,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		endian = Endian.BIG_ENDIAN;
 		timeout = 20000;
+		__closed = false;
 
 		__buffer = Bytes.alloc(4096);
 
@@ -310,19 +319,35 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__socket.onmessage = socket_onMessage;
 		__socket.onclose = socket_onClose;
 		__socket.onerror = socket_onError;
+
+		CrossByte.instance.addEventListener(TickEvent.TICK, this_onTick);
 		#else
 		__socket = new SysSocket();
 
+		@:privateAccess
 		try
 		{
 			__socket.setBlocking(false);
 			__socket.connect(h, port);
-			__socket.setFastSend(true);
-		}
-		catch (e:Dynamic) {}
-		#end
+			__socket.setFastSend(true);	
+			__socket.custom = this;
+			__cbInstance = CrossByte.current();
+			if(__cbInstance == null){
+				throw "Socket can only be initiated in a CrossByte threaded instance";
+			} else {
+				
+				__cbInstance.beginSocketPolling();
+				__cbInstance.registerSocket(__socket);
+			}
+			
 
-		CrossByte.current.addEventListener(TickEvent.TICK, this_onTick);
+		}
+		catch (e:Dynamic) {}	
+		
+		
+		
+		
+		#end
 	}
 
 	/**
@@ -880,9 +905,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__socket.close();
 		}
 		catch (e:Dynamic) {}
+
 		__socket = null;
 		__connected = false;
+		#if js
 		CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
+		#else
+		__closed = true;
+		@:privateAccess
+		__cbInstance.deregisterSocket(this.__socket);
+		__cbInstance = null;
+		#end
 	}
 
 	// Event Handlers
@@ -930,7 +963,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		dispatchEvent(new Event(Event.CONNECT));
 	}
 
-	@:noCompletion private function this_onTick(event:TickEvent):Void
+	@:noCompletion private function this_onTick(?event:TickEvent):Void
 	{
 		#if (js && html5)
 		if (__socket != null)
