@@ -5,6 +5,7 @@ import haxe.crypto.Base64;
 import haxe.Json;
 import haxe.crypto.Hmac;
 
+using StringTools;
 /**
  * ...
  * @author Christopher Speciale
@@ -96,11 +97,11 @@ class JWT {
     }
 
     private static function base64UrlEncode(data: String): String {
-        return StringTools.replace(StringTools.replace(StringTools.replace(Base64.encode(Bytes.ofString(data)), "+", "-"), "/", "_"),"=", "");
+        return Base64.encode(Bytes.ofString(data)).replace("+", "-").replace("/", "_").replace("=", "");
     }
 
     private static function base64UrlDecode(data: String): String {
         var padded = data + "===".substr(0, (4 - data.length % 4) % 4);
-        return Base64.decode(StringTools.replace(StringTools.replace(padded, "-", "+"), "_", "/")).toString();
+        return Base64.decode(padded.replace("-", "+").replace("_", "/")).toString();
     }
 }
