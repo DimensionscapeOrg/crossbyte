@@ -19,7 +19,7 @@ package crossbyte;
  * var b:Bool = p.toBool(); // true
  * ```
  */
-abstract Primitive(Any) from Dynamic to Dynamic {
+abstract PrimitiveValue(Any) from Dynamic to Dynamic {
 
     /**
      * Converts the primitive to a `String`.
@@ -106,55 +106,28 @@ abstract Primitive(Any) from Dynamic to Dynamic {
         }
     }
 
-    /**
-     * Creates a `Primitive` from a `String`.
-     * 
-     * @param s The string value.
-     * @return A `Primitive` instance.
-     */
-    @:from public static inline function fromString(s:String):Primitive {
+
+    @:from private static inline function fromString(s:String):PrimitiveValue {
         return s != null ? s : "";
     }
 
-    /**
-     * Creates a `Primitive` from an `Int`.
-     * 
-     * @param i The integer value.
-     * @return A `Primitive` instance.
-     */
-    @:from public static inline function fromInt(i:Int):Primitive {
+
+    @:from private static inline function fromInt(i:Int):PrimitiveValue {
         return i;
     }
 
-    /**
-     * Creates a `Primitive` from a `Float`.
-     * 
-     * - `NaN` values are converted to `0.0`.
-     *
-     * @param f The float value.
-     * @return A `Primitive` instance.
-     */
-    @:from public static inline function fromFloat(f:Float):Primitive {
+
+    @:from private static inline function fromFloat(f:Float):PrimitiveValue {
         return !Math.isNaN(f) ? f : 0.0;
     }
 
-    /**
-     * Creates a `Primitive` from a `Bool`.
-     * 
-     * @param b The boolean value.
-     * @return A `Primitive` instance.
-     */
-    @:from public static inline function fromBool(b:Bool):Primitive {
+
+    @:from private static inline function fromBool(b:Bool):PrimitiveValue {
         return b;
     }
 
-    /**
-     * Checks if a given value is a valid primitive type.
-     * 
-     * @param value The value to check.
-     * @return `true` if the value is a `String`, `Int`, `Float`, or `Bool`, otherwise `false`.
-     */
-    public static function isValid(value:Dynamic):Bool {
+
+     private static function isValid(value:Dynamic):Bool {
         return value != null
             && (Std.isOfType(value, String) || Std.isOfType(value, Int) || Std.isOfType(value, Float) || Std.isOfType(value, Bool));
     }
