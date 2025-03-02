@@ -1,6 +1,5 @@
 package crossbyte.core;
 
-import cpp.RawPointer;
 import cpp.Pointer;
 import cpp.net.Poll;
 import sys.net.Socket as SysSocket;
@@ -29,6 +28,7 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
 	@:noCompletion private static var __instances:Map<Thread, CrossByte> = new ObjectMap();
 	@:noCompletion private static var __primordial:CrossByte;
+	@:noCompletion private static var __init:Bool = __onCrossByteInit();
 
 	// ==== Public Static Methods ====
 	public static inline function make():CrossByte {
@@ -43,6 +43,30 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// ==== Private Static Methods ====
+	@:noCompletion private static function __onCrossByteInit():Bool {
+		#if (cpp && windows)
+		untyped __cpp__("timeBeginPeriod(1);");
+		untyped __cpp__("HANDLE hProcess = GetCurrentProcess();");
+		untyped __cpp__("SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS)");
+
+		__setAtSystemExit(__atExit);
+		#end
+
+		return true;
+	}
+
+	#if (cpp && windows)
+	@:noCompletion private static function __atExit():Void {
+		untyped __cpp__("timeEndPeriod(1);");
+	}
+
+	@:noCompletion
+	private static function __setAtSystemExit(callback:Void->Void):Void {
+		untyped __cpp__("static cpp::Function<void()> exitCallback = {0};", callback);
+		untyped __cpp__("std::atexit([](){ exitCallback(); });");
+	}
+	#end
+
 	// ==== Public Variables ====
 	public var tps(get, set):UInt;
 	public var cpuLoad(get, null):Float;
@@ -83,7 +107,7 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	/* ==== Public Methods ==== */
-	public inline function getThreadPriority():ThreadPriority{
+	public inline function getThreadPriority():ThreadPriority {
 		return __threadPriority;
 	}
 
@@ -112,11 +136,11 @@ final class CrossByte extends EventDispatcher {
 		}
 	}
 
-	//TODO
+	// TODO
+
 	/* public function runInThread(job:Function):Void{
 
-	} */
-
+	}*/
 	public function exit():Void {
 		__isRunning = false;
 		__instances.remove(Thread.current());
@@ -210,10 +234,6 @@ final class CrossByte extends EventDispatcher {
 		untyped __cpp__("HANDLE hThread = GetCurrentThread();");
 		__threadHandle = untyped __cpp__("hThread");
 		setThreadPriority(__threadPriority);
-
-		untyped __cpp__("timeBeginPeriod(1);");
-		untyped __cpp__("HANDLE hProcess = GetCurrentProcess();");
-		untyped __cpp__("SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS)");
 		#end
 
 		if (!__isPrimordial) {
