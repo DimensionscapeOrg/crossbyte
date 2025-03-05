@@ -38,7 +38,5 @@ import crossbyte.net.NetConnection;
  */
 @:autoBuild(crossbyte.rpc._internal.RPCCommandMacro.build())
 class RPCCommands {
-    @:optional
 	private var __nc:NetConnection;
-
 }

@@ -72,13 +72,11 @@ import sys.io.Process;
 	@event securityError  		Dispatched when an operation violates a security constraint.
 
 **/
-#if !openfl_debug
-@:fileXml('tags="haxe,release"')
+#if !crossbyte_debug
 @:noDebug
 #end
-class File extends EventDispatcher
+final class File extends EventDispatcher
 {
-	private static inline var APPLICATION_DIR:String = "Crossbyte";
 	/**
 		The creation date of the file on the local disk. If the object is was
 		not populated, a call to get the value of this property returns
@@ -136,7 +134,7 @@ class File extends EventDispatcher
 									  this case, the value of the `data`
 									  property is `null`.
 	**/
-	public var data(default, null):ByteArray;
+	public var data(get, null):ByteArray;
 
 	/**
 		The date that the file on the local disk was last modified. If the
@@ -503,7 +501,7 @@ class File extends EventDispatcher
 		of backslashes in a String literal represent a single backslash in the
 		String.
 	**/
-	public static inline var seperator:String =
+	public static inline var separator:String =
 		#if windows
 		"\\"
 		#else
@@ -544,6 +542,49 @@ class File extends EventDispatcher
 
 	**/
 	public static var userDirectory(get, never):File;
+
+	/**
+     * Reads the contents of a file as a `ByteArray`.
+     *
+     * @param path The path to the file.
+     * @return A `ByteArray` containing the file's contents.
+     */
+	 public static inline function getFileBytes(path:String):ByteArray {
+        return HaxeFile.getBytes(path);
+    }
+
+    /**
+     * Reads the contents of a file as a `String`.
+     *
+     * @param path The path to the file.
+     * @return A `String` containing the file's contents.
+     */
+    public static inline function getFileText(path:String):String {
+        return HaxeFile.getContent(path);
+    }
+
+    /**
+     * Saves a `ByteArray` to a file.
+     *
+     * @param path The path where the file should be saved.
+     * @param bytes The `ByteArray` to write to the file.
+     */
+    public static inline function saveBytes(path:String, bytes:ByteArray):Void {
+        HaxeFile.saveBytes(path, bytes);
+    }
+
+    /**
+     * Saves a `String` as a text file.
+     *
+     * @param path The path where the file should be saved.
+     * @param text The `String` content to write to the file.
+     */
+    public static inline function saveText(path:String, text:String):Void {
+        HaxeFile.saveContent(path, text);
+    }
+
+	@:noCompletion private var __data:ByteArray;
+
 
 	@:noCompletion private static var __driveLetters:Array<String> =
 		[
@@ -596,7 +637,7 @@ class File extends EventDispatcher
 
 		if (name.length == 0)
 		{
-			var dirs:Array<String> = Path.directory(__path).split(seperator);
+			var dirs:Array<String> = Path.directory(__path).split(separator);
 			name = dirs[dirs.length - 1];
 		}
 	}
@@ -634,20 +675,20 @@ class File extends EventDispatcher
 	**/
 	public function canonicalize():Void
 	{
-		var segs:Array<String> = __path.split(seperator);
+		var segs:Array<String> = __path.split(separator);
 
-		var cPath:String = __driveLetters[__driveLetters.indexOf(segs[0].toUpperCase() + seperator)];
+		var cPath:String = __driveLetters[__driveLetters.indexOf(segs[0].toUpperCase() + separator)];
 		var start:Int = 1;
 		if (cPath == null)
 		{
 			// fall back to unix paths
-			cPath = seperator + segs[1] + seperator;
+			cPath = separator + segs[1] + separator;
 			start = 2;
 		}
 
 		for (i in start...segs.length)
 		{
-			cPath += __canonicalize(cPath, segs[i]) + seperator;
+			cPath += __canonicalize(cPath, segs[i]) + separator;
 		}
 
 		__path = Path.removeTrailingSlashes(cPath);
@@ -1070,7 +1111,7 @@ class File extends EventDispatcher
 
 		for (directory in directories)
 		{
-			files.push(new File(__path + seperator + directory));
+			files.push(new File(__path + separator + directory));
 		}
 
 		return files;
@@ -1179,8 +1220,8 @@ class File extends EventDispatcher
 	**/
 	public function getRelativePath(ref:File, useDotDot:Bool = false):Null<String>
 	{
-		var thisPath:Array<String> = __path.split(seperator);
-		var refPath:Array<String> = ref.__path.split(seperator);
+		var thisPath:Array<String> = __path.split(separator);
+		var refPath:Array<String> = ref.__path.split(separator);
 
 		var relatives:Array<String> = [];
 
@@ -1210,7 +1251,7 @@ class File extends EventDispatcher
 			relatives.push(refPath[j]);
 		}
 
-		var relativePath:String = relatives.join(seperator);
+		var relativePath:String = relatives.join(separator);
 
 		return relativePath.length == 0 && ref.__path != __path ? null : relativePath;
 	}
@@ -1221,7 +1262,7 @@ class File extends EventDispatcher
 
 	public function load():Void
 	{
-		data = HaxeFile.getBytes(__path);
+		__data = HaxeFile.getBytes(__path);
 	}
 
 	/**
@@ -1398,7 +1439,7 @@ class File extends EventDispatcher
 	public function resolvePath(path:String):File
 	{
 		var directoryPath:String = Path.removeTrailingSlashes(__path);
-		return new File('$directoryPath$seperator$path');
+		return new File('$directoryPath$separator$path');
 	}
 	/**
 		Saves the data parameter passed to the location of the file.
@@ -1409,8 +1450,13 @@ class File extends EventDispatcher
 			throw "File exists at this location and overwrite param is false";
 			return;
 		}
+		try{
+			HaxeFile.saveBytes(__path, data);
+		} catch(e:Dynamic){
+			throw("File is open");
+		}
 		
-		HaxeFile.saveBytes(__path, data);
+		this.__data = data;
 	}
 
 	/**
@@ -1507,7 +1553,7 @@ class File extends EventDispatcher
 		return rootDirs;
 		#else
 
-		return [seperator];
+		return [new File(separator)];
 		#end
 	}
 
@@ -1580,7 +1626,7 @@ class File extends EventDispatcher
 
 		for (dir in dirs)
 		{
-			path += '$dir$seperator';
+			path += '$dir$separator';
 		}
 
 		return Path.removeTrailingSlashes(path);
@@ -1690,52 +1736,30 @@ class File extends EventDispatcher
 
 	@:noCompletion private static function get_applicationDirectory():File
 	{
-		return new File(Path.removeTrailingSlashes(Sys.getCwd()));
+		return new File(System.appDir);
 	}
 
 	@:noCompletion private static function get_applicationStorageDirectory():File
 	{
-		var path:String;
-		#if windows
-		path = Sys.getEnv("APPDATA");
-		#else
-		path = Sys.getEnv("HOME");
-		#end
+		
 
-		return new File(Path.removeTrailingSlashes(path) + seperator + APPLICATION_DIR);
+		return new File(System.appStorageDir);
 	}
 
 	@:noCompletion private static function get_documentsDirectory():File
-	{
-		var path:String;
-		#if windows
-		path = Sys.getEnv("USERPROFILE");
-		#else
-		path = Sys.getEnv("HOME");
-		#end
-		return new File(path + seperator + "Documents");
+	{	
+		return new File(System.documentsDir);
 	}
 
 	@:noCompletion private static function get_desktopDirectory():File
 	{
-		var path:String;
-		#if windows
-		path = Sys.getEnv("USERPROFILE");
-		#else
-		path = Sys.getEnv("HOME");
-		#end
-		return new File(path + seperator + "Desktop");
+
+		return new File(System.desktopDir);
 	}
 
 	@:noCompletion private static function get_userDirectory():File
 	{
-		var path:String;
-		#if windows
-		path = Sys.getEnv("USERPROFILE");
-		#else
-		path = Sys.getEnv("HOME");
-		#end
-		return new File(path);
+		return new File(System.userDir);
 	}
 
 	@:noCompletion private function get_creationDate():Date
@@ -1745,6 +1769,10 @@ class File extends EventDispatcher
 			__updateFileStats();
 		}
 		return creationDate;
+	}
+
+	@:noCompletion private inline function get_data():ByteArray{
+		return __data;
 	}
 
 	@:noCompletion private static function get_lineEnding():String
@@ -1774,7 +1802,7 @@ class File extends EventDispatcher
 		return name;
 	}
 
-	@:noCompletion private static function get_separator():String
+	@:noCompletion private static inline function get_separator():String
 	{
 		#if windows
 		return "\\";
@@ -1853,8 +1881,8 @@ class File extends EventDispatcher
 		// TODO:Can we optimize this?
 		var path:String = Path.removeTrailingSlashes(__path);
 
-		var lastIndex:Int = path.lastIndexOf(seperator);
-		if (lastIndex == path.indexOf(seperator))
+		var lastIndex:Int = path.lastIndexOf(separator);
+		if (lastIndex == path.indexOf(separator))
 		{
 			lastIndex += 1;
 		}
@@ -1872,7 +1900,7 @@ class File extends EventDispatcher
 		args = ["volume", "diskfree", Path.addTrailingSlash(__path)];
 		#else
 		cmd = "df";
-		args = ["-k", path];
+		args = ["-k", __path];
 		#end
 
 		var process:Process = new Process(cmd, args);
@@ -1902,7 +1930,7 @@ class File extends EventDispatcher
 					break;
 				}
 				#else
-				parts = EReg("\\s+", "").split(line);
+				parts = new EReg("\\s+", "").split(line);
 				if (parts.length >= 4 && parts[0] == __path)
 				{
 					availableSpace = Std.parseFloat(parts[3]);
