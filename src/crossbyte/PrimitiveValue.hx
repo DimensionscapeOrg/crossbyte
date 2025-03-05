@@ -21,6 +21,10 @@ package crossbyte;
  */
 abstract PrimitiveValue(Any) from Dynamic to Dynamic {
 
+    public inline function getValueType():Type.ValueType{
+        return Type.typeof(this);
+    }
+    
     /**
      * Converts the primitive to a `String`.
      * @return The string representation of the primitive.
