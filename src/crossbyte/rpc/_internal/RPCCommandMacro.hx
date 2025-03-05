@@ -23,6 +23,7 @@ class RPCCommandMacro {
                         var metaField = createMetaFunction(metaName, field.name, method.args);
                         newFields.push(metaField);
                     default:
+                        Context.error("Field " + field.name + " is marked as :rpc but is not a function.", field.pos);
                 }
             }
         }
