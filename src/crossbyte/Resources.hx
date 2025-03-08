@@ -30,9 +30,9 @@ final class Resources {
         return Json.parse(jsonString);
     }
 
-    public static inline function getLines(relativePath:String):Array<PrimitiveValue>{
+    public static inline function getLines(relativePath:String):Array<String>{
         var text:String = getText(relativePath);
-        var lines:Array<PrimitiveValue> = text.split("\n");
+        var lines:Array<String> = text.split(File.lineEnding);
         
         return lines;
     }
