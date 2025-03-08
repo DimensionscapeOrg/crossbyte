@@ -19,7 +19,7 @@ package crossbyte;
  * var b:Bool = p.toBool(); // true
  * ```
  */
-abstract PrimitiveValue(Any) from Dynamic to Dynamic {
+abstract PrimitiveValue(Dynamic) from Dynamic to Dynamic {
 
     public inline function getValueType():Type.ValueType{
         return Type.typeof(this);
