@@ -18,11 +18,24 @@ import sys.thread.Deque;
 import crossbyte.events.EventDispatcher;
 
 /**
- * LocalConnection - Implements IPC using Named Pipes
+ * `LocalConnection` provides inter-process communication (IPC) using Named Pipes.
+ * 
+ * This class allows **sending messages between processes** on the same **local machine**.
+ * The communication model follows a **client-server architecture**, where:
+ * - A **server** process listens for incoming messages.
+ * - A **client** process connects to the server and sends data.
+ *
+ * This implementation supports **asynchronous, non-blocking communication** and handles **multiple clients**.
+ *
  */
+@:access(haxe.Serializer)
 @:access(openfl.net._internal.NativeLocalConnection)
 class LocalConnection extends EventDispatcher
 {
+	/**
+	* The object that handles incoming messages.
+	* This should be set to an instance containing methods corresponding to the message names sent by other processes.
+	*/
 	public var client:Object;
 	
 	@:noCompletion private var __inboundPipe:HANDLE;
@@ -37,15 +50,25 @@ class LocalConnection extends EventDispatcher
 	@:noCompletion private static inline var TIME_OUT:Int = 45000;
 	@:noCompletion private static inline var BUFFER_SIZE:Int = 4096;
 
+	/**
+	* Creates a new `LocalConnection` instance.
+	*
+	* This instance must either `connect()` to receive messages or use `send()` to send messages.
+	*/
 	public function new()
 	{
 		super();
 		__serializer = new Serializer();
 		__serializer.useCache = true;
 		__clientPipes = [];
+		
 	}
 
-	/** Closes the receiving connection*/
+	/**
+	* Closes the **inbound** (server-side) connection.
+	*
+	* This stops the server from receiving further messages.
+	*/
 	public function close():Void
 	{
 
@@ -57,9 +80,36 @@ class LocalConnection extends EventDispatcher
 		__connected = false;
 	}
 
-	/** Sends a message to another connection */
+	/**
+	* Starts listening for incoming messages on the given connection.
+	*
+	* @param connectionName The name of the connection (pipe) to listen for messages.
+	*/
+	public function connect(connectionName:String):Void
+	{
+		//trace('Connecting as server: ' + connectionName);
+		if (!__setupNamedPipe(connectionName))
+		{
+
+			//trace("Error setting up named pipe: " + connectionName);
+			throw new ArgumentError("Connection name is already in use or invalid");
+		}
+		else {
+			__connected = true;
+		}
+	}
+
+	/**
+	* Sends a message to another process.
+	*
+	* @param connectionName The name of the connection (pipe) to send the message to.
+	* @param methodName The name of the method to invoke on the receiving process.
+	* @param arguments The arguments to pass to the method.
+	*/
 	public function send(connectionName:String, methodName:String, ...arguments):Void
 	{
+		__resetSeralizer();
+
 		var status:Bool = false;
 
 		__serializer.serialize(arguments);
@@ -139,21 +189,6 @@ class LocalConnection extends EventDispatcher
 		__outboundTimeout = Timer.delay(() -> __checkTimeout(), 5000);
 	}
 
-	/** Starts listening for messages */
-	public function connect(connectionName:String):Void
-	{
-		//trace('Connecting as server: ' + connectionName);
-		if (!__setupNamedPipe(connectionName))
-		{
-
-			//trace("Error setting up named pipe: " + connectionName);
-			throw new ArgumentError("Connection name is already in use or invalid");
-		}
-		else {
-			__connected = true;
-		}
-	}
-
 	/** Writes data to a named pipe */
 	@:noCompletion private static function __write(pipe:HANDLE, data:BytesData, size:Int):Bool
 	{
@@ -199,6 +234,15 @@ class LocalConnection extends EventDispatcher
 	@:noCompletion private static function __close(pipe:HANDLE):Void
 	{
 		NativeLocalConnection.__close(pipe);
+	}
+
+	/** Resets our serializer internally */
+	@;noCompletion private inline function __resetSeralizer():Void
+	{
+		__serializer.buf = new StringBuf();
+		__serializer.shash.clear();
+		__serializer.cache = [];
+		__serializer.scount = 0;
 	}
 
 	/** Initializes the Named Pipe Server */
