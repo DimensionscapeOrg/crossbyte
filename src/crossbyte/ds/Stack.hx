@@ -4,18 +4,16 @@ package crossbyte.ds;
  * ...
  * @author Chris__topher Speciale
  */
-
 /**
-* A generic stack implementation.
-*
-* This class represents a simple stack data structure, which operates on the Last In, First Out (LIFO) principle.
-*
-* @param T The type of elements held in this stack.
-*/
+ * A generic stack implementation.
+ *
+ * This class represents a simple stack data structure, which operates on the Last In, First Out (LIFO) principle.
+ *
+ * @param T The type of elements held in this stack.
+ */
 @:final
 @:generic
-class Stack<T>
-{
+class Stack<T> {
 	/**
 	 * The current number of elements in the stack.
 	 *
@@ -26,24 +24,18 @@ class Stack<T>
 	private var __items:Array<T>;
 	private var __top:Int;
 
-	private inline function get_length()
-	{
+	private inline function get_length() {
 		return __top;
 	}
 
 	/**
-	* Creates a new stack.
-	*
-	* @param length Optional. The initial size of the internal array used to store elements.
-	*/
-	public function new(?length:Int)
-	{
-		__items = new Array();
-		if (length != null)
-		{
-			__items.resize(length);
-		}
-
+	 * Creates a new stack.
+	 *
+	 * @param length Optional. The initial size of the internal array used to store elements.
+	 */
+	public function new(length:Int = 0) {
+		__items = new Array();		
+		__items.resize(length);
 		__top = 0;
 	}
 
@@ -52,10 +44,8 @@ class Stack<T>
 	 *
 	 * @param item The element to push onto the stack.
 	 */
-	public inline function push(item:T):Void
-	{
-		if (__top >= __items.length)
-		{
+	public inline function push(item:T):Void {
+		if (__top >= __items.length) {
 			__items.resize(__items.length > 0 ? __items.length * 2 : 1);
 		}
 		__items[__top++] = item;
@@ -66,13 +56,12 @@ class Stack<T>
 	 *
 	 * @return The element at the top of the stack, or `null` if the stack is empty.
 	 */
-	public inline function pop():Null<T>
-	{
+	public inline function pop():Null<T> {
 		/*if (__top == 0)
-		{
-			return null;  // Return null instead of throwing an error
-		}
-		return __items[--__top];*/
+			{
+				return null;  // Return null instead of throwing an error
+			}
+			return __items[--__top]; */
 
 		return __top > 0 ? __items[--__top] : null;
 	}
@@ -82,11 +71,9 @@ class Stack<T>
 	 *
 	 * @param dispose Optional. If `true`, the internal array is resized to zero.
 	 */
-	public inline function clear(dispose:Bool = false):Void
-	{
+	public inline function clear(dispose:Bool = false):Void {
 		__top = 0;
-		if (dispose)
-		{
+		if (dispose) {
 			__items.resize(0);
 		}
 	}
@@ -96,13 +83,32 @@ class Stack<T>
 	 *
 	 * @return The element at the top of the stack, or `null` if the stack is empty.
 	 */
-	public inline function last():Null<T>
-	{
+	public inline function last():Null<T> {
 		/*if (__top == 0)
-		{
-			return null; // Return null instead of throwing an error
-		}
-		return __items[__top - 1];*/
+			{
+				return null; // Return null instead of throwing an error
+			}
+			return __items[__top - 1]; */
 		return __top > 0 ? __items[__top - 1] : null;
+	}
+
+	/**
+	 * Checks if the stack is empty.
+	 *
+	 * @return True if the stack has no elements; false otherwise.
+	 */
+	public inline function isEmpty():Bool {
+		return __top == 0;
+	}
+
+	/**
+	 * Provides an iterator to traverse the stack from top to bottom.
+	 */
+	public inline function iterator():Iterator<T> {
+		var index = __top;
+		return {
+			hasNext: function() return index > 0,
+			next: function() return __items[--index]
+		};
 	}
 }
