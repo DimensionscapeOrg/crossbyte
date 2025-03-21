@@ -21,7 +21,7 @@ import haxe.ds.Map;
  * @param V The type of values associated with the keys.
  */
 @:generic
-final class ListedMap<K, V> {
+final class ListedMap<K:Dynamic, V> {
 	// Map for fast key -> value access.
 	private var __map:Map<K, V>;
 	// Array holding key–value entries.
