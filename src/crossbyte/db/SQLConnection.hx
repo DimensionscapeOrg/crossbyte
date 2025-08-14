@@ -26,10 +26,8 @@ import sys.thread.Mutex;
 @:access(crossbyte.db.SQLStatement)
 class SQLConnection extends EventDispatcher
 {
-	public static inline var isSupported:Bool =
-		#if windows
-		true;
-		#end
+	public static inline var isSupported:Bool =	#if windows	true; #else false; #end
+
 	private static inline var DEFAULT_CACHE_SIZE:UInt = 2000;
 	public var autoCompact(get, null):Bool;
 	public var cacheSize(get, set):UInt;
@@ -690,4 +688,27 @@ class SQLConnection extends EventDispatcher
 		}
 		return tables;
 	}
+
+	 private inline function __pragma(body:String):ResultSet {
+		var ret = null;
+        if (__async) {
+            __sqlMutex.acquire();
+           ret = __connection.request('PRAGMA ' + body + ';');
+            __sqlMutex.release();
+        } else {
+            ret = __connection.request('PRAGMA ' + body + ';');
+        }
+
+		return ret;
+    }
+
+    private inline function __pragmaFirstRow(body:String):Dynamic {
+        var rs = __pragma(body);
+		var ret = null;
+
+		if(rs.hasNext()){
+			ret = rs.next();
+		}
+        return ret;
+    }
 }
