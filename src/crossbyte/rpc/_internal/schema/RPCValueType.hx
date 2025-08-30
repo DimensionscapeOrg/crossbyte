@@ -1,10 +1,10 @@
-package crossbyte.rpc;
+package crossbyte.rpc._internal.schema;
 
 /**
  * ...
  * @author Christopher Speciale
  */
- 
+
 /**
  * Represents the various value types supported in the RPC system.
  * This enum defines data types that can be used for serialization, message structuring, 
@@ -91,7 +91,7 @@ package crossbyte.rpc;
      * Represents a Universally Unique Identifier (UUID).
      * Typically stored as a 128-bit value (16 bytes).
      */
-    UUID;
+    UUID(length:Int);
 
     /**
      * Represents an enumerated value stored as a string.
