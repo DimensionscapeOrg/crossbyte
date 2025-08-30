@@ -1,8 +1,7 @@
-package crossbyte.rpc;
+package crossbyte.rpc._internal.schema;
 
 import crossbyte.utils.ChecksumAlgorithm;
 import crossbyte.utils.CompressionAlgorithm;
-import crossbyte.rpc.RPCValueType;
 
 /**
  * ...
@@ -18,24 +17,30 @@ import crossbyte.rpc.RPCValueType;
  * Some fields are **automatically generated**, while others require external values.
  * The `RPCHeaderFieldFactory` acts as a **blueprint** for constructing an RPC header.
  */
- enum RPCHeaderFieldFactoryType {
+ enum RPCHeaderFieldType {
 
-    /**
+     /**
      * **Message ID** (Mandatory)
      * 
      * - A unique identifier for each RPC message.
      * - Used for tracking and matching responses.
      * - Typically auto-incremented or generated uniquely per message.
-     */
-    MessageID;
-
-    /**
-     * **Message Size** (Mandatory)
+     * - The `maxSize` determines the optimal integer type.
      * 
-     * - Represents the **total size** of the message in bytes (header + payload).
-     * - Automatically calculated when constructing the message.
+     * @param maxSize The maximum value the message ID can reach.
      */
-    MessageSize;
+     MessageID(maxSize:Int);
+
+     /**
+      * **Message Size** (Mandatory)
+      * 
+      * - Represents the **total size** of the message in bytes (header + payload).
+      * - Automatically calculated when constructing the message.
+      * - The `maxSize` determines whether to use a 16-bit, 32-bit, or 64-bit integer.
+      * 
+      * @param maxSize The maximum possible message size.
+      */
+     MessageSize(maxSize:Int);
 
     /**
      * **Timestamp** (Optional)
@@ -136,8 +141,9 @@ import crossbyte.rpc.RPCValueType;
      * - This is useful for protocol extensions that require extra metadata.
      * - The field's **data type** must be explicitly declared (`RPCValueType`).
      * 
+     * @param name The name provided for this field
      * @param provider A function that provides the custom field value.
-     * @param type The expected data type of the custom field.
+     * @param valueType The expected data type of the custom field.
      */
-    Custom(?provider:Void->Dynamic, type:RPCValueType); //TODO: Do we really need the type here? Maybe not!
+    Custom(name:String, ?provider:Void->Dynamic, valueType:RPCValueType); //TODO: Do we really need the type here? Maybe not!
 }

@@ -1,8 +1,8 @@
-package crossbyte.rpc;
+package crossbyte.rpc._internal.schema;
 
-import haxe.ds.ReadOnlyArray;
+import crossbyte.ds.OrderedMap;
+import crossbyte.utils.EnumUtil;
 import haxe.Json;
-using Lambda;
 
 /**
  * ...
@@ -16,14 +16,6 @@ using Lambda;
  class RPCHeader {
 
     /**
-     * A **read-only ordered list** of header fields.
-     * 
-     * This defines the structure of the header, including fixed-size and variable-size fields.
-     * The order of fields **is important** and cannot be changed after initialization.
-     */
-	public var fields(get, null):ReadOnlyArray<RPCHeaderField>;
-
-    /**
      * The **alignment setting** for the header.
      * 
      * This determines how fields should be **aligned** in memory if alignment is required.
@@ -34,13 +26,13 @@ using Lambda;
      * 
      * @note Alignment is **not enforced here** but can be used in generated serialization code.
      */
+
+    public static inline final DEFAULT_MAX_MESSAGE_ID_SPACE = 65535;
+    public static inline final DEFAULT_MAX_MESSAGE_SIZE = 65535;
+
 	public var alignment:Int; // Optional alignment (default: 1, no alignment)
 
-	private var __fields:Array<RPCHeaderField>;
-
-	private inline function get_fields():ReadOnlyArray<RPCHeaderField> {
-		return __fields.copy();
-	}
+	private var __fields:OrderedMap<String, RPCHeaderField>;
 
 	/**
 	 * Creates a new immutable RPCHeader.
@@ -48,42 +40,32 @@ using Lambda;
 	 * @param fields The ordered list of header fields.
 	 * @param alignment Optional field alignment (default: 1).
 	 */
-	public function new(?fields:Array<RPCHeaderField>, alignment:Int = 1) {
-		this.__fields = [];
-
-		if (fields != null) {
-			var seen:Map<String, Bool> = [];
-			for (field in fields) {
-				if (seen.exists(field.name)) {
-					throw 'Duplicate field name: ${field.name}';
-				}
-				seen.set(field.name, true);
-				this.__fields.push(field);
-			}
-		}
-
+	public function new(alignment:Int = 1) {
+		this.__fields = new OrderedMap();
 		this.alignment = alignment;
+
+        __setup();
 	}
+
+    private inline function __setup():Void{
+        this.__fields.set(EnumUtil.getValueName(RPCHeaderFieldType.MessageID(0)), new RPCHeaderField(MessageID(DEFAULT_MAX_MESSAGE_ID_SPACE)));
+        this.__fields.set(EnumUtil.getValueName(RPCHeaderFieldType.MessageSize(0)), new RPCHeaderField(MessageSize(DEFAULT_MAX_MESSAGE_SIZE)));
+    }
 
 	/**
 	 * Adds a field to the header in the specified position.
 	 * Ensures that field names are unique.
 	 * 
 	 * @param field The field to add.
-	 * @param index (Optional) The index to insert the field at. Defaults to the end of the array.
 	 */
-	public function addField(field:RPCHeaderField, ?index:Int):Void {
-		if (__fields.exists(f -> f.name == field.name)) {
-			throw 'Duplicate field name: ${field.name}';
+	public function addField(field:RPCHeaderField):Void {
+		/* if(this.__fields.exists(field)){
+			throw "The RPC Header can not accept duplicate fields.";
 		}
 
-		if (index == null || index >= __fields.length) {
-			__fields.push(field);
-		} else {
-			__fields.insert(index, field);
-		}
+		this.__fields.set(field); */
 	}
-
+	
 	/**
 	 * Removes a field by name.
 	 * 
@@ -91,9 +73,10 @@ using Lambda;
 	 * @return The removed field, or throws an error if the field is not found.
 	 */
 	public function removeField(name:String):RPCHeaderField {
-		var index = __fields.findIndex(f -> f.name == name);
+		/* var index = __fields.findIndex(f -> f.name == name);
 		if (index == -1) throw 'Field not found: ${name}';
-		return __fields.splice(index, 1)[0];
+		return __fields.splice(index, 1)[0]; */
+        return null;
 	}
 
 	/**
@@ -103,8 +86,9 @@ using Lambda;
 	 * @return The removed field, or throws an error if the index is out of bounds.
 	 */
 	public function removeFieldAt(index:Int):RPCHeaderField {
-		if (index < 0 || index >= __fields.length) throw 'Index out of bounds: ${index}';
-		return __fields.splice(index, 1)[0];
+		/* if (index < 0 || index >= __fields.length) throw 'Index out of bounds: ${index}';
+		return __fields.splice(index, 1)[0]; */
+        return null;
 	}
 
     /**
@@ -114,7 +98,8 @@ using Lambda;
      * @return `true` if the field exists, `false` otherwise.
      */
      public function hasField(name:String):Bool {
-        return Lambda.exists(__fields, f -> f.name == name);
+        /* return Lambda.exists(__fields, f -> f.name == name); */
+        return null;
     }
 
     /**
@@ -150,58 +135,25 @@ using Lambda;
     * @return A JSON string representation of the header schema.
     */
     public function exportSchema():String {
-        var schema = {
+        /* var schema = {
             alignment: alignment,
             fields: __fields.map(f -> {
                 return {
                     name: f.name,
                     type: Std.string(f.type),
-                    size: f.isFixedSize() ? f.getByteSize() : -1
                 };
             })
         };
-        return Json.stringify(schema, null, "  ");
+        return Json.stringify(schema, null, "  "); */
+        return null;
     }
-    
-	/**
-	 * Gets all fixed-size fields in the header.
-	 * 
-	 * @return An array of fixed-size fields.
-	 */
-	public function getFixedFields():Array<RPCHeaderField> {
-		return __fields.filter(f -> f.isFixedSize());
-	}
-
-	/**
-	 * Gets all variable-size fields in the header.
-	 * 
-	 * @return An array of variable-size fields.
-	 */
-	public function getVariableFields():Array<RPCHeaderField> {
-		return __fields.filter(f -> !f.isFixedSize());
-	}
-
-	/**
-	 * Calculates the total size of the fixed portion of the header.
-	 * This does not include variable-sized fields.
-	 * 
-	 * @return The total size in bytes.
-	 */
-	public function getFixedSize():Int {
-		var size = 0;
-		for (field in __fields) {
-			if (field.isFixedSize()) {
-				size += field.getByteSize();
-			}
-		}
-		return size;
-	}
 
 	/**
 	 * Serializes the header structure into a readable string.
 	 */
 	public function toString():String {
-		return "[\n  " + __fields.map(f -> f.toString()).join(",\n  ") + "\n]";
+		/* return "[\n  " + __fields.map(f -> f.toString()).join(",\n  ") + "\n]"; */
+        return null;
 	}
 }
 
