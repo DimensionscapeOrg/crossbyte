@@ -1,10 +1,43 @@
 package crossbyte.rpc;
 
-@:autoBuild(crossbyte.rpc._internal.RPCHandlerMacro.build())
-class RPCHandler {
-    //@:generic 
-    public function call<P1, P2, P3, P4, P5, P6, P7, P8>(type:CallSig<P1, P2, P3, P4, P5, P6, P7, P8>, a:P1, b:P2, c:P3, d:P4, e:P5, f:P6, g:P7, h:P8):Void {}
-}
+import crossbyte.net.INetConnection;
+import crossbyte.net.NetConnection;
+import crossbyte.net.Socket;
+import crossbyte.events.ProgressEvent;
+import crossbyte.io.ByteArrayInput;
 
-//@:generic
-enum abstract CallSig<P1, P2, P3, P4, P5, P6, P7, P8>(Int) from Int to Int {}
+@:autoBuild(crossbyte.rpc._internal.RPCHandlerMacro.build())
+@:access(crossbyte.net.Socket)
+abstract class RPCHandler {
+	public static inline final MAX_FRAME_LEN:Int = 8 * 1024 * 1024;
+
+	@:noCompletion private var this_connection:NetConnection;
+	@:noCompletion private inline function this_socket_onData(input:ByteArrayInput):Void {
+
+		while (input.bytesAvailable >= 8) {
+			final lenPos:Int = input.position;
+			final payloadLen:Int = input.readInt();
+
+			if (payloadLen < 4 || (MAX_FRAME_LEN != 0 && payloadLen > MAX_FRAME_LEN)) {
+				input.position = input.length;
+				return;
+			}
+
+			if (input.bytesAvailable < payloadLen) {
+				input.position = lenPos;
+				return;
+			}
+
+			final frameEnd:Int = input.position + payloadLen;
+			final op:Int = input.readInt();
+			this.dispatch(op, input);
+			input.position = frameEnd;
+		}
+	}
+
+
+	abstract public function dispatch(op:Int, input:ByteArrayInput):Void;
+	
+	
+	abstract public function ping():Void;
+}
