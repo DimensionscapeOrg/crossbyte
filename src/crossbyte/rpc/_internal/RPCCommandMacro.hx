@@ -1,85 +1,198 @@
 package crossbyte.rpc._internal;
 
+import crossbyte.utils.Hash;
 #if macro
 import haxe.macro.Context;
 import haxe.macro.Expr;
+import haxe.macro.ComplexTypeTools;
 
 using haxe.macro.Tools;
 
 class RPCCommandMacro {
-    public static function build():Array<Field> {
-        var fields = Context.getBuildFields();
-        var newFields:Array<Field> = [];
+	private static function initWriters():Map<String, (Expr, Expr) -> Expr> {
+		var m = new Map<String, (Expr, Expr) -> Expr>();
 
-        for (field in fields) {
-            if (field.name != "new" && field.meta.filter(m -> m.name == ":rpc").length > 0) {
-                switch (field.kind) {
-                    case FFun(method):
-                        var metaName = "meta_" + field.name;
+		m.set("Int", function(out, v) return macro {
+			$out.reserve(4);
+			$out.writeInt($v);
+		});
+		m.set("Bool", function(out, v) return macro {
+			$out.reserve(1);
+			$out.writeByte($v ? 1 : 0);
+		});
+		m.set("Float", function(out, v) return macro {
+			$out.reserve(8);
+			$out.writeDouble($v);
+		});
+		m.set("String", function(out, v) return macro {
+			$out.writeVarUTF($v);
+		});
+		m.set("haxe.io.Bytes", function(out, v) return macro {
+			$out.writeVarUInt($v.length);
+			$out.reserve($v.length);
+			$out.write($v);
+		});
 
-                        // Replace the existing method with the wrapper instead of adding a duplicate.
-                        field.kind = createWrapperFunction(field, metaName, method.args).kind;
+		return m;
+	}
 
-                        var metaField = createMetaFunction(metaName, field.name, method.args);
-                        newFields.push(metaField);
-                    default:
-                        Context.error("Field " + field.name + " is marked as :rpc but is not a function.", field.pos);
-                }
-            }
-        }
+	private static final TYPE_WRITERS:Map<String, (Expr, Expr) -> Expr> = initWriters();
 
-        return fields.concat(newFields);
-    }
+	public static function build():Array<Field> {
+		var fields = Context.getBuildFields();
+		var newFields:Array<Field> = [];
+		for (field in fields) {
+			if (field.name != "new" && field.meta.filter(m -> m.name == ":rpc").length > 0) {
+				switch (field.kind) {
+					case FFun(method):
+						var metaName = "meta_" + field.name;
 
-    private static function createMetaFunction(
-        metaName:String, 
-        commandName:String, 
-        args:Array<FunctionArg>
-    ):Field {
-        var argNames = args.map(a -> macro $i{a.name});
+						field.kind = createWrapperFunction(field, metaName, method.args).kind;
 
-        return {
-            name: metaName,
-            doc: "Auto-generated RPC meta for " + commandName,
-            access: [APrivate, AStatic, AInline],
-            kind: FFun({
-                args: [{ name: "__nc", type: macro : crossbyte.net.NetConnection }].concat(args),
-                expr: macro {
-                   /*  var packet = new crossbyte.io.ByteArray();
-                    packet.writeUTF($v{commandName});
-                    for (arg in $a{argNames}) {
-                        packet.writeUTF(Std.string(arg));
-                    }
-                    nc.send(packet); */
+						var metaField = createMetaFunction(metaName, field.name, method.args, field.pos);
+						newFields.push(metaField);
+					default:
+						Context.error("Field " + field.name + " is marked as :rpc but is not a function.", field.pos);
+				}
+			}
+		}
 
-                    trace("it worked!", $a{argNames}[0], __nc);
-                },
-                ret: macro : Void
-            }),
-            pos: Context.currentPos()
-        };
-    }
+		injectPing(newFields, Context.currentPos());
+		
+		return fields.concat(newFields);
+	}
 
-    private static function createWrapperFunction(
-        field:Field, 
-        metaName:String, 
-        args:Array<FunctionArg>
-    ):Field {
-        var argNames = args.map(a -> macro $i{a.name});
+	private static function createMetaFunction(metaName:String, commandName:String, args:Array<FunctionArg>, errPos:Position):Field {
+		var argNames = args.map(a -> macro $i{a.name});
+		var statements:Array<Expr> = [];
+		var opCode:Int = Hash.fnv1a32(haxe.io.Bytes.ofString(commandName));
+		statements.push(macro var payload:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(4));
+		statements.push(macro payload.writeInt($v{opCode}));
 
-        return {
-            name: field.name,
-            doc: "Replaced existing method with auto-generated RPC wrapper for: " + field.name,
-            access: field.access.concat([AInline]),
-            kind: FFun({
-                args: args,
-                expr: macro {
-                    $i{metaName}(this.__nc, $a{argNames}[0]);
-                },
-                ret: macro : Void
-            }),
-            pos: field.pos
-        };
-    }
+		for (i in 0...args.length) {
+			statements.push(writerForArg(args[i], errPos));
+		}
+
+		statements.push(macro payload.flush());
+		statements.push(macro var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(payload.length + 4));
+		statements.push(macro framed.writeInt(payload.length));
+		statements.push(macro framed.writeBytes(payload));
+		statements.push(macro connection.send(framed));
+
+		return {
+			name: metaName,
+			doc: "Auto-generated RPC meta for " + commandName,
+			access: [APrivate, AInline],
+			kind: FFun({
+				args: [{name: "connection", type: macro :crossbyte.net.NetConnection}].concat(args),
+				expr: macro {$b{statements};},
+				ret: macro :Void
+			}),
+			pos: Context.currentPos()
+		};
+	}
+
+	private static function createWrapperFunction(field:Field, metaName:String, args:Array<FunctionArg>):Field {
+		// build [this.__nc, arg1, arg2, ...]
+		var callArgs:Array<Expr> = [macro this.__nc].concat(args.map(a -> macro $i{a.name}));
+
+		// keep the original return type if present; otherwise Void
+		var retType:ComplexType = switch (field.kind) {
+			case FFun(f) if (f.ret != null): f.ret;
+			case _: macro :Void;
+		};
+
+		return {
+			name: field.name,
+			doc: "Replaced existing method with auto-generated RPC wrapper for: " + field.name,
+			access: field.access.concat([AInline]),
+			kind: FFun({
+				args: args,
+				expr: macro $i{metaName}($a{callArgs}),
+				ret: retType
+			}),
+			pos: field.pos
+		};
+	}
+
+	private static function writerForArg(a:FunctionArg, errPos:Position):Expr {
+		var ct:ComplexType = a.type;
+		if (ct == null)
+			Context.error("RPC arg '" + a.name + "' must have an explicit type.", errPos);
+
+		var isOpt = a.opt || isNullWrapped(ct);
+		var base = unwrapNull(ct);
+		var key = typeKey(base);
+
+		var fn = TYPE_WRITERS.get(key);
+		if (fn == null)
+			Context.error("Unsupported RPC arg type for '" + a.name + "': " + key, errPos);
+
+		var valueExpr:Expr = macro $i{a.name};
+
+		// generate payload writes using the passed target `payload`
+		var writeValue:Expr = fn(macro payload, valueExpr);
+
+		return isOpt ? macro {
+			if ($valueExpr == null)
+				payload.writeByte(0);
+			else {
+				payload.writeByte(1);
+				$writeValue;
+			}
+		} : writeValue;
+	}
+
+	private static inline function isNullWrapped(ct:ComplexType):Bool {
+		return switch (ct) {
+			case TPath({name: "Null", params: _}): true;
+			case _: false;
+		}
+	}
+
+	private static inline function unwrapNull(ct:ComplexType):ComplexType {
+		return switch (ct) {
+			case TPath({name: "Null", params: [TPType(inner)]}): inner;
+			case _: ct;
+		}
+	}
+
+	private static function typeKey(ct:ComplexType):String {
+		return switch (ct) {
+			case TPath(tp):
+				var pack:String = tp.pack.length > 0 ? tp.pack.join(".") + "." : "";
+				pack + tp.name;
+			case _: ComplexTypeTools.toString(ct);
+		}
+	}
+
+	private static function injectPing(newFields:Array<Field>, pos:Position):Void {
+		var pingName = "ping";
+		var metaName = "meta_ping";
+
+		// Define its args (optional nonce for RTT if you want)
+		//var args:Array<FunctionArg> = [{name: "nonce", opt: true, type: macro :Int}];
+		var args:Array<FunctionArg> = [];
+
+		// Wrapper around RPC dispatch
+		var wrapper = createWrapperFunction({
+			name: pingName,
+			access: [APublic],
+			kind: FFun({
+				args: null,
+				ret: macro :Void,
+				expr: null
+			}),
+			pos: pos,
+			meta: null,
+			doc: "System reserved RPC ping()."
+		}, metaName, args);
+
+		// Meta dispatcher (static inline call target)
+		var meta = createMetaFunction(metaName, pingName, args, pos);
+
+		newFields.push(wrapper);
+		newFields.push(meta);
+	}
 }
 #end
