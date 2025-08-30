@@ -1,5 +1,6 @@
 package crossbyte.rpc;
 
+import crossbyte.core.CrossByte;
 import crossbyte.net.NetConnection;
 
 /**
@@ -25,10 +26,10 @@ import crossbyte.net.NetConnection;
  * ```haxe
  * class PlayerCommands extends RPCCommands {
  *     @:rpc
- *     public inline function jump():Void;
+ *     public inline function jump():Void{}
  * 
  *     @:rpc
- *     public inline function movePlayer(x:Int, y:Int):Void;
+ *     public inline function movePlayer(x:Int, y:Int):Void{}
  * }
  * 
  * rpcAgent.commands = new PlayerCommands();
@@ -37,6 +38,8 @@ import crossbyte.net.NetConnection;
  * ```
  */
 @:autoBuild(crossbyte.rpc._internal.RPCCommandMacro.build())
-class RPCCommands {
+abstract class RPCCommands {
 	private var __nc:NetConnection;
+
+	abstract public function ping():Void;
 }
