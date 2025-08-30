@@ -1,9 +1,9 @@
 package crossbyte.core;
 
+import cpp.AtomicInt;
 import cpp.Pointer;
 import cpp.net.Poll;
-import sys.net.Socket as SysSocket;
-import crossbyte.net.Socket as CBSocket;
+import sys.net.Socket;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.TickEvent;
@@ -11,8 +11,10 @@ import haxe.EntryPoint;
 import haxe.Timer;
 import haxe.ds.Map;
 import sys.thread.Thread;
+import sys.thread.Tls;
 import haxe.ds.ObjectMap;
 import crossbyte.utils.ThreadPriority;
+import crossbyte._internal.socket.NativeSocketRegistry;
 
 /**
  * ...
@@ -26,20 +28,30 @@ final class CrossByte extends EventDispatcher {
 	// ==== Public Static Variables ====
 	// ==== Private Static Variables ====
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
+	@:noCompletion private static inline var DEFAULT_MAX_SOCKETS:Int = 64;
 	@:noCompletion private static var __instances:Map<Thread, CrossByte> = new ObjectMap();
 	@:noCompletion private static var __primordial:CrossByte;
+	@:noCompletion private static var __instanceCount:AtomicInt = 0;
 	@:noCompletion private static var __init:Bool = __onCrossByteInit();
+	@:noCompletion private static var __threadLocalStorage:Tls<CrossByte> = new Tls();
 
 	// ==== Public Static Methods ====
-	public static inline function make():CrossByte {
-		var instance:CrossByte = new CrossByte(false);
+	public static inline function make(loopType:MainLoopType = DEFAULT):CrossByte {
+		var instance:CrossByte = new CrossByte(false, loopType);
 		return instance;
 	}
 
 	public static inline function current():CrossByte {
-		var currentThread:Thread = Thread.current();
+		//is TLS better?
+		/* var currentThread:Thread = Thread.current();
 		var instance:CrossByte = __instances.get(currentThread);
-		return instance;
+		return instance; */
+
+		var instance:CrossByte = __threadLocalStorage.value;
+        if (instance == null){
+			instance = __primordial;
+		}
+        return instance;
 	}
 
 	// ==== Private Static Methods ====
@@ -70,6 +82,7 @@ final class CrossByte extends EventDispatcher {
 	// ==== Public Variables ====
 	public var tps(get, set):UInt;
 	public var cpuLoad(get, null):Float;
+	public var uptime(get, never):Float;
 
 	// ==== Private Variables ====
 	@:noCompletion private var __tickInterval:Float;
@@ -79,10 +92,11 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __dt:Float = 0.0;
 	@:noCompletion private var __cpuTime:Float = 0.0;
 	@:noCompletion private var __sleepAccuracy:Float = 0.0;
-	@:noCompletion private var __socketRegistry:Array<SysSocket> = [];
+	@:noCompletion private var __socketRegistry:NativeSocketRegistry;
 	@:noCompletion private var __socketPoll:Poll;
 	@:noCompletion private var __isPrimordial:Bool;
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
+	@:noCompletion private var __loopType:MainLoopType;
 
 	#if cpp
 	@:noCompletion private var __threadHandle:Pointer<cpp.Void>;
@@ -100,9 +114,10 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// ==== Constructor ====
-	private function new(isPrimordial:Bool) {
+	private function new(isPrimordial:Bool, loopType:MainLoopType = DEFAULT) {
 		super(this);
 		__isPrimordial = isPrimordial;
+		__loopType = loopType;
 		__setup();
 	}
 
@@ -142,64 +157,47 @@ final class CrossByte extends EventDispatcher {
 
 	}*/
 	public function exit():Void {
+
+		//TODO: Thread safety
 		__isRunning = false;
 		__instances.remove(Thread.current());
-		// should we clean things up after the exit event?
 		__socketRegistry = null;
-		// should we iterate the socket registery and close them all?
-		__socketPoll = null;
+		__instanceCount--;
 	}
 
+	@:noCompletion private inline function get_uptime():Float{
+		return __time;
+	}
 	// ==== Private Methods ====
 	#if cpp
-	@:noCompletion private inline function beginSocketPolling():Void {
-		if (__socketPoll == null) {
-			__socketPoll = new Poll(4096);
-			this.addEventListener(TickEvent.TICK, __onPollSocket);
-		}
+	@:noCompletion private inline function registerSocket(socket:Socket):Void {
+		__socketRegistry.register(socket);
 	}
 
-	@:noCompletion private function registerSocket(socket:SysSocket):Void {
-		__socketRegistry.push(socket);
-		__socketPoll.prepare(__socketRegistry, null);
-	}
-
-	@:noCompletion private function deregisterSocket(socket:SysSocket):Void {
-		__socketRegistry.remove(socket);
-		__socketPoll.prepare(__socketRegistry, null);
-		// TODO: Conditional check here? maybe we dont care so much and only care about server performance
-		if (__socketRegistry.length == 0) {
-			this.removeEventListener(TickEvent.TICK, __onPollSocket);
-			__socketPoll = null;
-		}
-	}
-
-	@:noCompletion private function __onPollSocket(e:TickEvent):Void {
-		var sockets:Array<SysSocket> = __socketPoll.poll(__socketRegistry, 0);
-		for (i in 0...sockets.length) {
-			var cur:SysSocket = sockets[i];
-			var cbSocket:CBSocket = cur.custom;
-			@:privateAccess
-			if (!cbSocket.__closed) {
-				cbSocket.this_onTick();
-			}
-		}
+	@:noCompletion private inline function deregisterSocket(socket:Socket):Void {
+		__socketRegistry.deregister(socket);
 	}
 	#end
 
 	@:noCompletion private inline function __setup():Void {
 		Sys.println("Initializing CrossByte Instance");
-
+		__instanceCount++;
+		__socketRegistry = new NativeSocketRegistry(DEFAULT_MAX_SOCKETS);
 		tps = DEFAULT_TICKS_PER_SECOND;
+		mainLoop = switch (__loopType) {
+			case POLL: __pollBasedMainLoop;
+			case CUSTOM(loop): loop;
+			default: __defaultMainLoop;
+		}
 
-		#if precisionTick
+		#if precision_tick
 		__getSleepAccuracy();
 		#end
 
 		if (__isPrimordial) {
 			EntryPoint.runInMainThread(__runEventLoop);
 			__primordial = this;
-
+			//TODO: Thread safety
 			var t:Thread = Thread.current();
 			__instances.set(t, this);
 		} else {
@@ -213,7 +211,7 @@ final class CrossByte extends EventDispatcher {
 		return Math.min(Math.floor((100 - free) * 100) / 100, 100);
 	}
 
-	#if precisionTick
+	#if precision_tick
 	@:noCompletion private function __getSleepAccuracy():Void {
 		var time:Float = Timer.stamp();
 		var dtTotal:Float = 0.0;
@@ -242,31 +240,73 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		dispatchEvent(new Event(Event.INIT));
-
 		while (__isRunning) {
-			var currentTime:Float = Timer.stamp();
-			var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
-
-			dispatchEvent(e);
-			__cpuTime = __dt = Timer.stamp() - currentTime;
-			#if precisionTick
-			var minSleep = 0.001;
-			#end
-			while (__dt < __tickInterval) {
-				#if precisionTick
-				if (__dt + __sleepAccuracy > __tickInterval) {
-					minSleep = 0;
-				}
-
-				Sys.sleep(minSleep);
-				#else
-				Sys.sleep(0.001);
-				#end
-				__dt = Timer.stamp() - currentTime;
-			}
-
-			__time += __dt;
+			mainLoop();
 		}
 		dispatchEvent(new Event(Event.EXIT));
+	}
+
+	private var mainLoop:Void->Void;
+	private #if final inline #end function __defaultMainLoop():Void {
+		var currentTime:Float = Timer.stamp();
+		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
+
+		dispatchEvent(e);
+		__socketRegistry.update();
+
+		__cpuTime = __dt = Timer.stamp() - currentTime;
+		__wait(currentTime);
+
+		__time += __dt;
+	}
+	private #if final inline #end function __pollBasedMainLoop():Void {
+		var frameStart = Timer.stamp();
+		var e = new TickEvent(TickEvent.TICK, __dt);
+		dispatchEvent(e);
+
+		__cpuTime = __dt = Timer.stamp() - frameStart;
+
+		if (!__socketRegistry.isEmpty) {
+			var deadline = frameStart + __tickInterval;
+
+			while (true) {
+				var now = Timer.stamp();
+				var remaining = deadline - now;
+				if (remaining < 0) {
+					remaining = 0;
+				}
+
+				__socketRegistry.update(remaining);
+
+				__dt = Timer.stamp() - frameStart;
+
+				if (remaining == 0) {
+					break;
+				}
+			}
+		} else {
+			__wait(frameStart);
+		}
+
+		__time += __dt;
+	}
+
+	private inline function __wait(frameStartTime:Float):Void {
+		#if precision_tick
+		var minSleep = 0.001;
+		#end
+
+		while (__dt < __tickInterval) {
+			#if precision_tick
+			if (__dt + __sleepAccuracy > __tickInterval) {
+				minSleep = 0;
+			}
+
+			Sys.sleep(minSleep);
+			#else
+			Sys.sleep(0.001);
+			#end
+			__dt = Timer.stamp() - frameStartTime;
+		}
 	}
 }
