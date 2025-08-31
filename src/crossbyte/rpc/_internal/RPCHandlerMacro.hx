@@ -134,7 +134,7 @@ class RPCHandlerMacro {
 						var slot = slots[i];
 						used[slot] = true;
 						T[slot] = id;
-						methods[id].idx = id; 
+						methods[id].idx = id;
 					}
 					break;
 				}
@@ -361,11 +361,11 @@ class RPCHandlerMacro {
 				args: [],
 				ret: macro :Void,
 				expr: macro {
-					//instead of noop, maybe we shouldnt call it at all
+					// instead of noop, maybe we shouldnt call it at all
 					#if debug
 					crossbyte.utils.Logger.info("PACKET SENT: PING");
 					#else
-					-1;
+					- 1;
 					#end
 				}
 			}),

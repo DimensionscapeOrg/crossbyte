@@ -1,11 +1,11 @@
 package crossbyte._internal.http;
+
 import haxe.io.Bytes;
 
 /**
  * @author Christopher Speciale
  */
-enum ContentType 
-{
+enum ContentType {
 	XML(data:String);
 	JSON(data:String);
 	IMAGE(data:Bytes);

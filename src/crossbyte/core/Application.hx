@@ -53,7 +53,7 @@ class Application extends EventDispatcher {
 		initialize();
 	}
 
-	private function initialize():Void{
+	private function initialize():Void {
 		if (__application != null) {
 			throw "Application must only be instantiated once by extending it.";
 		}
