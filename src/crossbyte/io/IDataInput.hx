@@ -18,8 +18,7 @@ import crossbyte.net.ObjectEncoding;
 	* Use `IDataOutput.writeShort()` with `IDataInput.readUnsignedShort()` and
 	`IDataInput.readShort()`.
 **/
-interface IDataInput
-{
+interface IDataInput {
 	/**
 		Returns the number of bytes of data available for reading in the input buffer.
 		User code must call `bytesAvailable` to ensure that sufficient data is available

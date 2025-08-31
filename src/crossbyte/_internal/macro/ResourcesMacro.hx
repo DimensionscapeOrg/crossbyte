@@ -83,41 +83,41 @@ class ResourcesMacro {
 	}
 
 	public static function buildResourceTree():Array<Field> {
-        var rootPath = Context.resolvePath("resources");
-        var allFields:Array<Field> = [];
+		var rootPath = Context.resolvePath("resources");
+		var allFields:Array<Field> = [];
 
-        function capitalize(str:String):String {
-            return str.charAt(0).toUpperCase() + str.substr(1);
-        }
+		function capitalize(str:String):String {
+			return str.charAt(0).toUpperCase() + str.substr(1);
+		}
 
-        function processDirectory(path:String, relativePath:String, className:String):Array<Field> {
-            var entries = FileSystem.readDirectory(path);
-            var subFields:Array<Field> = [];
+		function processDirectory(path:String, relativePath:String, className:String):Array<Field> {
+			var entries = FileSystem.readDirectory(path);
+			var subFields:Array<Field> = [];
 
-            for (entry in entries) {
-                var fullPath = path + "/" + entry;
-                var relativeFilePath = (relativePath == "") ? entry : relativePath + "/" + entry;
-                var fieldName = entry.replace(".", "_");
+			for (entry in entries) {
+				var fullPath = path + "/" + entry;
+				var relativeFilePath = (relativePath == "") ? entry : relativePath + "/" + entry;
+				var fieldName = entry.replace(".", "_");
 
-                if (FileSystem.isDirectory(fullPath)) {
-                    var subClassName = capitalize(fieldName+"_RTNode");
-                    var nestedFields = processDirectory(fullPath, relativeFilePath, subClassName);
+				if (FileSystem.isDirectory(fullPath)) {
+					var subClassName = capitalize(fieldName + "_RTNode");
+					var nestedFields = processDirectory(fullPath, relativeFilePath, subClassName);
 
-                    var classPath:TypePath = { pack: [], name: subClassName };
-                    var instanceExpr:Expr = macro new $classPath();
+					var classPath:TypePath = {pack: [], name: subClassName};
+					var instanceExpr:Expr = macro new $classPath();
 					var ct:ComplexType = TPath(classPath);
 
-                    subFields.push({
-                        name: fieldName,
-                        pos: Context.currentPos(),
-                        kind: FVar(macro :$ct, instanceExpr),
-                        access: [APublic]
-                    });
+					subFields.push({
+						name: fieldName,
+						pos: Context.currentPos(),
+						kind: FVar(macro :$ct, instanceExpr),
+						access: [APublic]
+					});
 
 					nestedFields.push({
 						name: "toString",
 						pos: Context.currentPos(),
-						meta: [{ name: ":noCompletion", pos: Context.currentPos() }],
+						meta: [{name: ":noCompletion", pos: Context.currentPos()}],
 						kind: FFun({
 							args: [],
 							expr: macro return $v{relativeFilePath + "/"},
@@ -126,54 +126,54 @@ class ResourcesMacro {
 						access: [APrivate]
 					});
 
-                    nestedFields.push({
-                        name: "new",
-                        pos: Context.currentPos(),
-                        kind: FFun({
-                            args: [],
-                            expr: macro {},
-                            ret: null
-                        }),
-                        access: [APublic]
-                    });
+					nestedFields.push({
+						name: "new",
+						pos: Context.currentPos(),
+						kind: FFun({
+							args: [],
+							expr: macro {},
+							ret: null
+						}),
+						access: [APublic]
+					});
 
-                    Context.defineType({
-                        pack: [],
-                        name: subClassName,
-                        pos: Context.currentPos(),
-                        meta: [],
-                        isExtern: false,
-                        kind: TDClass(),
-                        fields: nestedFields,
-                        params: []
-                    });
-                } else {
-                    subFields.push({
-                        name: fieldName,
-                        pos: Context.currentPos(),
-                        kind: FVar(macro :String, macro $v{relativeFilePath}),
-                        access: [APublic]
-                    });
-                }
-            }
+					Context.defineType({
+						pack: [],
+						name: subClassName,
+						pos: Context.currentPos(),
+						meta: [],
+						isExtern: false,
+						kind: TDClass(),
+						fields: nestedFields,
+						params: []
+					});
+				} else {
+					subFields.push({
+						name: fieldName,
+						pos: Context.currentPos(),
+						kind: FVar(macro :String, macro $v{relativeFilePath}),
+						access: [APublic]
+					});
+				}
+			}
 
-            return subFields;
-        }
+			return subFields;
+		}
 
-        allFields = processDirectory(rootPath, "", "ResourceTree");
+		allFields = processDirectory(rootPath, "", "ResourceTree");
 
-        allFields.push({
-            name: "new",
-            pos: Context.currentPos(),
-            kind: FFun({
-                args: [],
-                expr: macro {},
-                ret: null
-            }),
-            access: [APublic]
-        });
+		allFields.push({
+			name: "new",
+			pos: Context.currentPos(),
+			kind: FFun({
+				args: [],
+				expr: macro {},
+				ret: null
+			}),
+			access: [APublic]
+		});
 
-        return Context.getBuildFields().concat(allFields);
-    }
+		return Context.getBuildFields().concat(allFields);
+	}
 }
 #end

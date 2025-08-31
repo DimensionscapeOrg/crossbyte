@@ -30,14 +30,13 @@ import crossbyte.events.EventDispatcher;
  */
 @:access(haxe.Serializer)
 @:access(openfl.net._internal.NativeLocalConnection)
-class LocalConnection extends EventDispatcher
-{
+class LocalConnection extends EventDispatcher {
 	/**
-	* The object that handles incoming messages.
-	* This should be set to an instance containing methods corresponding to the message names sent by other processes.
-	*/
+	 * The object that handles incoming messages.
+	 * This should be set to an instance containing methods corresponding to the message names sent by other processes.
+	 */
 	public var client:Object;
-	
+
 	@:noCompletion private var __inboundPipe:HANDLE;
 	@:noCompletion private var __outboundPipe:HANDLE;
 	@:noCompletion private var __serializer:Serializer;
@@ -51,29 +50,24 @@ class LocalConnection extends EventDispatcher
 	@:noCompletion private static inline var BUFFER_SIZE:Int = 4096;
 
 	/**
-	* Creates a new `LocalConnection` instance.
-	*
-	* This instance must either `connect()` to receive messages or use `send()` to send messages.
-	*/
-	public function new()
-	{
+	 * Creates a new `LocalConnection` instance.
+	 *
+	 * This instance must either `connect()` to receive messages or use `send()` to send messages.
+	 */
+	public function new() {
 		super();
 		__serializer = new Serializer();
 		__serializer.useCache = true;
 		__clientPipes = [];
-		
 	}
 
 	/**
-	* Closes the **inbound** (server-side) connection.
-	*
-	* This stops the server from receiving further messages.
-	*/
-	public function close():Void
-	{
-
-		if (__inboundPipe != null)
-		{
+	 * Closes the **inbound** (server-side) connection.
+	 *
+	 * This stops the server from receiving further messages.
+	 */
+	public function close():Void {
+		if (__inboundPipe != null) {
 			__close(__inboundPipe);
 			__inboundPipe = null;
 		}
@@ -81,33 +75,28 @@ class LocalConnection extends EventDispatcher
 	}
 
 	/**
-	* Starts listening for incoming messages on the given connection.
-	*
-	* @param connectionName The name of the connection (pipe) to listen for messages.
-	*/
-	public function connect(connectionName:String):Void
-	{
-		//trace('Connecting as server: ' + connectionName);
-		if (!__setupNamedPipe(connectionName))
-		{
-
-			//trace("Error setting up named pipe: " + connectionName);
+	 * Starts listening for incoming messages on the given connection.
+	 *
+	 * @param connectionName The name of the connection (pipe) to listen for messages.
+	 */
+	public function connect(connectionName:String):Void {
+		// trace('Connecting as server: ' + connectionName);
+		if (!__setupNamedPipe(connectionName)) {
+			// trace("Error setting up named pipe: " + connectionName);
 			throw new ArgumentError("Connection name is already in use or invalid");
-		}
-		else {
+		} else {
 			__connected = true;
 		}
 	}
 
 	/**
-	* Sends a message to another process.
-	*
-	* @param connectionName The name of the connection (pipe) to send the message to.
-	* @param methodName The name of the method to invoke on the receiving process.
-	* @param arguments The arguments to pass to the method.
-	*/
-	public function send(connectionName:String, methodName:String, ...arguments):Void
-	{
+	 * Sends a message to another process.
+	 *
+	 * @param connectionName The name of the connection (pipe) to send the message to.
+	 * @param methodName The name of the method to invoke on the receiving process.
+	 * @param arguments The arguments to pass to the method.
+	 */
+	public function send(connectionName:String, methodName:String, ...arguments):Void {
 		__resetSeralizer();
 
 		var status:Bool = false;
@@ -123,63 +112,56 @@ class LocalConnection extends EventDispatcher
 		messageBuffer.addBytes(serializationBytes, 0, serializationBytes.length);
 
 		var messageBytes:Bytes = messageBuffer.getBytes();
-		//trace("Attempt to send: " + message);
+		// trace("Attempt to send: " + message);
 
 		// Connects to the outbound pipe
 
-		if (__outboundPipe == null || !__isOpen(__outboundPipe))
-		{
+		if (__outboundPipe == null || !__isOpen(__outboundPipe)) {
 			__outboundPipe = __connect(connectionName);
 		}
 
 		// Send the message
-		if (__outboundPipe != null)
-		{
+		if (__outboundPipe != null) {
 			status = __write(__outboundPipe, messageBytes.getData(), messageBytes.length);
 		}
 
-		//trace("Send message status is: " + (status ? "Success" : "Failure"));
+		// trace("Send message status is: " + (status ? "Success" : "Failure"));
 		var level:String = status ? "status" : "error";
 
 		dispatchEvent(new StatusEvent(StatusEvent.STATUS, false, false, "0", level));
-		//__close(pipe);
+		// __close(pipe);
 
 		// Update last sent time
 		__lastSentTime = Sys.time();
 
 		// Ensure timeout checking is running
-		if (__outboundTimeout == null)
-		{
+		if (__outboundTimeout == null) {
 			__startTimeoutCheck();
 		}
 	}
 
 	/** Starts the timeout check (but does not hold a strong reference) */
-	@:noCompletion private function __startTimeoutCheck():Void
-	{
-		if (__outboundTimeout != null) return; // Prevent multiple timers
+	@:noCompletion private function __startTimeoutCheck():Void {
+		if (__outboundTimeout != null)
+			return; // Prevent multiple timers
 
 		__outboundTimeout = Timer.delay(() -> __checkTimeout(), 5000);
 	}
 
 	/** Checks if the pipe should be closed due to timeout */
-	@:noCompletion private function __checkTimeout():Void
-	{
-		if (__outboundPipe != null)
-		{
+	@:noCompletion private function __checkTimeout():Void {
+		if (__outboundPipe != null) {
 			var elapsed:Float = Sys.time() - __lastSentTime;
-			if (elapsed >= TIME_OUT / 1000)
-			{
-				//trace("Timeout expired. Closing outbound pipe.");
+			if (elapsed >= TIME_OUT / 1000) {
+				// trace("Timeout expired. Closing outbound pipe.");
 				__close(__outboundPipe);
 				__outboundPipe = null;
 			}
 		}
 
 		// Stop the timer if there’s no active pipe
-		if (__outboundPipe == null && __outboundTimeout != null)
-		{
-			//trace("No active pipe, stopping timeout checks.");
+		if (__outboundPipe == null && __outboundTimeout != null) {
+			// trace("No active pipe, stopping timeout checks.");
 			__outboundTimeout.stop();
 			__outboundTimeout = null; // Allow garbage collection
 			return;
@@ -190,55 +172,47 @@ class LocalConnection extends EventDispatcher
 	}
 
 	/** Writes data to a named pipe */
-	@:noCompletion private static function __write(pipe:HANDLE, data:BytesData, size:Int):Bool
-	{
+	@:noCompletion private static function __write(pipe:HANDLE, data:BytesData, size:Int):Bool {
 		return NativeLocalConnection.__write(pipe, Pointer.ofArray(data), size);
 	}
 
 	/** Connects to an outbound pipe */
-	@:noCompletion private static function __connect(name:String):HANDLE
-	{
+	@:noCompletion private static function __connect(name:String):HANDLE {
 		return NativeLocalConnection.__connect(name);
 	}
 
 	/** Creates an inbound pipe (server) */
-	@:noCompletion private static function __createInboundPipe(name:String):HANDLE
-	{
+	@:noCompletion private static function __createInboundPipe(name:String):HANDLE {
 		return NativeLocalConnection.__createInboundPipe(name);
 	}
 
 	/** Accepts a new client connection */
-	@:noCompletion private static function __accept(pipe:HANDLE):Bool
-	{
+	@:noCompletion private static function __accept(pipe:HANDLE):Bool {
 		return NativeLocalConnection.__accept(pipe);
 	}
 
-	@:noCompletion private static function __isOpen(pipe:HANDLE):Bool
-	{
+	@:noCompletion private static function __isOpen(pipe:HANDLE):Bool {
 		return NativeLocalConnection.__isOpen(pipe);
 	}
 
 	/** Reads from the named pipe */
-	@:noCompletion private static function __read(pipe:HANDLE, buffer:BytesData, size:Int):Int
-	{
+	@:noCompletion private static function __read(pipe:HANDLE, buffer:BytesData, size:Int):Int {
 		return NativeLocalConnection.__read(pipe, Pointer.ofArray(buffer), size);
 	}
 
 	/** Gets available bytes in the pipe */
-	@:noCompletion private static function __getBytesAvailable(pipe:HANDLE):Int
-	{
+	@:noCompletion private static function __getBytesAvailable(pipe:HANDLE):Int {
 		return NativeLocalConnection.__getBytesAvailable(pipe);
 	}
 
 	/** Closes a named pipe */
-	@:noCompletion private static function __close(pipe:HANDLE):Void
-	{
+	@:noCompletion private static function __close(pipe:HANDLE):Void {
 		NativeLocalConnection.__close(pipe);
 	}
 
 	/** Resets our serializer internally */
-	@;noCompletion private inline function __resetSeralizer():Void
-	{
+	@ ;
+	noCompletion private inline function __resetSeralizer():Void {
 		__serializer.buf = new StringBuf();
 		__serializer.shash.clear();
 		__serializer.cache = [];
@@ -246,23 +220,19 @@ class LocalConnection extends EventDispatcher
 	}
 
 	/** Initializes the Named Pipe Server */
-	@:noCompletion private function __setupNamedPipe(connectionName:String):Bool
-	{
+	@:noCompletion private function __setupNamedPipe(connectionName:String):Bool {
 		__worker = new Worker();
 		var handleQueue:Deque<HANDLE> = new Deque();
 
-		__worker.doWork.add((name:String)->{
+		__worker.doWork.add((name:String) -> {
 			var handle:HANDLE = null;
-			try{
+			try {
 				handle = __createInboundPipe(name);
 				handleQueue.add(handle);
-			}
-			catch (e:Dynamic)
-			{
+			} catch (e:Dynamic) {
 				handleQueue.add(null);
 			}
-			if (handle != null)
-			{
+			if (handle != null) {
 				__runLocalConnection(name);
 			}
 		});
@@ -270,8 +240,7 @@ class LocalConnection extends EventDispatcher
 		__worker.run(connectionName);
 
 		var handle:HANDLE = handleQueue.pop(true);
-		if (handle != null)
-		{
+		if (handle != null) {
 			__inboundPipe = handle;
 			return true;
 		}
@@ -279,59 +248,52 @@ class LocalConnection extends EventDispatcher
 		return false;
 	}
 
-	@:noCompletion private #if !debug inline #end function __onData(received:Bytes):Void
-	{
-		if (client == null)
-		{
+	@:noCompletion private #if !debug inline #end function __onData(received:Bytes):Void {
+		if (client == null) {
 			return;
 		}
 
 		var offset:Int = 0;
-		try{
+		try {
 			var methodLength:Int = received.getInt32(0);
-			//trace(methodLength);
+			// trace(methodLength);
 			offset += 4;
 
 			var method:String = received.getString(offset, methodLength);
 			offset += methodLength;
-			//trace(method);
+			// trace(method);
 
 			var serializationLength:Int = received.getInt32(offset);
 			offset += 4;
-			//trace(serializationLength);
+			// trace(serializationLength);
 
 			var serialization:String = received.getString(offset, serializationLength);
-			//trace(serialization);
+			// trace(serialization);
 
 			var args:Array<Dynamic> = Unserializer.run(serialization);
 
 			Reflect.callMethod(client, Reflect.field(client, method), args);
-		}
-		catch (e:Dynamic)
-		{
+		} catch (e:Dynamic) {
 			throw "error parsing LocalConnection message";
 		}
 
 		/*try{
-			Reflect.callMethod(client, client[method], args);
-		}
-		catch (e:Dynamic)
-		{
-			// De nada
+				Reflect.callMethod(client, client[method], args);
+			}
+			catch (e:Dynamic)
+			{
+				// De nada
 		}*/
 	}
-	
+
 	/** Listens for incoming messages in a background thread */
-	@:noCompletion private function __runLocalConnection(connectionName:String):Void
-	{
+	@:noCompletion private function __runLocalConnection(connectionName:String):Void {
 		var buffer:Bytes = Bytes.alloc(BUFFER_SIZE);
 
-		while (true)
-		{
+		while (true) {
 			// Accepts new clients
-			if (__accept(__inboundPipe))
-			{
-				//trace("New client connected!");
+			if (__accept(__inboundPipe)) {
+				// trace("New client connected!");
 
 				// we store new client pipe
 				__clientPipes.push(__inboundPipe);
@@ -341,41 +303,34 @@ class LocalConnection extends EventDispatcher
 
 			// we can iterate in reverse to safely remove elements
 			var i = __clientPipes.length - 1;
-			while (i >= 0)
-			{
+			while (i >= 0) {
 				var pipe = __clientPipes[i];
 
 				// Checks if the client disconnected
 				var available:Int = __getBytesAvailable(pipe);
-				if (available == 0)
-				{
+				if (available == 0) {
 					// Check if the pipe is still valid?
-					if (!__isOpen(pipe))
-					{
-						//trace("Client disconnected. Removing handle.");
+					if (!__isOpen(pipe)) {
+						// trace("Client disconnected. Removing handle.");
 						__clientPipes.splice(i, 1); // Remove client from the list
 					}
-				}
-				else if (available > 0)
-				{
-					if (available > BUFFER_SIZE){
+				} else if (available > 0) {
+					if (available > BUFFER_SIZE) {
 						var largeMessageBuffer:BytesBuffer = new BytesBuffer();
 						var bytesRemaining:Int = available;
-						while (bytesRemaining > 0){
-							if (__read(pipe, buffer.getData(), BUFFER_SIZE) == 0)
-							{
-								var length:Int = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;	
+						while (bytesRemaining > 0) {
+							if (__read(pipe, buffer.getData(), BUFFER_SIZE) == 0) {
+								var length:Int = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
 								bytesRemaining -= length;
-								largeMessageBuffer.addBytes(buffer, 0, length); 
-							}							
+								largeMessageBuffer.addBytes(buffer, 0, length);
+							}
 						}
 						__onData(largeMessageBuffer.getBytes());
-					}else {					
+					} else {
 						// Read theavailable data
-						if (__read(pipe, buffer.getData(), BUFFER_SIZE) == 0)
-						{
+						if (__read(pipe, buffer.getData(), BUFFER_SIZE) == 0) {
 							var received:Bytes = buffer;
-							//trace("Received: " + received);
+							// trace("Received: " + received);
 							__onData(received);
 						}
 					}
@@ -384,7 +339,7 @@ class LocalConnection extends EventDispatcher
 				i--; // Moves to the previous index
 			}
 
-			//Application seems to lock up without sleep
+			// Application seems to lock up without sleep
 			Sys.sleep(0);
 		}
 	}

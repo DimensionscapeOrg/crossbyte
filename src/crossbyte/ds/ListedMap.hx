@@ -126,10 +126,10 @@ final class ListedMap<K:Dynamic, V> {
 	 */
 	public #if !debug inline #end function ofIndex(i:Int):Null<V> {
 		#if debug
-		if (i < 0 || i >= __keyValuePairs.length) 
+		if (i < 0 || i >= __keyValuePairs.length)
 			throw 'Index $i is out of bounds (size: ${__keyValuePairs.length})';
 		#end
-		
+
 		return __keyValuePairs[i].value;
 	}
 

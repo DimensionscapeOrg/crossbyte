@@ -1,4 +1,5 @@
 package crossbyte.net;
+
 import crossbyte._internal.websocket.FlexSocket;
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
@@ -17,24 +18,24 @@ import crossbyte.io.ByteArray;
 import sys.net.Host;
 import sys.ssl.Certificate;
 import sys.ssl.Key;
+
 /**
  * ...
  * @author Christopher Speciale
  */
-class ServerWebSocket extends ServerSocket
-{
+class ServerWebSocket extends ServerSocket {
+	// Note: use chrome://flags/#allow-insecure-localhost to allow local host certificates in chrome!
 
-	//Note: use chrome://flags/#allow-insecure-localhost to allow local host certificates in chrome!
 	/**
 		The Certificate Authoritiy responsible for signing the SSL Certificate for a Secure WebSocket Server.
 	**/
 	public var certAuthority(default, set):Certificate;
-	
+
 	/**
 		Indicates whether or not ServerSocket features are supported in the run-time environment.
 	**/
 	public static var isSupported(default, null):Bool = #if html5 false #else true #end;
-	
+
 	/**
 		Determines whether or not the Websocket Server should verify the Certificate.
 	**/
@@ -43,47 +44,46 @@ class ServerWebSocket extends ServerSocket
 	@:noCompletion private var __webServerSocket:FlexSocket;
 	@:noCompletion private var __isSecure:Bool;
 
-	@:noCompletion private function set_verifyCert(value:Bool):Bool{
-		if (__isSecure){
+	@:noCompletion private function set_verifyCert(value:Bool):Bool {
+		if (__isSecure) {
 			return verifyCert = __webServerSocket.verifyCert = value;
 		}
-		
+
 		return verifyCert = value;
 	}
-	
-	@:noCompletion private function set_certAuthority(value:Certificate):Certificate{
-		if (__isSecure){
+
+	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
+		if (__isSecure) {
 			__webServerSocket.setCA(value);
 		}
-		
+
 		return certAuthority = value;
 	}
+
 	/**
 		Creates a ServerSocket object.
 		@throws  SecurityError This error occurs ff the calling content is running outside the AIR
 				application security sandbox.
 	**/
-	public function new(secure:Bool = false) 
-	{
+	public function new(secure:Bool = false) {
 		__isSecure = secure;
-		super();		
+		super();
 	}
-	
-	override function __init():Void 
-	{
+
+	override function __init():Void {
 		__webServerSocket = new FlexSocket(__isSecure);
-		
-		if (__isSecure){
+
+		if (__isSecure) {
 			verifyCert = false;
 		}
-				
+
 		__webServerSocket.setBlocking(false);
 		__webServerSocket.setFastSend(true);
 		__closed = false;
 		bound = false;
 		listening = false;
 	}
-	
+
 	/**
 		Binds this socket to the specified local address and port.
 		@param localPort 	(default = 0) The number of the port to bind to on the local computer.
@@ -107,23 +107,17 @@ class ServerWebSocket extends ServerSocket
 							  this ServerSocket object is already bound. (Call close() before binding to a different socket.)
 							  when localAddress is not a valid local address.
 	**/
-	override public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void
-	{
-		if (localPort > 65535 || localPort < 0)
-		{
+	override public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
+		if (localPort > 65535 || localPort < 0) {
 			throw new RangeError("Invalid socket port number specified.");
 		}
-		try
-		{
+		try {
 			this.localAddress = localAddress;
 			this.localPort = localPort;
 			__webServerSocket.bind(localAddress, localPort);
 			bound = true;
-		}
-		catch (e:Dynamic)
-		{
-			switch (e)
-			{
+		} catch (e:Dynamic) {
+			switch (e) {
 				case "Bind failed":
 					trace("bind fail");
 					throw new IOError("Operation attempted on invalid socket.");
@@ -138,14 +132,10 @@ class ServerWebSocket extends ServerSocket
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
-	override public function close():Void
-	{
-		try
-		{
+	override public function close():Void {
+		try {
 			__webServerSocket.close();
-		}
-		catch (e:Dynamic)
-		{
+		} catch (e:Dynamic) {
 			trace("close?");
 			throw new CBError("Operation attempted on invalid socket.");
 		}
@@ -175,91 +165,78 @@ class ServerWebSocket extends ServerSocket
 							This error also occurs if the call to listen() fails for any
 							other reason.
 	**/
-	override public function listen(backlog:Int = 0):Void
-	{
-		if (__closed)
-		{
+	override public function listen(backlog:Int = 0):Void {
+		if (__closed) {
 			trace("listen?");
 			throw new IOError("Operation attempted on invalid socket.");
 		}
-		if (backlog < 0)
-		{
+		if (backlog < 0) {
 			throw new RangeError("The supplied index is out of bounds.");
-		} else if (backlog == 0) 
-		{
+		} else if (backlog == 0) {
 			backlog = 0x7FFFFFF;
 		}
-		
-		
+
 		__webServerSocket.listen(backlog);
 		listening = true;
 	}
 
-	@:noCompletion  private function __fromSockettoWebsocket(socket:FlexSocket):WebSocket
-	{
+	@:noCompletion private function __fromSockettoWebsocket(socket:FlexSocket):WebSocket {
 		socket.setFastSend(true);
 		socket.setBlocking(false);
 
 		var webSocket:WebSocket = WebSocket.toWebSocket(socket, this);
 		/*var cbSocket = new WebSocket(); 
-		cbSocket.__socket = socket;
-		cbSocket.__connected = true;
-		cbSocket.__timestamp = Sys.time();
+			cbSocket.__socket = socket;
+			cbSocket.__connected = true;
+			cbSocket.__timestamp = Sys.time();
 
-		cbSocket.__host = socket.peer().host.host;
-		cbSocket.__port = socket.peer().port;
+			cbSocket.__host = socket.peer().host.host;
+			cbSocket.__port = socket.peer().port;
 
-		cbSocket.__output = new ByteArray();
-		cbSocket.__output.endian = cbSocket.__endian;
+			cbSocket.__output = new ByteArray();
+			cbSocket.__output.endian = cbSocket.__endian;
 
-		cbSocket.__input = new ByteArray();
-		cbSocket.__input.endian = cbSocket.__endian;*/
+			cbSocket.__input = new ByteArray();
+			cbSocket.__input.endian = cbSocket.__endian; */
 
-		//CrossByte.current().addEventListener(TickEvent.TICK, cbSocket.this_onTick);
+		// CrossByte.current().addEventListener(TickEvent.TICK, cbSocket.this_onTick);
 
 		return webSocket;
 	}
 
-	@:noCompletion override private function this_onTick(e:TickEvent):Void
-	{
+	@:noCompletion override private function this_onTick(e:TickEvent):Void {
 		var socket:FlexSocket = null;
 
-		try
-		{
+		try {
 			socket = __webServerSocket.accept();
 		}
 		/*catch (e:Eof){
 			close();
 			dispatchEvent(new Event(Event.CLOSE));
 		}*/
-		catch (e:Error)
-		{
+		catch (e:Error) {
 			close();
 			dispatchEvent(new Event(Event.CLOSE));
-		}
-		catch (e:Dynamic)
-		{
+		} catch (e:Dynamic) {
 			// Do nothing.
 		}
 
-		if (socket != null)
-		{
-			//trace('con');
+		if (socket != null) {
+			// trace('con');
 			__fromSockettoWebsocket(socket);
 		}
 	}
-	
+
 	/**
 		The certificate for a Secure WebSocket Server.
 	**/
-	public var cert(default, set): {certificate:Certificate, key:Key};
-	
-		
-	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key}{
-		if (__isSecure){
+	public var cert(default, set):{certificate:Certificate, key:Key};
+
+	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key} {
+		if (__isSecure) {
 			__webServerSocket.setCertificate(value.certificate, value.key);
 		}
-		
+
 		return cert = value;
 	}
 }

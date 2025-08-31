@@ -6,13 +6,11 @@ import crossbyte.url.URLRequestHeader;
  * ...
  * @author Christopher Speciale
  */
-class HTTPStatusEvent extends Event 
-{
-
+class HTTPStatusEvent extends Event {
 	public static inline var HTTP_RESPONSE_STATUS:EventType<HTTPStatusEvent> = "httpResponseStatus";
-	
+
 	public static inline var HTTP_STATUS:EventType<HTTPStatusEvent> = "httpStatus";
-	
+
 	/**
 		Indicates whether the request was redirected.
 	**/
@@ -29,30 +27,27 @@ class HTTPStatusEvent extends Event
 		this will be different from the request URL.
 	**/
 	public var responseURL:String;
-	
+
 	/**
 		The HTTP status code returned by the server.
 	**/
 	public var status(default, null):Int;
-	
-	public function new(type:String, status:Int = 0, redirected:Bool = false):Void
-	{
+
+	public function new(type:String, status:Int = 0, redirected:Bool = false):Void {
 		this.status = status;
 		this.redirected = redirected;
 
 		super(type);
 	}
-	
-	public override function clone():HTTPStatusEvent
-	{
+
+	public override function clone():HTTPStatusEvent {
 		var event = new HTTPStatusEvent(type, status, redirected);
 		event.target = target;
 		event.currentTarget = currentTarget;
 		return event;
 	}
 
-	public override function toString():String
-	{
+	public override function toString():String {
 		return '[HTTPStatusEvent], type:$type, status:$status, redirected:$redirected';
 	}
 }

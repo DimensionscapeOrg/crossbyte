@@ -1,7 +1,7 @@
 package crossbyte.io;
 
-//import cpp.zip.Compress;
-//import cpp.zip.Uncompress;
+// import cpp.zip.Compress;
+// import cpp.zip.Uncompress;
 import haxe.Int64;
 import crossbyte._internal.deflatex.Deflater;
 import crossbyte._internal.deflatex.GZCompressor;
@@ -20,7 +20,6 @@ import haxe.Unserializer;
 import crossbyte.errors.EOFError;
 import crossbyte.net.ObjectEncoding;
 import crossbyte.utils.CompressionAlgorithm;
-
 #if format
 import format.amf.Reader as AMFReader;
 import format.amf.Tools as AMFTools;
@@ -31,12 +30,12 @@ import format.amf3.Tools as AMF3Tools;
 import format.amf3.Value as AMF3Value;
 import format.amf3.Writer as AMF3Writer;
 #end
+
 /**
  * ...
  * @author Christopher Speciale
  */
-
- /**
+/**
 	The ByteArray class provides methods and properties to optimize reading,
 	writing, and working with binary data.
 	_Note:_ The ByteArray class is for advanced developers who need to
@@ -67,8 +66,7 @@ import format.amf3.Writer as AMF3Writer;
 @:forward(endian, objectEncoding)
 #end
 @:transitive
-abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
-{
+abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
 		Denotes the default endianness for the ByteArray class to use for a
 		new ByteArray instance. When you create a new ByteArray instance, the
@@ -96,7 +94,6 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		class.
 	**/
 	public static var defaultObjectEncoding(get, set):ObjectEncoding;
-
 
 	/**
 		The number of bytes of data available for reading from the current
@@ -126,22 +123,22 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 
 	#if doc_gen
 	/**
-		* Used to determine whether the ActionScript 3.0, ActionScript 2.0, or
-		* ActionScript 1.0 format should be used when writing to, or reading from, a
-		* ByteArray instance. The value is a constant from the ObjectEncoding class.
-		* On the Flash and AIR targets, support for Action Message Format (AMF) object
-		* serialization is included in the Flash runtime. For other targets, AMF
-		* serialization is supported if your project using built using the optional
-		* "format" library, such as `<haxelib name="format" />` in a project.xml file.
-		*
-		* Additional OpenFL targets support reading and writing of objects using
-		* Haxe Serialization Format (HXSF) and JavaScript Object Notation (JSON). These
-		* targets use HXSF by default.
-		*
-		* Since these additional object serialization formats are not internal to the
-		* Flash runtime, they are not supported by the `readObject` or `writeObject`
-		* functions on the Flash or AIR targets, but through `haxe.Serializer`,
-		* `haxe.Unserializer` or `haxe.JSON` if needed.
+	 * Used to determine whether the ActionScript 3.0, ActionScript 2.0, or
+	 * ActionScript 1.0 format should be used when writing to, or reading from, a
+	 * ByteArray instance. The value is a constant from the ObjectEncoding class.
+	 * On the Flash and AIR targets, support for Action Message Format (AMF) object
+	 * serialization is included in the Flash runtime. For other targets, AMF
+	 * serialization is supported if your project using built using the optional
+	 * "format" library, such as `<haxelib name="format" />` in a project.xml file.
+	 *
+	 * Additional OpenFL targets support reading and writing of objects using
+	 * Haxe Serialization Format (HXSF) and JavaScript Object Notation (JSON). These
+	 * targets use HXSF by default.
+	 *
+	 * Since these additional object serialization formats are not internal to the
+	 * Flash runtime, they are not supported by the `readObject` or `writeObject`
+	 * functions on the Flash or AIR targets, but through `haxe.Serializer`,
+	 * `haxe.Unserializer` or `haxe.JSON` if needed.
 	**/
 	public var objectEncoding(get, set):ObjectEncoding;
 	#end
@@ -158,8 +155,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		you can use the methods and properties in this class to optimize your data
 		storage and stream.
 	**/
-	public inline function new(length:Int = 0):Void
-	{		
+	public inline function new(length:Int = 0):Void {
 		this = new ByteArrayData(length);
 	}
 
@@ -168,8 +164,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		and `position` properties to 0. Calling this method explicitly
 		frees up the memory used by the ByteArray instance.
 	**/
-	public inline function clear():Void
-	{
+	public inline function clear():Void {
 		this.clear();
 	}
 
@@ -220,9 +215,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		you must separate the metadata from the compressed data, and you can then
 		use the deflate format to decompress the compressed data.
 	**/
-	public inline function compress(algorithm:CompressionAlgorithm = LZ4):Void
-	{
-		this.compress(algorithm);		
+	public inline function compress(algorithm:CompressionAlgorithm = LZ4):Void {
+		this.compress(algorithm);
 	}
 
 	/**
@@ -243,8 +237,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		must separate the metadata from the compressed data, and you can then use
 		the deflate format to decompress the compressed data.
 	**/
-	public inline function deflate():Void
-	{
+	public inline function deflate():Void {
 		this.deflate();
 	}
 
@@ -253,19 +246,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@param	buffer	A Bytes instance
 		@returns	A new ByteArray
 	**/
-	@:from public static function fromBytes(bytes:Bytes):ByteArray
-	{
-		if (bytes == null) return null;
+	@:from public static function fromBytes(bytes:Bytes):ByteArray {
+		if (bytes == null)
+			return null;
 
-		if ((bytes is ByteArrayData))
-		{
+		if ((bytes is ByteArrayData)) {
 			return cast bytes;
-		}
-		else
-		{
+		} else {
 			return ByteArrayData.fromBytes(bytes);
 		}
-		
 	}
 
 	/**
@@ -273,16 +262,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@param	buffer	A BytesData instance
 		@returns	A new ByteArray
 	**/
-	@:from @:noCompletion public static function fromBytesData(bytesData:BytesData):ByteArray
-	{
-		if (bytesData == null) return null;
+	@:from @:noCompletion public static function fromBytesData(bytesData:BytesData):ByteArray {
+		if (bytesData == null)
+			return null;
 
 		return ByteArrayData.fromBytes(Bytes.ofData(bytesData));
 	}
 
-	@:arrayAccess @:noCompletion private inline function get(index:Int):Int
-	{
-	
+	@:arrayAccess @:noCompletion private inline function get(index:Int):Int {
 		return this.get(index);
 	}
 
@@ -304,8 +291,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 						compressed with the same compression algorithm used to
 						compress.
 	**/
-	public inline function inflate():Void
-	{
+	public inline function inflate():Void {
 		this.inflate();
 	}
 
@@ -317,8 +303,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 				`false` otherwise.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readBoolean():Bool
-	{
+	public inline function readBoolean():Bool {
 		return this.readBoolean();
 	}
 
@@ -328,8 +313,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return An integer between -128 and 127.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readByte():Int
-	{
+	public inline function readByte():Int {
 		return this.readByte();
 	}
 
@@ -348,8 +332,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@throws RangeError The value of the supplied offset and length, combined,
 						   is greater than the maximum for a uint.
 	**/
-	public inline function readBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void
-	{
+	public inline function readBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
 		this.readBytes(bytes, offset, length);
 	}
 
@@ -359,8 +342,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A double-precision(64-bit) floating-point number.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readDouble():Float
-	{
+	public inline function readDouble():Float {
 		return this.readDouble();
 	}
 
@@ -370,8 +352,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A single-precision(32-bit) floating-point number.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readFloat():Float
-	{
+	public inline function readFloat():Float {
 		return this.readFloat();
 	}
 
@@ -381,8 +362,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A 32-bit signed integer between -2147483648 and 2147483647.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readInt():Int
-	{
+	public inline function readInt():Int {
 		return this.readInt();
 	}
 
@@ -392,8 +372,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A 64-bit signed integer between −9223372036854775808 to 9223372036854775807.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readInt64():Int64
-	{
+	public inline function readInt64():Int64 {
 		return this.readInt64();
 	}
 
@@ -420,8 +399,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return UTF-8 encoded string.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readMultiByte(length:UInt, charSet:String):String
-	{
+	public inline function readMultiByte(length:UInt, charSet:String):String {
 		return this.readMultiByte(length, charSet);
 	}
 
@@ -430,8 +408,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return The deserialized object.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readObject():Dynamic
-	{
+	public inline function readObject():Dynamic {
 		return this.readObject();
 	}
 
@@ -441,8 +418,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A 16-bit signed integer between -32768 and 32767.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readShort():Int
-	{
+	public inline function readShort():Int {
 		return this.readShort();
 	}
 
@@ -452,8 +428,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return UTF-8 encoded string.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readUTF():String
-	{
+	public inline function readUTF():String {
 		return this.readUTF();
 	}
 
@@ -464,8 +439,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A string composed of the UTF-8 bytes of the specified length.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readUTFBytes(length:UInt):String
-	{
+	public inline function readUTFBytes(length:UInt):String {
 		return this.readUTFBytes(length);
 	}
 
@@ -475,8 +449,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A 32-bit unsigned integer between 0 and 255.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readUnsignedByte():UInt
-	{
+	public inline function readUnsignedByte():UInt {
 		return this.readUnsignedByte();
 	}
 
@@ -486,8 +459,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A 32-bit unsigned integer between 0 and 4294967295.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readUnsignedInt():UInt
-	{
+	public inline function readUnsignedInt():UInt {
 		return this.readUnsignedInt();
 	}
 
@@ -497,27 +469,20 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@return A 16-bit unsigned integer between 0 and 65535.
 		@throws EOFError There is not sufficient data available to read.
 	**/
-	public inline function readUnsignedShort():UInt
-	{
+	public inline function readUnsignedShort():UInt {
 		return this.readUnsignedShort();
 	}
 
-	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int
-	{
-		
+	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int {
 		this.__resize(index + 1);
 		this.set(index, value);
 
 		return value;
 	}
 
-
-	@:to @:noCompletion private static function toBytes(byteArray:ByteArray):Bytes
-	{
+	@:to @:noCompletion private static function toBytes(byteArray:ByteArray):Bytes {
 		return (byteArray : ByteArrayData);
 	}
-
-	
 
 	/**
 		Converts the byte array to a string. If the data in the array begins with
@@ -527,8 +492,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		being in the current system code page when converting.
 		@return The string representation of the byte array.
 	**/
-	public inline function toString():String
-	{
+	public inline function toString():String {
 		return this.toString();
 	}
 
@@ -555,10 +519,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 						compressed with the same compression algorithm used to
 						compress.
 	**/
-	public inline function uncompress(algorithm:CompressionAlgorithm = LZ4):Void
-	{
-		
-		this.uncompress(algorithm);		
+	public inline function uncompress(algorithm:CompressionAlgorithm = LZ4):Void {
+		this.uncompress(algorithm);
 	}
 
 	/**
@@ -569,8 +531,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 					 parameter is `true`, the method writes a 1; if
 					 `false`, the method writes a 0.
 	**/
-	public inline function writeBoolean(value:Bool):Void
-	{
+	public inline function writeBoolean(value:Bool):Void {
 		this.writeBoolean(value);
 	}
 
@@ -580,8 +541,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@param value A 32-bit integer. The low 8 bits are written to the byte
 					 stream.
 	**/
-	public inline function writeByte(value:Int):Void
-	{
+	public inline function writeByte(value:Int):Void {
 		this.writeByte(value);
 	}
 
@@ -601,8 +561,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@param length An unsigned integer indicating how far into the buffer to
 					  write.
 	**/
-	public inline function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void
-	{
+	public inline function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
 		this.writeBytes(bytes, offset, length);
 	}
 
@@ -611,8 +570,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		byte stream.
 		@param value A double-precision(64-bit) floating-point number.
 	**/
-	public inline function writeDouble(value:Float):Void
-	{
+	public inline function writeDouble(value:Float):Void {
 		this.writeDouble(value);
 	}
 
@@ -621,8 +579,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		byte stream.
 		@param value A single-precision(32-bit) floating-point number.
 	**/
-	public inline function writeFloat(value:Float):Void
-	{
+	public inline function writeFloat(value:Float):Void {
 		this.writeFloat(value);
 	}
 
@@ -630,8 +587,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		Writes a 32-bit signed integer to the byte stream.
 		@param value An integer to write to the byte stream.
 	**/
-	public inline function writeInt(value:Int):Void
-	{
+	public inline function writeInt(value:Int):Void {
 		this.writeInt(value);
 	}
 
@@ -639,10 +595,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		Writes a 64-bit signed integer to the byte stream.
 		@param value An integer to write to the byte stream.
 	**/
-	public inline function writeInt64(value:Int64):Void
-		{
-			this.writeInt64(value);
-		}
+	public inline function writeInt64(value:Int64):Void {
+		this.writeInt64(value);
+	}
 
 	/**
 		Writes a multibyte string to the byte stream using the specified character
@@ -655,8 +610,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 					   href="../../charset-codes.html">Supported Character
 					   Sets</a>.
 	**/
-	public inline function writeMultiByte(value:String, charSet:String):Void
-	{
+	public inline function writeMultiByte(value:String, charSet:String):Void {
 		this.writeMultiByte(value, charSet);
 	}
 
@@ -664,8 +618,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		Writes an object into the byte array in AMF serialized format.
 		@param object The object to serialize.
 	**/
-	public inline function writeObject(object:Dynamic):Void
-	{
+	public inline function writeObject(object:Dynamic):Void {
 		this.writeObject(object);
 	}
 
@@ -675,8 +628,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@param value 32-bit integer, whose low 16 bits are written to the byte
 					 stream.
 	**/
-	public inline function writeShort(value:Int):Void
-	{
+	public inline function writeShort(value:Int):Void {
 		this.writeShort(value);
 	}
 
@@ -687,8 +639,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		@param value The string value to be written.
 		@throws RangeError If the length is larger than 65535.
 	**/
-	public inline function writeUTF(value:String):Void
-	{
+	public inline function writeUTF(value:String):Void {
 		this.writeUTF(value);
 	}
 
@@ -698,8 +649,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		prefix the string with a 16-bit length word.
 		@param value The string value to be written.
 	**/
-	public inline function writeUTFBytes(value:String):Void
-	{
+	public inline function writeUTFBytes(value:String):Void {
 		this.writeUTFBytes(value);
 	}
 
@@ -707,59 +657,48 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		Writes a 32-bit unsigned integer to the byte stream.
 		@param value An unsigned integer to write to the byte stream.
 	**/
-	public inline function writeUnsignedInt(value:UInt):Void
-	{
+	public inline function writeUnsignedInt(value:UInt):Void {
 		this.writeUnsignedInt(value);
 	}
 
 	// Get & Set Methods
-	@:noCompletion private inline function get_bytesAvailable():UInt
-	{
+	@:noCompletion private inline function get_bytesAvailable():UInt {
 		return this.bytesAvailable;
 	}
 
-	@:noCompletion private inline static function get_defaultEndian():Endian
-	{
+	@:noCompletion private inline static function get_defaultEndian():Endian {
 		return ByteArrayData.defaultEndian;
 	}
 
-	@:noCompletion private inline static function set_defaultEndian(value:Endian):Endian
-	{
+	@:noCompletion private inline static function set_defaultEndian(value:Endian):Endian {
 		return ByteArrayData.defaultEndian = value;
 	}
 
-	@:noCompletion private inline static function get_defaultObjectEncoding():ObjectEncoding
-	{
+	@:noCompletion private inline static function get_defaultObjectEncoding():ObjectEncoding {
 		return ByteArrayData.defaultObjectEncoding;
 	}
 
-	@:noCompletion private inline static function set_defaultObjectEncoding(value:ObjectEncoding):ObjectEncoding
-	{
+	@:noCompletion private inline static function set_defaultObjectEncoding(value:ObjectEncoding):ObjectEncoding {
 		return ByteArrayData.defaultObjectEncoding = value;
 	}
 
-	@:noCompletion private inline function get_endian():Endian
-	{
+	@:noCompletion private inline function get_endian():Endian {
 		return this.endian;
 	}
 
-	@:noCompletion private inline function set_endian(value:Endian):Endian
-	{
+	@:noCompletion private inline function set_endian(value:Endian):Endian {
 		return this.endian = value;
 	}
 
-	@:noCompletion private function get_length():UInt
-	{		
+	@:noCompletion private function get_length():UInt {
 		return this == null ? 0 : this.length;
 	}
 
-	@:noCompletion private function set_length(value:Int):UInt
-	{
-		
-		if (value >= 0)
-		{
+	@:noCompletion private function set_length(value:Int):UInt {
+		if (value >= 0) {
 			this.__resize(value);
-			if (value < this.position) this.position = value;
+			if (value < this.position)
+				this.position = value;
 		}
 
 		this.length = value;
@@ -767,40 +706,31 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		return value;
 	}
 
-	@:noCompletion private inline function get_objectEncoding():ObjectEncoding
-	{
+	@:noCompletion private inline function get_objectEncoding():ObjectEncoding {
 		return this.objectEncoding;
 	}
 
-	@:noCompletion private inline function set_objectEncoding(value:ObjectEncoding):ObjectEncoding
-	{
+	@:noCompletion private inline function set_objectEncoding(value:ObjectEncoding):ObjectEncoding {
 		return this.objectEncoding = value;
 	}
 
-	@:noCompletion private inline function get_position():UInt
-	{
+	@:noCompletion private inline function get_position():UInt {
 		return this.position;
 	}
 
-	@:noCompletion private inline function set_position(value:UInt):UInt
-	{
+	@:noCompletion private inline function set_position(value:UInt):UInt {
 		return this.position = value;
 	}
-} 
- 
- 
- 
- //--------------------------------------------------------------------------------------------------------------------------
- 
+}
 
+//--------------------------------------------------------------------------------------------------------------------------
 #if !debug
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
 @SuppressWarnings("checkstyle:FieldDocComment")
 @:autoBuild(lime._internal.macros.AssetsMacro.embedByteArray())
-@:noCompletion @:dox(hide) class ByteArrayData extends Bytes implements IDataInput implements IDataOutput
-{
+@:noCompletion @:dox(hide) class ByteArrayData extends Bytes implements IDataInput implements IDataOutput {
 	public static var defaultEndian(get, set):Endian;
 	public static var defaultObjectEncoding:ObjectEncoding = ObjectEncoding.DEFAULT;
 	@:noCompletion private static var __defaultEndian:Endian = null;
@@ -811,19 +741,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 	public var position:Int;
 
 	@:noCompletion private var __endian:Endian;
-	@:noCompletion private var __length:Int;	
+	@:noCompletion private var __length:Int;
 
-	public function new(length:Int = 0)
-	{
+	public function new(length:Int = 0) {
 		var bytes = Bytes.alloc(length);
 
 		#if sys
-		if (length > 0)
-		{
+		if (length > 0) {
 			bytes.fill(0, length, 0);
 		}
 		#end
-		
+
 		#if hl
 		super(bytes.getData(), length);
 		#elseif js
@@ -839,130 +767,113 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		position = 0;
 	}
 
-	public function clear():Void
-	{
+	public function clear():Void {
 		length = 0;
 		position = 0;
 	}
 
-	public function compress(algorithm:CompressionAlgorithm = LZ4):Void
-	{
+	public function compress(algorithm:CompressionAlgorithm = LZ4):Void {
 		/*#if lime
-		#if js
-		if (__length > #if lime_bytes_length_getter l #else length #end)
-		{
-			var cacheLength = #if lime_bytes_length_getter l #else length #end;
-			#if lime_bytes_length_getter
-			this.l = __length;
-			#else
-			this.length = __length;
+			#if js
+			if (__length > #if lime_bytes_length_getter l #else length #end)
+			{
+				var cacheLength = #if lime_bytes_length_getter l #else length #end;
+				#if lime_bytes_length_getter
+				this.l = __length;
+				#else
+				this.length = __length;
+				#end
+				var data = Bytes.alloc(cacheLength);
+				data.blit(0, this, 0, cacheLength);
+				__setData(data);
+				#if lime_bytes_length_getter
+				this.l = cacheLength;
+				#else
+				this.length = cacheLength;
+				#end
+			}
 			#end
-			var data = Bytes.alloc(cacheLength);
-			data.blit(0, this, 0, cacheLength);
-			__setData(data);
-			#if lime_bytes_length_getter
-			this.l = cacheLength;
-			#else
-			this.length = cacheLength;
-			#end
-		}
-		#end
 
-		var limeBytes:LimeBytes = this;
+			var limeBytes:LimeBytes = this;
 
-		
-		var bytes = switch (algorithm)
-		{
-			case CompressionAlgorithm.DEFLATE: limeBytes.compress(DEFLATE);
-			case CompressionAlgorithm.LZMA: limeBytes.compress(LZMA);
-			default: limeBytes.compress(ZLIB);
-		}
 
-		if (bytes != null)
-		{
-			__setData(bytes);
+			var bytes = switch (algorithm)
+			{
+				case CompressionAlgorithm.DEFLATE: limeBytes.compress(DEFLATE);
+				case CompressionAlgorithm.LZMA: limeBytes.compress(LZMA);
+				default: limeBytes.compress(ZLIB);
+			}
 
-			#if lime_bytes_length_getter
-			l
-			#else
-			length
-			#end
-			= __length;
-			position = #if lime_bytes_length_getter l #else length #end;
-		}
-		#end*/
-						
-		var bytes:Bytes = switch(algorithm)
-		{
+			if (bytes != null)
+			{
+				__setData(bytes);
+
+				#if lime_bytes_length_getter
+				l
+				#else
+				length
+				#end
+				= __length;
+				position = #if lime_bytes_length_getter l #else length #end;
+			}
+			#end */
+
+		var bytes:Bytes = switch (algorithm) {
 			case CompressionAlgorithm.DEFLATE: Deflater.apply(this);
-			//case CompressionAlgorithm.LZMA: Compress.run(bt, 1);
+			// case CompressionAlgorithm.LZMA: Compress.run(bt, 1);
 			case CompressionAlgorithm.LZ4: Lz4.compress(this);
 		}
-		
-		if (bytes != null){
+
+		if (bytes != null) {
 			__setData(bytes);
 			length = __length;
-			
+
 			position = length;
 		}
 	}
 
-	public function deflate():Void
-	{
+	public function deflate():Void {
 		compress(CompressionAlgorithm.DEFLATE);
-	}	
+	}
 
-	public static function fromBytes(bytes:Bytes):ByteArrayData
-	{
+	public static function fromBytes(bytes:Bytes):ByteArrayData {
 		var result = new ByteArrayData();
 		result.__fromBytes(bytes);
 		return result;
 	}
 
-	public function inflate():Void
-	{
+	public function inflate():Void {
 		uncompress(CompressionAlgorithm.DEFLATE);
 	}
 
-
-	public function readBoolean():Bool
-	{
-		if (position < length)
-		{
+	public function readBoolean():Bool {
+		if (position < length) {
 			return (get(position++) != 0);
-		}
-		else
-		{
+		} else {
 			throw new EOFError();
 			return false;
 		}
 	}
 
-	public function readByte():Int
-	{
+	public function readByte():Int {
 		var value = readUnsignedByte();
 
-		if (value & 0x80 != 0)
-		{
+		if (value & 0x80 != 0) {
 			return value - 0x100;
-		}
-		else
-		{
+		} else {
 			return value;
 		}
 	}
 
-	public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void
-	{
-		if (length == 0) length = this.length - position;
+	public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		if (length == 0)
+			length = this.length - position;
 
-		if (position + length > this.length)
-		{
+		if (position + length > this.length) {
 			throw new EOFError();
 		}
 
-		if ((bytes : ByteArrayData).length < offset + length)
-		{
+		if ((bytes : ByteArrayData).length < offset + length) {
 			(bytes : ByteArrayData).__resize(offset + length);
 		}
 
@@ -970,21 +881,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		position += length;
 	}
 
-	public function readDouble():Float
-	{
-		if (endian == LITTLE_ENDIAN)
-		{
-			if (position + 8 > length)
-			{
+	public function readDouble():Float {
+		if (endian == LITTLE_ENDIAN) {
+			if (position + 8 > length) {
 				throw new EOFError();
 				return 0;
 			}
 
 			position += 8;
 			return getDouble(position - 8);
-		}
-		else
-		{
+		} else {
 			var ch1 = readInt();
 			var ch2 = readInt();
 
@@ -992,70 +898,58 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		}
 	}
 
-	public function readFloat():Float
-	{
-		if (endian == LITTLE_ENDIAN)
-		{
-			if (position + 4 > length)
-			{
+	public function readFloat():Float {
+		if (endian == LITTLE_ENDIAN) {
+			if (position + 4 > length) {
 				throw new EOFError();
 				return 0;
 			}
 
 			position += 4;
 			return getFloat(position - 4);
-		}
-		else
-		{
+		} else {
 			return FPHelper.i32ToFloat(readInt());
 		}
 	}
 
-	public function readInt():Int
-	{
+	public function readInt():Int {
 		var ch1 = readUnsignedByte();
 		var ch2 = readUnsignedByte();
 		var ch3 = readUnsignedByte();
 		var ch4 = readUnsignedByte();
 
-		if (endian == LITTLE_ENDIAN)
-		{
+		if (endian == LITTLE_ENDIAN) {
 			return (ch4 << 24) | (ch3 << 16) | (ch2 << 8) | ch1;
-		}
-		else
-		{
+		} else {
 			return (ch1 << 24) | (ch2 << 16) | (ch3 << 8) | ch4;
 		}
 	}
 
 	public function readInt64():Int64 {
-        if (position + 8 > length) {
-            throw new EOFError();
-        }
+		if (position + 8 > length) {
+			throw new EOFError();
+		}
 
-        var high:Int;
-        var low:Int;
+		var high:Int;
+		var low:Int;
 
-        if (endian == LITTLE_ENDIAN) {
-            low = readUnsignedInt();
-            high = readUnsignedInt();
-        } else {
-            high = readUnsignedInt();
-            low = readUnsignedInt();
-        }
+		if (endian == LITTLE_ENDIAN) {
+			low = readUnsignedInt();
+			high = readUnsignedInt();
+		} else {
+			high = readUnsignedInt();
+			low = readUnsignedInt();
+		}
 
-        return Int64.make(high, low);
-    }
+		return Int64.make(high, low);
+	}
 
-	public function readMultiByte(length:Int, charSet:String):String
-	{
+	public function readMultiByte(length:Int, charSet:String):String {
 		return readUTFBytes(length);
 	}
 
-	public function readObject():Dynamic
-	{
-		switch (objectEncoding)
-		{
+	public function readObject():Dynamic {
+		switch (objectEncoding) {
 			#if format
 			case AMF0:
 				var input = new BytesInput(this, position);
@@ -1086,10 +980,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 	}
 
 	#if format
-	private static function unwrapAMFValue(val:AMFValue):Dynamic
-	{
-		switch (val)
-		{
+	private static function unwrapAMFValue(val:AMFValue):Dynamic {
+		switch (val) {
 			case ANumber(f):
 				return f;
 			case ABool(b):
@@ -1108,18 +1000,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 			case AObject(vmap):
 				// AMF0 has no distinction between Object/Map. Most likely we want an anonymous object here.
 				var obj = {};
-				for (name in vmap.keys())
-				{
+				for (name in vmap.keys()) {
 					Reflect.setField(obj, name, unwrapAMFValue(vmap.get(name)));
 				}
 				return obj;
 		};
 	}
 
-	private static function unwrapAMF3Value(val:AMF3Value):Dynamic
-	{
-		return switch (val)
-		{
+	private static function unwrapAMF3Value(val:AMF3Value):Dynamic {
+		return switch (val) {
 			case ANumber(f): return f;
 			case AInt(n): return n;
 			case ABool(b): return b;
@@ -1134,21 +1023,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 
 			case AObject(vmap):
 				var obj = {};
-				for (name in vmap.keys())
-				{
+				for (name in vmap.keys()) {
 					Reflect.setField(obj, name, unwrapAMF3Value(vmap[name]));
 				}
 				return obj;
 
 			case AMap(vmap):
 				var map:IMap<Dynamic, Dynamic> = null;
-				for (key in vmap.keys())
-				{
+				for (key in vmap.keys()) {
 					// Get the map type from the type of the first key.
-					if (map == null)
-					{
-						map = switch (key)
-						{
+					if (map == null) {
+						map = switch (key) {
 							case AString(_): new Map<String, Dynamic>();
 							case AInt(_): new Map<Int, Dynamic>();
 							default: new ObjectMap<Dynamic, Dynamic>();
@@ -1158,8 +1043,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 				}
 
 				// Default to StringMap if the map is empty.
-				if (map == null)
-				{
+				if (map == null) {
 					map = new Map<String, Dynamic>();
 				}
 				return map;
@@ -1167,87 +1051,65 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 	}
 	#end
 
-	public function readShort():Int
-	{
+	public function readShort():Int {
 		var ch1 = readUnsignedByte();
 		var ch2 = readUnsignedByte();
 
 		var value;
 
-		if (endian == LITTLE_ENDIAN)
-		{
+		if (endian == LITTLE_ENDIAN) {
 			value = ((ch2 << 8) | ch1);
-		}
-		else
-		{
+		} else {
 			value = ((ch1 << 8) | ch2);
 		}
 
-		if ((value & 0x8000) != 0)
-		{
+		if ((value & 0x8000) != 0) {
 			return value - 0x10000;
-		}
-		else
-		{
+		} else {
 			return value;
 		}
 	}
 
-	public function readUnsignedByte():Int
-	{
-		if (position < #if lime_bytes_length_getter l #else length #end)
-		{
+	public function readUnsignedByte():Int {
+		if (position < #if lime_bytes_length_getter l #else length #end) {
 			return get(position++);
-		}
-		else
-		{
+		} else {
 			throw new EOFError();
 			return 0;
 		}
 	}
 
-	public function readUnsignedInt():Int
-	{
+	public function readUnsignedInt():Int {
 		var ch1 = readUnsignedByte();
 		var ch2 = readUnsignedByte();
 		var ch3 = readUnsignedByte();
 		var ch4 = readUnsignedByte();
 
-		if (endian == LITTLE_ENDIAN)
-		{
+		if (endian == LITTLE_ENDIAN) {
 			return (ch4 << 24) | (ch3 << 16) | (ch2 << 8) | ch1;
-		}
-		else
-		{
+		} else {
 			return (ch1 << 24) | (ch2 << 16) | (ch3 << 8) | ch4;
 		}
 	}
 
-	public function readUnsignedShort():Int
-	{
+	public function readUnsignedShort():Int {
 		var ch1 = readUnsignedByte();
 		var ch2 = readUnsignedByte();
 
-		if (endian == LITTLE_ENDIAN)
-		{
+		if (endian == LITTLE_ENDIAN) {
 			return (ch2 << 8) + ch1;
-		}
-		else
-		{
+		} else {
 			return (ch1 << 8) | ch2;
 		}
 	}
 
-	public function readUTF():String
-	{
+	public function readUTF():String {
 		var bytesCount = readUnsignedShort();
 		return readUTFBytes(bytesCount);
 	}
 
-	public function readUTFBytes(length:Int):String
-	{
-		if (position + length > #if lime_bytes_length_getter l #else this.length #end)
-		{
+	public function readUTFBytes(length:Int):String {
+		if (position + length > #if lime_bytes_length_getter l #else this.length #end) {
 			throw new EOFError();
 		}
 
@@ -1256,134 +1118,119 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		return getString(position - length, length);
 	}
 
-	public function uncompress(algorithm:CompressionAlgorithm = LZ4):Void
-	{
+	public function uncompress(algorithm:CompressionAlgorithm = LZ4):Void {
 		/*#if lime
-		#if js
-		if (__length > #if lime_bytes_length_getter l #else length #end)
-		{
-			var cacheLength = #if lime_bytes_length_getter l #else length #end;
-			#if lime_bytes_length_getter
-			this.l = __length;
-			#else
-			this.length = __length;
+			#if js
+			if (__length > #if lime_bytes_length_getter l #else length #end)
+			{
+				var cacheLength = #if lime_bytes_length_getter l #else length #end;
+				#if lime_bytes_length_getter
+				this.l = __length;
+				#else
+				this.length = __length;
+				#end
+				var data = Bytes.alloc(cacheLength);
+				data.blit(0, this, 0, cacheLength);
+				__setData(data);
+				#if lime_bytes_length_getter
+				this.l = cacheLength;
+				#else
+				this.length = cacheLength;
+				#end
+			}
 			#end
-			var data = Bytes.alloc(cacheLength);
-			data.blit(0, this, 0, cacheLength);
-			__setData(data);
-			#if lime_bytes_length_getter
-			this.l = cacheLength;
-			#else
-			this.length = cacheLength;
+
+			var limeBytes:LimeBytes = this;
+
+			var bytes = switch (algorithm)
+			{
+				case CompressionAlgorithm.DEFLATE: limeBytes.decompress(DEFLATE);
+				case CompressionAlgorithm.LZMA: limeBytes.decompress(LZMA);
+				default: limeBytes.decompress(ZLIB);
+			};
+
+			if (bytes != null)
+			{
+				__setData(bytes);
+
+				#if lime_bytes_length_getter
+				l
+				#else
+				length
+				#end
+				= __length;
+			}
 			#end
-		}
-		#end
 
-		var limeBytes:LimeBytes = this;
+			position = 0; */
 
-		var bytes = switch (algorithm)
-		{
-			case CompressionAlgorithm.DEFLATE: limeBytes.decompress(DEFLATE);
-			case CompressionAlgorithm.LZMA: limeBytes.decompress(LZMA);
-			default: limeBytes.decompress(ZLIB);
-		};
-
-		if (bytes != null)
-		{
-			__setData(bytes);
-
-			#if lime_bytes_length_getter
-			l
-			#else
-			length
-			#end
-			= __length;
-		}
-		#end
-
-		position = 0;*/
-		
-		var bytes:Bytes = switch(algorithm)
-		{
+		var bytes:Bytes = switch (algorithm) {
 			case CompressionAlgorithm.DEFLATE: Inflater.apply(this);
-			//case CompressionAlgorithm.LZMA: Uncompress.run(this);
+			// case CompressionAlgorithm.LZMA: Uncompress.run(this);
 			case CompressionAlgorithm.LZ4: Lz4.decompress(this);
 		}
-		
-		if (bytes != null){
+
+		if (bytes != null) {
 			__setData(bytes);
-			
+
 			length = __length;
 		}
 		position = 0;
 	}
 
-	public function writeBoolean(value:Bool):Void
-	{
+	public function writeBoolean(value:Bool):Void {
 		this.writeByte(value ? 1 : 0);
 	}
 
-	public function writeByte(value:Int):Void
-	{
+	public function writeByte(value:Int):Void {
 		__resize(position + 1);
 		set(position++, value & 0xFF);
 	}
 
-	public function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void
-	{
-		if (bytes.length == 0) return;
-		if (length == 0) length = bytes.length - offset;
+	public function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
+		if (bytes.length == 0)
+			return;
+		if (length == 0)
+			length = bytes.length - offset;
 
 		__resize(position + length);
 		blit(position, (bytes : ByteArrayData), offset, length);
 
-		position += length;		
+		position += length;
 	}
 
-	public function writeDouble(value:Float):Void
-	{
+	public function writeDouble(value:Float):Void {
 		var int64 = FPHelper.doubleToI64(value);
 
-		if (endian == LITTLE_ENDIAN)
-		{
+		if (endian == LITTLE_ENDIAN) {
 			writeInt(int64.low);
 			writeInt(int64.high);
-		}
-		else
-		{
+		} else {
 			writeInt(int64.high);
 			writeInt(int64.low);
 		}
 	}
 
-	public function writeFloat(value:Float):Void
-	{
-		if (endian == LITTLE_ENDIAN)
-		{
+	public function writeFloat(value:Float):Void {
+		if (endian == LITTLE_ENDIAN) {
 			__resize(position + 4);
 			setFloat(position, value);
 			position += 4;
-		}
-		else
-		{
+		} else {
 			var int = FPHelper.floatToI32(value);
 			writeInt(int);
 		}
 	}
 
-	public function writeInt(value:Int):Void
-	{
+	public function writeInt(value:Int):Void {
 		__resize(position + 4);
 
-		if (endian == LITTLE_ENDIAN)
-		{
+		if (endian == LITTLE_ENDIAN) {
 			set(position++, value & 0xFF);
 			set(position++, (value >> 8) & 0xFF);
 			set(position++, (value >> 16) & 0xFF);
 			set(position++, (value >> 24) & 0xFF);
-		}
-		else
-		{
+		} else {
 			set(position++, (value >> 24) & 0xFF);
 			set(position++, (value >> 16) & 0xFF);
 			set(position++, (value >> 8) & 0xFF);
@@ -1392,24 +1239,21 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 	}
 
 	public function writeInt64(value:Int64):Void {
-        if (endian == LITTLE_ENDIAN) {
-            writeUnsignedInt(value.low);
-            writeUnsignedInt(value.high);
-        } else {
-            writeUnsignedInt(value.high);
-            writeUnsignedInt(value.low);
-        }
-    }
+		if (endian == LITTLE_ENDIAN) {
+			writeUnsignedInt(value.low);
+			writeUnsignedInt(value.high);
+		} else {
+			writeUnsignedInt(value.high);
+			writeUnsignedInt(value.low);
+		}
+	}
 
-	public function writeMultiByte(value:String, charSet:String):Void
-	{
+	public function writeMultiByte(value:String, charSet:String):Void {
 		writeUTFBytes(value);
 	}
 
-	public function writeObject(object:Dynamic):Void
-	{
-		switch (objectEncoding)
-		{
+	public function writeObject(object:Dynamic):Void {
+		switch (objectEncoding) {
 			#if format
 			case AMF0:
 				var value = AMFTools.encode(object);
@@ -1439,78 +1283,65 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 		}
 	}
 
-	public function writeShort(value:Int):Void
-	{
+	public function writeShort(value:Int):Void {
 		__resize(position + 2);
 
-		if (endian == LITTLE_ENDIAN)
-		{
+		if (endian == LITTLE_ENDIAN) {
 			set(position++, value);
 			set(position++, value >> 8);
-		}
-		else
-		{
+		} else {
 			set(position++, value >> 8);
 			set(position++, value);
 		}
 	}
 
-	public function writeUnsignedInt(value:Int):Void
-	{
+	public function writeUnsignedInt(value:Int):Void {
 		writeInt(value);
 	}
 
-	public function writeUTF(value:String):Void
-	{
+	public function writeUTF(value:String):Void {
 		var bytes = Bytes.ofString(value);
 
 		writeShort(bytes.length);
 		writeBytes(bytes);
 	}
 
-	public function writeUTFBytes(value:String):Void
-	{
+	public function writeUTFBytes(value:String):Void {
 		var bytes = Bytes.ofString(value);
 		writeBytes(bytes);
 	}
 
-	@:noCompletion private function __fromBytes(bytes:Bytes):Void
-	{
+	@:noCompletion private function __fromBytes(bytes:Bytes):Void {
 		__setData(bytes);
-		
+
 		length = bytes.length;
 	}
 
-	@:noCompletion private function __resize(size:Int):Void
-	{
-		if (size > __length)
-		{
+	@:noCompletion private function __resize(size:Int):Void {
+		if (size > __length) {
 			var bytes = Bytes.alloc(((size + 1) * 3) >> 1);
 			#if sys
 			bytes.fill(__length, size - __length, 0);
 			#end
 
-			if (__length > 0)
-			{
+			if (__length > 0) {
 				var cacheLength = length;
-				
+
 				length = __length;
 				bytes.blit(0, this, 0, __length);
-				
+
 				length = cacheLength;
 			}
 
 			__setData(bytes);
 		}
 
-		if (length < size)
-		{
+		if (length < size) {
 			length = size;
 		}
 	}
 
-	@:noCompletion private inline function __setData(bytes:Bytes):Void
-	{
+	@:noCompletion private inline function __setData(bytes:Bytes):Void {
 		#if eval
 		// TODO: Not quite correct, but this will probably
 		// not be called while in a macro
@@ -1529,34 +1360,27 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData
 	}
 
 	// Get & Set Methods
-	@:noCompletion private inline function get_bytesAvailable():Int
-	{
+	@:noCompletion private inline function get_bytesAvailable():Int {
 		return length - position;
 	}
 
-	@:noCompletion private inline static function get_defaultEndian():Endian
-	{
-		if (__defaultEndian == null)
-		{			
+	@:noCompletion private inline static function get_defaultEndian():Endian {
+		if (__defaultEndian == null) {
 			__defaultEndian = LITTLE_ENDIAN;
 		}
 
 		return __defaultEndian;
 	}
 
-	@:noCompletion private inline static function set_defaultEndian(value:Endian):Endian
-	{
+	@:noCompletion private inline static function set_defaultEndian(value:Endian):Endian {
 		return __defaultEndian = value;
 	}
 
-	@:noCompletion private inline function get_endian():Endian
-	{
+	@:noCompletion private inline function get_endian():Endian {
 		return __endian;
 	}
 
-	@:noCompletion private inline function set_endian(value:Endian):Endian
-	{
+	@:noCompletion private inline function set_endian(value:Endian):Endian {
 		return __endian = value;
 	}
-	
 }

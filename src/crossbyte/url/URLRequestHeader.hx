@@ -4,8 +4,7 @@ package crossbyte.url;
  * ...
  * @author Christopher Speciale
  */
-final class URLRequestHeader
-{
+final class URLRequestHeader {
 	/**
 		An HTTP request header name(such as `Content-Type` or
 		`SOAPAction`).
@@ -27,13 +26,12 @@ final class URLRequestHeader
 		@param value The value associated with the `name` property
 					(such as `text/plain`).
 	**/
-	public function new(name:String = "", value:String = "")
-	{
+	public function new(name:String = "", value:String = "") {
 		this.name = name;
 		this.value = value;
 	}
-	
-	public function toString():String{
+
+	public function toString():String {
 		return '${this.name}:${this.value}';
 	}
 }
