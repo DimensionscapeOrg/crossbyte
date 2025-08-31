@@ -42,16 +42,16 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	public static inline function current():CrossByte {
-		//is TLS better?
+		// is TLS better?
 		/* var currentThread:Thread = Thread.current();
-		var instance:CrossByte = __instances.get(currentThread);
-		return instance; */
+			var instance:CrossByte = __instances.get(currentThread);
+			return instance; */
 
 		var instance:CrossByte = __threadLocalStorage.value;
-        if (instance == null){
+		if (instance == null) {
 			instance = __primordial;
 		}
-        return instance;
+		return instance;
 	}
 
 	// ==== Private Static Methods ====
@@ -157,17 +157,17 @@ final class CrossByte extends EventDispatcher {
 
 	}*/
 	public function exit():Void {
-
-		//TODO: Thread safety
+		// TODO: Thread safety
 		__isRunning = false;
 		__instances.remove(Thread.current());
 		__socketRegistry = null;
 		__instanceCount--;
 	}
 
-	@:noCompletion private inline function get_uptime():Float{
+	@:noCompletion private inline function get_uptime():Float {
 		return __time;
 	}
+
 	// ==== Private Methods ====
 	#if cpp
 	@:noCompletion private inline function registerSocket(socket:Socket):Void {
@@ -197,7 +197,7 @@ final class CrossByte extends EventDispatcher {
 		if (__isPrimordial) {
 			EntryPoint.runInMainThread(__runEventLoop);
 			__primordial = this;
-			//TODO: Thread safety
+			// TODO: Thread safety
 			var t:Thread = Thread.current();
 			__instances.set(t, this);
 		} else {

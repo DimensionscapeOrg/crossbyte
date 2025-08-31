@@ -196,7 +196,7 @@ class ServerSocket extends EventDispatcher {
 
 			__serverSocket.listen(backlog);
 			listening = true;
-			if(__hasListener){
+			if (__hasListener) {
 				__cbInstance.addEventListener(Event.TICK, this_onTick);
 			}
 		}
@@ -253,7 +253,7 @@ class ServerSocket extends EventDispatcher {
 
 		if (type == Event.CONNECT) {
 			__hasListener = true;
-			if(listening){
+			if (listening) {
 				__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
 			}
 		}
@@ -264,7 +264,7 @@ class ServerSocket extends EventDispatcher {
 
 		if (type == Event.CONNECT) {
 			__hasListener = false;
-			if(__cbInstance != null){
+			if (__cbInstance != null) {
 				__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
 			}
 		}

@@ -1644,7 +1644,6 @@ final class File extends EventDispatcher {
 		return __data;
 	}
 
-
 	@:noCompletion private function get_modificationDate():Date {
 		if (__fileStatsDirty) {
 			__updateFileStats();

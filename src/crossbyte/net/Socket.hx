@@ -608,7 +608,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return __input.readUTFBytes(length);
 	}
 
-	public function readVarUInt():Int{
+	public function readVarUInt():Int {
 		return __input.readVarInt();
 	}
 
@@ -950,7 +950,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				rl = 0;
 
 			var newInput = Bytes.alloc(rl + newData.length);
-			if (rl > 0){
+			if (rl > 0) {
 				newInput.blit(0, __input, __input.position, rl);
 			}
 
