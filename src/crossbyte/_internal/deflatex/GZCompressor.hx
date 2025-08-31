@@ -40,16 +40,16 @@ class GZCompressor {
 			output.writeByte(0);
 		}
 
-		output.writeString( file_name );
+		output.writeString(file_name);
 		output.writeByte(0);
 
 		var deflater:Deflater = new Deflater();
 		var result:Bytes = deflater.compress(stream);
-		output.write( result );
+		output.write(result);
 
-		output.writeInt32( deflater.getCRCValue() );
-		output.writeInt32( stream.length );
-		
+		output.writeInt32(deflater.getCRCValue());
+		output.writeInt32(stream.length);
+
 		return output.getBytes();
 	}
 
@@ -95,13 +95,13 @@ class GZCompressor {
 
 		// Verify data
 		if (result.length != f_size) {
-			throw new Exception("Size mismatch, expected = "+f_size+", actual = "+result.length);
+			throw new Exception("Size mismatch, expected = " + f_size + ", actual = " + result.length);
 		}
 		var crc:Int = inflater.CRC;
 		if (crc != f_crc) {
-			throw new Exception("CRC mismatch, expected = "+StringTools.hex(f_crc)+", actual = "+StringTools.hex(crc));
+			throw new Exception("CRC mismatch, expected = " + StringTools.hex(f_crc) + ", actual = " + StringTools.hex(crc));
 		}
-		
+
 		return result;
 	}
 }

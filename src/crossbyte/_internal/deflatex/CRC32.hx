@@ -28,6 +28,7 @@ class CRC32 {
 	}
 
 	private var crc:Int = 0xffffffff;
+
 	public function new() {}
 
 	/**
@@ -35,7 +36,10 @@ class CRC32 {
 	 * @return The current CRC value
 	 */
 	public var value(get, never):Int;
-	function get_value():Int { return ~crc; }
+
+	function get_value():Int {
+		return ~crc;
+	}
 
 	/**
 	 * Update the current checksum with the given byte.
@@ -61,7 +65,7 @@ class CRC32 {
 	 * @param len The number of bytes
 	 */
 	public function updateBytes(bytes:Bytes, off:Int, len:Int) {
-		for(i in off...off+len) {
+		for (i in off...off + len) {
 			var byte:Int = bytes.get(i);
 			crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ byte) & 0xff];
 		}

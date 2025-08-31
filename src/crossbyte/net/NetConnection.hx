@@ -249,7 +249,7 @@ private class UDPConnection implements INetConnection {
 	public var protocol:Protocol = UDP;
 	public var inTimestamp:Float = 0.0;
 	public var outTimestamp:Float = 0.0;
-	
+
 	public var onData(get, set):ByteArrayInput->Void;
 	public var onClose(get, set):Reason->Void;
 	public var onError(get, set):Reason->Void;
