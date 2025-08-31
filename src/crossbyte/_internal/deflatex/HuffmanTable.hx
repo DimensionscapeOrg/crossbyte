@@ -8,6 +8,7 @@ import haxe.ds.Vector;
 class HuffmanTable {
 	/** An array of codes. */
 	public var code:Vector<Int>;
+
 	/** An array of codelengths. */
 	public var codeLen:Vector<Int>;
 
@@ -19,10 +20,10 @@ class HuffmanTable {
 		code = new Vector<Int>(numSymbols);
 		codeLen = new Vector<Int>(numSymbols);
 		#if !static
-				for(i in 0...numSymbols) {
-					code[i] = 0;
-					codeLen[i] = 0;
-				}
+		for (i in 0...numSymbols) {
+			code[i] = 0;
+			codeLen[i] = 0;
+		}
 		#end
 	}
 
@@ -99,6 +100,7 @@ class HuffmanTable {
 	 * Fixed literal codes
 	 */
 	public static var LIT(default, null):HuffmanTable = createLIT();
+
 	private static function createLIT():HuffmanTable {
 		var lit:HuffmanTable = new HuffmanTable(286);
 		var nextCode:Int = 0;
@@ -123,12 +125,13 @@ class HuffmanTable {
 		}
 		return lit;
 	}
-	
+
 	/*
 	 * Default Huffman code tables (see RFC 1951, section 3.2.6)
 	 * Fixed distance codes
 	 */
 	public static var DIST(default, null):HuffmanTable = createDIST();
+
 	private static function createDIST():HuffmanTable {
 		var dist:HuffmanTable = new HuffmanTable(30);
 		for (i in 0...30) {

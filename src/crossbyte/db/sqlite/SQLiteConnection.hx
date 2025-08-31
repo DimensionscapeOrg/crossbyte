@@ -9,7 +9,7 @@ import haxe.Int64;
  * Extends {@link crossbyte.db.SQLConnection}.
  */
 class SQLiteConnection extends SQLConnection {
-    /**
+	/**
 	 * Controls the on-disk journaling mode for transactions.
 	 *
 	 * Common values: {@link JournalMode#WAL}, {@link JournalMode#DELETE}, etc.
@@ -22,7 +22,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var journalMode(get, set):JournalMode;
 
-    /**
+	/**
 	 * Durability level for writes (fsync strategy).
 	 *
 	 * - `OFF` = fastest, lowest durability
@@ -35,7 +35,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var synchronous(get, set):SynchronousMode;
 
-    /**
+	/**
 	 * Enables or disables foreign-key constraint enforcement.
 	 *
 	 * Getter/Setter wrap `PRAGMA foreign_keys`.
@@ -43,7 +43,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var foreignKeys(get, set):Bool;
 
-    /**
+	/**
 	 * Threshold (in pages) at which SQLite auto-checkpoints the WAL.
 	 *
 	 * Getter/Setter wrap `PRAGMA wal_autocheckpoint`.
@@ -51,7 +51,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var walAutoCheckpoint(get, set):Int;
 
-    /**
+	/**
 	 * Milliseconds to wait on a locked database before failing.
 	 *
 	 * Getter/Setter wrap `PRAGMA busy_timeout`.
@@ -59,7 +59,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var busyTimeout(get, set):Int;
 
-    /**
+	/**
 	 * Memory-mapped I/O window size in bytes.
 	 *
 	 * Getter/Setter wrap `PRAGMA mmap_size`.
@@ -68,7 +68,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var mmapSize(get, set):Int64;
 
-    /**
+	/**
 	 * Where SQLite stores temporary tables and indices.
 	 *
 	 * Getter/Setter wrap `PRAGMA temp_store`.
@@ -76,7 +76,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var tempStore(get, set):TempStoreMode;
 
-    /**
+	/**
 	 * Securely overwrite deleted content.
 	 *
 	 * Getter/Setter wrap `PRAGMA secure_delete` (0/1).
@@ -84,7 +84,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var secureDelete(get, set):Bool;
 
-    /**
+	/**
 	 * Allow reading uncommitted (dirty) rows.
 	 *
 	 * Getter/Setter wrap `PRAGMA read_uncommitted` (0/1).
@@ -92,7 +92,7 @@ class SQLiteConnection extends SQLConnection {
 	 */
 	public var readUncommitted(get, set):Bool;
 
-    /**
+	/**
 	 * Create a new SQLiteConnection.
 	 *
 	 * Most configuration is done via the public properties (e.g., {@link #journalMode}).
@@ -101,7 +101,7 @@ class SQLiteConnection extends SQLConnection {
 		super();
 	}
 
-    /**
+	/**
 	 * Run a WAL checkpoint and return its result counters.
 	 *
 	 * Wraps `PRAGMA wal_checkpoint(<mode>)`.
@@ -123,7 +123,7 @@ class SQLiteConnection extends SQLConnection {
 		return {busy: 0, log: 0, checkpointed: 0};
 	}
 
-    /**
+	/**
 	 * Convenience for `walCheckpoint(TRUNCATE)`, attempting to shrink the WAL file.
 	 *
 	 * @return A {@link WalCheckpointResult} with `busy`, `log`, and `checkpointed` frame counts.
@@ -132,7 +132,7 @@ class SQLiteConnection extends SQLConnection {
 	public inline function walTruncate():WalCheckpointResult
 		return walCheckpoint(CheckpointMode.TRUNCATE);
 
-    /**
+	/**
 	 * Run a full integrity check on the database.
 	 *
 	 * Wraps `PRAGMA integrity_check`; returns `"ok"` if no issues are found,
@@ -145,7 +145,7 @@ class SQLiteConnection extends SQLConnection {
 		return (rs != null && rs.hasNext()) ? Std.string(Reflect.field(rs.next(), "integrity_check")) : "";
 	}
 
-    /**
+	/**
 	 * Report rows that violate foreign-key constraints.
 	 *
 	 * Wraps `PRAGMA foreign_key_check`.
@@ -169,7 +169,7 @@ class SQLiteConnection extends SQLConnection {
 		return out;
 	}
 
-    /**
+	/**
 	 * List compile-time options built into the linked SQLite library.
 	 *
 	 * Wraps `PRAGMA compile_options`.
@@ -185,7 +185,7 @@ class SQLiteConnection extends SQLConnection {
 		return out;
 	}
 
-    /**
+	/**
 	 * List supported PRAGMA names in the current SQLite build.
 	 *
 	 * Wraps `PRAGMA pragma_list`.
@@ -201,7 +201,7 @@ class SQLiteConnection extends SQLConnection {
 		return out;
 	}
 
-    /**
+	/**
 	 * Quick database size/fragmentation snapshot.
 	 *
 	 * Internally reads `page_size`, `page_count`, and `freelist_count`
@@ -219,15 +219,15 @@ class SQLiteConnection extends SQLConnection {
 		final freeList = freeListRow != null ? Std.parseInt(Std.string(Reflect.field(freeListRow, "freelist_count"))) : 0;
 
 		return {
-			pageSize:pageSize,
-			pageCount:pageCount,
-			freeListCount:freeList,
-			dbSizeBytes:Int64.make(0, pageSize * pageCount),
-			freeBytes:Int64.make(0, pageSize * freeList)
+			pageSize: pageSize,
+			pageCount: pageCount,
+			freeListCount: freeList,
+			dbSizeBytes: Int64.make(0, pageSize * pageCount),
+			freeBytes: Int64.make(0, pageSize * freeList)
 		};
 	}
 
-    /**
+	/**
 	 * List user tables in the database.
 	 *
 	 * Thin public wrapper around the base-class introspection.
@@ -335,8 +335,8 @@ class SQLiteConnection extends SQLConnection {
 
 typedef WalCheckpointResult = {
 	var busy:Int;
-	var log:Int; 
-	var checkpointed:Int; 
+	var log:Int;
+	var checkpointed:Int;
 }
 
 typedef FKViolation = {

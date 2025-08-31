@@ -1,10 +1,10 @@
 package crossbyte._internal.native.sys;
+
 #if windows
 typedef NativeSystem = crossbyte._internal.native.sys.win.WinNativeSystem;
 #elseif linux
 typedef NativeSystem = crossbyte._internal.native.sys.linux.LinuxNativeSystem;
 #else
-
 class NativeSystem {
 	extern private static function getProcessorCount():Int;
 

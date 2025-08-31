@@ -1,22 +1,21 @@
 package crossbyte._internal.lz4;
+
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
-
 import haxe.io.Int32Array;
 import haxe.io.UInt8Array;
 
 class Lz4 {
+	static var hashTable:ByteArray = new ByteArray(65536);
 
-	static var hashTable: ByteArray = new ByteArray(65536);
-
-	static inline function encodeBound(size: Int): Int {
+	static inline function encodeBound(size:Int):Int {
 		return untyped size > 0x7e000000 ? 0 : size + (size / 255 | 0) + 16;
 	}
 
-	public static inline function compress(b: Bytes): Bytes {
-	
-		var iBuf: ByteArray = new ByteArray(b.length);
-		for (i in 0...b.length) iBuf[i] = b.get(i);
+	public static inline function compress(b:Bytes):Bytes {
+		var iBuf:ByteArray = new ByteArray(b.length);
+		for (i in 0...b.length)
+			iBuf[i] = b.get(i);
 
 		var iLen = iBuf.length;
 		if (iLen >= 0x7e000000) {
@@ -30,7 +29,7 @@ class Lz4 {
 		// "The last 5 bytes are always literals"
 		var lastLiteralPos = iLen - 5;
 
-		//if (hashTable == null) 
+		// if (hashTable == null)
 		/*for (i in 0...hashTable.length) {
 			hashTable[i] = 0;
 		}*/
@@ -52,32 +51,34 @@ class Lz4 {
 			while (iPos <= lastMatchPos) {
 				sequence = sequence >>> 8 | iBuf[iPos + 3] << 24;
 				var hash = (sequence * 0x9e37 & 0xffff) + (sequence * 0x79b1 >>> 16) & 0xffff;
-				
-				 hash = ((hash >> 16) ^ hash) >>> 0 & 0xffff;
-				 
-				refPos = hashTable[hash] -1;
+
+				hash = ((hash >> 16) ^ hash) >>> 0 & 0xffff;
+
+				refPos = hashTable[hash] - 1;
 				hashTable[hash] = iPos + 1;
 				mOffset = iPos - refPos;
-				if (mOffset < 65536 &&
-					iBuf[refPos + 0] == ((sequence       ) & 0xff) &&
-					iBuf[refPos + 1] == ((sequence >>>  8) & 0xff) &&
-					iBuf[refPos + 2] == ((sequence >>> 16) & 0xff) &&
-					iBuf[refPos + 3] == ((sequence >>> 24) & 0xff)
-				) {
+				if (mOffset < 65536
+					&& iBuf[refPos + 0] == ((sequence) & 0xff)
+					&& iBuf[refPos + 1] == ((sequence >>> 8) & 0xff)
+					&& iBuf[refPos + 2] == ((sequence >>> 16) & 0xff)
+					&& iBuf[refPos + 3] == ((sequence >>> 24) & 0xff)) {
 					break;
 				}
 				iPos += 1;
 			}
 
 			// No match found
-			if (iPos > lastMatchPos) break;
+			if (iPos > lastMatchPos)
+				break;
 
 			// Match found
 			var lLen = iPos - anchorPos;
 			var mLen = iPos;
-			iPos += 4; refPos += 4;
+			iPos += 4;
+			refPos += 4;
 			while (iPos < lastLiteralPos && iBuf[iPos] == iBuf[refPos]) {
-				iPos += 1; refPos += 1;
+				iPos += 1;
+				refPos += 1;
 			}
 			mLen = iPos - mLen;
 			var token = mLen < 19 ? mLen - 4 : 15;
@@ -91,8 +92,7 @@ class Lz4 {
 					l -= 255;
 				}
 				oBuf[oPos++] = l;
-			}
-			else {
+			} else {
 				oBuf[oPos++] = (lLen << 4) | token;
 			}
 
@@ -101,7 +101,8 @@ class Lz4 {
 				oBuf[oPos++] = iBuf[anchorPos++];
 			}
 
-			if (mLen == 0) break;
+			if (mLen == 0)
+				break;
 
 			// Write offset of match
 			oBuf[oPos + 0] = mOffset;
@@ -131,8 +132,7 @@ class Lz4 {
 				l -= 255;
 			}
 			oBuf[oPos++] = l;
-		}
-		else {
+		} else {
 			oBuf[oPos++] = lLen << 4;
 		}
 		while (lLen-- > 0) {
@@ -141,10 +141,8 @@ class Lz4 {
 
 		#if js
 		return Bytes.ofData(untyped oBuf.buffer.slice(0, oPos));
-
 		#elseif hl
 		return oBuf.getData().toBytes(oPos);
-
 		#else
 		var bOut = Bytes.alloc(oPos);
 		for (i in 0...oPos) {
@@ -154,10 +152,10 @@ class Lz4 {
 		#end
 	}
 
-	public static inline function decompress(b: Bytes): Bytes {
-		
-		var iBuf: ByteArray = new ByteArray(b.length);
-		for (i in 0...b.length) iBuf[i] = b.get(i);
+	public static inline function decompress(b:Bytes):Bytes {
+		var iBuf:ByteArray = new ByteArray(b.length);
+		for (i in 0...b.length)
+			iBuf[i] = b.get(i);
 
 		var iLen = iBuf.length;
 		var oBuf = new ByteArray();
@@ -176,7 +174,8 @@ class Lz4 {
 					var l = 0;
 					while (true) {
 						l = iBuf[iPos++];
-						if (l != 255) break;
+						if (l != 255)
+							break;
 						clen += 255;
 					}
 					clen += l;
@@ -184,16 +183,18 @@ class Lz4 {
 
 				// Copy literals
 				var end = iPos + clen;
-				
-				while (iPos < end) {					
+
+				while (iPos < end) {
 					oBuf[oPos++] = iBuf[iPos++];
 				}
-				if (iPos == iLen) break;
+				if (iPos == iLen)
+					break;
 			}
 
 			// Match
 			var mOffset = iBuf[iPos + 0] | (iBuf[iPos + 1] << 8);
-			if (mOffset == 0 || mOffset > oPos) throw "Could not perform decompression";
+			if (mOffset == 0 || mOffset > oPos)
+				throw "Could not perform decompression";
 			iPos += 2;
 
 			// Length of match
@@ -202,7 +203,8 @@ class Lz4 {
 				var l = 0;
 				while (true) {
 					l = iBuf[iPos++];
-					if (l != 255) break;
+					if (l != 255)
+						break;
 					clen += 255;
 				}
 				clen += l;
@@ -218,10 +220,8 @@ class Lz4 {
 
 		#if js
 		return Bytes.ofData(untyped oBuf.buffer);
-
 		#elseif hl
 		return oBuf.getData().toBytes(oBuf.length);
-
 		#else
 		var bOut = Bytes.alloc(oPos);
 		for (i in 0...oPos) {

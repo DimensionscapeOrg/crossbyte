@@ -1,4 +1,5 @@
 package crossbyte.db;
+
 import crossbyte.Object;
 import crossbyte.errors.SQLError;
 import crossbyte.events.Event;
@@ -15,9 +16,7 @@ import sys.thread.Deque;
  * @author Christopher Speciale
  */
 @:access(crossbyte.db.SQLConnection)
-class SQLStatement extends EventDispatcher
-{
-
+class SQLStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 	public var itemClass:Class<Dynamic>;
 	public var parameters(get, null):Object;
@@ -32,16 +31,13 @@ class SQLStatement extends EventDispatcher
 	private var __resultQueue:Deque<Array<String>>;
 	private var __async:Bool = false;
 
-	public function new()
-	{
+	public function new() {
 		super();
 		parameters = new Object();
 	}
 
-	public function cancel():Void
-	{
-		if (executing)
-		{
+	public function cancel():Void {
+		if (executing) {
 			__executing = false;
 			__prefetch = 0;
 			__resultQueue = new Deque();
@@ -51,45 +47,34 @@ class SQLStatement extends EventDispatcher
 		}
 	}
 
-	public function clearParameters():Void
-	{
+	public function clearParameters():Void {
 		parameters = new Object();
 	}
 
-	public function execute(prefetch:Int = -1):Void
-	{
+	public function execute(prefetch:Int = -1):Void {
 		__executing = true;
 		__resultQueue = new Deque();
 
-		for (parameter in parameters)
-		{
+		for (parameter in parameters) {
 			__connection.addValue(cast parameter, Reflect.field(parameters, parameter));
 		}
-		if (__async)
-		{
+		if (__async) {
 			__sqlConnection.__addToQue(__executeAsync(text, this, prefetch));
-		}
-		else {
+		} else {
 			__prefetch = prefetch;
 			__resultSet = __connection.request(text);
 			__queueResult();
 		}
-
 	}
 
-	private function __executeAsync(sql:String, statement:SQLStatement, prefetch:Int):Function
-	{
-		return function()
-		{
+	private function __executeAsync(sql:String, statement:SQLStatement, prefetch:Int):Function {
+		return function() {
 			var event:Event;
 			var results:ResultSet;
-			try
-			{
+			try {
 				results = __connection.request(sql);
 				event = new SQLEvent(SQLEvent.RESULT);
-			}
-			catch (e:Dynamic)
-			{
+			} catch (e:Dynamic) {
 				results = null;
 				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, "Execution failed"));
 			}
@@ -105,29 +90,20 @@ class SQLStatement extends EventDispatcher
 		}
 	}
 
-	private function __queueResult():Void
-	{
+	private function __queueResult():Void {
 		var results:Array<String> = [];
 
-		if (__prefetch == -1)
-		{
-			while (__resultSet.hasNext())
-			{
+		if (__prefetch == -1) {
+			while (__resultSet.hasNext()) {
 				results.push(__resultSet.next());
 			}
 			__resultQueue.push(results);
 			__executing = false;
-		}
-		else if (__prefetch > 0)
-		{
-			for (i in 0...__prefetch)
-			{
-				if (__resultSet.hasNext())
-				{
+		} else if (__prefetch > 0) {
+			for (i in 0...__prefetch) {
+				if (__resultSet.hasNext()) {
 					results.push(__resultSet.next());
-				}
-				else
-				{
+				} else {
 					__executing = false;
 					break;
 				}
@@ -137,13 +113,11 @@ class SQLStatement extends EventDispatcher
 		__prefetch = 0;
 	}
 
-	public function getResult():SQLResult
-	{
+	public function getResult():SQLResult {
 		var results:Array<String> = __resultQueue.pop(false);
 		var complete:Bool = !__executing;
 
-		if (results != null)
-		{
+		if (results != null) {
 			var sqlResult:SQLResult = new SQLResult(results, __resultSet.length, complete, __connection.lastInsertId());
 
 			return sqlResult;
@@ -152,60 +126,43 @@ class SQLStatement extends EventDispatcher
 		return null;
 	}
 
-	public function next(prefetch:Int = -1):Void
-	{
-		if (__async)
-		{
+	public function next(prefetch:Int = -1):Void {
+		if (__async) {
 			__sqlConnection.__addToQue(__nextAsync(this, prefetch));
-		}
-		else {
-			if (__resultSet != null)
-			{
+		} else {
+			if (__resultSet != null) {
 				__prefetch = prefetch;
 
-				if (__resultSet.hasNext())
-				{
+				if (__resultSet.hasNext()) {
 					__queueResult();
-				}
-				else
-				{
+				} else {
 					__executing = false;
 					__prefetch = 0;
 				}
-			}
-			else {
+			} else {
 				throw "SQLite Error - invalid result set";
 			}
 		}
 	}
 
-	private function __nextAsync(statement:SQLStatement, prefetch:Int):Function
-	{
-		return function()
-		{
+	private function __nextAsync(statement:SQLStatement, prefetch:Int):Function {
+		return function() {
 			var event:Event;
 			var results:ResultSet;
 			var isExecuting:Bool = false;
 
-			try
-			{
-				if (__resultSet != null)
-				{
+			try {
+				if (__resultSet != null) {
 					var hasNext:Bool = __resultSet.hasNext();
-					
-					if (hasNext)
-					{
+
+					if (hasNext) {
 						isExecuting = true;
-					}
-					else
-					{
+					} else {
 						prefetch = 0;
 					}
 				}
 				event = new SQLEvent(SQLEvent.RESULT);
-			}
-			catch (e:Dynamic)
-			{
+			} catch (e:Dynamic) {
 				isExecuting = false;
 				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, "Execution failed"));
 			}
@@ -216,38 +173,31 @@ class SQLStatement extends EventDispatcher
 			message.event = event;
 			message.prefetch = prefetch;
 			message.executing = isExecuting;
-			
+
 			__sqlConnection.__sqlWorker.sendProgress(message);
 		}
 	}
 
-	private function get_executing():Bool
-	{
+	private function get_executing():Bool {
 		return __executing;
 	}
 
-	private function get_parameters():Object
-	{
+	private function get_parameters():Object {
 		return null;
 	}
 
-	private function set_sqlConnection(value:SQLConnection):SQLConnection
-	{
-		if (value != null)
-		{
+	private function set_sqlConnection(value:SQLConnection):SQLConnection {
+		if (value != null) {
 			__async = value.__async;
 			__connection = value.__connection;
-		}
-		else {
+		} else {
 			__connection = null;
 			__async = false;
 		}
 		return __sqlConnection = value;
 	}
 
-	private function get_sqlConnection():SQLConnection
-	{
+	private function get_sqlConnection():SQLConnection {
 		return __sqlConnection;
 	}
-
 }

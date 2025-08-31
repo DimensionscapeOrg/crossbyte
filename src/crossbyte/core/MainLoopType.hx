@@ -1,7 +1,7 @@
 package crossbyte.core;
 
-enum MainLoopType{
-    DEFAULT;
-    POLL;
-    CUSTOM(loop:Void->Void);
+enum MainLoopType {
+	DEFAULT;
+	POLL;
+	CUSTOM(loop:Void->Void);
 }

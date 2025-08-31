@@ -4,10 +4,9 @@ package crossbyte.url;
  * ...
  * @author Christopher Speciale
  */
-class URLRequest
-{
-
+class URLRequest {
 	public var contentType:String;
+
 	/**
 		**Note**: The value of `contentType` must correspond to
 		the type of data in the `data` property. See the note in the
@@ -155,29 +154,23 @@ class URLRequest
 		@param url The URL to be requested. You can set the URL later by using the
 				   `url` property.
 	**/
-	public function new(url:String = null)
-	{
-		if (url != null)
-		{
+	public function new(url:String = null) {
+		if (url != null) {
 			this.url = url;
 		}
 
 		contentType = null;
 		followRedirects = URLRequestDefaults.followRedirects;
 
-		if (URLRequestDefaults.idleTimeout > 0)
-		{
+		if (URLRequestDefaults.idleTimeout > 0) {
 			idleTimeout = URLRequestDefaults.idleTimeout;
-		}
-		else
-		{
+		} else {
 			idleTimeout = 30000;
 		}
 
 		manageCookies = URLRequestDefaults.manageCookies;
 		method = URLRequestMethod.GET;
 		requestHeaders = [];
-		userAgent = URLRequestDefaults.userAgent;		
-	
+		userAgent = URLRequestDefaults.userAgent;
 	}
 }

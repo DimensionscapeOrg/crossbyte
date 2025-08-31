@@ -70,25 +70,25 @@ class IndexedMap<T> {
 
 		return true;
 	}
-    
-    /**
-     * Gets the value associated with the given key.
-     *
-     * @param key The key to look up.
-     * @return The associated value, or `null` if the key does not exist.
-     */
+
+	/**
+	 * Gets the value associated with the given key.
+	 *
+	 * @param key The key to look up.
+	 * @return The associated value, or `null` if the key does not exist.
+	 */
 	public function get(key:Int):Null<T> {
 		var idx = keyToIndex.get(key);
 		return (idx != null) ? values[idx] : null;
 	}
-    
-    /**
-     * Sets the value for a given key.
-     * If the key does not exist, it will be added.
-     *
-     * @param key The key to set.
-     * @param value The value to associate with the key.
-     */
+
+	/**
+	 * Sets the value for a given key.
+	 * If the key does not exist, it will be added.
+	 *
+	 * @param key The key to set.
+	 * @param value The value to associate with the key.
+	 */
 	public function set(key:Int, value:T):Void {
 		if (keyToIndex.exists(key)) {
 			values[keyToIndex[key]] = value;
@@ -97,61 +97,60 @@ class IndexedMap<T> {
 		}
 	}
 
-    /**
-     * Returns the number of values stored.
-     *
-     * @return The number of entries in the map.
-     */
+	/**
+	 * Returns the number of values stored.
+	 *
+	 * @return The number of entries in the map.
+	 */
 	public inline function length():Int {
 		return values.length;
 	}
 
-    /**
-     * Returns a shallow copy of the internal value array.
-     * This array may be in arbitrary order.
-     *
-     * @return A copy of the internal values array.
-     */
+	/**
+	 * Returns a shallow copy of the internal value array.
+	 * This array may be in arbitrary order.
+	 *
+	 * @return A copy of the internal values array.
+	 */
 	public function toArray():Array<T> {
 		return values.copy();
 	}
 
-    
-    /**
-     * Removes all values and keys from the map.
-     */
+	/**
+	 * Removes all values and keys from the map.
+	 */
 	public function clear():Void {
 		values.resize(0);
 		indexToKey.resize(0);
 		keyToIndex = new Map();
 	}
 
-    /**
-     * Returns an array of all keys in the map.
-     * The keys correspond to the order of values in `toArray()`.
-     *
-     * @return A copy of the list of keys.
-     */
+	/**
+	 * Returns an array of all keys in the map.
+	 * The keys correspond to the order of values in `toArray()`.
+	 *
+	 * @return A copy of the list of keys.
+	 */
 	public function keys():Array<Int> {
 		return indexToKey.copy();
 	}
 
-    /**
-     * Checks whether a key exists in the map.
-     *
-     * @param key The key to check.
-     * @return `true` if the key exists, `false` otherwise.
-     */
+	/**
+	 * Checks whether a key exists in the map.
+	 *
+	 * @param key The key to check.
+	 * @return `true` if the key exists, `false` otherwise.
+	 */
 	public function exists(key:Int):Bool {
 		return keyToIndex.exists(key);
 	}
 
-    /**
-     * Returns an iterator over all values in the map.
-     * The iteration order matches the internal array.
-     *
-     * @return An iterator over the stored values.
-     */
+	/**
+	 * Returns an iterator over all values in the map.
+	 * The iteration order matches the internal array.
+	 *
+	 * @return An iterator over the stored values.
+	 */
 	public function iterator():Iterator<T> {
 		return values.iterator();
 	}

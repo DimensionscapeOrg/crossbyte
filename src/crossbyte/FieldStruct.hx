@@ -6,26 +6,25 @@ import haxe.ds.StringMap;
 private typedef BaseStruct<T> = StringMap<T>;
 
 @:callable
-abstract FieldStruct<T>(BaseStruct<T>){
-
-	public static inline function clear<T>(instance:FieldStruct<T>):Void{
-		(cast instance:BaseStruct<T>).clear();
+abstract FieldStruct<T>(BaseStruct<T>) {
+	public static inline function clear<T>(instance:FieldStruct<T>):Void {
+		(cast instance : BaseStruct<T>).clear();
 	}
 
-	public static inline function delete<T>(instance:FieldStruct<T>, field:String):Void{
-		(cast instance:BaseStruct<T>).remove(field);
+	public static inline function delete<T>(instance:FieldStruct<T>, field:String):Void {
+		(cast instance : BaseStruct<T>).remove(field);
 	}
 
-	public static inline function get<T>(instance:FieldStruct<T>, field:String):Null<T>{
-		return (cast instance:BaseStruct<T>).get(field);
+	public static inline function get<T>(instance:FieldStruct<T>, field:String):Null<T> {
+		return (cast instance : BaseStruct<T>).get(field);
 	}
 
-	public static inline function exists<T>(instance:FieldStruct<T>, field:String):Bool{
-		return (cast instance:BaseStruct<T>).exists(field);
+	public static inline function exists<T>(instance:FieldStruct<T>, field:String):Bool {
+		return (cast instance : BaseStruct<T>).exists(field);
 	}
 
-	public static inline function iterator<T>(instance:FieldStruct<T>):KeyValueIterator<String, T>{
-		return (cast instance:BaseStruct<T>).keyValueIterator();
+	public static inline function iterator<T>(instance:FieldStruct<T>):KeyValueIterator<String, T> {
+		return (cast instance : BaseStruct<T>).keyValueIterator();
 	}
 
 	public inline function new() {
