@@ -58,7 +58,7 @@ class RPCCommandMacro {
 		}
 
 		injectPing(newFields, Context.currentPos());
-		
+
 		return fields.concat(newFields);
 	}
 
@@ -171,7 +171,7 @@ class RPCCommandMacro {
 		var metaName = "meta_ping";
 
 		// Define its args (optional nonce for RTT if you want)
-		//var args:Array<FunctionArg> = [{name: "nonce", opt: true, type: macro :Int}];
+		// var args:Array<FunctionArg> = [{name: "nonce", opt: true, type: macro :Int}];
 		var args:Array<FunctionArg> = [];
 
 		// Wrapper around RPC dispatch

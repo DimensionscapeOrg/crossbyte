@@ -12,8 +12,8 @@ abstract class RPCHandler {
 	public static inline final MAX_FRAME_LEN:Int = 8 * 1024 * 1024;
 
 	@:noCompletion private var this_connection:NetConnection;
-	@:noCompletion private inline function this_socket_onData(input:ByteArrayInput):Void {
 
+	@:noCompletion private inline function this_socket_onData(input:ByteArrayInput):Void {
 		while (input.bytesAvailable >= 8) {
 			final lenPos:Int = input.position;
 			final payloadLen:Int = input.readInt();
@@ -35,9 +35,7 @@ abstract class RPCHandler {
 		}
 	}
 
-
 	abstract public function dispatch(op:Int, input:ByteArrayInput):Void;
-	
-	
+
 	abstract public function ping():Void;
 }
