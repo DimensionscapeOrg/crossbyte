@@ -1,92 +1,218 @@
 package crossbyte.ds;
 
+import haxe.ds.ObjectMap;
+
 /**
  * ...
  * @author Christopher Speciale
  */
-/**
- * A Priority Queue implementation in Haxe using a binary heap.
- *
- * @param T The type of values to be stored in the queue.
+
+ /**
+ * A generic priority queue implemented as a binary heap.
+ * 
+ * Items are ordered according to a user-provided comparator function.
+ * This structure supports fast `enqueue`, `dequeue`, and `update` operations.
+ * 
+ * @param T The type of elements stored in the queue. Must be an object type.
  */
-class PriorityQueue<T> {
-	private var heap:Array<T>;
-	private var comparator:(T, T) -> Int;
+final class PriorityQueue<T:{}> {
+	/**
+	 * Returns `true` if the queue is empty.
+	 */
+	public var isEmpty(get, never):Bool;
 
 	/**
-	 * Constructs a new PriorityQueue.
-	 *
-	 * @param comparator A function to compare two elements (negative if first is less, zero if equal, positive if greater).
+	 * Returns the number of elements currently in the queue.
+	 */
+	public var size(get, never):Int;
+
+	@:noCompletion private var heap:Array<T>;
+	@:noCompletion private var pos:ObjectMap<T, Int>; 
+	@:noCompletion private var cmp:(T, T) -> Int;
+
+	/**
+	 * Creates a new priority queue with a given comparator function.
+	 * 
+	 * @param comparator A function that compares two elements. 
+	 * Returns a negative number if the first is less than the second,
+	 * zero if they are equal, or a positive number if greater.
 	 */
 	public function new(comparator:(T, T) -> Int) {
 		this.heap = [];
-		this.comparator = comparator;
+		this.pos = new ObjectMap();
+		this.cmp = comparator;
+	}
+
+	@:noCompletion private inline function get_isEmpty():Bool {
+		return heap.length == 0;
+	}
+
+	@:noCompletion private inline function get_size():Int {
+		return heap.length;
 	}
 
 	/**
-	 * Inserts a value into the priority queue.
-	 *
-	 * @param value The value to be inserted.
+	 * Returns `true` if the queue contains the given element.
+	 * 
+	 * @param x The element to check.
+	 * @return Whether the element is in the queue.
 	 */
-	public function enqueue(value:T):Void {
-		heap.push(value);
-		siftUp(heap.length - 1);
+	public inline function contains(x:T):Bool {
+		return pos.exists(x);
 	}
 
 	/**
-	 * Removes and returns the highest priority value from the queue.
-	 *
-	 * @return The highest priority value.
+	 * Returns the element at the front of the queue (highest priority)
+	 * without removing it. Returns `null` if the queue is empty.
 	 */
-	public function dequeue():Null<T> {
-		if (heap.length == 0)
-			return null;
-		var root = heap[0];
-		var last = heap.pop();
-		if (heap.length > 0) {
-			heap[0] = last;
-			siftDown(0);
+	public inline function peek():Null<T> {
+		return heap.length > 0 ? heap[0] : null;
+	}
+
+	/**
+	 * Adds an element to the queue or updates its priority
+	 * if it already exists.
+	 * 
+	 * @param x The element to insert or update.
+	 */
+	public inline function enqueueOrUpdate(x:T):Void {
+		var i:Null<Int> = pos.get(x);
+		if (i == null) {
+			enqueue(x);
+		} else {
+			update(x);
+		}
+	}
+
+	/**
+	 * Adds an element to the queue.
+	 * 
+	 * @param x The element to insert.
+	 */
+	public inline function enqueue(x:T):Void {
+		var i:Int = heap.length;
+		heap[i] = x;
+		pos.set(x, i);
+		siftUp(i);
+	}
+
+	/**
+	 * Removes and returns the element with the highest priority.
+	 * Returns `null` if the queue is empty.
+	 * 
+	 * @return The highest-priority element, or `null`.
+	 */
+	public inline function dequeue():Null<T> {
+		var n:Int = heap.length;
+		var root:T = null;
+		if (n > 0) {
+			root = heap[0];
+			removeAt(0);
 		}
 		return root;
 	}
 
 	/**
-	 * Returns the highest priority value without removing it.
-	 *
-	 * @return The highest priority value.
+	 * Updates the priority of an element already in the queue.
+	 * Has no effect if the element is not present.
+	 * 
+	 * @param x The element to update.
 	 */
-	public function peek():Null<T> {
-		return heap.length > 0 ? heap[0] : null;
+	public inline function update(x:T):Void {
+		var i:Null<Int> = pos.get(x);
+		if (i == null) {
+			return;
+		}
+
+		siftUp(i);
+		siftDown(i);
 	}
 
-	private function siftUp(index:Int):Void {
-		var parentIndex = (index - 1) >> 1;
-		while (index > 0 && comparator(heap[index], heap[parentIndex]) < 0) {
-			swap(index, parentIndex);
-			index = parentIndex;
-			parentIndex = (index - 1) >> 1;
+	/**
+	 * Removes an element from the queue if it exists.
+	 * 
+	 * @param x The element to remove.
+	 * @return `true` if the element was found and removed.
+	 */
+	public inline function remove(x:T):Bool {
+		var i:Null<Int> = pos.get(x);
+		var removed:Bool = i != null;
+		if (removed) {
+			removeAt(i);
+		}
+
+		return removed;
+	}
+
+	/**
+	 * Clears all elements from the queue.
+	 */
+	public inline function clear():Void {
+		heap.resize(0);
+		pos = new ObjectMap();
+	}
+
+	@:noCompletion private inline function less(i:Int, j:Int):Bool {
+		var c = cmp(heap[i], heap[j]);
+		return c < 0;
+	}
+
+	@:noCompletion private inline function swap(i:Int, j:Int):Void {
+		var a:T = heap[i];
+		var b:T = heap[j];
+
+		heap[i] = b;
+		heap[j] = a;
+		pos.set(b, i);
+		pos.set(a, j);
+	}
+
+	@:noCompletion private function removeAt(i:Int):Void {
+		var n:Int = heap.length - 1;
+		var victim:T = heap[i];
+		pos.remove(victim);
+
+		if (i != n) {
+			heap[i] = heap[n];
+			pos.set(heap[i], i);
+		}
+		heap.pop();
+
+		if (i < heap.length) {
+			siftUp(i);
+			siftDown(i);
 		}
 	}
 
-	private function siftDown(index:Int):Void {
-		var leftChild = (index << 1) + 1;
-		var rightChild = leftChild + 1;
-		var smallest = index;
-		if (leftChild < heap.length && comparator(heap[leftChild], heap[smallest]) < 0) {
-			smallest = leftChild;
-		}
-		if (rightChild < heap.length && comparator(heap[rightChild], heap[smallest]) < 0) {
-			smallest = rightChild;
-		}
-		if (smallest != index) {
-			swap(index, smallest);
-			siftDown(smallest);
+	@:noCompletion private function siftUp(i:Int):Void {
+		while (i > 0) {
+			var p:Int = (i - 1) >> 1;
+			if (!less(i, p))
+				break;
+			swap(i, p);
+			i = p;
 		}
 	}
 
-	private function swap(i:Int, j:Int):Void {
-		var temp = heap[i];
-		heap[i] = heap[j];
-		heap[j] = temp;
+	@:noCompletion private function siftDown(i:Int):Void {
+		var n:Int = heap.length;
+		while (true) {
+			var l:Int = (i << 1) + 1;
+			if (l >= n)
+				break;
+
+			var r:Int = l + 1;
+			var m:Int = l;
+			if (r < n && less(r, l)) {
+				m = r;
+			}
+
+			if (!less(m, i)) {
+				break;
+			}
+
+			swap(i, m);
+			i = m;
+		}
 	}
 }
