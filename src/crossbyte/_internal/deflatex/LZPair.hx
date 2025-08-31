@@ -8,9 +8,9 @@ import haxe.Exception;
  */
 class LZPair {
 	/*
-	* Ranges for Length/distance symbols
-	* (see RFC 1951, section 3.2.5)
-	*/
+	 * Ranges for Length/distance symbols
+	 * (see RFC 1951, section 3.2.5)
+	 */
 	public static final SYMBOLS:Symbols = new Symbols();
 
 	/** The distance value. */

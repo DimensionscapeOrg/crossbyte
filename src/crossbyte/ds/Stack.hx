@@ -34,7 +34,7 @@ class Stack<T> {
 	 * @param length Optional. The initial size of the internal array used to store elements.
 	 */
 	public function new(length:Int = 0) {
-		__items = new Array();		
+		__items = new Array();
 		__items.resize(length);
 		__top = 0;
 	}
