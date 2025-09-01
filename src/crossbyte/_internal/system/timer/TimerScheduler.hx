@@ -13,6 +13,7 @@ import crossbyte._internal.system.timer.heap.TimerHeap;
  * The default implementation is based on a min-heap, but future variants like
  * timer wheels can be plugged in by implementing `ITimerScheduler`.
  */
+ @:forward(startTime)
 abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler {
 	/**
 	 * The number of active timers currently managed by the scheduler.

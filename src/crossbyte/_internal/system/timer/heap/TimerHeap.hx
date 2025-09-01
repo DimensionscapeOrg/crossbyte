@@ -2,6 +2,7 @@
 package crossbyte._internal.system.timer.heap;
 
 import crossbyte.ds.PriorityQueue;
+import haxe.Timer as HxTimer;
 
 class TimerHeap implements ITimerScheduler {
 	#if precision_tick
@@ -17,6 +18,7 @@ class TimerHeap implements ITimerScheduler {
 	public var time(get, never):Float;
 
 	private final queue:PriorityQueue<TimerNode> = new PriorityQueue(comparatorFunc);
+	public final startTime:Float = HxTimer.stamp();
 
 	private var nodes:Array<TimerNode> = [];
 	private var gens:Array<Int> = [];
