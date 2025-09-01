@@ -7,14 +7,14 @@ import haxe.Timer as HxTimer;
  * ...
  * @author Christopher Speciale
  */
-class Timer {
+final class GlobalTimer {
 	@:noCompletion private static var __lastTimerID:UInt = 0;
 	@:noCompletion private static var __timers:Map<UInt, HxTimer> = new Map();
 
 	/**
-			Cancels a specified `setInterval()` call.
-		@param	id	The ID of the `setInterval()` call, which you set to a variable, as
-			in the following:
+	 *	Cancels a specified `setInterval()` call.
+	 *	@param	id	The ID of the `setInterval()` call, which you set to a variable, as
+	 *	in the following:
 	**/
 	public static function clearInterval(id:UInt):Void {
 		if (__timers.exists(id)) {
@@ -25,9 +25,9 @@ class Timer {
 	}
 
 	/**
-		Cancels a specified `setTimeout()` call.
-		@param	id	The ID of the `setTimeout()` call, which you set to a variable, as in
-		the following
+	 *	Cancels a specified `setTimeout()` call.
+	 *	@param	id	The ID of the `setTimeout()` call, which you set to a variable, as in
+	 *	the following
 	**/
 	public static function clearTimeout(id:UInt):Void {
 		if (__timers.exists(id)) {
