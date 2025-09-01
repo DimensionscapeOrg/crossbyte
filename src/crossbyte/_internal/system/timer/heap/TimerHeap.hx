@@ -1,4 +1,3 @@
-
 package crossbyte._internal.system.timer.heap;
 
 import crossbyte.ds.PriorityQueue;
@@ -18,6 +17,7 @@ class TimerHeap implements ITimerScheduler {
 	public var time(get, never):Float;
 
 	private final queue:PriorityQueue<TimerNode> = new PriorityQueue(comparatorFunc);
+
 	public final startTime:Float = HxTimer.stamp();
 
 	private var nodes:Array<TimerNode> = [];
@@ -40,7 +40,6 @@ class TimerHeap implements ITimerScheduler {
 
 	public function new() {}
 
-
 	overload extern public inline function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle {
 		return createTimer(__now + delay, 0, callback);
 	}
@@ -51,20 +50,26 @@ class TimerHeap implements ITimerScheduler {
 
 	overload extern public inline function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
 		#if debug
-		if (interval <= 0) throw "interval must be > 0";
+		if (interval <= 0) {
+			throw "interval must be > 0";
+		}
 		#end
 		return createTimer(__now + delay, interval, callback);
 	}
 
 	overload extern public inline function setInterval(delay:Float, interval:Float, callback:Void->Void):TimerHandle {
 		#if debug
-		if (interval <= 0) throw "interval must be > 0";
+		if (interval <= 0) {
+			throw "interval must be > 0";
+		}
 		#end
 		return createTimer(__now + delay, interval, (handle:TimerHandle) -> callback());
 	}
 
 	public function clear(handle:TimerHandle, immediate:Bool = false):Bool {
-		if (!isLive(handle)) return false;
+		if (!isLive(handle)) {
+			return false;
+		}
 
 		var node:TimerNode = nodes[handle.id()];
 		if (immediate) {
@@ -80,8 +85,20 @@ class TimerHeap implements ITimerScheduler {
 		return isLive(handle);
 	}
 
+	overload extern public inline function schedule(time:Float, callback:TimerHandle->Void):TimerHandle {
+		final delay:Float = time - this.time;
+		return this.setTimeout(delay, callback);
+	}
+
+	overload extern public inline function schedule(time:Float, callback:Void->Void):TimerHandle {
+		final delay:Float = time - this.time;
+		return this.setTimeout(delay, callback);
+	}
+
 	public function reschedule(handle:TimerHandle, time:Float):Bool {
-		if (!isLive(handle)) return false;
+		if (!isLive(handle)) {
+			return false;
+		}
 
 		var node:TimerNode = nodes[handle.id()];
 		node.time = time;
@@ -90,8 +107,13 @@ class TimerHeap implements ITimerScheduler {
 	}
 
 	public function delay(handle:TimerHandle, dt:Float):Bool {
-		if (!isLive(handle)) return false;
-		if (dt < 0) return false;
+		if (!isLive(handle)) {
+			return false;
+		}
+
+		if (dt < 0) {
+			return false;
+		}
 
 		var node:TimerNode = nodes[handle.id()];
 		node.time += dt;
@@ -100,10 +122,14 @@ class TimerHeap implements ITimerScheduler {
 	}
 
 	public function setEnabled(handle:TimerHandle, enabled:Bool, policy:ResumePolicy = KeepPhase, time:Float = 0.0):Bool {
-		if (!isLive(handle)) return false;
+		if (!isLive(handle)) {
+			return false;
+		}
 
 		var node:TimerNode = nodes[handle.id()];
-		if (node.enabled == enabled) return true;
+		if (node.enabled == enabled) {
+			return true;
+		}
 
 		var t:Float = (time != 0.0) ? time : __now;
 
@@ -119,7 +145,10 @@ class TimerHeap implements ITimerScheduler {
 			case KeepPhase:
 				if (node.pausedAt != 0.0) {
 					var pausedDur = t - node.pausedAt;
-					if (pausedDur != 0.0) node.time += pausedDur;
+					if (pausedDur != 0.0) {
+						node.time += pausedDur;
+					}
+
 					node.pausedAt = 0.0;
 				}
 			case FromNow:
@@ -154,7 +183,9 @@ class TimerHeap implements ITimerScheduler {
 					#if timer_burst_catchup
 					if (node.interval > 0) {
 						var steps:Int = Std.int(Math.floor((_now - node.time) / node.interval)) + 1;
-						if (steps < 1) steps = 1;
+						if (steps < 1) {
+							steps = 1;
+						}
 
 						var budget:Int = maxFires - fired;
 						var fires:Int = (steps <= budget) ? steps : budget;
