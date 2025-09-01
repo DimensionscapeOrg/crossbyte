@@ -10,6 +10,8 @@ interface ITimerScheduler {
 	overload extern public function setInterval(delay:Float, interval:Float, callback:Void->Void):TimerHandle;
 	public function clear(handle:TimerHandle, immediate:Bool = false):Bool;
 	public function isActive(handle:TimerHandle):Bool;
+	overload extern public function schedule(time:Float, callback:TimerHandle->Void):TimerHandle;
+	overload extern public function schedule(time:Float, callback:Void->Void):TimerHandle;
 	public function reschedule(handle:TimerHandle, time:Float):Bool;
 	public function delay(handle:TimerHandle, dt:Float):Bool;
 	public function setEnabled(handle:TimerHandle, enabled:Bool, policy:ResumePolicy = ResumePolicy.KeepPhase, time:Float = 0.0):Bool;
