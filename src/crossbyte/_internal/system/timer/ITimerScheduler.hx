@@ -3,6 +3,7 @@ interface ITimerScheduler {
 	public var size(get, never):Int;
 	public var isEmpty(get, never):Bool;	
 	public var time(get, never):Float;
+	public final startTime:Float;
 	overload extern public function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle;
 	overload extern public function setTimeout(delay:Float, callback:Void->Void):TimerHandle;
 	overload extern public function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle;
