@@ -143,4 +143,29 @@ class Timer {
 	public static inline function resume(handle:Int, time:Float, policy:Int = 0):Bool {
 		return current().setEnabled(handle, true, policy, time);
 	}
+
+	/**
+	 * Converts an absolute wall clock time (in milliseconds since epoch)
+	 * to the scheduler's virtual time.
+	 *
+	 * @param wallTime The absolute wall clock time.
+	 * @return The corresponding virtual time in the scheduler.
+	 */
+	public static inline function fromWallClock(wallTime:Float):Float
+	{
+		final scheduler:TimerScheduler = current();
+		return scheduler.time + (wallTime - scheduler.startTime);
+	}
+
+	/**
+	 * Converts a scheduler virtual time back into a wall clock timestamp.
+	 *
+	 * @param virtualTime The virtual time from the scheduler.
+	 * @return The corresponding wall clock time in milliseconds since epoch.
+	 */
+	public static inline function toWallClock(virtualTime:Float):Float
+	{
+		final scheduler = current();
+		return scheduler.startTime + (virtualTime - scheduler.time);
+	}
 }
