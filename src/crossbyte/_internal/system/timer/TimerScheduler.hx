@@ -82,7 +82,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @return A handle used to manage the timer.
 	 */
 	overload extern public inline function setTimeout(delay:Float, callback:Void->Void):Int {
-		return this.setTimeout(delay, callback);
+		return this.setTimeoutVoid(delay, callback);
 	}
 
 	/**
@@ -107,7 +107,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @return A handle used to manage the timer.
 	 */
 	overload extern public inline function setInterval(delay:Float, interval:Float, callback:Void->Void):Int {
-		return this.setInterval(delay, interval, callback);
+		return this.setIntervalVoid(delay, interval, callback);
 	}
 
 	/**
@@ -153,7 +153,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @return A handle that can be used to pause, resume, or clear the timer.
 	 */
 	overload extern public inline function schedule(time:Float, callback:Void->Void):TimerHandle {
-		return this.schedule(time, callback);
+		return this.scheduleVoid(time, callback);
 	}
 
 	/**

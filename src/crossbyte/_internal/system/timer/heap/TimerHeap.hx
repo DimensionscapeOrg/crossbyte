@@ -15,11 +15,9 @@ class TimerHeap implements ITimerScheduler {
 	public var size(get, never):Int;
 	public var isEmpty(get, never):Bool;
 	public var time(get, never):Float;
-
-	private final queue:PriorityQueue<TimerNode> = new PriorityQueue(comparatorFunc);
-
 	public final startTime:Float = HxTimer.stamp();
 
+	private final queue:PriorityQueue<TimerNode> = new PriorityQueue(comparatorFunc);
 	private var nodes:Array<TimerNode> = [];
 	private var gens:Array<Int> = [];
 	private var free:Array<Int> = [];
@@ -40,15 +38,15 @@ class TimerHeap implements ITimerScheduler {
 
 	public function new() {}
 
-	overload extern public inline function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle {
+	public inline function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle {
 		return createTimer(__now + delay, 0, callback);
 	}
 
-	overload extern public inline function setTimeout(delay:Float, callback:Void->Void):TimerHandle {
-		return createTimer(__now + delay, 0, (handle:TimerHandle) -> callback());
+	public inline function setTimeoutVoid(delay:Float, callback:Void->Void):TimerHandle {
+		return createTimer(__now + delay, 0, (handle:Int) -> callback());
 	}
 
-	overload extern public inline function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
+	public inline function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
 		#if debug
 		if (interval <= 0) {
 			throw "interval must be > 0";
@@ -57,7 +55,7 @@ class TimerHeap implements ITimerScheduler {
 		return createTimer(__now + delay, interval, callback);
 	}
 
-	overload extern public inline function setInterval(delay:Float, interval:Float, callback:Void->Void):TimerHandle {
+	public inline function setIntervalVoid(delay:Float, interval:Float, callback:Void->Void):TimerHandle {
 		#if debug
 		if (interval <= 0) {
 			throw "interval must be > 0";
@@ -85,14 +83,14 @@ class TimerHeap implements ITimerScheduler {
 		return isLive(handle);
 	}
 
-	overload extern public inline function schedule(time:Float, callback:TimerHandle->Void):TimerHandle {
+	public inline function schedule(time:Float, callback:TimerHandle->Void):TimerHandle {
 		final delay:Float = time - this.time;
 		return this.setTimeout(delay, callback);
 	}
 
-	overload extern public inline function schedule(time:Float, callback:Void->Void):TimerHandle {
+	public inline function scheduleVoid(time:Float, callback:Void->Void):TimerHandle {
 		final delay:Float = time - this.time;
-		return this.setTimeout(delay, callback);
+		return this.setTimeoutVoid(delay, callback);
 	}
 
 	public function reschedule(handle:TimerHandle, time:Float):Bool {
