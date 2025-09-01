@@ -15,6 +15,9 @@ import sys.thread.Tls;
 import haxe.ds.ObjectMap;
 import crossbyte.utils.ThreadPriority;
 import crossbyte._internal.socket.NativeSocketRegistry;
+import crossbyte.net.Socket as CBSocket;
+import crossbyte._internal.system.timer.TimerScheduler;
+import crossbyte.Timer as CBTimer;
 
 /**
  * ...
@@ -88,7 +91,6 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __tickInterval:Float;
 	@:noCompletion private var __isRunning:Bool = true;
 	@:noCompletion private var __tps:UInt;
-	@:noCompletion private var __time:Float;
 	@:noCompletion private var __dt:Float = 0.0;
 	@:noCompletion private var __cpuTime:Float = 0.0;
 	@:noCompletion private var __sleepAccuracy:Float = 0.0;
@@ -97,6 +99,7 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __isPrimordial:Bool;
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
 	@:noCompletion private var __loopType:MainLoopType;
+	@:noCompletion private var __timer:TimerScheduler;
 
 	#if cpp
 	@:noCompletion private var __threadHandle:Pointer<cpp.Void>;
@@ -165,7 +168,7 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function get_uptime():Float {
-		return __time;
+		return __timer.time;
 	}
 
 	// ==== Private Methods ====
@@ -179,10 +182,16 @@ final class CrossByte extends EventDispatcher {
 	}
 	#end
 
+	@:noCompletion private inline function queueWritable(socket:Socket):Void {
+		__socketRegistry.queueWritable(socket);
+	}
+
 	@:noCompletion private inline function __setup():Void {
 		Sys.println("Initializing CrossByte Instance");
 		__instanceCount++;
 		__socketRegistry = new NativeSocketRegistry(DEFAULT_MAX_SOCKETS);
+		__timer = new TimerScheduler();
+		CBTimer.bindCurrentThread(__timer);
 		tps = DEFAULT_TICKS_PER_SECOND;
 		mainLoop = switch (__loopType) {
 			case POLL: __pollBasedMainLoop;
@@ -248,30 +257,29 @@ final class CrossByte extends EventDispatcher {
 
 	private var mainLoop:Void->Void;
 	private #if final inline #end function __defaultMainLoop():Void {
-		var currentTime:Float = Timer.stamp();
+		var frameStart:Float = Timer.stamp();
 		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
-
-		dispatchEvent(e);
+		__timer.advanceTime(__dt);
+		dispatchEvent(e);		
 		__socketRegistry.update();
 
-		__cpuTime = __dt = Timer.stamp() - currentTime;
-		__wait(currentTime);
-
-		__time += __dt;
+		__cpuTime = __dt = Timer.stamp() - frameStart;
+		__wait(frameStart);
 	}
 	private #if final inline #end function __pollBasedMainLoop():Void {
-		var frameStart = Timer.stamp();
-		var e = new TickEvent(TickEvent.TICK, __dt);
+		var frameStart:Float = Timer.stamp();
+		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
+		__timer.advanceTime(__dt);
 		dispatchEvent(e);
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
 
 		if (!__socketRegistry.isEmpty) {
-			var deadline = frameStart + __tickInterval;
+			var deadline:Float = frameStart + __tickInterval;
 
 			while (true) {
-				var now = Timer.stamp();
-				var remaining = deadline - now;
+				var now:Float = Timer.stamp();
+				var remaining:Float = deadline - now;
 				if (remaining < 0) {
 					remaining = 0;
 				}
@@ -287,11 +295,9 @@ final class CrossByte extends EventDispatcher {
 		} else {
 			__wait(frameStart);
 		}
-
-		__time += __dt;
 	}
 
-	private inline function __wait(frameStartTime:Float):Void {
+	private #if final inline #end function __wait(frameStartTime:Float):Void {
 		#if precision_tick
 		var minSleep = 0.001;
 		#end
