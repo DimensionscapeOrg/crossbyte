@@ -13,7 +13,7 @@ import crossbyte._internal.system.timer.heap.TimerHeap;
  * The default implementation is based on a min-heap, but future variants like
  * timer wheels can be plugged in by implementing `ITimerScheduler`.
  */
- @:forward(startTime)
+@:forward(startTime)
 abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler {
 	/**
 	 * The number of active timers currently managed by the scheduler.
@@ -128,6 +128,32 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 */
 	public inline function isActive(handle:Int):Bool {
 		return this.isActive(handle);
+	}
+
+	/**
+	 * Schedules a callback to fire at a specific virtual time.
+	 *
+	 * This variant passes the timer handle into the callback when it is invoked.
+	 *
+	 * @param time The absolute virtual time at which the callback should fire.
+	 * @param callback A function that receives the `TimerHandle` of the scheduled timer.
+	 * @return A handle that can be used to pause, resume, or clear the timer.
+	 */
+	overload extern public inline function schedule(time:Float, callback:TimerHandle->Void):TimerHandle {
+		return this.schedule(time, callback);
+	}
+
+	/**
+	 * Schedules a callback to fire at a specific virtual time.
+	 *
+	 * This variant invokes a simple function with no parameters.
+	 *
+	 * @param time The absolute virtual time at which the callback should fire.
+	 * @param callback A function to call when the virtual time is reached.
+	 * @return A handle that can be used to pause, resume, or clear the timer.
+	 */
+	overload extern public inline function schedule(time:Float, callback:Void->Void):TimerHandle {
+		return this.schedule(time, callback);
 	}
 
 	/**
