@@ -11,7 +11,7 @@ import sys.io.File;
 @:cppInclude("bcrypt.h")
 @:cppNamespaceCode('#pragma comment(lib, "bcrypt.lib")')
 #end
-final class Random {
+final class SecureRandom {
 	public static function getSecureRandomBytes(length:Int):ByteArray {
 		#if cpp
 		return __getSecureRandomBytesNative(length);
