@@ -3,16 +3,15 @@ package crossbyte._internal.websocket;
 import haxe.Int64;
 import crossbyte.Function;
 import crossbyte.core.CrossByte;
-import crossbyte.crypto.Random;
+import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
 import crossbyte.io.ByteArray;
-import crossbyte.utils.Timer;
+import crossbyte.utils.GlobalTimer;
 import haxe.crypto.Base64;
 import haxe.crypto.Sha1;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 import haxe.io.Error;
-import haxe.io.Output;
 
 /**
  * ...
@@ -91,7 +90,7 @@ class WebSocket {
 	private var __isClient:Null<Bool>;
 
 	public function new(url:String, ?protocols:Array<String>, ?origin:String) {
-		__key = Base64.encode(Random.getSecureRandomBytes(16));
+		__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 
 		__mask = __getMask();
 
@@ -596,7 +595,7 @@ class WebSocket {
 			__socket.close();
 
 			if (__heartbeatID > 0) {
-				Timer.clearInterval(__heartbeatID);
+				GlobalTimer.clearInterval(__heartbeatID);
 			}
 
 			readyState = CLOSED;
@@ -617,7 +616,7 @@ class WebSocket {
 	}
 
 	private function __initHeartbeat():Void {
-		__heartbeatID = Timer.setInterval(__heartbeatInterval, __heartbeatDelay);
+		__heartbeatID = GlobalTimer.setInterval(__heartbeatInterval, __heartbeatDelay);
 	}
 
 	private function __heartbeatInterval() {
@@ -681,11 +680,11 @@ class WebSocket {
 	}
 
 	private static function __generateMaskBytes():ByteArray {
-		var maskBytes:ByteArray = Random.getSecureRandomBytes(4);
+		var maskBytes:ByteArray = SecureRandom.getSecureRandomBytes(4);
 
 		if (__maskTable.exists(maskBytes.toString())) {
 			while (__maskTable.exists(maskBytes.toString())) {
-				maskBytes = Random.getSecureRandomBytes(4);
+				maskBytes = SecureRandom.getSecureRandomBytes(4);
 			}
 			__maskTable.set(maskBytes.toString(), 0);
 		}
