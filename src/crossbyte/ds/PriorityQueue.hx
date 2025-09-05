@@ -6,8 +6,7 @@ import haxe.ds.ObjectMap;
  * ...
  * @author Christopher Speciale
  */
-
- /**
+/**
  * A generic priority queue implemented as a binary heap.
  * 
  * Items are ordered according to a user-provided comparator function.
@@ -27,7 +26,7 @@ final class PriorityQueue<T:{}> {
 	public var size(get, never):Int;
 
 	@:noCompletion private var heap:Array<T>;
-	@:noCompletion private var pos:ObjectMap<T, Int>; 
+	@:noCompletion private var pos:ObjectMap<T, Int>;
 	@:noCompletion private var cmp:(T, T) -> Int;
 
 	/**
@@ -62,8 +61,10 @@ final class PriorityQueue<T:{}> {
 	}
 
 	/**
-	 * Returns the element at the front of the queue (highest priority)
-	 * without removing it. Returns `null` if the queue is empty.
+	 * Returns the element with the **smallest key** according to the comparator
+	 * (the current root of the min-heap) without removing it.
+	 * 
+	 * Returns `null` if the queue is empty.
 	 */
 	public inline function peek():Null<T> {
 		return heap.length > 0 ? heap[0] : null;
