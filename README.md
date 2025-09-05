@@ -9,7 +9,7 @@ Empower your development workflow with CrossByte and unlock new possibilities fo
 
 
 ## 2025 Roadmap
-- [ ] RPC
+- [x] RPC
 - [ ] rUDP
 - [ ] webRTC
 - [ ] Quic/HTTP3
