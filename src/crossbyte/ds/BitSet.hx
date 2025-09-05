@@ -34,7 +34,8 @@ class BitSet {
 	 */
 	public function new(size:UInt = 32) {
 		this.__size = size;
-		this.__bits = new Array<Int>(Math.ceil(size / 32));
+		this.__bits = new Array<Int>();
+		this.__bits.resize(Math.ceil(size / 32));
 		for (i in 0...__bits.length) {
 			__bits[i] = 0;
 		}
@@ -42,8 +43,9 @@ class BitSet {
 
 	private inline function __ensureCapacity(bitIndex:Int):Void {
 		if (bitIndex >= __size) {
-			var newSize = Math.max(__size * 2, bitIndex + 1);
-			var newBits = new Array<Int>(Math.ceil(newSize / 32));
+			var newSize:Int = Std.int(Math.max(__size * 2, bitIndex + 1));
+			var newBits:Array<Int> = new Array<Int>();
+			newBits.resize(Math.ceil(newSize / 32));
 			for (i in 0...__bits.length) {
 				newBits[i] = __bits[i];
 			}
@@ -69,8 +71,8 @@ class BitSet {
 	public inline function set(index:Int, value:Bool):Void {
 		__checkBounds(index);
 		__ensureCapacity(index);
-		var bitIndex = index >> 5; // Divide by 32
-		var bitOffset = index & 31; // Modulus 32
+		var bitIndex:Int = index >> 5; // Divide by 32
+		var bitOffset:Int = index & 31; // Modulus 32
 		if (value) {
 			__bits[bitIndex] |= (1 << bitOffset); // Set bit
 		} else {
@@ -87,7 +89,10 @@ class BitSet {
 	public inline function get(index:Int):Bool {
 		__checkBounds(index);
 		if (index >= __size)
+		{
 			return false;
+		}
+			
 		var bitIndex = index >> 5;
 		var bitOffset = index & 31;
 		return (__bits[bitIndex] & (1 << bitOffset)) != 0;
@@ -100,10 +105,12 @@ class BitSet {
 	 */
 	public inline function clear(index:Int):Void {
 		__checkBounds(index);
-		if (index >= __size)
+		if (index >= __size){
 			return;
-		var bitIndex = index >> 5;
-		var bitOffset = index & 31;
+		}
+			
+		var bitIndex:Int = index >> 5;
+		var bitOffset:Int = index & 31;
 		__bits[bitIndex] &= ~(1 << bitOffset); // Clear bit
 	}
 
@@ -133,14 +140,14 @@ class BitSet {
 	public inline function flip(index:Int):Void {
 		__checkBounds(index);
 		__ensureCapacity(index);
-		var bitIndex = index >> 5;
-		var bitOffset = index & 31;
+		var bitIndex:Int = index >> 5;
+		var bitOffset:Int = index & 31;
 		__bits[bitIndex] ^= (1 << bitOffset); // Flip bit
 	}
 
 	private static inline function bitCount(value:Int):Int {
-		var count = 0;
-		var v = value;
+		var count:Int = 0;
+		var v:Int = value;
 		while (v != 0) {
 			count++;
 			v &= v - 1; // Clear the lowest set bit
@@ -154,7 +161,7 @@ class BitSet {
 	 * @return The number of set bits in the `BitSet`.
 	 */
 	public function countSetBits():Int {
-		var count = 0;
+		var count:Int = 0;
 		for (i in 0...__bits.length) {
 			count += bitCount(__bits[i]);
 		}
