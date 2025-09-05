@@ -12,21 +12,19 @@ import crossbyte.io.ByteArray;
 @:forward
 abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
-			startReceiving:Bool = false):Void {
+			readEnabled:Bool = false):Void {
 		var endpoint:Endpoint = parseURL(uri);
 		var protocol:Protocol = endpoint.protocol;
 		this = switch (protocol) {
 			case TCP:
-				var socket:Socket = new Socket();				
+				var socket:Socket = new Socket();
 				var nc:TCPConnection = new TCPConnection(socket);
 				nc.onData = onData;
 				nc.onClose = onClose;
 				nc.onReady = onReady;
 				nc.onError = onError;
+				nc.readEnabled = readEnabled;
 
-				if (startReceiving) {
-					nc.startReceiving();
-				}				
 				socket.connect(endpoint.address, endpoint.port);
 				nc;
 			default:
@@ -52,17 +50,15 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 	}
 
 	public static inline function fromSocketWith(socket:Socket, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void,
-			?onError:Reason->Void, startReceiving:Bool = false):NetConnection {
+			?onError:Reason->Void, readEnabled:Bool = false):NetConnection {
 		var nc:TCPConnection = new TCPConnection(socket);
 
 		nc.onData = onData;
 		nc.onClose = onClose;
 		nc.onReady = onReady;
 		nc.onError = onError;
+		nc.readEnabled = readEnabled;
 
-		if (startReceiving) {
-			nc.startReceiving();
-		}
 		return nc;
 	}
 
@@ -88,8 +84,9 @@ private class TCPConnection implements INetConnection {
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
-	public var autoFlushOnWrite:Bool = true;
+	public var autoFlush:Bool = true;
 	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
 	public var inTimestamp:Float = 0.0;
 	public var outTimestamp:Float = 0.0;
 	public var protocol:Protocol = TCP;
@@ -103,22 +100,22 @@ private class TCPConnection implements INetConnection {
 	@:noCompletion private var __onClose:Reason->Void = __noopClose;
 	@:noCompletion private var __onError:Reason->Void = __noopError;
 	@:noCompletion private var __onReady:Void->Void = __noopReady;
-	@:noCompletion private var __receiving:Bool = false;
+	@:noCompletion private var __isReceiving:Bool = false;
 	@:noCompletion private var __lifecycleReady:Bool = false;
 
-	@:noCompletion private inline function get_remoteAddress():String{
+	@:noCompletion private inline function get_remoteAddress():String {
 		return __socket.remoteAddress;
 	}
 
-	@:noCompletion private inline function get_remotePort():Int{
+	@:noCompletion private inline function get_remotePort():Int {
 		return __socket.remotePort;
 	}
 
-	@:noCompletion private inline function get_localAddress():String{
+	@:noCompletion private inline function get_localAddress():String {
 		return __socket.localAddress;
 	}
 
-	@:noCompletion private inline function get_localPort():Int{
+	@:noCompletion private inline function get_localPort():Int {
 		return __socket.localPort;
 	}
 
@@ -162,6 +159,24 @@ private class TCPConnection implements INetConnection {
 		return __socket.connected;
 	}
 
+	@:noCompletion inline function get_readEnabled():Bool {
+		return __isReceiving;
+	}
+
+	@:noCompletion inline function set_readEnabled(v:Bool):Bool {
+		if (v == __isReceiving) {
+			return v;
+		}
+		__isReceiving = v;
+		if (v) {
+			__socket.addEventListener(ProgressEvent.SOCKET_DATA, socket_onData);
+		} else {
+			__socket.removeEventListener(ProgressEvent.SOCKET_DATA, socket_onData);
+		}
+
+		return v;
+	}
+
 	@:noCompletion private function new(socket:Socket) {
 		this.__socket = socket;
 		__prepareLifecycle();
@@ -179,7 +194,7 @@ private class TCPConnection implements INetConnection {
 
 	public inline function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
 		__writeBytes(bytes, offset, length);
-		if (autoFlushOnWrite) {
+		if (autoFlush) {
 			__socket.__queueWrite();
 		}
 	}
@@ -189,7 +204,7 @@ private class TCPConnection implements INetConnection {
 	}
 
 	public inline function close():Void {
-		stopReceiving();
+		readEnabled = false;
 		__disposeLifecycle();
 		__onClose(Reason.Closed);
 		try {
@@ -206,20 +221,6 @@ private class TCPConnection implements INetConnection {
 		outTimestamp = __socket.__cbInstance.uptime;
 	}
 
-	@:noCompletion public inline function startReceiving():Void {
-		if (!__receiving) {
-			__receiving = true;
-			__socket.addEventListener(ProgressEvent.SOCKET_DATA, socket_onData);
-		}
-	}
-
-	@:noCompletion public inline function stopReceiving():Void {
-		if (__receiving) {
-			__receiving = false;
-			__socket.removeEventListener(ProgressEvent.SOCKET_DATA, socket_onData);
-		}
-	}
-
 	@:noCompletion private inline function socket_onData(_e:ProgressEvent):Void {
 		inTimestamp = __socket.__cbInstance.uptime;
 		final input:ByteArrayInput = __socket.__input;
@@ -233,7 +234,7 @@ private class TCPConnection implements INetConnection {
 	}
 
 	private inline function socket_onClose(_e:Event):Void {
-		stopReceiving();
+		readEnabled = false;
 		__onClose(Reason.Closed);
 	}
 
@@ -243,20 +244,20 @@ private class TCPConnection implements INetConnection {
 	}
 
 	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
-		stopReceiving();
+		readEnabled = false;
 		__onError(Reason.Error(e.text));
 	}
 
 	@:noCompletion private inline function socket_onSecError(e:SecurityError):Void {
-		stopReceiving();
+		readEnabled = false;
 		__onError(Reason.Error(e.message));
 	}
 
 	@:noCompletion private inline function __prepareLifecycle():Void {
-		if (__lifecycleReady || __socket == null){
+		if (__lifecycleReady || __socket == null) {
 			return;
 		}
-			
+
 		__lifecycleReady = true;
 
 		if (!connected) {
@@ -296,6 +297,7 @@ private class UDPConnection implements INetConnection {
 	public var localPort(get, never):Int;
 	public var socket:DatagramSocket;
 	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
 	public var protocol:Protocol = UDP;
 	public var inTimestamp:Float = 0.0;
 	public var outTimestamp:Float = 0.0;
@@ -313,20 +315,20 @@ private class UDPConnection implements INetConnection {
 	@:noCompletion private var __hasOnData:Bool;
 	@:noCompletion private var __receiving:Bool = false;
 
-	@:noCompletion private inline function get_remoteAddress():String{
-		return "";//__socket.remoteAddress;
+	@:noCompletion private inline function get_remoteAddress():String {
+		return ""; // __socket.remoteAddress;
 	}
 
-	@:noCompletion private inline function get_remotePort():Int{
-		return 0;//__socket.remotePort;
+	@:noCompletion private inline function get_remotePort():Int {
+		return 0; // __socket.remotePort;
 	}
 
-	@:noCompletion private inline function get_localAddress():String{
-		return "";//__socket.localAddress;
+	@:noCompletion private inline function get_localAddress():String {
+		return ""; // __socket.localAddress;
 	}
 
-	@:noCompletion private inline function get_localPort():Int{
-		return 0;//__socket.localPort;
+	@:noCompletion private inline function get_localPort():Int {
+		return 0; // __socket.localPort;
 	}
 
 	@:noCompletion private inline function get_connected():Bool {
@@ -369,6 +371,14 @@ private class UDPConnection implements INetConnection {
 		return __onReady;
 	}
 
+	@:noCompletion private inline function set_readEnabled(v:Bool):Bool {
+		return false;
+	}
+
+	@:noCompletion private inline function get_readEnabled():Bool {
+		return false;
+	}
+
 	private function new(socket:DatagramSocket) {
 		this.socket = socket;
 	}
@@ -405,6 +415,7 @@ private class WSConnection implements INetConnection {
 	public var localPort(get, never):Int;
 	public var socket:WebSocket;
 	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
 	public var protocol:Protocol = WEBSOCKET;
 	public var inTimestamp:Float = 0.0;
 	public var outTimestamp:Float = 0.0;
@@ -422,19 +433,19 @@ private class WSConnection implements INetConnection {
 	@:noCompletion private var __hasOnData:Bool;
 	@:noCompletion private var __receiving:Bool = false;
 
-	@:noCompletion private inline function get_remoteAddress():String{
+	@:noCompletion private inline function get_remoteAddress():String {
 		return __socket.remoteAddress;
 	}
 
-	@:noCompletion private inline function get_remotePort():Int{
+	@:noCompletion private inline function get_remotePort():Int {
 		return __socket.remotePort;
 	}
 
-	@:noCompletion private inline function get_localAddress():String{
+	@:noCompletion private inline function get_localAddress():String {
 		return __socket.localAddress;
 	}
 
-	@:noCompletion private inline function get_localPort():Int{
+	@:noCompletion private inline function get_localPort():Int {
 		return __socket.localPort;
 	}
 
@@ -476,6 +487,14 @@ private class WSConnection implements INetConnection {
 	@:noCompletion private inline function set_onReady(v:Void->Void):Void->Void {
 		__onReady = (v != null) ? v : __noopReady;
 		return __onReady;
+	}
+
+	@:noCompletion private inline function set_readEnabled(v:Bool):Bool {
+		return false;
+	}
+
+	@:noCompletion private inline function get_readEnabled():Bool {
+		return false;
 	}
 
 	private function new(socket:WebSocket) {
