@@ -11,6 +11,7 @@ interface INetConnection {
 	public var localPort(get, never):Int;
 	public var protocol:Protocol;
 	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
 	public var inTimestamp(default, null):Float;
 	public var outTimestamp(default, null):Float;
 	public var onData(get, set):ByteArrayInput->Void;
@@ -20,6 +21,4 @@ interface INetConnection {
 	public function expose():Transport;
 	public function send(data:ByteArray):Void;
 	public function close():Void;
-	public function startReceiving():Void;
-	public function stopReceiving():Void;
 }
