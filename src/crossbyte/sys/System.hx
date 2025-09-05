@@ -58,6 +58,10 @@ class System {
 		{
 			return CrossByte.current.tps;
 	}*/
+	public static inline function getDeviceId():String {
+		return NativeSystem.getDeviceId();
+	}
+
 	public static inline function currentThreadCpuUsage():Float {
 		return CrossByte.current().cpuLoad;
 	}
