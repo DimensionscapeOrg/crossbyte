@@ -44,7 +44,7 @@ class WebSocket extends Socket {
 		super.close();
 	}
 
-	override public function connect(host:String = null, port:Int = 0):Void {
+	override public function connect(host:String, port:Int):Void {
 		if (__socket != null) {
 			close();
 		}
