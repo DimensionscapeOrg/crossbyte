@@ -125,6 +125,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __timestamp:Float;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __isConnecting:Bool;
+	@:noCompletion private var __isDirty = false;
+	@:noCompletion private var flushFull:Bool = false;
 
 	/**
 		Creates a new Socket object. If no parameters are specified, an
@@ -254,7 +256,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 							 href="http://www.adobe.com/go/devnet_security_en"
 							 scope="external">Security</a>.
 	**/
-	public function connect(host:String = null, port:Int = 0):Void {
+	public function connect(host:String, port:Int):Void {
 		if (__socket != null) {
 			close();
 		}
@@ -336,6 +338,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						not open.
 	**/
 	public function flush():Void {
+		// TODO: see if flush backpressure is an issue in OpenFL and remedy it as well
+		if (flushFull) {
+			return;
+		}
+
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
@@ -349,14 +356,23 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				__socket.send(buffer);
 				#else
 				__socket.output.writeBytes(__output, 0, __output.length);
+				// TODO: We have fastsend set, do we need to call flush?
 				__socket.output.flush();
+				__isDirty = false;
 				#end
+				// TODO: cant we just clear the exisiting? does it's internal
+				// size readjust?
+				//__output.clear();
 				__output = new ByteArray();
-				__output.endian = __endian;
+
+				// __output.clear();
+				// __output.endian = __endian;
 			} catch (e:Dynamic) {
 				var throwError = false;
 				switch (e) {
 					case Error.Blocked:
+						flushFull = true;
+						Timer.delay(__tryFlush, 0);
 					case Error.Custom(Error.Blocked):
 					default:
 						throwError = true;
@@ -626,6 +642,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeBoolean(value);
+		__queueWrite();
 	}
 
 	/**
@@ -641,6 +658,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeByte(value);
+		__queueWrite();
 	}
 
 	/**
@@ -668,6 +686,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeBytes(bytes, offset, length);
+		__queueWrite();
 	}
 
 	/**
@@ -683,6 +702,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeDouble(value);
+		__queueWrite();
 	}
 
 	/**
@@ -698,6 +718,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeFloat(value);
+		__queueWrite();
 	}
 
 	/**
@@ -712,6 +733,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeInt(value);
+		__queueWrite();
 	}
 
 	/**
@@ -731,6 +753,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeUTFBytes(value);
+		__queueWrite();
 	}
 
 	/**
@@ -742,6 +765,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public function writeObject(object:Dynamic):Void {
 		if (objectEncoding == HXSF) {
 			__output.writeUTF(Serializer.run(object));
+			__queueWrite();
 		} else {
 			// TODO: Add support for AMF if haxelib "format" is included
 		}
@@ -765,6 +789,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeShort(value);
+		__queueWrite();
 	}
 
 	/**
@@ -779,6 +804,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeUnsignedInt(value);
+		__queueWrite();
 	}
 
 	/**
@@ -798,6 +824,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeUTF(value);
+		__queueWrite();
 	}
 
 	/**
@@ -812,6 +839,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		__output.writeUTFBytes(value);
+		__queueWrite();
 	}
 
 	@:noCompletion private function __cleanSocket():Void {
@@ -845,12 +873,25 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
 	}
 
+	@:noCompletion private inline function __tryFlush():Void {
+		flushFull = false;
+		flush();
+	}
+
+	@:noCompletion private inline function __queueWrite():Void {
+		if (__isDirty == false) {
+			__isDirty = true;
+			@:privateAccess
+			__cbInstance.queueWritable(this.__socket);
+		}
+	}
+
 	// Event Handlers
-	@:noCompletion private function socket_onClose(_):Void {
+	@:noCompletion private inline function socket_onClose(_):Void {
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 
-	@:noCompletion private function socket_onError(e):Void {
+	@:noCompletion private inline function socket_onError(e):Void {
 		dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
 	}
 
@@ -942,18 +983,20 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__cbInstance.registerSocket(__socket);
 			dispatchEvent(new Event(Event.CONNECT));
 		}
-		if (bLength > 0) {
-			var newData = b.getBytes();
+		if (bLength > 0) {			
+			var newData:Bytes = b.getBytes();
 
-			var rl = __input.length - __input.position;
-			if (rl < 0)
+			var rl:UInt = __input.length - __input.position;
+			if (rl < 0){
 				rl = 0;
+			}
+				
 
-			var newInput = Bytes.alloc(rl + newData.length);
+			var newInput:Bytes = Bytes.alloc(rl + newData.length);
 			if (rl > 0) {
 				newInput.blit(0, __input, __input.position, rl);
 			}
-
+			
 			newInput.blit(rl, newData, 0, newData.length);
 			__input = newInput;
 			__input.endian = __endian;
