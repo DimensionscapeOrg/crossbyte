@@ -93,10 +93,8 @@ class RPCCommandMacro {
 	}
 
 	private static function createWrapperFunction(field:Field, metaName:String, args:Array<FunctionArg>):Field {
-		// build [this.__nc, arg1, arg2, ...]
 		var callArgs:Array<Expr> = [macro this.__nc].concat(args.map(a -> macro $i{a.name}));
 
-		// keep the original return type if present; otherwise Void
 		var retType:ComplexType = switch (field.kind) {
 			case FFun(f) if (f.ret != null): f.ret;
 			case _: macro :Void;
@@ -130,7 +128,6 @@ class RPCCommandMacro {
 
 		var valueExpr:Expr = macro $i{a.name};
 
-		// generate payload writes using the passed target `payload`
 		var writeValue:Expr = fn(macro payload, valueExpr);
 
 		return isOpt ? macro {
@@ -170,11 +167,8 @@ class RPCCommandMacro {
 		var pingName = "ping";
 		var metaName = "meta_ping";
 
-		// Define its args (optional nonce for RTT if you want)
-		// var args:Array<FunctionArg> = [{name: "nonce", opt: true, type: macro :Int}];
 		var args:Array<FunctionArg> = [];
 
-		// Wrapper around RPC dispatch
 		var wrapper = createWrapperFunction({
 			name: pingName,
 			access: [APublic],
@@ -188,7 +182,6 @@ class RPCCommandMacro {
 			doc: "System reserved RPC ping()."
 		}, metaName, args);
 
-		// Meta dispatcher (static inline call target)
 		var meta = createMetaFunction(metaName, pingName, args, pos);
 
 		newFields.push(wrapper);
