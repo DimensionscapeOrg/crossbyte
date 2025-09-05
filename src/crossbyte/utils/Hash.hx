@@ -34,5 +34,4 @@ class Hash {
 	@:pure public static inline function combineHash32(a:Int, b:Int):Int {
 		return fmix32(a ^ fmix32(b + PHI32));
 	}
-
 }
