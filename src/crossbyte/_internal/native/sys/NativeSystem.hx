@@ -13,5 +13,7 @@ class NativeSystem {
 	extern private static function setProcessAffinity(index:Int, value:Bool):Bool;
 
 	extern private static function hasProcessAffinity(index:Int):Bool;
+
+	extern private static function getDeviceId():Null<String>;
 }
 #end

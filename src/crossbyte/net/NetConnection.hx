@@ -1,5 +1,6 @@
 package crossbyte.net;
 
+import crossbyte.errors.IOError;
 import crossbyte.net.Endpoint.parseURL;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.IOErrorEvent;
@@ -16,16 +17,17 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 		var protocol:Protocol = endpoint.protocol;
 		this = switch (protocol) {
 			case TCP:
-				var socket:Socket = new Socket();
-				socket.connect(endpoint.address, endpoint.port);
+				var socket:Socket = new Socket();				
 				var nc:TCPConnection = new TCPConnection(socket);
 				nc.onData = onData;
 				nc.onClose = onClose;
 				nc.onReady = onReady;
 				nc.onError = onError;
+
 				if (startReceiving) {
 					nc.startReceiving();
-				}
+				}				
+				socket.connect(endpoint.address, endpoint.port);
 				nc;
 			default:
 				throw('Protocol error');
@@ -57,10 +59,10 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 		nc.onClose = onClose;
 		nc.onReady = onReady;
 		nc.onError = onError;
+
 		if (startReceiving) {
 			nc.startReceiving();
 		}
-
 		return nc;
 	}
 
@@ -82,6 +84,11 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 @:access(crossbyte.net.Socket)
 @:allow(crossbyte.net.NetConnection)
 private class TCPConnection implements INetConnection {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+	public var autoFlushOnWrite:Bool = true;
 	public var connected(get, never):Bool;
 	public var inTimestamp:Float = 0.0;
 	public var outTimestamp:Float = 0.0;
@@ -98,6 +105,22 @@ private class TCPConnection implements INetConnection {
 	@:noCompletion private var __onReady:Void->Void = __noopReady;
 	@:noCompletion private var __receiving:Bool = false;
 	@:noCompletion private var __lifecycleReady:Bool = false;
+
+	@:noCompletion private inline function get_remoteAddress():String{
+		return __socket.remoteAddress;
+	}
+
+	@:noCompletion private inline function get_remotePort():Int{
+		return __socket.remotePort;
+	}
+
+	@:noCompletion private inline function get_localAddress():String{
+		return __socket.localAddress;
+	}
+
+	@:noCompletion private inline function get_localPort():Int{
+		return __socket.localPort;
+	}
 
 	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
 		return __onData;
@@ -149,8 +172,20 @@ private class TCPConnection implements INetConnection {
 	}
 
 	public inline function send(data:ByteArray):Void {
-		this.__socket.writeBytes(data);
-		outTimestamp = __socket.__cbInstance.uptime;
+		// TODO: bypass and write to directly to sys.net.socket?
+		this.__writeBytes(data, 0, 0);
+		this.flush();
+	}
+
+	public inline function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		__writeBytes(bytes, offset, length);
+		if (autoFlushOnWrite) {
+			__socket.__queueWrite();
+		}
+	}
+
+	public inline function flush():Void {
+		__socket.flush();
 	}
 
 	public inline function close():Void {
@@ -160,6 +195,15 @@ private class TCPConnection implements INetConnection {
 		try {
 			__socket.close();
 		} catch (_:Dynamic) {}
+	}
+
+	@:noCompletion private inline function __writeBytes(bytes:ByteArray, offset:Int, length:Int):Void {
+		if (__socket.__socket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
+		__socket.__output.writeBytes(bytes, offset, length);
+		outTimestamp = __socket.__cbInstance.uptime;
 	}
 
 	@:noCompletion public inline function startReceiving():Void {
@@ -209,8 +253,10 @@ private class TCPConnection implements INetConnection {
 	}
 
 	@:noCompletion private inline function __prepareLifecycle():Void {
-		if (__lifecycleReady || __socket == null)
+		if (__lifecycleReady || __socket == null){
 			return;
+		}
+			
 		__lifecycleReady = true;
 
 		if (!connected) {
@@ -244,6 +290,10 @@ private class TCPConnection implements INetConnection {
 }
 
 private class UDPConnection implements INetConnection {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
 	public var socket:DatagramSocket;
 	public var connected(get, never):Bool;
 	public var protocol:Protocol = UDP;
@@ -262,6 +312,22 @@ private class UDPConnection implements INetConnection {
 	@:noCompletion private var __onReady:Void->Void;
 	@:noCompletion private var __hasOnData:Bool;
 	@:noCompletion private var __receiving:Bool = false;
+
+	@:noCompletion private inline function get_remoteAddress():String{
+		return "";//__socket.remoteAddress;
+	}
+
+	@:noCompletion private inline function get_remotePort():Int{
+		return 0;//__socket.remotePort;
+	}
+
+	@:noCompletion private inline function get_localAddress():String{
+		return "";//__socket.localAddress;
+	}
+
+	@:noCompletion private inline function get_localPort():Int{
+		return 0;//__socket.localPort;
+	}
 
 	@:noCompletion private inline function get_connected():Bool {
 		return false; // this.socket.connected;
@@ -333,6 +399,10 @@ private class UDPConnection implements INetConnection {
 }
 
 private class WSConnection implements INetConnection {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
 	public var socket:WebSocket;
 	public var connected(get, never):Bool;
 	public var protocol:Protocol = WEBSOCKET;
@@ -351,6 +421,22 @@ private class WSConnection implements INetConnection {
 	@:noCompletion private var __onReady:Void->Void;
 	@:noCompletion private var __hasOnData:Bool;
 	@:noCompletion private var __receiving:Bool = false;
+
+	@:noCompletion private inline function get_remoteAddress():String{
+		return __socket.remoteAddress;
+	}
+
+	@:noCompletion private inline function get_remotePort():Int{
+		return __socket.remotePort;
+	}
+
+	@:noCompletion private inline function get_localAddress():String{
+		return __socket.localAddress;
+	}
+
+	@:noCompletion private inline function get_localPort():Int{
+		return __socket.localPort;
+	}
 
 	private inline function get_connected():Bool {
 		return this.socket.connected;
