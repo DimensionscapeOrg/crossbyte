@@ -1,5 +1,6 @@
 package crossbyte.net;
 
+import haxe.Timer;
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
 import haxe.io.Error;
@@ -195,6 +196,10 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			__serverSocket.listen(backlog);
+			/* @:privateAccess
+				__cbInstance.beginSocketPolling();
+				@:privateAccess
+				__cbInstance.registerSocket(__serverSocket); */
 			listening = true;
 			if (__hasListener) {
 				__cbInstance.addEventListener(Event.TICK, this_onTick);
@@ -220,10 +225,16 @@ class ServerSocket extends EventDispatcher {
 		cbSocket.__input = new ByteArray();
 		cbSocket.__input.endian = cbSocket.__endian;
 
+		cbSocket.__cbInstance = __cbInstance;
+
+		Timer.delay(() -> {
+			if (!cbSocket.__connected) {
+				cbSocket.dispatchEvent(new Event(Event.CLOSE));
+			}
+		}, 0);
+
 		socket.custom = cbSocket;
 
-		@:privateAccess
-		__cbInstance.beginSocketPolling();
 		@:privateAccess
 		__cbInstance.registerSocket(socket);
 
@@ -235,6 +246,8 @@ class ServerSocket extends EventDispatcher {
 
 		try {
 			sysSocket = __serverSocket.accept();
+			var socket:CBSocket = __fromSocket(sysSocket);
+			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 		} catch (e:Error) {
 			close();
 			dispatchEvent(new Event(Event.CLOSE));
@@ -242,10 +255,10 @@ class ServerSocket extends EventDispatcher {
 			// Do nothing.
 		}
 
-		if (sysSocket != null) {
+		/* if (sysSocket != null) {
 			var socket:CBSocket = __fromSocket(sysSocket);
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
-		}
+		}*/
 	}
 
 	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void {
