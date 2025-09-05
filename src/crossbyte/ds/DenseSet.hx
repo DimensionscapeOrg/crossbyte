@@ -12,6 +12,7 @@ import haxe.ds.Map;
  * so order is not preserved. Designed for performance-critical use cases like
  * polling APIs, ECS systems, or socket sets.
  *
+ * @param K The element type. Keys are compared using `Map` semantics.
  */
 @:generic
 final class DenseSet<K:Dynamic> {
@@ -24,7 +25,6 @@ final class DenseSet<K:Dynamic> {
 	/**
 	 * Creates a new DenseSet
 	 * 
-	 * @param K The element type. Keys are compared using `Map` semantics.
 	 */
 	public function new() {
 		keys = [];
