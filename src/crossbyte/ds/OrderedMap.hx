@@ -5,25 +5,25 @@ package crossbyte.ds;
  * @author Christopher Speciale
  */
 /**
- * A simple map that preserves insertion order of keys.
+ * A simple __map that preserves insertion order of __keys.
  * 
  * Combines fast key-based lookup with ordered iteration.
- * Useful when you need predictable iteration order along with map semantics.
+ * Useful when you need predictable iteration order along with __map semantics.
  *
- * @param K The type of keys used in the map.
- * @param V The type of values stored in the map.
+ * @param K The type of __keys used in the __map.
+ * @param V The type of values stored in the __map.
  */
 @:generic
-class OrderedMap<K:Dynamic, V> {
-	private var map:Map<K, V>;
-	private var keys:Array<K>;
+final class OrderedMap<K:Dynamic, V> {
+	private var __map:Map<K, V>;
+	private var __keys:Array<K>;
 
 	/**
-	 * Creates a new, empty `OrderedMap`.
+	 * Creates a new, empty `Ordered__map`.
 	 */
 	public function new() {
-		map = new Map();
-		keys = [];
+		__map = new Map();
+		__keys = [];
 	}
 
 	/**
@@ -34,9 +34,9 @@ class OrderedMap<K:Dynamic, V> {
 	 * @param value The value to associate with the key.
 	 */
 	public function set(key:K, value:V):Void {
-		if (!map.exists(key))
-			keys.push(key);
-		map.set(key, value);
+		if (!__map.exists(key))
+			__keys.push(key);
+		__map.set(key, value);
 	}
 
 	/**
@@ -46,40 +46,40 @@ class OrderedMap<K:Dynamic, V> {
 	 * @return The value associated with the key, or `null` if not found.
 	 */
 	public function get(key:K):Null<V> {
-		return map.get(key);
+		return __map.get(key);
 	}
 
 	/**
-	 * Checks if the map contains the specified key.
+	 * Checks if the __map contains the specified key.
 	 *
 	 * @param key The key to check.
 	 * @return `true` if the key exists, `false` otherwise.
 	 */
 	public function exists(key:K):Bool {
-		return map.exists(key);
+		return __map.exists(key);
 	}
 
 	/**
-	 * Removes the specified key and its associated value from the map.
+	 * Removes the specified key and its associated value from the __map.
 	 *
 	 * @param key The key to remove.
 	 * @return `true` if the key existed and was removed, `false` otherwise.
 	 */
 	public function remove(key:K):Bool {
-		if (!map.exists(key))
+		if (!__map.exists(key))
 			return false;
-		map.remove(key);
-		keys.remove(key);
+		__map.remove(key);
+		__keys.remove(key);
 		return true;
 	}
 
 	/**
-	 * Returns an iterator over the keys in insertion order.
+	 * Returns an iterator over the __keys in insertion order.
 	 *
-	 * @return An iterator of keys.
+	 * @return An iterator of __keys.
 	 */
-	public function keysIterator():Iterator<K> {
-		return keys.iterator();
+	public function __keysIterator():Iterator<K> {
+		return __keys.iterator();
 	}
 
 	/**
@@ -88,7 +88,7 @@ class OrderedMap<K:Dynamic, V> {
 	 * @return An iterator of values.
 	 */
 	public function valuesIterator():Iterator<V> {
-		return keys.map(k -> map.get(k)).iterator();
+		return __keys.map(k -> __map.get(k)).iterator();
 	}
 
 	/**
@@ -97,23 +97,31 @@ class OrderedMap<K:Dynamic, V> {
 	 * @return An iterator of objects with `key` and `value` fields.
 	 */
 	public function keyValuePairs():Iterator<{key:K, value:V}> {
-		return keys.map(k -> {key: k, value: map.get(k)}).iterator();
+		return __keys.map(k -> {key: k, value: __map.get(k)}).iterator();
 	}
 
 	/**
-	 * Removes all keys and values from the map.
+	 * Removes all __keys and values from the __map.
 	 */
 	public function clear():Void {
-		map = new Map();
-		keys = [];
+		__map.clear();
+		__keys = [];
 	}
 
 	/**
-	 * Returns the number of key-value pairs stored in the map.
+	 * Returns the number of key-value pairs stored in the __map.
 	 *
-	 * @return The number of entries in the map.
+	 * @return The number of entries in the __map.
 	 */
-	public inline function length():Int {
-		return keys.length;
+	public #if !debug inline #end function length():Int {
+		return __keys.length;
+	}
+
+	public #if !debug inline #end function ofIndex(x:Int):Null<V> {
+		return __map.get(__keys[x]);
+	}
+
+	public #if !debug inline #end function indexOf(key:K, ?fromIndex:Int):Int {
+		return __keys.indexOf(key, fromIndex);
 	}
 }

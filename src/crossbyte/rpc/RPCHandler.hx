@@ -1,5 +1,6 @@
 package crossbyte.rpc;
 
+import crossbyte.io.ByteArray;
 import crossbyte.net.INetConnection;
 import crossbyte.net.NetConnection;
 import crossbyte.net.Socket;
@@ -25,14 +26,16 @@ abstract class RPCHandler {
 
 			if (input.bytesAvailable < payloadLen) {
 				input.position = lenPos;
-				return;
+				break;
 			}
 
 			final frameEnd:Int = input.position + payloadLen;
 			final op:Int = input.readInt();
-			this.dispatch(op, input);
+			this.dispatch(op, input);			
 			input.position = frameEnd;
 		}
+		@:privateAccess
+		this_connection.inTimestamp = Timer.getTime();
 	}
 
 	abstract public function dispatch(op:Int, input:ByteArrayInput):Void;

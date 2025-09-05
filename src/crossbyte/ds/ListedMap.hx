@@ -124,7 +124,7 @@ final class ListedMap<K:Dynamic, V> {
 	 * @return The value at the given index, or `null` if the index is out of bounds.
 	 * @throws An error if the index has an invaid range. (only in debug mode).
 	 */
-	public #if !debug inline #end function ofIndex(i:Int):Null<V> {
+	public #if !debug inline #end function valueAt(i:Int):Null<V> {
 		#if debug
 		if (i < 0 || i >= __keyValuePairs.length)
 			throw 'Index $i is out of bounds (size: ${__keyValuePairs.length})';

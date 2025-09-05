@@ -39,20 +39,20 @@ class SQLConnection extends EventDispatcher {
 	public var pageSize(get, null):UInt;
 	public var totalChanges(get, null):Float;
 
-	private var __totalChanges:Float = 0;
-	private var __lasInsertRowID:Float = 0;
-	private var __inTransaction:Bool = false;
-	private var __async:Null<Bool>;
-	private var __reference:String;
-	private var __initAutoCompact:Bool;
-	private var __initPageSize:UInt;
+	@:noCompletion private var __totalChanges:Float = 0;
+	@:noCompletion private var __lasInsertRowID:Float = 0;
+	@:noCompletion private var __inTransaction:Bool = false;
+	@:noCompletion private var __async:Null<Bool>;
+	@:noCompletion private var __reference:String;
+	@:noCompletion private var __initAutoCompact:Bool;
+	@:noCompletion private var __initPageSize:UInt;
 
 	@:noCompletion private var __connection:Connection;
-	private var __openMode:SQLMode;
+	@:noCompletion private var __openMode:SQLMode;
 
-	private var __sqlWorker:Worker;
-	private var __sqlQueue:Deque<Function>;
-	private var __sqlMutex:Mutex;
+	@:noCompletion private var __sqlWorker:Worker;
+	@:noCompletion private var __sqlQueue:Deque<Function>;
+	@:noCompletion private var __sqlMutex:Mutex;
 
 	public function new() {
 		super();
