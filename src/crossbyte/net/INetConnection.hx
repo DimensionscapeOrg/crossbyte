@@ -5,6 +5,10 @@ import crossbyte.net.Protocol;
 import crossbyte.io.ByteArray;
 
 interface INetConnection {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
 	public var protocol:Protocol;
 	public var connected(get, never):Bool;
 	public var inTimestamp(default, null):Float;
