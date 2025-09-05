@@ -4,7 +4,6 @@ package crossbyte.utils;
  * ...
  * @author Christopher Speciale
  */
- 
 /**
  * General math helpers and low-level numeric utilities.
  */
