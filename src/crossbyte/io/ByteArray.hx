@@ -156,6 +156,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		storage and stream.
 	**/
 	public inline function new(length:Int = 0):Void {
+		@:privateAccess
 		this = new ByteArrayData(length);
 	}
 
@@ -473,6 +474,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return this.readUnsignedShort();
 	}
 
+	/**
+		Reads an **unsigned variable-length integer** that was written
+		using `writeVarInt()`.
+
+		@return The decoded integer (0 – 0xFFFFFFFF).
+		@throws EOFError If the buffer ends before the var-int terminates.
+	**/
+	public inline function readVarInt():Int {
+		return this.readVarInt();
+	}
+
 	@:arrayAccess @:noCompletion private inline function set(index:Int, value:Int):Int {
 		this.__resize(index + 1);
 		this.set(index, value);
@@ -661,6 +673,26 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		this.writeUnsignedInt(value);
 	}
 
+	/**
+		Writes an **unsigned variable-length integer** to the buffer
+		in little-endian, 7-bit continuation-byte format (compatible
+		with Google Protocol Buffers “varint”).
+
+		```text
+		value range   encoded length
+		0 – 127        1 byte
+		128 – 16,383     2 bytes
+		16,384 – 2,097,151 3 bytes
+		```
+		Each byte stores the lower 7 bits; the high bit is set to 1
+		until the final byte, where it is 0.
+
+		@param value The non-negative integer to encode (0 – 0xFFFFFFFF)
+	**/
+	public inline function writeVarInt(value:Int):Void {
+		this.writeVarInt(value);
+	}
+
 	// Get & Set Methods
 	@:noCompletion private inline function get_bytesAvailable():UInt {
 		return this.bytesAvailable;
@@ -729,7 +761,6 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 @:noDebug
 #end
 @SuppressWarnings("checkstyle:FieldDocComment")
-@:autoBuild(lime._internal.macros.AssetsMacro.embedByteArray())
 @:noCompletion @:dox(hide) class ByteArrayData extends Bytes implements IDataInput implements IDataOutput {
 	public static var defaultEndian(get, set):Endian;
 	public static var defaultObjectEncoding:ObjectEncoding = ObjectEncoding.DEFAULT;
@@ -743,7 +774,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	@:noCompletion private var __endian:Endian;
 	@:noCompletion private var __length:Int;
 
-	public function new(length:Int = 0) {
+	private function new(length:Int = 0) {
 		var bytes = Bytes.alloc(length);
 
 		#if sys
@@ -1118,6 +1149,18 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return getString(position - length, length);
 	}
 
+	@:keep public inline function readVarInt():Int {
+		var result = 0;
+		var shift = 0;
+		var byte:Int;
+		do {
+			byte = this.readUnsignedByte();
+			result |= (byte & 0x7F) << shift;
+			shift += 7;
+		} while ((byte & 0x80) != 0);
+		return result;
+	}
+
 	public function uncompress(algorithm:CompressionAlgorithm = LZ4):Void {
 		/*#if lime
 			#if js
@@ -1178,16 +1221,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		position = 0;
 	}
 
-	public function writeBoolean(value:Bool):Void {
+	@:keep public inline function writeBoolean(value:Bool):Void {
 		this.writeByte(value ? 1 : 0);
 	}
 
-	public function writeByte(value:Int):Void {
+	@:keep public inline function writeByte(value:Int):Void {
 		__resize(position + 1);
 		set(position++, value & 0xFF);
 	}
 
-	public function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
+	@:keep public function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
 		if (bytes.length == 0)
 			return;
 		if (length == 0)
@@ -1309,6 +1352,39 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public function writeUTFBytes(value:String):Void {
 		var bytes = Bytes.ofString(value);
 		writeBytes(bytes);
+	}
+
+	@:keep public inline function writeVarInt(value:Int):Void {
+		var v = value >>> 0;
+		while (v > 0x7F) {
+			writeByte((v & 0x7F) | 0x80);
+			v >>= 7;
+		}
+		writeByte(v);
+	}
+
+	@:noCompletion private function explicitResize(size:Int):Void {
+		#if debug
+		if (size < 0)
+			throw "`__explicitResize`: size < 0";
+		#end
+
+		if (size > __length) {
+			var bytes = Bytes.alloc(size);
+
+			if (__length > 0) {
+				var cacheLength = length;
+				length = __length;
+				bytes.blit(0, this, 0, __length);
+				length = cacheLength;
+			}
+
+			__setData(bytes);
+		}
+
+		if (length < size) {
+			length = size;
+		}
 	}
 
 	@:noCompletion private function __fromBytes(bytes:Bytes):Void {
