@@ -32,7 +32,6 @@ class RPCSession<C:RPCCommands = Dynamic> extends EventDispatcher {
 	public var heartbeatInterval(get, set):Int;
 	public var heartbeatTimeout(get, set):Int;
 
-	// public var heartbeatJitter(get, set):Int;
 	@:noCompletion private var __connection:INetConnection;
 	@:noCompletion private var __handler:RPCHandler;
 	@:noCompletion private var __commands:C;
@@ -94,14 +93,6 @@ class RPCSession<C:RPCCommands = Dynamic> extends EventDispatcher {
 		return __heartbeatTimeout;
 	}
 
-	/* @:noCompletion private inline function set_heartbeatJitter(value:Int):Int {
-			return __heartbeatJitter = value;
-		}
-
-		@:noCompletion private inline function get_heartbeatJitter():Int {
-			return __heartbeatJitter;
-		}
-	 */
 	@:noCompletion private inline function set_commands(commands:C):C {
 		if (__active && !__hasHeartbeat) {
 			__resumeHeartbeat();
@@ -137,13 +128,13 @@ class RPCSession<C:RPCCommands = Dynamic> extends EventDispatcher {
 	@:noCompletion private inline function set_handler(handler:RPCHandler):RPCHandler {
 		if (__handler != null && handler != __handler) {
 			__handler.this_connection = null;
-			connection.startReceiving();
+			connection.readEnabled = true;
 			handler.this_connection = this.connection;
 		}
 		__handler = handler;
 		if (handler != null) {
 			connection.onData = __handler.this_socket_onData;
-			connection.startReceiving();
+			connection.readEnabled = true;
 			handler.this_connection = this.connection;
 		}
 
