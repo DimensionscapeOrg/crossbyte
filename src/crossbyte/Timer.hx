@@ -1,5 +1,6 @@
 package crossbyte;
 
+import crossbyte.core.CrossByte;
 import crossbyte._internal.system.timer.TimerScheduler;
 #if sys
 import sys.thread.Tls;
@@ -145,14 +146,34 @@ class Timer {
 	}
 
 	/**
+	 * Returns the current logical time (in seconds) for application since it started.
+	 * 
+	 * This value increments when `advanceTime()` is called by the host loop.
+	 *
+	 * @return The application uptime (not wall-clock time).
+	 */
+	public static inline function stamp():Float {
+		@:privateAccess
+		return CrossByte.__primordial.uptime;
+	}
+
+	/**
+	 * Returns the current wall-clock time in seconds.
+	 * 
+	 * @return The wall-clock time in seconds.
+	 */
+	public static inline function now():Float {
+		return haxe.Timer.stamp();
+	}
+
+	/**
 	 * Converts an absolute wall clock time (in milliseconds since epoch)
 	 * to the scheduler's virtual time.
 	 *
 	 * @param wallTime The absolute wall clock time.
 	 * @return The corresponding virtual time in the scheduler.
 	 */
-	public static inline function fromWallClock(wallTime:Float):Float
-	{
+	public static inline function fromWallClock(wallTime:Float):Float {
 		final scheduler:TimerScheduler = current();
 		return scheduler.time + (wallTime - scheduler.startTime);
 	}
@@ -163,8 +184,7 @@ class Timer {
 	 * @param virtualTime The virtual time from the scheduler.
 	 * @return The corresponding wall clock time in milliseconds since epoch.
 	 */
-	public static inline function toWallClock(virtualTime:Float):Float
-	{
+	public static inline function toWallClock(virtualTime:Float):Float {
 		final scheduler = current();
 		return scheduler.startTime + (virtualTime - scheduler.time);
 	}
