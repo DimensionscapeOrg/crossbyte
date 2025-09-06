@@ -5,13 +5,13 @@ package crossbyte.ds;
  * @author Christopher Speciale
  */
 /**
- * A simple __map that preserves insertion order of __keys.
+ * A simple map that preserves insertion order of keys.
  * 
  * Combines fast key-based lookup with ordered iteration.
- * Useful when you need predictable iteration order along with __map semantics.
+ * Useful when you need predictable iteration order along with map semantics.
  *
- * @param K The type of __keys used in the __map.
- * @param V The type of values stored in the __map.
+ * @param K The type of keys used in the map.
+ * @param V The type of values stored in the map.
  */
 @:generic
 final class OrderedMap<K:Dynamic, V> {
@@ -19,7 +19,7 @@ final class OrderedMap<K:Dynamic, V> {
 	private var __keys:Array<K>;
 
 	/**
-	 * Creates a new, empty `Ordered__map`.
+	 * Creates a new, empty `Orderedmap`.
 	 */
 	public function new() {
 		__map = new Map();
@@ -50,7 +50,7 @@ final class OrderedMap<K:Dynamic, V> {
 	}
 
 	/**
-	 * Checks if the __map contains the specified key.
+	 * Checks if the map contains the specified key.
 	 *
 	 * @param key The key to check.
 	 * @return `true` if the key exists, `false` otherwise.
@@ -60,7 +60,7 @@ final class OrderedMap<K:Dynamic, V> {
 	}
 
 	/**
-	 * Removes the specified key and its associated value from the __map.
+	 * Removes the specified key and its associated value from the map.
 	 *
 	 * @param key The key to remove.
 	 * @return `true` if the key existed and was removed, `false` otherwise.
@@ -74,11 +74,11 @@ final class OrderedMap<K:Dynamic, V> {
 	}
 
 	/**
-	 * Returns an iterator over the __keys in insertion order.
+	 * Returns an iterator over the keys in insertion order.
 	 *
-	 * @return An iterator of __keys.
+	 * @return An iterator of keys.
 	 */
-	public function __keysIterator():Iterator<K> {
+	public function keysIterator():Iterator<K> {
 		return __keys.iterator();
 	}
 
@@ -87,8 +87,12 @@ final class OrderedMap<K:Dynamic, V> {
 	 *
 	 * @return An iterator of values.
 	 */
-	public function valuesIterator():Iterator<V> {
+	public function iterator():Iterator<V> {
 		return __keys.map(k -> __map.get(k)).iterator();
+	}
+
+	public inline function unorderedIterator():Iterator<V>{
+		return inline __map.iterator();
 	}
 
 	/**
@@ -101,7 +105,7 @@ final class OrderedMap<K:Dynamic, V> {
 	}
 
 	/**
-	 * Removes all __keys and values from the __map.
+	 * Removes all keys and values from the map.
 	 */
 	public function clear():Void {
 		__map.clear();
@@ -109,19 +113,19 @@ final class OrderedMap<K:Dynamic, V> {
 	}
 
 	/**
-	 * Returns the number of key-value pairs stored in the __map.
+	 * Returns the number of key-value pairs stored in the map.
 	 *
-	 * @return The number of entries in the __map.
+	 * @return The number of entries in the map.
 	 */
-	public #if !debug inline #end function length():Int {
+	public #if final inline #end function length():Int {
 		return __keys.length;
 	}
 
-	public #if !debug inline #end function ofIndex(x:Int):Null<V> {
+	public #if final inline #end function ofIndex(x:Int):Null<V> {
 		return __map.get(__keys[x]);
 	}
 
-	public #if !debug inline #end function indexOf(key:K, ?fromIndex:Int):Int {
+	public #if final inline #end function indexOf(key:K, ?fromIndex:Int):Int {
 		return __keys.indexOf(key, fromIndex);
 	}
 }
