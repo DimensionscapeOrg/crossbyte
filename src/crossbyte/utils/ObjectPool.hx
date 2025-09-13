@@ -13,10 +13,12 @@ import crossbyte.ds.Stack;
  * @param T The type of objects to be pooled.
  */
 @:generic
-class ObjectPool<T> {
-	private var __pool:Array<ObjectBucket<T>>;
-	private var __available:Stack<Int>;
-	private var __free:Stack<Int>;
+class ObjectPool<T:{}> {
+	@:noCompletion private var __free:Stack<T>;
+	@:noCompletion private var __created:Int = 0;
+	#if debug
+	@:noCompletion private var __inUse:haxe.ds.ObjectMap<{}, Bool> = new haxe.ds.ObjectMap();
+	#end
 
 	/**
 	 * A factory function that creates new instances of the pooled objects.
@@ -30,6 +32,33 @@ class ObjectPool<T> {
 	 */
 	public var resetFunction:T->Void;
 
+	/** 
+	 * Objects currently free. 
+	 */
+	public var freeCount(get, never):Int;
+
+	/** 
+	 * Total created by this pool
+	 */
+	public var capacity(get, never):Int;
+
+	/** 
+	 * Estimated in-use count
+	 */
+	public var inUse(get, never):Int;
+
+	@:noCompletion private inline function get_freeCount():Int {
+		return __free.length;
+	}
+
+	@:noCompletion private inline function get_capacity():Int {
+		return __created;
+	}
+
+	@:noCompletion private inline function get_inUse():Int {
+		return __created - __free.length;
+	}
+
 	/**
 	 * Creates a new object pool.
 	 *
@@ -37,63 +66,34 @@ class ObjectPool<T> {
 	 * @param resetFunction Optional The function used to reset our object.
 	 * @param length Optional initial size of the pool.
 	 */
-	public function new(objectFactory:Void->T, ?resetFunction:T->Void, ?length:Int) {
-		__pool = [];
+	public inline function new(objectFactory:Void->T, ?resetFunction:T->Void, ?length:Int) {
 		this.objectFactory = objectFactory;
-
 		this.resetFunction = resetFunction;
+		__free = new Stack(length != null ? length : 0);
 
-		if (length != null) {
-			__free = new Stack(length);
-			__available = new Stack(length);
-			__populate(length);
-			return;
+		if (length != null && length > 0) {
+			reserve(length);
 		}
-
-		__free = new Stack();
-		__available = new Stack();
-	}
-
-	private function __populate(len:Int):Void {
-		for (i in 0...len) {
-			var object:T = objectFactory();
-			__newElement(object);
-			__available.push(i);
-		}
-	}
-
-	private inline function __newElement(obj:T):Void {
-		var len:Int = __pool.length;
-		var element:ObjectBucket<T> = new ObjectBucket(obj, len);
-		__pool.push(element);
 	}
 
 	/**
 	 * Acquires an object from the pool.
 	 * If no objects are available, it creates a new one using the factory function.
 	 *
-	 * @return The acquired object.
+	 * @return T The acquired object.
 	 */
 	public inline function acquire():T {
-		var obj:T = null;
-		if (__available.length > 0) {
-			obj = __getObject(__available.pop());
-		} else {
-			// Handle case where no objects are available
-			// Example: Expand pool
-			obj = objectFactory();
-			__newElement(obj);
-			__free.push(__pool.length - 1);
+		if (__free.length > 0) {
+			var obj:T = __free.pop();
+			#if debug
+			if (__inUse.exists(obj))
+				throw "ObjectPool: double-loan";
+			__inUse.set(obj, true);
+			#end
+			return obj;
 		}
-
-		return obj;
-	}
-
-	private function __getObject(index:Int):T {
-		var element:ObjectBucket<T> = __pool[index];
-		__free.push(index);
-
-		return element.value;
+		__created++;
+		return objectFactory();
 	}
 
 	/**
@@ -101,24 +101,68 @@ class ObjectPool<T> {
 	 *
 	 * @param obj The object to release.
 	 */
-	public function release(obj:T):Void {
-		var index:Int = __free.pop();
-		__available.push(index);
-		__pool[index].value = obj;
+	public inline function release(obj:T):Void {
+		#if debug
+		if (obj == null)
+			throw "Released object cant be null";
+		if (!__inUse.remove(obj))
+			throw "ObjectPool: foreign or already-released object";
+		#end
+		var func:T->Void = resetFunction;
+		if (func != null) {
+			func(obj);
+		}
 
-		if (resetFunction != null) {
-			resetFunction(obj);
+		__free.push(obj);
+	}
+
+	/**
+	 * Ensure at least n free objects are available
+	 * 
+	 * @param length 
+	 */
+	public inline function reserve(length:Int):Void {
+		var need:Int = length - __free.length;
+		while (need > 0) {
+			__free.push(objectFactory());
+			__created++;
+			need--;
 		}
 	}
-}
 
-@:generic
-private class ObjectBucket<T> {
-	public var index:Int;
-	public var value:T;
+	/**
+	 * Set total logical capacity (inUse + free) to `target`.
+	 * Never shrinks below current `inUse`. Returns the new capacity.
+	 *
+	 * @param target 
+	 * @return Int
+	 */
+	public inline function resizeCapacity(target:Int):Int {
+		if (target < 0){
+			target = 0;
+		}
+			
+		var inUseNow:Int = __created - __free.length;
+		if (target < inUseNow){
+			target = inUseNow;
+		}
+			
 
-	private inline function new(value:T, index:Int) {
-		this.index = index;
-		this.value = value;
+		var wantFree:Int = target - inUseNow;
+		var free:Int = __free.length;
+
+		if (wantFree > free) {
+			var need:Int = wantFree - free;
+			while (need-- > 0) {
+				__free.push(objectFactory());
+				__created++;
+			}
+		} else if (wantFree < free) {
+			var drop:Int = free - wantFree;
+			while (drop-- > 0) {
+				__free.pop();
+			}
+		}
+		return inUseNow + __free.length;
 	}
 }
