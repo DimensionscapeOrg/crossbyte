@@ -1,3 +1,9 @@
+package crossbyte.utils;
+
+/**
+ * ...
+ * @author Christopher Speciale
+ */
 @:generic
 final class ObjectRecycler<T:{}> {
 	public var pool(default, null):ObjectPool<T>;
@@ -25,17 +31,31 @@ final class ObjectRecycler<T:{}> {
 	}
 
 	public inline function recycle(object:T):Void {
+		if (object == null)
+			return;
+		#if debug
+		if (object == _l0 || object == _l1)
+			throw "ObjectRecycler: double-recycle of same object";
+		#end
+
 		var func:T->Void = pool.resetFunction;
-		if (func != null)
-			func(object);
 		if (_l0 == null) {
+			if (func != null) {
+				func(object);
+			}
+
 			_l0 = object;
 			return;
 		}
 		if (_l1 == null) {
+			if (func != null) {
+				func(object);
+			}
+
 			_l1 = object;
 			return;
 		}
+
 		pool.release(object);
 	}
 
@@ -52,8 +72,7 @@ final class ObjectRecycler<T:{}> {
 		}
 	}
 
-	public inline function localSize():Int{
+	public inline function localSize():Int {
 		return (_l0 != null ? 1 : 0) + (_l1 != null ? 1 : 0);
 	}
-		
 }
