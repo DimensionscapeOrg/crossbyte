@@ -13,7 +13,7 @@ import crossbyte.ds.Stack;
  * @param T The type of objects to be pooled.
  */
 @:generic
-class ObjectPool<T:{}> {
+final class ObjectPool<T:{}> {
 	@:noCompletion private var __free:Stack<T>;
 	@:noCompletion private var __created:Int = 0;
 	#if debug
@@ -138,15 +138,14 @@ class ObjectPool<T:{}> {
 	 * @return Int
 	 */
 	public inline function resizeCapacity(target:Int):Int {
-		if (target < 0){
+		if (target < 0) {
 			target = 0;
 		}
-			
+
 		var inUseNow:Int = __created - __free.length;
-		if (target < inUseNow){
+		if (target < inUseNow) {
 			target = inUseNow;
 		}
-			
 
 		var wantFree:Int = target - inUseNow;
 		var free:Int = __free.length;
