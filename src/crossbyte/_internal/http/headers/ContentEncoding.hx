@@ -4,7 +4,7 @@ package crossbyte._internal.http.headers;
  * ...
  * @author Christopher Speciale
  */
-abstract ContentEncoding(String) from String to String {
+enum abstract ContentEncoding(String) from String to String {
 	/*
 		A compression format that uses the Brotli algorithm.
 	 */
