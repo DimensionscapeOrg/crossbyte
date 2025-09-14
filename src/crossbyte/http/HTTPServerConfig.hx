@@ -22,11 +22,14 @@ class HTTPServerConfig {
 	public var corsAllowedOrigins:Array<String>;
 	public var corsAllowedMethods:Array<String>;
 	public var corsAllowedHeaders:Array<String>;
+	public var corsMaxAge:Int;
+	public var maxConnections:Int;
+	public var backlog:Int;
 
 	public function new(address:String = "0.0.0.0", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
-			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null) {
+			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, maxConnections:Int = 256, backlog:Int = 0) {
 		this.address = address;
 		this.port = port;
 		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
@@ -40,6 +43,9 @@ class HTTPServerConfig {
 		this.corsAllowedOrigins = corsAllowedOrigins == null ? ["*"] : corsAllowedOrigins;
 		this.corsAllowedMethods = corsAllowedMethods == null ? ["GET", "POST", "OPTIONS"] : corsAllowedMethods;
 		this.corsAllowedHeaders = corsAllowedHeaders == null ? ["Content-Type"] : corsAllowedHeaders;
+		this.corsMaxAge = corsMaxAge;
+		this.maxConnections = maxConnections;
+		this.backlog = backlog;
 	}
 }
 
