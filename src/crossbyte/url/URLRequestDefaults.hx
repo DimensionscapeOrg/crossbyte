@@ -31,7 +31,7 @@ class URLRequestDefaults {
 		requests.
 		The default value is 0.
 	**/
-	public static var idleTimeout:Float = 0;
+	public static var idleTimeout:Int = 0;
 
 	/**
 		The default setting for the manageCookies property of URLRequest objects. Setting
