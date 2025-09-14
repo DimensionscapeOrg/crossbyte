@@ -31,7 +31,7 @@ class URLRequest {
 		`idleTimeout` property.
 		The default value is initialized from the `URLRequestDefaults.idleTimeout` property.
 	**/
-	public var idleTimeout:Float;
+	public var idleTimeout:Int;
 
 	/**
 		Specifies whether the HTTP protocol stack should manage cookies for this request.
