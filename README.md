@@ -10,6 +10,8 @@ Empower your development workflow with CrossByte and unlock new possibilities fo
 
 ## 2025 Roadmap
 - [x] RPC
+- [x] HTTP Server
+  - [ ] PHP Support 
 - [ ] rUDP
 - [ ] webRTC
 - [ ] Quic/HTTP3
