@@ -12,7 +12,7 @@ Empower your development workflow with CrossByte and unlock new possibilities fo
 - [x] IPC
 - [x] RPC
 - [x] HTTP Server
-  - [ ] PHP Support 
+  - [x] PHP Support 
 - [ ] rUDP
 - [ ] webRTC
 - [ ] Quic/HTTP3
