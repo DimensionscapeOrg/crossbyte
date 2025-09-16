@@ -1400,7 +1400,9 @@ final class File extends EventDispatcher {
 		Each time you run this code, a new (unique) file is created.
 	**/
 	public static function createTempDirectory():File {
-		return new File(__getTempPath(true));
+		var tempPath:String = __getTempPath(true);
+		FileSystem.createDirectory(tempPath);
+		return new File(tempPath);
 	}
 
 	/**
@@ -1425,7 +1427,11 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public static function createTempFile():File {
-		return new File(__getTempPath(false));
+		var tempPath:String = __getTempPath(false);
+		var directory:String = Path.directory(tempPath);
+		FileSystem.createDirectory(directory);
+		File.saveBytes(tempPath, haxe.io.Bytes.alloc(0));
+		return new File(tempPath);
 	}
 
 	/**
