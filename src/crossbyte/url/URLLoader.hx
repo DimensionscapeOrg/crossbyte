@@ -37,7 +37,16 @@ class URLLoader extends EventDispatcher {
 
 	@:noCompletion private function __onWorkerComplete(e:ThreadEvent):Void {
 		var dataBytes:Bytes = e.message;
-		data = (dataFormat == URLLoaderDataFormat.TEXT) ? dataBytes.getString(0, dataBytes.length) : dataBytes;
+		switch (dataFormat) {
+			case URLLoaderDataFormat.TEXT:
+				data = dataBytes.getString(0, dataBytes.length);
+			case URLLoaderDataFormat.BINARY:
+				data = dataBytes;
+			case URLLoaderDataFormat.VARIABLES:
+				var s:String = dataBytes.getString(0, dataBytes.length);
+				data = new URLVariables(s);
+		}
+
 		dispatchEvent(new Event(Event.COMPLETE));
 		__disposeWorker();
 	}
@@ -73,63 +82,60 @@ class URLLoader extends EventDispatcher {
 	}
 
 	private function __work(message:Dynamic):Void {
-		var request:URLRequest = message.request;
-		var df:URLLoaderDataFormat = message.dataFormat;
+		try {
+			var request:URLRequest = message.request;
 
-		// Build raw header strings
-		var requestHeaders:Array<String> = [];
-		for (header in request.requestHeaders) {
-			requestHeaders.push(header.toString());
-		}
-
-		// Decide how to map request.data into Http args
-		var requestData:Dynamic = null; // becomes query/form fields
-		var contentType:Null<String> = null;
-		var bodyData:Dynamic = null; // becomes raw request body
-
-		if (request.data != null) {
-			if (Std.isOfType(request.data, haxe.io.Bytes) || Std.isOfType(request.data, String)) {
-				// Raw body mode
-				bodyData = request.data;
-				contentType = (request.contentType != null) ? request.contentType : "application/octet-stream";
-			} else if (Reflect.isObject(request.data)) {
-				// Form/urlencoded mode (Http will build body for non-GET)
-				requestData = request.data;
-				// optionally honor request.contentType if user provided one
-				if (request.contentType != null)
-					contentType = request.contentType;
-			} else {
-				// Fallback: stringify
-				bodyData = Std.string(request.data);
-				contentType = (request.contentType != null) ? request.contentType : "text/plain; charset=utf-8";
+			var requestHeaders:Array<String> = [];
+			for (header in request.requestHeaders) {
+				requestHeaders.push(header.toString());
 			}
-		}
 
-		var http:Http = new Http(request.url, request.method, requestHeaders, requestData, // 4th: requestData (for query/form)
-			contentType, bodyData,
-			HTTP_1_1, request.idleTimeout, request.userAgent, request.followRedirects);
+			var requestData:Dynamic = null;
+			var contentType:Null<String> = null;
+			var bodyData:Dynamic = null;
 
-		function onComplete(dataBytes:Bytes):Void {
-			__loaderWorker.sendComplete(dataBytes);
-		}
-		function onProgress(loaded:Int, total:Int):Void {
-			var obj = {type: "progress", value: {bytesLoaded: loaded, bytesTotal: total}};
-			__loaderWorker.sendProgress(obj);
-		}
-		function onError(msg:String):Void {
-			__loaderWorker.sendError(msg);
-		}
-		function onStatus(code:Int):Void {
-			var obj = {type: "status", value: code};
-			__loaderWorker.sendProgress(obj);
-		}
+			if (request.data != null) {
+				if (Std.isOfType(request.data, haxe.io.Bytes) || Std.isOfType(request.data, String)) {
+					bodyData = request.data;
+					contentType = (request.contentType != null) ? request.contentType : "application/octet-stream";
+				} else if (Reflect.isObject(request.data)) {
+					requestData = request.data;
+					if (request.contentType != null) {
+						contentType = request.contentType;
+					}
+				} else {
+					bodyData = Std.string(request.data);
+					contentType = (request.contentType != null) ? request.contentType : "text/plain; charset=utf-8";
+				}
+			}
 
-		http.onComplete = onComplete;
-		http.onProgress = onProgress;
-		http.onError = onError;
-		http.onStatus = onStatus;
+			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, HTTP_1_1, request.idleTimeout,
+				request.userAgent, request.followRedirects);
 
-		http.load();
+			function onComplete(dataBytes:Bytes):Void {
+				__loaderWorker.sendComplete(dataBytes);
+			}
+			function onProgress(loaded:Int, total:Int):Void {
+				var obj = {type: "progress", value: {bytesLoaded: loaded, bytesTotal: total}};
+				__loaderWorker.sendProgress(obj);
+			}
+			function onError(msg:String):Void {
+				__loaderWorker.sendError(msg);
+			}
+			function onStatus(code:Int):Void {
+				var obj = {type: "status", value: code};
+				__loaderWorker.sendProgress(obj);
+			}
+
+			http.onComplete = onComplete;
+			http.onProgress = onProgress;
+			http.onError = onError;
+			http.onStatus = onStatus;
+
+			http.load();
+		} catch (e:Dynamic) {
+			__loaderWorker.sendError(e);
+		}
 	}
 
 	public function load(request:URLRequest):Void {
