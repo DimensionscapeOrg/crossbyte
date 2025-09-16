@@ -86,17 +86,18 @@ final class ListedMap<K:Dynamic, V> {
 	 * @param key The key to insert or update.
 	 * @param value The value to associate with the key.
 	 */
-	public function set(key:K, value:V):Void {
-		if (!__map.exists(key)) {
+	public function set(key:K, value:V):Bool {
+		var idx:Null<Int> = __indices.get(key);
+		if (idx == null) {
 			__map.set(key, value);
-			// Create a new entry inline.
-			var entry:KeyValuePair<K, V> = {key: key, value: value};
+			var entry:KeyValuePair<K, V> = { key: key, value: value };
 			__indices.set(key, __keyValuePairs.length);
 			__keyValuePairs.push(entry);
+			return true;
 		} else {
 			__map.set(key, value);
-			var index = __indices.get(key);
-			__keyValuePairs[index].value = value;
+			__keyValuePairs[idx].value = value;
+			return false;
 		}
 	}
 
@@ -168,7 +169,7 @@ final class ListedMap<K:Dynamic, V> {
 	 */
 	public function clear():Void {
 		__map.clear();
-		__keyValuePairs = [];
+		__keyValuePairs.resize(0);
 		__indices.clear();
 	}
 
@@ -187,13 +188,16 @@ final class ListedMap<K:Dynamic, V> {
 	 * @return An `Iterator<V>` over the values.
 	 */
 	public function iterator():Iterator<V> {
-		var i = 0;
+		var i:Int = 0;
+		var a:Array<KeyValuePair<K,V>> = __keyValuePairs;
+		var n:Int = a.length;
+		
 		return {
 			hasNext: function():Bool {
-				return i < __keyValuePairs.length;
+				return i < n;
 			},
 			next: function():V {
-				return __keyValuePairs[i++].value;
+				return a[i++].value;
 			}
 		};
 	}
