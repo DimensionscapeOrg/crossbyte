@@ -26,6 +26,8 @@ class HTTPServerConfig {
 	public var maxConnections:Int;
 	public var backlog:Int;
 	public var phpEnabled:Bool;
+	public var phpAddress:String;
+	public var phpPort:Int;
 	public var phpCGIPath:String;
 	public var phpINIPath:String;
 	public var phpMode:Int;
@@ -35,7 +37,7 @@ class HTTPServerConfig {
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false, maxConnections:Int = 256, backlog:Int = 0, 
-			phpEnabled:Bool = false, phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1) {
+			phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080, phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1) {
 		this.address = address;
 		this.port = port;
 		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
@@ -54,6 +56,8 @@ class HTTPServerConfig {
 		this.maxConnections = maxConnections;
 		this.backlog = backlog;
 		this.phpEnabled = phpEnabled;
+		this.phpAddress = phpAddress;
+		this.phpPort = phpPort;
 		this.phpCGIPath = phpCGIPath;
 		this.phpINIPath = phpINIPath;
 		this.phpMode = phpMode;
