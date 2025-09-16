@@ -1,25 +1,47 @@
 package crossbyte.url;
 
+import crossbyte.FieldStruct;
+
 /**
-	The URLVariables class allows you to transfer variables between an
-	application and a server. Use URLVariables objects with methods of the
-	URLLoader class, with the `data` property of the URLRequest
-	class, and with openfl.net package functions.
+	Abstract representing a set of URL query parameters with **multi-value support**.
+
+	`URLVariables` encodes/decodes data using the `application/x-www-form-urlencoded`
+	convention. Repeated keys are preserved (e.g. `a=1&a=2`) and are stored internally
+	as `Array<String>` per key.
+
+	### Key behaviors
+
+	- **Decode**: Accepts both `&` and `;` as pair separators. Existing content is **cleared**.
+	- **Encode**: Produces `k=v&k=v2` for repeated keys. Values and keys are percent-encoded.
+	- **Access (dot/bracket)**: `vars.foo` or `vars["foo"]` returns/sets the **first value**
+	  for `foo`. Use `all("foo")` to get the full `Array<String>`.
+	- **Append**: Use `append(key, value)` to add an additional value while preserving
+	  prior values for the same key.
+
+	> Internally this is an abstract over `FieldStruct<Array<String>>` (a `StringMap`-based
+	> structure). Iteration order of keys is implementation-dependent.
+
+	@example Basic usage
+	```haxe
+	var v = new URLVariables("a=1&a=2&b=");
+	trace(v.all("a"));     // [ "1", "2" ]
+	trace(v["a"]);         // "1"
+	v.append("a", "3");
+	trace(v.toString());   // "a=1&a=2&a=3&b=" (order of keys may vary)
+	```
+
+	@since 1.0
 **/
-@:forward
-abstract URLVariables(Dynamic) from Dynamic to Dynamic {
+abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>> to FieldStruct<Array<String>> {
+
 	/**
-		Creates a new URLVariables object. You pass URLVariables objects to the
-		`data` property of URLRequest objects.
+		Create a new `URLVariables`. If `source` is provided, it is immediately
+		{@link decode}d into this instance.
 
-		If you call the URLVariables constructor with a string, the
-		`decode()` method is automatically called to convert the string
-		to properties of the URLVariables object.
-
-		@param source A URL-encoded string containing name/value pairs.
+		@param source Optional URL-encoded query string (e.g. `"a=1&b=2"`).
 	**/
-	public function new(source:String = null) {
-		this = {};
+	public inline function new(source:String = null) {
+		this = new FieldStruct();
 
 		if (source != null) {
 			decode(source);
@@ -27,68 +49,131 @@ abstract URLVariables(Dynamic) from Dynamic to Dynamic {
 	}
 
 	/**
-		Converts the variable string to properties of the specified URLVariables
-		object.
+		Populate this instance from a URL-encoded string.
 
-		This method is used internally by the URLVariables events. Most users
-		do not need to call this method directly.
+		- Accepts `&` **and** `;` as separators.
+		- Missing values (e.g. `b` in `"b"`) decode as empty strings.
+		- **Clears** existing keys before decoding.
+		- Repeated keys append in order of appearance.
 
-		@param source A URL-encoded query string containing name/value pairs.
-		@throws Error The source parameter must be a URL-encoded query string
-					  containing name/value pairs.
+		@param source A URL-encoded query string.
 	**/
 	public function decode(source:String):Void {
-		var fields = Reflect.fields(this);
+		FieldStruct.clear(this);
 
-		for (f in fields) {
-			Reflect.deleteField(this, f);
-		}
-
-		var fields = source.split(";").join("&").split("&");
-
-		for (f in fields) {
-			var eq = f.indexOf("=");
-
-			if (eq > 0) {
-				Reflect.setField(this, StringTools.urlDecode(f.substr(0, eq)), StringTools.urlDecode(f.substr(eq + 1)));
-			} else if (eq != 0) {
-				Reflect.setField(this, StringTools.urlDecode(f), "");
+		for (pair in source.split(";").join("&").split("&")) {
+			if (pair == "") {
+				continue;
+			}
+			var eq:Int = pair.indexOf("=");
+			var k:String = StringTools.urlDecode(eq > 0 ? pair.substr(0, eq) : pair);
+			var v:String = StringTools.urlDecode(eq > 0 ? pair.substr(eq + 1) : "");
+			var a:Array<String> = this[k];
+			if (a == null) {
+				this[k] = [v];
+			} else {
+				a.push(v);
 			}
 		}
 	}
 
 	/**
-		Returns a string containing all enumerable variables, in the MIME content
-		encoding _application/x-www-form-urlencoded_.
+		Serialize all parameters to a URL-encoded string using
+		`application/x-www-form-urlencoded`.
 
-		@return A URL-encoded string containing name/value pairs.
+		- Repeated keys emit multiple `k=v` pairs (e.g. `a=1&a=2`).
+		- Empty values emit as `k=`.
+
+		@return A URL-encoded query string. Key order is implementation-dependent.
 	**/
 	public function toString():String {
-		var result = new Array<String>();
-		var fields = Reflect.fields(this);
-
-		for (f in fields) {
-			var value:Dynamic = Reflect.field(this, f);
-			if (f.indexOf("[]") > -1 && (value is Array)) {
-				var arrayValue:String = Lambda.map(value, function(v:String) {
-					return StringTools.urlEncode(v);
-				}).join('&amp;${f}=');
-				result.push(StringTools.urlEncode(f) + "=" + arrayValue);
+		var out:Array<String> = new Array<String>();
+		for (kv in FieldStruct.iterator(this)) {
+			var k:String = StringTools.urlEncode(kv.key);
+			var a:Array<String> = kv.value;
+			if (a == null || a.length == 0) {
+				out.push(k + "=");
 			} else {
-				result.push(StringTools.urlEncode(f) + "=" + StringTools.urlEncode(value));
+				for (v in a) {
+					out.push(k + "=" + StringTools.urlEncode(v));
+				}
 			}
 		}
-
-		return result.join("&");
+		return out.join("&");
 	}
 
-	@SuppressWarnings("checkstyle:FieldDocComment")
-	@:arrayAccess private inline function __get(key:String):Dynamic {
-		return Reflect.field(this, key);
+	/**
+		Append a value to a key without overwriting existing values.
+
+		@param key   Parameter name.
+		@param value Value to append (unencoded; encoding happens in {@link toString}).
+	**/
+	public inline function append(key:String, value:String):Void {
+		var a:Array<String> = this[key];
+		if (a == null) {
+			this[key] = [value];
+		} else {
+			a.push(value);
+		}
 	}
 
-	@SuppressWarnings("checkstyle:FieldDocComment")
-	@:arrayAccess private inline function __set(key:String, value:String):Void {
-		Reflect.setField(this, key, value);
+	/**
+		Get **all** values for a key.
+
+		@param key Parameter name.
+		@return An array of values (empty if the key does not exist).
+	**/
+	public inline function all(key:String):Array<String> {
+		var a:Array<String> = this[key];
+		return (a == null) ? [] : a;
 	}
+
+	/**
+		Array-style access (read): returns the **first** value for `key`, or `null`
+		if the key is not present. `all` to retrieve all values.
+
+		@example
+		```haxe
+		var v = new URLVariables("a=1&a=2");
+		trace(v["a"]);      // "1"
+		trace(v.all("a"));  // ["1","2"]
+		```
+	**/
+	@:arrayAccess public inline function get(key:String):Null<String> {
+		final a = this[key]; // FieldStruct's arrayAccess
+		return (a == null || a.length == 0) ? null : a[0];
+	}
+
+	/**
+		Array-style access (write): sets/replaces the **first** value for `key`.
+		Other existing values for that key are kept as-is.
+
+		@param key   Parameter name.
+		@param value New first value.
+		@return The value written.
+	**/
+	@:arrayAccess public inline function set(key:String, value:String):String {
+		var a:Array<String> = this[key];
+		if (a == null) {
+			this[key] = [value];
+		} else {
+			if (a.length == 0) {
+				a.push(value);
+			} else {
+				a[0] = value;
+			}
+		}
+		return value;
+	}
+
+	@:noCompletion @:op(a.b) private inline function __read(name:String):Null<String>
+	{
+		return get(name);
+	}
+		
+
+	@:noCompletion @:op(a.b) private inline function __write(name:String, v:String):String{
+		return set(name, v);
+	}
+		
 }
