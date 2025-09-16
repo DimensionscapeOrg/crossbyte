@@ -34,4 +34,5 @@ enum abstract URLRequestMethod(String) from String to String {
 		Specifies that the URLRequest object is a `PUT`.
 	**/
 	public var PUT = "PUT";
+
 }

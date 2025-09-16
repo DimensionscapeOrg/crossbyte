@@ -33,7 +33,6 @@ import crossbyte.FieldStruct;
 	@since 1.0
 **/
 abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>> to FieldStruct<Array<String>> {
-
 	/**
 		Create a new `URLVariables`. If `source` is provided, it is immediately
 		{@link decode}d into this instance.
@@ -166,14 +165,11 @@ abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>
 		return value;
 	}
 
-	@:noCompletion @:op(a.b) private inline function __read(name:String):Null<String>
-	{
+	@:noCompletion @:op(a.b) private inline function __read(name:String):Null<String> {
 		return get(name);
 	}
-		
 
-	@:noCompletion @:op(a.b) private inline function __write(name:String, v:String):String{
+	@:noCompletion @:op(a.b) private inline function __write(name:String, v:String):String {
 		return set(name, v);
 	}
-		
 }
