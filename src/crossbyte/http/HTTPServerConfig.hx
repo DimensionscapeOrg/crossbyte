@@ -25,11 +25,17 @@ class HTTPServerConfig {
 	public var corsMaxAge:Int;
 	public var maxConnections:Int;
 	public var backlog:Int;
+	public var phpEnabled:Bool;
+	public var phpCGIPath:String;
+	public var phpINIPath:String;
+	public var phpMode:Int;
+	public var corsAllowCredentials:Bool;
 
 	public function new(address:String = "0.0.0.0", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
-			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, maxConnections:Int = 256, backlog:Int = 0) {
+			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false, maxConnections:Int = 256, backlog:Int = 0, 
+			phpEnabled:Bool = false, phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1) {
 		this.address = address;
 		this.port = port;
 		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
@@ -43,9 +49,15 @@ class HTTPServerConfig {
 		this.corsAllowedOrigins = corsAllowedOrigins == null ? ["*"] : corsAllowedOrigins;
 		this.corsAllowedMethods = corsAllowedMethods == null ? ["GET", "POST", "OPTIONS"] : corsAllowedMethods;
 		this.corsAllowedHeaders = corsAllowedHeaders == null ? ["Content-Type"] : corsAllowedHeaders;
+		this.corsAllowCredentials = corsAllowCredentials;
 		this.corsMaxAge = corsMaxAge;
 		this.maxConnections = maxConnections;
 		this.backlog = backlog;
+		this.phpEnabled = phpEnabled;
+		this.phpCGIPath = phpCGIPath;
+		this.phpINIPath = phpINIPath;
+		this.phpMode = phpMode;
+		
 	}
 }
 

@@ -9,11 +9,14 @@ import crossbyte.io.File;
 import crossbyte.net.Socket;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.Logger;
+import crossbyte._internal.php.PHPBridge;
+import crossbyte._internal.php.PHPRequest;
+import crossbyte._internal.php.PHPResponse;
 import crossbyte._internal.http.Http;
 
 final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var MAX_BUFFER_SIZE:Int = 1024 * 1024; // 1 MB
-	@:noCompletion private static final ALLOWED_METHODS:Array<String> = ["GET", "HEAD", "OPTIONS"];
+	@:noCompletion private static final ALLOWED_METHODS:Array<String> = ["GET", "HEAD", "OPTIONS", "POST"];
 
 	@:noCompletion private var __origin:Socket;
 	@:noCompletion private var __incomingBuffer:ByteArray;
@@ -22,14 +25,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __method:String;
 	@:noCompletion private var __filePath:String;
 	@:noCompletion private var __httpVersion:String;
+	@:noCompletion private var __php:PHPBridge;
+	@:noCompletion private var __queryString:String = "";
+	@:noCompletion private var __requestPath:String = "/";
+	@:noCompletion private var __awaitingBody:Bool = false;
+	@:noCompletion private var __expectBody:Int = 0;
+	@:noCompletion private var __bodyBuf:ByteArray = null;
+	@:noCompletion private var __bodyTargetPhpPath:String = null;
+	@:noCompletion private var __bodyHeadOnly:Bool = false;
 
-	public function new(socket:Socket, config:HTTPServerConfig) {
+	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge) {
 		super();
 		__origin = socket;
 		__config = config;
 		__incomingBuffer = new ByteArray();
 		__headers = new Map<String, String>();
 		__setup();
+		__php = php;
 	}
 
 	public function getCookie(name:String):String {
@@ -92,6 +104,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return;
 			}
 
+			if (__awaitingBody) {
+				__readBodyFromBuffer();
+				if (!__awaitingBody) {
+					__finishPhpWithBody();
+				}
+
+				return;
+			}
+
 			__parseRequest();
 		} catch (error:Dynamic) {
 			Logger.error("Error reading data: " + error);
@@ -124,23 +145,26 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var rawTarget:String = parts[1];
 		__httpVersion = parts[2];
 
-		var supportsHttpVersion:Bool = Http.validateHttpVersion(__httpVersion);
-		if (!supportsHttpVersion) {
+		if (!Http.validateHttpVersion(__httpVersion)) {
 			__sendErrorResponse(505, "HTTP Version Not Supported");
 			return;
 		}
 
-		var pathOnly:String = rawTarget;
-		var q:Int = pathOnly.indexOf("?");
-		if (q >= 0) {
-			pathOnly = pathOnly.substr(0, q);
+		var qPos:Int = rawTarget.indexOf("?");
+		if (qPos >= 0) {
+			__queryString = rawTarget.substr(qPos + 1);
+		} else {
+			__queryString = "";
 		}
+
+		var pathOnly:String = (qPos >= 0) ? rawTarget.substr(0, qPos) : rawTarget;
 		var h:Int = pathOnly.indexOf("#");
 		if (h >= 0)
 			pathOnly = pathOnly.substr(0, h);
 
 		try {
 			pathOnly = StringTools.urlDecode(pathOnly);
+			__requestPath = pathOnly;
 		} catch (_:Dynamic) {
 			__sendErrorResponse(400, "Bad Request");
 			return;
@@ -193,6 +217,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 				} else {
 					__sendMethodNotAllowed();
 				}
+			case "POST":
+				__handlePost(__filePath);
 
 			default:
 				__sendMethodNotAllowed();
@@ -200,17 +226,34 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __handleOptionsRequest():Void {
-		var response = "HTTP/1.1 204 No Content\r\n";
-		response += "Access-Control-Allow-Origin: " + __config.corsAllowedOrigins.join(", ") + "\r\n";
-		response += "Access-Control-Allow-Methods: " + __config.corsAllowedMethods.join(", ") + "\r\n";
-		response += "Access-Control-Allow-Headers: " + __config.corsAllowedHeaders.join(", ") + "\r\n";
-		response += "Allow: " + ALLOWED_METHODS.join(", ") + "\r\n";
-		response += "Vary: Origin\r\n";
-		if (__config.corsMaxAge > 0){
+		var response:String = "HTTP/1.1 204 No Content\r\n";
+
+		response += "Date: " + __formatHttpDate() + "\r\n";
+		response += "Server: CrossByte\r\n";
+		response += "X-Content-Type-Options: nosniff\r\n";
+		response += "Connection: close\r\n";
+
+		var allowOrigin = __computeAllowOrigin();
+		if (allowOrigin != null) {
+			response += "Access-Control-Allow-Origin: " + allowOrigin + "\r\n";
+		}
+		if (__config.corsAllowCredentials && allowOrigin != "*") {
+			response += "Access-Control-Allow-Credentials: true\r\n";
+		}
+		response += "Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers\r\n";
+
+		var reqMethod:String = __headers.exists("access-control-request-method") ? __headers.get("access-control-request-method") : null;
+		response += "Access-Control-Allow-Methods: " + (reqMethod != null ? reqMethod : __config.corsAllowedMethods.join(", ")) + "\r\n";
+
+		var reqHdrs:String = __headers.exists("access-control-request-headers") ? __headers.get("access-control-request-headers") : null;
+		response += "Access-Control-Allow-Headers: " + (reqHdrs != null ? reqHdrs : __config.corsAllowedHeaders.join(", ")) + "\r\n";
+
+		if (__config.corsMaxAge > 0) {
 			response += "Access-Control-Max-Age: " + __config.corsMaxAge + "\r\n";
 		}
-			
+		response += "Allow: " + ALLOWED_METHODS.join(", ") + "\r\n";
 		response += "Content-Length: 0\r\n\r\n";
+
 		__origin.writeUTFBytes(response);
 		__origin.flush();
 		__origin.close();
@@ -236,6 +279,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 			return;
 		}
+
 		if (file.isDirectory) {
 			var indexFile:String = __findIndexFile(file);
 			if (indexFile != null) {
@@ -246,6 +290,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 					__origin.close();
 			}
 			return;
+		} else {
+			if (__php != null && __isPhp(file.nativePath)) {
+				__servePhp(file.nativePath, headOnly);
+				return;
+			}
 		}
 
 		file.load();
@@ -293,7 +342,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, file.data, headOnly);
 		}
 
-		if (!headOnly && __origin.connected) {
+		if (__origin.connected) {
 			__origin.close();
 		}
 	}
@@ -326,9 +375,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		if (__config.corsEnabled) {
-			response += "Access-Control-Allow-Origin: " + __config.corsAllowedOrigins.join(", ") + "\r\n";
+			var allowOrigin = __computeAllowOrigin();
+			if (allowOrigin != null) {
+				response += "Access-Control-Allow-Origin: " + allowOrigin + "\r\n";
+			}
+			if (__config.corsAllowCredentials && allowOrigin != "*") {
+				response += "Access-Control-Allow-Credentials: true\r\n";
+			}
 			response += "Vary: Origin\r\n";
+			response += "Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges, Last-Modified\r\n";
 		}
+
 		for (header in __config.customHeaders) {
 			response += header.name + ": " + header.value + "\r\n";
 		}
@@ -389,9 +446,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		if (__config.corsEnabled) {
-			response += "Access-Control-Allow-Origin: " + __config.corsAllowedOrigins.join(", ") + "\r\n";
+			var allowOrigin = __computeAllowOrigin();
+			if (allowOrigin != null) {
+				response += "Access-Control-Allow-Origin: " + allowOrigin + "\r\n";
+			}
+			if (__config.corsAllowCredentials && allowOrigin != "*") {
+				response += "Access-Control-Allow-Credentials: true\r\n";
+			}
 			response += "Vary: Origin\r\n";
+			response += "Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges, Last-Modified\r\n";
 		}
+
 		for (header in __config.customHeaders) {
 			response += header.name + ": " + header.value + "\r\n";
 		}
@@ -425,7 +490,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return line;
 			}
 		}
-		// rewind if we need to
 		buffer.position = startPos;
 		return null;
 	}
@@ -433,13 +497,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __getMimeType(filePath:String):String {
 		var extension:String = filePath.split('.').pop().toLowerCase();
 		return switch (extension) {
-			case "html", "htm": "text/html";
-			case "css": "text/css";
-			case "js": "application/javascript";
-			case "png": "image/png";
-			case "jpg", "jpeg": "image/jpeg";
-			case "gif": "image/gif";
-			case "txt": "text/plain";
+			case "wasm": "application/wasm";
+			case "mjs": "application/javascript; charset=utf-8";
+			case "json": "application/json; charset=utf-8";
+			case "map": "application/json; charset=utf-8";
+			case "webmanifest", "manifest": "application/manifest+json";
+			case "ico": "image/x-icon";
+			case "ttf": "font/ttf";
+			case "otf": "font/otf";
+			case "wav": "audio/wav";
+			case "mp3": "audio/mpeg";
+			case "mp4": "video/mp4";
+			case "txt": "text/plain; charset=utf-8";
+			case "csv": "text/csv; charset=utf-8";
+			case "xml": "application/xml; charset=utf-8";
+			case "pdf": "application/pdf";
 			default: "application/octet-stream";
 		}
 	}
@@ -531,5 +603,220 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return w[d.getDay()] + ", " + StringTools.lpad(Std.string(d.getDate()), "0", 2) + " " + m[d.getMonth()] + " " + d.getFullYear() + " "
 			+ StringTools.lpad(Std.string(d.getHours()), "0", 2) + ":" + StringTools.lpad(Std.string(d.getMinutes()), "0", 2) + ":"
 			+ StringTools.lpad(Std.string(d.getSeconds()), "0", 2) + " GMT";
+	}
+
+	@:noCompletion private inline function __isPhp(path:String):Bool {
+		var dot:Int = path.lastIndexOf(".");
+		return (dot >= 0) && (path.substr(dot + 1).toLowerCase() == "php");
+	}
+
+	@:noCompletion private function __servePhp(absPhpPath:String, headOnly:Bool, ?body:ByteArray):Void {
+		final reqUri = (__queryString != "" ? (__extractPathOnly() + "?" + __queryString) : __extractPathOnly());
+
+		var hostHeader:String = __headers.exists("host") ? __headers.get("host") : null;
+		var sName:String = hostHeader;
+		var sPort:String = null;
+		if (hostHeader != null) {
+			var i:Int = hostHeader.indexOf(":");
+			if (i > 0) {
+				sName = hostHeader.substr(0, i);
+				var p:Null<Int> = Std.parseInt(hostHeader.substr(i + 1));
+				if (p != null) {
+					sPort = Std.string(p);
+				}
+			}
+		}
+
+		final phpReq:PHPRequest = {
+			scriptFilename: absPhpPath,
+			requestMethod: __method,
+			requestUri: reqUri,
+			scriptName: __extractPathOnly(),
+			queryString: __queryString,
+			contentType: __headers.exists("content-type") ? __headers.get("content-type") : null,
+			remoteAddr: __origin.remoteAddress,
+			serverName: sName,
+			serverPort: sPort,
+			extraHeaders: __forwardSubset(__headers),
+			body: body
+		};
+
+		var phpRes:PHPResponse;
+		try {
+			phpRes = __php.execute(phpReq);
+		} catch (e:Dynamic) {
+			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", true);
+			if (__origin.connected) {
+				__origin.close();
+			}
+
+			return;
+		}
+
+		var ctype:String = phpRes.headers.exists("content-type") ? phpRes.headers.get("content-type") : "text/html; charset=utf-8";
+
+		var out:Array<URLRequestHeader> = [];
+		if (phpRes.headers.exists("cache-control")) {
+			out.push(new URLRequestHeader("Cache-Control", phpRes.headers.get("cache-control")));
+		}
+		if (phpRes.headers.exists("location")) {
+			out.push(new URLRequestHeader("Location", phpRes.headers.get("location")));
+		}
+		if (phpRes.headers.exists("set-cookie")) {
+			out.push(new URLRequestHeader("Set-Cookie", phpRes.headers.get("set-cookie"))); // TODO: multi-cookie support
+		}
+
+		var bodyBytes:ByteArray = phpRes.body;
+		__dispatchResponseBytes(phpRes.status, __statusMessage(phpRes.status), out, ctype, bodyBytes, (__method == "HEAD" || headOnly));
+		if (__origin.connected) {
+			__origin.close();
+		}
+	}
+
+	@:noCompletion private inline function __extractPathOnly():String {
+		return __requestPath;
+	}
+
+	@:noCompletion private function __forwardSubset(h:Map<String, String>):Map<String, String> {
+		var m:Map<String, String> = new Map();
+		inline function put(k:String) {
+			if (h.exists(k)) {
+				final v = h.get(k);
+				if (v != null)
+					m.set(k, v);
+			}
+		}
+		put("host");
+		put("user-agent");
+		put("accept");
+		put("accept-language");
+		put("accept-encoding");
+		put("referer");
+		put("cookie");
+		put("authorization");
+		return m;
+	}
+
+	@:noCompletion private inline function __statusMessage(code:Int):String {
+		return switch (code) {
+			case 200: "OK";
+			case 201: "Created";
+			case 204: "No Content";
+			case 301: "Moved Permanently";
+			case 302: "Found";
+			case 304: "Not Modified";
+			case 400: "Bad Request";
+			case 401: "Unauthorized";
+			case 403: "Forbidden";
+			case 404: "Not Found";
+			case 413: "Payload Too Large";
+			case 416: "Range Not Satisfiable";
+			case 500: "Internal Server Error";
+			case 502: "Bad Gateway";
+			case 501: "Not Implemented";
+			case 504: "Gateway Timeout";
+			case 505: "HTTP Version Not Supported";
+			default: "OK";
+		}
+	}
+
+	@:noCompletion private function __readBodyFromBuffer():Void {
+		if (__bodyBuf == null || __expectBody <= 0) {
+			__awaitingBody = false;
+			return;
+		}
+		var avail:UInt = __incomingBuffer.length - __incomingBuffer.position;
+		var need:UInt = __expectBody - __bodyBuf.length;
+		var take:UInt = (avail < need) ? avail : need;
+		if (take > 0) {
+			__bodyBuf.writeBytes(__incomingBuffer, __incomingBuffer.position, take);
+			__incomingBuffer.position += take;
+		}
+		__awaitingBody = (__bodyBuf.length < __expectBody);
+	}
+
+	@:noCompletion private function __finishPhpWithBody():Void {
+		__servePhp(__bodyTargetPhpPath, __bodyHeadOnly, __bodyBuf);
+		__bodyBuf = null;
+		__expectBody = 0;
+		__awaitingBody = false;
+		__bodyTargetPhpPath = null;
+		__bodyHeadOnly = false;
+	}
+
+	@:noCompletion private function __handlePost(filePath:String):Void {
+		var file:File = new File(filePath);
+		if (!file.exists) {
+			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+			if (__origin.connected) {
+				__origin.close();
+			}
+
+			return;
+		}
+
+		if (file.isDirectory) {
+			var indexFile:String = __findIndexFile(file);
+			if (indexFile != null) {
+				__handlePost(indexFile);
+			} else {
+				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+				if (__origin.connected) {
+					__origin.close();
+				}
+			}
+			return;
+		}
+
+		if (__php == null || !__isPhp(file.nativePath)) {
+			__sendMethodNotAllowed();
+			return;
+		}
+
+		var te:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
+		if (te != null && te.toLowerCase().indexOf("chunked") >= 0) {
+			__dispatchResponse(501, "Not Implemented", null, "text/plain", "Chunked TE not supported yet");
+			if (__origin.connected) {
+				__origin.close();
+			}
+
+			return;
+		}
+
+		var cls:String = __headers.exists("content-length") ? __headers.get("content-length") : null;
+		var n:Null<Int> = (cls != null) ? Std.parseInt(cls) : 0;
+		if (n == null || n < 0) {
+			n = 0;
+		}
+
+		if (n > MAX_BUFFER_SIZE) {
+			__sendErrorResponse(413, "Payload Too Large");
+			return;
+		}
+
+		__expectBody = n;
+		__bodyBuf = new ByteArray();
+		__bodyTargetPhpPath = file.nativePath;
+		__bodyHeadOnly = false;
+		__awaitingBody = true;
+
+		__readBodyFromBuffer();
+		if (!__awaitingBody) {
+			__finishPhpWithBody();
+		}
+	}
+
+	@:noCompletion private inline function __computeAllowOrigin():Null<String> {
+		var origin:String = __headers.exists("origin") ? __headers.get("origin") : null;
+		if (__config.corsAllowedOrigins.indexOf("*") != -1) {
+			if (__config.corsAllowCredentials && origin != null) {
+				return origin;
+			}
+			return "*";
+		}
+		if (origin != null && __config.corsAllowedOrigins.indexOf(origin) != -1) {
+			return origin;
+		}
+		return null;
 	}
 }
