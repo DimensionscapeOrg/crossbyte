@@ -495,25 +495,38 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __getMimeType(filePath:String):String {
-		var extension:String = filePath.split('.').pop().toLowerCase();
-		return switch (extension) {
-			case "wasm": "application/wasm";
-			case "mjs": "application/javascript; charset=utf-8";
-			case "json": "application/json; charset=utf-8";
-			case "map": "application/json; charset=utf-8";
-			case "webmanifest", "manifest": "application/manifest+json";
-			case "ico": "image/x-icon";
-			case "ttf": "font/ttf";
-			case "otf": "font/otf";
-			case "wav": "audio/wav";
-			case "mp3": "audio/mpeg";
-			case "mp4": "video/mp4";
+		final ext = filePath.split('.').pop().toLowerCase();
+		var mimeType:String = switch (ext) {
+			case "html", "htm": "text/html; charset=utf-8";
+			case "css": "text/css; charset=utf-8";
+			case "js", "mjs": "application/javascript; charset=utf-8";
 			case "txt": "text/plain; charset=utf-8";
+			case "json", "map": "application/json; charset=utf-8";
 			case "csv": "text/csv; charset=utf-8";
 			case "xml": "application/xml; charset=utf-8";
+			case "webmanifest", "manifest": "application/manifest+json";
+			case "svg": "image/svg+xml";
+
+			case "png": "image/png";
+			case "jpg", "jpeg": "image/jpeg";
+			case "gif": "image/gif";
+			case "webp": "image/webp";
+			case "ico": "image/x-icon";
+
+			case "woff2": "font/woff2";
+			case "woff": "font/woff";
+			case "ttf": "font/ttf";
+			case "otf": "font/otf";
+
+			case "wasm": "application/wasm";
+			case "mp3": "audio/mpeg";
+			case "wav": "audio/wav";
+			case "mp4": "video/mp4";
 			case "pdf": "application/pdf";
+
 			default: "application/octet-stream";
 		}
+		return mimeType;
 	}
 
 	@:noCompletion private function __resolveSafePath(root:File, targetPath:String):File {
