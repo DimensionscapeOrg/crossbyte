@@ -2,7 +2,7 @@ package crossbyte.ds;
 
 /**
  * ...
- * @author Christopher Speciale
+ * @author Chris__topher Speciale
  */
 /**
  * A generic stack implementation.
