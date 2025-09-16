@@ -35,8 +35,8 @@ class HTTPServer extends ServerSocket {
 
 		if (__config.phpEnabled) {
 			var mode:PHPMode = switch (__config.phpMode) {
-				case 0: Connect("127.0.0.1", 6666);
-				case 1: Launch("127.0.0.1", 6666, __config.phpCGIPath, __config.phpINIPath);
+				case 0: Connect(__config.phpAddress, __config.phpPort);
+				case 1: Launch(__config.phpAddress, __config.phpPort, __config.phpCGIPath, __config.phpINIPath);
 				default:
 					throw "Invalid PHPMode enum";
 			}
