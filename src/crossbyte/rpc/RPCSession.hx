@@ -19,18 +19,19 @@ import haxe.atomic.AtomicInt;
 
 @:access(crossbyte.rpc.RPCHandler)
 @:access(crossbyte.rpc.RPCCommands)
-class RPCSession<C:RPCCommands = Dynamic> extends EventDispatcher {
+class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public static inline final DEFAULT_HEARTBEAT_INTERVAL:Int = 45000;
 	public static inline final DEFAULT_HEARTBEAT_TIMEOUT:Int = 90000;
 	public static inline final DEFAULT_HEARTBEAT_JITTER:Int = 5000;
 	@:noCompletion private static final HEARTBEAT_SALT:Int = __getSalt();
 
-	public final sessionId:String = __getSessionId();
+	public final sessionId:Int = __getSessionId();
 	public var connection(get, never):INetConnection;
 	public var handler(get, set):RPCHandler;
 	public var commands(get, set):C;
 	public var heartbeatInterval(get, set):Int;
 	public var heartbeatTimeout(get, set):Int;
+	public var data:D;
 
 	@:noCompletion private var __connection:INetConnection;
 	@:noCompletion private var __handler:RPCHandler;
@@ -66,14 +67,14 @@ class RPCSession<C:RPCCommands = Dynamic> extends EventDispatcher {
 		return Hash.fnv1a32String(id.toLowerCase());
 	}
 
-	@:noCompletion private static inline function __getSessionId():String {
+	@:noCompletion private static inline function __getSessionId():Int {
 		#if (neko)
 		__sidLock.acquire();
 		var id:Int = ++__sidCounter;
 		__sidLock.release();
-		return Std.string(id);
+		return id;
 		#else
-		return Std.string(__sidCounter.add(1));
+		return __sidCounter.add(1);
 		#end
 	}
 
