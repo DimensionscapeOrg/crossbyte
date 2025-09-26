@@ -13,6 +13,7 @@ import crossbyte._internal.php.PHPBridge;
 import crossbyte._internal.php.PHPRequest;
 import crossbyte._internal.php.PHPResponse;
 import crossbyte._internal.http.Http;
+import crossbyte._internal.http.RewriteEngine;
 
 final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var MAX_BUFFER_SIZE:Int = 1024 * 1024; // 1 MB
@@ -33,6 +34,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __bodyBuf:ByteArray = null;
 	@:noCompletion private var __bodyTargetPhpPath:String = null;
 	@:noCompletion private var __bodyHeadOnly:Bool = false;
+	@:noCompletion private var __bodyOverrideScriptName:String = null;
 
 	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge) {
 		super();
@@ -133,6 +135,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (requestLine == null) {
 			return;
 		}
+		__headers.clear();
 
 		requestLine = StringTools.trim(requestLine);
 		var parts:Array<String> = requestLine.split(" ");
@@ -206,6 +209,68 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
+		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+		if (decision != null) {
+			var targetAbs:File = __config.rootDirectory.resolvePath("." + decision.finalPath);
+
+			switch (__method) {
+				case "GET" | "HEAD":
+					if (decision.toPHP) {
+						__queryString = decision.query;
+						__servePhp(targetAbs.nativePath, (__method == "HEAD"), null, decision.finalPath);
+					} else if (decision.isStatic) {
+						__serveFile(targetAbs.nativePath, (__method == "HEAD"));
+					} else {
+						__sendMethodNotAllowed();
+					}
+					return;
+
+				case "POST":
+					if (decision.toPHP) {
+						__queryString = decision.query;
+						var te:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
+
+						if (te != null && te.toLowerCase().indexOf("chunked") >= 0) {
+							__dispatchResponse(501, "Not Implemented", null, "text/plain", "Chunked TE not supported yet");
+							if (__origin.connected) {
+								__origin.close();
+							}
+							return;
+						}
+
+						var cls:String = __headers.exists("content-length") ? __headers.get("content-length") : null;
+						var n:Null<Int> = (cls != null) ? Std.parseInt(cls) : 0;
+
+						if (n == null || n < 0) {
+							n = 0;
+						}
+						if (n > MAX_BUFFER_SIZE) {
+							__sendErrorResponse(413, "Payload Too Large");
+							return;
+						}
+
+						__expectBody = n;
+						__bodyBuf = new ByteArray();
+						__bodyTargetPhpPath = targetAbs.nativePath;
+						__bodyOverrideScriptName = decision.finalPath;
+						__bodyHeadOnly = false;
+						__awaitingBody = true;
+
+						__readBodyFromBuffer();
+						if (!__awaitingBody) {
+							__finishPhpWithBody();
+						}
+
+						return;
+					} else {
+						__handlePost(__filePath);
+						return;
+					}
+
+				default:
+			}
+		}
+
 		switch (__method) {
 			case "GET":
 				__serveFile(__filePath);
@@ -264,19 +329,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (__config.blacklist.indexOf(file.nativePath) != -1) {
 			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
+			if (__origin.connected) {
+				__origin.close();
+			}
 			return;
 		}
 		if (__config.whitelist.length > 0 && __config.whitelist.indexOf(file.nativePath) == -1) {
 			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
+			if (__origin.connected) {
+				__origin.close();
+			}
 			return;
 		}
 
 		if (!file.exists) {
 			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
-			if (!headOnly && __origin.connected) {
+
+			if (__origin.connected) {
 				__origin.close();
 			}
-
 			return;
 		}
 
@@ -286,7 +357,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__serveFile(indexFile, headOnly);
 			} else {
 				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
-				if (!headOnly && __origin.connected)
+				if (__origin.connected)
 					__origin.close();
 			}
 			return;
@@ -297,18 +368,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
-		file.load();
-		var total:UInt = file.data.length;
+		// file.load();
+		var total:Int = file.size; // file.data.length;
 		var lastModifiedTime:Float = file.modificationDate.getTime();
-		var lastModHeader = new URLRequestHeader("Last-Modified", __toHttpDate(lastModifiedTime));
+		var lastModHeader:URLRequestHeader = new URLRequestHeader("Last-Modified", __toHttpDate(lastModifiedTime));
 		var mimeType:String = __getMimeType(file.nativePath);
 
 		var ims:String = __headers.exists("if-modified-since") ? __headers.get("if-modified-since") : null;
 		if (ims != null) {
 			try {
-				var since = Date.fromString(ims);
+				var since:Date = __parseHttpDate(ims);
 				if (since != null && lastModifiedTime <= since.getTime()) {
-					var h = [new URLRequestHeader("Accept-Ranges", "bytes"), lastModHeader];
+					var h:Array<URLRequestHeader> = [new URLRequestHeader("Accept-Ranges", "bytes"), lastModHeader];
 					__dispatchResponse(304, "Not Modified", h, "text/plain", "", true);
 					if (__origin.connected) {
 						__origin.close();
@@ -323,6 +394,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var rangeHdr:String = __headers.exists("range") ? __headers.get("range") : null;
 
 		if (rangeHdr != null) {
+			file.load();
 			var r:Dynamic = __parseRange(rangeHdr, total);
 			if (r == null) {
 				var h:Array<URLRequestHeader> = baseHeaders.concat([new URLRequestHeader("Content-Range", 'bytes */${total}')]);
@@ -339,7 +411,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__dispatchResponseBytes(206, "Partial Content", h, mimeType, slice, headOnly);
 			}
 		} else {
-			__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, file.data, headOnly);
+			if (headOnly) {
+				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, null, true, total);
+			} else {
+				file.load();
+				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, file.data, false);
+			}
 		}
 
 		if (__origin.connected) {
@@ -348,9 +425,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
-			data:ByteArray, headOnly:Bool = false):Void {
+			data:ByteArray, headOnly:Bool = false, ?contentLength:Int):Void {
 		var clientAddress:String = __origin.remoteAddress;
-		Logger.info("Client " + clientAddress + " requested " + __origin.remoteAddress + " - Status: " + statusCode);
+		Logger.info('Client ' + clientAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 
 		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
 		statusEvent.responseURL = __origin.remoteAddress;
@@ -387,20 +464,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		for (header in __config.customHeaders) {
-			response += header.name + ": " + header.value + "\r\n";
+			response += header.name + ": " + __sanitizeHeaderValue(header.value) + "\r\n";
 		}
-
-		var byteLen:UInt = (data != null) ? data.length : 0;
-		response += "Content-Length: " + byteLen + "\r\n";
+		var headerLen:Int = (contentLength != null) ? contentLength : (data != null ? data.length : 0);
+		response += "Content-Length: " + headerLen + "\r\n";
 		response += "\r\n";
 
 		__origin.writeUTFBytes(response);
 
-		if (!headOnly && data != null && byteLen > 0) {
-			__origin.writeBytes(data, 0, byteLen);
+		if (!headOnly && data != null && data.length > 0) {
+			__origin.writeBytes(data, 0, data.length);
 		}
 
 		__origin.flush();
+		// TODO: can we just clear it?
+		__incomingBuffer = new ByteArray();
 	}
 
 	@:noCompletion private function __findIndexFile(directory:File):Null<String> {
@@ -416,7 +494,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __dispatchResponse(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			content:String, headOnly:Bool = false):Void {
 		var clientAddress:String = __origin.remoteAddress;
-		Logger.info("Client " + clientAddress + " requested " + __origin.remoteAddress + " - Status: " + statusCode);
+		Logger.info('Client ' + clientAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 
 		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
 		statusEvent.responseURL = __origin.remoteAddress;
@@ -458,7 +536,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		for (header in __config.customHeaders) {
-			response += header.name + ": " + header.value + "\r\n";
+			response += header.name + ": " + __sanitizeHeaderValue(header.value) + "\r\n";
 		}
 
 		response += "Content-Length: " + bodyBytes.length + "\r\n";
@@ -471,6 +549,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__origin.flush();
+		// TODO: can we just clear it?
+		__incomingBuffer = new ByteArray();
 	}
 
 	@:noCompletion private function __sendErrorResponse(statusCode:Int, message:String):Void {
@@ -609,6 +689,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private inline function __toHttpDate(t:Float):String {
 		var d:Date = Date.fromTime(t);
+		var utc:Float = d.getTime() + d.getTimezoneOffset() * 60000;
+		d = Date.fromTime(utc);
 		var w:Array<String> = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 		var m:Array<String> = [
 			"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
@@ -623,8 +705,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return (dot >= 0) && (path.substr(dot + 1).toLowerCase() == "php");
 	}
 
-	@:noCompletion private function __servePhp(absPhpPath:String, headOnly:Bool, ?body:ByteArray):Void {
-		final reqUri = (__queryString != "" ? (__extractPathOnly() + "?" + __queryString) : __extractPathOnly());
+	@:noCompletion private function __servePhp(absPhpPath:String, headOnly:Bool, ?body:ByteArray, ?overrideScriptName:String):Void {
+		// final reqUri:String = (__queryString != "" ? (__extractPathOnly() + "?" + __queryString) : __extractPathOnly());
 
 		var hostHeader:String = __headers.exists("host") ? __headers.get("host") : null;
 		var sName:String = hostHeader;
@@ -643,8 +725,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		final phpReq:PHPRequest = {
 			scriptFilename: absPhpPath,
 			requestMethod: __method,
-			requestUri: reqUri,
-			scriptName: __extractPathOnly(),
+			requestUri: (__queryString != "" ? (__extractPathOnly() + "?" + __queryString) : __extractPathOnly()),
+			scriptName: overrideScriptName != null ? overrideScriptName : __extractPathOnly(),
 			queryString: __queryString,
 			contentType: __headers.exists("content-type") ? __headers.get("content-type") : null,
 			remoteAddr: __origin.remoteAddress,
@@ -676,7 +758,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 			out.push(new URLRequestHeader("Location", phpRes.headers.get("location")));
 		}
 		if (phpRes.headers.exists("set-cookie")) {
-			out.push(new URLRequestHeader("Set-Cookie", phpRes.headers.get("set-cookie"))); // TODO: multi-cookie support
+			for (cookie in phpRes.headers.get("set-cookie").split("\n")) {
+				var c:String = StringTools.trim(cookie);
+				if (c != "") {
+					out.push(new URLRequestHeader("Set-Cookie", c));
+				}
+			}
 		}
 
 		var bodyBytes:ByteArray = phpRes.body;
@@ -749,7 +836,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __finishPhpWithBody():Void {
-		__servePhp(__bodyTargetPhpPath, __bodyHeadOnly, __bodyBuf);
+		__servePhp(__bodyTargetPhpPath, __bodyHeadOnly, __bodyBuf, __bodyOverrideScriptName);
+		__bodyOverrideScriptName = null;
 		__bodyBuf = null;
 		__expectBody = 0;
 		__awaitingBody = false;
@@ -831,5 +919,45 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return origin;
 		}
 		return null;
+	}
+
+	@:noCompletion private static function __parseHttpDate(s:String):Date {
+		var r = ~/^\w{3}, (\d{2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/;
+
+		if (!r.match(StringTools.trim(s))) {
+			return null;
+		}
+
+		var day:Null<Int> = Std.parseInt(r.matched(1));
+		var mon = switch (r.matched(2)) {
+			case "Jan": 0;
+			case "Feb": 1;
+			case "Mar": 2;
+			case "Apr": 3;
+			case "May": 4;
+			case "Jun": 5;
+			case "Jul": 6;
+			case "Aug": 7;
+			case "Sep": 8;
+			case "Oct": 9;
+			case "Nov": 10;
+			case "Dec": 11;
+			default: -1;
+		}
+
+		if (mon < 0) {
+			return null;
+		}
+
+		var year:Null<Int> = Std.parseInt(r.matched(3));
+		var hh:Null<Int> = Std.parseInt(r.matched(4));
+		var mm:Null<Int> = Std.parseInt(r.matched(5));
+		var ss:Null<Int> = Std.parseInt(r.matched(6));
+		var t:Float = DateTools.makeUtc(year, mon, day, hh, mm, ss);
+		return Date.fromTime(t);
+	}
+
+	@:noCompletion private inline function __sanitizeHeaderValue(v:String):String {
+		return v == null ? "" : v.split("\r").join("").split("\n").join("");
 	}
 }
