@@ -2,6 +2,7 @@ package crossbyte.http;
 
 import crossbyte.io.File;
 import crossbyte.url.URLRequestHeader;
+import crossbyte.http.config.RewriteRule;
 
 /**
  * ...
@@ -32,16 +33,19 @@ class HTTPServerConfig {
 	public var phpINIPath:String;
 	public var phpMode:Int;
 	public var corsAllowCredentials:Bool;
+	public var tryFiles:Array<String>;
+	public var rewrites:Array<RewriteRule>;
 
 	public function new(address:String = "0.0.0.0", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
-			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false, maxConnections:Int = 256, backlog:Int = 0, 
-			phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080, phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1) {
+			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
+			maxConnections:Int = 256, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
+			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null) {
 		this.address = address;
 		this.port = port;
 		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
-		this.directoryIndex = directoryIndex == null ? ["index.html"] : directoryIndex;
+		this.directoryIndex = directoryIndex == null ? ["index.php", "index.html"] : directoryIndex;
 		this.errorDocument = errorDocument;
 		this.whitelist = whitelist == null ? [] : whitelist;
 		this.blacklist = blacklist == null ? [] : blacklist;
@@ -61,7 +65,15 @@ class HTTPServerConfig {
 		this.phpCGIPath = phpCGIPath;
 		this.phpINIPath = phpINIPath;
 		this.phpMode = phpMode;
-		
+		this.tryFiles = (tryFiles == null) ? ["$uri", "$uri/", "/index.html"] : tryFiles;
+		this.rewrites = (rewrites == null) ? [
+			{
+				pattern: "^/api/.*$",
+				target: "/index.php",
+				flags: ["L", "QSA", "PHP"],
+				conditions: []
+			}
+		] : rewrites;
 	}
 }
 
