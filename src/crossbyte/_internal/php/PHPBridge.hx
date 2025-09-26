@@ -1,5 +1,6 @@
 package crossbyte._internal.php;
 
+import haxe.io.Path;
 import crossbyte.events.Event;
 import crossbyte.core.CrossByte;
 import sys.FileSystem;
@@ -27,6 +28,13 @@ class PHPBridge {
 
 		switch (mode) {
 			case Launch(address, port, phpCgiPath, phpIniPath):
+				var cgiPath:String = "";
+				if (!FileSystem.exists(phpCgiPath) && Sys.getEnv(phpCgiPath) != null) {
+					cgiPath = phpCgiPath;
+				} else {
+					cgiPath = Path.directory(Sys.programPath()) + "\\php\\php-cgi.exe";
+				}
+
 				if (_proc != null)
 					try {
 						_proc.close();
@@ -35,14 +43,14 @@ class PHPBridge {
 				if (phpIniPath != null && phpIniPath != "") {
 					var iniPath:String = phpIniPath;
 					if (iniPath == "php.ini") {
-						iniPath = Sys.programPath() + iniPath;
+						iniPath = Path.directory(Sys.programPath()) + iniPath;
 					}
 					if (FileSystem.exists(iniPath)) {
 						args = ["-c", iniPath].concat(args);
 					}
 				}
 				WindowsKillOnExit.attach();
-				_proc = new Process(phpCgiPath, args);
+				_proc = new Process(cgiPath, args);
 				CrossByte.current().addEventListener(Event.EXIT, _onExit);
 			case Connect(_, _):
 				// nothing to do we’ll just dial per call
@@ -152,9 +160,15 @@ class PHPBridge {
 			switch (typ) {
 				case Fcgi.STDOUT:
 					rawBytes.add(content);
+
 				case Fcgi.STDERR:
+					// c apture stderr but DO NOT terminate the read loop.
+					// var err = content.toString();
+					// Logger.log('[php-cgi] ' + err);
+
 				case Fcgi.END_REQUEST:
 					done = true;
+
 				default:
 			}
 		}
@@ -278,6 +292,7 @@ private class Fcgi {
 		}
 	}
 }
+
 @:cppInclude("Windows.h")
 private class WindowsKillOnExit {
 	public static function attach():Void {
@@ -286,7 +301,7 @@ private class WindowsKillOnExit {
 		#end
 	}
 
-	#if (cpp && windows)    
+	#if (cpp && windows)
 	static function _attach():Void {
 		untyped __cpp__(" 
 			HANDLE gJob = NULL;
@@ -300,6 +315,5 @@ private class WindowsKillOnExit {
             AssignProcessToJobObject(gJob, GetCurrentProcess());
 			");
 	}
-
 	#end
 }
