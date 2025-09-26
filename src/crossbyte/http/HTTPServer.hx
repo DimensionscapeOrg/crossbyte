@@ -22,14 +22,16 @@ class HTTPServer extends ServerSocket {
 	private var __active:ObjectMap<Dynamic, HTTPRequestHandler>;
 	private var __maxConnections:Int;
 	private var __connections:Int;
-	private var docRoot = "./www";
-	private var autoIndex = ["index.php", "index.html"];
+	private var docRoot:String;
+	private var autoIndex:Array<String>;
 	private var php:PHPBridge;
 
 	public function new(config:HTTPServerConfig) {
 		super();
 		__connections = 0;
 		__config = config;
+		docRoot = config.rootDirectory.nativePath;
+		autoIndex = (config.directoryIndex != null && config.directoryIndex.length > 0) ? config.directoryIndex : ["index.php", "index.html"];
 		__active = new ObjectMap();
 		__maxConnections = config.maxConnections;
 
@@ -52,6 +54,16 @@ class HTTPServer extends ServerSocket {
 		} catch (e:Dynamic) {
 			Logger.error('HTTP Server failed to start on ${__config.address}:${__config.port}: ' + e);
 			throw e;
+		}
+	}
+
+	override function close() {
+		super.close();
+		if (php != null) {
+			try {
+				php.stop();
+			} catch (_:Dynamic) {}
+			php = null;
 		}
 	}
 
@@ -84,13 +96,6 @@ class HTTPServer extends ServerSocket {
 			if (__connections > 0) {
 				__connections--;
 			}
-		}
-
-		if (php != null) {
-			try {
-				php.stop();
-			} catch (_:Dynamic) {}
-			php = null;
 		}
 	}
 
