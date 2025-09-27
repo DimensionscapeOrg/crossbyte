@@ -6,7 +6,7 @@ import haxe.macro.Expr;
 class SwitchTable {
 	/**
 	 * Build a compile-time switch dispatcher from a list of key-handler pairs.
-	 * Returns a function of type `String -> Void`.
+	 * Returns a function of type `T -> Void`.
 	 *
 	 * Example:
 	 * ```haxe
