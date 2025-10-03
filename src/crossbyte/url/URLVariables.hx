@@ -29,8 +29,6 @@ import crossbyte.FieldStruct;
 	v.append("a", "3");
 	trace(v.toString());   // "a=1&a=2&a=3&b=" (order of keys may vary)
 	```
-
-	@since 1.0
 **/
 abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>> to FieldStruct<Array<String>> {
 	/**

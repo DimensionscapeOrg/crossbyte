@@ -1,8 +1,11 @@
 package crossbyte.core;
 
+#if cpp
 import cpp.AtomicInt;
 import cpp.Pointer;
 import cpp.net.Poll;
+import crossbyte.utils.ThreadPriority;
+#end
 import sys.net.Socket;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -10,11 +13,16 @@ import crossbyte.events.TickEvent;
 import haxe.EntryPoint;
 import haxe.Timer;
 import haxe.ds.Map;
+#if (cpp || neko || hl)
 import sys.thread.Thread;
 import sys.thread.Tls;
+#end
 import haxe.ds.ObjectMap;
-import crossbyte.utils.ThreadPriority;
+#if cpp
 import crossbyte._internal.socket.NativeSocketRegistry;
+#else
+import crossbyte._internal.socket.SocketRegistry;
+#end
 import crossbyte.net.Socket as CBSocket;
 import crossbyte._internal.system.timer.TimerScheduler;
 import crossbyte.Timer as CBTimer;
@@ -32,11 +40,19 @@ final class CrossByte extends EventDispatcher {
 	// ==== Private Static Variables ====
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
 	@:noCompletion private static inline var DEFAULT_MAX_SOCKETS:Int = 64;
+	
+	#if cpp
 	@:noCompletion private static var __instances:Map<Thread, CrossByte> = new ObjectMap();
-	@:noCompletion private static var __primordial:CrossByte;
 	@:noCompletion private static var __instanceCount:AtomicInt = 0;
-	@:noCompletion private static var __init:Bool = __onCrossByteInit();
+	@:noCompletion private var __socketRegistry:NativeSocketRegistry;
 	@:noCompletion private static var __threadLocalStorage:Tls<CrossByte> = new Tls();
+
+	#else
+	@:noCompletion private var __socketRegistry:SocketRegistry;
+	#end	
+
+	@:noCompletion private static var __init:Bool = __onCrossByteInit();
+	@:noCompletion private static var __primordial:CrossByte;
 
 	// ==== Public Static Methods ====
 	public static inline function make(loopType:MainLoopType = DEFAULT):CrossByte {
@@ -49,12 +65,15 @@ final class CrossByte extends EventDispatcher {
 		/* var currentThread:Thread = Thread.current();
 			var instance:CrossByte = __instances.get(currentThread);
 			return instance; */
-
+		#if cpp
 		var instance:CrossByte = __threadLocalStorage.value;
 		if (instance == null) {
 			instance = __primordial;
 		}
 		return instance;
+		#else
+		return __primordial;
+		#end
 	}
 
 	// ==== Private Static Methods ====
@@ -94,10 +113,19 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __dt:Float = 0.0;
 	@:noCompletion private var __cpuTime:Float = 0.0;
 	@:noCompletion private var __sleepAccuracy:Float = 0.0;
+
+	#if cpp
 	@:noCompletion private var __socketRegistry:NativeSocketRegistry;
-	@:noCompletion private var __socketPoll:Poll;
+	#else
+	@:noCompletion private var __socketRegsitry:SocketRegistry;
+	#end
+
 	@:noCompletion private var __isPrimordial:Bool;
+
+	#if cpp
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
+	#end
+
 	@:noCompletion private var __loopType:MainLoopType;
 	@:noCompletion private var __timer:TimerScheduler;
 
@@ -125,6 +153,7 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	/* ==== Public Methods ==== */
+	#if cpp
 	public inline function getThreadPriority():ThreadPriority {
 		return __threadPriority;
 	}
@@ -153,6 +182,7 @@ final class CrossByte extends EventDispatcher {
 				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_TIME_CRITICAL);", __threadHandle.raw);
 		}
 	}
+	#end
 
 	// TODO
 
@@ -162,9 +192,12 @@ final class CrossByte extends EventDispatcher {
 	public function exit():Void {
 		// TODO: Thread safety
 		__isRunning = false;
+		#if cpp
 		__instances.remove(Thread.current());
-		__socketRegistry = null;
 		__instanceCount--;
+		#end
+		__socketRegistry = null;
+		
 	}
 
 	@:noCompletion private inline function get_uptime():Float {
@@ -172,15 +205,22 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// ==== Private Methods ====
-	#if cpp
+
 	@:noCompletion private inline function registerSocket(socket:Socket):Void {
+		#if cpp
 		__socketRegistry.register(socket);
+		#else
+		// no-op for now
+		#end
 	}
 
 	@:noCompletion private inline function deregisterSocket(socket:Socket):Void {
+		#if cpp
 		__socketRegistry.deregister(socket);
+		#else
+		// no-op for now
+		#end
 	}
-	#end
 
 	@:noCompletion private inline function queueWritable(socket:Socket):Void {
 		__socketRegistry.queueWritable(socket);
@@ -188,8 +228,13 @@ final class CrossByte extends EventDispatcher {
 
 	@:noCompletion private inline function __setup():Void {
 		Sys.println("Initializing CrossByte Instance");
+		#if cpp
 		__instanceCount++;
 		__socketRegistry = new NativeSocketRegistry(DEFAULT_MAX_SOCKETS);
+		#else
+		__socketRegistry = new SocketRegistry(DEFAULT_MAX_SOCKETS);
+		#end
+
 		__timer = new TimerScheduler();
 		CBTimer.bindCurrentThread(__timer);
 		tps = DEFAULT_TICKS_PER_SECOND;
@@ -207,8 +252,10 @@ final class CrossByte extends EventDispatcher {
 			EntryPoint.runInMainThread(__runEventLoop);
 			__primordial = this;
 			// TODO: Thread safety
+			#if cpp
 			var t:Thread = Thread.current();
 			__instances.set(t, this);
+			#end			
 		} else {
 			EntryPoint.addThread(__runEventLoop);
 		}
@@ -243,10 +290,12 @@ final class CrossByte extends EventDispatcher {
 		setThreadPriority(__threadPriority);
 		#end
 
+		#if cpp
 		if (!__isPrimordial) {
 			var t:Thread = Thread.current();
 			__instances.set(t, this);
 		}
+		#end
 
 		dispatchEvent(new Event(Event.INIT));
 		while (__isRunning) {
@@ -260,7 +309,7 @@ final class CrossByte extends EventDispatcher {
 		var frameStart:Float = Timer.stamp();
 		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
 		__timer.advanceTime(__dt);
-		dispatchEvent(e);		
+		dispatchEvent(e);
 		__socketRegistry.update();
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
@@ -296,7 +345,6 @@ final class CrossByte extends EventDispatcher {
 			__wait(frameStart);
 		}
 	}
-
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
 		#if precision_tick
 		var minSleep = 0.001;
