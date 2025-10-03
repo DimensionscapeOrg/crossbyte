@@ -1,10 +1,12 @@
 package crossbyte;
 
 import haxe.ds.StringMap;
+//using FieldStruct;
 
 @:noCompletion
 private typedef BaseStruct<T = Dynamic> = StringMap<T>;
 
+@:generic
 @:callable
 abstract FieldStruct<T = Dynamic>(BaseStruct<T>) {
 	public static inline function clear<T>(instance:FieldStruct<T>):Void {

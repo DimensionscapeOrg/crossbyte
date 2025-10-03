@@ -50,7 +50,6 @@ final class NativeSocketRegistry {
 		if (__set.add(socket)) {
 			__isDirty = true;
 
-			// we check here, we dont need to check again in `grow()`
 			if (__set.length > capacity) {
 				__grow();
 			}
@@ -113,7 +112,6 @@ final class NativeSocketRegistry {
 	}
 
 	@:noCompletion private inline function __grow():Void {
-		// ceil accepts a float and returns an int
 		__capacity = Math.ceil(__capacity * 1.5);
 		__poll = new Poll(__capacity);
 		__isDirty = true;

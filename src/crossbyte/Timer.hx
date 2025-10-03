@@ -2,7 +2,7 @@ package crossbyte;
 
 import crossbyte.core.CrossByte;
 import crossbyte._internal.system.timer.TimerScheduler;
-#if sys
+#if cpp
 import sys.thread.Tls;
 #end
 
@@ -25,13 +25,22 @@ import sys.thread.Tls;
  */
 @:allow(crossbyte.core.CrossByte)
 class Timer {
+	#if cpp
 	@:noCompletion private static final __tls:Tls<TimerScheduler> = new Tls();
+	#else
+	@:noCompletion private static var __nonThreadedTimer:TimerScheduler;
+	#end
 
-	private static inline function bindCurrentThread(timer:TimerScheduler):Void {
+	@:noCompletion private static inline function bindCurrentThread(timer:TimerScheduler):Void {
+		#if cpp
 		__tls.value = timer;
+		#else
+		__nonThreadedTimer = timer;
+		#end
 	}
 
-	private static inline function current():TimerScheduler {
+	@:noCompletion private static inline function current():TimerScheduler {
+		#if cpp
 		final scheduler:TimerScheduler = __tls.value;
 		#if debug
 		if (scheduler == null) {
@@ -39,6 +48,9 @@ class Timer {
 		}
 		#end
 		return scheduler;
+		#else
+		return __nonThreadedTimer;
+		#end
 	}
 
 	/**

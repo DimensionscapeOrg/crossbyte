@@ -6,7 +6,7 @@ import haxe.macro.Expr;
 class SwitchTable {
 	/**
 	 * Build a compile-time switch dispatcher from a list of key-handler pairs.
-	 * Returns a function of type `T -> Void`.
+	 * Returns a function of type `String -> Void`.
 	 *
 	 * Example:
 	 * ```haxe
@@ -18,12 +18,13 @@ class SwitchTable {
 	 * dispatch("PING");
 	 * ```
 	 */
-	public static macro function make<T>(cases:ExprOf<Array<SwitchCase<T>>>):Expr {
+	public static macro function make(cases:ExprOf<Array<SwitchCase>>):Expr {
 		final parsed = switch (cases.expr) {
 			case EArrayDecl(values): values;
 			default: Context.error("Expected an array of { key, handler }", cases.pos);
 		}
 
+		var hasArgs:Bool = false;
 		var switchCases:Array<Case> = [];
 		for (e in parsed) {
 			switch (e.expr) {
@@ -57,10 +58,12 @@ class SwitchTable {
 									values: [macro $v{key}],
 									expr: macro ${handler}()
 								});
-							} else if (args.length == 0) {
+							} else if (args.length > 0) {
+                                hasArgs = true;
+
 								switchCases.push({
 									values: [macro $v{key}],
-									expr: macro ${handler}($i{"data"})
+									expr: macro ${handler}($i{"args"})
 								});
 							}
 						default:
@@ -71,12 +74,13 @@ class SwitchTable {
 			}
 		}
 
+		var funcArgs:Array<FunctionArg> = [{name: "key", type: macro :Dynamic}];
+		if (hasArgs) {
+			funcArgs.push({name: "args", type: macro :haxe.Rest<Dynamic>, opt: false});
+		}
 		return {
 			expr: EFunction(FAnonymous, {
-				args: [
-					{name: "key", type: macro :Dynamic},
-					{name: "data", type: macro :Dynamic, opt: true}
-				],
+				args: funcArgs,
 				ret: macro :Void,
 				expr: {
 					expr: ESwitch(macro key, switchCases, macro throw "Case not found"),

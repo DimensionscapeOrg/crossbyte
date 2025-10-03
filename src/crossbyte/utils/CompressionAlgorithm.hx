@@ -4,7 +4,7 @@ package crossbyte.utils;
  * ...
  * @author Christopher Speciale
  */
-@:enum abstract CompressionAlgorithm(Null<Int>) {
+enum abstract CompressionAlgorithm(Null<Int>) {
 	/**
 		Defines the string to use for the deflate compression algorithm.
 	**/
