@@ -2,22 +2,27 @@ package crossbyte.sys;
 
 import crossbyte.io.File;
 import haxe.io.Path;
+
 #if cpp
 import cpp.vm.Gc;
-import crossbyte.core.CrossByte;
 import crossbyte._internal.native.sys.NativeSystem;
+#end
+
+import crossbyte.core.CrossByte;
 import sys.io.Process;
 
 /**
  * ...
  * @author Christopher Speciale
  */
+ #if cpp
 #if windows
 @:access(crossbyte._internal.native.sys.win.WinNativeSystem)
 #elseif linux
 @:access(crossbyte._internal.native.sys.linux.LinuxNativeSystem)
 #else
 @:access(crossbyte._internal.native.sys.NativeSystem)
+#end
 #end
 class System {
 	public static inline var PLATFORM:String =
@@ -59,7 +64,12 @@ class System {
 			return CrossByte.current.tps;
 	}*/
 	public static inline function getDeviceId():String {
+		#if cpp
 		return NativeSystem.getDeviceId();
+		#else
+		//no-op for now
+		return "";
+		#end
 	}
 
 	public static inline function currentThreadCpuUsage():Float {
@@ -71,7 +81,12 @@ class System {
 	}
 
 	public static inline function memoryUsage():Int {
+		#if cpp
 		return Gc.memInfo(Gc.MEM_INFO_CURRENT);
+		#else
+		// no-op for now
+		return 0;
+		#end
 	}
 
 	private static inline var APPLICATION_DIR:String = "Crossbyte";
@@ -161,14 +176,24 @@ class System {
 	 * Returns false if polling fails to retrieve a value
 	 */
 	public static inline function setProcessAffinity(index:Int, value:Bool):Bool {
+		#if cpp
 		return NativeSystem.setProcessAffinity(index, value);
+		#else
+		// no-op for now
+		return false;
+		#end
 	}
 
 	/**
 	 * Returns an a Boolean that reflects whether or not the processor at the supplied index is accessible to the process.
 	 */
 	public static inline function hasProcessAffinity(index:Int):Bool {
+		#if cpp
 		return NativeSystem.hasProcessAffinity(index);
+		#else 
+		//no-op for now
+		return false;
+		#end
 	}
 
 	@:noCompletion private static inline function get_appDir():String {
@@ -220,11 +245,19 @@ class System {
 	}
 
 	@:noCompletion private static inline function get_processAffinity():Array<Bool> {
+		#if cpp
 		return NativeSystem.getProcessAffinity();
+		#else
+		// no op for now
+		return [false];
+		#end
 	}
 
 	@:noCompletion private static inline function get_processorCount():Int {
+		#if cpp
 		return NativeSystem.getProcessorCount();
+		#else
+		return 0;
+		#end
 	}
 }
-#end
