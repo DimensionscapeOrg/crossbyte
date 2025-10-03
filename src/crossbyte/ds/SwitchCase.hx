@@ -1,6 +1,9 @@
 package crossbyte.ds;
 
-typedef SwitchCase<T = Dynamic> = {
-	key:T,
-	handler:Void->Void
+import haxe.extern.EitherType;
+import haxe.Constraints.Function;
+
+typedef SwitchCase = {
+	var key:EitherType<String, Int>;
+	var handler:Function;
 }
