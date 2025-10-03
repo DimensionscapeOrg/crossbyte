@@ -2,11 +2,6 @@ package crossbyte.crypto;
 
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
-#if (cpp && windows)
-@:cppInclude("Windows.h")
-@:cppInclude("bcrypt.h")
-@:cppNamespaceCode('#pragma comment(lib, "bcrypt.lib")')
-#end
 #if (cpp && !windows)
 import sys.io.File;
 #end
@@ -15,12 +10,18 @@ import php.Global;
 import php.Syntax;
 #end
 
+#if cpp
+@:cppInclude("Windows.h")
+@:cppInclude("bcrypt.h")
+@:cppNamespaceCode('#pragma comment(lib, "bcrypt.lib")')
+#end
 final class SecureRandom {
 	public static function getSecureRandomBytes(length:Int):ByteArray {
 		#if cpp
 		if (length <= 0) {
 			return Bytes.alloc((length < 0) ? 0 : length);
 		}
+		return __getSecureRandomBytesNative(length);
 		#elseif php
 		return __getSecureRandomBytesPHP(length);
 		#else
@@ -30,22 +31,22 @@ final class SecureRandom {
 
 	#if cpp
 	#if windows
-	private static inline function __getSecureRandomBytesNative(length:Int):ByteArray {
-		var out:Bytes = Bytes.alloc(length);
+	private static inline function __getSecureRandomBytesNative(length:Int):Bytes {
+		var out = Bytes.alloc(length);
+		if (length == 0)
+			return out;
 
 		var ok:Bool = untyped __cpp__('
-			static BCRYPT_ALG_HANDLE hAlg = NULL;
-			if (hAlg == NULL) {
-				if (::BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_RNG_ALGORITHM, NULL, 0) != 0) {
-					return false;
-				}
-			}
-			return ::BCryptGenRandom(hAlg, (PUCHAR)&{0}->b[0], {1}, 0) == 0;
-		', out, length);
+        (::BCryptGenRandom(
+            (void*)0,
+            (PUCHAR)&{0}->b[0],
+            (unsigned long){1},
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG
+        ) == 0)
+    ', out, length);
 
-		if (!ok) {
+		if (!ok)
 			throw "BCryptGenRandom failed";
-		}
 		return out;
 	}
 	#else
