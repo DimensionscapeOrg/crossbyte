@@ -283,7 +283,8 @@ class Http {
 		if (isHttpError) {
 			var status:Int = __status;
 			__close();
-			onError('HTTP error ' + status);
+			onError('HTTP error ' + status, data);
+				
 			return;
 		}
 
