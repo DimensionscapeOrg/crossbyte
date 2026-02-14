@@ -37,6 +37,13 @@ class URLLoader extends EventDispatcher {
 
 	@:noCompletion private function __onWorkerComplete(e:ThreadEvent):Void {
 		var dataBytes:Bytes = e.message;
+		__parseData(e.message);		
+
+		dispatchEvent(new Event(Event.COMPLETE));
+		__disposeWorker();
+	}
+
+	@:noCompletion private inline function __parseData(dataBytes:Bytes):Void {
 		switch (dataFormat) {
 			case URLLoaderDataFormat.TEXT:
 				data = dataBytes.getString(0, dataBytes.length);
@@ -46,9 +53,6 @@ class URLLoader extends EventDispatcher {
 				var s:String = dataBytes.getString(0, dataBytes.length);
 				data = new URLVariables(s);
 		}
-
-		dispatchEvent(new Event(Event.COMPLETE));
-		__disposeWorker();
 	}
 
 	@:noCompletion private function __disposeWorker():Void {
@@ -77,7 +81,14 @@ class URLLoader extends EventDispatcher {
 	}
 
 	@:noCompletion private function __onWorkerError(e:ThreadEvent):Void {
-		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, e.message));
+		var errorMessage:Dynamic = e.message;
+		var dataBytes:Bytes = errorMessage.dataBytes;
+
+		if(dataBytes != null){
+			__parseData(dataBytes);
+		}
+
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, errorMessage.msg));
 		__disposeWorker();
 	}
 
@@ -119,8 +130,12 @@ class URLLoader extends EventDispatcher {
 				var obj = {type: "progress", value: {bytesLoaded: loaded, bytesTotal: total}};
 				__loaderWorker.sendProgress(obj);
 			}
-			function onError(msg:String):Void {
-				__loaderWorker.sendError(msg);
+			function onError(msg:String, dataBytes:Bytes):Void {
+				var errorMessage = {
+					"msg":msg,
+					"dataBytes":dataBytes
+				};
+				__loaderWorker.sendError(errorMessage);
 			}
 			function onStatus(code:Int):Void {
 				var obj = {type: "status", value: code};
