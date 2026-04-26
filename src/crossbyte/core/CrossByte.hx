@@ -82,24 +82,10 @@ final class CrossByte extends EventDispatcher {
 		untyped __cpp__("timeBeginPeriod(1);");
 		untyped __cpp__("HANDLE hProcess = GetCurrentProcess();");
 		untyped __cpp__("SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS)");
-
-		__setAtSystemExit(__atExit);
 		#end
 
 		return true;
 	}
-
-	#if (cpp && windows)
-	@:noCompletion private static function __atExit():Void {
-		untyped __cpp__("timeEndPeriod(1);");
-	}
-
-	@:noCompletion
-	private static function __setAtSystemExit(callback:Void->Void):Void {
-		untyped __cpp__("static cpp::Function<void()> exitCallback = {0};", callback);
-		untyped __cpp__("std::atexit([](){ exitCallback(); });");
-	}
-	#end
 
 	// ==== Public Variables ====
 	public var tps(get, set):UInt;
@@ -113,12 +99,6 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __dt:Float = 0.0;
 	@:noCompletion private var __cpuTime:Float = 0.0;
 	@:noCompletion private var __sleepAccuracy:Float = 0.0;
-
-	#if cpp
-	@:noCompletion private var __socketRegistry:NativeSocketRegistry;
-	#else
-	@:noCompletion private var __socketRegsitry:SocketRegistry;
-	#end
 
 	@:noCompletion private var __isPrimordial:Bool;
 
@@ -196,8 +176,6 @@ final class CrossByte extends EventDispatcher {
 		__instances.remove(Thread.current());
 		__instanceCount--;
 		#end
-		__socketRegistry = null;
-		
 	}
 
 	@:noCompletion private inline function get_uptime():Float {
@@ -206,24 +184,20 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Private Methods ====
 
+	// Socket polling is now shared across cpp and non-cpp targets.
+	// `SocketRegistry` already exists on non-cpp, and both TCP/UDP transports rely on it.
 	@:noCompletion private inline function registerSocket(socket:Socket):Void {
-		#if cpp
 		__socketRegistry.register(socket);
-		#else
-		// no-op for now
-		#end
 	}
 
 	@:noCompletion private inline function deregisterSocket(socket:Socket):Void {
-		#if cpp
 		__socketRegistry.deregister(socket);
-		#else
-		// no-op for now
-		#end
 	}
 
 	@:noCompletion private inline function queueWritable(socket:Socket):Void {
-		__socketRegistry.queueWritable(socket);
+		if (__socketRegistry != null) {
+			__socketRegistry.queueWritable(socket);
+		}
 	}
 
 	@:noCompletion private inline function __setup():Void {
@@ -302,6 +276,15 @@ final class CrossByte extends EventDispatcher {
 			mainLoop();
 		}
 		dispatchEvent(new Event(Event.EXIT));
+		if (__socketRegistry != null) {
+			__socketRegistry.clear();
+			__socketRegistry = null;
+		}
+		#if (cpp && windows)
+		if (__isPrimordial) {
+			untyped __cpp__("timeEndPeriod(1);");
+		}
+		#end
 	}
 
 	private var mainLoop:Void->Void;
@@ -310,6 +293,9 @@ final class CrossByte extends EventDispatcher {
 		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
 		__timer.advanceTime(__dt);
 		dispatchEvent(e);
+		if (!__isRunning) {
+			return;
+		}
 		__socketRegistry.update();
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
@@ -320,6 +306,9 @@ final class CrossByte extends EventDispatcher {
 		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
 		__timer.advanceTime(__dt);
 		dispatchEvent(e);
+		if (!__isRunning) {
+			return;
+		}
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
 

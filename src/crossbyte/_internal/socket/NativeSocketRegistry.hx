@@ -1,10 +1,8 @@
 package crossbyte._internal.socket;
 
-import crossbyte.core.CrossByte;
 import crossbyte.ds.Stack;
 import cpp.net.Poll;
 import sys.net.Socket;
-import crossbyte.net.Socket as CBSocket;
 import crossbyte.ds.DenseSet;
 
 @:access(crossbyte.ds.DenseSet)
@@ -90,10 +88,9 @@ final class NativeSocketRegistry {
 					break;
 				}
 				var socket:Socket = __set.valueAt(i);
-				var cb:CBSocket = socket.custom;
-				@:privateAccess
-				if (!cb.__closed) {
-					cb.this_onTick();
+				var cb:IPollableSocket = cast socket.custom;
+				if (cb != null && !cb.registryClosed) {
+					cb.registryOnReadable();
 				}
 			}
 
@@ -118,10 +115,9 @@ final class NativeSocketRegistry {
 	}
 
 	@:noCompletion private inline function __onFlushSocket(socket:Socket):Void {
-		var socket:crossbyte.net.Socket = socket.custom;
-		@:privateAccess
-		if (socket.__isDirty) {
-			socket.flush();
+		var cb:IPollableSocket = cast socket.custom;
+		if (cb != null && !cb.registryClosed) {
+			cb.registryOnWritable();
 		}
 	}
 }
