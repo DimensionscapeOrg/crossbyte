@@ -14,6 +14,7 @@ import haxe.io.Error;
 import haxe.Serializer;
 import haxe.Timer;
 import haxe.Unserializer;
+import crossbyte._internal.socket.IPollableSocket;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
@@ -37,7 +38,7 @@ import sys.net.Socket as SysSocket;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class Socket extends EventDispatcher implements IDataInput implements IDataOutput {
+class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket {
 	/**
 		The number of bytes of data available for reading in the input buffer.
 		Your code must access `bytesAvailable` to ensure that sufficient data
@@ -102,6 +103,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		dispatched in a ServerSocketConnectEvent by a ServerSocket object.
 	 */
 	public var remotePort(get, never):Int;
+	public var registryClosed(get, never):Bool;
 
 	@SuppressWarnings("checkstyle:FieldDocComment")
 	@:noCompletion @:dox(hide) public var secure:Bool;
@@ -886,6 +888,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 	}
 
+	public inline function registryOnReadable():Void {
+		this_onTick();
+	}
+
+	public inline function registryOnWritable():Void {
+		if (__isDirty) {
+			flush();
+		}
+	}
+
 	// Event Handlers
 	@:noCompletion private inline function socket_onClose(_):Void {
 		dispatchEvent(new Event(Event.CLOSE));
@@ -1059,5 +1071,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private function get_remotePort():Int {
 		return __socket.peer().port;
+	}
+
+	@:noCompletion private inline function get_registryClosed():Bool {
+		return __closed || __socket == null;
 	}
 }
