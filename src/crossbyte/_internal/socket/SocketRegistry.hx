@@ -1,9 +1,7 @@
 package crossbyte._internal.socket;
 
-import crossbyte.core.CrossByte;
 import crossbyte.ds.Stack;
 import sys.net.Socket;
-import crossbyte.net.Socket as CBSocket;
 import crossbyte.ds.DenseSet;
 
 @:access(crossbyte.ds.DenseSet)
@@ -98,9 +96,9 @@ final class SocketRegistry {
 		var res = Socket.select(read, null, null, timeout);
 
 		for (s in res.read) {
-			var cb:CBSocket = s.custom;
-			@:privateAccess if (cb != null && !cb.__closed) {
-				cb.this_onTick();
+			var cb:IPollableSocket = cast s.custom;
+			if (cb != null && !cb.registryClosed) {
+				cb.registryOnReadable();
 			}
 		}
 	}
@@ -111,9 +109,9 @@ final class SocketRegistry {
 	}
 
 	@:noCompletion private inline function __onFlushSocket(sock:Socket):Void {
-		var cb:crossbyte.net.Socket = sock.custom;
-		@:privateAccess if (cb.__isDirty) {
-			cb.flush();
+		var cb:IPollableSocket = cast sock.custom;
+		if (cb != null && !cb.registryClosed) {
+			cb.registryOnWritable();
 		}
 	}
 }
