@@ -30,7 +30,7 @@ class Timer {
 
 		timers.set(id, this);
 		if (timerCount == 1) {
-			CrossByte.current.addEventListener(TickEvent.TICK, onTick);
+			CrossByte.current().addEventListener(TickEvent.TICK, onTick);
 		}
 	}
 
@@ -57,7 +57,7 @@ class Timer {
 	private function cleanup():Void {
 		timers.remove(id);
 		if (--timerCount == 0) {
-			CrossByte.current.removeEventListener(TickEvent.TICK, onTick);
+			CrossByte.current().removeEventListener(TickEvent.TICK, onTick);
 		}
 	}
 
