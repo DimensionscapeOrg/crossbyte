@@ -570,12 +570,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		mode:ReliableDatagramSocketMode
 	):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
+		var temporaryTransport = socket.__transport;
+		socket.__teardownTransportListener();
+		if (temporaryTransport != null) {
+			temporaryTransport.close();
+		}
 		socket.__ownsTransport = false;
 		socket.__incoming = true;
 		socket.__mode = mode;
 		socket.__server = server;
 		socket.__transport = transport;
-		socket.__teardownTransportListener();
 		socket.__remoteAddress = remoteAddress;
 		socket.__remotePort = remotePort;
 		socket.__resetSequences();
