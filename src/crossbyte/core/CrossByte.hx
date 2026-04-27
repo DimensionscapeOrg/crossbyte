@@ -28,7 +28,26 @@ import crossbyte._internal.system.timer.TimerScheduler;
 import crossbyte.Timer as CBTimer;
 
 /**
- * ...
+ * The core CrossByte runtime.
+ *
+ * A `CrossByte` instance owns:
+ * - a timer scheduler
+ * - a socket registry / polling context
+ * - a tick-driven event loop
+ * - thread-local runtime state for the thread it runs on
+ *
+ * In normal application usage there is exactly one primordial `CrossByte`
+ * created by extending `Application`, `HostApplication`, or
+ * `ServerApplication`.
+ *
+ * Additional `CrossByte` instances may then be created as child runtimes,
+ * typically to simplify threaded work while keeping each thread's timer and
+ * socket state isolated.
+ *
+ * Child runtimes are created with `CrossByte.make(...)`. They are not
+ * primordial applications and should be treated as worker/runtime instances
+ * under the main application context.
+ *
  * @author Christopher Speciale
  */
 #if (cpp && windows)
@@ -55,11 +74,29 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private static var __primordial:CrossByte;
 
 	// ==== Public Static Methods ====
+	/**
+	 * Creates a non-primordial CrossByte child runtime.
+	 *
+	 * This is the intended entry point for additional threaded CrossByte
+	 * instances after the primordial application has already been established.
+	 *
+	 * @param loopType The loop strategy to use for the child runtime.
+	 * @return The newly created non-primordial CrossByte instance.
+	 */
 	public static inline function make(loopType:MainLoopType = DEFAULT):CrossByte {
 		var instance:CrossByte = new CrossByte(false, loopType);
 		return instance;
 	}
 
+	/**
+	 * Returns the CrossByte runtime associated with the current thread.
+	 *
+	 * On threaded targets, this first resolves the thread-local CrossByte
+	 * instance. If none is attached, it falls back to the primordial runtime.
+	 *
+	 * @return The current thread's CrossByte instance, or the primordial
+	 *         application runtime when no thread-local runtime is attached.
+	 */
 	public static inline function current():CrossByte {
 		// is TLS better?
 		/* var currentThread:Thread = Thread.current();
@@ -101,6 +138,9 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __sleepAccuracy:Float = 0.0;
 
 	@:noCompletion private var __isPrimordial:Bool;
+	@:noCompletion private var __usesHostLoop:Bool = false;
+	@:noCompletion private var __didInit:Bool = false;
+	@:noCompletion private var __didExit:Bool = false;
 
 	#if cpp
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
@@ -125,10 +165,11 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// ==== Constructor ====
-	private function new(isPrimordial:Bool, loopType:MainLoopType = DEFAULT) {
+	private function new(isPrimordial:Bool, loopType:MainLoopType = DEFAULT, hostDriven:Bool = false) {
 		super(this);
 		__isPrimordial = isPrimordial;
 		__loopType = loopType;
+		__usesHostLoop = hostDriven;
 		__setup();
 	}
 
@@ -176,6 +217,54 @@ final class CrossByte extends EventDispatcher {
 		__instances.remove(Thread.current());
 		__instanceCount--;
 		#end
+		if (__usesHostLoop) {
+			__finalizeExit();
+		}
+	}
+
+	@:noCompletion public function pump(delta:Float, socketTimeout:Float = 0.0):Void {
+		if (!__usesHostLoop) {
+			throw "CrossByte.pump(delta) is only available for host-driven application instances.";
+		}
+
+		#if cpp
+		__threadLocalStorage.value = this;
+		#end
+		CBTimer.bindCurrentThread(__timer);
+		__dispatchInitIfNeeded();
+
+		if (!__isRunning) {
+			__finalizeExit();
+			return;
+		}
+
+		__stepHost(delta, socketTimeout);
+
+		if (!__isRunning) {
+			__finalizeExit();
+		}
+	}
+
+	@:noCompletion private function __stepHost(delta:Float, socketTimeout:Float = 0.0):Void {
+		if (delta < 0) {
+			delta = 0;
+		}
+
+		if (socketTimeout < 0) {
+			socketTimeout = 0;
+		}
+
+		var frameStart:Float = Timer.stamp();
+		__dt = delta;
+		__timer.advanceTime(delta);
+		dispatchEvent(new TickEvent(TickEvent.TICK, delta));
+		if (!__isRunning) {
+			__cpuTime = Timer.stamp() - frameStart;
+			return;
+		}
+
+		__socketRegistry.update(socketTimeout);
+		__cpuTime = Timer.stamp() - frameStart;
 	}
 
 	@:noCompletion private inline function get_uptime():Float {
@@ -222,6 +311,19 @@ final class CrossByte extends EventDispatcher {
 		__getSleepAccuracy();
 		#end
 
+		if (__usesHostLoop) {
+			if (__isPrimordial) {
+				__primordial = this;
+			}
+
+			#if cpp
+			var currentThread:Thread = Thread.current();
+			__instances.set(currentThread, this);
+			__threadLocalStorage.value = this;
+			#end
+			return;
+		}
+
 		if (__isPrimordial) {
 			EntryPoint.runInMainThread(__runEventLoop);
 			__primordial = this;
@@ -229,7 +331,7 @@ final class CrossByte extends EventDispatcher {
 			#if cpp
 			var t:Thread = Thread.current();
 			__instances.set(t, this);
-			#end			
+			#end
 		} else {
 			EntryPoint.addThread(__runEventLoop);
 		}
@@ -265,16 +367,34 @@ final class CrossByte extends EventDispatcher {
 		#end
 
 		#if cpp
+		__threadLocalStorage.value = this;
 		if (!__isPrimordial) {
 			var t:Thread = Thread.current();
 			__instances.set(t, this);
 		}
 		#end
+		CBTimer.bindCurrentThread(__timer);
 
-		dispatchEvent(new Event(Event.INIT));
+		__dispatchInitIfNeeded();
 		while (__isRunning) {
 			mainLoop();
 		}
+		__finalizeExit();
+	}
+
+	@:noCompletion private inline function __dispatchInitIfNeeded():Void {
+		if (!__didInit) {
+			__didInit = true;
+			dispatchEvent(new Event(Event.INIT));
+		}
+	}
+
+	@:noCompletion private function __finalizeExit():Void {
+		if (__didExit) {
+			return;
+		}
+
+		__didExit = true;
 		dispatchEvent(new Event(Event.EXIT));
 		if (__socketRegistry != null) {
 			__socketRegistry.clear();
