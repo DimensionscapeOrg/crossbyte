@@ -1,17 +1,50 @@
 package haxe;
 
+#if lime_cffi
+import lime.system.System;
+#else
+import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
+import haxe.ds.IntMap;
+#end
 import haxe.Log;
 import haxe.PosInfos;
-import crossbyte.core.CrossByte;
-import crossbyte.events.Event;
-import haxe.ds.IntMap;
 
 /**
- * ...
- * @author Christopher Speciale
- */
+	A hybrid `haxe.Timer` implementation that preserves CrossByte's tick-driven
+	behavior in standalone CrossByte runtimes while remaining compatible with
+	Lime-based hosts that expect the legacy `lime_cffi` timer surface.
+**/
 class Timer {
+	#if lime_cffi
+	private static var sRunningTimers:Array<Timer> = [];
+
+	private var mTime:Float;
+	private var mFireAt:Float;
+	private var mRunning:Bool;
+
+	public function new(time:Float) {
+		mTime = time;
+		sRunningTimers.push(this);
+		mFireAt = getMS() + mTime;
+		mRunning = true;
+	}
+
+	private static inline function getMS():Float {
+		return System.getTimer();
+	}
+
+	public function stop():Void {
+		mRunning = false;
+	}
+
+	@:noCompletion private function __check(inTime:Float):Void {
+		if (inTime >= mFireAt) {
+			mFireAt += mTime;
+			run();
+		}
+	}
+	#else
 	private static var timerCount:Int = 0;
 	private static var timers:IntMap<Timer> = new IntMap<Timer>();
 	private static var __currentId:Int = 0;
@@ -22,10 +55,10 @@ class Timer {
 	private var id:Int;
 
 	public function new(time_ms:Int) {
-		this.delayCount = time_ms / 1000;
-		this.timeRemaining = this.delayCount;
-		this.running = false;
-		this.id = ++__currentId;
+		delayCount = time_ms / 1000;
+		timeRemaining = delayCount;
+		running = false;
+		id = ++__currentId;
 		timerCount++;
 
 		timers.set(id, this);
@@ -34,21 +67,20 @@ class Timer {
 		}
 	}
 
-	private static function onTick(e:TickEvent):Void {
+	private static function onTick(event:TickEvent):Void {
 		for (timer in timers) {
-			timer.__update(e.delta);
+			timer.__update(event.delta);
 		}
 	}
 
 	private function __update(dt:Float):Void {
 		if (running) {
 			timeRemaining -= dt;
-
 			if (timeRemaining <= 0) {
 				run();
-
-				if (!running)
+				if (!running) {
 					return;
+				}
 				timeRemaining = delayCount;
 			}
 		}
@@ -62,35 +94,41 @@ class Timer {
 	}
 
 	public function stop():Void {
-		this.running = false;
+		running = false;
 		cleanup();
 	}
 
 	public function start():Void {
-		this.running = true;
+		running = true;
 	}
+	#end
 
 	public dynamic function run():Void {}
 
 	public static function delay(f:Void->Void, time_ms:Int):Timer {
-		var t = new Timer(time_ms);
-		t.run = function() {
-			t.stop();
+		var timer = new Timer(time_ms);
+		timer.run = function() {
+			timer.stop();
 			f();
 		};
-		t.start();
-		return t;
+		#if !lime_cffi
+		timer.start();
+		#end
+		return timer;
 	}
 
 	public static function measure<T>(f:Void->T, ?pos:PosInfos):T {
 		var t0 = stamp();
-		var r = f();
+		var result = f();
 		Log.trace((stamp() - t0) + "s", pos);
-		return r;
+		return result;
 	}
 
 	public static inline function stamp():Float {
-		#if js
+		#if lime_cffi
+		var timer = System.getTimer();
+		return (timer > 0 ? timer / 1000 : 0);
+		#elseif js
 		return Date.now().getTime() / 1000;
 		#elseif cpp
 		return untyped __global__.__time_stamp();
