@@ -132,7 +132,7 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 
 	public inline function listen(connections:Int = 0):Void {
 		if (connections == 0)
-			connections = 0x7FFFFFF;
+			connections = 0x7FFFFFFF;
 		(this : Socket).listen(connections);
 	}
 
