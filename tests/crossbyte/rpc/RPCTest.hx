@@ -154,6 +154,22 @@ class RPCTest extends utest.Test {
 		Assert.equals("hello", handler.lastAnnounceMessage);
 		Assert.equals("label-7", label);
 	}
+
+	public function testContractDrivenCommandsRetainBuiltInPingOutsideSharedContract():Void {
+		var link = LinkedConnection.pair();
+		var commands = new ContractCommands();
+		var handler = new ContractHandler();
+
+		new RPCSession<ContractCommands>(link.client, commands);
+		new RPCSession(link.server, null, handler);
+
+		commands.ping();
+		commands.announce(12, "still-fine");
+
+		Assert.equals(1, handler.announceCalls);
+		Assert.equals(12, handler.lastAnnounceId);
+		Assert.equals("still-fine", handler.lastAnnounceMessage);
+	}
 }
 
 private class TestCommands extends RPCCommands {

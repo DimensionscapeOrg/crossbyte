@@ -231,6 +231,43 @@ class HttpTest extends utest.Test {
 		Assert.equals("hello from lz4", completed.toString());
 	}
 
+	public function testLoadDecodesBrotliContentEncoding():Void {
+		var encoded = new ByteArray();
+		encoded.writeUTFBytes("hello from brotli");
+		encoded.compress(CompressionAlgorithm.BROTLI);
+
+		var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
+		var completed:Bytes = null;
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/encoded');
+		http.onComplete = data -> completed = data;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.notNull(completed);
+		Assert.equals("hello from brotli", completed.toString());
+	}
+
+	public function testLoadRejectsUnsupportedContentEncoding():Void {
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Encoding: zstd\r\nContent-Length: 5\r\n\r\nhello");
+		var http = new Http('http://127.0.0.1:${fixture.port}/encoded');
+		var message:String = null;
+		var errorData:Bytes = null;
+
+		http.onError = function(error:String, ?data:Bytes):Void {
+			message = error;
+			errorData = data;
+		};
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.equals("Unsupported content encoding: zstd", message);
+		Assert.notNull(errorData);
+		Assert.equals("hello", errorData.toString());
+	}
+
 	public function testHttpErrorBodyIsDecodedBeforeOnError():Void {
 		var encoded = new ByteArray();
 		encoded.writeUTFBytes("compressed missing");
