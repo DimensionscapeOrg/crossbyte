@@ -5,6 +5,7 @@ import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.ThreadEvent;
 import utest.Assert;
 
+@:access(crossbyte.core.CrossByte)
 class WorkerTest extends utest.Test {
 	public function testCompleteCapturesResultAndState():Void {
 		var worker = new Worker();
@@ -130,6 +131,26 @@ class WorkerTest extends utest.Test {
 		Assert.equals("second", completeMessage);
 		Assert.equals(WorkerState.COMPLETED, worker.state);
 		Assert.equals("second", worker.result);
+	}
+
+	public function testCancelDetachesFromOwningRuntimeEvenIfCurrentRuntimeChanges():Void {
+		#if (cpp || neko || hl)
+		var primordial = CrossByte.current();
+		var child = new CrossByte(false, DEFAULT, true);
+		var worker = new Worker();
+		worker.doWork = _ -> Sys.sleep(0.05);
+
+		worker.run();
+		Assert.isTrue(child.hasEventListener(crossbyte.events.TickEvent.TICK));
+
+		primordial.pump(0, 0);
+		worker.cancel(false);
+
+		Assert.isFalse(child.hasEventListener(crossbyte.events.TickEvent.TICK));
+		child.exit();
+		#else
+		Assert.pass();
+		#end
 	}
 
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
