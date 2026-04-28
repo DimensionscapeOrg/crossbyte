@@ -1,4 +1,4 @@
-name: CI
+name: CrossByte CI
 
 on:
   push:
@@ -13,26 +13,26 @@ concurrency:
 
 jobs:
   tests:
-    name: Haxe tests
+    name: Haxe test suite
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Haxe
+      - name: Prepare Haxe toolchain
         uses: krdlab/setup-haxe@v1
         with:
           haxe-version: "4.3.7"
 
-      - name: Install haxelibs
+      - name: Install dependencies
         run: |
           haxelib install utest --quiet
 
-      - name: Run unit tests
+      - name: Run Haxe unit tests
         run: haxe test.hxml
 
-      - name: Check samples
+      - name: Validate sample builds
         shell: bash
         run: |
           set -euo pipefail
@@ -43,55 +43,55 @@ jobs:
           done < <(find samples -name check.hxml -print | sort)
 
   cpp-audit:
-    name: hxcpp compile audit
+    name: hxcpp compile checks
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Haxe
+      - name: Prepare Haxe toolchain
         uses: krdlab/setup-haxe@v1
         with:
           haxe-version: "4.3.7"
 
-      - name: Install hxcpp
+      - name: hxcpp
         run: haxelib install hxcpp --quiet
 
-      - name: Type-check full cpp surface
+      - name: Type-check full C++ API surface
         run: haxe -cp src --macro "include('crossbyte')" --cpp export/audit-full --no-output
 
-      - name: Type-check timer burst catch-up
+      - name: Type-check timer burst support
         run: haxe -cp src --macro "include('crossbyte._internal.system.timer.heap')" -D timer_burst_catchup --cpp export/audit-timer --no-output
 
   native-smoke:
-    name: Native smoke tests
+    name: Native build & smoke checks
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Haxe
+      - name: Prepare Haxe toolchain
         uses: krdlab/setup-haxe@v1
         with:
           haxe-version: "4.3.7"
 
-      - name: Install haxelibs
+      - name: Install dependencies
         run: |
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
 
-      - name: Build focused HTTP client tests
+      - name: Build HTTP client tests
         run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-http-client-test -main crossbyte._internal.http.HttpTestMain
 
-      - name: Run focused HTTP client tests
+      - name: Run HTTP client tests
         run: .\export\cpp-http-client-test\HttpTestMain.exe
 
-      - name: Build focused HTTP server tests
+      - name: Build HTTP server tests
         run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-http-server-test -main crossbyte.http.HTTPTestMain
 
-      - name: Run focused HTTP server tests
+      - name: Run HTTP server tests
         run: .\export\cpp-http-server-test\HTTPTestMain.exe
 
       - name: Build websocket echo sample
