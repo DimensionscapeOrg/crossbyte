@@ -168,6 +168,80 @@ class DatagramSocketTest extends utest.Test {
 		closeQuietly(receiver);
 	}
 
+	public function testIpv6SendReceiveOverLocalhost():Void {
+		if (!requireDatagramSupport() || !requireIpv6Loopback()) {
+			return;
+		}
+
+		var receiver = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var payload:String = null;
+
+		try {
+			receiver.bind(0, "::1");
+			var srcAddress = "";
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, event -> {
+				event.data.position = 0;
+				payload = event.data.readUTFBytes(event.data.length);
+				srcAddress = event.srcAddress;
+			});
+			receiver.receive();
+
+			sender.bind(0, "::1");
+			sender.send(bytesOf("ping"), 0, 0, "::1", receiver.localPort);
+
+			pumpUntil(() -> payload != null, 2.0);
+
+			Assert.equals("ping", payload);
+			Assert.equals("::1", srcAddress);
+			Assert.equals("::1", receiver.localAddress);
+			Assert.equals("::1", sender.localAddress);
+		} catch (e:Dynamic) {
+			closeQuietly(sender);
+			closeQuietly(receiver);
+			throw e;
+		}
+
+		closeQuietly(sender);
+		closeQuietly(receiver);
+	}
+
+	public function testIpv6ConnectedSendUsesDefaultEndpoint():Void {
+		if (!requireDatagramSupport() || !requireIpv6Loopback()) {
+			return;
+		}
+
+		var receiver = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var payload:String = null;
+
+		try {
+			receiver.bind(0, "::1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, event -> {
+				event.data.position = 0;
+				payload = event.data.readUTFBytes(event.data.length);
+			});
+			receiver.receive();
+
+			sender.bind(0, "::1");
+			sender.connect("::1", receiver.localPort);
+			sender.send(bytesOf("connected"));
+
+			pumpUntil(() -> payload != null, 2.0);
+
+			Assert.isTrue(sender.connected);
+			Assert.equals("connected", payload);
+			Assert.equals("::1", sender.remoteAddress);
+		} catch (e:Dynamic) {
+			closeQuietly(sender);
+			closeQuietly(receiver);
+			throw e;
+		}
+
+		closeQuietly(sender);
+		closeQuietly(receiver);
+	}
+
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
 		bytes.writeUTFBytes(value);
@@ -181,6 +255,20 @@ class DatagramSocketTest extends utest.Test {
 			return false;
 		}
 		return true;
+	}
+
+	private static function requireIpv6Loopback():Bool {
+		var socket = new DatagramSocket();
+		try {
+			socket.bind(0, "::1");
+			socket.close();
+			return true;
+		} catch (_:Dynamic) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+			return false;
+		}
 	}
 
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
