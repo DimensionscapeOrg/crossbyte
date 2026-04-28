@@ -42,6 +42,7 @@ class FoundationConstructsTest extends utest.Test {
 		var object:Object = new Object();
 		object.alpha = "a";
 		object.beta = 2;
+		object["gamma"] = true;
 
 		var fields = [];
 		for (field in object) {
@@ -50,17 +51,33 @@ class FoundationConstructsTest extends utest.Test {
 
 		Assert.isTrue(fields.indexOf("alpha") != -1);
 		Assert.isTrue(fields.indexOf("beta") != -1);
+		Assert.isTrue(fields.indexOf("gamma") != -1);
 	}
 
-	public function testObjectCanIterateStringArrays():Void {
-		var object:Object = cast ["first", "second"];
-		var values = [];
+	public function testObjectSupportsBracketAccessAndIntrospection():Void {
+		var object:Object = new Object();
+		object["first"] = "value";
+		object["second"] = 2;
 
-		for (value in object) {
-			values.push(value);
+		Assert.equals("value", object["first"]);
+		Assert.equals(2, object["second"]);
+		Assert.isTrue(object.exists("first"));
+		Assert.isFalse(object.exists("missing"));
+
+		var sortedKeys = object.keys();
+		sortedKeys.sort(Reflect.compare);
+		Assert.same(["first", "second"], sortedKeys);
+		Assert.equals(2, object.values().length);
+
+		var entries = [];
+		for (entry in object.entries()) {
+			entries.push(entry.key + "=" + Std.string(entry.value));
 		}
 
-		Assert.same(["first", "second"], values);
+		Assert.isTrue(entries.indexOf("first=value") != -1);
+		Assert.isTrue(entries.indexOf("second=2") != -1);
+		Assert.isTrue(object.remove("first"));
+		Assert.isFalse(object.exists("first"));
 	}
 
 	public function testPrimitiveValueCastsAcrossSupportedPrimitives():Void {
