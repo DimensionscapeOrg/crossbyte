@@ -11,6 +11,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.core.CrossByteTest());
 	}
 
+	public static function addEvents(runner:Runner):Void {
+		runner.addCase(new crossbyte.events.EventDispatcherTest());
+	}
+
 	public static function addDataStructures(runner:Runner):Void {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
@@ -73,6 +77,7 @@ class TestSuites {
 	public static function addAll(runner:Runner):Void {
 		addAuth(runner);
 		addCore(runner);
+		addEvents(runner);
 		addDataStructures(runner);
 		addHttp(runner);
 		addIO(runner);
@@ -87,6 +92,7 @@ class TestSuites {
 
 	public static function addNativeSmoke(runner:Runner):Void {
 		addCore(runner);
+		addEvents(runner);
 		addHttp(runner);
 		addSystem(runner);
 		addNet(runner);
