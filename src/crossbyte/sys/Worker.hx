@@ -16,10 +16,7 @@ private enum WorkerMessage {
 	Progress(message:Dynamic);
 }
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Lightweight background worker that reports progress and completion on the owning runtime. */
 class Worker extends EventDispatcher {
 	public var canceled(default, null):Bool;
 	public var completed(default, null):Bool;

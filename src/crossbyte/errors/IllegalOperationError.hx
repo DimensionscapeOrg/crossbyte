@@ -3,10 +3,6 @@ package crossbyte.errors;
 import crossbyte.events.Event;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
 	The IllegalOperationError exception is thrown when a method is not
 	implemented or the implementation doesn't cover the current usage.
 

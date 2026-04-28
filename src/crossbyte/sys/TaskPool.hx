@@ -12,9 +12,7 @@ private typedef QueuedTask = {
 	job:Void->Dynamic
 }
 
-/**
- * ...
- */
+/** Small worker-pool scheduler for running `Task` jobs across background threads. */
 class TaskPool {
 	public var isShutdown(get, never):Bool;
 	public var workerCount(get, never):Int;

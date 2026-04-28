@@ -1,9 +1,6 @@
 package crossbyte.url;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Name/value pair representing a single outbound HTTP request header. */
 final class URLRequestHeader {
 	/**
 		An HTTP request header name(such as `Content-Type` or

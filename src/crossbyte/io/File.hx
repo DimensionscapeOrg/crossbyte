@@ -18,10 +18,6 @@ import haxe.io.Bytes;
 
 // @:noCompletion private typedef HaxeFile = sys.io.File;
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
 	A File object represents a path to a file or directory. This can be an existing file
 	or directory, or it can be one that does not yet exist; for instance, it can represent
 	the path to a file or directory that you plan to create.

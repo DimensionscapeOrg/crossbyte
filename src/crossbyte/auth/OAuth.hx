@@ -5,10 +5,6 @@ import haxe.Json;
 using StringTools;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
  * OAuth utility class.
  */
 class OAuth {

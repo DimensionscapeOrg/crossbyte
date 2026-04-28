@@ -11,11 +11,7 @@ import crossbyte._internal.native.sys.NativeSystem;
 import crossbyte.core.CrossByte;
 import sys.io.Process;
 
-/**
- * ...
- * @author Christopher Speciale
- */
- #if cpp
+#if cpp
 #if windows
 @:access(crossbyte._internal.native.sys.win.WinNativeSystem)
 #elseif linux
@@ -24,6 +20,7 @@ import sys.io.Process;
 @:access(crossbyte._internal.native.sys.NativeSystem)
 #end
 #end
+/** Cross-platform system information and process-level utility accessors. */
 class System {
 	public static inline var PLATFORM:String =
 		#if windows

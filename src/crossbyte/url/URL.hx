@@ -1,9 +1,6 @@
 package crossbyte.url;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Parsed URL wrapper with convenience accessors for common request parts. */
 @:forward
 @:transitive
 abstract URL(URLAccess) from URLAccess to URLAccess {
