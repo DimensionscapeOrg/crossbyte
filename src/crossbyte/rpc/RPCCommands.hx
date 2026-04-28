@@ -5,39 +5,33 @@ import crossbyte.net.NetConnection;
 import haxe.ds.IntMap;
 
 /**
- * `RPCCommands` is a base class for defining networked Remote Procedure Calls (RPC) 
- * in your application. By annotating methods with `@:rpc`, you enable automatic 
- * generation of network-ready functions for client-server communication.
- * 
- * ## Defining RPC Methods:
- * To create a set of remote commands, extend `RPCCommands` and annotate methods with `@:rpc`:
- * 
- * 
- * ## Important Notes:
- * - Only methods marked with `@:rpc` are exposed for remote calling.
- * - Each method automatically serializes arguments and sends them through the network.
- * - `RPCCommands` requires a `NetConnection` to be provided internally.
- * 
- * ## Best Practices:
- * - Use descriptive method names to clearly identify remote operations.
- * - Keep method signatures minimal for efficient transmission.
- * - Avoid large data structures as arguments to reduce network overhead.
- * 
- * ## Example Use Case:
- * ```haxe
- * class PlayerCommands extends RPCCommands {
- *     @:rpc
- *     public inline function jump():Void{}
- * 
- *     @:rpc
- *     public inline function movePlayer(x:Int, y:Int):Void{}
- * }
- * 
- * rpcAgent.commands = new PlayerCommands();
- * playerCommands.jump();
- * playerCommands.movePlayer(x, y);
- * ```
- */
+	`RPCCommands` is the outbound stub surface for CrossByte RPC sessions.
+
+	There are two supported ways to define command methods:
+
+	- Manual mode: declare `@:rpc` methods directly on the subclass. One-way calls
+	  return `Void` and request/response calls return `RPCResponse<T>`.
+	- Contract mode: annotate the subclass with `@:rpcContract(YourContract)`. The
+	  shared contract interface uses plain logical return types such as `String`,
+	  `Int`, or `Void`, and the macro lifts non-`Void` returns into
+	  `RPCResponse<T>` on the command side automatically.
+
+	The shared contract should describe application logic, not transport wrappers.
+	That means a contract method should be declared as `function getName(id:Int):String`
+	rather than `function getName(id:Int):RPCResponse<String>`.
+
+	Example:
+
+	```haxe
+	interface PlayerContract {
+		function jump():Void;
+		function getName(id:Int):String;
+	}
+
+	@:rpcContract(PlayerContract)
+	class PlayerCommands extends RPCCommands {}
+	```
+**/
 @:autoBuild(crossbyte.rpc._internal.RPCCommandMacro.build())
 abstract class RPCCommands {
 	@:noCompletion private var __nc:NetConnection;

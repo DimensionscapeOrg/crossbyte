@@ -11,7 +11,7 @@ package crossbyte._internal.native.sys.win;
 @:cppInclude("algorithm")
 @:cppInclude("cwctype")
 class WinNativeSystem {
-	private static function getProcessorCount():Int {
+	public static function getProcessorCount():Int {
 		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 			SYSTEM_INFO systemInfo;
@@ -21,7 +21,7 @@ class WinNativeSystem {
 		return untyped __cpp__("systemInfo.dwNumberOfProcessors;");
 	};
 
-	private static function getProcessAffinity():Array<Bool> {
+	public static function getProcessAffinity():Array<Bool> {
 		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 
@@ -50,7 +50,7 @@ class WinNativeSystem {
 		return untyped __cpp__("affinity");
 	}
 
-	private static function hasProcessAffinity(index:Int):Bool {
+	public static function hasProcessAffinity(index:Int):Bool {
 		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 			DWORD_PTR processAffinityMask;
@@ -72,7 +72,7 @@ class WinNativeSystem {
 		return untyped __cpp__("isSet");
 	}
 
-	private static function setProcessAffinity(index:Int, value:Bool):Bool {
+	public static function setProcessAffinity(index:Int, value:Bool):Bool {
 		untyped __cpp__("
 			HANDLE hProcess = GetCurrentProcess();
 			DWORD_PTR processAffinityMask;
