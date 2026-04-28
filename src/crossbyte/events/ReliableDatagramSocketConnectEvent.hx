@@ -33,6 +33,9 @@ class ReliableDatagramSocketConnectEvent extends Event {
 		@return A new `ReliableDatagramSocketConnectEvent` with the same accepted socket.
 	**/
 	override public function clone():Event {
-		return new ReliableDatagramSocketConnectEvent(type, socket);
+		var event = new ReliableDatagramSocketConnectEvent(type, socket);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 }

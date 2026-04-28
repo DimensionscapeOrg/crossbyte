@@ -1,0 +1,19 @@
+<xml>
+	<files id="crossbyte-sodium-common">
+		<depend files="hxcpp-depends"/>
+		<file name="${this_dir}/NativeSodium.cpp">
+			<depend name="${this_dir}/NativeSodium.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-sodium-common"/>
+		<section if="windows">
+			<section if="HXCPP_M64">
+				<section unless="HXCPP_ARM64">
+					<lib name="${this_dir}/vendor/libsodium/windows/x64/libsodium.lib"/>
+				</section>
+			</section>
+		</section>
+	</target>
+</xml>

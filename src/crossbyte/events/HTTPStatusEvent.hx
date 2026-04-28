@@ -42,6 +42,8 @@ class HTTPStatusEvent extends Event {
 
 	public override function clone():HTTPStatusEvent {
 		var event = new HTTPStatusEvent(type, status, redirected);
+		event.responseHeaders = responseHeaders;
+		event.responseURL = responseURL;
 		event.target = target;
 		event.currentTarget = currentTarget;
 		return event;
