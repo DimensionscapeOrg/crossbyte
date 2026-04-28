@@ -94,34 +94,45 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 			return;
 		}
 
-		var offset:Int = this.byteArray.length;
+		var used:Int = this.__outputPosition;
+		if (this.byteCache != null) {
+			for (bytes in this.byteCache) {
+				used += bytes.length;
+			}
+		}
 
-		this.byteArray.explicitResize(this.size);
+		this.byteArray.explicitResize(used);
+		this.byteArray.length = used;
+		var offset:Int = 0;
 
 		#if debug
 		var total = this.byteArray.length;
-		var used = offset;
-		for (bytes in this.byteCache)
-			used += bytes.length;
-		if (this.currentBytes != null && this.currentBytes != this.byteArray)
-			used += this.currentBytes.length;
-		if (used != total)
+		var expected = 0;
+		if (this.byteCache != null) {
+			for (bytes in this.byteCache)
+				expected += bytes.length;
+		}
+		expected += this.__outputPosition;
+		if (expected != total)
 			throw "flush invariant failed: used != size";
 		#end
 
-		for (i in 0...this.byteCache.length) {
-			var bytes:Bytes = this.byteCache[i];
-			inline this.byteArray.blit(offset, bytes, 0, bytes.length);
-			offset += bytes.length;
+		if (this.byteCache != null) {
+			for (i in 0...this.byteCache.length) {
+				var bytes:Bytes = this.byteCache[i];
+				inline this.byteArray.blit(offset, bytes, 0, bytes.length);
+				offset += bytes.length;
+			}
 		}
 
-		if (this.currentBytes != null && this.currentBytes != this.byteArray) {
-			inline this.byteArray.blit(offset, this.currentBytes, 0, this.currentBytes.length);
-			offset += this.currentBytes.length;
+		if (this.__outputPosition > 0) {
+			inline this.byteArray.blit(offset, this.currentBytes, 0, this.__outputPosition);
+			offset += this.__outputPosition;
 		}
 
 		this.byteCache = null;
 		this.currentBytes = this.byteArray;
+		this.__outputPosition = used;
 	}
 
 	/**
@@ -161,7 +172,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @return `true` if valid, `false` otherwise.
 	 */
 	public inline function validateSizeAt(size:Int, pos:Int):Bool {
-		if (pos + size > length) {
+		if (pos + size > current.length) {
 			return false;
 		}
 		return true;
@@ -402,15 +413,20 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @return `true` if `flush()` has already been called.
 	 */
 	public inline function isFlushed():Bool {
-		return this.byteCache == null;
+		return this.byteCache == null && this.currentBytes == this.byteArray && this.__outputPosition == this.byteArray.length;
 	}
 
 	@:noCompletion private inline function this_resize(length):Void {
 		if (this.byteCache == null) {
 			this.byteCache = [];
-		} else {
-			this.byteCache.push(this.currentBytes);
 		}
+
+		if (this.__outputPosition > 0) {
+			var used = Bytes.alloc(this.__outputPosition);
+			used.blit(0, this.currentBytes, 0, this.__outputPosition);
+			this.byteCache.push(used);
+		}
+
 		this.currentBytes = Bytes.alloc(length - this.size);
 		this.size = length;
 	}
@@ -445,10 +461,15 @@ class ByteArrayDataOutput extends ByteArrayData {
 	}
 
 	public inline function copy():ByteArray {
-		var out:ByteArrayData = new ByteArray(this.size);
-		inline out.blit(0, this.byteArray, 0, this.byteArray.length);
+		var used:Int = this.__outputPosition;
+		if (byteCache != null) {
+			for (bytes in this.byteCache) {
+				used += bytes.length;
+			}
+		}
 
-		var offset:Int = out.length;
+		var out:ByteArrayData = new ByteArray(used);
+		var offset:Int = 0;
 
 		if (byteCache != null) {
 			for (i in 0...this.byteCache.length) {
@@ -458,8 +479,8 @@ class ByteArrayDataOutput extends ByteArrayData {
 			}
 		}
 
-		if (this.currentBytes != null && this.currentBytes != this.byteArray) {
-			inline out.blit(offset, this.currentBytes, 0, this.currentBytes.length);
+		if (this.__outputPosition > 0) {
+			inline out.blit(offset, this.currentBytes, 0, this.__outputPosition);
 		}
 
 		return out;
