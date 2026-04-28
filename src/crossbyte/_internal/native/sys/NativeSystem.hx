@@ -1,19 +1,53 @@
 package crossbyte._internal.native.sys;
 
-#if windows
-typedef NativeSystem = crossbyte._internal.native.sys.win.WinNativeSystem;
-#elseif linux
-typedef NativeSystem = crossbyte._internal.native.sys.linux.LinuxNativeSystem;
-#else
 class NativeSystem {
-	extern private static function getProcessorCount():Int;
+	public static inline function getProcessorCount():Int {
+		#if windows
+		return crossbyte._internal.native.sys.win.WinNativeSystem.getProcessorCount();
+		#elseif linux
+		return crossbyte._internal.native.sys.linux.LinuxNativeSystem.getProcessorCount();
+		#else
+		return 0;
+		#end
+	}
 
-	extern private static function getProcessAffinity():Array<Bool>;
+	public static inline function getProcessAffinity():Array<Bool> {
+		#if windows
+		return crossbyte._internal.native.sys.win.WinNativeSystem.getProcessAffinity();
+		#elseif linux
+		return crossbyte._internal.native.sys.linux.LinuxNativeSystem.getProcessAffinity();
+		#else
+		return [];
+		#end
+	}
 
-	extern private static function setProcessAffinity(index:Int, value:Bool):Bool;
+	public static inline function setProcessAffinity(index:Int, value:Bool):Bool {
+		#if windows
+		return crossbyte._internal.native.sys.win.WinNativeSystem.setProcessAffinity(index, value);
+		#elseif linux
+		return crossbyte._internal.native.sys.linux.LinuxNativeSystem.setProcessAffinity(index, value);
+		#else
+		return false;
+		#end
+	}
 
-	extern private static function hasProcessAffinity(index:Int):Bool;
+	public static inline function hasProcessAffinity(index:Int):Bool {
+		#if windows
+		return crossbyte._internal.native.sys.win.WinNativeSystem.hasProcessAffinity(index);
+		#elseif linux
+		return crossbyte._internal.native.sys.linux.LinuxNativeSystem.hasProcessAffinity(index);
+		#else
+		return false;
+		#end
+	}
 
-	extern private static function getDeviceId():Null<String>;
+	public static inline function getDeviceId():Null<String> {
+		#if windows
+		return crossbyte._internal.native.sys.win.WinNativeSystem.getDeviceId();
+		#elseif linux
+		return crossbyte._internal.native.sys.linux.LinuxNativeSystem.getDeviceId();
+		#else
+		return null;
+		#end
+	}
 }
-#end

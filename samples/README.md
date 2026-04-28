@@ -28,3 +28,15 @@ haxe check.hxml
 haxe server-cpp.hxml
 haxe client-cpp.hxml
 ```
+
+## RPC Greeter
+
+`rpc-greeter` is a tiny contract-driven RPC sample that uses an in-memory
+loopback connection to show the `RPCCommands` / `RPCHandler` model clearly.
+
+Useful commands from `samples/rpc-greeter`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```

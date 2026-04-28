@@ -208,16 +208,15 @@ private class TestHandler extends RPCHandler {
 
 private interface ContractShape {
 	function announce(id:Int, message:String):Void;
-	function getLabel(id:Int):RPCResponse<String>;
+	function getLabel(id:Int):String;
 }
 
-@:rpcCommands(ContractShape)
+@:rpcContract(ContractShape)
 private class ContractCommands extends RPCCommands {
 	public function new() {}
 }
 
-@:rpcHandler(ContractShape)
-private class ContractHandler extends RPCHandler {
+private class ContractHandler extends RPCHandler implements ContractShape {
 	public var announceCalls:Int = 0;
 	public var lastAnnounceId:Int = 0;
 	public var lastAnnounceMessage:String = null;

@@ -5,6 +5,20 @@ import crossbyte.rpc.RPCCommands;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.io.ByteArrayInput;
 
+/**
+	`RPCHandler` is the inbound implementation surface for CrossByte RPC sessions.
+
+	A handler can be defined in two ways:
+
+	- Manual mode: declare `@:rpc` methods directly on the subclass.
+	- Contract mode: implement a single shared contract interface whose methods use
+	  plain logical return types. The handler methods should match that interface
+	  directly; unlike `RPCCommands`, handlers do not use `RPCResponse<T>` in their
+	  method signatures.
+
+	In contract mode, the shared interface can be used by `@:rpcContract(Contract)`
+	on the command side, while the handler simply `implements Contract`.
+**/
 @:autoBuild(crossbyte.rpc._internal.RPCHandlerMacro.build())
 @:access(crossbyte.net.Socket)
 abstract class RPCHandler {
