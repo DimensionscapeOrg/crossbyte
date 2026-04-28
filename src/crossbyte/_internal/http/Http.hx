@@ -22,10 +22,10 @@ class Http {
 	private static inline final HEADER_TRANSFER_ENCODING = "transfer-encoding";
 	private static final SUPPORTED_VERSIONS:Array<HttpVersion> = [HttpVersion.HTTP_1, HttpVersion.HTTP_1_1];
 
-	public var onProgress:Function = () -> {};
-	public var onError:Function = () -> {};
-	public var onComplete:Function = () -> {};
-	public var onStatus:Function = () -> {};
+	public var onProgress:Function = (bytesLoaded:Int, bytesTotal:Int) -> {};
+	public var onError:Function = (message:String, ?data:Bytes) -> {};
+	public var onComplete:Function = (data:Bytes) -> {};
+	public var onStatus:Function = (status:Int) -> {};
 
 	private var __socket:FlexSocket;
 	private var __url:URL;
