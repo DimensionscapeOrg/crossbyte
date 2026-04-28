@@ -1,9 +1,13 @@
 package crossbyte.sys;
 
+import crossbyte.core.CrossByte;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.TaskEvent;
+import crossbyte.events.TickEvent;
 
 #if (cpp || neko || hl)
+import sys.thread.Deque;
 import sys.thread.Lock;
 import sys.thread.Mutex;
 #end
@@ -11,6 +15,12 @@ import sys.thread.Mutex;
 /**
  * ...
  */
+private enum TaskDispatch<T> {
+	Complete(result:Null<T>);
+	Fail(error:Dynamic);
+	Cancel;
+}
+
 class Task<T> extends EventDispatcher {
 	public var state(default, null):TaskState;
 	public var result(default, null):Null<T>;
@@ -26,7 +36,11 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private var __lock:Mutex;
 	@:noCompletion private var __completion:Lock;
 	@:noCompletion private var __awaiters:Int;
+	@:noCompletion private var __dispatchQueue:Deque<TaskDispatch<T>>;
+	@:noCompletion private var __dispatchListener:TickEvent->Void;
+	@:noCompletion private var __dispatchAttached:Bool;
 	#end
+	@:noCompletion private var __runtime:CrossByte;
 
 	public function new() {
 		super();
@@ -39,7 +53,17 @@ class Task<T> extends EventDispatcher {
 		__lock = new Mutex();
 		__completion = new Lock();
 		__awaiters = 0;
+		__dispatchQueue = new Deque();
+		__dispatchListener = __flushDispatchQueue;
+		__dispatchAttached = false;
 		#end
+		try {
+			__runtime = CrossByte.current();
+		} catch (_:IllegalOperationError) {
+			__runtime = null;
+		} catch (_:Dynamic) {
+			__runtime = null;
+		}
 	}
 
 	public function cancel():Bool {
@@ -70,7 +94,7 @@ class Task<T> extends EventDispatcher {
 			if (cancelHook != null) {
 				cancelHook();
 			}
-			dispatchEvent(new TaskEvent(TaskEvent.CANCEL, this));
+			__dispatchTerminalEvent(Cancel);
 		}
 
 		return didCancel;
@@ -194,7 +218,7 @@ class Task<T> extends EventDispatcher {
 		#end
 
 		if (shouldDispatch) {
-			dispatchEvent(new TaskEvent(TaskEvent.COMPLETE, this, value));
+			__dispatchTerminalEvent(Complete(value));
 		}
 	}
 
@@ -221,7 +245,7 @@ class Task<T> extends EventDispatcher {
 		#end
 
 		if (shouldDispatch) {
-			dispatchEvent(new TaskEvent(TaskEvent.ERROR, this, null, finalError));
+			__dispatchTerminalEvent(Fail(finalError));
 		}
 	}
 
@@ -233,5 +257,59 @@ class Task<T> extends EventDispatcher {
 			__awaiters--;
 		}
 	#end
+	}
+
+	@:noCompletion private inline function __dispatchTerminalEvent(event:TaskDispatch<T>):Void {
+		#if (cpp || neko || hl)
+		if (!__canDispatchInline()) {
+			__dispatchQueue.add(event);
+			if (!__dispatchAttached && __runtime != null) {
+				__dispatchAttached = true;
+				__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
+			}
+			return;
+		}
+		#end
+		__dispatchNow(event);
+	}
+
+	#if (cpp || neko || hl)
+	@:noCompletion private inline function __canDispatchInline():Bool {
+		if (__runtime == null) {
+			return true;
+		}
+
+		try {
+			return CrossByte.current() == __runtime;
+		} catch (_:Dynamic) {
+			return false;
+		}
+	}
+
+	@:noCompletion private function __flushDispatchQueue(event:TickEvent):Void {
+		while (true) {
+			var pending = __dispatchQueue.pop(false);
+			if (pending == null) {
+				break;
+			}
+			__dispatchNow(pending);
+		}
+
+		if (__dispatchAttached && __runtime != null) {
+			__dispatchAttached = false;
+			__runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
+		}
+	}
+	#end
+
+	@:noCompletion private inline function __dispatchNow(event:TaskDispatch<T>):Void {
+		switch (event) {
+			case Complete(value):
+				dispatchEvent(new TaskEvent(TaskEvent.COMPLETE, this, value));
+			case Fail(errorValue):
+				dispatchEvent(new TaskEvent(TaskEvent.ERROR, this, null, errorValue));
+			case Cancel:
+				dispatchEvent(new TaskEvent(TaskEvent.CANCEL, this));
+		}
 	}
 }

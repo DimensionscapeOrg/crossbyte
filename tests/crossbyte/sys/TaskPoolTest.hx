@@ -1,11 +1,13 @@
 package crossbyte.sys;
 
+import crossbyte.core.CrossByte;
 import crossbyte.sys.TaskState;
 import utest.Assert;
 #if (cpp || neko || hl)
 import sys.thread.Mutex;
 #end
 
+@:access(crossbyte.core.CrossByte)
 class TaskPoolTest extends utest.Test {
 	public function testTasksRunAndComplete():Void {
 		var pool = new TaskPool(1);
@@ -39,11 +41,43 @@ class TaskPoolTest extends utest.Test {
 
 		Assert.equals(2, pool.workerCount);
 		Assert.isTrue(throws(() -> task.await()));
+		pumpUntil(() -> caught != null);
 		Assert.equals("bad", caught);
 		Assert.equals("bad", task.error);
 		Assert.equals(TaskState.FAILED, task.state);
 		Assert.isTrue(task.isFailed);
 		Assert.isTrue(task.isDone);
+	}
+
+	public function testCompletionDispatchesOnOwningRuntimeTick():Void {
+		#if (cpp || neko || hl)
+		var primordial = CrossByte.current();
+		var child = new CrossByte(false, DEFAULT, true);
+		var pool = new TaskPool(1);
+		var callbackRuntime:CrossByte = null;
+		var callbackCount = 0;
+		var task = pool.submitResult(() -> 42);
+		task.onComplete(_ -> {
+			callbackCount++;
+			callbackRuntime = CrossByte.current();
+		});
+
+		Assert.equals(42, task.await());
+		Assert.equals(0, callbackCount);
+
+		primordial.pump(1 / 60, 0);
+		Assert.equals(0, callbackCount);
+
+		pumpRuntimeUntil(child, () -> callbackCount == 1);
+
+		Assert.equals(1, callbackCount);
+		Assert.equals(child, callbackRuntime);
+
+		pool.shutdown();
+		child.exit();
+		#else
+		Assert.pass();
+		#end
 	}
 
 	public function testFifoExecutionWithSingleWorker():Void {
@@ -212,5 +246,21 @@ class TaskPoolTest extends utest.Test {
 		} catch (_:Dynamic) {
 			return true;
 		}
+	}
+
+	@:noCompletion private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
+		#if (cpp || neko || hl)
+		pumpRuntimeUntil(CrossByte.current(), done, timeoutSeconds);
+		#end
+	}
+
+	@:noCompletion private static function pumpRuntimeUntil(runtime:CrossByte, done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
+		#if (cpp || neko || hl)
+		var deadline = Sys.time() + timeoutSeconds;
+		while (!done() && Sys.time() < deadline) {
+			runtime.pump(1 / 60, 0);
+			Sys.sleep(0.001);
+		}
+		#end
 	}
 }
