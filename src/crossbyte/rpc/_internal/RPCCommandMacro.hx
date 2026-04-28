@@ -60,12 +60,17 @@ class RPCCommandMacro {
 		var fields = Context.getBuildFields();
 		var newFields:Array<Field> = [];
 		var responseMethods:Array<ResponseMethod> = [];
-		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcCommands");
+		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 
 		if (contractMethods != null) {
+			RPCContractMacroTools.requireExtends(":rpcContract", "crossbyte.rpc.RPCCommands");
+			final contractPath = RPCContractMacroTools.contractPath(":rpcContract");
+			if (contractPath != null && RPCContractMacroTools.classImplements(contractPath)) {
+				Context.error("RPC commands classes should not implement the shared contract directly. Use @:rpcContract(...) to generate command stubs, and let the handler implement the contract interface.", Context.currentPos());
+			}
 			if (manualRpcFields.length > 0) {
-				Context.error("Do not mix @:rpcCommands(...) with field-level @:rpc methods in the same class.", manualRpcFields[0].pos);
+				Context.error("Do not mix @:rpcContract(...) with field-level @:rpc methods in the same class.", manualRpcFields[0].pos);
 			}
 
 			for (method in contractMethods) {
@@ -73,22 +78,23 @@ class RPCCommandMacro {
 					Context.error(RPCContractMacroTools.reservedSystemMethodMessage(method.name), method.pos);
 				}
 				if (hasFieldNamed(fields, method.name) || hasFieldNamed(fields, "meta_" + method.name)) {
-					Context.error("RPC commands class already declares '" + method.name + "'; remove the manual declaration when using @:rpcCommands(...).", method.pos);
+					Context.error("RPC commands class already declares '" + method.name + "'; remove the manual declaration when using @:rpcContract(...).", method.pos);
 				}
 
 				final metaName = "meta_" + method.name;
+				final wrapperReturnType = commandReturnType(method.ret);
 				final wrapper = createWrapperFunction({
 					name: method.name,
 					doc: "Generated RPC wrapper for contract method " + method.name,
 					access: [APublic],
 					kind: FFun({
 						args: method.args,
-						ret: method.ret,
+						ret: wrapperReturnType,
 						expr: null
 					}),
 					pos: method.pos,
 					meta: null
-				}, metaName, method.args, method.ret, method.responseType, method.op);
+				}, metaName, method.args, wrapperReturnType, method.responseType, method.op);
 				newFields.push(wrapper);
 				newFields.push(createMetaFunction(metaName, method.name, method.args, method.pos, method.op));
 
@@ -307,8 +313,20 @@ class RPCCommandMacro {
 						null;
 				}
 			case _:
-				Context.error("RPC command return type must be Void or RPCResponse<T>. Contract-driven command methods should mirror the shared contract signature exactly.", pos);
+				Context.error("RPC command return type must be Void or RPCResponse<T>.", pos);
 				null;
+		}
+	}
+
+	private static function commandReturnType(ret:ComplexType):ComplexType {
+		return if (isVoid(ret)) {
+			macro :Void;
+		} else {
+			TPath({
+				pack: ["crossbyte", "rpc"],
+				name: "RPCResponse",
+				params: [TPType(ret)]
+			});
 		}
 	}
 
