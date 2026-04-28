@@ -7,6 +7,8 @@ import crossbyte.http.HTTPBackend;
 import crossbyte.http.HTTPBackendRegistry;
 import crossbyte.http.HTTPRequestContext;
 import crossbyte.http.HTTPVersion;
+import crossbyte.io.ByteArray;
+import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.url.URL;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
@@ -22,6 +24,7 @@ class Http {
 	private static inline final CRLFCRLF:String = "\r\n\r\n";
 	private static inline final HEADER_LOCATION = "location";
 	private static inline final HEADER_CONTENT_LENGTH = "content-length";
+	private static inline final HEADER_CONTENT_ENCODING = "content-encoding";
 	private static inline final HEADER_TRANSFER_ENCODING = "transfer-encoding";
 	private static final SUPPORTED_VERSIONS:Array<HttpVersion> = [HttpVersion.HTTP_1, HttpVersion.HTTP_1_1];
 
@@ -338,11 +341,20 @@ class Http {
 			return;
 		}
 
+		if (data != null) {
+			try {
+				data = __decodeResponseBody(data);
+			} catch (error:Dynamic) {
+				__close();
+				onError('Unsupported content encoding: ${error}', data);
+				return;
+			}
+		}
+
 		if (isHttpError) {
 			var status:Int = __status;
 			__close();
 			onError('HTTP error ' + status, data);
-				
 			return;
 		}
 
@@ -351,6 +363,55 @@ class Http {
 		}
 
 		__close();
+	}
+
+	@:noCompletion private function __decodeResponseBody(data:Bytes):Bytes {
+		if (data == null || data.length == 0) {
+			return data;
+		}
+
+		var header = __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null;
+		if (header == null || StringTools.trim(header) == "") {
+			return data;
+		}
+
+		var encodings:Array<CompressionAlgorithm> = [];
+		for (raw in header.split(",")) {
+			var token = StringTools.trim(raw);
+			if (token == "") {
+				continue;
+			}
+
+			var semi:Int = token.indexOf(";");
+			if (semi >= 0) {
+				token = StringTools.trim(token.substr(0, semi));
+			}
+
+			token = token.toLowerCase();
+		switch (token) {
+			case "gzip", "x-gzip":
+				encodings.push(CompressionAlgorithm.GZIP);
+			case "deflate":
+				encodings.push(CompressionAlgorithm.DEFLATE);
+			case "lz4":
+				encodings.push(CompressionAlgorithm.LZ4);
+			case "identity":
+				continue;
+				default:
+					throw token;
+			}
+		}
+
+		if (encodings.length == 0) {
+			return data;
+		}
+
+		var payload:ByteArray = data;
+		for (i in 0...encodings.length) {
+			payload.uncompress(encodings[encodings.length - 1 - i]);
+		}
+
+		return payload;
 	}
 
 	private function __tryRequest():Void {
