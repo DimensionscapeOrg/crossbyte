@@ -96,8 +96,7 @@ class RPCHeader {
 	 * @return `true` if the field exists, `false` otherwise.
 	 */
 	public function hasField(name:String):Bool {
-		/* return Lambda.exists(__fields, f -> f.name == name); */
-		return null;
+		return __fields.exists(name);
 	}
 
 	/**

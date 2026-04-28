@@ -12,6 +12,7 @@ final class NativeSocketRegistry {
 	@:noCompletion private var __isDirty:Bool = true;
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
+	@:noCompletion private var __deregisterPending:DenseSet<Socket>;
 	@:noCompletion private var __writableQueue:Stack<Socket>;
 	@:noCompletion private var __readSnapshot:Array<Socket>;
 
@@ -36,6 +37,7 @@ final class NativeSocketRegistry {
 		__set = new DenseSet();
 		__poll = new Poll(__capacity);
 		__deregisterQueue = new Stack();
+		__deregisterPending = new DenseSet();
 		__writableQueue = new Stack();
 		__readSnapshot = [];
 	}
@@ -43,12 +45,17 @@ final class NativeSocketRegistry {
 	public inline function clear():Void {
 		__set.clear();
 		__deregisterQueue.clear(true);
+		__deregisterPending.clear();
 		__writableQueue.clear();
 		__readSnapshot.resize(0);
 		__isDirty = true;
 	}
 
 	public inline function register(socket:Socket):Void {
+		if (__deregisterPending.remove(socket)) {
+			return;
+		}
+
 		if (__set.add(socket)) {
 			__isDirty = true;
 
@@ -59,8 +66,9 @@ final class NativeSocketRegistry {
 	}
 
 	public inline function deregister(socket:Socket):Void {
-		// TODO: Lazy dereg? Rate limit this in teh future
-		__deregisterQueue.push(socket);
+		if (__set.contains(socket) && __deregisterPending.add(socket)) {
+			__deregisterQueue.push(socket);
+		}
 	}
 
 	public inline function queueWritable(socket:Socket):Void {
@@ -68,7 +76,9 @@ final class NativeSocketRegistry {
 	}
 
 	@:noCompletion private inline function __onDeregisterSocket(s:Socket):Void {
-		__set.remove(s);
+		if (__deregisterPending.remove(s)) {
+			__set.remove(s);
+		}
 	}
 	public #if final inline #end function update(timeout:Float = 0):Void {
 		if (!__writableQueue.isEmpty) {

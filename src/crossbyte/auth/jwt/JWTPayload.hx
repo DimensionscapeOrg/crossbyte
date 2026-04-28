@@ -4,8 +4,8 @@ package crossbyte.auth.jwt;
 abstract JWTPayload(JWTPayloadData) {
 	public var subject(get, set):String;
 	public var name(get, set):String;
-	public var issuedAt(get, set):Int;
-	public var expiresAt(get, set):Int;
+	public var issuedAt(get, set):Null<Int>;
+	public var expiresAt(get, set):Null<Int>;
 	public var notBeforeTime(get, set):Null<Int>;
 	public var issuer(get, set):String;
 	public var audience(get, set):Dynamic;
@@ -27,19 +27,19 @@ abstract JWTPayload(JWTPayloadData) {
 		return this.name = v;
 	}
 
-	@:noCompletion private inline function get_issuedAt():Int {
+	@:noCompletion private inline function get_issuedAt():Null<Int> {
 		return this.iat;
 	}
 
-	@:noCompletion private inline function set_issuedAt(v:Int):Int {
+	@:noCompletion private inline function set_issuedAt(v:Null<Int>):Null<Int> {
 		return this.iat = v;
 	}
 
-	@:noCompletion private inline function get_expiresAt():Int {
+	@:noCompletion private inline function get_expiresAt():Null<Int> {
 		return this.exp;
 	}
 
-	@:noCompletion private inline function set_expiresAt(v:Int):Int {
+	@:noCompletion private inline function set_expiresAt(v:Null<Int>):Null<Int> {
 		return this.exp = v;
 	}
 
@@ -91,9 +91,9 @@ abstract JWTPayload(JWTPayloadData) {
 typedef JWTPayloadData = {
 	var sub:String;
 	@:optional var name:String;
-	var iat:Int;
-	var exp:Int;
-	@:optional var nbf:Int;
+	var iat:Null<Int>;
+	var exp:Null<Int>;
+	@:optional var nbf:Null<Int>;
 	@:optional var iss:String;
 	@:optional var aud:Dynamic;
 	@:optional var jti:String;
