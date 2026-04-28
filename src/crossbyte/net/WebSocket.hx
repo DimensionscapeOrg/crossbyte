@@ -41,11 +41,15 @@ class WebSocket extends Socket {
 	}
 
 	override public function close():Void {
-		super.close();
+		if (__webSocket != null) {
+			__cleanSocket();
+		} else {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
 	}
 
 	override public function connect(host:String, port:Int):Void {
-		if (__socket != null) {
+		if (__webSocket != null) {
 			close();
 		}
 
@@ -57,6 +61,7 @@ class WebSocket extends Socket {
 
 		__host = host;
 		__port = port;
+		__connected = false;
 
 		__output = new ByteArray();
 		__output.endian = __endian;
@@ -66,7 +71,9 @@ class WebSocket extends Socket {
 
 		var schema = secure ? "wss" : "ws";
 		var urlReg = ~/^(.*:\/\/)?([A-Za-z0-9\-\.]+)\/?(.*)/g;
-		urlReg.match(__host);
+		if (!urlReg.match(__host)) {
+			throw new IOError("Invalid host");
+		}
 		var __webHost = urlReg.matched(2);
 		var __webPath = urlReg.matched(3);
 
@@ -554,6 +561,16 @@ class WebSocket extends Socket {
 		__connected = false;
 	}
 
+	@:noCompletion override private function socket_onClose(_):Void {
+		__connected = false;
+		__webSocket = null;
+		dispatchEvent(new Event(Event.CLOSE));
+	}
+
+	@:noCompletion override private function socket_onError(e):Void {
+		dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
+	}
+
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {
 		if (__input.position == __input.length) {
 			__input.clear();
@@ -580,6 +597,7 @@ class WebSocket extends Socket {
 
 	@:noCompletion override private function socket_onOpen(_):Void {
 		__connected = true;
+		__closed = false;
 		dispatchEvent(new Event(Event.CONNECT));
 
 		if (__server != null) {
@@ -600,5 +618,25 @@ class WebSocket extends Socket {
 		__webSocket.onmessage = socket_onMessage;
 		__webSocket.onclose = socket_onClose;
 		__webSocket.onerror = socket_onError;
+	}
+
+	@:noCompletion override private inline function get_localAddress():String {
+		return "";
+	}
+
+	@:noCompletion override private inline function get_localPort():Int {
+		return 0;
+	}
+
+	@:noCompletion override private inline function get_remoteAddress():String {
+		return __host;
+	}
+
+	@:noCompletion override private inline function get_remotePort():Int {
+		return __port;
+	}
+
+	@:noCompletion override private inline function get_registryClosed():Bool {
+		return __closed || __webSocket == null;
 	}
 }
