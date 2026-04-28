@@ -1,0 +1,6 @@
+-cp src
+-cp tests
+-lib utest
+-D windows
+-main TestMain
+--cpp export/ci-native-tests
