@@ -150,4 +150,4 @@ jobs:
 
       - name: Run extension native tests
         working-directory: crossbyte-libuv
-        run: ./export/native-test/LibuvNativeTestMain
+        run: ../crossbyte/export/crossbyte-libuv-native-test/LibuvNativeTestMain
