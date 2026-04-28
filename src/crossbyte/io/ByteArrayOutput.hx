@@ -466,7 +466,12 @@ class ByteArrayDataOutput extends ByteArrayData {
 	}
 
 	public inline function reset(length:Int):Void {
-		this.byteArray.clear();
+		this.byteArray.explicitResize(length);
+		if (length > 0) {
+			this.byteArray.fill(0, length, 0);
+		}
+		this.byteArray.length = length;
+		this.byteArray.position = 0;
 		this.byteCache = null;
 		this.currentBytes = this.byteArray;
 		this.size = length;
