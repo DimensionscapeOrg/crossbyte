@@ -25,5 +25,6 @@ haxe test.hxml
 - [ ] rUDP
 - [ ] webRTC
 - [ ] Quic/HTTP3
-- [ ] MongoDB support
+- [x] MongoDB support
+- [x] PostgreSQL support
 
