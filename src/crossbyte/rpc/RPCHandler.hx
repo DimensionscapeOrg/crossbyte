@@ -31,10 +31,19 @@ abstract class RPCHandler {
 			final frameEnd:Int = input.position + payloadLen;
 			final flags:Int = input.readByte();
 			final op:Int = input.readInt();
-			if ((flags & RPCWire.FLAG_RESPONSE) != 0) {
+			if (flags == 0) {
+				this.dispatch(op, input, 0);
+			} else if (flags == RPCWire.FLAG_REQUEST) {
+				this.dispatch(op, input, input.readVarUInt());
+			} else if (flags == RPCWire.FLAG_RESPONSE) {
 				final requestId:Int = input.readVarUInt();
 				if (this_commands != null) {
-					this_commands.__rpc_handle_response(op, requestId, input, (flags & RPCWire.FLAG_ERROR) != 0);
+					this_commands.__rpc_handle_response(op, requestId, input, false);
+				}
+			} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+				final requestId:Int = input.readVarUInt();
+				if (this_commands != null) {
+					this_commands.__rpc_handle_response(op, requestId, input, true);
 				}
 			} else {
 				final requestId:Int = ((flags & RPCWire.FLAG_REQUEST) != 0) ? input.readVarUInt() : 0;
@@ -42,10 +51,10 @@ abstract class RPCHandler {
 			}
 			input.position = frameEnd;
 		}
-		@:privateAccess
-		try {
-			this_connection.inTimestamp = Timer.getTime();
-		} catch (_:Dynamic) {}
+		@:privateAccess final now:Float = Timer.tryGetTime();
+		if (now >= 0.0) {
+			this_connection.inTimestamp = now;
+		}
 	}
 
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
