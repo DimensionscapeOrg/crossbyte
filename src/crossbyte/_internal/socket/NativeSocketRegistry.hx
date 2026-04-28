@@ -1,14 +1,15 @@
 package crossbyte._internal.socket;
 
 import crossbyte.ds.Stack;
-import cpp.net.Poll;
+import crossbyte._internal.socket.poll.PollBackend;
+import crossbyte._internal.socket.poll.PollBackendRegistry;
 import sys.net.Socket;
 import crossbyte.ds.DenseSet;
 
 @:access(crossbyte.ds.DenseSet)
 final class NativeSocketRegistry {
 	@:noCompletion private var __set:DenseSet<Socket>;
-	@:noCompletion private var __poll:Poll;
+	@:noCompletion private var __poll:PollBackend;
 	@:noCompletion private var __isDirty:Bool = true;
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
@@ -35,7 +36,7 @@ final class NativeSocketRegistry {
 	public inline function new(capacity:Int) {
 		__capacity = capacity;
 		__set = new DenseSet();
-		__poll = new Poll(__capacity);
+		__poll = PollBackendRegistry.create(__capacity);
 		__deregisterQueue = new Stack();
 		__deregisterPending = new DenseSet();
 		__writableQueue = new Stack();
@@ -44,6 +45,7 @@ final class NativeSocketRegistry {
 
 	public inline function clear():Void {
 		__set.clear();
+		__poll.dispose();
 		__deregisterQueue.clear(true);
 		__deregisterPending.clear();
 		__writableQueue.clear();
@@ -112,7 +114,8 @@ final class NativeSocketRegistry {
 
 	@:noCompletion private inline function __grow():Void {
 		__capacity = Math.ceil(__capacity * 1.5);
-		__poll = new Poll(__capacity);
+		__poll.dispose();
+		__poll = PollBackendRegistry.create(__capacity);
 		__isDirty = true;
 	}
 
