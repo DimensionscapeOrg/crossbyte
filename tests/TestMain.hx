@@ -6,7 +6,11 @@ class TestMain {
 	public static function main():Void {
 		var crossByte = new crossbyte.core.CrossByte(true, DEFAULT, true);
 		var runner = new Runner();
+		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.ds.Array2DTest());
+		runner.addCase(new crossbyte.ds.CollectionsTest());
+		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
+		runner.addCase(new crossbyte.io.ByteArrayTest());
 		runner.addCase(new crossbyte.ipc.LocalConnectionTest());
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte.resources.ResourcesTest());

@@ -362,13 +362,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				__socket.output.flush();
 				__isDirty = false;
 				#end
-				// TODO: cant we just clear the exisiting? does it's internal
-				// size readjust?
-				//__output.clear();
-				__output = new ByteArray();
-
-				// __output.clear();
-				// __output.endian = __endian;
+				__output.clear();
 			} catch (e:Dynamic) {
 				var throwError = false;
 				switch (e) {
