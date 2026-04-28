@@ -905,6 +905,7 @@ final class File extends EventDispatcher {
 	**/
 	public function createDirectory():Void {
 		FileSystem.createDirectory(__path);
+		__updateFileStats();
 	}
 
 	/**
@@ -931,10 +932,8 @@ final class File extends EventDispatcher {
 	**/
 	public function deleteDirectory(deleteDirectoryContents:Bool = false):Void {
 		if (deleteDirectoryContents) {
-			var files:Array<File> = getDirectoryListing();
-
-			for (file in files) {
-				file.deleteFile();
+			for (item in FileSystem.readDirectory(__path)) {
+				__deletePath(Path.join([__path, item]));
 			}
 		}
 
@@ -943,6 +942,8 @@ final class File extends EventDispatcher {
 		} catch (e:Dynamic) {
 			throw new Error("Folder is not empty.", 3010);
 		}
+
+		__updateFileStats();
 	}
 
 	/**
@@ -997,6 +998,7 @@ final class File extends EventDispatcher {
 	**/
 	public function deleteFile():Void {
 		FileSystem.deleteFile(__path);
+		__updateFileStats();
 	}
 
 	/**
@@ -1367,12 +1369,13 @@ final class File extends EventDispatcher {
 			return;
 		}
 		try {
-			HaxeFile.saveBytes(__path, data);
+			HaxeFile.saveBytes(__path, (data : haxe.io.Bytes));
 		} catch (e:Dynamic) {
 			throw("File is open");
 		}
 
 		this.__data = data;
+		__updateFileStats();
 	}
 
 	/**
@@ -1503,6 +1506,17 @@ final class File extends EventDispatcher {
 		}
 	}
 
+	@:noCompletion private function __deletePath(path:String):Void {
+		if (FileSystem.isDirectory(path)) {
+			for (item in FileSystem.readDirectory(path)) {
+				__deletePath(Path.join([path, item]));
+			}
+			FileSystem.deleteDirectory(path);
+		} else {
+			FileSystem.deleteFile(path);
+		}
+	}
+
 	@:noCompletion private function __formatPath(path:String):String {
 		var dirs:Array<String> = [];
 		var lastBreak:Int = 0;
@@ -1617,6 +1631,7 @@ final class File extends EventDispatcher {
 		extension = Path.extension(path);
 		type = extension;
 		name = Path.withoutDirectory(path);
+		__fileStatsDirty = false;
 	}
 
 	@:noCompletion private static function get_applicationDirectory():File {
