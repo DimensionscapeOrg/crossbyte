@@ -11,11 +11,12 @@ import crossbyte.ipc._internal.VoidPointer;
 @:buildXml("
 <files id='haxe'>
 	<compilerflag value='-I../../src/crossbyte/ipc/_internal'/>
-	<file name='../../src/crossbyte/ipc/_internal/NativeLocalConnection.cpp' if='cpp'>
+	<file name='../../src/crossbyte/ipc/_internal/NativeLocalConnection.cpp'>
 		<depend name='../../src/crossbyte/ipc/_internal/NativeLocalConnection.h'/>
 	</file>
 </files>
 ")
+@:keep
 @:include("NativeLocalConnection.h")
 extern class NativeLocalConnection {
 	@:native('native_createInboundPipe') private static function __createInboundPipe(name:String):VoidPointer;
