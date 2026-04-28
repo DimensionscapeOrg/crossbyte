@@ -59,7 +59,7 @@ abstract JWTPayload(JWTPayloadData) {
 		return this.iss = v;
 	}
 
-	@:noCompletion private inline function get_audience():String {
+	@:noCompletion private inline function get_audience():Dynamic {
 		return this.aud;
 	}
 
