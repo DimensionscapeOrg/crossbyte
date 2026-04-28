@@ -119,7 +119,7 @@ class RPCCommandMacro {
 			access: [APrivate, AInline],
 			kind: FFun({
 				args: [
-					{name: "connection", type: macro :crossbyte.net.INetConnection},
+					{name: "connection", type: macro :crossbyte.net.NetConnection},
 					{name: "requestId", type: macro :Int}
 				].concat(args),
 				expr: macro {$b{statements};},
