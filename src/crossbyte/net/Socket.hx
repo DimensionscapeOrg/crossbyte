@@ -1113,7 +1113,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function get_localAddress():String {
-		return __socket.host().host.host;
+		return __socket.host().host.toString();
 	}
 
 	@:noCompletion private function get_localPort():Int {
@@ -1121,7 +1121,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function get_remoteAddress():String {
-		return __socket.peer().host.host;
+		return __socket.peer().host.toString();
 	}
 
 	@:noCompletion private function get_remotePort():Int {
