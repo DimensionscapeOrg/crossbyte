@@ -1,5 +1,6 @@
 package crossbyte.db.sql.sqlite;
 
+import crossbyte.FieldStruct;
 import crossbyte.errors.SQLError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
