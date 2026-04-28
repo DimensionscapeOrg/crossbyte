@@ -21,6 +21,6 @@ class StatusEvent extends Event {
 	}
 
 	public override function toString():String {
-		return ""; // __formatToString("StatusEvent", ["type", "code", "level"]);
+		return '[StatusEvent type=$type code=$code level=$level]';
 	}
 }
