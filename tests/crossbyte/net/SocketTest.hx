@@ -3,6 +3,7 @@ package crossbyte.net;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
 import crossbyte.events.Event;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.io.ByteArray;
@@ -85,6 +86,47 @@ class SocketTest extends utest.Test {
 		Assert.isFalse(socket.__isDirty);
 		Assert.isFalse(socket.flushFull);
 		Assert.isTrue(socket.__closed);
+	}
+
+	public function testInvalidHostDispatchesIOErrorWithoutSocket():Void {
+		var socket = new Socket();
+		var errors = 0;
+		socket.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
+
+		socket.connect("bad host name", 80);
+
+		Assert.equals(1, errors);
+		Assert.isNull(socket.__socket);
+		Assert.isFalse(socket.connected);
+	}
+
+	public function testPartialFlushRetainsUnwrittenBytes():Void {
+		var socket = socketWithOutput("abcdef");
+
+		socket.__retainPendingOutput(2, socket.__output.length);
+
+		Assert.equals(4, socket.bytesPending);
+		Assert.equals("cdef", readOutput(socket));
+		Assert.isFalse(socket.__isDirty);
+	}
+
+	public function testZeroByteFlushRetainsAllBytes():Void {
+		var socket = socketWithOutput("abcdef");
+
+		socket.__retainPendingOutput(0, socket.__output.length);
+
+		Assert.equals(6, socket.bytesPending);
+		Assert.equals("abcdef", readOutput(socket));
+		Assert.isFalse(socket.__isDirty);
+	}
+
+	public function testCompleteFlushClearsPendingBytes():Void {
+		var socket = socketWithOutput("abcdef");
+
+		socket.__retainPendingOutput(socket.__output.length, socket.__output.length);
+
+		Assert.equals(0, socket.bytesPending);
+		Assert.isFalse(socket.__isDirty);
 	}
 
 	public function testClientServerEchoOverLocalhost():Void {
@@ -189,5 +231,19 @@ class SocketTest extends utest.Test {
 				server.close();
 			}
 		} catch (_:Dynamic) {}
+	}
+
+	private static function socketWithOutput(value:String):Socket {
+		var socket = new Socket();
+		socket.__output = new ByteArray();
+		socket.__output.endian = socket.__endian;
+		socket.__output.writeUTFBytes(value);
+		socket.__isDirty = true;
+		return socket;
+	}
+
+	private static function readOutput(socket:Socket):String {
+		socket.__output.position = 0;
+		return socket.__output.readUTFBytes(socket.__output.length);
 	}
 }
