@@ -59,5 +59,9 @@ abstract class RPCHandler {
 
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
 
+	/**
+		Built-in heartbeat/system ping. This stays on the handler surface and should not
+		be declared inside shared RPC contract interfaces.
+	**/
 	abstract public function ping():Void;
 }

@@ -43,18 +43,6 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 
 				socket.connect(endpoint.address, endpoint.port);
 				nc;
-			case UDP:
-				var socket = new DatagramSocket();
-				var nc = new UDPConnection(socket);
-				nc.onData = onData;
-				nc.onClose = onClose;
-				nc.onReady = onReady;
-				nc.onError = onError;
-				nc.readEnabled = readEnabled;
-
-				socket.connect(endpoint.address, endpoint.port);
-				nc.__notifyReadyIfUsable();
-				nc;
 			case WEBSOCKET:
 				var socket = new WebSocket();
 				var nc = new WSConnection(socket);
@@ -196,16 +184,6 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return socket;
 	}
 
-	public static inline function toDatagramSocket(connection:NetConnection):DatagramSocket {
-		var socket:DatagramSocket = null;
-
-		if (connection.protocol == UDP) {
-			socket = (cast connection : UDPConnection).__socket;
-		}
-
-		return socket;
-	}
-
 	public static inline function toWebSocket(connection:NetConnection):WebSocket {
 		var socket:WebSocket = null;
 
@@ -260,13 +238,6 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	public static inline function fromWebSocket(webSocket:WebSocket):NetConnection {
 		@:privateAccess
 		var nc:NetConnection = new WSConnection(webSocket);
-		return nc;
-	}
-
-	@:from
-	public static inline function fromDatagramSocket(datagramSocket:DatagramSocket):NetConnection {
-		@:privateAccess
-		var nc:NetConnection = new UDPConnection(datagramSocket);
 		return nc;
 	}
 
@@ -574,178 +545,6 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 		__socket.removeEventListener(Event.CLOSE, socket_onClose);
 		__socket.removeEventListener(IOErrorEvent.IO_ERROR, socket_onIoError);
 		// __socket.removeEventListener(SecurityError.SECURITY_ERROR, socket_onSecError);
-	}
-
-	@:noCompletion private static inline function __noopReady():Void {}
-
-	@:noCompletion private static inline function __noopData(_:ByteArrayInput):Void {}
-
-	@:noCompletion private static inline function __noopClose(_:Reason):Void {}
-
-	@:noCompletion private static inline function __noopError(_:Reason):Void {}
-}
-
-@:allow(crossbyte.net.NetConnection)
-private class UDPConnection extends NetConnectionBase implements INetConnection {
-	public var remoteAddress(get, never):String;
-	public var remotePort(get, never):Int;
-	public var localAddress(get, never):String;
-	public var localPort(get, never):Int;
-	public var connected(get, never):Bool;
-	public var readEnabled(get, set):Bool;
-	public var onData(get, set):ByteArrayInput->Void;
-	public var onClose(get, set):Reason->Void;
-	public var onError(get, set):Reason->Void;
-	public var onReady(get, set):Void->Void;
-
-	@:noCompletion private var __socket:DatagramSocket;
-	@:noCompletion private var __onData:ByteArrayInput->Void = __noopData;
-	@:noCompletion private var __onClose:Reason->Void = __noopClose;
-	@:noCompletion private var __onError:Reason->Void = __noopError;
-	@:noCompletion private var __onReady:Void->Void = __noopReady;
-	@:noCompletion private var __receiving:Bool = false;
-	@:noCompletion private var __lifecycleReady:Bool = false;
-
-	@:noCompletion private inline function get_remoteAddress():String {
-		return __socket.remoteAddress;
-	}
-
-	@:noCompletion private inline function get_remotePort():Int {
-		return __socket.remotePort;
-	}
-
-	@:noCompletion private inline function get_localAddress():String {
-		return __socket.localAddress;
-	}
-
-	@:noCompletion private inline function get_localPort():Int {
-		return __socket.localPort;
-	}
-
-	@:noCompletion private inline function get_connected():Bool {
-		return __socket.connected;
-	}
-
-	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
-		return __onData;
-	}
-
-	@:noCompletion private inline function get_onClose():Reason->Void {
-		return __onClose;
-	}
-
-	@:noCompletion private inline function get_onError():Reason->Void {
-		return __onError;
-	}
-
-	@:noCompletion private inline function get_onReady():Void->Void {
-		return __onReady;
-	}
-
-	@:noCompletion private inline function set_onData(v:ByteArrayInput->Void):ByteArrayInput->Void {
-		__onData = (v != null) ? v : __noopData;
-		return __onData;
-	}
-
-	@:noCompletion private inline function set_onClose(v:Reason->Void):Reason->Void {
-		__onClose = (v != null) ? v : __noopClose;
-		return __onClose;
-	}
-
-	@:noCompletion private inline function set_onError(v:Reason->Void):Reason->Void {
-		__onError = (v != null) ? v : __noopError;
-		return __onError;
-	}
-
-	@:noCompletion private inline function set_onReady(v:Void->Void):Void->Void {
-		__onReady = (v != null) ? v : __noopReady;
-		return __onReady;
-	}
-
-	@:noCompletion private inline function set_readEnabled(v:Bool):Bool {
-		if (v == __receiving) {
-			return v;
-		}
-
-		__receiving = v;
-		if (v) {
-			__socket.addEventListener(DatagramSocketDataEvent.DATA, socket_onData);
-			__socket.receive();
-		} else {
-			__socket.removeEventListener(DatagramSocketDataEvent.DATA, socket_onData);
-			__socket.stopReceiving();
-		}
-
-		return v;
-	}
-
-	@:noCompletion private inline function get_readEnabled():Bool {
-		return __receiving;
-	}
-
-	private function new(socket:DatagramSocket) {
-		protocol = UDP;
-		this.__socket = socket;
-		__prepareLifecycle();
-	}
-
-	public inline function expose():Transport {
-		return UDP(__socket);
-	}
-
-	public function send(data:ByteArray):Void {
-		__socket.send(data);
-		var runtime = CrossByte.current();
-		outTimestamp = runtime != null ? runtime.uptime : 0.0;
-	}
-
-	public function close():Void {
-		readEnabled = false;
-		__disposeLifecycle();
-		__onClose(Reason.Closed);
-		__socket.close();
-	}
-
-	@:noCompletion private inline function __notifyReadyIfUsable():Void {
-		if (__socket != null) {
-			__onReady();
-		}
-	}
-
-	@:noCompletion private inline function socket_onData(event:DatagramSocketDataEvent):Void {
-		inTimestamp = CrossByte.current().uptime;
-		event.data.position = 0;
-		__onData(event.data);
-	}
-
-	@:noCompletion private inline function socket_onClose(_e:Event):Void {
-		readEnabled = false;
-		__onClose(Reason.Closed);
-	}
-
-	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
-		readEnabled = false;
-		__onError(Reason.Error(e.text));
-	}
-
-	@:noCompletion private inline function __prepareLifecycle():Void {
-		if (__lifecycleReady || __socket == null) {
-			return;
-		}
-
-		__lifecycleReady = true;
-		__socket.addEventListener(Event.CLOSE, socket_onClose);
-		__socket.addEventListener(IOErrorEvent.IO_ERROR, socket_onIoError);
-	}
-
-	@:noCompletion private inline function __disposeLifecycle():Void {
-		if (!__lifecycleReady || __socket == null) {
-			return;
-		}
-
-		__lifecycleReady = false;
-		__socket.removeEventListener(Event.CLOSE, socket_onClose);
-		__socket.removeEventListener(IOErrorEvent.IO_ERROR, socket_onIoError);
 	}
 
 	@:noCompletion private static inline function __noopReady():Void {}

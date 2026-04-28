@@ -3,6 +3,7 @@ package crossbyte.io;
 // import cpp.zip.Compress;
 // import cpp.zip.Uncompress;
 import haxe.Int64;
+import crossbyte._internal.brotli.Brotli;
 import crossbyte._internal.lz4.Lz4;
 import crossbyte._internal.deflatex.Deflater;
 import crossbyte._internal.deflatex.GZCompressor;
@@ -51,7 +52,7 @@ import format.amf3.Writer as AMF3Writer;
 	type. To check if an object is a ByteArray at runtime, import the ByteArray
 	type, then compare with ByteArrayData, such as `Std.is (ba, ByteArrayData)`.
 	Compression support is limited to the algorithms available in
-	`CompressionAlgorithm`: `deflate`, `gzip`, and `lz4`.
+	`CompressionAlgorithm`: `br`, `deflate`, `gzip`, and `lz4`.
 	Possible uses of the ByteArray class include the following:
 	* Creating a custom protocol to connect to a server.
 	* Writing your own URLEncoder/URLDecoder.
@@ -851,6 +852,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			#end */
 
 		var bytes:Bytes = switch (algorithm) {
+			case CompressionAlgorithm.BROTLI: Brotli.compress(this);
 			case CompressionAlgorithm.DEFLATE: Deflater.apply(this);
 			case CompressionAlgorithm.GZIP: GZCompressor.compress("data", this);
 			case CompressionAlgorithm.LZ4: Lz4.compress(this);
@@ -1210,6 +1212,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			position = 0; */
 
 		var bytes:Bytes = switch (algorithm) {
+			case CompressionAlgorithm.BROTLI: Brotli.decompress(this);
 			case CompressionAlgorithm.DEFLATE: Inflater.apply(this);
 			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this);
 			case CompressionAlgorithm.LZ4: Lz4.decompress(this);
