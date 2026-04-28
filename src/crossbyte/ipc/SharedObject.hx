@@ -6,13 +6,13 @@ import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.io.Bytes;
 import haxe.io.BytesData;
-#if (cpp && (windows || linux || mac || macos))
+#if cpp
 import crossbyte.ipc._internal.NativeSharedObject;
 import crossbyte.ipc._internal.VoidPointer;
 import cpp.Pointer;
 #end
 
-#if (cpp && (windows || linux || mac || macos))
+#if cpp
 private typedef SharedObjectHandle = VoidPointer;
 #else
 private typedef SharedObjectHandle = Dynamic;
@@ -24,11 +24,11 @@ private typedef SharedObjectHandle = Dynamic;
  * This class allows multiple processes to read/write structured values in the same
  * memory-mapped region by name.
  */
-#if (cpp && (windows || linux || mac || macos))
+#if cpp
 @:access(crossbyte.ipc._internal.NativeSharedObject)
 #end
 class SharedObject {
-	public static inline var isSupported:Bool = #if (cpp && (windows || linux || mac || macos)) true #else false #end;
+	public static inline var isSupported:Bool = #if cpp true #else false #end;
 
 	/** Shared region name used to identify the underlying memory mapping. */
 	public var name(default, null):String;
@@ -161,7 +161,7 @@ class SharedObject {
 	}
 
 	@:noCompletion private static function __open(name:String, maxSize:Int):SharedObjectHandle {
-		#if (cpp && (windows || linux || mac || macos))
+		#if cpp
 		return NativeSharedObject.__open(name, maxSize);
 		#else
 		return null;
@@ -169,13 +169,13 @@ class SharedObject {
 	}
 
 	@:noCompletion private static function __close(handle:SharedObjectHandle):Void {
-		#if (cpp && (windows || linux || mac || macos))
+		#if cpp
 		NativeSharedObject.__close(handle);
 		#end
 	}
 
 	@:noCompletion private static function __read(handle:SharedObjectHandle, buffer:BytesData, size:Int):Int {
-		#if (cpp && (windows || linux || mac || macos))
+		#if cpp
 		return NativeSharedObject.__read(handle, Pointer.ofArray(buffer), size);
 		#else
 		return -1;
@@ -183,7 +183,7 @@ class SharedObject {
 	}
 
 	@:noCompletion private static function __write(handle:SharedObjectHandle, buffer:BytesData, size:Int):Bool {
-		#if (cpp && (windows || linux || mac || macos))
+		#if cpp
 		return NativeSharedObject.__write(handle, Pointer.ofArray(buffer), size);
 		#else
 		return false;
@@ -191,13 +191,13 @@ class SharedObject {
 	}
 
 	@:noCompletion private static function __clear(handle:SharedObjectHandle):Void {
-		#if (cpp && (windows || linux || mac || macos))
+		#if cpp
 		NativeSharedObject.__clear(handle);
 		#end
 	}
 
 	@:noCompletion private static function __readPayloadLength(handle:SharedObjectHandle):Int {
-		#if (cpp && (windows || linux || mac || macos))
+		#if cpp
 		return NativeSharedObject.__getDataLength(handle);
 		#else
 		return 0;
@@ -205,7 +205,7 @@ class SharedObject {
 	}
 
 	@:noCompletion private static function __getCapacity(handle:SharedObjectHandle):Int {
-		#if (cpp && (windows || linux || mac || macos))
+		#if cpp
 		return NativeSharedObject.__getCapacity(handle);
 		#else
 		return 0;

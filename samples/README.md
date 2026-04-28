@@ -40,3 +40,27 @@ Useful commands from `samples/rpc-greeter`:
 haxe check.hxml
 haxe cpp.hxml
 ```
+
+## LocalConnection
+
+`localconnection` demonstrates CrossByte's local named-pipe IPC API with
+`demo`, `listen`, and `send` modes.
+
+Useful commands from `samples/localconnection`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
+## SharedObject
+
+`sharedobject` demonstrates CrossByte's shared-memory IPC API with `demo`,
+`write`, and `read` modes.
+
+Useful commands from `samples/sharedobject`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
