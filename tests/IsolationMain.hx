@@ -5,11 +5,23 @@ class IsolationMain {
 			#if subset_auth
 			crossbyte.test.TestSuites.addAuth(runner);
 			#end
+			#if subset_auth_support
+			runner.addCase(new crossbyte.auth.AuthSupportTest());
+			#end
+			#if subset_auth_jwt
+			runner.addCase(new crossbyte.auth.jwt.JWTTest());
+			#end
 			#if subset_foundation
 			crossbyte.test.TestSuites.addFoundation(runner);
 			#end
 			#if subset_ds
 			crossbyte.test.TestSuites.addDataStructures(runner);
+			#end
+			#if subset_ds_array2d
+			runner.addCase(new crossbyte.ds.Array2DTest());
+			#end
+			#if subset_ds_collections
+			runner.addCase(new crossbyte.ds.CollectionsTest());
 			#end
 			#if subset_math
 			crossbyte.test.TestSuites.addMath(runner);
