@@ -46,6 +46,27 @@ class SocketTest extends utest.Test {
 		Assert.equals(1, connectedEvents);
 	}
 
+	public function testConnectEventIsReusedAcrossDispatches():Void {
+		var socket = new Socket();
+		var first = null;
+		var second = null;
+		var count = 0;
+		socket.addEventListener(Event.CONNECT, event -> {
+			count++;
+			if (count == 1) {
+				first = event;
+			} else if (count == 2) {
+				second = event;
+			}
+		});
+
+		socket.socket_onOpen(null);
+		socket.socket_onOpen(null);
+
+		Assert.notNull(first);
+		Assert.equals(first, second);
+	}
+
 	public function testWriteWithoutRuntimeBuffersButDoesNotCrash():Void {
 		var socket = new Socket();
 		socket.__socket = new SysSocket();
@@ -127,6 +148,28 @@ class SocketTest extends utest.Test {
 
 		Assert.equals(0, socket.bytesPending);
 		Assert.isFalse(socket.__isDirty);
+	}
+
+	public function testSocketDataEventIsReusedAcrossDispatches():Void {
+		var socket = new Socket();
+		var first:ProgressEvent = null;
+		var second:ProgressEvent = null;
+		var count = 0;
+		socket.addEventListener(ProgressEvent.SOCKET_DATA, event -> {
+			count++;
+			if (count == 1) {
+				first = event;
+			} else if (count == 2) {
+				second = event;
+			}
+		});
+
+		socket.__dispatchPooledSocketData(4, 0);
+		socket.__dispatchPooledSocketData(8, 0);
+
+		Assert.notNull(first);
+		Assert.equals(first, second);
+		Assert.equals(8, second.bytesLoaded);
 	}
 
 	public function testClientServerEchoOverLocalhost():Void {
