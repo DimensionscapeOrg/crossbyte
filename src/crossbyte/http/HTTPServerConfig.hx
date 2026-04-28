@@ -50,6 +50,7 @@ class HTTPServerConfig {
 		this.whitelist = whitelist == null ? [] : whitelist;
 		this.blacklist = blacklist == null ? [] : blacklist;
 		this.customHeaders = customHeaders == null ? [] : customHeaders;
+		this.middleware = middleware == null ? [] : middleware;
 		this.rateLimiter = rateLimiter == null ? new RateLimiter() : rateLimiter;
 		this.corsEnabled = corsEnabled;
 		this.corsAllowedOrigins = corsAllowedOrigins == null ? ["*"] : corsAllowedOrigins;
@@ -77,4 +78,4 @@ class HTTPServerConfig {
 	}
 }
 
-typedef Middleware = (HTTPRequestHandler, Dynamic->Void) -> Void;
+typedef Middleware = (HTTPRequestHandler, ?Dynamic->Void) -> Void;
