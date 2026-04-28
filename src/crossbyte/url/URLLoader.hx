@@ -134,7 +134,7 @@ class URLLoader extends EventDispatcher {
 				}
 			}
 
-			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, HTTP_1_1, request.idleTimeout,
+			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, request.httpVersion, request.idleTimeout,
 				request.userAgent, request.followRedirects);
 
 			function onComplete(dataBytes:Bytes):Void {
@@ -144,7 +144,7 @@ class URLLoader extends EventDispatcher {
 				var obj = {type: "progress", value: {bytesLoaded: loaded, bytesTotal: total}};
 				__loaderWorker.sendProgress(obj);
 			}
-			function onError(msg:String, dataBytes:Bytes):Void {
+			function onError(msg:String, ?dataBytes:Bytes):Void {
 				var errorMessage = {
 					"msg":msg,
 					"dataBytes":dataBytes
