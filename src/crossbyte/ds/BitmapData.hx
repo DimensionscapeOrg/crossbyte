@@ -35,6 +35,7 @@ class BitmapData {
 	}
 
 	public function getPixel(x:Int, y:Int):Int {
+		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
 			throw "Pixel out of bounds";
 		}
@@ -42,6 +43,7 @@ class BitmapData {
 	}
 
 	public function setPixel(x:Int, y:Int, color:Int):Void {
+		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
 			throw "Pixel out of bounds";
 		}
@@ -50,6 +52,7 @@ class BitmapData {
 	}
 
 	public function getPixel32(x:Int, y:Int):Int {
+		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
 			throw "Pixel out of bounds";
 		}
@@ -57,6 +60,7 @@ class BitmapData {
 	}
 
 	public function setPixel32(x:Int, y:Int, color:Int):Void {
+		__ensureNotDisposed();
 		if (x < 0 || x >= width || y < 0 || y >= height) {
 			throw "Pixel out of bounds";
 		}
@@ -71,6 +75,7 @@ class BitmapData {
 	}
 
 	public function fillRect(rect:Rectangle, color:Int):Void {
+		__ensureNotDisposed();
 		for (y in Std.int(rect.y)...Std.int(rect.y + rect.height)) {
 			for (x in Std.int(rect.x)...Std.int(rect.x + rect.width)) {
 				setPixel32(x, y, color);
@@ -79,6 +84,7 @@ class BitmapData {
 	}
 
 	public function clone():BitmapData {
+		__ensureNotDisposed();
 		var clone = new BitmapData(width, height, transparent);
 		for (i in 0...pixels.length) {
 			clone.pixels[i] = pixels[i];
@@ -87,6 +93,7 @@ class BitmapData {
 	}
 
 	public function toByteArray():ByteArray {
+		__ensureNotDisposed();
 		var byteArray = new ByteArray();
 		for (i in 0...pixels.length) {
 			var color = pixels[i];
@@ -111,6 +118,8 @@ class BitmapData {
 	}
 
 	public function copyPixels(sourceBitmap:BitmapData, sourceRect:Rectangle, destPoint:Point):Void {
+		__ensureNotDisposed();
+		sourceBitmap.__ensureNotDisposed();
 		for (y in 0...Std.int(sourceRect.height)) {
 			for (x in 0...Std.int(sourceRect.width)) {
 				var sourceColor = sourceBitmap.getPixel32(Std.int(sourceRect.x + x), Std.int(sourceRect.y + y));
@@ -120,6 +129,7 @@ class BitmapData {
 	}
 
 	public function getColorBoundsRect(mask:Int, color:Int, findColor:Bool = true):Rectangle {
+		__ensureNotDisposed();
 		var xMin = width, xMax = 0, yMin = height, yMax = 0;
 		var found = false;
 		for (y in 0...height) {
@@ -146,6 +156,8 @@ class BitmapData {
 
 	public function threshold(sourceBitmap:BitmapData, sourceRect:Rectangle, destPoint:Point, operation:String, threshold:Int, color:Int = 0,
 			mask:Int = 0xFFFFFFFF, copySource:Bool = false):Int {
+		__ensureNotDisposed();
+		sourceBitmap.__ensureNotDisposed();
 		var hits = 0;
 		for (y in 0...Std.int(sourceRect.height)) {
 			for (x in 0...Std.int(sourceRect.width)) {
@@ -183,5 +195,12 @@ class BitmapData {
 			}
 		}
 		return hits;
+	}
+
+	@:noCompletion
+	private inline function __ensureNotDisposed():Void {
+		if (pixels == null) {
+			throw "BitmapData has been disposed";
+		}
 	}
 }
