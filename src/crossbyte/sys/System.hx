@@ -218,7 +218,7 @@ class System {
 
 	@:noCompletion private static inline function get_desktopDir():String {
 		if (__desktopDirPath == null) {
-			__documentsDirPath = userDir + File.separator + "Desktop";
+			__desktopDirPath = userDir + File.separator + "Desktop";
 		}
 
 		return __desktopDirPath;
