@@ -6,6 +6,7 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import crossbyte.net.Socket;
+import crossbyte.utils.CompressionAlgorithm;
 import haxe.Timer;
 import utest.Assert;
 
@@ -145,6 +146,103 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals(405, response.status);
 	}
 
+	public function testMiddlewareCanReadGzipRequestBody():Void {
+		var bodyText:String = null;
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello world");
+		body.compress(CompressionAlgorithm.GZIP);
+
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: ${body.length}\r\n\r\n', null, false, body);
+
+		Assert.equals("hello world", bodyText);
+		Assert.equals(405, response.status);
+	}
+
+	public function testMiddlewareCanReadDeflateRequestBody():Void {
+		var bodyText:String = null;
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello world");
+		body.compress(CompressionAlgorithm.DEFLATE);
+
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: deflate\r\nContent-Length: ${body.length}\r\n\r\n', null, false, body);
+
+		Assert.equals("hello world", bodyText);
+		Assert.equals(405, response.status);
+	}
+
+	public function testUnsupportedRequestContentEncodingReturns415AndSkipsRouting():Void {
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello world");
+		var middlewareCalled = false;
+
+		var response = __sendRequest([
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				middlewareCalled = true;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: br\r\nContent-Length: ${body.length}\r\n\r\n', null, false, body);
+
+		Assert.equals(415, response.status);
+		Assert.equals("Unsupported Content-Encoding: br", response.body);
+		Assert.isFalse(middlewareCalled);
+	}
+
+	public function testResponseCompressionNegotiatesGzip():Void {
+		var response = __sendRequest([], 'GET /index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\n\r\n', null, true);
+
+		Assert.equals(200, response.status);
+		Assert.equals("gzip", response.headers.get("content-encoding"));
+
+		var decompressed = new ByteArray();
+		decompressed.writeBytes(response.bodyBytes, 0, response.bodyBytes.length);
+		decompressed.uncompress(CompressionAlgorithm.GZIP);
+		Assert.equals("Hello from middleware test", decompressed.toString());
+		Assert.notEquals("Hello from middleware test", response.body);
+	}
+
+	public function testWildcardNegotiationDoesNotReviveExplicitlyRejectedGzip():Void {
+		var response = __sendRequest([], 'GET /index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip;q=0, *;q=1\r\n\r\n', null, true);
+
+		Assert.equals(200, response.status);
+		Assert.equals("deflate", response.headers.get("content-encoding"));
+
+		var decompressed = new ByteArray();
+		decompressed.writeBytes(response.bodyBytes, 0, response.bodyBytes.length);
+		decompressed.uncompress(CompressionAlgorithm.DEFLATE);
+		Assert.equals("Hello from middleware test", decompressed.toString());
+	}
+
+	public function testResponseCompressionCanNegotiateLz4():Void {
+		var response = __sendRequest([], 'GET /index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: lz4\r\n\r\n', null, true);
+
+		Assert.equals(200, response.status);
+		Assert.equals("lz4", response.headers.get("content-encoding"));
+
+		var decompressed = new ByteArray();
+		decompressed.writeBytes(response.bodyBytes, 0, response.bodyBytes.length);
+		decompressed.uncompress(CompressionAlgorithm.LZ4);
+		Assert.equals("Hello from middleware test", decompressed.toString());
+	}
+
+	public function testRangeResponseSkipsCompressionNegotiation():Void {
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nRange: bytes=6-9\r\nAccept-Encoding: gzip\r\n\r\n");
+
+		Assert.equals(206, response.status);
+		Assert.equals("from", response.body);
+		Assert.isNull(response.headers.get("content-encoding"));
+		Assert.equals("4", response.headers.get("content-length"));
+	}
+
 	public function testExpectContinueSendsInterimResponseAndReadsBody():Void {
 		var bodyText:String = null;
 		var response = __sendRequest([
@@ -252,7 +350,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals("GET, HEAD, OPTIONS, POST", response.headers.get("allow"));
 	}
 
-	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false):HTTPTestResponse {
+	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
@@ -265,9 +363,13 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var rawResponse = "";
 		var closeSeen = false;
 		var response:HTTPTestResponse = null;
+		var rawResponseBytes = new ByteArray();
 
 		client.addEventListener(Event.CONNECT, _ -> {
 			client.writeUTFBytes(requestText);
+			if (requestBody != null) {
+				client.writeBytes(requestBody, 0, requestBody.length);
+			}
 			client.flush();
 			if (secondChunk != null) {
 				Timer.delay(function() {
@@ -280,7 +382,12 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 			if (client.bytesAvailable > 0) {
-				rawResponse += client.readUTFBytes(client.bytesAvailable);
+				var chunk:ByteArray = new ByteArray();
+				client.readBytes(chunk, 0, client.bytesAvailable);
+				rawResponseBytes.writeBytes(chunk, 0, chunk.length);
+				for (i in 0...chunk.length) {
+					rawResponse += String.fromCharCode(chunk[i]);
+				}
 			}
 		});
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
@@ -289,7 +396,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		try {
 			client.connect("127.0.0.1", server.localPort);
 			__pumpUntil(() -> closeSeen || __isResponseComplete(rawResponse), 2.0);
-			response = __parseResponse(rawResponse);
+			response = __parseResponse(rawResponse, rawResponseBytes);
 			try {
 				client.close();
 			} catch (_:Dynamic) {}
@@ -332,8 +439,26 @@ class HTTPRequestHandlerTest extends utest.Test {
 		return false;
 	}
 
-	private static function __parseResponse(raw:String):HTTPTestResponse {
+	private static function __parseResponse(raw:String, rawBytes:ByteArray):HTTPTestResponse {
 		var originalRaw = raw;
+		var parseText = raw;
+		var parseBytes = rawBytes;
+		while (parseText.indexOf("HTTP/1.1 100 ") == 0 || parseText.indexOf("HTTP/1.0 100 ") == 0) {
+			var interimEnd = parseText.indexOf("\r\n\r\n");
+			if (interimEnd < 0) {
+				break;
+			}
+			var drop = interimEnd + 4;
+			parseText = parseText.substr(drop);
+			if (parseBytes != null) {
+				var next = new ByteArray();
+				if (parseBytes.length > drop) {
+					next.writeBytes(parseBytes, drop, parseBytes.length - drop);
+				}
+				parseBytes = next;
+			}
+		}
+
 		while (raw.indexOf("HTTP/1.1 100 ") == 0 || raw.indexOf("HTTP/1.0 100 ") == 0) {
 			var interimEnd = raw.indexOf("\r\n\r\n");
 			if (interimEnd < 0) {
@@ -342,8 +467,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 			raw = raw.substr(interimEnd + 4);
 		}
 
-		var lineEnd = raw.indexOf("\r\n");
-		var statusLine = raw.substr(0, lineEnd);
+		var lineEnd = parseText.indexOf("\r\n");
+		var statusLine = parseText.substr(0, lineEnd);
 		var status = 0;
 		if (statusLine != null && statusLine.length >= 12) {
 			status = Std.parseInt(statusLine.substr(9, 3));
@@ -351,22 +476,29 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 		var body = "";
 		var headers:Map<String, String> = new Map();
-		var headerEnd = raw.indexOf("\r\n\r\n");
+		var headerEnd = parseText.indexOf("\r\n\r\n");
 		if (headerEnd >= 0) {
-			var headerLines = raw.substr(lineEnd + 2, headerEnd - lineEnd - 2).split("\r\n");
+			var headerLines = parseText.substr(lineEnd + 2, headerEnd - lineEnd - 2).split("\r\n");
 			for (line in headerLines) {
 				var separator = line.indexOf(":");
 				if (separator > 0) {
 					headers.set(StringTools.trim(line.substr(0, separator)).toLowerCase(), StringTools.trim(line.substr(separator + 1)));
 				}
 			}
-			body = raw.substr(headerEnd + 4);
+			body = parseText.substr(headerEnd + 4);
+		}
+
+		var responseBody = new ByteArray();
+		if (parseBytes != null && headerEnd >= 0 && parseBytes.length >= (headerEnd + 4)) {
+			var bodyStart:Int = headerEnd + 4;
+			responseBody.writeBytes(parseBytes, bodyStart, parseBytes.length - bodyStart);
 		}
 
 		return {
 			status: status,
 			headers: headers,
 			body: body,
+			bodyBytes: responseBody,
 			raw: originalRaw
 		};
 	}
@@ -385,5 +517,6 @@ typedef HTTPTestResponse = {
 	var status:Int;
 	var headers:Map<String, String>;
 	var body:String;
+	var bodyBytes:ByteArray;
 	var raw:String;
 }
