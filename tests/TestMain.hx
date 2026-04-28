@@ -28,7 +28,9 @@ class TestMain {
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
+		#if cpp
 		runner.addCase(new crossbyte.net.SocketTest());
+		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte.resources.ResourcesTest());
 		runner.addCase(new crossbyte.timer.TimerHeapTest());
