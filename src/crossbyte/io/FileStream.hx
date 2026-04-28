@@ -1414,6 +1414,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			case APPEND:
 				try {
 					__output = HaxeFile.append(__file.nativePath, true);
+					__output.seek(0, sys.io.FileSeek.SeekEnd);
 					__isWrite = true;
 				} catch (d:Dynamic) {
 					throw new IOError("Invalid parameters.");
@@ -1437,6 +1438,11 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 		if (__input != null) {
 			__input.bigEndian = true;
+		}
+
+		if (!__isAsync) {
+			position = (__fileMode == APPEND) ? __file.size : __getSynchronousPosition();
+			__positionDirty = false;
 		}
 	}
 
