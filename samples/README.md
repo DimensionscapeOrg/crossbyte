@@ -64,3 +64,38 @@ Useful commands from `samples/sharedobject`:
 haxe check.hxml
 haxe cpp.hxml
 ```
+
+## Simple Application
+
+`simple-application` demonstrates the smallest primordial CrossByte app shape
+with `Application`, `init`, `tick`, and clean shutdown.
+
+Useful commands from `samples/simple-application`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
+## UDP
+
+`udp` demonstrates localhost datagram send/receive with `DatagramSocket`.
+
+Useful commands from `samples/udp`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
+## RUDP
+
+`rudp` demonstrates localhost reliable datagram handshake and echo with
+`ReliableDatagramServerSocket` and `ReliableDatagramSocket`.
+
+Useful commands from `samples/rudp`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
