@@ -7,10 +7,13 @@ import crossbyte.events.StatusEvent;
 import crossbyte.Object;
 import haxe.Unserializer;
 import haxe.Serializer;
-#if (cpp && windows)
+#if (cpp && (windows || linux || mac || macos))
 import cpp.Pointer;
 import crossbyte.ipc._internal.NativeLocalConnection;
+#if windows
 import crossbyte.ipc._internal.win.HANDLE;
+#end
+import crossbyte.ipc._internal.VoidPointer;
 #end
 import haxe.io.Bytes;
 import haxe.io.BytesData;
@@ -18,8 +21,12 @@ import crossbyte.sys.Worker;
 import sys.thread.Deque;
 import crossbyte.events.EventDispatcher;
 
-#if (cpp && windows)
+#if (cpp && (windows || linux || mac || macos))
+#if windows
 private typedef LocalConnectionHandle = HANDLE;
+#else
+private typedef LocalConnectionHandle = VoidPointer;
+#end
 #else
 private typedef LocalConnectionHandle = Dynamic;
 #end
@@ -36,11 +43,11 @@ private typedef LocalConnectionHandle = Dynamic;
  *
  */
 @:access(haxe.Serializer)
-#if (cpp && windows)
+#if (cpp && (windows || linux || mac || macos))
 @:access(crossbyte.ipc._internal.NativeLocalConnection)
 #end
 class LocalConnection extends EventDispatcher {
-	public static inline var isSupported:Bool = #if (cpp && windows) true #else false #end;
+	public static inline var isSupported:Bool = #if (cpp && (windows || linux || mac || macos)) true #else false #end;
 
 	/**
 	 * The object that handles incoming messages.
@@ -208,7 +215,7 @@ class LocalConnection extends EventDispatcher {
 
 	/** Writes data to a named pipe */
 	@:noCompletion private static function __write(pipe:LocalConnectionHandle, data:BytesData, size:Int):Bool {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		return NativeLocalConnection.__write(pipe, Pointer.ofArray(data), size);
 		#else
 		return false;
@@ -217,7 +224,7 @@ class LocalConnection extends EventDispatcher {
 
 	/** Connects to an outbound pipe */
 	@:noCompletion private static function __connect(name:String):LocalConnectionHandle {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		return NativeLocalConnection.__connect(name);
 		#else
 		return null;
@@ -226,7 +233,7 @@ class LocalConnection extends EventDispatcher {
 
 	/** Creates an inbound pipe (server) */
 	@:noCompletion private static function __createInboundPipe(name:String):LocalConnectionHandle {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		return NativeLocalConnection.__createInboundPipe(name);
 		#else
 		return null;
@@ -235,7 +242,7 @@ class LocalConnection extends EventDispatcher {
 
 	/** Accepts a new client connection */
 	@:noCompletion private static function __accept(pipe:LocalConnectionHandle):Bool {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		return NativeLocalConnection.__accept(pipe);
 		#else
 		return false;
@@ -243,7 +250,7 @@ class LocalConnection extends EventDispatcher {
 	}
 
 	@:noCompletion private static function __isOpen(pipe:LocalConnectionHandle):Bool {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		return NativeLocalConnection.__isOpen(pipe);
 		#else
 		return false;
@@ -252,7 +259,7 @@ class LocalConnection extends EventDispatcher {
 
 	/** Reads from the named pipe */
 	@:noCompletion private static function __read(pipe:LocalConnectionHandle, buffer:BytesData, size:Int):Int {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		return NativeLocalConnection.__read(pipe, Pointer.ofArray(buffer), size);
 		#else
 		return -1;
@@ -261,7 +268,7 @@ class LocalConnection extends EventDispatcher {
 
 	/** Gets available bytes in the pipe */
 	@:noCompletion private static function __getBytesAvailable(pipe:LocalConnectionHandle):Int {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		return NativeLocalConnection.__getBytesAvailable(pipe);
 		#else
 		return 0;
@@ -270,7 +277,7 @@ class LocalConnection extends EventDispatcher {
 
 	/** Closes a named pipe */
 	@:noCompletion private static function __close(pipe:LocalConnectionHandle):Void {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		NativeLocalConnection.__close(pipe);
 		#end
 	}
@@ -446,7 +453,7 @@ class LocalConnection extends EventDispatcher {
 
 	@:noCompletion private static inline function __requireSupported():Void {
 		if (!isSupported) {
-			throw new ArgumentError("LocalConnection is only supported on native Windows cpp targets.");
+			throw new ArgumentError("LocalConnection is only supported on native cpp targets.");
 		}
 	}
 }
