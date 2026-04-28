@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/rpc-greeter
+-main RPCGreeterSample
+--cpp export/rpc-greeter
