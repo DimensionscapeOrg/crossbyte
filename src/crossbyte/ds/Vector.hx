@@ -8,9 +8,9 @@ import crossbyte.Object;
  * @author Christopher Speciale
  */
 class Vector<T> implements ArrayAccess<T> {
-	private static function __fromArray<T>(arr:T):Vector<Dynamic> {
-		var vec:Vector<Dynamic> = new Vector();
-		vec.__array = cast arr;
+	private static function __fromArray<T>(arr:Array<T>):Vector<T> {
+		var vec:Vector<T> = new Vector();
+		vec.__array = arr;
 
 		return vec;
 	}
@@ -114,8 +114,9 @@ class Vector<T> implements ArrayAccess<T> {
 	public inline function splice(startIndex:Int, deleteCount:UInt = 2147483647, ...items):Vector<T> {
 		var vec:Vector<T> = __fromArray(__array.splice(startIndex, deleteCount));
 
+		var insertIndex:Int = startIndex;
 		for (item in items) {
-			__array.insert(startIndex, item);
+			__array.insert(insertIndex++, cast item);
 		}
 
 		return vec;
