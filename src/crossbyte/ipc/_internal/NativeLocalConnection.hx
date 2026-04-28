@@ -1,17 +1,21 @@
 package crossbyte.ipc._internal;
 
 import cpp.Pointer;
-import haxe.io.Bytes;
-import haxe.io.BytesData;
 import crossbyte.ipc._internal.win.HANDLE;
-import cpp.RawPointer;
 import cpp.UInt8;
 
 /**
  * ...
  * @author Christopher Speciale
  */
-@:include('./NativeLocalConnection.cpp')
+@:buildXml("
+<files id='haxe'>
+	<file name='../../src/crossbyte/ipc/_internal/NativeLocalConnection.cpp' if='windows'>
+		<depend name='../../src/crossbyte/ipc/_internal/NativeLocalConnection.h'/>
+	</file>
+</files>
+")
+@:include("../../../../src/crossbyte/ipc/_internal/NativeLocalConnection.h")
 extern class NativeLocalConnection {
 	@:native('native_createInboundPipe') private static function __createInboundPipe(name:String):HANDLE;
 	@:native('native_accept') private static function __accept(pipe:HANDLE):Bool;
