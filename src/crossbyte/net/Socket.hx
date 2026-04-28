@@ -284,6 +284,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		__host = host;
 		__port = port;
+		__connected = false;
+		__closed = false;
+		__isDirty = false;
+		flushFull = false;
 
 		__output = new ByteArray();
 		__output.endian = __endian;
@@ -313,18 +317,40 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#else
 		__socket = new SysSocket();
 		@:privateAccess
+		__cbInstance = CrossByte.current();
+		if (__cbInstance == null) {
+			__cleanupFailedConnect();
+			throw "Socket can only be initiated in a CrossByte threaded instance";
+		}
+
+		var isPendingConnect = false;
 		try {
 			__socket.setBlocking(false);
 			__socket.connect(h, port);
-			__socket.setFastSend(true);
-			__socket.custom = this;
-			__cbInstance = CrossByte.current();
-			if (__cbInstance == null) {
-				throw "Socket can only be initiated in a CrossByte threaded instance";
-			} else {
-				__startConnecting();
+		} catch (e:Error) {
+			if (!__isBlockedError(e)) {
+				__cleanupFailedConnect();
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+				return;
 			}
-		} catch (e:Dynamic) {}
+			isPendingConnect = true;
+		} catch (e:Dynamic) {
+			__cleanupFailedConnect();
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+			return;
+		}
+
+		__socket.setFastSend(true);
+		__socket.custom = this;
+
+		if (isPendingConnect) {
+			__startConnecting();
+		} else {
+			__connected = true;
+			@:privateAccess
+			__cbInstance.registerSocket(__socket);
+			dispatchEvent(new Event(Event.CONNECT));
+		}
 		#end
 	}
 
@@ -357,21 +383,27 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					buffer = buffer.slice(0, __output.length);
 				__socket.send(buffer);
 				#else
-				__socket.output.writeBytes(__output, 0, __output.length);
-				// TODO: We have fastsend set, do we need to call flush?
-				__socket.output.flush();
-				__isDirty = false;
+				var pendingLength = __output.length;
+				var bytesWritten = __socket.output.writeBytes(__output, 0, pendingLength);
+				if (bytesWritten >= pendingLength) {
+					__isDirty = false;
+					__output.clear();
+				} else {
+					var remaining = new ByteArray();
+					remaining.endian = __endian;
+					remaining.writeBytes(__output, bytesWritten, pendingLength - bytesWritten);
+					__output = remaining;
+					__isDirty = false;
+					__queueWrite();
+				}
 				#end
-				__output.clear();
 			} catch (e:Dynamic) {
 				var throwError = false;
-				switch (e) {
-					case Error.Blocked:
-						flushFull = true;
-						Timer.delay(__tryFlush, 0);
-					case Error.Custom(Error.Blocked):
-					default:
-						throwError = true;
+				if (Std.isOfType(e, Error) && __isBlockedError(cast e)) {
+					flushFull = true;
+					Timer.delay(__tryFlush, 0);
+				} else {
+					throwError = true;
 				}
 				if (throwError) {
 					throw new IOError("Operation attempted on invalid socket.");
@@ -519,6 +551,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						 not open.
 	**/
 	public function readObject():Dynamic {
+		if (__socket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
 		if (objectEncoding == HXSF) {
 			return Unserializer.run(readUTF());
 		} else {
@@ -621,6 +657,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	public function readVarUInt():Int {
+		if (__socket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
 		return __input.readVarInt();
 	}
 
@@ -759,6 +799,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						not open.
 	**/
 	public function writeObject(object:Dynamic):Void {
+		if (__socket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
 		if (objectEncoding == HXSF) {
 			__output.writeUTF(Serializer.run(object));
 			__queueWrite();
@@ -845,11 +889,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		__stopConnecting();
 
-		@:privateAccess
-		__cbInstance.deregisterSocket(this.__socket);
+		if (__cbInstance != null) {
+			@:privateAccess
+			__cbInstance.deregisterSocket(this.__socket);
+		}
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
+		__isDirty = false;
+		flushFull = false;
 		#if js
 		CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
 		#else
@@ -858,7 +906,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private inline function __stopConnecting():Void {
-		if (__isConnecting) {
+		if (__isConnecting && __cbInstance != null) {
 			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
 			__isConnecting = false;
 		}
@@ -875,6 +923,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private inline function __queueWrite():Void {
+		if (__cbInstance == null) {
+			return;
+		}
 		if (__isDirty == false) {
 			__isDirty = true;
 			@:privateAccess
@@ -925,6 +976,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private function socket_onOpen(_):Void {
 		__connected = true;
+		__closed = false;
 		dispatchEvent(new Event(Event.CONNECT));
 	}
 
@@ -934,13 +986,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			flush();
 		}
 		#else
+		if (__socket == null) {
+			return;
+		}
+
 		var doConnect = false;
 		var doClose = false;
 
 		if (!connected) {
-			var r = SysSocket.select(null, [__socket], null, 0);
+			var r = SysSocket.select([], [__socket], [], 0);
 
-			if (r.write[0] == __socket) {
+			if (r.write.length > 0 && r.write[0] == __socket) {
 				doConnect = true;
 			} else if (Sys.time() - __timestamp > timeout / 1000) {
 				doClose = true;
@@ -965,11 +1021,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			} catch (e:Eof) {
 				doClose = true;
 			} catch (e:Error) {
-				switch (e) {
-					case Error.Blocked:
-					case Error.Custom(Error.Blocked):
-					default:
-						doClose = true;
+				if (!__isBlockedError(e)) {
+					doClose = true;
 				}
 			} catch (e:Dynamic) {
 				doClose = true;
@@ -1069,5 +1122,29 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private function get_registryClosed():Bool {
 		return __closed || __socket == null;
+	}
+
+	@:noCompletion private inline function __cleanupFailedConnect():Void {
+		if (__socket != null) {
+			try {
+				__socket.close();
+			} catch (_:Dynamic) {}
+		}
+		__socket = null;
+		__cbInstance = null;
+		__connected = false;
+		__isConnecting = false;
+		__isDirty = false;
+		flushFull = false;
+		__closed = true;
+	}
+
+	@:noCompletion private function __isBlockedError(error:Error):Bool {
+		return switch (error) {
+			case Error.Blocked: true;
+			case Error.Custom(value):
+				Std.isOfType(value, Error) && __isBlockedError(cast value);
+			default: false;
+		}
 	}
 }
