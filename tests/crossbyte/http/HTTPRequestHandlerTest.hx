@@ -25,6 +25,71 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals("Hello from middleware test", response.body);
 	}
 
+	public function testHttp11RequiresHostHeader():Void {
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\n\r\n");
+
+		Assert.equals(400, response.status);
+		Assert.equals("Bad Request", response.body);
+	}
+
+	public function testHttp10AllowsMissingHostHeader():Void {
+		var response = __sendRequest([], "GET /index.html HTTP/1.0\r\n\r\n");
+
+		Assert.equals(200, response.status);
+		Assert.equals("Hello from middleware test", response.body);
+	}
+
+	public function testAbsoluteFormRequestTargetRoutesToPath():Void {
+		var response = __sendRequest([], "GET http://localhost/index.html?mode=absolute HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+		Assert.equals(200, response.status);
+		Assert.equals("Hello from middleware test", response.body);
+	}
+
+	public function testHeadReturnsContentLengthWithoutBody():Void {
+		var response = __sendRequest([], "HEAD /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+		Assert.equals(200, response.status);
+		Assert.equals("", response.body);
+		Assert.equals("26", response.headers.get("content-length"));
+	}
+
+	public function testRangeRequestReturnsPartialContent():Void {
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nRange: bytes=6-9\r\n\r\n");
+
+		Assert.equals(206, response.status);
+		Assert.equals("from", response.body);
+		Assert.equals("4", response.headers.get("content-length"));
+		Assert.isTrue(response.headers.get("content-range").indexOf("bytes 6-9/") == 0);
+	}
+
+	public function testSuffixRangeRequestReturnsTail():Void {
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nRange: bytes=-4\r\n\r\n");
+
+		Assert.equals(206, response.status);
+		Assert.equals("test", response.body);
+		Assert.equals("4", response.headers.get("content-length"));
+	}
+
+	public function testInvalidRangeReturns416():Void {
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nRange: bytes=999-1000\r\n\r\n");
+
+		Assert.equals(416, response.status);
+		Assert.equals("Requested Range Not Satisfiable", response.body);
+		Assert.isTrue(response.headers.get("content-range").indexOf("bytes */") == 0);
+	}
+
+	public function testIfModifiedSinceReturns304():Void {
+		var first = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		var lastModified = first.headers.get("last-modified");
+		var second = __sendRequest([], 'GET /index.html HTTP/1.1\r\nHost: localhost\r\nIf-Modified-Since: ${lastModified}\r\n\r\n');
+
+		Assert.equals(200, first.status);
+		Assert.notNull(lastModified);
+		Assert.equals(304, second.status);
+		Assert.equals("", second.body);
+	}
+
 	public function testMiddlewareHelpersAreAvailableAndCaseInsensitive():Void {
 		var method:String = null;
 		var requestPath:String = null;
@@ -105,14 +170,25 @@ class HTTPRequestHandlerTest extends utest.Test {
 		#end
 	}
 
-	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String):HTTPTestResponse {
+	public function testCorsPreflightReturnsConfiguredHeaders():Void {
+		var response = __sendRequest([], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: X-Test\r\n\r\n", null, true);
+
+		Assert.equals(204, response.status);
+		Assert.equals("", response.body);
+		Assert.equals("*", response.headers.get("access-control-allow-origin"));
+		Assert.equals("POST", response.headers.get("access-control-allow-methods"));
+		Assert.equals("X-Test", response.headers.get("access-control-allow-headers"));
+		Assert.equals("GET, POST, OPTIONS", response.headers.get("allow"));
+	}
+
+	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
 		fixture.writeUTFBytes("Hello from middleware test");
 		indexFile.save(fixture);
 
-		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, middleware);
+		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, middleware, null, corsEnabled);
 		var server = new HTTPServer(config);
 		var client = new Socket();
 		var rawResponse = "";
@@ -192,13 +268,22 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}
 
 		var body = "";
+		var headers:Map<String, String> = new Map();
 		var headerEnd = raw.indexOf("\r\n\r\n");
 		if (headerEnd >= 0) {
+			var headerLines = raw.substr(lineEnd + 2, headerEnd - lineEnd - 2).split("\r\n");
+			for (line in headerLines) {
+				var separator = line.indexOf(":");
+				if (separator > 0) {
+					headers.set(StringTools.trim(line.substr(0, separator)).toLowerCase(), StringTools.trim(line.substr(separator + 1)));
+				}
+			}
 			body = raw.substr(headerEnd + 4);
 		}
 
 		return {
 			status: status,
+			headers: headers,
 			body: body
 		};
 	}
@@ -215,5 +300,6 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 typedef HTTPTestResponse = {
 	var status:Int;
+	var headers:Map<String, String>;
 	var body:String;
 }
