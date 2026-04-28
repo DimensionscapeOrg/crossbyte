@@ -288,7 +288,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		try {
 			var host:Host = new Host(address);
 			var target:Address = new Address();
-			target.host = host.ip;
+			target.setHost(host);
 			target.port = port;
 			__socket.sendTo(cast bytes, offset, length, target);
 			__bound = __getLocalEndpoint() != null;
