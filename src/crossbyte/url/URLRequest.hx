@@ -1,5 +1,7 @@
 package crossbyte.url;
 
+import crossbyte.http.HTTPVersion;
+
 /**
  * ...
  * @author Christopher Speciale
@@ -21,6 +23,14 @@ class URLRequest {
 		The default value is `true`.
 	**/
 	public var followRedirects:Bool;
+
+	/**
+		Specifies the HTTP protocol version requested by URLLoader.
+
+		HTTP/1.1 is implemented by CrossByte core. HTTP/2 and HTTP/3 require
+		an HTTPBackend registered with HTTPBackendRegistry.
+	**/
+	public var httpVersion:HTTPVersion;
 
 	/**
 		Specifies the idle timeout value (in milliseconds) for this request.
@@ -171,6 +181,7 @@ class URLRequest {
 		manageCookies = URLRequestDefaults.manageCookies;
 		method = URLRequestMethod.GET;
 		requestHeaders = [];
+		httpVersion = HTTPVersion.HTTP_1_1;
 		userAgent = URLRequestDefaults.userAgent;
 	}
 }

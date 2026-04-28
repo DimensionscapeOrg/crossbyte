@@ -77,30 +77,117 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 	}
 
 	@:private @:noCompletion private function parseUri(uri:String):Void {
-		var regex:EReg = new EReg('^([\\w-]+):\\/\\/([^\\/?:#]+)(?::(\\d+))?([^?#]*)(?:\\?([^#]*))?(?:#(.*))?$', 'i');
+		var schemeEnd:Int = uri.indexOf("://");
+		if (schemeEnd <= 0) {
+			throw "Uri must be well-formed";
+		}
 
-		if (regex.match(uri)) {
-			scheme = regex.matched(1);
-			ssl = (scheme == "https" || scheme == "wss");
-			host = regex.matched(2);
-			port = Std.parseInt(regex.matched(3));
-			if (port == null) {
-				port = ssl ? 443 : 80;
+		var rawScheme:String = uri.substr(0, schemeEnd);
+		if (!~/^[A-Za-z][A-Za-z0-9+\-.]*$/.match(rawScheme)) {
+			throw "Uri must be well-formed";
+		}
+
+		scheme = rawScheme.toLowerCase();
+		ssl = (scheme == "https" || scheme == "wss");
+
+		var rest:String = uri.substr(schemeEnd + 3);
+		var authorityEnd:Int = rest.length;
+		for (token in ["/", "?", "#"]) {
+			var index:Int = rest.indexOf(token);
+			if (index >= 0 && index < authorityEnd) {
+				authorityEnd = index;
 			}
-			path = regex.matched(4);
-			if (path == "") {
-				path = "/";
+		}
+
+		var authority:String = rest.substr(0, authorityEnd);
+		if (authority.length == 0 || authority.indexOf("@") >= 0) {
+			throw "Uri must be well-formed";
+		}
+
+		var rawPort:Null<String> = null;
+		if (StringTools.startsWith(authority, "[")) {
+			var bracketEnd:Int = authority.indexOf("]");
+			if (bracketEnd <= 1) {
+				throw "Uri must be well-formed";
 			}
-			query = regex.matched(5);
-			if (query == null) {
-				query = "";
+
+			host = authority.substr(1, bracketEnd - 1);
+			if (host.indexOf(":") < 0) {
+				throw "Uri must be well-formed";
 			}
-			fragment = regex.matched(6);
-			if (fragment == null) {
-				fragment = "";
+
+			var remainder:String = authority.substr(bracketEnd + 1);
+			if (remainder.length > 0) {
+				if (!StringTools.startsWith(remainder, ":")) {
+					throw "Uri must be well-formed";
+				}
+				rawPort = remainder.substr(1);
 			}
 		} else {
+			var colon:Int = authority.lastIndexOf(":");
+			if (colon >= 0) {
+				if (authority.indexOf(":") != colon) {
+					throw "Uri must be well-formed";
+				}
+				rawPort = authority.substr(colon + 1);
+				host = authority.substr(0, colon);
+			} else {
+				host = authority;
+			}
+		}
+
+		if (host == null || host.length == 0) {
 			throw "Uri must be well-formed";
+		}
+
+		port = __parsePort(rawPort);
+		if (port == null) {
+			port = ssl ? 443 : 80;
+		}
+
+		var reference:String = rest.substr(authorityEnd);
+		__parseReference(reference);
+	}
+
+	@:private @:noCompletion private function __parsePort(rawPort:Null<String>):Null<Int> {
+		if (rawPort == null) {
+			return null;
+		}
+		if (rawPort.length == 0 || !~/^[0-9]+$/.match(rawPort)) {
+			throw "Uri must be well-formed";
+		}
+
+		var parsed:Null<Int> = Std.parseInt(rawPort);
+		if (parsed == null || parsed < 0 || parsed > 65535) {
+			throw "Uri must be well-formed";
+		}
+
+		return parsed;
+	}
+
+	@:private @:noCompletion private function __parseReference(reference:String):Void {
+		var pathEnd:Int = reference.length;
+		var queryIndex:Int = reference.indexOf("?");
+		var fragmentIndex:Int = reference.indexOf("#");
+		if (queryIndex >= 0 && (fragmentIndex < 0 || queryIndex < fragmentIndex)) {
+			pathEnd = queryIndex;
+		} else if (fragmentIndex >= 0) {
+			pathEnd = fragmentIndex;
+		}
+
+		path = reference.substr(0, pathEnd);
+		if (path == "") {
+			path = "/";
+		}
+
+		query = "";
+		fragment = "";
+		if (queryIndex >= 0 && (fragmentIndex < 0 || queryIndex < fragmentIndex)) {
+			var queryEnd:Int = fragmentIndex >= 0 ? fragmentIndex : reference.length;
+			query = reference.substr(queryIndex + 1, queryEnd - queryIndex - 1);
+		}
+		if (fragmentIndex >= 0) {
+			fragment = reference.substr(fragmentIndex + 1);
 		}
 	}
 }

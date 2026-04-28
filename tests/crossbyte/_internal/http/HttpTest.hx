@@ -1,5 +1,8 @@
 package crossbyte._internal.http;
 
+import crossbyte.http.HTTPBackend;
+import crossbyte.http.HTTPBackendRegistry;
+import crossbyte.http.HTTPRequestContext;
 import crossbyte.url.URL;
 import haxe.io.Bytes;
 import haxe.exceptions.NotImplementedException;
@@ -19,8 +22,85 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testConstructorRejectsUnsupportedVersions():Void {
+		HTTPBackendRegistry.clear();
+
 		Assert.raises(() -> new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2), NotImplementedException);
 		Assert.raises(() -> new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_3), NotImplementedException);
+
+		HTTPBackendRegistry.clear();
+	}
+
+	public function testRegisteredBackendAllowsHttp2ConstructionAndLoad():Void {
+		HTTPBackendRegistry.clear();
+		var backend = new FakeHTTP2Backend();
+		HTTPBackendRegistry.register(backend);
+		var statusCodes:Array<Int> = [];
+		var progress:Array<{loaded:Int, total:Int}> = [];
+		var completed:Bytes = null;
+		var error:String = null;
+
+		var http = new Http("https://example.com/resource", "POST", ["X-Test: yes"], {page: 1}, "text/plain", "body", HttpVersion.HTTP_2, 5000,
+			"TestAgent", false);
+		http.onStatus = code -> statusCodes.push(code);
+		http.onProgress = (loaded:Int, total:Int) -> progress.push({loaded: loaded, total: total});
+		http.onComplete = data -> completed = data;
+		http.onError = (message:String, ?data:Bytes) -> error = message;
+
+		http.load();
+
+		Assert.isNull(error);
+		Assert.notNull(completed);
+		Assert.equals("ok", completed.toString());
+		Assert.same([200], statusCodes);
+		Assert.equals(2, progress[progress.length - 1].loaded);
+		Assert.equals(2, progress[progress.length - 1].total);
+		Assert.notNull(backend.lastContext);
+		Assert.equals("https://example.com/resource", backend.lastContext.url);
+		Assert.equals("POST", backend.lastContext.method);
+		Assert.equals(HttpVersion.HTTP_2, backend.lastContext.version);
+		Assert.equals("X-Test: yes", backend.lastContext.headers[0]);
+		Assert.equals("text/plain", backend.lastContext.contentType);
+		Assert.equals("body", backend.lastContext.data);
+		Assert.equals(5000, backend.lastContext.timeout);
+		Assert.equals("TestAgent", backend.lastContext.userAgent);
+		Assert.isFalse(backend.lastContext.followRedirects);
+
+		HTTPBackendRegistry.clear();
+	}
+
+	public function testMostRecentlyRegisteredBackendWins():Void {
+		HTTPBackendRegistry.clear();
+		var first = new FakeHTTP2Backend("first");
+		var second = new FakeHTTP2Backend("second");
+
+		HTTPBackendRegistry.register(first);
+		HTTPBackendRegistry.register(second);
+
+		var http = new Http("https://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2);
+		var completed:Bytes = null;
+		http.onComplete = data -> completed = data;
+
+		http.load();
+
+		Assert.notNull(completed);
+		Assert.equals("second", completed.toString());
+		Assert.isNull(first.lastContext);
+		Assert.notNull(second.lastContext);
+
+		HTTPBackendRegistry.clear();
+	}
+
+	public function testUnregisterBackendRemovesHttp2Support():Void {
+		HTTPBackendRegistry.clear();
+		var backend = new FakeHTTP2Backend();
+
+		HTTPBackendRegistry.register(backend);
+		Assert.isTrue(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
+		Assert.isTrue(HTTPBackendRegistry.unregister(backend));
+		Assert.isFalse(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
+		Assert.raises(() -> new Http("https://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2), NotImplementedException);
+
+		HTTPBackendRegistry.clear();
 	}
 
 	public function testResolveLocationHandlesAbsoluteAndRootRelativeUrls():Void {
@@ -75,7 +155,7 @@ class HttpTest extends utest.Test {
 		http.onStatus = code -> statusCodes.push(code);
 		http.onProgress = (loaded:Int, total:Int) -> progress.push({loaded: loaded, total: total});
 		http.onComplete = data -> completed = data;
-		http.onError = message -> error = Std.string(message);
+		http.onError = (message:String, ?data:Bytes) -> error = message;
 
 		http.load();
 		fixture.waitDone();
@@ -121,7 +201,7 @@ class HttpTest extends utest.Test {
 		var errorData:Bytes = null;
 
 		http.onComplete = _ -> completeCalled = true;
-		http.onError = (message:String, data:Bytes) -> {
+		http.onError = (message:String, ?data:Bytes) -> {
 			errorMessage = message;
 			errorData = data;
 		}
@@ -142,12 +222,15 @@ class HttpTest extends utest.Test {
 			ok: false
 		});
 		var completed:Bytes = null;
+		var error:String = null;
 
 		http.onComplete = data -> completed = data;
+		http.onError = (message:String, ?data:Bytes) -> error = message;
 
 		http.load();
 		fixture.waitDone();
 
+		Assert.isNull(error);
 		Assert.notNull(completed);
 		Assert.equals(0, completed.length);
 		Assert.isTrue(fixture.request.indexOf("POST /submit HTTP/1.1") == 0);
@@ -238,5 +321,27 @@ private class OneShotHttpServer {
 		if (error != null) {
 			Assert.fail("HTTP fixture request failed: " + error);
 		}
+	}
+}
+
+private class FakeHTTP2Backend implements HTTPBackend {
+	public var lastContext:HTTPRequestContext;
+	private var response:String;
+
+	public function new(response:String = "ok") {
+		this.response = response;
+	}
+
+	public function supports(version:crossbyte.http.HTTPVersion):Bool {
+		return version == HttpVersion.HTTP_2;
+	}
+
+	public function load(context:HTTPRequestContext):Void {
+		lastContext = context;
+		var bytes = Bytes.ofString(response);
+		context.onStatus(200);
+		context.onProgress(0, bytes.length);
+		context.onProgress(bytes.length, bytes.length);
+		context.onComplete(bytes);
 	}
 }
