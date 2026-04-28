@@ -1,4 +1,6 @@
--cp ../../src
--cp .
+--cwd ../..
+-cp src
+-cp samples/websocket-echo
 -main WebSocketEchoSample
---no-output
+--cpp export/sample-websocket-echo-check
+-D no-compilation
