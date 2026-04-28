@@ -169,7 +169,13 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	public function testIpv6SendReceiveOverLocalhost():Void {
-		if (!requireDatagramSupport() || !requireIpv6Loopback()) {
+		if (!requireDatagramSupport()) {
+			return;
+		}
+
+		var ipv6Supported = requireIpv6Loopback();
+		if (!ipv6Supported) {
+			Assert.isFalse(ipv6Supported);
 			return;
 		}
 
@@ -207,7 +213,13 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	public function testIpv6ConnectedSendUsesDefaultEndpoint():Void {
-		if (!requireDatagramSupport() || !requireIpv6Loopback()) {
+		if (!requireDatagramSupport()) {
+			return;
+		}
+
+		var ipv6Supported = requireIpv6Loopback();
+		if (!ipv6Supported) {
+			Assert.isFalse(ipv6Supported);
 			return;
 		}
 
