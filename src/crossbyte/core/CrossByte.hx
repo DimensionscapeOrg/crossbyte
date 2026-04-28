@@ -63,6 +63,7 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private static var __instanceCount:AtomicInt = 0;
 	@:noCompletion private var __socketRegistry:NativeSocketRegistry;
 	@:noCompletion private static var __threadLocalStorage:Tls<CrossByte> = new Tls();
+	@:noCompletion private static var __primordialThread:Thread;
 
 	#else
 	@:noCompletion private var __socketRegistry:SocketRegistry;
@@ -94,20 +95,21 @@ final class CrossByte extends EventDispatcher {
 	 * Returns the CrossByte runtime associated with the current thread.
 	 *
 	 * On threaded targets, this first resolves the thread-local CrossByte
-	 * instance. If none is attached, it falls back to the primordial runtime.
+	 * instance. If none is attached, it falls back to the primordial runtime
+	 * only when called from the primordial thread.
 	 *
 	 * @return The current thread's CrossByte instance, or the primordial
-	 *         application runtime when no thread-local runtime is attached.
+	 *         application runtime when called from the primordial thread.
 	 */
 	public static inline function current():CrossByte {
-		// is TLS better?
-		/* var currentThread:Thread = Thread.current();
-			var instance:CrossByte = __instances.get(currentThread);
-			return instance; */
 		#if cpp
 		var instance:CrossByte = __threadLocalStorage.value;
 		if (instance == null) {
-			instance = __primordial;
+			if (__primordial != null && __primordialThread != null && Thread.current() == __primordialThread) {
+				instance = __primordial;
+			} else {
+				throw new IllegalOperationError("CrossByte runtime not attached to this thread. Create a child runtime with CrossByte.make(...), or access the primordial runtime only from its owning thread.");
+			}
 		}
 		return instance;
 		#else
@@ -308,6 +310,9 @@ final class CrossByte extends EventDispatcher {
 			var currentThread:Thread = Thread.current();
 			__instances.set(currentThread, this);
 			__threadLocalStorage.value = this;
+			if (__isPrimordial) {
+				__primordialThread = currentThread;
+			}
 			#end
 			return;
 		}
@@ -319,6 +324,7 @@ final class CrossByte extends EventDispatcher {
 			#if cpp
 			var t:Thread = Thread.current();
 			__instances.set(t, this);
+			__primordialThread = t;
 			#end
 		} else {
 			EntryPoint.addThread(__runEventLoop);
@@ -387,11 +393,26 @@ final class CrossByte extends EventDispatcher {
 			__socketRegistry.clear();
 			__socketRegistry = null;
 		}
+		#if cpp
+		if (__threadLocalStorage.value == this) {
+			if (!__isPrimordial && __primordial != null && __primordialThread != null && Thread.current() == __primordialThread) {
+				__threadLocalStorage.value = __primordial;
+			} else {
+				__threadLocalStorage.value = null;
+			}
+		}
+		#end
 		#if (cpp && windows)
 		if (__isPrimordial) {
 			NativeWindowsRuntime.endTimingPeriod(1);
 		}
 		#end
+		if (__isPrimordial && __primordial == this) {
+			__primordial = null;
+			#if cpp
+			__primordialThread = null;
+			#end
+		}
 	}
 
 	#if (cpp && windows)
