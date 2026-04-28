@@ -85,34 +85,13 @@ final class File extends EventDispatcher {
 		@throws IOError               If the file information cannot be
 									  accessed, an exception is thrown with a
 									  message indicating a file I/O error.
-		@throws IllegalOperationError If the `FileReference.browse()`,
-									  `FileReferenceList.browse()`, or
-									  `FileReference.download()` method was
-									  not called successfully, an exception is
-									  thrown with a message indicating that
-									  functions were called in the incorrect
-									  sequence or an earlier call was
-									  unsuccessful. In this case, the value of
-									  the `creationDate` property is `null`.
 	**/
 	public var creationDate(get, null):Date;
 
 	/**
 		The Macintosh creator type of the file, which is only used in Mac OS
 		versions prior to Mac OS X. In Windows or Linux, this property is
-		`null`. If the FileReference object was not populated, a call to get
-		the value of this property returns `null`.
-
-		@throws IllegalOperationError On Macintosh, if the
-									  `FileReference.browse()`,
-									  `FileReferenceList.browse()`, or
-									  `FileReference.download()` method was
-									  not called successfully, an exception is
-									  thrown with a message indicating that
-									  functions were called in the incorrect
-									  sequence or an earlier call was
-									  unsuccessful. In this case, the value of
-									  the `creator` property is `null`.
+		`null`.
 	**/
 	public var creator(default, null):String;
 
@@ -138,43 +117,17 @@ final class File extends EventDispatcher {
 
 	/**
 		The date that the file on the local disk was last modified. If the
-		FileReference object was not populated, a call to get the value of
-		this property returns `null`.
+		object is not populated, a call to get the value of this property
+		returns `null`.
 
 		@throws IOError               If the file information cannot be
 									  accessed, an exception is thrown with a
 									  message indicating a file I/O error.
-		@throws IllegalOperationError If the `FileReference.browse()`,
-									  `FileReferenceList.browse()`, or
-									  `FileReference.download()` method was
-									  not called successfully, an exception is
-									  thrown with a message indicating that
-									  functions were called in the incorrect
-									  sequence or an earlier call was
-									  unsuccessful. In this case, the value of
-									  the `modificationDate` property is
-									  `null`.
 	**/
 	public var modificationDate(get, null):Date;
 
 	/**
-		The name of the file on the local disk. If the FileReference object
-		was not populated (by a valid call to `FileReference.download()` or `
-		FileReference.browse()`), Flash Player throws an error when you try to
-		get the value of this property.
-		All the properties of a FileReference object are populated by calling
-		the `browse()` method. Unlike other FileReference properties, if you
-		call the `download()` method, the `name` property is populated when
-		the `select` event is dispatched.
-
-		@throws IllegalOperationError If the `FileReference.browse()`,
-									  `FileReferenceList.browse()`, or
-									  `FileReference.download()` method was
-									  not called successfully, an exception is
-									  thrown with a message indicating that
-									  functions were called in the incorrect
-									  sequence or an earlier call was
-									  unsuccessful.
+		The name of the file on the local disk.
 	**/
 	public var name(get, null):String;
 
@@ -191,14 +144,6 @@ final class File extends EventDispatcher {
 									  accessing the file, an exception is
 									  thrown with a message indicating a file
 									  I/O error.
-		@throws IllegalOperationError If the `FileReference.browse()`,
-									  `FileReferenceList.browse()`, or
-									  `FileReference.download()` method was
-									  not called successfully, an exception is
-									  thrown with a message indicating that
-									  functions were called in the incorrect
-									  sequence or an earlier call was
-									  unsuccessful.
 	**/
 	public var size(get, null):Int;
 
@@ -206,23 +151,11 @@ final class File extends EventDispatcher {
 		The file type.
 		In Windows or Linux, this property is the file extension. On the
 		Macintosh, this property is the four-character file type, which is
-		only used in Mac OS versions prior to Mac OS X. If the FileReference
-		object was not populated, a call to get the value of this property
-		returns `null`.
+		only used in Mac OS versions prior to Mac OS X.
 
 		For Windows, Linux, and Mac OS X, the file extension ?the portion
 		of the `name` property that follows the last occurrence of the dot (.)
 		character ?identifies the file type.
-
-		@throws IllegalOperationError If the `FileReference.browse()`,
-									  `FileReferenceList.browse()`, or
-									  `FileReference.download()` method was
-									  not called successfully, an exception is
-									  thrown with a message indicating that
-									  functions were called in the incorrect
-									  sequence or an earlier call was
-									  unsuccessful. In this case, the value of
-									  the `type` property is `null`.
 	**/
 	public var type(get, null):String;
 
@@ -245,28 +178,9 @@ final class File extends EventDispatcher {
 	/**
 		The folder containing the application's installed files.
 
-		The url* property for this object uses the app URL scheme (not the file URL scheme). This
-		means that the url string is specified starting with "app:" (not "file:"). Also, if you
-		create a File object relative to the File.applicationDirectory directory (by using the
-		resolvePath() method), the url property of the File object also uses the app URL scheme.
-		*The url property is currently unsupported on all targets execpt AIR.
-
-		Note: You cannot write to files or directories that have paths that use the app: URL scheme.
-		Also, you cannot delete or create files or folders that have paths that use the app: URL
-		scheme. Modifying content in the application directory is a bad practice, for security
-		reasons, and is blocked by the operating system on some platforms. If you want to store
-		application-specific data, consider using the application storage directory
-		(File.applicationStorageDirectory). If you want any of the content in the application
-		storage directory to have access to the application-privileged functionality (AIR APIs),
-		you can expose that functionality by using a sandbox bridge.
-
 		The applicationDirectory property provides a way to reference the application directory
-		that works across platforms. If you set a File object to reference the application
-		directory using the nativePath or url property, it will only work on the platform for
-		which that path is valid.
-
-		On Android, the nativePath property of a File object pointing to the application directory
-		is an empty string. Use the url property to access application files.
+		that works across platforms. In CrossByte this is exposed as a filesystem path, not
+		as a URL-backed virtual path.
 
 	**/
 	public static var applicationDirectory(get, never):File;
@@ -279,26 +193,17 @@ final class File extends EventDispatcher {
 		to each application and user. This directory is a convenient location to store user-specific
 		or application-specific data.
 
-		The url property* for this object uses the app-storage URL scheme (not the file URL scheme).
-		This means that the url string is specified starting with "app-storage:" (not "file:").
-		Also, if you create a File object relative to the File.applicationStoreDirectory directory
-		(by using the resolvePath() method), the url of the File object also uses the app-storage
-		URL scheme (as in the example).
-		*The url property is currently unsupported on all targets execpt AIR.
-
 		The applicationStorageDirectory property provides a way to reference the application
-		storage directory that works across platforms. If you set a File object to reference the
-		application storage directory using the nativePath or url property, it will only work on
-		the platform for which that path is valid.
+		storage directory that works across platforms.
 
 		The following code creates a File object pointing to the "images" subdirectory of the application storage directory.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var tempFiles:File = File.applicationStorageDirectory;
 		tempFiles = tempFiles.resolvePath("images/");
-		trace(tempFiles.url); // app-storage:/images
+		trace(tempFiles.nativePath);
 		```
 	**/
 	public static var applicationStorageDirectory(get, never):File;
@@ -310,7 +215,7 @@ final class File extends EventDispatcher {
 		The user's desktop directory.
 
 		The desktopDirectory property provides a way to reference the desktop directory that works across platforms. If you
-		set a File object to reference the desktop directory using the nativePath or url property, it will only work on the
+		set a File object to reference the desktop directory using the nativePath property, it will only work on the
 		platform for which that path is valid.
 
 		If an operating system does not support a desktop directory, a suitable directory in the file system is used instead.
@@ -318,7 +223,7 @@ final class File extends EventDispatcher {
 		The following code outputs a list of files and directories contained in the user's desktop directory.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 		var desktop:File = File.desktopDirectory;
 
 		var files:Array = desktop.getDirectoryListing();
@@ -338,20 +243,19 @@ final class File extends EventDispatcher {
 		is /home/userName/Documents (on an English system), and the property observes the xdg-user-dirs setting.
 
 		The documentsDirectory property provides a way to reference the documents directory that works across
-		platforms. If you set a File object to reference the documents directory using the nativePath or url
-		property, it will only work on the platform for which that path is valid.
+		platforms.
 
 		If an operating system does not support a documents directory, a suitable directory in the file system
 		is used instead.
 
 		The following code uses the File.documentsDirectory property and the File.createDirectory() method to
-		ensure that a directory named "OpenFL Test" exists in the user's documents directory.
+		ensure that a directory named "CrossByte Test" exists in the user's documents directory.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var directory:File = File.documentsDirectory;
-		directory = directory.resolvePath("OpenFL Test");
+		directory = directory.resolvePath("CrossByte Test");
 
 		File.createDirectory(directory);
 		trace(directory.exists); // true
@@ -370,7 +274,7 @@ final class File extends EventDispatcher {
 		for the existence of the file.
 
 		```hx
-		import openfl.filesystem.*;
+		import crossbyte.io.File;
 
 		var temp:File = File.createTempFile();
 		trace(temp.exists); // true
@@ -390,7 +294,7 @@ final class File extends EventDispatcher {
 		isDirectory property to list only those File objects that point to directories (not to files).
 
 		```hx
-		import openfl.filesystem.*;
+		import crossbyte.io.File;
 
 		var userDirFiles:Array = File.userDirectory.getDirectoryListing();
 		for (var i:uint = 0; i < userDirFiles.length; i++) {
@@ -410,7 +314,7 @@ final class File extends EventDispatcher {
 		the user directory and then uses the isHidden property to list hidden files and directories.
 
 		```hx
-		import openfl.filesystem.*;
+		import crossbyte.io.File;
 
 		var userDirFiles:Array = File.userDirectory.getDirectoryListing();
 		for (var i:uint = 0; i < userDirFiles.length; i++) {
@@ -452,15 +356,13 @@ final class File extends EventDispatcher {
 		@throws ArgumentError The syntax of the path is invalid.
 		@throws SecurityError The caller is not in the application security sandbox.
 
-		The following code shows the difference between the nativePath property and the url property of a File object.
-		The comments show results on an example Windows computer.
+		The following code shows a native path for an example Windows computer.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var docs:File = File.documentsDirectory;
 		trace(docs.nativePath); // C:\Documents and Settings\turing\My Documents
-		trace(docs.url); // file:///C:/Documents%20and%20Settings/turing/My%20Documents
 		```
 	**/
 	public var nativePath(get, set):String;
@@ -477,7 +379,7 @@ final class File extends EventDispatcher {
 		The following code uses the parent property to show the directory that contains a temporary file.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var tempFile:File = File.createTempDirectory();
 		trace(tempFile.parent.nativePath);
@@ -519,7 +421,7 @@ final class File extends EventDispatcher {
 		On Mac OS, it is /Users/userName. On Linux, it is /home/userName.
 
 		The userDirectory property provides a way to reference the user directory that works across platforms. If you
-		set the nativePath or url property of a File object directly, it will only work on the platform for which that
+		set the nativePath property of a File object directly, it will only work on the platform for which that
 		path is valid.
 
 		If an operating system does not support a user directory, a suitable directory in the file system is used
@@ -528,7 +430,7 @@ final class File extends EventDispatcher {
 		The following code outputs a list of files and directories contained in the root level of the user directory:
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var files:Array = File.userDirectory.listDirectory();
 		for (var i:uint = 0; i < files.length; i++) {
@@ -652,15 +554,15 @@ final class File extends EventDispatcher {
 		the path to match the first file found (in an order determined by the file system).
 
 		The following code shows how to use the canonicalize() method to find the correct capitalization of a
-		directory name. Before running this example, create a directory named AIR Test on the desktop of your computer.
+		directory name. Before running this example, create a directory named CrossByte Test on the desktop of your computer.
 
 		```hx
-		import openfl.filesystem.*;
+		import crossbyte.io.File;
 
-		var path:File = File.desktopDirectory.resolvePath("air test");
+		var path:File = File.desktopDirectory.resolvePath("crossbyte test");
 		trace(path.nativePath);
 		path.canonicalize();
-		trace(path.nativePath); // ...\AIR Test
+		trace(path.nativePath); // ...\CrossByte Test
 		```
 	**/
 	public function canonicalize():Void {
@@ -716,35 +618,30 @@ final class File extends EventDispatcher {
 		@throws SecurityError The application does not have the necessary permissions.
 
 		The following code shows how to use the copyTo() method to copy a file. Before running this code,
-		create a test1.txt file in the AIR Test subdirectory of the documents directory on your computer.
-		The resulting copied file is named test2.txt, and it is also in the OpenFL Test subdirectory. When
+		create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your computer.
+		The resulting copied file is named test2.txt in the same directory. When
 		you set the overwrite parameter to true, the operation overwrites any existing test2.txt file.
 
 		```haxe
-		import openfl.filesystem.File;
-		import openfl.events.Event;
+		import crossbyte.io.File;
 
-		var sourceFile:FileReference = File.documentsDirectory;
-		sourceFile = sourceFile.resolvePath("OpenFL Test/test1.txt");
-		var destination:FileReference = File.documentsDirectory;
-		destination = destination.resolvePath("OpenFL Test/test2.txt");
-
-		if (sourceFile.copyTo(destination, true)) {
-			trace("Done.");
-		}
+		var sourceFile:File = File.documentsDirectory.resolvePath("CrossByte Test/test1.txt");
+		var destination:File = File.documentsDirectory.resolvePath("CrossByte Test/test2.txt");
+		sourceFile.copyTo(destination, true);
+		trace("Done.");
 		```
 
 		The following code shows how to use the copyTo() method to copy a file. Before running this code,
-		create a test1.txt file in the OpenFL Test subdirectory of the home directory on your computer. The
+		create a test1.txt file in the CrossByte Test subdirectory of the home directory on your computer. The
 		resulting copied file is named test2.txt. The try and catch statements show how to respond to errors.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var sourceFile:File = File.documentsDirectory;
-		sourceFile = sourceFile.resolvePath("OpenFL Test/test1.txt");
+		sourceFile = sourceFile.resolvePath("CrossByte Test/test1.txt");
 		var destination:File = File.documentsDirectory;
-		destination = destination.resolvePath("OpenFL Test/test2.txt");
+		destination = destination.resolvePath("CrossByte Test/test2.txt");
 
 		try
 		{
@@ -824,18 +721,18 @@ final class File extends EventDispatcher {
 		@throws SecurityError The application does not have the necessary permissions to write to the destination.
 
 		The following code shows how to use the copyToAsync() method to copy a file. Before running this code,
-		be sure to create a test1.txt file in the OpenFL Test subdirectory of the documents directory on your computer.
-		The resulting copied file is named test2.txt, and it is also in the AIR Test subdirectory. When you set the
+		be sure to create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your computer.
+		The resulting copied file is named test2.txt in the same directory. When you set the
 		overwrite parameter to true, the operation overwrites any existing test2.txt file.
 
 		```hx
-		import openfl.filesystem.File;
-		import openfl.events.Event;
+		import crossbyte.events.Event;
+		import crossbyte.io.File;
 
 		var sourceFile:File = File.documentsDirectory;
-		sourceFile = sourceFile.resolvePath("OpenFL Test/test1.txt");
+		sourceFile = sourceFile.resolvePath("CrossByte Test/test1.txt");
 		var destination:File = File.documentsDirectory;
-		destination = destination.resolvePath("OpenFL Test/test2.txt");
+		destination = destination.resolvePath("CrossByte Test/test2.txt");
 
 		sourceFile.copyToAsync(destination, true);
 		sourceFile.addEventListener(Event.COMPLETE, fileCopiedHandler);
@@ -889,15 +786,15 @@ final class File extends EventDispatcher {
 		@throws	IOError The directory did not exist and could not be created.
 		@throws SecurityError The application does not have the necessary permissions.
 
-		The following code moves a file named test.txt on the desktop to the OpenFL Test subdirectory of the
-		documents directory. The call to the createDirectory() method ensures that the OpenFL Test directory
+		The following code moves a file named test.txt on the desktop to the CrossByte Test subdirectory of the
+		documents directory. The call to the createDirectory() method ensures that the CrossByte Test directory
 		exists before the file is moved.
 
 		```hx
-		import openfl.filesystem.*;
+		import crossbyte.io.File;
 
 		var source:File = File.desktopDirectory.resolvePath("test.txt");
-		var target:File = File.documentsDirectory.resolvePath("OpenFL Test/test.txt");
+		var target:File = File.documentsDirectory.resolvePath("CrossByte Test/test.txt");
 		var targetParent:File = target.parent;
 		targetParent.createDirectory();
 		source.moveTo(target, true);
@@ -922,7 +819,7 @@ final class File extends EventDispatcher {
 		The following code creates an empty directory and then uses the deleteDirectory() method to delete the directory.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var directory:File = File.documentsDirectory.resolvePath("Empty Junk Directory/");
 		File.createDirectory(directory);
@@ -989,7 +886,7 @@ final class File extends EventDispatcher {
 		The following code creates a temporary file and then calls the deleteFile() method to delete it.
 
 		```hx
-		import openfl.filesystem.*;
+		import crossbyte.io.File;
 
 		var file:File = File.createTempFile();
 		trace(file.exists); // true
@@ -1039,7 +936,7 @@ final class File extends EventDispatcher {
 		user directory.
 
 		```hx
-		import openfl.filesystem.File;
+		import crossbyte.io.File;
 
 		var directory:File = File.userDirectory;
 		var list:Array = directory.getDirectoryListing();
@@ -1076,8 +973,8 @@ final class File extends EventDispatcher {
 		of the user directory.
 
 		```hx
-		import openfl.filesystem.File;
-		import openfl.events.FileListEvent;
+		import crossbyte.events.FileListEvent;
+		import crossbyte.io.File;
 
 		var directory:File = File.userDirectory;
 		directory.getDirectoryListingAsync();
@@ -1257,20 +1154,19 @@ final class File extends EventDispatcher {
 
 		The following code shows how to use the moveTo() method to rename a file. The original filename
 		is test1.txt and the resulting filename is test2.txt. Since both the source and destination File
-		object point to the same directory (the Apollo Test subdirectory of the user's documents directory),
+		object point to the same directory (the CrossByte Test subdirectory of the user's documents directory),
 		the moveTo() method renames the file, rather than moving it to a new directory. Before running this
-		code, create a test1.txt file in the OpenFL Test subdirectory of the documents directory on your
+		code, create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your
 		computer. When you set the overwrite parameter to true, the operation overwrites any existing test2.txt
 		file.
 
 		```hx
-		import openfl.filesystem.File;
-		import openfl.events.Event;
+		import crossbyte.io.File;
 
 		var sourceFile:File = File.documentsDirectory;
-		sourceFile = sourceFile.resolvePath("OpenFL Test/test1.txt");
+		sourceFile = sourceFile.resolvePath("CrossByte Test/test1.txt");
 		var destination:File = File.documentsDirectory;
-		destination = destination.resolvePath("Apollo Test/test2.txt");
+		destination = destination.resolvePath("CrossByte Test/test2.txt");
 
 		try
 		{
@@ -1316,19 +1212,19 @@ final class File extends EventDispatcher {
 
 			The following code shows how to use the moveToAsync() method to rename a file. The original filename
 			is test1.txt and the resulting name is test2.txt. Since both the source and destination File object
-			point to the same directory (the Apollo Test subdirectory of the user's documents directory), the
+			point to the same directory (the CrossByte Test subdirectory of the user's documents directory), the
 			moveToAsync() method renames the file, rather than moving it to a new directory. Before running this
-			code, create a test1.txt file in the Apollo Test subdirectory of the documents directory on your
+			code, create a test1.txt file in the CrossByte Test subdirectory of the documents directory on your
 			computer. When you set overwrite parameter to true, the operation overwrites any existing test2.txt file.
 
 			```hx
-			import openfl.filesystem.File;
-			import openfl.events.Event;
+			import crossbyte.events.Event;
+			import crossbyte.io.File;
 
 			var sourceFile:File = File.documentsDirectory;
-			sourceFile = sourceFile.resolvePath("Apollo Test/test1.txt");
+			sourceFile = sourceFile.resolvePath("CrossByte Test/test1.txt");
 			var destination:File = File.documentsDirectory;
-			destination = destination.resolvePath("Apollo Test/test2.txt");
+			destination = destination.resolvePath("CrossByte Test/test2.txt");
 
 			sourceFile.moveToAsync(destination, true);
 			sourceFile.addEventListener(Event.COMPLETE, fileMoveCompleteHandler);
@@ -1436,7 +1332,7 @@ final class File extends EventDispatcher {
 		directory.
 
 		```hx
-		import openfl.File;
+		import crossbyte.io.File;
 
 		var temp:File = File.createTempDirectory();
 		trace(temp.nativePath);
@@ -1465,7 +1361,7 @@ final class File extends EventDispatcher {
 		The following code uses the createTempFile() method to obtain a reference to a new temporary file.
 
 		```hx
-		import openfl.File;
+		import crossbyte.io.File;
 
 		var temp:File = File.createTempFile();
 		trace(temp.nativePath);
@@ -1495,7 +1391,7 @@ final class File extends EventDispatcher {
 		The following code outputs a list of root directories:
 
 		```hx
-		import flash.filesystem.File;
+		import crossbyte.io.File;
 		var rootDirs:Array = File.getRootDirectories();
 
 		for (var i:uint = 0; i < rootDirs.length; i++) {
