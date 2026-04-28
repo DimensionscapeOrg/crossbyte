@@ -134,3 +134,42 @@ jobs:
       - name: Run extension native tests
         working-directory: crossbyte-libuv
         run: ../crossbyte/export/crossbyte-libuv-native-test/LibuvNativeTestMain
+
+  brotli-extension:
+    name: Brotli native oracle extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout CrossByte
+        uses: actions/checkout@v4
+        with:
+          path: crossbyte
+
+      - name: Checkout crossbyte-brotli
+        uses: actions/checkout@v4
+        with:
+          repository: DimensionscapeOrg/crossbyte-brotli
+          path: crossbyte-brotli
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install haxelibs
+        run: |
+          haxelib install utest --quiet
+          haxelib install hxcpp --quiet
+          haxelib dev crossbyte-brotli "$GITHUB_WORKSPACE/crossbyte-brotli"
+
+      - name: Run extension non-native tests
+        working-directory: crossbyte-brotli
+        run: haxe test.hxml
+
+      - name: Build extension native tests
+        working-directory: crossbyte-brotli
+        run: haxe native-test.hxml
+
+      - name: Run extension native tests
+        working-directory: crossbyte-brotli
+        run: ../crossbyte/export/crossbyte-brotli-native-test/NativeBrotliTestMain

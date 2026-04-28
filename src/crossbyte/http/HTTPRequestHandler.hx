@@ -8,6 +8,7 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import crossbyte.net.Socket;
+import crossbyte.http.HTTPContentCoding;
 import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.CompressionAlgorithm;
@@ -722,21 +723,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 				token = StringTools.trim(token.substr(0, qIndex));
 			}
 
-			token = token.toLowerCase();
-			switch (token) {
-				case AcceptEncoding.GZIP:
-					encodings.push(CompressionAlgorithm.GZIP);
-				case "x-gzip":
-					encodings.push(CompressionAlgorithm.GZIP);
-				case AcceptEncoding.DEFLATE:
-					encodings.push(CompressionAlgorithm.DEFLATE);
-				case "lz4":
-					encodings.push(CompressionAlgorithm.LZ4);
-				case AcceptEncoding.IDENTITY:
+			var coding = HTTPContentCoding.fromString(token);
+			switch (coding) {
+				case HTTPContentCoding.IDENTITY:
 					continue;
-				default:
-					__sendErrorResponse(415, "Unsupported Content-Encoding: " + token);
+				case null:
+					__sendErrorResponse(415, "Unsupported Content-Encoding: " + token.toLowerCase());
 					return null;
+				default:
+					var algorithm = coding.toCompressionAlgorithm();
+					if (algorithm == null) {
+						__sendErrorResponse(415, "Unsupported Content-Encoding: " + token.toLowerCase());
+						return null;
+					}
+					encodings.push(algorithm);
 			}
 		}
 
@@ -782,10 +782,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			token = token.toLowerCase();
 			explicitQ.set(token, q);
 			switch (token) {
-				case AcceptEncoding.GZIP:
-				case AcceptEncoding.DEFLATE:
-				case "lz4":
-				case AcceptEncoding.IDENTITY:
+				case HTTPContentCoding.GZIP:
+				case HTTPContentCoding.BR:
+				case HTTPContentCoding.DEFLATE:
+				case HTTPContentCoding.LZ4:
+				case HTTPContentCoding.IDENTITY:
 					hasIdentityToken = true;
 					if (q <= 0) {
 						identityAllowed = false;
@@ -797,12 +798,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var wildcardQ:Float = explicitQ.exists(AcceptEncoding.DEFAULT) ? explicitQ.get(AcceptEncoding.DEFAULT) : -1;
 		var bestQ:Float = -1;
 		var supported = [
-			{name: AcceptEncoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
-			{name: AcceptEncoding.DEFLATE, algorithm: CompressionAlgorithm.DEFLATE},
-			{name: "lz4", algorithm: CompressionAlgorithm.LZ4}
+			{name: HTTPContentCoding.BR, algorithm: CompressionAlgorithm.BROTLI},
+			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
+			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.DEFLATE},
+			{name: HTTPContentCoding.LZ4, algorithm: CompressionAlgorithm.LZ4}
 		];
 
 		for (option in supported) {
+			if (option.name == HTTPContentCoding.BR && !explicitQ.exists(option.name)) {
+				continue;
+			}
+
 			var q = explicitQ.exists(option.name) ? explicitQ.get(option.name) : wildcardQ;
 			if (q > 0 && q > bestQ) {
 				bestQ = q;
@@ -823,9 +829,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __encodingToHeaderValue(algorithm:CompressionAlgorithm):Null<String> {
 		return switch (algorithm) {
-			case CompressionAlgorithm.DEFLATE: AcceptEncoding.DEFLATE;
-			case CompressionAlgorithm.GZIP: AcceptEncoding.GZIP;
-			case CompressionAlgorithm.LZ4: "lz4";
+			case CompressionAlgorithm.BROTLI: HTTPContentCoding.BR;
+			case CompressionAlgorithm.DEFLATE: HTTPContentCoding.DEFLATE;
+			case CompressionAlgorithm.GZIP: HTTPContentCoding.GZIP;
+			case CompressionAlgorithm.LZ4: HTTPContentCoding.LZ4;
 			default: null;
 		}
 	}

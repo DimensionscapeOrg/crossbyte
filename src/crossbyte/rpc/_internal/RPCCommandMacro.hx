@@ -69,8 +69,8 @@ class RPCCommandMacro {
 			}
 
 			for (method in contractMethods) {
-				if (method.name == "ping") {
-					Context.error("RPC contract method name 'ping' is reserved.", method.pos);
+				if (RPCContractMacroTools.isReservedSystemMethod(method.name)) {
+					Context.error(RPCContractMacroTools.reservedSystemMethodMessage(method.name), method.pos);
 				}
 				if (hasFieldNamed(fields, method.name) || hasFieldNamed(fields, "meta_" + method.name)) {
 					Context.error("RPC commands class already declares '" + method.name + "'; remove the manual declaration when using @:rpcCommands(...).", method.pos);
@@ -307,7 +307,7 @@ class RPCCommandMacro {
 						null;
 				}
 			case _:
-				Context.error("RPC command return type must be Void or RPCResponse<T>.", pos);
+				Context.error("RPC command return type must be Void or RPCResponse<T>. Contract-driven command methods should mirror the shared contract signature exactly.", pos);
 				null;
 		}
 	}
@@ -389,7 +389,7 @@ class RPCCommandMacro {
 			}),
 			pos: pos,
 			meta: null,
-			doc: "System reserved RPC ping()."
+			doc: "Built-in RPC heartbeat ping(). Do not include this in shared RPC contracts."
 		}, metaName, args, macro :Void, null, opCode);
 
 		var meta = createMetaFunction(metaName, pingName, args, pos, opCode);
