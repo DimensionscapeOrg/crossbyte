@@ -59,12 +59,13 @@ class RPCHandlerMacro {
 		var fields = Context.getBuildFields();
 		injectPing(fields);
 		var methods = new Array<MethodInfo>();
-		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcHandler");
+		final contractMethods = RPCContractMacroTools.getImplementedContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 
 		if (contractMethods != null) {
+			RPCContractMacroTools.requireExtends(":rpcContract", "crossbyte.rpc.RPCHandler");
 			if (manualRpcFields.length > 0) {
-				Context.error("Do not mix @:rpcHandler(...) with field-level @:rpc methods in the same class.", manualRpcFields[0].pos);
+				Context.error("Do not mix @:rpcContract with field-level @:rpc methods in the same class.", manualRpcFields[0].pos);
 			}
 
 			for (method in contractMethods) {
@@ -94,11 +95,11 @@ class RPCHandlerMacro {
 						}
 					}
 
-					final expectedRet = method.responseType != null ? method.responseType : method.ret;
+					final expectedRet = method.ret;
 					if (fn.ret == null) {
 						fn.ret = expectedRet;
 					} else if (!sameType(fn.ret, expectedRet, implementation.pos)) {
-						Context.error("RPC handler return type mismatch for '" + method.name + "'. Response-bearing contract methods should return the payload type on the handler side.", implementation.pos);
+						Context.error("RPC handler return type mismatch for '" + method.name + "'. Handler method signatures must match the shared contract directly.", implementation.pos);
 					}
 
 						methods.push({
