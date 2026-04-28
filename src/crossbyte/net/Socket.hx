@@ -899,11 +899,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	// Event Handlers
-	@:noCompletion private inline function socket_onClose(_):Void {
+	@:noCompletion private function socket_onClose(_):Void {
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 
-	@:noCompletion private inline function socket_onError(e):Void {
+	@:noCompletion private function socket_onError(e):Void {
 		dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
 	}
 
@@ -1073,7 +1073,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return __socket.peer().port;
 	}
 
-	@:noCompletion private inline function get_registryClosed():Bool {
+	@:noCompletion private function get_registryClosed():Bool {
 		return __closed || __socket == null;
 	}
 }
