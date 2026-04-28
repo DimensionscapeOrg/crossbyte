@@ -60,6 +60,33 @@ class CrossByteTest extends utest.Test {
 		Assert.isTrue(ThreadUtil.isPrimordial);
 	}
 
+	public function testTickEventIsReusedAcrossPumps():Void {
+		#if (cpp || neko || hl)
+		var runtime = new CrossByte(false, DEFAULT, true);
+		var first = null;
+		var second = null;
+		var count = 0;
+
+		runtime.addEventListener(crossbyte.events.TickEvent.TICK, event -> {
+			count++;
+			if (count == 1) {
+				first = event;
+			} else if (count == 2) {
+				second = event;
+			}
+		});
+
+		runtime.pump(1 / 60, 0);
+		runtime.pump(1 / 60, 0);
+		runtime.exit();
+
+		Assert.notNull(first);
+		Assert.equals(first, second);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	@:noCompletion private static function throwsIllegalOperationError(fn:Void->Void):Bool {
 		try {
 			fn();
