@@ -1,11 +1,16 @@
 package crossbyte.ipc;
 
+import crossbyte.core.CrossByte;
 import haxe.Serializer;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import utest.Assert;
+#if (cpp || neko || hl)
+import sys.thread.Thread;
+#end
 
 @:access(crossbyte.ipc.LocalConnection)
+@:access(crossbyte.core.CrossByte)
 class LocalConnectionTest extends utest.Test {
 	public function testSupportFlagMatchesTarget():Void {
 		#if (cpp && (windows || linux || mac || macos))
@@ -97,6 +102,34 @@ class LocalConnectionTest extends utest.Test {
 		Assert.pass();
 	}
 
+	public function testForeignThreadDeliveryWaitsForOwningRuntimePump():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var primordial = CrossByte.current();
+		var child = new CrossByte(false, DEFAULT, true);
+		var connection = new LocalConnection();
+		var receiver = new LocalConnectionReceiver();
+		connection.client = receiver;
+
+		Thread.create(() -> connection.__dispatchReceivedData(frame("receive", ["hello", 42])));
+		Sys.sleep(0.01);
+
+		Assert.equals(0, receiver.calls);
+		primordial.pump(1 / 60, 0);
+		Assert.equals(0, receiver.calls);
+
+		pumpRuntimeUntil(child, () -> receiver.calls == 1);
+
+		Assert.equals(1, receiver.calls);
+		Assert.equals("hello", receiver.lastMessage);
+		Assert.equals(42, receiver.lastValue);
+		Assert.equals(child, receiver.runtime);
+		connection.close();
+		child.exit();
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private static function frame(method:String, args:Array<Dynamic>):Bytes {
 		var methodBytes = Bytes.ofString(method);
 		var serialized = Serializer.run(args);
@@ -135,6 +168,16 @@ class LocalConnectionTest extends utest.Test {
 			return true;
 		}
 	}
+
+	private static function pumpRuntimeUntil(runtime:CrossByte, done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
+		#if (cpp || neko || hl)
+		var deadline = Sys.time() + timeoutSeconds;
+		while (!done() && Sys.time() < deadline) {
+			runtime.pump(1 / 60, 0);
+			Sys.sleep(0.001);
+		}
+		#end
+	}
 }
 
 private class LocalConnectionReceiver {
@@ -142,6 +185,7 @@ private class LocalConnectionReceiver {
 	public var label:String = "not callable";
 	public var lastMessage:String = null;
 	public var lastValue:Int = 0;
+	public var runtime:CrossByte = null;
 
 	public function new() {}
 
@@ -149,5 +193,6 @@ private class LocalConnectionReceiver {
 		calls++;
 		lastMessage = message;
 		lastValue = value;
+		runtime = CrossByte.current();
 	}
 }
