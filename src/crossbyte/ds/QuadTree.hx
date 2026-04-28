@@ -1,6 +1,6 @@
 package crossbyte.ds;
 
-import math.Rectangle;
+import crossbyte.math.Rectangle;
 
 /**
  * ...
@@ -14,7 +14,7 @@ import math.Rectangle;
 class QuadTree<T> {
 	private var boundary:Rectangle;
 	private var capacity:Int;
-	private var nodes:Array<Node<T>>;
+	private var nodes:Array<QuadTreeNode<T>>;
 	private var divided:Bool;
 	private var northeast:QuadTree<T>;
 	private var northwest:QuadTree<T>;
@@ -40,7 +40,7 @@ class QuadTree<T> {
 	 * @param node The node to be inserted.
 	 * @return True if the node was inserted, false otherwise.
 	 */
-	public function insert(node:Node<T>):Bool {
+	public function insert(node:QuadTreeNode<T>):Bool {
 		if (!boundary.contains(node.x, node.y))
 			return false;
 
@@ -69,20 +69,21 @@ class QuadTree<T> {
 		divided = true;
 	}
 
-	/**
-	 * Node class to define elements in the QuadTree.
-	 *
-	 * @param T The type of value associated with the node.
-	 */
-	class Node<T> {
-		public var x:Float;
-		public var y:Float;
-		public var value:T;
+}
 
-		public function new(x:Float, y:Float, value:T) {
-			this.x = x;
-			this.y = y;
-			this.value = value;
-		}
+/**
+ * Node class to define elements in the QuadTree.
+ *
+ * @param T The type of value associated with the node.
+ */
+class QuadTreeNode<T> {
+	public var x:Float;
+	public var y:Float;
+	public var value:T;
+
+	public function new(x:Float, y:Float, value:T) {
+		this.x = x;
+		this.y = y;
+		this.value = value;
 	}
 }

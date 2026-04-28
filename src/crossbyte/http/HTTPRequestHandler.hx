@@ -1,6 +1,7 @@
 package crossbyte.http;
 
 import haxe.ds.StringMap;
+import haxe.io.Path;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ProgressEvent;
@@ -619,13 +620,63 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var resolved:File = root.resolvePath("." + targetPath);
-		var rootPath = root.nativePath;
-		var fullPath = resolved.nativePath;
 
-		if (fullPath.length < rootPath.length || fullPath.substr(0, rootPath.length) != rootPath) {
+		if (!__isWithinRoot(root.nativePath, resolved.nativePath)) {
 			return null;
 		}
 		return resolved;
+	}
+
+	@:noCompletion private static function __isWithinRoot(rootPath:String, fullPath:String):Bool {
+		var rootNorm:String = __normalizeContainmentPath(rootPath);
+		var fullNorm:String = __normalizeContainmentPath(fullPath);
+		if (fullNorm == rootNorm) {
+			return true;
+		}
+
+		var rootWithBoundary:String = rootNorm;
+		if (!StringTools.endsWith(rootWithBoundary, __pathSeparator())) {
+			rootWithBoundary += __pathSeparator();
+		}
+		return StringTools.startsWith(fullNorm, rootWithBoundary);
+	}
+
+	@:noCompletion private static function __normalizeContainmentPath(path:String):String {
+		var normalized:String = Path.normalize(path);
+		#if windows
+		normalized = normalized.split("/").join("\\").toLowerCase();
+		#else
+		normalized = normalized.split("\\").join("/");
+		#end
+		return __trimTrailingSeparators(normalized);
+	}
+
+	@:noCompletion private static function __trimTrailingSeparators(path:String):String {
+		while (path.length > 1 && __isTrailingSeparatorSafeToTrim(path)) {
+			path = path.substr(0, path.length - 1);
+		}
+		return path;
+	}
+
+	@:noCompletion private static inline function __isTrailingSeparatorSafeToTrim(path:String):Bool {
+		var last:String = path.charAt(path.length - 1);
+		if (last != "/" && last != "\\") {
+			return false;
+		}
+		#if windows
+		if (path.length == 3 && path.charAt(1) == ":") {
+			return false;
+		}
+		#end
+		return true;
+	}
+
+	@:noCompletion private static inline function __pathSeparator():String {
+		#if windows
+		return "\\";
+		#else
+		return "/";
+		#end
 	}
 
 	@:noCompletion private static inline function __formatHttpDate():String {

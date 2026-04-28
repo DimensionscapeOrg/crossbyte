@@ -1,5 +1,6 @@
 package crossbyte.crypto._internal;
 
+#if cpp
 import cpp.ConstPointer;
 import cpp.RawPointer;
 import cpp.UInt8;
@@ -13,3 +14,6 @@ extern class NativeBlake3 {
 	@:native("crossbyte_crypto_blake3_simd_degree")
 	public static function simdDegree():Int;
 }
+#else
+extern class NativeBlake3 {}
+#end
