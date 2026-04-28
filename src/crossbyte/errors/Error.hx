@@ -104,10 +104,10 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 		@returns	The error message.
 	**/
 	public #if (haxe_ver >= "4.1.0") override #end function toString():String {
-		if (message != null) {
+		if (message != null && message != "") {
 			return message;
 		} else {
-			return DEFAULT_TO_STRING;
+			return name != null ? name : DEFAULT_TO_STRING;
 		}
 	}
 }

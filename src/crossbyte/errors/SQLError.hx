@@ -13,6 +13,7 @@ class SQLError extends Error {
 
 	public function new(operation:String, details:String = "", message:String = "", id:Int = 0, detailID:Int = -1, detailArgs:Array<String> = null) {
 		super(message, id);
+		name = "SQLError";
 		detailArguments = detailArgs;
 		this.detailID = detailID;
 		this.operation = operation;
