@@ -35,7 +35,10 @@ class ServerSocketConnectEvent extends Event {
 		@return Event A new ServerSocketConnectEvent object with property values that match those of the original.
 	**/
 	public override function clone():Event {
-		return new ServerSocketConnectEvent(type, socket);
+		var event = new ServerSocketConnectEvent(type, socket);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 
 	/**
