@@ -1,55 +1,78 @@
 package crossbyte.rpc._internal;
 
 #if macro
+import haxe.macro.ComplexTypeTools;
 import haxe.macro.Context;
 import haxe.macro.Expr;
-import haxe.macro.ComplexTypeTools;
+import haxe.macro.Type;
 
 using haxe.macro.Tools;
 
 class RPCHandlerMacro {
-	static function initReaders():Map<String, (Expr) -> Expr> {
-		var m = new Map<String, (Expr) -> Expr>();
+	static function initReaders():Map<String, Expr->Expr> {
+		var m = new Map<String, Expr->Expr>();
 		m.set("Int", inp -> macro $inp.readInt());
 		m.set("Bool", inp -> macro($inp.readByte() != 0));
 		m.set("Float", inp -> macro $inp.readDouble());
 		m.set("String", inp -> macro $inp.readVarUTF());
 		m.set("haxe.io.Bytes", inp -> macro {
 			var __len = $inp.readVarUInt();
-			var __b = haxe.io.Bytes.alloc(__len);
-			$inp.readBytes(__b, 0, __len);
-			__b;
+			var __bytes = haxe.io.Bytes.alloc(__len);
+			$inp.readBytes(__bytes, 0, __len);
+			__bytes;
+		});
+		return m;
+	}
+
+	static function initWriters():Map<String, (Expr, Expr) -> Expr> {
+		var m = new Map<String, (Expr, Expr) -> Expr>();
+		m.set("Int", function(out, v) return macro {
+			$out.reserve(4);
+			$out.writeInt($v);
+		});
+		m.set("Bool", function(out, v) return macro {
+			$out.reserve(1);
+			$out.writeByte($v ? 1 : 0);
+		});
+		m.set("Float", function(out, v) return macro {
+			$out.reserve(8);
+			$out.writeDouble($v);
+		});
+		m.set("String", function(out, v) return macro {
+			$out.writeVarUTF($v);
+		});
+		m.set("haxe.io.Bytes", function(out, v) return macro {
+			$out.writeVarUInt($v.length);
+			$out.reserve($v.length);
+			$out.writeBytes($v, 0, $v.length);
 		});
 		return m;
 	}
 
 	static final TYPE_READERS = initReaders();
+	static final TYPE_WRITERS = initWriters();
 
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
 
 		injectPing(fields);
 
-		var methods = new Array<{
-			idx:Int,
-			name:String,
-			pos:Position,
-			args:Array<FunctionArg>,
-			op:Int
-		}>();
+		var methods = new Array<MethodInfo>();
 
 		for (f in fields) {
-			if (f.name != "new" && f.meta != null && f.meta.filter(m -> m.name == ":rpc").length > 0 || f.name == "ping") {
+			if (f.name != "new" && ((f.meta != null && f.meta.filter(m -> m.name == ":rpc").length > 0) || f.name == "ping")) {
 				switch f.kind {
 					case FFun(fn):
-						if (fn.args.length > 8)
+						if (fn.args.length > 8) {
 							Context.error("RPC limited to 8 params", f.pos);
+						}
 						var op = crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(f.name));
 						methods.push({
 							idx: -1,
 							name: f.name,
 							pos: f.pos,
 							args: fn.args,
+							ret: fn.ret != null ? fn.ret : macro :Void,
 							op: op
 						});
 					default:
@@ -72,11 +95,12 @@ class RPCHandlerMacro {
 			x ^= (x >>> 15);
 			x *= 0x846ca68b;
 			x ^= (x >>> 16);
-			return (x < 0 ? -x : x) % mVal;
+			x &= 0x7fffffff;
+			return x % mVal;
 		}
 
-		function h2(op:Int):Int {
-			var x = op;
+		function h2(op:Int, d:Int):Int {
+			var x = op + d * 0x9e3779b9;
 			x ^= (x >>> 17);
 			x *= 0xed5ad4bb;
 			x ^= (x >>> 11);
@@ -89,28 +113,33 @@ class RPCHandlerMacro {
 		}
 
 		var buckets = [for (_ in 0...mVal) new Array<Int>()];
-		for (i in 0...n)
+		for (i in 0...n) {
 			buckets[h1(methods[i].op)].push(i);
+		}
 		buckets.sort((a, b) -> b.length - a.length);
 
 		var G = new Array<Int>();
 		G.resize(mVal);
-		for (i in 0...mVal)
+		for (i in 0...mVal) {
 			G[i] = -1;
+		}
 
 		var T = new Array<Int>();
 		T.resize(n);
-		for (i in 0...n)
+		for (i in 0...n) {
 			T[i] = -1;
+		}
 
 		var used = new Array<Bool>();
 		used.resize(n);
-		for (i in 0...n)
+		for (i in 0...n) {
 			used[i] = false;
+		}
 
 		for (bucket in buckets) {
-			if (bucket.length == 0)
+			if (bucket.length == 0) {
 				continue;
+			}
 
 			var b = h1(methods[bucket[0]].op);
 			var d = 0;
@@ -119,8 +148,8 @@ class RPCHandlerMacro {
 				var slots = new Array<Int>();
 
 				for (id in bucket) {
-					var slot = (h2(methods[id].op) + d) % n;
-					if (used[slot]) {
+					var slot = h2(methods[id].op, d);
+					if (used[slot] || slots.indexOf(slot) != -1) {
 						ok = false;
 						break;
 					}
@@ -140,14 +169,16 @@ class RPCHandlerMacro {
 				}
 
 				d++;
-				if (d > 1 << 22)
+				if (d > 1 << 22) {
 					Context.error("Failed to build perfect hash (unexpected).", Context.currentPos());
+				}
 			}
 		}
 
 		var newFields:Array<Field> = [];
 		newFields.push(makeIntArray("RPC_G", G));
 		newFields.push(makeIntArray("RPC_T", T));
+		newFields.push(makeIntArray("RPC_OPS", methods.map(method -> method.op)));
 
 		newFields.push({
 			name: "RPC_M",
@@ -163,8 +194,9 @@ class RPCHandlerMacro {
 			pos: Context.currentPos()
 		});
 
-		for (i in 0...n)
+		for (i in 0...n) {
 			newFields.push(makeDecoder(methods[i]));
+		}
 
 		newFields.push(makeDispatcher(methods));
 
@@ -181,65 +213,55 @@ class RPCHandlerMacro {
 		};
 	}
 
-	static function makeDecoder(m:{
-		idx:Int,
-		name:String,
-		pos:Position,
-		args:Array<FunctionArg>,
-		op:Int
-	}):Field {
+	static function makeDecoder(m:MethodInfo):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
 
 		for (i in 0...m.args.length) {
 			var a = m.args[i];
-			if (a.type == null)
+			if (a.type == null) {
 				Context.error("RPC arg '" + a.name + "' must be typed", m.pos);
-
-			var isOpt = a.opt || isNullWrapped(a.type);
-			var base = unwrapNull(a.type);
-			var key = typeKey(base);
-			var reader = TYPE_READERS.get(key);
-			if (reader == null)
-				Context.error("Unsupported RPC arg type " + key + " for '" + a.name + "'", m.pos);
+			}
 
 			var local = "__a" + i;
-			var read = reader(macro input);
-
-			var varDecl:Expr = {
+			var read = readerForArg(a, m.pos);
+			stmts.push({
 				expr: EVars([
 					{
 						name: local,
-						type: base,
-						expr: isOpt ? {
-							expr: EIf(macro(input.readByte() != 0), {
-								expr: EBlock([
-									{
-										expr: EBinop(OpAssign, {expr: EConst(CIdent(local)), pos: m.pos}, read),
-										pos: m.pos
-									}
-								]),
-								pos: m.pos
-							}, null),
-							pos: m.pos
-						} : read
+						type: localTypeForArg(a),
+						expr: read
 					}
 				]),
 				pos: m.pos
-			};
-
-			stmts.push(varDecl);
-
+			});
 			paramExprs.push({expr: EConst(CIdent(local)), pos: m.pos});
 		}
 
-		var callExpr:Expr = {
-			expr: ECall({expr: EConst(CIdent(m.name)), pos: m.pos}, paramExprs),
-			pos: m.pos
-		};
+		var callTarget:Expr = {expr: EConst(CIdent(m.name)), pos: m.pos};
+		var callExpr:Expr = {expr: ECall(callTarget, paramExprs), pos: m.pos};
+
+		if (isVoid(m.ret)) {
+			stmts.push(callExpr);
+		} else {
+			var key = typeKey(m.ret, m.pos);
+			if (!TYPE_WRITERS.exists(key)) {
+				Context.error("Unsupported RPC response return type " + key + " for '" + m.name + "'", m.pos);
+			}
+			stmts.push({
+				expr: EVars([{name: "__result", type: m.ret, expr: callExpr}]),
+				pos: m.pos
+			});
+			var sendResponse = sendResponseExpr(m.op, macro requestId, macro __result, m.ret, m.pos);
+			stmts.push(macro {
+				if (requestId != 0) {
+					$e{sendResponse};
+				}
+			});
+		}
 
 		var body:Expr = {
-			expr: EBlock(stmts.concat([callExpr])),
+			expr: EBlock(stmts),
 			pos: m.pos
 		};
 
@@ -248,26 +270,26 @@ class RPCHandlerMacro {
 			access: [APrivate, AInline],
 			kind: FFun({
 				ret: macro :Void,
-				args: [{name: "input", type: macro :crossbyte.io.ByteArrayInput}],
+				args: [
+					{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+					{name: "requestId", type: macro :Int}
+				],
 				expr: body
 			}),
 			pos: m.pos
 		};
 	}
 
-	static function makeDispatcher(methods:Array<{
-		idx:Int,
-		name:String,
-		pos:Position,
-		args:Array<FunctionArg>,
-		op:Int
-	}>):Field {
+	static function makeDispatcher(methods:Array<MethodInfo>):Field {
 		var cases = new Array<Case>();
 		for (i in 0...methods.length) {
 			var fname = "__rpc_decode_call_" + methods[i].name;
 			cases.push({
 				values: [macro $v{i}],
-				expr: macro return this.$fname(input)
+				expr: macro {
+					this.$fname(input, requestId);
+					return;
+				}
 			});
 		}
 		var defaultExpr:Expr = macro throw "Unknown RPC index";
@@ -278,7 +300,6 @@ class RPCHandlerMacro {
 		};
 
 		var body = macro {
-			// O(1) perfect hash index for optimal time complexity
 			var b = (function(op:Int) {
 				var x = op;
 				x ^= (x >>> 16);
@@ -286,13 +307,13 @@ class RPCHandlerMacro {
 				x ^= (x >>> 15);
 				x *= 0x846ca68b;
 				x ^= (x >>> 16);
-				if (x < 0)
-					x = -x;
+				x &= 0x7fffffff;
 				return x % RPC_M;
 			})(op);
 
-			var x = (function(op:Int) {
-				var y = op;
+			var d = RPC_G[b];
+			var idx = (function(op:Int, d:Int) {
+				var y = op + d * 0x9e3779b9;
 				y ^= (y >>> 17);
 				y *= 0xed5ad4bb;
 				y ^= (y >>> 11);
@@ -302,10 +323,11 @@ class RPCHandlerMacro {
 				y ^= (y >>> 14);
 				y &= 0x7fffffff;
 				return y % RPC_N;
-			})(op);
-
-			var idx = (x + RPC_G[b]) % RPC_N;
+			})(op, d);
 			var id = RPC_T[idx];
+			if (id < 0 || RPC_OPS[id] != op) {
+				throw "Unknown RPC op";
+			}
 
 			$e{switchExpr};
 		};
@@ -317,11 +339,48 @@ class RPCHandlerMacro {
 				ret: macro :Void,
 				args: [
 					{name: "op", type: macro :Int},
-					{name: "input", type: macro :crossbyte.io.ByteArrayInput}
+					{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+					{name: "requestId", type: macro :Int}
 				],
 				expr: body
 			}),
 			pos: Context.currentPos()
+		};
+	}
+
+	static function readerForArg(a:FunctionArg, pos:Position):Expr {
+		var ct = a.type;
+		var isOpt = a.opt || isNullWrapped(ct);
+		var base = unwrapNull(ct);
+		var key = typeKey(base, pos);
+		var reader = TYPE_READERS.get(key);
+		if (reader == null) {
+			Context.error("Unsupported RPC arg type " + key + " for '" + a.name + "'", pos);
+		}
+
+		var read = reader(macro input);
+		return isOpt ? macro(input.readByte() != 0 ? $read : null) : read;
+	}
+
+	static function localTypeForArg(a:FunctionArg):ComplexType {
+		return a.opt ? makeNullType(unwrapNull(a.type)) : a.type;
+	}
+
+	static function sendResponseExpr(op:Int, requestId:Expr, value:Expr, ret:ComplexType, pos:Position):Expr {
+		var key = typeKey(ret, pos);
+		var writer = TYPE_WRITERS.get(key);
+		var writeValue = writer(macro payload, value);
+		return macro {
+			var payload:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN);
+			payload.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_RESPONSE);
+			payload.writeInt($v{op});
+			payload.writeVarUInt($requestId);
+			$writeValue;
+			payload.flush();
+			var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(payload.length + 4);
+			framed.writeInt(payload.length);
+			framed.writeBytes(payload);
+			this.this_connection.send(framed);
 		};
 	}
 
@@ -339,20 +398,49 @@ class RPCHandlerMacro {
 		}
 	}
 
-	static function typeKey(ct:ComplexType):String {
-		return switch ct {
-			case TPath(tp):
-				(tp.pack.length > 0 ? tp.pack.join(".") + "." : "") + tp.name;
-			case _:
-				ComplexTypeTools.toString(ct);
+	static function makeNullType(ct:ComplexType):ComplexType {
+		return TPath({pack: [], name: "Null", params: [TPType(ct)]});
+	}
+
+	static function isVoid(ct:ComplexType):Bool {
+		return switch (ct) {
+			case TPath({pack: [], name: "Void"}): true;
+			case _: false;
 		}
 	}
 
-	private static function injectPing(fields:Array<Field>):Void {
-		// we provided an abstract function in the base class so we dont need this anymore
-		//	if (fields.exists(f -> f.name == "ping"))
-		//		return;
+	static function typeKey(ct:ComplexType, pos:Position):String {
+		try {
+			return resolvedTypeKey(Context.resolveType(ct, pos));
+		} catch (_:Dynamic) {
+			return switch (ct) {
+				case TPath(tp):
+					var pack:String = tp.pack.length > 0 ? tp.pack.join(".") + "." : "";
+					pack + tp.name;
+				case _:
+					ComplexTypeTools.toString(ct);
+			}
+		}
+	}
 
+	static function resolvedTypeKey(type:Type):String {
+		return switch (Context.follow(type)) {
+			case TAbstract(t, _):
+				pathKey(t.get().pack, t.get().name);
+			case TInst(t, _):
+				pathKey(t.get().pack, t.get().name);
+			case TType(t, _):
+				pathKey(t.get().pack, t.get().name);
+			case _:
+				Std.string(type);
+		}
+	}
+
+	static inline function pathKey(pack:Array<String>, name:String):String {
+		return (pack.length > 0 ? pack.join(".") + "." : "") + name;
+	}
+
+	private static function injectPing(fields:Array<Field>):Void {
 		var pos = Context.currentPos();
 		fields.push({
 			name: "ping",
@@ -361,16 +449,22 @@ class RPCHandlerMacro {
 				args: [],
 				ret: macro :Void,
 				expr: macro {
-					// instead of noop, maybe we shouldnt call it at all
 					#if debug
 					crossbyte.utils.Logger.info("PACKET SENT: PING");
-					#else
-					- 1;
 					#end
 				}
 			}),
 			pos: pos
 		});
 	}
+}
+
+private typedef MethodInfo = {
+	idx:Int,
+	name:String,
+	pos:Position,
+	args:Array<FunctionArg>,
+	ret:ComplexType,
+	op:Int
 }
 #end
