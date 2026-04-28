@@ -57,6 +57,7 @@ class URLLoader extends EventDispatcher {
 
 	@:noCompletion private function __disposeWorker():Void {
 		if (__loaderWorker == null) {
+			__busy = false;
 			return;
 		}
 		__loaderWorker.removeEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
@@ -69,12 +70,15 @@ class URLLoader extends EventDispatcher {
 
 	@:noCompletion private function __onWorkerProgress(e:ThreadEvent):Void {
 		var obj:Dynamic = e.message;
+		if (obj == null || !Reflect.hasField(obj, "type")) {
+			return;
+		}
 
 		switch (obj.type) {
 			case "progress":
 				bytesTotal = obj.value.bytesTotal;
 				bytesLoaded = obj.value.bytesLoaded;
-				dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, bytesTotal, bytesLoaded));
+				dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, bytesLoaded, bytesTotal));
 			case "status":
 				dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, obj.value));
 		}
@@ -82,13 +86,23 @@ class URLLoader extends EventDispatcher {
 
 	@:noCompletion private function __onWorkerError(e:ThreadEvent):Void {
 		var errorMessage:Dynamic = e.message;
-		var dataBytes:Bytes = errorMessage.dataBytes;
+		var dataBytes:Bytes = null;
+		var message:String = Std.string(errorMessage);
 
-		if(dataBytes != null){
+		if (errorMessage != null && Reflect.isObject(errorMessage)) {
+			if (Reflect.hasField(errorMessage, "dataBytes")) {
+				dataBytes = Reflect.field(errorMessage, "dataBytes");
+			}
+			if (Reflect.hasField(errorMessage, "msg")) {
+				message = Std.string(Reflect.field(errorMessage, "msg"));
+			}
+		}
+
+		if (dataBytes != null) {
 			__parseData(dataBytes);
 		}
 
-		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, errorMessage.msg));
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 		__disposeWorker();
 	}
 
