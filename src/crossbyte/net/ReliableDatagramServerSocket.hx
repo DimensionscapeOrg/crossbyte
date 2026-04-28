@@ -90,19 +90,27 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return;
 		}
 
+		__closed = true;
 		listening = false;
-		__socket.removeEventListener(DatagramSocketDataEvent.DATA, __onData);
+		try {
+			__socket.removeEventListener(DatagramSocketDataEvent.DATA, __onData);
+		} catch (_:Dynamic) {}
 
 		var connections:Array<ReliableDatagramSocket> = [];
 		for (connection in __connections) {
 			connections.push(connection);
 		}
-		for (connection in connections) {
-			connection.__dispose(true);
-		}
 		__connections = new StringMap();
-		__socket.close();
-		__closed = true;
+
+		for (connection in connections) {
+			try {
+				connection.__dispose(true);
+			} catch (_:Dynamic) {}
+		}
+
+		try {
+			__socket.close();
+		} catch (_:Dynamic) {}
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 
