@@ -1,5 +1,9 @@
 # CrossByte
 
+<p align="center">
+  <img src="crossbyte.png" alt="CrossByte logo" width="160" />
+</p>
+
 CrossByte is a cross-platform Haxe framework for networked, event-driven, and systems-oriented applications.
 
 It is built for projects that want a strong runtime foundation without dragging in a giant engine shape: sockets, HTTP, RPC, timers, workers, files, crypto, compression, IPC, and a set of practical data structures all live in one coherent core.
