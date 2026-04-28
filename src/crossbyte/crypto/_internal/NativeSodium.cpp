@@ -8,7 +8,7 @@
 #include <string>
 #include <mutex>
 
-#if defined(_WIN32) && defined(_WIN64) && !defined(_M_ARM64)
+#if defined(_WIN32) && defined(HXCPP_M64) && !defined(HXCPP_ARM64)
 
 extern "C" {
 	int sodium_init(void);
