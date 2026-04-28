@@ -9,6 +9,7 @@
 typedef int SocketLen;
 #else
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -18,6 +19,10 @@ typedef int SOCKET;
 #define INVALID_SOCKET (-1)
 #define SOCKET_ERROR (-1)
 typedef socklen_t SocketLen;
+#endif
+
+#if !defined(MSG_NOSIGNAL)
+#define MSG_NOSIGNAL 0
 #endif
 
 namespace {
@@ -107,6 +112,60 @@ static Array<int> crossbyte_socket_name_info(Dynamic socket, bool peer) {
 	return crossbyte_address_to_array(reinterpret_cast<sockaddr*>(&address), addressLength);
 }
 
+static void crossbyte_sockaddr_to_dynamic(const sockaddr* address, SocketLen length, Dynamic outAddress) {
+	if (address == 0 || outAddress.mPtr == 0) {
+		return;
+	}
+
+	if (address->sa_family == AF_INET && length >= (SocketLen)sizeof(sockaddr_in)) {
+		const sockaddr_in* ipv4 = reinterpret_cast<const sockaddr_in*>(address);
+		outAddress->__SetField(HX_CSTRING("host"), *(const int*)&ipv4->sin_addr, hx::paccDynamic);
+		outAddress->__SetField(HX_CSTRING("port"), ntohs(ipv4->sin_port), hx::paccDynamic);
+		outAddress->__SetField(HX_CSTRING("ipv6"), null(), hx::paccDynamic);
+		return;
+	}
+
+	if (address->sa_family == AF_INET6 && length >= (SocketLen)sizeof(sockaddr_in6)) {
+		const sockaddr_in6* ipv6 = reinterpret_cast<const sockaddr_in6*>(address);
+		const unsigned char* bytes = reinterpret_cast<const unsigned char*>(&ipv6->sin6_addr);
+		Array<unsigned char> encoded = Array_obj<unsigned char>::__new(16, 16);
+		for (int i = 0; i < 16; ++i) {
+			encoded[i] = bytes[i];
+		}
+		outAddress->__SetField(HX_CSTRING("host"), 0, hx::paccDynamic);
+		outAddress->__SetField(HX_CSTRING("port"), ntohs(ipv6->sin6_port), hx::paccDynamic);
+		outAddress->__SetField(HX_CSTRING("ipv6"), encoded, hx::paccDynamic);
+	}
+}
+
+static void crossbyte_dynamic_to_sockaddr(Dynamic inAddress, sockaddr_storage& storage, SocketLen& length) {
+	memset(&storage, 0, sizeof(storage));
+
+	int port = inAddress->__Field(HX_CSTRING("port"), hx::paccDynamic);
+	Dynamic ipv6Value = inAddress->__Field(HX_CSTRING("ipv6"), hx::paccDynamic);
+
+	if (ipv6Value.mPtr != 0) {
+		Array<unsigned char> ipv6 = ipv6Value.Cast<Array<unsigned char> >();
+		if (ipv6->length < 16) {
+			hx::Throw(HX_CSTRING("Invalid IPv6 address"));
+		}
+
+		sockaddr_in6* address = reinterpret_cast<sockaddr_in6*>(&storage);
+		address->sin6_family = AF_INET6;
+		address->sin6_port = htons(port);
+		memcpy(&address->sin6_addr, &ipv6[0], 16);
+		length = sizeof(sockaddr_in6);
+		return;
+	}
+
+	int host = inAddress->__Field(HX_CSTRING("host"), hx::paccDynamic);
+	sockaddr_in* address = reinterpret_cast<sockaddr_in*>(&storage);
+	address->sin_family = AF_INET;
+	address->sin_port = htons(port);
+	*(int*)&address->sin_addr.s_addr = host;
+	length = sizeof(sockaddr_in);
+}
+
 static void crossbyte_block_error() {
 #if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
 	int error = WSAGetLastError();
@@ -149,4 +208,91 @@ Array<int> crossbyte_socket_host_info(Dynamic socket) {
 
 Array<int> crossbyte_socket_peer_info(Dynamic socket) {
 	return crossbyte_socket_name_info(socket, true);
+}
+
+int crossbyte_socket_send_to(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int bufferLength = buffer->length;
+	if (position < 0 || length < 0 || position > bufferLength || position + length > bufferLength) {
+		hx::Throw(HX_CSTRING("Invalid data position"));
+	}
+
+	sockaddr_storage nativeAddress;
+	SocketLen nativeAddressLength = 0;
+	crossbyte_dynamic_to_sockaddr(address, nativeAddress, nativeAddressLength);
+
+	const char* data = (const char*)&buffer[0];
+
+	hx::EnterGCFreeZone();
+	int sent;
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	sent = sendto(
+		nativeSocket,
+		data + position,
+		length,
+		MSG_NOSIGNAL,
+		reinterpret_cast<sockaddr*>(&nativeAddress),
+		nativeAddressLength
+	);
+#else
+	do {
+		sent = sendto(
+			nativeSocket,
+			data + position,
+			length,
+			MSG_NOSIGNAL,
+			reinterpret_cast<sockaddr*>(&nativeAddress),
+			nativeAddressLength
+		);
+	} while (sent == SOCKET_ERROR && errno == EINTR);
+#end
+	if (sent == SOCKET_ERROR) {
+		crossbyte_block_error();
+	}
+	hx::ExitGCFreeZone();
+	return sent;
+}
+
+int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address) {
+	SOCKET nativeSocket = crossbyte_val_sock(socket);
+	int bufferLength = buffer->length;
+	if (position < 0 || length < 0 || position > bufferLength || position + length > bufferLength) {
+		hx::Throw(HX_CSTRING("Invalid data position"));
+	}
+
+	sockaddr_storage nativeAddress;
+	memset(&nativeAddress, 0, sizeof(nativeAddress));
+	SocketLen nativeAddressLength = sizeof(nativeAddress);
+	char* data = (char*)&buffer[0];
+
+	hx::EnterGCFreeZone();
+	int received;
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	received = recvfrom(
+		nativeSocket,
+		data + position,
+		length,
+		MSG_NOSIGNAL,
+		reinterpret_cast<sockaddr*>(&nativeAddress),
+		&nativeAddressLength
+	);
+#else
+	do {
+		received = recvfrom(
+			nativeSocket,
+			data + position,
+			length,
+			MSG_NOSIGNAL,
+			reinterpret_cast<sockaddr*>(&nativeAddress),
+			&nativeAddressLength
+		);
+	} while (received == SOCKET_ERROR && errno == EINTR);
+#end
+	if (received == SOCKET_ERROR) {
+		crossbyte_block_error();
+	}
+	hx::ExitGCFreeZone();
+
+	crossbyte_sockaddr_to_dynamic(reinterpret_cast<sockaddr*>(&nativeAddress), nativeAddressLength, address);
+	return received;
 }
