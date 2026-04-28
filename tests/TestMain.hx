@@ -12,6 +12,7 @@ class TestMain {
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte._internal.http.HttpTest());
 		runner.addCase(new crossbyte.io.ByteArrayTest());
+		runner.addCase(new crossbyte.url.URLTest());
 		runner.addCase(new crossbyte.url.URLLoaderHttpTest());
 		runner.addCase(new crossbyte.url.URLLoaderTest());
 		runner.addCase(new crossbyte.url.URLVariablesTest());
