@@ -1,7 +1,9 @@
 package crossbyte.io;
 
 import crossbyte.core.CrossByte;
+import crossbyte.events.Event;
 import crossbyte.events.FileListEvent;
+import crossbyte.events.IOErrorEvent;
 import haxe.io.Bytes;
 import sys.io.File as HaxeFile;
 import utest.Assert;
@@ -132,6 +134,102 @@ class FileTest extends utest.Test {
 			Assert.equals(1, directoryEvent.files.length);
 			Assert.equals(child.nativePath, directoryEvent.files[0].nativePath);
 			Assert.equals("child.txt", directoryEvent.files[0].name);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testCopyToAsyncDispatchesCompleteAndCopiesContents():Void {
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source.txt");
+		var destination = root.resolvePath("destination.txt");
+		var completeSeen = false;
+
+		try {
+			source.save(ByteArray.fromBytes(Bytes.ofString("async-copy")));
+			source.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			source.copyToAsync(destination, true);
+
+			pumpUntil(() -> completeSeen, 2.0);
+
+			Assert.isTrue(completeSeen);
+			Assert.isTrue(destination.exists);
+			Assert.equals("async-copy", HaxeFile.getContent(destination.nativePath));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testMoveToAsyncDispatchesCompleteAndRemovesSource():Void {
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source.txt");
+		var destination = root.resolvePath("destination.txt");
+		var completeSeen = false;
+
+		try {
+			source.save(ByteArray.fromBytes(Bytes.ofString("async-move")));
+			source.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			source.moveToAsync(destination, true);
+
+			pumpUntil(() -> completeSeen, 2.0);
+
+			Assert.isTrue(completeSeen);
+			Assert.isFalse(source.exists);
+			Assert.isTrue(destination.exists);
+			Assert.equals("async-move", HaxeFile.getContent(destination.nativePath));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testDeleteDirectoryAsyncDispatchesCompleteAndRemovesContents():Void {
+		var root = File.createTempDirectory();
+		var nested = root.resolvePath("nested");
+		var payload = nested.resolvePath("payload.txt");
+		var completeSeen = false;
+
+		try {
+			nested.createDirectory();
+			payload.save(ByteArray.fromBytes(Bytes.ofString("payload")));
+			root.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			root.deleteDirectoryAsync(true);
+
+			pumpUntil(() -> completeSeen, 2.0);
+
+			Assert.isTrue(completeSeen);
+			Assert.isFalse(root.exists);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testCopyToAsyncDispatchesIoErrorWhenOverwriteIsFalse():Void {
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source.txt");
+		var destination = root.resolvePath("destination.txt");
+		var errorEvent:IOErrorEvent = null;
+		var completeSeen = false;
+
+		try {
+			source.save(ByteArray.fromBytes(Bytes.ofString("source")));
+			destination.save(ByteArray.fromBytes(Bytes.ofString("destination")));
+			source.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> errorEvent = event);
+			source.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			source.copyToAsync(destination, false);
+
+			pumpUntil(() -> errorEvent != null || completeSeen, 2.0);
+
+			Assert.notNull(errorEvent);
+			Assert.isFalse(completeSeen);
+			Assert.equals("destination", HaxeFile.getContent(destination.nativePath));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
