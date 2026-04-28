@@ -32,6 +32,10 @@ class Worker extends EventDispatcher {
 	public var state(default, null):WorkerState;
 
 	@:noCompletion private var __runMessage:Dynamic;
+	@:noCompletion private var __runtime:CrossByte;
+	#if (cpp || neko || hl)
+	@:noCompletion private var __tickListener:TickEvent->Void;
+	#end
 
 	#if (cpp || neko || hl)
 	@:noCompletion private var __messageQueue:Deque<WorkerMessage>;
@@ -40,6 +44,9 @@ class Worker extends EventDispatcher {
 
 	public function new() {
 		super();
+		#if (cpp || neko || hl)
+		__tickListener = __update;
+		#end
 		__resetState();
 	}
 
@@ -51,7 +58,7 @@ class Worker extends EventDispatcher {
 		}
 		#if (cpp || neko || hl)
 		__workerThread = null;
-		CrossByte.current().removeEventListener(TickEvent.TICK, __update);
+		__detachRuntimeListener();
 		#end
 		if (doClean) {
 			__cleanResources();
@@ -60,7 +67,7 @@ class Worker extends EventDispatcher {
 
 	public function clean():Void {
 		#if (cpp || neko || hl)
-		CrossByte.current().removeEventListener(TickEvent.TICK, __update);
+		__detachRuntimeListener();
 		#end
 		__cleanResources();
 		__resetState();
@@ -76,9 +83,10 @@ class Worker extends EventDispatcher {
 		__runMessage = message;
 
 		#if (cpp || neko || hl)
+		__runtime = CrossByte.current();
 		__messageQueue = new Deque();
 		__workerThread = Thread.create(__doWork);
-		CrossByte.current().addEventListener(TickEvent.TICK, __update);
+		__runtime.addEventListener(TickEvent.TICK, __tickListener);
 		#else
 		__doWork();
 		#end
@@ -145,6 +153,7 @@ class Worker extends EventDispatcher {
 		__workerThread = null;
 		__messageQueue = null;
 		#end
+		__runtime = null;
 		__runMessage = null;
 		doWork = null;
 	}
@@ -186,7 +195,13 @@ class Worker extends EventDispatcher {
 	}
 
 	#if (cpp || neko || hl)
-	@:noCompletion private function __update(dt:Float):Void {
+	@:noCompletion private inline function __detachRuntimeListener():Void {
+		if (__runtime != null) {
+			__runtime.removeEventListener(TickEvent.TICK, __tickListener);
+		}
+	}
+
+	@:noCompletion private function __update(event:TickEvent):Void {
 		var msg = __messageQueue.pop(false);
 
 		if (msg == null) {
@@ -195,12 +210,12 @@ class Worker extends EventDispatcher {
 
 		switch (msg) {
 			case Error(message):
-				CrossByte.current().removeEventListener(TickEvent.TICK, __update);
+				__detachRuntimeListener();
 				if (!canceled) {
 					__finishFailed(message);
 				}
 			case Complete(message):
-				CrossByte.current().removeEventListener(TickEvent.TICK, __update);
+				__detachRuntimeListener();
 				if (!canceled) {
 					__finishCompleted(message);
 				}
