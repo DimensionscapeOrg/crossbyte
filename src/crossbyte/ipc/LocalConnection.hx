@@ -1,4 +1,4 @@
-package openfl.net;
+package crossbyte.ipc;
 
 import haxe.Timer;
 import haxe.io.BytesBuffer;
@@ -29,7 +29,7 @@ import crossbyte.events.EventDispatcher;
  *
  */
 @:access(haxe.Serializer)
-@:access(openfl.net._internal.NativeLocalConnection)
+@:access(crossbyte.ipc._internal.NativeLocalConnection)
 class LocalConnection extends EventDispatcher {
 	/**
 	 * The object that handles incoming messages.
@@ -128,7 +128,7 @@ class LocalConnection extends EventDispatcher {
 		// trace("Send message status is: " + (status ? "Success" : "Failure"));
 		var level:String = status ? "status" : "error";
 
-		dispatchEvent(new StatusEvent(StatusEvent.STATUS, false, false, "0", level));
+		dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", level));
 		// __close(pipe);
 
 		// Update last sent time
@@ -211,8 +211,7 @@ class LocalConnection extends EventDispatcher {
 	}
 
 	/** Resets our serializer internally */
-	@ ;
-	noCompletion private inline function __resetSeralizer():Void {
+	@:noCompletion private inline function __resetSeralizer():Void {
 		__serializer.buf = new StringBuf();
 		__serializer.shash.clear();
 		__serializer.cache = [];
@@ -224,7 +223,7 @@ class LocalConnection extends EventDispatcher {
 		__worker = new Worker();
 		var handleQueue:Deque<HANDLE> = new Deque();
 
-		__worker.doWork.add((name:String) -> {
+		__worker.doWork = (name:String) -> {
 			var handle:HANDLE = null;
 			try {
 				handle = __createInboundPipe(name);
@@ -235,7 +234,7 @@ class LocalConnection extends EventDispatcher {
 			if (handle != null) {
 				__runLocalConnection(name);
 			}
-		});
+		};
 
 		__worker.run(connectionName);
 
