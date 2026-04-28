@@ -169,7 +169,7 @@ class TimerHeap implements ITimerScheduler {
 		if (!isEmpty) {
 			var top:TimerNode = queue.peek();
 
-			while (top != null && top.enabled && top.time <= __now #if precision_tick + EPS #end && fired < maxFires) {
+			while (top != null && top.time <= __now #if precision_tick + EPS #end && fired < maxFires) {
 				queue.dequeue();
 				var node:TimerNode = top;
 
