@@ -180,7 +180,7 @@ class TimerHeap implements ITimerScheduler {
 
 					#if timer_burst_catchup
 					if (node.interval > 0) {
-						var steps:Int = Std.int(Math.floor((_now - node.time) / node.interval)) + 1;
+						var steps:Int = Std.int(Math.floor((__now - node.time) / node.interval)) + 1;
 						if (steps < 1) {
 							steps = 1;
 						}
