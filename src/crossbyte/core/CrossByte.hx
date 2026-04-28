@@ -8,6 +8,7 @@ import crossbyte.utils.ThreadPriority;
 #if (cpp && windows)
 import crossbyte.core._internal.NativeWindowsRuntime;
 #end
+import crossbyte.errors.IllegalOperationError;
 import sys.net.Socket;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -81,7 +82,11 @@ final class CrossByte extends EventDispatcher {
 	 * @param loopType The loop strategy to use for the child runtime.
 	 * @return The newly created non-primordial CrossByte instance.
 	 */
-	public static inline function make(loopType:MainLoopType = DEFAULT):CrossByte {
+	public static function make(loopType:MainLoopType = DEFAULT):CrossByte {
+		if (__primordial == null) {
+			throw new IllegalOperationError("CrossByte.make() requires a primordial CrossByte instance. Create an Application, HostApplication, ServerApplication, or primordial CrossByte before creating child runtimes.");
+		}
+
 		var instance:CrossByte = new CrossByte(false, loopType);
 		return instance;
 	}
