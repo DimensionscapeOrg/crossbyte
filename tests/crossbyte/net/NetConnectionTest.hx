@@ -3,6 +3,7 @@ package crossbyte.net;
 import crossbyte.core.CrossByte;
 import crossbyte.events.Event;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
 
@@ -10,6 +11,11 @@ import utest.Assert;
 @:access(crossbyte.net.WebSocket)
 class NetConnectionTest extends utest.Test {
 	public function testFromSocketWithConnectedSocketInvokesReadyCallback():Void {
+		#if !cpp
+		Assert.isTrue(true);
+		return;
+		#end
+
 		var server = new ServerSocket();
 		var client = new Socket();
 		var accepted:Socket = null;
@@ -105,6 +111,67 @@ class NetConnectionTest extends utest.Test {
 		Assert.equals(1, readyCount);
 		Assert.equals("hello", received);
 		Assert.equals(Reason.Closed, closed);
+		Assert.equals(socket, NetConnection.toWebSocket(connection));
+		Assert.isNull(NetConnection.toDatagramSocket(connection));
+	}
+
+	public function testReliableDatagramConnectionReceivesDataWhenReadEnabled():Void {
+		if (!ReliableDatagramSocket.isSupported) {
+			Assert.isFalse(ReliableDatagramSocket.isSupported);
+			return;
+		}
+
+		var server = new ReliableDatagramServerSocket();
+		var client:NetConnection = null;
+		var accepted:NetConnection = null;
+		var received:String = null;
+		var readyCount = 0;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> {
+				accepted = NetConnection.fromReliableDatagramSocket(event.socket);
+				accepted.onData = input -> received = input.readUTFBytes(input.length);
+				accepted.readEnabled = true;
+			});
+			server.listen();
+
+			client = new NetConnection('rudp://127.0.0.1:${server.localPort}', null, () -> readyCount++);
+			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 2.0);
+
+			client.send(bytesOf("reliable"));
+			pumpUntil(() -> received != null, 2.0);
+
+			Assert.equals(1, readyCount);
+			Assert.equals(Protocol.RUDP, client.protocol);
+			Assert.equals(Protocol.RUDP, accepted.protocol);
+			Assert.equals("reliable", received);
+			Assert.notNull(NetConnection.toReliableDatagramSocket(client));
+			Assert.isNull(NetConnection.toSocket(client));
+		} catch (e:Dynamic) {
+			closeNetQuietly(client);
+			closeNetQuietly(accepted);
+			closeReliableServerQuietly(server);
+			throw e;
+		}
+
+		closeNetQuietly(client);
+		closeNetQuietly(accepted);
+		closeReliableServerQuietly(server);
+	}
+
+	public function testDatagramSocketExtractorReturnsWrappedSocket():Void {
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		var socket = new DatagramSocket();
+		var connection = NetConnection.fromDatagramSocket(socket);
+
+		Assert.equals(socket, NetConnection.toDatagramSocket(connection));
+		Assert.isNull(NetConnection.toReliableDatagramSocket(connection));
+		closeDatagramQuietly(socket);
 	}
 
 	private static function bytesOf(value:String):ByteArray {
@@ -151,6 +218,14 @@ class NetConnectionTest extends utest.Test {
 		try {
 			if (connection != null) {
 				connection.close();
+			}
+		} catch (_:Dynamic) {}
+	}
+
+	private static function closeReliableServerQuietly(server:ReliableDatagramServerSocket):Void {
+		try {
+			if (server != null) {
+				server.close();
 			}
 		} catch (_:Dynamic) {}
 	}

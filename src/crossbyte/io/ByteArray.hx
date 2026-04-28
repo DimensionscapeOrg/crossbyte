@@ -3,10 +3,11 @@ package crossbyte.io;
 // import cpp.zip.Compress;
 // import cpp.zip.Uncompress;
 import haxe.Int64;
+import crossbyte._internal.lz4.Lz4;
 import crossbyte._internal.deflatex.Deflater;
 import crossbyte._internal.deflatex.GZCompressor;
 import crossbyte._internal.deflatex.Inflater;
-import crossbyte._internal.lz4.Lz4;
+import haxe.Exception;
 import haxe.Constraints.IMap;
 import haxe.ds.ObjectMap;
 import haxe.io.Bytes;
@@ -49,8 +50,8 @@ import format.amf3.Writer as AMF3Writer;
 	other platforms, ByteArray is a Haxe abstract over a hidden `ByteArrayData`
 	type. To check if an object is a ByteArray at runtime, import the ByteArray
 	type, then compare with ByteArrayData, such as `Std.is (ba, ByteArrayData)`.
-	In addition, all platforms support zlib compression and decompression, as
-	well as additional formats for object serialization.
+	Compression support is limited to the algorithms available in
+	`CompressionAlgorithm`: `deflate`, `gzip`, and `lz4`.
 	Possible uses of the ByteArray class include the following:
 	* Creating a custom protocol to connect to a server.
 	* Writing your own URLEncoder/URLDecoder.
@@ -851,8 +852,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		var bytes:Bytes = switch (algorithm) {
 			case CompressionAlgorithm.DEFLATE: Deflater.apply(this);
-			// case CompressionAlgorithm.LZMA: Compress.run(bt, 1);
+			case CompressionAlgorithm.GZIP: GZCompressor.compress("data", this);
 			case CompressionAlgorithm.LZ4: Lz4.compress(this);
+			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 
 		if (bytes != null) {
@@ -1209,8 +1211,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		var bytes:Bytes = switch (algorithm) {
 			case CompressionAlgorithm.DEFLATE: Inflater.apply(this);
-			// case CompressionAlgorithm.LZMA: Uncompress.run(this);
+			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this);
 			case CompressionAlgorithm.LZ4: Lz4.decompress(this);
+			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 
 		if (bytes != null) {
@@ -1371,15 +1374,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		if (size > __length) {
 			var bytes = Bytes.alloc(size);
+			var cacheLength = length;
 
 			if (__length > 0) {
-				var cacheLength = length;
 				length = __length;
 				bytes.blit(0, this, 0, __length);
 				length = cacheLength;
 			}
 
 			__setData(bytes);
+			length = cacheLength;
 		}
 
 		if (length < size) {
@@ -1396,20 +1400,19 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	@:noCompletion private function __resize(size:Int):Void {
 		if (size > __length) {
 			var bytes = Bytes.alloc(((size + 1) * 3) >> 1);
+			var cacheLength = length;
 			#if sys
 			bytes.fill(__length, size - __length, 0);
 			#end
 
 			if (__length > 0) {
-				var cacheLength = length;
-
 				length = __length;
 				bytes.blit(0, this, 0, __length);
-
 				length = cacheLength;
 			}
 
 			__setData(bytes);
+			length = cacheLength;
 		}
 
 		if (length < size) {
@@ -1419,16 +1422,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	@:noCompletion private inline function __setData(bytes:Bytes):Void {
 		#if eval
-		// TODO: Not quite correct, but this will probably
-		// not be called while in a macro
-		var count = bytes.length < length ? bytes.length : length;
-		for (i in 0...count)
+		if (length < bytes.length) {
+			length = bytes.length;
+		}
+		for (i in 0...bytes.length) {
 			set(i, bytes.get(i));
-		#else
-		b = bytes.b;
-		#end
-
+		}
 		__length = bytes.length;
+		#else
+		untyped this.b = bytes.getData();
+		__length = bytes.length;
+		#end
 
 		#if js
 		data = bytes.data;

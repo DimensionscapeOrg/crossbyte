@@ -3,6 +3,8 @@ package crossbyte._internal.deflatex;
 import haxe.Constraints.IMap;
 import haxe.ds.BalancedTree;
 import haxe.io.Bytes;
+import haxe.io.BytesBuffer;
+import haxe.io.BytesInput;
 import haxe.Exception;
 import crossbyte._internal.deflatex.utils.BitsOutput;
 import crossbyte._internal.deflatex.utils.BitsInput;
@@ -12,7 +14,6 @@ import haxe.ds.Vector;
  * Inflates a given stream of compressed data.
  */
 class Inflater {
-	private static var INSTANCE:Inflater = new Inflater();
 
 	private static final END_OF_BLOCK:Int = 256;
 	private static final LEN_ORDER:Vector<Int> = Vector.fromArrayCopy([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
@@ -51,30 +52,22 @@ class Inflater {
 	 * @return Bytes with the uncompressed data
 	 */
 	public function decompress(stream:Bytes):Bytes {
-		var input:BitsInput = new BitsInput(stream);
-		var output:BitsOutput = new BitsOutput();
+		var inflater = new haxe.zip.InflateImpl(new BytesInput(stream), false, false);
+		var output = new BytesBuffer();
+		var buffer = Bytes.alloc(8192);
+
 		while (true) {
-			var bfinal:Int = input.readBits(1);
-			var btype:Int = input.readBits(2);
-
-			if (btype == 0) {
-				input.clearBits();
-				processUncompressedBlock(input, output);
-			} else if (btype == 1) {
-				loadDefaultCodes();
-				processHuffmanBlock(input, output);
-			} else if (btype == 2) {
-				readCodes(input, output);
-				processHuffmanBlock(input, output);
-			} else {
-				throw new Exception("Invalid block type");
-			}
-
-			if (bfinal == 1)
+			var read = inflater.readBytes(buffer, 0, buffer.length);
+			output.addBytes(buffer, 0, read);
+			if (read < buffer.length) {
 				break;
+			}
 		}
 
-		return output.getBytes();
+		var result = output.getBytes();
+		crc = new CRC32();
+		crc.updateBytes(result, 0, result.length);
+		return result;
 	}
 
 	private function processUncompressedBlock(input:BitsInput, output:BitsOutput) {
@@ -292,6 +285,6 @@ class Inflater {
 	 * @return Decompressed output
 	 */
 	public static function apply(stream:Bytes):Bytes {
-		return INSTANCE.decompress(stream);
+		return new Inflater().decompress(stream);
 	}
 }

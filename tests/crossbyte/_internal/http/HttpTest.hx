@@ -3,6 +3,8 @@ package crossbyte._internal.http;
 import crossbyte.http.HTTPBackend;
 import crossbyte.http.HTTPBackendRegistry;
 import crossbyte.http.HTTPRequestContext;
+import crossbyte.io.ByteArray;
+import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.url.URL;
 import haxe.io.Bytes;
 import haxe.exceptions.NotImplementedException;
@@ -193,6 +195,65 @@ class HttpTest extends utest.Test {
 		Assert.equals(-1, progress[progress.length - 1].total);
 	}
 
+	public function testLoadDecodesGzipContentEncoding():Void {
+		var encoded = new ByteArray();
+		encoded.writeUTFBytes("hello from gzip");
+		encoded.compress(CompressionAlgorithm.GZIP);
+
+		var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
+		var completed:Bytes = null;
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/encoded');
+		http.onComplete = data -> completed = data;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.notNull(completed);
+		Assert.equals("hello from gzip", completed.toString());
+	}
+
+	public function testLoadDecodesLz4ContentEncoding():Void {
+		var encoded = new ByteArray();
+		encoded.writeUTFBytes("hello from lz4");
+		encoded.compress(CompressionAlgorithm.LZ4);
+
+		var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: lz4\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
+		var completed:Bytes = null;
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/encoded');
+		http.onComplete = data -> completed = data;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.notNull(completed);
+		Assert.equals("hello from lz4", completed.toString());
+	}
+
+	public function testHttpErrorBodyIsDecodedBeforeOnError():Void {
+		var encoded = new ByteArray();
+		encoded.writeUTFBytes("compressed missing");
+		encoded.compress(CompressionAlgorithm.GZIP);
+
+		var fixture = serveOnceWithBody("HTTP/1.1 404 Not Found\r\nContent-Encoding: gzip\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
+		var message:String = null;
+		var errorData:Bytes = null;
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/missing');
+		http.onError = function(msg:String, ?data:Bytes):Void {
+			message = msg;
+			errorData = data;
+		};
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.equals("HTTP error 404", message);
+		Assert.notNull(errorData);
+		Assert.equals("compressed missing", errorData.toString());
+	}
+
 	public function testLoadReportsHttpErrorsWithResponseData():Void {
 		var fixture = serveOnce("HTTP/1.1 404 Not Found\r\nContent-Length: 7\r\n\r\nmissing");
 		var http = new Http('http://127.0.0.1:${fixture.port}/missing');
@@ -256,6 +317,44 @@ class HttpTest extends utest.Test {
 				peer.setTimeout(2.0);
 				fixture.request = readRequest(peer);
 				peer.output.writeString(response);
+				peer.output.flush();
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		if (fixture.error != null) {
+			Assert.fail("HTTP fixture server failed to start: " + fixture.error);
+		}
+		return fixture;
+	}
+
+	private static function serveOnceWithBody(response:String, body:Bytes):OneShotHttpServer {
+		var fixture = new OneShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				peer = server.accept();
+				peer.setTimeout(2.0);
+				fixture.request = readRequest(peer);
+				peer.output.writeString(response);
+				if (body != null && body.length > 0) {
+					peer.output.writeBytes(body, 0, body.length);
+				}
 				peer.output.flush();
 			} catch (e:Dynamic) {
 				fixture.error = e;
