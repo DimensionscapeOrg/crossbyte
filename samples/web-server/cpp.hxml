@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/web-server
+-main SimpleWebServerSample
+--cpp export/web-server

@@ -99,3 +99,27 @@ Useful commands from `samples/rudp`:
 haxe check.hxml
 haxe cpp.hxml
 ```
+
+## Web Server
+
+`web-server` starts a localhost `HTTPServer`, serves a tiny doc root, and can
+either fetch itself in `demo` mode or stay up in `serve` mode.
+
+Useful commands from `samples/web-server`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
+## Worker
+
+`worker` demonstrates `crossbyte.sys.Worker` progress and completion events in
+the smallest host-driven shape.
+
+Useful commands from `samples/worker`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
