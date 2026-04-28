@@ -1,10 +1,15 @@
 package crossbyte.auth.jwt;
 
 @:structInit
+/** Typed view over the standard JWT header fields. */
 abstract JWTHeader(JWTHeaderData) {
+	/** Signature algorithm (`alg`) used by the token. */
+	/** Header `typ` value. Defaults to `JWT` when created via `make`. */
 	public var algorithm(get, set):JWTAlgorithm;
 	public var type(get, set):String;
+	/** Optional key identifier used during signature selection. */
 	public var keyId(get, set):String;
+	/** Optional content type for nested JWT payloads. */
 	public var contentType(get, set):String;
 
 	@:noCompletion private inline function get_algorithm():String {
@@ -43,9 +48,11 @@ abstract JWTHeader(JWTHeaderData) {
 		this = d;
 	}
 
+	/** Builds a standard JWT header for the provided algorithm and optional key id. */
 	public static inline function make(algorithm:JWTAlgorithm, ?keyId:String, ?type:String = "JWT"):JWTHeader
 		return new JWTHeader({alg: algorithm, typ: type, kid: keyId});
 
+	/** Returns `true` when the header uses a supported algorithm and expected type. */
 	public inline function isValid(?requireTypeJWT:Bool = true):Bool {
 		if (requireTypeJWT && this.typ != "JWT") {
 			return false;
@@ -63,6 +70,7 @@ abstract JWTHeader(JWTHeaderData) {
 		return new JWTHeader(d);
 }
 
+/** Raw data shape encoded into a JWT header segment. */
 typedef JWTHeaderData = {
 	var alg:JWTAlgorithm;
 	var typ:String;

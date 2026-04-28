@@ -15,7 +15,17 @@ import php.Syntax;
 @:cppInclude("bcrypt.h")
 @:cppNamespaceCode('#pragma comment(lib, "bcrypt.lib")')
 #end
+/**
+ * Provides cryptographically secure random bytes using the strongest native
+ * source available on the current target.
+ */
 final class SecureRandom {
+	/**
+	 * Returns `length` bytes from the platform CSPRNG.
+	 *
+	 * On unsupported targets this throws rather than silently falling back to a
+	 * non-cryptographic generator.
+	 */
 	public static function getSecureRandomBytes(length:Int):ByteArray {
 		#if cpp
 		if (length <= 0) {
