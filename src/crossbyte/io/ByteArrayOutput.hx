@@ -4,10 +4,6 @@ import haxe.io.Bytes;
 import crossbyte.io.ByteArray;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
  * A buffered and growable binary output stream for writing primitive values into a `ByteArray`.
  *
  * `ByteArrayOutput` allows for efficient, low-level binary serialization using native Haxe types

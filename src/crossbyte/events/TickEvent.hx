@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.events.Event;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event dispatched once per runtime tick with the elapsed delta time. */
 class TickEvent extends Event {
 	public static inline var TICK:String = "tick";
 

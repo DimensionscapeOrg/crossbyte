@@ -28,9 +28,9 @@ import sys.net.Socket as SysSocket;
 #end
 
 /**
- * ...
- * @author Christopher Speciale
- */
+	High-level TCP socket with binary read/write helpers, event dispatch, and
+	CrossByte runtime integration.
+**/
 #if !debug
 @:fileXml('tags="haxe,release"')
 @:noDebug

@@ -1,9 +1,6 @@
 package crossbyte.events;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event dispatched for asynchronous SQL or database operation milestones. */
 class SQLEvent extends Event {
 	public static inline var ANALYZE:EventType<SQLEvent> = "analyze";
 	public static inline var ATTACH:EventType<SQLEvent> = "attach";

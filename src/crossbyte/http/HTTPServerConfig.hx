@@ -4,10 +4,7 @@ import crossbyte.io.File;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.http.config.RewriteRule;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Configuration object for `HTTPServer` routing, limits, headers, and PHP integration. */
 class HTTPServerConfig {
 	public var address:String;
 	public var port:UInt;

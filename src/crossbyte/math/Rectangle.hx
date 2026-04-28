@@ -1,9 +1,6 @@
 package crossbyte.math;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Mutable axis-aligned rectangle with geometry helpers and containment tests. */
 class Rectangle {
 	/**
 		The sum of the `y` and `height` properties.

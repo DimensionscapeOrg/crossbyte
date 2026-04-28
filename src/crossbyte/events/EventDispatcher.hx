@@ -3,11 +3,6 @@ package crossbyte.events;
 import haxe.ds.StringMap;
 import crossbyte.Function;
 
-/**
- * ...
- * @author Christopher Speciale
- */
-
  /**
  * A basic event dispatcher that implements `IEventDispatcher` for managing listeners and dispatching events.
  *
@@ -39,8 +34,6 @@ import crossbyte.Function;
  * @see EventType
  * @see Event
  * @see IEventDispatcher
- *
- * @author Christopher Speciale
  */
 @:access(crossbyte.events.Event)
 class EventDispatcher implements IEventDispatcher {

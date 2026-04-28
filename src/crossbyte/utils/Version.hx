@@ -1,9 +1,6 @@
 package crossbyte.utils;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Semantic version helper with comparable major/minor/patch accessors. */
 abstract Version(String) from String to String {
 	public var major(get, set):Int;
 

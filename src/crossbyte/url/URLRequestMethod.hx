@@ -1,9 +1,6 @@
 package crossbyte.url;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Common HTTP methods used by `URLRequest`. */
 enum abstract URLRequestMethod(String) from String to String {
 	/**
 		Specifies that the URLRequest object is a `DELETE`.

@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.url.URLRequestHeader;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event dispatched when an HTTP request or response reports a status code. */
 class HTTPStatusEvent extends Event {
 	public static inline var HTTP_RESPONSE_STATUS:EventType<HTTPStatusEvent> = "httpResponseStatus";
 

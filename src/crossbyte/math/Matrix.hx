@@ -1,9 +1,6 @@
 package crossbyte.math;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** 2D affine transform matrix used for geometry and display-style math. */
 class Matrix {
 	public var a:Float;
 	public var b:Float;
