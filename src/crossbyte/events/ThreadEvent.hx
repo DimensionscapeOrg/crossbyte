@@ -17,4 +17,11 @@ class ThreadEvent extends Event {
 
 		this.message = message;
 	}
+
+	override public function clone():Event {
+		var event = new ThreadEvent(type, message);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
+	}
 }

@@ -5,7 +5,8 @@ import cpp.ConstPointer;
 import cpp.RawPointer;
 import cpp.UInt8;
 
-@:include("./NativeSodium.cpp")
+@:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/crypto/_internal/NativeSodiumBuild.xml"/>')
+@:include("./NativeSodium.h")
 extern class NativeSodium {
 	@:native("crossbyte_crypto_sodium_available")
 	public static function isAvailable():Bool;
