@@ -6,6 +6,7 @@ obj/
 
 # Local test and coverage output
 coverage/
+.aedifex/
 
 # Editor / OS noise
 .DS_Store
