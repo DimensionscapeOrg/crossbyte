@@ -9,6 +9,7 @@ import sys.db.Connection;
 import sys.db.ResultSet;
 import sys.db.Mysql;
 
+/** MySQL connection wrapper over Haxe's `sys.db.Mysql` support. */
 class MySQLConnection extends EventDispatcher {
 	private static final ALLOWED_CHARSETS = ["utf8mb4", "utf8", "latin1", "ucs2", "utf16", "utf32"];
 

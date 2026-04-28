@@ -10,6 +10,7 @@ import crossbyte.FieldStruct;
 import sys.thread.Deque;
 #end
 
+/** Statement helper for executing PostgreSQL queries and paging result rows. */
 typedef PostgresResultSet = Dynamic;
 
 @:access(crossbyte.db.postgres.PostgresConnection)

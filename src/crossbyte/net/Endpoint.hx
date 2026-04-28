@@ -3,14 +3,30 @@ package crossbyte.net;
 using StringTools;
 
 @:structInit
+/**
+ * Parsed endpoint data produced from a transport URI.
+ */
 class Endpoint {
+	/** Parsed protocol scheme. */
 	public var protocol:Protocol;
+	/** Hostname or IP literal without brackets. */
 	public var address:String;
+	/** Explicit or inferred port number. */
 	public var port:Int;
+	/** `true` when the original URI requested a secure WebSocket (`wss://`). */
 	public var secure:Bool = false;
+	/** WebSocket resource path including query string when present. */
 	public var resource:String = "";
 }
 
+/**
+ * Parses a transport URI into an `Endpoint`.
+ *
+ * Supports `tcp://`, `rudp://`, `ws://`, and `wss://`. Plain TCP/RUDP
+ * endpoints require an explicit port and do not accept path or query
+ * components. WebSocket endpoints accept optional paths and infer port `80` or
+ * `443` when omitted.
+ */
 function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoint:Endpoint):Endpoint {
 	if (input == null) {
 		throw "empty url";
