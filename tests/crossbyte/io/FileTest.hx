@@ -28,6 +28,39 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testLoadReadsBytesIntoData():Void {
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("payload.bin");
+
+		try {
+			HaxeFile.saveBytes(file.nativePath, Bytes.ofString("payload"));
+			file.load();
+
+			Assert.notNull(file.data);
+			Assert.equals(7, file.data.length);
+			Assert.equals("payload", file.data.toString());
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testLoadThrowsForMissingFile():Void {
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("missing.bin");
+		var threw = false;
+
+		try {
+			file.load();
+		} catch (_:Dynamic) {
+			threw = true;
+		}
+
+		Assert.isTrue(threw);
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testDeleteDirectoryRecursivelyRemovesNestedContents():Void {
 		var root = File.createTempDirectory();
 		var nested = root.resolvePath("a").resolvePath("b");
@@ -211,6 +244,27 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testDeleteFileAsyncDispatchesCompleteAndRemovesFile():Void {
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("payload.txt");
+		var completeSeen = false;
+
+		try {
+			file.save(ByteArray.fromBytes(Bytes.ofString("payload")));
+			file.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			file.deleteFileAsync();
+
+			pumpUntil(() -> completeSeen, 2.0);
+
+			Assert.isTrue(completeSeen);
+			Assert.isFalse(file.exists);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testCopyToAsyncDispatchesIoErrorWhenOverwriteIsFalse():Void {
 		var root = File.createTempDirectory();
 		var source = root.resolvePath("source.txt");
@@ -234,6 +288,22 @@ class FileTest extends utest.Test {
 			Assert.fail(Std.string(e));
 		}
 
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testGetDirectoryListingAsyncThrowsForNonDirectory():Void {
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("payload.txt");
+		var threw = false;
+
+		try {
+			file.save(ByteArray.fromBytes(Bytes.ofString("payload")));
+			file.getDirectoryListingAsync();
+		} catch (_:Dynamic) {
+			threw = true;
+		}
+
+		Assert.isTrue(threw);
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
