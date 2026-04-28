@@ -1,11 +1,17 @@
 package crossbyte;
 
 import haxe.ds.StringMap;
-//using FieldStruct;
 
 @:noCompletion
 private typedef BaseStruct<T = Dynamic> = StringMap<T>;
 
+/**
+ * A typed dynamic field bag backed by `StringMap`.
+ *
+ * `FieldStruct<T>` gives CrossByte a compact way to model dynamic, string-keyed
+ * records while still constraining the value lane to `T`. It supports dot access,
+ * bracket access, and iteration over keys or key/value pairs.
+ */
 @:generic
 @:callable
 abstract FieldStruct<T = Dynamic>(BaseStruct<T>) {
@@ -31,6 +37,26 @@ abstract FieldStruct<T = Dynamic>(BaseStruct<T>) {
 
 	public inline function new() {
 		this = new BaseStruct();
+	}
+
+	public inline function keys():Iterator<String> {
+		return (cast this : BaseStruct<T>).keys();
+	}
+
+	public inline function values():Iterator<T> {
+		return (cast this : BaseStruct<T>).iterator();
+	}
+
+	public inline function entries():KeyValueIterator<String, T> {
+		return (cast this : BaseStruct<T>).keyValueIterator();
+	}
+
+	public inline function toObject():Object {
+		var object:Object = new Object();
+		for (entry in (cast this : BaseStruct<T>).keyValueIterator()) {
+			object[entry.key] = entry.value;
+		}
+		return object;
 	}
 
 	@:op(a.b)

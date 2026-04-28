@@ -1,5 +1,6 @@
 package crossbyte.utils;
 
+import crossbyte.Function;
 import haxe.ds.Map;
 import haxe.Timer as HxTimer;
 #if cpp
