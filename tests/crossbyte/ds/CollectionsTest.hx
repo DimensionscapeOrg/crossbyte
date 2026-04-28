@@ -66,6 +66,146 @@ class CollectionsTest extends utest.Test {
 		Assert.equals("1,2,3,4,5", concatenated.join(","));
 	}
 
+	public function testDequeSupportsDoubleEndedAccessAndSizing():Void {
+		var deque = new Deque<String>();
+		deque.add("tail");
+		deque.add("head");
+		deque.push("last");
+
+		Assert.isFalse(deque.isEmpty());
+		Assert.equals(3, deque.size());
+		Assert.equals("head", deque.first());
+		Assert.equals("last", deque.last());
+		Assert.equals("head", deque.pop());
+		Assert.equals("last", deque.remove());
+		Assert.equals("tail", deque.pop());
+		Assert.isTrue(deque.isEmpty());
+		Assert.raises(() -> deque.pop());
+		Assert.raises(() -> deque.remove());
+		Assert.raises(() -> deque.first());
+		Assert.raises(() -> deque.last());
+	}
+
+	public function testPriorityQueueSupportsUpdateRemoveAndClear():Void {
+		var low = {priority: 5, name: "low"};
+		var mid = {priority: 3, name: "mid"};
+		var high = {priority: 1, name: "high"};
+		var queue = new PriorityQueue<{priority:Int, name:String}>((a, b) -> a.priority - b.priority);
+
+		queue.enqueue(low);
+		queue.enqueue(mid);
+		queue.enqueue(high);
+
+		Assert.equals("high", queue.peek().name);
+		Assert.isTrue(queue.contains(mid));
+
+		low.priority = 0;
+		queue.update(low);
+		Assert.equals("low", queue.peek().name);
+
+		high.priority = 6;
+		queue.enqueue(high);
+		Assert.equals(3, queue.size);
+
+		Assert.equals("low", queue.dequeue().name);
+		Assert.isTrue(queue.remove(mid));
+		Assert.isFalse(queue.contains(mid));
+		Assert.equals(1, queue.size);
+
+		queue.clear();
+		Assert.isTrue(queue.isEmpty);
+		Assert.isNull(queue.peek());
+	}
+
+	public function testOrderedMapPreservesInsertionOrderAcrossUpdatesAndReinserts():Void {
+		var map = new OrderedMap<String, Int>();
+		map.set("a", 1);
+		map.set("b", 2);
+		map.set("a", 3);
+
+		var keys = [];
+		for (key in map.keysIterator()) {
+			keys.push(key);
+		}
+		Assert.equals("a,b", keys.join(","));
+
+		var values = [];
+		for (value in map) {
+			values.push(value);
+		}
+		Assert.equals("3,2", values.join(","));
+
+		Assert.equals(3, map.get("a"));
+		Assert.equals(0, map.indexOf("a"));
+		Assert.equals(2, map.ofIndex(1));
+
+		Assert.isTrue(map.remove("a"));
+		map.set("a", 4);
+
+		var pairs = [];
+		for (pair in map.keyValuePairs()) {
+			pairs.push(pair.key + "=" + pair.value);
+		}
+		Assert.equals("b=2,a=4", pairs.join(","));
+		Assert.equals(2, map.length());
+	}
+
+	public function testIndexedMapMaintainsDenseStorageAcrossRemoval():Void {
+		var map = new IndexedMap<String>();
+		map.add("ten", 10);
+		map.add("twenty", 20);
+		map.set(30, "thirty");
+
+		Assert.equals(3, map.length());
+		Assert.equals("ten", map.get(10));
+		Assert.equals("thirty", map.get(30));
+		Assert.isTrue(map.exists(20));
+
+		Assert.isTrue(map.remove(20));
+		Assert.isFalse(map.exists(20));
+		Assert.equals(2, map.length());
+		Assert.isFalse(map.remove(20));
+
+		var keys = map.keys();
+		keys.sort((a, b) -> a - b);
+		Assert.equals("10,30", keys.join(","));
+
+		var values = map.toArray();
+		values.sort((a, b) -> Reflect.compare(a, b));
+		Assert.equals("ten,thirty", values.join(","));
+
+		map.clear();
+		Assert.equals(0, map.length());
+		Assert.equals(0, map.keys().length);
+	}
+
+	public function testListedMapSupportsSwapRemovalAndIndexedAccess():Void {
+		var map = new ListedMap<String, Int>();
+
+		Assert.isTrue(map.set("a", 1));
+		Assert.isTrue(map.set("b", 2));
+		Assert.isFalse(map.set("a", 3));
+		Assert.equals(2, map.length);
+		Assert.equals(3, map.get("a"));
+		Assert.equals(3, map.valueAt(0));
+
+		Assert.isTrue(map.remove("a"));
+		Assert.isFalse(map.exists("a"));
+		Assert.equals(1, map.length);
+		Assert.equals(2, map.valueAt(0));
+		Assert.isFalse(map.remove("missing"));
+
+		var pairs = [];
+		for (pair in map.keyValueIterator()) {
+			pairs.push(pair.key + "=" + pair.value);
+		}
+		Assert.equals("b=2", pairs.join(","));
+
+		map.clear();
+		Assert.equals(0, map.length);
+		Assert.isFalse(map.exists("b"));
+	}
+
 	public function testWeightedGraphSupportsStringNodes():Void {
 		var graph = new WeightedGraph<String>();
 		graph.addEdge("a", "b", 2.5);
