@@ -1,0 +1,6 @@
+--cwd ../..
+-cp src
+-cp samples/web-server
+-main SimpleWebServerSample
+--cpp export/sample-web-server-check
+-D no-compilation
