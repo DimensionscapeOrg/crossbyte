@@ -139,7 +139,12 @@ class Http {
 		}
 
 		var contentLengthHeader:String = __responseHeaders.get(HEADER_CONTENT_LENGTH);
-		var contentLength:Null<Int> = (contentLengthHeader != null) ? Std.parseInt(contentLengthHeader) : null;
+		var contentLength:Null<Int> = __parseContentLength(contentLengthHeader);
+		if (contentLengthHeader != null && contentLength == null) {
+			__close();
+			onError("Download failed: invalid Content-Length");
+			return;
+		}
 
 		var transferEncodingHeader:String = __responseHeaders.get(HEADER_TRANSFER_ENCODING);
 		var isChunked:Bool = false;
@@ -247,7 +252,10 @@ class Http {
 						bytesLoaded += chunkSize;
 						onProgress(bytesLoaded, bytesTotalForProgress);
 
-						__socket.input.read(2);
+						var lineEnd:Bytes = __socket.input.read(2);
+						if (lineEnd == null || lineEnd.length != 2 || lineEnd.get(0) != 13 || lineEnd.get(1) != 10) {
+							throw "Invalid chunk terminator";
+						}
 					}
 					data = buffer.getBytes();
 
@@ -296,6 +304,7 @@ class Http {
 	}
 
 	private function __tryRequest():Void {
+		__status = 0;
 		__responseHeaders = new StringMap();
 
 		try {
@@ -501,6 +510,32 @@ class Http {
 		return StringTools.urlEncode(k) + "=" + StringTools.urlEncode(v);
 	}
 
+	private function __parseContentLength(header:String):Null<Int> {
+		if (header == null) {
+			return null;
+		}
+
+		var values = header.split(",");
+		var parsed:Null<Int> = null;
+		for (raw in values) {
+			var value = StringTools.trim(raw);
+			if (value.length == 0 || !~/^[0-9]+$/.match(value)) {
+				return null;
+			}
+
+			var n:Null<Int> = Std.parseInt(value);
+			if (n == null || n < 0) {
+				return null;
+			}
+			if (parsed != null && parsed != n) {
+				return null;
+			}
+			parsed = n;
+		}
+
+		return parsed;
+	}
+
 	private function __buildQuery(obj:Dynamic):String {
 		var parts:Array<String> = [];
 
@@ -552,8 +587,12 @@ class Http {
 		var port:Int = base.port;
 		var portPart:String = (port != 80 && port != 443) ? (":" + port) : "";
 
+		if (StringTools.startsWith(loc, "//")) {
+			return scheme + ":" + loc;
+		}
+
 		if (loc.charAt(0) == "/") {
-			return scheme + "://" + host + portPart + loc;
+			return scheme + "://" + host + portPart + __normalizeReferencePath(loc);
 		}
 
 		var basePath:String = (base.path != null && base.path.length > 0) ? base.path : "/";
@@ -561,6 +600,45 @@ class Http {
 		var dir:String = (slash >= 0) ? basePath.substr(0, slash + 1) : "/";
 		var joined:String = dir + loc;
 
-		return scheme + "://" + host + portPart + joined;
+		return scheme + "://" + host + portPart + __normalizeReferencePath(joined);
+	}
+
+	private function __normalizeReferencePath(pathWithQuery:String):String {
+		var pathEnd:Int = pathWithQuery.length;
+		var queryIndex:Int = pathWithQuery.indexOf("?");
+		var fragmentIndex:Int = pathWithQuery.indexOf("#");
+		if (queryIndex >= 0 && (fragmentIndex < 0 || queryIndex < fragmentIndex)) {
+			pathEnd = queryIndex;
+		} else if (fragmentIndex >= 0) {
+			pathEnd = fragmentIndex;
+		}
+
+		var suffix:String = pathWithQuery.substr(pathEnd);
+		var path:String = pathWithQuery.substr(0, pathEnd);
+		var absolute:Bool = StringTools.startsWith(path, "/");
+		var trailingSlash:Bool = StringTools.endsWith(path, "/");
+		var output:Array<String> = [];
+
+		for (segment in path.split("/")) {
+			if (segment == "" || segment == ".") {
+				continue;
+			}
+			if (segment == "..") {
+				if (output.length > 0) {
+					output.pop();
+				}
+			} else {
+				output.push(segment);
+			}
+		}
+
+		var normalized:String = (absolute ? "/" : "") + output.join("/");
+		if (normalized == "") {
+			normalized = absolute ? "/" : "";
+		} else if (trailingSlash && !StringTools.endsWith(normalized, "/")) {
+			normalized += "/";
+		}
+
+		return normalized + suffix;
 	}
 }
