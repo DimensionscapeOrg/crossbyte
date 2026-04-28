@@ -11,6 +11,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.core.CrossByteTest());
 	}
 
+	public static function addFoundation(runner:Runner):Void {
+		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
+	}
+
 	public static function addEvents(runner:Runner):Void {
 		runner.addCase(new crossbyte.events.EventDispatcherTest());
 	}
@@ -87,6 +91,7 @@ class TestSuites {
 	public static function addAll(runner:Runner):Void {
 		addAuth(runner);
 		addCore(runner);
+		addFoundation(runner);
 		addEvents(runner);
 		addDataStructures(runner);
 		addHttp(runner);
