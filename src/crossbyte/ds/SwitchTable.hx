@@ -6,7 +6,7 @@ import haxe.macro.Expr;
 class SwitchTable {
 	/**
 	 * Build a compile-time switch dispatcher from a list of key-handler pairs.
-	 * Returns a function of type `String -> Void`.
+	 * Returns a function of type `(key:Dynamic, ...args:Dynamic) -> Void`.
 	 *
 	 * Example:
 	 * ```haxe
@@ -24,14 +24,12 @@ class SwitchTable {
 			default: Context.error("Expected an array of { key, handler }", cases.pos);
 		}
 
-		var hasArgs:Bool = false;
 		var switchCases:Array<Case> = [];
 		for (e in parsed) {
 			switch (e.expr) {
 				case EObjectDecl(fields):
 					var key = null;
 					var handler = null;
-					var args = null;
 
 					for (f in fields) {
 						switch f.field {
@@ -51,33 +49,20 @@ class SwitchTable {
 						Context.error("Missing key or handler in case object", e.pos);
 					}
 
-					switch (Context.typeof(handler)) {
-						case TFun(args, _):
-							if (args.length == 0) {
-								switchCases.push({
-									values: [macro $v{key}],
-									expr: macro ${handler}()
-								});
-							} else if (args.length > 0) {
-                                hasArgs = true;
-
-								switchCases.push({
-									values: [macro $v{key}],
-									expr: macro ${handler}($i{"args"})
-								});
-							}
-						default:
-					}
+					switchCases.push({
+						values: [macro $v{key}],
+						expr: macro Reflect.callMethod(${handler}, ${handler}, $i{"args"})
+					});
 
 				case _:
 					Context.error("Expected object literal for SwitchCase", e.pos);
 			}
 		}
 
-		var funcArgs:Array<FunctionArg> = [{name: "key", type: macro :Dynamic}];
-		if (hasArgs) {
-			funcArgs.push({name: "args", type: macro :haxe.Rest<Dynamic>, opt: false});
-		}
+		var funcArgs:Array<FunctionArg> = [
+			{name: "key", type: macro :Dynamic},
+			{name: "args", type: macro :haxe.Rest<Dynamic>, opt: false}
+		];
 		return {
 			expr: EFunction(FAnonymous, {
 				args: funcArgs,
