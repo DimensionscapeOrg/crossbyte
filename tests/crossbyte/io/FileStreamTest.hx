@@ -59,6 +59,64 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	public function testReadBytesHonorsDestinationOffsetAndLength():Void {
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var input = new FileStream();
+		var target = ByteArray.fromBytes(haxe.io.Bytes.ofString("__!!!!"));
+
+		try {
+			output.open(file, FileMode.WRITE);
+			output.writeUTFBytes("abcdef");
+			output.close();
+
+			input.open(file, FileMode.READ);
+			input.readBytes(target, 2, 3);
+
+			Assert.equals(6, target.length);
+			target.position = 0;
+			Assert.equals("__abc!", target.readUTFBytes(target.length));
+			Assert.equals(3, input.position);
+			Assert.equals(3, input.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try output.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
+	public function testTruncateShrinksFileAtCurrentPosition():Void {
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var input = new FileStream();
+
+		try {
+			output.open(file, FileMode.WRITE);
+			output.writeUTFBytes("abcdef");
+			output.position = 4;
+			output.truncate();
+			output.close();
+
+			Assert.equals(4, file.size);
+
+			input.open(file, FileMode.READ);
+			Assert.equals("abcd", input.readUTFBytes(4));
+			Assert.equals(0, input.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try output.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
 	public function testWriteUTFUsesUtf8ByteLength():Void {
 		var file = File.createTempFile();
 		var output = new FileStream();
