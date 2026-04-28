@@ -126,6 +126,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __isConnecting:Bool;
 	@:noCompletion private var __isDirty = false;
 	@:noCompletion private var flushFull:Bool = false;
+	// Hot socket events are reused to reduce steady-state allocation churn.
+	// These events are ephemeral during dispatch and must not be retained.
+	@:noCompletion private var __pooledConnectEvent:Event;
+	@:noCompletion private var __pooledConnectEventInUse:Bool = false;
+	@:noCompletion private var __pooledCloseEvent:Event;
+	@:noCompletion private var __pooledCloseEventInUse:Bool = false;
+	@:noCompletion private var __pooledSocketDataEvent:ProgressEvent;
+	@:noCompletion private var __pooledSocketDataEventInUse:Bool = false;
+	@:noCompletion private var __pooledIOErrorEvent:IOErrorEvent;
+	@:noCompletion private var __pooledIOErrorEventInUse:Bool = false;
 
 	/**
 		Creates a new Socket object. If no parameters are specified, an
@@ -354,9 +364,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__connected = true;
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
-			if (hasEventListener(Event.CONNECT)) {
-				dispatchEvent(new Event(Event.CONNECT));
-			}
+			__dispatchPooledSimpleEvent(Event.CONNECT);
 		}
 		#end
 	}
@@ -958,15 +966,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	// Event Handlers
 	@:noCompletion private function socket_onClose(_):Void {
-		if (hasEventListener(Event.CLOSE)) {
-			dispatchEvent(new Event(Event.CLOSE));
-		}
+		__dispatchPooledSimpleEvent(Event.CLOSE);
 	}
 
 	@:noCompletion private function socket_onError(e):Void {
-		if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-			dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
-		}
+		__dispatchPooledIOError();
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
@@ -986,9 +990,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		if (__input.bytesAvailable > 0) {
-			if (hasEventListener(ProgressEvent.SOCKET_DATA)) {
-				dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, __input.bytesAvailable, 0));
-			}
+			__dispatchPooledSocketData(__input.bytesAvailable, 0);
 		}
 		#end
 	}
@@ -996,9 +998,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function socket_onOpen(_):Void {
 		__connected = true;
 		__closed = false;
-		if (hasEventListener(Event.CONNECT)) {
-			dispatchEvent(new Event(Event.CONNECT));
-		}
+		__dispatchPooledSimpleEvent(Event.CONNECT);
 	}
 
 	@:noCompletion private function this_onTick(?event:TickEvent):Void {
@@ -1052,22 +1052,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if (doClose && connected) {
 			__cleanSocket();
-			if (hasEventListener(Event.CLOSE)) {
-				dispatchEvent(new Event(Event.CLOSE));
-			}
+			__dispatchPooledSimpleEvent(Event.CLOSE);
 		} else if (doClose) {
 			__cleanSocket();
-			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
-			}
+			__dispatchPooledIOError("Connection failed");
 		} else if (doConnect) {
 			__connected = true;
 			__stopConnecting();
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
-			if (hasEventListener(Event.CONNECT)) {
-				dispatchEvent(new Event(Event.CONNECT));
-			}
+			__dispatchPooledSimpleEvent(Event.CONNECT);
 		}
 		if (bLength > 0) {			
 			var newData:Bytes = b.getBytes();
@@ -1086,21 +1080,140 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			newInput.blit(rl, newData, 0, newData.length);
 			__input = newInput;
 			__input.endian = __endian;
-			if (hasEventListener(ProgressEvent.SOCKET_DATA)) {
-				dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, newData.length, 0));
-			}
+			__dispatchPooledSocketData(newData.length, 0);
 		}
 
 		if (__socket != null) {
 			try {
 				flush();
 			} catch (e:IOError) {
-				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, e.message));
-				}
+				__dispatchPooledIOError(e.message);
 			}
 		}
 		#end
+	}
+
+	@:noCompletion private function __dispatchPooledSimpleEvent(type:String):Void {
+		if (!hasEventListener(type)) {
+			return;
+		}
+
+		var pooledEvent:Event;
+		var inUse:Bool;
+		switch (type) {
+			case Event.CONNECT:
+				pooledEvent = __pooledConnectEvent;
+				inUse = __pooledConnectEventInUse;
+			case Event.CLOSE:
+				pooledEvent = __pooledCloseEvent;
+				inUse = __pooledCloseEventInUse;
+			default:
+				dispatchEvent(new Event(type));
+				return;
+		}
+
+		if (inUse) {
+			dispatchEvent(new Event(type));
+			return;
+		}
+
+		if (pooledEvent == null) {
+			pooledEvent = new Event(type);
+			switch (type) {
+				case Event.CONNECT: __pooledConnectEvent = pooledEvent;
+				case Event.CLOSE: __pooledCloseEvent = pooledEvent;
+				default:
+			}
+		} else {
+			@:privateAccess {
+				pooledEvent.target = null;
+				pooledEvent.currentTarget = null;
+			}
+		}
+
+		switch (type) {
+			case Event.CONNECT: __pooledConnectEventInUse = true;
+			case Event.CLOSE: __pooledCloseEventInUse = true;
+			default:
+		}
+
+		try {
+			dispatchEvent(pooledEvent);
+		} catch (error:Dynamic) {
+			switch (type) {
+				case Event.CONNECT: __pooledConnectEventInUse = false;
+				case Event.CLOSE: __pooledCloseEventInUse = false;
+				default:
+			}
+			throw error;
+		}
+
+		switch (type) {
+			case Event.CONNECT: __pooledConnectEventInUse = false;
+			case Event.CLOSE: __pooledCloseEventInUse = false;
+			default:
+		}
+	}
+
+	@:noCompletion private function __dispatchPooledSocketData(bytesLoaded:UInt, bytesTotal:UInt):Void {
+		if (!hasEventListener(ProgressEvent.SOCKET_DATA)) {
+			return;
+		}
+
+		if (__pooledSocketDataEventInUse) {
+			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, bytesLoaded, bytesTotal));
+			return;
+		}
+
+		if (__pooledSocketDataEvent == null) {
+			__pooledSocketDataEvent = new ProgressEvent(ProgressEvent.SOCKET_DATA, bytesLoaded, bytesTotal);
+		} else {
+			__pooledSocketDataEvent.bytesLoaded = bytesLoaded;
+			__pooledSocketDataEvent.bytesTotal = bytesTotal;
+			@:privateAccess {
+				__pooledSocketDataEvent.target = null;
+				__pooledSocketDataEvent.currentTarget = null;
+			}
+		}
+
+		__pooledSocketDataEventInUse = true;
+		try {
+			dispatchEvent(__pooledSocketDataEvent);
+		} catch (error:Dynamic) {
+			__pooledSocketDataEventInUse = false;
+			throw error;
+		}
+		__pooledSocketDataEventInUse = false;
+	}
+
+	@:noCompletion private function __dispatchPooledIOError(text:String = ""):Void {
+		if (!hasEventListener(IOErrorEvent.IO_ERROR)) {
+			return;
+		}
+
+		if (__pooledIOErrorEventInUse) {
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
+			return;
+		}
+
+		if (__pooledIOErrorEvent == null) {
+			__pooledIOErrorEvent = new IOErrorEvent(IOErrorEvent.IO_ERROR, text);
+		} else {
+			@:privateAccess {
+				__pooledIOErrorEvent.text = text;
+				__pooledIOErrorEvent.target = null;
+				__pooledIOErrorEvent.currentTarget = null;
+			}
+		}
+
+		__pooledIOErrorEventInUse = true;
+		try {
+			dispatchEvent(__pooledIOErrorEvent);
+		} catch (error:Dynamic) {
+			__pooledIOErrorEventInUse = false;
+			throw error;
+		}
+		__pooledIOErrorEventInUse = false;
 	}
 
 	override public function dispatchEvent(event:Event):Bool {
