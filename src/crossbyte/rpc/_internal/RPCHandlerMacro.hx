@@ -68,13 +68,13 @@ class RPCHandlerMacro {
 			}
 
 			for (method in contractMethods) {
-				if (method.name == "ping") {
-					Context.error("RPC contract method name 'ping' is reserved.", method.pos);
+				if (RPCContractMacroTools.isReservedSystemMethod(method.name)) {
+					Context.error(RPCContractMacroTools.reservedSystemMethodMessage(method.name), method.pos);
 				}
 
 				final implementation = findField(fields, method.name);
 				if (implementation == null) {
-					Context.error("RPC handler is missing implementation for contract method '" + method.name + "'.", method.pos);
+					Context.error("RPC handler is missing implementation for contract method '" + method.name + "'. Built-in system methods such as ping() stay on RPCHandler and should not appear in the shared contract.", method.pos);
 				}
 
 				switch (implementation.kind) {
@@ -90,16 +90,16 @@ class RPCHandlerMacro {
 							if (actual.type == null) {
 								actual.type = expected.type;
 							} else if (!sameType(actual.type, expected.type, implementation.pos)) {
-								Context.error("RPC handler argument type mismatch for '" + method.name + "." + actual.name + "'.", implementation.pos);
-							}
+							Context.error("RPC handler argument type mismatch for '" + method.name + "." + actual.name + "'. Handler argument types must match the shared contract.", implementation.pos);
 						}
+					}
 
-						final expectedRet = method.responseType != null ? method.responseType : method.ret;
-						if (fn.ret == null) {
-							fn.ret = expectedRet;
-						} else if (!sameType(fn.ret, expectedRet, implementation.pos)) {
-							Context.error("RPC handler return type mismatch for '" + method.name + "'. Response contracts should return the payload type on the handler side.", implementation.pos);
-						}
+					final expectedRet = method.responseType != null ? method.responseType : method.ret;
+					if (fn.ret == null) {
+						fn.ret = expectedRet;
+					} else if (!sameType(fn.ret, expectedRet, implementation.pos)) {
+						Context.error("RPC handler return type mismatch for '" + method.name + "'. Response-bearing contract methods should return the payload type on the handler side.", implementation.pos);
+					}
 
 						methods.push({
 							idx: -1,

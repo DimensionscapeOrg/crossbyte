@@ -46,6 +46,10 @@ abstract class RPCCommands {
 	@:noCompletion private var __pendingResponse:RPCResponse<Dynamic> = null;
 	@:noCompletion private var __pendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
 
+	/**
+		Built-in heartbeat/system ping. This stays on the commands surface and should not
+		be declared inside shared RPC contract interfaces.
+	**/
 	abstract public function ping():Void;
 
 	@:noCompletion abstract public function __rpc_handle_response(op:Int, requestId:Int, input:ByteArrayInput, failed:Bool):Void;

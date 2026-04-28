@@ -93,6 +93,50 @@ class ByteArrayTest extends utest.Test {
 		Assert.equals("hello world", byteArray.toString());
 	}
 
+	public function testCompressAndUncompressBrotli():Void {
+		var byteArray:ByteArray = ByteArray.fromBytes(Bytes.ofString("hello world hello world"));
+		byteArray.compress(CompressionAlgorithm.BROTLI);
+		byteArray.uncompress(CompressionAlgorithm.BROTLI);
+
+		Assert.equals("hello world hello world", byteArray.toString());
+	}
+
+	public function testBrotliDecodesKnownFixture():Void {
+		var byteArray:ByteArray = ByteArray.fromBytes(Bytes.ofHex("0b0c8068656c6c6f2066726f6d2062726f746c69206669787475726503"));
+		byteArray.uncompress(CompressionAlgorithm.BROTLI);
+
+		Assert.equals("hello from brotli fixture", byteArray.toString());
+	}
+
+	public function testBrotliRoundTripsBinaryBytes():Void {
+		var bytes = Bytes.alloc(7);
+		bytes.set(0, 0);
+		bytes.set(1, 1);
+		bytes.set(2, 2);
+		bytes.set(3, 255);
+		bytes.set(4, 0);
+		bytes.set(5, 128);
+		bytes.set(6, 64);
+
+		var byteArray:ByteArray = ByteArray.fromBytes(bytes);
+		byteArray.compress(CompressionAlgorithm.BROTLI);
+		byteArray.uncompress(CompressionAlgorithm.BROTLI);
+
+		Assert.equals(bytes.length, byteArray.length);
+		byteArray.position = 0;
+		for (i in 0...bytes.length) {
+			Assert.equals(bytes.get(i), byteArray.readUnsignedByte());
+		}
+	}
+
+	public function testInvalidBrotliPayloadThrows():Void {
+		var byteArray:ByteArray = ByteArray.fromBytes(Bytes.ofString("not brotli"));
+
+		Assert.raises(() -> {
+			byteArray.uncompress(CompressionAlgorithm.BROTLI);
+		});
+	}
+
 	public function testUnsupportedCompressionAlgorithmThrows():Void {
 		var byteArray:ByteArray = ByteArray.fromBytes(Bytes.ofString("hello world"));
 
@@ -104,16 +148,19 @@ class ByteArrayTest extends utest.Test {
 	public function testCompressionAlgorithmMappings():Void {
 		var algorithmDeflate:CompressionAlgorithm = CompressionAlgorithm.fromString("deflate");
 		var algorithmGzip:CompressionAlgorithm = CompressionAlgorithm.fromString("gzip");
+		var algorithmBrotli:CompressionAlgorithm = CompressionAlgorithm.fromString("br");
 		var algorithmLz4:CompressionAlgorithm = CompressionAlgorithm.fromString("lz4");
-		var algorithmUnknown:CompressionAlgorithm = CompressionAlgorithm.fromString("br");
+		var algorithmUnknown:CompressionAlgorithm = CompressionAlgorithm.fromString("zstd");
 
 		Assert.equals(CompressionAlgorithm.DEFLATE, algorithmDeflate);
 		Assert.equals(CompressionAlgorithm.GZIP, algorithmGzip);
+		Assert.equals(CompressionAlgorithm.BROTLI, algorithmBrotli);
 		Assert.equals(CompressionAlgorithm.LZ4, algorithmLz4);
 		Assert.isNull(algorithmUnknown);
 
 		Assert.equals("deflate", Std.string(CompressionAlgorithm.DEFLATE));
 		Assert.equals("gzip", Std.string(CompressionAlgorithm.GZIP));
+		Assert.equals("br", Std.string(CompressionAlgorithm.BROTLI));
 		Assert.equals("lz4", Std.string(CompressionAlgorithm.LZ4));
 	}
 }

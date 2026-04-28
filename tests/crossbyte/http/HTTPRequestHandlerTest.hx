@@ -180,6 +180,23 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals(405, response.status);
 	}
 
+	public function testMiddlewareCanReadBrotliRequestBody():Void {
+		var bodyText:String = null;
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello world");
+		body.compress(CompressionAlgorithm.BROTLI);
+
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: br\r\nContent-Length: ${body.length}\r\n\r\n', null, false, body);
+
+		Assert.equals("hello world", bodyText);
+		Assert.equals(405, response.status);
+	}
+
 	public function testUnsupportedRequestContentEncodingReturns415AndSkipsRouting():Void {
 		var body:ByteArray = new ByteArray();
 		body.writeUTFBytes("hello world");
@@ -190,10 +207,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 				middlewareCalled = true;
 				next();
 			}
-		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: br\r\nContent-Length: ${body.length}\r\n\r\n', null, false, body);
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: zstd\r\nContent-Length: ${body.length}\r\n\r\n', null, false, body);
 
 		Assert.equals(415, response.status);
-		Assert.equals("Unsupported Content-Encoding: br", response.body);
+		Assert.equals("Unsupported Content-Encoding: zstd", response.body);
 		Assert.isFalse(middlewareCalled);
 	}
 
@@ -231,6 +248,18 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var decompressed = new ByteArray();
 		decompressed.writeBytes(response.bodyBytes, 0, response.bodyBytes.length);
 		decompressed.uncompress(CompressionAlgorithm.LZ4);
+		Assert.equals("Hello from middleware test", decompressed.toString());
+	}
+
+	public function testResponseCompressionCanNegotiateBrotli():Void {
+		var response = __sendRequest([], 'GET /index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: br\r\n\r\n', null, true);
+
+		Assert.equals(200, response.status);
+		Assert.equals("br", response.headers.get("content-encoding"));
+
+		var decompressed = new ByteArray();
+		decompressed.writeBytes(response.bodyBytes, 0, response.bodyBytes.length);
+		decompressed.uncompress(CompressionAlgorithm.BROTLI);
 		Assert.equals("Hello from middleware test", decompressed.toString());
 	}
 

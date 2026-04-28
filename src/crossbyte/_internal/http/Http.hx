@@ -5,6 +5,7 @@ import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.socket.FlexSocket;
 import crossbyte.http.HTTPBackend;
 import crossbyte.http.HTTPBackendRegistry;
+import crossbyte.http.HTTPContentCoding;
 import crossbyte.http.HTTPRequestContext;
 import crossbyte.http.HTTPVersion;
 import crossbyte.io.ByteArray;
@@ -387,18 +388,18 @@ class Http {
 				token = StringTools.trim(token.substr(0, semi));
 			}
 
-			token = token.toLowerCase();
-		switch (token) {
-			case "gzip", "x-gzip":
-				encodings.push(CompressionAlgorithm.GZIP);
-			case "deflate":
-				encodings.push(CompressionAlgorithm.DEFLATE);
-			case "lz4":
-				encodings.push(CompressionAlgorithm.LZ4);
-			case "identity":
+			var coding = HTTPContentCoding.fromString(token);
+			switch (coding) {
+			case HTTPContentCoding.IDENTITY:
 				continue;
+			case null:
+				throw token.toLowerCase();
 				default:
-					throw token;
+					var algorithm = coding.toCompressionAlgorithm();
+					if (algorithm == null) {
+						throw token.toLowerCase();
+					}
+					encodings.push(algorithm);
 			}
 		}
 
