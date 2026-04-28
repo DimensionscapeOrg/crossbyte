@@ -6,6 +6,7 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.errors.SQLError;
+typedef MongoResultSet = Dynamic;
 #if cpp
 import sys.thread.Deque;
 #end
@@ -20,7 +21,7 @@ class MongoStatement extends EventDispatcher {
 
 	@:noCompletion private var __sqlConnection:MongoConnection;
 	@:noCompletion private var __connection:Dynamic;
-	@:noCompletion private var __resultSet:MongoResultSet;
+	@:noCompletion private var __resultSet:Dynamic;
 	@:noCompletion private var __prefetch:Int = 0;
 	@:noCompletion private var __executing:Bool = false;
 
@@ -101,7 +102,7 @@ class MongoStatement extends EventDispatcher {
 		var results = __resultQueue.pop(false);
 		#else
 		var results = __resultQueue.pop();
-		#endif
+		#end
 
 		var complete:Bool = !__executing;
 
