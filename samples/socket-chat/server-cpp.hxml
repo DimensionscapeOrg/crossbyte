@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/socket-chat
+-main SocketChatServerSample
+--cpp export/socket-chat-server
