@@ -4,7 +4,7 @@ import haxe.io.Bytes;
 import crossbyte.io.ByteArray;
 
 /**
- * A fast, bounds-checked (in `#if debug`) read-only view over an underlying
+ * A fast, bounds-checked (except in `#if final`) read-only view over an underlying
  * `ByteArrayData`/`ByteArray` buffer.
  *
  * `ByteArrayInput` exposes a forward-only cursor (`position`) and convenience
@@ -13,7 +13,7 @@ import crossbyte.io.ByteArray;
  * ### Key characteristics
  * - **Zero-copy reads**: uses direct getters on the backing buffer where possible.
  * - **Explicit cursoring**: all reads advance `position` by the number of bytes consumed.
- * - **Safety in debug**: out-of-range accesses throw helpful errors in debug builds.
+ * - **Safety outside `final`**: out-of-range accesses throw helpful errors in normal builds.
  * - **Interop**: can be implicitly created from `ByteArrayData` or `ByteArray`.
  *
  * ### Typical usage
@@ -33,7 +33,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * The current read cursor measured in **bytes** from the start of the buffer.
 	 *
 	 * Setting `position` allows random access reads within `[0, length]`.
-	 * In debug builds, assigning a value outside this range throws `"position out of range"`.
+	 * Outside `final`, assigning a value outside this range throws `"position out of range"`.
 	 *
 	 * Each successful read advances `position` by the size of the type read.
 	 */
@@ -51,7 +51,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * The number of bytes remaining from the current `position` to `length`.
 	 *
 	 * Equivalent to `length - position`. When `bytesAvailable == 0`, subsequent reads will
-	 * throw in debug builds or produce undefined behavior in release builds if forced.
+	 * throw outside `final` or produce undefined behavior in `final` builds if forced.
 	 */
 	public var bytesAvailable(get, never):Int;
 
@@ -68,7 +68,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	}
 
 	@:noCompletion private inline function set_position(v:Int):Int {
-		#if debug
+		#if !final
 		if (v < 0 || v > this.length)
 			throw "position out of range";
 		#end
@@ -76,7 +76,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	}
 
 	@:noCompletion private inline function __need(n:Int):Void {
-		#if debug
+		#if !final
 		if (this.position + n > this.length)
 			throw "ByteArrayInput underflow";
 		#end
@@ -271,12 +271,12 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 				break;
 			}				
 			shift += 7;
-			#if debug
+			#if !final
 			if (shift > 35)
 				throw "varuint too long";
 			#end
 		}
-		#if debug
+		#if !final
 		if (result < 0)
 			throw "varuint overflow";
 		#end

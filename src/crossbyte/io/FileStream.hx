@@ -532,7 +532,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 		if (length == 0) {
 			__input.seek(0, FileSeek.SeekEnd);
-			length = __input.tell();
+			length = __input.tell() - position;
 			__input.seek(position, FileSeek.SeekBegin);
 		}
 
