@@ -21,6 +21,13 @@ class BloomFilter {
 	 * @param numHashFunctions The number of hash functions to use.
 	 */
 	public function new(size:Int, numHashFunctions:Int) {
+		if (size <= 0) {
+			throw "BloomFilter size must be greater than zero";
+		}
+		if (numHashFunctions <= 0) {
+			throw "BloomFilter must use at least one hash function";
+		}
+
 		this.size = size;
 		this.bitArray = [];
 		this.bitArray.resize(size);

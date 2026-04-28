@@ -13,6 +13,11 @@ class CollectionsTest extends utest.Test {
 		Assert.isTrue(filter.contains("alpha"));
 	}
 
+	public function testBloomFilterRejectsInvalidConstruction():Void {
+		Assert.raises(() -> new BloomFilter(0, 3));
+		Assert.raises(() -> new BloomFilter(16, 0));
+	}
+
 	public function testBitSetSupportsGrowthMutationAndLogicalLength():Void {
 		var bits = new BitSet(5);
 
@@ -514,5 +519,24 @@ class CollectionsTest extends utest.Test {
 		var neighbors:Array<Dynamic> = cast graph.getNeighbors(from);
 		Assert.equals(to, Reflect.field(neighbors[0], "to"));
 		Assert.isNull(graph.getNeighbors({id: 1}));
+	}
+
+	public function testWeightedGraphMaintainsDirectedNeighborsAndExplicitNodes():Void {
+		var graph = new WeightedGraph<String>();
+		graph.addNode("start");
+		graph.addNode("start");
+		graph.addEdge("start", "mid", 1.5);
+		graph.addEdge("start", "end", 2.5);
+
+		var startNeighbors:Array<Dynamic> = cast graph.getNeighbors("start");
+		Assert.equals(2, startNeighbors.length);
+		Assert.equals("mid", Reflect.field(startNeighbors[0], "to"));
+		Assert.equals(1.5, Reflect.field(startNeighbors[0], "weight"));
+		Assert.equals("end", Reflect.field(startNeighbors[1], "to"));
+		Assert.equals(2.5, Reflect.field(startNeighbors[1], "weight"));
+
+		Assert.notNull(graph.getNeighbors("mid"));
+		Assert.equals(0, graph.getNeighbors("mid").length);
+		Assert.equals(0, graph.getNeighbors("end").length);
 	}
 }
