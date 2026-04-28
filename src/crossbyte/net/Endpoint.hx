@@ -7,6 +7,8 @@ class Endpoint {
 	public var protocol:Protocol;
 	public var address:String;
 	public var port:Int;
+	public var secure:Bool = false;
+	public var resource:String = "";
 }
 
 function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoint:Endpoint):Endpoint {
@@ -46,6 +48,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 
 	var cut:Int = indexOfAny(rest, SLASHQF);
 	var auth:String = (cut >= 0) ? rest.substr(0, cut) : rest;
+	var tail:String = (cut >= 0) ? rest.substr(cut) : "";
 	if (auth.length == 0) {
 		throw "missing host";
 	}
@@ -71,6 +74,10 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 			port = parsePort(auth.substr(rb + 2));
 		}
 	} else {
+		if (auth.indexOf(":") != auth.lastIndexOf(":")) {
+			throw "invalid IPv6 literal";
+		}
+
 		var lastColon:Int = auth.lastIndexOf(":");
 		if (lastColon >= 0) {
 			host = auth.substr(0, lastColon);
@@ -82,6 +89,13 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 
 	if (host.length == 0) {
 		throw "empty host";
+	}
+
+	var resource = "";
+	if (proto == Protocol.WEBSOCKET) {
+		resource = __parseWebSocketResource(tail);
+	} else if (tail.length > 0) {
+		throw "path/query not supported for tcp/udp";
 	}
 
 	if (proto == Protocol.WEBSOCKET) {
@@ -106,8 +120,10 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 		endpoint.address = host;
 		endpoint.port = port;
 		endpoint.protocol = proto;
+		endpoint.secure = wasWss;
+		endpoint.resource = resource;
 	} else {
-		endpoint = {protocol: proto, address: host, port: port};
+		endpoint = {protocol: proto, address: host, port: port, secure: wasWss, resource: resource};
 	}
 
 	return endpoint;
@@ -144,4 +160,22 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 	}
 
 	return v;
+}
+
+@:noCompletion inline function __parseWebSocketResource(tail:String):String {
+	if (tail == null || tail.length == 0) {
+		return "/";
+	}
+
+	var fragmentIndex = tail.indexOf("#");
+	var withoutFragment = (fragmentIndex >= 0) ? tail.substr(0, fragmentIndex) : tail;
+	if (withoutFragment.length == 0) {
+		return "/";
+	}
+
+	return switch (withoutFragment.charAt(0)) {
+		case "?": "/" + withoutFragment;
+		case "/": withoutFragment;
+		default: "/" + withoutFragment;
+	}
 }
