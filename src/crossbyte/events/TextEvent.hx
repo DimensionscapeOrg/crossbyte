@@ -15,6 +15,9 @@ class TextEvent extends Event {
 	}
 
 	override public function clone():Event {
-		return new TextEvent(type, text);
+		var event = new TextEvent(type, text);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 }

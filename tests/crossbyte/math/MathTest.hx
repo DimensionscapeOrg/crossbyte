@@ -170,6 +170,31 @@ class MathTest extends utest.Test {
 		Assert.equals(12, rect.bottom);
 	}
 
+	public function testRectanglePointMutatorsAndSizeViews():Void {
+		var rect = new Rectangle(1, 2, 3, 4);
+		Assert.equals(3, rect.size.x);
+		Assert.equals(4, rect.size.y);
+
+		rect.size = new Point(8, 9);
+		Assert.equals(8, rect.width);
+		Assert.equals(9, rect.height);
+
+		rect.inflatePoint(new Point(1, 2));
+		Assert.equals(0, rect.x);
+		Assert.equals(0, rect.y);
+		Assert.equals(10, rect.width);
+		Assert.equals(13, rect.height);
+
+		rect.offsetPoint(new Point(5, -1));
+		Assert.equals(5, rect.x);
+		Assert.equals(-1, rect.y);
+
+		var copy = new Rectangle();
+		copy.copyFrom(rect);
+		Assert.isTrue(copy.equals(rect));
+		Assert.equals("(x=5, y=-1, width=10, height=13)", copy.toString());
+	}
+
 	public function testMatrixTransformationsAndInversion():Void {
 		var matrix = new Matrix();
 		matrix.createBox(2, 2);
@@ -244,5 +269,22 @@ class MathTest extends utest.Test {
 		var delta = cloneA.deltaTransformPoint(new Point(2, 1));
 		Assert.equals(8, delta.x);
 		Assert.equals(11, delta.y);
+	}
+
+	public function testMatrixGradientBoxAndStringOutput():Void {
+		var matrix = new Matrix();
+		matrix.createGradientBox(1638.4, 819.2, 0, 10, 20);
+
+		Assert.equals(1, matrix.a);
+		Assert.equals(0, matrix.b);
+		Assert.equals(0, matrix.c);
+		Assert.equals(0.5, matrix.d);
+		Assert.equals(829.2, matrix.tx);
+		Assert.equals(429.6, matrix.ty);
+		var asString = matrix.toString();
+		Assert.isTrue(asString.indexOf("a=1") != -1);
+		Assert.isTrue(asString.indexOf("d=0.5") != -1);
+		Assert.isTrue(asString.indexOf("tx=829.2") != -1);
+		Assert.isTrue(asString.indexOf("ty=429.6") != -1);
 	}
 }

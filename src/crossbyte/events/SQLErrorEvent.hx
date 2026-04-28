@@ -18,6 +18,9 @@ class SQLErrorEvent extends ErrorEvent {
 	}
 
 	override public function clone():Event {
-		return new SQLErrorEvent(type, error);
+		var event = new SQLErrorEvent(type, error);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 }

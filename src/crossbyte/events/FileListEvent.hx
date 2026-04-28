@@ -17,4 +17,11 @@ class FileListEvent extends Event {
 
 		this.files = files;
 	}
+
+	override public function clone():Event {
+		var event = new FileListEvent(type, files);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
+	}
 }
