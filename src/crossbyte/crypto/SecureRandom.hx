@@ -10,7 +10,7 @@ import php.Global;
 import php.Syntax;
 #end
 
-#if cpp
+#if (cpp && windows)
 @:cppInclude("Windows.h")
 @:cppInclude("bcrypt.h")
 @:cppNamespaceCode('#pragma comment(lib, "bcrypt.lib")')

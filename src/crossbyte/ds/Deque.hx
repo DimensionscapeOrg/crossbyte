@@ -4,10 +4,10 @@ package crossbyte.ds;
  * ...
  * @author Christopher Speciale
  */
-class Node<T> {
+class DequeNode<T> {
 	public var value:T;
-	public var next:Node<T>;
-	public var prev:Node<T>;
+	public var next:DequeNode<T>;
+	public var prev:DequeNode<T>;
 
 	public function new(value:T) {
 		this.value = value;
@@ -17,8 +17,8 @@ class Node<T> {
 }
 
 class Deque<T> {
-	private var head:Node<T>;
-	private var tail:Node<T>;
+	private var head:DequeNode<T>;
+	private var tail:DequeNode<T>;
 	private var _size:Int;
 
 	public function new() {
@@ -28,7 +28,7 @@ class Deque<T> {
 	}
 
 	public function add(item:T):Void {
-		var node = new Node(item);
+		var node = new DequeNode(item);
 		if (head == null) {
 			head = node;
 			tail = node;
@@ -41,7 +41,7 @@ class Deque<T> {
 	}
 
 	public function push(item:T):Void {
-		var node = new Node(item);
+		var node = new DequeNode(item);
 		if (tail == null) {
 			head = node;
 			tail = node;
