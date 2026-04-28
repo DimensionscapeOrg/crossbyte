@@ -1,6 +1,5 @@
 package crossbyte._internal.websocket;
 
-import haxe.Int64;
 import crossbyte.Function;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
@@ -11,6 +10,7 @@ import haxe.crypto.Base64;
 import haxe.crypto.Sha1;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
+import haxe.io.BytesBuffer;
 import haxe.io.Error;
 
 /**
@@ -26,16 +26,11 @@ class WebSocket {
 	// Max payload size in bytes
 	public static var MAX_PAYLOAD:Int = 65536;
 
-	// The mask pool size. A socket should have its own unique mask and each connection will
-	// create and return a mask to the pool if it exceeds this size, but it is a good practice
-	// match your max expected connections. The Default value is 64.
+	// Retained for compatibility; clients now generate a fresh mask per frame.
 	public static var MASK_POOL_SIZE:Int = 64;
 
 	// The default ping interval. Set to 0 to disable pings.
 	public static var PING_INTERVAL:Int = 60000;
-
-	private static var __maskTable:StringMap<Int> = new StringMap();
-	private static var __maskPool:Array<ByteArray> = __constructMaskPool();
 
 	private static inline var WS:String = "ws";
 	private static inline var WSS:String = "wss";
@@ -63,6 +58,7 @@ class WebSocket {
 	private var __inputPosition:Int = 0;
 	private var __input:ByteArray;
 	private var __incomingMessageBuffer:ByteArray;
+	private var __incomingOpcode:Int = -1;
 	private var __output:ByteArray;
 	private var __connected:Bool = false;
 	private var __timestamp:Float;
@@ -79,7 +75,6 @@ class WebSocket {
 
 	private var __handshakeBuffer:String = "";
 
-	private var __mask:ByteArray;
 	private var __maskedPayload:ByteArray;
 	private var __outgoingMessageBuffer:ByteArray;
 
@@ -92,9 +87,8 @@ class WebSocket {
 	public function new(url:String, ?protocols:Array<String>, ?origin:String) {
 		__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 
-		__mask = __getMask();
-
 		if (__isClient == null) {
+			__isClient = true;
 			this.url = url;
 			// benchmark the two for the fastest regular expression
 			// var regex:EReg = ~/^(\w+):\/\/([^\/:]+)(?::(\d+))?([^#]*)(?:#.*)?$/;
@@ -103,21 +97,22 @@ class WebSocket {
 
 			if (regex.match(url)) {
 				// the URI is well-formed
-				__scheme = regex.matched(1);
+				__scheme = regex.matched(1).toLowerCase();
 				__host = regex.matched(2);
+				if (__scheme == WSS) {
+					__secure = true;
+				} else if (__scheme == WS) {
+					__secure = false;
+				} else {
+					throw "Uri does not include a valid Web Socket Scheme";
+				}
+
 				var port:Null<Int> = Std.parseInt(regex.matched(3));
 				__port = port == null ? (__secure ? 443 : 80) : port;
 				var path:Null<String> = regex.matched(4);
-				__path = path == "" ? "/" : path;
+				__path = path == "" ? "/" : "/" + path;
 			} else {
 				throw "Uri is not a well-formed";
-			}
-			if (__scheme == WSS) {
-				__secure = true;
-			} else if (__scheme == WS) {
-				__secure = false;
-			} else {
-				throw "Uri does not include a valid Web Socket Scheme";
 			}
 
 			if (protocols != null) {
@@ -127,6 +122,7 @@ class WebSocket {
 			if (origin == null) {
 				origin = "http://127.0.0.1/";
 			}
+			__origin = origin;
 			__initSocket();
 		} else {
 			__heartbeatDelay = PING_INTERVAL;
@@ -155,6 +151,7 @@ class WebSocket {
 			__socket = new FlexSocket(__secure);
 			if (__secure) {
 				__socket.verifyCert = false;
+				__socket.setHostname(__host);
 			}
 			__socket.output.bigEndian = true;
 			__connect();
@@ -189,32 +186,19 @@ class WebSocket {
 	private function __onTickProcess(e:Event):Void {
 		var hasData:Bool = false;
 		var doClose:Bool = false;
-		var currentBytes:Int = 0;
 		var totalBytes:Int = 0;
-		__input.position = __input.length;
+		var pending:BytesBuffer = new BytesBuffer();
+
 		while (__connected) {
 			try {
-				var nBytes:Int = __socket.input.readBytes(__buffer, currentBytes, 1024);
-				currentBytes += nBytes;
-				totalBytes += nBytes;
-
-				if (currentBytes > 3072) {
-					__input.writeBytes(__buffer, 0, currentBytes);
-					currentBytes = 0;
-				}
-				/*	else if (totalBytes < 1024) {
-					__input.writeBytes(__buffer, 0, currentBytes);
-					__input.position = 0;
-
-					hasData = true;
+				var nBytes:Int = __socket.input.readBytes(__buffer, 0, __buffer.length);
+				if (nBytes <= 0) {
 					break;
-				}*/
+				}
+				totalBytes += nBytes;
+				pending.addBytes(__buffer, 0, nBytes);
 			} catch (e:Error) {
 				if (totalBytes > 0) {
-					if (currentBytes > 0) {
-						__input.writeBytes(__buffer, 0, currentBytes);
-					}
-
 					hasData = true;
 				}
 				if (e != Error.Blocked #if HXCPP_DEBUGGER && !e.match(Error.Custom(Blocked)) #end) {
@@ -232,6 +216,8 @@ class WebSocket {
 		}
 
 		if (hasData) {
+			__input.position = __input.length;
+			__input.writeBytes(pending.getBytes());
 			__input.position = __inputPosition;
 			__onData();
 		} else if (doClose) {
@@ -241,19 +227,24 @@ class WebSocket {
 	}
 
 	private function __doHandshake():Void {
-		var handshakeBytes:Bytes = Bytes.ofString([
-			'GET ${url} HTTP/1.1',
+		var headers:Array<String> = [
+			'GET ${__path} HTTP/1.1',
 			'Host: ${__host}:${__port}',
 			'Pragma: no-cache',
 			'Cache-Control: no-cache',
 			'Upgrade: websocket',
-			__protocols != null ? 'Sec-WebSocket-Protocol: ' + __protocols.join(', ') : '',
 			'Sec-WebSocket-Version: 13',
 			'Connection: Upgrade',
 			"Sec-WebSocket-Key: " + __key,
 			'Origin: ${__origin}',
 			'User-Agent: Mozilla/5.0'
-		].join(CRLF) + CRLFCRLF);
+		];
+
+		if (__protocols != null && __protocols.length > 0) {
+			headers.insert(5, 'Sec-WebSocket-Protocol: ' + __protocols.join(', '));
+		}
+
+		var handshakeBytes:Bytes = Bytes.ofString(headers.join(CRLF) + CRLFCRLF);
 
 		__writeBytes(handshakeBytes);
 	}
@@ -267,13 +258,16 @@ class WebSocket {
 		}
 	}
 
-	private function __handleControlFrame(opcode:WebSocketOpcode):Void {
+	private function __handleControlFrame(opcode:WebSocketOpcode, payload:ByteArray):Void {
 		switch (opcode) {
 			case PING:
-				__pong();
+				__pong(payload);
 			case PONG:
 				__hasTimeoutPotential = false;
 			case CLOSE:
+				if (readyState == OPEN) {
+					__sendFrame(payload, WebSocketOpcode.CLOSE, true);
+				}
 				__close(1000);
 		}
 	}
@@ -282,129 +276,149 @@ class WebSocket {
 		// trace("/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\", __input.length, __input.position, __input.bytesAvailable, __inputPosition);
 		if (readyState == OPEN) {
 			while (__input.bytesAvailable > 0) {
-				// try {
-				// keep track of our header bytes
-				// maybe we can rewind our buffer position based on a some different method like comparing start position
+				var frameStart:Int = __input.position;
 				if (__input.bytesAvailable < 2) {
+					__input.position = frameStart;
 					break;
 				}
 
-				var lengthBytes:Int = 0;
-				// Parse the first byte
 				var firstByte:Int = __input.readUnsignedByte();
 				var isFinal:Bool = (firstByte & 0x80) != 0;
 				var opCode:Int = firstByte & 0x0F;
-				lengthBytes = 1;
-				// Parse the second byte
+
 				var secondByte:Int = __input.readUnsignedByte();
 				var isMasked:Bool = (secondByte & 0x80) != 0;
-				var payloadLength:UInt = secondByte & 0x7F;
-				lengthBytes = 2;
+				var payloadLength:Int = secondByte & 0x7F;
 
-				if (opCode > 0x02) {
-					__handleControlFrame(opCode);
-					__validateInputPosition();
-					break;
+				if ((firstByte & (WebSocketHeaderMask.RSV1 | WebSocketHeaderMask.RSV2 | WebSocketHeaderMask.RSV3)) != 0) {
+					__close(1002);
+					return;
 				}
 
-				// Parse extended payload length if necessary
 				if (payloadLength == 126) {
 					if (__input.bytesAvailable < 2) {
-						__input.position -= lengthBytes;
+						__input.position = frameStart;
 						break;
 					}
-					lengthBytes = 4;
 					payloadLength = __input.readUnsignedShort();
 				} else if (payloadLength == 127) {
 					if (__input.bytesAvailable < 8) {
-						__input.position -= lengthBytes;
+						__input.position = frameStart;
 						break;
 					}
-					lengthBytes = 10;
-					var i64Val:Int64 = __input.readInt64();
-					payloadLength = Int64.toInt(i64Val);
+					var high:Int = __input.readUnsignedInt();
+					var low:Int = __input.readUnsignedInt();
+					if (high != 0 || low < 0) {
+						__close(1009);
+						return;
+					}
+					payloadLength = low;
 				}
 
-				if (payloadLength > __input.bytesAvailable) {
-					// If our frame is incomplete, we rewind the buffer position so the rest of
-					// it can be written in order.
-					// lets use a frame buffer here in the future
-					// perhaps we can switch between implementations based on the network conditions.
-					// a frame buffer might add overhead if network conditions are solid, while
-					// rewinding adds a lot of overhead if incomplete payloads are frequently received
-					__input.position -= lengthBytes;
+				var maskBytes:Int = isMasked ? 4 : 0;
+				if (__input.bytesAvailable < maskBytes + payloadLength) {
+					__input.position = frameStart;
 					break;
 				}
 
-				// if (payloadLength > MAX_PAYLOAD) {
-				//	throw("Payload too large");
-				// }
+				var isControl:Bool = opCode >= WebSocketOpcode.CLOSE;
+				if (isControl && (!isFinal || payloadLength > 125)) {
+					__close(1002);
+					return;
+				}
+				if (!isControl && payloadLength > MAX_PAYLOAD) {
+					__close(1009);
+					return;
+				}
 
-				// Parse masking key if necessary
+				if (opCode != WebSocketOpcode.CONTINUATION
+					&& opCode != WebSocketOpcode.TEXT
+					&& opCode != WebSocketOpcode.BINARY
+					&& opCode != WebSocketOpcode.CLOSE
+					&& opCode != WebSocketOpcode.PING
+					&& opCode != WebSocketOpcode.PONG) {
+					__close(1002);
+					return;
+				}
+
 				var maskingKey:ByteArray = new ByteArray(4);
 				if (isMasked) {
 					__input.readBytes(maskingKey, 0, 4);
 				}
 
-				// Parse the payload
-				if (__incomingMessageBuffer.length == 0) {
-					__incomingMessageBuffer.length = payloadLength;
-					// var frameBytes:ByteArray = new ByteArray(PayloadLength)?
+				var payload:ByteArray = new ByteArray(payloadLength);
+				if (payloadLength > 0) {
+					__input.readBytes(payload, 0, payloadLength);
 				}
-
-				// if (payloadLength > 0) {
-				__input.readBytes(__incomingMessageBuffer, __incomingMessageBuffer.position, payloadLength);
 				if (isMasked) {
 					for (i in 0...payloadLength) {
-						// Is the arrayaccess slower than manually positioning and calling readByte()?
-						// we can avoid using the position as an offset by adding an addition buffer potentially having less
-						// overhead.
-						// frameBytes[i] ^= maskingKey[i & 0x03];
-						__incomingMessageBuffer[i + __incomingMessageBuffer.position] ^= maskingKey[i & 0x03]; // use bitwise AND instead of modulo
+						payload[i] = payload[i] ^ maskingKey[i & 0x03];
 					}
 				}
-				// handle some error?
-				// }
+
+				payload.position = 0;
+
+				if (isControl) {
+					__handleControlFrame(opCode, payload);
+					__validateInputPosition();
+					if (opCode == WebSocketOpcode.CLOSE) {
+						return;
+					}
+					continue;
+				}
+
+				if (opCode == WebSocketOpcode.CONTINUATION) {
+					if (__incomingOpcode == -1) {
+						__close(1002);
+						return;
+					}
+				} else {
+					if (__incomingOpcode != -1) {
+						__close(1002);
+						return;
+					}
+					__incomingOpcode = opCode;
+				}
+
+				__incomingMessageBuffer.position = __incomingMessageBuffer.length;
+				__incomingMessageBuffer.writeBytes(payload);
 
 				if (isFinal) {
-					var messageEvent:WebsocketEvent = new WebsocketEvent(WebsocketEvent.MESSAGE, this, __incomingMessageBuffer);
-					onmessage(messageEvent);
-					__incomingMessageBuffer.clear();
-
-					__validateInputPosition();
+					__dispatchMessage();
 				}
-				// }
-				// catch (e:Error)
-				// {
-				// Handle errors here
-				// TODO: some kind of error handling here
-				//	trace('wrror');
-				// }
+
+				__validateInputPosition();
 			}
 		} else if (readyState == CONNECTING) {
-			var headerData:String = __input.readUTFBytes(__input.length);
-			var endIndex:Int = headerData.lastIndexOf(CRLFCRLF);
+			var chunk:String = __input.readUTFBytes(__input.bytesAvailable);
+			var bufferedLength:Int = __handshakeBuffer.length;
+			var headerData:String = __handshakeBuffer + chunk;
+			var endIndex:Int = headerData.indexOf(CRLFCRLF);
 			var headerLength = endIndex + 4;
 			if (endIndex > -1) {
 				// received entire header
-				if (__handshakeBuffer.length > 0) {
-					headerData = __handshakeBuffer + headerData;
-					__handshakeBuffer = "";
-				}
-				var lines:Array<String> = headerData.split(CRLF);
+				__handshakeBuffer = "";
+				var headerBlock:String = headerData.substr(0, headerLength);
+				var extraStart:Int = headerLength - bufferedLength;
+				var extra:String = extraStart < chunk.length ? chunk.substr(extraStart) : "";
+				var lines:Array<String> = headerBlock.split(CRLF);
 				var headers:StringMap<String>;
 
 				if (lines[0].indexOf(GET) == 0) {
 					headers = __parseHeaders(lines);
-					var response:Bytes = __generateResponseHandshake(headers);
-					__writeBytes(response);
+					if (__validateRequestHandshake(headers)) {
+						var response:Bytes = __generateResponseHandshake(headers);
+						__writeBytes(response);
 
-					readyState = OPEN;
-					onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
+						readyState = OPEN;
+						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
+					} else {
+						__close(1002);
+					}
 				} else if (lines[0].indexOf("HTTP") == 0) {
 					headers = __parseHeaders(lines);
 					if (lines[0].indexOf("101") > -1) {
-						headers.set("Status", "101");
+						headers.set("status", "101");
 					} else {
 						__close(1002);
 					}
@@ -422,17 +436,28 @@ class WebSocket {
 						if (__heartbeatDelay > 0) {
 							__initHeartbeat();
 						}
-
-						__validateInputPosition();
 					} else {
 						__close(1002);
 					}
 				}
 
+				if (readyState == OPEN) {
+					if (extra.length > 0) {
+						__input.clear();
+						__input.writeBytes(Bytes.ofString(extra));
+						__input.position = 0;
+						__inputPosition = 0;
+						__onData();
+					} else {
+						__validateInputPosition();
+					}
+				}
 				// is it the client handshake or server response?
 			} else {
 				// received partial header, buffer it and wait.
-				__handshakeBuffer += headerData;
+				__handshakeBuffer = headerData;
+				__input.clear();
+				__inputPosition = 0;
 			}
 		}
 	}
@@ -446,12 +471,21 @@ class WebSocket {
 		}
 	}
 
+	private inline function __dispatchMessage():Void {
+		var message:ByteArray = __incomingMessageBuffer;
+		message.position = 0;
+		__incomingMessageBuffer = new ByteArray();
+		__incomingMessageBuffer.endian = BIG_ENDIAN;
+		__incomingOpcode = -1;
+		onmessage(new WebsocketEvent(WebsocketEvent.MESSAGE, this, message));
+	}
+
 	private function __generateResponseHandshake(headers:StringMap<String>):Bytes {
 		var responseHeadersBytes:Bytes = Bytes.ofString([
-			"HTTPS/1.1 101 Switching Protocols",
-			"upgrade: websocket",
-			"Connection: upgrade",
-			"Sec-WebSocket-Accept: " + __generateWebSocketAccept(headers.get("Sec-WebSocket-Key")),
+			"HTTP/1.1 101 Switching Protocols",
+			"Upgrade: websocket",
+			"Connection: Upgrade",
+			"Sec-WebSocket-Accept: " + __generateWebSocketAccept(headers.get("sec-websocket-key")),
 			"",
 			""
 		].join(CRLF));
@@ -483,29 +517,52 @@ class WebSocket {
 				var value:String = StringTools.trim(line.substring(index + 1));
 
 				// Store the header in the map
-				headers.set(name, value);
+				headers.set(name.toLowerCase(), value);
 			}
 		}
 
 		return headers;
 	}
 
+	private function __validateRequestHandshake(headers:StringMap<String>):Bool {
+		var upgrade:String = headers.get("upgrade");
+		var connection:String = headers.get("connection");
+		var key:String = headers.get("sec-websocket-key");
+		var version:String = headers.get("sec-websocket-version");
+
+		if (upgrade == null || upgrade.toLowerCase() != "websocket") {
+			return false;
+		}
+		if (connection == null || connection.toLowerCase().indexOf("upgrade") == -1) {
+			return false;
+		}
+		if (key == null || key.length == 0) {
+			return false;
+		}
+		if (version != "13") {
+			return false;
+		}
+
+		return true;
+	}
+
 	private function __validateResponseHandshake(headers:StringMap<String>):Bool {
-		trace(headers.get('Status'));
 		// Check if the response status code is 101
-		if (headers.get("Status") != "101") {
+		if (headers.get("status") != "101") {
 			// The server failed to switch protocols, close the connection with code 1002 (protocol error)
 			return false;
 		}
 
 		// Check if the "Upgrade" header is set to "websocket"
-		if (headers.get("upgrade") != "websocket") {
+		var upgrade:String = headers.get("upgrade");
+		if (upgrade == null || upgrade.toLowerCase() != "websocket") {
 			// The server does not support WebSockets, close the connection with code 1002 (protocol error)
 			return false;
 		}
 
 		// Check if the "Connection" header is set to "Upgrade"
-		if (headers.get("Connection") != "upgrade") {
+		var connection:String = headers.get("connection");
+		if (connection == null || connection.toLowerCase().indexOf("upgrade") == -1) {
 			// The server failed to switch protocols, close the connection with code 1002 (protocol error)
 			return false;
 		}
@@ -591,6 +648,8 @@ class WebSocket {
 		if (__socket == null)
 			return;
 
+		readyState = CLOSED;
+
 		if (__connected) {
 			__socket.close();
 
@@ -598,9 +657,10 @@ class WebSocket {
 				GlobalTimer.clearInterval(__heartbeatID);
 			}
 
-			readyState = CLOSED;
 			__connected = false;
 			CrossByte.current().removeEventListener(Event.TICK, __onTickProcess);
+			CrossByte.current().removeEventListener(Event.TICK, __onTickConnect);
+			CrossByte.current().removeEventListener(Event.TICK, __onTickSSLHandshake);
 		} else {
 			CrossByte.current().removeEventListener(Event.TICK, __onTickConnect);
 
@@ -609,7 +669,6 @@ class WebSocket {
 			}
 		}
 
-		trace(code, reason);
 		onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
 
 		__socket = null;
@@ -639,8 +698,14 @@ class WebSocket {
 	}
 
 	private function __prepareMessage(data:ByteArray, opcode:Int):Void {
+		if (readyState != OPEN) {
+			throw "WebSocket is not open";
+		}
+		data.position = 0;
+
 		// handles fragmentation of message into multiple frames
 		if (data.length > MAX_PAYLOAD) {
+			var firstFrame:Bool = true;
 			while (data.position != data.length) {
 				var fin:Bool;
 				var fragmentOpcode:Int;
@@ -651,12 +716,13 @@ class WebSocket {
 				if (remaining > MAX_PAYLOAD) {
 					fin = false;
 					length = MAX_PAYLOAD;
-					fragmentOpcode = WebSocketOpcode.CONTINUATION;
+					fragmentOpcode = firstFrame ? opcode : WebSocketOpcode.CONTINUATION;
 				} else {
 					fin = true;
 					length = remaining;
-					fragmentOpcode = opcode;
+					fragmentOpcode = firstFrame ? opcode : WebSocketOpcode.CONTINUATION;
 				}
+				firstFrame = false;
 
 				__outgoingMessageBuffer.length = length;
 				__outgoingMessageBuffer.position = 0;
@@ -670,40 +736,18 @@ class WebSocket {
 		}
 	}
 
-	private static function __constructMaskPool():Array<ByteArray> {
-		var pool:Array<ByteArray> = [];
-		for (i in 0...MASK_POOL_SIZE) {
-			pool.push(__generateMaskBytes());
-		}
-
-		return pool;
-	}
-
 	private static function __generateMaskBytes():ByteArray {
-		var maskBytes:ByteArray = SecureRandom.getSecureRandomBytes(4);
-
-		if (__maskTable.exists(maskBytes.toString())) {
-			while (__maskTable.exists(maskBytes.toString())) {
-				maskBytes = SecureRandom.getSecureRandomBytes(4);
-			}
-			__maskTable.set(maskBytes.toString(), 0);
-		}
-
-		return maskBytes;
-	}
-
-	private function __getMask():ByteArray {
-		var mask:ByteArray = __maskPool.length > 0 ? __maskPool.shift() : __generateMaskBytes();
-		return __maskPool.shift();
-	}
-
-	private function __freeMask(maskBytes:ByteArray):Void {
-		__maskPool.push(maskBytes);
+		return SecureRandom.getSecureRandomBytes(4);
 	}
 
 	private inline function __sendFrame(payload:ByteArray, opcode:Int, isFinal:Bool):Void {
+		if (__socket == null) {
+			return;
+		}
+
 		// Write the frame header
-		var fin:Int = isFinal ? WebSocketHeaderMask.FIN : WebSocketOpcode.CONTINUATION;
+		var fin:Int = isFinal ? WebSocketHeaderMask.FIN : 0;
+		__output.clear();
 		__output.writeByte(fin | opcode);
 		var length:Int = payload.length;
 
@@ -712,29 +756,28 @@ class WebSocket {
 			__output.writeBytes(payload);
 		} else {
 			__writePayloadLength(length, WebSocketHeaderMask.MASK);
+			var frameMask:ByteArray = __generateMaskBytes();
 
 			// Reset the maskedPayload ByteArray
 			__maskedPayload.length = payload.length;
 			__maskedPayload.position = 0;
 			// Mask the payload using a bulk XOR operation
 			for (i in 0...length) {
-				__maskedPayload.writeByte(payload[i] ^ __mask[i % 4]);
+				__maskedPayload.writeByte(payload[i] ^ frameMask[i & 0x03]);
 			}
 
 			// Write the masked payload
-			__output.writeBytes(__mask);
+			__output.writeBytes(frameMask);
 			__output.writeBytes(__maskedPayload);
 		}
 		// Write the frame to the socket
-		if (isFinal) {
-			try {
-				__socket.output.writeBytes(__output, 0, __output.length);
-				__socket.output.flush();
+		try {
+			__socket.output.writeBytes(__output, 0, __output.length);
+			__socket.output.flush();
 
-				__output.clear();
-			} catch (e:Dynamic) {
-				__close(1006, null);
-			}
+			__output.clear();
+		} catch (e:Dynamic) {
+			__close(1006, null);
 		}
 	}
 
@@ -742,6 +785,7 @@ class WebSocket {
 		if (length > 65535) {
 			maskFlag |= 127;
 			__output.writeByte(maskFlag);
+			__output.writeUnsignedInt(0);
 			__output.writeUnsignedInt(length);
 		} else if (length > 125) {
 			maskFlag |= 126;
@@ -753,18 +797,15 @@ class WebSocket {
 		}
 	}
 
-	private static var __pingPongBuffer:Bytes = Bytes.alloc(2);
-
 	public function ping():Void {
-		__pingPongBuffer.set(0, WebSocketOpcode.PING);
-		__socket.output.writeBytes(__pingPongBuffer, 0, 2);
-		__socket.output.flush();
+		__sendFrame(new ByteArray(), WebSocketOpcode.PING, true);
 	}
 
-	private function __pong():Void {
-		__pingPongBuffer.set(0, WebSocketOpcode.PONG);
-		__socket.output.writeBytes(__pingPongBuffer, 0, 2);
-		__socket.output.flush();
+	private function __pong(?payload:ByteArray):Void {
+		if (payload == null) {
+			payload = new ByteArray();
+		}
+		__sendFrame(payload, WebSocketOpcode.PONG, true);
 	}
 
 	@:access(crossbyte._internal.websocket)
