@@ -30,7 +30,7 @@ jobs:
           haxelib install utest --quiet
 
       - name: Run Haxe unit tests
-        run: haxe test.hxml
+        run: haxe ci/interp-tests.hxml
 
       - name: Validate sample builds
         shell: bash
@@ -59,10 +59,10 @@ jobs:
         run: haxelib install hxcpp --quiet
 
       - name: Type-check full C++ API surface
-        run: haxe -cp src --macro "include('crossbyte')" --cpp export/audit-full --no-output
+        run: haxe ci/cpp-api-audit.hxml
 
       - name: Type-check timer burst support
-        run: haxe -cp src --macro "include('crossbyte._internal.system.timer.heap')" -D timer_burst_catchup --cpp export/audit-timer --no-output
+        run: haxe ci/cpp-timer-burst-audit.hxml
 
   native-smoke:
     name: Native build & smoke checks
@@ -82,31 +82,14 @@ jobs:
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
 
-      - name: Build poll backend tests
-        run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-poll-backend-test -main crossbyte._internal.socket.poll.PollBackendTestMain
+      - name: Run native smoke harness
+        run: haxe ci/native-tests.hxml
 
-      - name: Run poll backend tests
-        run: .\export\cpp-poll-backend-test\PollBackendTestMain.exe
-
-      - name: Build HTTP client tests
-        run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-http-client-test -main crossbyte._internal.http.HttpTestMain
-
-      - name: Run HTTP client tests
-        run: .\export\cpp-http-client-test\HttpTestMain.exe
-
-      - name: Build HTTP server tests
-        run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-http-server-test -main crossbyte.http.HTTPTestMain
-
-      - name: Run HTTP server tests
-        run: .\export\cpp-http-server-test\HTTPTestMain.exe
+      - name: Run native test suite
+        run: .\export\ci-native-tests\TestMain.exe
 
       - name: Build websocket echo sample
-        working-directory: samples/websocket-echo
-        run: haxe cpp.hxml
-
-      - name: Run websocket echo sample
-        working-directory: samples/websocket-echo
-        run: .\build\websocket-echo\WebSocketEchoSample.exe
+        run: haxe ci/websocket-echo-sample.hxml
 
   libuv-extension:
     name: libuv poll backend extension
