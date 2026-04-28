@@ -175,6 +175,61 @@ class SocketTest extends utest.Test {
 		}
 	}
 
+	public function testIpv6ClientServerEchoOnLoopback():Void {
+		if (!requireIpv6Loopback()) {
+			return;
+		}
+
+		var server = new ServerSocket();
+		var client = new Socket();
+		var serverPeer:Socket = null;
+		var echoed:String = null;
+		var connected = false;
+
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
+			serverPeer = event.socket;
+			serverPeer.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+				var data = new ByteArray();
+				serverPeer.readBytes(data, 0, serverPeer.bytesAvailable);
+				serverPeer.writeBytes(data);
+				serverPeer.flush();
+			});
+		});
+		server.bind(0, "::1");
+		server.listen();
+
+		client.addEventListener(Event.CONNECT, _ -> {
+			connected = true;
+			client.writeUTFBytes("pong");
+			client.flush();
+		});
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			echoed = client.readUTFBytes(client.bytesAvailable);
+		});
+		try {
+			client.connect("::1", server.localPort);
+
+			pumpUntil(() -> echoed != null, 2.0);
+
+			Assert.isTrue(connected);
+			Assert.notNull(serverPeer);
+			Assert.equals("pong", echoed);
+			Assert.equals("::1", server.localAddress);
+			Assert.equals("::1", serverPeer.localAddress);
+			Assert.equals(0, serverPeer.__socket.peer().host.ip);
+			Assert.equals("::1", client.remoteAddress);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(serverPeer);
+		closeServerQuietly(server);
+	}
+
 	public function testServerSocketIdlePumpDoesNotClose():Void {
 		var server = new ServerSocket();
 		var closeEvents = 0;
@@ -231,6 +286,20 @@ class SocketTest extends utest.Test {
 				server.close();
 			}
 		} catch (_:Dynamic) {}
+	}
+
+	private static function requireIpv6Loopback():Bool {
+		var server = new ServerSocket();
+		try {
+			server.bind(0, "::1");
+			server.close();
+			return true;
+		} catch (_:Dynamic) {
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			return false;
+		}
 	}
 
 	private static function socketWithOutput(value:String):Socket {
