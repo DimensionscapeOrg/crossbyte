@@ -1,16 +1,24 @@
 {
 	"name": "crossbyte",
-	"url": "https://github.com/dimensionscape-llc/crossbyte",
 	"license": "Apache-2.0",
-	"tags": [ "crossbyte", "networking", "http", "rpc", "server", "ipc", "tools" ],
+	"tags": [
+		"crossbyte",
+		"networking",
+		"http",
+		"rpc",
+		"server",
+		"ipc",
+		"tools"
+	],
+	"classPath": "src",
 	"description": "Cross-platform Haxe runtime and networking framework for event-driven applications, services, IPC, RPC, and systems-oriented tools.",
-	"version": "1.0.0-rc1",
-	"releasenote": "First 1.0 release candidate with polished samples, API docs, optional native extensions, and expanded runtime/networking coverage.",
-	"contributors": [		
+	"contributors": [
 		"Dimensionscape"
 	],
+	"releasenote": "First 1.0 release candidate with polished samples, API docs, optional native extensions, and expanded runtime/networking coverage.",
+	"version": "1.0.0-rc1",
+	"url": "https://github.com/dimensionscape-llc/crossbyte",
 	"dependencies": {
-		"aedifex":""
-	},
-	"classPath": "src"
+		"aedifex": ""
+	}
 }
