@@ -1,5 +1,6 @@
 package crossbyte.crypto.password._internal;
 
+#if php
 import haxe.extern.EitherType;
 import php.NativeArray;
 import php.NativeAssocArray;
@@ -16,3 +17,6 @@ extern class PHPGlobalExt {
 
 	static var PASSWORD_BCRYPT:String;
 }
+#else
+extern class PHPGlobalExt {}
+#end

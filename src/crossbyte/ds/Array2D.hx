@@ -30,7 +30,7 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 	}
 
 	public inline function isEmpty():Bool {
-		return length == 0;
+		return this.length == 0;
 	}
 
 	public inline function getWidth():Int {
@@ -38,13 +38,13 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 	}
 
 	public inline function getHeight():Int {
-		return this.length
+		return this.length;
 	}
 
 	public inline function toFlatArray():Array<T> {
 		var flatArray:Array<T> = [];
 
-		for (r in 0...length) {
+		for (r in 0...this.length) {
 			for (c in 0...this[r].length) {
 				flatArray.push(this[r][c]);
 			}
@@ -53,7 +53,7 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 		return flatArray;
 	}
 
-	public inline function clone():Array2D {
-		return this.clone();
+	public inline function clone():Array2D<T> {
+		return this.copy();
 	}
 }

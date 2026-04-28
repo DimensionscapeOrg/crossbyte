@@ -1,11 +1,11 @@
 package crossbyte.crypto.password;
 
-import php.NativeAssocArray;
 import haxe.crypto.BaseCode;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
 import crossbyte.crypto.SecureRandom;
 #if php
+import php.NativeAssocArray;
 import crossbyte.crypto.password._internal.PHPGlobalExt;
 #end
 
