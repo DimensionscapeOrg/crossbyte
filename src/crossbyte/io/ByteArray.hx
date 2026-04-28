@@ -868,7 +868,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public static function fromBytes(bytes:Bytes):ByteArrayData {
-		var result = new ByteArrayData();
+		var result = new ByteArrayData(bytes.length);
 		result.__fromBytes(bytes);
 		return result;
 	}

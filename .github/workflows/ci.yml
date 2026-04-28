@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install haxelibs
+        run: |
+          haxelib install utest --quiet
+          haxelib install hxcpp --quiet
+
+      - name: Run tests
+        run: haxe test.hxml
+
+      - name: Type-check full cpp surface
+        run: haxe -cp src --macro "include('crossbyte')" --cpp export/audit-full --no-output
+
+      - name: Type-check timer burst catch-up
+        run: haxe -cp src --macro "include('crossbyte._internal.system.timer.heap')" -D timer_burst_catchup --cpp export/audit-timer --no-output
