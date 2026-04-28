@@ -30,42 +30,7 @@ class RadixTree<T> {
 		if (key == null || key.length == 0)
 			return;
 
-		var currentNode = root;
-		var currentKey = key;
-
-		while (true) {
-			var commonPrefix = getCommonPrefix(currentNode.label, currentKey);
-
-			if (commonPrefix.length == 0) {
-				var newNode = new RadixTreeNode<T>(currentKey, value);
-				currentNode.children.set(currentKey, newNode);
-				return;
-			}
-
-			if (commonPrefix == currentNode.label) {
-				var remainingKey = currentKey.substr(commonPrefix.length);
-				if (currentNode.children.exists(remainingKey)) {
-					currentNode = currentNode.children.get(remainingKey);
-					currentKey = remainingKey;
-				} else {
-					var newChild = new RadixTreeNode<T>(remainingKey, value);
-					currentNode.children.set(remainingKey, newChild);
-					return;
-				}
-			} else {
-				var newNode = new RadixTreeNode<T>(commonPrefix);
-				var nodeRemainingLabel = currentNode.label.substr(commonPrefix.length);
-				newNode.children.set(nodeRemainingLabel, currentNode);
-
-				var keyRemainingLabel = currentKey.substr(commonPrefix.length);
-				var newChild = new RadixTreeNode<T>(keyRemainingLabel, value);
-				newNode.children.set(keyRemainingLabel, newChild);
-
-				currentNode.label = commonPrefix;
-				currentNode.children = newNode.children;
-				return;
-			}
-		}
+		insertInto(root, key, value);
 	}
 
 	/**
@@ -78,30 +43,67 @@ class RadixTree<T> {
 		// Handle empty or null key
 		if (key == null || key.length == 0)
 			return null;
-		var node = searchNode(root, key);
-		return (node != null && node.value != null) ? node.value : null;
+		return searchIn(root, key);
 	}
 
-	/**
-	 * Recursively searches for a node with the given key.
-	 *
-	 * @param node The current node being searched.
-	 * @param key The key to be searched.
-	 * @return The node associated with the key, or null if the key is not found.
-	 */
-	private function searchNode(node:RadixTreeNode<T>, key:String):RadixTreeNode<T> {
-		if (node == null) {
+	private function insertInto(node:RadixTreeNode<T>, key:String, value:T):Void {
+		if (key.length == 0) {
+			node.value = value;
+			return;
+		}
+
+		var child = findMatchingChild(node, key);
+		if (child == null) {
+			node.children.set(key, new RadixTreeNode<T>(key, value));
+			return;
+		}
+
+		var commonPrefix = getCommonPrefix(child.label, key);
+		if (commonPrefix == child.label) {
+			insertInto(child, key.substr(commonPrefix.length), value);
+			return;
+		}
+
+		var childRemainder = child.label.substr(commonPrefix.length);
+		var keyRemainder = key.substr(commonPrefix.length);
+		var split = new RadixTreeNode<T>(commonPrefix);
+
+		node.children.remove(child.label);
+		child.label = childRemainder;
+		split.children.set(child.label, child);
+
+		if (keyRemainder.length == 0) {
+			split.value = value;
+		} else {
+			split.children.set(keyRemainder, new RadixTreeNode<T>(keyRemainder, value));
+		}
+
+		node.children.set(split.label, split);
+	}
+
+	private function searchIn(node:RadixTreeNode<T>, key:String):Null<T> {
+		if (key.length == 0) {
+			return node.value;
+		}
+
+		var child = findMatchingChild(node, key);
+		if (child == null) {
 			return null;
 		}
 
-		if (node.label == key) {
-			return node;
+		var commonPrefix = getCommonPrefix(child.label, key);
+		if (commonPrefix != child.label) {
+			return null;
 		}
 
-		var commonPrefix = getCommonPrefix(node.label, key);
-		if (commonPrefix == node.label) {
-			var remainingKey = key.substr(commonPrefix.length);
-			return searchNode(node.children.get(remainingKey), remainingKey);
+		return searchIn(child, key.substr(commonPrefix.length));
+	}
+
+	private function findMatchingChild(node:RadixTreeNode<T>, key:String):RadixTreeNode<T> {
+		for (child in node.children) {
+			if (getCommonPrefix(child.label, key).length > 0) {
+				return child;
+			}
 		}
 
 		return null;
