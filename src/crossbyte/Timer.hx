@@ -19,7 +19,8 @@ import sys.thread.Tls;
  * will fail at runtime when calling these timer methods unless a scheduler is explicitly bound.
  *
  * This design allows each CrossByte-managed thread to maintain its own isolated timing system.
- * For unified, thread-safe timer APIs, consider using `crossbyte.utils.GlobalTimer` instead.
+ * For process-wide timeout/interval APIs backed by the primordial runtime,
+ * consider using `crossbyte.utils.GlobalTimer` instead.
  * 
  * @see crossbyte.utils.GlobalTimer
  */
