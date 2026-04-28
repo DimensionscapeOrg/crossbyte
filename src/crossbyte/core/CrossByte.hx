@@ -2,9 +2,11 @@ package crossbyte.core;
 
 #if cpp
 import cpp.AtomicInt;
-import cpp.Pointer;
 import cpp.net.Poll;
 import crossbyte.utils.ThreadPriority;
+#end
+#if (cpp && windows)
+import crossbyte.core._internal.NativeWindowsRuntime;
 #end
 import sys.net.Socket;
 import crossbyte.events.Event;
@@ -50,10 +52,6 @@ import crossbyte.Timer as CBTimer;
  *
  * @author Christopher Speciale
  */
-#if (cpp && windows)
-@:cppInclude("Windows.h")
-@:cppNamespaceCode('#pragma comment(lib, "winmm.lib")')
-#end
 final class CrossByte extends EventDispatcher {
 	// ==== Public Static Variables ====
 	// ==== Private Static Variables ====
@@ -116,9 +114,8 @@ final class CrossByte extends EventDispatcher {
 	// ==== Private Static Methods ====
 	@:noCompletion private static function __onCrossByteInit():Bool {
 		#if (cpp && windows)
-		untyped __cpp__("timeBeginPeriod(1);");
-		untyped __cpp__("HANDLE hProcess = GetCurrentProcess();");
-		untyped __cpp__("SetPriorityClass(hProcess, HIGH_PRIORITY_CLASS)");
+		NativeWindowsRuntime.beginTimingPeriod(1);
+		NativeWindowsRuntime.setHighPriorityProcess();
 		#end
 
 		return true;
@@ -149,8 +146,8 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __loopType:MainLoopType;
 	@:noCompletion private var __timer:TimerScheduler;
 
-	#if cpp
-	@:noCompletion private var __threadHandle:Pointer<cpp.Void>;
+	#if (cpp && windows)
+	@:noCompletion private var __threadId:Int = 0;
 	#end
 
 	// ==== Getters/Setters ====
@@ -182,26 +179,13 @@ final class CrossByte extends EventDispatcher {
 	public function setThreadPriority(priority:ThreadPriority):Void {
 		__threadPriority = priority;
 
-		if (__threadHandle == null) {
+		#if windows
+		if (__threadId == 0) {
 			return;
 		}
 
-		switch (priority) {
-			case IDLE:
-				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_IDLE);", __threadHandle.raw);
-			case LOWEST:
-				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_LOWEST);", __threadHandle.raw);
-			case LOW:
-				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_BELOW_NORMAL);", __threadHandle.raw);
-			case NORMAL:
-				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_NORMAL);", __threadHandle.raw);
-			case HIGH:
-				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_ABOVE_NORMAL);", __threadHandle.raw);
-			case HIGHEST:
-				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_HIGHEST);", __threadHandle.raw);
-			case CRITICAL:
-				untyped __cpp__("SetThreadPriority(reinterpret_cast<HANDLE>({0}), THREAD_PRIORITY_TIME_CRITICAL);", __threadHandle.raw);
-		}
+		NativeWindowsRuntime.setThreadPriority(__threadId, __nativeThreadPriority(priority));
+		#end
 	}
 	#end
 
@@ -361,8 +345,7 @@ final class CrossByte extends EventDispatcher {
 
 	@:noCompletion private function __runEventLoop():Void {
 		#if (cpp && windows)
-		untyped __cpp__("HANDLE hThread = GetCurrentThread();");
-		__threadHandle = untyped __cpp__("hThread");
+		__threadId = NativeWindowsRuntime.getCurrentThreadId();
 		setThreadPriority(__threadPriority);
 		#end
 
@@ -402,10 +385,24 @@ final class CrossByte extends EventDispatcher {
 		}
 		#if (cpp && windows)
 		if (__isPrimordial) {
-			untyped __cpp__("timeEndPeriod(1);");
+			NativeWindowsRuntime.endTimingPeriod(1);
 		}
 		#end
 	}
+
+	#if (cpp && windows)
+	@:noCompletion private static inline function __nativeThreadPriority(priority:ThreadPriority):Int {
+		return switch (priority) {
+			case IDLE: -15;
+			case LOWEST: -2;
+			case LOW: -1;
+			case NORMAL: 0;
+			case HIGH: 1;
+			case HIGHEST: 2;
+			case CRITICAL: 15;
+		}
+	}
+	#end
 
 	private var mainLoop:Void->Void;
 	private #if final inline #end function __defaultMainLoop():Void {
