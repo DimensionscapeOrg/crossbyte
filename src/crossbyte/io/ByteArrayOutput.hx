@@ -303,7 +303,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		var b:Bytes = Bytes.ofString(value);
 
 		if (!reserved) {
-			reserve(b.length);
+			reserve(2 + b.length);
 		}
 
 		writeShort(b.length);
@@ -342,10 +342,10 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		var b:Bytes = Bytes.ofString(value);
 
 		if (!reserved) {
-			reserve(b.length);
+			reserve(varUIntSize(b.length) + b.length);
 		}
 
-		writeVarUInt(b.length);
+		writeVarUInt(b.length, true);
 		writeBytes(b);
 	}
 
