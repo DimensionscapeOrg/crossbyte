@@ -18,7 +18,7 @@ abstract Version(String) from String to String {
 			throw "Major version can only be max length of 3 digits";
 		}
 
-		if (Std.string(major).length > 3) {
+		if (Std.string(minor).length > 3) {
 			throw "Minor version can only be max length of 3 digits";
 		}
 
