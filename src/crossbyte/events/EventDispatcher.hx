@@ -44,8 +44,9 @@ import crossbyte.Function;
  */
 @:access(crossbyte.events.Event)
 class EventDispatcher implements IEventDispatcher {
-	@:noCompletion private var __eventMap:StringMap<Array<Function>>;
+	@:noCompletion private var __eventMap:StringMap<Array<ListenerEntry>>;
 	@:noCompletion private var __targetDispatcher:IEventDispatcher;
+	@:noCompletion private var __nextListenerOrder:Int;
 
 	/**
 	 * Creates a new `EventDispatcher`, optionally bound to a target dispatcher.
@@ -58,6 +59,7 @@ class EventDispatcher implements IEventDispatcher {
 	public function new(target:IEventDispatcher = null) {
 		__targetDispatcher = target;
 		__eventMap = new StringMap();
+		__nextListenerOrder = 0;
 	}
 
 	/**
@@ -85,20 +87,28 @@ class EventDispatcher implements IEventDispatcher {
 			throw "listener must not be null";
 		}
 
-		var list:Null<Array<Function>> = __eventMap.get(type);
+		var entry:ListenerEntry = {
+			listener: cast listener,
+			priority: priority,
+			order: __nextListenerOrder++
+		};
+
+		var list:Null<Array<ListenerEntry>> = __eventMap.get(type);
 		if (list == null) {
-			__eventMap.set(type, [cast listener]);
+			__eventMap.set(type, [entry]);
 			return;
 		}
 
-		var idx:Int = priority;
-		if (idx < 0) {
-			idx = 0;
-		} else if (idx > list.length) {
-			idx = list.length;
+		var idx = list.length;
+		for (i in 0...list.length) {
+			var current = list[i];
+			if (priority > current.priority) {
+				idx = i;
+				break;
+			}
 		}
 
-		list.insert(idx, cast listener);
+		list.insert(idx, entry);
 	}
 
 	/**
@@ -114,13 +124,19 @@ class EventDispatcher implements IEventDispatcher {
 			return;
 		}
 
-		var list:Null<Array<Function>> = __eventMap.get(type);
+		var list:Null<Array<ListenerEntry>> = __eventMap.get(type);
 		if (list == null) {
 			return;
 		}
 
-		if (list.remove(cast listener) && list.length == 0) {
-			__eventMap.remove(type);
+		for (i in 0...list.length) {
+			if (list[i].listener == cast listener) {
+				list.splice(i, 1);
+				if (list.length == 0) {
+					__eventMap.remove(type);
+				}
+				return;
+			}
 		}
 	}
 
@@ -147,8 +163,10 @@ class EventDispatcher implements IEventDispatcher {
 		if (event.target == null) {
 			var tgt:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
 			event.target = tgt;
+			event.currentTarget = tgt;
+		} else {
+			event.currentTarget = (__targetDispatcher != null) ? __targetDispatcher : this;
 		}
-		event.currentTarget = this;
 
 		return __dispatchEvent(event);
 	}
@@ -173,7 +191,7 @@ class EventDispatcher implements IEventDispatcher {
 	}
 
 	private inline function __dispatchEvent(event:Event):Bool {
-		var list:Null<Array<Function>> = __eventMap.get(event.type);
+		var list:Null<Array<ListenerEntry>> = __eventMap.get(event.type);
 		if (list == null) {
 			return false;
 		}
@@ -184,14 +202,20 @@ class EventDispatcher implements IEventDispatcher {
 		}
 
 		if (len == 1) {
-			list[0](event);
+			list[0].listener(event);
 			return true;
 		}
 
-		var snapshot:Array<Function> = list.copy();
+		var snapshot:Array<ListenerEntry> = list.copy();
 		for (i in 0...snapshot.length) {
-			snapshot[i](event);
+			snapshot[i].listener(event);
 		}
 		return true;
 	}
+}
+
+private typedef ListenerEntry = {
+	listener:Function,
+	priority:Int,
+	order:Int
 }
