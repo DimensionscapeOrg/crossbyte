@@ -135,6 +135,30 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0x01020304, clone.getPixel32(0, 0));
 	}
 
+	public function testBitmapDataCopyPixelsAndDispose():Void {
+		var source = new BitmapData(2, 2, true, 0x00000000);
+		source.setPixel32(0, 0, 0xFF000001);
+		source.setPixel32(1, 0, 0xFF000002);
+		source.setPixel32(0, 1, 0xFF000003);
+		source.setPixel32(1, 1, 0xFF000004);
+
+		var dest = new BitmapData(2, 2, true, 0x00000000);
+		dest.copyPixels(source, new Rectangle(1, 0, 1, 2), new crossbyte.math.Point(0, 0));
+		Assert.equals(0xFF000002, dest.getPixel32(0, 0));
+		Assert.equals(0xFF000004, dest.getPixel32(0, 1));
+
+		dest.dispose();
+		Assert.raises(() -> dest.getPixel32(0, 0));
+	}
+
+	public function testSlotHandleEncodesIndexAndGeneration():Void {
+		var handle = SlotHandle.make(12345, 37);
+
+		Assert.equals(12345, handle.index());
+		Assert.equals(37, handle.gen());
+		Assert.equals(-1, SlotHandle.INVALID);
+	}
+
 	public function testSwitchTableDispatchesMixedKeysAndArguments():Void {
 		var seen = [];
 		var total = 0;
