@@ -6,13 +6,13 @@ package crossbyte._internal.native.sys.linux;
  */
 @:cppInclude("sched.h")
 class LinuxNativeSystem {
-	private static function getProcessorCount():Int {
+	public static function getProcessorCount():Int {
 		var cores:Int = untyped __cpp__("sysconf(_SC_NPROCESSORS_ONLN);");
 
 		return cores > 0 ? cores : 1;
 	};
 
-	private static function getProcessAffinity():Array<Bool> {
+	public static function getProcessAffinity():Array<Bool> {
 		untyped __cpp__("
 			cpu_set_t cpuSet;
 			CPU_ZERO(&cpuSet);
@@ -39,7 +39,7 @@ class LinuxNativeSystem {
 		return untyped __cpp__("affinity");
 	}
 
-	private static function hasProcessAffinity(index:Int):Bool {
+	public static function hasProcessAffinity(index:Int):Bool {
 		untyped __cpp__("
 			cpu_set_t cpuSet;
 			CPU_ZERO(&cpuSet);			
@@ -55,7 +55,7 @@ class LinuxNativeSystem {
 		return untyped __cpp__("CPU_ISSET(index, &cpuSet) != 0;");
 	}
 
-	private static function setProcessAffinity(index:Int, value:Bool):Bool {
+	public static function setProcessAffinity(index:Int, value:Bool):Bool {
 		untyped __cpp__("
 			cpu_set_t cpuSet;
 			CPU_ZERO(&cpuSet);
@@ -76,5 +76,9 @@ class LinuxNativeSystem {
 		}
 
 		return untyped __cpp__("sched_setaffinity(0, sizeof(cpu_set_t), & cpuSet)") > -1;
+	}
+
+	public static inline function getDeviceId():Null<String> {
+		return null;
 	}
 }
