@@ -38,6 +38,40 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isFalse(FieldStruct.exists(fields, "size"));
 	}
 
+	public function testFieldStructProvidesKeyValueAndObjectViews():Void {
+		var fields:FieldStruct<Int> = new FieldStruct();
+		fields.alpha = 10;
+		fields["beta"] = 20;
+
+		var keys = [];
+		for (key in fields.keys()) {
+			keys.push(key);
+		}
+
+		Assert.isTrue(keys.indexOf("alpha") != -1);
+		Assert.isTrue(keys.indexOf("beta") != -1);
+
+		var values = [];
+		for (value in fields.values()) {
+			values.push(value);
+		}
+
+		Assert.isTrue(values.indexOf(10) != -1);
+		Assert.isTrue(values.indexOf(20) != -1);
+
+		var entries = [];
+		for (entry in fields.entries()) {
+			entries.push(entry.key + "=" + entry.value);
+		}
+
+		Assert.isTrue(entries.indexOf("alpha=10") != -1);
+		Assert.isTrue(entries.indexOf("beta=20") != -1);
+
+		var object = fields.toObject();
+		Assert.equals(10, object["alpha"]);
+		Assert.equals(20, object["beta"]);
+	}
+
 	public function testObjectIteratesDynamicFields():Void {
 		var object:Object = new Object();
 		object.alpha = "a";
