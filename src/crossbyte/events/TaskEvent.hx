@@ -21,4 +21,11 @@ class TaskEvent<T> extends Event {
 		this.result = result;
 		this.error = error;
 	}
+
+	override public function clone():Event {
+		var event = new TaskEvent(type, task, result, error);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
+	}
 }

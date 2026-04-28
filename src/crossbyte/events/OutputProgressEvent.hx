@@ -19,6 +19,9 @@ class OutputProgressEvent extends Event {
 	}
 
 	override public function clone():Event {
-		return new OutputProgressEvent(type, bytesPending, bytesTotal);
+		var event = new OutputProgressEvent(type, bytesPending, bytesTotal);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 }

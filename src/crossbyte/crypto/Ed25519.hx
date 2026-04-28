@@ -16,9 +16,9 @@ import crossbyte.crypto._internal.NativeSodium;
  * signed control messages, release manifests, trust records, and other
  * application-layer authenticity checks.
  *
- * On `cpp` targets the implementation uses `libsodium` at runtime. The
- * application should either ship `libsodium.dll` alongside the executable or
- * set `CROSSBYTE_LIBSODIUM_DLL` to an absolute DLL path before use.
+ * On supported native `cpp` targets the implementation uses a statically
+ * linked libsodium backend, so applications do not need to ship a separate
+ * runtime DLL in order to use Ed25519.
  */
 class Ed25519 {
 	/**
@@ -45,7 +45,7 @@ class Ed25519 {
 	 * Returns `true` when the native Ed25519 backend is available on the current
 	 * process and target.
 	 *
-	 * On non-native targets this always returns `false`.
+	 * On unsupported targets this returns `false`.
 	 */
 	public static function isAvailable():Bool {
 		#if cpp
@@ -64,7 +64,7 @@ class Ed25519 {
 		var message = NativeSodium.statusMessage();
 		return (message == null || message == "") ? "libsodium status is unavailable." : message;
 		#else
-		return "Ed25519 is only available on native cpp targets.";
+		return "Ed25519 is only available on supported native cpp targets.";
 		#end
 	}
 
@@ -85,7 +85,7 @@ class Ed25519 {
 		}
 		return {publicKey: publicKey, secretKey: secretKey};
 		#else
-		throw "Ed25519 keypair generation is only available on native cpp targets.";
+		throw "Ed25519 keypair generation is only available on supported native cpp targets.";
 		#end
 	}
 
@@ -111,7 +111,7 @@ class Ed25519 {
 		}
 		return signature;
 		#else
-		throw "Ed25519 signing is only available on native cpp targets.";
+		throw "Ed25519 signing is only available on supported native cpp targets.";
 		#end
 	}
 

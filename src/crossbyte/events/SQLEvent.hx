@@ -20,9 +20,16 @@ class SQLEvent extends Event {
 	public static inline var ROLLBACK:EventType<SQLEvent> = "rollback";
 	public static inline var ROLLBACK_TO_SAVEPOINT:EventType<SQLEvent> = "rollbackToSavepoint";
 	public static inline var SCHEMA:EventType<SQLEvent> = "schema";
-	public static inline var SET_SAVEPOINT:EventType<SQLEvent> = "cancel";
+	public static inline var SET_SAVEPOINT:EventType<SQLEvent> = "setSavepoint";
 
 	public function new(type:EventType<SQLEvent>) {
 		super(type);
+	}
+
+	override public function clone():Event {
+		var event = new SQLEvent(type);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 }

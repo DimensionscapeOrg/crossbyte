@@ -12,4 +12,11 @@ class IOErrorEvent extends ErrorEvent {
 	public function new(type:EventType<IOErrorEvent>, text:String = "", id:Int = 0) {
 		super(type, text, id);
 	}
+
+	override public function clone():Event {
+		var event = new IOErrorEvent(type, text, errorID);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
+	}
 }

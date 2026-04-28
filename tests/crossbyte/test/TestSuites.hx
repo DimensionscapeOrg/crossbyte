@@ -8,6 +8,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 	}
 
+	public static function addCrypto(runner:Runner):Void {
+		runner.addCase(new crossbyte.crypto.CryptoTest());
+	}
+
 	public static function addCore(runner:Runner):Void {
 		runner.addCase(new crossbyte.core.CrossByteTest());
 	}
@@ -22,6 +26,7 @@ class TestSuites {
 
 	public static function addEvents(runner:Runner):Void {
 		runner.addCase(new crossbyte.events.EventDispatcherTest());
+		runner.addCase(new crossbyte.events.EventsSupportTest());
 	}
 
 	public static function addDataStructures(runner:Runner):Void {
@@ -105,6 +110,7 @@ class TestSuites {
 
 	public static function addAll(runner:Runner):Void {
 		addAuth(runner);
+		addCrypto(runner);
 		addCore(runner);
 		addFoundation(runner);
 		addErrors(runner);
@@ -124,6 +130,7 @@ class TestSuites {
 	}
 
 	public static function addNativeSmoke(runner:Runner):Void {
+		addCrypto(runner);
 		addCore(runner);
 		addErrors(runner);
 		addEvents(runner);

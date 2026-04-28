@@ -18,9 +18,9 @@ class TickEvent extends Event {
 	}
 
 	override public function clone():Event {
-		var event:TickEvent = cast super.clone();
-		event.delta = delta;
-
+		var event = new TickEvent(type, delta);
+		event.target = target;
+		event.currentTarget = currentTarget;
 		return event;
 	}
 }

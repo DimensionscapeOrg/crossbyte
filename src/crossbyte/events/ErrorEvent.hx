@@ -17,6 +17,9 @@ class ErrorEvent extends TextEvent {
 	}
 
 	override public function clone():Event {
-		return new ErrorEvent(type, text, errorID);
+		var event = new ErrorEvent(type, text, errorID);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 }

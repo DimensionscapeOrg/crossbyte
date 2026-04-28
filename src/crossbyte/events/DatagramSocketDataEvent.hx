@@ -62,6 +62,9 @@ class DatagramSocketDataEvent extends Event {
 		@return A new `DatagramSocketDataEvent` with the same endpoint and payload data.
 	**/
 	override public function clone():Event {
-		return new DatagramSocketDataEvent(type, srcAddress, srcPort, dstAddress, dstPort, data);
+		var event = new DatagramSocketDataEvent(type, srcAddress, srcPort, dstAddress, dstPort, data);
+		event.target = target;
+		event.currentTarget = currentTarget;
+		return event;
 	}
 }
