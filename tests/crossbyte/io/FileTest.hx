@@ -61,6 +61,51 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testLoadAsyncPopulatesDataAndDispatchesComplete():Void {
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("payload.bin");
+		var completeSeen = false;
+
+		try {
+			HaxeFile.saveBytes(file.nativePath, Bytes.ofString("payload"));
+			file.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			file.loadAsync();
+
+			pumpUntil(() -> completeSeen, 2.0);
+
+			Assert.isTrue(completeSeen);
+			Assert.notNull(file.data);
+			Assert.equals(7, file.data.length);
+			Assert.equals("payload", file.data.toString());
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testLoadAsyncDispatchesIoErrorForMissingFile():Void {
+		var root = File.createTempDirectory();
+		var file = root.resolvePath("missing.bin");
+		var errorEvent:IOErrorEvent = null;
+		var completeSeen = false;
+
+		try {
+			file.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> errorEvent = event);
+			file.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			file.loadAsync();
+
+			pumpUntil(() -> errorEvent != null || completeSeen, 2.0);
+
+			Assert.notNull(errorEvent);
+			Assert.isFalse(completeSeen);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testDeleteDirectoryRecursivelyRemovesNestedContents():Void {
 		var root = File.createTempDirectory();
 		var nested = root.resolvePath("a").resolvePath("b");
