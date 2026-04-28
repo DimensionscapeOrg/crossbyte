@@ -296,7 +296,7 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * @throws String In debug builds if reading would exceed `length` or if the length is invalid.
 	 */
 	public inline function readVarUTF():String {
-		var len:Int = readVarInt();
+		var len:Int = readVarUInt();
 		return readUTFBytes(len);
 	}
 }
