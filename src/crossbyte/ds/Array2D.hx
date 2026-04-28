@@ -54,6 +54,10 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 	}
 
 	public inline function clone():Array2D<T> {
-		return this.copy();
+		var copy:Array<Array<T>> = [];
+		for (row in this) {
+			copy.push(row.copy());
+		}
+		return copy;
 	}
 }
