@@ -3,10 +3,6 @@ package crossbyte.utils;
 import crossbyte.ds.Stack;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
  * ObjectPool is a generic object pool class.
  * It helps in reusing objects efficiently by managing a pool of reusable instances.
  *

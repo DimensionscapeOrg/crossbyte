@@ -2,10 +2,7 @@ package crossbyte.url;
 
 import crossbyte.http.HTTPVersion;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Mutable request descriptor consumed by `URLLoader` and related APIs. */
 class URLRequest {
 	public var contentType:String;
 

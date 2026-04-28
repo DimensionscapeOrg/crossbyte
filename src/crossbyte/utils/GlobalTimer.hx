@@ -7,10 +7,7 @@ import haxe.Timer as HxTimer;
 import sys.thread.Mutex;
 #end
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Process-level timeout and interval helpers backed by the primordial runtime. */
 final class GlobalTimer {
 	@:noCompletion private static var __lastTimerID:UInt = 0;
 	@:noCompletion private static var __timers:Map<UInt, HxTimer> = new Map();

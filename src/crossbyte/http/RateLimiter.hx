@@ -1,9 +1,6 @@
 package crossbyte.http;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Small fixed-window per-client request limiter used by HTTP server flows. */
 class RateLimiter {
 	private var requestCounts:Map<String, Int>;
 	private var resetTime:Float;

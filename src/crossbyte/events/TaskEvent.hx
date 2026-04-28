@@ -2,9 +2,7 @@ package crossbyte.events;
 
 import crossbyte.sys.Task;
 
-/**
- * ...
- */
+/** Event dispatched when a `Task` changes state or completes with a result. */
 class TaskEvent<T> extends Event {
 	public static inline var COMPLETE:String = "complete";
 	public static inline var ERROR:String = "error";

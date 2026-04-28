@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.events.Event;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event dispatched when an asynchronous I/O operation fails. */
 class IOErrorEvent extends ErrorEvent {
 	public static inline var IO_ERROR:String = "ioError";
 
