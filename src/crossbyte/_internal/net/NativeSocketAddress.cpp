@@ -245,7 +245,7 @@ int crossbyte_socket_send_to(Dynamic socket, Array<unsigned char> buffer, int po
 			nativeAddressLength
 		);
 	} while (sent == SOCKET_ERROR && errno == EINTR);
-#end
+#endif
 	if (sent == SOCKET_ERROR) {
 		crossbyte_block_error();
 	}
@@ -287,7 +287,7 @@ int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int 
 			&nativeAddressLength
 		);
 	} while (received == SOCKET_ERROR && errno == EINTR);
-#end
+#endif
 	if (received == SOCKET_ERROR) {
 		crossbyte_block_error();
 	}
