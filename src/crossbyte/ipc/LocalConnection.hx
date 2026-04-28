@@ -7,15 +7,22 @@ import crossbyte.events.StatusEvent;
 import crossbyte.Object;
 import haxe.Unserializer;
 import haxe.Serializer;
+#if (cpp && windows)
 import cpp.Pointer;
-import haxe.ds.StringMap;
+import crossbyte.ipc._internal.NativeLocalConnection;
+import crossbyte.ipc._internal.win.HANDLE;
+#end
 import haxe.io.Bytes;
 import haxe.io.BytesData;
-import crossbyte.ipc._internal.NativeLocalConnection;
 import crossbyte.sys.Worker;
-import crossbyte.ipc._internal.win.HANDLE;
 import sys.thread.Deque;
 import crossbyte.events.EventDispatcher;
+
+#if (cpp && windows)
+private typedef LocalConnectionHandle = HANDLE;
+#else
+private typedef LocalConnectionHandle = Dynamic;
+#end
 
 /**
  * `LocalConnection` provides inter-process communication (IPC) using Named Pipes.
@@ -29,25 +36,32 @@ import crossbyte.events.EventDispatcher;
  *
  */
 @:access(haxe.Serializer)
+#if (cpp && windows)
 @:access(crossbyte.ipc._internal.NativeLocalConnection)
+#end
 class LocalConnection extends EventDispatcher {
+	public static inline var isSupported:Bool = #if (cpp && windows) true #else false #end;
+
 	/**
 	 * The object that handles incoming messages.
 	 * This should be set to an instance containing methods corresponding to the message names sent by other processes.
 	 */
 	public var client:Object;
 
-	@:noCompletion private var __inboundPipe:HANDLE;
-	@:noCompletion private var __outboundPipe:HANDLE;
+	@:noCompletion private var __inboundPipe:LocalConnectionHandle;
+	@:noCompletion private var __outboundPipe:LocalConnectionHandle;
 	@:noCompletion private var __serializer:Serializer;
 	@:noCompletion private var __worker:Worker;
 	@:noCompletion private var __clientPipes:Array<Dynamic>;
 	@:noCompletion private var __outboundTimeout:Timer;
 	@:noCompletion private var __lastSentTime:Float = 0;
 	@:noCompletion private var __connected:Bool = false;
+	@:noCompletion private var __running:Bool = false;
 
 	@:noCompletion private static inline var TIME_OUT:Int = 45000;
 	@:noCompletion private static inline var BUFFER_SIZE:Int = 4096;
+	@:noCompletion private static inline var MAX_METHOD_LENGTH:Int = 256;
+	@:noCompletion private static inline var MAX_MESSAGE_SIZE:Int = 1024 * 1024;
 
 	/**
 	 * Creates a new `LocalConnection` instance.
@@ -67,9 +81,19 @@ class LocalConnection extends EventDispatcher {
 	 * This stops the server from receiving further messages.
 	 */
 	public function close():Void {
+		__running = false;
 		if (__inboundPipe != null) {
 			__close(__inboundPipe);
 			__inboundPipe = null;
+		}
+		if (__outboundPipe != null) {
+			__close(__outboundPipe);
+			__outboundPipe = null;
+		}
+		__closeClientPipes();
+		if (__outboundTimeout != null) {
+			__outboundTimeout.stop();
+			__outboundTimeout = null;
 		}
 		__connected = false;
 	}
@@ -80,6 +104,7 @@ class LocalConnection extends EventDispatcher {
 	 * @param connectionName The name of the connection (pipe) to listen for messages.
 	 */
 	public function connect(connectionName:String):Void {
+		__requireSupported();
 		// trace('Connecting as server: ' + connectionName);
 		if (!__setupNamedPipe(connectionName)) {
 			// trace("Error setting up named pipe: " + connectionName);
@@ -97,6 +122,12 @@ class LocalConnection extends EventDispatcher {
 	 * @param arguments The arguments to pass to the method.
 	 */
 	public function send(connectionName:String, methodName:String, ...arguments):Void {
+		__requireSupported();
+		if (methodName == null || methodName.length == 0 || methodName.length > MAX_METHOD_LENGTH) {
+			dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", "error"));
+			return;
+		}
+
 		__resetSeralizer();
 
 		var status:Bool = false;
@@ -104,6 +135,10 @@ class LocalConnection extends EventDispatcher {
 		__serializer.serialize(arguments);
 		var methodBytes:Bytes = Bytes.ofString(methodName);
 		var serializationBytes:Bytes = Bytes.ofString(__serializer.toString());
+		if (8 + methodBytes.length + serializationBytes.length > MAX_MESSAGE_SIZE) {
+			dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", "error"));
+			return;
+		}
 
 		var messageBuffer:BytesBuffer = new BytesBuffer();
 		messageBuffer.addInt32(methodBytes.length);
@@ -172,42 +207,72 @@ class LocalConnection extends EventDispatcher {
 	}
 
 	/** Writes data to a named pipe */
-	@:noCompletion private static function __write(pipe:HANDLE, data:BytesData, size:Int):Bool {
+	@:noCompletion private static function __write(pipe:LocalConnectionHandle, data:BytesData, size:Int):Bool {
+		#if (cpp && windows)
 		return NativeLocalConnection.__write(pipe, Pointer.ofArray(data), size);
+		#else
+		return false;
+		#end
 	}
 
 	/** Connects to an outbound pipe */
-	@:noCompletion private static function __connect(name:String):HANDLE {
+	@:noCompletion private static function __connect(name:String):LocalConnectionHandle {
+		#if (cpp && windows)
 		return NativeLocalConnection.__connect(name);
+		#else
+		return null;
+		#end
 	}
 
 	/** Creates an inbound pipe (server) */
-	@:noCompletion private static function __createInboundPipe(name:String):HANDLE {
+	@:noCompletion private static function __createInboundPipe(name:String):LocalConnectionHandle {
+		#if (cpp && windows)
 		return NativeLocalConnection.__createInboundPipe(name);
+		#else
+		return null;
+		#end
 	}
 
 	/** Accepts a new client connection */
-	@:noCompletion private static function __accept(pipe:HANDLE):Bool {
+	@:noCompletion private static function __accept(pipe:LocalConnectionHandle):Bool {
+		#if (cpp && windows)
 		return NativeLocalConnection.__accept(pipe);
+		#else
+		return false;
+		#end
 	}
 
-	@:noCompletion private static function __isOpen(pipe:HANDLE):Bool {
+	@:noCompletion private static function __isOpen(pipe:LocalConnectionHandle):Bool {
+		#if (cpp && windows)
 		return NativeLocalConnection.__isOpen(pipe);
+		#else
+		return false;
+		#end
 	}
 
 	/** Reads from the named pipe */
-	@:noCompletion private static function __read(pipe:HANDLE, buffer:BytesData, size:Int):Int {
+	@:noCompletion private static function __read(pipe:LocalConnectionHandle, buffer:BytesData, size:Int):Int {
+		#if (cpp && windows)
 		return NativeLocalConnection.__read(pipe, Pointer.ofArray(buffer), size);
+		#else
+		return -1;
+		#end
 	}
 
 	/** Gets available bytes in the pipe */
-	@:noCompletion private static function __getBytesAvailable(pipe:HANDLE):Int {
+	@:noCompletion private static function __getBytesAvailable(pipe:LocalConnectionHandle):Int {
+		#if (cpp && windows)
 		return NativeLocalConnection.__getBytesAvailable(pipe);
+		#else
+		return 0;
+		#end
 	}
 
 	/** Closes a named pipe */
-	@:noCompletion private static function __close(pipe:HANDLE):Void {
+	@:noCompletion private static function __close(pipe:LocalConnectionHandle):Void {
+		#if (cpp && windows)
 		NativeLocalConnection.__close(pipe);
+		#end
 	}
 
 	/** Resets our serializer internally */
@@ -220,30 +285,33 @@ class LocalConnection extends EventDispatcher {
 
 	/** Initializes the Named Pipe Server */
 	@:noCompletion private function __setupNamedPipe(connectionName:String):Bool {
+		close();
+		__running = true;
 		__worker = new Worker();
-		var handleQueue:Deque<HANDLE> = new Deque();
+		var handleQueue:Deque<LocalConnectionHandle> = new Deque();
 
 		__worker.doWork = (name:String) -> {
-			var handle:HANDLE = null;
+			var handle:LocalConnectionHandle = null;
 			try {
 				handle = __createInboundPipe(name);
+				__inboundPipe = handle;
 				handleQueue.add(handle);
 			} catch (e:Dynamic) {
 				handleQueue.add(null);
 			}
 			if (handle != null) {
-				__runLocalConnection(name);
+				__runLocalConnection(name, handle);
 			}
 		};
 
 		__worker.run(connectionName);
 
-		var handle:HANDLE = handleQueue.pop(true);
+		var handle:LocalConnectionHandle = handleQueue.pop(true);
 		if (handle != null) {
-			__inboundPipe = handle;
 			return true;
 		}
 
+		__running = false;
 		return false;
 	}
 
@@ -254,27 +322,35 @@ class LocalConnection extends EventDispatcher {
 
 		var offset:Int = 0;
 		try {
+			if (received == null || received.length < 8 || received.length > MAX_MESSAGE_SIZE) {
+				return;
+			}
+
 			var methodLength:Int = received.getInt32(0);
-			// trace(methodLength);
+			if (methodLength <= 0 || methodLength > MAX_METHOD_LENGTH || methodLength > received.length - 8) {
+				return;
+			}
 			offset += 4;
 
 			var method:String = received.getString(offset, methodLength);
 			offset += methodLength;
-			// trace(method);
 
 			var serializationLength:Int = received.getInt32(offset);
+			if (serializationLength < 0 || serializationLength > MAX_MESSAGE_SIZE || offset + 4 + serializationLength > received.length) {
+				return;
+			}
 			offset += 4;
-			// trace(serializationLength);
 
 			var serialization:String = received.getString(offset, serializationLength);
-			// trace(serialization);
 
 			var args:Array<Dynamic> = Unserializer.run(serialization);
+			var field:Dynamic = Reflect.field(client, method);
+			if (!Reflect.isFunction(field)) {
+				return;
+			}
 
-			Reflect.callMethod(client, Reflect.field(client, method), args);
-		} catch (e:Dynamic) {
-			throw "error parsing LocalConnection message";
-		}
+			Reflect.callMethod(client, field, args);
+		} catch (_:Dynamic) {}
 
 		/*try{
 				Reflect.callMethod(client, client[method], args);
@@ -286,18 +362,19 @@ class LocalConnection extends EventDispatcher {
 	}
 
 	/** Listens for incoming messages in a background thread */
-	@:noCompletion private function __runLocalConnection(connectionName:String):Void {
+	@:noCompletion private function __runLocalConnection(connectionName:String, listeningPipe:LocalConnectionHandle):Void {
 		var buffer:Bytes = Bytes.alloc(BUFFER_SIZE);
 
-		while (true) {
+		while (__running) {
 			// Accepts new clients
-			if (__accept(__inboundPipe)) {
+			if (listeningPipe != null && __accept(listeningPipe)) {
 				// trace("New client connected!");
 
 				// we store new client pipe
-				__clientPipes.push(__inboundPipe);
+				__clientPipes.push(listeningPipe);
 				// Creates a new pipe for next client
-				__inboundPipe = __createInboundPipe(connectionName);
+				listeningPipe = __createInboundPipe(connectionName);
+				__inboundPipe = listeningPipe;
 			}
 
 			// we can iterate in reverse to safely remove elements
@@ -311,24 +388,30 @@ class LocalConnection extends EventDispatcher {
 					// Check if the pipe is still valid?
 					if (!__isOpen(pipe)) {
 						// trace("Client disconnected. Removing handle.");
+						__close(pipe);
 						__clientPipes.splice(i, 1); // Remove client from the list
 					}
 				} else if (available > 0) {
-					if (available > BUFFER_SIZE) {
+					if (available > MAX_MESSAGE_SIZE) {
+						__close(pipe);
+						__clientPipes.splice(i, 1);
+					} else if (available > BUFFER_SIZE) {
 						var largeMessageBuffer:BytesBuffer = new BytesBuffer();
 						var bytesRemaining:Int = available;
 						while (bytesRemaining > 0) {
-							if (__read(pipe, buffer.getData(), BUFFER_SIZE) == 0) {
-								var length:Int = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
+							var length:Int = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
+							if (__read(pipe, buffer.getData(), length) == 0) {
 								bytesRemaining -= length;
 								largeMessageBuffer.addBytes(buffer, 0, length);
+							} else {
+								bytesRemaining = 0;
 							}
 						}
 						__onData(largeMessageBuffer.getBytes());
 					} else {
 						// Read theavailable data
-						if (__read(pipe, buffer.getData(), BUFFER_SIZE) == 0) {
-							var received:Bytes = buffer;
+						if (__read(pipe, buffer.getData(), available) == 0) {
+							var received:Bytes = buffer.sub(0, available);
 							// trace("Received: " + received);
 							__onData(received);
 						}
@@ -339,7 +422,28 @@ class LocalConnection extends EventDispatcher {
 			}
 
 			// Application seems to lock up without sleep
-			Sys.sleep(0);
+			Sys.sleep(0.001);
+		}
+
+		if (listeningPipe != null && listeningPipe == __inboundPipe) {
+			__close(listeningPipe);
+			__inboundPipe = null;
+		}
+		__closeClientPipes();
+	}
+
+	@:noCompletion private function __closeClientPipes():Void {
+		for (pipe in __clientPipes) {
+			if (pipe != null) {
+				__close(pipe);
+			}
+		}
+		__clientPipes.resize(0);
+	}
+
+	@:noCompletion private static inline function __requireSupported():Void {
+		if (!isSupported) {
+			throw new ArgumentError("LocalConnection is only supported on native Windows cpp targets.");
 		}
 	}
 }
