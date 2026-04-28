@@ -23,8 +23,13 @@ class BitSet {
 	}
 
 	private function set_length(value:Int):Int {
+		if (value < 0) {
+			throw "Index out of bounds";
+		}
 		__ensureCapacity(value);
-		return __size = value;
+		__size = value;
+		__trimToSize();
+		return __size;
 	}
 
 	/**
@@ -60,6 +65,30 @@ class BitSet {
 	private inline function __checkBounds(index:Int):Void {
 		if (index < 0)
 			throw "Index out of bounds";
+	}
+
+	private inline function __wordCountForSize(size:Int):Int {
+		return Std.int(Math.ceil(size / 32));
+	}
+
+	private inline function __lastWordMask():Int {
+		var bitsInLastWord:Int = __size & 31;
+		if (bitsInLastWord == 0) {
+			return -1;
+		}
+
+		return (1 << bitsInLastWord) - 1;
+	}
+
+	private function __trimToSize():Void {
+		var words:Int = __wordCountForSize(__size);
+		if (__bits.length > words) {
+			__bits.resize(words);
+		}
+
+		if (words > 0) {
+			__bits[words - 1] &= __lastWordMask();
+		}
 	}
 
 	/**
@@ -127,8 +156,12 @@ class BitSet {
 	 * Sets all bits in the `BitSet` to `true`.
 	 */
 	public function setAll():Void {
-		for (i in 0...__bits.length) {
+		var words:Int = __wordCountForSize(__size);
+		for (i in 0...words) {
 			__bits[i] = -1; // Set all bits to 1
+		}
+		if (words > 0) {
+			__bits[words - 1] &= __lastWordMask();
 		}
 	}
 
@@ -162,8 +195,13 @@ class BitSet {
 	 */
 	public function countSetBits():Int {
 		var count:Int = 0;
-		for (i in 0...__bits.length) {
-			count += bitCount(__bits[i]);
+		var words:Int = __wordCountForSize(__size);
+		for (i in 0...words) {
+			var word:Int = __bits[i];
+			if (i == words - 1) {
+				word &= __lastWordMask();
+			}
+			count += bitCount(word);
 		}
 		return count;
 	}
