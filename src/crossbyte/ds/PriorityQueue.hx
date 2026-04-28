@@ -91,6 +91,11 @@ final class PriorityQueue<T:{}> {
 	 * @param x The element to insert.
 	 */
 	public inline function enqueue(x:T):Void {
+		if (pos.exists(x)) {
+			update(x);
+			return;
+		}
+
 		var i:Int = heap.length;
 		heap[i] = x;
 		pos.set(x, i);
