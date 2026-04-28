@@ -34,6 +34,7 @@ class TestMain {
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte.resources.ResourcesTest());
+		runner.addCase(new crossbyte.timer.GlobalTimerTest());
 		runner.addCase(new crossbyte.timer.HaxeTimerTest());
 		runner.addCase(new crossbyte.timer.TimerHeapTest());
 		Report.create(runner);

@@ -1,10 +1,14 @@
 package haxe;
 
 import crossbyte.core.CrossByte;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.TickEvent;
 import haxe.ds.IntMap;
 import haxe.Log;
 import haxe.PosInfos;
+#if cpp
+import sys.thread.Mutex;
+#end
 
 /**
 	A `haxe.Timer` implementation backed by CrossByte's tick-driven runtime.
@@ -13,6 +17,9 @@ class Timer {
 	private static var timerCount:Int = 0;
 	private static var timers:IntMap<Timer> = new IntMap<Timer>();
 	private static var __currentId:Int = 0;
+	#if cpp
+	private static final __mutex:Mutex = new Mutex();
+	#end
 
 	private var delayCount:Float;
 	private var timeRemaining:Float;
@@ -26,16 +33,32 @@ class Timer {
 		running = true;
 		stopped = false;
 		id = ++__currentId;
-		timerCount++;
+		__withLock(() -> {
+			timerCount++;
+			timers.set(id, this);
+			if (timerCount == 1) {
+				__getGlobalRuntime().addEventListener(TickEvent.TICK, onTick);
+			}
+		});
+	}
 
-		timers.set(id, this);
-		if (timerCount == 1) {
-			CrossByte.current().addEventListener(TickEvent.TICK, onTick);
+	private static inline function __getGlobalRuntime():CrossByte {
+		@:privateAccess var runtime:CrossByte = CrossByte.__primordial;
+		if (runtime == null) {
+			throw new IllegalOperationError("haxe.Timer requires a primordial CrossByte runtime. Create an Application, HostApplication, ServerApplication, or primordial CrossByte before using global timers.");
 		}
+		return runtime;
 	}
 
 	private static function onTick(event:TickEvent):Void {
-		for (timer in timers) {
+		var snapshot = new Array<Timer>();
+		__withLock(() -> {
+			for (timer in timers) {
+				snapshot.push(timer);
+			}
+		});
+
+		for (timer in snapshot) {
 			timer.__update(event.delta);
 		}
 	}
@@ -59,10 +82,12 @@ class Timer {
 		}
 
 		stopped = true;
-		timers.remove(id);
-		if (--timerCount == 0) {
-			CrossByte.current().removeEventListener(TickEvent.TICK, onTick);
-		}
+		__withLock(() -> {
+			timers.remove(id);
+			if (--timerCount == 0) {
+				__getGlobalRuntime().removeEventListener(TickEvent.TICK, onTick);
+			}
+		});
 	}
 
 	public function stop():Void {
@@ -111,6 +136,21 @@ class Timer {
 		return Sys.time();
 		#else
 		return 0;
+		#end
+	}
+
+	private static inline function __withLock(fn:Void->Void):Void {
+		#if cpp
+		__mutex.acquire();
+		try {
+			fn();
+		} catch (e:Dynamic) {
+			__mutex.release();
+			throw e;
+		}
+		__mutex.release();
+		#else
+		fn();
 		#end
 	}
 }
