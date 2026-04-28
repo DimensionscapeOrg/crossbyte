@@ -1,51 +1,46 @@
 name: CrossByte CI
+run-name: CrossByte CI | ${{ github.event_name }} | ${{ github.ref_name }}
 
 on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      run_brotli_extension:
-        description: Run the optional Brotli extension CI job
-        required: false
-        default: false
-        type: boolean
-      run_lz4_extension:
-        description: Run the optional LZ4 extension CI job
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  HAXE_VERSION: "4.3.7"
+
 jobs:
-  tests:
-    name: Haxe test suite
+  core-tests:
+    name: Core | Haxe Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare Haxe toolchain
+      - name: Setup Haxe
         uses: krdlab/setup-haxe@v1
         with:
-          haxe-version: "4.3.7"
+          haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install dependencies
-        run: |
-          haxelib install utest --quiet
+      - name: Install test dependencies
+        run: haxelib install utest --quiet
 
-      - name: Run Haxe unit tests
+      - name: Run interpreter test suite
         run: haxe ci/interp-tests.hxml
 
       - name: Validate sample builds
-        shell: bash
         run: |
           set -euo pipefail
           while IFS= read -r sample; do
@@ -55,57 +50,91 @@ jobs:
           done < <(find samples -name check.hxml -print | sort)
 
   cpp-audit:
-    name: hxcpp compile checks
+    name: Core | hxcpp API Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare Haxe toolchain
+      - name: Setup Haxe
         uses: krdlab/setup-haxe@v1
         with:
-          haxe-version: "4.3.7"
+          haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: hxcpp
+      - name: Install hxcpp
         run: haxelib install hxcpp --quiet
 
-      - name: Type-check full C++ API surface
+      - name: Type-check C++ API surface
         run: haxe ci/cpp-api-audit.hxml
 
       - name: Type-check timer burst support
         run: haxe ci/cpp-timer-burst-audit.hxml
 
   native-smoke:
-    name: Native build & smoke checks
+    name: Core | Native Smoke
     runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare Haxe toolchain
+      - name: Setup Haxe
         uses: krdlab/setup-haxe@v1
         with:
-          haxe-version: "4.3.7"
+          haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install dependencies
+      - name: Install native dependencies
         run: |
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
 
-      - name: Run native smoke harness
+      - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 
-      - name: Run native test suite
+      - name: Run native smoke suite
         run: .\export\ci-native-tests\NativeSmokeMain.exe
 
       - name: Build websocket echo sample
         run: haxe ci/websocket-echo-sample.hxml
 
-  libuv-extension:
-    name: libuv poll backend extension
+  extensions:
+    name: Extensions | ${{ matrix.label }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: libuv Poll Backend
+            repo: DimensionscapeOrg/crossbyte-libuv
+            path: crossbyte-libuv
+            haxelib_name: crossbyte-libuv
+            native_deps: sudo apt-get update && sudo apt-get install -y libuv1-dev
+            native_test_binary: ../crossbyte/export/crossbyte-libuv-native-test/LibuvNativeTestMain
+          - label: Brotli Native Oracle
+            repo: DimensionscapeOrg/crossbyte-brotli
+            path: crossbyte-brotli
+            haxelib_name: crossbyte-brotli
+            native_deps: ""
+            native_test_binary: ../crossbyte/export/crossbyte-brotli-native-test/NativeBrotliTestMain
+          - label: LZ4 Native Oracle
+            repo: DimensionscapeOrg/crossbyte-lz4
+            path: crossbyte-lz4
+            haxelib_name: crossbyte-lz4
+            native_deps: ""
+            native_test_binary: ../crossbyte/export/crossbyte-lz4-native-test/NativeLz4TestMain
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout CrossByte
@@ -113,116 +142,35 @@ jobs:
         with:
           path: crossbyte
 
-      - name: Checkout crossbyte-libuv
+      - name: Checkout ${{ matrix.haxelib_name }}
         uses: actions/checkout@v4
         with:
-          repository: DimensionscapeOrg/crossbyte-libuv
-          path: crossbyte-libuv
+          repository: ${{ matrix.repo }}
+          path: ${{ matrix.path }}
 
       - name: Setup Haxe
         uses: krdlab/setup-haxe@v1
         with:
-          haxe-version: "4.3.7"
+          haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install native dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libuv1-dev
+      - name: Install platform dependencies
+        if: ${{ matrix.native_deps != '' }}
+        run: ${{ matrix.native_deps }}
 
-      - name: Install haxelibs
-        run: |
-          haxelib install utest --quiet
-          haxelib install hxcpp --quiet
-          haxelib git crossbyte-libuv https://github.com/DimensionscapeOrg/crossbyte-libuv.git main
-
-      - name: Run extension non-native tests
-        working-directory: crossbyte-libuv
-        run: haxe test.hxml
-
-      - name: Build extension native tests
-        working-directory: crossbyte-libuv
-        run: haxe native-test.hxml
-
-      - name: Run extension native tests
-        working-directory: crossbyte-libuv
-        run: ../crossbyte/export/crossbyte-libuv-native-test/LibuvNativeTestMain
-
-  brotli-extension:
-    name: Brotli native oracle extension
-    if: ${{ vars.CROSSBYTE_ENABLE_BROTLI_EXTENSION_CI == 'true' || (github.event_name == 'workflow_dispatch' && inputs.run_brotli_extension) }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout CrossByte
-        uses: actions/checkout@v4
-        with:
-          path: crossbyte
-
-      - name: Checkout crossbyte-brotli
-        uses: actions/checkout@v4
-        with:
-          repository: DimensionscapeOrg/crossbyte-brotli
-          path: crossbyte-brotli
-
-      - name: Setup Haxe
-        uses: krdlab/setup-haxe@v1
-        with:
-          haxe-version: "4.3.7"
-
-      - name: Install haxelibs
+      - name: Install Haxelibs
         run: |
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
-          haxelib dev crossbyte-brotli "$GITHUB_WORKSPACE/crossbyte-brotli"
+          haxelib dev ${{ matrix.haxelib_name }} "$GITHUB_WORKSPACE/${{ matrix.path }}"
 
-      - name: Run extension non-native tests
-        working-directory: crossbyte-brotli
+      - name: Run extension interpreter tests
+        working-directory: ${{ matrix.path }}
         run: haxe test.hxml
 
       - name: Build extension native tests
-        working-directory: crossbyte-brotli
+        working-directory: ${{ matrix.path }}
         run: haxe native-test.hxml
 
       - name: Run extension native tests
-        working-directory: crossbyte-brotli
-        run: ../crossbyte/export/crossbyte-brotli-native-test/NativeBrotliTestMain
-
-  lz4-extension:
-    name: LZ4 native oracle extension
-    if: ${{ vars.CROSSBYTE_ENABLE_LZ4_EXTENSION_CI == 'true' || (github.event_name == 'workflow_dispatch' && inputs.run_lz4_extension) }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout CrossByte
-        uses: actions/checkout@v4
-        with:
-          path: crossbyte
-
-      - name: Checkout crossbyte-lz4
-        uses: actions/checkout@v4
-        with:
-          repository: DimensionscapeOrg/crossbyte-lz4
-          path: crossbyte-lz4
-
-      - name: Setup Haxe
-        uses: krdlab/setup-haxe@v1
-        with:
-          haxe-version: "4.3.7"
-
-      - name: Install haxelibs
-        run: |
-          haxelib install utest --quiet
-          haxelib install hxcpp --quiet
-          haxelib dev crossbyte-lz4 "$GITHUB_WORKSPACE/crossbyte-lz4"
-
-      - name: Run extension non-native tests
-        working-directory: crossbyte-lz4
-        run: haxe test.hxml
-
-      - name: Build extension native tests
-        working-directory: crossbyte-lz4
-        run: haxe native-test.hxml
-
-      - name: Run extension native tests
-        working-directory: crossbyte-lz4
-        run: ../crossbyte/export/crossbyte-lz4-native-test/NativeLz4TestMain
+        working-directory: ${{ matrix.path }}
+        run: ${{ matrix.native_test_binary }}
