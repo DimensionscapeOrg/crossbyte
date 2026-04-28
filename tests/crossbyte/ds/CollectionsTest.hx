@@ -206,6 +206,77 @@ class CollectionsTest extends utest.Test {
 		Assert.isFalse(map.exists("b"));
 	}
 
+	public function testSlotMapInvalidatesStaleHandlesAndReusesSlots():Void {
+		var map = new SlotMap<String>(2, 4, 1);
+		var first = map.insert("alpha");
+		var second = map.insert("beta");
+
+		Assert.equals(2, map.length);
+		Assert.equals(2, map.capacity);
+		Assert.equals("alpha", map.get(first));
+		Assert.equals("beta", map.get(second));
+
+		Assert.isTrue(map.remove(first));
+		Assert.isNull(map.get(first));
+		Assert.isFalse(map.set(first, "stale"));
+
+		var reused = map.insert("gamma");
+		Assert.equals(first.index(), reused.index());
+		Assert.notEquals(first.gen(), reused.gen());
+		Assert.equals("gamma", map.get(reused));
+
+		var seen = [];
+		map.forEach((handle, value) -> seen.push(handle.index() + ":" + value));
+		Assert.equals(2, seen.length);
+
+		map.ensureCapacity(4);
+		Assert.equals(4, map.capacity);
+
+		map.clear();
+		Assert.equals(0, map.length);
+		Assert.isNull(map.get(second));
+		Assert.isNull(map.get(reused));
+	}
+
+	public function testPackedSlotMapKeepsDenseIterationAndHonorsMaxCapacity():Void {
+		var map = new PackedSlotMap<String>(2, 3, 2);
+		var first = map.insert("alpha");
+		var second = map.insert("beta");
+		var third = map.insert("gamma");
+
+		Assert.equals(3, map.length);
+		Assert.equals(3, map.capacity);
+		Assert.equals("alpha", map.get(first));
+		Assert.equals("beta", map.get(second));
+		Assert.equals("gamma", map.get(third));
+
+		Assert.isTrue(map.remove(second));
+		Assert.isNull(map.get(second));
+		Assert.equals(2, map.length);
+		Assert.equals("gamma", map.get(third));
+
+		var iterated = [];
+		for (value in map) {
+			iterated.push(value);
+		}
+		iterated.sort((a, b) -> Reflect.compare(a, b));
+		Assert.equals("alpha,gamma", iterated.join(","));
+
+		map.ensureCapacity(99);
+		Assert.equals(3, map.capacity);
+
+		var replacement = map.insert("delta");
+		Assert.equals(second.index(), replacement.index());
+		Assert.notEquals(second.gen(), replacement.gen());
+		Assert.equals("delta", map.get(replacement));
+
+		map.clear();
+		Assert.equals(0, map.length);
+		Assert.isNull(map.get(first));
+		Assert.isNull(map.get(third));
+		Assert.isNull(map.get(replacement));
+	}
+
 	public function testWeightedGraphSupportsStringNodes():Void {
 		var graph = new WeightedGraph<String>();
 		graph.addEdge("a", "b", 2.5);
