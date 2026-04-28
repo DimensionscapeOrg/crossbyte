@@ -42,13 +42,14 @@ class Timer {
 	@:noCompletion private static inline function current():TimerScheduler {
 		#if cpp
 		final scheduler:TimerScheduler = __tls.value;
-		#if debug
 		if (scheduler == null) {
 			throw "TimerScheduler not attached to this thread";
 		}
-		#end
 		return scheduler;
 		#else
+		if (__nonThreadedTimer == null) {
+			throw "TimerScheduler not attached to this thread";
+		}
 		return __nonThreadedTimer;
 		#end
 	}
@@ -179,7 +180,7 @@ class Timer {
 	}
 
 	/**
-	 * Converts an absolute wall clock time (in milliseconds since epoch)
+	 * Converts an absolute wall clock time (in seconds)
 	 * to the scheduler's virtual time.
 	 *
 	 * @param wallTime The absolute wall clock time.
@@ -194,7 +195,7 @@ class Timer {
 	 * Converts a scheduler virtual time back into a wall clock timestamp.
 	 *
 	 * @param virtualTime The virtual time from the scheduler.
-	 * @return The corresponding wall clock time in milliseconds since epoch.
+	 * @return The corresponding wall clock time in seconds.
 	 */
 	public static inline function toWallClock(virtualTime:Float):Float {
 		final scheduler = current();
