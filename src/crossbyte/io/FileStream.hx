@@ -1236,8 +1236,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			return;
 		}
 
-		__output.writeInt16(value.length);
-		__output.writeString(value);
+		var bytes = Bytes.ofString(value);
+		__output.writeInt16(bytes.length);
+		__output.writeBytes(bytes, 0, bytes.length);
 		__file.__fileStatsDirty = true;
 		__positionDirty = true;
 	}
