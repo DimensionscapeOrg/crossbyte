@@ -12,15 +12,14 @@ import sys.thread.Lock;
 import sys.thread.Mutex;
 #end
 
-/**
- * ...
- */
+/** Promise-like unit of work scheduled and completed through `TaskPool`. */
 private enum TaskDispatch<T> {
 	Complete(result:Null<T>);
 	Fail(error:Dynamic);
 	Cancel;
 }
 
+/** Promise-like unit of work scheduled and completed through `TaskPool`. */
 class Task<T> extends EventDispatcher {
 	public var state(default, null):TaskState;
 	public var result(default, null):Null<T>;

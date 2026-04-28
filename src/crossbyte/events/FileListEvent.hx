@@ -3,10 +3,7 @@ package crossbyte.events;
 import crossbyte.events.Event;
 import crossbyte.io.File;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event carrying a resolved file listing from an asynchronous directory query. */
 class FileListEvent extends Event {
 	public static inline var DIRECTORY_LISTING:String = "directoryListing";
 
