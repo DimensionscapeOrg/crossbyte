@@ -122,8 +122,18 @@ jobs:
       - name: Run native smoke suite
         run: .\export\ci-native-tests\NativeSmokeMain.exe
 
-      - name: Build websocket echo sample
-        run: haxe ci/websocket-echo-sample.hxml
+      - name: Build native samples
+        run: |
+          Get-ChildItem samples -Recurse -Filter *.hxml |
+            Where-Object { $_.Name -ne 'check.hxml' } |
+            Sort-Object FullName |
+            ForEach-Object {
+              Write-Host "::group::$($_.FullName)"
+              Push-Location $_.DirectoryName
+              haxe $_.Name
+              Pop-Location
+              Write-Host "::endgroup::"
+            }
 
   extensions:
     name: Extensions | ${{ matrix.label }}
