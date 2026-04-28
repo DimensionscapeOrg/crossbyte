@@ -8,7 +8,7 @@ import crossbyte.utils.Hash;
 import crossbyte.sys.System;
 import crossbyte.rpc.RPCHandler;
 import crossbyte.rpc.RPCCommands;
-import crossbyte.net.INetConnection;
+import crossbyte.net.NetConnection;
 import crossbyte.events.EventDispatcher;
 #if neko
 import sys.thread.Mutex;
@@ -25,14 +25,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private static final HEARTBEAT_SALT:Int = __getSalt();
 
 	public final sessionId:Int = __getSessionId();
-	public var connection(get, never):INetConnection;
+	public var connection(get, never):NetConnection;
 	public var handler(get, set):RPCHandler;
 	public var commands(get, set):C;
 	public var heartbeatInterval(get, set):Int;
 	public var heartbeatTimeout(get, set):Int;
 	public var data:D;
 
-	@:noCompletion private var __connection:INetConnection;
+	@:noCompletion private var __connection:NetConnection;
 	@:noCompletion private var __handler:RPCHandler;
 	@:noCompletion private var __commands:C;
 	@:noCompletion private var __heartbeatTimerHandle:Int;
@@ -148,7 +148,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return handler;
 	}
 
-	@:noCompletion private inline function get_connection():INetConnection {
+	@:noCompletion private inline function get_connection():NetConnection {
 		return __connection;
 	}
 
@@ -160,7 +160,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return __commands;
 	}
 
-	public function new(connection:INetConnection, ?commands:C, ?handler:RPCHandler) {
+	public function new(connection:NetConnection, ?commands:C, ?handler:RPCHandler) {
 		super();
 		__connection = connection;
 		this.commands = commands;
