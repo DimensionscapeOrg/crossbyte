@@ -68,6 +68,7 @@ class TestSuites {
 	}
 
 	public static function addDatabase(runner:Runner):Void {
+		runner.addCase(new crossbyte.db.DBSupportTest());
 		runner.addCase(new crossbyte.db.PostgresConnectionTest());
 		runner.addCase(new crossbyte.db.MongoConnectionTest());
 	}

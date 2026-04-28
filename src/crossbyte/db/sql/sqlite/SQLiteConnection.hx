@@ -211,7 +211,6 @@ class SQLiteConnection extends EventDispatcher {
 	public function stats():DBStats {
 		var pageSizeRow:Dynamic = __pragmaFirstRow("page_size");
 		var pageCountRow:Dynamic = __pragmaFirstRow("page_count");
-		var freeListRow :Dynamic= __pragmaFirstRow("freelist_count");
 		var freeListRow = __pragmaFirstRow("freelist_count");
 
 		var pageSize:Null<Int> = pageSizeRow != null ? Std.parseInt(Std.string(Reflect.field(pageSizeRow, "page_size"))) : 0;
@@ -938,7 +937,17 @@ class SQLiteConnection extends EventDispatcher {
 	private function get_busyTimeout():Int {
 		var row:Dynamic = __pragmaFirstRow("busy_timeout");
 
-		return row != null ? Std.parseInt(Std.string(Reflect.field(row, "busy_timeout"))) : 0;
+		if (row == null) {
+			return 0;
+		}
+
+		var value = Reflect.field(row, "busy_timeout");
+		if (value == null) {
+			value = Reflect.field(row, "timeout");
+		}
+
+		var parsed = value != null ? Std.parseInt(Std.string(value)) : null;
+		return parsed != null ? parsed : 0;
 	}
 
 	private function set_busyTimeout(v:Int):Int {
