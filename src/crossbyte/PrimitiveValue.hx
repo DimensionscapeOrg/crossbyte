@@ -19,7 +19,7 @@ package crossbyte;
  * var b:Bool = p.toBool(); // true
  * ```
  */
-abstract PrimitiveValue(Dynamic) from Dynamic to Dynamic {
+abstract PrimitiveValue(Dynamic) to Dynamic {
 	public inline function getValueType():Type.ValueType {
 		return Type.typeof(this);
 	}
@@ -109,20 +109,20 @@ abstract PrimitiveValue(Dynamic) from Dynamic to Dynamic {
 		}
 	}
 
-	@:from private static inline function fromString(s:String):PrimitiveValue {
-		return s != null ? s : "";
+	@:from private static inline function fromNullableString(s:Null<String>):PrimitiveValue {
+		return cast (s != null ? s : "");
 	}
 
 	@:from private static inline function fromInt(i:Int):PrimitiveValue {
-		return i;
+		return cast i;
 	}
 
 	@:from private static inline function fromFloat(f:Float):PrimitiveValue {
-		return !Math.isNaN(f) ? f : 0.0;
+		return cast (!Math.isNaN(f) ? f : 0.0);
 	}
 
 	@:from private static inline function fromBool(b:Bool):PrimitiveValue {
-		return b;
+		return cast b;
 	}
 
 	private static function isValid(value:Dynamic):Bool {
