@@ -4,6 +4,7 @@ import sys.FileSystem;
 import crossbyte.io.ByteArray;
 import crossbyte.sys.System;
 import haxe.Json;
+import StringTools;
 import crossbyte.io.File;
 
 @:build(crossbyte._internal.macro.ResourcesMacro.ensureResources())
@@ -30,7 +31,11 @@ final class Resources {
 
 	public static inline function getLines(relativePath:String):Array<String> {
 		var text:String = getText(relativePath);
-		var lines:Array<String> = text.split(File.lineEnding);
+		var normalized = text.split("\r\n").join("\n").split("\r").join("\n");
+		var lines:Array<String> = normalized.split("\n");
+		if (lines.length > 0 && lines[lines.length - 1] == "") {
+			lines.pop();
+		}
 
 		return lines;
 	}
@@ -43,19 +48,26 @@ final class Resources {
 	public static function listResourcesRecursive(subDir:String = ""):Array<String> {
 		var dir = __resourcesDir + subDir;
 		var files:Array<String> = [];
+		var relativeRoot = StringTools.replace(subDir, "\\", "/");
+		while (StringTools.endsWith(relativeRoot, "/")) {
+			relativeRoot = relativeRoot.substr(0, relativeRoot.length - 1);
+		}
 
-		function scan(path:String) {
+		function scan(path:String, relativePath:String) {
 			if (!FileSystem.exists(path) || !FileSystem.isDirectory(path))
 				return;
 			for (file in FileSystem.readDirectory(path)) {
 				var fullPath = path + File.separator + file;
-				files.push(fullPath.substr(__resourcesDir.length)); // Store relative path
-				if (FileSystem.isDirectory(fullPath))
-					scan(fullPath); // Recursively scan subdirectories
+				var childRelativePath = relativePath == "" ? file : relativePath + "/" + file;
+				if (FileSystem.isDirectory(fullPath)) {
+					scan(fullPath, childRelativePath);
+				} else {
+					files.push(childRelativePath);
+				}
 			}
 		}
 
-		scan(dir);
+		scan(dir, relativeRoot);
 		return files;
 	}
 
