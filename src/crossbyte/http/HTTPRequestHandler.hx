@@ -478,8 +478,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__origin.flush();
-		// TODO: can we just clear it?
-		__incomingBuffer = new ByteArray();
+		__incomingBuffer.clear();
 	}
 
 	@:noCompletion private function __findIndexFile(directory:File):Null<String> {
@@ -550,8 +549,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__origin.flush();
-		// TODO: can we just clear it?
-		__incomingBuffer = new ByteArray();
+		__incomingBuffer.clear();
 	}
 
 	@:noCompletion private function __sendErrorResponse(statusCode:Int, message:String):Void {
@@ -1004,8 +1002,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var hh:Null<Int> = Std.parseInt(r.matched(4));
 		var mm:Null<Int> = Std.parseInt(r.matched(5));
 		var ss:Null<Int> = Std.parseInt(r.matched(6));
-		var t:Float = DateTools.makeUtc(year, mon, day, hh, mm, ss);
-		return Date.fromTime(t);
+		if (year == null || day == null || hh == null || mm == null || ss == null) {
+			return null;
+		}
+
+		var localDate:Date = new Date(year, mon, day, hh, mm, ss);
+		return Date.fromTime(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
 	}
 
 	@:noCompletion private inline function __sanitizeHeaderValue(v:String):String {

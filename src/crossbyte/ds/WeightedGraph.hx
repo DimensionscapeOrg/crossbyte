@@ -1,7 +1,5 @@
 package crossbyte.ds;
 
-import haxe.ds.IntMap;
-
 /**
  * ...
  * @author Christopher Speciale
@@ -12,13 +10,13 @@ import haxe.ds.IntMap;
  * @param T The type of values stored in the graph nodes.
  */
 class WeightedGraph<T> {
-	private var adjacencyList:Map<T, Array<Edge<T>>>;
+	private var adjacencyList:Array<Adjacency<T>>;
 
 	/**
 	 * Constructs a new WeightedGraph.
 	 */
 	public function new() {
-		adjacencyList = new Map<T, Array<Edge<T>>>();
+		adjacencyList = [];
 	}
 
 	/**
@@ -27,8 +25,8 @@ class WeightedGraph<T> {
 	 * @param node The node to be added.
 	 */
 	public function addNode(node:T):Void {
-		if (!adjacencyList.exists(node)) {
-			adjacencyList.set(node, []);
+		if (__find(node) == null) {
+			adjacencyList.push(new Adjacency<T>(node));
 		}
 	}
 
@@ -40,11 +38,16 @@ class WeightedGraph<T> {
 	 * @param weight The weight of the edge.
 	 */
 	public function addEdge(from:T, to:T, weight:Float):Void {
-		if (!adjacencyList.exists(from))
-			addNode(from);
-		if (!adjacencyList.exists(to))
-			addNode(to);
-		adjacencyList.get(from).push(new Edge<T>(to, weight));
+		var entry = __find(from);
+		if (entry == null) {
+			entry = new Adjacency<T>(from);
+			adjacencyList.push(entry);
+		}
+
+		if (__find(to) == null)
+			adjacencyList.push(new Adjacency<T>(to));
+
+		entry.edges.push(new Edge<T>(to, weight));
 	}
 
 	/**
@@ -54,7 +57,27 @@ class WeightedGraph<T> {
 	 * @return An array of edges representing the neighbors and their weights.
 	 */
 	public function getNeighbors(node:T):Array<Edge<T>> {
-		return adjacencyList.get(node);
+		var entry = __find(node);
+		return entry == null ? null : entry.edges;
+	}
+
+	private function __find(node:T):Adjacency<T> {
+		for (entry in adjacencyList) {
+			if (entry.node == node)
+				return entry;
+		}
+
+		return null;
+	}
+}
+
+private class Adjacency<T> {
+	public var node:T;
+	public var edges:Array<Edge<T>>;
+
+	public function new(node:T) {
+		this.node = node;
+		this.edges = [];
 	}
 }
 
