@@ -6,10 +6,11 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.errors.SQLError;
-typedef MongoResultSet = Dynamic;
 #if cpp
 import sys.thread.Deque;
 #end
+
+typedef MongoResultSet = Dynamic;
 
 @:access(crossbyte.db.mongodb.MongoConnection)
 class MongoStatement extends EventDispatcher {
