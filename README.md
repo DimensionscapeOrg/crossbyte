@@ -10,6 +10,20 @@ It is built for projects that want a strong runtime foundation without dragging 
 
 CrossByte aims to stay modular. The core provides portable behavior first, while optional sibling haxelibs can add native-backed integrations when they are worth the extra dependency.
 
+## Install
+
+Release candidate target:
+
+```sh
+haxelib install crossbyte
+```
+
+If you are tracking the repo directly during RC validation:
+
+```sh
+haxelib git crossbyte https://github.com/dimensionscape-llc/crossbyte.git
+```
+
 ## What CrossByte Is Good At
 
 - evented applications and services
@@ -65,6 +79,20 @@ Current extension repos:
 
 The core remains usable without these extensions. When installed, they can be enabled selectively for native-backed behavior where it matters.
 
+## Samples
+
+The repository includes small runnable samples for:
+
+- primordial applications
+- TCP chat
+- RPC
+- LocalConnection and SharedObject IPC
+- UDP and reliable datagrams
+- HTTP serving
+- worker/background tasks
+
+See [samples/README.md](samples/README.md) for the current sample index and build commands.
+
 ## Testing
 
 CrossByte uses [utest](https://lib.haxe.org/p/utest) for its test suite.
@@ -92,11 +120,15 @@ Then run the produced executable:
 The repository CI covers:
 
 - fast interpreter tests
+- generated API documentation
 - hxcpp API audit builds
 - native smoke tests
+- native sample builds
 - sibling extension jobs for the optional native modules
 
 The CI is currently configured to use the `dimensionscape/hxcpp` `socket-fixes` branch so CrossByte can validate against the poll/index fixes it depends on.
+
+Each CI run now also publishes a `crossbyte-api-docs` artifact containing the generated dox site for that revision.
 
 ## Design Direction
 

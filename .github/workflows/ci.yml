@@ -51,6 +51,56 @@ jobs:
             echo "::endgroup::"
           done < <(find samples -name check.hxml -print | sort)
 
+  docs:
+    name: Core | API Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install doc dependencies
+        run: |
+          haxelib install dox --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+
+      - name: Build API XML
+        run: |
+          rm -rf export/docs-api export/docs-site
+          mkdir -p export/docs-api export/docs-site
+          haxe ci/docs-api.hxml
+
+      - name: Generate docs site
+        run: |
+          haxelib run dox \
+            -i export/docs-api/crossbyte.xml \
+            -o export/docs-site \
+            --title CrossByte \
+            --toplevel-package crossbyte \
+            --include '^crossbyte(\.|$)' \
+            --exclude '\._internal(\.|$)' \
+            -D version "${GITHUB_REF_NAME}" \
+            -D source-path "https://github.com/dimensionscape-llc/crossbyte/blob/${GITHUB_SHA}/src/" \
+            -D website "https://github.com/dimensionscape-llc/crossbyte" \
+            -D logo crossbyte.png \
+            -D description "CrossByte API reference"
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crossbyte-api-docs
+          path: export/docs-site
+          if-no-files-found: error
+
   cpp-audit:
     name: Core | hxcpp API Audit
     runs-on: ubuntu-latest
