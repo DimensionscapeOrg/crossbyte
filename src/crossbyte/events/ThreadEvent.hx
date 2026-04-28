@@ -1,9 +1,6 @@
 package crossbyte.events;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event used by worker and task primitives to deliver thread-side messages. */
 class ThreadEvent extends Event {
 	public static inline var COMPLETE:String = "complete";
 	public static inline var UPDATE:String = "update";

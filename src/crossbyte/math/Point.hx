@@ -1,9 +1,6 @@
 package crossbyte.math;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Mutable 2D point with common vector-style helpers. */
 class Point {
 	/**
 		The length of the line segment from(0,0) to this point.

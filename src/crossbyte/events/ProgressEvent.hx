@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.events.Event;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event carrying `bytesLoaded` and `bytesTotal` progress counters. */
 class ProgressEvent extends Event {
 	public static inline var PROGRESS:String = "progress";
 	public static inline var SOCKET_DATA:String = "socketData";

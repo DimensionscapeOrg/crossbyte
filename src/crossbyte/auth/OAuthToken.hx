@@ -1,10 +1,6 @@
 package crossbyte.auth;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
  * OAuth token class.
  */
 class OAuthToken {

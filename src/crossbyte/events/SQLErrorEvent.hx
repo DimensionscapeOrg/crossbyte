@@ -3,10 +3,7 @@ package crossbyte.events;
 import crossbyte.errors.SQLError;
 import crossbyte.events.Event;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event dispatched when an asynchronous database operation fails. */
 class SQLErrorEvent extends ErrorEvent {
 	public static inline var ERROR:EventType<SQLErrorEvent> = "error";
 

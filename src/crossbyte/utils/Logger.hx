@@ -1,9 +1,6 @@
 package crossbyte.utils;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Minimal logging helper used by runtime and sample code. */
 class Logger {
 	public static function info(message:String):Void {
 		Sys.println("[INFO] " + message);
