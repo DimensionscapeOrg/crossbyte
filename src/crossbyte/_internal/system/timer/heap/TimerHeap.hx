@@ -64,7 +64,7 @@ class TimerHeap implements ITimerScheduler {
 		return createTimer(__now + delay, interval, (handle:TimerHandle) -> callback());
 	}
 
-	public function clear(handle:TimerHandle, immediate:Bool = false):Bool {
+	public function clear(handle:TimerHandle, immediate:Bool = true):Bool {
 		if (!isLive(handle)) {
 			return false;
 		}
@@ -141,19 +141,19 @@ class TimerHeap implements ITimerScheduler {
 		node.enabled = true;
 		switch (policy) {
 			case KeepPhase:
-				if (node.pausedAt != 0.0) {
+				if (node.pausedAt != null) {
 					var pausedDur = t - node.pausedAt;
 					if (pausedDur != 0.0) {
 						node.time += pausedDur;
 					}
 
-					node.pausedAt = 0.0;
+					node.pausedAt = null;
 				}
 			case FromNow:
 				node.time = (node.interval > 0) ? (t + node.interval) : t;
-				node.pausedAt = 0.0;
+				node.pausedAt = null;
 		}
-		queue.update(node);
+		queue.enqueue(node);
 		return true;
 	}
 
