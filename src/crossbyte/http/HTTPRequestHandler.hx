@@ -8,6 +8,7 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import crossbyte.net.Socket;
+import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.Logger;
 import crossbyte._internal.php.PHPBridge;
@@ -186,6 +187,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
+		var absoluteTarget:EReg = ~/^https?:\/\//i;
+		if (absoluteTarget.match(rawTarget)) {
+			try {
+				var absoluteUrl = new URL(rawTarget);
+				rawTarget = absoluteUrl.path + (absoluteUrl.query.length > 0 ? "?" + absoluteUrl.query : "");
+			} catch (_:Dynamic) {
+				__sendErrorResponse(400, "Bad Request");
+				return;
+			}
+		}
+
 		var qPos:Int = rawTarget.indexOf("?");
 		if (qPos >= 0) {
 			__queryString = rawTarget.substr(qPos + 1);
@@ -240,6 +252,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			} else {
 				__headers.set(key, value);
 			}
+		}
+
+		if (__httpVersion == "HTTP/1.1" && !__headers.exists("host")) {
+			__sendErrorResponse(400, "Bad Request");
+			return;
 		}
 
 		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
