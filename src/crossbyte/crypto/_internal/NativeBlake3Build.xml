@@ -1,0 +1,40 @@
+<xml>
+	<files id="crossbyte-blake3-common">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}/vendor/blake3"/>
+		<file name="${this_dir}/NativeBlake3.cpp"/>
+		<file name="${this_dir}/vendor/blake3/blake3.c"/>
+		<file name="${this_dir}/vendor/blake3/blake3_portable.c"/>
+		<file name="${this_dir}/vendor/blake3/blake3_dispatch.c"/>
+	</files>
+
+	<files id="crossbyte-blake3-sse">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}/vendor/blake3"/>
+		<file name="${this_dir}/vendor/blake3/blake3_sse2.c"/>
+		<file name="${this_dir}/vendor/blake3/blake3_sse41.c"/>
+	</files>
+
+	<files id="crossbyte-blake3-avx2">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}/vendor/blake3"/>
+		<compilerflag value="/arch:AVX2" if="MSVC_VER"/>
+		<file name="${this_dir}/vendor/blake3/blake3_avx2.c"/>
+	</files>
+
+	<files id="crossbyte-blake3-avx512">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}/vendor/blake3"/>
+		<compilerflag value="/arch:AVX512" if="MSVC_VER"/>
+		<file name="${this_dir}/vendor/blake3/blake3_avx512.c"/>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-blake3-common"/>
+		<section if="HXCPP_M64">
+			<files id="crossbyte-blake3-sse"/>
+			<files id="crossbyte-blake3-avx2"/>
+			<files id="crossbyte-blake3-avx512"/>
+		</section>
+	</target>
+</xml>
