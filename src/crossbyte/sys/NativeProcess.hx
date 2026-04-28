@@ -15,6 +15,7 @@ import haxe.io.Eof;
 import haxe.io.Input;
 import haxe.io.Output;
 import sys.io.Process;
+import sys.thread.Deque;
 import sys.thread.Thread;
 #else
 import haxe.io.Input;
@@ -112,17 +113,20 @@ class NativeProcess extends EventDispatcher {
 			__process = new Process(startupInfo.executable, args);
 			__pid = __resolvePid();
 
-			var stdoutReader:Thread = Thread.create(() -> __readStream(STREAM_STDOUT, __process.stdout));
-			var stderrReader:Thread = Thread.create(() -> __readStream(STREAM_STDERR, __process.stderr));
+			var readerCompletion = new Deque<String>();
+			Thread.create(() -> {
+				__readStream(STREAM_STDOUT, __process.stdout);
+				readerCompletion.add(STREAM_STDOUT);
+			});
+			Thread.create(() -> {
+				__readStream(STREAM_STDERR, __process.stderr);
+				readerCompletion.add(STREAM_STDERR);
+			});
 
 			__exitCode = __process.exitCode();
 
-			if (stdoutReader != null) {
-				stdoutReader.join();
-			}
-			if (stderrReader != null) {
-				stderrReader.join();
-			}
+			readerCompletion.pop(true);
+			readerCompletion.pop(true);
 
 			__worker.sendComplete({exitCode: __exitCode, pid: __pid});
 
@@ -134,9 +138,8 @@ class NativeProcess extends EventDispatcher {
 			if (__running) {
 				__worker.sendError(Std.string(e));
 			}
-		} finally {
-			__running = false;
 		}
+		__running = false;
 		#else
 		__worker.sendError("NativeProcess is not supported on this target.");
 		__running = false;
