@@ -36,6 +36,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __bodyTargetPhpPath:String = null;
 	@:noCompletion private var __bodyHeadOnly:Bool = false;
 	@:noCompletion private var __bodyOverrideScriptName:String = null;
+	public var method(get, null):String;
+	public var requestPath(get, null):String;
+	public var queryString(get, null):String;
 
 	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge) {
 		super();
@@ -66,6 +69,31 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 		return null;
+	}
+
+	public function getHeader(name:String):String {
+		if (name == null) {
+			return null;
+		}
+
+		var key:String = StringTools.trim(name.toLowerCase());
+		return __headers.exists(key) ? __headers.get(key) : null;
+	}
+
+	public function hasHeader(name:String):Bool {
+		return getHeader(name) != null;
+	}
+
+	public function get_method():String {
+		return __method;
+	}
+
+	public function get_requestPath():String {
+		return __requestPath;
+	}
+
+	public function get_queryString():String {
+		return __queryString;
 	}
 
 	public function getAllCookies():StringMap<String> {
@@ -211,6 +239,53 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+		if (__config.middleware != null && __config.middleware.length > 0) {
+			__runMiddleware(0, function() {
+				__continueRequestDispatch(decision);
+			});
+			return;
+		}
+
+		__continueRequestDispatch(decision);
+	}
+
+	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
+		if (index >= __config.middleware.length) {
+			onComplete();
+			return;
+		}
+
+		var alreadyCalled:Bool = false;
+		var next = function(?error:Dynamic):Void {
+			if (alreadyCalled) {
+				return;
+			}
+			alreadyCalled = true;
+
+			if (error == null) {
+				__runMiddleware(index + 1, onComplete);
+			} else {
+				__dispatchMiddlewareError(error);
+			}
+		}
+
+		try {
+			__config.middleware[index](this, next);
+		} catch (error:Dynamic) {
+			__dispatchMiddlewareError(error);
+		}
+	}
+
+	@:noCompletion private function __dispatchMiddlewareError(error:Dynamic):Void {
+		var status:Int = 500;
+		if (Std.isOfType(error, Int)) {
+			status = cast error;
+		}
+		var statusText:String = __statusMessage(status);
+		__sendErrorResponse(status, statusText);
+	}
+
+	@:noCompletion private function __continueRequestDispatch(decision:Decision):Void {
 		if (decision != null) {
 			var targetAbs:File = __config.rootDirectory.resolvePath("." + decision.finalPath);
 
@@ -268,9 +343,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 						return;
 					}
 
-				default:
-			}
+			default:
 		}
+	}
 
 		switch (__method) {
 			case "GET":
