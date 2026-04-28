@@ -188,7 +188,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		endian = Endian.LITTLE_ENDIAN;
 		timeout = 20000;
+		__connected = false;
 		__closed = false;
+		__isConnecting = false;
 
 		__buffer = Bytes.alloc(4096);
 
@@ -385,17 +387,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				#else
 				var pendingLength = __output.length;
 				var bytesWritten = __socket.output.writeBytes(__output, 0, pendingLength);
-				if (bytesWritten >= pendingLength) {
-					__isDirty = false;
-					__output.clear();
-				} else {
-					var remaining = new ByteArray();
-					remaining.endian = __endian;
-					remaining.writeBytes(__output, bytesWritten, pendingLength - bytesWritten);
-					__output = remaining;
-					__isDirty = false;
-					__queueWrite();
-				}
+				__retainPendingOutput(bytesWritten, pendingLength);
 				#end
 			} catch (e:Dynamic) {
 				var throwError = false;
@@ -920,6 +912,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private inline function __tryFlush():Void {
 		flushFull = false;
 		flush();
+	}
+
+	@:noCompletion private function __retainPendingOutput(bytesWritten:Int, pendingLength:Int):Void {
+		if (bytesWritten >= pendingLength) {
+			__isDirty = false;
+			__output.clear();
+			return;
+		}
+
+		var offset = bytesWritten > 0 ? bytesWritten : 0;
+		var remaining = new ByteArray();
+		remaining.endian = __endian;
+		remaining.writeBytes(__output, offset, pendingLength - offset);
+		__output = remaining;
+		__isDirty = false;
+		__queueWrite();
 	}
 
 	@:noCompletion private inline function __queueWrite():Void {
