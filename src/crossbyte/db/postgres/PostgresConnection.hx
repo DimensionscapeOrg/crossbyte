@@ -3,7 +3,7 @@ package crossbyte.db.postgres;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.events.EventDispatcher;
-import crossbyte.events.SQLError;
+import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 #if php
@@ -39,6 +39,7 @@ class PostgresConnection extends EventDispatcher {
 			throw "PostgresConnection: config is required.";
 		}
 
+		#if php
 		try {
 			var host:String = cfg.host != null ? cfg.host : "127.0.0.1";
 			var port:Int = cfg.port != null ? cfg.port : 5432;
@@ -69,6 +70,9 @@ class PostgresConnection extends EventDispatcher {
 		} catch (e:Dynamic) {
 			throw new IOError(e);
 		}
+		#else
+		throw new IOError("PostgreSQL is only supported on php targets.");
+		#end
 	}
 
 	public function close():Void {
@@ -159,7 +163,7 @@ class PostgresConnection extends EventDispatcher {
 		}
 	}
 
-	public inline function request(sql:String):PostgresResultSet {
+	public inline function request(sql:String):Dynamic {
 		__requireConnected();
 
 		var statement:Dynamic = null;
