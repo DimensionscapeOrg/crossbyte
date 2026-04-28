@@ -14,6 +14,7 @@ import crossbyte.events.FileListEvent;
 import sys.FileSystem;
 import sys.io.File as HaxeFile;
 import sys.io.Process;
+import haxe.io.Bytes;
 
 // @:noCompletion private typedef HaxeFile = sys.io.File;
 /**
@@ -1193,6 +1194,46 @@ final class File extends EventDispatcher {
 	**/
 	public function load():Void {
 		__data = HaxeFile.getBytes(__path);
+	}
+
+	/**
+		Loads a file asynchronously. The file data is stored in the `data` property and a
+		`complete` event is dispatched when loading finishes.
+	**/
+	public function loadAsync():Void {
+		__fileWorker = new Worker();
+		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onAsyncLoadWorkerComplete);
+		__fileWorker.addEventListener(ThreadEvent.ERROR, __onAsyncLoadWorkerError);
+
+		__fileWorker.doWork = __asyncLoadWork;
+		__fileWorker.run();
+	}
+
+	private function __asyncLoadWork(m:Dynamic):Void {
+		try {
+			var bytes:Bytes = HaxeFile.getBytes(__path);
+			__fileWorker.sendComplete(bytes);
+		} catch (e:Dynamic) {
+			__fileWorker.sendError(e);
+		}
+	}
+
+	private function __onAsyncLoadWorkerError(e:ThreadEvent):Void {
+		__disposeAsyncLoadWorker();
+		__dispatchIoError(e.message);
+	}
+
+	private function __onAsyncLoadWorkerComplete(e:ThreadEvent):Void {
+		__data = ByteArray.fromBytes(cast e.message);
+		__disposeAsyncLoadWorker();
+		dispatchEvent(new Event(Event.COMPLETE));
+	}
+
+	private function __disposeAsyncLoadWorker():Void {
+		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onAsyncLoadWorkerComplete);
+		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onAsyncLoadWorkerError);
+		__fileWorker.cancel();
+		__fileWorker = null;
 	}
 
 	/**
