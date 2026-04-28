@@ -11,6 +11,8 @@ class TestMain {
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.io.ByteArrayTest());
+		runner.addCase(new crossbyte.url.URLLoaderTest());
+		runner.addCase(new crossbyte.url.URLVariablesTest());
 		runner.addCase(new crossbyte.ipc.LocalConnectionTest());
 		runner.addCase(new crossbyte.ipc.SharedObjectTest());
 		runner.addCase(new crossbyte.db.PostgresConnectionTest());
