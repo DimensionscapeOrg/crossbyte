@@ -44,7 +44,7 @@ import crossbyte.Function;
  */
 @:access(crossbyte.events.Event)
 class EventDispatcher implements IEventDispatcher {
-	@:noCompletion private var __eventMap:StringMap<Array<ListenerEntry>>;
+	@:noCompletion private var __eventMap:Null<StringMap<Array<ListenerEntry>>>;
 	@:noCompletion private var __targetDispatcher:IEventDispatcher;
 	@:noCompletion private var __nextListenerOrder:Int;
 
@@ -58,7 +58,7 @@ class EventDispatcher implements IEventDispatcher {
 	 */
 	public function new(target:IEventDispatcher = null) {
 		__targetDispatcher = target;
-		__eventMap = new StringMap();
+		__eventMap = null;
 		__nextListenerOrder = 0;
 	}
 
@@ -93,9 +93,15 @@ class EventDispatcher implements IEventDispatcher {
 			order: __nextListenerOrder++
 		};
 
-		var list:Null<Array<ListenerEntry>> = __eventMap.get(type);
+		var eventMap = __eventMap;
+		if (eventMap == null) {
+			eventMap = new StringMap();
+			__eventMap = eventMap;
+		}
+
+		var list:Null<Array<ListenerEntry>> = eventMap.get(type);
 		if (list == null) {
-			__eventMap.set(type, [entry]);
+			eventMap.set(type, [entry]);
 			return;
 		}
 
@@ -124,7 +130,12 @@ class EventDispatcher implements IEventDispatcher {
 			return;
 		}
 
-		var list:Null<Array<ListenerEntry>> = __eventMap.get(type);
+		var eventMap = __eventMap;
+		if (eventMap == null) {
+			return;
+		}
+
+		var list:Null<Array<ListenerEntry>> = eventMap.get(type);
 		if (list == null) {
 			return;
 		}
@@ -178,7 +189,7 @@ class EventDispatcher implements IEventDispatcher {
 	 * @return `true` if there are listeners for the given type, `false` otherwise.
 	 */
 	public function hasEventListener(type:String):Bool {
-		return __eventMap.get(type) != null;
+		return __eventMap != null && __eventMap.get(type) != null;
 	}
 
 	/**
@@ -187,11 +198,18 @@ class EventDispatcher implements IEventDispatcher {
 	 * Use with caution—this clears the entire internal event map.
 	 */
 	public function removeAllListeners():Void {
-		__eventMap.clear();
+		if (__eventMap != null) {
+			__eventMap.clear();
+		}
 	}
 
 	private inline function __dispatchEvent(event:Event):Bool {
-		var list:Null<Array<ListenerEntry>> = __eventMap.get(event.type);
+		var eventMap = __eventMap;
+		if (eventMap == null) {
+			return false;
+		}
+
+		var list:Null<Array<ListenerEntry>> = eventMap.get(event.type);
 		if (list == null) {
 			return false;
 		}
