@@ -1,10 +1,13 @@
 package crossbyte.net;
 
+import crossbyte.core.CrossByte;
 import crossbyte._internal.websocket.WebSocket as InternalWebSocket;
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
 import utest.Assert;
 
+@:access(crossbyte.core.CrossByte)
+@:access(crossbyte.events.EventDispatcher)
 @:access(crossbyte._internal.websocket.WebSocket)
 class WebSocketTest extends utest.Test {
 	public function testRequestHandshakeValidationIsCaseInsensitive():Void {
@@ -342,6 +345,32 @@ class WebSocketTest extends utest.Test {
 		Assert.equals(1, opened);
 		Assert.notNull(received);
 		Assert.equals("after", received.readUTFBytes(received.length));
+	}
+
+	public function testCloseDetachesFromOwningRuntimeEvenIfCurrentRuntimeChanges():Void {
+		var primordial = CrossByte.current();
+		var child = new CrossByte(false, DEFAULT, true);
+		var ws = emptyWebSocket();
+		ws.__runtime = child;
+		ws.__tickConnectListener = ws.__onTickConnect;
+		ws.__tickProcessListener = ws.__onTickProcess;
+		ws.__tickSSLHandshakeListener = ws.__onTickSSLHandshake;
+		ws.__socket = cast {};
+		ws.__secure = false;
+		ws.__connected = false;
+		ws.onclose = _ -> {};
+
+		child.addEventListener("tick", ws.__tickConnectListener);
+		var listenersBefore:Array<Dynamic> = cast @:privateAccess child.__eventMap.get("tick");
+		Assert.notNull(listenersBefore);
+		Assert.isTrue(listenersBefore.length > 0);
+
+		primordial.pump(0, 0);
+		ws.__close(1000);
+
+		var listenersAfter:Array<Dynamic> = cast @:privateAccess child.__eventMap.get("tick");
+		Assert.isTrue(listenersAfter == null || listenersAfter.length < listenersBefore.length);
+		child.exit();
 	}
 
 	private static function emptyWebSocket():InternalWebSocket {
