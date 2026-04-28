@@ -115,6 +115,16 @@ class NetConnectionTest extends utest.Test {
 		Assert.isNull(NetConnection.toDatagramSocket(connection));
 	}
 
+	public function testInterfaceRoundTripKeepsWrappedTransport():Void {
+		var socket = new WebSocket();
+		var connection = NetConnection.fromWebSocket(socket);
+		var asInterface:INetConnection = connection;
+		var restored:NetConnection = asInterface;
+
+		Assert.equals(Protocol.WEBSOCKET, restored.protocol);
+		Assert.equals(socket, NetConnection.toWebSocket(restored));
+	}
+
 	public function testReliableDatagramConnectionReceivesDataWhenReadEnabled():Void {
 		if (!ReliableDatagramSocket.isSupported) {
 			Assert.isFalse(ReliableDatagramSocket.isSupported);
