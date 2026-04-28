@@ -28,6 +28,9 @@ class QuadTree<T> {
 	 * @param capacity The capacity of points before subdivision.
 	 */
 	public function new(boundary:Rectangle, capacity:Int) {
+		if (capacity <= 0) {
+			throw "capacity must be > 0";
+		}
 		this.boundary = boundary;
 		this.capacity = capacity;
 		this.nodes = [];
@@ -61,12 +64,53 @@ class QuadTree<T> {
 		var w = boundary.width / 2;
 		var h = boundary.height / 2;
 
-		northeast = new QuadTree<T>(new Rectangle(x + w, y - h, w, h), capacity);
-		northwest = new QuadTree<T>(new Rectangle(x - w, y - h, w, h), capacity);
+		northwest = new QuadTree<T>(new Rectangle(x, y, w, h), capacity);
+		northeast = new QuadTree<T>(new Rectangle(x + w, y, w, h), capacity);
+		southwest = new QuadTree<T>(new Rectangle(x, y + h, w, h), capacity);
 		southeast = new QuadTree<T>(new Rectangle(x + w, y + h, w, h), capacity);
-		southwest = new QuadTree<T>(new Rectangle(x - w, y + h, w, h), capacity);
 
 		divided = true;
+	}
+
+	public function query(range:Rectangle, ?found:Array<QuadTreeNode<T>>):Array<QuadTreeNode<T>> {
+		if (found == null) {
+			found = [];
+		}
+
+		if (!boundary.intersects(range)) {
+			return found;
+		}
+
+		for (node in nodes) {
+			if (range.contains(node.x, node.y)) {
+				found.push(node);
+			}
+		}
+
+		if (divided) {
+			northwest.query(range, found);
+			northeast.query(range, found);
+			southwest.query(range, found);
+			southeast.query(range, found);
+		}
+
+		return found;
+	}
+
+	public function clear():Void {
+		nodes.resize(0);
+
+		if (divided) {
+			northwest.clear();
+			northeast.clear();
+			southwest.clear();
+			southeast.clear();
+			northwest = null;
+			northeast = null;
+			southwest = null;
+			southeast = null;
+			divided = false;
+		}
 	}
 
 }
