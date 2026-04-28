@@ -45,7 +45,7 @@ class Application extends EventDispatcher {
 	 */
 	public static function addGlobalListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
 		if (__application != null) {
-			__application.addEventListener(type, listener);
+			__application.addEventListener(type, listener, priority);
 		} else {
 			throw("Application instance is not initialized.");
 		}

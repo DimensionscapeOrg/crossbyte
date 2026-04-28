@@ -1,9 +1,12 @@
 package crossbyte.ipc;
 
+import crossbyte.core.CrossByte;
+import crossbyte.errors.IllegalOperationError;
 import haxe.Timer;
 import haxe.io.BytesBuffer;
 import crossbyte.errors.ArgumentError;
 import crossbyte.events.StatusEvent;
+import crossbyte.events.TickEvent;
 import crossbyte.Object;
 import haxe.Unserializer;
 import haxe.Serializer;
@@ -20,6 +23,9 @@ import haxe.io.BytesData;
 import crossbyte.sys.Worker;
 import sys.thread.Deque;
 import crossbyte.events.EventDispatcher;
+#if (cpp || neko || hl)
+import sys.thread.Mutex;
+#end
 
 #if (cpp && (windows || linux || mac || macos))
 #if windows
@@ -61,6 +67,13 @@ class LocalConnection extends EventDispatcher {
 	@:noCompletion private var __worker:Worker;
 	@:noCompletion private var __clientPipes:Array<Dynamic>;
 	@:noCompletion private var __outboundTimeout:Timer;
+	@:noCompletion private var __runtime:CrossByte;
+	#if (cpp || neko || hl)
+	@:noCompletion private var __dispatchQueue:Deque<Bytes>;
+	@:noCompletion private var __dispatchLock:Mutex;
+	#end
+	@:noCompletion private var __dispatchListener:TickEvent->Void;
+	@:noCompletion private var __dispatchAttached:Bool = false;
 	@:noCompletion private var __lastSentTime:Float = 0;
 	@:noCompletion private var __connected:Bool = false;
 	@:noCompletion private var __running:Bool = false;
@@ -80,6 +93,18 @@ class LocalConnection extends EventDispatcher {
 		__serializer = new Serializer();
 		__serializer.useCache = true;
 		__clientPipes = [];
+		#if (cpp || neko || hl)
+		__dispatchQueue = new Deque();
+		__dispatchLock = new Mutex();
+		#end
+		__dispatchListener = __flushDispatchQueue;
+		try {
+			__runtime = CrossByte.current();
+		} catch (_:IllegalOperationError) {
+			__runtime = null;
+		} catch (_:Dynamic) {
+			__runtime = null;
+		}
 	}
 
 	/**
@@ -102,6 +127,7 @@ class LocalConnection extends EventDispatcher {
 			__outboundTimeout.stop();
 			__outboundTimeout = null;
 		}
+		__detachDispatchListener();
 		__connected = false;
 	}
 
@@ -112,6 +138,13 @@ class LocalConnection extends EventDispatcher {
 	 */
 	public function connect(connectionName:String):Void {
 		__requireSupported();
+		try {
+			__runtime = CrossByte.current();
+		} catch (_:IllegalOperationError) {
+			__runtime = null;
+		} catch (_:Dynamic) {
+			__runtime = null;
+		}
 		// trace('Connecting as server: ' + connectionName);
 		if (!__setupNamedPipe(connectionName)) {
 			// trace("Error setting up named pipe: " + connectionName);
@@ -368,6 +401,18 @@ class LocalConnection extends EventDispatcher {
 		}*/
 	}
 
+	@:noCompletion private function __dispatchReceivedData(received:Bytes):Void {
+		#if (cpp || neko || hl)
+		if (!__canDispatchInline()) {
+			__dispatchQueue.add(received);
+			__ensureDispatchListener();
+			return;
+		}
+		#end
+
+		__onData(received);
+	}
+
 	/** Listens for incoming messages in a background thread */
 	@:noCompletion private function __runLocalConnection(connectionName:String, listeningPipe:LocalConnectionHandle):Void {
 		var buffer:Bytes = Bytes.alloc(BUFFER_SIZE);
@@ -417,13 +462,13 @@ class LocalConnection extends EventDispatcher {
 								bytesRemaining = 0;
 							}
 						}
-						__onData(largeMessageBuffer.getBytes());
+						__dispatchReceivedData(largeMessageBuffer.getBytes());
 					} else {
 						// Read theavailable data
 						if (__read(pipe, buffer.getData(), available) == 0) {
 							var received:Bytes = buffer.sub(0, available);
 							// trace("Received: " + received);
-							__onData(received);
+							__dispatchReceivedData(received);
 						}
 					}
 				}
@@ -449,6 +494,73 @@ class LocalConnection extends EventDispatcher {
 			}
 		}
 		__clientPipes.resize(0);
+	}
+
+	#if (cpp || neko || hl)
+	@:noCompletion private inline function __canDispatchInline():Bool {
+		if (__runtime == null) {
+			return true;
+		}
+
+		try {
+			return CrossByte.current() == __runtime;
+		} catch (_:Dynamic) {
+			return false;
+		}
+	}
+
+	@:noCompletion private function __ensureDispatchListener():Void {
+		if (__runtime == null) {
+			return;
+		}
+
+		__dispatchLock.acquire();
+		var shouldAttach = !__dispatchAttached;
+		if (shouldAttach) {
+			__dispatchAttached = true;
+		}
+		__dispatchLock.release();
+
+		if (shouldAttach) {
+			__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
+		}
+	}
+	#end
+
+	@:noCompletion private function __flushDispatchQueue(_event:TickEvent):Void {
+		#if (cpp || neko || hl)
+		while (true) {
+			var received = __dispatchQueue.pop(false);
+			if (received == null) {
+				break;
+			}
+
+			__onData(received);
+		}
+		#end
+
+		__detachDispatchListener();
+	}
+
+	@:noCompletion private function __detachDispatchListener():Void {
+		var runtime = __runtime;
+		if (runtime == null) {
+			return;
+		}
+
+		#if (cpp || neko || hl)
+		__dispatchLock.acquire();
+		var shouldDetach = __dispatchAttached;
+		__dispatchAttached = false;
+		__dispatchLock.release();
+		#else
+		var shouldDetach = __dispatchAttached;
+		__dispatchAttached = false;
+		#end
+
+		if (shouldDetach) {
+			runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
+		}
 	}
 
 	@:noCompletion private static inline function __requireSupported():Void {
