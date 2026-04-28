@@ -138,7 +138,6 @@ jobs:
         run: |
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
-          haxelib dev crossbyte ./crossbyte
           haxelib dev crossbyte-libuv ./crossbyte-libuv
 
       - name: Run extension non-native tests

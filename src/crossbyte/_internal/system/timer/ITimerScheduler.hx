@@ -8,7 +8,7 @@ interface ITimerScheduler {
 	public function setTimeoutVoid(delay:Float, callback:Void->Void):TimerHandle;
 	public function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle;
 	public function setIntervalVoid(delay:Float, interval:Float, callback:Void->Void):TimerHandle;
-	public function clear(handle:TimerHandle, immediate:Bool = false):Bool;
+	public function clear(handle:TimerHandle, immediate:Bool = true):Bool;
 	public function isActive(handle:TimerHandle):Bool;
 	public function schedule(time:Float, callback:TimerHandle->Void):TimerHandle;
 	public function scheduleVoid(time:Float, callback:Void->Void):TimerHandle;

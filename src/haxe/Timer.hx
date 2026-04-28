@@ -1,50 +1,15 @@
 package haxe;
 
-#if lime_cffi
-import lime.system.System;
-#else
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
 import haxe.ds.IntMap;
-#end
 import haxe.Log;
 import haxe.PosInfos;
 
 /**
-	A hybrid `haxe.Timer` implementation that preserves CrossByte's tick-driven
-	behavior in standalone CrossByte runtimes while remaining compatible with
-	Lime-based hosts that expect the legacy `lime_cffi` timer surface.
+	A `haxe.Timer` implementation backed by CrossByte's tick-driven runtime.
 **/
 class Timer {
-	#if lime_cffi
-	private static var sRunningTimers:Array<Timer> = [];
-
-	private var mTime:Float;
-	private var mFireAt:Float;
-	private var mRunning:Bool;
-
-	public function new(time:Float) {
-		mTime = time;
-		sRunningTimers.push(this);
-		mFireAt = getMS() + mTime;
-		mRunning = true;
-	}
-
-	private static inline function getMS():Float {
-		return System.getTimer();
-	}
-
-	public function stop():Void {
-		mRunning = false;
-	}
-
-	@:noCompletion private function __check(inTime:Float):Void {
-		if (inTime >= mFireAt) {
-			mFireAt += mTime;
-			run();
-		}
-	}
-	#else
 	private static var timerCount:Int = 0;
 	private static var timers:IntMap<Timer> = new IntMap<Timer>();
 	private static var __currentId:Int = 0;
@@ -52,12 +17,14 @@ class Timer {
 	private var delayCount:Float;
 	private var timeRemaining:Float;
 	private var running:Bool;
+	private var stopped:Bool;
 	private var id:Int;
 
 	public function new(time_ms:Int) {
 		delayCount = time_ms / 1000;
 		timeRemaining = delayCount;
-		running = false;
+		running = true;
+		stopped = false;
 		id = ++__currentId;
 		timerCount++;
 
@@ -87,6 +54,11 @@ class Timer {
 	}
 
 	private function cleanup():Void {
+		if (stopped) {
+			return;
+		}
+
+		stopped = true;
 		timers.remove(id);
 		if (--timerCount == 0) {
 			CrossByte.current().removeEventListener(TickEvent.TICK, onTick);
@@ -94,14 +66,21 @@ class Timer {
 	}
 
 	public function stop():Void {
+		if (stopped) {
+			return;
+		}
+
 		running = false;
 		cleanup();
 	}
 
 	public function start():Void {
+		if (stopped) {
+			return;
+		}
+
 		running = true;
 	}
-	#end
 
 	public dynamic function run():Void {}
 
@@ -111,9 +90,6 @@ class Timer {
 			timer.stop();
 			f();
 		};
-		#if !lime_cffi
-		timer.start();
-		#end
 		return timer;
 	}
 
@@ -125,10 +101,7 @@ class Timer {
 	}
 
 	public static inline function stamp():Float {
-		#if lime_cffi
-		var timer = System.getTimer();
-		return (timer > 0 ? timer / 1000 : 0);
-		#elseif js
+		#if js
 		return Date.now().getTime() / 1000;
 		#elseif cpp
 		return untyped __global__.__time_stamp();
