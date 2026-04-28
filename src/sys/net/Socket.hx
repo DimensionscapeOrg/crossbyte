@@ -134,9 +134,13 @@ class Socket {
 		init();
 	}
 
+	@:noCompletion function __createSocket(ipv6:Bool):Dynamic {
+		return ipv6 ? NativeSocket.socket_new_ip(false, true) : NativeSocket.socket_new(false);
+	}
+
 	private function init():Void {
 		if (__s == null)
-			__s = NativeSocket.socket_new(false);
+			__s = __createSocket(false);
 
 		// Restore current settings after potential recreate.
 		input = new SocketInput(__s);
@@ -181,7 +185,7 @@ class Socket {
 				var ipv6:haxe.io.BytesData = Reflect.field(host, "ipv6");
 				if (ipv6 != null) {
 					close();
-					__s = NativeSocket.socket_new_ip(false, true);
+					__s = __createSocket(true);
 					init();
 					NativeSocket.socket_connect_ipv6(__s, ipv6, port);
 				} else
@@ -211,7 +215,7 @@ class Socket {
 			var ipv6:haxe.io.BytesData = Reflect.field(host, "ipv6");
 			if (ipv6 != null) {
 				close();
-				__s = NativeSocket.socket_new_ip(false, true);
+				__s = __createSocket(true);
 				init();
 				NativeSocket.socket_bind_ipv6(__s, ipv6, port);
 			} else
