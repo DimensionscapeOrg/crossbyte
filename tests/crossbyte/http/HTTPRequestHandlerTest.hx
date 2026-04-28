@@ -6,12 +6,20 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import crossbyte.net.Socket;
+import haxe.Timer;
 import utest.Assert;
 
 @:access(crossbyte.http.HTTPRequestHandler)
 class HTTPRequestHandlerTest extends utest.Test {
 	public function testNoMiddlewarePreservesStaticRouting():Void {
 		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+		Assert.equals(200, response.status);
+		Assert.equals("Hello from middleware test", response.body);
+	}
+
+	public function testSplitHeadersWaitForCompleteRequest():Void {
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\n", "Host: localhost\r\n\r\n");
 
 		Assert.equals(200, response.status);
 		Assert.equals("Hello from middleware test", response.body);
@@ -97,7 +105,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		#end
 	}
 
-	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String):HTTPTestResponse {
+	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
@@ -114,6 +122,14 @@ class HTTPRequestHandlerTest extends utest.Test {
 		client.addEventListener(Event.CONNECT, _ -> {
 			client.writeUTFBytes(requestText);
 			client.flush();
+			if (secondChunk != null) {
+				Timer.delay(function() {
+					if (client.connected) {
+						client.writeUTFBytes(secondChunk);
+						client.flush();
+					}
+				}, 10);
+			}
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
 			if (client.bytesAvailable > 0) {
