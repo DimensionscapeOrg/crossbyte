@@ -57,7 +57,7 @@ class CryptoTest extends utest.Test {
 		Assert.isFalse(Ed25519.verifyDetached(signature, tampered, keyPair.publicKey));
 		#elseif cpp
 		Assert.isFalse(Ed25519.isAvailable());
-		Assert.contains("wired", Ed25519.availabilityMessage());
+		Assert.notEquals(-1, Ed25519.availabilityMessage().indexOf("wired"));
 		Assert.isTrue(throwsDynamic(() -> Ed25519.keypair()));
 		Assert.isTrue(throwsDynamic(() -> Ed25519.signDetached(message, Bytes.alloc(Ed25519.SECRET_KEY_BYTES))));
 		Assert.isFalse(Ed25519.verifyDetached(Bytes.alloc(Ed25519.SIGNATURE_BYTES), message, Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES)));

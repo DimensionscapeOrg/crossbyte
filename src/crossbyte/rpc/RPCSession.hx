@@ -10,10 +10,9 @@ import crossbyte.rpc.RPCHandler;
 import crossbyte.rpc.RPCCommands;
 import crossbyte.net.INetConnection;
 import crossbyte.events.EventDispatcher;
-import crossbyte.utils.Random;
 #if neko
 import sys.thread.Mutex;
-#else
+#elseif (cpp || hl || java || cs)
 import haxe.atomic.AtomicInt;
 #end
 
@@ -48,8 +47,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	#if neko
 	@:noCompletion private static var __sidCounter:Int = 0;
 	@:noCompletion private static var __sidLock:Null<Mutex> = new Mutex();
-	#else
+	#elseif (cpp || hl || java || cs)
 	@:noCompletion private static var __sidCounter:AtomicInt = new AtomicInt(0);
+	#else
+	@:noCompletion private static var __sidCounter:Int = 0;
 	#end
 
 	@:noCompletion private static inline function __getSalt():Int {
@@ -61,7 +62,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 
 		if (id == null || id.length == 0) {
-			id = Random.randomString(16);
+			id = "crossbyte-rpc";
 		}
 
 		return Hash.fnv1a32String(id.toLowerCase());
@@ -73,8 +74,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		var id:Int = ++__sidCounter;
 		__sidLock.release();
 		return id;
-		#else
+		#elseif (cpp || hl || java || cs)
 		return __sidCounter.add(1);
+		#else
+		return ++__sidCounter;
 		#end
 	}
 
@@ -121,6 +124,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			} else if (__hasHeartbeat) {
 				__stopHeartbeat();
 			}
+			if (__handler != null) {
+				__handler.this_commands = commands;
+			}
 		}
 
 		return __commands;
@@ -129,14 +135,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private inline function set_handler(handler:RPCHandler):RPCHandler {
 		if (__handler != null && handler != __handler) {
 			__handler.this_connection = null;
-			connection.readEnabled = true;
-			handler.this_connection = this.connection;
+			__handler.this_commands = null;
 		}
 		__handler = handler;
 		if (handler != null) {
 			connection.onData = __handler.this_socket_onData;
 			connection.readEnabled = true;
 			handler.this_connection = this.connection;
+			handler.this_commands = __commands;
 		}
 
 		return handler;

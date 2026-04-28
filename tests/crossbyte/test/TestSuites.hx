@@ -95,6 +95,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.WebSocketTest());
 	}
 
+	public static function addRPC(runner:Runner):Void {
+		runner.addCase(new crossbyte.rpc.RPCTest());
+	}
+
 	public static function addResources(runner:Runner):Void {
 		runner.addCase(new crossbyte.resources.ResourcesTest());
 	}
@@ -125,6 +129,7 @@ class TestSuites {
 		addDatabase(runner);
 		addSystem(runner);
 		addNet(runner);
+		addRPC(runner);
 		addResources(runner);
 		addTimers(runner);
 		addUtils(runner);
@@ -138,6 +143,7 @@ class TestSuites {
 		addHttp(runner);
 		addSystem(runner);
 		addNet(runner);
+		addRPC(runner);
 		addTimers(runner);
 	}
 }
