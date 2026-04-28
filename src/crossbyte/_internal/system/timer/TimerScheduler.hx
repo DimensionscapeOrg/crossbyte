@@ -61,10 +61,10 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	}
 
 	/**
-	 * Schedules a one-shot timer to fire after a delay (in milliseconds).
+	 * Schedules a one-shot timer to fire after a delay (in seconds).
 	 * The callback receives the actual fire time.
 	 *
-	 * @param delay Milliseconds from now to fire the timer.
+	 * @param delay Seconds from now to fire the timer.
 	 * @param callback A function that receives the current time when the timer fires.
 	 * @return A handle used to manage the timer.
 	 */
@@ -76,8 +76,8 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * Schedules a one-shot timer from a specific start time.
 	 * The callback does not receive any parameters.
 	 *
-	 * @param startTime Start time in ms.
-	 * @param delay Milliseconds after start time to fire.
+	 * @param startTime Start time in seconds.
+	 * @param delay Seconds after start time to fire.
 	 * @param callback A function to invoke when the timer fires.
 	 * @return A handle used to manage the timer.
 	 */
@@ -89,8 +89,8 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * Schedules a repeating timer starting at a given time and repeating
 	 * at the specified interval. The callback receives the current time.
 	 *
-	 * @param startTime When the first fire should occur (in ms).
-	 * @param delay How often to repeat (in ms).
+	 * @param startTime When the first fire should occur (in seconds).
+	 * @param delay How often to repeat (in seconds).
 	 * @param callback A function receiving the current time each fire.
 	 * @return A handle used to manage the timer.
 	 */
@@ -101,8 +101,8 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	/**
 	 * Schedules a repeating timer without parameters.
 	 *
-	 * @param startTime When to start (in ms).
-	 * @param delay Interval duration (in ms).
+	 * @param startTime When to start (in seconds).
+	 * @param delay Interval duration (in seconds).
 	 * @param callback A function to invoke each interval.
 	 * @return A handle used to manage the timer.
 	 */
@@ -160,7 +160,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * Reschedules a timer to fire at a new time.
 	 *
 	 * @param handle The timer handle to modify.
-	 * @param time The new time (in ms) to fire.
+	 * @param time The new time (in seconds) to fire.
 	 * @return `true` if rescheduled successfully.
 	 */
 	public function reschedule(handle:Int, time:Float):Bool {
@@ -194,7 +194,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * Resumes a paused timer.
 	 *
 	 * @param handle The timer handle.
-	 * @param time Optional resume time (in ms).
+	 * @param time Optional resume time (in seconds).
 	 * @param policy Optional resume behavior policy.
 	 * @return `true` if resumed.
 	 */
@@ -203,7 +203,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	}
 
 	/**
-	 * Returns the next due time (in ms) for the earliest scheduled timer,
+	 * Returns the next due time (in seconds) for the earliest scheduled timer,
 	 * or `null` if the queue is empty.
 	 */
 	public inline function nextDue():Null<Float> {
@@ -213,7 +213,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	/**
 	 * Processes and fires any timers due at or before the given time.
 	 *
-	 * @param time The current time in ms.
+	 * @param time The current time delta in seconds.
 	 * @param maxFires Optional limit on how many timers to fire (default 256).
 	 * @return The number of timers fired.
 	 */
