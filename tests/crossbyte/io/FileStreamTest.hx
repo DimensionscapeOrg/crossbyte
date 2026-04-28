@@ -175,6 +175,38 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	public function testAppendModeStartsAtEndAndStillAppendsAfterSeek():Void {
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var append = new FileStream();
+		var input = new FileStream();
+
+		try {
+			output.open(file, FileMode.WRITE);
+			output.writeUTFBytes("abc");
+			output.close();
+
+			append.open(file, FileMode.APPEND);
+			Assert.equals(3, append.position);
+			append.position = 0;
+			append.writeUTFBytes("XY");
+			append.close();
+
+			input.open(file, FileMode.READ);
+			Assert.equals("abcXY", input.readUTFBytes(5));
+			Assert.equals(0, input.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try append.close() catch (_:Dynamic) {}
+		try output.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
 	public function testWriteUTFUsesUtf8ByteLength():Void {
 		var file = File.createTempFile();
 		var output = new FileStream();
