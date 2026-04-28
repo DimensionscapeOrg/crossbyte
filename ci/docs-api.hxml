@@ -1,0 +1,8 @@
+--cwd .
+-cp src
+-cp ci
+-main DocsMain
+--macro include("crossbyte")
+--cpp export/docs-api-check
+-D no-compilation
+-xml export/docs-api/crossbyte.xml
