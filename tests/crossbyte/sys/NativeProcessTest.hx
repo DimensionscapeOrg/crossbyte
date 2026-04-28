@@ -59,7 +59,7 @@ class NativeProcessTest extends utest.Test {
 
 	@:noCompletion private static function getDefaultInfo():NativeProcessStartupInfo {
 		#if windows
-		return new NativeProcessStartupInfo("cmd", ["/C", "echo nativeprocess_smoke"]);
+		return new NativeProcessStartupInfo("cmd.exe", ["/C echo nativeprocess_smoke"]);
 		#else
 		return new NativeProcessStartupInfo("sh", ["-c", "echo nativeprocess_smoke"]);
 		#end
