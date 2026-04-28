@@ -10,6 +10,14 @@ import haxe.macro.Type;
 using haxe.macro.Tools;
 
 class RPCContractMacroTools {
+	public static inline function isReservedSystemMethod(name:String):Bool {
+		return name == "ping";
+	}
+
+	public static inline function reservedSystemMethodMessage(name:String):String {
+		return "RPC contract method name '" + name + "' is reserved for built-in RPC system traffic.";
+	}
+
 	public static function getContractMethods(metaName:String):Null<Array<ContractMethod>> {
 		final meta = getClassMetadata(metaName);
 		if (meta == null) {
@@ -114,12 +122,6 @@ class RPCContractMacroTools {
 		}
 	}
 
-	static inline function isVoid(ct:ComplexType):Bool {
-		return switch (ct) {
-			case TPath(tp) if (tp.name == "Void"): true;
-			case _: false;
-		}
-	}
 }
 
 typedef ContractMethod = {
