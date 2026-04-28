@@ -2,7 +2,6 @@ package crossbyte.core;
 
 #if cpp
 import cpp.AtomicInt;
-import cpp.net.Poll;
 import crossbyte.utils.ThreadPriority;
 #end
 #if (cpp && windows)
