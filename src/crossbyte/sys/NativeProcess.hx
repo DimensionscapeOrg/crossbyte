@@ -1,9 +1,5 @@
 package crossbyte.sys;
 
-/**
- * ...
- * @author Christopher Speciale
- */
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.NativeProcessEvent;
 import crossbyte.events.ThreadEvent;
@@ -22,6 +18,7 @@ import haxe.io.Input;
 import haxe.io.Output;
 #end
 
+/** Launches and monitors a native operating-system process. */
 class NativeProcess extends EventDispatcher {
 	public static inline var isSupported:Bool = #if (sys && (windows || linux || mac || macos)) true #else false #end;
 

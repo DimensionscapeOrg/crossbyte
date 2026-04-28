@@ -1,10 +1,6 @@
 package crossbyte.ds;
 
 /**
- * ...
- * @author Chris__topher Speciale
- */
-/**
  * A generic stack implementation.
  *
  * This class represents a simple stack data structure, which operates on the Last In, First Out (LIFO) principle.

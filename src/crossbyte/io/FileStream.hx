@@ -1,9 +1,5 @@
 package crossbyte.io;
 
-/**
- * ...
- * @author Christopher Speciale
- */
 import crossbyte.events.ThreadEvent;
 import haxe.Json;
 import haxe.Serializer;

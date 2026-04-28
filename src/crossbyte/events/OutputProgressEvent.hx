@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.events.Event;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event carrying outbound write progress counters. */
 class OutputProgressEvent extends Event {
 	public static inline var OUTPUT_PROGRESS:EventType<OutputProgressEvent> = "outputProgress";
 

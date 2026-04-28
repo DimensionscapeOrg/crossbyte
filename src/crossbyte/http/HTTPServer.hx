@@ -13,10 +13,7 @@ import crossbyte._internal.php.PHPMode;
 
 using StringTools;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Lightweight static-and-middleware HTTP server built on `ServerSocket`. */
 class HTTPServer extends ServerSocket {
 	private var __config:HTTPServerConfig;
 	private var __active:ObjectMap<Dynamic, HTTPRequestHandler>;

@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.Object;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Base event payload for CrossByte dispatchers and typed event subclasses. */
 class Event {
 	public static inline var TICK:String = "tick";
 	public static inline var CLOSE:String = "close";

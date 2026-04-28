@@ -3,10 +3,6 @@ package crossbyte.errors;
 import haxe.CallStack;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
 	The Error class contains information about an error that occurred in a script. In
 	developing ActionScript 3.0 applications, when you run your compiled code in the
 	debugger version of a Flash runtime, a dialog box displays exceptions of type Error,
