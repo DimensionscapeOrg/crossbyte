@@ -46,6 +46,109 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, logical.countSetBits());
 	}
 
+	public function testArray2DReportsEmptyWidthAndClonesIndependently():Void {
+		var empty = new Array2D<Int>();
+		Assert.isTrue(empty.isEmpty());
+		Assert.equals(0, empty.getWidth());
+		Assert.equals(0, empty.getHeight());
+
+		var grid = new Array2D<Int>(2, 3, 1);
+		grid.set(1, 2, 9);
+
+		Assert.equals(1, grid.get(0, 0));
+		Assert.equals(9, grid.get(1, 2));
+		Assert.equals("1,1,1,1,1,9", grid.toFlatArray().join(","));
+
+		var clone = grid.clone();
+		clone.set(0, 0, 7);
+		Assert.equals(1, grid.get(0, 0));
+		Assert.equals(7, clone.get(0, 0));
+	}
+
+	public function testStackSupportsLifoIterationAndClearing():Void {
+		var stack = new Stack<String>(1);
+		Assert.isTrue(stack.isEmpty);
+		Assert.isNull(stack.pop());
+
+		stack.push("a");
+		stack.push("b");
+		stack.push("c");
+
+		Assert.equals(3, stack.length);
+		Assert.equals("c", stack.last());
+
+		var forward = [];
+		stack.forEach(value -> forward.push(value));
+		Assert.equals("a,b,c", forward.join(","));
+
+		var reverse = [];
+		stack.forEachReverse(value -> reverse.push(value));
+		Assert.equals("c,b,a", reverse.join(","));
+
+		var iterated = [];
+		for (value in stack) {
+			iterated.push(value);
+		}
+		Assert.equals("c,b,a", iterated.join(","));
+
+		Assert.equals("c", stack.pop());
+		stack.clear();
+		Assert.isTrue(stack.isEmpty);
+		Assert.isNull(stack.last());
+	}
+
+	public function testBitmapDataRoundTripsPixelsBoundsAndSerialization():Void {
+		var bitmap = new BitmapData(2, 2, true, 0x11223344);
+		Assert.equals(0x11223344, bitmap.getPixel32(0, 0));
+
+		bitmap.setPixel32(1, 0, 0xAABBCCDD);
+		Assert.equals(0xAABBCCDD, bitmap.getPixel32(1, 0));
+		Assert.equals(0xBBCCDD, bitmap.getPixel(1, 0));
+
+		bitmap.setPixel(1, 0, 0x102030);
+		Assert.equals(0xAA102030, bitmap.getPixel32(1, 0));
+
+		var opaque = new BitmapData(1, 1, false, 0x00112233);
+		Assert.equals(0xFF112233, opaque.getPixel32(0, 0));
+		opaque.setPixel32(0, 0, 0x00123456);
+		Assert.equals(0xFF123456, opaque.getPixel32(0, 0));
+
+		var bytes = bitmap.toByteArray();
+		var restored = BitmapData.fromByteArray(2, 2, bytes, true);
+		Assert.equals(bitmap.getPixel32(0, 0), restored.getPixel32(0, 0));
+		Assert.equals(bitmap.getPixel32(1, 0), restored.getPixel32(1, 0));
+
+		var bounds = bitmap.getColorBoundsRect(0xFFFFFFFF, 0xAABBCCDD);
+		Assert.isTrue(bounds.isEmpty());
+
+		bitmap.fillRect(new Rectangle(0, 1, 2, 1), 0x55667788);
+		Assert.equals(0x55667788, bitmap.getPixel32(0, 1));
+
+		var clone = bitmap.clone();
+		clone.setPixel32(0, 0, 0x01020304);
+		Assert.equals(0x11223344, bitmap.getPixel32(0, 0));
+		Assert.equals(0x01020304, clone.getPixel32(0, 0));
+	}
+
+	public function testSwitchTableDispatchesMixedKeysAndArguments():Void {
+		var seen = [];
+		var total = 0;
+		var dispatch = SwitchTable.make([
+			{key: "PING", handler: () -> seen.push("pong")},
+			{key: "ADD", handler: (value:Int) -> total += value},
+			{key: 7, handler: (left:Int, right:Int) -> seen.push((left + right) + "")}
+		]);
+
+		dispatch("PING");
+		dispatch("ADD", 4);
+		dispatch("ADD", 6);
+		dispatch(7, 2, 5);
+
+		Assert.equals(10, total);
+		Assert.equals("pong,7", seen.join(","));
+		Assert.raises(() -> dispatch("MISSING"));
+	}
+
 	public function testRadixTreeSupportsExactKeysPrefixesAndUpdates():Void {
 		var tree = new RadixTree<Int>();
 

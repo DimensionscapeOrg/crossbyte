@@ -28,7 +28,6 @@ class BitmapData {
 		} else {
 			fillColor = (0xFF << 24) | (fillColor & 0xFFFFFF);
 		}
-		fillColor = (fillColor << 8) | ((fillColor >> 24) & 0xFF);
 
 		for (i in 0...width * height) {
 			pixels.push(fillColor);
@@ -68,7 +67,6 @@ class BitmapData {
 		} else {
 			color = (0xFF << 24) | (color & 0xFFFFFF);
 		}
-		color = (color << 8) | ((color >> 24) & 0xFF);
 		pixels[y * width + x] = color;
 	}
 
@@ -123,10 +121,12 @@ class BitmapData {
 
 	public function getColorBoundsRect(mask:Int, color:Int, findColor:Bool = true):Rectangle {
 		var xMin = width, xMax = 0, yMin = height, yMax = 0;
+		var found = false;
 		for (y in 0...height) {
 			for (x in 0...width) {
 				var pixelColor = getPixel32(x, y);
 				if (((pixelColor & mask) == color) == findColor) {
+					found = true;
 					if (x < xMin)
 						xMin = x;
 					if (x > xMax)
@@ -137,6 +137,9 @@ class BitmapData {
 						yMax = y;
 				}
 			}
+		}
+		if (!found) {
+			return new Rectangle();
 		}
 		return new Rectangle(xMin, yMin, xMax - xMin + 1, yMax - yMin + 1);
 	}
