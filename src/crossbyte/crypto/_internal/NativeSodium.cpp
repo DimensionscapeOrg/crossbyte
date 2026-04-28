@@ -8,7 +8,11 @@
 #include <string>
 #include <mutex>
 
-#if defined(_WIN32) && defined(HXCPP_M64) && !defined(HXCPP_ARM64)
+// hxcpp build variables used in Build.xml do not always map 1:1 to the exact
+// preprocessor defines exposed to custom native sources across hxcpp releases.
+// Accept both the hxcpp architecture macros and the compiler's native x64
+// macros so the compiled bridge and the link step agree on supported targets.
+#if defined(_WIN32) && !defined(HXCPP_ARM64) && !defined(_M_ARM64) && !defined(_M_ARM64EC) && (defined(HXCPP_M64) || defined(_WIN64) || defined(_M_X64) || defined(__x86_64__))
 
 extern "C" {
 	int sodium_init(void);
