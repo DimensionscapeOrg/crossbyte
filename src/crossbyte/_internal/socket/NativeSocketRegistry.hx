@@ -13,6 +13,7 @@ final class NativeSocketRegistry {
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
 	@:noCompletion private var __writableQueue:Stack<Socket>;
+	@:noCompletion private var __readSnapshot:Array<Socket>;
 
 	public var capacity(get, null):Int;
 	public var size(get, null):Int;
@@ -36,11 +37,14 @@ final class NativeSocketRegistry {
 		__poll = new Poll(__capacity);
 		__deregisterQueue = new Stack();
 		__writableQueue = new Stack();
+		__readSnapshot = [];
 	}
 
 	public inline function clear():Void {
 		__set.clear();
 		__deregisterQueue.clear(true);
+		__writableQueue.clear();
+		__readSnapshot.resize(0);
 		__isDirty = true;
 	}
 
@@ -77,34 +81,22 @@ final class NativeSocketRegistry {
 			__isDirty = true;
 		}
 
-		if (!__set.isEmpty) {
-			if (__isDirty) {
-				__poll.prepare(__set.keys, null);
-				__isDirty = false;
-			}
-			__poll.events(timeout);
-			for (i in __poll.readIndexes) {
-				if (i == -1) {
-					break;
-				}
-				var socket:Socket = __set.valueAt(i);
-				var cb:IPollableSocket = cast socket.custom;
-				if (cb != null && !cb.registryClosed) {
-					cb.registryOnReadable();
-				}
-			}
+		if (__set.isEmpty) {
+			return;
+		}
 
-			/* for (i in __poll.writeIndexes) {
-				if (i == -1) {
-					break;
-				}
-				var socket:Socket = __set.valueAt(i);
-				var cb:CBSocket = socket.custom;
-				@:privateAccess
-				if (!cb.__closed) {
-					cb.this_onTick();
-				}
-			}*/
+		if (__isDirty) {
+			__readSnapshot = __set.keys;
+			__poll.prepare(__readSnapshot, null);
+			__isDirty = false;
+		}
+
+		__poll.events(timeout);
+		for (i in __poll.readIndexes) {
+			if (i == -1) {
+				break;
+			}
+			__dispatchReadable(__readSnapshot[i]);
 		}
 	}
 
@@ -112,6 +104,13 @@ final class NativeSocketRegistry {
 		__capacity = Math.ceil(__capacity * 1.5);
 		__poll = new Poll(__capacity);
 		__isDirty = true;
+	}
+
+	@:noCompletion private inline function __dispatchReadable(socket:Socket):Void {
+		var cb:IPollableSocket = cast socket.custom;
+		if (cb != null && !cb.registryClosed) {
+			cb.registryOnReadable();
+		}
 	}
 
 	@:noCompletion private inline function __onFlushSocket(socket:Socket):Void {

@@ -433,26 +433,13 @@ final class CrossByte extends EventDispatcher {
 		__cpuTime = __dt = Timer.stamp() - frameStart;
 
 		if (!__socketRegistry.isEmpty) {
-			var deadline:Float = frameStart + __tickInterval;
-
-			while (true) {
-				var now:Float = Timer.stamp();
-				var remaining:Float = deadline - now;
-				if (remaining < 0) {
-					remaining = 0;
-				}
-
-				__socketRegistry.update(remaining);
-
-				__dt = Timer.stamp() - frameStart;
-
-				if (remaining == 0) {
-					break;
-				}
-			}
-		} else {
-			__wait(frameStart);
+			// Keep Poll as the readiness backend, but never let it own the frame
+			// wait. Windows UDP poll can otherwise starve CrossByte timers while
+			// an idle socket is registered.
+			__socketRegistry.update(0);
+			__dt = Timer.stamp() - frameStart;
 		}
+		__wait(frameStart);
 	}
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
 		#if precision_tick
