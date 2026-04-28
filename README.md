@@ -97,10 +97,24 @@ See [samples/README.md](samples/README.md) for the current sample index and buil
 
 CrossByte uses [utest](https://lib.haxe.org/p/utest) for its test suite.
 
+The repository root is now described by `Aedifex.hx`. That file is the source of truth for the library identity, task list, and generated `haxelib.json` metadata.
+
+To refresh `haxelib.json` from `Aedifex.hx`, run:
+
+```sh
+haxelib run aedifex haxelib sync .
+```
+
 Run the fast interpreted suite with:
 
 ```sh
 haxe test.hxml
+```
+
+The same test flow is available through Aedifex:
+
+```sh
+haxelib run aedifex task interp-tests .
 ```
 
 Run the native smoke build with:
@@ -109,10 +123,22 @@ Run the native smoke build with:
 haxe ci/native-tests.hxml
 ```
 
+Or through Aedifex:
+
+```sh
+haxelib run aedifex task native-tests .
+```
+
 Then run the produced executable:
 
 ```sh
 ./export/ci-native-tests/NativeSmokeMain
+```
+
+To inspect the registered CrossByte tasks, run:
+
+```sh
+haxelib run aedifex tasks --json .
 ```
 
 ## CI
