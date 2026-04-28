@@ -6,10 +6,11 @@ import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.errors.SQLError;
 import crossbyte.FieldStruct;
-typedef PostgresResultSet = Dynamic;
 #if cpp
 import sys.thread.Deque;
 #end
+
+typedef PostgresResultSet = Dynamic;
 
 @:access(crossbyte.db.postgres.PostgresConnection)
 class PostgresStatement extends EventDispatcher {
