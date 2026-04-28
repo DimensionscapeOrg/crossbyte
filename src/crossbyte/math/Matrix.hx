@@ -62,18 +62,23 @@ class Matrix {
 	}
 
 	public function invert():Void {
-		var det = a * d - b * c;
+		var oldA = a;
+		var oldB = b;
+		var oldC = c;
+		var oldD = d;
+		var oldTx = tx;
+		var oldTy = ty;
+		var det = oldA * oldD - oldB * oldC;
 		if (det == 0) {
 			identity();
 			return;
 		}
-		var a1 = d / det;
-		d = a / det;
-		b = -b / det;
-		c = -c / det;
-		var tx1 = (c * ty - d * tx) / det;
-		ty = (a * ty - b * tx) / det;
-		tx = tx1;
+		a = oldD / det;
+		b = -oldB / det;
+		c = -oldC / det;
+		d = oldA / det;
+		tx = (oldC * oldTy - oldD * oldTx) / det;
+		ty = (oldB * oldTx - oldA * oldTy) / det;
 	}
 
 	public function rotate(angle:Float):Void {
