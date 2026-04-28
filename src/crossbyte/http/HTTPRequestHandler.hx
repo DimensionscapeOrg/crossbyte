@@ -34,12 +34,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __awaitingBody:Bool = false;
 	@:noCompletion private var __expectBody:Int = 0;
 	@:noCompletion private var __bodyBuf:ByteArray = null;
+	@:noCompletion private var __bodyComplete:Void->Void = null;
+	@:noCompletion private var __bodyIsChunked:Bool = false;
 	@:noCompletion private var __bodyTargetPhpPath:String = null;
 	@:noCompletion private var __bodyHeadOnly:Bool = false;
 	@:noCompletion private var __bodyOverrideScriptName:String = null;
+	@:noCompletion private var __chunkBytesRemaining:Int = -1;
+	@:noCompletion private var __requestBody:ByteArray;
 	public var method(get, null):String;
 	public var requestPath(get, null):String;
 	public var queryString(get, null):String;
+	public var requestBody(get, null):ByteArray;
+	public var requestText(get, null):String;
 
 	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge) {
 		super();
@@ -47,6 +53,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__config = config;
 		__incomingBuffer = new ByteArray();
 		__headers = new Map<String, String>();
+		__requestBody = new ByteArray();
 		__setup();
 		__php = php;
 	}
@@ -97,6 +104,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __queryString;
 	}
 
+	public function get_requestBody():ByteArray {
+		return __requestBody;
+	}
+
+	public function get_requestText():String {
+		return __requestBody != null ? __requestBody.toString() : "";
+	}
+
 	public function getAllCookies():StringMap<String> {
 		var out:StringMap<String> = new StringMap();
 		var h:String = __getCookieHeader();
@@ -137,9 +152,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 
 			if (__awaitingBody) {
-				__readBodyFromBuffer();
-				if (!__awaitingBody) {
-					__finishPhpWithBody();
+				if (__readRequestBodyFromBuffer()) {
+					__finishRequestBody();
 				}
 
 				return;
@@ -259,15 +273,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
-		if (__config.middleware != null && __config.middleware.length > 0) {
-			__runMiddleware(0, function() {
-				__continueRequestDispatch(decision);
-			});
+		var continueDispatch = function():Void {
+			var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+			if (__config.middleware != null && __config.middleware.length > 0) {
+				__runMiddleware(0, function() {
+					__continueRequestDispatch(decision);
+				});
+				return;
+			}
+
+			__continueRequestDispatch(decision);
+		}
+
+		if (__beginRequestBodyRead(continueDispatch)) {
 			return;
 		}
 
-		__continueRequestDispatch(decision);
+		continueDispatch();
 	}
 
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
@@ -325,39 +347,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				case "POST":
 					if (decision.toPHP) {
 						__queryString = decision.query;
-						var te:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
-
-						if (te != null && te.toLowerCase().indexOf("chunked") >= 0) {
-							__dispatchResponse(501, "Not Implemented", null, "text/plain", "Chunked TE not supported yet");
-							if (__origin.connected) {
-								__origin.close();
-							}
-							return;
-						}
-
-						var cls:String = __headers.exists("content-length") ? __headers.get("content-length") : null;
-						var n:Null<Int> = (cls != null) ? Std.parseInt(cls) : 0;
-
-						if (n == null || n < 0) {
-							n = 0;
-						}
-						if (n > MAX_BUFFER_SIZE) {
-							__sendErrorResponse(413, "Payload Too Large");
-							return;
-						}
-
-						__expectBody = n;
-						__bodyBuf = new ByteArray();
-						__bodyTargetPhpPath = targetAbs.nativePath;
-						__bodyOverrideScriptName = decision.finalPath;
-						__bodyHeadOnly = false;
-						__awaitingBody = true;
-
-						__readBodyFromBuffer();
-						if (!__awaitingBody) {
-							__finishPhpWithBody();
-						}
-
+						__servePhp(targetAbs.nativePath, false, __requestBody, decision.finalPath);
 						return;
 					} else {
 						__handlePost(__filePath);
@@ -475,7 +465,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (ims != null) {
 			try {
 				var since:Date = __parseHttpDate(ims);
-				if (since != null && lastModifiedTime <= since.getTime()) {
+				if (since != null && Math.floor(lastModifiedTime / 1000) <= Math.floor(since.getTime() / 1000)) {
 					var h:Array<URLRequestHeader> = [new URLRequestHeader("Accept-Ranges", "bytes"), lastModHeader];
 					__dispatchResponse(304, "Not Modified", h, "text/plain", "", true);
 					if (__origin.connected) {
@@ -979,6 +969,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case 404: "Not Found";
 			case 413: "Payload Too Large";
 			case 416: "Range Not Satisfiable";
+			case 417: "Expectation Failed";
 			case 500: "Internal Server Error";
 			case 502: "Bad Gateway";
 			case 501: "Not Implemented";
@@ -986,6 +977,64 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case 505: "HTTP Version Not Supported";
 			default: "OK";
 		}
+	}
+
+	@:noCompletion private function __beginRequestBodyRead(onComplete:Void->Void):Bool {
+		__requestBody = new ByteArray();
+		__requestBody.endian = __incomingBuffer.endian;
+
+		var transferEncoding:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
+		var chunked:Bool = false;
+		if (transferEncoding != null) {
+			var encodings = transferEncoding.toLowerCase().split(",");
+			if (encodings.length == 0 || StringTools.trim(encodings[encodings.length - 1]) != "chunked") {
+				__dispatchResponse(501, "Not Implemented", null, "text/plain", "Transfer-Encoding not supported");
+				if (__origin.connected) {
+					__origin.close();
+				}
+				return true;
+			}
+			chunked = true;
+		}
+
+		var contentLength:Null<Int> = null;
+		if (!chunked) {
+			var contentLengthHeader:String = __headers.exists("content-length") ? __headers.get("content-length") : null;
+			contentLength = __parseContentLength(contentLengthHeader);
+			if (contentLengthHeader != null && contentLength == null) {
+				__sendErrorResponse(400, "Bad Request");
+				return true;
+			}
+		}
+
+		var expect:String = __headers.exists("expect") ? __headers.get("expect") : null;
+		if (expect != null) {
+			var expectValue:String = StringTools.trim(expect.toLowerCase());
+			if (expectValue == "100-continue") {
+				__origin.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
+				__origin.flush();
+			} else {
+				__sendErrorResponse(417, "Expectation Failed");
+				return true;
+			}
+		}
+
+		if (!chunked && (contentLength == null || contentLength == 0)) {
+			return false;
+		}
+
+		__bodyBuf = __requestBody;
+		__bodyComplete = onComplete;
+		__bodyIsChunked = chunked;
+		__chunkBytesRemaining = -1;
+		__expectBody = chunked ? 0 : contentLength;
+		__awaitingBody = true;
+
+		if (__readRequestBodyFromBuffer()) {
+			__finishRequestBody();
+		}
+
+		return true;
 	}
 
 	@:noCompletion private function __readBodyFromBuffer():Void {
@@ -1003,14 +1052,119 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__awaitingBody = (__bodyBuf.length < __expectBody);
 	}
 
-	@:noCompletion private function __finishPhpWithBody():Void {
-		__servePhp(__bodyTargetPhpPath, __bodyHeadOnly, __bodyBuf, __bodyOverrideScriptName);
+	@:noCompletion private function __readRequestBodyFromBuffer():Bool {
+		if (__bodyIsChunked) {
+			return __readChunkedBodyFromBuffer();
+		}
+
+		__readBodyFromBuffer();
+		return !__awaitingBody;
+	}
+
+	@:noCompletion private function __readChunkedBodyFromBuffer():Bool {
+		while (true) {
+			if (__chunkBytesRemaining < 0) {
+				var sizeLine:String = __readLine(__incomingBuffer);
+				if (sizeLine == null) {
+					return false;
+				}
+
+				var semi:Int = sizeLine.indexOf(";");
+				if (semi >= 0) {
+					sizeLine = sizeLine.substr(0, semi);
+				}
+
+				var hex:String = StringTools.trim(sizeLine);
+				if (hex.length == 0 || !~/^[0-9a-fA-F]+$/.match(hex)) {
+					__sendErrorResponse(400, "Bad Request");
+					return false;
+				}
+
+				var parsed:Null<Int> = Std.parseInt("0x" + hex);
+				if (parsed == null || parsed < 0) {
+					__sendErrorResponse(400, "Bad Request");
+					return false;
+				}
+				__chunkBytesRemaining = parsed;
+
+				if (__chunkBytesRemaining == 0) {
+					while (true) {
+						var trailer:String = __readLine(__incomingBuffer);
+						if (trailer == null) {
+							return false;
+						}
+						if (StringTools.trim(trailer).length == 0) {
+							return true;
+						}
+					}
+				}
+			}
+
+			var available:UInt = __incomingBuffer.length - __incomingBuffer.position;
+			if (available < __chunkBytesRemaining + 2) {
+				return false;
+			}
+
+			__bodyBuf.writeBytes(__incomingBuffer, __incomingBuffer.position, __chunkBytesRemaining);
+			__incomingBuffer.position += __chunkBytesRemaining;
+
+			var cr:Int = __incomingBuffer.readByte();
+			var lf:Int = __incomingBuffer.readByte();
+			if (cr != 13 || lf != 10) {
+				__sendErrorResponse(400, "Bad Request");
+				return false;
+			}
+
+			if (__bodyBuf.length > MAX_BUFFER_SIZE) {
+				__sendErrorResponse(413, "Payload Too Large");
+				return false;
+			}
+
+			__chunkBytesRemaining = -1;
+		}
+	}
+
+	@:noCompletion private function __finishRequestBody():Void {
+		var onComplete = __bodyComplete;
 		__bodyOverrideScriptName = null;
 		__bodyBuf = null;
 		__expectBody = 0;
 		__awaitingBody = false;
+		__bodyComplete = null;
+		__bodyIsChunked = false;
+		__chunkBytesRemaining = -1;
 		__bodyTargetPhpPath = null;
 		__bodyHeadOnly = false;
+
+		if (onComplete != null) {
+			onComplete();
+		}
+	}
+
+	@:noCompletion private function __parseContentLength(header:String):Null<Int> {
+		if (header == null) {
+			return null;
+		}
+
+		var values = header.split(",");
+		var parsed:Null<Int> = null;
+		for (raw in values) {
+			var value = StringTools.trim(raw);
+			if (value.length == 0 || !~/^[0-9]+$/.match(value)) {
+				return null;
+			}
+
+			var n:Null<Int> = Std.parseInt(value);
+			if (n == null || n < 0 || n > MAX_BUFFER_SIZE) {
+				return null;
+			}
+			if (parsed != null && parsed != n) {
+				return null;
+			}
+			parsed = n;
+		}
+
+		return parsed;
 	}
 
 	@:noCompletion private function __handlePost(filePath:String):Void {
@@ -1042,37 +1196,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var te:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
-		if (te != null && te.toLowerCase().indexOf("chunked") >= 0) {
-			__dispatchResponse(501, "Not Implemented", null, "text/plain", "Chunked TE not supported yet");
-			if (__origin.connected) {
-				__origin.close();
-			}
-
-			return;
-		}
-
-		var cls:String = __headers.exists("content-length") ? __headers.get("content-length") : null;
-		var n:Null<Int> = (cls != null) ? Std.parseInt(cls) : 0;
-		if (n == null || n < 0) {
-			n = 0;
-		}
-
-		if (n > MAX_BUFFER_SIZE) {
-			__sendErrorResponse(413, "Payload Too Large");
-			return;
-		}
-
-		__expectBody = n;
-		__bodyBuf = new ByteArray();
-		__bodyTargetPhpPath = file.nativePath;
-		__bodyHeadOnly = false;
-		__awaitingBody = true;
-
-		__readBodyFromBuffer();
-		if (!__awaitingBody) {
-			__finishPhpWithBody();
-		}
+		__servePhp(file.nativePath, false, __requestBody);
 	}
 
 	@:noCompletion private inline function __computeAllowOrigin():Null<String> {
