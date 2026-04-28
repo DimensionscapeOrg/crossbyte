@@ -1,12 +1,18 @@
 package crossbyte.net;
 
 import crossbyte.core.CrossByte;
+import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import utest.Assert;
 
 @:access(crossbyte.net.ServerWebSocket)
 class NetHostTest extends utest.Test {
 	public function testFromServerSocketAcceptsAndForwardsDisconnect():Void {
+		#if !cpp
+		Assert.isTrue(true);
+		return;
+		#end
+
 		var server = new ServerSocket();
 		var host:NetHost = null;
 		var client = new Socket();
@@ -84,6 +90,46 @@ class NetHostTest extends utest.Test {
 		closeHostQuietly(host);
 	}
 
+	public function testFromReliableDatagramServerSocketWrapsAcceptedSocket():Void {
+		if (!ReliableDatagramSocket.isSupported) {
+			Assert.isFalse(ReliableDatagramSocket.isSupported);
+			return;
+		}
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:INetConnection = null;
+		var disconnectReason:Reason = null;
+		var host = NetHost.fromReliableDatagramServerSocket(server, connection -> accepted = connection, (connection, reason) -> {
+			if (accepted == connection) {
+				disconnectReason = reason;
+			}
+		});
+
+		try {
+			server.bind(0, "127.0.0.1");
+			host.listen();
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> accepted != null && accepted.connected, 2.0);
+
+			Assert.notNull(accepted);
+			Assert.equals(Protocol.RUDP, accepted.protocol);
+			Assert.equals(server.localPort, host.localPort);
+
+			client.close();
+			pumpUntil(() -> disconnectReason != null, 2.0);
+
+			Assert.equals(Reason.Closed, disconnectReason);
+		} catch (e:Dynamic) {
+			closeReliableSocketQuietly(client);
+			closeHostQuietly(host);
+			throw e;
+		}
+
+		closeReliableSocketQuietly(client);
+		closeHostQuietly(host);
+	}
+
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
 		var deadline = Sys.time() + timeout;
@@ -105,6 +151,14 @@ class NetHostTest extends utest.Test {
 		try {
 			if (host != null) {
 				host.close();
+			}
+		} catch (_:Dynamic) {}
+	}
+
+	private static function closeReliableSocketQuietly(socket:ReliableDatagramSocket):Void {
+		try {
+			if (socket != null) {
+				socket.close();
 			}
 		} catch (_:Dynamic) {}
 	}

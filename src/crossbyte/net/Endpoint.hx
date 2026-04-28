@@ -36,6 +36,8 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 				proto = Protocol.TCP;
 			case "udp":
 				proto = Protocol.UDP;
+			case "rudp":
+				proto = Protocol.RUDP;
 			case "ws":
 				proto = Protocol.WEBSOCKET;
 			case "wss":
@@ -95,7 +97,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 	if (proto == Protocol.WEBSOCKET) {
 		resource = __parseWebSocketResource(tail);
 	} else if (tail.length > 0) {
-		throw "path/query not supported for tcp/udp";
+		throw "path/query not supported for tcp/udp/rudp";
 	}
 
 	if (proto == Protocol.WEBSOCKET) {
@@ -108,7 +110,7 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 		}
 	} else {
 		if (port < 0) {
-			throw "port required for tcp/udp";
+			throw "port required for tcp/udp/rudp";
 		}
 
 		if (port == 0) {
