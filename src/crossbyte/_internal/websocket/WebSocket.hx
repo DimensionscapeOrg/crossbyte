@@ -217,7 +217,7 @@ class WebSocket {
 
 		if (hasData) {
 			__input.position = __input.length;
-			__input.writeBytes(pending.getBytes());
+			__appendBytes(__input, pending.getBytes());
 			__input.position = __inputPosition;
 			__onData();
 		} else if (doClose) {
@@ -265,10 +265,19 @@ class WebSocket {
 			case PONG:
 				__hasTimeoutPotential = false;
 			case CLOSE:
+				var code:Int = 1000;
+				var reason:String = null;
+				if (payload.length >= 2) {
+					code = (payload[0] << 8) | payload[1];
+					if (payload.length > 2) {
+						payload.position = 2;
+						reason = payload.readUTFBytes(payload.length - 2);
+					}
+				}
 				if (readyState == OPEN) {
 					__sendFrame(payload, WebSocketOpcode.CLOSE, true);
 				}
-				__close(1000);
+				__close(code, reason);
 		}
 	}
 
@@ -390,18 +399,18 @@ class WebSocket {
 				__validateInputPosition();
 			}
 		} else if (readyState == CONNECTING) {
-			var chunk:String = __input.readUTFBytes(__input.bytesAvailable);
-			var bufferedLength:Int = __handshakeBuffer.length;
-			var headerData:String = __handshakeBuffer + chunk;
-			var endIndex:Int = headerData.indexOf(CRLFCRLF);
-			var headerLength = endIndex + 4;
+			var raw:Bytes = __input;
+			var start:Int = __input.position;
+			var endIndex:Int = __findHeaderEnd(raw, start, __input.length);
 			if (endIndex > -1) {
 				// received entire header
+				var headerLength:Int = endIndex - start + 4;
+				var headerData:String = __handshakeBuffer + raw.getString(start, headerLength);
 				__handshakeBuffer = "";
-				var headerBlock:String = headerData.substr(0, headerLength);
-				var extraStart:Int = headerLength - bufferedLength;
-				var extra:String = extraStart < chunk.length ? chunk.substr(extraStart) : "";
-				var lines:Array<String> = headerBlock.split(CRLF);
+				var extraStart:Int = start + headerLength;
+				var extraLength:Int = Std.int(__input.length) - extraStart;
+				var extra:Bytes = extraLength > 0 ? raw.sub(extraStart, extraLength) : null;
+				var lines:Array<String> = headerData.split(CRLF);
 				var headers:StringMap<String>;
 
 				if (lines[0].indexOf(GET) == 0) {
@@ -428,11 +437,6 @@ class WebSocket {
 						readyState = OPEN;
 						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
 
-						if (__input.length > headerLength) {
-							__input.position = headerLength;
-							__onData();
-						}
-
 						if (__heartbeatDelay > 0) {
 							__initHeartbeat();
 						}
@@ -442,9 +446,9 @@ class WebSocket {
 				}
 
 				if (readyState == OPEN) {
-					if (extra.length > 0) {
+					if (extra != null && extra.length > 0) {
 						__input.clear();
-						__input.writeBytes(Bytes.ofString(extra));
+						__appendBytes(__input, extra);
 						__input.position = 0;
 						__inputPosition = 0;
 						__onData();
@@ -455,10 +459,28 @@ class WebSocket {
 				// is it the client handshake or server response?
 			} else {
 				// received partial header, buffer it and wait.
-				__handshakeBuffer = headerData;
+				__handshakeBuffer += raw.getString(start, __input.bytesAvailable);
 				__input.clear();
 				__inputPosition = 0;
 			}
+		}
+	}
+
+	private function __findHeaderEnd(bytes:Bytes, start:Int, end:Int):Int {
+		var last:Int = end - 3;
+		var i:Int = start;
+		while (i < last) {
+			if (bytes.get(i) == 13 && bytes.get(i + 1) == 10 && bytes.get(i + 2) == 13 && bytes.get(i + 3) == 10) {
+				return i;
+			}
+			i++;
+		}
+		return -1;
+	}
+
+	private inline function __appendBytes(target:ByteArray, bytes:Bytes):Void {
+		for (i in 0...bytes.length) {
+			target.writeByte(bytes.get(i));
 		}
 	}
 
@@ -645,10 +667,12 @@ class WebSocket {
 	}
 
 	private function __close(code:Int, ?reason:String):Void {
-		if (__socket == null)
-			return;
-
 		readyState = CLOSED;
+
+		if (__socket == null) {
+			onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
+			return;
+		}
 
 		if (__connected) {
 			__socket.close();

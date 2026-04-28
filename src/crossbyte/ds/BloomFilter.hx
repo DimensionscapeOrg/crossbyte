@@ -22,7 +22,8 @@ class BloomFilter {
 	 */
 	public function new(size:Int, numHashFunctions:Int) {
 		this.size = size;
-		this.bitArray = new Array<Bool>(size);
+		this.bitArray = [];
+		this.bitArray.resize(size);
 		for (i in 0...size)
 			bitArray[i] = false;
 		this.hashFunctions = [];
@@ -60,7 +61,7 @@ class BloomFilter {
 
 	private function createHashFunction(seed:Int):(String) -> Int {
 		return function(item:String):Int {
-			return Math.abs(Md5.encode(item + seed).charCodeAt(0));
+			return Std.int(Math.abs(Md5.encode(item + seed).charCodeAt(0)));
 		}
 	}
 }
