@@ -1,5 +1,6 @@
 package crossbyte.net;
 
+import crossbyte.events.Event;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Endpoint.parseURL;
 
@@ -8,54 +9,125 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 	public inline function new(uri:String, ?onAccept:INetConnection->Void, ?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void,
 			startListening:Bool = false):Void {
 		var endpoint:Endpoint = parseURL(uri);
-		var protocol:Protocol = endpoint.protocol;
-		this = switch (protocol) {
+		var secureWebSocket = __isSecureWebSocketUri(uri);
+		this = switch (endpoint.protocol) {
 			case TCP:
-				var server:ServerSocket = new ServerSocket();
+				var server = new ServerSocket();
 				server.bind(endpoint.port, endpoint.address);
-				var nh:NetHost = new TCPHost(server);
-				nh.onAccept = onAccept;
-				nh.onDisconnect = onDisconnect;
-				nh.onError = onError;
-				if (startListening) {
-					nh.listen();
-				}
-				// return
-				nh;
+				fromServerSocket(server, onAccept, onDisconnect, onError);
+			case WEBSOCKET:
+				var server = new ServerWebSocket(secureWebSocket);
+				server.bind(endpoint.port, endpoint.address);
+				fromServerWebSocket(server, onAccept, onDisconnect, onError);
 			default:
-				throw('Protocol error');
-				null;
+				throw "Protocol error";
 		}
+
+		if (startListening) {
+			this.listen();
+		}
+	}
+
+	public static inline function fromServerSocket(server:ServerSocket, ?onAccept:INetConnection->Void,
+			?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void):NetHost {
+		var host:TCPHost = new TCPHost(server);
+		host.onAccept = onAccept;
+		host.onDisconnect = onDisconnect;
+		host.onError = onError;
+		return host;
+	}
+
+	public static inline function fromServerWebSocket(server:ServerWebSocket, ?onAccept:INetConnection->Void,
+			?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void):NetHost {
+		var host:WebSocketHost = new WebSocketHost(server);
+		host.onAccept = onAccept;
+		host.onDisconnect = onDisconnect;
+		host.onError = onError;
+		return host;
+	}
+
+	private static inline function __isSecureWebSocketUri(uri:String):Bool {
+		if (uri == null) {
+			return false;
+		}
+
+		var normalized = StringTools.trim(uri).toLowerCase();
+		return StringTools.startsWith(normalized, "wss://");
 	}
 }
 
-@:allow(crossbyte.net.NetHost)
-@:noCompletion private class TCPHost implements INetHost {
+private typedef DisconnectHandler = (INetConnection, Reason) -> Void;
+
+private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
 	public var isRunning(get, null):Bool = false;
-	public var protocol(default, null):Protocol = TCP;
+	public var protocol(default, null):Protocol;
 	public var maxConnections:Int = 0;
 	public var onAccept(get, set):INetConnection->Void;
-	public var onDisconnect(get, set):(INetConnection, Reason) -> Void;
+	public var onDisconnect(get, set):DisconnectHandler;
 	public var onError(get, set):Reason->Void;
 
-	@:noCompletion private var __server:ServerSocket;
-	@:noCompletion private var __onAccept:INetConnection->Void;
-	@:noCompletion private var __onDisconnect:(INetConnection, Reason) -> Void;
-	@:noCompletion private var __onError:Reason->Void;
-	@:noCompletion private var __lifecycleReady:Bool = false;
+	@:noCompletion private var __server:TServer;
+	@:noCompletion private var __onAccept:INetConnection->Void = __noopAccept;
+	@:noCompletion private var __onDisconnect:DisconnectHandler = __noopDisconnect;
+	@:noCompletion private var __onError:Reason->Void = __noopError;
+	@:noCompletion private var __listeningHooked:Bool = false;
+
+	@:noCompletion private inline function new(server:TServer, protocol:Protocol) {
+		__server = server;
+		this.protocol = protocol;
+	}
+
+	public function bind(address:String, port:Int):Void {
+		__server.bind(port, address);
+	}
+
+	public function listen():Void {
+		if (isRunning) {
+			__ensureListeningHooks();
+			return;
+		}
+
+		__server.listen(maxConnections);
+		__ensureListeningHooks();
+	}
+
+	public function close():Void {
+		__removeListeningHooks();
+		__server.close();
+	}
+
+	@:noCompletion private function __ensureListeningHooks():Void {
+		if (__listeningHooked) {
+			return;
+		}
+
+		__listeningHooked = true;
+		__server.addEventListener(ServerSocketConnectEvent.CONNECT, __onConnect);
+		__server.addEventListener(Event.CLOSE, __onServerClose);
+	}
+
+	@:noCompletion private function __removeListeningHooks():Void {
+		if (!__listeningHooked) {
+			return;
+		}
+
+		__listeningHooked = false;
+		__server.removeEventListener(ServerSocketConnectEvent.CONNECT, __onConnect);
+		__server.removeEventListener(Event.CLOSE, __onServerClose);
+	}
 
 	@:noCompletion private inline function get_isRunning():Bool {
 		return __server.listening;
 	}
 
 	@:noCompletion private inline function get_localAddress():String {
-		return this.__server.localAddress;
+		return __server.localAddress;
 	}
 
 	@:noCompletion private inline function get_localPort():Int {
-		return this.__server.localPort;
+		return __server.localPort;
 	}
 
 	@:noCompletion private inline function get_onAccept():INetConnection->Void {
@@ -63,15 +135,15 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 	}
 
 	@:noCompletion private inline function set_onAccept(value:INetConnection->Void):INetConnection->Void {
-		return __onAccept = value;
+		return __onAccept = (value != null) ? value : __noopAccept;
 	}
 
-	@:noCompletion private inline function get_onDisconnect():(INetConnection, Reason) -> Void {
+	@:noCompletion private inline function get_onDisconnect():DisconnectHandler {
 		return __onDisconnect;
 	}
 
-	@:noCompletion private inline function set_onDisconnect(value:(INetConnection, Reason) -> Void):(INetConnection, Reason) -> Void {
-		return __onDisconnect = value;
+	@:noCompletion private inline function set_onDisconnect(value:DisconnectHandler):DisconnectHandler {
+		return __onDisconnect = (value != null) ? value : __noopDisconnect;
 	}
 
 	@:noCompletion private inline function get_onError():Reason->Void {
@@ -79,40 +151,56 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 	}
 
 	@:noCompletion private inline function set_onError(value:Reason->Void):Reason->Void {
-		return __onError = value;
+		return __onError = (value != null) ? value : __noopError;
 	}
 
-	@:noCompletion private inline function new(server:ServerSocket) {
-		this.__server = server;
+	@:noCompletion private function __onConnect(event:ServerSocketConnectEvent):Void {
+		var connection = __wrapConnection(event.socket);
+		__onAccept(connection);
 	}
 
-	public inline function bind(address:String, port:Int):Void {
-		__server.bind(port, address);
+	@:noCompletion private function __onServerClose(_event:Event):Void {
+		__removeListeningHooks();
+		__onError(Reason.Closed);
 	}
 
-	public inline function listen():Void {
-		__server.listen(maxConnections);
-        __server.addEventListener(ServerSocketConnectEvent.CONNECT, __onConnect);
+	@:noCompletion private function __wrapConnection(socket:Socket):INetConnection {
+		return __bindConnectionCallbacks(NetConnection.fromSocket(socket));
 	}
 
-	public function close():Void {
-		__server.close();
+	@:noCompletion private function __bindConnectionCallbacks(connection:NetConnection):INetConnection {
+		var wrapped:INetConnection = connection;
+		var forwarded:NetConnection = connection;
+		forwarded.onClose = reason -> __onDisconnect(wrapped, reason);
+		forwarded.onError = reason -> __onError(reason);
+		return wrapped;
 	}
 
-    private inline function __onConnect(e:ServerSocketConnectEvent):Void{
-        var socket:Socket = e.socket;
-        var nc:INetConnection = NetConnection.fromSocket(socket);
-        onAccept(nc);
-    }
+	@:noCompletion private static inline function __noopAccept(_:INetConnection):Void {}
+
+	@:noCompletion private static inline function __noopDisconnect(_:INetConnection, _:Reason):Void {}
+
+	@:noCompletion private static inline function __noopError(_:Reason):Void {}
 }
-/* @:noCompletion private class WebSocketHost implements INetHost {
-	public var localAddress(get, never):String;
-	public var localPort(get, never):Int;
-	public var isRunning(default, null):Bool;
 
-	public function bind(address:String, port:Int):Void;
+@:allow(crossbyte.net.NetHost)
+private class TCPHost extends BaseNetHost<ServerSocket> {
+	@:noCompletion private inline function new(server:ServerSocket) {
+		super(server, TCP);
+	}
+}
 
-	public function listen():Void;
+@:allow(crossbyte.net.NetHost)
+private class WebSocketHost extends BaseNetHost<ServerWebSocket> {
+	@:noCompletion private inline function new(server:ServerWebSocket) {
+		super(server, WEBSOCKET);
+	}
 
-	public function close():Void;
-}*/
+	override private function __wrapConnection(socket:Socket):INetConnection {
+		if (Std.isOfType(socket, WebSocket)) {
+			return __bindConnectionCallbacks(NetConnection.fromWebSocket(cast socket));
+		}
+
+		return super.__wrapConnection(socket);
+	}
+}
