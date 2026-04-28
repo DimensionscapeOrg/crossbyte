@@ -15,3 +15,16 @@ haxe cpp.hxml
 
 The runtime sample needs a native target because `WebSocket` uses
 `SecureRandom` for client handshake keys.
+
+## Socket Chat
+
+`socket-chat` is a small TCP chat sample with a broadcast server and a console
+client built directly on `ServerSocket` and `Socket`.
+
+Useful commands from `samples/socket-chat`:
+
+```sh
+haxe check.hxml
+haxe server-cpp.hxml
+haxe client-cpp.hxml
+```
