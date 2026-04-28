@@ -2,5 +2,6 @@
 -cp tests
 -lib utest
 -D windows
+-D HXCPP_M64
 -main NativeSmokeMain
 --cpp export/ci-native-tests
