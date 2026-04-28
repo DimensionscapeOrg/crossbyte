@@ -8,7 +8,7 @@ import utest.Assert;
 @:access(crossbyte.ipc.LocalConnection)
 class LocalConnectionTest extends utest.Test {
 	public function testSupportFlagMatchesTarget():Void {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		Assert.isTrue(LocalConnection.isSupported);
 		#else
 		Assert.isFalse(LocalConnection.isSupported);
@@ -16,7 +16,7 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testConnectThrowsOnUnsupportedTargets():Void {
-		#if (cpp && windows)
+		#if (cpp && (windows || linux || mac || macos))
 		Assert.isTrue(LocalConnection.isSupported);
 		#else
 		var connection = new LocalConnection();
