@@ -6,7 +6,15 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net.Endpoint.parseURL;
 
 @:forward
+/**
+ * High-level server host wrapper over CrossByte's supported listener transports.
+ *
+ * `NetHost` normalizes TCP, WebSocket, and reliable datagram listeners behind
+ * the `INetHost` contract. Accepted clients are surfaced through `onAccept`
+ * and later disconnects are forwarded to `onDisconnect`.
+ */
 abstract NetHost(INetHost) from INetHost to INetHost {
+	/** Creates and optionally starts a host from a transport URI. */
 	public inline function new(uri:String, ?onAccept:INetConnection->Void, ?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void,
 			startListening:Bool = false):Void {
 		var endpoint:Endpoint = parseURL(uri);
@@ -33,6 +41,7 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 		}
 	}
 
+	/** Wraps an existing TCP `ServerSocket`. */
 	public static inline function fromServerSocket(server:ServerSocket, ?onAccept:INetConnection->Void,
 			?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void):NetHost {
 		var host:TCPHost = new TCPHost(server);
@@ -42,6 +51,7 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 		return host;
 	}
 
+	/** Wraps an existing `ServerWebSocket`. */
 	public static inline function fromServerWebSocket(server:ServerWebSocket, ?onAccept:INetConnection->Void,
 			?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void):NetHost {
 		var host:WebSocketHost = new WebSocketHost(server);
@@ -51,6 +61,7 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 		return host;
 	}
 
+	/** Wraps an existing `ReliableDatagramServerSocket`. */
 	public static inline function fromReliableDatagramServerSocket(server:ReliableDatagramServerSocket, ?onAccept:INetConnection->Void,
 			?onDisconnect:(INetConnection, Reason) -> Void, ?onError:Reason->Void):NetHost {
 		var host:RUDPHost = new RUDPHost(server);

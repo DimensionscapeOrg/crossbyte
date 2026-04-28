@@ -4,7 +4,9 @@ import crossbyte.core.CrossByte;
 import sys.thread.Thread;
 
 @:access(crossbyte.core.CrossByte)
+/** Thread-related helpers for interrogating the active CrossByte runtime. */
 class ThreadUtil {
+	/** `true` when called from the primordial/runtime-owning thread. */
 	public static var isPrimordial(get, never):Bool;
 
 	private static inline function get_isPrimordial():Bool {

@@ -11,6 +11,7 @@ import php.Global;
 import php.Syntax;
 #end
 
+/** PostgreSQL connection wrapper currently backed by PHP PDO on supported targets. */
 class PostgresConnection extends EventDispatcher {
 	public static final isSupported:Bool = #if php __checkSupport() #else false #end;
 

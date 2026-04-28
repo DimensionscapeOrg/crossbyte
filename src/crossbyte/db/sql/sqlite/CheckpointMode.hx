@@ -1,5 +1,6 @@
 package crossbyte.db.sql.sqlite;
 
+/** SQLite WAL checkpoint modes. */
 enum abstract CheckpointMode(String) from String to String {
 	var PASSIVE = "PASSIVE";
 	var FULL = "FULL";
