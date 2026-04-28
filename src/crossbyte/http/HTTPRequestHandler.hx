@@ -160,6 +160,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __parseRequest():Void {
+		if (!__hasCompleteHeaderBlock(__incomingBuffer)) {
+			return;
+		}
+
 		var requestLine:Null<String> = __readLine(__incomingBuffer);
 		if (requestLine == null) {
 			return;
@@ -646,6 +650,29 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 		buffer.position = startPos;
 		return null;
+	}
+
+	@:noCompletion private function __hasCompleteHeaderBlock(buffer:ByteArray):Bool {
+		var startPos:UInt = buffer.position;
+		var a:Int = -1;
+		var b:Int = -1;
+		var c:Int = -1;
+		var d:Int = -1;
+
+		while (buffer.position < buffer.length) {
+			a = b;
+			b = c;
+			c = d;
+			d = buffer.readByte();
+
+			if ((a == 13 && b == 10 && c == 13 && d == 10) || (c == 10 && d == 10)) {
+				buffer.position = startPos;
+				return true;
+			}
+		}
+
+		buffer.position = startPos;
+		return false;
 	}
 
 	@:noCompletion private function __getMimeType(filePath:String):String {
