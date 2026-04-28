@@ -274,7 +274,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		try {
 			h = new Host(host);
 		} catch (e:Dynamic) {
-			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+			}
 			return;
 		}
 
@@ -329,13 +331,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		} catch (e:Error) {
 			if (!__isBlockedError(e)) {
 				__cleanupFailedConnect();
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+				}
 				return;
 			}
 			isPendingConnect = true;
 		} catch (e:Dynamic) {
 			__cleanupFailedConnect();
-			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+			}
 			return;
 		}
 
@@ -348,7 +354,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__connected = true;
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
-			dispatchEvent(new Event(Event.CONNECT));
+			if (hasEventListener(Event.CONNECT)) {
+				dispatchEvent(new Event(Event.CONNECT));
+			}
 		}
 		#end
 	}
@@ -950,11 +958,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	// Event Handlers
 	@:noCompletion private function socket_onClose(_):Void {
-		dispatchEvent(new Event(Event.CLOSE));
+		if (hasEventListener(Event.CLOSE)) {
+			dispatchEvent(new Event(Event.CLOSE));
+		}
 	}
 
 	@:noCompletion private function socket_onError(e):Void {
-		dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
+		if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+			dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
+		}
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
@@ -974,7 +986,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		if (__input.bytesAvailable > 0) {
-			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, false, false, __input.bytesAvailable, 0));
+			if (hasEventListener(ProgressEvent.SOCKET_DATA)) {
+				dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, __input.bytesAvailable, 0));
+			}
 		}
 		#end
 	}
@@ -982,7 +996,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function socket_onOpen(_):Void {
 		__connected = true;
 		__closed = false;
-		dispatchEvent(new Event(Event.CONNECT));
+		if (hasEventListener(Event.CONNECT)) {
+			dispatchEvent(new Event(Event.CONNECT));
+		}
 	}
 
 	@:noCompletion private function this_onTick(?event:TickEvent):Void {
@@ -1036,16 +1052,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if (doClose && connected) {
 			__cleanSocket();
-			dispatchEvent(new Event(Event.CLOSE));
+			if (hasEventListener(Event.CLOSE)) {
+				dispatchEvent(new Event(Event.CLOSE));
+			}
 		} else if (doClose) {
 			__cleanSocket();
-			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+			}
 		} else if (doConnect) {
 			__connected = true;
 			__stopConnecting();
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
-			dispatchEvent(new Event(Event.CONNECT));
+			if (hasEventListener(Event.CONNECT)) {
+				dispatchEvent(new Event(Event.CONNECT));
+			}
 		}
 		if (bLength > 0) {			
 			var newData:Bytes = b.getBytes();
@@ -1064,14 +1086,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			newInput.blit(rl, newData, 0, newData.length);
 			__input = newInput;
 			__input.endian = __endian;
-			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, newData.length, 0));
+			if (hasEventListener(ProgressEvent.SOCKET_DATA)) {
+				dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, newData.length, 0));
+			}
 		}
 
 		if (__socket != null) {
 			try {
 				flush();
 			} catch (e:IOError) {
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, e.message));
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, e.message));
+				}
 			}
 		}
 		#end
