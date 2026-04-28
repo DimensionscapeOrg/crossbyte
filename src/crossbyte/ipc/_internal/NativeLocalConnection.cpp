@@ -71,7 +71,7 @@ namespace
 		}
 
 		DWORD error = GetLastError();
-		return error == ERROR_PIPE_CONNECTED;
+		return error == ERROR_PIPE_CONNECTED || error == ERROR_NO_DATA;
 	}
 
 	extern "C" int native_read(void* pipe, unsigned char* buffer, int bufferSize)
@@ -180,7 +180,7 @@ namespace
 		}
 
 		DWORD error = GetLastError();
-		if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_PIPE_NOT_CONNECTED)
+		if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_NO_DATA || error == ERROR_PIPE_NOT_CONNECTED)
 		{
 			return -1;
 		}
@@ -202,7 +202,7 @@ namespace
 		}
 
 		DWORD error = GetLastError();
-		return error != ERROR_BROKEN_PIPE && error != ERROR_INVALID_HANDLE && error != ERROR_PIPE_NOT_CONNECTED;
+		return error != ERROR_BROKEN_PIPE && error != ERROR_INVALID_HANDLE && error != ERROR_NO_DATA && error != ERROR_PIPE_NOT_CONNECTED;
 	}
 #else
 	struct NativeLocalConnectionHandle
