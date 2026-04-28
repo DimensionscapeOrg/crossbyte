@@ -130,6 +130,28 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.isNull(result.error);
 	}
 
+	public function testQueryOnlyRedirectPreservesBasePath():Void {
+		var fixture = serveRequests(request -> {
+			return switch (request.target) {
+				case "/dir/start?old=1":
+					response(302, "Found", ["Location: ?token=1", "Content-Length: 0"], "");
+				case "/dir/start?token=1":
+					response(200, "OK", ["Content-Length: 4"], "done");
+				default:
+					response(500, "Unexpected", ["Content-Length: 0"], "");
+			}
+		}, 2);
+		var result = loadText('http://127.0.0.1:${fixture.port}/dir/start?old=1');
+
+		fixture.waitDone();
+
+		Assert.equals("done", result.data);
+		Assert.same([302, 200], result.statuses);
+		Assert.equals("/dir/start?old=1", fixture.requests[0].target);
+		Assert.equals("/dir/start?token=1", fixture.requests[1].target);
+		Assert.isNull(result.error);
+	}
+
 	public function testFollowRedirectsFalseCompletesWithRedirectResponse():Void {
 		var fixture = serveRequests(_ -> response(302, "Found", ["Location: /final", "Content-Length: 0"], ""), 1);
 		var request = new URLRequest('http://127.0.0.1:${fixture.port}/start');
@@ -204,6 +226,47 @@ class URLLoaderHttpTest extends utest.Test {
 
 		Assert.equals("Download failed: invalid Content-Length", result.error);
 		Assert.isFalse(result.complete);
+	}
+
+	public function testConflictingDuplicateContentLengthDispatchesIoError():Void {
+		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nbad", 1);
+		var result = loadText('http://127.0.0.1:${fixture.port}/conflicting-length');
+
+		fixture.waitDone();
+
+		Assert.equals("Download failed: invalid Content-Length", result.error);
+		Assert.isFalse(result.complete);
+	}
+
+	public function testMatchingDuplicateContentLengthIsAccepted():Void {
+		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\nok", 1);
+		var result = loadText('http://127.0.0.1:${fixture.port}/matching-length');
+
+		fixture.waitDone();
+
+		Assert.equals("ok", result.data);
+		Assert.isNull(result.error);
+	}
+
+	public function testInvalidChunkTerminatorDispatchesIoError():Void {
+		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nokXX0\r\n\r\n", 1);
+		var result = loadText('http://127.0.0.1:${fixture.port}/bad-chunk');
+
+		fixture.waitDone();
+
+		Assert.equals("Download failed", result.error);
+		Assert.isFalse(result.complete);
+	}
+
+	public function testChunkedTransferIgnoresContentLength():Void {
+		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: nope\r\n\r\n2\r\nok\r\n0\r\n\r\n", 1);
+		var result = loadText('http://127.0.0.1:${fixture.port}/chunked-over-length');
+
+		fixture.waitDone();
+
+		Assert.equals("ok", result.data);
+		Assert.isNull(result.error);
+		Assert.equals(-1, result.progress[0].total);
 	}
 
 	private static function loadText(url:String):URLLoaderHttpResult {

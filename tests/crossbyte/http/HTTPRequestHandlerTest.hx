@@ -116,6 +116,77 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.isTrue(hasUaHeader);
 	}
 
+	public function testMiddlewareCanReadContentLengthRequestBody():Void {
+		var bodyText:String = null;
+		var bodyLength:UInt = 0;
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				bodyLength = handler.requestBody.length;
+				next();
+			}
+		], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\n\r\nhello world");
+
+		Assert.equals("hello world", bodyText);
+		Assert.equals(11, bodyLength);
+		Assert.equals(405, response.status);
+	}
+
+	public function testMiddlewareCanReadChunkedRequestBody():Void {
+		var bodyText:String = null;
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				next();
+			}
+		], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;ext=1\r\npedia\r\n0\r\nX-Trailer: yes\r\n\r\n");
+
+		Assert.equals("Wikipedia", bodyText);
+		Assert.equals(405, response.status);
+	}
+
+	public function testExpectContinueSendsInterimResponseAndReadsBody():Void {
+		var bodyText:String = null;
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				next();
+			}
+		], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 7\r\n\r\npayload");
+
+		Assert.equals("payload", bodyText);
+		Assert.isTrue(response.raw.indexOf("HTTP/1.1 100 Continue") == 0);
+		Assert.equals(405, response.status);
+	}
+
+	public function testUnknownExpectationReturns417():Void {
+		var middlewareCalled = false;
+		var response = __sendRequest([
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				middlewareCalled = true;
+				next();
+			}
+		], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nExpect: magic\r\nContent-Length: 7\r\n\r\npayload");
+
+		Assert.equals(417, response.status);
+		Assert.equals("Expectation Failed", response.body);
+		Assert.isFalse(middlewareCalled);
+	}
+
+	public function testUnsupportedTransferEncodingReturns501():Void {
+		var middlewareCalled = false;
+		var response = __sendRequest([
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				middlewareCalled = true;
+				next();
+			}
+		], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: gzip\r\n\r\npayload");
+
+		Assert.equals(501, response.status);
+		Assert.equals("Transfer-Encoding not supported", response.body);
+		Assert.isFalse(middlewareCalled);
+	}
+
 	public function testMiddlewareRunsInOrderAndCanReturnStatusCode():Void {
 		var order:Array<String> = [];
 		var response = __sendRequest([
@@ -178,7 +249,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals("*", response.headers.get("access-control-allow-origin"));
 		Assert.equals("POST", response.headers.get("access-control-allow-methods"));
 		Assert.equals("X-Test", response.headers.get("access-control-allow-headers"));
-		Assert.equals("GET, POST, OPTIONS", response.headers.get("allow"));
+		Assert.equals("GET, HEAD, OPTIONS, POST", response.headers.get("allow"));
 	}
 
 	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false):HTTPTestResponse {
@@ -219,7 +290,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 			client.connect("127.0.0.1", server.localPort);
 			__pumpUntil(() -> closeSeen || __isResponseComplete(rawResponse), 2.0);
 			response = __parseResponse(rawResponse);
-			client.close();
+			try {
+				client.close();
+			} catch (_:Dynamic) {}
 		} catch (error:Dynamic) {
 			requestFailed = error;
 		}
@@ -260,6 +333,15 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	private static function __parseResponse(raw:String):HTTPTestResponse {
+		var originalRaw = raw;
+		while (raw.indexOf("HTTP/1.1 100 ") == 0 || raw.indexOf("HTTP/1.0 100 ") == 0) {
+			var interimEnd = raw.indexOf("\r\n\r\n");
+			if (interimEnd < 0) {
+				break;
+			}
+			raw = raw.substr(interimEnd + 4);
+		}
+
 		var lineEnd = raw.indexOf("\r\n");
 		var statusLine = raw.substr(0, lineEnd);
 		var status = 0;
@@ -284,7 +366,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 		return {
 			status: status,
 			headers: headers,
-			body: body
+			body: body,
+			raw: originalRaw
 		};
 	}
 
@@ -302,4 +385,5 @@ typedef HTTPTestResponse = {
 	var status:Int;
 	var headers:Map<String, String>;
 	var body:String;
+	var raw:String;
 }
