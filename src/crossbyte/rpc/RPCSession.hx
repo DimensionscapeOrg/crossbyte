@@ -20,18 +20,35 @@ import haxe.atomic.AtomicInt;
 
 @:access(crossbyte.rpc.RPCHandler)
 @:access(crossbyte.rpc.RPCCommands)
+/**
+ * Binds an `RPCCommands` client surface and an optional `RPCHandler` to a live connection.
+ *
+ * `RPCSession` owns the wire-level framing hookup for request/response traffic,
+ * forwards inbound calls to a handler, routes responses back to pending client
+ * calls, and optionally maintains a heartbeat using the built-in `ping` path.
+ */
 class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
+	/** Default interval between heartbeat pings in milliseconds. */
 	public static inline final DEFAULT_HEARTBEAT_INTERVAL:Int = 45000;
+	/** Default timeout window before a peer is considered dead, in milliseconds. */
 	public static inline final DEFAULT_HEARTBEAT_TIMEOUT:Int = 90000;
+	/** Default jitter bucket used to spread heartbeat start phases, in milliseconds. */
 	public static inline final DEFAULT_HEARTBEAT_JITTER:Int = 5000;
 	@:noCompletion private static final HEARTBEAT_SALT:Int = __getSalt();
 
+	/** Process-local session identifier. */
 	public final sessionId:Int = __getSessionId();
+	/** Underlying transport connection used by this session. */
 	public var connection(get, never):NetConnection;
+	/** Optional server-side handler for inbound RPC calls. */
 	public var handler(get, set):RPCHandler;
+	/** Optional client-side command surface for outbound RPC calls and responses. */
 	public var commands(get, set):C;
+	/** Heartbeat interval in milliseconds. */
 	public var heartbeatInterval(get, set):Int;
+	/** Heartbeat timeout in milliseconds. */
 	public var heartbeatTimeout(get, set):Int;
+	/** Arbitrary user data attached to the session. */
 	public var data:D;
 
 	@:noCompletion private var __connection:NetConnection;
@@ -222,6 +239,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 	}
 
+	/**
+	 * Starts session bookkeeping and enables heartbeats when a command surface is present.
+	 *
+	 * @return `true` if the underlying connection was already connected at start time.
+	 */
 	public inline function start():Bool {
 		Logger.info('Session $sessionId started');
 		var status:Bool = __connection.connected;
@@ -235,6 +257,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return status;
 	}
 
+	/** Stops heartbeat bookkeeping without closing the underlying connection. */
 	public inline function stop():Void {
 		__active = false;
 		__stopHeartbeat();

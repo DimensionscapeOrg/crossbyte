@@ -12,21 +12,47 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 
+/**
+ * High-level connection wrapper over CrossByte's supported stream transports.
+ *
+ * `NetConnection` normalizes TCP, WebSocket, and reliable datagram sockets
+ * behind the `INetConnection` contract. Use the callback properties for the hot
+ * data path and the static conversion helpers when you need to reach the
+ * underlying transport type.
+ */
 abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectionBase {
+	/** Remote peer address. */
 	public var remoteAddress(get, never):String;
+	/** Remote peer port. */
 	public var remotePort(get, never):Int;
+	/** Local bound address. */
 	public var localAddress(get, never):String;
+	/** Local bound port. */
 	public var localPort(get, never):Int;
+	/** Active transport protocol. */
 	public var protocol(get, set):Protocol;
+	/** `true` while the wrapped transport is connected. */
 	public var connected(get, never):Bool;
+	/** Enables or disables delivery to `onData`. */
 	public var readEnabled(get, set):Bool;
+	/** Timestamp of the most recent inbound payload, in uptime seconds. */
 	public var inTimestamp(get, set):Float;
+	/** Timestamp of the most recent outbound payload, in uptime seconds. */
 	public var outTimestamp(get, set):Float;
+	/** Called when incoming data is available. */
 	public var onData(get, set):ByteArrayInput->Void;
+	/** Called when the connection closes. */
 	public var onClose(get, set):Reason->Void;
+	/** Called when the transport reports an error. */
 	public var onError(get, set):Reason->Void;
+	/** Called once the connection becomes ready for I/O. */
 	public var onReady(get, set):Void->Void;
 
+	/**
+	 * Connects to a transport URI and wraps the resulting connection.
+	 *
+	 * Supported schemes are `tcp://`, `ws://`, `wss://`, and `rudp://`.
+	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
 			readEnabled:Bool = false):Void {
 		var endpoint:Endpoint = parseURL(uri);
@@ -76,14 +102,17 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return cast this;
 	}
 
+	/** Exposes the wrapped transport-specific value. */
 	public inline function expose():Transport {
 		return this.expose();
 	}
 
+	/** Sends a payload over the wrapped transport. */
 	public inline function send(data:ByteArray):Void {
 		this.send(data);
 	}
 
+	/** Closes the wrapped transport. */
 	public inline function close():Void {
 		this.close();
 	}
@@ -174,6 +203,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return (cast this : INetConnection).onReady = value;
 	}
 
+	/** Returns the wrapped TCP socket when this connection uses `Protocol.TCP`. */
 	public static inline function toSocket(connection:NetConnection):Socket {
 		var socket:Socket = null;
 
@@ -184,6 +214,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return socket;
 	}
 
+	/** Returns the wrapped WebSocket when this connection uses `Protocol.WEBSOCKET`. */
 	public static inline function toWebSocket(connection:NetConnection):WebSocket {
 		var socket:WebSocket = null;
 
@@ -194,6 +225,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return socket;
 	}
 
+	/** Returns the wrapped reliable datagram socket when this connection uses `Protocol.RUDP`. */
 	public static inline function toReliableDatagramSocket(connection:NetConnection):ReliableDatagramSocket {
 		var socket:ReliableDatagramSocket = null;
 
@@ -205,12 +237,14 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	}
 
 	@:from
+	/** Wraps an existing TCP socket as a `NetConnection`. */
 	public static inline function fromSocket(socket:Socket):NetConnection {
 		var nc:NetConnection = new TCPConnection(socket);
 		return nc;
 	}
 
 	@:from
+	/** Wraps an arbitrary `INetConnection`, adapting external implementations when needed. */
 	public static inline function fromINetConnection(connection:INetConnection):NetConnection {
 		if (Std.isOfType(connection, NetConnectionBase)) {
 			return cast connection;
@@ -218,6 +252,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return new NetConnectionAdapter(connection);
 	}
 
+	/** Wraps an existing TCP socket and immediately binds connection callbacks. */
 	public static inline function fromSocketWith(socket:Socket, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void,
 			?onError:Reason->Void, readEnabled:Bool = false):NetConnection {
 		var nc:TCPConnection = new TCPConnection(socket);
@@ -235,6 +270,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	}
 
 	@:from
+	/** Wraps an existing WebSocket as a `NetConnection`. */
 	public static inline function fromWebSocket(webSocket:WebSocket):NetConnection {
 		@:privateAccess
 		var nc:NetConnection = new WSConnection(webSocket);
@@ -242,6 +278,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	}
 
 	@:from
+	/** Wraps an existing reliable datagram socket as a `NetConnection`. */
 	public static inline function fromReliableDatagramSocket(reliableDatagramSocket:ReliableDatagramSocket):NetConnection {
 		@:privateAccess
 		var nc:NetConnection = new RUDPConnection(reliableDatagramSocket);

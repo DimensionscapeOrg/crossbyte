@@ -1,4 +1,5 @@
 package crossbyte.db.sql.sqlite;
+/** SQLite journal modes accepted by `SQLiteConnection`. */
 enum abstract JournalMode(String) from String to String {
 	var DELETE = "DELETE";
 	var TRUNCATE = "TRUNCATE";

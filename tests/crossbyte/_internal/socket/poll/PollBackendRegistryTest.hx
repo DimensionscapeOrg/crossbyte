@@ -59,6 +59,7 @@ class PollBackendRegistryTest extends utest.Test {
 		var client = new SysSocket();
 		var peer:SysSocket = null;
 		var backend:PollBackend = null;
+		var readableIndex = -1;
 
 		try {
 			server.bind(new Host("127.0.0.1"), 0);
@@ -68,8 +69,15 @@ class PollBackendRegistryTest extends utest.Test {
 
 			backend = PollBackendRegistry.create(4);
 			backend.prepare([server], []);
-			backend.events(1.0);
-			Assert.equals(0, backend.readIndexes[0]);
+			for (_ in 0...20) {
+				backend.events(0.05);
+				readableIndex = backend.readIndexes[0];
+				if (readableIndex == 0) {
+					break;
+				}
+				Sys.sleep(0.01);
+			}
+			Assert.equals(0, readableIndex);
 
 			peer = server.accept();
 		} catch (e:Dynamic) {

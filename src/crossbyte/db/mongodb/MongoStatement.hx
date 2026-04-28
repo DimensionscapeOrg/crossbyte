@@ -10,6 +10,7 @@ import crossbyte.errors.SQLError;
 import sys.thread.Deque;
 #end
 
+/** Prepared-like command wrapper for issuing MongoDB JSON commands through `MongoConnection`. */
 typedef MongoResultSet = Dynamic;
 
 @:access(crossbyte.db.mongodb.MongoConnection)

@@ -1,14 +1,23 @@
 package crossbyte.auth.jwt;
 
 @:structInit
+/** Typed view over the standard JWT payload claims used by CrossByte. */
 abstract JWTPayload(JWTPayloadData) {
+	/** Subject (`sub`) claim. */
 	public var subject(get, set):String;
+	/** Optional display name or application-specific name claim. */
 	public var name(get, set):String;
+	/** Issued-at (`iat`) claim as seconds since epoch. */
 	public var issuedAt(get, set):Null<Int>;
+	/** Expiration (`exp`) claim as seconds since epoch. */
 	public var expiresAt(get, set):Null<Int>;
+	/** Not-before (`nbf`) claim as seconds since epoch. */
 	public var notBeforeTime(get, set):Null<Int>;
+	/** Issuer (`iss`) claim. */
 	public var issuer(get, set):String;
+	/** Audience (`aud`) claim as either a string or array of strings. */
 	public var audience(get, set):Dynamic;
+	/** JWT ID (`jti`) claim. */
 	public var tokenId(get, set):String;
 
 	@:noCompletion private inline function get_subject():String {
@@ -88,6 +97,7 @@ abstract JWTPayload(JWTPayloadData) {
 	}
 }
 
+/** Raw data shape encoded into a JWT payload segment. */
 typedef JWTPayloadData = {
 	var sub:String;
 	@:optional var name:String;
