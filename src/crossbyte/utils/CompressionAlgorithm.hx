@@ -1,9 +1,6 @@
 package crossbyte.utils;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Enumerates the generic compression codecs supported by CrossByte core. */
 enum abstract CompressionAlgorithm(Null<Int>) {
 	/**
 		Defines the string to use for the deflate compression algorithm.

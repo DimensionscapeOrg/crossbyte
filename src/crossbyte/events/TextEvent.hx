@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.events.Event;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event carrying a single text payload. */
 class TextEvent extends Event {
 	public var text(default, null):String;
 

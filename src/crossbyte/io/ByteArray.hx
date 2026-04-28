@@ -34,10 +34,6 @@ import format.amf3.Writer as AMF3Writer;
 #end
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
 	The ByteArray class provides methods and properties to optimize reading,
 	writing, and working with binary data.
 	_Note:_ The ByteArray class is for advanced developers who need to

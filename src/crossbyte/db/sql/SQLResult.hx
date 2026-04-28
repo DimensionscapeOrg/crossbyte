@@ -1,9 +1,6 @@
 package crossbyte.db.sql;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Immutable row-and-metadata container returned from SQL-style queries. */
 class SQLResult {
 	public var complete(default, null):Bool;
 	public var data(default, null):Array<Dynamic>;

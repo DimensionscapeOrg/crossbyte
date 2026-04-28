@@ -1,9 +1,6 @@
 package crossbyte.ds;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Simple row-major two-dimensional array wrapper. */
 abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 	public inline function new(rows:Int = 0, cols:Int = 0, value:T = null) {
 		this = [];

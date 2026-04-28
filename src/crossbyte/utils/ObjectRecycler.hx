@@ -1,9 +1,6 @@
 package crossbyte.utils;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Local recycler that batches objects before returning them to a shared pool. */
 @:generic
 final class ObjectRecycler<T:{}> {
 	public var pool(default, null):ObjectPool<T>;

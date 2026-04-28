@@ -2,10 +2,7 @@ package crossbyte.events;
 
 import crossbyte.events.Event;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Event carrying an error text payload through the event system. */
 class ErrorEvent extends TextEvent {
 	public static inline var ERROR:EventType<ErrorEvent> = "error";
 

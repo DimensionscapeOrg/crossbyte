@@ -1,9 +1,6 @@
 package crossbyte.errors;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Describes a database-layer failure with optional vendor-specific metadata. */
 class SQLError extends Error {
 	public var detailArguments(default, null):Array<String>;
 	public var detailID(default, null):Int;

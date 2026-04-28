@@ -1,9 +1,6 @@
 package crossbyte.url;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Process-wide defaults applied to newly created `URLRequest` instances. */
 class URLRequestDefaults {
 	/**
 		The default setting for the `followRedirects` property of URLRequest objects.

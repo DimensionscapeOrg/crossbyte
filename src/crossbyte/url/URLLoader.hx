@@ -10,10 +10,7 @@ import crossbyte.events.ThreadEvent;
 import crossbyte.sys.Worker;
 import haxe.io.Bytes;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Background-loading request helper with progress and status events. */
 class URLLoader extends EventDispatcher {
 	public var dataFormat:URLLoaderDataFormat = URLLoaderDataFormat.TEXT;
 	public var bytesTotal:Int;

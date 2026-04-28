@@ -1,9 +1,6 @@
 package crossbyte.url;
 
-/**
- * ...
- * @author Christopher Speciale
- */
+/** Controls how `URLLoader` parses its completed payload. */
 enum abstract URLLoaderDataFormat(Null<Int>) {
 	/**
 		Specifies that downloaded data is received as raw binary data.
