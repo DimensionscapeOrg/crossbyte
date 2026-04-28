@@ -1,5 +1,9 @@
 package crossbyte.io;
 
+import crossbyte.core.CrossByte;
+import crossbyte.events.Event;
+import crossbyte.events.OutputProgressEvent;
+import crossbyte.events.ProgressEvent;
 import utest.Assert;
 
 class FileStreamTest extends utest.Test {
@@ -207,6 +211,99 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	public function testOpenAsyncReadDispatchesProgressAndCompleteWithReadableBuffer():Void {
+		#if !(cpp || neko || hl)
+		Assert.pass();
+		return;
+		#end
+
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var input = new FileStream();
+		var completeSeen = false;
+		var progressEvents = 0;
+		var progressLoaded = 0;
+		var progressTotal = 0;
+
+		try {
+			output.open(file, FileMode.WRITE);
+			output.writeUTFBytes("async-read");
+			output.close();
+
+			input.addEventListener(ProgressEvent.PROGRESS, (event:ProgressEvent) -> {
+				progressEvents++;
+				progressLoaded = event.bytesLoaded;
+				progressTotal = event.bytesTotal;
+			});
+			input.addEventListener(Event.COMPLETE, (_:Event) -> completeSeen = true);
+			input.openAsync(file, FileMode.READ);
+
+			pumpUntil(() -> completeSeen, 2.0);
+
+			Assert.isTrue(completeSeen);
+			Assert.isTrue(progressEvents > 0);
+			Assert.equals(file.size, progressLoaded);
+			Assert.equals(file.size, progressTotal);
+			Assert.equals(file.size, input.bytesAvailable);
+			Assert.equals("async-read", input.readUTFBytes(input.bytesAvailable));
+			Assert.equals(0, input.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try output.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
+	public function testOpenAsyncWriteFlushesOnCloseAndDispatchesClose():Void {
+		#if !(cpp || neko || hl)
+		Assert.pass();
+		return;
+		#end
+
+		var file = File.createTempFile();
+		var stream = new FileStream();
+		var input = new FileStream();
+		var closeSeen = false;
+		var outputProgressSeen = false;
+		var lastBytesPending = -1.0;
+		var lastBytesTotal = -1.0;
+
+		try {
+			stream.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, (event:OutputProgressEvent) -> {
+				outputProgressSeen = true;
+				lastBytesPending = event.bytesPending;
+				lastBytesTotal = event.bytesTotal;
+			});
+			stream.addEventListener(Event.CLOSE, (_:Event) -> closeSeen = true);
+			stream.openAsync(file, FileMode.WRITE);
+			stream.writeUTFBytes("async-write");
+			stream.close();
+
+			pumpUntil(() -> closeSeen, 2.0);
+
+			Assert.isTrue(closeSeen);
+			Assert.isTrue(outputProgressSeen);
+			Assert.equals(0.0, lastBytesPending);
+			Assert.equals(11.0, lastBytesTotal);
+
+			input.open(file, FileMode.READ);
+			Assert.equals("async-write", input.readUTFBytes(11));
+			Assert.equals(0, input.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try stream.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
 	public function testWriteUTFUsesUtf8ByteLength():Void {
 		var file = File.createTempFile();
 		var output = new FileStream();
@@ -229,6 +326,15 @@ class FileStreamTest extends utest.Test {
 		try output.close() catch (_:Dynamic) {}
 		if (file.exists) {
 			file.deleteFile();
+		}
+	}
+
+	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float):Void {
+		var runtime = CrossByte.current();
+		var deadline = Sys.time() + timeoutSeconds;
+		while (!done() && Sys.time() < deadline) {
+			runtime.pump(1 / 60, 0);
+			Sys.sleep(0.001);
 		}
 	}
 }
