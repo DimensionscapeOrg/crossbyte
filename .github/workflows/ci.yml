@@ -138,7 +138,7 @@ jobs:
         run: |
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
-          haxelib dev crossbyte-libuv ./crossbyte-libuv
+          haxelib git crossbyte-libuv https://github.com/DimensionscapeOrg/crossbyte-libuv.git main
 
       - name: Run extension non-native tests
         working-directory: crossbyte-libuv
