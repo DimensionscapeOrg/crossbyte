@@ -15,6 +15,8 @@ concurrency:
 
 env:
   HAXE_VERSION: "4.3.7"
+  HXCPP_REPO: "https://github.com/dimensionscape/hxcpp.git"
+  HXCPP_REF: "socket-fixes"
 
 jobs:
   core-tests:
@@ -67,7 +69,7 @@ jobs:
           haxe-version: ${{ env.HAXE_VERSION }}
 
       - name: Install hxcpp
-        run: haxelib install hxcpp --quiet
+        run: haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
       - name: Type-check C++ API surface
         run: haxe ci/cpp-api-audit.hxml
@@ -95,7 +97,7 @@ jobs:
       - name: Install native dependencies
         run: |
           haxelib install utest --quiet
-          haxelib install hxcpp --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
@@ -160,7 +162,7 @@ jobs:
       - name: Install Haxelibs
         run: |
           haxelib install utest --quiet
-          haxelib install hxcpp --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
           haxelib dev ${{ matrix.haxelib_name }} "$GITHUB_WORKSPACE/${{ matrix.path }}"
 
       - name: Run extension interpreter tests

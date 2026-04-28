@@ -1,5 +1,6 @@
 package crossbyte.db.mongodb;
 
+/** Connection settings for `MongoConnection`. */
 typedef MongoConfig = {
 	@:optional var uri:String;
 	@:optional var host:String;

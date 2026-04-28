@@ -1,5 +1,6 @@
 package crossbyte.db.mysql;
 
+/** Connection settings for `MySQLConnection`. */
 typedef MySQLConfig = {
     var host:String;
     @:optional var port:Int;
