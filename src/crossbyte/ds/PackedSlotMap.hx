@@ -276,12 +276,18 @@ final class PackedSlotMap<T> {
 	}
 
 	@:noCompletion private inline function __reserve(additional:Int):Void {
-		if (additional <= 0){
-            return;
-        }
+		if (additional <= 0) {
+			return;
+		}
 			
 		var old:Int = __slotToDense.length;
 		var want:Int = old + additional;
+		if (want > maxCapacity) {
+			want = maxCapacity;
+		}
+		if (want <= old) {
+			return;
+		}
 
 		__slotToDense[want - 1] = 0;
 		__gen[want - 1] = 0;
