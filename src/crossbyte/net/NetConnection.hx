@@ -1,8 +1,10 @@
 package crossbyte.net;
 
+import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
 import crossbyte.net.Endpoint.parseURL;
 import crossbyte.errors.SecurityError;
+import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.Event;
 import crossbyte.io.ByteArrayInput;
@@ -26,6 +28,30 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 				nc.readEnabled = readEnabled;
 
 				socket.connect(endpoint.address, endpoint.port);
+				nc;
+			case UDP:
+				var socket = new DatagramSocket();
+				var nc = new UDPConnection(socket);
+				nc.onData = onData;
+				nc.onClose = onClose;
+				nc.onReady = onReady;
+				nc.onError = onError;
+				nc.readEnabled = readEnabled;
+
+				socket.connect(endpoint.address, endpoint.port);
+				nc.__notifyReadyIfUsable();
+				nc;
+			case WEBSOCKET:
+				var socket = new WebSocket();
+				var nc = new WSConnection(socket);
+				nc.onData = onData;
+				nc.onClose = onClose;
+				nc.onReady = onReady;
+				nc.onError = onError;
+				nc.readEnabled = readEnabled;
+
+				socket.secure = endpoint.secure;
+				socket.connect(endpoint.address + endpoint.resource, endpoint.port);
 				nc;
 			default:
 				throw('Protocol error');
@@ -58,6 +84,9 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 		nc.onReady = onReady;
 		nc.onError = onError;
 		nc.readEnabled = readEnabled;
+		if (nc.connected) {
+			nc.onReady();
+		}
 
 		return nc;
 	}
@@ -290,12 +319,12 @@ private class TCPConnection implements INetConnection {
 	@:noCompletion private static inline function __noopError(_:Reason):Void {}
 }
 
+@:allow(crossbyte.net.NetConnection)
 private class UDPConnection implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
-	public var socket:DatagramSocket;
 	public var connected(get, never):Bool;
 	public var readEnabled(get, set):Bool;
 	public var protocol:Protocol = UDP;
@@ -308,31 +337,31 @@ private class UDPConnection implements INetConnection {
 	public var onReady(get, set):Void->Void;
 
 	@:noCompletion private var __socket:DatagramSocket;
-	@:noCompletion private var __onData:ByteArrayInput->Void;
-	@:noCompletion private var __onClose:Reason->Void;
-	@:noCompletion private var __onError:Reason->Void;
-	@:noCompletion private var __onReady:Void->Void;
-	@:noCompletion private var __hasOnData:Bool;
+	@:noCompletion private var __onData:ByteArrayInput->Void = __noopData;
+	@:noCompletion private var __onClose:Reason->Void = __noopClose;
+	@:noCompletion private var __onError:Reason->Void = __noopError;
+	@:noCompletion private var __onReady:Void->Void = __noopReady;
 	@:noCompletion private var __receiving:Bool = false;
+	@:noCompletion private var __lifecycleReady:Bool = false;
 
 	@:noCompletion private inline function get_remoteAddress():String {
-		return ""; // __socket.remoteAddress;
+		return __socket.remoteAddress;
 	}
 
 	@:noCompletion private inline function get_remotePort():Int {
-		return 0; // __socket.remotePort;
+		return __socket.remotePort;
 	}
 
 	@:noCompletion private inline function get_localAddress():String {
-		return ""; // __socket.localAddress;
+		return __socket.localAddress;
 	}
 
 	@:noCompletion private inline function get_localPort():Int {
-		return 0; // __socket.localPort;
+		return __socket.localPort;
 	}
 
 	@:noCompletion private inline function get_connected():Bool {
-		return false; // this.socket.connected;
+		return __socket.connected;
 	}
 
 	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
@@ -372,15 +401,29 @@ private class UDPConnection implements INetConnection {
 	}
 
 	@:noCompletion private inline function set_readEnabled(v:Bool):Bool {
-		return false;
+		if (v == __receiving) {
+			return v;
+		}
+
+		__receiving = v;
+		if (v) {
+			__socket.addEventListener(DatagramSocketDataEvent.DATA, socket_onData);
+			__socket.receive();
+		} else {
+			__socket.removeEventListener(DatagramSocketDataEvent.DATA, socket_onData);
+			__socket.stopReceiving();
+		}
+
+		return v;
 	}
 
 	@:noCompletion private inline function get_readEnabled():Bool {
-		return false;
+		return __receiving;
 	}
 
 	private function new(socket:DatagramSocket) {
-		this.socket = socket;
+		this.__socket = socket;
+		__prepareLifecycle();
 	}
 
 	public inline function expose():Transport {
@@ -388,15 +431,58 @@ private class UDPConnection implements INetConnection {
 	}
 
 	public function send(data:ByteArray):Void {
-		trace("SEND");
+		__socket.send(data);
+		var runtime = CrossByte.current();
+		outTimestamp = runtime != null ? runtime.uptime : 0.0;
 	}
 
-	public inline function startReceiving():Void {}
-
-	public inline function stopReceiving():Void {}
-
 	public function close():Void {
-		// socket.close();
+		readEnabled = false;
+		__disposeLifecycle();
+		__onClose(Reason.Closed);
+		__socket.close();
+	}
+
+	@:noCompletion private inline function __notifyReadyIfUsable():Void {
+		if (__socket != null) {
+			__onReady();
+		}
+	}
+
+	@:noCompletion private inline function socket_onData(event:DatagramSocketDataEvent):Void {
+		inTimestamp = CrossByte.current().uptime;
+		event.data.position = 0;
+		__onData(event.data);
+	}
+
+	@:noCompletion private inline function socket_onClose(_e:Event):Void {
+		readEnabled = false;
+		__onClose(Reason.Closed);
+	}
+
+	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
+		readEnabled = false;
+		__onError(Reason.Error(e.text));
+	}
+
+	@:noCompletion private inline function __prepareLifecycle():Void {
+		if (__lifecycleReady || __socket == null) {
+			return;
+		}
+
+		__lifecycleReady = true;
+		__socket.addEventListener(Event.CLOSE, socket_onClose);
+		__socket.addEventListener(IOErrorEvent.IO_ERROR, socket_onIoError);
+	}
+
+	@:noCompletion private inline function __disposeLifecycle():Void {
+		if (!__lifecycleReady || __socket == null) {
+			return;
+		}
+
+		__lifecycleReady = false;
+		__socket.removeEventListener(Event.CLOSE, socket_onClose);
+		__socket.removeEventListener(IOErrorEvent.IO_ERROR, socket_onIoError);
 	}
 
 	@:noCompletion private static inline function __noopReady():Void {}
@@ -408,12 +494,13 @@ private class UDPConnection implements INetConnection {
 	@:noCompletion private static inline function __noopError(_:Reason):Void {}
 }
 
+@:access(crossbyte.net.WebSocket)
+@:allow(crossbyte.net.NetConnection)
 private class WSConnection implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
-	public var socket:WebSocket;
 	public var connected(get, never):Bool;
 	public var readEnabled(get, set):Bool;
 	public var protocol:Protocol = WEBSOCKET;
@@ -426,12 +513,12 @@ private class WSConnection implements INetConnection {
 	public var onReady(get, set):Void->Void;
 
 	@:noCompletion private var __socket:WebSocket;
-	@:noCompletion private var __onData:ByteArrayInput->Void;
-	@:noCompletion private var __onClose:Reason->Void;
-	@:noCompletion private var __onError:Reason->Void;
-	@:noCompletion private var __onReady:Void->Void;
-	@:noCompletion private var __hasOnData:Bool;
+	@:noCompletion private var __onData:ByteArrayInput->Void = __noopData;
+	@:noCompletion private var __onClose:Reason->Void = __noopClose;
+	@:noCompletion private var __onError:Reason->Void = __noopError;
+	@:noCompletion private var __onReady:Void->Void = __noopReady;
 	@:noCompletion private var __receiving:Bool = false;
+	@:noCompletion private var __lifecycleReady:Bool = false;
 
 	@:noCompletion private inline function get_remoteAddress():String {
 		return __socket.remoteAddress;
@@ -450,7 +537,7 @@ private class WSConnection implements INetConnection {
 	}
 
 	private inline function get_connected():Bool {
-		return this.socket.connected;
+		return __socket.connected;
 	}
 
 	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
@@ -490,15 +577,27 @@ private class WSConnection implements INetConnection {
 	}
 
 	@:noCompletion private inline function set_readEnabled(v:Bool):Bool {
-		return false;
+		if (v == __receiving) {
+			return v;
+		}
+
+		__receiving = v;
+		if (v) {
+			__socket.addEventListener(ProgressEvent.SOCKET_DATA, socket_onData);
+		} else {
+			__socket.removeEventListener(ProgressEvent.SOCKET_DATA, socket_onData);
+		}
+
+		return v;
 	}
 
 	@:noCompletion private inline function get_readEnabled():Bool {
-		return false;
+		return __receiving;
 	}
 
 	private function new(socket:WebSocket) {
-		this.socket = socket;
+		this.__socket = socket;
+		__prepareLifecycle();
 	}
 
 	public inline function expose():Transport {
@@ -510,15 +609,63 @@ private class WSConnection implements INetConnection {
 	}
 
 	public function send(data:ByteArray):Void {
-		trace("SEND");
+		__socket.writeBytes(data);
+		__socket.flush();
+		var runtime = CrossByte.current();
+		outTimestamp = runtime != null ? runtime.uptime : 0.0;
 	}
 
-	public inline function startReceiving():Void {}
-
-	public inline function stopReceiving():Void {}
-
 	public function close():Void {
-		socket.close();
+		readEnabled = false;
+		__disposeLifecycle();
+		__onClose(Reason.Closed);
+		__socket.close();
+	}
+
+	@:noCompletion private inline function socket_onData(_e:ProgressEvent):Void {
+		@:privateAccess {
+			inTimestamp = __socket.__cbInstance != null ? __socket.__cbInstance.uptime : 0.0;
+			__onData(__socket.__input);
+		}
+	}
+
+	@:noCompletion private inline function socket_onClose(_e:Event):Void {
+		readEnabled = false;
+		__onClose(Reason.Closed);
+	}
+
+	@:noCompletion private inline function socket_onReady(_e:Event):Void {
+		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__onReady();
+	}
+
+	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
+		readEnabled = false;
+		__onError(Reason.Error(e.text));
+	}
+
+	@:noCompletion private inline function __prepareLifecycle():Void {
+		if (__lifecycleReady || __socket == null) {
+			return;
+		}
+
+		__lifecycleReady = true;
+		if (!connected) {
+			__socket.addEventListener(Event.CONNECT, socket_onReady);
+		}
+		__socket.addEventListener(Event.CLOSE, socket_onClose);
+		__socket.addEventListener(IOErrorEvent.IO_ERROR, socket_onIoError);
+	}
+
+	@:noCompletion private inline function __disposeLifecycle():Void {
+		if (!__lifecycleReady || __socket == null) {
+			return;
+		}
+
+		__lifecycleReady = false;
+		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__socket.removeEventListener(Event.CLOSE, socket_onClose);
+		__socket.removeEventListener(IOErrorEvent.IO_ERROR, socket_onIoError);
 	}
 
 	@:noCompletion private static inline function __noopReady():Void {}
