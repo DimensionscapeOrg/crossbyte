@@ -1,6 +1,6 @@
 package crossbyte.rpc;
 
-import crossbyte.net.INetConnection;
+import crossbyte.net.NetConnection;
 import crossbyte.rpc.RPCCommands;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.io.ByteArrayInput;
@@ -10,7 +10,7 @@ import crossbyte.io.ByteArrayInput;
 abstract class RPCHandler {
 	public static inline final MAX_FRAME_LEN:Int = 8 * 1024 * 1024;
 
-	@:noCompletion private var this_connection:INetConnection;
+	@:noCompletion private var this_connection:NetConnection;
 	@:noCompletion private var this_commands:RPCCommands;
 
 	@:noCompletion private inline function this_socket_onData(input:ByteArrayInput):Void {
