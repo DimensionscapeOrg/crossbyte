@@ -42,7 +42,9 @@ import haxe.ds.IntMap;
 abstract class RPCCommands {
 	@:noCompletion private var __nc:NetConnection;
 	@:noCompletion private var __requestIdSeed:Int = 0;
-	@:noCompletion private var __pendingResponses:IntMap<RPCResponse<Dynamic>> = new IntMap();
+	@:noCompletion private var __pendingResponseId:Int = 0;
+	@:noCompletion private var __pendingResponse:RPCResponse<Dynamic> = null;
+	@:noCompletion private var __pendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
 
 	abstract public function ping():Void;
 
@@ -51,25 +53,51 @@ abstract class RPCCommands {
 	@:noCompletion private function __createResponse<T>(op:Int):RPCResponse<T> {
 		final requestId:Int = __nextRequestId();
 		final response = new RPCResponse<T>(requestId, op);
-		__pendingResponses.set(requestId, cast response);
+		if (__pendingResponse == null) {
+			__pendingResponseId = requestId;
+			__pendingResponse = cast response;
+		} else {
+			if (__pendingResponses == null) {
+				__pendingResponses = new IntMap();
+			}
+			__pendingResponses.set(requestId, cast response);
+		}
 		return response;
 	}
 
 	@:noCompletion private function __resolveResponse<T>(requestId:Int, value:T):Void {
-		final response:RPCResponse<Dynamic> = __pendingResponses.get(requestId);
+		var response:RPCResponse<Dynamic> = null;
+		if (__pendingResponse != null && requestId == __pendingResponseId) {
+			response = __pendingResponse;
+			__pendingResponse = null;
+			__pendingResponseId = 0;
+		} else if (__pendingResponses != null) {
+			response = __pendingResponses.get(requestId);
+			if (response != null) {
+				__pendingResponses.remove(requestId);
+			}
+		}
 		if (response == null) {
 			return;
 		}
-		__pendingResponses.remove(requestId);
 		(cast response : RPCResponse<T>).__resolve(value);
 	}
 
 	@:noCompletion private function __rejectResponse(requestId:Int, message:String):Void {
-		final response:RPCResponse<Dynamic> = __pendingResponses.get(requestId);
+		var response:RPCResponse<Dynamic> = null;
+		if (__pendingResponse != null && requestId == __pendingResponseId) {
+			response = __pendingResponse;
+			__pendingResponse = null;
+			__pendingResponseId = 0;
+		} else if (__pendingResponses != null) {
+			response = __pendingResponses.get(requestId);
+			if (response != null) {
+				__pendingResponses.remove(requestId);
+			}
+		}
 		if (response == null) {
 			return;
 		}
-		__pendingResponses.remove(requestId);
 		response.__reject(message);
 	}
 
@@ -83,7 +111,10 @@ abstract class RPCCommands {
 			if (__requestIdSeed <= 0) {
 				__requestIdSeed = 1;
 			}
-		} while (__pendingResponses.exists(__requestIdSeed));
+			if (__requestIdSeed == __pendingResponseId) {
+				continue;
+			}
+		} while (__pendingResponses != null && __pendingResponses.exists(__requestIdSeed));
 
 		return __requestIdSeed;
 	}

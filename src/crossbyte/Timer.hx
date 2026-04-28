@@ -25,6 +25,7 @@ import sys.thread.Tls;
  * @see crossbyte.utils.GlobalTimer
  */
 @:allow(crossbyte.core.CrossByte)
+@:allow(crossbyte.rpc.RPCHandler)
 class Timer {
 	#if cpp
 	@:noCompletion private static final __tls:Tls<TimerScheduler> = new Tls();
@@ -53,6 +54,19 @@ class Timer {
 		}
 		return __nonThreadedTimer;
 		#end
+	}
+
+	@:noCompletion private static inline function currentOrNull():Null<TimerScheduler> {
+		#if cpp
+		return __tls.value;
+		#else
+		return __nonThreadedTimer;
+		#end
+	}
+
+	@:noCompletion private static inline function tryGetTime():Float {
+		final scheduler = currentOrNull();
+		return scheduler != null ? scheduler.time : -1.0;
 	}
 
 	/**

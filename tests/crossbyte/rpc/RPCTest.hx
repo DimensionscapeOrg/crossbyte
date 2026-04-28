@@ -44,11 +44,10 @@ class RPCTest extends utest.Test {
 		var link = LinkedConnection.pair();
 		var commands = new TestCommands();
 		var serverHandler = new TestHandler();
-		var clientHandler = new TestHandler();
 		var result:String = null;
 		var error:String = null;
 
-		new RPCSession<TestCommands>(link.client, commands, clientHandler);
+		new RPCSession<TestCommands>(link.client, commands);
 		new RPCSession(link.server, null, serverHandler);
 
 		var response = commands.getName(42).then(value -> result = value, message -> error = message);
@@ -58,6 +57,56 @@ class RPCTest extends utest.Test {
 		Assert.equals("player-42", response.result);
 		Assert.equals("player-42", result);
 		Assert.isNull(error);
+	}
+
+	public function testConcurrentResponsesCompleteWhenMultipleArePending():Void {
+		var link = LinkedConnection.pair();
+		var commands = new TestCommands();
+		var serverHandler = new TestHandler();
+		link.client.bufferInbound = true;
+
+		new RPCSession<TestCommands>(link.client, commands);
+		new RPCSession(link.server, null, serverHandler);
+
+		var first = commands.getName(1);
+		var second = commands.getName(2);
+
+		Assert.isFalse(first.completed);
+		Assert.isFalse(second.completed);
+
+		link.client.flushBufferedReads();
+
+		Assert.isTrue(first.completed);
+		Assert.isTrue(second.completed);
+		Assert.equals("player-1", first.result);
+		Assert.equals("player-2", second.result);
+	}
+
+	public function testCommandsOnlySessionHandlesResponsesWithoutClientHandler():Void {
+		var link = LinkedConnection.pair();
+		var commands = new TestCommands();
+		var serverHandler = new TestHandler();
+
+		new RPCSession<TestCommands>(link.client, commands);
+		new RPCSession(link.server, null, serverHandler);
+
+		var response = commands.getName(9);
+
+		Assert.isTrue(response.completed);
+		Assert.isTrue(response.succeeded);
+		Assert.equals("player-9", response.result);
+	}
+
+	public function testResponseDispatchesResultEventWhenObserved():Void {
+		var response = new RPCResponse<String>(7, 11);
+		var resultEvents = 0;
+
+		response.addEventListener(RPCResponse.RESULT, _ -> resultEvents++);
+		@:privateAccess response.__resolve("player-7");
+
+		Assert.isTrue(response.completed);
+		Assert.equals("player-7", response.result);
+		Assert.equals(1, resultEvents);
 	}
 
 	public function testHandlerCanBeCleared():Void {
@@ -86,6 +135,24 @@ class RPCTest extends utest.Test {
 
 		Assert.raises(() -> link.client.send(frame), String);
 		Assert.equals(0, handler.calls);
+	}
+
+	public function testContractDrivenCommandsAndHandlerGenerateFromSharedInterface():Void {
+		var link = LinkedConnection.pair();
+		var commands = new ContractCommands();
+		var handler = new ContractHandler();
+		var label:String = null;
+
+		new RPCSession<ContractCommands>(link.client, commands);
+		new RPCSession(link.server, null, handler);
+
+		commands.announce(7, "hello");
+		commands.getLabel(7).then(value -> label = value);
+
+		Assert.equals(1, handler.announceCalls);
+		Assert.equals(7, handler.lastAnnounceId);
+		Assert.equals("hello", handler.lastAnnounceMessage);
+		Assert.equals("label-7", label);
 	}
 }
 
@@ -123,6 +190,35 @@ private class TestHandler extends RPCHandler {
 	}
 }
 
+private interface ContractShape {
+	function announce(id:Int, message:String):Void;
+	function getLabel(id:Int):RPCResponse<String>;
+}
+
+@:rpcCommands(ContractShape)
+private class ContractCommands extends RPCCommands {
+	public function new() {}
+}
+
+@:rpcHandler(ContractShape)
+private class ContractHandler extends RPCHandler {
+	public var announceCalls:Int = 0;
+	public var lastAnnounceId:Int = 0;
+	public var lastAnnounceMessage:String = null;
+
+	public function new() {}
+
+	public function announce(id:Int, message:String):Void {
+		announceCalls++;
+		lastAnnounceId = id;
+		lastAnnounceMessage = message;
+	}
+
+	public function getLabel(id:Int):String {
+		return 'label-$id';
+	}
+}
+
 private class LinkedConnection implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
@@ -137,8 +233,10 @@ private class LinkedConnection implements INetConnection {
 	public var protocol:Protocol = TCP;
 	public var inTimestamp(default, null):Float = 0;
 	public var outTimestamp(default, null):Float = 0;
+	public var bufferInbound:Bool = false;
 
 	public var peer:LinkedConnection;
+	@:noCompletion private var __pendingInputs:Array<ByteArray> = [];
 
 	@:noCompletion private var __readEnabled:Bool = false;
 	@:noCompletion private var __onData:ByteArrayInput->Void = input -> {};
@@ -174,13 +272,30 @@ private class LinkedConnection implements INetConnection {
 
 	@:noCompletion private function receive(data:ByteArray):Void {
 		inTimestamp = Timer.getTime();
-		if (!__readEnabled) {
-			return;
-		}
 		var copy = new ByteArray();
 		copy.writeBytes(data, 0, data.length);
 		copy.position = 0;
+		if (bufferInbound) {
+			__pendingInputs.push(copy);
+			return;
+		}
+		if (!__readEnabled) {
+			return;
+		}
 		__onData(copy);
+	}
+
+	public function flushBufferedReads():Void {
+		if (!__readEnabled) {
+			__pendingInputs = [];
+			return;
+		}
+		var pending = __pendingInputs;
+		__pendingInputs = [];
+		for (input in pending) {
+			input.position = 0;
+			__onData(input);
+		}
 	}
 
 	@:noCompletion private inline function get_remoteAddress():String {
