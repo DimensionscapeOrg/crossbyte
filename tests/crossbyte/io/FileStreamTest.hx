@@ -117,6 +117,64 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	public function testUpdateModeCanReadExistingBytes():Void {
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var update = new FileStream();
+
+		try {
+			output.open(file, FileMode.WRITE);
+			output.writeUTFBytes("abcdef");
+			output.close();
+
+			update.open(file, FileMode.UPDATE);
+			Assert.equals("abc", update.readUTFBytes(3));
+			Assert.equals(3, update.position);
+			Assert.equals(3, update.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try update.close() catch (_:Dynamic) {}
+		try output.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
+	public function testUpdateModeCanOverwriteAndReadBack():Void {
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var update = new FileStream();
+		var input = new FileStream();
+
+		try {
+			output.open(file, FileMode.WRITE);
+			output.writeUTFBytes("abcdef");
+			output.close();
+
+			update.open(file, FileMode.UPDATE);
+			update.position = 2;
+			update.writeUTFBytes("XY");
+			update.position = 0;
+			Assert.equals("abXYef", update.readUTFBytes(6));
+			update.close();
+
+			input.open(file, FileMode.READ);
+			Assert.equals("abXYef", input.readUTFBytes(6));
+			Assert.equals(0, input.bytesAvailable);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try input.close() catch (_:Dynamic) {}
+		try update.close() catch (_:Dynamic) {}
+		try output.close() catch (_:Dynamic) {}
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
 	public function testWriteUTFUsesUtf8ByteLength():Void {
 		var file = File.createTempFile();
 		var output = new FileStream();
