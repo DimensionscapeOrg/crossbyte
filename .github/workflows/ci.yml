@@ -4,9 +4,69 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  tests:
+    name: Haxe tests
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install haxelibs
+        run: |
+          haxelib install utest --quiet
+
+      - name: Run unit tests
+        run: haxe test.hxml
+
+      - name: Check samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r sample; do
+            echo "::group::${sample}"
+            (cd "$(dirname "$sample")" && haxe "$(basename "$sample")")
+            echo "::endgroup::"
+          done < <(find samples -name check.hxml -print | sort)
+
+  cpp-audit:
+    name: hxcpp compile audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install hxcpp
+        run: haxelib install hxcpp --quiet
+
+      - name: Type-check full cpp surface
+        run: haxe -cp src --macro "include('crossbyte')" --cpp export/audit-full --no-output
+
+      - name: Type-check timer burst catch-up
+        run: haxe -cp src --macro "include('crossbyte._internal.system.timer.heap')" -D timer_burst_catchup --cpp export/audit-timer --no-output
+
+  native-smoke:
+    name: Native smoke tests
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -22,11 +82,22 @@ jobs:
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
 
-      - name: Run tests
-        run: haxe test.hxml
+      - name: Build focused HTTP client tests
+        run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-http-client-test -main crossbyte._internal.http.HttpTestMain
 
-      - name: Type-check full cpp surface
-        run: haxe -cp src --macro "include('crossbyte')" --cpp export/audit-full --no-output
+      - name: Run focused HTTP client tests
+        run: .\export\cpp-http-client-test\HttpTestMain.exe
 
-      - name: Type-check timer burst catch-up
-        run: haxe -cp src --macro "include('crossbyte._internal.system.timer.heap')" -D timer_burst_catchup --cpp export/audit-timer --no-output
+      - name: Build focused HTTP server tests
+        run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-http-server-test -main crossbyte.http.HTTPTestMain
+
+      - name: Run focused HTTP server tests
+        run: .\export\cpp-http-server-test\HTTPTestMain.exe
+
+      - name: Build websocket echo sample
+        working-directory: samples/websocket-echo
+        run: haxe cpp.hxml
+
+      - name: Run websocket echo sample
+        working-directory: samples/websocket-echo
+        run: .\build\websocket-echo\WebSocketEchoSample.exe
