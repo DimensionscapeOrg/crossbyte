@@ -1,9 +1,12 @@
 package crossbyte._internal.http;
 
 import haxe.exceptions.NotImplementedException;
-import crossbyte.Function;
 import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.socket.FlexSocket;
+import crossbyte.http.HTTPBackend;
+import crossbyte.http.HTTPBackendRegistry;
+import crossbyte.http.HTTPRequestContext;
+import crossbyte.http.HTTPVersion;
 import crossbyte.url.URL;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
@@ -22,10 +25,10 @@ class Http {
 	private static inline final HEADER_TRANSFER_ENCODING = "transfer-encoding";
 	private static final SUPPORTED_VERSIONS:Array<HttpVersion> = [HttpVersion.HTTP_1, HttpVersion.HTTP_1_1];
 
-	public var onProgress:Function = (bytesLoaded:Int, bytesTotal:Int) -> {};
-	public var onError:Function = (message:String, ?data:Bytes) -> {};
-	public var onComplete:Function = (data:Bytes) -> {};
-	public var onStatus:Function = (status:Int) -> {};
+	public var onProgress:(bytesLoaded:Int, bytesTotal:Int) -> Void = (bytesLoaded:Int, bytesTotal:Int) -> {};
+	public var onError:(message:String, ?data:Bytes) -> Void = (message:String, ?data:Bytes) -> {};
+	public var onComplete:(data:Bytes) -> Void = (data:Bytes) -> {};
+	public var onStatus:(status:Int) -> Void = (status:Int) -> {};
 
 	private var __socket:FlexSocket;
 	private var __url:URL;
@@ -43,7 +46,7 @@ class Http {
 	private var __followRedirects:Bool;
 	private var __redirect:Bool = false;
 
-	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData = null, contentType:Null<String> = null,
+	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData:Dynamic = null, contentType:Null<String> = null,
 			data:Dynamic = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true) {
 		__url = new URL(url);
 		__headers = headers;
@@ -55,24 +58,29 @@ class Http {
 		__userAgent = userAgent;
 		__followRedirects = followRedirects;
 
-		switch (version) {
-			case HTTP_1:
-				__version = HttpVersion.HTTP_1;
-			case HTTP_1_1:
-				__version = HttpVersion.HTTP_1_1;
-			case HTTP_2:
-				throw new NotImplementedException("HTTP/2 not supported yet");
-			case HTTP_3:
-				throw new NotImplementedException("HTTP/3 not supported yet");
+		if (validateHttpVersion(version) || HTTPBackendRegistry.isRegistered(version)) {
+			__version = version;
+		} else {
+			throw new NotImplementedException(__unsupportedVersionMessage(version));
 		}
 	}
 
 	public function advance():Void {}
 
-	public function loadAsync():Void {}
+	public function loadAsync():Void {
+		if (!__usesBuiltInBackend()) {
+			__loadWithBackend();
+		}
+	}
 
 	public function load():Void {
 		__redirect = false;
+
+		if (!__usesBuiltInBackend()) {
+			__loadWithBackend();
+			return;
+		}
+
 		var redirects:Array<String> = [__url];
 
 		__tryRequest();
@@ -130,6 +138,48 @@ class Http {
 
 	public static function validateHttpVersion(version:HttpVersion):Bool {
 		return SUPPORTED_VERSIONS.indexOf(version) > -1;
+	}
+
+	private static function __unsupportedVersionMessage(version:HTTPVersion):String {
+		return version + " is not supported by the built-in HTTP client. Register an HTTPBackend to provide support.";
+	}
+
+	private function __usesBuiltInBackend():Bool {
+		return validateHttpVersion(cast __version);
+	}
+
+	private function __loadWithBackend():Void {
+		var version:HTTPVersion = cast __version;
+		var backend:HTTPBackend = HTTPBackendRegistry.resolve(version);
+		if (backend == null) {
+			onError(__unsupportedVersionMessage(version));
+			return;
+		}
+
+		try {
+			backend.load(__createRequestContext(version));
+		} catch (e:Dynamic) {
+			onError("HTTP backend failed: " + Std.string(e));
+		}
+	}
+
+	private function __createRequestContext(version:HTTPVersion):HTTPRequestContext {
+		return {
+			url: Std.string(__url),
+			method: __method,
+			headers: __headers != null ? __headers.copy() : [],
+			requestData: __requestData,
+			contentType: __contentType,
+			data: __data,
+			version: version,
+			timeout: __timeout,
+			userAgent: __userAgent,
+			followRedirects: __followRedirects,
+			onProgress: onProgress,
+			onError: onError,
+			onComplete: onComplete,
+			onStatus: onStatus
+		};
 	}
 
 	private function __parseResponse():Void {
