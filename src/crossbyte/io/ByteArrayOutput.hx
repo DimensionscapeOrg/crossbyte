@@ -59,11 +59,22 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * ```
 	 */
 	public var length(get, never):Int;
+	public var bytesWritten(get, never):Int;
 
 	@:noCompletion private var current(get, never):Bytes;
 
 	@:noCompletion private inline function get_length():Int {
 		return this.size;
+	}
+
+	@:noCompletion private inline function get_bytesWritten():Int {
+		var used:Int = this.__outputPosition;
+		if (this.byteCache != null) {
+			for (bytes in this.byteCache) {
+				used += bytes.length;
+			}
+		}
+		return used;
 	}
 
 	@:noCompletion private inline function get_current():Bytes {
@@ -266,6 +277,27 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		#end
 		current.setInt32(this.__outputPosition, v);
 		this.__outputPosition += 4;
+	}
+
+	public function writeIntAt(position:Int, value:Int):Void {
+		#if !final
+		if (position < 0 || position + 4 > bytesWritten) {
+			throw 'ByteArrayOutput position out of range (' + position + ' + 4 > ' + bytesWritten + ')';
+		}
+		#end
+
+		var chunkStart:Int = 0;
+		if (this.byteCache != null) {
+			for (bytes in this.byteCache) {
+				if (position < chunkStart + bytes.length) {
+					bytes.setInt32(position - chunkStart, value);
+					return;
+				}
+				chunkStart += bytes.length;
+			}
+		}
+
+		current.setInt32(position - chunkStart, value);
 	}
 
 	/**

@@ -2,6 +2,7 @@ package crossbyte.rpc._internal;
 
 import crossbyte.utils.Hash;
 #if macro
+import crossbyte.rpc._internal.RPCContractMacroTools;
 import haxe.macro.ComplexTypeTools;
 import haxe.macro.Context;
 import haxe.macro.Expr;
@@ -59,6 +60,52 @@ class RPCCommandMacro {
 		var fields = Context.getBuildFields();
 		var newFields:Array<Field> = [];
 		var responseMethods:Array<ResponseMethod> = [];
+		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcCommands");
+		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
+
+		if (contractMethods != null) {
+			if (manualRpcFields.length > 0) {
+				Context.error("Do not mix @:rpcCommands(...) with field-level @:rpc methods in the same class.", manualRpcFields[0].pos);
+			}
+
+			for (method in contractMethods) {
+				if (method.name == "ping") {
+					Context.error("RPC contract method name 'ping' is reserved.", method.pos);
+				}
+				if (hasFieldNamed(fields, method.name) || hasFieldNamed(fields, "meta_" + method.name)) {
+					Context.error("RPC commands class already declares '" + method.name + "'; remove the manual declaration when using @:rpcCommands(...).", method.pos);
+				}
+
+				final metaName = "meta_" + method.name;
+				final wrapper = createWrapperFunction({
+					name: method.name,
+					doc: "Generated RPC wrapper for contract method " + method.name,
+					access: [APublic],
+					kind: FFun({
+						args: method.args,
+						ret: method.ret,
+						expr: null
+					}),
+					pos: method.pos,
+					meta: null
+				}, metaName, method.args, method.ret, method.responseType, method.op);
+				newFields.push(wrapper);
+				newFields.push(createMetaFunction(metaName, method.name, method.args, method.pos, method.op));
+
+				if (method.responseType != null) {
+					responseMethods.push({
+						name: method.name,
+						op: method.op,
+						responseType: method.responseType,
+						pos: method.pos
+					});
+				}
+			}
+
+			injectPing(newFields, Context.currentPos());
+			injectResponseHandler(newFields, responseMethods);
+			return fields.concat(newFields);
+		}
 
 		for (field in fields) {
 			if (field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0) {
@@ -94,12 +141,13 @@ class RPCCommandMacro {
 
 	private static function createMetaFunction(metaName:String, commandName:String, args:Array<FunctionArg>, errPos:Position, opCode:Int):Field {
 		var statements:Array<Expr> = [];
-		statements.push(macro var payload:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN));
+		statements.push(macro var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN + 4));
+		statements.push(macro framed.writeInt(0));
 		statements.push(macro {
-			payload.writeByte(requestId != 0 ? crossbyte.rpc._internal.RPCWire.FLAG_REQUEST : 0);
-			payload.writeInt($v{opCode});
+			framed.writeByte(requestId != 0 ? crossbyte.rpc._internal.RPCWire.FLAG_REQUEST : 0);
+			framed.writeInt($v{opCode});
 			if (requestId != 0) {
-				payload.writeVarUInt(requestId);
+				framed.writeVarUInt(requestId);
 			}
 		});
 
@@ -107,10 +155,8 @@ class RPCCommandMacro {
 			statements.push(writerForArg(args[i], errPos));
 		}
 
-		statements.push(macro payload.flush());
-		statements.push(macro var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(payload.length + 4));
-		statements.push(macro framed.writeInt(payload.length));
-		statements.push(macro framed.writeBytes(payload));
+		statements.push(macro framed.writeIntAt(0, framed.bytesWritten - 4));
+		statements.push(macro framed.flush());
 		statements.push(macro connection.send(framed));
 
 		return {
@@ -171,14 +217,14 @@ class RPCCommandMacro {
 		}
 
 		var valueExpr:Expr = macro $i{a.name};
-		var writeValue:Expr = fn(macro payload, valueExpr);
+		var writeValue:Expr = fn(macro framed, valueExpr);
 
 		return isOpt ? macro {
-			payload.reserve(1);
+			framed.reserve(1);
 			if ($valueExpr == null) {
-				payload.writeByte(0);
+				framed.writeByte(0);
 			} else {
-				payload.writeByte(1);
+				framed.writeByte(1);
 				$writeValue;
 			}
 		} : writeValue;
@@ -244,15 +290,21 @@ class RPCCommandMacro {
 	}
 
 	private static function responsePayloadType(ret:ComplexType, pos:Position):Null<ComplexType> {
-		if (isVoid(ret)) {
-			return null;
-		}
-
-		return switch (ret) {
-			case TPath(tp) if ((tp.name == "RPCResponse" || tp.name == "RPCResonse") && (tp.pack.length == 0 || tp.pack.join(".") == "crossbyte.rpc")):
-				switch (tp.params) {
-					case [TPType(inner)]: inner;
-					case _: Context.error("RPCResponse must declare a payload type.", pos);
+		final resolved = Context.follow(Context.resolveType(ret, pos));
+		return switch (resolved) {
+			case TAbstract(typeRef, _) if (typeRef.get().name == "Void"):
+				null;
+			case TInst(typeRef, params) if (typeRef.get().name == "RPCResponse" && typeRef.get().pack.join(".") == "crossbyte.rpc"):
+				switch (params) {
+					case [inner]:
+						final payload = inner.toComplexType();
+						if (payload == null) {
+							Context.error("RPCResponse must declare a payload type.", pos);
+						}
+						payload;
+					case _:
+						Context.error("RPCResponse must declare a payload type.", pos);
+						null;
 				}
 			case _:
 				Context.error("RPC command return type must be Void or RPCResponse<T>.", pos);
@@ -261,8 +313,8 @@ class RPCCommandMacro {
 	}
 
 	private static inline function isVoid(ct:ComplexType):Bool {
-		return switch (ct) {
-			case TPath({pack: [], name: "Void"}): true;
+		return switch (Context.follow(Context.resolveType(ct, Context.currentPos()))) {
+			case TAbstract(typeRef, _) if (typeRef.get().name == "Void"): true;
 			case _: false;
 		}
 	}
@@ -310,6 +362,15 @@ class RPCCommandMacro {
 
 	private static inline function pathKey(pack:Array<String>, name:String):String {
 		return (pack.length > 0 ? pack.join(".") + "." : "") + name;
+	}
+
+	private static function hasFieldNamed(fields:Array<Field>, name:String):Bool {
+		for (field in fields) {
+			if (field.name == name) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static function injectPing(newFields:Array<Field>, pos:Position):Void {
