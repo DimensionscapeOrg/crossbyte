@@ -10,6 +10,7 @@ class TestMain {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
+		runner.addCase(new crossbyte._internal.http.HttpTest());
 		runner.addCase(new crossbyte.io.ByteArrayTest());
 		runner.addCase(new crossbyte.url.URLLoaderTest());
 		runner.addCase(new crossbyte.url.URLVariablesTest());
@@ -18,7 +19,9 @@ class TestMain {
 		runner.addCase(new crossbyte.db.PostgresConnectionTest());
 		runner.addCase(new crossbyte.db.MongoConnectionTest());
 		runner.addCase(new crossbyte.sys.NativeProcessTest());
+		runner.addCase(new crossbyte.sys.WorkerTest());
 		runner.addCase(new crossbyte.net.DatagramSocketTest());
+		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		runner.addCase(new crossbyte.net.SocketTest());
