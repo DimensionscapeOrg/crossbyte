@@ -3,7 +3,7 @@ package crossbyte.db.mongodb;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.events.EventDispatcher;
-import crossbyte.events.SQLError;
+import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 #if php
@@ -36,6 +36,7 @@ class MongoConnection extends EventDispatcher {
 			throw "MongoConnection: config is required.";
 		}
 
+		#if php
 		try {
 			__uri = (cfg.uri != null && cfg.uri != "") ? cfg.uri : __buildUri(cfg);
 			__database = (cfg.database != null && cfg.database != "") ? cfg.database : null;
@@ -44,6 +45,9 @@ class MongoConnection extends EventDispatcher {
 		} catch (e:Dynamic) {
 			throw new IOError(e);
 		}
+			#else
+			throw new IOError("MongoDB is only supported on php targets.");
+			#end
 	}
 
 	public function close():Void {
@@ -73,6 +77,7 @@ class MongoConnection extends EventDispatcher {
 			throw "MongoConnection: command text is required.";
 		}
 
+		#if php
 		try {
 			var commandRows:Dynamic = Syntax.code(
 				'
@@ -103,6 +108,9 @@ class MongoConnection extends EventDispatcher {
 		} catch (e:Dynamic) {
 			throw new IOError(e);
 		}
+		#else
+		throw new IOError("MongoDB is only supported on php targets.");
+		#end
 	}
 
 	public function get_connected():Bool {
