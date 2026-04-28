@@ -80,10 +80,14 @@ class Deque<T> {
 	}
 
 	public function first():T {
+		if (head == null)
+			throw "Deque is empty";
 		return head.value;
 	}
 
 	public function last():T {
+		if (tail == null)
+			throw "Deque is empty";
 		return tail.value;
 	}
 
