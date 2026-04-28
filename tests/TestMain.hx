@@ -12,6 +12,13 @@ class TestMain {
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.io.ByteArrayTest());
 		runner.addCase(new crossbyte.ipc.LocalConnectionTest());
+		runner.addCase(new crossbyte.ipc.SharedObjectTest());
+		runner.addCase(new crossbyte.db.PostgresConnectionTest());
+		runner.addCase(new crossbyte.db.MongoConnectionTest());
+		runner.addCase(new crossbyte.sys.NativeProcessTest());
+		runner.addCase(new crossbyte.net.DatagramSocketTest());
+		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
+		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte.resources.ResourcesTest());
