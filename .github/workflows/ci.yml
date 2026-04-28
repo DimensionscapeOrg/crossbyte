@@ -77,7 +77,6 @@ jobs:
           HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
           (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
           (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/project" && neko build.n)
 
       - name: Type-check C++ API surface
         run: haxe ci/cpp-api-audit.hxml
@@ -115,9 +114,6 @@ jobs:
           Pop-Location
           Push-Location (Join-Path $hxcppDir "tools/hxcpp")
           haxe compile.hxml
-          Pop-Location
-          Push-Location (Join-Path $hxcppDir "project")
-          neko build.n
           Pop-Location
 
       - name: Build native smoke harness
@@ -192,7 +188,6 @@ jobs:
           HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
           (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
           (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
-          (cd "$HXCPP_DIR/project" && neko build.n)
 
       - name: Run extension interpreter tests
         working-directory: ${{ matrix.path }}
