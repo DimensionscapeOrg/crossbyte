@@ -5,7 +5,7 @@ import cpp.ConstPointer;
 import cpp.RawPointer;
 import cpp.UInt8;
 
-@:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/crypto/_internal/NativeSodiumBuild.xml"/>')
+@:buildXml('<include name="../../src/crossbyte/crypto/_internal/NativeSodiumBuild.xml"/>')
 @:include("./NativeSodium.h")
 extern class NativeSodium {
 	@:native("crossbyte_crypto_sodium_available")
