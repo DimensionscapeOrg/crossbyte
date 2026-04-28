@@ -1,0 +1,6 @@
+--cwd ../..
+-cp src
+-cp samples/simple-application
+-main SimpleApplicationSample
+--cpp export/sample-simple-application-check
+-D no-compilation

@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/simple-application
+-main SimpleApplicationSample
+--cpp export/simple-application
