@@ -17,14 +17,37 @@ haxe test.hxml
 ```
 
 
-## 2025 Roadmap
-- [x] IPC
-- [x] RPC
-- [x] HTTP Server
-  - [x] PHP Support 
-- [ ] rUDP
-- [ ] webRTC
-- [ ] Quic/HTTP3
-- [x] MongoDB support
-- [x] PostgreSQL support
+## Supported features
+- Async runtime
+- Evented architecture
+- Cross-target support
+- HTTP
+- Middleware
+- PHP
+- WebSocket
+- RUDP
+- OAuth
+- IPC
+- RPC
+- URL
+- IO
+- Database
+  - MongoDB
+  - PostgreSQL
+  - MySQL
+  - SQLite
+- Compression
+  - DEFLATE
+  - GZIP
+  - LZ4
+- Crypto
+  - BLAKE3
+  - Ed25519
+  - SecureRandom
+  - SigningKeyPair
+- DS
+- Workers
+- File I/O
+- Socket API
+- NativeProcess
 
