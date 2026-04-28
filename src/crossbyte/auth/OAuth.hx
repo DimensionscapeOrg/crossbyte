@@ -2,6 +2,7 @@ package crossbyte.auth;
 
 import haxe.Http;
 import haxe.Json;
+using StringTools;
 
 /**
  * ...
@@ -30,7 +31,12 @@ class OAuth {
 	 * @return The authorization URL.
 	 */
 	public function getAuthorizationUrl(state:String, scope:String):String {
-		return '${config.authorizeUrl}?response_type=code&client_id=${config.clientId}&redirect_uri=${config.redirectUri}&state=${state}&scope=${scope}';
+		return config.authorizeUrl
+			+ "?response_type=code"
+			+ "&client_id=" + __encode(config.clientId)
+			+ "&redirect_uri=" + __encode(config.redirectUri)
+			+ "&state=" + __encode(state)
+			+ "&scope=" + __encode(scope);
 	}
 
 	/**
@@ -41,11 +47,11 @@ class OAuth {
 	 */
 	public function getAccessToken(code:String, callback:(OAuthToken) -> Void):Void {
 		var params = [
-			'grant_type=authorization_code',
-			'code=${code}',
-			'redirect_uri=${config.redirectUri}',
-			'client_id=${config.clientId}',
-			'client_secret=${config.clientSecret}'
+			'grant_type=' + __encode('authorization_code'),
+			'code=' + __encode(code),
+			'redirect_uri=' + __encode(config.redirectUri),
+			'client_id=' + __encode(config.clientId),
+			'client_secret=' + __encode(config.clientSecret)
 		];
 
 		var url = config.tokenUrl;
@@ -71,10 +77,10 @@ class OAuth {
 	 */
 	public function refreshAccessToken(refreshToken:String, callback:(OAuthToken) -> Void):Void {
 		var params = [
-			'grant_type=refresh_token',
-			'refresh_token=${refreshToken}',
-			'client_id=${config.clientId}',
-			'client_secret=${config.clientSecret}'
+			'grant_type=' + __encode('refresh_token'),
+			'refresh_token=' + __encode(refreshToken),
+			'client_id=' + __encode(config.clientId),
+			'client_secret=' + __encode(config.clientSecret)
 		];
 
 		var url = config.tokenUrl;
@@ -90,5 +96,9 @@ class OAuth {
 			trace('Error refreshing access token: ' + error);
 		};
 		http.request(true);
+	}
+
+	@:noCompletion private static inline function __encode(value:String):String {
+		return (value == null ? "" : StringTools.urlEncode(value));
 	}
 }
