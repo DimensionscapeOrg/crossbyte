@@ -54,6 +54,9 @@ class TestSuites {
 
 	public static function addNet(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.DatagramSocketTest());
+		runner.addCase(new crossbyte.net.EndpointTest());
+		runner.addCase(new crossbyte.net.NetConnectionTest());
+		runner.addCase(new crossbyte.net.NetHostTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
