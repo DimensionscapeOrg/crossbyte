@@ -789,7 +789,7 @@ final class File extends EventDispatcher {
 				var files:Array<File> = getDirectoryListing();
 				for (file in files) {
 					var newFile = new File(Path.join([newPath, file.name]));
-					file.copyTo(newFile);
+					file.copyTo(newFile, overwrite);
 				}
 			} else {
 				var newDirectory:String = Path.directory(newPath);
@@ -1110,10 +1110,11 @@ final class File extends EventDispatcher {
 			var directoryItems:Array<String> = FileSystem.readDirectory(__path);
 
 			for (item in directoryItems) {
-				files.push(new File(__path + item));
+				files.push(new File(Path.join([__path, item])));
 			}
 		} catch (e:Dynamic) {
 			__fileWorker.sendError(e);
+			return;
 		}
 
 		__fileWorker.sendComplete(files);
