@@ -7,6 +7,7 @@ class TestMain {
 		var crossByte = new crossbyte.core.CrossByte(true, DEFAULT, true);
 		var runner = new Runner();
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
+		runner.addCase(new crossbyte.core.CrossByteTest());
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
