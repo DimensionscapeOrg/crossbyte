@@ -3,6 +3,18 @@ name: CrossByte CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_brotli_extension:
+        description: Run the optional Brotli extension CI job
+        required: false
+        default: false
+        type: boolean
+      run_lz4_extension:
+        description: Run the optional LZ4 extension CI job
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -137,6 +149,7 @@ jobs:
 
   brotli-extension:
     name: Brotli native oracle extension
+    if: ${{ vars.CROSSBYTE_ENABLE_BROTLI_EXTENSION_CI == 'true' || (github.event_name == 'workflow_dispatch' && inputs.run_brotli_extension) }}
     runs-on: ubuntu-latest
 
     steps:
@@ -173,3 +186,43 @@ jobs:
       - name: Run extension native tests
         working-directory: crossbyte-brotli
         run: ../crossbyte/export/crossbyte-brotli-native-test/NativeBrotliTestMain
+
+  lz4-extension:
+    name: LZ4 native oracle extension
+    if: ${{ vars.CROSSBYTE_ENABLE_LZ4_EXTENSION_CI == 'true' || (github.event_name == 'workflow_dispatch' && inputs.run_lz4_extension) }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout CrossByte
+        uses: actions/checkout@v4
+        with:
+          path: crossbyte
+
+      - name: Checkout crossbyte-lz4
+        uses: actions/checkout@v4
+        with:
+          repository: DimensionscapeOrg/crossbyte-lz4
+          path: crossbyte-lz4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install haxelibs
+        run: |
+          haxelib install utest --quiet
+          haxelib install hxcpp --quiet
+          haxelib dev crossbyte-lz4 "$GITHUB_WORKSPACE/crossbyte-lz4"
+
+      - name: Run extension non-native tests
+        working-directory: crossbyte-lz4
+        run: haxe test.hxml
+
+      - name: Build extension native tests
+        working-directory: crossbyte-lz4
+        run: haxe native-test.hxml
+
+      - name: Run extension native tests
+        working-directory: crossbyte-lz4
+        run: ../crossbyte/export/crossbyte-lz4-native-test/NativeLz4TestMain
