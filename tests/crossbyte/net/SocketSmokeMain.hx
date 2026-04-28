@@ -8,7 +8,7 @@ class SocketSmokeMain {
 	public static function main():Void {
 		new crossbyte.core.CrossByte(true, DEFAULT, true);
 		var runner = new Runner();
-		runner.addCase(new SocketTest());
+		runner.addCase(new SocketSingleCase());
 		Report.create(runner);
 		runner.run();
 	}
