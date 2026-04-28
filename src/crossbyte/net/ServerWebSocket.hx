@@ -136,13 +136,15 @@ class ServerWebSocket extends ServerSocket {
 		try {
 			__webServerSocket.close();
 		} catch (e:Dynamic) {
-			trace("close?");
 			throw new CBError("Operation attempted on invalid socket.");
 		}
 		listening = false;
 		bound = false;
 		__closed = true;
-		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
+		if (__cbInstance != null) {
+			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+			__cbInstance = null;
+		}
 	}
 
 	/**
@@ -166,8 +168,11 @@ class ServerWebSocket extends ServerSocket {
 							other reason.
 	**/
 	override public function listen(backlog:Int = 0):Void {
+		__cbInstance = CrossByte.current();
+		if (__cbInstance == null) {
+			throw "ServerWebSocket can only be initiated in a CrossByte threaded instance";
+		}
 		if (__closed) {
-			trace("listen?");
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 		if (backlog < 0) {
@@ -178,6 +183,9 @@ class ServerWebSocket extends ServerSocket {
 
 		__webServerSocket.listen(backlog);
 		listening = true;
+		if (__hasListener) {
+			__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+		}
 	}
 
 	@:noCompletion private function __fromSockettoWebsocket(socket:FlexSocket):WebSocket {
@@ -215,8 +223,13 @@ class ServerWebSocket extends ServerSocket {
 			dispatchEvent(new Event(Event.CLOSE));
 		}*/
 		catch (e:Error) {
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
+			switch (e) {
+				case Error.Blocked:
+				case Error.Custom(Error.Blocked):
+				default:
+					close();
+					dispatchEvent(new Event(Event.CLOSE));
+			}
 		} catch (e:Dynamic) {
 			// Do nothing.
 		}
