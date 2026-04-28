@@ -136,6 +136,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __ownsTransport:Bool = true;
 	@:noCompletion private var __remoteAddress:String = "";
 	@:noCompletion private var __remotePort:Int = 0;
+	@:noCompletion private var __remoteResponsePort:Int = 0;
 	@:noCompletion private var __server:ReliableDatagramServerSocket;
 	@:noCompletion private var __timeout:Int = 20000;
 	@:noCompletion private var __transport:DatagramSocket;
@@ -241,6 +242,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		__remoteAddress = resolved.toString();
 		__remotePort = port;
+		__remoteResponsePort = 0;
 		__incoming = false;
 		__resetSequences();
 		__transport.receive();
@@ -582,6 +584,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__transport = transport;
 		socket.__remoteAddress = remoteAddress;
 		socket.__remotePort = remotePort;
+		socket.__remoteResponsePort = 0;
 		socket.__resetSequences();
 		socket.__beginHandshake();
 		return socket;
@@ -599,6 +602,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		switch (frame.type) {
 			case CONNECT:
+				if (__incoming && !__connected) {
+					__sendHandshakeAttempt();
+				}
 			case HANDSHAKE:
 				__onHandshake(frame.sequence);
 			case PACKET:
@@ -947,11 +953,29 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __onTransportData(e:DatagramSocketDataEvent):Void {
-		if (e.srcAddress != __remoteAddress || e.srcPort != __remotePort) {
+		var frame = ReliableDatagramProtocol.decode(e.data);
+		if (frame == null || !__matchesRemoteEndpoint(e, frame)) {
 			return;
 		}
 
-		__acceptFrame(ReliableDatagramProtocol.decode(e.data));
+		__acceptFrame(frame);
+	}
+
+	@:noCompletion private function __matchesRemoteEndpoint(e:DatagramSocketDataEvent, frame:ReliableDatagramFrame):Bool {
+		if (e.srcAddress != __remoteAddress) {
+			return false;
+		}
+
+		if (e.srcPort == __remotePort || (__remoteResponsePort > 0 && e.srcPort == __remoteResponsePort)) {
+			return true;
+		}
+
+		if (!__incoming && !__connected && frame.type == HANDSHAKE) {
+			__remoteResponsePort = e.srcPort;
+			return true;
+		}
+
+		return false;
 	}
 
 	@:noCompletion private inline function get_bound():Bool {
