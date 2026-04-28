@@ -20,6 +20,14 @@ import crossbyte._internal.php.PHPResponse;
 import crossbyte._internal.http.Http;
 import crossbyte._internal.http.RewriteEngine;
 
+/**
+ * Incrementally parses and responds to a single HTTP request over a `Socket`.
+ *
+ * The handler buffers incoming bytes until a complete request is available,
+ * normalizes headers and request metadata, decodes supported request body
+ * encodings before middleware/PHP routing, and dispatches
+ * `HTTPStatusEvent.HTTP_RESPONSE_STATUS` whenever it sends a response.
+ */
 final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var MAX_BUFFER_SIZE:Int = 1024 * 1024; // 1 MB
 	@:noCompletion private static final ALLOWED_METHODS:Array<String> = ["GET", "HEAD", "OPTIONS", "POST"];
@@ -45,12 +53,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __bodyOverrideScriptName:String = null;
 	@:noCompletion private var __chunkBytesRemaining:Int = -1;
 	@:noCompletion private var __requestBody:ByteArray;
+	/** Uppercased request method, for example `GET` or `POST`. */
 	public var method(get, null):String;
+	/** Normalized request path without the query string. */
 	public var requestPath(get, null):String;
+	/** Raw query string without the leading `?`. */
 	public var queryString(get, null):String;
+	/** Fully buffered request body after supported content decoding. */
 	public var requestBody(get, null):ByteArray;
+	/** Convenience UTF-8 string view of `requestBody`. */
 	public var requestText(get, null):String;
 
+	/**
+	 * Creates a request handler for one accepted client socket.
+	 *
+	 * @param socket Connected client socket supplying request bytes.
+	 * @param config Server configuration used for routing and response behavior.
+	 * @param php Optional PHP bridge used when routing requests into PHP handlers.
+	 */
 	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge) {
 		super();
 		__origin = socket;
@@ -62,6 +82,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__php = php;
 	}
 
+	/** Returns the named cookie value, or `null` when the cookie is absent. */
 	public function getCookie(name:String):String {
 		var h:String = __getCookieHeader();
 		if (h == null) {
@@ -83,6 +104,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return null;
 	}
 
+	/** Returns a request header by case-insensitive name, or `null` when absent. */
 	public function getHeader(name:String):String {
 		if (name == null) {
 			return null;
@@ -92,6 +114,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __headers.exists(key) ? __headers.get(key) : null;
 	}
 
+	/** Returns `true` when a request header exists. */
 	public function hasHeader(name:String):Bool {
 		return getHeader(name) != null;
 	}
@@ -116,6 +139,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __requestBody != null ? __requestBody.toString() : "";
 	}
 
+	/** Returns all parsed cookies keyed by cookie name. */
 	public function getAllCookies():StringMap<String> {
 		var out:StringMap<String> = new StringMap();
 		var h:String = __getCookieHeader();

@@ -9,6 +9,9 @@ import crossbyte.auth.jwt._internal.sign.HS256Signer;
 
 using StringTools;
 
+/**
+ * Generates and verifies compact JWT strings using a configured signer.
+ */
 class JWT {
 	@:noCompletion private var __signer:IJWTSigner;
 
@@ -16,6 +19,9 @@ class JWT {
 	public var expectedAudience:String;
 	public var leeway:Int = 60;
 
+	/**
+	 * Creates a JWT helper from signer configuration and optional verification expectations.
+	 */
 	public static function make(spec:JWTSigner, ?issuer:String, ?audience:String, ?leeway:Int = 60):JWT {
 		var signer:IJWTSigner = switch (spec) {
 			case HS256(secrets, signKeyId):
@@ -39,6 +45,7 @@ class JWT {
 		this.__signer = signer;
 	}
 
+	/** Serializes and signs a payload into a compact JWT string. */
 	public function generateToken(payload:JWTPayload):String {
 		var header:JWTHeader = JWTHeader.make(__signer.algorithm, __signer.signKeyId, "JWT");
 		var headerStr:String = base64UrlEncodeString(Json.stringify(header.toData()));
@@ -47,6 +54,12 @@ class JWT {
 		return headerStr + "." + payloadStr + "." + signature;
 	}
 
+	/**
+	 * Verifies a compact JWT and returns the decoded payload on success.
+	 *
+	 * Returns `null` when the token is malformed, expired, signed by the wrong
+	 * algorithm, or fails issuer/audience validation.
+	 */
 	public function verifyToken(token:String):JWTPayload {
 		if (token == null || token.length == 0 || token.length > 4096) {
 			return null;
@@ -148,6 +161,7 @@ class JWT {
 		return __stripPad(s);
 	}
 
+	/** Normalizes a base64url string into padded standard base64 form. */
 	public static inline function normalizeBase64Url(s:String):String {
 		var std:String = s.split("-").join("+").split("_").join("/");
 		switch (std.length % 4) {
@@ -162,6 +176,7 @@ class JWT {
 		return std;
 	}
 
+	/** Safely decodes a base64url string to UTF-8 text, returning `null` on failure. */
 	public static function safeBase64UrlEncodeString(s:String):Null<String> {
 		var b64:String = s.split("-").join("+").split("_").join("/");
 		switch (b64.length % 4) {
@@ -180,6 +195,7 @@ class JWT {
 		}
 	}
 
+	/** Compares two strings in constant-time with respect to matching prefix length. */
 	public static inline function secureCompare(a:String, b:String):Bool {
 		if (a.length != b.length) {
 			return false;

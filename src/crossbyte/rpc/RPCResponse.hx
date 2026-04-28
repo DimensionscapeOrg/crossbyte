@@ -6,15 +6,30 @@ import crossbyte.events.EventType;
 import crossbyte.events.IEventDispatcher;
 
 @:allow(crossbyte.rpc.RPCCommands)
+/**
+ * Represents the eventual result of a request/response RPC invocation.
+ *
+ * `RPCResponse` supports both callback-style consumption through `Responder`
+ * and event-style observation through `IEventDispatcher`. It dispatches
+ * `RESULT` or `ERROR` once and then becomes immutable.
+ */
 class RPCResponse<T> implements IEventDispatcher {
+	/** Dispatched when the response resolves successfully. */
 	public static inline final RESULT:String = "rpcResponseResult";
+	/** Dispatched when the response resolves with an error. */
 	public static inline final ERROR:String = "rpcResponseError";
 
+	/** Request identifier assigned by the originating `RPCCommands` instance. */
 	public final requestId:Int;
+	/** Operation code associated with the request. */
 	public final op:Int;
+	/** `true` after the response has either resolved or rejected. */
 	public var completed(default, null):Bool = false;
+	/** `true` only when the response resolved successfully. */
 	public var succeeded(default, null):Bool = false;
+	/** Typed result value when `succeeded` is `true`. */
 	public var result(default, null):Null<T>;
+	/** Error message when `succeeded` is `false`. */
 	public var error(default, null):String;
 
 	@:noCompletion private var __responder:Responder<T>;
@@ -27,6 +42,7 @@ class RPCResponse<T> implements IEventDispatcher {
 		this.__dispatcher = null;
 	}
 
+	/** Registers an event listener for `RESULT` or `ERROR`. */
 	public inline function addEventListener<U>(type:EventType<U>, listener:U->Void, priority:Int = 0):Void {
 		__ensureDispatcher().addEventListener(type, listener, priority);
 	}
@@ -51,6 +67,7 @@ class RPCResponse<T> implements IEventDispatcher {
 		return __dispatcher != null && __dispatcher.dispatchEvent(event);
 	}
 
+	/** Binds or replaces the responder that should receive the final result. */
 	public inline function respond(responder:Responder<T>):RPCResponse<T> {
 		__responder = responder;
 		if (completed) {
@@ -59,6 +76,7 @@ class RPCResponse<T> implements IEventDispatcher {
 		return this;
 	}
 
+	/** Convenience alias for `respond(new Responder(onResult, onError))`. */
 	public inline function then(onResult:T->Void, ?onError:String->Void):RPCResponse<T> {
 		return respond(new Responder(onResult, onError));
 	}
