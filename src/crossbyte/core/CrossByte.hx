@@ -247,7 +247,9 @@ final class CrossByte extends EventDispatcher {
 		var frameStart:Float = Timer.stamp();
 		__dt = delta;
 		__timer.advanceTime(delta);
-		dispatchEvent(new TickEvent(TickEvent.TICK, delta));
+		if (hasEventListener(TickEvent.TICK)) {
+			dispatchEvent(new TickEvent(TickEvent.TICK, delta));
+		}
 		if (!__isRunning) {
 			__cpuTime = Timer.stamp() - frameStart;
 			return;
@@ -378,7 +380,9 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private inline function __dispatchInitIfNeeded():Void {
 		if (!__didInit) {
 			__didInit = true;
-			dispatchEvent(new Event(Event.INIT));
+			if (hasEventListener(Event.INIT)) {
+				dispatchEvent(new Event(Event.INIT));
+			}
 		}
 	}
 
@@ -388,7 +392,9 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		__didExit = true;
-		dispatchEvent(new Event(Event.EXIT));
+		if (hasEventListener(Event.EXIT)) {
+			dispatchEvent(new Event(Event.EXIT));
+		}
 		if (__socketRegistry != null) {
 			__socketRegistry.clear();
 			__socketRegistry = null;
@@ -432,9 +438,10 @@ final class CrossByte extends EventDispatcher {
 	private var mainLoop:Void->Void;
 	private #if final inline #end function __defaultMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
-		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
 		__timer.advanceTime(__dt);
-		dispatchEvent(e);
+		if (hasEventListener(TickEvent.TICK)) {
+			dispatchEvent(new TickEvent(TickEvent.TICK, __dt));
+		}
 		if (!__isRunning) {
 			return;
 		}
@@ -445,9 +452,10 @@ final class CrossByte extends EventDispatcher {
 	}
 	private #if final inline #end function __pollBasedMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
-		var e:TickEvent = new TickEvent(TickEvent.TICK, __dt);
 		__timer.advanceTime(__dt);
-		dispatchEvent(e);
+		if (hasEventListener(TickEvent.TICK)) {
+			dispatchEvent(new TickEvent(TickEvent.TICK, __dt));
+		}
 		if (!__isRunning) {
 			return;
 		}
