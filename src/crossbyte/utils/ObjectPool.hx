@@ -83,17 +83,21 @@ final class ObjectPool<T:{}> {
 	 * @return T The acquired object.
 	 */
 	public inline function acquire():T {
+		var obj:T;
 		if (__free.length > 0) {
-			var obj:T = __free.pop();
-			#if debug
-			if (__inUse.exists(obj))
-				throw "ObjectPool: double-loan";
-			__inUse.set(obj, true);
-			#end
-			return obj;
+			obj = __free.pop();
+		} else {
+			__created++;
+			obj = objectFactory();
 		}
-		__created++;
-		return objectFactory();
+
+		#if debug
+		if (__inUse.exists(obj))
+			throw "ObjectPool: double-loan";
+		__inUse.set(obj, true);
+		#end
+
+		return obj;
 	}
 
 	/**
@@ -160,6 +164,7 @@ final class ObjectPool<T:{}> {
 			var drop:Int = free - wantFree;
 			while (drop-- > 0) {
 				__free.pop();
+				__created--;
 			}
 		}
 		return inUseNow + __free.length;

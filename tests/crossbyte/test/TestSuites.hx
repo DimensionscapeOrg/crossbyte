@@ -47,6 +47,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.url.URLVariablesTest());
 	}
 
+	public static function addMath(runner:Runner):Void {
+		runner.addCase(new crossbyte.math.MathTest());
+	}
+
 	public static function addIPC(runner:Runner):Void {
 		runner.addCase(new crossbyte.ipc.LocalConnectionTest());
 		runner.addCase(new crossbyte.ipc.SharedObjectTest());
@@ -88,12 +92,17 @@ class TestSuites {
 		runner.addCase(new crossbyte.timer.TimerHeapTest());
 	}
 
+	public static function addUtils(runner:Runner):Void {
+		runner.addCase(new crossbyte.utils.UtilsTest());
+	}
+
 	public static function addAll(runner:Runner):Void {
 		addAuth(runner);
 		addCore(runner);
 		addFoundation(runner);
 		addEvents(runner);
 		addDataStructures(runner);
+		addMath(runner);
 		addHttp(runner);
 		addIO(runner);
 		addURL(runner);
@@ -103,6 +112,7 @@ class TestSuites {
 		addNet(runner);
 		addResources(runner);
 		addTimers(runner);
+		addUtils(runner);
 	}
 
 	public static function addNativeSmoke(runner:Runner):Void {
