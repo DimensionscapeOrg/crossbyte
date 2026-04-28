@@ -1,0 +1,4 @@
+-cp src
+--macro include('crossbyte')
+--cpp export/audit-full
+--no-output

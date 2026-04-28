@@ -4,6 +4,7 @@ import crossbyte.core.CrossByte;
 import crossbyte.events.NativeProcessEvent;
 import utest.Assert;
 
+@:access(crossbyte.core.CrossByte)
 class NativeProcessTest extends utest.Test {
 	public function testSupportFlagMatchesTarget():Void {
 		#if (sys && (windows || linux || mac || macos))
@@ -57,6 +58,36 @@ class NativeProcessTest extends utest.Test {
 		#end
 	}
 
+	public function testExitEventDispatchesOnOwningRuntimeTick():Void {
+		#if (sys && (windows || linux || mac || macos))
+		var primordial = CrossByte.current();
+		var child = new CrossByte(false, DEFAULT, true);
+		var proc = new NativeProcess();
+		var exited = false;
+		var exitRuntime:CrossByte = null;
+
+		proc.addEventListener(NativeProcessEvent.EXIT, _ -> {
+			exited = true;
+			exitRuntime = CrossByte.current();
+		});
+
+		proc.start(getDefaultInfo());
+		waitUntil(() -> proc.exitCode == 0, 3.0);
+
+		primordial.pump(1 / 60, 0);
+		Assert.isFalse(exited);
+
+		pumpRuntimeUntil(child, () -> exited, 3.0);
+
+		Assert.isTrue(exited);
+		Assert.equals(child, exitRuntime);
+
+		child.exit();
+		#else
+		Assert.pass();
+		#end
+	}
+
 	@:noCompletion private static function getDefaultInfo():NativeProcessStartupInfo {
 		#if windows
 		return new NativeProcessStartupInfo("cmd.exe", ["/C echo nativeprocess_smoke"]);
@@ -66,10 +97,20 @@ class NativeProcessTest extends utest.Test {
 	}
 
 	@:noCompletion private static function pumpUntil(predicate:Void->Bool, timeoutSeconds:Float):Void {
-		var runtime = CrossByte.current();
+		pumpRuntimeUntil(CrossByte.current(), predicate, timeoutSeconds);
+	}
+
+	@:noCompletion private static function pumpRuntimeUntil(runtime:CrossByte, predicate:Void->Bool, timeoutSeconds:Float):Void {
 		var deadline = Sys.time() + timeoutSeconds;
 		while (!predicate() && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0.0);
+			Sys.sleep(0.001);
+		}
+	}
+
+	@:noCompletion private static function waitUntil(predicate:Void->Bool, timeoutSeconds:Float):Void {
+		var deadline = Sys.time() + timeoutSeconds;
+		while (!predicate() && Sys.time() < deadline) {
 			Sys.sleep(0.001);
 		}
 	}
