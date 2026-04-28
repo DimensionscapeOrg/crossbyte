@@ -34,7 +34,7 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 	}
 
 	public inline function getWidth():Int {
-		return this[0].length;
+		return this.length > 0 ? this[0].length : 0;
 	}
 
 	public inline function getHeight():Int {
