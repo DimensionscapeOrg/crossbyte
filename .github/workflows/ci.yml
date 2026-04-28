@@ -71,6 +71,14 @@ jobs:
       - name: Install hxcpp
         run: haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
+      - name: Bootstrap hxcpp tools
+        run: |
+          set -euo pipefail
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/project" && neko build.n)
+
       - name: Type-check C++ API surface
         run: haxe ci/cpp-api-audit.hxml
 
@@ -98,6 +106,19 @@ jobs:
         run: |
           haxelib install utest --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+
+      - name: Bootstrap hxcpp tools
+        run: |
+          $hxcppDir = (haxelib path hxcpp | Select-Object -First 1).Trim()
+          Push-Location (Join-Path $hxcppDir "tools/run")
+          haxe compile.hxml
+          Pop-Location
+          Push-Location (Join-Path $hxcppDir "tools/hxcpp")
+          haxe compile.hxml
+          Pop-Location
+          Push-Location (Join-Path $hxcppDir "project")
+          neko build.n
+          Pop-Location
 
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
@@ -164,6 +185,14 @@ jobs:
           haxelib install utest --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
           haxelib dev ${{ matrix.haxelib_name }} "$GITHUB_WORKSPACE/${{ matrix.path }}"
+
+      - name: Bootstrap hxcpp tools
+        run: |
+          set -euo pipefail
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/project" && neko build.n)
 
       - name: Run extension interpreter tests
         working-directory: ${{ matrix.path }}
