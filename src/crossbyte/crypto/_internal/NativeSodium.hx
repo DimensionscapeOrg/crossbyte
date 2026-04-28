@@ -1,5 +1,6 @@
 package crossbyte.crypto._internal;
 
+#if cpp
 import cpp.ConstPointer;
 import cpp.RawPointer;
 import cpp.UInt8;
@@ -21,3 +22,6 @@ extern class NativeSodium {
 	@:native("crossbyte_crypto_ed25519_verify_detached")
 	public static function ed25519VerifyDetached(signature:ConstPointer<UInt8>, message:ConstPointer<UInt8>, messageLength:Int, publicKey:ConstPointer<UInt8>):Int;
 }
+#else
+extern class NativeSodium {}
+#end

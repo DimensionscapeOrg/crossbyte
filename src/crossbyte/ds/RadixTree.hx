@@ -10,13 +10,13 @@ package crossbyte.ds;
  * @param T The type of values to be stored in the tree.
  */
 class RadixTree<T> {
-	private var root:Node<T>;
+	private var root:RadixTreeNode<T>;
 
 	/**
 	 * Constructs a new RadixTree.
 	 */
 	public function new() {
-		root = new Node<T>("");
+		root = new RadixTreeNode<T>("");
 	}
 
 	/**
@@ -37,7 +37,7 @@ class RadixTree<T> {
 			var commonPrefix = getCommonPrefix(currentNode.label, currentKey);
 
 			if (commonPrefix.length == 0) {
-				var newNode = new Node<T>(currentKey, value);
+				var newNode = new RadixTreeNode<T>(currentKey, value);
 				currentNode.children.set(currentKey, newNode);
 				return;
 			}
@@ -48,17 +48,17 @@ class RadixTree<T> {
 					currentNode = currentNode.children.get(remainingKey);
 					currentKey = remainingKey;
 				} else {
-					var newChild = new Node<T>(remainingKey, value);
+					var newChild = new RadixTreeNode<T>(remainingKey, value);
 					currentNode.children.set(remainingKey, newChild);
 					return;
 				}
 			} else {
-				var newNode = new Node<T>(commonPrefix);
+				var newNode = new RadixTreeNode<T>(commonPrefix);
 				var nodeRemainingLabel = currentNode.label.substr(commonPrefix.length);
 				newNode.children.set(nodeRemainingLabel, currentNode);
 
 				var keyRemainingLabel = currentKey.substr(commonPrefix.length);
-				var newChild = new Node<T>(keyRemainingLabel, value);
+				var newChild = new RadixTreeNode<T>(keyRemainingLabel, value);
 				newNode.children.set(keyRemainingLabel, newChild);
 
 				currentNode.label = commonPrefix;
@@ -89,7 +89,7 @@ class RadixTree<T> {
 	 * @param key The key to be searched.
 	 * @return The node associated with the key, or null if the key is not found.
 	 */
-	private function searchNode(node:Node<T>, key:String):Node<T> {
+	private function searchNode(node:RadixTreeNode<T>, key:String):RadixTreeNode<T> {
 		if (node == null) {
 			return null;
 		}
@@ -134,10 +134,10 @@ class RadixTree<T> {
  */
 @:private
 @:noCompletion
-class Node<T> {
+class RadixTreeNode<T> {
 	public var label:String;
 	public var value:Null<T>;
-	public var children:Map<String, Node<T>>;
+	public var children:Map<String, RadixTreeNode<T>>;
 
 	/**
 	 * Constructs a new Node.
@@ -148,6 +148,6 @@ class Node<T> {
 	public function new(label:String, value:Null<T> = null) {
 		this.label = label;
 		this.value = value;
-		this.children = new Map<String, Node<T>>();
+		this.children = new Map<String, RadixTreeNode<T>>();
 	}
 }
