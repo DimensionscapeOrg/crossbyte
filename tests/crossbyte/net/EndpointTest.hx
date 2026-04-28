@@ -23,9 +23,10 @@ class EndpointTest extends utest.Test {
 		Assert.equals("/?token=1", endpoint.resource);
 	}
 
-	public function testRejectsTcpAndUdpPaths():Void {
+	public function testRejectsTcpUdpAndRudpPaths():Void {
 		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:9000/path")));
 		Assert.isTrue(throwsParseError(() -> parseURL("udp://127.0.0.1:9000?mode=test")));
+		Assert.isTrue(throwsParseError(() -> parseURL("rudp://127.0.0.1:9000/stream")));
 	}
 
 	public function testRejectsUnbracketedIpv6Literal():Void {
@@ -38,6 +39,15 @@ class EndpointTest extends utest.Test {
 
 		Assert.equals(Protocol.TCP, endpoint.protocol);
 		Assert.equals("::1", endpoint.address);
+		Assert.equals(9000, endpoint.port);
+		Assert.equals("", endpoint.resource);
+	}
+
+	public function testParsesReliableDatagramEndpoint():Void {
+		var endpoint = parseURL("rudp://127.0.0.1:9000");
+
+		Assert.equals(Protocol.RUDP, endpoint.protocol);
+		Assert.equals("127.0.0.1", endpoint.address);
 		Assert.equals(9000, endpoint.port);
 		Assert.equals("", endpoint.resource);
 	}

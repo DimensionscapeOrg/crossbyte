@@ -10,7 +10,9 @@ import crossbyte.io.File;
 import crossbyte.net.Socket;
 import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
+import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.utils.Logger;
+import crossbyte._internal.http.headers.AcceptEncoding;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte._internal.php.PHPRequest;
 import crossbyte._internal.php.PHPResponse;
@@ -31,6 +33,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __php:PHPBridge;
 	@:noCompletion private var __queryString:String = "";
 	@:noCompletion private var __requestPath:String = "/";
+	@:noCompletion private var __requestContentEncodings:Array<CompressionAlgorithm> = null;
 	@:noCompletion private var __awaitingBody:Bool = false;
 	@:noCompletion private var __expectBody:Int = 0;
 	@:noCompletion private var __bodyBuf:ByteArray = null;
@@ -270,6 +273,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (__httpVersion == "HTTP/1.1" && !__headers.exists("host")) {
 			__sendErrorResponse(400, "Bad Request");
+			return;
+		}
+
+		__requestContentEncodings = __parseContentEncodingHeader();
+		if (__requestContentEncodings == null) {
 			return;
 		}
 
@@ -538,6 +546,32 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
+		var responseData = data;
+		if (!headOnly && responseData != null && responseData.length > 0) {
+			var responseEncoding = __resolveResponseEncoding(statusCode, headers);
+			if (responseEncoding.reject) {
+				__sendErrorResponse(406, "Not Acceptable");
+				return;
+			}
+			if (responseEncoding.encoding != null) {
+				responseData = new ByteArray();
+				responseData.writeBytes(data, 0, data.length);
+				try {
+					responseData.compress(responseEncoding.encoding);
+				} catch (_:Dynamic) {
+					__sendErrorResponse(500, "Internal Server Error");
+					return;
+				}
+			}
+
+			if (responseEncoding.encoding != null) {
+				var headerValue = __encodingToHeaderValue(responseEncoding.encoding);
+				if (headerValue != null) {
+					response += "Content-Encoding: " + headerValue + "\r\n";
+				}
+			}
+		}
+
 		if (__config.corsEnabled) {
 			var allowOrigin = __computeAllowOrigin();
 			if (allowOrigin != null) {
@@ -553,14 +587,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		for (header in __config.customHeaders) {
 			response += header.name + ": " + __sanitizeHeaderValue(header.value) + "\r\n";
 		}
-		var headerLen:Int = (contentLength != null) ? contentLength : (data != null ? data.length : 0);
+		var headerLen:Int = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
 		response += "Content-Length: " + headerLen + "\r\n";
 		response += "\r\n";
 
 		__origin.writeUTFBytes(response);
 
-		if (!headOnly && data != null && data.length > 0) {
-			__origin.writeBytes(data, 0, data.length);
+		if (!headOnly && responseData != null && responseData.length > 0) {
+			__origin.writeBytes(responseData, 0, responseData.length);
 		}
 
 		__origin.flush();
@@ -609,6 +643,31 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
+		var responseData = bodyBytes;
+		if (!headOnly && responseData != null && responseData.length > 0) {
+			var responseEncoding = __resolveResponseEncoding(statusCode, headers);
+			if (responseEncoding.reject) {
+				__sendErrorResponse(406, "Not Acceptable");
+				return;
+			}
+			if (responseEncoding.encoding != null) {
+				responseData = new ByteArray();
+				responseData.writeBytes(bodyBytes, 0, bodyBytes.length);
+				try {
+					responseData.compress(responseEncoding.encoding);
+				} catch (_:Dynamic) {
+					__sendErrorResponse(500, "Internal Server Error");
+					return;
+				}
+			}
+			if (responseEncoding.encoding != null) {
+				var headerValue = __encodingToHeaderValue(responseEncoding.encoding);
+				if (headerValue != null) {
+					response += "Content-Encoding: " + headerValue + "\r\n";
+				}
+			}
+		}
+
 		if (__config.corsEnabled) {
 			var allowOrigin = __computeAllowOrigin();
 			if (allowOrigin != null) {
@@ -625,13 +684,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 			response += header.name + ": " + __sanitizeHeaderValue(header.value) + "\r\n";
 		}
 
-		response += "Content-Length: " + bodyBytes.length + "\r\n";
+		response += "Content-Length: " + (responseData != null ? responseData.length : 0) + "\r\n";
 		response += "\r\n";
 
 		__origin.writeUTFBytes(response);
 
-		if (!headOnly && bodyBytes.length > 0) {
-			__origin.writeBytes(bodyBytes, 0, bodyBytes.length);
+		if (!headOnly && responseData != null && responseData.length > 0) {
+			__origin.writeBytes(responseData, 0, responseData.length);
 		}
 
 		__origin.flush();
@@ -643,6 +702,147 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (__origin.connected) {
 			__origin.close();
 		}
+	}
+
+	@:noCompletion private function __parseContentEncodingHeader():Array<CompressionAlgorithm> {
+		var header:String = __headers.exists("content-encoding") ? __headers.get("content-encoding") : null;
+		if (header == null) {
+			return [];
+		}
+
+		var encodings:Array<CompressionAlgorithm> = [];
+		for (raw in header.split(",")) {
+			var token:String = StringTools.trim(raw);
+			if (token == "") {
+				continue;
+			}
+
+			var qIndex:Int = token.indexOf(";");
+			if (qIndex >= 0) {
+				token = StringTools.trim(token.substr(0, qIndex));
+			}
+
+			token = token.toLowerCase();
+			switch (token) {
+				case AcceptEncoding.GZIP:
+					encodings.push(CompressionAlgorithm.GZIP);
+				case "x-gzip":
+					encodings.push(CompressionAlgorithm.GZIP);
+				case AcceptEncoding.DEFLATE:
+					encodings.push(CompressionAlgorithm.DEFLATE);
+				case "lz4":
+					encodings.push(CompressionAlgorithm.LZ4);
+				case AcceptEncoding.IDENTITY:
+					continue;
+				default:
+					__sendErrorResponse(415, "Unsupported Content-Encoding: " + token);
+					return null;
+			}
+		}
+
+		return encodings;
+	}
+
+	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>):ResponseEncodingDecision {
+		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range")) {
+			return {encoding: null, reject: false};
+		}
+
+		var acceptEncoding:String = getHeader("accept-encoding");
+		if (acceptEncoding == null || StringTools.trim(acceptEncoding) == "") {
+			return {encoding: null, reject: false};
+		}
+
+		var explicitQ:Map<String, Float> = new Map();
+		var bestEncoding:Null<CompressionAlgorithm> = null;
+		var identityAllowed:Bool = true;
+		var hasIdentityToken:Bool = false;
+
+		for (raw in acceptEncoding.split(",")) {
+			var token:String = StringTools.trim(raw);
+			if (token == "") {
+				continue;
+			}
+
+			var q:Float = 1.0;
+			var parts = token.split(";");
+			token = StringTools.trim(parts[0]);
+			if (parts.length > 1) {
+				for (i in 1...parts.length) {
+					var param = StringTools.trim(parts[i]).toLowerCase();
+					if (StringTools.startsWith(param, "q=")) {
+						var qValue = StringTools.trim(param.substring(2));
+						var parsed = Std.parseFloat(qValue);
+						q = (parsed != parsed || parsed < 0 || parsed > 1) ? 0 : parsed;
+						break;
+					}
+				}
+			}
+
+			token = token.toLowerCase();
+			explicitQ.set(token, q);
+			switch (token) {
+				case AcceptEncoding.GZIP:
+				case AcceptEncoding.DEFLATE:
+				case "lz4":
+				case AcceptEncoding.IDENTITY:
+					hasIdentityToken = true;
+					if (q <= 0) {
+						identityAllowed = false;
+					}
+				default:
+			}
+		}
+
+		var wildcardQ:Float = explicitQ.exists(AcceptEncoding.DEFAULT) ? explicitQ.get(AcceptEncoding.DEFAULT) : -1;
+		var bestQ:Float = -1;
+		var supported = [
+			{name: AcceptEncoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
+			{name: AcceptEncoding.DEFLATE, algorithm: CompressionAlgorithm.DEFLATE},
+			{name: "lz4", algorithm: CompressionAlgorithm.LZ4}
+		];
+
+		for (option in supported) {
+			var q = explicitQ.exists(option.name) ? explicitQ.get(option.name) : wildcardQ;
+			if (q > 0 && q > bestQ) {
+				bestQ = q;
+				bestEncoding = option.algorithm;
+			}
+		}
+
+		if (bestEncoding != null) {
+			return {encoding: bestEncoding, reject: false};
+		}
+
+		if (hasIdentityToken && !identityAllowed) {
+			return {encoding: null, reject: true};
+		}
+
+		return {encoding: null, reject: false};
+	}
+
+	@:noCompletion private function __encodingToHeaderValue(algorithm:CompressionAlgorithm):Null<String> {
+		return switch (algorithm) {
+			case CompressionAlgorithm.DEFLATE: AcceptEncoding.DEFLATE;
+			case CompressionAlgorithm.GZIP: AcceptEncoding.GZIP;
+			case CompressionAlgorithm.LZ4: "lz4";
+			default: null;
+		}
+	}
+
+	@:noCompletion private function __hasResponseHeader(headers:Array<URLRequestHeader>, name:String):Bool {
+		if (headers == null) {
+			return false;
+		}
+
+		var needle = name.toLowerCase();
+		for (header in headers) {
+			if (header != null && header.name != null && header.name.toLowerCase() == needle) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	@:noCompletion private function __readLine(buffer:ByteArray):Null<String> {
@@ -967,6 +1167,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case 401: "Unauthorized";
 			case 403: "Forbidden";
 			case 404: "Not Found";
+			case 406: "Not Acceptable";
+			case 415: "Unsupported Media Type";
 			case 413: "Payload Too Large";
 			case 416: "Range Not Satisfiable";
 			case 417: "Expectation Failed";
@@ -1125,6 +1327,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __finishRequestBody():Void {
+		if (__requestBody != null && __requestBody.length > 0 && __requestContentEncodings != null && __requestContentEncodings.length > 0) {
+			try {
+				for (i in 0...__requestContentEncodings.length) {
+					var algorithm = __requestContentEncodings[__requestContentEncodings.length - 1 - i];
+					__requestBody.uncompress(algorithm);
+				}
+			} catch (e:Dynamic) {
+				__sendErrorResponse(415, "Unsupported Content-Encoding");
+				return;
+			}
+		}
+
 		var onComplete = __bodyComplete;
 		__bodyOverrideScriptName = null;
 		__bodyBuf = null;
@@ -1257,3 +1471,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return v == null ? "" : v.split("\r").join("").split("\n").join("");
 	}
 }
+
+typedef ResponseEncodingDecision = {
+	var encoding:Null<CompressionAlgorithm>;
+	var reject:Bool;
+}
+
+
+
