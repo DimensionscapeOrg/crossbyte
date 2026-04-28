@@ -1,0 +1,6 @@
+--cwd ../..
+-cp src
+-cp samples/worker
+-main WorkerSample
+--cpp export/sample-worker-check
+-D no-compilation

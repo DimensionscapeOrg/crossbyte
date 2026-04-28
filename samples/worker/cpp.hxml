@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/worker
+-main WorkerSample
+--cpp export/worker
