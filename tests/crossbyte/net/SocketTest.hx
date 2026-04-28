@@ -176,7 +176,9 @@ class SocketTest extends utest.Test {
 	}
 
 	public function testIpv6ClientServerEchoOnLoopback():Void {
-		if (!requireIpv6Loopback()) {
+		var ipv6Supported = requireIpv6Loopback();
+		if (!ipv6Supported) {
+			Assert.isFalse(ipv6Supported);
 			return;
 		}
 
