@@ -30,6 +30,7 @@ import haxe.io.Error;
 import cpp.NativeSocket;
 import cpp.NativeString;
 import cpp.Pointer;
+import crossbyte._internal.net.NativeSocketAddress;
 
 private class SocketInput extends haxe.io.Input {
 	var __s:Dynamic;
@@ -147,7 +148,11 @@ class Socket {
 	}
 
 	public function close():Void {
-		NativeSocket.socket_close(__s);
+		var socket = __s;
+		__s = null;
+		if (socket != null) {
+			NativeSocket.socket_close(socket);
+		}
 		untyped {
 			var input:SocketInput = cast input;
 			var output:SocketOutput = cast output;
@@ -216,7 +221,7 @@ class Socket {
 	}
 
 	public function accept():Socket {
-		var c = NativeSocket.socket_accept(__s);
+		var c = NativeSocketAddress.accept(__s);
 		var s = Type.createEmptyInstance(Socket);
 		s.__s = c;
 		s.input = new SocketInput(c);
@@ -225,41 +230,19 @@ class Socket {
 	}
 
 	public function peer():{host:Host, port:Int} {
-		var a:Dynamic = NativeSocket.socket_peer(__s);
+		var a:Dynamic = NativeSocketAddress.peerInfo(__s);
 		if (a == null) {
 			return null;
 		}
-		var h = new Host("127.0.0.1");
-		if (a.length > 2) {
-			var bytes = Bytes.alloc(16);
-			for (i in 0...16) {
-				bytes.set(i, a[2 + i]);
-			}
-			untyped h.ipv6 = bytes.getData();
-			untyped h.ip = 0;
-		} else {
-			untyped h.ip = a[0];
-		}
-		return {host: h, port: a[1]};
+		return {host: __hostFromNativeAddress(a), port: a[1]};
 	}
 
 	public function host():{host:Host, port:Int} {
-		var a:Dynamic = NativeSocket.socket_host(__s);
+		var a:Dynamic = NativeSocketAddress.hostInfo(__s);
 		if (a == null) {
 			return null;
 		}
-		var h = new Host("127.0.0.1");
-		if (a.length > 2) {
-			var bytes = Bytes.alloc(16);
-			for (i in 0...16) {
-				bytes.set(i, a[2 + i]);
-			}
-			untyped h.ipv6 = bytes.getData();
-			untyped h.ip = 0;
-		} else {
-			untyped h.ip = a[0];
-		}
-		return {host: h, port: a[1]};
+		return {host: __hostFromNativeAddress(a), port: a[1]};
 	}
 
 	public function setTimeout(timeout:Float):Void {
@@ -289,6 +272,28 @@ class Socket {
 		return @:fixed {
 			read: neko_array[0], write: neko_array[1], others: neko_array[2]
 		};
+	}
+
+	private static function __hostFromNativeAddress(address:Dynamic):Host {
+		var host:Host = Type.createEmptyInstance(Host);
+
+		if (address.length > 2) {
+			var bytes = Bytes.alloc(16);
+			for (i in 0...16) {
+				bytes.set(i, address[2 + i]);
+			}
+			var ipv6 = bytes.getData();
+			untyped host.ip = 0;
+			untyped host.ipv6 = ipv6;
+			untyped host.host = NativeSocket.host_to_string_ipv6(ipv6);
+		} else {
+			var ip:Int = address[0];
+			untyped host.ip = ip;
+			untyped host.ipv6 = null;
+			untyped host.host = NativeSocket.host_to_string(ip);
+		}
+
+		return host;
 	}
 }
 

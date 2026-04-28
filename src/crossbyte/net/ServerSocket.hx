@@ -218,7 +218,7 @@ class ServerSocket extends EventDispatcher {
 		cbSocket.__connected = true;
 		cbSocket.__timestamp = Sys.time();
 
-		cbSocket.__host = socket.peer().host.host;
+		cbSocket.__host = socket.peer().host.toString();
 		cbSocket.__port = socket.peer().port;
 
 		cbSocket.__output = new ByteArray();
