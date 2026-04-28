@@ -144,6 +144,10 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __usesHostLoop:Bool = false;
 	@:noCompletion private var __didInit:Bool = false;
 	@:noCompletion private var __didExit:Bool = false;
+	// Hot-path tick events are reused to reduce per-frame allocation churn.
+	// These events are ephemeral during dispatch and must not be retained.
+	@:noCompletion private var __pooledTickEvent:TickEvent;
+	@:noCompletion private var __pooledTickEventInUse:Bool = false;
 
 	#if cpp
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
@@ -247,9 +251,7 @@ final class CrossByte extends EventDispatcher {
 		var frameStart:Float = Timer.stamp();
 		__dt = delta;
 		__timer.advanceTime(delta);
-		if (hasEventListener(TickEvent.TICK)) {
-			dispatchEvent(new TickEvent(TickEvent.TICK, delta));
-		}
+		__dispatchTick(delta);
 		if (!__isRunning) {
 			__cpuTime = Timer.stamp() - frameStart;
 			return;
@@ -386,6 +388,36 @@ final class CrossByte extends EventDispatcher {
 		}
 	}
 
+	@:noCompletion private inline function __dispatchTick(delta:Float):Void {
+		if (!hasEventListener(TickEvent.TICK)) {
+			return;
+		}
+
+		if (__pooledTickEventInUse) {
+			dispatchEvent(new TickEvent(TickEvent.TICK, delta));
+			return;
+		}
+
+		if (__pooledTickEvent == null) {
+			__pooledTickEvent = new TickEvent(TickEvent.TICK, delta);
+		} else {
+			__pooledTickEvent.delta = delta;
+			@:privateAccess {
+				__pooledTickEvent.target = null;
+				__pooledTickEvent.currentTarget = null;
+			}
+		}
+
+		__pooledTickEventInUse = true;
+		try {
+			dispatchEvent(__pooledTickEvent);
+		} catch (error:Dynamic) {
+			__pooledTickEventInUse = false;
+			throw error;
+		}
+		__pooledTickEventInUse = false;
+	}
+
 	@:noCompletion private function __finalizeExit():Void {
 		if (__didExit) {
 			return;
@@ -439,9 +471,7 @@ final class CrossByte extends EventDispatcher {
 	private #if final inline #end function __defaultMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
-		if (hasEventListener(TickEvent.TICK)) {
-			dispatchEvent(new TickEvent(TickEvent.TICK, __dt));
-		}
+		__dispatchTick(__dt);
 		if (!__isRunning) {
 			return;
 		}
@@ -453,9 +483,7 @@ final class CrossByte extends EventDispatcher {
 	private #if final inline #end function __pollBasedMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
-		if (hasEventListener(TickEvent.TICK)) {
-			dispatchEvent(new TickEvent(TickEvent.TICK, __dt));
-		}
+		__dispatchTick(__dt);
 		if (!__isRunning) {
 			return;
 		}
