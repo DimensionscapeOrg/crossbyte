@@ -157,7 +157,9 @@ class ServerSocket extends EventDispatcher {
 		listening = false;
 		bound = false;
 		__closed = true;
-		__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+		if (__cbInstance != null) {
+			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+		}
 		__cbInstance = null;
 	}
 
@@ -245,12 +247,22 @@ class ServerSocket extends EventDispatcher {
 		var sysSocket = null;
 
 		try {
+			if (__serverSocket == null || !listening) {
+				return;
+			}
+			var ready = Socket.select([__serverSocket], [], [], 0);
+			if (ready.read.length == 0 || ready.read[0] != __serverSocket) {
+				return;
+			}
+
 			sysSocket = __serverSocket.accept();
 			var socket:CBSocket = __fromSocket(sysSocket);
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 		} catch (e:Error) {
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
+			if (!__isBlockedError(e)) {
+				close();
+				dispatchEvent(new Event(Event.CLOSE));
+			}
 		} catch (e:Dynamic) {
 			// Do nothing.
 		}
@@ -285,5 +297,14 @@ class ServerSocket extends EventDispatcher {
 
 	private function get_isSupported():Bool {
 		return true;
+	}
+
+	@:noCompletion private function __isBlockedError(error:Error):Bool {
+		return switch (error) {
+			case Error.Blocked: true;
+			case Error.Custom(value):
+				Std.isOfType(value, Error) && __isBlockedError(cast value);
+			default: false;
+		}
 	}
 }

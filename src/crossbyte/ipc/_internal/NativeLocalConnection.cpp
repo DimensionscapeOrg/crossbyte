@@ -1,172 +1,191 @@
+#include <hxcpp.h>
+
+#include "NativeLocalConnection.h"
+
 #include <Windows.h>
-#include <iostream>
-#include <thread>
 
-extern "C" HANDLE native_createInboundPipe(const char* name)
+#include <chrono>
+#include <string>
+
+namespace
 {
-	std::string pipeName = std::string("\\\\.\\pipe\\") + name;
+	constexpr DWORD PIPE_BUFFER_SIZE = 4096;
+	constexpr DWORD CONNECT_TIMEOUT_MS = 5000;
+	constexpr DWORD CONNECT_WAIT_SLICE_MS = 50;
 
-	HANDLE hPipe = CreateNamedPipeA(
-					   pipeName.c_str(),
-					   PIPE_ACCESS_DUPLEX,
-					   PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
-					   PIPE_UNLIMITED_INSTANCES,
-					   4096, 4096, 0, NULL
-				   );
-
-	if (hPipe == INVALID_HANDLE_VALUE)
+	std::string makePipeName(const char* name)
 	{
-		//std::cerr << "Failed to create Inbound pipe. Error: " << GetLastError() << "\n";
-		return NULL;
+		return std::string("\\\\.\\pipe\\") + (name == nullptr ? "" : name);
 	}
 
-	//std::cout << "Inbound pipe created (Message Mode, Non-Blocking): " << pipeName << std::endl;
-	return hPipe;
-}
-
-extern "C" bool native_accept(HANDLE hPipe)
-{
-    if (hPipe == NULL) return false;
-
-
-    BOOL success = ConnectNamedPipe(hPipe, NULL);
-    DWORD error = GetLastError();
-
-    if (success || error == ERROR_PIPE_CONNECTED)
-    {
-        //std::cout << "Client connected!\n";
-        return true; //connection accepted, we will handle new pipe creation on the haxe side
-    }
-
-    if (error == ERROR_IO_PENDING)
-    {
-        //std::cout << "Client connection pending...\n";
-        return false; // Still waiting, should check again later on the haxe side?
-    }
-
-    return false;
-}
-
-extern "C" int native_read(HANDLE hPipe, unsigned char* buffer, int bufferSize)
-{
-	if (hPipe == NULL) return false;
-
-	DWORD bytesRead;
-	if (!ReadFile(hPipe, buffer, bufferSize, &bytesRead, NULL))
+	bool isInvalid(HANDLE pipe)
 	{
-		int errCode = GetLastError();
-		
-		if(errCode == 234){
-			return 0;
-		}
-		
-		return errCode;
+		return pipe == nullptr || pipe == INVALID_HANDLE_VALUE;
 	}
-	
-	return 0;
 }
 
-extern "C" bool native_write(void* hPipe, const unsigned char* buffer, int bufferSize)
+extern "C" void* native_createInboundPipe(const char* name)
 {
-	if (hPipe == NULL || buffer == NULL || bufferSize <= 0) return false;
+	std::string pipeName = makePipeName(name);
 
-	DWORD bytesWritten;
-	if (!WriteFile((HANDLE)hPipe, buffer, bufferSize, &bytesWritten, NULL))
+	HANDLE pipe = CreateNamedPipeA(
+		pipeName.c_str(),
+		PIPE_ACCESS_DUPLEX,
+		PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
+		PIPE_UNLIMITED_INSTANCES,
+		PIPE_BUFFER_SIZE,
+		PIPE_BUFFER_SIZE,
+		0,
+		nullptr);
+
+	return pipe == INVALID_HANDLE_VALUE ? nullptr : pipe;
+}
+
+extern "C" bool native_accept(void* pipe)
+{
+	HANDLE handle = static_cast<HANDLE>(pipe);
+	if (isInvalid(handle))
 	{
-		// std::cerr << "WriteFile failed. Error: " << GetLastError() << "\n";
 		return false;
 	}
 
-	return bytesWritten == bufferSize;
-}
-
-// Close the named pipe
-extern "C" void native_close(void* hPipe)
-{
-	if (hPipe == NULL) return;
-
-	std::cout << "Closing named pipe...\n";
-	CloseHandle((HANDLE)hPipe);
-}
-
-extern "C" HANDLE native_connect(const char* pipeName)
-{
-    std::string fullPipeName = std::string("\\\\.\\pipe\\") + pipeName;
-
-    std::cout << "Attempting to connect to pipe: " << fullPipeName << "...\n";
-
-    HANDLE hPipe;
-	// Number of retry attempts
-    int retries = 5; 
-
-    while (retries-- > 0)
-    {
-        hPipe = CreateFileA(
-            fullPipeName.c_str(),
-            GENERIC_READ | GENERIC_WRITE, // Allow reading and writing
-            0, // No sharing
-            NULL, // default security
-            OPEN_EXISTING, //Connects to an existing pipe
-            0, // Default attributes
-            NULL // No template?
-        );
-
-        if (hPipe != INVALID_HANDLE_VALUE)
-        {
-            std::cout << "Successfully connected to named pipe!\n";
-            return hPipe;
-        }
-
-        DWORD error = GetLastError();
-        std::cerr << "Failed to connect to named pipe. Error: " << error << "\n";
-
-        if (error == ERROR_PIPE_BUSY)
-        {
-            std::cout << "Pipe is busy, waiting...\n";
-            if (!WaitNamedPipeA(fullPipeName.c_str(), 500))
-            {
-                std::cerr << "WaitNamedPipe failed. Error: " << GetLastError() << "\n";
-            }
-        }
-        else if (error == ERROR_FILE_NOT_FOUND)
-        {
-            std::cerr << "Named pipe does not exist. Make sure the server is running.\n";
-			// Wait a bit before retrying. Should this be more or less?
-            Sleep(500); 
-        }
-        else
-        {
-           // std::cerr << "Unexpected error. Exiting.\n";
-            return NULL;
-        }
-    }
-
-    //std::cerr << "Failed to connect after multiple attempts.\n";
-    return NULL;
-}
-
-extern "C" int native_getBytesAvailable(HANDLE hPipe)
-{
-	DWORD bytesAvailable;
-	if (PeekNamedPipe(hPipe, NULL, 0, NULL, &bytesAvailable, NULL))
+	BOOL success = ConnectNamedPipe(handle, nullptr);
+	if (success)
 	{
-		return bytesAvailable;
+		return true;
 	}
-	// If no data available
-	return 0; 
+
+	DWORD error = GetLastError();
+	return error == ERROR_PIPE_CONNECTED;
 }
 
-extern "C" bool native_isOpen(HANDLE hPipe)
+extern "C" int native_read(void* pipe, unsigned char* buffer, int bufferSize)
 {
-	DWORD bytesAvailable;
-	if (!PeekNamedPipe(hPipe, NULL, 0, NULL, &bytesAvailable, NULL))
+	HANDLE handle = static_cast<HANDLE>(pipe);
+	if (isInvalid(handle) || buffer == nullptr || bufferSize <= 0)
 	{
-		if (GetLastError() == ERROR_BROKEN_PIPE)
+		return ERROR_INVALID_PARAMETER;
+	}
+
+	DWORD bytesRead = 0;
+	if (!ReadFile(handle, buffer, static_cast<DWORD>(bufferSize), &bytesRead, nullptr))
+	{
+		DWORD error = GetLastError();
+		if (error == ERROR_MORE_DATA)
 		{
-			// Pipe is closed
-			return false; 
+			return 0;
+		}
+		return static_cast<int>(error);
+	}
+
+	return 0;
+}
+
+extern "C" bool native_write(void* pipe, const unsigned char* buffer, int bufferSize)
+{
+	HANDLE handle = static_cast<HANDLE>(pipe);
+	if (isInvalid(handle) || buffer == nullptr || bufferSize <= 0)
+	{
+		return false;
+	}
+
+	DWORD bytesWritten = 0;
+	if (!WriteFile(handle, buffer, static_cast<DWORD>(bufferSize), &bytesWritten, nullptr))
+	{
+		return false;
+	}
+
+	return bytesWritten == static_cast<DWORD>(bufferSize);
+}
+
+extern "C" void native_close(void* pipe)
+{
+	HANDLE handle = static_cast<HANDLE>(pipe);
+	if (isInvalid(handle))
+	{
+		return;
+	}
+
+	CloseHandle(handle);
+}
+
+extern "C" void* native_connect(const char* name)
+{
+	std::string pipeName = makePipeName(name);
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
+
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		HANDLE pipe = CreateFileA(
+			pipeName.c_str(),
+			GENERIC_READ | GENERIC_WRITE,
+			0,
+			nullptr,
+			OPEN_EXISTING,
+			0,
+			nullptr);
+
+		if (pipe != INVALID_HANDLE_VALUE)
+		{
+			DWORD mode = PIPE_READMODE_MESSAGE | PIPE_NOWAIT;
+			SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+			return pipe;
+		}
+
+		DWORD error = GetLastError();
+		if (error == ERROR_PIPE_BUSY)
+		{
+			WaitNamedPipeA(pipeName.c_str(), CONNECT_WAIT_SLICE_MS);
+		}
+		else if (error == ERROR_FILE_NOT_FOUND)
+		{
+			Sleep(CONNECT_WAIT_SLICE_MS);
+		}
+		else
+		{
+			return nullptr;
 		}
 	}
-	// Pipe is still open
-	return true; 
+
+	return nullptr;
+}
+
+extern "C" int native_getBytesAvailable(void* pipe)
+{
+	HANDLE handle = static_cast<HANDLE>(pipe);
+	if (isInvalid(handle))
+	{
+		return -1;
+	}
+
+	DWORD bytesAvailable = 0;
+	if (PeekNamedPipe(handle, nullptr, 0, nullptr, &bytesAvailable, nullptr))
+	{
+		return static_cast<int>(bytesAvailable);
+	}
+
+	DWORD error = GetLastError();
+	if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_PIPE_NOT_CONNECTED)
+	{
+		return -1;
+	}
+	return 0;
+}
+
+extern "C" bool native_isOpen(void* pipe)
+{
+	HANDLE handle = static_cast<HANDLE>(pipe);
+	if (isInvalid(handle))
+	{
+		return false;
+	}
+
+	DWORD bytesAvailable = 0;
+	if (PeekNamedPipe(handle, nullptr, 0, nullptr, &bytesAvailable, nullptr))
+	{
+		return true;
+	}
+
+	DWORD error = GetLastError();
+	return error != ERROR_BROKEN_PIPE && error != ERROR_INVALID_HANDLE && error != ERROR_PIPE_NOT_CONNECTED;
 }

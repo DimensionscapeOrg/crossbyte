@@ -104,7 +104,7 @@ final class SocketRegistry {
 			return;
 		}
 
-		var res = Socket.select(read, null, null, timeout);
+		var res = Socket.select(read, [], [], timeout);
 
 		for (s in res.read) {
 			var cb:IPollableSocket = cast s.custom;
