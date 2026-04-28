@@ -8,12 +8,12 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.NativeProcessEvent;
 import crossbyte.events.ThreadEvent;
 import crossbyte.errors.ArgumentError;
+import haxe.io.Bytes;
+import haxe.io.Eof;
 
 #if (sys && (windows || linux || mac || macos))
-import haxe.io.Bytes;
 import haxe.io.Input;
 import haxe.io.Output;
-import haxe.io.Eof;
 import sys.io.Process;
 import sys.thread.Thread;
 #else
