@@ -25,6 +25,7 @@ class TestMain {
 		runner.addCase(new crossbyte.sys.WorkerTest());
 		runner.addCase(new crossbyte.sys.TaskPoolTest());
 		runner.addCase(new crossbyte.net.DatagramSocketTest());
+		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());

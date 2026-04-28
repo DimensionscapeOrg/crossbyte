@@ -82,6 +82,12 @@ jobs:
           haxelib install utest --quiet
           haxelib install hxcpp --quiet
 
+      - name: Build poll backend tests
+        run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-poll-backend-test -main crossbyte._internal.socket.poll.PollBackendTestMain
+
+      - name: Run poll backend tests
+        run: .\export\cpp-poll-backend-test\PollBackendTestMain.exe
+
       - name: Build HTTP client tests
         run: haxe -cp src -cp tests -lib utest -D windows -cpp export\cpp-http-client-test -main crossbyte._internal.http.HttpTestMain
 
@@ -101,3 +107,48 @@ jobs:
       - name: Run websocket echo sample
         working-directory: samples/websocket-echo
         run: .\build\websocket-echo\WebSocketEchoSample.exe
+
+  libuv-extension:
+    name: libuv poll backend extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout CrossByte
+        uses: actions/checkout@v4
+        with:
+          path: crossbyte
+
+      - name: Checkout crossbyte-libuv
+        uses: actions/checkout@v4
+        with:
+          repository: DimensionscapeOrg/crossbyte-libuv
+          path: crossbyte-libuv
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: "4.3.7"
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libuv1-dev
+
+      - name: Install haxelibs
+        run: |
+          haxelib install utest --quiet
+          haxelib install hxcpp --quiet
+          haxelib dev crossbyte ./crossbyte
+          haxelib dev crossbyte-libuv ./crossbyte-libuv
+
+      - name: Run extension non-native tests
+        working-directory: crossbyte-libuv
+        run: haxe test.hxml
+
+      - name: Build extension native tests
+        working-directory: crossbyte-libuv
+        run: haxe native-test.hxml
+
+      - name: Run extension native tests
+        working-directory: crossbyte-libuv
+        run: ./export/native-test/LibuvNativeTestMain

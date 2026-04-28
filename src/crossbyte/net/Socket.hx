@@ -2,9 +2,6 @@ package crossbyte.net;
 
 import haxe.ds.StringMap;
 import haxe.ds.IntMap;
-#if cpp
-import cpp.net.Poll;
-#end
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
 import haxe.io.Bytes;
