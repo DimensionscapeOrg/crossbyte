@@ -226,10 +226,12 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__pendingClose = false;
 		__buffer = null;
 
-		if (__isWrite) {
+		if (__output != null) {
 			__output.close();
 			__output = null;
-		} else {
+		}
+
+		if (__input != null) {
 			__input.close();
 			__input = null;
 		}
@@ -1286,21 +1288,45 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	@:noCompletion private function __checkIfReadable():Void {
 		__checkIfOpen();
 
-		if (__isWrite) {
+		if (__isAsync) {
+			if (__fileMode != READ) {
+				throw new Error("This FileStream object does not have a input stream opened.", 2092);
+			}
+			return;
+		}
+
+		if (__input == null) {
 			throw new Error("This FileStream object does not have a input stream opened.", 2092);
+		}
+
+		if (__output != null) {
+			__input.seek(__getSynchronousPosition(), FileSeek.SeekBegin);
 		}
 	}
 
 	@:noCompletion private function __checkIfWritable():Void {
 		__checkIfOpen();
 
-		if (!__isWrite) {
+		if (__output == null) {
 			throw new Error("This FileStream object does not have a output stream opened.", 2092);
+		}
+
+		if (!__isAsync && __input != null) {
+			__output.seek(__getSynchronousPosition(), FileSeek.SeekBegin);
 		}
 	}
 
 	@:noCompletion private function __getStreamBytesAvailable():Int {
-		if (__isWrite) {
+		if (!__isAsync && __input != null && __output != null) {
+			var pos = __getSynchronousPosition();
+			__output.seek(0, FileSeek.SeekEnd);
+			var length = __output.tell();
+			__output.seek(pos, FileSeek.SeekBegin);
+			__input.seek(pos, FileSeek.SeekBegin);
+			return length - pos;
+		}
+
+		if (__output != null && __input == null) {
 			var pos:Int = position;
 
 			if (__isAsync) {
@@ -1335,6 +1361,22 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 
 		return length - pos;
+	}
+
+	@:noCompletion private function __getSynchronousPosition():Int {
+		if (__input != null && __output != null) {
+			return Std.int(Math.max(__input.tell(), __output.tell()));
+		}
+
+		if (__output != null) {
+			return __output.tell();
+		}
+
+		if (__input != null) {
+			return __input.tell();
+		}
+
+		return position;
 	}
 
 	@:noCompletion private function __openFile():Void {
@@ -1380,15 +1422,20 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				try {
 					__output = HaxeFile.update(__file.nativePath, true);
 					__output.seek(0, sys.io.FileSeek.SeekBegin);
+					if (!__isAsync) {
+						__input = HaxeFile.read(__file.nativePath, true);
+						__input.seek(0, FileSeek.SeekBegin);
+					}
 					__isWrite = true;
 				} catch (d:Dynamic) {
 					throw new IOError("Invalid parameters.");
 				}
 		}
 
-		if (__isWrite) {
+		if (__output != null) {
 			__output.bigEndian = true;
-		} else {
+		}
+		if (__input != null) {
 			__input.bigEndian = true;
 		}
 	}
@@ -1427,7 +1474,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	}
 
 	@:noCompletion private function get_endian():Endian {
-		if (__isWrite) {
+		if (__output != null) {
 			return __output.bigEndian ? BIG_ENDIAN : LITTLE_ENDIAN;
 		}
 
@@ -1435,12 +1482,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	}
 
 	@:noCompletion private function set_endian(value:Endian):Endian {
-		if (__isWrite) {
+		if (__output != null) {
 			__output.bigEndian = value == BIG_ENDIAN ? true : false;
-			return value;
 		}
 
-		__input.bigEndian = value == BIG_ENDIAN ? true : false;
+		if (__input != null) {
+			__input.bigEndian = value == BIG_ENDIAN ? true : false;
+		}
+
 		return value;
 	}
 
@@ -1468,11 +1517,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		if (__positionDirty) {
 			if (!__isAsync) {
 				__positionDirty = false;
-				if (__isWrite) {
-					return position = __output.tell();
-				}
-
-				return position = __input.tell();
+				return position = __getSynchronousPosition();
 			}
 			if (__fileMode == READ) {
 				__fileStreamMutex.acquire();
@@ -1487,9 +1532,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	@:noCompletion private function set_position(value:UInt):UInt {
 		if (__isOpen) {
 			if (!__isAsync) {
-				if (__isWrite) {
+				if (__output != null) {
 					__output.seek(value, FileSeek.SeekBegin);
-				} else {
+				}
+				if (__input != null) {
 					__input.seek(value, FileSeek.SeekBegin);
 				}
 			} else {
