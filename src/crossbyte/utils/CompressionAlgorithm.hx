@@ -10,30 +10,41 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 	**/
 	public var DEFLATE = 0;
 
-	// GZIP;
-	// public var LZMA = 1;
+	/**
+		Defines the string to use for the gzip compression algorithm.
+	**/
+	public var GZIP = 1;
 
 	/**
-		Defines the string to use for the zlib compression algorithm.
+		Defines the string to use for the LZ4 compression algorithm.
 	**/
-	// public var ZLIB = 2;
 	public var LZ4 = 3;
 
-	@:from private static function fromString(value:String):CompressionAlgorithm {
+	/**
+		Converts a lowercase token from an HTTP Content-Encoding or Accept-Encoding
+		header into a supported compression algorithm.
+	**/
+	public static function fromString(value:String):CompressionAlgorithm {
+		if (value == null) {
+			return null;
+		}
+
 		return switch (value) {
 			case "deflate": DEFLATE;
-			// case "lzma": LZMA;
-			// case "zlib": ZLIB;
+			case "gzip": GZIP;
 			case "lz4": LZ4;
 			default: null;
 		}
 	}
 
+	@:from private static function fromStringInternal(value:String):CompressionAlgorithm {
+		return fromString(value);
+	}
+
 	@:to private function toString():String {
 		return switch (cast this : CompressionAlgorithm) {
 			case CompressionAlgorithm.DEFLATE: "deflate";
-			// case CompressionAlgorithm.LZMA: "lzma";
-			///case CompressionAlgorithm.ZLIB: "zlib";
+			case CompressionAlgorithm.GZIP: "gzip";
 			case CompressionAlgorithm.LZ4: "lz4";
 			default: null;
 		}
