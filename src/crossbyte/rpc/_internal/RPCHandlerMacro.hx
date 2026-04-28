@@ -1,6 +1,7 @@
 package crossbyte.rpc._internal;
 
 #if macro
+import crossbyte.rpc._internal.RPCContractMacroTools;
 import haxe.macro.ComplexTypeTools;
 import haxe.macro.Context;
 import haxe.macro.Expr;
@@ -9,6 +10,8 @@ import haxe.macro.Type;
 using haxe.macro.Tools;
 
 class RPCHandlerMacro {
+	static inline final DIRECT_SWITCH_MAX_METHODS:Int = 8;
+
 	static function initReaders():Map<String, Expr->Expr> {
 		var m = new Map<String, Expr->Expr>();
 		m.set("Int", inp -> macro $inp.readInt());
@@ -54,29 +57,98 @@ class RPCHandlerMacro {
 
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
-
 		injectPing(fields);
-
 		var methods = new Array<MethodInfo>();
+		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcHandler");
+		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 
-		for (f in fields) {
-			if (f.name != "new" && ((f.meta != null && f.meta.filter(m -> m.name == ":rpc").length > 0) || f.name == "ping")) {
-				switch f.kind {
+		if (contractMethods != null) {
+			if (manualRpcFields.length > 0) {
+				Context.error("Do not mix @:rpcHandler(...) with field-level @:rpc methods in the same class.", manualRpcFields[0].pos);
+			}
+
+			for (method in contractMethods) {
+				if (method.name == "ping") {
+					Context.error("RPC contract method name 'ping' is reserved.", method.pos);
+				}
+
+				final implementation = findField(fields, method.name);
+				if (implementation == null) {
+					Context.error("RPC handler is missing implementation for contract method '" + method.name + "'.", method.pos);
+				}
+
+				switch (implementation.kind) {
 					case FFun(fn):
-						if (fn.args.length > 8) {
-							Context.error("RPC limited to 8 params", f.pos);
+						if (fn.args.length != method.args.length) {
+							Context.error("RPC handler method '" + method.name + "' must declare " + method.args.length + " arguments.", implementation.pos);
 						}
-						var op = crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(f.name));
+
+						for (i in 0...method.args.length) {
+							final expected = method.args[i];
+							final actual = fn.args[i];
+							actual.opt = expected.opt;
+							if (actual.type == null) {
+								actual.type = expected.type;
+							} else if (!sameType(actual.type, expected.type, implementation.pos)) {
+								Context.error("RPC handler argument type mismatch for '" + method.name + "." + actual.name + "'.", implementation.pos);
+							}
+						}
+
+						final expectedRet = method.responseType != null ? method.responseType : method.ret;
+						if (fn.ret == null) {
+							fn.ret = expectedRet;
+						} else if (!sameType(fn.ret, expectedRet, implementation.pos)) {
+							Context.error("RPC handler return type mismatch for '" + method.name + "'. Response contracts should return the payload type on the handler side.", implementation.pos);
+						}
+
 						methods.push({
 							idx: -1,
-							name: f.name,
-							pos: f.pos,
-							args: fn.args,
-							ret: fn.ret != null ? fn.ret : macro :Void,
-							op: op
+							name: method.name,
+							pos: implementation.pos,
+							args: method.args,
+							ret: expectedRet,
+							op: method.op
 						});
 					default:
-						Context.error("Field " + f.name + " is @:rpc but not a function", f.pos);
+						Context.error("RPC handler contract method '" + method.name + "' must be implemented as a function.", implementation.pos);
+				}
+			}
+
+			final pingField = findField(fields, "ping");
+			if (pingField != null) {
+				switch (pingField.kind) {
+					case FFun(fn):
+						methods.push({
+							idx: -1,
+							name: "ping",
+							pos: pingField.pos,
+							args: fn.args,
+							ret: fn.ret != null ? fn.ret : macro :Void,
+							op: crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString("ping"))
+						});
+					default:
+				}
+			}
+		} else {
+			for (f in fields) {
+				if (f.name != "new" && ((f.meta != null && f.meta.filter(m -> m.name == ":rpc").length > 0) || f.name == "ping")) {
+					switch f.kind {
+						case FFun(fn):
+							if (fn.args.length > 8) {
+								Context.error("RPC limited to 8 params", f.pos);
+							}
+							var op = crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(f.name));
+							methods.push({
+								idx: -1,
+								name: f.name,
+								pos: f.pos,
+								args: fn.args,
+								ret: fn.ret != null ? fn.ret : macro :Void,
+								op: op
+							});
+						default:
+							Context.error("Field " + f.name + " is @:rpc but not a function", f.pos);
+					}
 				}
 			}
 		}
@@ -86,119 +158,123 @@ class RPCHandlerMacro {
 			return fields;
 		}
 
-		var mVal = n;
+		var newFields:Array<Field> = [];
+		final usePerfectHash = (n > DIRECT_SWITCH_MAX_METHODS);
 
-		function h1(op:Int):Int {
-			var x = op;
-			x ^= (x >>> 16);
-			x *= 0x7feb352d;
-			x ^= (x >>> 15);
-			x *= 0x846ca68b;
-			x ^= (x >>> 16);
-			x &= 0x7fffffff;
-			return x % mVal;
-		}
+		if (usePerfectHash) {
+			var mVal = n;
 
-		function h2(op:Int, d:Int):Int {
-			var x = op + d * 0x9e3779b9;
-			x ^= (x >>> 17);
-			x *= 0xed5ad4bb;
-			x ^= (x >>> 11);
-			x *= 0xac4c1b51;
-			x ^= (x >>> 15);
-			x *= 0x31848bab;
-			x ^= (x >>> 14);
-			x &= 0x7fffffff;
-			return x % n;
-		}
-
-		var buckets = [for (_ in 0...mVal) new Array<Int>()];
-		for (i in 0...n) {
-			buckets[h1(methods[i].op)].push(i);
-		}
-		buckets.sort((a, b) -> b.length - a.length);
-
-		var G = new Array<Int>();
-		G.resize(mVal);
-		for (i in 0...mVal) {
-			G[i] = -1;
-		}
-
-		var T = new Array<Int>();
-		T.resize(n);
-		for (i in 0...n) {
-			T[i] = -1;
-		}
-
-		var used = new Array<Bool>();
-		used.resize(n);
-		for (i in 0...n) {
-			used[i] = false;
-		}
-
-		for (bucket in buckets) {
-			if (bucket.length == 0) {
-				continue;
+			function h1(op:Int):Int {
+				var x = op;
+				x ^= (x >>> 16);
+				x *= 0x7feb352d;
+				x ^= (x >>> 15);
+				x *= 0x846ca68b;
+				x ^= (x >>> 16);
+				x &= 0x7fffffff;
+				return x % mVal;
 			}
 
-			var b = h1(methods[bucket[0]].op);
-			var d = 0;
-			while (true) {
-				var ok = true;
-				var slots = new Array<Int>();
+			function h2(op:Int, d:Int):Int {
+				var x = op + d * 0x9e3779b9;
+				x ^= (x >>> 17);
+				x *= 0xed5ad4bb;
+				x ^= (x >>> 11);
+				x *= 0xac4c1b51;
+				x ^= (x >>> 15);
+				x *= 0x31848bab;
+				x ^= (x >>> 14);
+				x &= 0x7fffffff;
+				return x % n;
+			}
 
-				for (id in bucket) {
-					var slot = h2(methods[id].op, d);
-					if (used[slot] || slots.indexOf(slot) != -1) {
-						ok = false;
+			var buckets = [for (_ in 0...mVal) new Array<Int>()];
+			for (i in 0...n) {
+				buckets[h1(methods[i].op)].push(i);
+			}
+			buckets.sort((a, b) -> b.length - a.length);
+
+			var G = new Array<Int>();
+			G.resize(mVal);
+			for (i in 0...mVal) {
+				G[i] = -1;
+			}
+
+			var T = new Array<Int>();
+			T.resize(n);
+			for (i in 0...n) {
+				T[i] = -1;
+			}
+
+			var used = new Array<Bool>();
+			used.resize(n);
+			for (i in 0...n) {
+				used[i] = false;
+			}
+
+			for (bucket in buckets) {
+				if (bucket.length == 0) {
+					continue;
+				}
+
+				var b = h1(methods[bucket[0]].op);
+				var d = 0;
+				while (true) {
+					var ok = true;
+					var slots = new Array<Int>();
+
+					for (id in bucket) {
+						var slot = h2(methods[id].op, d);
+						if (used[slot] || slots.indexOf(slot) != -1) {
+							ok = false;
+							break;
+						}
+						slots.push(slot);
+					}
+
+					if (ok) {
+						G[b] = d;
+						for (i in 0...bucket.length) {
+							var id = bucket[i];
+							var slot = slots[i];
+							used[slot] = true;
+							T[slot] = id;
+							methods[id].idx = id;
+						}
 						break;
 					}
-					slots.push(slot);
-				}
 
-				if (ok) {
-					G[b] = d;
-					for (i in 0...bucket.length) {
-						var id = bucket[i];
-						var slot = slots[i];
-						used[slot] = true;
-						T[slot] = id;
-						methods[id].idx = id;
+					d++;
+					if (d > 1 << 22) {
+						Context.error("Failed to build perfect hash (unexpected).", Context.currentPos());
 					}
-					break;
-				}
-
-				d++;
-				if (d > 1 << 22) {
-					Context.error("Failed to build perfect hash (unexpected).", Context.currentPos());
 				}
 			}
+
+			newFields.push(makeIntArray("RPC_G", G));
+			newFields.push(makeIntArray("RPC_T", T));
+			newFields.push(makeIntArray("RPC_OPS", methods.map(method -> method.op)));
+
+			newFields.push({
+				name: "RPC_M",
+				access: [APrivate, AStatic, AInline],
+				kind: FVar(macro :Int, macro $v{mVal}),
+				pos: Context.currentPos()
+			});
+
+			newFields.push({
+				name: "RPC_N",
+				access: [APrivate, AStatic, AInline],
+				kind: FVar(macro :Int, macro $v{n}),
+				pos: Context.currentPos()
+			});
 		}
-
-		var newFields:Array<Field> = [];
-		newFields.push(makeIntArray("RPC_G", G));
-		newFields.push(makeIntArray("RPC_T", T));
-		newFields.push(makeIntArray("RPC_OPS", methods.map(method -> method.op)));
-
-		newFields.push({
-			name: "RPC_M",
-			access: [APrivate, AStatic, AInline],
-			kind: FVar(macro :Int, macro $v{mVal}),
-			pos: Context.currentPos()
-		});
-
-		newFields.push({
-			name: "RPC_N",
-			access: [APrivate, AStatic, AInline],
-			kind: FVar(macro :Int, macro $v{n}),
-			pos: Context.currentPos()
-		});
 
 		for (i in 0...n) {
 			newFields.push(makeDecoder(methods[i]));
 		}
 
-		newFields.push(makeDispatcher(methods));
+		newFields.push(makeDispatcher(methods, usePerfectHash));
 
 		return fields.concat(newFields);
 	}
@@ -280,7 +356,38 @@ class RPCHandlerMacro {
 		};
 	}
 
-	static function makeDispatcher(methods:Array<MethodInfo>):Field {
+	static function makeDispatcher(methods:Array<MethodInfo>, usePerfectHash:Bool):Field {
+		if (!usePerfectHash) {
+			final cases = new Array<Case>();
+			for (method in methods) {
+				final fname = "__rpc_decode_call_" + method.name;
+				cases.push({
+					values: [macro $v{method.op}],
+					expr: macro {
+						this.$fname(input, requestId);
+					}
+				});
+			}
+
+			return {
+				name: "dispatch",
+				access: [APublic],
+				kind: FFun({
+					ret: macro :Void,
+					args: [
+						{name: "op", type: macro :Int},
+						{name: "input", type: macro :crossbyte.io.ByteArrayInput},
+						{name: "requestId", type: macro :Int}
+					],
+					expr: {
+						expr: ESwitch(macro op, cases, macro throw "Unknown RPC op"),
+						pos: Context.currentPos()
+					}
+				}),
+				pos: Context.currentPos()
+			};
+		}
+
 		var cases = new Array<Case>();
 		for (i in 0...methods.length) {
 			var fname = "__rpc_decode_call_" + methods[i].name;
@@ -369,17 +476,16 @@ class RPCHandlerMacro {
 	static function sendResponseExpr(op:Int, requestId:Expr, value:Expr, ret:ComplexType, pos:Position):Expr {
 		var key = typeKey(ret, pos);
 		var writer = TYPE_WRITERS.get(key);
-		var writeValue = writer(macro payload, value);
+		var writeValue = writer(macro framed, value);
 		return macro {
-			var payload:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN);
-			payload.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_RESPONSE);
-			payload.writeInt($v{op});
-			payload.writeVarUInt($requestId);
+			var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN + 4);
+			framed.writeInt(0);
+			framed.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_RESPONSE);
+			framed.writeInt($v{op});
+			framed.writeVarUInt($requestId);
 			$writeValue;
-			payload.flush();
-			var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(payload.length + 4);
-			framed.writeInt(payload.length);
-			framed.writeBytes(payload);
+			framed.writeIntAt(0, framed.bytesWritten - 4);
+			framed.flush();
 			this.this_connection.send(framed);
 		};
 	}
@@ -403,8 +509,8 @@ class RPCHandlerMacro {
 	}
 
 	static function isVoid(ct:ComplexType):Bool {
-		return switch (ct) {
-			case TPath({pack: [], name: "Void"}): true;
+		return switch (Context.follow(Context.resolveType(ct, Context.currentPos()))) {
+			case TAbstract(typeRef, _) if (typeRef.get().name == "Void"): true;
 			case _: false;
 		}
 	}
@@ -438,6 +544,43 @@ class RPCHandlerMacro {
 
 	static inline function pathKey(pack:Array<String>, name:String):String {
 		return (pack.length > 0 ? pack.join(".") + "." : "") + name;
+	}
+
+	static function findField(fields:Array<Field>, name:String):Null<Field> {
+		for (field in fields) {
+			if (field.name == name) {
+				return field;
+			}
+		}
+		return null;
+	}
+
+	static function sameType(actual:ComplexType, expected:ComplexType, pos:Position):Bool {
+		return normalizedTypeKey(actual, pos) == normalizedTypeKey(expected, pos);
+	}
+
+	static function normalizedTypeKey(ct:ComplexType, pos:Position):String {
+		return normalizedResolvedTypeKey(Context.follow(Context.resolveType(ct, pos)));
+	}
+
+	static function normalizedResolvedTypeKey(type:Type):String {
+		return switch (type) {
+			case TAbstract(typeRef, params):
+				final typeDef = typeRef.get();
+				if (typeDef.name == "Void") {
+					"Void";
+				} else if (typeDef.name == "Null" && params.length == 1) {
+					"Null<" + normalizedResolvedTypeKey(Context.follow(params[0])) + ">";
+				} else {
+					pathKey(typeDef.pack, typeDef.name);
+				}
+			case TInst(typeRef, _):
+				pathKey(typeRef.get().pack, typeRef.get().name);
+			case TType(typeRef, _):
+				pathKey(typeRef.get().pack, typeRef.get().name);
+			case _:
+				Std.string(type);
+		}
 	}
 
 	private static function injectPing(fields:Array<Field>):Void {

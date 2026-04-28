@@ -10,6 +10,8 @@ import crossbyte.rpc.RPCHandler;
 import crossbyte.rpc.RPCCommands;
 import crossbyte.net.NetConnection;
 import crossbyte.events.EventDispatcher;
+import crossbyte.io.ByteArrayInput;
+import crossbyte.rpc._internal.RPCWire;
 #if neko
 import sys.thread.Mutex;
 #elseif (cpp || hl || java || cs)
@@ -127,6 +129,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			if (__handler != null) {
 				__handler.this_commands = commands;
 			}
+			__syncOnDataBinding();
 		}
 
 		return __commands;
@@ -139,11 +142,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 		__handler = handler;
 		if (handler != null) {
-			connection.onData = __handler.this_socket_onData;
-			connection.readEnabled = true;
 			handler.this_connection = this.connection;
 			handler.this_commands = __commands;
 		}
+		__syncOnDataBinding();
 
 		return handler;
 	}
@@ -165,6 +167,59 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__connection = connection;
 		this.commands = commands;
 		this.handler = handler;
+	}
+
+	@:noCompletion private inline function __syncOnDataBinding():Void {
+		if (__handler != null) {
+			__connection.onData = __handler.this_socket_onData;
+			__connection.readEnabled = true;
+			return;
+		}
+
+		if (__commands != null) {
+			__connection.onData = __commands_socket_onData;
+			__connection.readEnabled = true;
+			return;
+		}
+
+		__connection.onData = input -> {};
+		__connection.readEnabled = false;
+	}
+
+	@:noCompletion private inline function __commands_socket_onData(input:ByteArrayInput):Void {
+		while (input.bytesAvailable >= 9) {
+			final lenPos:Int = input.position;
+			final payloadLen:Int = input.readInt();
+
+			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN || (RPCHandler.MAX_FRAME_LEN != 0 && payloadLen > RPCHandler.MAX_FRAME_LEN)) {
+				input.position = input.length;
+				return;
+			}
+
+			if (input.bytesAvailable < payloadLen) {
+				input.position = lenPos;
+				break;
+			}
+
+			final frameEnd:Int = input.position + payloadLen;
+			final flags:Int = input.readByte();
+			final op:Int = input.readInt();
+			if (flags == RPCWire.FLAG_RESPONSE) {
+				if (__commands != null) {
+					__commands.__rpc_handle_response(op, input.readVarUInt(), input, false);
+				}
+			} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+				if (__commands != null) {
+					__commands.__rpc_handle_response(op, input.readVarUInt(), input, true);
+				}
+			}
+			input.position = frameEnd;
+		}
+
+		@:privateAccess final now:Float = Timer.tryGetTime();
+		if (now >= 0.0) {
+			__connection.inTimestamp = now;
+		}
 	}
 
 	public inline function start():Bool {
