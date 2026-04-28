@@ -6,6 +6,7 @@ import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.errors.SQLError;
 import crossbyte.FieldStruct;
+typedef PostgresResultSet = Dynamic;
 #if cpp
 import sys.thread.Deque;
 #end
@@ -20,7 +21,7 @@ class PostgresStatement extends EventDispatcher {
 
 	@:noCompletion private var __sqlConnection:PostgresConnection;
 	@:noCompletion private var __connection:Dynamic;
-	@:noCompletion private var __resultSet:PostgresResultSet;
+	@:noCompletion private var __resultSet:Dynamic;
 	@:noCompletion private var __prefetch:Int = 0;
 	@:noCompletion private var __executing:Bool = false;
 
