@@ -2,6 +2,9 @@ package crossbyte._internal.lz4;
 
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
+#if crossbyte_lz4_native
+import crossbyte.lz4.NativeLz4;
+#end
 
 class Lz4 {
 	@:noCompletion private static inline function __byte(source:Bytes, index:Int):Int {
@@ -9,6 +12,12 @@ class Lz4 {
 	}
 
 	public static inline function compress(b:Bytes):Bytes {
+		#if crossbyte_lz4_native
+		if (NativeLz4.isAvailable()) {
+			return NativeLz4.compress(b);
+		}
+		#end
+
 		var output = new ByteArray();
 		var literalLength = b.length;
 
@@ -29,6 +38,12 @@ class Lz4 {
 	}
 
 	public static inline function decompress(b:Bytes):Bytes {
+		#if crossbyte_lz4_native
+		if (NativeLz4.isAvailable()) {
+			return NativeLz4.decompress(b);
+		}
+		#end
+
 		var iLen = b.length;
 		var oBuf = new ByteArray();
 		var iPos = 0;
