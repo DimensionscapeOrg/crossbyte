@@ -7,6 +7,15 @@ Whether you're building applications with rendering capabilities or focusing on 
 
 Empower your development workflow with CrossByte and unlock new possibilities for creating cross-platform applications with ease and efficiency.
 
+## Testing
+CrossByte uses [utest](https://lib.haxe.org/p/utest) for unit tests.
+
+Run the fast interpreted suite with:
+
+```sh
+haxe test.hxml
+```
+
 
 ## 2025 Roadmap
 - [x] IPC
