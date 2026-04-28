@@ -1,7 +1,7 @@
 package crossbyte.rpc;
 
 import crossbyte.io.ByteArrayInput;
-import crossbyte.net.INetConnection;
+import crossbyte.net.NetConnection;
 import haxe.ds.IntMap;
 
 /**
@@ -40,7 +40,7 @@ import haxe.ds.IntMap;
  */
 @:autoBuild(crossbyte.rpc._internal.RPCCommandMacro.build())
 abstract class RPCCommands {
-	@:noCompletion private var __nc:INetConnection;
+	@:noCompletion private var __nc:NetConnection;
 	@:noCompletion private var __requestIdSeed:Int = 0;
 	@:noCompletion private var __pendingResponses:IntMap<RPCResponse<Dynamic>> = new IntMap();
 

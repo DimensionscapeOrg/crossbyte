@@ -12,8 +12,21 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 
-@:forward
-abstract NetConnection(INetConnection) from INetConnection to INetConnection {
+abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectionBase {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+	public var protocol(get, set):Protocol;
+	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
+	public var inTimestamp(get, set):Float;
+	public var outTimestamp(get, set):Float;
+	public var onData(get, set):ByteArrayInput->Void;
+	public var onClose(get, set):Reason->Void;
+	public var onError(get, set):Reason->Void;
+	public var onReady(get, set):Void->Void;
+
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
 			readEnabled:Bool = false):Void {
 		var endpoint:Endpoint = parseURL(uri);
@@ -71,6 +84,108 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 		}
 	}
 
+	@:to public inline function toINetConnection():INetConnection {
+		return cast this;
+	}
+
+	public inline function expose():Transport {
+		return this.expose();
+	}
+
+	public inline function send(data:ByteArray):Void {
+		this.send(data);
+	}
+
+	public inline function close():Void {
+		this.close();
+	}
+
+	@:noCompletion private inline function get_remoteAddress():String {
+		return (cast this : INetConnection).remoteAddress;
+	}
+
+	@:noCompletion private inline function get_remotePort():Int {
+		return (cast this : INetConnection).remotePort;
+	}
+
+	@:noCompletion private inline function get_localAddress():String {
+		return (cast this : INetConnection).localAddress;
+	}
+
+	@:noCompletion private inline function get_localPort():Int {
+		return (cast this : INetConnection).localPort;
+	}
+
+	@:noCompletion private inline function get_protocol():Protocol {
+		return this.protocol;
+	}
+
+	@:noCompletion private inline function set_protocol(value:Protocol):Protocol {
+		return this.protocol = value;
+	}
+
+	@:noCompletion private inline function get_connected():Bool {
+		return (cast this : INetConnection).connected;
+	}
+
+	@:noCompletion private inline function get_readEnabled():Bool {
+		return (cast this : INetConnection).readEnabled;
+	}
+
+	@:noCompletion private inline function set_readEnabled(value:Bool):Bool {
+		return (cast this : INetConnection).readEnabled = value;
+	}
+
+	@:noCompletion private inline function get_inTimestamp():Float {
+		return this.inTimestamp;
+	}
+
+	@:noCompletion private inline function set_inTimestamp(value:Float):Float {
+		this.inTimestamp = value;
+		return value;
+	}
+
+	@:noCompletion private inline function get_outTimestamp():Float {
+		return this.outTimestamp;
+	}
+
+	@:noCompletion private inline function set_outTimestamp(value:Float):Float {
+		this.outTimestamp = value;
+		return value;
+	}
+
+	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
+		return (cast this : INetConnection).onData;
+	}
+
+	@:noCompletion private inline function set_onData(value:ByteArrayInput->Void):ByteArrayInput->Void {
+		return (cast this : INetConnection).onData = value;
+	}
+
+	@:noCompletion private inline function get_onClose():Reason->Void {
+		return (cast this : INetConnection).onClose;
+	}
+
+	@:noCompletion private inline function set_onClose(value:Reason->Void):Reason->Void {
+		return (cast this : INetConnection).onClose = value;
+	}
+
+	@:noCompletion private inline function get_onError():Reason->Void {
+		return (cast this : INetConnection).onError;
+	}
+
+	@:noCompletion private inline function set_onError(value:Reason->Void):Reason->Void {
+		return (cast this : INetConnection).onError = value;
+	}
+
+	@:noCompletion private inline function get_onReady():Void->Void {
+		return (cast this : INetConnection).onReady;
+	}
+
+	@:noCompletion private inline function set_onReady(value:Void->Void):Void->Void {
+		return (cast this : INetConnection).onReady = value;
+	}
+
 	public static inline function toSocket(connection:NetConnection):Socket {
 		var socket:Socket = null;
 
@@ -117,6 +232,14 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 		return nc;
 	}
 
+	@:from
+	public static inline function fromINetConnection(connection:INetConnection):NetConnection {
+		if (Std.isOfType(connection, NetConnectionBase)) {
+			return cast connection;
+		}
+		return new ExternalConnectionAdapter(connection);
+	}
+
 	public static inline function fromSocketWith(socket:Socket, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void,
 			?onError:Reason->Void, readEnabled:Bool = false):NetConnection {
 		var nc:TCPConnection = new TCPConnection(socket);
@@ -155,9 +278,105 @@ abstract NetConnection(INetConnection) from INetConnection to INetConnection {
 	}
 }
 
+@:allow(crossbyte.net.NetConnection)
+private class ExternalConnectionAdapter extends NetConnectionBase implements INetConnection {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
+	public var onData(get, set):ByteArrayInput->Void;
+	public var onClose(get, set):Reason->Void;
+	public var onError(get, set):Reason->Void;
+	public var onReady(get, set):Void->Void;
+
+	@:noCompletion private var __connection:INetConnection;
+
+	private function new(connection:INetConnection) {
+		__connection = connection;
+		protocol = connection.protocol;
+		inTimestamp = connection.inTimestamp;
+		outTimestamp = connection.outTimestamp;
+	}
+
+	@:noCompletion private inline function get_remoteAddress():String {
+		return __connection.remoteAddress;
+	}
+
+	@:noCompletion private inline function get_remotePort():Int {
+		return __connection.remotePort;
+	}
+
+	@:noCompletion private inline function get_localAddress():String {
+		return __connection.localAddress;
+	}
+
+	@:noCompletion private inline function get_localPort():Int {
+		return __connection.localPort;
+	}
+
+	@:noCompletion private inline function get_connected():Bool {
+		return __connection.connected;
+	}
+
+	@:noCompletion private inline function get_readEnabled():Bool {
+		return __connection.readEnabled;
+	}
+
+	@:noCompletion private inline function set_readEnabled(value:Bool):Bool {
+		return __connection.readEnabled = value;
+	}
+
+	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
+		return __connection.onData;
+	}
+
+	@:noCompletion private inline function set_onData(value:ByteArrayInput->Void):ByteArrayInput->Void {
+		return __connection.onData = value;
+	}
+
+	@:noCompletion private inline function get_onClose():Reason->Void {
+		return __connection.onClose;
+	}
+
+	@:noCompletion private inline function set_onClose(value:Reason->Void):Reason->Void {
+		return __connection.onClose = value;
+	}
+
+	@:noCompletion private inline function get_onError():Reason->Void {
+		return __connection.onError;
+	}
+
+	@:noCompletion private inline function set_onError(value:Reason->Void):Reason->Void {
+		return __connection.onError = value;
+	}
+
+	@:noCompletion private inline function get_onReady():Void->Void {
+		return __connection.onReady;
+	}
+
+	@:noCompletion private inline function set_onReady(value:Void->Void):Void->Void {
+		return __connection.onReady = value;
+	}
+
+	public inline function expose():Transport {
+		return __connection.expose();
+	}
+
+	public inline function send(data:ByteArray):Void {
+		__connection.send(data);
+		outTimestamp = __connection.outTimestamp;
+	}
+
+	public inline function close():Void {
+		__connection.close();
+	}
+}
+
 @:access(crossbyte.net.Socket)
 @:allow(crossbyte.net.NetConnection)
-private class TCPConnection implements INetConnection {
+private class TCPConnection extends NetConnectionBase implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
@@ -165,9 +384,6 @@ private class TCPConnection implements INetConnection {
 	public var autoFlush:Bool = true;
 	public var connected(get, never):Bool;
 	public var readEnabled(get, set):Bool;
-	public var inTimestamp:Float = 0.0;
-	public var outTimestamp:Float = 0.0;
-	public var protocol:Protocol = TCP;
 	public var onData(get, set):ByteArrayInput->Void;
 	public var onClose(get, set):Reason->Void;
 	public var onError(get, set):Reason->Void;
@@ -256,6 +472,7 @@ private class TCPConnection implements INetConnection {
 	}
 
 	@:noCompletion private function new(socket:Socket) {
+		protocol = TCP;
 		this.__socket = socket;
 		__prepareLifecycle();
 	}
@@ -369,17 +586,13 @@ private class TCPConnection implements INetConnection {
 }
 
 @:allow(crossbyte.net.NetConnection)
-private class UDPConnection implements INetConnection {
+private class UDPConnection extends NetConnectionBase implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
 	public var connected(get, never):Bool;
 	public var readEnabled(get, set):Bool;
-	public var protocol:Protocol = UDP;
-	public var inTimestamp:Float = 0.0;
-	public var outTimestamp:Float = 0.0;
-
 	public var onData(get, set):ByteArrayInput->Void;
 	public var onClose(get, set):Reason->Void;
 	public var onError(get, set):Reason->Void;
@@ -471,6 +684,7 @@ private class UDPConnection implements INetConnection {
 	}
 
 	private function new(socket:DatagramSocket) {
+		protocol = UDP;
 		this.__socket = socket;
 		__prepareLifecycle();
 	}
@@ -544,17 +758,13 @@ private class UDPConnection implements INetConnection {
 }
 
 @:allow(crossbyte.net.NetConnection)
-private class RUDPConnection implements INetConnection {
+private class RUDPConnection extends NetConnectionBase implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
 	public var connected(get, never):Bool;
 	public var readEnabled(get, set):Bool;
-	public var protocol:Protocol = RUDP;
-	public var inTimestamp:Float = 0.0;
-	public var outTimestamp:Float = 0.0;
-
 	public var onData(get, set):ByteArrayInput->Void;
 	public var onClose(get, set):Reason->Void;
 	public var onError(get, set):Reason->Void;
@@ -650,6 +860,7 @@ private class RUDPConnection implements INetConnection {
 	}
 
 	private function new(socket:ReliableDatagramSocket) {
+		protocol = RUDP;
 		__socket = socket;
 		__prepareLifecycle();
 	}
@@ -745,17 +956,13 @@ private class RUDPConnection implements INetConnection {
 
 @:access(crossbyte.net.WebSocket)
 @:allow(crossbyte.net.NetConnection)
-private class WSConnection implements INetConnection {
+private class WSConnection extends NetConnectionBase implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
 	public var connected(get, never):Bool;
 	public var readEnabled(get, set):Bool;
-	public var protocol:Protocol = WEBSOCKET;
-	public var inTimestamp:Float = 0.0;
-	public var outTimestamp:Float = 0.0;
-
 	public var onData(get, set):ByteArrayInput->Void;
 	public var onClose(get, set):Reason->Void;
 	public var onError(get, set):Reason->Void;
@@ -845,6 +1052,7 @@ private class WSConnection implements INetConnection {
 	}
 
 	private function new(socket:WebSocket) {
+		protocol = WEBSOCKET;
 		this.__socket = socket;
 		__prepareLifecycle();
 	}
