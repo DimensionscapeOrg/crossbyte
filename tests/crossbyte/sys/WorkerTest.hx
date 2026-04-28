@@ -1,5 +1,6 @@
 package crossbyte.sys;
 
+import crossbyte.core.CrossByte;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.ThreadEvent;
 import utest.Assert;
@@ -12,6 +13,7 @@ class WorkerTest extends utest.Test {
 		worker.doWork = message -> worker.sendComplete("done:" + message);
 
 		worker.run("job");
+		pumpUntil(() -> worker.state != WorkerState.RUNNING);
 
 		Assert.equals("done:job", completeMessage);
 		Assert.equals("done:job", worker.result);
@@ -33,6 +35,7 @@ class WorkerTest extends utest.Test {
 		};
 
 		worker.run();
+		pumpUntil(() -> events.length >= 3 || worker.state != WorkerState.RUNNING);
 
 		Assert.equals("progress:one", events[0]);
 		Assert.equals("progress:two", events[1]);
@@ -47,6 +50,7 @@ class WorkerTest extends utest.Test {
 		worker.doWork = _ -> worker.sendError("bad");
 
 		worker.run();
+		pumpUntil(() -> worker.state != WorkerState.RUNNING);
 
 		Assert.equals("bad", errorMessage);
 		Assert.equals("bad", worker.error);
@@ -62,6 +66,7 @@ class WorkerTest extends utest.Test {
 		worker.doWork = _ -> throw "boom";
 
 		worker.run();
+		pumpUntil(() -> worker.state != WorkerState.RUNNING);
 
 		Assert.equals("boom", errorMessage);
 		Assert.equals("boom", worker.error);
@@ -81,6 +86,7 @@ class WorkerTest extends utest.Test {
 		};
 
 		worker.run();
+		pumpUntil(() -> worker.state == WorkerState.CANCELLED);
 
 		Assert.equals(0, completeCount);
 		Assert.equals(0, progressCount);
@@ -102,6 +108,7 @@ class WorkerTest extends utest.Test {
 		};
 
 		worker.run();
+		pumpUntil(() -> worker.state != WorkerState.RUNNING);
 
 		Assert.isTrue(threw);
 		Assert.equals(WorkerState.COMPLETED, worker.state);
@@ -111,15 +118,28 @@ class WorkerTest extends utest.Test {
 		var worker = new Worker();
 		worker.doWork = _ -> worker.sendComplete("first");
 		worker.run();
+		pumpUntil(() -> worker.state != WorkerState.RUNNING);
 		worker.clean();
 
 		var completeMessage:Dynamic = null;
 		worker.addEventListener(ThreadEvent.COMPLETE, (event:ThreadEvent) -> completeMessage = event.message);
 		worker.doWork = _ -> worker.sendComplete("second");
 		worker.run();
+		pumpUntil(() -> worker.state != WorkerState.RUNNING);
 
 		Assert.equals("second", completeMessage);
 		Assert.equals(WorkerState.COMPLETED, worker.state);
 		Assert.equals("second", worker.result);
+	}
+
+	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
+		#if (cpp || neko || hl)
+		var runtime = CrossByte.current();
+		var deadline = Sys.time() + timeoutSeconds;
+		while (!done() && Sys.time() < deadline) {
+			runtime.pump(1 / 60, 0);
+			Sys.sleep(0.001);
+		}
+		#end
 	}
 }
