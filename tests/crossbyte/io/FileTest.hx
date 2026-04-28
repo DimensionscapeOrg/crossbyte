@@ -1,5 +1,7 @@
 package crossbyte.io;
 
+import crossbyte.core.CrossByte;
+import crossbyte.events.FileListEvent;
 import haxe.io.Bytes;
 import sys.io.File as HaxeFile;
 import utest.Assert;
@@ -66,5 +68,83 @@ class FileTest extends utest.Test {
 
 		try source.deleteDirectory(true) catch (_:Dynamic) {}
 		try destinationRoot.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testCopyToOverwriteReplacesExistingFileContents():Void {
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source.txt");
+		var destination = root.resolvePath("destination.txt");
+
+		try {
+			source.save(ByteArray.fromBytes(Bytes.ofString("new")));
+			destination.save(ByteArray.fromBytes(Bytes.ofString("old")));
+
+			source.copyTo(destination, true);
+
+			Assert.equals("new", HaxeFile.getContent(destination.nativePath));
+			Assert.isTrue(source.exists);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testCopyToOverwriteRecursivelyReplacesNestedDirectoryContents():Void {
+		var source = File.createTempDirectory();
+		var sourceNested = source.resolvePath("nested");
+		var sourceFile = sourceNested.resolvePath("payload.txt");
+		var destination = File.createTempDirectory();
+		var destinationNested = destination.resolvePath("nested");
+		var destinationFile = destinationNested.resolvePath("payload.txt");
+
+		try {
+			sourceNested.createDirectory();
+			destinationNested.createDirectory();
+			sourceFile.save(ByteArray.fromBytes(Bytes.ofString("new")));
+			destinationFile.save(ByteArray.fromBytes(Bytes.ofString("old")));
+
+			source.copyTo(destination, true);
+
+			Assert.equals("new", HaxeFile.getContent(destinationFile.nativePath));
+			Assert.isTrue(sourceFile.exists);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try source.deleteDirectory(true) catch (_:Dynamic) {}
+		try destination.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testGetDirectoryListingAsyncReturnsResolvedChildren():Void {
+		var root = File.createTempDirectory();
+		var child = root.resolvePath("child.txt");
+		var directoryEvent:FileListEvent = null;
+
+		try {
+			child.save(ByteArray.fromBytes(Bytes.ofString("payload")));
+			root.addEventListener(FileListEvent.DIRECTORY_LISTING, (event:FileListEvent) -> directoryEvent = event);
+			root.getDirectoryListingAsync();
+
+			pumpUntil(() -> directoryEvent != null, 2.0);
+
+			Assert.notNull(directoryEvent);
+			Assert.equals(1, directoryEvent.files.length);
+			Assert.equals(child.nativePath, directoryEvent.files[0].nativePath);
+			Assert.equals("child.txt", directoryEvent.files[0].name);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float):Void {
+		var runtime = CrossByte.current();
+		var deadline = Sys.time() + timeoutSeconds;
+		while (!done() && Sys.time() < deadline) {
+			runtime.pump(1 / 60, 0);
+			Sys.sleep(0.001);
+		}
 	}
 }
