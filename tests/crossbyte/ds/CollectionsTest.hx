@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import crossbyte.ds.QuadTree.QuadTreeNode;
+import crossbyte.math.Rectangle;
 import utest.Assert;
 
 class CollectionsTest extends utest.Test {
@@ -42,6 +44,29 @@ class CollectionsTest extends utest.Test {
 
 		logical.clearAll();
 		Assert.equals(0, logical.countSetBits());
+	}
+
+	public function testRadixTreeSupportsExactKeysPrefixesAndUpdates():Void {
+		var tree = new RadixTree<Int>();
+
+		tree.insert("carpet", 1);
+		tree.insert("car", 2);
+		tree.insert("cart", 3);
+		tree.insert("cat", 4);
+		tree.insert("dog", 5);
+		tree.insert("car", 9);
+		tree.insert("", 99);
+		tree.insert(null, 100);
+
+		Assert.equals(9, tree.search("car"));
+		Assert.equals(1, tree.search("carpet"));
+		Assert.equals(3, tree.search("cart"));
+		Assert.equals(4, tree.search("cat"));
+		Assert.equals(5, tree.search("dog"));
+		Assert.isNull(tree.search("ca"));
+		Assert.isNull(tree.search("care"));
+		Assert.isNull(tree.search(""));
+		Assert.isNull(tree.search(null));
 	}
 
 	public function testVectorSpliceReturnsRemovedAndKeepsInsertOrder():Void {
@@ -336,6 +361,32 @@ class CollectionsTest extends utest.Test {
 		Assert.isNull(map.get(first));
 		Assert.isNull(map.get(third));
 		Assert.isNull(map.get(replacement));
+	}
+
+	public function testQuadTreeQueriesPointsAcrossSubdivisions():Void {
+		var tree = new QuadTree<String>(new Rectangle(0, 0, 100, 100), 1);
+		var a = new QuadTreeNode<String>(10, 10, "nw");
+		var b = new QuadTreeNode<String>(75, 10, "ne");
+		var c = new QuadTreeNode<String>(10, 75, "sw");
+		var d = new QuadTreeNode<String>(75, 75, "se");
+
+		Assert.isTrue(tree.insert(a));
+		Assert.isTrue(tree.insert(b));
+		Assert.isTrue(tree.insert(c));
+		Assert.isTrue(tree.insert(d));
+		Assert.isFalse(tree.insert(new QuadTreeNode<String>(150, 150, "outside")));
+
+		var topHalf = tree.query(new Rectangle(0, 0, 100, 50));
+		var topValues = [for (node in topHalf) node.value];
+		topValues.sort((left, right) -> Reflect.compare(left, right));
+		Assert.equals("ne,nw", topValues.join(","));
+
+		var bottomRight = tree.query(new Rectangle(50, 50, 50, 50));
+		Assert.equals(1, bottomRight.length);
+		Assert.equals("se", bottomRight[0].value);
+
+		tree.clear();
+		Assert.equals(0, tree.query(new Rectangle(0, 0, 100, 100)).length);
 	}
 
 	public function testWeightedGraphSupportsStringNodes():Void {
