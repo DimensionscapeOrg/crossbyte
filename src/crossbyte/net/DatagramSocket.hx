@@ -39,7 +39,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 	/**
 		Indicates whether UDP sockets are supported by the current target.
 	**/
-	public static var isSupported(default, null):Bool = #if sys true #else false #end;
+	public static var isSupported(default, null):Bool = #if (sys && !eval) true #else false #end;
 
 	/**
 		Indicates whether the socket is currently bound to a local address and port.
@@ -193,7 +193,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 			throw new ArgumentError("One of the parameters is invalid");
 		}
 
-		__validatePort(port);
+		__validateRemotePort(port);
 
 		try {
 			var remote:Host = new Host(host);
@@ -255,6 +255,9 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		if (__socket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
+		if (bytes == null) {
+			throw new ArgumentError("One of the parameters is invalid");
+		}
 
 		var totalLength:Int = bytes.length;
 		if (offset < 0 || offset > totalLength) {
@@ -280,7 +283,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 			throw new IllegalOperationError("Cannot send data to a location when connected.");
 		}
 
-		__validatePort(port);
+		__validateRemotePort(port);
 
 		try {
 			var host:Host = new Host(address);
@@ -338,13 +341,11 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 			} catch (_:Eof) {
 				break;
 			} catch (e:HxIOError) {
-				switch (e) {
-					case Blocked, Custom(Blocked):
-						return;
-					default:
-						__dispatchIoError(Std.string(e));
-						return;
+				if (__isBlockedError(e)) {
+					return;
 				}
+				__dispatchIoError(Std.string(e));
+				return;
 			} catch (e:Dynamic) {
 				if (Std.string(e) == "Blocking") {
 					return;
@@ -423,6 +424,21 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 	@:noCompletion private inline function __validatePort(port:Int):Void {
 		if (port < 0 || port > 65535) {
 			throw new RangeError("Invalid socket port number specified.");
+		}
+	}
+
+	@:noCompletion private inline function __validateRemotePort(port:Int):Void {
+		if (port <= 0 || port > 65535) {
+			throw new RangeError("Invalid socket port number specified.");
+		}
+	}
+
+	@:noCompletion private function __isBlockedError(error:HxIOError):Bool {
+		return switch (error) {
+			case HxIOError.Blocked: true;
+			case HxIOError.Custom(value):
+				Std.isOfType(value, HxIOError) && __isBlockedError(cast value);
+			default: false;
 		}
 	}
 
