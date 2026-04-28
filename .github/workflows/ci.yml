@@ -86,7 +86,7 @@ jobs:
         run: haxe ci/native-tests.hxml
 
       - name: Run native test suite
-        run: .\export\ci-native-tests\TestMain.exe
+        run: .\export\ci-native-tests\NativeSmokeMain.exe
 
       - name: Build websocket echo sample
         run: haxe ci/websocket-echo-sample.hxml
