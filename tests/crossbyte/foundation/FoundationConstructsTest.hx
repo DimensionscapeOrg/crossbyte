@@ -112,6 +112,17 @@ class FoundationConstructsTest extends utest.Test {
 		});
 	}
 
+	public function testPrimitiveValueSupportsExplicitDynamicGateAndTypeChecks():Void {
+		var stringValue = PrimitiveValue.fromDynamic("42");
+		var nullValue = PrimitiveValue.fromDynamic(null);
+
+		Assert.notNull(PrimitiveValue.tryFromDynamic(true));
+		Assert.isNull(PrimitiveValue.tryFromDynamic({ nested: true }));
+		Assert.isTrue(stringValue.isString());
+		Assert.isFalse(stringValue.isInt());
+		Assert.isTrue(nullValue.isNull());
+	}
+
 	public function testSeq32UsesWrappingOrderAcrossRollover():Void {
 		var beforeWrap:Seq32 = 0xFFFFFFFF;
 		var afterWrap:Seq32 = 0;
@@ -148,5 +159,28 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals("created", created.name);
 		Assert.equals(9, casted.id);
 		Assert.equals("cast", casted.name);
+	}
+
+	public function testTypedObjectSupportsOfBracketAccessAndFieldIteration():Void {
+		var object = TypedObject.of({
+			id: 11,
+			name: "typed"
+		});
+
+		Assert.equals(11, object.id);
+		Assert.equals("typed", object["name"]);
+		Assert.isTrue(object.exists("id"));
+
+		var keys = object.keys();
+		Assert.isTrue(keys.indexOf("id") != -1);
+		Assert.isTrue(keys.indexOf("name") != -1);
+
+		var entries = [];
+		for (entry in object.entries()) {
+			entries.push(entry.key + "=" + Std.string(entry.value));
+		}
+
+		Assert.isTrue(entries.indexOf("id=11") != -1);
+		Assert.isTrue(entries.indexOf("name=typed") != -1);
 	}
 }
