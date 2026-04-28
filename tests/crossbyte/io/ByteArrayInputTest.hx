@@ -5,7 +5,7 @@ import utest.Assert;
 
 class ByteArrayInputTest extends utest.Test {
 	public function testPositionSetterRejectsOutOfRangeValues():Void {
-		#if !debug
+		#if final
 		Assert.pass();
 		return;
 		#end
@@ -56,7 +56,7 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadByteThrowsWhenPastEnd():Void {
-		#if !debug
+		#if final
 		Assert.pass();
 		return;
 		#end
@@ -84,7 +84,7 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadUTFThrowsWhenPayloadIsTruncated():Void {
-		#if !debug
+		#if final
 		Assert.pass();
 		return;
 		#end
@@ -116,7 +116,7 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntRejectsOverlongEncoding():Void {
-		#if !debug
+		#if final
 		Assert.pass();
 		return;
 		#end
@@ -131,7 +131,7 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntRejectsOverflow():Void {
-		#if !debug
+		#if final
 		Assert.pass();
 		return;
 		#end
