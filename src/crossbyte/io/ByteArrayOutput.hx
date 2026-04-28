@@ -11,13 +11,13 @@ import crossbyte.io.ByteArray;
  * A buffered and growable binary output stream for writing primitive values into a `ByteArray`.
  *
  * `ByteArrayOutput` allows for efficient, low-level binary serialization using native Haxe types
- * with bounds-checked write methods (in debug builds) and staging via internal `Bytes` buffers.
+ * with bounds-checked write methods (except in `#if final`) and staging via internal `Bytes` buffers.
  *
  * Data written through this abstraction is not immediately visible via `toBytes()` or `toByteArray()`
  * until `flush()` is called, at which point all internal buffers are merged into a contiguous array.
  *
  * ## Key Features
- * - Fast, low-level `Bytes`-backed writing with safety in debug builds
+ * - Fast, low-level `Bytes`-backed writing with safety outside `final`
  * - Efficient incremental growth using internal buffer chunking
  * - Support for varint encoding, UTF strings, and fixed-size primitives
  * - Lazy flush behavior for performance
@@ -105,7 +105,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		this.byteArray.length = used;
 		var offset:Int = 0;
 
-		#if debug
+		#if !final
 		var total = this.byteArray.length;
 		var expected = 0;
 		if (this.byteCache != null) {
@@ -197,7 +197,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The byte value to write.
 	 */
 	public inline function writeByte(v:Int):Void {
-		#if debug
+		#if !final
 		if (!validateSize(1))
 			__validateSizeErr(this.__outputPosition, 1);
 		#end
@@ -216,7 +216,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 			length = source.length - offset;
 		}
 
-		#if debug
+		#if !final
 		if (!validateSize(length))
 			__validateSizeErr(this.__outputPosition, length);
 		#end
@@ -230,7 +230,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The `Float` value to write.
 	 */
 	public inline function writeDouble(v:Float):Void {
-		#if debug
+		#if !final
 		if (!validateSize(8))
 			__validateSizeErr(this.__outputPosition, 8);
 		#end
@@ -245,7 +245,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The `Float` value to write.
 	 */
 	public inline function writeFloat(v:Float):Void {
-		#if debug
+		#if !final
 		if (!validateSize(4))
 			__validateSizeErr(this.__outputPosition, 4);
 		#end
@@ -259,7 +259,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param v The `Int` value to write.
 	 */
 	public inline function writeInt(v:Int):Void {
-		#if debug
+		#if !final
 		if (!validateSize(4)) {
 			__validateSizeErr(this.__outputPosition, 4);
 		}
@@ -276,7 +276,7 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param value The `UInt16` to write.
 	 */
 	public inline function writeShort(value:Int):Void {
-		#if debug
+		#if !final
 		if (!validateSize(2))
 			__validateSizeErr(this.__outputPosition, 2);
 		#end
