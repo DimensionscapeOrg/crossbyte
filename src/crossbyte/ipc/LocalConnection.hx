@@ -384,7 +384,10 @@ class LocalConnection extends EventDispatcher {
 
 				// Checks if the client disconnected
 				var available:Int = __getBytesAvailable(pipe);
-				if (available == 0) {
+				if (available < 0) {
+					__close(pipe);
+					__clientPipes.splice(i, 1);
+				} else if (available == 0) {
 					// Check if the pipe is still valid?
 					if (!__isOpen(pipe)) {
 						// trace("Client disconnected. Removing handle.");

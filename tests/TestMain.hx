@@ -12,6 +12,7 @@ class TestMain {
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.io.ByteArrayTest());
 		runner.addCase(new crossbyte.ipc.LocalConnectionTest());
+		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte.resources.ResourcesTest());
 		runner.addCase(new crossbyte.timer.TimerHeapTest());

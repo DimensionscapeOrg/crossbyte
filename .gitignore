@@ -1,0 +1,18 @@
+# Haxe / hxcpp generated output
+export/
+bin/
+obj/
+*.cppia
+
+# Local test and coverage output
+coverage/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local environment files
+.env
+.env.*
