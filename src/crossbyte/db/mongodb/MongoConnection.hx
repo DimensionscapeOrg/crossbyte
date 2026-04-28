@@ -11,6 +11,7 @@ import php.Global;
 import php.Syntax;
 #end
 
+/** MongoDB connection wrapper currently backed by PHP's MongoDB driver. */
 class MongoConnection extends EventDispatcher {
 	public static final isSupported:Bool = #if php __checkSupport() #else false #end;
 

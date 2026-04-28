@@ -12,6 +12,7 @@ import sys.db.ResultSet;
 import sys.thread.Deque;
 #end
 
+/** Statement helper for executing MySQL queries and paging result rows. */
 @:access(crossbyte.db.mysql.MySQLConnection)
 class MySQLStatement extends EventDispatcher {
 	public var executing(get, null):Bool;

@@ -1,5 +1,6 @@
 package crossbyte.db.postgres;
 
+/** Connection settings for `PostgresConnection`. */
 typedef PostgresConfig = {
 	@:optional var host:String;
 	@:optional var port:Int;
