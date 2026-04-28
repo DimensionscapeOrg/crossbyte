@@ -28,6 +28,7 @@ class TestSuites {
 		#if cpp
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		#end
+		runner.addCase(new crossbyte.http.HTTPSupportTest());
 		runner.addCase(new crossbyte._internal.http.HttpTest());
 	}
 
