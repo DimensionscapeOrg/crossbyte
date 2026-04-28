@@ -536,11 +536,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			__input.seek(position, FileSeek.SeekBegin);
 		}
 
-		var hxBytes = Bytes.alloc(length - offset);
+		var hxBytes = Bytes.alloc(length);
+		__input.readBytes(hxBytes, 0, length);
 
-		__input.readBytes(hxBytes, offset, length);
-
-		bytes.writeBytes(hxBytes);
+		var byteArrayData:ByteArrayData = bytes;
+		if (byteArrayData.length < offset + length) {
+			byteArrayData.__resize(offset + length);
+		}
+		byteArrayData.blit(offset, hxBytes, 0, length);
 
 		__positionDirty = true;
 	}
@@ -884,26 +887,28 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	public function truncate():Void {
 		__checkIfOpen();
 
+		var targetPosition:Int = position;
 		var fileMode:FileMode = __fileMode;
-
 		var isAsync:Bool = __isAsync;
-
-		var fileBytes:ByteArray = ByteArray.fromBytes(HaxeFile.getBytes(__file.nativePath));
-
-		var truncatedBytes:ByteArray = new ByteArray(position);
-		truncatedBytes.writeBytes(fileBytes, 0, truncatedBytes.length);
+		var reopenMode = switch (fileMode) {
+			case WRITE, APPEND: UPDATE;
+			default: fileMode;
+		}
 		close();
 
+		var fileBytes:Bytes = HaxeFile.getBytes(__file.nativePath);
+		var truncatedLength = Std.int(Math.min(targetPosition, fileBytes.length));
+		var truncatedBytes = Bytes.alloc(targetPosition);
+		truncatedBytes.blit(0, fileBytes, 0, truncatedLength);
+
 		HaxeFile.saveBytes(__file.nativePath, truncatedBytes);
-		var pos:Int = truncatedBytes.length;
-		fileBytes = null;
 
 		if (isAsync) {
-			openAsync(__file, fileMode);
+			openAsync(__file, reopenMode);
 		} else {
-			open(__file, fileMode);
+			open(__file, reopenMode);
 		}
-		position = pos;
+		position = targetPosition;
 
 		__file.__fileStatsDirty = true;
 	}
