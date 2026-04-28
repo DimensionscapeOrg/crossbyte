@@ -138,14 +138,6 @@ class Http {
 			return;
 		}
 
-		var contentLengthHeader:String = __responseHeaders.get(HEADER_CONTENT_LENGTH);
-		var contentLength:Null<Int> = __parseContentLength(contentLengthHeader);
-		if (contentLengthHeader != null && contentLength == null) {
-			__close();
-			onError("Download failed: invalid Content-Length");
-			return;
-		}
-
 		var transferEncodingHeader:String = __responseHeaders.get(HEADER_TRANSFER_ENCODING);
 		var isChunked:Bool = false;
 		if (transferEncodingHeader != null) {
@@ -158,7 +150,15 @@ class Http {
 			}
 		}
 
-		var bytesTotalForProgress:Int = (contentLength != null) ? contentLength : -1;
+		var contentLengthHeader:String = __responseHeaders.get(HEADER_CONTENT_LENGTH);
+		var contentLength:Null<Int> = isChunked ? null : __parseContentLength(contentLengthHeader);
+		if (!isChunked && contentLengthHeader != null && contentLength == null) {
+			__close();
+			onError("Download failed: invalid Content-Length");
+			return;
+		}
+
+		var bytesTotalForProgress:Int = (!isChunked && contentLength != null) ? contentLength : -1;
 
 		var isNoContentStatus:Bool = (__status == 204 || __status == 304);
 
@@ -591,11 +591,20 @@ class Http {
 			return scheme + ":" + loc;
 		}
 
+		var basePath:String = (base.path != null && base.path.length > 0) ? base.path : "/";
+		if (StringTools.startsWith(loc, "?")) {
+			return scheme + "://" + host + portPart + __normalizeReferencePath(basePath + loc);
+		}
+
+		if (StringTools.startsWith(loc, "#")) {
+			var baseQuery:String = (base.query != null && base.query.length > 0) ? ("?" + base.query) : "";
+			return scheme + "://" + host + portPart + __normalizeReferencePath(basePath + baseQuery + loc);
+		}
+
 		if (loc.charAt(0) == "/") {
 			return scheme + "://" + host + portPart + __normalizeReferencePath(loc);
 		}
 
-		var basePath:String = (base.path != null && base.path.length > 0) ? base.path : "/";
 		var slash:Int = basePath.lastIndexOf("/");
 		var dir:String = (slash >= 0) ? basePath.substr(0, slash + 1) : "/";
 		var joined:String = dir + loc;
