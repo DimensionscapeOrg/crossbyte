@@ -16,7 +16,7 @@ class ResourcesMacro {
 	public static function ensureResources():Array<Field> {
 		Context.onAfterGenerate(onAfterGenerate);
 
-		projectDirectory = Sys.getCwd() + "resources/";
+		projectDirectory = getProjectResourcesDirectory();
 		if (!FileSystem.exists(projectDirectory)) {
 			FileSystem.createDirectory(projectDirectory);
 		}
@@ -25,6 +25,10 @@ class ResourcesMacro {
 	}
 
 	private static function onAfterGenerate():Void {
+		if (projectDirectory == null) {
+			projectDirectory = getProjectResourcesDirectory();
+		}
+
 		var outputDir:String = Sys.getCwd();
 		#if (windows)
 		{
@@ -83,7 +87,7 @@ class ResourcesMacro {
 	}
 
 	public static function buildResourceTree():Array<Field> {
-		var rootPath = Context.resolvePath("resources");
+		var rootPath = getProjectResourcesDirectory();
 		var allFields:Array<Field> = [];
 
 		function capitalize(str:String):String {
@@ -160,7 +164,9 @@ class ResourcesMacro {
 			return subFields;
 		}
 
-		allFields = processDirectory(rootPath, "", "ResourceTree");
+		if (FileSystem.exists(rootPath) && FileSystem.isDirectory(rootPath)) {
+			allFields = processDirectory(rootPath, "", "ResourceTree");
+		}
 
 		allFields.push({
 			name: "new",
@@ -174,6 +180,10 @@ class ResourcesMacro {
 		});
 
 		return Context.getBuildFields().concat(allFields);
+	}
+
+	private static inline function getProjectResourcesDirectory():String {
+		return Path.addTrailingSlash(Sys.getCwd()) + "resources/";
 	}
 }
 #end
