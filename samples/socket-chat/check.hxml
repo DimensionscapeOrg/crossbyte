@@ -1,0 +1,6 @@
+--cwd ../..
+-cp src
+-cp samples/socket-chat
+-main SocketChatSampleCheck
+--cpp export/sample-socket-chat-check
+-D no-compilation
