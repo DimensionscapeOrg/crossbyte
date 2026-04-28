@@ -20,8 +20,54 @@ package crossbyte;
  * ```
  */
 abstract PrimitiveValue(Dynamic) to Dynamic {
+	public static inline function tryFromDynamic(value:Dynamic):Null<PrimitiveValue> {
+		return isValid(value) ? cast value : null;
+	}
+
+	public static inline function fromDynamic(value:Dynamic):PrimitiveValue {
+		if (!isValid(value)) {
+			throw "Cannot convert " + Std.string(value) + " to PrimitiveValue";
+		}
+		return cast value;
+	}
+
 	public inline function getValueType():Type.ValueType {
 		return Type.typeof(this);
+	}
+
+	public inline function isString():Bool {
+		return switch (Type.typeof(this)) {
+			case TClass(String): true;
+			default: false;
+		};
+	}
+
+	public inline function isInt():Bool {
+		return switch (Type.typeof(this)) {
+			case TInt: true;
+			default: false;
+		};
+	}
+
+	public inline function isFloat():Bool {
+		return switch (Type.typeof(this)) {
+			case TFloat: true;
+			default: false;
+		};
+	}
+
+	public inline function isBool():Bool {
+		return switch (Type.typeof(this)) {
+			case TBool: true;
+			default: false;
+		};
+	}
+
+	public inline function isNull():Bool {
+		return switch (Type.typeof(this)) {
+			case TNull: true;
+			default: false;
+		};
 	}
 
 	/**
@@ -126,7 +172,10 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	}
 
 	private static function isValid(value:Dynamic):Bool {
-		return value != null
-			&& (Std.isOfType(value, String) || Std.isOfType(value, Int) || Std.isOfType(value, Float) || Std.isOfType(value, Bool));
+		return value == null
+			|| Std.isOfType(value, String)
+			|| Std.isOfType(value, Int)
+			|| Std.isOfType(value, Float)
+			|| Std.isOfType(value, Bool);
 	}
 }
