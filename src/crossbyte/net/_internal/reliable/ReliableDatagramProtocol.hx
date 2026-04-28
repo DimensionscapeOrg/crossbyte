@@ -53,6 +53,9 @@ final class ReliableDatagramProtocol {
 
 		var meta:Int = packet.readUnsignedByte();
 		var typeValue:Int = (meta & TYPE_MASK) >> TYPE_SHIFT;
+		if (typeValue > (FIN : Int)) {
+			return null;
+		}
 		var resend:Bool = (meta & RESEND_MASK) != 0;
 		var ackPresent:Bool = (meta & ACK_PRESENT_MASK) != 0;
 		if (ackPresent && packet.length < HEADER_SIZE + ACK_FIELD_SIZE) {
