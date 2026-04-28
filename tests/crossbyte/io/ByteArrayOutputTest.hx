@@ -80,4 +80,29 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.isTrue(output.validateSizeAt(2, 2));
 		Assert.isFalse(output.validateSizeAt(3, 2));
 	}
+
+	public function testBytesWrittenTracksUsedBytesAcrossChunks():Void {
+		var output = new ByteArrayOutput(1);
+		output.writeByte(0x11);
+		Assert.equals(1, output.bytesWritten);
+
+		output.reserve(4);
+		output.writeInt(0x22334455);
+		Assert.equals(5, output.bytesWritten);
+	}
+
+	public function testWriteIntAtCanPatchAcrossChunkBoundary():Void {
+		var output = new ByteArrayOutput(2);
+		output.writeShort(0x1122);
+		output.reserve(4);
+		output.writeInt(0);
+		output.writeIntAt(2, 0x55667788);
+
+		var bytes:Bytes = output;
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+
+		Assert.equals(0x1122, input.readShort() & 0xFFFF);
+		Assert.equals(0x55667788, input.readInt());
+		Assert.isTrue(input.eof());
+	}
 }

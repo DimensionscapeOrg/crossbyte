@@ -2,9 +2,11 @@ package crossbyte.rpc;
 
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.EventType;
+import crossbyte.events.IEventDispatcher;
 
 @:allow(crossbyte.rpc.RPCCommands)
-class RPCResponse<T> extends EventDispatcher {
+class RPCResponse<T> implements IEventDispatcher {
 	public static inline final RESULT:String = "rpcResponseResult";
 	public static inline final ERROR:String = "rpcResponseError";
 
@@ -16,12 +18,37 @@ class RPCResponse<T> extends EventDispatcher {
 	public var error(default, null):String;
 
 	@:noCompletion private var __responder:Responder<T>;
+	@:noCompletion private var __dispatcher:Null<EventDispatcher>;
 
 	public function new(requestId:Int, op:Int, ?responder:Responder<T>) {
-		super();
 		this.requestId = requestId;
 		this.op = op;
 		this.__responder = responder;
+		this.__dispatcher = null;
+	}
+
+	public inline function addEventListener<U>(type:EventType<U>, listener:U->Void, priority:Int = 0):Void {
+		__ensureDispatcher().addEventListener(type, listener, priority);
+	}
+
+	public inline function removeEventListener<U>(type:EventType<U>, listener:U->Void):Void {
+		if (__dispatcher != null) {
+			__dispatcher.removeEventListener(type, listener);
+		}
+	}
+
+	public inline function hasEventListener(type:String):Bool {
+		return __dispatcher != null && __dispatcher.hasEventListener(type);
+	}
+
+	public inline function removeAllListeners():Void {
+		if (__dispatcher != null) {
+			__dispatcher.removeAllListeners();
+		}
+	}
+
+	public inline function dispatchEvent<E:Event>(event:E):Bool {
+		return __dispatcher != null && __dispatcher.dispatchEvent(event);
 	}
 
 	public inline function respond(responder:Responder<T>):RPCResponse<T> {
@@ -44,7 +71,9 @@ class RPCResponse<T> extends EventDispatcher {
 		succeeded = true;
 		result = value;
 		__notifyResponder();
-		dispatchEvent(new Event(RESULT));
+		if (hasEventListener(RESULT)) {
+			dispatchEvent(new Event(RESULT));
+		}
 	}
 
 	@:noCompletion private function __reject(message:String):Void {
@@ -55,7 +84,9 @@ class RPCResponse<T> extends EventDispatcher {
 		succeeded = false;
 		error = message;
 		__notifyResponder();
-		dispatchEvent(new Event(ERROR));
+		if (hasEventListener(ERROR)) {
+			dispatchEvent(new Event(ERROR));
+		}
 	}
 
 	@:noCompletion private inline function __notifyResponder():Void {
@@ -67,6 +98,13 @@ class RPCResponse<T> extends EventDispatcher {
 		} else {
 			__responder.error(error);
 		}
+	}
+
+	@:noCompletion private inline function __ensureDispatcher():EventDispatcher {
+		if (__dispatcher == null) {
+			__dispatcher = new EventDispatcher(cast this);
+		}
+		return __dispatcher;
 	}
 }
 
