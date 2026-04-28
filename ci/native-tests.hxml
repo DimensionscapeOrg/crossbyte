@@ -2,5 +2,5 @@
 -cp tests
 -lib utest
 -D windows
--main TestMain
+-main NativeSmokeMain
 --cpp export/ci-native-tests
