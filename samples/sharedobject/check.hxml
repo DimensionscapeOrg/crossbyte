@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/sharedobject
+-main SharedObjectSample
+--interp
