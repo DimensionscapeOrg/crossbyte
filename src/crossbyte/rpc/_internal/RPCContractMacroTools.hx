@@ -29,6 +29,67 @@ class RPCContractMacroTools {
 		return readContractMethods(meta.params[0], meta.pos, metaName);
 	}
 
+	public static function getImplementedContractMethods(metaName:String):Null<Array<ContractMethod>> {
+		final meta = getClassMetadata(metaName);
+		if (meta != null && meta.params != null && meta.params.length > 0) {
+			Context.error(metaName + " does not take arguments. Implement the shared contract interface directly on the handler class.", meta.pos);
+		}
+		final localClass = Context.getLocalClass();
+		if (localClass == null) {
+			return null;
+		}
+		final interfaces = localClass.get().interfaces;
+		if (interfaces.length == 0) {
+			return null;
+		}
+		if (interfaces.length > 1) {
+			final errorPos = meta != null ? meta.pos : localClass.get().pos;
+			Context.error(metaName + " only supports one directly-implemented shared RPC contract interface.", errorPos);
+		}
+		final pos = meta != null ? meta.pos : localClass.get().pos;
+		return readContractClass(interfaces[0].t.get(), pos, metaName);
+	}
+
+	public static function requireExtends(metaName:String, expectedPath:String):Void {
+		final localClass = Context.getLocalClass();
+		if (localClass == null) {
+			return;
+		}
+		var superClass = localClass.get().superClass;
+		while (superClass != null) {
+			final current = superClass.t.get();
+			if (pathKey(current.pack, current.name) == expectedPath) {
+				return;
+			}
+			superClass = current.superClass;
+		}
+		Context.error(metaName + " can only be used on classes extending " + expectedPath + ".", localClass.get().pos);
+	}
+
+	public static function classImplements(path:String):Bool {
+		final localClass = Context.getLocalClass();
+		if (localClass == null) {
+			return false;
+		}
+		for (iface in localClass.get().interfaces) {
+			if (pathKey(iface.t.get().pack, iface.t.get().name) == path) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public static function contractPath(metaName:String):Null<String> {
+		final meta = getClassMetadata(metaName);
+		if (meta == null) {
+			return null;
+		}
+		if (meta.params == null || meta.params.length != 1) {
+			Context.error(metaName + " requires exactly one contract interface argument.", meta.pos);
+		}
+		return exprToTypePath(meta.params[0]);
+	}
+
 	static function getClassMetadata(name:String):Null<MetadataEntry> {
 		final localClass = Context.getLocalClass();
 		if (localClass == null) {
@@ -50,41 +111,45 @@ class RPCContractMacroTools {
 
 		return switch (Context.follow(resolved)) {
 			case TInst(typeRef, _):
-				final type = typeRef.get();
-				if (!type.isInterface) {
-					Context.error(metaName + " expects an interface contract, got " + path + ".", pos);
-				}
-				final methods = new Array<ContractMethod>();
-				for (field in type.fields.get()) {
-					switch (Context.follow(field.type)) {
-						case TFun(args, ret):
-							var retType = ret.toComplexType();
-							if (retType == null) {
-								retType = macro :Void;
-							}
-							methods.push({
-								name: field.name,
-								pos: field.pos,
-								args: args.map(arg -> {
-									name: arg.name,
-									opt: arg.opt,
-									type: arg.t.toComplexType(),
-									value: null,
-									meta: []
-								}),
-								ret: retType,
-								responseType: responsePayloadType(retType, field.pos),
-								op: Hash.fnv1a32(haxe.io.Bytes.ofString(field.name))
-							});
-						case _:
-							Context.error("RPC contract field '" + field.name + "' must be a function.", field.pos);
-					}
-				}
-				methods;
+				readContractClass(typeRef.get(), pos, metaName);
 			case _:
 				Context.error(metaName + " expects an interface contract, got " + path + ".", pos);
 				null;
 		};
+	}
+
+	static function readContractClass(type:ClassType, pos:Position, metaName:String):Array<ContractMethod> {
+		if (!type.isInterface) {
+			Context.error(metaName + " expects an interface contract, got " + pathKey(type.pack, type.name) + ".", pos);
+		}
+
+		final methods = new Array<ContractMethod>();
+		for (field in type.fields.get()) {
+			switch (Context.follow(field.type)) {
+				case TFun(args, ret):
+					var retType = ret.toComplexType();
+					if (retType == null) {
+						retType = macro :Void;
+					}
+					methods.push({
+						name: field.name,
+						pos: field.pos,
+						args: args.map(arg -> {
+							name: arg.name,
+							opt: arg.opt,
+							type: arg.t.toComplexType(),
+							value: null,
+							meta: []
+						}),
+						ret: retType,
+						responseType: responsePayloadType(retType, field.pos),
+						op: Hash.fnv1a32(haxe.io.Bytes.ofString(field.name))
+					});
+				case _:
+					Context.error("RPC contract field '" + field.name + "' must be a function.", field.pos);
+			}
+		}
+		return methods;
 	}
 
 	static function exprToTypePath(expr:Expr):String {
@@ -105,21 +170,15 @@ class RPCContractMacroTools {
 			case TAbstract(typeRef, _) if (typeRef.get().name == "Void"):
 				null;
 			case TInst(typeRef, params) if (typeRef.get().name == "RPCResponse" && typeRef.get().pack.join(".") == "crossbyte.rpc"):
-				switch (params) {
-					case [inner]:
-						final payload = inner.toComplexType();
-						if (payload == null) {
-							Context.error("RPCResponse must declare a payload type.", pos);
-						}
-						payload;
-					case _:
-						Context.error("RPCResponse must declare a payload type.", pos);
-						null;
-				}
-			case _:
-				Context.error("RPC contract return type must be Void or RPCResponse<T>, got " + ComplexTypeTools.toString(ret) + ".", pos);
+				Context.error("Shared RPC contracts should use plain payload return types. Use T or Void in the contract, not RPCResponse<T>.", pos);
 				null;
+			case _:
+				ret;
 		}
+	}
+
+	static inline function pathKey(pack:Array<String>, name:String):String {
+		return (pack.length > 0 ? pack.join(".") + "." : "") + name;
 	}
 
 }
