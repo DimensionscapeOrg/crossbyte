@@ -237,7 +237,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		if (Std.isOfType(connection, NetConnectionBase)) {
 			return cast connection;
 		}
-		return new ExternalConnectionAdapter(connection);
+		return new NetConnectionAdapter(connection);
 	}
 
 	public static inline function fromSocketWith(socket:Socket, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void,
@@ -279,7 +279,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 }
 
 @:allow(crossbyte.net.NetConnection)
-private class ExternalConnectionAdapter extends NetConnectionBase implements INetConnection {
+private class NetConnectionAdapter extends NetConnectionBase implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
 	public var localAddress(get, never):String;
