@@ -11,6 +11,39 @@ class CollectionsTest extends utest.Test {
 		Assert.isTrue(filter.contains("alpha"));
 	}
 
+	public function testBitSetSupportsGrowthMutationAndLogicalLength():Void {
+		var bits = new BitSet(5);
+
+		Assert.equals(5, bits.length);
+		Assert.isFalse(bits.get(0));
+		Assert.isFalse(bits.get(4));
+		Assert.isFalse(bits.get(99));
+
+		bits.set(1, true);
+		bits.flip(4);
+		Assert.isTrue(bits.get(1));
+		Assert.isTrue(bits.get(4));
+		Assert.equals(2, bits.countSetBits());
+
+		bits.clear(1);
+		Assert.isFalse(bits.get(1));
+		Assert.equals(1, bits.countSetBits());
+
+		bits.set(40, true);
+		Assert.isTrue(bits.get(40));
+		Assert.isTrue(bits.length >= 41);
+
+		var logical = new BitSet(5);
+		logical.setAll();
+		Assert.equals(5, logical.countSetBits());
+
+		logical.length = 3;
+		Assert.equals(3, logical.countSetBits());
+
+		logical.clearAll();
+		Assert.equals(0, logical.countSetBits());
+	}
+
 	public function testVectorSpliceReturnsRemovedAndKeepsInsertOrder():Void {
 		var vector = new Vector<String>();
 		vector.push("a");
@@ -177,6 +210,34 @@ class CollectionsTest extends utest.Test {
 		map.clear();
 		Assert.equals(0, map.length());
 		Assert.equals(0, map.keys().length);
+	}
+
+	public function testDenseSetSupportsPackedRemovalAndLookup():Void {
+		var set = new DenseSet<String>();
+
+		Assert.isTrue(set.isEmpty);
+		Assert.isTrue(set.add("a"));
+		Assert.isTrue(set.add("b"));
+		Assert.isFalse(set.add("a"));
+		Assert.equals(2, set.length);
+		Assert.isTrue(set.contains("a"));
+		Assert.isTrue(set.contains("b"));
+		Assert.equals(0, set.indexOf("a"));
+
+		Assert.isTrue(set.remove("a"));
+		Assert.isFalse(set.contains("a"));
+		Assert.equals(1, set.length);
+		Assert.equals("b", set.valueAt(0));
+		Assert.isFalse(set.remove("missing"));
+		Assert.isFalse(set.removeAt(-1));
+		Assert.isFalse(set.removeAt(99));
+
+		var values = set.toArray();
+		Assert.equals("b", values.join(","));
+
+		set.clear();
+		Assert.isTrue(set.isEmpty);
+		Assert.equals(0, set.readArray().length);
 	}
 
 	public function testListedMapSupportsSwapRemovalAndIndexedAccess():Void {
