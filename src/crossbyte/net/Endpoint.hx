@@ -22,9 +22,10 @@ class Endpoint {
 /**
  * Parses a transport URI into an `Endpoint`.
  *
- * Supports `tcp://`, `rudp://`, `ws://`, and `wss://`. Plain TCP/RUDP
+ * Supports `tcp://`, `rudp://`, `local://`, `ws://`, and `wss://`. Plain TCP/RUDP
  * endpoints require an explicit port and do not accept path or query
- * components. WebSocket endpoints accept optional paths and infer port `80` or
+ * components. `local://` endpoints treat the remainder as a local pipe name.
+ * WebSocket endpoints accept optional paths and infer port `80` or
  * `443` when omitted.
  */
 function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoint:Endpoint):Endpoint {
@@ -54,6 +55,8 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 				proto = Protocol.UDP;
 			case "rudp":
 				proto = Protocol.RUDP;
+			case "local":
+				proto = Protocol.LOCAL;
 			case "ws":
 				proto = Protocol.WEBSOCKET;
 			case "wss":
@@ -62,6 +65,23 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 			default:
 				throw 'unsupported scheme: $scheme';
 		}
+	}
+
+	if (proto == Protocol.LOCAL) {
+		if (rest.length == 0) {
+			throw "missing local endpoint";
+		}
+		if (endpoint != null) {
+			endpoint.address = rest;
+			endpoint.port = 0;
+			endpoint.protocol = proto;
+			endpoint.secure = false;
+			endpoint.resource = "";
+		} else {
+			endpoint = {protocol: proto, address: rest, port: 0, secure: false, resource: ""};
+		}
+
+		return endpoint;
 	}
 
 	var cut:Int = indexOfAny(rest, SLASHQF);
