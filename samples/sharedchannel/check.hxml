@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/sharedchannel
+-main SharedChannelSample
+--interp

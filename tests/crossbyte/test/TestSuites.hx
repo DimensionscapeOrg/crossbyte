@@ -64,6 +64,7 @@ class TestSuites {
 
 	public static function addIPC(runner:Runner):Void {
 		runner.addCase(new crossbyte.ipc.LocalConnectionTest());
+		runner.addCase(new crossbyte.ipc.SharedChannelTest());
 		runner.addCase(new crossbyte.ipc.SharedObjectTest());
 	}
 
