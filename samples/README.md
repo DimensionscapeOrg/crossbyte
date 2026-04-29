@@ -43,10 +43,22 @@ haxe cpp.hxml
 
 ## LocalConnection
 
-`localconnection` demonstrates CrossByte's local named-pipe IPC API with
+`localconnection` demonstrates CrossByte's low-level local named-pipe transport with
 `demo`, `listen`, and `send` modes.
 
 Useful commands from `samples/localconnection`:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
+## SharedChannel
+
+`sharedchannel` demonstrates CrossByte's higher-level local message IPC API
+with `demo`, `listen`, and `send` modes.
+
+Useful commands from `samples/sharedchannel`:
 
 ```sh
 haxe check.hxml

@@ -2,9 +2,8 @@ package crossbyte.integration;
 
 import crossbyte.core.CrossByte;
 import crossbyte.ipc.LocalConnection;
-import haxe.Serializer;
+import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
-import haxe.io.BytesBuffer;
 
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.ipc.LocalConnection)
@@ -17,8 +16,13 @@ class LocalConnectionIntegrationMain {
 
 		var name:String = "__crossbyte_lc_integration_" + Std.int(Sys.time() * 1000) + "_" + Std.random(1000000);
 		var receiver = new LocalConnection();
-		var client = new ReceiverClient();
-		receiver.client = client;
+		var state = new ReceiverState();
+		receiver.onData = input -> {
+			state.calls++;
+			state.lastMessage = input.readUTF();
+			state.lastValue = input.readInt();
+		};
+		receiver.readEnabled = true;
 
 		var sender:LocalConnection = null;
 		var reconnectSender:LocalConnection = null;
@@ -26,41 +30,45 @@ class LocalConnectionIntegrationMain {
 		var rawPipe:Dynamic = null;
 
 		try {
-			receiver.connect(name);
+			receiver.listen(name);
 
 			sender = new LocalConnection();
-			sender.send(name, "receive", cast "first", cast 1, cast {kind: "primitive"});
-			waitFor(() -> client.calls == 1, "first message");
-			assertEquals("first", client.lastMessage, "first message text");
-			assertEquals(1, client.lastValue, "first message value");
-			assertEquals("primitive", Reflect.field(client.lastPayload, "kind"), "first payload kind");
+			sender.connect(name);
+			waitFor(() -> receiver.connected && sender.connected, "first connection");
+			sender.send(message("first", 1));
+			waitFor(() -> state.calls == 1, "first message");
+			assertEquals("first", state.lastMessage, "first message text");
+			assertEquals(1, state.lastValue, "first message value");
 
 			sender.close();
 			sender = null;
 
 			reconnectSender = new LocalConnection();
-			reconnectSender.send(name, "receive", cast "second", cast 2, cast {kind: "reconnect"});
-			waitFor(() -> client.calls == 2, "reconnected sender message");
-			assertEquals("second", client.lastMessage, "second message text");
-			assertEquals(2, client.lastValue, "second message value");
-			assertEquals("reconnect", Reflect.field(client.lastPayload, "kind"), "second payload kind");
+			reconnectSender.connect(name);
+			waitFor(() -> receiver.connected && reconnectSender.connected, "reconnected sender connection");
+			reconnectSender.send(message("second", 2));
+			waitFor(() -> state.calls == 2, "reconnected sender message");
+			assertEquals("second", state.lastMessage, "second message text");
+			assertEquals(2, state.lastValue, "second message value");
 
 			rawPipe = LocalConnection.__connect(name);
 			if (rawPipe == null) {
 				throw "raw pipe connect failed";
 			}
-			if (!LocalConnection.__write(rawPipe, Bytes.ofString("bad-frame").getData(), 9)) {
+			var malformed = Bytes.ofString("bad-frame");
+			if (!LocalConnection.__write(rawPipe, malformed.getData(), malformed.length)) {
 				throw "raw malformed frame write failed";
 			}
 			LocalConnection.__close(rawPipe);
 			rawPipe = null;
 
 			finalSender = new LocalConnection();
-			finalSender.send(name, "receive", cast "third", cast 3, cast {kind: "after-malformed"});
-			waitFor(() -> client.calls == 3, "valid message after malformed frame");
-			assertEquals("third", client.lastMessage, "third message text");
-			assertEquals(3, client.lastValue, "third message value");
-			assertEquals("after-malformed", Reflect.field(client.lastPayload, "kind"), "third payload kind");
+			finalSender.connect(name);
+			waitFor(() -> receiver.connected && finalSender.connected, "final sender connection");
+			finalSender.send(message("third", 3));
+			waitFor(() -> state.calls == 3, "valid message after malformed frame");
+			assertEquals("third", state.lastMessage, "third message text");
+			assertEquals(3, state.lastValue, "third message value");
 
 			receiver.close();
 			reconnectSender.close();
@@ -103,20 +111,20 @@ class LocalConnectionIntegrationMain {
 			throw '$label: expected $expected, got $actual';
 		}
 	}
+
+	private static function message(text:String, value:Int):ByteArray {
+		var bytes = new ByteArray();
+		bytes.writeUTF(text);
+		bytes.writeInt(value);
+		bytes.position = 0;
+		return bytes;
+	}
 }
 
-private class ReceiverClient {
+private class ReceiverState {
 	public var calls:Int = 0;
 	public var lastMessage:String;
 	public var lastValue:Int = -1;
-	public var lastPayload:Dynamic;
 
 	public function new() {}
-
-	public function receive(message:String, value:Int, payload:Dynamic):Void {
-		calls++;
-		lastMessage = message;
-		lastValue = value;
-		lastPayload = payload;
-	}
 }

@@ -1,15 +1,18 @@
 package crossbyte.ipc;
 
 import crossbyte.core.CrossByte;
-import crossbyte.errors.IllegalOperationError;
-import haxe.Timer;
-import haxe.io.BytesBuffer;
 import crossbyte.errors.ArgumentError;
-import crossbyte.events.StatusEvent;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.TickEvent;
-import crossbyte.Object;
-import haxe.Unserializer;
-import haxe.Serializer;
+import crossbyte.io.ByteArray;
+import crossbyte.io.ByteArrayInput;
+import crossbyte.net.INetConnection;
+import crossbyte.net.Protocol;
+import crossbyte.net.Reason;
+import crossbyte.net.Transport;
+import haxe.io.Bytes;
+import haxe.io.BytesData;
+import haxe.io.BytesBuffer;
 #if cpp
 import cpp.Pointer;
 import crossbyte.ipc._internal.NativeLocalConnection;
@@ -18,11 +21,8 @@ import crossbyte.ipc._internal.win.HANDLE;
 #end
 import crossbyte.ipc._internal.VoidPointer;
 #end
-import haxe.io.Bytes;
-import haxe.io.BytesData;
-import sys.thread.Deque;
-import crossbyte.events.EventDispatcher;
 #if (cpp || neko || hl)
+import sys.thread.Deque;
 import sys.thread.Mutex;
 import sys.thread.Thread;
 #end
@@ -37,472 +37,442 @@ private typedef LocalConnectionHandle = VoidPointer;
 private typedef LocalConnectionHandle = Dynamic;
 #end
 
+private enum LocalConnectionMode {
+	NONE;
+	CLIENT;
+	SERVER;
+}
+
+private enum LocalConnectionDispatch {
+	Ready;
+	Close(reason:Reason);
+	Error(reason:Reason);
+	Data(payload:ByteArray);
+}
+
 /**
- * `LocalConnection` provides inter-process communication (IPC) using Named Pipes.
- * 
- * This class allows **sending messages between processes** on the same **local machine**.
- * The communication model follows a **client-server architecture**, where:
- * - A **server** process listens for incoming messages.
- * - A **client** process connects to the server and sends data.
+ * `LocalConnection` is CrossByte's low-level local IPC transport.
  *
- * This implementation supports **asynchronous, non-blocking communication** and handles **multiple clients**.
+ * The transport exposes a byte-oriented, duplex connection surface compatible
+ * with `INetConnection`, making it suitable for `NetConnection` and
+ * `RPCSession`. Use `listen(name)` on the server side and `connect(name)` on
+ * the client side.
  *
+ * `SharedChannel` builds on top of this transport when you want the older
+ * method-name plus serialized-arguments message model.
  */
-@:access(haxe.Serializer)
+@:access(haxe.io.Bytes)
 #if cpp
 @:access(crossbyte.ipc._internal.NativeLocalConnection)
 #end
-class LocalConnection extends EventDispatcher {
+class LocalConnection implements INetConnection {
 	public static inline var isSupported:Bool = #if cpp true #else false #end;
 
-	/**
-	 * The object that handles incoming messages.
-	 * This should be set to an instance containing methods corresponding to the message names sent by other processes.
-	 */
-	public var client:Object;
+	/** Maximum payload size accepted by the framing layer, in bytes. */
+	public static inline var MAX_FRAME_SIZE:Int = 1024 * 1024;
 
-	@:noCompletion private var __inboundPipe:LocalConnectionHandle;
-	@:noCompletion private var __outboundPipe:LocalConnectionHandle;
-	@:noCompletion private var __serializer:Serializer;
-	@:noCompletion private var __clientPipes:Array<Dynamic>;
-	@:noCompletion private var __outboundTimeout:Timer;
-	@:noCompletion private var __runtime:CrossByte;
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+	public var protocol:Protocol = LOCAL;
+	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
+	public var onData(get, set):ByteArrayInput->Void;
+	public var onClose(get, set):Reason->Void;
+	public var onError(get, set):Reason->Void;
+	public var onReady(get, set):Void->Void;
+	public var inTimestamp(default, null):Float = 0;
+	public var outTimestamp(default, null):Float = 0;
+
+	@:noCompletion private static inline var BUFFER_SIZE:Int = 4096;
+
+	@:noCompletion private var __mode:LocalConnectionMode = NONE;
+	@:noCompletion private var __connectionName:String = null;
+	@:noCompletion private var __runtime:CrossByte = null;
+	@:noCompletion private var __activePipe:LocalConnectionHandle = null;
+	@:noCompletion private var __listeningPipe:LocalConnectionHandle = null;
+	@:noCompletion private var __connected:Bool = false;
+	@:noCompletion private var __readEnabled:Bool = false;
+	@:noCompletion private var __running:Bool = false;
+	@:noCompletion private var __receiveBuffer:ByteArray;
+	@:noCompletion private var __onData:ByteArrayInput->Void = __noopData;
+	@:noCompletion private var __onClose:Reason->Void = __noopClose;
+	@:noCompletion private var __onError:Reason->Void = __noopError;
+	@:noCompletion private var __onReady:Void->Void = __noopReady;
 	#if (cpp || neko || hl)
-	@:noCompletion private var __dispatchQueue:Deque<Bytes>;
+	@:noCompletion private var __dispatchQueue:Deque<LocalConnectionDispatch>;
 	@:noCompletion private var __dispatchLock:Mutex;
+	@:noCompletion private var __pendingLock:Mutex;
 	#end
 	@:noCompletion private var __dispatchListener:TickEvent->Void;
 	@:noCompletion private var __dispatchAttached:Bool = false;
-	@:noCompletion private var __lastSentTime:Float = 0;
-	@:noCompletion private var __connected:Bool = false;
-	@:noCompletion private var __running:Bool = false;
+	@:noCompletion private var __pendingPayloads:Array<ByteArray> = [];
 
-	@:noCompletion private static inline var TIME_OUT:Int = 45000;
-	@:noCompletion private static inline var BUFFER_SIZE:Int = 4096;
-	@:noCompletion private static inline var MAX_METHOD_LENGTH:Int = 256;
-	@:noCompletion private static inline var MAX_MESSAGE_SIZE:Int = 1024 * 1024;
-
-	/**
-	 * Creates a new `LocalConnection` instance.
-	 *
-	 * This instance must either `connect()` to receive messages or use `send()` to send messages.
-	 */
 	public function new() {
-		super();
-		__serializer = new Serializer();
-		__serializer.useCache = true;
-		__clientPipes = [];
+		__captureRuntime();
+		__receiveBuffer = new ByteArray();
 		#if (cpp || neko || hl)
 		__dispatchQueue = new Deque();
 		__dispatchLock = new Mutex();
+		__pendingLock = new Mutex();
 		#end
 		__dispatchListener = __flushDispatchQueue;
-		try {
-			__runtime = CrossByte.current();
-		} catch (_:IllegalOperationError) {
-			__runtime = null;
-		} catch (_:Dynamic) {
-			__runtime = null;
-		}
 	}
 
 	/**
-	 * Closes the **inbound** (server-side) connection.
+	 * Starts listening for a local peer on the given pipe name.
 	 *
-	 * This stops the server from receiving further messages.
-	 */
-	public function close():Void {
-		__running = false;
-		if (__inboundPipe != null) {
-			__close(__inboundPipe);
-			__inboundPipe = null;
-		}
-		if (__outboundPipe != null) {
-			__close(__outboundPipe);
-			__outboundPipe = null;
-		}
-		__closeClientPipes();
-		if (__outboundTimeout != null) {
-			__outboundTimeout.stop();
-			__outboundTimeout = null;
-		}
-		__detachDispatchListener();
-		__connected = false;
-	}
-
-	/**
-	 * Starts listening for incoming messages on the given connection.
+	 * The connection becomes `connected == true` only after a client attaches.
 	 *
-	 * @param connectionName The name of the connection (pipe) to listen for messages.
+	 * @param connectionName Named local IPC endpoint to listen on.
 	 */
-	public function connect(connectionName:String):Void {
+	public function listen(connectionName:String):Void {
 		__requireSupported();
-		try {
-			__runtime = CrossByte.current();
-		} catch (_:IllegalOperationError) {
-			__runtime = null;
-		} catch (_:Dynamic) {
-			__runtime = null;
-		}
-		// trace('Connecting as server: ' + connectionName);
-		if (!__setupNamedPipe(connectionName)) {
-			// trace("Error setting up named pipe: " + connectionName);
-			throw new ArgumentError("Connection name is already in use or invalid");
-		} else {
-			__connected = true;
-		}
-	}
-
-	/**
-	 * Sends a message to another process.
-	 *
-	 * @param connectionName The name of the connection (pipe) to send the message to.
-	 * @param methodName The name of the method to invoke on the receiving process.
-	 * @param arguments The arguments to pass to the method.
-	 */
-	public function send(connectionName:String, methodName:String, ...arguments):Void {
-		__requireSupported();
-		if (methodName == null || methodName.length == 0 || methodName.length > MAX_METHOD_LENGTH) {
-			dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", "error"));
-			return;
-		}
-
-		__resetSeralizer();
-
-		var status:Bool = false;
-
-		__serializer.serialize(arguments);
-		var methodBytes:Bytes = Bytes.ofString(methodName);
-		var serializationBytes:Bytes = Bytes.ofString(__serializer.toString());
-		if (8 + methodBytes.length + serializationBytes.length > MAX_MESSAGE_SIZE) {
-			dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", "error"));
-			return;
-		}
-
-		var messageBuffer:BytesBuffer = new BytesBuffer();
-		messageBuffer.addInt32(methodBytes.length);
-		messageBuffer.addBytes(methodBytes, 0, methodBytes.length);
-		messageBuffer.addInt32(serializationBytes.length);
-		messageBuffer.addBytes(serializationBytes, 0, serializationBytes.length);
-
-		var messageBytes:Bytes = messageBuffer.getBytes();
-		// trace("Attempt to send: " + message);
-
-		// Connects to the outbound pipe
-
-		if (__outboundPipe == null || !__isOpen(__outboundPipe)) {
-			__outboundPipe = __connect(connectionName);
-		}
-
-		// Send the message
-		if (__outboundPipe != null) {
-			status = __write(__outboundPipe, messageBytes.getData(), messageBytes.length);
-		}
-
-		// trace("Send message status is: " + (status ? "Success" : "Failure"));
-		var level:String = status ? "status" : "error";
-
-		dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", level));
-		// __close(pipe);
-
-		// Update last sent time
-		__lastSentTime = Sys.time();
-
-		// Ensure timeout checking is running
-		if (__outboundTimeout == null) {
-			__startTimeoutCheck();
-		}
-	}
-
-	/** Starts the timeout check (but does not hold a strong reference) */
-	@:noCompletion private function __startTimeoutCheck():Void {
-		if (__outboundTimeout != null)
-			return; // Prevent multiple timers
-
-		__outboundTimeout = Timer.delay(() -> __checkTimeout(), 5000);
-	}
-
-	/** Checks if the pipe should be closed due to timeout */
-	@:noCompletion private function __checkTimeout():Void {
-		if (__outboundPipe != null) {
-			var elapsed:Float = Sys.time() - __lastSentTime;
-			if (elapsed >= TIME_OUT / 1000) {
-				// trace("Timeout expired. Closing outbound pipe.");
-				__close(__outboundPipe);
-				__outboundPipe = null;
-			}
-		}
-
-		// Stop the timer if there’s no active pipe
-		if (__outboundPipe == null && __outboundTimeout != null) {
-			// trace("No active pipe, stopping timeout checks.");
-			__outboundTimeout.stop();
-			__outboundTimeout = null; // Allow garbage collection
-			return;
-		}
-
-		// Continue checking if still active
-		__outboundTimeout = Timer.delay(() -> __checkTimeout(), 5000);
-	}
-
-	/** Writes data to a named pipe */
-	@:noCompletion private static function __write(pipe:LocalConnectionHandle, data:BytesData, size:Int):Bool {
-		#if cpp
-		return NativeLocalConnection.__write(pipe, Pointer.ofArray(data), size);
-		#else
-		return false;
-		#end
-	}
-
-	/** Connects to an outbound pipe */
-	@:noCompletion private static function __connect(name:String):LocalConnectionHandle {
-		#if cpp
-		return NativeLocalConnection.__connect(name);
-		#else
-		return null;
-		#end
-	}
-
-	/** Creates an inbound pipe (server) */
-	@:noCompletion private static function __createInboundPipe(name:String):LocalConnectionHandle {
-		#if cpp
-		return NativeLocalConnection.__createInboundPipe(name);
-		#else
-		return null;
-		#end
-	}
-
-	/** Accepts a new client connection */
-	@:noCompletion private static function __accept(pipe:LocalConnectionHandle):Bool {
-		#if cpp
-		return NativeLocalConnection.__accept(pipe);
-		#else
-		return false;
-		#end
-	}
-
-	@:noCompletion private static function __isOpen(pipe:LocalConnectionHandle):Bool {
-		#if cpp
-		return NativeLocalConnection.__isOpen(pipe);
-		#else
-		return false;
-		#end
-	}
-
-	/** Reads from the named pipe */
-	@:noCompletion private static function __read(pipe:LocalConnectionHandle, buffer:BytesData, size:Int):Int {
-		#if cpp
-		return NativeLocalConnection.__read(pipe, Pointer.ofArray(buffer), size);
-		#else
-		return -1;
-		#end
-	}
-
-	/** Gets available bytes in the pipe */
-	@:noCompletion private static function __getBytesAvailable(pipe:LocalConnectionHandle):Int {
-		#if cpp
-		return NativeLocalConnection.__getBytesAvailable(pipe);
-		#else
-		return 0;
-		#end
-	}
-
-	/** Closes a named pipe */
-	@:noCompletion private static function __close(pipe:LocalConnectionHandle):Void {
-		#if cpp
-		NativeLocalConnection.__close(pipe);
-		#end
-	}
-
-	/** Resets our serializer internally */
-	@:noCompletion private inline function __resetSeralizer():Void {
-		__serializer.buf = new StringBuf();
-		__serializer.shash.clear();
-		__serializer.cache = [];
-		__serializer.scount = 0;
-	}
-
-	/** Initializes the Named Pipe Server */
-	@:noCompletion private function __setupNamedPipe(connectionName:String):Bool {
+		__requireConnectionName(connectionName);
 		close();
+		__captureRuntime();
+		__mode = SERVER;
+		__connectionName = connectionName;
 		__running = true;
+
+		#if cpp
 		var handleQueue:Deque<LocalConnectionHandle> = new Deque();
-		#if (cpp || neko || hl)
 		Thread.create(() -> {
 			var handle:LocalConnectionHandle = null;
 			try {
 				handle = __createInboundPipe(connectionName);
-				__inboundPipe = handle;
+				__listeningPipe = handle;
 				handleQueue.add(handle);
-			} catch (e:Dynamic) {
+			} catch (_:Dynamic) {
 				handleQueue.add(null);
 			}
+
 			if (handle != null) {
-				__runLocalConnection(connectionName, handle);
+				__runLoop();
 			}
 		});
-		#else
-		var handle:LocalConnectionHandle = null;
-		try {
-			handle = __createInboundPipe(connectionName);
-			__inboundPipe = handle;
-			handleQueue.add(handle);
-		} catch (e:Dynamic) {
-			handleQueue.add(null);
-		}
-		if (handle != null) {
-			__runLocalConnection(connectionName, handle);
+
+		if (handleQueue.pop(true) == null) {
+			__running = false;
+			__mode = NONE;
+			throw new ArgumentError("Connection name is already in use or invalid");
 		}
 		#end
-
-		var handle:LocalConnectionHandle = handleQueue.pop(true);
-		if (handle != null) {
-			return true;
-		}
-
-		__running = false;
-		return false;
 	}
 
-	@:noCompletion private #if !debug inline #end function __onData(received:Bytes):Void {
-		if (client == null) {
+	/**
+	 * Connects to a listening local endpoint.
+	 *
+	 * @param connectionName Named local IPC endpoint to connect to.
+	 */
+	public function connect(connectionName:String):Void {
+		__requireSupported();
+		__requireConnectionName(connectionName);
+		close();
+		__captureRuntime();
+		__mode = CLIENT;
+		__connectionName = connectionName;
+
+		var handle = __connect(connectionName);
+		if (handle == null) {
+			__mode = NONE;
+			var reason = Reason.Error("Failed to connect to local endpoint.");
+			__dispatchLifecycle(Error(reason));
+			throw new ArgumentError("Connection name is unavailable or invalid");
+		}
+
+		__activePipe = handle;
+		__connected = true;
+		__running = true;
+		__dispatchLifecycle(Ready);
+
+		#if (cpp || neko || hl)
+		Thread.create(__runLoop);
+		#else
+		__runLoop();
+		#end
+	}
+
+	public function expose():Transport {
+		return LOCAL(this);
+	}
+
+	/**
+	 * Sends a framed payload over the active local transport.
+	 *
+	 * @param data Payload bytes to transmit.
+	 */
+	public function send(data:ByteArray):Void {
+		if (!__connected || __activePipe == null || !__isOpen(__activePipe)) {
+			__dispatchLifecycle(Error(Reason.Closed));
 			return;
 		}
 
-		var offset:Int = 0;
-		try {
-			if (received == null || received.length < 8 || received.length > MAX_MESSAGE_SIZE) {
-				return;
-			}
+		if (data == null || data.length > MAX_FRAME_SIZE) {
+			__dispatchLifecycle(Error(Reason.Error("Invalid local payload size.")));
+			return;
+		}
 
-			var methodLength:Int = received.getInt32(0);
-			if (methodLength <= 0 || methodLength > MAX_METHOD_LENGTH || methodLength > received.length - 8) {
-				return;
-			}
-			offset += 4;
+		var frame = new ByteArray();
+		frame.writeInt(data.length);
+		frame.writeBytes(data, 0, data.length);
+		frame.position = 0;
+		var frameBytes:Bytes = cast frame;
 
-			var method:String = received.getString(offset, methodLength);
-			offset += methodLength;
+		if (!__write(__activePipe, frameBytes.getData(), frameBytes.length)) {
+			__dispatchLifecycle(Error(Reason.Error("Local transport write failed.")));
+			return;
+		}
 
-			var serializationLength:Int = received.getInt32(offset);
-			if (serializationLength < 0 || serializationLength > MAX_MESSAGE_SIZE || offset + 4 + serializationLength > received.length) {
-				return;
-			}
-			offset += 4;
-
-			var serialization:String = received.getString(offset, serializationLength);
-
-			var args:Array<Dynamic> = Unserializer.run(serialization);
-			var field:Dynamic = Reflect.field(client, method);
-			if (!Reflect.isFunction(field)) {
-				return;
-			}
-
-			Reflect.callMethod(client, field, args);
-		} catch (_:Dynamic) {}
-
-		/*try{
-				Reflect.callMethod(client, client[method], args);
-			}
-			catch (e:Dynamic)
-			{
-				// De nada
-		}*/
+		outTimestamp = __timestamp();
 	}
 
-	@:noCompletion private function __dispatchReceivedData(received:Bytes):Void {
+	public function close():Void {
+		var wasConnected = __connected;
+		__running = false;
+		__connected = false;
+		__mode = NONE;
+		__connectionName = null;
+		__receiveBuffer.clear();
+		__clearPendingPayloads();
+		__detachDispatchListener();
+
+		if (__activePipe != null) {
+			__close(__activePipe);
+			__activePipe = null;
+		}
+		if (__listeningPipe != null) {
+			__close(__listeningPipe);
+			__listeningPipe = null;
+		}
+
+		if (wasConnected) {
+			__onClose(Reason.Closed);
+		}
+	}
+
+	@:noCompletion private function __runLoop():Void {
+		var chunk:Bytes = Bytes.alloc(BUFFER_SIZE);
+
+		while (__running) {
+			if (__mode == SERVER && __activePipe == null && __listeningPipe != null && __accept(__listeningPipe)) {
+				__activePipe = __listeningPipe;
+				__listeningPipe = null;
+				__connected = true;
+				__dispatchLifecycle(Ready);
+			}
+
+			var pipe = __activePipe;
+			if (pipe != null) {
+				var available = __getBytesAvailable(pipe);
+				if (available < 0 || (available == 0 && !__isOpen(pipe))) {
+					__disconnectActive(Reason.Closed);
+				} else if (available > 0) {
+					if (available > MAX_FRAME_SIZE + 4) {
+						__disconnectActive(Reason.Error("Local transport received an oversized frame."));
+					} else {
+						var bytesRemaining = available;
+						var aggregate = new BytesBuffer();
+						var readOk = true;
+
+						while (bytesRemaining > 0) {
+							var length = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
+							if (__read(pipe, chunk.getData(), length) != 0) {
+								readOk = false;
+								break;
+							}
+							aggregate.addBytes(chunk, 0, length);
+							bytesRemaining -= length;
+						}
+
+						if (readOk) {
+							__appendReceivedBytes(aggregate.getBytes());
+						} else {
+							__disconnectActive(Reason.Error("Local transport read failed."));
+						}
+					}
+				}
+			}
+
+			Sys.sleep(0.001);
+		}
+
+		if (__activePipe != null) {
+			__close(__activePipe);
+			__activePipe = null;
+		}
+		if (__listeningPipe != null) {
+			__close(__listeningPipe);
+			__listeningPipe = null;
+		}
+	}
+
+	@:noCompletion private function __appendReceivedBytes(received:Bytes):Void {
+		if (received == null || received.length == 0) {
+			return;
+		}
+
+		__receiveBuffer.position = __receiveBuffer.length;
+		__receiveBuffer.writeBytes(received, 0, received.length);
+		__receiveBuffer.position = 0;
+
+		while (__receiveBuffer.bytesAvailable >= 4) {
+			var frameStart = __receiveBuffer.position;
+			var payloadLength = __receiveBuffer.readInt();
+			if (payloadLength < 0 || payloadLength > MAX_FRAME_SIZE) {
+				__disconnectActive(Reason.Error("Local transport received an invalid frame."));
+				return;
+			}
+
+			if (__receiveBuffer.bytesAvailable < payloadLength) {
+				__receiveBuffer.position = frameStart;
+				break;
+			}
+
+			var payload = new ByteArray();
+			if (payloadLength > 0) {
+				__receiveBuffer.readBytes(payload, 0, payloadLength);
+			}
+			payload.position = 0;
+			inTimestamp = __timestamp();
+			__dispatchPayload(payload);
+		}
+
+		__compactReceiveBuffer();
+	}
+
+	@:noCompletion private function __compactReceiveBuffer():Void {
+		var remaining = __receiveBuffer.bytesAvailable;
+		if (remaining <= 0) {
+			__receiveBuffer.clear();
+			__receiveBuffer.position = 0;
+			return;
+		}
+
+		var unread = new ByteArray();
+		__receiveBuffer.readBytes(unread, 0, remaining);
+		unread.position = 0;
+		__receiveBuffer.clear();
+		__receiveBuffer.writeBytes(unread, 0, unread.length);
+		__receiveBuffer.position = 0;
+	}
+
+	@:noCompletion private function __disconnectActive(reason:Reason):Void {
+		if (__activePipe != null) {
+			__close(__activePipe);
+			__activePipe = null;
+		}
+
+		var wasConnected = __connected;
+		__connected = false;
+		__receiveBuffer.clear();
+
+		switch (reason) {
+			case Error(_):
+				__dispatchLifecycle(Error(reason));
+			default:
+		}
+
+		if (wasConnected) {
+			__dispatchLifecycle(Close(Reason.Closed));
+		}
+
+		if (__mode == SERVER && __running) {
+			try {
+				__listeningPipe = __createInboundPipe(__connectionName);
+			} catch (_:Dynamic) {
+				__running = false;
+				__dispatchLifecycle(Error(Reason.Error("Failed to recreate the local listener.")));
+			}
+		} else {
+			__running = false;
+		}
+	}
+
+	@:noCompletion private function __dispatchPayload(payload:ByteArray):Void {
+		if (!__readEnabled) {
+			__pushPendingPayload(payload);
+			return;
+		}
+
+		var message = Data(payload);
 		#if (cpp || neko || hl)
 		if (!__canDispatchInline()) {
-			__dispatchQueue.add(received);
+			__dispatchQueue.add(message);
 			__ensureDispatchListener();
 			return;
 		}
 		#end
 
-		__onData(received);
+		__applyDispatch(message);
 	}
 
-	/** Listens for incoming messages in a background thread */
-	@:noCompletion private function __runLocalConnection(connectionName:String, listeningPipe:LocalConnectionHandle):Void {
-		var buffer:Bytes = Bytes.alloc(BUFFER_SIZE);
+	@:noCompletion private function __dispatchLifecycle(message:LocalConnectionDispatch):Void {
+		#if (cpp || neko || hl)
+		if (!__canDispatchInline()) {
+			__dispatchQueue.add(message);
+			__ensureDispatchListener();
+			return;
+		}
+		#end
 
-		while (__running) {
-			// Accepts new clients
-			if (listeningPipe != null && __accept(listeningPipe)) {
-				// trace("New client connected!");
+		__applyDispatch(message);
+	}
 
-				// we store new client pipe
-				__clientPipes.push(listeningPipe);
-				// Creates a new pipe for next client
-				listeningPipe = __createInboundPipe(connectionName);
-				__inboundPipe = listeningPipe;
-			}
-
-			// we can iterate in reverse to safely remove elements
-			var i = __clientPipes.length - 1;
-			while (i >= 0) {
-				var pipe = __clientPipes[i];
-
-				// Checks if the client disconnected
-				var available:Int = __getBytesAvailable(pipe);
-				if (available < 0) {
-					__close(pipe);
-					__clientPipes.splice(i, 1);
-				} else if (available == 0) {
-					// Check if the pipe is still valid?
-					if (!__isOpen(pipe)) {
-						// trace("Client disconnected. Removing handle.");
-						__close(pipe);
-						__clientPipes.splice(i, 1); // Remove client from the list
-					}
-				} else if (available > 0) {
-					if (available > MAX_MESSAGE_SIZE) {
-						__close(pipe);
-						__clientPipes.splice(i, 1);
-					} else if (available > BUFFER_SIZE) {
-						var largeMessageBuffer:BytesBuffer = new BytesBuffer();
-						var bytesRemaining:Int = available;
-						while (bytesRemaining > 0) {
-							var length:Int = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
-							if (__read(pipe, buffer.getData(), length) == 0) {
-								bytesRemaining -= length;
-								largeMessageBuffer.addBytes(buffer, 0, length);
-							} else {
-								bytesRemaining = 0;
-							}
-						}
-						__dispatchReceivedData(largeMessageBuffer.getBytes());
-					} else {
-						// Read theavailable data
-						if (__read(pipe, buffer.getData(), available) == 0) {
-							var received:Bytes = buffer.sub(0, available);
-							// trace("Received: " + received);
-							__dispatchReceivedData(received);
-						}
-					}
+	@:noCompletion private function __applyDispatch(message:LocalConnectionDispatch):Void {
+		switch (message) {
+			case Ready:
+				__onReady();
+			case Close(reason):
+				__onClose(reason);
+			case Error(reason):
+				__onError(reason);
+			case Data(payload):
+				if (!__readEnabled) {
+					__pushPendingPayload(payload);
+					return;
 				}
-
-				i--; // Moves to the previous index
-			}
-
-			// Application seems to lock up without sleep
-			Sys.sleep(0.001);
+				payload.position = 0;
+				__onData(payload);
 		}
-
-		if (listeningPipe != null && listeningPipe == __inboundPipe) {
-			__close(listeningPipe);
-			__inboundPipe = null;
-		}
-		__closeClientPipes();
 	}
 
-	@:noCompletion private function __closeClientPipes():Void {
-		for (pipe in __clientPipes) {
-			if (pipe != null) {
-				__close(pipe);
-			}
+	@:noCompletion private function __flushPendingPayloads():Void {
+		var pending:Array<ByteArray> = null;
+		#if (cpp || neko || hl)
+		__pendingLock.acquire();
+		pending = __pendingPayloads;
+		__pendingPayloads = [];
+		__pendingLock.release();
+		#else
+		pending = __pendingPayloads;
+		__pendingPayloads = [];
+		#end
+
+		for (payload in pending) {
+			__dispatchPayload(payload);
 		}
-		__clientPipes.resize(0);
+	}
+
+	@:noCompletion private function __pushPendingPayload(payload:ByteArray):Void {
+		#if (cpp || neko || hl)
+		__pendingLock.acquire();
+		__pendingPayloads.push(payload);
+		__pendingLock.release();
+		#else
+		__pendingPayloads.push(payload);
+		#end
+	}
+
+	@:noCompletion private function __clearPendingPayloads():Void {
+		#if (cpp || neko || hl)
+		__pendingLock.acquire();
+		__pendingPayloads = [];
+		__pendingLock.release();
+		#else
+		__pendingPayloads = [];
+		#end
 	}
 
 	#if (cpp || neko || hl)
@@ -534,17 +504,20 @@ class LocalConnection extends EventDispatcher {
 			__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
 		}
 	}
+	#else
+	@:noCompletion private inline function __canDispatchInline():Bool {
+		return true;
+	}
 	#end
 
 	@:noCompletion private function __flushDispatchQueue(_event:TickEvent):Void {
 		#if (cpp || neko || hl)
 		while (true) {
-			var received = __dispatchQueue.pop(false);
-			if (received == null) {
+			var message = __dispatchQueue.pop(false);
+			if (message == null) {
 				break;
 			}
-
-			__onData(received);
+			__applyDispatch(message);
 		}
 		#end
 
@@ -572,9 +545,178 @@ class LocalConnection extends EventDispatcher {
 		}
 	}
 
+	@:noCompletion private inline function __captureRuntime():Void {
+		try {
+			__runtime = CrossByte.current();
+		} catch (_:IllegalOperationError) {
+			__runtime = null;
+		} catch (_:Dynamic) {
+			__runtime = null;
+		}
+	}
+
+	@:noCompletion private inline function __timestamp():Float {
+		if (__runtime != null) {
+			return __runtime.uptime;
+		}
+
+		try {
+			var runtime = CrossByte.current();
+			return runtime != null ? runtime.uptime : 0.0;
+		} catch (_:Dynamic) {
+			return 0.0;
+		}
+	}
+
+	@:noCompletion private inline function get_remoteAddress():String {
+		return __connectionName != null ? __connectionName : "";
+	}
+
+	@:noCompletion private inline function get_remotePort():Int {
+		return 0;
+	}
+
+	@:noCompletion private inline function get_localAddress():String {
+		return __connectionName != null ? __connectionName : "";
+	}
+
+	@:noCompletion private inline function get_localPort():Int {
+		return 0;
+	}
+
+	@:noCompletion private inline function get_connected():Bool {
+		return __connected;
+	}
+
+	@:noCompletion private inline function get_readEnabled():Bool {
+		return __readEnabled;
+	}
+
+	@:noCompletion private inline function set_readEnabled(value:Bool):Bool {
+		__readEnabled = value;
+		if (value) {
+			__flushPendingPayloads();
+		}
+		return value;
+	}
+
+	@:noCompletion private inline function get_onData():ByteArrayInput->Void {
+		return __onData;
+	}
+
+	@:noCompletion private inline function set_onData(value:ByteArrayInput->Void):ByteArrayInput->Void {
+		__onData = value != null ? value : __noopData;
+		return __onData;
+	}
+
+	@:noCompletion private inline function get_onClose():Reason->Void {
+		return __onClose;
+	}
+
+	@:noCompletion private inline function set_onClose(value:Reason->Void):Reason->Void {
+		__onClose = value != null ? value : __noopClose;
+		return __onClose;
+	}
+
+	@:noCompletion private inline function get_onError():Reason->Void {
+		return __onError;
+	}
+
+	@:noCompletion private inline function set_onError(value:Reason->Void):Reason->Void {
+		__onError = value != null ? value : __noopError;
+		return __onError;
+	}
+
+	@:noCompletion private inline function get_onReady():Void->Void {
+		return __onReady;
+	}
+
+	@:noCompletion private inline function set_onReady(value:Void->Void):Void->Void {
+		__onReady = value != null ? value : __noopReady;
+		return __onReady;
+	}
+
+	/** Writes raw bytes to a native local handle. SharedChannel forwards through these helpers for tests. */
+	@:noCompletion private static function __write(pipe:LocalConnectionHandle, data:BytesData, size:Int):Bool {
+		#if cpp
+		return NativeLocalConnection.__write(pipe, Pointer.ofArray(data), size);
+		#else
+		return false;
+		#end
+	}
+
+	/** Connects to a native local endpoint handle. SharedChannel forwards through these helpers for tests. */
+	@:noCompletion private static function __connect(name:String):LocalConnectionHandle {
+		#if cpp
+		return NativeLocalConnection.__connect(name);
+		#else
+		return null;
+		#end
+	}
+
+	@:noCompletion private static function __createInboundPipe(name:String):LocalConnectionHandle {
+		#if cpp
+		return NativeLocalConnection.__createInboundPipe(name);
+		#else
+		return null;
+		#end
+	}
+
+	@:noCompletion private static function __accept(pipe:LocalConnectionHandle):Bool {
+		#if cpp
+		return NativeLocalConnection.__accept(pipe);
+		#else
+		return false;
+		#end
+	}
+
+	@:noCompletion private static function __isOpen(pipe:LocalConnectionHandle):Bool {
+		#if cpp
+		return NativeLocalConnection.__isOpen(pipe);
+		#else
+		return false;
+		#end
+	}
+
+	@:noCompletion private static function __read(pipe:LocalConnectionHandle, buffer:BytesData, size:Int):Int {
+		#if cpp
+		return NativeLocalConnection.__read(pipe, Pointer.ofArray(buffer), size);
+		#else
+		return -1;
+		#end
+	}
+
+	@:noCompletion private static function __getBytesAvailable(pipe:LocalConnectionHandle):Int {
+		#if cpp
+		return NativeLocalConnection.__getBytesAvailable(pipe);
+		#else
+		return 0;
+		#end
+	}
+
+	@:noCompletion private static function __close(pipe:LocalConnectionHandle):Void {
+		#if cpp
+		NativeLocalConnection.__close(pipe);
+		#end
+	}
+
 	@:noCompletion private static inline function __requireSupported():Void {
 		if (!isSupported) {
 			throw new ArgumentError("LocalConnection is only supported on native cpp targets.");
 		}
 	}
+
+	@:noCompletion private static inline function __requireConnectionName(connectionName:String):Void {
+		if (connectionName == null || connectionName.length == 0) {
+			throw new ArgumentError("Connection name must not be empty.");
+		}
+	}
+
+	@:noCompletion private static inline function __noopReady():Void {}
+
+	@:noCompletion private static inline function __noopData(_:ByteArrayInput):Void {}
+
+	@:noCompletion private static inline function __noopClose(_:Reason):Void {}
+
+	@:noCompletion private static inline function __noopError(_:Reason):Void {}
 }
