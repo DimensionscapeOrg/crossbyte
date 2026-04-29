@@ -91,6 +91,43 @@ class NetConnectionTest extends utest.Test {
 		Assert.equals(socket, NetConnection.toWebSocket(restored));
 	}
 
+	public function testLocalUriBuildsConnectedLocalTransport():Void {
+		#if !cpp
+		Assert.pass();
+		return;
+		#end
+
+		var name = '__crossbyte_netconnection_local_${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		var server = new crossbyte.ipc.LocalConnection();
+		var client:NetConnection = null;
+		var received:String = null;
+
+		try {
+			server.onData = input -> received = input.readUTFBytes(input.length);
+			server.readEnabled = true;
+			server.listen(name);
+
+			client = new NetConnection('local://$name');
+			pumpUntil(() -> server.connected && client.connected, 2.0);
+
+			client.send(bytesOf("uri-local"));
+			pumpUntil(() -> received != null, 2.0);
+
+			Assert.equals(Protocol.LOCAL, client.protocol);
+			Assert.notNull(NetConnection.toLocalConnection(client));
+			Assert.equals("uri-local", received);
+		} catch (e:Dynamic) {
+			closeNetQuietly(client);
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			throw e;
+		}
+
+		closeNetQuietly(client);
+		server.close();
+	}
+
 	public function testReliableDatagramConnectionReceivesDataWhenReadEnabled():Void {
 		if (!ReliableDatagramSocket.isSupported) {
 			Assert.isFalse(ReliableDatagramSocket.isSupported);
