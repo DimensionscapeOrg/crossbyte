@@ -52,6 +52,15 @@ class EndpointTest extends utest.Test {
 		Assert.equals("", endpoint.resource);
 	}
 
+	public function testParsesLocalEndpoint():Void {
+		var endpoint = parseURL("local://crossbyte_ipc_demo");
+
+		Assert.equals(Protocol.LOCAL, endpoint.protocol);
+		Assert.equals("crossbyte_ipc_demo", endpoint.address);
+		Assert.equals(0, endpoint.port);
+		Assert.equals("", endpoint.resource);
+	}
+
 	private static function throwsParseError(fn:Void->Void):Bool {
 		try {
 			fn();

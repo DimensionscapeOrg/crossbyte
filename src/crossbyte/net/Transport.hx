@@ -10,4 +10,6 @@ enum Transport {
 	WEBSOCKET(socket:WebSocket);
 	/** Reliable datagram transport. */
 	RUDP(socket:ReliableDatagramSocket);
+	/** Local IPC transport. */
+	LOCAL(connection:crossbyte.ipc.LocalConnection);
 }

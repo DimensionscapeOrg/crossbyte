@@ -2,6 +2,7 @@ package crossbyte.net;
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
+import crossbyte.ipc.LocalConnection;
 import crossbyte.net.Endpoint.parseURL;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.DatagramSocketDataEvent;
@@ -15,7 +16,7 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
 /**
  * High-level connection wrapper over CrossByte's supported stream transports.
  *
- * `NetConnection` normalizes TCP, WebSocket, and reliable datagram sockets
+ * `NetConnection` normalizes TCP, WebSocket, local IPC, and reliable datagram sockets
  * behind the `INetConnection` contract. Use the callback properties for the hot
  * data path and the static conversion helpers when you need to reach the
  * underlying transport type.
@@ -51,7 +52,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	/**
 	 * Connects to a transport URI and wraps the resulting connection.
 	 *
-	 * Supported schemes are `tcp://`, `ws://`, `wss://`, and `rudp://`.
+	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
 			readEnabled:Bool = false):Void {
@@ -92,6 +93,15 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 
 				socket.connect(endpoint.address, endpoint.port);
 				nc;
+			case LOCAL:
+				var connection = new LocalConnection();
+				connection.onData = onData;
+				connection.onClose = onClose;
+				connection.onReady = onReady;
+				connection.onError = onError;
+				connection.readEnabled = readEnabled;
+				connection.connect(endpoint.address);
+				new NetConnectionAdapter(connection);
 			default:
 				throw('Protocol error');
 				null;
@@ -236,6 +246,25 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return socket;
 	}
 
+	/** Returns the wrapped local IPC transport when this connection uses `Protocol.LOCAL`. */
+	public static inline function toLocalConnection(connection:NetConnection):LocalConnection {
+		var local:LocalConnection = null;
+
+		if (connection.protocol == LOCAL) {
+			var base:Dynamic = connection;
+			if (Std.isOfType(base, LocalConnection)) {
+				local = cast base;
+			} else if (Std.isOfType(base, NetConnectionAdapter)) {
+				var adapter:NetConnectionAdapter = cast base;
+				if (Std.isOfType(adapter.__connection, LocalConnection)) {
+					local = cast adapter.__connection;
+				}
+			}
+		}
+
+		return local;
+	}
+
 	@:from
 	/** Wraps an existing TCP socket as a `NetConnection`. */
 	public static inline function fromSocket(socket:Socket):NetConnection {
@@ -283,6 +312,12 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		@:privateAccess
 		var nc:NetConnection = new RUDPConnection(reliableDatagramSocket);
 		return nc;
+	}
+
+	@:from
+	/** Wraps an existing local IPC transport as a `NetConnection`. */
+	public static inline function fromLocalConnection(localConnection:LocalConnection):NetConnection {
+		return fromINetConnection(localConnection);
 	}
 }
 

@@ -44,7 +44,7 @@ CrossByte currently includes:
 - URL loading and request utilities
 - TCP, WebSocket, and RUDP transport layers
 - RPC sessions, commands, handlers, and typed responses
-- IPC primitives such as `LocalConnection` and `SharedObject`
+- IPC primitives such as `LocalConnection`, `SharedChannel`, and `SharedObject`
 - file APIs, `ByteArray`, `ByteArrayInput`, and `ByteArrayOutput`
 - compression:
   - DEFLATE
@@ -86,7 +86,7 @@ The repository includes small runnable samples for:
 - primordial applications
 - TCP chat
 - RPC
-- LocalConnection and SharedObject IPC
+- LocalConnection, SharedChannel, and SharedObject IPC
 - UDP and reliable datagrams
 - HTTP serving
 - worker/background tasks

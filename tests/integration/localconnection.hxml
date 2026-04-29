@@ -1,5 +1,5 @@
--cp ../../src
--cp .
+-cp src
+-cp tests/integration
 -D windows
 -main crossbyte.integration.LocalConnectionIntegrationMain
---cpp ../../export/localconnection-integration
+--cpp export/localconnection-integration

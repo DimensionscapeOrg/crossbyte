@@ -1,5 +1,5 @@
 import crossbyte.core.HostApplication;
-import crossbyte.events.StatusEvent;
+import crossbyte.io.ByteArray;
 import crossbyte.ipc.LocalConnection;
 
 class LocalConnectionSample extends HostApplication {
@@ -50,18 +50,22 @@ class LocalConnectionSample extends HostApplication {
 
 	private function runDemo(name:String):Void {
 		var server = new LocalConnection();
-		var sender = new LocalConnection();
+		var client = new LocalConnection();
 		var receiver = new SampleReceiver();
-		server.client = receiver;
-		server.connect(name);
-		sender.addEventListener(StatusEvent.STATUS, event -> {
-			Sys.println('send status -> level=${event.level} code=${event.code}');
-		});
-
-		Sys.sleep(0.05);
-		sender.send(name, "receive", {message: "hello from demo", value: 42});
+		server.readEnabled = true;
+		server.onData = input -> receiver.receive(input.readUTF(), input.readInt());
+		server.listen(name);
+		client.connect(name);
 
 		var deadline = Sys.time() + 2.0;
+		while ((!server.connected || !client.connected) && Sys.time() < deadline) {
+			advance(1 / 60, 0);
+			Sys.sleep(0.01);
+		}
+
+		client.send(makePayload("hello from demo", 42));
+
+		deadline = Sys.time() + 2.0;
 		while (!receiver.received && Sys.time() < deadline) {
 			advance(1 / 60, 0);
 			Sys.sleep(0.01);
@@ -69,7 +73,7 @@ class LocalConnectionSample extends HostApplication {
 
 		if (!receiver.received) {
 			server.close();
-			sender.close();
+			client.close();
 			throw "LocalConnection demo timed out waiting for the receiver.";
 		}
 
@@ -77,14 +81,15 @@ class LocalConnectionSample extends HostApplication {
 		Sys.println('received -> "${receiver.message}" (${receiver.value})');
 
 		server.close();
-		sender.close();
+		client.close();
 	}
 
 	private function runListener(name:String):Void {
 		var server = new LocalConnection();
 		var receiver = new SampleReceiver();
-		server.client = receiver;
-		server.connect(name);
+		server.readEnabled = true;
+		server.onData = input -> receiver.receive(input.readUTF(), input.readInt());
+		server.listen(name);
 
 		Sys.println('Listening on "$name". Press Ctrl+C to stop.');
 		while (true) {
@@ -98,14 +103,20 @@ class LocalConnectionSample extends HostApplication {
 	}
 
 	private function runSender(name:String, message:String, value:Int):Void {
-		var sender = new LocalConnection();
-		sender.addEventListener(StatusEvent.STATUS, event -> {
-			Sys.println('send status -> level=${event.level} code=${event.code}');
-		});
-		sender.send(name, "receive", {message: message, value: value});
+		var client = new LocalConnection();
+		client.connect(name);
+		client.send(makePayload(message, value));
 		advance(1 / 60, 0);
 		Sys.sleep(0.05);
-		sender.close();
+		client.close();
+	}
+
+	private static function makePayload(message:String, value:Int):ByteArray {
+		var payload = new ByteArray();
+		payload.writeUTF(message);
+		payload.writeInt(value);
+		payload.position = 0;
+		return payload;
 	}
 }
 
@@ -116,11 +127,10 @@ private class SampleReceiver {
 
 	public function new() {}
 
-	public function receive(payload:Dynamic):Void {
+	public function receive(message:String, value:Int):Void {
 		received = true;
-		this.message = Std.string(Reflect.field(payload, "message"));
-		var rawValue:Dynamic = Reflect.field(payload, "value");
-		this.value = rawValue == null ? 0 : Std.int(rawValue);
+		this.message = message;
+		this.value = value;
 	}
 
 	public function reset():Void {
