@@ -10,4 +10,6 @@ enum abstract Protocol(Int) from Int to Int {
 	var WEBSOCKET:Int = 2;
 	/** CrossByte reliable datagram transport. */
 	var RUDP:Int = 3;
+	/** Local named-pipe / Unix-domain transport. */
+	var LOCAL:Int = 4;
 }
