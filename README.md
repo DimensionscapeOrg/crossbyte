@@ -79,9 +79,9 @@ Current extension repos:
 - `crossbyte-libuv`
   - native libuv-backed poll backend
 - `crossbyte-brotli`
-  - native Brotli oracle / backend
+  - native Brotli backend
 - `crossbyte-lz4`
-  - native LZ4 oracle / backend
+  - native LZ4 backend
 
 The core remains usable without these extensions. When installed, they can be enabled selectively for native-backed behavior where it matters.
 
