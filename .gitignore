@@ -1,5 +1,6 @@
 # Haxe / hxcpp generated output
 export/
+dist/
 bin/
 obj/
 *.cppia
