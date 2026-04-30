@@ -1,0 +1,13 @@
+<xml>
+	<files id="crossbyte-net-socketaddress-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeSocketAddress.cpp">
+			<depend name="${this_dir}/NativeSocketAddress.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-net-socketaddress-native"/>
+	</target>
+</xml>

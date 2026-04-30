@@ -1,0 +1,13 @@
+<xml>
+	<files id="crossbyte-ipc-sharedobject-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeSharedObject.cpp">
+			<depend name="${this_dir}/NativeSharedObject.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-ipc-sharedobject-native"/>
+	</target>
+</xml>

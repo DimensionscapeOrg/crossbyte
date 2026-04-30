@@ -7,16 +7,9 @@ import crossbyte.ipc._internal.VoidPointer;
 /**
  * Shared memory bindings for SharedObject.
  */
-@:buildXml("
-<files id='haxe'>
-	<compilerflag value='-I../../src/crossbyte/ipc/_internal'/>
-	<file name='../../src/crossbyte/ipc/_internal/NativeSharedObject.cpp'>
-		<depend name='../../src/crossbyte/ipc/_internal/NativeSharedObject.h'/>
-	</file>
-</files>
-")
+@:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/ipc/_internal/NativeSharedObjectBuild.xml"/>')
 @:keep
-@:include("NativeSharedObject.h")
+@:include("./NativeSharedObject.h")
 extern class NativeSharedObject {
 	@:native('native_sharedObjectOpen') private static function __open(name:String, maxSize:Int):VoidPointer;
 	@:native('native_sharedObjectClose') private static function __close(handle:VoidPointer):Void;
