@@ -1,0 +1,13 @@
+<xml>
+	<files id="crossbyte-ipc-localconnection-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeLocalConnection.cpp">
+			<depend name="${this_dir}/NativeLocalConnection.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-ipc-localconnection-native"/>
+	</target>
+</xml>
