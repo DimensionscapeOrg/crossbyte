@@ -8,7 +8,7 @@ class Aedifex {
 		.library("crossbyte")
 		.tags(["crossbyte", "networking", "http", "rpc", "server", "ipc", "tools"])
 		.description("Cross-platform Haxe runtime and networking framework for event-driven applications, services, IPC, RPC, and systems-oriented tools.")
-		.version("1.0.0-rc1")
+		.version("1.0.0-rc.1")
 		.github("dimensionscapeorg/crossbyte")
 		.license("Apache")
 		.releaseNote("First 1.0 release candidate with polished samples, API docs, optional native extensions, and expanded runtime/networking coverage.")
@@ -35,7 +35,7 @@ class Aedifex {
 			"\\._internal(\\.|$)",
 			"-D",
 			"version",
-			"1.0.0-rc1",
+			"1.0.0-rc.1",
 			"-D",
 			"source-path",
 			"https://github.com/dimensionscapeorg/crossbyte/blob/main/src/",
