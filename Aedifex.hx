@@ -10,7 +10,7 @@ class Aedifex {
 		.description("Cross-platform Haxe runtime and networking framework for event-driven applications, services, IPC, RPC, and systems-oriented tools.")
 		.version("1.0.0-rc1")
 		.github("dimensionscapeorg/crossbyte")
-		.license("Apache-2.0")
+		.license("Apache")
 		.releaseNote("First 1.0 release candidate with polished samples, API docs, optional native extensions, and expanded runtime/networking coverage.")
 		.contributor("Dimensionscape")
 		.classPath("src")
