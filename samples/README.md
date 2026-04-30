@@ -9,8 +9,8 @@ socket-style API.
 From the repository root:
 
 ```sh
-aedifex task sample-websocket-echo-check .
-aedifex task sample-websocket-echo-cpp .
+aedifex task sample-websocket-echo-check <project-root>
+aedifex task sample-websocket-echo-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -31,9 +31,9 @@ client built directly on `ServerSocket` and `Socket`.
 From the repository root:
 
 ```sh
-aedifex task sample-socket-chat-check .
-aedifex task sample-socket-chat-server-cpp .
-aedifex task sample-socket-chat-client-cpp .
+aedifex task sample-socket-chat-check <project-root>
+aedifex task sample-socket-chat-server-cpp <project-root>
+aedifex task sample-socket-chat-client-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -52,8 +52,8 @@ loopback connection to show the `RPCCommands` / `RPCHandler` model clearly.
 From the repository root:
 
 ```sh
-aedifex task sample-rpc-greeter-check .
-aedifex task sample-rpc-greeter-cpp .
+aedifex task sample-rpc-greeter-check <project-root>
+aedifex task sample-rpc-greeter-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -71,8 +71,8 @@ haxe cpp.hxml
 From the repository root:
 
 ```sh
-aedifex task sample-localconnection-check .
-aedifex task sample-localconnection-cpp .
+aedifex task sample-localconnection-check <project-root>
+aedifex task sample-localconnection-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -90,8 +90,8 @@ with `demo`, `listen`, and `send` modes.
 From the repository root:
 
 ```sh
-aedifex task sample-sharedchannel-check .
-aedifex task sample-sharedchannel-cpp .
+aedifex task sample-sharedchannel-check <project-root>
+aedifex task sample-sharedchannel-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -109,8 +109,8 @@ haxe cpp.hxml
 From the repository root:
 
 ```sh
-aedifex task sample-sharedobject-check .
-aedifex task sample-sharedobject-cpp .
+aedifex task sample-sharedobject-check <project-root>
+aedifex task sample-sharedobject-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -128,8 +128,8 @@ with `Application`, `init`, `tick`, and clean shutdown.
 From the repository root:
 
 ```sh
-aedifex task sample-simple-application-check .
-aedifex task sample-simple-application-cpp .
+aedifex task sample-simple-application-check <project-root>
+aedifex task sample-simple-application-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -146,8 +146,8 @@ haxe cpp.hxml
 From the repository root:
 
 ```sh
-aedifex task sample-udp-check .
-aedifex task sample-udp-cpp .
+aedifex task sample-udp-check <project-root>
+aedifex task sample-udp-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -165,8 +165,8 @@ haxe cpp.hxml
 From the repository root:
 
 ```sh
-aedifex task sample-rudp-check .
-aedifex task sample-rudp-cpp .
+aedifex task sample-rudp-check <project-root>
+aedifex task sample-rudp-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -184,8 +184,8 @@ either fetch itself in `demo` mode or stay up in `serve` mode.
 From the repository root:
 
 ```sh
-aedifex task sample-web-server-check .
-aedifex task sample-web-server-cpp .
+aedifex task sample-web-server-check <project-root>
+aedifex task sample-web-server-cpp <project-root>
 ```
 
 Raw HXML entrypoints:
@@ -203,9 +203,12 @@ the smallest host-driven shape.
 From the repository root:
 
 ```sh
-aedifex task sample-worker-check .
-aedifex task sample-worker-cpp .
+aedifex task sample-worker-check <project-root>
+aedifex task sample-worker-cpp <project-root>
 ```
+
+In these examples, `<project-root>` is usually `.` when you are already in the
+repository root.
 
 Raw HXML entrypoints:
 

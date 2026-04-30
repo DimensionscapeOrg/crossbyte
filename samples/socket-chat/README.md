@@ -11,10 +11,12 @@ It includes:
 Useful commands from `samples/socket-chat`:
 
 ```sh
-aedifex task sample-socket-chat-check ../..
-aedifex task sample-socket-chat-server-cpp ../..
-aedifex task sample-socket-chat-client-cpp ../..
+aedifex task sample-socket-chat-check <project-root>
+aedifex task sample-socket-chat-server-cpp <project-root>
+aedifex task sample-socket-chat-client-cpp <project-root>
 ```
+
+From `samples/socket-chat`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 

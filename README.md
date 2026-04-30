@@ -108,13 +108,13 @@ The repository root is now described by `Aedifex.hx`. That file is the source of
 To refresh `haxelib.json` from `Aedifex.hx`, run:
 
 ```sh
-aedifex haxelib sync .
+aedifex haxelib sync <project-root>
 ```
 
 Run the fast interpreted suite with Aedifex:
 
 ```sh
-aedifex task interp-tests .
+aedifex task interp-tests <project-root>
 ```
 
 The raw compiler entrypoint still exists underneath:
@@ -126,7 +126,7 @@ haxe ci/interp-tests.hxml
 Build the native smoke executable with Aedifex:
 
 ```sh
-aedifex task native-tests .
+aedifex task native-tests <project-root>
 ```
 
 The raw compiler entrypoint still exists underneath:
@@ -144,15 +144,18 @@ Then run the produced executable:
 To inspect the registered CrossByte tasks, run:
 
 ```sh
-aedifex tasks -json .
+aedifex tasks -json <project-root>
 ```
 
 Generate docs through Aedifex with:
 
 ```sh
-aedifex task docs-api .
-aedifex task docs-site .
+aedifex task docs-api <project-root>
+aedifex task docs-site <project-root>
 ```
+
+In the examples above, `<project-root>` is usually `.` when you are already in
+the repository root.
 
 ## CI
 
