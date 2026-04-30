@@ -1,0 +1,14 @@
+<xml>
+	<files id="crossbyte-core-windowsruntime-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeWindowsRuntime.cpp" if="windows">
+			<depend name="${this_dir}/NativeWindowsRuntime.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-core-windowsruntime-native"/>
+		<lib name="Winmm.lib" if="windows"/>
+	</target>
+</xml>
