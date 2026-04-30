@@ -101,7 +101,7 @@ jobs:
             --toplevel-package crossbyte \
             --include '^crossbyte(\.|$)' \
             --exclude '\._internal(\.|$)' \
-            -D version "1.0.0-rc1" \
+            -D version "1.0.0-rc.1" \
             -D source-path "https://github.com/dimensionscapeorg/crossbyte/blob/main/src/" \
             -D website "https://github.com/dimensionscapeorg/crossbyte" \
             -D logo crossbyte.png \

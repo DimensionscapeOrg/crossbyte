@@ -2,7 +2,7 @@
 
 All notable changes to CrossByte will be documented in this file.
 
-## 1.0.0-rc1 - 2026-04-28
+## 1.0.0-rc.1 - 2026-04-28
 
 This is the first CrossByte 1.0 release candidate.
 
