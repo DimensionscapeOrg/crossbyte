@@ -13,6 +13,13 @@ It demonstrates:
 Useful commands from `samples/rudp`:
 
 ```sh
+aedifex task sample-rudp-check ../..
+aedifex task sample-rudp-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ..\..\export\rudp\RUDPSample.exe

@@ -14,6 +14,13 @@ It supports three modes:
 Useful commands from `samples/localconnection`:
 
 ```sh
+aedifex task sample-localconnection-check ../..
+aedifex task sample-localconnection-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ..\..\export\localconnection\LocalConnectionSample.exe demo

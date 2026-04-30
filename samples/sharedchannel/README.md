@@ -14,6 +14,13 @@ It supports three modes:
 Useful commands from `samples/sharedchannel`:
 
 ```sh
+aedifex task sample-sharedchannel-check ../..
+aedifex task sample-sharedchannel-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ..\..\export\sharedchannel\SharedChannelSample.exe demo
