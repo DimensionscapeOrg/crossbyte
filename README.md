@@ -21,7 +21,7 @@ haxelib install crossbyte
 If you are tracking the repo directly during RC validation:
 
 ```sh
-haxelib git crossbyte https://github.com/dimensionscape-llc/crossbyte.git
+haxelib git crossbyte https://github.com/dimensionscapeorg/crossbyte.git
 ```
 
 ## What CrossByte Is Good At
@@ -102,7 +102,7 @@ The repository root is now described by `Aedifex.hx`. That file is the source of
 To refresh `haxelib.json` from `Aedifex.hx`, run:
 
 ```sh
-haxelib run aedifex haxelib sync .
+aedifex haxelib sync .
 ```
 
 Run the fast interpreted suite with:
@@ -114,7 +114,7 @@ haxe test.hxml
 The same test flow is available through Aedifex:
 
 ```sh
-haxelib run aedifex task interp-tests .
+aedifex task interp-tests .
 ```
 
 Run the native smoke build with:
@@ -126,7 +126,7 @@ haxe ci/native-tests.hxml
 Or through Aedifex:
 
 ```sh
-haxelib run aedifex task native-tests .
+aedifex task native-tests .
 ```
 
 Then run the produced executable:
@@ -138,7 +138,7 @@ Then run the produced executable:
 To inspect the registered CrossByte tasks, run:
 
 ```sh
-haxelib run aedifex tasks --json .
+aedifex tasks -json .
 ```
 
 ## CI
