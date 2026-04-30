@@ -10,9 +10,11 @@
 Useful commands from `samples/web-server`:
 
 ```sh
-aedifex task sample-web-server-check ../..
-aedifex task sample-web-server-cpp ../..
+aedifex task sample-web-server-check <project-root>
+aedifex task sample-web-server-cpp <project-root>
 ```
+
+From `samples/web-server`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 

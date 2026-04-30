@@ -13,9 +13,11 @@ It demonstrates:
 Useful commands from `samples/rpc-greeter`:
 
 ```sh
-aedifex task sample-rpc-greeter-check ../..
-aedifex task sample-rpc-greeter-cpp ../..
+aedifex task sample-rpc-greeter-check <project-root>
+aedifex task sample-rpc-greeter-cpp <project-root>
 ```
+
+From `samples/rpc-greeter`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 

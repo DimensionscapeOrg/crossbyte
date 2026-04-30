@@ -14,9 +14,11 @@ It supports three modes:
 Useful commands from `samples/localconnection`:
 
 ```sh
-aedifex task sample-localconnection-check ../..
-aedifex task sample-localconnection-cpp ../..
+aedifex task sample-localconnection-check <project-root>
+aedifex task sample-localconnection-cpp <project-root>
 ```
+
+From `samples/localconnection`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 

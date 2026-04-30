@@ -13,9 +13,11 @@ It demonstrates:
 Useful commands from `samples/rudp`:
 
 ```sh
-aedifex task sample-rudp-check ../..
-aedifex task sample-rudp-cpp ../..
+aedifex task sample-rudp-check <project-root>
+aedifex task sample-rudp-cpp <project-root>
 ```
+
+From `samples/rudp`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 

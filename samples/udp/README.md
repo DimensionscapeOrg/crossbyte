@@ -11,9 +11,11 @@ It demonstrates:
 Useful commands from `samples/udp`:
 
 ```sh
-aedifex task sample-udp-check ../..
-aedifex task sample-udp-cpp ../..
+aedifex task sample-udp-check <project-root>
+aedifex task sample-udp-cpp <project-root>
 ```
+
+From `samples/udp`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 
