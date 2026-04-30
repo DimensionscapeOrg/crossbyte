@@ -81,22 +81,33 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install doc dependencies
+      - name: Install Haxe dependencies
         run: |
           haxelib install dox --quiet
-          haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
       - name: Build API XML
         run: |
           rm -rf export/docs-api export/docs-site
           mkdir -p export/docs-api export/docs-site
-          haxelib run aedifex task docs-api .
+          haxe ci/docs-api.hxml
 
       - name: Generate docs site
-        run: haxelib run aedifex task docs-site .
+        run: |
+          haxelib run dox \
+            -i export/docs-api/crossbyte.xml \
+            -o export/docs-site \
+            --title CrossByte \
+            --toplevel-package crossbyte \
+            --include '^crossbyte(\.|$)' \
+            --exclude '\._internal(\.|$)' \
+            -D version "1.0.0-rc1" \
+            -D source-path "https://github.com/dimensionscapeorg/crossbyte/blob/main/src/" \
+            -D website "https://github.com/dimensionscapeorg/crossbyte" \
+            -D logo crossbyte.png \
+            -D description "CrossByte API reference"
 
-      - name: Upload docs artifact
+      - name: Upload API docs artifact
         uses: actions/upload-artifact@v4
         with:
           name: crossbyte-api-docs
@@ -120,7 +131,7 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install hxcpp
+      - name: Install Haxe dependencies
         run: |
           haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
@@ -155,7 +166,7 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      - name: Install native dependencies
+      - name: Install Haxe dependencies
         run: |
           haxelib install utest --quiet
           haxelib install aedifex --quiet
@@ -172,10 +183,11 @@ jobs:
           Pop-Location
 
       - name: Build native smoke harness
-        run: haxelib run aedifex task native-tests .
+        run: haxe ci/native-tests.hxml
 
       - name: Run native smoke suite
-        run: .\export\ci-native-tests\NativeSmokeMain.exe
+        working-directory: export/ci-native-tests
+        run: .\NativeSmokeMain.exe
 
       - name: Build native samples
         run: |
@@ -213,13 +225,13 @@ jobs:
             haxelib_name: crossbyte-libuv
             native_deps: sudo apt-get update && sudo apt-get install -y libuv1-dev
             native_test_binary: ../crossbyte/export/crossbyte-libuv-native-test/LibuvNativeTestMain
-          - label: Brotli Native Oracle
+          - label: Brotli Native Backend
             repo: DimensionscapeOrg/crossbyte-brotli
             path: crossbyte-brotli
             haxelib_name: crossbyte-brotli
             native_deps: ""
             native_test_binary: ../crossbyte/export/crossbyte-brotli-native-test/NativeBrotliTestMain
-          - label: LZ4 Native Oracle
+          - label: LZ4 Native Backend
             repo: DimensionscapeOrg/crossbyte-lz4
             path: crossbyte-lz4
             haxelib_name: crossbyte-lz4
