@@ -10,6 +10,13 @@
 Useful commands from `samples/web-server`:
 
 ```sh
+aedifex task sample-web-server-check ../..
+aedifex task sample-web-server-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ..\..\export\web-server\SimpleWebServerSample.exe

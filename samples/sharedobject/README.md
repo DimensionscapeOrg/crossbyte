@@ -11,6 +11,13 @@ It supports three modes:
 Useful commands from `samples/sharedobject`:
 
 ```sh
+aedifex task sample-sharedobject-check ../..
+aedifex task sample-sharedobject-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ..\..\export\sharedobject\SharedObjectSample.exe demo

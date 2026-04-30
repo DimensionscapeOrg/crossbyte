@@ -37,19 +37,32 @@ jobs:
           haxe-version: ${{ env.HAXE_VERSION }}
 
       - name: Install test dependencies
-        run: haxelib install utest --quiet
+        run: |
+          haxelib install utest --quiet
+          haxelib install aedifex --quiet
 
       - name: Run interpreter test suite
-        run: haxe ci/interp-tests.hxml
+        run: haxelib run aedifex task interp-tests .
 
       - name: Validate sample builds
         run: |
           set -euo pipefail
-          while IFS= read -r sample; do
-            echo "::group::${sample}"
-            (cd "$(dirname "$sample")" && haxe "$(basename "$sample")")
+          for task in \
+            sample-localconnection-check \
+            sample-rpc-greeter-check \
+            sample-rudp-check \
+            sample-sharedchannel-check \
+            sample-sharedobject-check \
+            sample-simple-application-check \
+            sample-socket-chat-check \
+            sample-udp-check \
+            sample-web-server-check \
+            sample-websocket-echo-check \
+            sample-worker-check; do
+            echo "::group::${task}"
+            haxelib run aedifex task "$task" .
             echo "::endgroup::"
-          done < <(find samples -name check.hxml -print | sort)
+          done
 
   docs:
     name: Core | API Docs
@@ -71,28 +84,17 @@ jobs:
       - name: Install doc dependencies
         run: |
           haxelib install dox --quiet
+          haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
       - name: Build API XML
         run: |
           rm -rf export/docs-api export/docs-site
           mkdir -p export/docs-api export/docs-site
-          haxe ci/docs-api.hxml
+          haxelib run aedifex task docs-api .
 
       - name: Generate docs site
-        run: |
-          haxelib run dox \
-            -i export/docs-api/crossbyte.xml \
-            -o export/docs-site \
-            --title CrossByte \
-            --toplevel-package crossbyte \
-            --include '^crossbyte(\.|$)' \
-            --exclude '\._internal(\.|$)' \
-            -D version "${GITHUB_REF_NAME}" \
-            -D source-path "https://github.com/dimensionscape-llc/crossbyte/blob/${GITHUB_SHA}/src/" \
-            -D website "https://github.com/dimensionscape-llc/crossbyte" \
-            -D logo crossbyte.png \
-            -D description "CrossByte API reference"
+        run: haxelib run aedifex task docs-site .
 
       - name: Upload docs artifact
         uses: actions/upload-artifact@v4
@@ -119,7 +121,9 @@ jobs:
           haxe-version: ${{ env.HAXE_VERSION }}
 
       - name: Install hxcpp
-        run: haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+        run: |
+          haxelib install aedifex --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
       - name: Bootstrap hxcpp tools
         run: |
@@ -129,10 +133,10 @@ jobs:
           (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
 
       - name: Type-check C++ API surface
-        run: haxe ci/cpp-api-audit.hxml
+        run: haxelib run aedifex task cpp-api-audit .
 
       - name: Type-check timer burst support
-        run: haxe ci/cpp-timer-burst-audit.hxml
+        run: haxelib run aedifex task cpp-timer-burst-audit .
 
   native-smoke:
     name: Core | Native Smoke
@@ -154,6 +158,7 @@ jobs:
       - name: Install native dependencies
         run: |
           haxelib install utest --quiet
+          haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
       - name: Bootstrap hxcpp tools
@@ -167,23 +172,32 @@ jobs:
           Pop-Location
 
       - name: Build native smoke harness
-        run: haxe ci/native-tests.hxml
+        run: haxelib run aedifex task native-tests .
 
       - name: Run native smoke suite
         run: .\export\ci-native-tests\NativeSmokeMain.exe
 
       - name: Build native samples
         run: |
-          Get-ChildItem samples -Recurse -Filter *.hxml |
-            Where-Object { $_.Name -ne 'check.hxml' } |
-            Sort-Object FullName |
-            ForEach-Object {
-              Write-Host "::group::$($_.FullName)"
-              Push-Location $_.DirectoryName
-              haxe $_.Name
-              Pop-Location
-              Write-Host "::endgroup::"
-            }
+          $tasks = @(
+            "sample-localconnection-cpp",
+            "sample-rpc-greeter-cpp",
+            "sample-rudp-cpp",
+            "sample-sharedchannel-cpp",
+            "sample-sharedobject-cpp",
+            "sample-simple-application-cpp",
+            "sample-socket-chat-client-cpp",
+            "sample-socket-chat-server-cpp",
+            "sample-udp-cpp",
+            "sample-web-server-cpp",
+            "sample-websocket-echo-cpp",
+            "sample-worker-cpp"
+          )
+          foreach ($task in $tasks) {
+            Write-Host "::group::$task"
+            haxelib run aedifex task $task .
+            Write-Host "::endgroup::"
+          }
 
   extensions:
     name: Extensions | ${{ matrix.label }}
