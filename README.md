@@ -24,6 +24,12 @@ If you are tracking the repo directly during RC validation:
 haxelib git crossbyte https://github.com/dimensionscapeorg/crossbyte.git
 ```
 
+Install the published CrossByte task runner with:
+
+```sh
+haxelib install aedifex
+```
+
 ## What CrossByte Is Good At
 
 - evented applications and services
@@ -105,28 +111,28 @@ To refresh `haxelib.json` from `Aedifex.hx`, run:
 aedifex haxelib sync .
 ```
 
-Run the fast interpreted suite with:
-
-```sh
-haxe test.hxml
-```
-
-The same test flow is available through Aedifex:
+Run the fast interpreted suite with Aedifex:
 
 ```sh
 aedifex task interp-tests .
 ```
 
-Run the native smoke build with:
+The raw compiler entrypoint still exists underneath:
 
 ```sh
-haxe ci/native-tests.hxml
+haxe ci/interp-tests.hxml
 ```
 
-Or through Aedifex:
+Build the native smoke executable with Aedifex:
 
 ```sh
 aedifex task native-tests .
+```
+
+The raw compiler entrypoint still exists underneath:
+
+```sh
+haxe ci/native-tests.hxml
 ```
 
 Then run the produced executable:
@@ -139,6 +145,13 @@ To inspect the registered CrossByte tasks, run:
 
 ```sh
 aedifex tasks -json .
+```
+
+Generate docs through Aedifex with:
+
+```sh
+aedifex task docs-api .
+aedifex task docs-site .
 ```
 
 ## CI

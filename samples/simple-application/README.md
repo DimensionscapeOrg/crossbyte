@@ -12,6 +12,13 @@ It demonstrates:
 Useful commands from `samples/simple-application`:
 
 ```sh
+aedifex task sample-simple-application-check ../..
+aedifex task sample-simple-application-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ..\..\export\simple-application\SimpleApplicationSample.exe

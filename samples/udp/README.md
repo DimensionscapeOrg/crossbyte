@@ -11,6 +11,13 @@ It demonstrates:
 Useful commands from `samples/udp`:
 
 ```sh
+aedifex task sample-udp-check ../..
+aedifex task sample-udp-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ..\..\export\udp\UDPSample.exe

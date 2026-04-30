@@ -11,6 +11,14 @@ It includes:
 Useful commands from `samples/socket-chat`:
 
 ```sh
+aedifex task sample-socket-chat-check ../..
+aedifex task sample-socket-chat-server-cpp ../..
+aedifex task sample-socket-chat-client-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe server-cpp.hxml
 haxe client-cpp.hxml
