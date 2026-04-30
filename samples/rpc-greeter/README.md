@@ -13,6 +13,13 @@ It demonstrates:
 Useful commands from `samples/rpc-greeter`:
 
 ```sh
+aedifex task sample-rpc-greeter-check ../..
+aedifex task sample-rpc-greeter-cpp ../..
+```
+
+Raw HXML entrypoints:
+
+```sh
 haxe check.hxml
 haxe cpp.hxml
 ```
