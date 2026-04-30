@@ -12,9 +12,11 @@ It demonstrates:
 Useful commands from `samples/simple-application`:
 
 ```sh
-aedifex task sample-simple-application-check ../..
-aedifex task sample-simple-application-cpp ../..
+aedifex task sample-simple-application-check <project-root>
+aedifex task sample-simple-application-cpp <project-root>
 ```
+
+From `samples/simple-application`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 

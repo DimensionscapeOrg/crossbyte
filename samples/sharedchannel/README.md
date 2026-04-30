@@ -14,9 +14,11 @@ It supports three modes:
 Useful commands from `samples/sharedchannel`:
 
 ```sh
-aedifex task sample-sharedchannel-check ../..
-aedifex task sample-sharedchannel-cpp ../..
+aedifex task sample-sharedchannel-check <project-root>
+aedifex task sample-sharedchannel-cpp <project-root>
 ```
+
+From `samples/sharedchannel`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 
