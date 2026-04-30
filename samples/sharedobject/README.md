@@ -11,9 +11,11 @@ It supports three modes:
 Useful commands from `samples/sharedobject`:
 
 ```sh
-aedifex task sample-sharedobject-check ../..
-aedifex task sample-sharedobject-cpp ../..
+aedifex task sample-sharedobject-check <project-root>
+aedifex task sample-sharedobject-cpp <project-root>
 ```
+
+From `samples/sharedobject`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 

@@ -6,9 +6,11 @@ final completion payload.
 Useful commands from `samples/worker`:
 
 ```sh
-aedifex task sample-worker-check ../..
-aedifex task sample-worker-cpp ../..
+aedifex task sample-worker-check <project-root>
+aedifex task sample-worker-cpp <project-root>
 ```
+
+From `samples/worker`, `<project-root>` is `../..`.
 
 Raw HXML entrypoints:
 
