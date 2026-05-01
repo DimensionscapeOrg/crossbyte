@@ -57,10 +57,28 @@ class RPCHandlerMacro {
 
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
-		injectPing(fields);
 		var methods = new Array<MethodInfo>();
 		final contractMethods = RPCContractMacroTools.getImplementedContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
+		final dispatchField = findField(fields, "dispatch");
+		final pingField = findField(fields, "ping");
+		final usesManualDispatch = dispatchField != null;
+
+		if (usesManualDispatch) {
+			if (contractMethods != null) {
+				Context.error("Do not mix @:rpcContract with a hand-written dispatch() implementation in the same RPC handler.", dispatchField.pos);
+			}
+			if (manualRpcFields.length > 0) {
+				Context.error("Do not mix field-level @:rpc methods with a hand-written dispatch() implementation in the same RPC handler.",
+					manualRpcFields[0].pos);
+			}
+			if (pingField == null) {
+				injectPing(fields);
+			}
+			return fields;
+		}
+
+		injectPing(fields);
 
 		if (contractMethods != null) {
 			RPCContractMacroTools.requireExtends(":rpcContract", "crossbyte.rpc.RPCHandler");
