@@ -19,5 +19,6 @@ extern class NativeLocalConnection {
 	@:native('native_read') private static function __read(pipe:VoidPointer, buffer:Pointer<UInt8>, size:Int):Int;
 	@:native('native_write') private static function __write(pipe:VoidPointer, data:Pointer<UInt8>, size:Int):Bool;
 	@:native('native_connect') private static function __connect(name:String):VoidPointer;
+	@:native('native_connectWithTimeout') private static function __connectWithTimeout(name:String, timeoutMs:Int):VoidPointer;
 	@:native('native_close') private static function __close(pipe:VoidPointer):Void;
 }
