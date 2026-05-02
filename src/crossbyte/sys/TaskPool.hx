@@ -21,6 +21,7 @@ class TaskPool {
 
 	@:noCompletion private var __workerCount:Int;
 	@:noCompletion private var __isShutdown:Bool;
+	@:noCompletion private var __retainedTasks:Array<Task<Dynamic>>;
 	#if (cpp || neko || hl)
 	@:noCompletion private var __queued:Int;
 	@:noCompletion private var __running:Int;
@@ -36,6 +37,7 @@ class TaskPool {
 
 		__workerCount = workerCount;
 		__isShutdown = false;
+		__retainedTasks = [];
 
 		#if (cpp || neko || hl)
 		__queued = 0;
@@ -63,6 +65,10 @@ class TaskPool {
 		}
 
 		var task = new Task<T>();
+		__retainTask(cast task);
+		task.__registerReleaseHook(() -> {
+			__releaseTask(cast task);
+		});
 		var queuedTask:QueuedTask = {
 			task: cast task,
 			job: () -> job()
@@ -172,6 +178,18 @@ class TaskPool {
 	}
 
 	#if (cpp || neko || hl)
+	@:noCompletion private function __retainTask(task:Task<Dynamic>):Void {
+		__queueLock.acquire();
+		__retainedTasks.push(task);
+		__queueLock.release();
+	}
+
+	@:noCompletion private function __releaseTask(task:Task<Dynamic>):Void {
+		__queueLock.acquire();
+		__retainedTasks.remove(task);
+		__queueLock.release();
+	}
+
 	@:noCompletion private function __workerLoop():Void {
 		var queuedTask:QueuedTask = null;
 		while (true) {
