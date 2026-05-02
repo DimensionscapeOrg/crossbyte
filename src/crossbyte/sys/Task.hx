@@ -30,6 +30,8 @@ class Task<T> extends EventDispatcher {
 	public var isFailed(get, never):Bool;
 
 	@:noCompletion private var __cancelHook:Void->Void;
+	@:noCompletion private var __releaseHook:Void->Void;
+	@:noCompletion private var __released:Bool;
 
 	#if (cpp || neko || hl)
 	@:noCompletion private var __lock:Mutex;
@@ -38,6 +40,7 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private var __dispatchQueue:Deque<TaskDispatch<T>>;
 	@:noCompletion private var __dispatchListener:TickEvent->Void;
 	@:noCompletion private var __dispatchAttached:Bool;
+	@:noCompletion private var __dispatchPending:Bool;
 	#end
 	@:noCompletion private var __runtime:CrossByte;
 
@@ -47,14 +50,19 @@ class Task<T> extends EventDispatcher {
 		state = PENDING;
 		result = null;
 		error = null;
+		__releaseHook = null;
+		__released = false;
 
 		#if (cpp || neko || hl)
 		__lock = new Mutex();
 		__completion = new Lock();
 		__awaiters = 0;
 		__dispatchQueue = new Deque();
-		__dispatchListener = __flushDispatchQueue;
+		__dispatchListener = function(event:TickEvent):Void {
+			__flushDispatchQueue(event);
+		};
 		__dispatchAttached = false;
+		__dispatchPending = false;
 		#end
 		try {
 			__runtime = CrossByte.current();
@@ -63,6 +71,12 @@ class Task<T> extends EventDispatcher {
 		} catch (_:Dynamic) {
 			__runtime = null;
 		}
+		#if (cpp || neko || hl)
+		if (__runtime != null) {
+			__dispatchAttached = true;
+			__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
+		}
+		#end
 	}
 
 	public function cancel():Bool {
@@ -177,6 +191,11 @@ class Task<T> extends EventDispatcher {
 	}
 
 	@:allow(crossbyte.sys.TaskPool)
+	@:noCompletion private function __registerReleaseHook(handler:Void->Void):Void {
+		__releaseHook = handler;
+	}
+
+	@:allow(crossbyte.sys.TaskPool)
 	@:noCompletion private function __start():Bool {
 		var didStart = false;
 
@@ -261,15 +280,15 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private inline function __dispatchTerminalEvent(event:TaskDispatch<T>):Void {
 		#if (cpp || neko || hl)
 		if (!__canDispatchInline()) {
+			__lock.acquire();
+			__dispatchPending = true;
+			__lock.release();
 			__dispatchQueue.add(event);
-			if (!__dispatchAttached && __runtime != null) {
-				__dispatchAttached = true;
-				__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
-			}
 			return;
 		}
 		#end
 		__dispatchNow(event);
+		__finalizeDispatchLifecycle();
 	}
 
 	#if (cpp || neko || hl)
@@ -286,18 +305,22 @@ class Task<T> extends EventDispatcher {
 	}
 
 	@:noCompletion private function __flushDispatchQueue(event:TickEvent):Void {
+		var dispatched = false;
 		while (true) {
 			var pending = __dispatchQueue.pop(false);
 			if (pending == null) {
 				break;
 			}
+			dispatched = true;
 			__dispatchNow(pending);
 		}
 
-		if (__dispatchAttached && __runtime != null) {
-			__dispatchAttached = false;
-			__runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
+		if (dispatched) {
+			__lock.acquire();
+			__dispatchPending = false;
+			__lock.release();
 		}
+		__finalizeDispatchLifecycle();
 	}
 	#end
 
@@ -309,6 +332,32 @@ class Task<T> extends EventDispatcher {
 				dispatchEvent(new TaskEvent(TaskEvent.ERROR, this, null, errorValue));
 			case Cancel:
 				dispatchEvent(new TaskEvent(TaskEvent.CANCEL, this));
+		}
+	}
+
+	@:noCompletion private inline function __finalizeDispatchLifecycle():Void {
+		#if (cpp || neko || hl)
+		__lock.acquire();
+		var shouldDetach = __dispatchAttached && __runtime != null && isDone && !__dispatchPending;
+		__lock.release();
+		if (shouldDetach) {
+			__dispatchAttached = false;
+			__runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
+		}
+		#end
+		__maybeRelease();
+	}
+
+	@:noCompletion private inline function __maybeRelease():Void {
+		if (__released || !isDone) {
+			return;
+		}
+
+		__released = true;
+		if (__releaseHook != null) {
+			var hook = __releaseHook;
+			__releaseHook = null;
+			hook();
 		}
 	}
 }
