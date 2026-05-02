@@ -20,7 +20,7 @@
 
 namespace
 {
-	constexpr int PIPE_BUFFER_SIZE = 4096;
+	constexpr int PIPE_BUFFER_SIZE = 65536;
 	constexpr int CONNECT_TIMEOUT_MS = 5000;
 	constexpr int CONNECT_WAIT_SLICE_MS = 50;
 	constexpr int PIPE_LISTEN_BACKLOG = 16;
@@ -46,7 +46,7 @@ namespace
 		HANDLE pipe = CreateNamedPipeA(
 			pipeName.c_str(),
 			PIPE_ACCESS_DUPLEX,
-			PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
+			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
 			PIPE_UNLIMITED_INSTANCES,
 			PIPE_BUFFER_SIZE,
 			PIPE_BUFFER_SIZE,
@@ -71,7 +71,7 @@ namespace
 		}
 
 		DWORD error = GetLastError();
-		return error == ERROR_PIPE_CONNECTED || error == ERROR_NO_DATA;
+		return error == ERROR_PIPE_CONNECTED;
 	}
 
 	extern "C" int native_read(void* pipe, unsigned char* buffer, int bufferSize)
@@ -82,15 +82,43 @@ namespace
 			return ERROR_INVALID_PARAMETER;
 		}
 
-		DWORD bytesRead = 0;
-		if (!ReadFile(handle, buffer, static_cast<DWORD>(bufferSize), &bytesRead, nullptr))
+		int totalRead = 0;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
+		while (totalRead < bufferSize)
 		{
+			DWORD bytesRead = 0;
+			if (ReadFile(handle, buffer + totalRead, static_cast<DWORD>(bufferSize - totalRead), &bytesRead, nullptr))
+			{
+				if (bytesRead > 0)
+				{
+					totalRead += static_cast<int>(bytesRead);
+					continue;
+				}
+			}
+
 			DWORD error = GetLastError();
 			if (error == ERROR_MORE_DATA)
 			{
-				return 0;
+				continue;
 			}
-			return static_cast<int>(error);
+			if (error == ERROR_NO_DATA)
+			{
+				if (std::chrono::steady_clock::now() >= deadline)
+				{
+					return ERROR_TIMEOUT;
+				}
+				Sleep(1);
+				continue;
+			}
+			if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_PIPE_NOT_CONNECTED)
+			{
+				return static_cast<int>(error);
+			}
+			if (std::chrono::steady_clock::now() >= deadline)
+			{
+				return error == ERROR_SUCCESS ? ERROR_TIMEOUT : static_cast<int>(error);
+			}
+			Sleep(1);
 		}
 
 		return 0;
@@ -104,13 +132,47 @@ namespace
 			return false;
 		}
 
-		DWORD bytesWritten = 0;
-		if (!WriteFile(handle, buffer, static_cast<DWORD>(bufferSize), &bytesWritten, nullptr))
+		int totalWritten = 0;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
+		while (totalWritten < bufferSize)
 		{
-			return false;
+			int writeSize = bufferSize - totalWritten;
+			if (writeSize > PIPE_BUFFER_SIZE)
+			{
+				writeSize = PIPE_BUFFER_SIZE;
+			}
+			DWORD bytesWritten = 0;
+			if (WriteFile(handle, buffer + totalWritten, static_cast<DWORD>(writeSize), &bytesWritten, nullptr))
+			{
+				if (bytesWritten > 0)
+				{
+					totalWritten += static_cast<int>(bytesWritten);
+					continue;
+				}
+			}
+
+			DWORD error = GetLastError();
+			if (error == ERROR_NO_DATA)
+			{
+				if (std::chrono::steady_clock::now() >= deadline)
+				{
+					return false;
+				}
+				Sleep(1);
+				continue;
+			}
+			if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_PIPE_NOT_CONNECTED)
+			{
+				return false;
+			}
+			if (std::chrono::steady_clock::now() >= deadline)
+			{
+				return false;
+			}
+			Sleep(1);
 		}
 
-		return bytesWritten == static_cast<DWORD>(bufferSize);
+		return true;
 	}
 
 	extern "C" void native_close(void* pipe)
@@ -124,12 +186,16 @@ namespace
 		CloseHandle(handle);
 	}
 
-	extern "C" void* native_connect(const char* name)
+	extern "C" void* native_connectWithTimeout(const char* name, int timeoutMs)
 	{
 		std::string pipeName = makePipeName(name);
-		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
+		if (timeoutMs < 0)
+		{
+			timeoutMs = 0;
+		}
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
-		while (std::chrono::steady_clock::now() < deadline)
+		do
 		{
 			HANDLE pipe = CreateFileA(
 				pipeName.c_str(),
@@ -142,7 +208,7 @@ namespace
 
 			if (pipe != INVALID_HANDLE_VALUE)
 			{
-				DWORD mode = PIPE_READMODE_MESSAGE | PIPE_NOWAIT;
+				DWORD mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
 				SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
 				return pipe;
 			}
@@ -160,9 +226,14 @@ namespace
 			{
 				return nullptr;
 			}
-		}
+		} while (std::chrono::steady_clock::now() < deadline);
 
 		return nullptr;
+	}
+
+	extern "C" void* native_connect(const char* name)
+	{
+		return native_connectWithTimeout(name, CONNECT_TIMEOUT_MS);
 	}
 
 	extern "C" int native_getBytesAvailable(void* pipe)
@@ -180,7 +251,11 @@ namespace
 		}
 
 		DWORD error = GetLastError();
-		if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_NO_DATA || error == ERROR_PIPE_NOT_CONNECTED)
+		if (error == ERROR_NO_DATA)
+		{
+			return 0;
+		}
+		if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_PIPE_NOT_CONNECTED)
 		{
 			return -1;
 		}
@@ -202,7 +277,11 @@ namespace
 		}
 
 		DWORD error = GetLastError();
-		return error != ERROR_BROKEN_PIPE && error != ERROR_INVALID_HANDLE && error != ERROR_NO_DATA && error != ERROR_PIPE_NOT_CONNECTED;
+		if (error == ERROR_NO_DATA)
+		{
+			return true;
+		}
+		return error != ERROR_BROKEN_PIPE && error != ERROR_INVALID_HANDLE && error != ERROR_PIPE_NOT_CONNECTED;
 	}
 #else
 	struct NativeLocalConnectionHandle
@@ -487,7 +566,7 @@ namespace
 		delete handle;
 	}
 
-	extern "C" void* native_connect(const char* name)
+	extern "C" void* native_connectWithTimeout(const char* name, int timeoutMs)
 	{
 		std::string pipeName = makePipeName(name);
 		if (pipeName.size() >= sizeof(((sockaddr_un*)nullptr)->sun_path))
@@ -507,8 +586,12 @@ namespace
 		std::memcpy(address.sun_path, pipeName.data(), pipeName.size());
 		address.sun_path[pipeName.size()] = '\0';
 
-		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
-		while (std::chrono::steady_clock::now() < deadline)
+		if (timeoutMs < 0)
+		{
+			timeoutMs = 0;
+		}
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+		do
 		{
 			int fd = socket(AF_UNIX, SOCK_STREAM, 0);
 			if (fd < 0)
@@ -533,10 +616,15 @@ namespace
 			}
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(CONNECT_WAIT_SLICE_MS));
-		}
+		} while (std::chrono::steady_clock::now() < deadline);
 
 		delete handle;
 		return nullptr;
+	}
+
+	extern "C" void* native_connect(const char* name)
+	{
+		return native_connectWithTimeout(name, CONNECT_TIMEOUT_MS);
 	}
 
 	extern "C" int native_getBytesAvailable(void* pipe)
