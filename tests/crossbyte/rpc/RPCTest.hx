@@ -7,6 +7,7 @@ import crossbyte.net.INetConnection;
 import crossbyte.net.Protocol;
 import crossbyte.net.Reason;
 import crossbyte.net.Transport;
+import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 import utest.Assert;
 
@@ -174,6 +175,84 @@ class RPCTest extends utest.Test {
 		Assert.equals(1, handler.announceCalls);
 		Assert.equals(12, handler.lastAnnounceId);
 		Assert.equals("still-fine", handler.lastAnnounceMessage);
+	}
+
+	public function testRuntimeOneWayCallDecodesDynamicValues():Void {
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var captured:Array<Dynamic> = null;
+
+		serverSession.register(101, args -> {
+			captured = args;
+			return null;
+		});
+
+		var clientSession = new RPCSession(link.client);
+		clientSession.call(101, [7, true, 1.25, "alpha", Bytes.ofString("abc"), null]);
+
+		Assert.notNull(captured);
+		Assert.equals(6, captured.length);
+		Assert.equals(7, captured[0]);
+		Assert.isTrue(captured[1]);
+		Assert.equals(1.25, captured[2]);
+		Assert.equals("alpha", captured[3]);
+		Assert.equals("abc", (cast captured[4] : Bytes).toString());
+		Assert.isNull(captured[5]);
+	}
+
+	public function testRuntimeRequestCompletesTypedResponse():Void {
+		var link = LinkedConnection.pair();
+		var clientSession = new RPCSession(link.client);
+		var serverSession = new RPCSession(link.server);
+
+		serverSession.register(202, args -> "player-" + args[0]);
+
+		var response:RPCResponse<String> = clientSession.request(202, [42]);
+
+		Assert.isTrue(response.completed);
+		Assert.isTrue(response.succeeded);
+		Assert.equals("player-42", response.result);
+	}
+
+	public function testRuntimeMessagesDoNotHitCompileTimeHandlerWhenOpcodeCollides():Void {
+		var link = LinkedConnection.pair();
+		var compileHandler = new TestHandler();
+		var serverSession = new RPCSession(link.server, null, compileHandler);
+		var runtimeCalls:Int = 0;
+		final collidingOp:Int = Hash.fnv1a32(Bytes.ofString("sendData"));
+
+		serverSession.register(collidingOp, args -> {
+			runtimeCalls++;
+			return null;
+		});
+
+		var clientSession = new RPCSession(link.client);
+		clientSession.call(collidingOp, [99, false]);
+
+		Assert.equals(1, runtimeCalls);
+		Assert.equals(0, compileHandler.calls);
+	}
+
+	public function testCompiledAndRuntimeLanesCanShareOneSession():Void {
+		var link = LinkedConnection.pair();
+		var commands = new TestCommands();
+		var handler = new TestHandler();
+		var clientSession = new RPCSession<TestCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
+		var runtimeAnnounce:String = null;
+
+		serverSession.register(303, args -> {
+			runtimeAnnounce = cast args[0];
+			return "seen:" + runtimeAnnounce;
+		});
+
+		commands.sendData(7, true, 1.25, "alpha", Bytes.ofString("abc"), "tagged");
+		var response:RPCResponse<String> = clientSession.request(303, ["runtime"]);
+
+		Assert.equals(1, handler.calls);
+		Assert.equals("runtime", runtimeAnnounce);
+		Assert.isTrue(response.completed);
+		Assert.equals("seen:runtime", response.result);
 	}
 }
 

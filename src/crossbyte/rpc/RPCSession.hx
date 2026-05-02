@@ -11,7 +11,10 @@ import crossbyte.rpc.RPCCommands;
 import crossbyte.net.NetConnection;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.io.ByteArrayOutput;
 import crossbyte.rpc._internal.RPCWire;
+import crossbyte.rpc._internal.RPCRuntimeCodec;
+import haxe.ds.IntMap;
 #if neko
 import sys.thread.Mutex;
 #elseif (cpp || hl || java || cs)
@@ -62,6 +65,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __hasHeartbeat:Bool = false;
 	@:noCompletion private var __timeoutSec:Float = 0.0;
 	@:noCompletion private var __intervalSec:Float = 0.0;
+	@:noCompletion private var __runtimeHandlers:Null<IntMap<Array<Dynamic>->Dynamic>> = null;
+	@:noCompletion private var __runtimeRequestIdSeed:Int = 0;
+	@:noCompletion private var __runtimePendingResponseId:Int = 0;
+	@:noCompletion private var __runtimePendingResponse:RPCResponse<Dynamic> = null;
+	@:noCompletion private var __runtimePendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
 
 	#if neko
 	@:noCompletion private static var __sidCounter:Int = 0;
@@ -186,7 +194,79 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		this.handler = handler;
 	}
 
+	/**
+	 * Registers a runtime RPC handler for the given operation code.
+	 *
+	 * Runtime handlers receive decoded arguments as an array of dynamic values. If
+	 * the incoming frame expects a response, the return value is encoded and sent
+	 * back to the caller. One-way runtime calls ignore the return value.
+	 */
+	public function register(op:Int, handler:Array<Dynamic>->Dynamic):RPCSession<C, D> {
+		if (__runtimeHandlers == null) {
+			__runtimeHandlers = new IntMap();
+		}
+		__runtimeHandlers.set(op, handler);
+		__syncOnDataBinding();
+		return this;
+	}
+
+	/** Removes a previously registered runtime RPC handler. */
+	public function deregister(op:Int):Bool {
+		if (__runtimeHandlers == null || !__runtimeHandlers.exists(op)) {
+			return false;
+		}
+		__runtimeHandlers.remove(op);
+		if (!__hasRuntimeHandlers()) {
+			__runtimeHandlers = null;
+		}
+		__syncOnDataBinding();
+		return true;
+	}
+
+	/** Sends a one-way runtime RPC call on the dynamic lane. */
+	public function call(op:Int, ?args:Array<Dynamic>):Void {
+		__sendRuntimeFrame(op, 0, false, args);
+	}
+
+	/**
+	 * Sends a request/response runtime RPC call on the dynamic lane.
+	 *
+	 * The response payload is decoded through the runtime codec and resolved into a
+	 * normal `RPCResponse<T>`.
+	 */
+	public function request<T>(op:Int, ?args:Array<Dynamic>):RPCResponse<T> {
+		final requestId = __nextRuntimeRequestId();
+		final response = new RPCResponse<T>(requestId, op);
+		__trackRuntimeResponse(requestId, cast response);
+		__sendRuntimeFrame(op, requestId, true, args);
+		return response;
+	}
+
+	@:noCompletion private function __hasRuntimeHandlers():Bool {
+		if (__runtimeHandlers == null) {
+			return false;
+		}
+		for (_ in __runtimeHandlers) {
+			return true;
+		}
+		return false;
+	}
+
+	@:noCompletion private function __hasRuntimePendingResponses():Bool {
+		return __runtimePendingResponse != null || (__runtimePendingResponses != null && __runtimePendingResponses.iterator().hasNext());
+	}
+
+	@:noCompletion private function __usesRuntimeLane():Bool {
+		return __hasRuntimeHandlers() || __hasRuntimePendingResponses();
+	}
+
 	@:noCompletion private inline function __syncOnDataBinding():Void {
+		if (__usesRuntimeLane()) {
+			__connection.onData = __safeSessionOnData;
+			__connection.readEnabled = (__handler != null || __commands != null || __hasRuntimeHandlers() || __hasRuntimePendingResponses());
+			return;
+		}
+
 		if (__handler != null) {
 			__connection.onData = __safeHandlerOnData;
 			__connection.readEnabled = true;
@@ -201,6 +281,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 		__connection.onData = input -> {};
 		__connection.readEnabled = false;
+	}
+
+	@:noCompletion private inline function __safeSessionOnData(input:ByteArrayInput):Void {
+		try {
+			__session_socket_onData(input);
+		} catch (error:Dynamic) {
+			__terminateProtocol(Reason.Error("RPC session decode failed: " + Std.string(error)));
+		}
 	}
 
 	@:noCompletion private inline function __safeHandlerOnData(input:ByteArrayInput):Void {
@@ -235,6 +323,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 			final frameEnd:Int = input.position + payloadLen;
 			final flags:Int = input.readByte();
+			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
+				throw "Runtime RPC frame delivered to compile-time commands lane";
+			}
 			final op:Int = input.readInt();
 			if (flags == RPCWire.FLAG_RESPONSE) {
 				if (__commands != null) {
@@ -252,6 +343,212 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (now >= 0.0) {
 			__connection.inTimestamp = now;
 		}
+	}
+
+	@:noCompletion private inline function __session_socket_onData(input:ByteArrayInput):Void {
+		while (input.bytesAvailable >= 9) {
+			final lenPos:Int = input.position;
+			final payloadLen:Int = input.readInt();
+
+			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN || (RPCHandler.MAX_FRAME_LEN != 0 && payloadLen > RPCHandler.MAX_FRAME_LEN)) {
+				throw "Invalid RPC frame length";
+			}
+
+			if (input.bytesAvailable < payloadLen) {
+				input.position = lenPos;
+				break;
+			}
+
+			final frameEnd:Int = input.position + payloadLen;
+			final flags:Int = input.readByte();
+			final op:Int = input.readInt();
+
+			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
+				__dispatchRuntimeFrame(flags, op, input);
+			} else if (__handler != null) {
+				__dispatchCompiledFrame(flags, op, input);
+			} else if (__commands != null) {
+				__dispatchCompiledResponseFrame(flags, op, input);
+			}
+
+			input.position = frameEnd;
+		}
+
+		@:privateAccess final now:Float = Timer.tryGetTime();
+		if (now >= 0.0) {
+			__connection.inTimestamp = now;
+		}
+	}
+
+	@:noCompletion private inline function __dispatchCompiledFrame(flags:Int, op:Int, input:ByteArrayInput):Void {
+		if (flags == 0) {
+			__handler.dispatch(op, input, 0);
+		} else if (flags == RPCWire.FLAG_REQUEST) {
+			__handler.dispatch(op, input, input.readVarUInt());
+		} else if (flags == RPCWire.FLAG_RESPONSE) {
+			final requestId:Int = input.readVarUInt();
+			if (__commands != null) {
+				__commands.__rpc_handle_response(op, requestId, input, false);
+			}
+		} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+			final requestId:Int = input.readVarUInt();
+			if (__commands != null) {
+				__commands.__rpc_handle_response(op, requestId, input, true);
+			}
+		} else {
+			final requestId:Int = ((flags & RPCWire.FLAG_REQUEST) != 0) ? input.readVarUInt() : 0;
+			__handler.dispatch(op, input, requestId);
+		}
+	}
+
+	@:noCompletion private inline function __dispatchCompiledResponseFrame(flags:Int, op:Int, input:ByteArrayInput):Void {
+		if (flags == RPCWire.FLAG_RESPONSE) {
+			__commands.__rpc_handle_response(op, input.readVarUInt(), input, false);
+		} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+			__commands.__rpc_handle_response(op, input.readVarUInt(), input, true);
+		}
+	}
+
+	@:noCompletion private function __dispatchRuntimeFrame(flags:Int, op:Int, input:ByteArrayInput):Void {
+		final runtimeFlags:Int = flags & ~RPCWire.FLAG_RUNTIME;
+		if (runtimeFlags == 0) {
+			__invokeRuntime(op, RPCRuntimeCodec.readArgs(input), 0);
+			return;
+		}
+		if (runtimeFlags == RPCWire.FLAG_REQUEST) {
+			final requestId:Int = input.readVarUInt();
+			__invokeRuntime(op, RPCRuntimeCodec.readArgs(input), requestId);
+			return;
+		}
+		if (runtimeFlags == RPCWire.FLAG_RESPONSE) {
+			__resolveRuntimeResponse(op, input.readVarUInt(), RPCRuntimeCodec.readValue(input));
+			return;
+		}
+		if (runtimeFlags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+			__rejectRuntimeResponse(input.readVarUInt(), input.readVarUTF());
+			return;
+		}
+		throw "Invalid runtime RPC flags";
+	}
+
+	@:noCompletion private function __invokeRuntime(op:Int, args:Array<Dynamic>, requestId:Int):Void {
+		final handler = (__runtimeHandlers != null) ? __runtimeHandlers.get(op) : null;
+		if (handler == null) {
+			if (requestId != 0) {
+				__sendRuntimeError(op, requestId, "Unsupported runtime RPC op: " + op);
+			}
+			return;
+		}
+
+		try {
+			final result = handler(args);
+			if (requestId != 0) {
+				__sendRuntimeResponse(op, requestId, result);
+			}
+		} catch (error:Dynamic) {
+			if (requestId != 0) {
+				__sendRuntimeError(op, requestId, Std.string(error));
+			} else {
+				throw error;
+			}
+		}
+	}
+
+	@:noCompletion private function __sendRuntimeFrame(op:Int, requestId:Int, expectsResponse:Bool, args:Array<Dynamic>):Void {
+		final framed = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
+		framed.writeInt(0);
+		framed.writeByte(RPCWire.FLAG_RUNTIME | (expectsResponse ? RPCWire.FLAG_REQUEST : 0));
+		framed.writeInt(op);
+		if (expectsResponse) {
+			framed.writeVarUInt(requestId);
+		}
+		RPCRuntimeCodec.writeArgs(framed, args);
+		framed.writeIntAt(0, framed.bytesWritten - 4);
+		framed.flush();
+		__connection.send(framed);
+	}
+
+	@:noCompletion private function __sendRuntimeResponse(op:Int, requestId:Int, value:Dynamic):Void {
+		final framed = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
+		framed.writeInt(0);
+		framed.writeByte(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE);
+		framed.writeInt(op);
+		framed.writeVarUInt(requestId);
+		RPCRuntimeCodec.writeValue(framed, value);
+		framed.writeIntAt(0, framed.bytesWritten - 4);
+		framed.flush();
+		__connection.send(framed);
+	}
+
+	@:noCompletion private function __sendRuntimeError(op:Int, requestId:Int, message:String):Void {
+		final framed = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
+		framed.writeInt(0);
+		framed.writeByte(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
+		framed.writeInt(op);
+		framed.writeVarUInt(requestId);
+		framed.writeVarUTF(message);
+		framed.writeIntAt(0, framed.bytesWritten - 4);
+		framed.flush();
+		__connection.send(framed);
+	}
+
+	@:noCompletion private function __trackRuntimeResponse(requestId:Int, response:RPCResponse<Dynamic>):Void {
+		if (__runtimePendingResponse == null) {
+			__runtimePendingResponseId = requestId;
+			__runtimePendingResponse = response;
+		} else {
+			if (__runtimePendingResponses == null) {
+				__runtimePendingResponses = new IntMap();
+			}
+			__runtimePendingResponses.set(requestId, response);
+		}
+		__syncOnDataBinding();
+	}
+
+	@:noCompletion private function __resolveRuntimeResponse<T>(op:Int, requestId:Int, value:T):Void {
+		final response = __takeRuntimeResponse(requestId);
+		if (response == null) {
+			return;
+		}
+		(cast response : RPCResponse<T>).__resolve(value);
+	}
+
+	@:noCompletion private function __rejectRuntimeResponse(requestId:Int, message:String):Void {
+		final response = __takeRuntimeResponse(requestId);
+		if (response == null) {
+			return;
+		}
+		response.__reject(message);
+	}
+
+	@:noCompletion private function __takeRuntimeResponse(requestId:Int):RPCResponse<Dynamic> {
+		var response:RPCResponse<Dynamic> = null;
+		if (__runtimePendingResponse != null && requestId == __runtimePendingResponseId) {
+			response = __runtimePendingResponse;
+			__runtimePendingResponse = null;
+			__runtimePendingResponseId = 0;
+		} else if (__runtimePendingResponses != null) {
+			response = __runtimePendingResponses.get(requestId);
+			if (response != null) {
+				__runtimePendingResponses.remove(requestId);
+			}
+		}
+		__syncOnDataBinding();
+		return response;
+	}
+
+	@:noCompletion private function __nextRuntimeRequestId():Int {
+		do {
+			__runtimeRequestIdSeed++;
+			if (__runtimeRequestIdSeed <= 0) {
+				__runtimeRequestIdSeed = 1;
+			}
+			if (__runtimeRequestIdSeed == __runtimePendingResponseId) {
+				continue;
+			}
+		} while (__runtimePendingResponses != null && __runtimePendingResponses.exists(__runtimeRequestIdSeed));
+
+		return __runtimeRequestIdSeed;
 	}
 
 	/**
