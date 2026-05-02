@@ -36,6 +36,12 @@ class SharedChannel extends EventDispatcher {
 	 * This should contain methods matching the message names sent by peers.
 	 */
 	public var client:Object;
+	/**
+	 * Connection timeout in milliseconds used when establishing the outbound local IPC link.
+	 *
+	 * `0` performs an immediate probe without waiting.
+	 */
+	public var timeout:Int = 5000;
 
 	@:noCompletion private var __listener:LocalConnection;
 	@:noCompletion private var __outbound:LocalConnection;
@@ -155,6 +161,7 @@ class SharedChannel extends EventDispatcher {
 					__outbound.close();
 				}
 				__outbound = new LocalConnection();
+				__outbound.timeout = timeout;
 				__outbound.connect(connectionName);
 				__outboundName = connectionName;
 			}
@@ -345,8 +352,8 @@ class SharedChannel extends EventDispatcher {
 	}
 
 	/** Test hook that forwards through the low-level native helper. */
-	@:noCompletion private static inline function __connect(name:String):Dynamic {
-		return LocalConnection.__connect(name);
+	@:noCompletion private static inline function __connect(name:String, timeoutMs:Int = 5000):Dynamic {
+		return LocalConnection.__connect(name, timeoutMs);
 	}
 
 	/** Test hook that forwards through the low-level native helper. */

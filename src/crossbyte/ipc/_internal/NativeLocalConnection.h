@@ -13,6 +13,7 @@ int native_getBytesAvailable(void* pipe);
 int native_read(void* pipe, unsigned char* buffer, int bufferSize);
 bool native_write(void* pipe, const unsigned char* buffer, int bufferSize);
 void* native_connect(const char* name);
+void* native_connectWithTimeout(const char* name, int timeoutMs);
 void native_close(void* pipe);
 
 #ifdef __cplusplus

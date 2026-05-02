@@ -69,7 +69,8 @@ class LocalConnection implements INetConnection {
 	public static inline var isSupported:Bool = #if cpp true #else false #end;
 
 	/** Maximum payload size accepted by the framing layer, in bytes. */
-	public static inline var MAX_FRAME_SIZE:Int = 1024 * 1024;
+	public static inline var MAX_FRAME_SIZE:Int = 8 * 1024 * 1024;
+	@:noCompletion private static inline var DISPATCH_BUDGET_PER_TICK:Int = 32;
 
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
@@ -82,6 +83,12 @@ class LocalConnection implements INetConnection {
 	public var onClose(get, set):Reason->Void;
 	public var onError(get, set):Reason->Void;
 	public var onReady(get, set):Void->Void;
+	/**
+	 * Connection timeout in milliseconds used by `connect()`.
+	 *
+	 * `0` performs an immediate probe without waiting.
+	 */
+	public var timeout:Int = 5000;
 	public var inTimestamp(default, null):Float = 0;
 	public var outTimestamp(default, null):Float = 0;
 
@@ -174,7 +181,7 @@ class LocalConnection implements INetConnection {
 		__mode = CLIENT;
 		__connectionName = connectionName;
 
-		var handle = __connect(connectionName);
+		var handle = __connect(connectionName, timeout);
 		if (handle == null) {
 			__mode = NONE;
 			var reason = Reason.Error("Failed to connect to local endpoint.");
@@ -512,12 +519,22 @@ class LocalConnection implements INetConnection {
 
 	@:noCompletion private function __flushDispatchQueue(_event:TickEvent):Void {
 		#if (cpp || neko || hl)
+		var drained = false;
+		var processed = 0;
 		while (true) {
+			if (processed >= DISPATCH_BUDGET_PER_TICK) {
+				break;
+			}
 			var message = __dispatchQueue.pop(false);
 			if (message == null) {
+				drained = true;
 				break;
 			}
 			__applyDispatch(message);
+			processed++;
+		}
+		if (!drained) {
+			return;
 		}
 		#end
 
@@ -646,9 +663,9 @@ class LocalConnection implements INetConnection {
 	}
 
 	/** Connects to a native local endpoint handle. SharedChannel forwards through these helpers for tests. */
-	@:noCompletion private static function __connect(name:String):LocalConnectionHandle {
+	@:noCompletion private static function __connect(name:String, timeoutMs:Int = 5000):LocalConnectionHandle {
 		#if cpp
-		return NativeLocalConnection.__connect(name);
+		return NativeLocalConnection.__connectWithTimeout(name, timeoutMs);
 		#else
 		return null;
 		#end

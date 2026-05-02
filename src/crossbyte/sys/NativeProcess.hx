@@ -65,6 +65,18 @@ class NativeProcess extends EventDispatcher {
 		__stdoutClosed = false;
 		__stderrClosed = false;
 
+		#if (sys && (windows || linux || mac || macos))
+		try {
+			var args = info.arguments == null ? [] : info.arguments;
+			__process = new Process(info.executable, args, false);
+			__pid = __resolvePid();
+		} catch (e:Dynamic) {
+			__process = null;
+			__running = false;
+			throw e;
+		}
+		#end
+
 		__worker = new Worker();
 		__worker.addEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
 		__worker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
@@ -82,6 +94,9 @@ class NativeProcess extends EventDispatcher {
 		}
 
 		if (__process != null) {
+			try {
+				__process.kill();
+			} catch (_:Dynamic) {}
 			try {
 				__process.close();
 			} catch (_:Dynamic) {}
@@ -103,13 +118,7 @@ class NativeProcess extends EventDispatcher {
 
 	@:noCompletion private function __execute(info:Dynamic):Void {
 		#if (sys && (windows || linux || mac || macos))
-		var startupInfo:NativeProcessStartupInfo = info;
-
 		try {
-			var args = startupInfo.arguments == null ? [] : startupInfo.arguments;
-			__process = new Process(startupInfo.executable, args);
-			__pid = __resolvePid();
-
 			var readerCompletion = new Deque<String>();
 			Thread.create(() -> {
 				__readStream(STREAM_STDOUT, __process.stdout);
