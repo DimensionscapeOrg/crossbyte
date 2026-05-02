@@ -1,5 +1,60 @@
 package haxe;
 
+#if lime_cffi
+import lime.system.System;
+import haxe.Log;
+import haxe.PosInfos;
+
+/**
+	A Lime-compatible `haxe.Timer` shape for projects where CrossByte shares a
+	classpath with Lime's native backend.
+
+	Lime's native application loop reaches into these private fields through
+	`@:access(haxe.Timer)`, so CrossByte's global timer shadow needs to expose
+	the same storage contract when `lime_cffi` is active.
+**/
+class Timer {
+	private static var sRunningTimers:Array<Timer> = [];
+
+	private var mTime:Float;
+	private var mFireAt:Float;
+	private var mRunning:Bool;
+
+	public function new(time_ms:Int) {
+		mTime = time_ms;
+		mFireAt = System.getTimer() + mTime;
+		mRunning = true;
+		sRunningTimers.push(this);
+	}
+
+	public function stop():Void {
+		mRunning = false;
+	}
+
+	public dynamic function run():Void {}
+
+	public static function delay(f:Void->Void, time_ms:Int):Timer {
+		var timer = new Timer(time_ms);
+		timer.run = function() {
+			timer.stop();
+			f();
+		};
+		return timer;
+	}
+
+	public static function measure<T>(f:Void->T, ?pos:PosInfos):T {
+		var t0 = stamp();
+		var result = f();
+		Log.trace((stamp() - t0) + "s", pos);
+		return result;
+	}
+
+	public static inline function stamp():Float {
+		var timer = System.getTimer();
+		return timer > 0 ? timer / 1000 : 0;
+	}
+}
+#else
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.TickEvent;
@@ -154,3 +209,4 @@ class Timer {
 		#end
 	}
 }
+#end
