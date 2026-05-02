@@ -33,8 +33,7 @@ abstract class RPCHandler {
 			final payloadLen:Int = input.readInt();
 
 			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN || (MAX_FRAME_LEN != 0 && payloadLen > MAX_FRAME_LEN)) {
-				input.position = input.length;
-				return;
+				throw "Invalid RPC frame length";
 			}
 
 			if (input.bytesAvailable < payloadLen) {
