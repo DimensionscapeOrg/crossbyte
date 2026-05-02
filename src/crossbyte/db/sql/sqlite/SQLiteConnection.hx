@@ -27,7 +27,7 @@ import haxe.Int64;
  */
 @:access(crossbyte.db.sql.sqlite.SQLiteStatement)
 class SQLiteConnection extends EventDispatcher {
-	public static inline var isSupported:Bool = #if windows true; #else false; #end
+	public static inline var isSupported:Bool = #if cpp true; #else false; #end
 
 	@:noCompletion private static inline var DEFAULT_CACHE_SIZE:UInt = 2000;
 
@@ -341,6 +341,18 @@ class SQLiteConnection extends EventDispatcher {
 			__connection.close();
 			__dispatchSQLEvent(SQLEvent.CLOSE);
 		}
+	}
+
+	public inline function request(sql:String):ResultSet {
+		return __connection.request(sql);
+	}
+
+	public inline function escape(value:String):String {
+		return __connection.escape(value);
+	}
+
+	public inline function quote(value:String):String {
+		return __connection.quote(value);
 	}
 
 	public function commit():Void {
