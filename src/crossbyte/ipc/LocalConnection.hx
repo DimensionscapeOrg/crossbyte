@@ -115,6 +115,7 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private var __dispatchListener:TickEvent->Void;
 	@:noCompletion private var __dispatchAttached:Bool = false;
 	@:noCompletion private var __pendingPayloads:Array<ByteArray> = [];
+	@:noCompletion private var __dispatchFailed:Bool = false;
 
 	public function new() {
 		__captureRuntime();
@@ -139,6 +140,7 @@ class LocalConnection implements INetConnection {
 		__requireConnectionName(connectionName);
 		close();
 		__captureRuntime();
+		__dispatchFailed = false;
 		__mode = SERVER;
 		__connectionName = connectionName;
 		__running = true;
@@ -178,6 +180,7 @@ class LocalConnection implements INetConnection {
 		__requireConnectionName(connectionName);
 		close();
 		__captureRuntime();
+		__dispatchFailed = false;
 		__mode = CLIENT;
 		__connectionName = connectionName;
 
@@ -239,6 +242,7 @@ class LocalConnection implements INetConnection {
 		var wasConnected = __connected;
 		__running = false;
 		__connected = false;
+		__dispatchFailed = false;
 		__mode = NONE;
 		__connectionName = null;
 		__receiveBuffer.clear();
@@ -255,7 +259,9 @@ class LocalConnection implements INetConnection {
 		}
 
 		if (wasConnected) {
-			__onClose(Reason.Closed);
+			try {
+				__onClose(Reason.Closed);
+			} catch (_:Dynamic) {}
 		}
 	}
 
@@ -428,21 +434,53 @@ class LocalConnection implements INetConnection {
 	}
 
 	@:noCompletion private function __applyDispatch(message:LocalConnectionDispatch):Void {
-		switch (message) {
-			case Ready:
-				__onReady();
-			case Close(reason):
-				__onClose(reason);
-			case Error(reason):
-				__onError(reason);
-			case Data(payload):
-				if (!__readEnabled) {
-					__pushPendingPayload(payload);
-					return;
-				}
-				payload.position = 0;
-				__onData(payload);
+		try {
+			switch (message) {
+				case Ready:
+					__onReady();
+				case Close(reason):
+					__onClose(reason);
+				case Error(reason):
+					__onError(reason);
+				case Data(payload):
+					if (!__readEnabled) {
+						__pushPendingPayload(payload);
+						return;
+					}
+					payload.position = 0;
+					__onData(payload);
+			}
+		} catch (error:Dynamic) {
+			__handleCallbackFailure(error);
 		}
+	}
+
+	@:noCompletion private function __handleCallbackFailure(error:Dynamic):Void {
+		if (__dispatchFailed) {
+			return;
+		}
+
+		__dispatchFailed = true;
+		__running = false;
+		__connected = false;
+		__mode = NONE;
+		__receiveBuffer.clear();
+		__clearPendingPayloads();
+		__detachDispatchListener();
+
+		if (__activePipe != null) {
+			__close(__activePipe);
+			__activePipe = null;
+		}
+		if (__listeningPipe != null) {
+			__close(__listeningPipe);
+			__listeningPipe = null;
+		}
+
+		var reason = Reason.Error("Local transport callback failed: " + Std.string(error));
+		try {
+			__onError(reason);
+		} catch (_:Dynamic) {}
 	}
 
 	@:noCompletion private function __flushPendingPayloads():Void {
