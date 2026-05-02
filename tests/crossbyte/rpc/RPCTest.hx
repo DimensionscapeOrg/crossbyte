@@ -123,6 +123,10 @@ class RPCTest extends utest.Test {
 		var link = LinkedConnection.pair();
 		var handler = new TestHandler();
 		new RPCSession(link.server, null, handler);
+		var closed:Bool = false;
+		var errored:Bool = false;
+		link.server.onClose = _ -> closed = true;
+		link.server.onError = _ -> errored = true;
 
 		var payload = new ByteArrayOutput(5);
 		payload.writeByte(0);
@@ -133,8 +137,9 @@ class RPCTest extends utest.Test {
 		frame.writeInt(payload.length);
 		frame.writeBytes(payload);
 
-		Assert.raises(() -> link.client.send(frame), String);
+		link.client.send(frame);
 		Assert.equals(0, handler.calls);
+		Assert.isTrue(closed || errored);
 	}
 
 	public function testContractDrivenCommandsAndHandlerGenerateFromSharedInterface():Void {

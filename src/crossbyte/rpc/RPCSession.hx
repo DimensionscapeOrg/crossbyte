@@ -188,13 +188,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	@:noCompletion private inline function __syncOnDataBinding():Void {
 		if (__handler != null) {
-			__connection.onData = __handler.this_socket_onData;
+			__connection.onData = __safeHandlerOnData;
 			__connection.readEnabled = true;
 			return;
 		}
 
 		if (__commands != null) {
-			__connection.onData = __commands_socket_onData;
+			__connection.onData = __safeCommandsOnData;
 			__connection.readEnabled = true;
 			return;
 		}
@@ -203,14 +203,29 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__connection.readEnabled = false;
 	}
 
+	@:noCompletion private inline function __safeHandlerOnData(input:ByteArrayInput):Void {
+		try {
+			__handler.this_socket_onData(input);
+		} catch (error:Dynamic) {
+			__terminateProtocol(Reason.Error("RPC handler decode failed: " + Std.string(error)));
+		}
+	}
+
+	@:noCompletion private inline function __safeCommandsOnData(input:ByteArrayInput):Void {
+		try {
+			__commands_socket_onData(input);
+		} catch (error:Dynamic) {
+			__terminateProtocol(Reason.Error("RPC command decode failed: " + Std.string(error)));
+		}
+	}
+
 	@:noCompletion private inline function __commands_socket_onData(input:ByteArrayInput):Void {
 		while (input.bytesAvailable >= 9) {
 			final lenPos:Int = input.position;
 			final payloadLen:Int = input.readInt();
 
 			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN || (RPCHandler.MAX_FRAME_LEN != 0 && payloadLen > RPCHandler.MAX_FRAME_LEN)) {
-				input.position = input.length;
-				return;
+				throw "Invalid RPC frame length";
 			}
 
 			if (input.bytesAvailable < payloadLen) {
@@ -327,5 +342,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private inline function __disconnect(reason:Reason):Void {
 		this.connection.close();
 		this.connection.onClose(reason);
+	}
+
+	@:noCompletion private inline function __terminateProtocol(reason:Reason):Void {
+		try {
+			__connection.onError(reason);
+		} catch (_:Dynamic) {}
+		try {
+			__connection.close();
+		} catch (_:Dynamic) {}
 	}
 }
