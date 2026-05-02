@@ -43,6 +43,9 @@ abstract class RPCHandler {
 
 			final frameEnd:Int = input.position + payloadLen;
 			final flags:Int = input.readByte();
+			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
+				throw "Runtime RPC frame delivered to compile-time handler lane";
+			}
 			final op:Int = input.readInt();
 			if (flags == 0) {
 				this.dispatch(op, input, 0);
