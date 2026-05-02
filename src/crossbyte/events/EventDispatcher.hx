@@ -213,15 +213,52 @@ class EventDispatcher implements IEventDispatcher {
 		}
 
 		if (len == 1) {
-			list[0].listener(event);
+			var only = list[0];
+			if (only == null || only.listener == null) {
+				__compactListeners(event.type, list);
+				return false;
+			}
+			only.listener(event);
 			return true;
 		}
 
 		var snapshot:Array<ListenerEntry> = list.copy();
 		for (i in 0...snapshot.length) {
-			snapshot[i].listener(event);
+			var entry = snapshot[i];
+			if (entry == null || entry.listener == null) {
+				__compactListeners(event.type, list);
+				continue;
+			}
+			if (!__isListenerPresent(list, entry)) {
+				continue;
+			}
+			entry.listener(event);
 		}
 		return true;
+	}
+
+	private inline function __compactListeners(type:String, list:Array<ListenerEntry>):Void {
+		var idx = list.length - 1;
+		while (idx >= 0) {
+			var entry = list[idx];
+			if (entry == null || entry.listener == null) {
+				list.splice(idx, 1);
+			}
+			idx--;
+		}
+		if (list.length == 0 && __eventMap != null) {
+			__eventMap.remove(type);
+		}
+	}
+
+	private function __isListenerPresent(list:Array<ListenerEntry>, target:ListenerEntry):Bool {
+		for (i in 0...list.length) {
+			var current = list[i];
+			if (current != null && current.order == target.order && current.listener == target.listener) {
+				return true;
+			}
+		}
+		return false;
 	}
 }
 
