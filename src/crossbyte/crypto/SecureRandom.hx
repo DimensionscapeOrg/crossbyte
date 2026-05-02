@@ -2,18 +2,23 @@ package crossbyte.crypto;
 
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
-#if (cpp && !windows)
+#if cpp
 import sys.io.File;
+import sys.thread.Mutex;
 #end
 #if php
 import php.Global;
 import php.Syntax;
 #end
 
-#if (cpp && windows)
-@:cppInclude("Windows.h")
-@:cppInclude("bcrypt.h")
-@:cppNamespaceCode('#pragma comment(lib, "bcrypt.lib")')
+#if cpp
+@:cppFileCode('
+#ifdef HX_WINDOWS
+#include <Windows.h>
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+#endif
+')
 #end
 /**
  * Provides cryptographically secure random bytes using the strongest native
@@ -40,8 +45,18 @@ final class SecureRandom {
 	}
 
 	#if cpp
-	#if windows
+	@:noCompletion static var __urandom:sys.io.FileInput = null;
+	@:noCompletion static var __lock:Mutex = null;
+
 	private static inline function __getSecureRandomBytesNative(length:Int):Bytes {
+		return __isWindows() ? __getSecureRandomBytesWindows(length) : __getSecureRandomBytesUnix(length);
+	}
+
+	private static inline function __isWindows():Bool {
+		return Sys.systemName() == "Windows";
+	}
+
+	private static inline function __getSecureRandomBytesWindows(length:Int):Bytes {
 		var out = Bytes.alloc(length);
 		if (length == 0)
 			return out;
@@ -59,11 +74,8 @@ final class SecureRandom {
 			throw "BCryptGenRandom failed";
 		return out;
 	}
-	#else
-	@:noCompletion static var __urandom:sys.io.FileInput = null;
-	@:noCompletion static var __lock:sys.thread.Mutex = null;
 
-	private static function __getSecureRandomBytesNative(length:Int):ByteArray {
+	private static function __getSecureRandomBytesUnix(length:Int):Bytes {
 		if (length <= 0) {
 			return Bytes.alloc(length < 0 ? 0 : length);
 		}
@@ -99,7 +111,6 @@ final class SecureRandom {
 		__lock.release();
 		return out;
 	}
-	#end
 	#end
 	#if php
 	private static function __getSecureRandomBytesPHP(length:Int):ByteArray {
