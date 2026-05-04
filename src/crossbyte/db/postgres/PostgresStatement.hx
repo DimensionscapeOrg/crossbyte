@@ -130,18 +130,14 @@ class PostgresStatement extends EventDispatcher {
 		}
 
 		if (Std.isOfType(value, Bool)) {
-			return value ? "1" : "0";
+			return value ? "TRUE" : "FALSE";
 		}
 
 		if (Std.isOfType(value, Int) || Std.isOfType(value, Float)) {
 			return Std.string(value);
 		}
 
-		var s:String = Std.string(value);
-		s = s.split("\\").join("\\\\");
-		s = s.split("'").join("\\'");
-
-		return "'" + s + "'";
+		return __sqlConnection != null ? __sqlConnection.quote(Std.string(value)) : ("'" + Std.string(value).split("'").join("''") + "'");
 	}
 
 	private function __queueResult():Void {
