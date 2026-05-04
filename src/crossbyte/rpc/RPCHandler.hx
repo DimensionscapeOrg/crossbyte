@@ -33,8 +33,7 @@ abstract class RPCHandler {
 			final payloadLen:Int = input.readInt();
 
 			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN || (MAX_FRAME_LEN != 0 && payloadLen > MAX_FRAME_LEN)) {
-				input.position = input.length;
-				return;
+				throw "Invalid RPC frame length";
 			}
 
 			if (input.bytesAvailable < payloadLen) {
@@ -44,6 +43,9 @@ abstract class RPCHandler {
 
 			final frameEnd:Int = input.position + payloadLen;
 			final flags:Int = input.readByte();
+			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
+				throw "Runtime RPC frame delivered to compile-time handler lane";
+			}
 			final op:Int = input.readInt();
 			if (flags == 0) {
 				this.dispatch(op, input, 0);
