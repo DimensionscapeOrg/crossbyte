@@ -1,0 +1,14 @@
+<xml>
+	<files id="crossbyte-db-postgres-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativePostgres.cpp">
+			<depend name="${this_dir}/NativePostgres.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-db-postgres-native"/>
+		<lib name="dl" if="linux"/>
+	</target>
+</xml>
