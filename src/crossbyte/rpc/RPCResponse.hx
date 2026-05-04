@@ -6,6 +6,7 @@ import crossbyte.events.EventType;
 import crossbyte.events.IEventDispatcher;
 
 @:allow(crossbyte.rpc.RPCCommands)
+@:allow(crossbyte.rpc.RPCSession)
 /**
  * Represents the eventual result of a request/response RPC invocation.
  *

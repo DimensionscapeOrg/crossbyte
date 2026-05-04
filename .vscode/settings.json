@@ -1,0 +1,26 @@
+{
+    "haxe.configurations": [
+        {
+            "label": "Aedifex Root",
+            "args": [
+                "c:/Users/Chris/Documents/GitHub/crossbyte/.aedifex/aedifex.display.hxml"
+            ],
+            "files": [
+                "Aedifex.hx",
+                "ProjectDefines.hx"
+            ]
+        }
+    ],
+    "haxe.displayConfigurations": [
+        {
+            "label": "Aedifex Root",
+            "args": [
+                "c:/Users/Chris/Documents/GitHub/crossbyte/.aedifex/aedifex.display.hxml"
+            ],
+            "files": [
+                "Aedifex.hx",
+                "ProjectDefines.hx"
+            ]
+        }
+    ]
+}
