@@ -1,11 +1,18 @@
 package crossbyte.db.postgres;
 
+import haxe.Json;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.events.EventDispatcher;
 import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
+#if cpp
+import crossbyte.db.postgres._internal.NativePostgres;
+import crossbyte.ipc._internal.VoidPointer;
+import haxe.io.Path;
+import sys.FileSystem;
+#end
 #if php
 import php.Global;
 import php.Syntax;
@@ -13,7 +20,7 @@ import php.Syntax;
 
 /** PostgreSQL connection wrapper currently backed by PHP PDO on supported targets. */
 class PostgresConnection extends EventDispatcher {
-	public static final isSupported:Bool = #if php __checkSupport() #else false #end;
+	public static final isSupported:Bool = #if php __checkSupport() #elseif cpp true #else false #end;
 
 	public var connected(get, null):Bool;
 	public var inTransaction(get, null):Bool;
@@ -24,6 +31,9 @@ class PostgresConnection extends EventDispatcher {
 	public var isolationLevel(get, set):PostgresIsolationLevel;
 
 	@:noCompletion private var __connection:Dynamic;
+	#if cpp
+	@:noCompletion private var __nativeHandle:VoidPointer;
+	#end
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __autocommit:Bool = true;
 	@:noCompletion private var __isolationLevel:PostgresIsolationLevel = PostgresIsolationLevel.REPEATABLE_READ;
@@ -40,6 +50,27 @@ class PostgresConnection extends EventDispatcher {
 			throw "PostgresConnection: config is required.";
 		}
 
+		#if cpp
+		try {
+			var host:String = cfg.host != null ? cfg.host : "127.0.0.1";
+			var port:Int = cfg.port != null ? cfg.port : 5432;
+			var database:String = cfg.database != null ? cfg.database : "postgres";
+			var user:String = cfg.user != null ? cfg.user : "";
+			var pass:String = cfg.password != null ? cfg.password : "";
+			var sslMode:String = cfg.sslMode != null ? cfg.sslMode : "";
+			var connectTimeout:Int = cfg.connectTimeout != null ? cfg.connectTimeout : 5;
+			var libraryPaths = __libraryCandidates(cfg);
+
+			__nativeHandle = NativePostgres.open(host, port, user, pass, database, sslMode, connectTimeout, libraryPaths);
+			if (__nativeHandle == null) {
+				throw new IOError(NativePostgres.lastError());
+			}
+
+			__dispatchEvent(new SQLEvent(SQLEvent.OPEN));
+		} catch (e:Dynamic) {
+			throw new IOError(e);
+		}
+		#else
 		#if php
 		try {
 			var host:String = cfg.host != null ? cfg.host : "127.0.0.1";
@@ -74,9 +105,19 @@ class PostgresConnection extends EventDispatcher {
 		#else
 		throw new IOError("PostgreSQL is only supported on php targets.");
 		#end
+		#end
 	}
 
 	public function close():Void {
+		#if cpp
+		if (__nativeHandle != null) {
+			NativePostgres.close(__nativeHandle);
+			__nativeHandle = null;
+			__inTransaction = false;
+			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
+		}
+		#end
+
 		if (__connection != null) {
 			__connection = null;
 			__inTransaction = false;
@@ -167,6 +208,19 @@ class PostgresConnection extends EventDispatcher {
 	public inline function request(sql:String):Dynamic {
 		__requireConnected();
 
+		#if cpp
+		var rawJson = NativePostgres.requestJson(__nativeHandle, sql);
+		var parsed:Dynamic = Json.parse(rawJson == null || rawJson == "" ? "{\"rows\":[],\"affectedRows\":0,\"lastInsertRowID\":0}" : rawJson);
+		var errorMessage:Dynamic = Reflect.field(parsed, "error");
+		if (errorMessage != null) {
+			throw new IOError(Std.string(errorMessage));
+		}
+
+		var rows:Array<Dynamic> = __toRows(Reflect.field(parsed, "rows"));
+		__lastAffectedRows = __toInt(Reflect.field(parsed, "affectedRows"));
+		__lastInsertRowID = __toInt(Reflect.field(parsed, "lastInsertRowID"));
+		return new PostgresResultSet(rows);
+		#else
 		var statement:Dynamic = null;
 		var rows:Array<Dynamic> = [];
 		__lastAffectedRows = 0;
@@ -192,13 +246,33 @@ class PostgresConnection extends EventDispatcher {
 
 		__lastInsertRowID = __lastInsertId();
 		return new PostgresResultSet(rows);
+		#end
+	}
+
+	public function escape(value:String):String {
+		#if cpp
+		return __nativeHandle == null ? __fallbackEscape(value) : NativePostgres.escape(__nativeHandle, value == null ? "" : value);
+		#else
+		return __fallbackEscape(value);
+		#end
+	}
+
+	public inline function quote(value:String):String {
+		return "'" + escape(value) + "'";
 	}
 
 	private function get_connected():Bool {
+		#if cpp
+		if (__nativeHandle == null) {
+			return false;
+		}
+		return NativePostgres.isOpen(__nativeHandle);
+		#else
 		if (__connection == null) {
 			return false;
 		}
 		return ping();
+		#end
 	}
 
 	private function get_inTransaction():Bool {
@@ -244,11 +318,7 @@ class PostgresConnection extends EventDispatcher {
 	}
 
 	private function set_autocommit(v:Bool):Bool {
-		try {
-			__autocommit = v;
-			request('SET AUTOCOMMIT TO ' + (v ? "ON" : "OFF") + ";");
-		} catch (_:Dynamic) {}
-
+		__autocommit = v;
 		return v;
 	}
 
@@ -293,9 +363,15 @@ class PostgresConnection extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __requireConnected():Void {
+		#if cpp
+		if (__nativeHandle == null) {
+			throw "PostgresConnection: no connection set.";
+		}
+		#else
 		if (__connection == null) {
 			throw "PostgresConnection: no connection set.";
 		}
+		#end
 	}
 
 	@:noCompletion private function __lastInsertId():Int {
@@ -342,10 +418,67 @@ class PostgresConnection extends EventDispatcher {
 	@:noCompletion private static function __checkSupport():Bool {
 		#if php
 		return Global.extension_loaded("pdo") && Global.extension_loaded("pdo_pgsql");
+		#elseif cpp
+		return true;
 		#else
 		return false;
 		#end
 	}
+
+	@:noCompletion private function __fallbackEscape(value:String):String {
+		var s = value == null ? "" : Std.string(value);
+		s = s.split("\\").join("\\\\");
+		return s.split("'").join("''");
+	}
+
+	#if cpp
+	@:noCompletion private function __libraryCandidates(cfg:PostgresConfig):Array<String> {
+		var candidates:Array<String> = [];
+		__pushCandidate(candidates, cfg.libraryPath);
+		if (cfg.libraryPaths != null) {
+			for (path in cfg.libraryPaths) {
+				__pushCandidate(candidates, path);
+			}
+		}
+
+		var cwd = Sys.getCwd();
+		var exeDir = Path.directory(Sys.programPath());
+		#if windows
+		__pushCandidate(candidates, Path.join([cwd, "php", "libpq.dll"]));
+		__pushCandidate(candidates, Path.join([cwd, "..", "php", "libpq.dll"]));
+		__pushCandidate(candidates, Path.join([exeDir, "libpq.dll"]));
+		__pushCandidate(candidates, Path.join([exeDir, "..", "..", "..", "..", "php", "libpq.dll"]));
+		__pushCandidate(candidates, "libpq.dll");
+		#else
+		__pushCandidate(candidates, "libpq.so.5");
+		__pushCandidate(candidates, "libpq.so");
+		#end
+		return candidates;
+	}
+
+	@:noCompletion private function __pushCandidate(candidates:Array<String>, raw:String):Void {
+		if (raw == null) {
+			return;
+		}
+
+		var trimmed = StringTools.trim(raw);
+		if (trimmed == "") {
+			return;
+		}
+
+		if (FileSystem.exists(trimmed) && FileSystem.isDirectory(trimmed)) {
+			#if windows
+			trimmed = Path.join([trimmed, "libpq.dll"]);
+			#else
+			trimmed = Path.join([trimmed, "libpq.so"]);
+			#end
+		}
+
+		if (candidates.indexOf(trimmed) == -1) {
+			candidates.push(trimmed);
+		}
+	}
+	#end
 }
 
 private class PostgresResultSet {

@@ -9,4 +9,6 @@ typedef PostgresConfig = {
 	@:optional var database:String;
 	@:optional var sslMode:String;
 	@:optional var connectTimeout:Int;
+	@:optional var libraryPath:String;
+	@:optional var libraryPaths:Array<String>;
 }
