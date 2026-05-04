@@ -284,7 +284,6 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __setup():Void {
-		Sys.println("Initializing CrossByte Instance");
 		#if cpp
 		__instanceCount++;
 		__socketRegistry = new NativeSocketRegistry(DEFAULT_MAX_SOCKETS);
