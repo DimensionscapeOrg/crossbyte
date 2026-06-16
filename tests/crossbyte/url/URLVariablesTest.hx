@@ -12,6 +12,14 @@ class URLVariablesTest extends utest.Test {
 		Assert.equals("", variables["c"]);
 	}
 
+	public function testDecodeHandlesEmptyKeyFromLeadingEquals():Void {
+		// A pair beginning with '=' has an empty key and the rest as the value.
+		var variables = new URLVariables("=value&k=v");
+
+		Assert.equals("value", variables[""]);
+		Assert.equals("v", variables["k"]);
+	}
+
 	public function testDecodeClearsExistingValues():Void {
 		var variables = new URLVariables("a=1");
 		variables.append("a", "2");
