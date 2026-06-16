@@ -10,10 +10,12 @@ class TestSuites {
 
 	public static function addCrypto(runner:Runner):Void {
 		runner.addCase(new crossbyte.crypto.CryptoTest());
+		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
 	}
 
 	public static function addCore(runner:Runner):Void {
 		runner.addCase(new crossbyte.core.CrossByteTest());
+		runner.addCase(new crossbyte.core.CrossByteRunningFlagTest());
 	}
 
 	public static function addFoundation(runner:Runner):Void {
@@ -40,6 +42,7 @@ class TestSuites {
 		#end
 		runner.addCase(new crossbyte.http.HTTPSupportTest());
 		runner.addCase(new crossbyte._internal.http.HttpTest());
+		runner.addCase(new crossbyte.http.HTTPHardeningTest());
 	}
 
 	public static function addIO(runner:Runner):Void {
@@ -49,6 +52,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.io.ByteArrayOutputTest());
 		runner.addCase(new crossbyte.io.FileTest());
 		runner.addCase(new crossbyte.io.FileStreamTest());
+		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
 	}
 
 	public static function addURL(runner:Runner):Void {
@@ -66,12 +70,14 @@ class TestSuites {
 		runner.addCase(new crossbyte.ipc.LocalConnectionTest());
 		runner.addCase(new crossbyte.ipc.SharedChannelTest());
 		runner.addCase(new crossbyte.ipc.SharedObjectTest());
+		runner.addCase(new crossbyte.ipc.LocalConnectionSendGuardTest());
 	}
 
 	public static function addDatabase(runner:Runner):Void {
 		runner.addCase(new crossbyte.db.DBSupportTest());
 		runner.addCase(new crossbyte.db.PostgresConnectionTest());
 		runner.addCase(new crossbyte.db.MongoConnectionTest());
+		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {
@@ -94,10 +100,13 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
+		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
+		runner.addCase(new crossbyte.net.RUDPHardeningTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {
 		runner.addCase(new crossbyte.rpc.RPCTest());
+		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
 	}
 
 	public static function addResources(runner:Runner):Void {

@@ -147,10 +147,10 @@ class BCrypt {
 	 * desired, this returns `true` to signal that the password should be rehashed.
 	 *
 	 * @param hash The bcrypt hash to evaluate.
-	 * @param cost The current desired cost factor. Defaults to 10.
+	 * @param cost The current desired cost factor. Defaults to 12.
 	 * @return `true` if the hash should be regenerated with the new cost, `false` otherwise.
 	 */
-	public static function needsRehash(hash:String, cost:Int = 10):Bool {
+	public static function needsRehash(hash:String, cost:Int = 12):Bool {
 		#if php
 		var phpOptions:NativeAssocArray<Dynamic> = new NativeAssocArray();
 		phpOptions["cost"] = cost;
@@ -174,11 +174,14 @@ class BCrypt {
 	 * A random salt is automatically generated. The result is a standard bcrypt string
 	 * including the revision (`$2y$`), cost, salt, and hash.
 	 *
-	 * @param password The plain text password to hash.
-	 * @param cost The cost factor (work factor), typically between 4 and 31. Higher values increase computation time. Defaults to 10.
+	 * @param password The plain text password to hash. Must be non-empty.
+	 * @param cost The cost factor (work factor), typically between 4 and 31. Higher values increase computation time. Defaults to 12.
 	 * @return A bcrypt-formatted hash string.
 	 */
-	public static inline function hash(password:String, cost:Int = 10):String {
+	public static inline function hash(password:String, cost:Int = 12):String {
+		if (password == null || password.length == 0) {
+			throw "Password must not be empty";
+		}
 		#if php
 		var phpOptions:NativeAssocArray<Dynamic> = new NativeAssocArray();
 		phpOptions["cost"] = cost;
@@ -192,11 +195,14 @@ class BCrypt {
 	/**
 	 * Verifies that a plain text password matches the given bcrypt hash.
 	 *
-	 * @param password The plain text password to verify.
+	 * @param password The plain text password to verify. An empty or `null` password never matches.
 	 * @param hash The bcrypt hash to verify against. Must include the salt and cost prefix.
 	 * @return `true` if the password matches the hash, `false` otherwise.
 	 */
 	public static function verify(password:String, hash:String):Bool {
+		if (password == null || password.length == 0) {
+			return false;
+		}
 		#if php
 		return PHPGlobalExt.password_verify(password, hash);
 		#else
@@ -243,7 +249,7 @@ class BCrypt {
 		return hashed;
 	}
 
-	@:noCompletion private static inline function __generateSalt(rounds:Int = 10):String {
+	@:noCompletion private static inline function __generateSalt(rounds:Int = 12):String {
 		if (rounds < 4 || rounds > 31) {
 			throw "Salt rounds should be between 4 and 31";
 		}

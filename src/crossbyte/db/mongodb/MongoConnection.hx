@@ -160,8 +160,11 @@ class MongoConnection extends EventDispatcher {
 		var credentials:String = "";
 
 		if (cfg.username != null && cfg.password != null && cfg.username != "") {
-			credentials = cfg.username;
-			credentials += ":" + cfg.password;
+			// Percent-encode the userinfo so credentials containing reserved
+			// characters (`:`, `@`, `/`, etc.) cannot break out of the userinfo
+			// segment and alter the host/authority of the connection URI.
+			credentials = StringTools.urlEncode(cfg.username);
+			credentials += ":" + StringTools.urlEncode(cfg.password);
 			credentials += "@";
 		}
 

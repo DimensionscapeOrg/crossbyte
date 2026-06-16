@@ -18,7 +18,7 @@ class PollBackendRegistryTest extends utest.Test {
 		var backend = PollBackendRegistry.create(32);
 
 		Assert.equals(32, createdCapacity);
-		Assert.equals(fake, backend);
+		Assert.equals((fake : PollBackend), backend);
 
 		PollBackendRegistry.clear();
 	}
@@ -48,7 +48,7 @@ class PollBackendRegistryTest extends utest.Test {
 		Assert.same([1, -1], backend.readIndexes);
 		Assert.same([0, -1], backend.writeIndexes);
 		Assert.isTrue(fake.prepared);
-		Assert.equals(0, fake.lastTimeout);
+		Assert.floatEquals(0, fake.lastTimeout);
 
 		PollBackendRegistry.clear();
 	}

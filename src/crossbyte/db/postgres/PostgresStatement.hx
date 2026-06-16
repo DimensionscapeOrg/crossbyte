@@ -1,6 +1,7 @@
 package crossbyte.db.postgres;
 
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
@@ -117,11 +118,10 @@ class PostgresStatement extends EventDispatcher {
 	}
 
 	private function __applyParameters(query:String):String {
-		var resolved = query;
-		for (parameter in FieldStruct.iterator(parameters)) {
-			resolved = StringTools.replace(resolved, ":" + parameter.key, __quoteValue(parameter.value));
-		}
-		return resolved;
+		var params:FieldStruct<String> = parameters;
+		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
+			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
+		}, __quoteValue);
 	}
 
 	private function __quoteValue(value:Dynamic):String {

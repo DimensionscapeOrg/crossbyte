@@ -1,0 +1,232 @@
+package crossbyte.io;
+
+import crossbyte.errors.EOFError;
+import crossbyte.io.Endian;
+import haxe.io.Bytes;
+import utest.Assert;
+
+class ByteArrayCorrectnessTest extends utest.Test {
+	public function testWriteReadFloatRoundTripsLittleEndian():Void {
+		var values:Array<Float> = [0.0, 1.5, -2.25, 3.1415927, -123456.75, 1.0e30, -1.0e-12];
+
+		var ba = new ByteArray();
+		ba.endian = Endian.LITTLE_ENDIAN;
+
+		for (value in values) {
+			ba.writeFloat(value);
+		}
+
+		ba.position = 0;
+		ba.endian = Endian.LITTLE_ENDIAN;
+		for (value in values) {
+			// Float32 carries ~7 significant digits, so assert the round-trip
+			// within float32 relative precision rather than exact equality.
+			Assert.floatEquals(value, ba.readFloat(), Math.abs(value) * 1e-6 + 1e-12);
+		}
+		Assert.equals(values.length * 4, ba.position);
+	}
+
+	public function testWriteReadFloatRoundTripsBigEndian():Void {
+		var values:Array<Float> = [0.0, 1.5, -2.25, 3.1415927, -123456.75, 1.0e30, -1.0e-12];
+
+		var ba = new ByteArray();
+		ba.endian = Endian.BIG_ENDIAN;
+
+		for (value in values) {
+			ba.writeFloat(value);
+		}
+
+		ba.position = 0;
+		ba.endian = Endian.BIG_ENDIAN;
+		for (value in values) {
+			Assert.floatEquals(value, ba.readFloat(), Math.abs(value) * 1e-6 + 1e-12);
+		}
+		Assert.equals(values.length * 4, ba.position);
+	}
+
+	public function testWriteReadDoubleRoundTripsLittleEndian():Void {
+		var values:Array<Float> = [0.0, 1.5, -2.25, 3.141592653589793, -1234567.89, 1.0e300, -1.0e-300];
+
+		var ba = new ByteArray();
+		ba.endian = Endian.LITTLE_ENDIAN;
+
+		for (value in values) {
+			ba.writeDouble(value);
+		}
+
+		ba.position = 0;
+		ba.endian = Endian.LITTLE_ENDIAN;
+		for (value in values) {
+			Assert.floatEquals(value, ba.readDouble());
+		}
+		Assert.equals(values.length * 8, ba.position);
+	}
+
+	public function testWriteReadDoubleRoundTripsBigEndian():Void {
+		var values:Array<Float> = [0.0, 1.5, -2.25, 3.141592653589793, -1234567.89, 1.0e300, -1.0e-300];
+
+		var ba = new ByteArray();
+		ba.endian = Endian.BIG_ENDIAN;
+
+		for (value in values) {
+			ba.writeDouble(value);
+		}
+
+		ba.position = 0;
+		ba.endian = Endian.BIG_ENDIAN;
+		for (value in values) {
+			Assert.floatEquals(value, ba.readDouble());
+		}
+		Assert.equals(values.length * 8, ba.position);
+	}
+
+	public function testFloatByteLayoutIsBigEndian():Void {
+		// IEEE-754 single-precision encoding of 1.0 is 0x3F800000.
+		var ba = new ByteArray();
+		ba.endian = Endian.BIG_ENDIAN;
+		ba.writeFloat(1.0);
+
+		Assert.equals(4, ba.length);
+		Assert.equals(0x3F, ba[0]);
+		Assert.equals(0x80, ba[1]);
+		Assert.equals(0x00, ba[2]);
+		Assert.equals(0x00, ba[3]);
+	}
+
+	public function testFloatByteLayoutIsLittleEndian():Void {
+		// IEEE-754 single-precision encoding of 1.0 is 0x3F800000, byte-reversed.
+		var ba = new ByteArray();
+		ba.endian = Endian.LITTLE_ENDIAN;
+		ba.writeFloat(1.0);
+
+		Assert.equals(4, ba.length);
+		Assert.equals(0x00, ba[0]);
+		Assert.equals(0x00, ba[1]);
+		Assert.equals(0x80, ba[2]);
+		Assert.equals(0x3F, ba[3]);
+	}
+
+	public function testFloatLayoutMatchesAcrossEndianReversal():Void {
+		// The little-endian layout must be the exact byte reversal of the
+		// big-endian layout for the same value.
+		var value:Float = -2.25;
+
+		var be = new ByteArray();
+		be.endian = Endian.BIG_ENDIAN;
+		be.writeFloat(value);
+
+		var le = new ByteArray();
+		le.endian = Endian.LITTLE_ENDIAN;
+		le.writeFloat(value);
+
+		Assert.equals(be[0], le[3]);
+		Assert.equals(be[1], le[2]);
+		Assert.equals(be[2], le[1]);
+		Assert.equals(be[3], le[0]);
+	}
+
+	public function testDoubleLayoutMatchesAcrossEndianReversal():Void {
+		var value:Float = 3.141592653589793;
+
+		var be = new ByteArray();
+		be.endian = Endian.BIG_ENDIAN;
+		be.writeDouble(value);
+
+		var le = new ByteArray();
+		le.endian = Endian.LITTLE_ENDIAN;
+		le.writeDouble(value);
+
+		Assert.equals(8, be.length);
+		Assert.equals(8, le.length);
+		for (i in 0...8) {
+			Assert.equals(be[i], le[7 - i]);
+		}
+	}
+
+	public function testWriteShortMasksHighBitsLittleEndian():Void {
+		var ba = new ByteArray();
+		ba.endian = Endian.LITTLE_ENDIAN;
+		// 0x1FF has bits outside the low 8; the high byte must be masked.
+		ba.writeShort(0x1FF);
+
+		Assert.equals(2, ba.length);
+		Assert.equals(0xFF, ba[0]);
+		Assert.equals(0x01, ba[1]);
+
+		ba.position = 0;
+		Assert.equals(0x1FF, ba.readUnsignedShort());
+	}
+
+	public function testWriteShortMasksHighBitsBigEndian():Void {
+		var ba = new ByteArray();
+		ba.endian = Endian.BIG_ENDIAN;
+		ba.writeShort(0x1FF);
+
+		Assert.equals(2, ba.length);
+		Assert.equals(0x01, ba[0]);
+		Assert.equals(0xFF, ba[1]);
+
+		ba.position = 0;
+		Assert.equals(0x1FF, ba.readUnsignedShort());
+	}
+
+	public function testWriteShortMasksNegativeValue():Void {
+		var ba = new ByteArray();
+		ba.endian = Endian.BIG_ENDIAN;
+		// -1 must be stored as the low 16 bits (0xFFFF), not as a wider value.
+		ba.writeShort(-1);
+
+		Assert.equals(2, ba.length);
+		Assert.equals(0xFF, ba[0]);
+		Assert.equals(0xFF, ba[1]);
+
+		ba.position = 0;
+		Assert.equals(-1, ba.readShort());
+	}
+
+	public function testWriteShortMasksLargeNegativeValue():Void {
+		var ba = new ByteArray();
+		ba.endian = Endian.LITTLE_ENDIAN;
+		// High bits beyond 16 are ignored: only 0x8001 is retained.
+		ba.writeShort(0xFFFF8001);
+
+		Assert.equals(2, ba.length);
+		Assert.equals(0x01, ba[0]);
+		Assert.equals(0x80, ba[1]);
+
+		ba.position = 0;
+		Assert.equals(0x8001, ba.readUnsignedShort());
+	}
+
+	public function testReadVarIntRoundTrips():Void {
+		var ba = new ByteArray();
+		var values:Array<Int> = [0, 1, 127, 128, 16383, 16384, 2097151, 0x0FFFFFFF];
+
+		for (value in values) {
+			ba.writeVarInt(value);
+		}
+
+		ba.position = 0;
+		for (value in values) {
+			Assert.equals(value, ba.readVarInt());
+		}
+	}
+
+	public function testReadVarIntThrowsOnNeverTerminatingVarInt():Void {
+		#if final
+		Assert.pass();
+		return;
+		#end
+
+		// Every byte sets the continuation bit (0x80) and never terminates.
+		var bytes = Bytes.alloc(8);
+		for (i in 0...8) {
+			bytes.set(i, 0x80);
+		}
+
+		var ba:ByteArray = ByteArray.fromBytes(bytes);
+		ba.position = 0;
+
+		Assert.raises(() -> ba.readVarInt(), EOFError);
+	}
+}
