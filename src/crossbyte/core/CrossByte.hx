@@ -146,7 +146,7 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Public Variables ====
 	public var tps(get, set):UInt;
-	public var cpuLoad(get, null):Float;
+	public var cpuLoad(get, never):Float;
 	public var uptime(get, never):Float;
 
 	// ==== Private Variables ====
@@ -175,6 +175,11 @@ final class CrossByte extends EventDispatcher {
 
 	#if cpp
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
+	// The thread this runtime is bound to (its loop thread, or the host pump
+	// thread). exit() deregisters this entry even when called from another
+	// thread, and __didDeregister makes the deregistration idempotent.
+	@:noCompletion private var __ownerThread:Thread;
+	@:noCompletion private var __didDeregister:Bool = false;
 	#end
 
 	@:noCompletion private var __loopType:MainLoopType;
@@ -190,7 +195,13 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	@:noCompletion private function set_tps(value:UInt):UInt {
-		__tickInterval = 1 / (__tps = value);
+		// Guard against tps == 0, which would make __tickInterval +Infinity and
+		// hang the frame-wait loop forever.
+		if (value < 1) {
+			value = 1;
+		}
+		__tps = value;
+		__tickInterval = 1 / __tps;
 
 		return value;
 	}
@@ -250,8 +261,15 @@ final class CrossByte extends EventDispatcher {
 		__setRunning(false);
 		#if cpp
 		__registryLock.acquire();
-		__instances.remove(Thread.current());
-		__instanceCount--;
+		if (!__didDeregister) {
+			__didDeregister = true;
+			// Remove the runtime's own thread entry, not the caller's, so a
+			// cross-thread exit() does not leak the owning thread's entry or
+			// drift __instanceCount.
+			var owner:Thread = __ownerThread != null ? __ownerThread : Thread.current();
+			__instances.remove(owner);
+			__instanceCount--;
+		}
 		__registryLock.release();
 		#end
 		if (__usesHostLoop) {
@@ -265,6 +283,7 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		#if cpp
+		__ownerThread = Thread.current();
 		__threadLocalStorage.value = this;
 		#end
 		CBTimer.bindCurrentThread(__timer);
@@ -313,11 +332,15 @@ final class CrossByte extends EventDispatcher {
 	// Socket polling is now shared across cpp and non-cpp targets.
 	// `SocketRegistry` already exists on non-cpp, and both TCP/UDP transports rely on it.
 	@:noCompletion private inline function registerSocket(socket:Socket):Void {
-		__socketRegistry.register(socket);
+		if (__socketRegistry != null) {
+			__socketRegistry.register(socket);
+		}
 	}
 
 	@:noCompletion private inline function deregisterSocket(socket:Socket):Void {
-		__socketRegistry.deregister(socket);
+		if (__socketRegistry != null) {
+			__socketRegistry.deregister(socket);
+		}
 	}
 
 	@:noCompletion private inline function queueWritable(socket:Socket):Void {
@@ -361,6 +384,7 @@ final class CrossByte extends EventDispatcher {
 			}
 			__instances.set(currentThread, this);
 			__registryLock.release();
+			__ownerThread = currentThread;
 			__threadLocalStorage.value = this;
 			#else
 			if (__isPrimordial) {
@@ -419,11 +443,11 @@ final class CrossByte extends EventDispatcher {
 		#end
 
 		#if cpp
+		__ownerThread = Thread.current();
 		__threadLocalStorage.value = this;
 		if (!__isPrimordial) {
-			var t:Thread = Thread.current();
 			__registryLock.acquire();
-			__instances.set(t, this);
+			__instances.set(__ownerThread, this);
 			__registryLock.release();
 		}
 		#end

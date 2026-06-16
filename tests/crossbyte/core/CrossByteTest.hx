@@ -87,6 +87,24 @@ class CrossByteTest extends utest.Test {
 		#end
 	}
 
+	public function testTpsIsClampedToAtLeastOne():Void {
+		#if (cpp || neko || hl)
+		var runtime = new CrossByte(false, DEFAULT, true);
+
+		// tps == 0 would make __tickInterval +Infinity and hang the wait loop.
+		runtime.tps = 0;
+		Assert.isTrue(runtime.tps == 1);
+		Assert.isTrue(Math.isFinite(runtime.__tickInterval));
+
+		runtime.tps = 60;
+		Assert.isTrue(runtime.tps == 60);
+
+		runtime.exit();
+		#else
+		Assert.pass();
+		#end
+	}
+
 	@:noCompletion private static function throwsIllegalOperationError(fn:Void->Void):Bool {
 		try {
 			fn();
