@@ -21,6 +21,24 @@ import haxe.io.BytesBuffer;
  */
 class Http {
 	public static var MAX_REDIRECTS:Int = 10;
+
+	/**
+	 * Maximum number of bytes the chunked response decoder will accumulate before
+	 * aborting. Guards against an unbounded `Transfer-Encoding: chunked` response
+	 * exhausting memory. Defaults to 64 MB; set to `<= 0` to disable the cap.
+	 */
+	public static var MAX_CHUNKED_BODY_SIZE:Int = 64 * 1024 * 1024;
+
+	/**
+	 * Returns `true` when adding `incoming` bytes to an already-accumulated
+	 * `accumulated` total would exceed `limit`. A `limit <= 0` disables the cap.
+	 */
+	public static function exceedsChunkedBodyLimit(accumulated:Int, incoming:Int, limit:Int):Bool {
+		if (limit <= 0) {
+			return false;
+		}
+		return (accumulated + incoming) > limit;
+	}
 	private static inline final CRLF:String = "\r\n";
 	private static inline final CRLFCRLF:String = "\r\n\r\n";
 	private static inline final HEADER_LOCATION = "location";
@@ -142,6 +160,58 @@ class Http {
 
 	public static function validateHttpVersion(version:HttpVersion):Bool {
 		return SUPPORTED_VERSIONS.indexOf(version) > -1;
+	}
+
+	/**
+	 * Strips CR, LF and control characters from a header value so it cannot be
+	 * used to inject additional headers or split the response (CRLF injection).
+	 */
+	public static function sanitizeHeaderValue(v:String):String {
+		if (v == null) {
+			return "";
+		}
+
+		var out:StringBuf = new StringBuf();
+		for (i in 0...v.length) {
+			var c:Int = v.charCodeAt(i);
+			// Drop CR, LF and all C0 control characters except horizontal tab.
+			if (c == 13 || c == 10 || (c < 32 && c != 9) || c == 127) {
+				continue;
+			}
+			out.addChar(c);
+		}
+		return out.toString();
+	}
+
+	/**
+	 * Sanitizes a header field name: strips CR/LF/control characters, whitespace
+	 * and any embedded colon so a value cannot smuggle a new header name. Returns
+	 * an empty string when nothing valid remains (caller should then skip it).
+	 */
+	public static function sanitizeHeaderName(n:String):String {
+		if (n == null) {
+			return "";
+		}
+
+		var out:StringBuf = new StringBuf();
+		for (i in 0...n.length) {
+			var c:Int = n.charCodeAt(i);
+			// Reject control chars (incl. CR/LF/tab), space, DEL and the colon separator.
+			if (c < 32 || c == 127 || c == 32 || c == 58) {
+				continue;
+			}
+			out.addChar(c);
+		}
+		return out.toString();
+	}
+
+	/**
+	 * Detects request smuggling vectors that must be rejected with `400` per
+	 * RFC 7230 §3.3.3: a request that carries both `Transfer-Encoding` and
+	 * `Content-Length` is ambiguous and must not be processed.
+	 */
+	public static function hasConflictingFraming(hasTransferEncoding:Bool, hasContentLength:Bool):Bool {
+		return hasTransferEncoding && hasContentLength;
 	}
 
 	private static function __unsupportedVersionMessage(version:HTTPVersion):String {
@@ -296,6 +366,10 @@ class Http {
 								trailer = StringTools.trim(trailer);
 							} while (trailer.length > 0);
 							break;
+						}
+
+						if (exceedsChunkedBodyLimit(buffer.length, chunkSize, MAX_CHUNKED_BODY_SIZE)) {
+							throw "Chunked response exceeded maximum size of " + MAX_CHUNKED_BODY_SIZE + " bytes";
 						}
 
 						var chunk:Bytes = __socket.input.read(chunkSize);

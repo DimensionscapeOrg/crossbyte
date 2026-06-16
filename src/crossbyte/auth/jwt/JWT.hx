@@ -3,7 +3,6 @@ package crossbyte.auth.jwt;
 import haxe.io.Bytes;
 import haxe.crypto.Base64;
 import haxe.Json;
-import haxe.Timer;
 import crossbyte.auth.jwt._internal.sign.IJWTSigner;
 import crossbyte.auth.jwt._internal.sign.HS256Signer;
 
@@ -103,7 +102,7 @@ class JWT {
 			return null;
 		}
 
-		var nowSec:Int = Std.int(Timer.stamp());
+		var nowSec:Int = Std.int(Date.now().getTime() / 1000);
 		if (payload.expiresAt == null || nowSec > payload.expiresAt + leeway) {
 			return null;
 		}
@@ -195,15 +194,22 @@ class JWT {
 		}
 	}
 
-	/** Compares two strings in constant-time with respect to matching prefix length. */
-	public static inline function secureCompare(a:String, b:String):Bool {
-		if (a.length != b.length) {
-			return false;
+	/**
+	 * Compares two strings in constant-time. Does not short-circuit on a length
+	 * mismatch: it iterates a fixed number of times over the longer string,
+	 * accumulating per-byte differences, and folds in the length delta so that the
+	 * comparison's running time does not leak which (if either) operand matched.
+	 */
+	public static function secureCompare(a:String, b:String):Bool {
+		var aLen:Int = a.length;
+		var bLen:Int = b.length;
+		var n:Int = (aLen > bLen) ? aLen : bLen;
+		var diff:Int = aLen ^ bLen;
+		for (i in 0...n) {
+			var ca:Int = (i < aLen) ? a.charCodeAt(i) : 0;
+			var cb:Int = (i < bLen) ? b.charCodeAt(i) : 0;
+			diff |= ca ^ cb;
 		}
-		var diff:Int = 0;
-		for (i in 0...a.length) {
-			diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-		}
-		return diff == 0;
+		return (aLen == bLen) && (diff == 0);
 	}
 }

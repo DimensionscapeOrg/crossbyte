@@ -210,7 +210,12 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		var async = __isAsync;
 		if (async) {
 			__fileStreamMutex.acquire();
-			if (__fileStreamWorker != null && !__fileStreamWorker.canceled) {
+			// Only defer the close to the worker if it is still actively
+			// running. If the worker has already finished (completed or
+			// canceled) there will be no further worker event to honor
+			// __pendingClose, so we must close the handle here to avoid
+			// leaking it.
+			if (__fileStreamWorker != null && __fileStreamWorker.running && !__fileStreamWorker.canceled) {
 				__pendingClose = true;
 				__fileStreamMutex.release();
 				return;

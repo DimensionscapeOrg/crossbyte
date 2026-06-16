@@ -222,14 +222,16 @@ class EventDispatcher implements IEventDispatcher {
 			return true;
 		}
 
+		// Snapshot the listener set at dispatch start. Listeners added during
+		// dispatch are intentionally not invoked until the next dispatch, and a
+		// listener removed during dispatch is still invoked for this dispatch
+		// (it was part of the captured set). `removeEventListener` splices the
+		// live list without mutating the entry objects, so the snapshot's
+		// captured `listener` references stay valid here.
 		var snapshot:Array<ListenerEntry> = list.copy();
 		for (i in 0...snapshot.length) {
 			var entry = snapshot[i];
 			if (entry == null || entry.listener == null) {
-				__compactListeners(event.type, list);
-				continue;
-			}
-			if (!__isListenerPresent(list, entry)) {
 				continue;
 			}
 			entry.listener(event);
@@ -249,16 +251,6 @@ class EventDispatcher implements IEventDispatcher {
 		if (list.length == 0 && __eventMap != null) {
 			__eventMap.remove(type);
 		}
-	}
-
-	private function __isListenerPresent(list:Array<ListenerEntry>, target:ListenerEntry):Bool {
-		for (i in 0...list.length) {
-			var current = list[i];
-			if (current != null && current.order == target.order && current.listener == target.listener) {
-				return true;
-			}
-		}
-		return false;
 	}
 }
 
