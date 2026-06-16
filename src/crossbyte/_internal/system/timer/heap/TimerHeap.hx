@@ -193,9 +193,15 @@ class TimerHeap implements ITimerScheduler {
 							node.callback(new TimerHandle(node.id, gen));
 							i++;
 							fired++;
+							// Stop if the callback cleared this timer via its handle.
+							if (gens[node.id] != gen || nodes[node.id] != node) {
+								break;
+							}
 						}
 
-						if (node.enabled) {
+						if (gens[node.id] != gen || nodes[node.id] != node) {
+							// freed by the callback; nothing to do
+						} else if (node.enabled) {
 							node.time += fires * node.interval;
 							queue.enqueue(node);
 						} else {
@@ -204,13 +210,21 @@ class TimerHeap implements ITimerScheduler {
 					} else {
 						node.callback(new TimerHandle(node.id, gen));
 						fired++;
-						freeSlot(node.id);
+						if (gens[node.id] == gen && nodes[node.id] == node) {
+							freeSlot(node.id);
+						}
 					}
 					#else
 					node.callback(new TimerHandle(node.id, gen));
 					fired++;
 
-					if (node.enabled && node.interval > 0) {
+					// The callback may have cleared/rescheduled this timer via its
+					// own handle. If clear() freed the slot during the callback the
+					// generation no longer matches (or the slot was reused), so we
+					// must not re-enqueue or free it again.
+					if (gens[node.id] != gen || nodes[node.id] != node) {
+						// already freed/replaced by the callback; nothing to do
+					} else if (node.enabled && node.interval > 0) {
 						node.time += node.interval;
 						queue.enqueue(node);
 					} else {
@@ -228,7 +242,7 @@ class TimerHeap implements ITimerScheduler {
 	private inline function createTimer(absoluteTime:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {
 		var id:Int;
 		if (free.length > 0) {
-			id = free.shift();
+			id = free.pop();
 		} else {
 			id = nodes.length;
 			nodes.push(null);

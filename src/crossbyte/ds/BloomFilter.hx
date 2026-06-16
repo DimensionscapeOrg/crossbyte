@@ -1,18 +1,22 @@
 package crossbyte.ds;
 
-import haxe.crypto.Md5;
+import crossbyte.utils.Hash;
 
 /**
- * ...
- * @author Christopher Speciale
- */
-/**
  * A simple Bloom Filter implementation.
+ *
+ * Membership is probabilistic: `contains` may return a false positive but never
+ * a false negative. The `k` bit positions per item are derived from two
+ * independent base hashes via the Kirsch-Mitzenmacher scheme (`h1 + i*h2`),
+ * which spreads the bits across the whole array from just two hash computations
+ * per call.
+ *
+ * @author Christopher Speciale
  */
 class BloomFilter {
 	private var size:Int;
+	private var numHashFunctions:Int;
 	private var bitArray:Array<Bool>;
-	private var hashFunctions:Array<(String) -> Int>;
 
 	/**
 	 * Constructs a new BloomFilter.
@@ -29,14 +33,11 @@ class BloomFilter {
 		}
 
 		this.size = size;
+		this.numHashFunctions = numHashFunctions;
 		this.bitArray = [];
 		this.bitArray.resize(size);
 		for (i in 0...size)
 			bitArray[i] = false;
-		this.hashFunctions = [];
-		for (i in 0...numHashFunctions) {
-			hashFunctions.push(createHashFunction(i));
-		}
 	}
 
 	/**
@@ -45,9 +46,10 @@ class BloomFilter {
 	 * @param item The item to be added.
 	 */
 	public function add(item:String):Void {
-		for (hashFunction in hashFunctions) {
-			var index = hashFunction(item) % size;
-			bitArray[index] = true;
+		var h1:Int = Hash.fnv1a32String(item) & 0x7fffffff;
+		var h2:Int = (Hash.fnv1a32String(item + "bloom") | 1) & 0x7fffffff;
+		for (i in 0...numHashFunctions) {
+			bitArray[__indexAt(h1, h2, i)] = true;
 		}
 	}
 
@@ -58,17 +60,22 @@ class BloomFilter {
 	 * @return True if the item is possibly in the set, false if definitely not.
 	 */
 	public function contains(item:String):Bool {
-		for (hashFunction in hashFunctions) {
-			var index = hashFunction(item) % size;
-			if (!bitArray[index])
+		var h1:Int = Hash.fnv1a32String(item) & 0x7fffffff;
+		var h2:Int = (Hash.fnv1a32String(item + "bloom") | 1) & 0x7fffffff;
+		for (i in 0...numHashFunctions) {
+			if (!bitArray[__indexAt(h1, h2, i)])
 				return false;
 		}
 		return true;
 	}
 
-	private function createHashFunction(seed:Int):(String) -> Int {
-		return function(item:String):Int {
-			return Std.int(Math.abs(Md5.encode(item + seed).charCodeAt(0)));
+	// Derives the i-th bit position from two base hashes. `i * h2` may overflow
+	// Int and wrap negative, so the result is normalized back into [0, size).
+	private inline function __indexAt(h1:Int, h2:Int, i:Int):Int {
+		var index:Int = (h1 + i * h2) % size;
+		if (index < 0) {
+			index += size;
 		}
+		return index;
 	}
 }

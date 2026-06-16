@@ -90,8 +90,10 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 	 */
 	@:to public inline function toInt():Int {
 		switch (Type.typeof(this)) {
-			case TInt, TFloat:
+			case TInt:
 				return this;
+			case TFloat:
+				return Std.int(this);
 			case TBool:
 				return this ? 1 : 0;
 			case TClass(String):

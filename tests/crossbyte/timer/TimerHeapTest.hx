@@ -31,6 +31,33 @@ class TimerHeapTest extends utest.Test {
 		Assert.isFalse(fired);
 	}
 
+	public function testCallbackClearingSelfDoesNotCorruptHeap():Void {
+		var heap = new TimerHeap();
+		var aFired = 0;
+
+		// An interval timer that cancels itself while firing must not be
+		// re-enqueued (or double-freed) after the callback returns.
+		heap.setInterval(1.0, 1.0, h -> {
+			aFired++;
+			heap.clear(h);
+		});
+
+		Assert.equals(1, heap.advanceTime(1.0));
+		Assert.equals(1, aFired);
+		Assert.isTrue(heap.isEmpty);
+
+		// The zombie must not resurface on later ticks.
+		Assert.equals(0, heap.advanceTime(5.0));
+		Assert.equals(1, aFired);
+
+		// A fresh timer after the self-clear must still work (no slot aliasing).
+		var bFired = 0;
+		heap.setTimeout(1.0, _ -> bFired++);
+		Assert.equals(1, heap.advanceTime(1.0));
+		Assert.equals(1, bFired);
+		Assert.isTrue(heap.isEmpty);
+	}
+
 	public function testIntervalReschedules():Void {
 		var heap = new TimerHeap();
 		var fired = 0;
