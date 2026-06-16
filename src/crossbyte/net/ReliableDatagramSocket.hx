@@ -2,6 +2,7 @@ package crossbyte.net;
 
 import crossbyte.Seq32;
 import crossbyte.Timer as CBTimer;
+import crossbyte.crypto.SecureRandom;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.IllegalOperationError;
@@ -647,11 +648,42 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__dispatchPayload(payload);
 			__inSequence++;
 			__drainBufferedPackets();
-		} else if (__inSequence < sequence && !__inFrameCache.exists(sequence)) {
+		} else if (__shouldBufferPacket(sequence)) {
 			__inFrameCache.set(sequence, payload);
 		}
 
 		__sendAck();
+	}
+
+	@:noCompletion private function __shouldBufferPacket(sequence:Seq32):Bool {
+		// Only buffer sequences that are strictly ahead of the next expected one
+		// and that fall inside the delivery window. RFC-1982 wrapping comparison
+		// is provided by the Seq32 ordering operators, so this stays correct at
+		// the 32-bit wrap boundary.
+		if (!(__inSequence < sequence) || sequence > __windowCeiling()) {
+			return false;
+		}
+
+		if (__inFrameCache.exists(sequence)) {
+			return false;
+		}
+
+		// Cap the out-of-order cache so a flood of high sequences cannot grow it
+		// without bound. The window itself bounds the live range; this guards the
+		// number of distinct buffered frames within that range.
+		return __inFrameCacheCount() < DELIVERY_WINDOW;
+	}
+
+	@:noCompletion private inline function __windowCeiling():Seq32 {
+		return __inSequence + DELIVERY_WINDOW;
+	}
+
+	@:noCompletion private function __inFrameCacheCount():Int {
+		var count:Int = 0;
+		for (sequence in __inFrameCache.keys()) {
+			count++;
+		}
+		return count;
 	}
 
 	@:noCompletion private function __beginHandshake():Void {
@@ -878,11 +910,29 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	@:noCompletion private inline function __resetSequences():Void {
-		var seed:Seq32 = Std.random(Seq32.MAX_INT_32);
+	@:noCompletion private function __resetSequences():Void {
+		var seed:Seq32 = __randomSequenceSeed();
 		__outSequence = seed;
 		__windowBase = seed;
 		__inSequence = 0;
+	}
+
+	@:noCompletion private function __randomSequenceSeed():Seq32 {
+		try {
+			var bytes:ByteArray = SecureRandom.getSecureRandomBytes(4);
+			bytes.position = 0;
+			var b0:Int = bytes.readUnsignedByte();
+			var b1:Int = bytes.readUnsignedByte();
+			var b2:Int = bytes.readUnsignedByte();
+			var b3:Int = bytes.readUnsignedByte();
+			return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+		} catch (_:Dynamic) {
+			// Targets without a CSPRNG (e.g. eval) fall back to a full 32-bit
+			// seed assembled from two non-cryptographic draws.
+			var hi:Int = Std.random(0x10000);
+			var lo:Int = Std.random(0x10000);
+			return (hi << 16) | lo;
+		}
 	}
 
 	@:noCompletion private function __retransmitPacket(sequence:Seq32):Void {

@@ -2,6 +2,7 @@ package crossbyte.db.mongodb;
 
 import crossbyte.FieldStruct;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
@@ -118,29 +119,15 @@ class MongoStatement extends EventDispatcher {
 	}
 
 	private function __resolvePayload(source:String):String {
-		var payload:String = source == null ? "" : source;
-
-		for (parameter in FieldStruct.iterator(parameters)) {
-			payload = StringTools.replace(payload, ":" + parameter.key, __quoteValue(parameter.value));
-		}
-
-		return payload;
+		var params:FieldStruct<String> = parameters;
+		return ParamBinder.substitute(source, function(name:String):Null<Dynamic> {
+			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
+		}, __quoteValue);
 	}
 
 	private function __quoteValue(value:Dynamic):String {
-		if (value == null) {
-			return "null";
-		}
-		if (Std.isOfType(value, Bool)) {
-			return value ? "true" : "false";
-		}
-		if (Std.isOfType(value, Int) || Std.isOfType(value, Float)) {
-			return Std.string(value);
-		}
-		var s:String = Std.string(value);
-		s = s.split("\\").join("\\\\");
-		s = s.split("\"").join("\\\"");
-		return "\"" + s + "\"";
+		// JSON-encode so a value containing `"` or `}` cannot alter command structure.
+		return haxe.Json.stringify(value);
 	}
 
 	private function __queueResult():Void {

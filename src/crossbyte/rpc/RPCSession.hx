@@ -57,7 +57,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __connection:NetConnection;
 	@:noCompletion private var __handler:RPCHandler;
 	@:noCompletion private var __commands:C;
-	@:noCompletion private var __heartbeatTimerHandle:Int;
+	@:noCompletion private var __heartbeatTimerHandle:Int = 0;
 	@:noCompletion private var __heartbeatInterval:Int = DEFAULT_HEARTBEAT_INTERVAL;
 	@:noCompletion private var __heartbeatTimeout:Int = DEFAULT_HEARTBEAT_TIMEOUT;
 	@:noCompletion private var __heartbeatPhase:Int;
@@ -543,12 +543,47 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			if (__runtimeRequestIdSeed <= 0) {
 				__runtimeRequestIdSeed = 1;
 			}
-			if (__runtimeRequestIdSeed == __runtimePendingResponseId) {
-				continue;
-			}
-		} while (__runtimePendingResponses != null && __runtimePendingResponses.exists(__runtimeRequestIdSeed));
+		} while ((__runtimeRequestIdSeed == __runtimePendingResponseId)
+			|| (__runtimePendingResponses != null && __runtimePendingResponses.exists(__runtimeRequestIdSeed)));
 
 		return __runtimeRequestIdSeed;
+	}
+
+	/**
+	 * Rejects and clears every outstanding runtime `RPCResponse` with the given reason.
+	 *
+	 * Drains pending runtime request/response calls so callers are not left waiting on
+	 * a reply that can no longer arrive. Must only be called on the owning thread.
+	 */
+	@:noCompletion private function __failAllRuntimePending(message:String):Void {
+		final pending = __runtimePendingResponse;
+		if (pending != null) {
+			__runtimePendingResponse = null;
+			__runtimePendingResponseId = 0;
+			pending.__reject(message);
+		}
+		final map = __runtimePendingResponses;
+		if (map != null) {
+			__runtimePendingResponses = null;
+			for (response in map) {
+				response.__reject(message);
+			}
+		}
+	}
+
+	/**
+	 * Rejects and clears every outstanding response on both the compiled command lane
+	 * and the runtime lane.
+	 *
+	 * This is invoked when the session is stopped or the underlying connection closes,
+	 * ensuring no `RPCResponse` is left perpetually uncompleted. Must only be called on
+	 * the owning thread.
+	 */
+	@:noCompletion private function __failAllPending(message:String):Void {
+		if (__commands != null) {
+			__commands.__failAllPending(message);
+		}
+		__failAllRuntimePending(message);
 	}
 
 	/**
@@ -573,10 +608,17 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public inline function stop():Void {
 		__active = false;
 		__stopHeartbeat();
+		__failAllPending("RPC session stopped");
 	}
 
 	@:noCompletion private inline function __stopHeartbeat():Void {
-		Timer.clear(__heartbeatTimerHandle);
+		// Guard against clearing an unstarted/already-cleared handle (0 is the
+		// timer system's no-op sentinel). This keeps stop() safe and idempotent
+		// even when no heartbeat was ever scheduled.
+		if (__heartbeatTimerHandle != 0) {
+			Timer.clear(__heartbeatTimerHandle);
+			__heartbeatTimerHandle = 0;
+		}
 		__hasHeartbeat = false;
 	}
 
@@ -637,11 +679,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __disconnect(reason:Reason):Void {
+		__failAllPending("RPC connection closed: " + Std.string(reason));
 		this.connection.close();
 		this.connection.onClose(reason);
 	}
 
 	@:noCompletion private inline function __terminateProtocol(reason:Reason):Void {
+		__failAllPending("RPC connection terminated: " + Std.string(reason));
 		try {
 			__connection.onError(reason);
 		} catch (_:Dynamic) {}

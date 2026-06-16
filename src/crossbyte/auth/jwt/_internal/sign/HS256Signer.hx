@@ -71,6 +71,27 @@ class HS256Signer implements IJWTSigner {
 		}
 	}
 
+	/**
+	 * Minimum secret length, in bytes, recommended for HS256 signing keys.
+	 *
+	 * RFC 7518 requires an HMAC-SHA-256 key to be at least the size of the hash
+	 * output (256 bits / 32 bytes). Shorter secrets are accepted for backward
+	 * compatibility but are not considered cryptographically strong.
+	 */
+	public static inline final RECOMMENDED_SECRET_BYTES:Int = 32;
+
+	/**
+	 * Reports whether `secret` meets the recommended strength for an HS256 key.
+	 *
+	 * This is an advisory check only and does not affect signing or verification:
+	 * secrets shorter than `RECOMMENDED_SECRET_BYTES` are still usable. Callers may
+	 * use it to warn operators about weak configuration. Returns `false` for a
+	 * `null` secret.
+	 */
+	public static inline function isSecretStrong(secret:String):Bool {
+		return secret != null && Bytes.ofString(secret).length >= RECOMMENDED_SECRET_BYTES;
+	}
+
 	public function sign(input:String, ?keyId:String):String {
 		keyId = keyId != null ? keyId : (__signKeyId != null ? __signKeyId : (__hasSoleSecret ? __singleKeyId() : null));
 

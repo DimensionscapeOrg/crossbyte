@@ -7,6 +7,7 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ParamBinder;
 import sys.db.Connection;
 import sys.db.ResultSet;
 #if cpp
@@ -69,18 +70,27 @@ class SQLiteStatement extends EventDispatcher {
 		__resultQueue = new Array();
 		#end
 
-		for (parameter in FieldStruct.iterator(parameters)) {
-			var sb:StringBuf = new StringBuf();
-			sb.add(parameter.key);
-			__connection.addValue(sb, parameter.value);
-		}
+		var sql:String = __applyParameters(text);
 		if (__async) {
-			__sqlConnection.__addToQueue(__executeAsync(text, this, prefetch));
+			__sqlConnection.__addToQueue(__executeAsync(sql, this, prefetch));
 		} else {
 			__prefetch = prefetch;
-			__resultSet = __connection.request(text);
+			__resultSet = __connection.request(sql);
 			__queueResult();
 		}
+	}
+
+	@:noCompletion private function __applyParameters(query:String):String {
+		var params:FieldStruct<String> = parameters;
+		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
+			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
+		}, __escapeValue);
+	}
+
+	@:noCompletion private function __escapeValue(value:Dynamic):String {
+		var sb:StringBuf = new StringBuf();
+		__connection.addValue(sb, value);
+		return sb.toString();
 	}
 
 	private function __executeAsync(sql:String, statement:SQLiteStatement, prefetch:Int):Function {

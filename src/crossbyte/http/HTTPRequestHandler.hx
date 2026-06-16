@@ -207,6 +207,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
+		if (__config.rateLimiter != null && __config.rateLimiter.isRateLimited(__origin.remoteAddress)) {
+			__sendErrorResponse(429, "Too Many Requests");
+			return;
+		}
+
 		var requestLine:Null<String> = __readLine(__incomingBuffer);
 		if (requestLine == null) {
 			return;
@@ -567,7 +572,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (headers != null) {
 			for (h in headers) {
-				response += h.name + ": " + h.value + "\r\n";
+				response = __appendHeader(response, h.name, h.value);
 			}
 		}
 
@@ -610,7 +615,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		for (header in __config.customHeaders) {
-			response += header.name + ": " + __sanitizeHeaderValue(header.value) + "\r\n";
+			response = __appendHeader(response, header.name, header.value);
 		}
 		var headerLen:Int = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
 		response += "Content-Length: " + headerLen + "\r\n";
@@ -664,7 +669,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (headers != null) {
 			for (h in headers) {
-				response += h.name + ": " + h.value + "\r\n";
+				response = __appendHeader(response, h.name, h.value);
 			}
 		}
 
@@ -706,7 +711,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		for (header in __config.customHeaders) {
-			response += header.name + ": " + __sanitizeHeaderValue(header.value) + "\r\n";
+			response = __appendHeader(response, header.name, header.value);
 		}
 
 		response += "Content-Length: " + (responseData != null ? responseData.length : 0) + "\r\n";
@@ -1203,6 +1208,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case 413: "Payload Too Large";
 			case 416: "Range Not Satisfiable";
 			case 417: "Expectation Failed";
+			case 429: "Too Many Requests";
 			case 500: "Internal Server Error";
 			case 502: "Bad Gateway";
 			case 501: "Not Implemented";
@@ -1217,6 +1223,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__requestBody.endian = __incomingBuffer.endian;
 
 		var transferEncoding:String = __headers.exists("transfer-encoding") ? __headers.get("transfer-encoding") : null;
+
+		// RFC 7230 3.3.3: a message with both Transfer-Encoding and Content-Length is
+		// ambiguous and a vector for request smuggling. Reject it outright.
+		if (Http.hasConflictingFraming(transferEncoding != null, __headers.exists("content-length"))) {
+			__sendErrorResponse(400, "Bad Request");
+			return true;
+		}
+
 		var chunked:Bool = false;
 		if (transferEncoding != null) {
 			var encodings = transferEncoding.toLowerCase().split(",");
@@ -1499,7 +1513,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __sanitizeHeaderValue(v:String):String {
-		return v == null ? "" : v.split("\r").join("").split("\n").join("");
+		return Http.sanitizeHeaderValue(v);
+	}
+
+	@:noCompletion private inline function __sanitizeHeaderName(n:String):String {
+		return Http.sanitizeHeaderName(n);
+	}
+
+	@:noCompletion private inline function __appendHeader(buf:String, name:String, value:String):String {
+		var safeName:String = __sanitizeHeaderName(name);
+		if (safeName.length == 0) {
+			return buf;
+		}
+		return buf + safeName + ": " + __sanitizeHeaderValue(value) + "\r\n";
 	}
 }
 

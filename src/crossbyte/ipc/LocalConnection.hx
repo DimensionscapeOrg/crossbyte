@@ -111,6 +111,10 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private var __dispatchQueue:Deque<LocalConnectionDispatch>;
 	@:noCompletion private var __dispatchLock:Mutex;
 	@:noCompletion private var __pendingLock:Mutex;
+	// Serializes native handle access (__activePipe/__listeningPipe) so a write
+	// in send() cannot race the reader thread closing the same handle in
+	// close()/__disconnectActive().
+	@:noCompletion private var __handleLock:Mutex;
 	#end
 	@:noCompletion private var __dispatchListener:TickEvent->Void;
 	@:noCompletion private var __dispatchAttached:Bool = false;
@@ -124,6 +128,7 @@ class LocalConnection implements INetConnection {
 		__dispatchQueue = new Deque();
 		__dispatchLock = new Mutex();
 		__pendingLock = new Mutex();
+		__handleLock = new Mutex();
 		#end
 		__dispatchListener = __flushDispatchQueue;
 	}
@@ -214,6 +219,9 @@ class LocalConnection implements INetConnection {
 	 * @param data Payload bytes to transmit.
 	 */
 	public function send(data:ByteArray):Void {
+		// Preserve the original guard ordering: closed first, then payload size.
+		// The authoritative closed-check + write happens again under __handleLock
+		// below so a concurrent close() cannot tear the handle down mid-write.
 		if (!__connected || __activePipe == null || !__isOpen(__activePipe)) {
 			__dispatchLifecycle(Error(Reason.Closed));
 			return;
@@ -230,18 +238,41 @@ class LocalConnection implements INetConnection {
 		frame.position = 0;
 		var frameBytes:Bytes = cast frame;
 
-		if (!__write(__activePipe, frameBytes.getData(), frameBytes.length)) {
-			__dispatchLifecycle(Error(Reason.Error("Local transport write failed.")));
+		// Re-validate and write the handle atomically with respect to the reader
+		// thread's close/disconnect so the handle cannot be closed (and the OS
+		// handle reused) between the check and the write. Lifecycle errors are
+		// dispatched after releasing the lock to avoid re-entering callbacks while
+		// holding it.
+		#if (cpp || neko || hl)
+		__handleLock.acquire();
+		#end
+		var failure:LocalConnectionDispatch = null;
+		var wrote = false;
+		var pipe = __activePipe;
+		if (!__connected || pipe == null || !__isOpen(pipe)) {
+			failure = Error(Reason.Closed);
+		} else if (!__write(pipe, frameBytes.getData(), frameBytes.length)) {
+			failure = Error(Reason.Error("Local transport write failed."));
+		} else {
+			wrote = true;
+		}
+		#if (cpp || neko || hl)
+		__handleLock.release();
+		#end
+
+		if (failure != null) {
+			__dispatchLifecycle(failure);
 			return;
 		}
 
-		outTimestamp = __timestamp();
+		if (wrote) {
+			outTimestamp = __timestamp();
+		}
 	}
 
 	public function close():Void {
 		var wasConnected = __connected;
 		__running = false;
-		__connected = false;
 		__dispatchFailed = false;
 		__mode = NONE;
 		__connectionName = null;
@@ -249,6 +280,13 @@ class LocalConnection implements INetConnection {
 		__clearPendingPayloads();
 		__detachDispatchListener();
 
+		// Clear connected state and tear down the handles under __handleLock so a
+		// concurrent send() observes the closed connection and cannot write to a
+		// handle that is being closed.
+		#if (cpp || neko || hl)
+		__handleLock.acquire();
+		#end
+		__connected = false;
 		if (__activePipe != null) {
 			__close(__activePipe);
 			__activePipe = null;
@@ -257,6 +295,9 @@ class LocalConnection implements INetConnection {
 			__close(__listeningPipe);
 			__listeningPipe = null;
 		}
+		#if (cpp || neko || hl)
+		__handleLock.release();
+		#end
 
 		if (wasConnected) {
 			try {
@@ -270,9 +311,18 @@ class LocalConnection implements INetConnection {
 
 		while (__running) {
 			if (__mode == SERVER && __activePipe == null && __listeningPipe != null && __accept(__listeningPipe)) {
+				// Publish the accepted handle + connected state under __handleLock
+				// so a concurrent send() observes a consistent (handle, connected)
+				// pair.
+				#if (cpp || neko || hl)
+				__handleLock.acquire();
+				#end
 				__activePipe = __listeningPipe;
 				__listeningPipe = null;
 				__connected = true;
+				#if (cpp || neko || hl)
+				__handleLock.release();
+				#end
 				__dispatchLifecycle(Ready);
 			}
 
@@ -311,6 +361,11 @@ class LocalConnection implements INetConnection {
 			Sys.sleep(0.001);
 		}
 
+		// Final teardown under __handleLock so a concurrent send() cannot write to
+		// a handle being closed as the reader loop exits.
+		#if (cpp || neko || hl)
+		__handleLock.acquire();
+		#end
 		if (__activePipe != null) {
 			__close(__activePipe);
 			__activePipe = null;
@@ -319,6 +374,9 @@ class LocalConnection implements INetConnection {
 			__close(__listeningPipe);
 			__listeningPipe = null;
 		}
+		#if (cpp || neko || hl)
+		__handleLock.release();
+		#end
 	}
 
 	@:noCompletion private function __appendReceivedBytes(received:Bytes):Void {
@@ -372,13 +430,21 @@ class LocalConnection implements INetConnection {
 	}
 
 	@:noCompletion private function __disconnectActive(reason:Reason):Void {
+		// Tear down the active handle and clear connected state under __handleLock
+		// so a concurrent send() cannot write to the handle being closed here.
+		#if (cpp || neko || hl)
+		__handleLock.acquire();
+		#end
+		var wasConnected = __connected;
+		__connected = false;
 		if (__activePipe != null) {
 			__close(__activePipe);
 			__activePipe = null;
 		}
+		#if (cpp || neko || hl)
+		__handleLock.release();
+		#end
 
-		var wasConnected = __connected;
-		__connected = false;
 		__receiveBuffer.clear();
 
 		switch (reason) {
@@ -462,12 +528,17 @@ class LocalConnection implements INetConnection {
 
 		__dispatchFailed = true;
 		__running = false;
-		__connected = false;
 		__mode = NONE;
 		__receiveBuffer.clear();
 		__clearPendingPayloads();
 		__detachDispatchListener();
 
+		// Clear connected state and tear down handles under __handleLock so a
+		// concurrent send() cannot write to a handle being closed here.
+		#if (cpp || neko || hl)
+		__handleLock.acquire();
+		#end
+		__connected = false;
 		if (__activePipe != null) {
 			__close(__activePipe);
 			__activePipe = null;
@@ -476,6 +547,9 @@ class LocalConnection implements INetConnection {
 			__close(__listeningPipe);
 			__listeningPipe = null;
 		}
+		#if (cpp || neko || hl)
+		__handleLock.release();
+		#end
 
 		var reason = Reason.Error("Local transport callback failed: " + Std.string(error));
 		try {

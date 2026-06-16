@@ -65,10 +65,12 @@ class TaskPool {
 		}
 
 		var task = new Task<T>();
+		#if (cpp || neko || hl)
 		__retainTask(cast task);
 		task.__registerReleaseHook(() -> {
 			__releaseTask(cast task);
 		});
+		#end
 		var queuedTask:QueuedTask = {
 			task: cast task,
 			job: () -> job()

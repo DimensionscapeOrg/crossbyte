@@ -5,50 +5,50 @@ import utest.Assert;
 class MathTest extends utest.Test {
 	public function testPointMathHelpers():Void {
 		var origin = new Point();
-		Assert.equals(0, origin.x);
-		Assert.equals(0, origin.y);
-		Assert.equals(0, origin.length);
+		Assert.floatEquals(0, origin.x);
+		Assert.floatEquals(0, origin.y);
+		Assert.floatEquals(0, origin.length);
 
 		var a = new Point(3, 4);
-		Assert.equals(5, a.length);
-		Assert.equals(5, Point.distance(a, origin));
-		Assert.equals(1, Point.distance(a, new Point(4, 4)));
+		Assert.floatEquals(5, a.length);
+		Assert.floatEquals(5, Point.distance(a, origin));
+		Assert.floatEquals(1, Point.distance(a, new Point(4, 4)));
 
 		var b = a.clone();
 		b.normalize(10);
-		Assert.equals(3, a.x);
-		Assert.equals(4, a.y);
-		Assert.equals(6, b.x);
-		Assert.equals(8, b.y);
+		Assert.floatEquals(3, a.x);
+		Assert.floatEquals(4, a.y);
+		Assert.floatEquals(6, b.x);
+		Assert.floatEquals(8, b.y);
 
 		var c = a.add(new Point(2, 1));
-		Assert.equals(5, c.x);
-		Assert.equals(5, c.y);
+		Assert.floatEquals(5, c.x);
+		Assert.floatEquals(5, c.y);
 
 		var d = a.subtract(new Point(1, 2));
-		Assert.equals(2, d.x);
-		Assert.equals(2, d.y);
+		Assert.floatEquals(2, d.x);
+		Assert.floatEquals(2, d.y);
 	}
 
 	public function testPointStaticAndMutations():Void {
 		var a = new Point(1, 2);
 		var b = Point.polar(10, Math.PI / 2);
 
-		Assert.equals(0, Math.round(b.x));
-		Assert.equals(10, Math.round(b.y));
-		Assert.equals(2, Math.round(a.length));
+		Assert.floatEquals(0, Math.round(b.x));
+		Assert.floatEquals(10, Math.round(b.y));
+		Assert.floatEquals(2, Math.round(a.length));
 
 		a.offset(5, -1);
-		Assert.equals(6, a.x);
-		Assert.equals(1, a.y);
+		Assert.floatEquals(6, a.x);
+		Assert.floatEquals(1, a.y);
 
 		a.setTo(2, 3);
-		Assert.equals(2, a.x);
-		Assert.equals(3, a.y);
+		Assert.floatEquals(2, a.x);
+		Assert.floatEquals(3, a.y);
 
 		var interpolated = Point.interpolate(new Point(1, 1), new Point(3, 5), 0.5);
-		Assert.equals(2, interpolated.x);
-		Assert.equals(3, interpolated.y);
+		Assert.floatEquals(2, interpolated.x);
+		Assert.floatEquals(3, interpolated.y);
 		Assert.isTrue(a.equals(a.clone()));
 		Assert.isFalse(a.equals(new Point(3, 4)));
 		Assert.equals("(x=2, y=3)", a.toString());
@@ -61,8 +61,8 @@ class MathTest extends utest.Test {
 		Assert.isTrue(a.equals(b));
 
 		b.copyFrom(new Point(-3, 12));
-		Assert.equals(-3, b.x);
-		Assert.equals(12, b.y);
+		Assert.floatEquals(-3, b.x);
+		Assert.floatEquals(12, b.y);
 		Assert.isFalse(a.equals(b));
 		Assert.isFalse(a.equals(cast null));
 	}
@@ -70,18 +70,18 @@ class MathTest extends utest.Test {
 	public function testRectangleContainmentAndProperties():Void {
 		var rect = new Rectangle(1, 2, 3, 4);
 
-		Assert.equals(1, rect.left);
-		Assert.equals(2, rect.top);
-		Assert.equals(4, rect.right);
-		Assert.equals(6, rect.bottom);
+		Assert.floatEquals(1, rect.left);
+		Assert.floatEquals(2, rect.top);
+		Assert.floatEquals(4, rect.right);
+		Assert.floatEquals(6, rect.bottom);
 
 		rect.right = 10;
-		Assert.equals(9, rect.width);
-		Assert.equals(10, rect.right);
+		Assert.floatEquals(9, rect.width);
+		Assert.floatEquals(10, rect.right);
 
 		rect.bottom = 20;
-		Assert.equals(18, rect.height);
-		Assert.equals(20, rect.bottom);
+		Assert.floatEquals(18, rect.height);
+		Assert.floatEquals(20, rect.bottom);
 
 		Assert.isTrue(rect.contains(5, 10));
 		Assert.isTrue(rect.containsPoint(new Point(5, 10)));
@@ -100,94 +100,94 @@ class MathTest extends utest.Test {
 		Assert.isTrue(outer.intersects(overlap));
 
 		var intersect = outer.intersection(overlap);
-		Assert.equals(8, intersect.x);
-		Assert.equals(8, intersect.y);
-		Assert.equals(2, intersect.width);
-		Assert.equals(2, intersect.height);
+		Assert.floatEquals(8, intersect.x);
+		Assert.floatEquals(8, intersect.y);
+		Assert.floatEquals(2, intersect.width);
+		Assert.floatEquals(2, intersect.height);
 
 		var union = inner.union(overlap);
-		Assert.equals(2, union.x);
-		Assert.equals(3, union.y);
-		Assert.equals(11, union.width);
-		Assert.equals(10, union.height);
+		Assert.floatEquals(2, union.x);
+		Assert.floatEquals(3, union.y);
+		Assert.floatEquals(11, union.width);
+		Assert.floatEquals(10, union.height);
 	}
 
 	public function testRectangleMutationsAndEdgeCases():Void {
 		var rect = new Rectangle(10, 10, 4, 4);
 
 		rect.inflate(1, 2);
-		Assert.equals(9, rect.x);
-		Assert.equals(8, rect.y);
-		Assert.equals(6, rect.width);
-		Assert.equals(8, rect.height);
+		Assert.floatEquals(9, rect.x);
+		Assert.floatEquals(8, rect.y);
+		Assert.floatEquals(6, rect.width);
+		Assert.floatEquals(8, rect.height);
 
 		rect.offset(2, -3);
-		Assert.equals(11, rect.x);
-		Assert.equals(5, rect.y);
+		Assert.floatEquals(11, rect.x);
+		Assert.floatEquals(5, rect.y);
 
 		rect.setEmpty();
 		Assert.isTrue(rect.isEmpty());
-		Assert.equals(0, rect.width);
-		Assert.equals(0, rect.height);
+		Assert.floatEquals(0, rect.width);
+		Assert.floatEquals(0, rect.height);
 	}
 
 	public function testRectangleGeometryHelpers():Void {
 		var rect = new Rectangle(4, 5, 8, 10);
 
-		Assert.equals(4, rect.left);
-		Assert.equals(5, rect.top);
-		Assert.equals(12, rect.right);
-		Assert.equals(15, rect.bottom);
+		Assert.floatEquals(4, rect.left);
+		Assert.floatEquals(5, rect.top);
+		Assert.floatEquals(12, rect.right);
+		Assert.floatEquals(15, rect.bottom);
 
 		rect.left = 2;
-		Assert.equals(2, rect.x);
-		Assert.equals(10, rect.width);
+		Assert.floatEquals(2, rect.x);
+		Assert.floatEquals(10, rect.width);
 
 		rect.top = 3;
-		Assert.equals(3, rect.y);
-		Assert.equals(12, rect.height);
+		Assert.floatEquals(3, rect.y);
+		Assert.floatEquals(12, rect.height);
 
 		var bottomRight = rect.bottomRight;
-		Assert.equals(12, bottomRight.x);
-		Assert.equals(15, bottomRight.y);
+		Assert.floatEquals(12, bottomRight.x);
+		Assert.floatEquals(15, bottomRight.y);
 
 		var topLeft = rect.topLeft;
-		Assert.equals(2, topLeft.x);
-		Assert.equals(3, topLeft.y);
+		Assert.floatEquals(2, topLeft.x);
+		Assert.floatEquals(3, topLeft.y);
 
 		rect.bottomRight = new Point(8, 6);
-		Assert.equals(6, rect.width);
-		Assert.equals(3, rect.height);
-		Assert.equals(8, rect.right);
-		Assert.equals(6, rect.bottom);
+		Assert.floatEquals(6, rect.width);
+		Assert.floatEquals(3, rect.height);
+		Assert.floatEquals(8, rect.right);
+		Assert.floatEquals(6, rect.bottom);
 
 		rect.topLeft = new Point(5, 9);
-		Assert.equals(6, rect.width);
-		Assert.equals(5, rect.x);
-		Assert.equals(9, rect.y);
-		Assert.equals(3, rect.height);
-		Assert.equals(11, rect.right);
-		Assert.equals(12, rect.bottom);
+		Assert.floatEquals(6, rect.width);
+		Assert.floatEquals(5, rect.x);
+		Assert.floatEquals(9, rect.y);
+		Assert.floatEquals(3, rect.height);
+		Assert.floatEquals(11, rect.right);
+		Assert.floatEquals(12, rect.bottom);
 	}
 
 	public function testRectanglePointMutatorsAndSizeViews():Void {
 		var rect = new Rectangle(1, 2, 3, 4);
-		Assert.equals(3, rect.size.x);
-		Assert.equals(4, rect.size.y);
+		Assert.floatEquals(3, rect.size.x);
+		Assert.floatEquals(4, rect.size.y);
 
 		rect.size = new Point(8, 9);
-		Assert.equals(8, rect.width);
-		Assert.equals(9, rect.height);
+		Assert.floatEquals(8, rect.width);
+		Assert.floatEquals(9, rect.height);
 
 		rect.inflatePoint(new Point(1, 2));
-		Assert.equals(0, rect.x);
-		Assert.equals(0, rect.y);
-		Assert.equals(10, rect.width);
-		Assert.equals(13, rect.height);
+		Assert.floatEquals(0, rect.x);
+		Assert.floatEquals(0, rect.y);
+		Assert.floatEquals(10, rect.width);
+		Assert.floatEquals(13, rect.height);
 
 		rect.offsetPoint(new Point(5, -1));
-		Assert.equals(5, rect.x);
-		Assert.equals(-1, rect.y);
+		Assert.floatEquals(5, rect.x);
+		Assert.floatEquals(-1, rect.y);
 
 		var copy = new Rectangle();
 		copy.copyFrom(rect);
@@ -198,89 +198,89 @@ class MathTest extends utest.Test {
 	public function testMatrixTransformationsAndInversion():Void {
 		var matrix = new Matrix();
 		matrix.createBox(2, 2);
-		Assert.equals(2, matrix.a);
-		Assert.equals(2, matrix.d);
+		Assert.floatEquals(2, matrix.a);
+		Assert.floatEquals(2, matrix.d);
 
 		var point = matrix.transformPoint(new Point(3, 5));
-		Assert.equals(6, point.x);
-		Assert.equals(10, point.y);
+		Assert.floatEquals(6, point.x);
+		Assert.floatEquals(10, point.y);
 
 		matrix.translate(1, 2);
 		var translated = matrix.transformPoint(new Point(1, 1));
-		Assert.equals(3, translated.x);
-		Assert.equals(4, translated.y);
+		Assert.floatEquals(3, translated.x);
+		Assert.floatEquals(4, translated.y);
 
 		var rotated = new Matrix();
 		rotated.rotate(Math.PI / 2);
 		var rotatedPoint = rotated.transformPoint(new Point(1, 0));
-		Assert.equals(0, Math.round(rotatedPoint.x));
-		Assert.equals(1, Math.round(rotatedPoint.y));
+		Assert.floatEquals(0, Math.round(rotatedPoint.x));
+		Assert.floatEquals(1, Math.round(rotatedPoint.y));
 
 		var scaled = new Matrix();
 		scaled.scale(3, 4);
 		var scaledPoint = scaled.deltaTransformPoint(new Point(2, 2));
-		Assert.equals(6, scaledPoint.x);
-		Assert.equals(8, scaledPoint.y);
+		Assert.floatEquals(6, scaledPoint.x);
+		Assert.floatEquals(8, scaledPoint.y);
 
 		var combined = new Matrix(1, 2, 3, 4, 5, 6);
 		combined.concat(new Matrix(2, 0, 0, 2, 10, 10));
-		Assert.equals(2, combined.a);
-		Assert.equals(4, combined.b);
-		Assert.equals(6, combined.c);
-		Assert.equals(8, combined.d);
-		Assert.equals(20, combined.tx);
-		Assert.equals(22, combined.ty);
+		Assert.floatEquals(2, combined.a);
+		Assert.floatEquals(4, combined.b);
+		Assert.floatEquals(6, combined.c);
+		Assert.floatEquals(8, combined.d);
+		Assert.floatEquals(20, combined.tx);
+		Assert.floatEquals(22, combined.ty);
 
 		var original = new Matrix(2, 0, 0, 2, 5, 5);
 		var transformed = original.transformPoint(new Point(3, 7));
 		var inverse = original.clone();
 		inverse.invert();
 		var inverseBack = inverse.transformPoint(transformed);
-		Assert.equals(3, inverseBack.x);
-		Assert.equals(7, inverseBack.y);
+		Assert.floatEquals(3, inverseBack.x);
+		Assert.floatEquals(7, inverseBack.y);
 
 		var singular = new Matrix(1, 2, 2, 4);
 		singular.invert();
-		Assert.equals(1, singular.a);
-		Assert.equals(0, singular.b);
-		Assert.equals(0, singular.c);
-		Assert.equals(1, singular.d);
-		Assert.equals(0, singular.tx);
-		Assert.equals(0, singular.ty);
+		Assert.floatEquals(1, singular.a);
+		Assert.floatEquals(0, singular.b);
+		Assert.floatEquals(0, singular.c);
+		Assert.floatEquals(1, singular.d);
+		Assert.floatEquals(0, singular.tx);
+		Assert.floatEquals(0, singular.ty);
 
 		var identity = new Matrix(3, 4, 1, 2, 9, 7);
 		identity.identity();
-		Assert.equals(1, identity.a);
-		Assert.equals(0, identity.b);
-		Assert.equals(0, identity.c);
-		Assert.equals(1, identity.d);
-		Assert.equals(0, identity.tx);
-		Assert.equals(0, identity.ty);
+		Assert.floatEquals(1, identity.a);
+		Assert.floatEquals(0, identity.b);
+		Assert.floatEquals(0, identity.c);
+		Assert.floatEquals(1, identity.d);
+		Assert.floatEquals(0, identity.tx);
+		Assert.floatEquals(0, identity.ty);
 
 		var cloneA = new Matrix(2, 3, 4, 5, 6, 7);
 		var cloneB = cloneA.clone();
 		cloneB.scale(2, 2);
 
-		Assert.equals(2, cloneA.a);
-		Assert.equals(5, cloneA.d);
-		Assert.equals(4, cloneB.a);
-		Assert.equals(10, cloneB.d);
+		Assert.floatEquals(2, cloneA.a);
+		Assert.floatEquals(5, cloneA.d);
+		Assert.floatEquals(4, cloneB.a);
+		Assert.floatEquals(10, cloneB.d);
 
 		var delta = cloneA.deltaTransformPoint(new Point(2, 1));
-		Assert.equals(8, delta.x);
-		Assert.equals(11, delta.y);
+		Assert.floatEquals(8, delta.x);
+		Assert.floatEquals(11, delta.y);
 	}
 
 	public function testMatrixGradientBoxAndStringOutput():Void {
 		var matrix = new Matrix();
 		matrix.createGradientBox(1638.4, 819.2, 0, 10, 20);
 
-		Assert.equals(1, matrix.a);
-		Assert.equals(0, matrix.b);
-		Assert.equals(0, matrix.c);
-		Assert.equals(0.5, matrix.d);
-		Assert.equals(829.2, matrix.tx);
-		Assert.equals(429.6, matrix.ty);
+		Assert.floatEquals(1, matrix.a);
+		Assert.floatEquals(0, matrix.b);
+		Assert.floatEquals(0, matrix.c);
+		Assert.floatEquals(0.5, matrix.d);
+		Assert.floatEquals(829.2, matrix.tx);
+		Assert.floatEquals(429.6, matrix.ty);
 		var asString = matrix.toString();
 		Assert.isTrue(asString.indexOf("a=1") != -1);
 		Assert.isTrue(asString.indexOf("d=0.5") != -1);

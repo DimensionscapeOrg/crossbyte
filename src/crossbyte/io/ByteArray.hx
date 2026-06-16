@@ -914,33 +914,20 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function readDouble():Float {
 		if (endian == LITTLE_ENDIAN) {
-			if (position + 8 > length) {
-				throw new EOFError();
-				return 0;
-			}
+			var low = readInt();
+			var high = readInt();
 
-			position += 8;
-			return getDouble(position - 8);
+			return FPHelper.i64ToDouble(low, high);
 		} else {
-			var ch1 = readInt();
-			var ch2 = readInt();
+			var high = readInt();
+			var low = readInt();
 
-			return FPHelper.i64ToDouble(ch2, ch1);
+			return FPHelper.i64ToDouble(low, high);
 		}
 	}
 
 	public function readFloat():Float {
-		if (endian == LITTLE_ENDIAN) {
-			if (position + 4 > length) {
-				throw new EOFError();
-				return 0;
-			}
-
-			position += 4;
-			return getFloat(position - 4);
-		} else {
-			return FPHelper.i32ToFloat(readInt());
-		}
+		return FPHelper.i32ToFloat(readInt());
 	}
 
 	public function readInt():Int {
@@ -1157,6 +1144,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			byte = this.readUnsignedByte();
 			result |= (byte & 0x7F) << shift;
 			shift += 7;
+			if (shift > 35) {
+				throw new EOFError();
+			}
 		} while ((byte & 0x80) != 0);
 		return result;
 	}
@@ -1257,14 +1247,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeFloat(value:Float):Void {
-		if (endian == LITTLE_ENDIAN) {
-			__resize(position + 4);
-			setFloat(position, value);
-			position += 4;
-		} else {
-			var int = FPHelper.floatToI32(value);
-			writeInt(int);
-		}
+		var int = FPHelper.floatToI32(value);
+		writeInt(int);
 	}
 
 	public function writeInt(value:Int):Void {
@@ -1332,11 +1316,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		__resize(position + 2);
 
 		if (endian == LITTLE_ENDIAN) {
-			set(position++, value);
-			set(position++, value >> 8);
+			set(position++, value & 0xFF);
+			set(position++, (value >> 8) & 0xFF);
 		} else {
-			set(position++, value >> 8);
-			set(position++, value);
+			set(position++, (value >> 8) & 0xFF);
+			set(position++, value & 0xFF);
 		}
 	}
 
@@ -1398,7 +1382,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	@:noCompletion private function __resize(size:Int):Void {
 		if (size > __length) {
-			var bytes = Bytes.alloc(((size + 1) * 3) >> 1);
+			var capacity = ((size + 1) * 3) >> 1;
+			// Guard against integer overflow: if the geometric growth wraps
+			// around (producing a value <= size, possibly negative), fall back
+			// to exactly the requested size.
+			if (capacity <= size) {
+				capacity = size;
+			}
+			var bytes = Bytes.alloc(capacity);
 			var cacheLength = length;
 			#if sys
 			bytes.fill(__length, size - __length, 0);
