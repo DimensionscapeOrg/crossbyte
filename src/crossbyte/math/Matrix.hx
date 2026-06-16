@@ -37,10 +37,14 @@ class Matrix {
 	}
 
 	public function createBox(scaleX:Float, scaleY:Float, rotation:Float = 0, tx:Float = 0, ty:Float = 0):Void {
-		a = Math.cos(rotation) * scaleX;
-		b = Math.sin(rotation) * scaleY;
-		c = -Math.sin(rotation) * scaleX;
-		d = Math.cos(rotation) * scaleY;
+		// x basis (a,b) scales by scaleX, y basis (c,d) by scaleY. cos/sin are
+		// computed once. Matches the rotation convention used by `rotate`.
+		var cos:Float = Math.cos(rotation);
+		var sin:Float = Math.sin(rotation);
+		a = cos * scaleX;
+		b = sin * scaleX;
+		c = -sin * scaleY;
+		d = cos * scaleY;
 		this.tx = tx;
 		this.ty = ty;
 	}
