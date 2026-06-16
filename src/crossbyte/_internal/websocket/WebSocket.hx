@@ -26,6 +26,9 @@ class WebSocket {
 	// Max payload size in bytes
 	public static var MAX_PAYLOAD:Int = 65536;
 
+	// Max cumulative reassembled message size across fragments, in bytes
+	public static var MAX_MESSAGE_SIZE:Int = 16 * 65536;
+
 	// Retained for compatibility; clients now generate a fresh mask per frame.
 	public static var MASK_POOL_SIZE:Int = 64;
 
@@ -59,6 +62,7 @@ class WebSocket {
 	private var __input:ByteArray;
 	private var __incomingMessageBuffer:ByteArray;
 	private var __incomingOpcode:Int = -1;
+	private var __incomingMessageSize:Int = 0;
 	private var __output:ByteArray;
 	private var __connected:Bool = false;
 	private var __timestamp:Float;
@@ -275,9 +279,22 @@ class WebSocket {
 			case CLOSE:
 				var code:Int = 1000;
 				var reason:String = null;
+				if (payload.length == 1) {
+					// A close frame carrying a body must contain at least a 2-byte code.
+					__close(1002);
+					return;
+				}
 				if (payload.length >= 2) {
 					code = (payload[0] << 8) | payload[1];
+					if (!__isValidCloseCode(code)) {
+						__close(1002);
+						return;
+					}
 					if (payload.length > 2) {
+						if (!__isValidUTF8(payload, 2, payload.length - 2)) {
+							__close(1007);
+							return;
+						}
 						payload.position = 2;
 						reason = payload.readUTFBytes(payload.length - 2);
 					}
@@ -308,6 +325,12 @@ class WebSocket {
 				var payloadLength:Int = secondByte & 0x7F;
 
 				if ((firstByte & (WebSocketHeaderMask.RSV1 | WebSocketHeaderMask.RSV2 | WebSocketHeaderMask.RSV3)) != 0) {
+					__close(1002);
+					return;
+				}
+
+				// A server MUST reject unmasked frames from a client (RFC 6455 5.1).
+				if (__isClient == false && !isMasked) {
 					__close(1002);
 					return;
 				}
@@ -395,12 +418,30 @@ class WebSocket {
 						return;
 					}
 					__incomingOpcode = opCode;
+					// Start of a new message: reset the cumulative size counter.
+					// Done here (not via a field initializer) so the counter is
+					// always valid even when the parser is constructed without
+					// running field initializers.
+					__incomingMessageSize = 0;
+				}
+
+				// Cap the cumulative reassembled message size across fragments.
+				__incomingMessageSize += payloadLength;
+				if (__incomingMessageSize > MAX_MESSAGE_SIZE) {
+					__close(1009);
+					return;
 				}
 
 				__incomingMessageBuffer.position = __incomingMessageBuffer.length;
 				__incomingMessageBuffer.writeBytes(payload);
 
 				if (isFinal) {
+					// Validate completed TEXT messages as UTF-8.
+					if (__incomingOpcode == WebSocketOpcode.TEXT
+						&& !__isValidUTF8(__incomingMessageBuffer, 0, __incomingMessageBuffer.length)) {
+						__close(1007);
+						return;
+					}
 					__dispatchMessage();
 				}
 
@@ -487,9 +528,103 @@ class WebSocket {
 	}
 
 	private inline function __appendBytes(target:ByteArray, bytes:Bytes):Void {
-		for (i in 0...bytes.length) {
-			target.writeByte(bytes.get(i));
+		if (bytes.length > 0) {
+			target.writeBytes(bytes, 0, bytes.length);
 		}
+	}
+
+	private inline function __isValidCloseCode(code:Int):Bool {
+		// Codes reserved or invalid for use in a close frame (RFC 6455 7.4).
+		if (code < 1000) {
+			return false;
+		}
+		if (code == 1004 || code == 1005 || code == 1006 || code == 1015) {
+			return false;
+		}
+		return true;
+	}
+
+	private function __isValidUTF8(bytes:ByteArray, offset:Int, length:Int):Bool {
+		var i:Int = offset;
+		var end:Int = offset + length;
+		while (i < end) {
+			var b0:Int = bytes[i];
+			if (b0 < 0x80) {
+				// 0xxxxxxx
+				i++;
+			} else if (b0 >= 0xC2 && b0 <= 0xDF) {
+				// 110xxxxx 10xxxxxx
+				if (i + 1 >= end || (bytes[i + 1] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 2;
+			} else if (b0 == 0xE0) {
+				// 11100000 101xxxxx 10xxxxxx (reject overlong)
+				if (i + 2 >= end) {
+					return false;
+				}
+				var b1:Int = bytes[i + 1];
+				if (b1 < 0xA0 || b1 > 0xBF || (bytes[i + 2] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 3;
+			} else if (b0 >= 0xE1 && b0 <= 0xEC) {
+				// 1110xxxx 10xxxxxx 10xxxxxx
+				if (i + 2 >= end || (bytes[i + 1] & 0xC0) != 0x80 || (bytes[i + 2] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 3;
+			} else if (b0 == 0xED) {
+				// 11101101 100xxxxx 10xxxxxx (reject surrogates)
+				if (i + 2 >= end) {
+					return false;
+				}
+				var b1:Int = bytes[i + 1];
+				if (b1 < 0x80 || b1 > 0x9F || (bytes[i + 2] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 3;
+			} else if (b0 >= 0xEE && b0 <= 0xEF) {
+				// 1110xxxx 10xxxxxx 10xxxxxx
+				if (i + 2 >= end || (bytes[i + 1] & 0xC0) != 0x80 || (bytes[i + 2] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 3;
+			} else if (b0 == 0xF0) {
+				// 11110000 1001xxxx 10xxxxxx 10xxxxxx (reject overlong)
+				if (i + 3 >= end) {
+					return false;
+				}
+				var b1:Int = bytes[i + 1];
+				if (b1 < 0x90 || b1 > 0xBF || (bytes[i + 2] & 0xC0) != 0x80 || (bytes[i + 3] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 4;
+			} else if (b0 >= 0xF1 && b0 <= 0xF3) {
+				// 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+				if (i + 3 >= end
+					|| (bytes[i + 1] & 0xC0) != 0x80
+					|| (bytes[i + 2] & 0xC0) != 0x80
+					|| (bytes[i + 3] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 4;
+			} else if (b0 == 0xF4) {
+				// 11110100 1000xxxx 10xxxxxx 10xxxxxx (cap at U+10FFFF)
+				if (i + 3 >= end) {
+					return false;
+				}
+				var b1:Int = bytes[i + 1];
+				if (b1 < 0x80 || b1 > 0x8F || (bytes[i + 2] & 0xC0) != 0x80 || (bytes[i + 3] & 0xC0) != 0x80) {
+					return false;
+				}
+				i += 4;
+			} else {
+				// 0x80-0xBF (stray continuation), 0xC0-0xC1 (overlong), 0xF5-0xFF (out of range)
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private inline function __validateInputPosition():Void {
@@ -507,6 +642,7 @@ class WebSocket {
 		__incomingMessageBuffer = new ByteArray();
 		__incomingMessageBuffer.endian = BIG_ENDIAN;
 		__incomingOpcode = -1;
+		__incomingMessageSize = 0;
 		onmessage(new WebsocketEvent(WebsocketEvent.MESSAGE, this, message));
 	}
 

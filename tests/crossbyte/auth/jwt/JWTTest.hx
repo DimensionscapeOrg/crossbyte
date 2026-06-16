@@ -6,7 +6,7 @@ import haxe.Json;
 class JWTTest extends utest.Test {
 	public function testGeneratesAndVerifiesHS256Token():Void {
 		var jwt = JWT.make(HS256([{secret: "test-secret"}]), "issuer-a", "aud-a", 0);
-		var now = Std.int(haxe.Timer.stamp());
+		var now = Std.int(Date.now().getTime() / 1000);
 		var token = jwt.generateToken({
 			sub: "subject",
 			name: "Chris",
@@ -28,7 +28,7 @@ class JWTTest extends utest.Test {
 	}
 
 	public function testRejectsTamperedSignatureAndWrongAudienceOrIssuer():Void {
-		var now = Std.int(haxe.Timer.stamp());
+		var now = Std.int(Date.now().getTime() / 1000);
 		var base = JWT.make(HS256([{secret: "test-secret"}]), "issuer-a", "aud-a", 0);
 		var token = base.generateToken({
 			sub: "subject",
@@ -52,7 +52,7 @@ class JWTTest extends utest.Test {
 	}
 
 	public function testAudienceArraysAndLeewayAreSupported():Void {
-		var now = Std.int(haxe.Timer.stamp());
+		var now = Std.int(Date.now().getTime() / 1000);
 		var jwt = JWT.make(HS256([{secret: "test-secret"}]), null, "aud-b", 5);
 		var token = jwt.generateToken({
 			sub: "subject",
@@ -69,7 +69,7 @@ class JWTTest extends utest.Test {
 
 	public function testExpiredOrMalformedTokensAreRejected():Void {
 		var jwt = JWT.make(HS256([{secret: "test-secret"}]), null, null, 0);
-		var now = Std.int(haxe.Timer.stamp());
+		var now = Std.int(Date.now().getTime() / 1000);
 		var expired = jwt.generateToken({
 			sub: "subject",
 			iat: now - 60,

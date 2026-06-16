@@ -98,6 +98,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 	public var timeout(get, set):Int;
 
 	@:noCompletion private static inline var DEFAULT_BUFFER_SIZE:Int = 65535;
+	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 64;
 
 	@:noCompletion private var __bound:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
@@ -334,7 +335,8 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 			return;
 		}
 
-		while (__receiving) {
+		var processed:Int = 0;
+		while (__receiving && processed < MAX_DATAGRAMS_PER_TICK) {
 			var bytesReady:Int = 0;
 			try {
 				bytesReady = __socket.readFrom(__readBuffer, 0, __readBuffer.length, __tempAddress);
@@ -374,6 +376,8 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 				local != null ? local.port : 0,
 				payload
 			));
+
+			processed++;
 		}
 	}
 

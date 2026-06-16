@@ -2,6 +2,7 @@ package crossbyte.db.mysql;
 
 import crossbyte.errors.SQLError;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
@@ -68,16 +69,12 @@ class MySQLStatement extends EventDispatcher {
 		__resultQueue = [];
 		#end
 
-		for (p in FieldStruct.iterator(parameters)) {
-			var sb:StringBuf = new StringBuf();
-			sb.add(p.key);
-			__connection.addValue(sb, p.value);
-		}
+		var sql:String = __applyParameters(text);
 
 		__prefetch = prefetch;
 
 		try {
-			__resultSet = __connection.request(text);
+			__resultSet = __connection.request(sql);
 			__queueResult();
 			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} catch (e:Dynamic) {
@@ -85,6 +82,19 @@ class MySQLStatement extends EventDispatcher {
 			__prefetch = 0;
 			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, e, "Execution failed")));
 		}
+	}
+
+	@:noCompletion private function __applyParameters(query:String):String {
+		var params:FieldStruct<String> = parameters;
+		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
+			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
+		}, __escapeValue);
+	}
+
+	@:noCompletion private function __escapeValue(value:Dynamic):String {
+		var sb:StringBuf = new StringBuf();
+		__connection.addValue(sb, value);
+		return sb.toString();
 	}
 
 	public function next(prefetch:Int = -1):Void {

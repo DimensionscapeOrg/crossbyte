@@ -109,11 +109,32 @@ abstract class RPCCommands {
 			if (__requestIdSeed <= 0) {
 				__requestIdSeed = 1;
 			}
-			if (__requestIdSeed == __pendingResponseId) {
-				continue;
-			}
-		} while (__pendingResponses != null && __pendingResponses.exists(__requestIdSeed));
+		} while ((__requestIdSeed == __pendingResponseId)
+			|| (__pendingResponses != null && __pendingResponses.exists(__requestIdSeed)));
 
 		return __requestIdSeed;
+	}
+
+	/**
+		Rejects and clears every outstanding `RPCResponse` with the given reason.
+
+		Used to drain pending request/response calls when the underlying session is
+		stopped or the connection closes, so callers are not left waiting forever for
+		a reply that can no longer arrive. Must only be called on the owning thread.
+	**/
+	@:noCompletion private function __failAllPending(message:String):Void {
+		final pending = __pendingResponse;
+		if (pending != null) {
+			__pendingResponse = null;
+			__pendingResponseId = 0;
+			pending.__reject(message);
+		}
+		final map = __pendingResponses;
+		if (map != null) {
+			__pendingResponses = null;
+			for (response in map) {
+				response.__reject(message);
+			}
+		}
 	}
 }
