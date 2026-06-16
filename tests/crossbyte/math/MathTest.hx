@@ -287,4 +287,15 @@ class MathTest extends utest.Test {
 		Assert.isTrue(asString.indexOf("tx=829.2") != -1);
 		Assert.isTrue(asString.indexOf("ty=429.6") != -1);
 	}
+
+	public function testCreateBoxAppliesScaleToCorrectBasis():Void {
+		// scaleX != scaleY with a rotation exposes b/c basis mix-ups (invisible at
+		// rotation 0). cos(90)=0, sin(90)=1 => a=0, b=scaleX, c=-scaleY, d=0.
+		var m = new Matrix();
+		m.createBox(2, 3, Math.PI / 2);
+		Assert.floatEquals(0, m.a);
+		Assert.floatEquals(2, m.b);
+		Assert.floatEquals(-3, m.c);
+		Assert.floatEquals(0, m.d);
+	}
 }

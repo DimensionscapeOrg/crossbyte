@@ -134,6 +134,17 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.isFalse(nullAsBool);
 	}
 
+	public function testPrimitiveValueFloatToIntTruncates():Void {
+		var positive:PrimitiveValue = 3.9;
+		var negative:PrimitiveValue = -2.7;
+
+		var posInt:Int = positive;
+		var negInt:Int = negative;
+
+		Assert.equals(3, posInt);
+		Assert.equals(-2, negInt);
+	}
+
 	public function testPrimitiveValueRejectsUnsupportedDynamicConversions():Void {
 		var value:PrimitiveValue = cast { nested: true };
 

@@ -34,6 +34,7 @@ class TestSuites {
 	public static function addDataStructures(runner:Runner):Void {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		runner.addCase(new crossbyte.ds.BloomFilterTest());
 	}
 
 	public static function addHttp(runner:Runner):Void {

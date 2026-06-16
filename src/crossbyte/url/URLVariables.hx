@@ -63,8 +63,8 @@ abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>
 				continue;
 			}
 			var eq:Int = pair.indexOf("=");
-			var k:String = StringTools.urlDecode(eq > 0 ? pair.substr(0, eq) : pair);
-			var v:String = StringTools.urlDecode(eq > 0 ? pair.substr(eq + 1) : "");
+			var k:String = StringTools.urlDecode(eq >= 0 ? pair.substr(0, eq) : pair);
+			var v:String = StringTools.urlDecode(eq >= 0 ? pair.substr(eq + 1) : "");
 			var a:Array<String> = this[k];
 			if (a == null) {
 				this[k] = [v];
