@@ -725,11 +725,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:noCompletion private function set_length(value:Int):UInt {
-		if (value >= 0) {
-			this.__resize(value);
-			if (value < this.position)
-				this.position = value;
+		// Clamp negatives to 0 instead of assigning a negative length, which
+		// would leave the ByteArray in an invalid state.
+		if (value < 0) {
+			value = 0;
 		}
+
+		this.__resize(value);
+		if (value < this.position)
+			this.position = value;
 
 		this.length = value;
 
@@ -1223,10 +1227,17 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:keep public function writeBytes(bytes:ByteArray, offset:UInt = 0, length:UInt = 0):Void {
-		if (bytes.length == 0)
+		// Clamp offset/length to the source bounds so an out-of-range request
+		// cannot over-read past the end of `bytes`.
+		var available:UInt = bytes.length;
+		if (available == 0 || offset >= available)
 			return;
+
+		var remaining:UInt = available - offset;
+		if (length == 0 || length > remaining)
+			length = remaining;
 		if (length == 0)
-			length = bytes.length - offset;
+			return;
 
 		__resize(position + length);
 		blit(position, (bytes : ByteArrayData), offset, length);
