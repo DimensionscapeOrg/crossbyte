@@ -93,15 +93,18 @@ class NativeProcess extends EventDispatcher {
 			return;
 		}
 
+		// Signal shutdown and terminate the child so blocked reads hit EOF, but
+		// do NOT close the process here: the worker thread closes it (in
+		// __execute) only after both reader threads have drained. Closing under
+		// the in-flight reads would be a use-after-close race. Killing the child
+		// lets the worker complete naturally, which also dispatches EXIT.
+		__running = false;
+
 		if (__process != null) {
 			try {
 				__process.kill();
 			} catch (_:Dynamic) {}
-			try {
-				__process.close();
-			} catch (_:Dynamic) {}
 		}
-		__running = false;
 	}
 
 	public function close():Void {

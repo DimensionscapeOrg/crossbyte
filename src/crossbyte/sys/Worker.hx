@@ -8,6 +8,7 @@ import crossbyte.events.EventDispatcher;
 #if (cpp || neko || hl)
 import sys.thread.Deque;
 import sys.thread.Thread;
+import sys.thread.Mutex;
 #end
 
 private enum WorkerMessage {
@@ -37,25 +38,38 @@ class Worker extends EventDispatcher {
 	#if (cpp || neko || hl)
 	@:noCompletion private var __messageQueue:Deque<WorkerMessage>;
 	@:noCompletion private var __workerThread:Thread;
+	// Guards the cross-thread lifecycle state (__messageQueue reference plus the
+	// canceled/cancelRequested/completed/result/error flags) so the worker
+	// thread's send* calls cannot race cancel()/clean() on the runtime thread.
+	@:noCompletion private var __lock:Mutex;
 	#end
 
 	public function new() {
 		super();
 		#if (cpp || neko || hl)
+		__lock = new Mutex();
 		__tickListener = __update;
 		#end
 		__resetState();
 	}
 
 	public function cancel(doClean:Bool = true):Void {
+		#if (cpp || neko || hl)
+		__lock.acquire();
 		cancelRequested = true;
 		canceled = true;
 		if (!completed && state != FAILED) {
 			state = CANCELLED;
 		}
-		#if (cpp || neko || hl)
 		__workerThread = null;
+		__lock.release();
 		__detachRuntimeListener();
+		#else
+		cancelRequested = true;
+		canceled = true;
+		if (!completed && state != FAILED) {
+			state = CANCELLED;
+		}
 		#end
 		if (doClean) {
 			__cleanResources();
@@ -90,49 +104,66 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendComplete(message:Dynamic = null):Void {
+		#if (cpp || neko || hl)
+		__lock.acquire();
 		if (cancelRequested || canceled) {
+			__lock.release();
 			return;
 		}
-
 		completed = true;
 		result = message;
 		error = null;
-
-		#if (cpp || neko || hl)
 		if (__messageQueue != null) {
 			__messageQueue.add(Complete(message));
 		}
+		__lock.release();
 		#else
+		if (cancelRequested || canceled) {
+			return;
+		}
+		completed = true;
+		result = message;
+		error = null;
 		__finishCompleted(message);
 		#end
 	}
 
 	public function sendError(message:Dynamic = null):Void {
+		#if (cpp || neko || hl)
+		__lock.acquire();
 		if (cancelRequested || canceled) {
+			__lock.release();
 			return;
 		}
-
 		error = message;
-
-		#if (cpp || neko || hl)
 		if (__messageQueue != null) {
 			__messageQueue.add(Error(message));
 		}
+		__lock.release();
 		#else
+		if (cancelRequested || canceled) {
+			return;
+		}
+		error = message;
 		__finishFailed(message);
 		#end
 	}
 
 	public function sendProgress(message:Dynamic = null):Void {
+		#if (cpp || neko || hl)
+		__lock.acquire();
 		if (cancelRequested || canceled) {
+			__lock.release();
 			return;
 		}
-
-		#if (cpp || neko || hl)
 		if (__messageQueue != null) {
 			__messageQueue.add(Progress(message));
 		}
+		__lock.release();
 		#else
+		if (cancelRequested || canceled) {
+			return;
+		}
 		dispatchEvent(new ThreadEvent(ThreadEvent.PROGRESS, message));
 		#end
 	}
@@ -147,8 +178,10 @@ class Worker extends EventDispatcher {
 
 	@:noCompletion private function __cleanResources():Void {
 		#if (cpp || neko || hl)
+		__lock.acquire();
 		__workerThread = null;
 		__messageQueue = null;
+		__lock.release();
 		#end
 		__runtime = null;
 		__runMessage = null;
@@ -199,6 +232,12 @@ class Worker extends EventDispatcher {
 	}
 
 	@:noCompletion private function __update(event:TickEvent):Void {
+		// A detached tick listener can still fire once under snapshot dispatch,
+		// after cancel()/clean() has nulled the queue — guard against that.
+		if (__messageQueue == null) {
+			return;
+		}
+
 		var msg = __messageQueue.pop(false);
 
 		if (msg == null) {
