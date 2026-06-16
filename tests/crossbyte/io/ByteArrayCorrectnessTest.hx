@@ -229,4 +229,42 @@ class ByteArrayCorrectnessTest extends utest.Test {
 
 		Assert.raises(() -> ba.readVarInt(), EOFError);
 	}
+
+	public function testWriteBytesClampsOutOfRangeOffsetAndLength():Void {
+		var src = new ByteArray();
+		for (i in 0...4) {
+			src.writeByte(i); // 0,1,2,3
+		}
+
+		// Explicit length larger than what remains from offset is clamped.
+		var a = new ByteArray();
+		a.writeBytes(src, 2, 100);
+		Assert.equals(2, a.length);
+		Assert.equals(2, a[0]);
+		Assert.equals(3, a[1]);
+
+		// Offset at/beyond the source length writes nothing (no over-read).
+		var b = new ByteArray();
+		b.writeBytes(src, 4, 0);
+		Assert.equals(0, b.length);
+		b.writeBytes(src, 10, 5);
+		Assert.equals(0, b.length);
+
+		// Default length (0) copies from offset to the end.
+		var c = new ByteArray();
+		c.writeBytes(src, 1);
+		Assert.equals(3, c.length);
+		Assert.equals(1, c[0]);
+		Assert.equals(3, c[2]);
+	}
+
+	public function testSetLengthClampsNegativeToZero():Void {
+		var ba = new ByteArray();
+		ba.writeInt(0x01020304);
+		Assert.equals(4, ba.length);
+
+		ba.length = -5;
+		Assert.equals(0, ba.length);
+		Assert.equals(0, ba.position);
+	}
 }
