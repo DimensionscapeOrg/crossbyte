@@ -5,10 +5,14 @@ import haxe.io.Bytes;
 
 /**
  * Provides static and instance-based pseudo-random number generation utilities.
- * 
+ *
  * Includes methods for generating integers, floats, booleans, bytes, strings, dates, and more.
  * Static methods use a shared `AtomicInt` seed and are thread-safe.
  * Instance methods use internal state and are not thread-safe, but offer reproducible results when seeded.
+ *
+ * **Security:** this is a fast, non-cryptographic PRNG. Its output is predictable
+ * and MUST NOT be used for tokens, session ids, salts, keys, nonces, or any other
+ * security-sensitive value. Use `crossbyte.crypto.SecureRandom` for those.
  */
 final class Random {
 
@@ -123,7 +127,10 @@ final class Random {
 
 	/**
 	 * Generates a random alphanumeric string.
-	 * 
+	 *
+	 * **Security:** not cryptographically secure — do not use for tokens, ids, or
+	 * secrets. Use `crossbyte.crypto.SecureRandom` for those.
+	 *
 	 * @param len The desired length of the string.
 	 * @param alphabet Optional custom alphabet. Defaults to A-Z, a-z, 0-9.
 	 * @return A pseudo-random string of the specified length.
@@ -135,7 +142,10 @@ final class Random {
 
 	/**
 	 * Generates a random hexadecimal string.
-	 * 
+	 *
+	 * **Security:** not cryptographically secure — do not use for tokens, ids, or
+	 * secrets. Use `crossbyte.crypto.SecureRandom` for those.
+	 *
 	 * @param lenBytes The number of random bytes to encode (2 hex digits per byte).
 	 * @return A hex string representing `lenBytes` random bytes.
 	 */
@@ -184,7 +194,10 @@ final class Random {
 
 	/**
 	 * Fills a portion of a `Bytes` buffer with random data.
-	 * 
+	 *
+	 * **Security:** not cryptographically secure — do not use to generate keys,
+	 * salts, or nonces. Use `crossbyte.crypto.SecureRandom` for those.
+	 *
 	 * @param buf The `Bytes` buffer to fill.
 	 * @param pos Starting position in the buffer (default is 0).
 	 * @param len Number of bytes to write (default fills to end).
