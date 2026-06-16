@@ -29,8 +29,10 @@ class PHPBridge {
 		switch (mode) {
 			case Launch(address, port, phpCgiPath, phpIniPath):
 				var cgiPath:String = "";
-				if (!FileSystem.exists(phpCgiPath) && Sys.getEnv(phpCgiPath) != null) {
+				if (phpCgiPath != null && phpCgiPath != "" && FileSystem.exists(phpCgiPath)) {
 					cgiPath = phpCgiPath;
+				} else if (phpCgiPath != null && Sys.getEnv(phpCgiPath) != null) {
+					cgiPath = Sys.getEnv(phpCgiPath);
 				} else {
 					cgiPath = Path.directory(Sys.programPath()) + "\\php\\php-cgi.exe";
 				}
@@ -43,7 +45,7 @@ class PHPBridge {
 				if (phpIniPath != null && phpIniPath != "") {
 					var iniPath:String = phpIniPath;
 					if (iniPath == "php.ini") {
-						iniPath = Path.directory(Sys.programPath()) + iniPath;
+						iniPath = Path.join([Path.directory(Sys.programPath()), iniPath]);
 					}
 					if (FileSystem.exists(iniPath)) {
 						args = ["-c", iniPath].concat(args);
@@ -150,11 +152,11 @@ class PHPBridge {
 
 			var content:Bytes = Bytes.alloc(cLen);
 			if (cLen > 0) {
-				sock.input.readBytes(content, 0, cLen);
+				sock.input.readFullBytes(content, 0, cLen);
 			}
 
 			if (pad > 0) {
-				sock.input.readBytes(PAD_SCRATCH, 0, pad);
+				sock.input.readFullBytes(PAD_SCRATCH, 0, pad);
 			}
 
 			switch (typ) {
@@ -192,7 +194,10 @@ class PHPBridge {
 					if (hk == "status") {
 						var sp:Array<String> = hv.split(" ");
 						if (sp.length > 0) {
-							status = Std.parseInt(sp[0]);
+							var parsedStatus = Std.parseInt(sp[0]);
+							if (parsedStatus != null) {
+								status = parsedStatus;
+							}
 						}
 					}
 				}
