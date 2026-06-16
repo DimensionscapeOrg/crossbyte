@@ -104,7 +104,10 @@ class ResourcesMacro {
 				var fieldName = entry.replace(".", "_");
 
 				if (FileSystem.isDirectory(fullPath)) {
-					var subClassName = capitalize(fieldName + "_RTNode");
+					// Derive the generated node type name from the full relative
+					// path so two same-named directories in different subtrees do
+					// not collide into a single duplicate Context.defineType.
+					var subClassName = capitalize(relativeFilePath.replace("/", "_").replace(".", "_") + "_RTNode");
 					var nestedFields = processDirectory(fullPath, relativeFilePath, subClassName);
 
 					var classPath:TypePath = {pack: [], name: subClassName};

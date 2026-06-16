@@ -44,7 +44,7 @@ class LinuxNativeSystem {
 			cpu_set_t cpuSet;
 			CPU_ZERO(&cpuSet);			
 
-			uint32_t success = sched_getaffinity(0, sizeof(cpu_set_t), &cpuSet);
+			int success = sched_getaffinity(0, sizeof(cpu_set_t), &cpuSet);
 		");
 
 		// TODO: throw an error if success is false instead
@@ -62,7 +62,7 @@ class LinuxNativeSystem {
 			uint32_t processAffinityMask;
 			uint32_t systemAffinityMask;
 
-			uint32_t success = sched_getaffinity(0, sizeof(cpu_set_t), &cpuSet);;
+			int success = sched_getaffinity(0, sizeof(cpu_set_t), &cpuSet);;
 		");
 
 		if (untyped __cpp__("success") < 0) {

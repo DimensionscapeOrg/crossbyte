@@ -40,7 +40,7 @@ class WinNativeSystem {
 		var numCores:Int = getProcessorCount();
 		for (i in 0...numCores) {
 			untyped __cpp__("
-				DWORD bit = 1 << i;
+				DWORD_PTR bit = ((DWORD_PTR)1) << i;
 				BOOL isSet = (processAffinityMask & bit) != 0;
 
 				affinity[i] = isSet;
@@ -65,7 +65,7 @@ class WinNativeSystem {
 		}
 
 		untyped __cpp__("
-			DWORD bit = 1 << index;
+			DWORD_PTR bit = ((DWORD_PTR)1) << index;
 			BOOL isSet = (processAffinityMask & bit) != 0;
 		");
 
