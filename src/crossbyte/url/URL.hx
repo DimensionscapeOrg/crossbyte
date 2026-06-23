@@ -21,7 +21,10 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 	public var ssl(get, never):Null<Bool>;
 
 	@:to public inline function toString():String {
-		@:privateAccess return this.__uri;
+		// Route through a (non-inline) public method rather than @:privateAccess
+		// on __uri: inlining the private field read into a caller in another
+		// class produces an IllegalAccessError on the jvm target.
+		return this.getRawUri();
 	}
 
 	public inline function new(address:String) {
@@ -71,6 +74,13 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 	public function new(uri:String) {
 		__uri = uri;
 		parseUri(__uri);
+	}
+
+	// Non-inline on purpose: keeps the private __uri read inside this class so a
+	// caller in another class (e.g. _internal.http.Http) never emits a direct
+	// cross-class field access (IllegalAccessError on jvm).
+	public function getRawUri():String {
+		return __uri;
 	}
 
 	@:private @:noCompletion private function parseUri(uri:String):Void {

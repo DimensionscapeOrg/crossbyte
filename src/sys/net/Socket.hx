@@ -594,7 +594,7 @@ class Socket {
 
 	public function new():Void {
 		this.channel = SocketChannel.open();
-		this.channel.configureBlocking(false);
+		this.channel.configureBlocking(true);
 	}
 
 	private function __init(channel:SocketChannel):Void {
@@ -661,7 +661,7 @@ class Socket {
 		try {
 			if (serverChannel == null) {
 				serverChannel = ServerSocketChannel.open();
-				serverChannel.configureBlocking(false);
+				serverChannel.configureBlocking(true);
 			}
 			var addr = new InetSocketAddress(host.wrapped, port);
 			serverChannel.bind(cast addr);
@@ -677,7 +677,7 @@ class Socket {
 		}
 		if (c == null)
 			throw Blocked;
-		c.configureBlocking(false);
+		c.configureBlocking(true);
 		var s:Socket = Type.createEmptyInstance(Socket);
 		s.__init(c);
 		return s;

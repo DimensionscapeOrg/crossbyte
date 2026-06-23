@@ -1,7 +1,7 @@
 package crossbyte.sys;
 
 import crossbyte.errors.IllegalOperationError;
-#if (cpp || neko || hl || java || jvm)
+#if (cpp || neko || hl)
 import sys.thread.Condition;
 import sys.thread.Deque;
 import sys.thread.Thread;
@@ -22,7 +22,7 @@ class TaskPool {
 	@:noCompletion private var __workerCount:Int;
 	@:noCompletion private var __isShutdown:Bool;
 	@:noCompletion private var __retainedTasks:Array<Task<Dynamic>>;
-	#if (cpp || neko || hl || java || jvm)
+	#if (cpp || neko || hl)
 	@:noCompletion private var __queued:Int;
 	@:noCompletion private var __running:Int;
 	@:noCompletion private var __activeWorkers:Int;
@@ -39,7 +39,7 @@ class TaskPool {
 		__isShutdown = false;
 		__retainedTasks = [];
 
-		#if (cpp || neko || hl || java || jvm)
+		#if (cpp || neko || hl)
 		__queued = 0;
 		__running = 0;
 		__activeWorkers = workerCount;
@@ -65,7 +65,7 @@ class TaskPool {
 		}
 
 		var task = new Task<T>();
-		#if (cpp || neko || hl || java || jvm)
+		#if (cpp || neko || hl)
 		__retainTask(cast task);
 		task.__registerReleaseHook(() -> {
 			__releaseTask(cast task);
@@ -76,7 +76,7 @@ class TaskPool {
 			job: () -> job()
 		};
 
-		#if (cpp || neko || hl || java || jvm)
+		#if (cpp || neko || hl)
 		task.__registerCancelHook(() -> {
 			__cancelQueuedTask(cast task);
 		});
@@ -104,7 +104,7 @@ class TaskPool {
 	}
 
 	public function shutdown(?drain:Bool = true):Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if (cpp || neko || hl)
 		__queueLock.acquire();
 		if (!__isShutdown) {
 			__isShutdown = true;
@@ -123,7 +123,7 @@ class TaskPool {
 	}
 
 	public function shutdownNow():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if (cpp || neko || hl)
 		var toCancel = new Array<Task<Dynamic>>();
 
 		__queueLock.acquire();
@@ -158,7 +158,7 @@ class TaskPool {
 	}
 
 	@:noCompletion private function get_queuedCount():Int {
-		#if (cpp || neko || hl || java || jvm)
+		#if (cpp || neko || hl)
 		__queueLock.acquire();
 		var value = __queued;
 		__queueLock.release();
@@ -169,7 +169,7 @@ class TaskPool {
 	}
 
 	@:noCompletion private function get_activeCount():Int {
-		#if (cpp || neko || hl || java || jvm)
+		#if (cpp || neko || hl)
 		__queueLock.acquire();
 		var value = __running;
 		__queueLock.release();
@@ -179,7 +179,7 @@ class TaskPool {
 		#end
 	}
 
-	#if (cpp || neko || hl || java || jvm)
+	#if (cpp || neko || hl)
 	@:noCompletion private function __retainTask(task:Task<Dynamic>):Void {
 		__queueLock.acquire();
 		__retainedTasks.push(task);
