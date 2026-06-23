@@ -5,9 +5,17 @@ import haxe.io.Input;
 import haxe.io.Output;
 import sys.net.Host;
 import sys.net.Socket;
+#if (java || jvm)
+// Haxe's sys.ssl.Socket (java.net.SslSocket) does not compile on the jvm
+// target, so TLS is stubbed there until a jvm SSL backend exists.
+import crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate as Certificate;
+import crossbyte._internal.socket._jvm.JvmSsl.JvmSslKey as Key;
+import crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket as SSLSocket;
+#else
 import sys.ssl.Certificate;
 import sys.ssl.Key;
 import sys.ssl.Socket as SSLSocket;
+#end
 
 typedef HostInfo = {port:Int, host:Host};
 typedef Sockets = {write:Array<Socket>, read:Array<Socket>, others:Array<Socket>};
@@ -89,13 +97,13 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	private inline function get_verifyCert():Null<Bool> {
 		__requireSSL("verifyCert", this);
 
-		return (this : sys.ssl.Socket).verifyCert;
+		return (this : SSLSocket).verifyCert;
 	}
 
 	private inline function set_verifyCert(value:Null<Bool>):Null<Bool> {
 		__requireSSL("verifyCert", this);
 
-		return (this : sys.ssl.Socket).verifyCert = value;
+		return (this : SSLSocket).verifyCert = value;
 	}
 
 	public inline function accept():Socket {
@@ -105,7 +113,7 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	public inline function addSNICertificate(cbServernameMatch:String->Bool, cert:Certificate, key:Key):Void {
 		__requireSSL("addSNICertificate", this);
 
-		(this : sys.ssl.Socket).addSNICertificate(cbServernameMatch, cert, key);
+		(this : SSLSocket).addSNICertificate(cbServernameMatch, cert, key);
 	}
 
 	public inline function bind(host:String, port:Int):Void {
@@ -123,7 +131,7 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	public inline function handshake():Void {
 		__requireSSL("handshake", this);
 
-		(this : sys.ssl.Socket).handshake();
+		(this : SSLSocket).handshake();
 	}
 
 	public inline function host():HostInfo {
@@ -143,7 +151,7 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	public inline function peerCertificate():Certificate {
 		__requireSSL("peerCertificate", this);
 
-		return (this : sys.ssl.Socket).peerCertificate();
+		return (this : SSLSocket).peerCertificate();
 	}
 
 	public inline function read():String {
@@ -157,13 +165,13 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	public inline function setCA(cert:Certificate):Void {
 		__requireSSL("setCA", this);
 
-		(this : sys.ssl.Socket).setCA(cert);
+		(this : SSLSocket).setCA(cert);
 	}
 
 	public inline function setCertificate(cert:Certificate, key:Key):Void {
 		__requireSSL("setCertificate", this);
 
-		(this : sys.ssl.Socket).setCertificate(cert, key);
+		(this : SSLSocket).setCertificate(cert, key);
 	}
 
 	public inline function setFastSend(value:Bool):Void {
@@ -173,7 +181,7 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	public inline function setHostname(name:String):Void {
 		__requireSSL("setHostname", this);
 
-		(this : sys.ssl.Socket).setHostname(name);
+		(this : SSLSocket).setHostname(name);
 	}
 
 	public inline function setTimeout(value:Float):Void {

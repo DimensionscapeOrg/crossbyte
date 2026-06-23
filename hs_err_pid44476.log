@@ -1,0 +1,294 @@
+#
+# A fatal error has been detected by the Java Runtime Environment:
+#
+#  EXCEPTION_ACCESS_VIOLATION (0xc0000005) at pc=0x00007ffc6a4a8312, pid=44476, tid=0x00000000000106f8
+#
+# JRE version: Java(TM) SE Runtime Environment (8.0_481) (build 1.8.0_481-b10)
+# Java VM: Java HotSpot(TM) 64-Bit Server VM (25.481-b10 mixed mode windows-amd64 compressed oops)
+# Problematic frame:
+# V  [jvm.dll+0x208312]
+#
+# Failed to write core dump. Minidumps are not enabled by default on client versions of Windows
+#
+# If you would like to submit a bug report, please visit:
+#   https://bugreport.java.com/bugreport/crash.jsp
+#
+
+---------------  T H R E A D  ---------------
+
+Current thread (0x0000027d1b5ad000):  JavaThread "main" [_thread_in_vm, id=67320, stack(0x0000008aaa400000,0x0000008aaa500000)]
+
+siginfo: ExceptionCode=0xc0000005, reading address 0x0000000000000020
+
+Registers:
+RAX=0x0000000000000000, RBX=0x00000000ffffffff, RCX=0x0000000000001f40, RDX=0x00000000ffffffff
+RSP=0x0000008aaa4fe170, RBP=0x0000008aaa4fe2b0, RSI=0x0000027d50c07498, RDI=0x0000008aaa4fe1d0
+R8 =0x00000007c0109c30, R9 =0x0000008aaa4fe2b0, R10=0x0000027d1b59e050, R11=0x0000000000000000
+R12=0x00000000fffffffd, R13=0x0000008aaa4fe5c0, R14=0x0000008aaa4fe350, R15=0x0000008aaa4fe330
+RIP=0x00007ffc6a4a8312, EFLAGS=0x0000000000010202
+
+Top of Stack: (sp=0x0000008aaa4fe170)
+0x0000008aaa4fe170:   0000027d50c07498 00007ffc6a2d40f6
+0x0000008aaa4fe180:   0000008aaa4fe4b0 0000008aaa4fe1d0
+0x0000008aaa4fe190:   0000008aaa4fe240 00007ffc6a5d2125
+0x0000008aaa4fe1a0:   00000000ffffffff 00007ffc6a4a98e6
+0x0000008aaa4fe1b0:   0000008aaa4fe230 00007ffc6a2d42f2
+0x0000008aaa4fe1c0:   0000027d50c06610 0000008aaa4fe5e0
+0x0000008aaa4fe1d0:   0000027d50520040 0000027d1b5ad000
+0x0000008aaa4fe1e0:   0000008aaa4fe2a0 00007ffc6a3708ba
+0x0000008aaa4fe1f0:   0000008aaa4fe5c0 0000008aaa4fe5c0
+0x0000008aaa4fe200:   0000027d56544410 0000008aaa4fe5c0
+0x0000008aaa4fe210:   00000007c010a7a0 0000027d1b5adce0
+0x0000008aaa4fe220:   0000027d1b5ad000 00007ffc6a36a57b
+0x0000008aaa4fe230:   0000027d50520040 0000027d1b5ad000
+0x0000008aaa4fe240:   0000027d50c06610 0000027d1b5ad000
+0x0000008aaa4fe250:   00000007c010a7a0 00007ffc6a370ca1
+0x0000008aaa4fe260:   0000008aaa4fe601 00000007c0109c30 
+
+Instructions: (pc=0x00007ffc6a4a8312)
+0x00007ffc6a4a82f2:   8b 41 20 c1 e8 0a a8 01 0f 85 ec 00 00 00 80 3d
+0x00007ffc6a4a8302:   cd a5 5a 00 00 74 13 48 8b 41 08 b9 40 1f 00 00
+0x00007ffc6a4a8312:   66 39 48 20 0f 87 d0 00 00 00 48 8b d7 48 8d 4c
+0x00007ffc6a4a8322:   24 20 e8 87 bd e2 ff 48 8b c8 e8 5f 9d 12 00 84 
+
+
+Register to memory mapping:
+
+RAX=0x0000000000000000 is an unknown value
+RBX=0x00000000ffffffff is an unknown value
+RCX=0x0000000000001f40 is an unknown value
+RDX=0x00000000ffffffff is an unknown value
+RSP=0x0000008aaa4fe170 is pointing into the stack for thread: 0x0000027d1b5ad000
+RBP=0x0000008aaa4fe2b0 is pointing into the stack for thread: 0x0000027d1b5ad000
+RSI={method} {0x0000027d50c074a0} 'doSort' '(Lcrossbyte/_internal/deflatex/utils/IComparable;Lcrossbyte/_internal/deflatex/utils/IComparable;)I' in 'crossbyte/_internal/deflatex/utils/PriorityQueue'
+RDI=0x0000008aaa4fe1d0 is pointing into the stack for thread: 0x0000027d1b5ad000
+R8 =0x00000007c0109c30 is pointing into metadata
+R9 =0x0000008aaa4fe2b0 is pointing into the stack for thread: 0x0000027d1b5ad000
+R10=0x0000027d1b59e050 is an unknown value
+R11=0x0000000000000000 is an unknown value
+R12=0x00000000fffffffd is an unknown value
+R13=0x0000008aaa4fe5c0 is pointing into the stack for thread: 0x0000027d1b5ad000
+R14=0x0000008aaa4fe350 is pointing into the stack for thread: 0x0000027d1b5ad000
+R15=0x0000008aaa4fe330 is pointing into the stack for thread: 0x0000027d1b5ad000
+
+
+Stack: [0x0000008aaa400000,0x0000008aaa500000],  sp=0x0000008aaa4fe170,  free space=1016k
+Native frames: (J=compiled Java code, j=interpreted, Vv=VM code, C=native code)
+V  [jvm.dll+0x208312]
+V  [jvm.dll+0x2098e6]
+V  [jvm.dll+0xd08ba]
+V  [jvm.dll+0xd0ca1]
+V  [jvm.dll+0xd070a]
+V  [jvm.dll+0xcea78]
+V  [jvm.dll+0xcd98b]
+V  [jvm.dll+0xccd2f]
+V  [jvm.dll+0xc694e]
+C  0x0000027d1d0b6666
+
+Java frames: (J=compiled Java code, j=interpreted, Vv=VM code)
+j  crossbyte._internal.deflatex.utils.PriorityQueue$PriorityQueue_doSort.invoke(Lcrossbyte/_internal/deflatex/utils/IComparable;Lcrossbyte/_internal/deflatex/utils/IComparable;)I+6
+j  crossbyte._internal.deflatex.utils.PriorityQueue$PriorityQueue_doSort.invoke(Ljava/lang/Object;Ljava/lang/Object;)I+9
+j  haxe.root.Array.quicksort(IILhaxe/jvm/Function;)V+48
+j  haxe.root.Array.sort(Lhaxe/jvm/Function;)V+17
+j  crossbyte._internal.deflatex.utils.PriorityQueue_crossbyte__internal_deflatex__HuffmanTree_Node.add(Lcrossbyte/_internal/deflatex/HuffmanTree$Node;)V+24
+j  crossbyte._internal.deflatex.HuffmanTree.<init>([II)V+81
+j  crossbyte._internal.compression.CompressionRoundTripTest.testHuffmanTwoSymbols()V+32
+j  crossbyte._internal.compression.CompressionRoundTripTest$Closure___initializeUtest___5.invoke()Lutest/Async;+4
+j  crossbyte._internal.compression.CompressionRoundTripTest$Closure___initializeUtest___5.invoke()Ljava/lang/Object;+1
+j  utest.TestHandler.runTest()V+31
+j  utest.TestHandler.checkSetup()V+35
+j  utest.TestHandler$TestHandler_checkSetup.invoke()V+4
+j  utest.Async.then(Lhaxe/jvm/Function;)V+11
+j  utest.TestHandler.runSetup()V+100
+j  utest.TestHandler.execute()V+27
+j  utest.Runner.runFixture(Lutest/TestFixture;)Lutest/TestHandler;+67
+j  utest.Runner$ITestRunner.runFixtures(Lutest/TestHandler;)Z+31
+j  utest.Runner$ITestRunner.runCases()V+284
+j  utest.Runner$ITestRunner.run()V+9
+j  utest.Runner.run()V+19
+j  crossbyte.test.TestHarness.run(Lhaxe/jvm/Function;)V+43
+j  haxe.root.TestMain.main()V+6
+j  haxe.root.TestMain.main([Ljava/lang/String;)V+3
+v  ~StubRoutines::call_stub
+
+---------------  P R O C E S S  ---------------
+
+Java Threads: ( => current thread )
+  0x0000027d53d30000 JavaThread "Service Thread" daemon [_thread_blocked, id=29900, stack(0x0000008aad000000,0x0000008aad100000)]
+  0x0000027d53c4c000 JavaThread "C1 CompilerThread14" daemon [_thread_blocked, id=65288, stack(0x0000008aacf00000,0x0000008aad000000)]
+  0x0000027d53c4b000 JavaThread "C1 CompilerThread13" daemon [_thread_blocked, id=29816, stack(0x0000008aace00000,0x0000008aacf00000)]
+  0x0000027d53c49800 JavaThread "C1 CompilerThread12" daemon [_thread_blocked, id=57640, stack(0x0000008aacd00000,0x0000008aace00000)]
+  0x0000027d53c49000 JavaThread "C1 CompilerThread11" daemon [_thread_blocked, id=68372, stack(0x0000008aacc00000,0x0000008aacd00000)]
+  0x0000027d53c4c800 JavaThread "C1 CompilerThread10" daemon [_thread_blocked, id=70184, stack(0x0000008aacb00000,0x0000008aacc00000)]
+  0x0000027d53c4e000 JavaThread "C2 CompilerThread9" daemon [_thread_blocked, id=69108, stack(0x0000008aaca00000,0x0000008aacb00000)]
+  0x0000027d53c47800 JavaThread "C2 CompilerThread8" daemon [_thread_blocked, id=17600, stack(0x0000008aac900000,0x0000008aaca00000)]
+  0x0000027d53c48000 JavaThread "C2 CompilerThread7" daemon [_thread_blocked, id=2228, stack(0x0000008aac800000,0x0000008aac900000)]
+  0x0000027d53c4a800 JavaThread "C2 CompilerThread6" daemon [_thread_blocked, id=63796, stack(0x0000008aac700000,0x0000008aac800000)]
+  0x0000027d53c3e800 JavaThread "C2 CompilerThread5" daemon [_thread_blocked, id=68820, stack(0x0000008aac600000,0x0000008aac700000)]
+  0x0000027d53c3d000 JavaThread "C2 CompilerThread4" daemon [_thread_blocked, id=66456, stack(0x0000008aac500000,0x0000008aac600000)]
+  0x0000027d53c3c000 JavaThread "C2 CompilerThread3" daemon [_thread_blocked, id=69652, stack(0x0000008aac400000,0x0000008aac500000)]
+  0x0000027d53c37800 JavaThread "C2 CompilerThread2" daemon [_thread_blocked, id=65984, stack(0x0000008aac300000,0x0000008aac400000)]
+  0x0000027d53c33800 JavaThread "C2 CompilerThread1" daemon [_thread_blocked, id=64168, stack(0x0000008aac200000,0x0000008aac300000)]
+  0x0000027d53c2f800 JavaThread "C2 CompilerThread0" daemon [_thread_blocked, id=48584, stack(0x0000008aac100000,0x0000008aac200000)]
+  0x0000027d53c2e800 JavaThread "Attach Listener" daemon [_thread_blocked, id=64440, stack(0x0000008aac000000,0x0000008aac100000)]
+  0x0000027d53c2e000 JavaThread "Signal Dispatcher" daemon [_thread_blocked, id=70352, stack(0x0000008aabf00000,0x0000008aac000000)]
+  0x0000027d53c0b000 JavaThread "Finalizer" daemon [_thread_blocked, id=60844, stack(0x0000008aabe00000,0x0000008aabf00000)]
+  0x0000027d53bea000 JavaThread "Reference Handler" daemon [_thread_blocked, id=64636, stack(0x0000008aabd00000,0x0000008aabe00000)]
+=>0x0000027d1b5ad000 JavaThread "main" [_thread_in_vm, id=67320, stack(0x0000008aaa400000,0x0000008aaa500000)]
+
+Other Threads:
+  0x0000027d53be4800 VMThread [stack: 0x0000008aabc00000,0x0000008aabd00000] [id=64236]
+  0x0000027d53d38000 WatcherThread [stack: 0x0000008aad100000,0x0000008aad200000] [id=66120]
+
+VM state:not at safepoint (normal execution)
+
+VM Mutex/Monitor currently owned by a thread: None
+
+heap address: 0x00000003e5800000, size: 15784 MB, Compressed Oops mode: Zero based, Oop shift amount: 3
+Narrow klass base: 0x0000000000000000, Narrow klass shift: 3
+Compressed class space size: 1073741824 Address: 0x00000007c0000000
+
+Heap:
+ PSYoungGen      total 294912K, used 126465K [0x0000000677300000, 0x000000068bc00000, 0x00000007c0000000)
+  eden space 252928K, 50% used [0x0000000677300000,0x000000067ee807a0,0x0000000686a00000)
+  from space 41984K, 0% used [0x0000000689300000,0x0000000689300000,0x000000068bc00000)
+  to   space 41984K, 0% used [0x0000000686a00000,0x0000000686a00000,0x0000000689300000)
+ ParOldGen       total 674816K, used 0K [0x00000003e5800000, 0x000000040eb00000, 0x0000000677300000)
+  object space 674816K, 0% used [0x00000003e5800000,0x00000003e5800000,0x000000040eb00000)
+ Metaspace       used 7822K, capacity 8198K, committed 8320K, reserved 1056768K
+  class space    used 1054K, capacity 1073K, committed 1152K, reserved 1048576K
+
+Card table byte_map: [0x0000027d2c450000,0x0000027d2e330000] byte_map_base: 0x0000027d2a524000
+
+Marking Bits: (ParMarkBitMap*) 0x00007ffc6aa7a3e0
+ Begin Bits: [0x0000027d2f7c0000, 0x0000027d3ee60000)
+ End Bits:   [0x0000027d3ee60000, 0x0000027d4e500000)
+
+Polling page: 0x0000027d1b540000
+
+CodeCache: size=245760Kb used=4490Kb max_used=4490Kb free=241269Kb
+ bounds [0x0000027d1d090000, 0x0000027d1d500000, 0x0000027d2c090000]
+ total_blobs=764 nmethods=496 adapters=178
+ compilation: enabled
+
+Compilation events (10 events):
+Event: 68.382 Thread 0x0000027d53c49800  492       3       haxe.StackItem::Method (10 bytes)
+Event: 68.382 Thread 0x0000027d53c49000  493       3       haxe.StackItem$Method::<init> (18 bytes)
+Event: 68.382 Thread 0x0000027d53c4c800  494       3       haxe.StackItem::FilePos (12 bytes)
+Event: 68.382 Thread 0x0000027d53c4b000  495       3       haxe.StackItem$FilePos::<init> (29 bytes)
+Event: 68.382 Thread 0x0000027d53c49000 nmethod 493 0x0000027d1d4f15d0 code [0x0000027d1d4f1740, 0x0000027d1d4f1a78]
+Event: 68.382 Thread 0x0000027d53c4c800 nmethod 494 0x0000027d1d4f1c10 code [0x0000027d1d4f1da0, 0x0000027d1d4f2198]
+Event: 68.382 Thread 0x0000027d53c49800 nmethod 492 0x0000027d1d4f2410 code [0x0000027d1d4f25a0, 0x0000027d1d4f2978]
+Event: 68.382 Thread 0x0000027d53c4b000 nmethod 495 0x0000027d1d4f2bd0 code [0x0000027d1d4f2d40, 0x0000027d1d4f3098]
+Event: 68.383 Thread 0x0000027d53c4c000  496       3       java.util.HashMap::containsKey (18 bytes)
+Event: 68.383 Thread 0x0000027d53c4c000 nmethod 496 0x0000027d1d4f3250 code [0x0000027d1d4f33e0, 0x0000027d1d4f37e0]
+
+GC Heap History (0 events):
+No events
+
+Deoptimization events (5 events):
+Event: 0.087 Thread 0x0000027d1b5ad000 Uncommon trap: reason=unstable_if action=reinterpret pc=0x0000027d1d471fc0 method=java.lang.String.indexOf([CII[CIII)I @ 134
+Event: 0.115 Thread 0x0000027d1b5ad000 Uncommon trap: reason=loop_limit_check action=maybe_recompile pc=0x0000027d1d4ada00 method=java.lang.String.equals(Ljava/lang/Object;)Z @ 56
+Event: 0.117 Thread 0x0000027d1b5ad000 Uncommon trap: reason=unstable_if action=reinterpret pc=0x0000027d1d4acff8 method=sun.misc.URLClassPath.getLoader(I)Lsun/misc/URLClassPath$Loader; @ 36
+Event: 0.118 Thread 0x0000027d1b5ad000 Uncommon trap: reason=unstable_if action=reinterpret pc=0x0000027d1d4b767c method=sun.misc.MetaIndex.mayContain(Ljava/lang/String;)Z @ 13
+Event: 0.118 Thread 0x0000027d1b5ad000 Uncommon trap: reason=unstable_if action=reinterpret pc=0x0000027d1d4ade0c method=sun.misc.MetaIndex.mayContain(Ljava/lang/String;)Z @ 13
+
+Classes redefined (0 events):
+No events
+
+Internal exceptions (10 events):
+Event: 30.255 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798bb418) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 34.263 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798c2c30) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 38.269 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798ca9e0) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 42.276 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798d2558) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 46.297 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798da0a0) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 50.311 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798e2458) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 54.329 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798ea868) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 58.339 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798f2fd0) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 62.353 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x00000006798fa3a0) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+Event: 66.367 Thread 0x0000027d1b5ad000 Exception <a 'java/lang/IllegalAccessError': tried to access field crossbyte.url.URLAccess.__uri from class crossbyte._internal.http.Http> (0x0000000679901eb0) thrown at [C:\jenkins\workspace\8-2-build-windows-x64-cygwin-sans-NAS\jdk8u481\2490\hotspot\src
+
+Events (10 events):
+Event: 68.383 loading class crossbyte/_internal/deflatex/HuffmanTree$LeafNode
+Event: 68.383 loading class crossbyte/_internal/deflatex/HuffmanTree$LeafNode done
+Event: 68.383 loading class crossbyte/_internal/deflatex/HuffmanTree$Node
+Event: 68.383 loading class crossbyte/_internal/deflatex/HuffmanTree$Node done
+Event: 68.383 loading class crossbyte/_internal/deflatex/utils/IComparable
+Event: 68.383 loading class crossbyte/_internal/deflatex/utils/IComparable done
+Event: 68.383 loading class crossbyte/_internal/deflatex/utils/PriorityQueue$PriorityQueue_doSort
+Event: 68.383 loading class crossbyte/_internal/deflatex/utils/PriorityQueue$PriorityQueue_doSort done
+Event: 68.383 loading class crossbyte/_internal/deflatex/utils/PriorityQueue
+Event: 68.383 loading class crossbyte/_internal/deflatex/utils/PriorityQueue done
+
+
+Dynamic libraries:
+0x00007ff6f3760000 - 0x00007ff6f37af000 	C:\Program Files\Java\jre1.8.0_481\bin\java.exe
+0x00007ffce1e70000 - 0x00007ffce2069000 	C:\Windows\SYSTEM32\ntdll.dll
+0x00007ffce1bd0000 - 0x00007ffce1c92000 	C:\Windows\System32\KERNEL32.DLL
+0x00007ffcdf4e0000 - 0x00007ffcdf7d7000 	C:\Windows\System32\KERNELBASE.dll
+0x00007ffce19f0000 - 0x00007ffce1aa1000 	C:\Windows\System32\ADVAPI32.dll
+0x00007ffce1650000 - 0x00007ffce16ee000 	C:\Windows\System32\msvcrt.dll
+0x00007ffce1130000 - 0x00007ffce11cf000 	C:\Windows\System32\sechost.dll
+0x00007ffce0f90000 - 0x00007ffce10b6000 	C:\Windows\System32\RPCRT4.dll
+0x00007ffcdf8e0000 - 0x00007ffcdf907000 	C:\Windows\System32\bcrypt.dll
+0x00007ffce0c60000 - 0x00007ffce0dfd000 	C:\Windows\System32\USER32.dll
+0x00007ffcdfdb0000 - 0x00007ffcdfdd2000 	C:\Windows\System32\win32u.dll
+0x00007ffce1b10000 - 0x00007ffce1b3b000 	C:\Windows\System32\GDI32.dll
+0x00007ffcdfc90000 - 0x00007ffcdfdaa000 	C:\Windows\System32\gdi32full.dll
+0x00007ffcdfac0000 - 0x00007ffcdfb5d000 	C:\Windows\System32\msvcp_win.dll
+0x00007ffcdf7e0000 - 0x00007ffcdf8e0000 	C:\Windows\System32\ucrtbase.dll
+0x00007ffcd4150000 - 0x00007ffcd43eb000 	C:\Windows\WinSxS\amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.19041.6926_none_60b5a53971f8f7e6\COMCTL32.dll
+0x00007ffce02e0000 - 0x00007ffce030f000 	C:\Windows\System32\IMM32.DLL
+0x00007ffc8a990000 - 0x00007ffc8a9ab000 	C:\Program Files\Java\jre1.8.0_481\bin\vcruntime140.dll
+0x00007ffcb6210000 - 0x00007ffcb621c000 	C:\Program Files\Java\jre1.8.0_481\bin\vcruntime140_1.dll
+0x00007ffc7fbf0000 - 0x00007ffc7fc7e000 	C:\Program Files\Java\jre1.8.0_481\bin\msvcp140.dll
+0x00007ffc6a2a0000 - 0x00007ffc6ab4a000 	C:\Program Files\Java\jre1.8.0_481\bin\server\jvm.dll
+0x00007ffce1bc0000 - 0x00007ffce1bc8000 	C:\Windows\System32\PSAPI.DLL
+0x00007ffcb6500000 - 0x00007ffcb6509000 	C:\Windows\SYSTEM32\WSOCK32.dll
+0x00007ffccf3d0000 - 0x00007ffccf3f7000 	C:\Windows\SYSTEM32\WINMM.dll
+0x00007ffcd8530000 - 0x00007ffcd853a000 	C:\Windows\SYSTEM32\VERSION.dll
+0x00007ffce10c0000 - 0x00007ffce112b000 	C:\Windows\System32\WS2_32.dll
+0x00007ffcdd330000 - 0x00007ffcdd342000 	C:\Windows\SYSTEM32\kernel.appcore.dll
+0x00007ffc93820000 - 0x00007ffc93830000 	C:\Program Files\Java\jre1.8.0_481\bin\verify.dll
+0x00007ffc81250000 - 0x00007ffc8127b000 	C:\Program Files\Java\jre1.8.0_481\bin\java.dll
+0x00007ffc811d0000 - 0x00007ffc811e8000 	C:\Program Files\Java\jre1.8.0_481\bin\zip.dll
+0x00007ffce0430000 - 0x00007ffce0ba1000 	C:\Windows\System32\SHELL32.dll
+0x00007ffcdd530000 - 0x00007ffcddcd6000 	C:\Windows\SYSTEM32\windows.storage.dll
+0x00007ffcdff80000 - 0x00007ffce02d3000 	C:\Windows\System32\combase.dll
+0x00007ffcdee20000 - 0x00007ffcdee4b000 	C:\Windows\SYSTEM32\Wldp.dll
+0x00007ffce0e00000 - 0x00007ffce0ed6000 	C:\Windows\System32\OLEAUT32.dll
+0x00007ffce0ee0000 - 0x00007ffce0f8d000 	C:\Windows\System32\SHCORE.dll
+0x00007ffce1ab0000 - 0x00007ffce1b0b000 	C:\Windows\System32\shlwapi.dll
+0x00007ffcdf410000 - 0x00007ffcdf434000 	C:\Windows\SYSTEM32\profapi.dll
+0x00007ffcd6d50000 - 0x00007ffcd6f51000 	C:\Windows\SYSTEM32\dbghelp.dll
+0x00007ffcdfde0000 - 0x00007ffcdfe62000 	C:\Windows\System32\bcryptPrimitives.dll
+
+VM Arguments:
+jvm_args: -Xverify:none 
+java_command: export/jvm/CrossByteTests.jar
+java_class_path (initial): export/jvm/CrossByteTests.jar
+Launcher Type: SUN_STANDARD
+
+Environment Variables:
+PATH=C:\Users\Chris\bin;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\local\bin;C:\Program Files\Git\usr\bin;C:\Program Files\Git\usr\bin;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin;C:\Users\Chris\bin;C:\Program Files (x86)\Common Files\Oracle\Java\java8path;C:\Program Files (x86)\Common Files\Oracle\Java\javapath;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32\OpenSSH;C:\Program Files\dotnet;C:\Program Files\NVIDIA Corporation\NVIDIA App\NvDLISR;C:\Program Files (x86)\NVIDIA Corporation\PhysX\Common;C:\HaxeToolkit\haxe;C:\HaxeToolkit\neko;C:\Program Files\Tailscale;C:\Program Files\Git\cmd;C:\Program Files\ruffle\bin;C:\Program Files\nodejs;C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit;C:\Program Files\GitHub CLI;C:\Users\Chris\AppData\Local\Programs\DKMLNA~1\usr\bin;C:\Users\Chris\AppData\Local\Programs\DKMLNA~1\bin;C:\Users\Chris\.cargo\bin;C:\ripgrep;C:\Users\Chris\AppData\Local\Microsoft\WindowsApps;C:\Users\Chris\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\Chris\AppData\Local\GitHubDesktop\bin;C:\Users\Chris\.lmstudio\bin;C:\Users\Chris\AppData\Local\Python\bin;C:\Users\Chris\AppData\Roaming\npm;C:\Users\Chris\AppData\Local\Microsoft\WinGet\Packages\BurntSushi.ripgrep.MSVC_Microsoft.Winget.Source_8wekyb3d8bbwe\ripgrep-15.1.0-x86_64-pc-windows-msvc;C:\Users\Chris\AppData\Local\Programs\Python\Python314;C:\Users\Chris\AppData\Local\Programs\Python\Python310;C:\Program Files\nodejs;C:\Program Files\Git\mingw64\bin;C:\Program Files\Git\usr\bin\vendor_perl;C:\Program Files\Git\usr\bin\core_perl;C:\Users\Chris\AppData\Roaming\Claude\local-agent-mode-sessions\skills-plugin\0d516abc-c944-4fdb-827b-133bb634df73\30695996-5b3b-48f8-aeec-885c245ca08e\bin
+USERNAME=Chris
+SHELL=C:\Program Files\Git\usr\bin\bash.exe
+OS=Windows_NT
+PROCESSOR_IDENTIFIER=AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD
+
+
+
+---------------  S Y S T E M  ---------------
+
+OS: Windows 10 , 64 bit Build 19041 (10.0.19041.7291)
+
+CPU:total 32 (initial active 32) (32 cores per cpu, 1 threads per core) family 26 model 68 stepping 0, cmov, cx8, fxsr, mmx, sse, sse2, sse3, ssse3, sse4.1, sse4.2, popcnt, avx, avx2, aes, clmul, erms, mmxext, 3dnowpref, lzcnt, sse4a, tsc, tscinvbit, tscinv, bmi1
+
+Memory: 4k page, physical 64650528k(20330440k free), swap 119176480k(46558768k free)
+
+vm_info: Java HotSpot(TM) 64-Bit Server VM (25.481-b10) for windows-amd64 JRE (1.8.0_481-b10), built on Dec 18 2025 12:18:00 by "java_re" with MS VC++ 17.6 (VS2022)
+
+time: Tue Jun 23 01:53:58 2026
+timezone: Eastern Daylight Time
+elapsed time: 68.390618 seconds (0d 0h 1m 8s)
+

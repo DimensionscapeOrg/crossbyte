@@ -1,0 +1,5 @@
+-cp src
+-cp tests
+-lib utest
+-main JvmSmokeMain
+--jvm export/jvm/CrossByteJvmSmoke.jar

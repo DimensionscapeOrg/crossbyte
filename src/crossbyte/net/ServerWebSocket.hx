@@ -16,8 +16,14 @@ import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
 import sys.net.Host;
+#if (java || jvm)
+// TLS is stubbed on the jvm target (see FlexSocket / JvmSsl).
+import crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate as Certificate;
+import crossbyte._internal.socket._jvm.JvmSsl.JvmSslKey as Key;
+#else
 import sys.ssl.Certificate;
 import sys.ssl.Key;
+#end
 
 /**
  * ...

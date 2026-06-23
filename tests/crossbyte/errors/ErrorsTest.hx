@@ -8,7 +8,7 @@ class ErrorsTest extends utest.Test {
 		Assert.equals("Error", err.name);
 		Assert.equals(0, err.errorID);
 		Assert.equals("Error", err.toString());
-		Assert.notNull(err.getStackTrace());
+		Assert.notNull(err.getCallStack());
 
 		var withMessage = new Error("boom", 7);
 		Assert.equals("boom", withMessage.toString());
