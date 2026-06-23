@@ -89,9 +89,18 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 		method returns `null`.
 		@returns	A string representation of the call stack.
 	**/
-	public function getStackTrace():String {
+	public function getCallStack():String {
 		return CallStack.toString(CallStack.exceptionStack());
 	}
+
+	#if !(java || jvm)
+	// AS3-compatible alias. Unavailable on java/jvm, where the name is taken by
+	// haxe.Exception/Throwable.getStackTrace() with an incompatible (native
+	// array) signature that Java cannot return-type-overload. Use getCallStack().
+	public inline function getStackTrace():String {
+		return getCallStack();
+	}
+	#end
 
 	// @:noCompletion @:dox(hide) public static function throwError (type:Class<Dynamic>, index:UInt, ?p1:Dynamic, ?p2:Dynamic, ?p3:Dynamic, ?p4:Dynamic, ?p5:Dynamic):Dynamic;
 	/**
