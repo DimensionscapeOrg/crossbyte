@@ -145,6 +145,31 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals(-2, negInt);
 	}
 
+	public function testPrimitiveValueToBoolNormalizesStringsAndNumbers():Void {
+		// Falsy strings (after trim + lowercase).
+		Assert.isFalse((("false" : PrimitiveValue)).toBool());
+		Assert.isFalse((("False" : PrimitiveValue)).toBool());
+		Assert.isFalse((("FALSE" : PrimitiveValue)).toBool());
+		Assert.isFalse((("0" : PrimitiveValue)).toBool());
+		Assert.isFalse((("" : PrimitiveValue)).toBool());
+		Assert.isFalse((("   " : PrimitiveValue)).toBool());
+		Assert.isFalse(((" false " : PrimitiveValue)).toBool());
+
+		// Truthy strings.
+		Assert.isTrue((("true" : PrimitiveValue)).toBool());
+		Assert.isTrue((("True" : PrimitiveValue)).toBool());
+		Assert.isTrue((("1" : PrimitiveValue)).toBool());
+		Assert.isTrue((("yes" : PrimitiveValue)).toBool());
+		Assert.isTrue((("hello" : PrimitiveValue)).toBool());
+
+		// Numeric and null branches.
+		Assert.isFalse(((0 : PrimitiveValue)).toBool());
+		Assert.isTrue(((1 : PrimitiveValue)).toBool());
+		Assert.isFalse(((0.0 : PrimitiveValue)).toBool());
+		Assert.isTrue(((2.5 : PrimitiveValue)).toBool());
+		Assert.isFalse(((cast null : PrimitiveValue)).toBool());
+	}
+
 	public function testPrimitiveValueRejectsUnsupportedDynamicConversions():Void {
 		var value:PrimitiveValue = cast { nested: true };
 

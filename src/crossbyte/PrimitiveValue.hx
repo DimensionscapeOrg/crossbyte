@@ -149,7 +149,8 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			case TBool:
 				return this;
 			case TClass(String):
-				return this != "false";
+				var s:String = StringTools.trim((this : String)).toLowerCase();
+				return s != "" && s != "0" && s != "false";
 			case TNull:
 				return false;
 			default:

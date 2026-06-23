@@ -85,10 +85,10 @@ class BitmapData {
 
 	public function clone():BitmapData {
 		__ensureNotDisposed();
-		var clone = new BitmapData(width, height, transparent);
-		for (i in 0...pixels.length) {
-			clone.pixels[i] = pixels[i];
-		}
+		var clone = new BitmapData(0, 0, transparent);
+		clone.width = width;
+		clone.height = height;
+		clone.pixels = pixels.copy();
 		return clone;
 	}
 

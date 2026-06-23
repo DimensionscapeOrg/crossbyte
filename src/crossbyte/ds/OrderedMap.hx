@@ -88,7 +88,10 @@ final class OrderedMap<K:Dynamic, V> {
 	 * @return An iterator of values.
 	 */
 	public function iterator():Iterator<V> {
-		return __keys.map(k -> __map.get(k)).iterator();
+		// The get closure is created here, in OrderedMap's @:generic-specialized
+		// context, so __map resolves to the correct concrete Map implementation.
+		// The iterator itself only does array access.
+		return new OrderedMapValueIterator(__keys, function(k:K):V return __map.get(k));
 	}
 
 	public inline function unorderedIterator():Iterator<V>{
@@ -101,7 +104,7 @@ final class OrderedMap<K:Dynamic, V> {
 	 * @return An iterator of objects with `key` and `value` fields.
 	 */
 	public function keyValuePairs():Iterator<{key:K, value:V}> {
-		return __keys.map(k -> {key: k, value: __map.get(k)}).iterator();
+		return new OrderedMapPairIterator(__keys, function(k:K):V return __map.get(k));
 	}
 
 	/**
@@ -127,5 +130,57 @@ final class OrderedMap<K:Dynamic, V> {
 
 	public #if final inline #end function indexOf(key:K, ?fromIndex:Int):Int {
 		return __keys.indexOf(key, fromIndex);
+	}
+}
+
+/**
+ * Lazy iterator over the values of an `OrderedMap` in insertion order.
+ * Index-walks the backing key array without allocating an intermediate array.
+ */
+// Holds only the key array and a value-getter closure (built in OrderedMap's
+// specialized context). The iterator does no Map operations itself, so Map's
+// @:multiType key-type selection is never resolved through an unspecialized K.
+@:noCompletion
+private class OrderedMapValueIterator<K, V> {
+	private var __keys:Array<K>;
+	private var __get:K->V;
+	private var __index:Int = 0;
+
+	public inline function new(keys:Array<K>, get:K->V) {
+		__keys = keys;
+		__get = get;
+	}
+
+	public inline function hasNext():Bool {
+		return __index < __keys.length;
+	}
+
+	public inline function next():V {
+		return __get(__keys[__index++]);
+	}
+}
+
+/**
+ * Lazy iterator over the `{ key, value }` pairs of an `OrderedMap` in insertion
+ * order. The pair struct is built only when `next()` is called.
+ */
+@:noCompletion
+private class OrderedMapPairIterator<K, V> {
+	private var __keys:Array<K>;
+	private var __get:K->V;
+	private var __index:Int = 0;
+
+	public inline function new(keys:Array<K>, get:K->V) {
+		__keys = keys;
+		__get = get;
+	}
+
+	public inline function hasNext():Bool {
+		return __index < __keys.length;
+	}
+
+	public inline function next():{key:K, value:V} {
+		var key = __keys[__index++];
+		return {key: key, value: __get(key)};
 	}
 }

@@ -291,15 +291,20 @@ class Rectangle {
 				`width`, and `height` properties set to 0.
 	**/
 	public function intersection(toIntersect:Rectangle):Rectangle {
+		var r = right;
+		var tr = toIntersect.right;
+		var b = bottom;
+		var tb = toIntersect.bottom;
+
 		var x0 = x < toIntersect.x ? toIntersect.x : x;
-		var x1 = right > toIntersect.right ? toIntersect.right : right;
+		var x1 = r > tr ? tr : r;
 
 		if (x1 <= x0) {
 			return new Rectangle();
 		}
 
 		var y0 = y < toIntersect.y ? toIntersect.y : y;
-		var y1 = bottom > toIntersect.bottom ? toIntersect.bottom : bottom;
+		var y1 = b > tb ? tb : b;
 
 		if (y1 <= y0) {
 			return new Rectangle();
@@ -321,15 +326,20 @@ class Rectangle {
 				with this Rectangle object; otherwise `false`.
 	**/
 	public function intersects(toIntersect:Rectangle):Bool {
+		var r = right;
+		var tr = toIntersect.right;
+		var b = bottom;
+		var tb = toIntersect.bottom;
+
 		var x0 = x < toIntersect.x ? toIntersect.x : x;
-		var x1 = right > toIntersect.right ? toIntersect.right : right;
+		var x1 = r > tr ? tr : r;
 
 		if (x1 <= x0) {
 			return false;
 		}
 
 		var y0 = y < toIntersect.y ? toIntersect.y : y;
-		var y1 = bottom > toIntersect.bottom ? toIntersect.bottom : bottom;
+		var y1 = b > tb ? tb : b;
 
 		return y1 > y0;
 	}
@@ -541,7 +551,7 @@ class Rectangle {
 	@:noCompletion private function set_bottomRight(p:Point):Point {
 		width = p.x - x;
 		height = p.y - y;
-		return p.clone();
+		return p;
 	}
 
 	@:noCompletion private function get_left():Float {
@@ -570,7 +580,7 @@ class Rectangle {
 	@:noCompletion private function set_size(p:Point):Point {
 		width = p.x;
 		height = p.y;
-		return p.clone();
+		return p;
 	}
 
 	@:noCompletion private function get_top():Float {
@@ -590,6 +600,6 @@ class Rectangle {
 	@:noCompletion private function set_topLeft(p:Point):Point {
 		x = p.x;
 		y = p.y;
-		return p.clone();
+		return p;
 	}
 }

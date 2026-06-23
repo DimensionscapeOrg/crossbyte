@@ -150,12 +150,16 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		if (rawPort == null) {
 			return null;
 		}
-		if (rawPort.length == 0 || !~/^[0-9]+$/.match(rawPort)) {
+		if (rawPort.length == 0 || rawPort.length > 5 || !~/^[0-9]+$/.match(rawPort)) {
 			throw "Uri must be well-formed";
 		}
 
 		var parsed:Null<Int> = Std.parseInt(rawPort);
 		if (parsed == null || parsed < 0 || parsed > 65535) {
+			throw "Uri must be well-formed";
+		}
+
+		if (Std.string(parsed) != rawPort) {
 			throw "Uri must be well-formed";
 		}
 

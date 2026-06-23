@@ -70,8 +70,11 @@ class Lz4 {
 			if (literalEnd > iLen) {
 				throw "Could not perform decompression";
 			}
-			while (iPos < literalEnd) {
-				oBuf[oPos++] = __byte(b, iPos++);
+			if (clen > 0) {
+				oBuf.position = oPos;
+				oBuf.writeBytes(b, iPos, clen);
+				iPos = literalEnd;
+				oPos += clen;
 			}
 
 			if (iPos == iLen) {
@@ -115,8 +118,8 @@ class Lz4 {
 		return oBuf.getData().toBytes(oBuf.length);
 		#else
 		var bOut = Bytes.alloc(oPos);
-		for (i in 0...oPos) {
-			bOut.set(i, oBuf[i]);
+		if (oPos > 0) {
+			bOut.blit(0, oBuf, 0, oPos);
 		}
 		return bOut;
 		#end
