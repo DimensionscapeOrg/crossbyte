@@ -73,6 +73,10 @@ class TimerHeap implements ITimerScheduler {
 		if (immediate) {
 			queue.remove(node);
 			freeSlot(node.id);
+		} else if (node.pausedAt != null) {
+			// A paused timer is not in the queue, so advanceTime will never
+			// dequeue it to free the slot. Free it now or the slot leaks.
+			freeSlot(node.id);
 		} else {
 			node.enabled = false;
 		}

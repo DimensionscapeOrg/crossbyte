@@ -50,6 +50,26 @@ class URLTest extends utest.Test {
 		Assert.isTrue(throws(() -> new URL("http://::1/")));
 	}
 
+	public function testParsesExplicitPort():Void {
+		var url = new URL("http://host:8080/path");
+
+		Assert.equals("host", url.host);
+		Assert.equals(8080, url.port);
+		Assert.equals("/path", url.path);
+	}
+
+	public function testRejectsOverflowingPort():Void {
+		// A 10+ digit port can wrap into the valid 0-65535 range when parsed
+		// with fixed-width integers; it must be rejected as malformed.
+		Assert.isTrue(throws(() -> new URL("http://host:99999999999/")));
+	}
+
+	public function testRejectsTooLongButInRangePort():Void {
+		// Six digits that happen to parse within range must still be rejected
+		// because the raw text is longer than any valid port.
+		Assert.isTrue(throws(() -> new URL("http://host:000080/")));
+	}
+
 	@:noCompletion private static function throws(fn:Void->Void):Bool {
 		try {
 			fn();
