@@ -6,7 +6,8 @@ import utest.Assert;
 
 class CryptoTest extends utest.Test {
 	public function testSecureRandomMatchesTargetSemantics():Void {
-		#if cpp
+		#if (cpp || java || jvm)
+		// jvm uses java.security.SecureRandom and matches the cpp length semantics.
 		Assert.equals(0, SecureRandom.getSecureRandomBytes(-1).length);
 		Assert.equals(0, SecureRandom.getSecureRandomBytes(0).length);
 		Assert.equals(32, SecureRandom.getSecureRandomBytes(32).length);
