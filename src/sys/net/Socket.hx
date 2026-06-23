@@ -702,8 +702,9 @@ class Socket {
 		if (addr == null)
 			return null;
 		var isa:InetSocketAddress = cast addr;
-		var h = new Host(null);
-		h.wrapped = isa.getAddress();
+		// Build a fully-populated Host from the IP string; `new Host(null); wrapped=...`
+		// leaves the host/ip fields stale (empty on the jvm target).
+		var h = new Host(isa.getAddress().getHostAddress());
 		return {host: h, port: isa.getPort()};
 	}
 
@@ -711,15 +712,18 @@ class Socket {
 		var addr:Dynamic = try {
 			// For a bound server socket the client channel is unbound (null);
 			// report the server channel's local address (incl. an OS-assigned port).
-			(serverChannel != null) ? serverChannel.getLocalAddress() : __sock().getLocalAddress();
+			// NetworkChannel.getLocalAddress works for both SocketChannel (TCP)
+			// and DatagramChannel (UDP), so this is correct for UdpSocket too.
+			(serverChannel != null) ? (cast serverChannel : java.nio.channels.NetworkChannel).getLocalAddress() : (cast channel : java.nio.channels.NetworkChannel).getLocalAddress();
 		} catch (e:Dynamic) {
 			return null;
 		}
 		if (addr == null)
 			return null;
 		var isa:InetSocketAddress = cast addr;
-		var h = new Host(null);
-		h.wrapped = isa.getAddress();
+		// Build a fully-populated Host from the IP string; `new Host(null); wrapped=...`
+		// leaves the host/ip fields stale (empty on the jvm target).
+		var h = new Host(isa.getAddress().getHostAddress());
 		return {host: h, port: isa.getPort()};
 	}
 
@@ -731,6 +735,8 @@ class Socket {
 	public function waitForRead():Void {
 		var selector = Selector.open();
 		try {
+			if (channel.isBlocking())
+				channel.configureBlocking(false);
 			channel.register(selector, SelectionKey.OP_READ);
 			selector.select();
 		} catch (e:Dynamic) {}
@@ -798,6 +804,9 @@ class Socket {
 				var ch:java.nio.channels.SelectableChannel = s.serverChannel != null ? cast s.serverChannel : cast s.channel;
 				if (ch == null)
 					continue;
+				// A channel must be non-blocking to register with a Selector.
+				if (ch.isBlocking())
+					ch.configureBlocking(false);
 				var key = ch.register(selector, interest[i]);
 				key.attach(s);
 			}
