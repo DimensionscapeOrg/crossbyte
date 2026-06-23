@@ -588,14 +588,22 @@ class Socket {
 	public var output(default, null):haxe.io.Output;
 	public var custom:Dynamic;
 
-	private var channel:SocketChannel;
+	// Holds either a SocketChannel (TCP) or a DatagramChannel (UDP) so that
+	// UdpSocket can reuse the registry/select() machinery. TCP-only members
+	// access it through __sock().
+	private var channel:java.nio.channels.SelectableChannel;
 	private var serverChannel:ServerSocketChannel;
 	private var __timeout:Float = 0.0;
 
 	public function new():Void {
-		this.channel = SocketChannel.open();
-		this.channel.configureBlocking(true);
+		var ch = SocketChannel.open();
+		ch.configureBlocking(true);
+		this.channel = ch;
 	}
+
+	// The channel as a SocketChannel for TCP operations. UDP never calls these.
+	private inline function __sock():SocketChannel
+		return cast channel;
 
 	private function __init(channel:SocketChannel):Void {
 		this.channel = channel;
@@ -629,13 +637,14 @@ class Socket {
 	public function connect(host:Host, port:Int):Void {
 		try {
 			var addr = new InetSocketAddress(host.wrapped, port);
-			channel.connect(addr);
+			var sc = __sock();
+			sc.connect(addr);
 			// Non-blocking connect: drive it to completion.
-			while (!channel.finishConnect()) {
+			while (!sc.finishConnect()) {
 				// busy-wait until the connection is established
 			}
-			this.input = new SocketInput(channel);
-			this.output = new SocketOutput(channel);
+			this.input = new SocketInput(sc);
+			this.output = new SocketOutput(sc);
 		} catch (e:Dynamic)
 			throw e;
 	}
@@ -649,10 +658,11 @@ class Socket {
 
 	public function shutdown(read:Bool, write:Bool):Void {
 		try {
+			var sc = __sock();
 			if (read)
-				channel.shutdownInput();
+				sc.shutdownInput();
 			if (write)
-				channel.shutdownOutput();
+				sc.shutdownOutput();
 		} catch (e:Dynamic)
 			throw e;
 	}
@@ -685,7 +695,7 @@ class Socket {
 
 	public function peer():{host:Host, port:Int} {
 		var addr:Dynamic = try {
-			channel.getRemoteAddress();
+			__sock().getRemoteAddress();
 		} catch (e:Dynamic) {
 			return null;
 		}
@@ -701,7 +711,7 @@ class Socket {
 		var addr:Dynamic = try {
 			// For a bound server socket the client channel is unbound (null);
 			// report the server channel's local address (incl. an OS-assigned port).
-			(serverChannel != null) ? serverChannel.getLocalAddress() : channel.getLocalAddress();
+			(serverChannel != null) ? serverChannel.getLocalAddress() : __sock().getLocalAddress();
 		} catch (e:Dynamic) {
 			return null;
 		}
@@ -741,7 +751,7 @@ class Socket {
 
 	public function setFastSend(b:Bool):Void {
 		try
-			channel.setOption(java.net.StandardSocketOptions.TCP_NODELAY, b)
+			__sock().setOption(java.net.StandardSocketOptions.TCP_NODELAY, b)
 		catch (e:Dynamic)
 			throw e;
 	}
