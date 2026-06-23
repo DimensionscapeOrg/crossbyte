@@ -5,7 +5,7 @@ import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.ThreadEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.events.EventDispatcher;
-#if (cpp || neko || hl)
+#if (cpp || neko || hl || java || jvm)
 import sys.thread.Deque;
 import sys.thread.Thread;
 import sys.thread.Mutex;
@@ -31,11 +31,11 @@ class Worker extends EventDispatcher {
 
 	@:noCompletion private var __runMessage:Dynamic;
 	@:noCompletion private var __runtime:CrossByte;
-	#if (cpp || neko || hl)
+	#if (cpp || neko || hl || java || jvm)
 	@:noCompletion private var __tickListener:TickEvent->Void;
 	#end
 
-	#if (cpp || neko || hl)
+	#if (cpp || neko || hl || java || jvm)
 	@:noCompletion private var __messageQueue:Deque<WorkerMessage>;
 	@:noCompletion private var __workerThread:Thread;
 	// Guards the cross-thread lifecycle state (__messageQueue reference plus the
@@ -46,7 +46,7 @@ class Worker extends EventDispatcher {
 
 	public function new() {
 		super();
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock = new Mutex();
 		__tickListener = __update;
 		#end
@@ -54,7 +54,7 @@ class Worker extends EventDispatcher {
 	}
 
 	public function cancel(doClean:Bool = true):Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		cancelRequested = true;
 		canceled = true;
@@ -77,7 +77,7 @@ class Worker extends EventDispatcher {
 	}
 
 	public function clean():Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__detachRuntimeListener();
 		#end
 		__cleanResources();
@@ -93,7 +93,7 @@ class Worker extends EventDispatcher {
 		state = RUNNING;
 		__runMessage = message;
 
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__runtime = CrossByte.current();
 		__messageQueue = new Deque();
 		__workerThread = Thread.create(__doWork);
@@ -104,7 +104,7 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendComplete(message:Dynamic = null):Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		if (cancelRequested || canceled) {
 			__lock.release();
@@ -129,7 +129,7 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendError(message:Dynamic = null):Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		if (cancelRequested || canceled) {
 			__lock.release();
@@ -150,7 +150,7 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendProgress(message:Dynamic = null):Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		if (cancelRequested || canceled) {
 			__lock.release();
@@ -177,7 +177,7 @@ class Worker extends EventDispatcher {
 	}
 
 	@:noCompletion private function __cleanResources():Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		__workerThread = null;
 		__messageQueue = null;
@@ -224,7 +224,7 @@ class Worker extends EventDispatcher {
 		dispatchEvent(new ThreadEvent(ThreadEvent.ERROR, message));
 	}
 
-	#if (cpp || neko || hl)
+	#if (cpp || neko || hl || java || jvm)
 	@:noCompletion private inline function __detachRuntimeListener():Void {
 		if (__runtime != null) {
 			__runtime.removeEventListener(TickEvent.TICK, __tickListener);

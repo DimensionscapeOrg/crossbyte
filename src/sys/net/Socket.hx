@@ -476,6 +476,361 @@ class Socket {
 	}
 }
 
+#elseif (java || jvm)
+
+import haxe.io.Error;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+
+private class SocketInput extends haxe.io.Input {
+	var channel:SocketChannel;
+
+	public function new(channel:SocketChannel) {
+		this.channel = channel;
+	}
+
+	public override function readByte():Int {
+		var buf = ByteBuffer.allocate(1);
+		var n:Int = try {
+			channel.read(buf);
+		} catch (e:Dynamic) {
+			throw Custom(e);
+		}
+		if (n == 0)
+			throw Blocked;
+		if (n < 0)
+			throw new haxe.io.Eof();
+		buf.flip();
+		return (cast(buf.get(), Int)) & 0xFF;
+	}
+
+	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (channel == null)
+			throw "Invalid handle";
+		var bb = ByteBuffer.allocate(len);
+		var n:Int = try {
+			channel.read(bb);
+		} catch (e:Dynamic) {
+			throw Custom(e);
+		}
+		if (n == 0)
+			throw Blocked;
+		if (n < 0)
+			throw new haxe.io.Eof();
+		bb.flip();
+		var data = buf.getData();
+		bb.get(data, pos, n);
+		return n;
+	}
+
+	public override function close():Void {
+		super.close();
+		if (channel != null) {
+			try
+				channel.close()
+			catch (e:Dynamic) {}
+		}
+	}
+}
+
+private class SocketOutput extends haxe.io.Output {
+	var channel:SocketChannel;
+
+	public function new(channel:SocketChannel) {
+		this.channel = channel;
+	}
+
+	public override function writeByte(c:Int):Void {
+		if (channel == null)
+			throw "Invalid handle";
+		var buf = ByteBuffer.allocate(1);
+		buf.put(c & 0xFF);
+		buf.flip();
+		var n:Int = try {
+			channel.write(buf);
+		} catch (e:Dynamic) {
+			throw Custom(e);
+		}
+		if (n == 0)
+			throw Blocked;
+	}
+
+	public override function writeBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (channel == null)
+			throw "Invalid handle";
+		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
+		var n:Int = try {
+			channel.write(bb);
+		} catch (e:Dynamic) {
+			throw Custom(e);
+		}
+		if (n == 0)
+			throw Blocked;
+		return n;
+	}
+
+	public override function close():Void {
+		super.close();
+		if (channel != null) {
+			try
+				channel.close()
+			catch (e:Dynamic) {}
+		}
+	}
+}
+
+class Socket {
+	public var input(default, null):haxe.io.Input;
+	public var output(default, null):haxe.io.Output;
+	public var custom:Dynamic;
+
+	private var channel:SocketChannel;
+	private var serverChannel:ServerSocketChannel;
+	private var __timeout:Float = 0.0;
+
+	public function new():Void {
+		this.channel = SocketChannel.open();
+		this.channel.configureBlocking(false);
+	}
+
+	private function __init(channel:SocketChannel):Void {
+		this.channel = channel;
+		this.input = new SocketInput(channel);
+		this.output = new SocketOutput(channel);
+	}
+
+	public function close():Void {
+		try {
+			if (channel != null)
+				channel.close();
+		} catch (e:Dynamic) {}
+		try {
+			if (serverChannel != null)
+				serverChannel.close();
+		} catch (e:Dynamic) {}
+		if (input != null)
+			input.close();
+		if (output != null)
+			output.close();
+	}
+
+	public function read():String {
+		return input.readAll().toString();
+	}
+
+	public function write(content:String):Void {
+		output.writeString(content);
+	}
+
+	public function connect(host:Host, port:Int):Void {
+		try {
+			var addr = new InetSocketAddress(host.wrapped, port);
+			channel.connect(addr);
+			// Non-blocking connect: drive it to completion.
+			while (!channel.finishConnect()) {
+				// busy-wait until the connection is established
+			}
+			this.input = new SocketInput(channel);
+			this.output = new SocketOutput(channel);
+		} catch (e:Dynamic)
+			throw e;
+	}
+
+	public function listen(connections:Int):Void {
+		if (serverChannel == null)
+			throw "You must bind the Socket to an address!";
+		// Backlog is provided to ServerSocketChannel.bind in bind(); java.nio
+		// has no separate listen() call, so this is a no-op beyond validation.
+	}
+
+	public function shutdown(read:Bool, write:Bool):Void {
+		try {
+			if (read)
+				channel.shutdownInput();
+			if (write)
+				channel.shutdownOutput();
+		} catch (e:Dynamic)
+			throw e;
+	}
+
+	public function bind(host:Host, port:Int):Void {
+		try {
+			if (serverChannel == null) {
+				serverChannel = ServerSocketChannel.open();
+				serverChannel.configureBlocking(false);
+			}
+			var addr = new InetSocketAddress(host.wrapped, port);
+			serverChannel.bind(cast addr);
+		} catch (e:Dynamic)
+			throw e;
+	}
+
+	public function accept():Socket {
+		var c:SocketChannel = try {
+			serverChannel.accept();
+		} catch (e:Dynamic) {
+			throw Custom(e);
+		}
+		if (c == null)
+			throw Blocked;
+		c.configureBlocking(false);
+		var s:Socket = Type.createEmptyInstance(Socket);
+		s.__init(c);
+		return s;
+	}
+
+	public function peer():{host:Host, port:Int} {
+		var addr:Dynamic = try {
+			channel.getRemoteAddress();
+		} catch (e:Dynamic) {
+			return null;
+		}
+		if (addr == null)
+			return null;
+		var isa:InetSocketAddress = cast addr;
+		var h = new Host(null);
+		h.wrapped = isa.getAddress();
+		return {host: h, port: isa.getPort()};
+	}
+
+	public function host():{host:Host, port:Int} {
+		var addr:Dynamic = try {
+			// For a bound server socket the client channel is unbound (null);
+			// report the server channel's local address (incl. an OS-assigned port).
+			(serverChannel != null) ? serverChannel.getLocalAddress() : channel.getLocalAddress();
+		} catch (e:Dynamic) {
+			return null;
+		}
+		if (addr == null)
+			return null;
+		var isa:InetSocketAddress = cast addr;
+		var h = new Host(null);
+		h.wrapped = isa.getAddress();
+		return {host: h, port: isa.getPort()};
+	}
+
+	public function setTimeout(timeout:Float):Void {
+		// java.nio channels have no per-socket SO_TIMEOUT; store best-effort.
+		__timeout = timeout;
+	}
+
+	public function waitForRead():Void {
+		var selector = Selector.open();
+		try {
+			channel.register(selector, SelectionKey.OP_READ);
+			selector.select();
+		} catch (e:Dynamic) {}
+		try
+			selector.close()
+		catch (e:Dynamic) {}
+	}
+
+	public function setBlocking(b:Bool):Void {
+		try {
+			if (channel != null)
+				channel.configureBlocking(b);
+			if (serverChannel != null)
+				serverChannel.configureBlocking(b);
+		} catch (e:Dynamic)
+			throw e;
+	}
+
+	public function setFastSend(b:Bool):Void {
+		try
+			channel.setOption(java.net.StandardSocketOptions.TCP_NODELAY, b)
+		catch (e:Dynamic)
+			throw e;
+	}
+
+	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
+			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
+		var resRead:Array<Socket> = [];
+		var resWrite:Array<Socket> = [];
+		var resOthers:Array<Socket> = [];
+
+		var selector = Selector.open();
+		// Track interest ops per socket so a socket present in both read and
+		// write lists gets a single registration with ORed interest ops.
+		var sockets:Array<Socket> = [];
+		var interest:Array<Int> = [];
+
+		function addInterest(s:Socket, ops:Int):Void {
+			for (i in 0...sockets.length) {
+				if (sockets[i] == s) {
+					interest[i] = interest[i] | ops;
+					return;
+				}
+			}
+			sockets.push(s);
+			interest.push(ops);
+		}
+
+		if (read != null) {
+			for (s in read) {
+				if (s.serverChannel != null)
+					addInterest(s, SelectionKey.OP_ACCEPT);
+				else
+					addInterest(s, SelectionKey.OP_READ);
+			}
+		}
+		if (write != null) {
+			for (s in write)
+				addInterest(s, SelectionKey.OP_WRITE);
+		}
+
+		try {
+			for (i in 0...sockets.length) {
+				var s = sockets[i];
+				var ch:java.nio.channels.SelectableChannel = s.serverChannel != null ? cast s.serverChannel : cast s.channel;
+				if (ch == null)
+					continue;
+				var key = ch.register(selector, interest[i]);
+				key.attach(s);
+			}
+
+			var n:Int;
+			if (timeout == null || timeout <= 0) {
+				n = selector.selectNow();
+			} else {
+				n = selector.select(cast(Std.int(timeout * 1000), haxe.Int64));
+			}
+
+			if (n > 0) {
+				var it = selector.selectedKeys().iterator();
+				while (it.hasNext()) {
+					var key:SelectionKey = it.next();
+					var s:Socket = cast key.attachment();
+					var ready = key.readyOps();
+					if ((ready & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0)
+						resRead.push(s);
+					if ((ready & SelectionKey.OP_WRITE) != 0)
+						resWrite.push(s);
+				}
+			}
+		} catch (e:Dynamic) {
+			// fall through, return whatever we collected
+		}
+
+		// Cancel keys and close the selector so channels can be re-registered.
+		try {
+			var keys = selector.keys().iterator();
+			while (keys.hasNext()) {
+				var k:SelectionKey = keys.next();
+				k.cancel();
+			}
+		} catch (e:Dynamic) {}
+		try
+			selector.close()
+		catch (e:Dynamic) {}
+
+		return {read: resRead, write: resWrite, others: resOthers};
+	}
+}
+
 #else
 
 class Socket {

@@ -39,6 +39,8 @@ final class SecureRandom {
 		return __getSecureRandomBytesNative(length);
 		#elseif php
 		return __getSecureRandomBytesPHP(length);
+		#elseif (java || jvm)
+		return __getSecureRandomBytesJava(length);
 		#else
 		throw "Secure random bytes are currently only supported on native platforms (Windows/Unix)";
 		#end
@@ -129,4 +131,28 @@ final class SecureRandom {
 		}
 	}
 	#end
+
+	#if (java || jvm)
+	@:noCompletion static var __jrng:JavaSecureRandom = null;
+
+	private static function __getSecureRandomBytesJava(length:Int):ByteArray {
+		if (length <= 0) {
+			return Bytes.alloc(length < 0 ? 0 : length);
+		}
+		if (__jrng == null) {
+			__jrng = new JavaSecureRandom();
+		}
+		var out:Bytes = Bytes.alloc(length);
+		__jrng.nextBytes(out.getData());
+		return out;
+	}
+	#end
 }
+
+#if (java || jvm)
+@:native("java.security.SecureRandom")
+private extern class JavaSecureRandom {
+	function new():Void;
+	function nextBytes(bytes:haxe.io.BytesData):Void;
+}
+#end
