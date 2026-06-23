@@ -40,7 +40,15 @@ class Address {
 
 	public function setHost(value:Host):Void {
 		host = value.ip;
+		#if (java || jvm)
+		// java's Host has no `ipv6` field; derive it from the wrapped InetAddress
+		// (a 16-byte address means IPv6).
+		var ia:java.net.InetAddress = value.wrapped;
+		var raw:haxe.io.BytesData = (ia != null) ? ia.getAddress() : null;
+		ipv6 = (raw != null && raw.length == 16) ? raw : null;
+		#else
 		ipv6 = Reflect.field(value, "ipv6");
+		#end
 	}
 
 	public function getHost():Host {

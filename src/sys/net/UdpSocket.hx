@@ -104,6 +104,15 @@ class UdpSocket extends Socket {
 			throw e;
 	}
 
+	// UDP "connect" sets the default peer; the inherited TCP connect() would cast
+	// the DatagramChannel to a SocketChannel and fail.
+	override public function connect(host:Host, port:Int):Void {
+		try {
+			__dc().connect(new InetSocketAddress(host.wrapped, port));
+		} catch (e:Dynamic)
+			throw e;
+	}
+
 	public function sendTo(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
 		var target:SocketAddress = cast __toSocketAddress(addr);
 		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
