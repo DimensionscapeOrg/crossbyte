@@ -19,3 +19,4 @@ Thumbs.db
 .env
 .env.*
 export/jvm/
+hs_err_pid*.log
