@@ -44,6 +44,27 @@ class Address {
 	}
 
 	public function getHost():Host {
+		#if (java || jvm)
+		// Build a real InetAddress so Host.wrapped/toString are populated on the
+		// jvm target (the non-cpp fallback below leaves wrapped null -> NPE).
+		var ia:java.net.InetAddress;
+		if (ipv6 != null) {
+			ia = java.net.InetAddress.getByAddress(ipv6);
+		} else {
+			var raw:haxe.io.Bytes = haxe.io.Bytes.alloc(4);
+			raw.set(0, (host >>> 24) & 0xFF);
+			raw.set(1, (host >>> 16) & 0xFF);
+			raw.set(2, (host >>> 8) & 0xFF);
+			raw.set(3, host & 0xFF);
+			ia = java.net.InetAddress.getByAddress(raw.getData());
+		}
+		var resolved:Host = Type.createEmptyInstance(Host);
+		untyped resolved.ip = host;
+		untyped resolved.ipv6 = ipv6;
+		untyped resolved.host = ia.getHostAddress();
+		untyped resolved.wrapped = ia;
+		return resolved;
+		#else
 		var resolved:Host = Type.createEmptyInstance(Host);
 		untyped resolved.ip = host;
 		untyped resolved.ipv6 = ipv6;
@@ -51,6 +72,7 @@ class Address {
 			? #if (cpp || hxcpp) NativeSocket.host_to_string(host) #else "0.0.0.0" #end
 			: #if (cpp || hxcpp) NativeSocket.host_to_string_ipv6(ipv6) #else "::1" #end;
 		return resolved;
+		#end
 	}
 
 	public function compare(a:Address):Int {
