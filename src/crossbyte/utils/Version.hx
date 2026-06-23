@@ -54,17 +54,26 @@ abstract Version(String) from String to String {
 	}
 
 	private inline function get_hash():Int {
-		var majorVal:String = StringTools.lpad(Std.string(major), "0", 3);
-		var minorVal:String = StringTools.lpad(Std.string(minor), "0", 3);
-		var patchVal:String = StringTools.lpad(Std.string(patch), "0", 3);
-
-		var hashVal:String = majorVal + minorVal + patchVal;
-
-		return Std.parseInt(hashVal);
+		// Parse the string once and combine the three components directly,
+		// avoiding several Array splits and padded-string allocations per call.
+		// Matches the legacy zero-padded-concat semantics: major*1000000 + minor*1000 + patch.
+		var parts:Array<String> = this.split(".");
+		var majorVal:Int = parseSegment(parts, 0);
+		var minorVal:Int = parseSegment(parts, 1);
+		var patchVal:Int = parseSegment(parts, 2);
+		return majorVal * 1000000 + minorVal * 1000 + patchVal;
 	}
 
-	private function getSub(index:Int):Int {
-		return Std.parseInt(this.split(".")[index]);
+	private inline function getSub(index:Int):Int {
+		return parseSegment(this.split("."), index);
+	}
+
+	private static inline function parseSegment(parts:Array<String>, index:Int):Int {
+		if (index < 0 || index >= parts.length) {
+			return 0;
+		}
+		var parsed:Null<Int> = Std.parseInt(parts[index]);
+		return parsed != null ? parsed : 0;
 	}
 
 	// Overload the < operator

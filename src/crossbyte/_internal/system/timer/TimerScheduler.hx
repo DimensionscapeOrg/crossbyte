@@ -198,7 +198,7 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	 * @param policy Optional resume behavior policy.
 	 * @return `true` if resumed.
 	 */
-	public inline function resume(handle:Int, time:Int = 0, policy:Int = 0):Bool {
+	public inline function resume(handle:Int, time:Float = 0.0, policy:Int = 0):Bool {
 		return this.setEnabled(handle, true, policy, time);
 	}
 
