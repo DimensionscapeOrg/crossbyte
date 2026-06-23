@@ -1,6 +1,11 @@
 package crossbyte.auth;
 
+#if !(java || jvm)
+// haxe.Http pulls in sys.ssl.Socket for HTTPS, which does not compile on the
+// jvm target (broken std java.net.SslSocket). Token requests are unsupported
+// there until CrossByte provides a jvm HTTPS client.
 import haxe.Http;
+#end
 import haxe.Json;
 using StringTools;
 
@@ -42,6 +47,9 @@ class OAuth {
 	 * @param callback The callback to handle the response.
 	 */
 	public function getAccessToken(code:String, callback:(OAuthToken) -> Void):Void {
+		#if (java || jvm)
+		throw "OAuth token requests are not yet supported on the jvm target (the std HTTPS/SSL socket is unavailable).";
+		#else
 		var params = [
 			'grant_type=' + __encode('authorization_code'),
 			'code=' + __encode(code),
@@ -63,6 +71,7 @@ class OAuth {
 			trace('Error getting access token: ' + error);
 		};
 		http.request(true);
+		#end
 	}
 
 	/**
@@ -72,6 +81,9 @@ class OAuth {
 	 * @param callback The callback to handle the response.
 	 */
 	public function refreshAccessToken(refreshToken:String, callback:(OAuthToken) -> Void):Void {
+		#if (java || jvm)
+		throw "OAuth token requests are not yet supported on the jvm target (the std HTTPS/SSL socket is unavailable).";
+		#else
 		var params = [
 			'grant_type=' + __encode('refresh_token'),
 			'refresh_token=' + __encode(refreshToken),
@@ -92,6 +104,7 @@ class OAuth {
 			trace('Error refreshing access token: ' + error);
 		};
 		http.request(true);
+		#end
 	}
 
 	@:noCompletion private static inline function __encode(value:String):String {

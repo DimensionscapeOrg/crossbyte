@@ -17,6 +17,7 @@ class Aedifex {
 		.source("src")
 		.task("interp-tests", "haxe", ["ci/interp-tests.hxml"], null, "Run the fast interpreted CrossByte test suite.")
 		.task("native-tests", "haxe", ["ci/native-tests.hxml"], null, "Build the native CrossByte smoke test executable.")
+		.task("jvm-smoke-tests", "haxe", ["ci/jvm-smoke.hxml"], null, "Build the jvm smoke test jar (core non-networking suites). Run with: java -jar export/jvm/CrossByteJvmSmoke.jar")
 		.task("docs-api", "haxe", ["ci/docs-api.hxml"], null, "Generate CrossByte API XML/doc build artifacts.")
 		.task("docs-site", "haxelib", [
 			"run",
