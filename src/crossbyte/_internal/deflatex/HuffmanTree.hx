@@ -33,14 +33,21 @@ class HuffmanTree {
 		}
 
 		var index:Int = 0;
-		while (queue.length < 2) {
+		while (queue.length < 2 && index < numSymbols) {
 			if (freq[index] == 0) {
 				queue.add(new LeafNode(index, 1));
 			}
 			index++;
 		}
 
-		var n:UInt = queue.length;
+		var n:Int = queue.length;
+		if (n == 0) {
+			// No symbols with non-zero frequency and nothing to pad with:
+			// there is no tree to build.
+			root = null;
+			return;
+		}
+
 		for (i in 0...n - 1) {
 			var left:Node = queue.remove();
 			var right:Node = queue.remove();

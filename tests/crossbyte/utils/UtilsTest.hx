@@ -96,6 +96,65 @@ class UtilsTest extends utest.Test {
 		Assert.equals(2, MathUtil.wrap(12, 0, 10));
 	}
 
+	public function testMathUtilWrapHandlesWideRangesWithoutCollapsing():Void {
+		// Normal range still wraps correctly.
+		Assert.equals(0, MathUtil.wrap(10, 0, 10));
+		Assert.equals(5, MathUtil.wrap(5, 0, 10));
+
+		// Wide range where (max - min) overflows 32-bit Int when computed naively.
+		// Previously this collapsed to `min`; now it must wrap correctly.
+		var min:Int = MathUtil.INT32_MIN;
+		var max:Int = MathUtil.INT32_MAX;
+		Assert.isFalse(MathUtil.wrap(0, min, max) == min);
+		Assert.equals(0, MathUtil.wrap(0, min, max));
+		Assert.equals(min, MathUtil.wrap(min, min, max));
+		Assert.equals(-1, MathUtil.wrap(-1, min, max));
+
+		// Inverted/degenerate range still returns min.
+		Assert.equals(5, MathUtil.wrap(7, 5, 5));
+		Assert.equals(5, MathUtil.wrap(7, 5, 3));
+	}
+
+	public function testVersionHandlesShortAndMalformedStrings():Void {
+		// Short string: missing segments resolve to 0 instead of crashing.
+		var short:Version = "1.2";
+		Assert.equals(1, short.major);
+		Assert.equals(2, short.minor);
+		Assert.equals(0, short.patch);
+		Assert.equals(1002000, short.hash);
+
+		// Malformed / non-numeric segments resolve to 0.
+		var malformed:Version = "x.y";
+		Assert.equals(0, malformed.major);
+		Assert.equals(0, malformed.minor);
+		Assert.equals(0, malformed.patch);
+		Assert.equals(0, malformed.hash);
+
+		// Empty string is fully robust.
+		var empty:Version = "";
+		Assert.equals(0, empty.major);
+		Assert.equals(0, empty.hash);
+
+		// Comparison semantics remain consistent with the constructed form.
+		Assert.isTrue(short == new Version(1, 2, 0));
+		Assert.isTrue(short < new Version(1, 2, 1));
+		Assert.isTrue(short > new Version(1, 1, 9));
+	}
+
+	public function testVersionHashIsStableAfterPerfChange():Void {
+		// Verify the direct-component hash matches the legacy padded-concat values
+		// and preserves ordering/equality across operators.
+		Assert.equals(1002003, new Version(1, 2, 3).hash);
+		Assert.equals(0, new Version(0, 0, 0).hash);
+		Assert.equals(999999999, new Version(999, 999, 999).hash);
+
+		Assert.isTrue(new Version(1, 9, 10) > new Version(1, 2, 99));
+		Assert.isTrue(new Version(1, 2, 0) < new Version(1, 2, 1));
+		Assert.isTrue(new Version(2, 0, 0) == new Version(2, 0, 0));
+		Assert.isTrue(new Version(1, 9, 10) >= new Version(1, 9, 10));
+		Assert.isTrue(new Version(1, 2, 0) <= new Version(1, 2, 0));
+	}
+
 	public function testObjectPoolTracksCapacityReuseAndReset():Void {
 		var resets = [];
 		var nextId = 0;

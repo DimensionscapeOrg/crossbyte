@@ -195,6 +195,58 @@ class MathTest extends utest.Test {
 		Assert.equals("(x=5, y=-1, width=10, height=13)", copy.toString());
 	}
 
+	public function testRectangleIntersectionIntersectsAndPointSetters():Void {
+		// intersection() of two known overlapping rectangles.
+		var a = new Rectangle(0, 0, 10, 10);
+		var b = new Rectangle(5, 5, 10, 10);
+		var inter = a.intersection(b);
+		Assert.floatEquals(5, inter.x);
+		Assert.floatEquals(5, inter.y);
+		Assert.floatEquals(5, inter.width);
+		Assert.floatEquals(5, inter.height);
+
+		// Non-overlapping rectangles yield an empty rect.
+		var far = new Rectangle(100, 100, 5, 5);
+		var empty = a.intersection(far);
+		Assert.floatEquals(0, empty.x);
+		Assert.floatEquals(0, empty.y);
+		Assert.floatEquals(0, empty.width);
+		Assert.floatEquals(0, empty.height);
+
+		// intersects() booleans for overlap / no-overlap / edge-touch.
+		Assert.isTrue(a.intersects(b));
+		Assert.isFalse(a.intersects(far));
+		// Shares only an edge (x from 10) => no positive-area intersection.
+		Assert.isFalse(a.intersects(new Rectangle(10, 0, 5, 5)));
+
+		// set_topLeft assigns x/y, leaving bottom-right corner moving with it.
+		var rect = new Rectangle(1, 2, 3, 4);
+		rect.topLeft = new Point(7, 8);
+		Assert.floatEquals(7, rect.x);
+		Assert.floatEquals(8, rect.y);
+		Assert.floatEquals(3, rect.width);
+		Assert.floatEquals(4, rect.height);
+
+		// set_size assigns width/height.
+		rect.size = new Point(20, 30);
+		Assert.floatEquals(20, rect.width);
+		Assert.floatEquals(30, rect.height);
+		Assert.floatEquals(7, rect.x);
+		Assert.floatEquals(8, rect.y);
+
+		// set_bottomRight derives width/height from the assigned corner.
+		rect.bottomRight = new Point(17, 28);
+		Assert.floatEquals(10, rect.width);
+		Assert.floatEquals(20, rect.height);
+		Assert.floatEquals(17, rect.right);
+		Assert.floatEquals(28, rect.bottom);
+
+		// Setters return the assigned value (contract preserved without clone()).
+		var p = new Point(40, 50);
+		var returned = (rect.topLeft = p);
+		Assert.isTrue(returned == p);
+	}
+
 	public function testMatrixTransformationsAndInversion():Void {
 		var matrix = new Matrix();
 		matrix.createBox(2, 2);

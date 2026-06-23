@@ -35,6 +35,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		runner.addCase(new crossbyte.ds.BloomFilterTest());
+		runner.addCase(new crossbyte.ds.OrderedMapTest());
+		runner.addCase(new crossbyte.ds.BitmapDataTest());
+		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 	}
 
 	public static function addHttp(runner:Runner):Void {

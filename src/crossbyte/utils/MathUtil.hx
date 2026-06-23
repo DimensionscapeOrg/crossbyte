@@ -119,14 +119,18 @@ class MathUtil {
 	 * @return    A value in [min, max).
 	 */
 	@:pure public static inline function wrap(v:Int, min:Int, max:Int):Int {
-		var range:Int = max - min;
-		if (range <= 0) {
+		if (max <= min) {
 			return min;
 		}
-		var result:Int = (v - min) % range;
-		if (result < 0) {
-			result += range;
+		// (max - min), (v - min), etc. can overflow 32-bit Int for wide ranges
+		// (e.g. min near INT32_MIN, max near INT32_MAX), which would otherwise
+		// make the range appear negative and collapse the result to `min`.
+		// Compute the modulo in 64-bit space, then narrow back to Int.
+		var range:haxe.Int64 = haxe.Int64.sub(haxe.Int64.ofInt(max), haxe.Int64.ofInt(min));
+		var result:haxe.Int64 = haxe.Int64.mod(haxe.Int64.sub(haxe.Int64.ofInt(v), haxe.Int64.ofInt(min)), range);
+		if (haxe.Int64.isNeg(result)) {
+			result = haxe.Int64.add(result, range);
 		}
-		return result + min;
+		return haxe.Int64.toInt(haxe.Int64.add(result, haxe.Int64.ofInt(min)));
 	}
 }
