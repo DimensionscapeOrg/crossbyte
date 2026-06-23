@@ -6,7 +6,7 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.TaskEvent;
 import crossbyte.events.TickEvent;
 
-#if (cpp || neko || hl)
+#if (cpp || neko || hl || java || jvm)
 import sys.thread.Deque;
 import sys.thread.Lock;
 import sys.thread.Mutex;
@@ -33,7 +33,7 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private var __releaseHook:Void->Void;
 	@:noCompletion private var __released:Bool;
 
-	#if (cpp || neko || hl)
+	#if (cpp || neko || hl || java || jvm)
 	@:noCompletion private var __lock:Mutex;
 	@:noCompletion private var __completion:Lock;
 	@:noCompletion private var __awaiters:Int;
@@ -53,7 +53,7 @@ class Task<T> extends EventDispatcher {
 		__releaseHook = null;
 		__released = false;
 
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock = new Mutex();
 		__completion = new Lock();
 		__awaiters = 0;
@@ -71,7 +71,7 @@ class Task<T> extends EventDispatcher {
 		} catch (_:Dynamic) {
 			__runtime = null;
 		}
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		if (__runtime != null) {
 			__dispatchAttached = true;
 			__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
@@ -83,7 +83,7 @@ class Task<T> extends EventDispatcher {
 		var didCancel = false;
 		var cancelHook:Void->Void = null;
 
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		#end
 
@@ -94,12 +94,12 @@ class Task<T> extends EventDispatcher {
 			cancelHook = __cancelHook;
 			__cancelHook = null;
 			didCancel = true;
-			#if (cpp || neko || hl)
+			#if (cpp || neko || hl || java || jvm)
 			__notifyWaiters();
 			#end
 		}
 
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.release();
 		#end
 
@@ -114,7 +114,7 @@ class Task<T> extends EventDispatcher {
 	}
 
 	public function await():T {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		while (!isDone) {
 			__awaiters++;
@@ -199,7 +199,7 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private function __start():Bool {
 		var didStart = false;
 
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		#end
 		if (state == PENDING) {
@@ -207,7 +207,7 @@ class Task<T> extends EventDispatcher {
 			__cancelHook = null;
 			didStart = true;
 		}
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.release();
 		#end
 
@@ -218,7 +218,7 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private function __complete(value:Null<T>):Void {
 		var shouldDispatch = false;
 
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		#end
 		if (state == RUNNING) {
@@ -227,11 +227,11 @@ class Task<T> extends EventDispatcher {
 			error = null;
 			__cancelHook = null;
 			shouldDispatch = true;
-			#if (cpp || neko || hl)
+			#if (cpp || neko || hl || java || jvm)
 			__notifyWaiters();
 			#end
 		}
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.release();
 		#end
 
@@ -245,7 +245,7 @@ class Task<T> extends EventDispatcher {
 		var shouldDispatch = false;
 		var finalError:Dynamic = errorValue;
 
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		#end
 		if (state == RUNNING) {
@@ -254,11 +254,11 @@ class Task<T> extends EventDispatcher {
 			result = null;
 			__cancelHook = null;
 			shouldDispatch = true;
-			#if (cpp || neko || hl)
+			#if (cpp || neko || hl || java || jvm)
 			__notifyWaiters();
 			#end
 		}
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.release();
 		#end
 
@@ -269,7 +269,7 @@ class Task<T> extends EventDispatcher {
 
 	@:allow(crossbyte.sys.TaskPool)
 	@:noCompletion private function __notifyWaiters():Void {
-	#if (cpp || neko || hl)
+	#if (cpp || neko || hl || java || jvm)
 		while (__awaiters > 0) {
 			__completion.release();
 			__awaiters--;
@@ -278,7 +278,7 @@ class Task<T> extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __dispatchTerminalEvent(event:TaskDispatch<T>):Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		if (!__canDispatchInline()) {
 			__lock.acquire();
 			__dispatchPending = true;
@@ -291,7 +291,7 @@ class Task<T> extends EventDispatcher {
 		__finalizeDispatchLifecycle();
 	}
 
-	#if (cpp || neko || hl)
+	#if (cpp || neko || hl || java || jvm)
 	@:noCompletion private inline function __canDispatchInline():Bool {
 		if (__runtime == null) {
 			return true;
@@ -336,7 +336,7 @@ class Task<T> extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __finalizeDispatchLifecycle():Void {
-		#if (cpp || neko || hl)
+		#if (cpp || neko || hl || java || jvm)
 		__lock.acquire();
 		var shouldDetach = __dispatchAttached && __runtime != null && isDone && !__dispatchPending;
 		__lock.release();
