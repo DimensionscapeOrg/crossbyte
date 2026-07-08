@@ -1312,8 +1312,16 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			throw new Error("This FileStream object does not have a output stream opened.", 2092);
 		}
 
-		if (!__isAsync && __input != null) {
-			__output.seek(__getSynchronousPosition(), FileSeek.SeekBegin);
+		if (!__isAsync) {
+			if (__fileMode == APPEND) {
+				// O_APPEND semantics: writes always go to the end regardless of
+				// position. cpp's native append handle enforces this; targets with
+				// a seekable append handle (e.g. jvm) would otherwise honor a prior
+				// seek and overwrite, so seek to the end explicitly before writing.
+				__output.seek(0, FileSeek.SeekEnd);
+			} else if (__input != null) {
+				__output.seek(__getSynchronousPosition(), FileSeek.SeekBegin);
+			}
 		}
 	}
 
