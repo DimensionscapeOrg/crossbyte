@@ -219,16 +219,28 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	@:noCompletion override private function this_onTick(e:TickEvent):Void {
-		var socket:FlexSocket = null;
-
-		try {
-			socket = __webServerSocket.accept();
+		// Extracted from a single method with a local assigned inside try/catch and
+		// used afterwards: that shape mis-compiles (VerifyError) on the jvm target.
+		var socket:FlexSocket = __acceptPending();
+		if (socket != null) {
+			__fromSockettoWebsocket(socket);
 		}
-		/*catch (e:Eof){
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
-		}*/
-		catch (e:Error) {
+	}
+
+	@:noCompletion private function __acceptPending():FlexSocket {
+		try {
+			return __webServerSocket.accept();
+		} catch (e:Error) {
+			#if (java || jvm)
+			// The enum switch-in-catch mis-compiles (VerifyError: bad type on
+			// operand stack) on the jvm target; match the transient Blocked case
+			// by string instead. Error.Blocked -> "Blocked", Custom(Blocked) ->
+			// "Custom(Blocked)"; both contain "Blocked".
+			if (Std.string(e).indexOf("Blocked") < 0) {
+				close();
+				dispatchEvent(new Event(Event.CLOSE));
+			}
+			#else
 			switch (e) {
 				case Error.Blocked:
 				case Error.Custom(Error.Blocked):
@@ -236,14 +248,11 @@ class ServerWebSocket extends ServerSocket {
 					close();
 					dispatchEvent(new Event(Event.CLOSE));
 			}
+			#end
 		} catch (e:Dynamic) {
 			// Do nothing.
 		}
-
-		if (socket != null) {
-			// trace('con');
-			__fromSockettoWebsocket(socket);
-		}
+		return null;
 	}
 
 	/**
