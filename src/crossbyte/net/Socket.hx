@@ -218,7 +218,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	public function close():Void {
 		if (__socket != null) {
+			// Mirror the remote-close path (see the read loop): an app-initiated
+			// close must also notify listeners via Event.CLOSE, otherwise code
+			// that releases per-connection resources on CLOSE (e.g. HTTPServer's
+			// connection counter) leaks every time it closes a socket itself.
+			var wasConnected:Bool = __connected;
 			__cleanSocket();
+			if (wasConnected) {
+				__dispatchPooledSimpleEvent(Event.CLOSE);
+			}
 		} else {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
