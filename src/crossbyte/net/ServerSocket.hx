@@ -97,6 +97,7 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private var __hasListener:Bool = false;
 	@:noCompletion private var __hasCertificate:Bool = false;
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
+	@:noCompletion private var __listenerReleased:Bool = false;
 
 	/**
 		Creates a ServerSocket object.
@@ -271,10 +272,15 @@ class ServerSocket extends EventDispatcher {
 	public function close():Void {
 		__dropPendingHandshakes();
 
-		try {
-			__serverSocket.close();
-		} catch (e:Dynamic) {
-			throw new CBError("Operation attempted on invalid socket.");
+		// stopAccepting() may already have released the listening socket as
+		// the first half of a graceful shutdown; closing it again is not an
+		// error.
+		if (!__listenerReleased) {
+			try {
+				__serverSocket.close();
+			} catch (e:Dynamic) {
+				throw new CBError("Operation attempted on invalid socket.");
+			}
 		}
 		listening = false;
 		bound = false;
@@ -442,6 +448,42 @@ class ServerSocket extends EventDispatcher {
 	**/
 	public function pendingHandshakeCount():Int {
 		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
+	}
+
+	/**
+		Stops accepting new connections while leaving already-established
+		connections open and usable.
+
+		This is the first half of a graceful shutdown: the listening socket
+		is released (freeing the port for a successor process) and any
+		connection still completing its TLS handshake is dropped, but
+		application traffic on existing connections continues until the
+		caller closes those connections itself.
+
+		Safe to call more than once, and safe to call on a server that was
+		never listening. Unlike `close()`, no `close` event is dispatched
+		and the server is not marked as closed.
+	**/
+	public function stopAccepting():Void {
+		if (!listening && !bound) {
+			return;
+		}
+
+		__dropPendingHandshakes();
+
+		if (__cbInstance != null) {
+			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+		}
+
+		try {
+			__serverSocket.close();
+		} catch (_:Dynamic) {
+			// The listener may already be gone; releasing it is best-effort.
+		}
+
+		listening = false;
+		bound = false;
+		__listenerReleased = true;
 	}
 
 	/**
