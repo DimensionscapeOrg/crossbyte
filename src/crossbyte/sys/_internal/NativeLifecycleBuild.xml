@@ -1,0 +1,13 @@
+<xml>
+	<files id="crossbyte-sys-lifecycle-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeLifecycle.cpp">
+			<depend name="${this_dir}/NativeLifecycle.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-sys-lifecycle-native"/>
+	</target>
+</xml>
