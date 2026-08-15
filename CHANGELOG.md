@@ -14,6 +14,13 @@ All notable changes to CrossByte will be documented in this file.
 
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
+### Fixed
+
+- jvm: `PriorityQueue` produced invalid bytecode (`VerifyError` on Java 8) — a bound method reference inside the `@:generic` specialization; replaced with a capture-free comparator lambda
+- jvm: `SwitchTable.make` dispatchers with mixed String/Int keys crashed with `ClassCastException` — a Dynamic-subject switch containing an Int case coerces the subject with `Jvm.toInt`; the macro now emits an if-chain through Dynamic-typed comparison/dispatch helpers
+- jvm: `Vector` `every`/`some`/`filter` always returned false/empty — `Reflect.callMethod` arity-mismatch behavior differs on jvm, breaking the callback-arity fallback; the closure's real arity is now resolved reflectively and called directly
+- with these fixes the jvm smoke suite passes fully on Java 8 (previously: 4 `VerifyError`s plus 2 failing tests)
+
 ## 1.0.0-rc.1 - 2026-04-28
 
 This is the first CrossByte 1.0 release candidate.
