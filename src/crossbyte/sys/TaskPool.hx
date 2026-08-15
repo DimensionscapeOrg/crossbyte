@@ -2,8 +2,9 @@ package crossbyte.sys;
 
 import crossbyte.errors.IllegalOperationError;
 #if (cpp || neko || hl)
-import sys.thread.Condition;
 import sys.thread.Deque;
+import sys.thread.Lock;
+import sys.thread.Mutex;
 import sys.thread.Thread;
 #end
 
@@ -27,7 +28,13 @@ class TaskPool {
 	@:noCompletion private var __running:Int;
 	@:noCompletion private var __activeWorkers:Int;
 	@:noCompletion private var __queue:Deque<QueuedTask>;
-	@:noCompletion private var __queueLock:Condition;
+	// Guards the counters and the shutdown flag. Every critical section taken on
+	// this mutex is short and never blocks, so a thread contending for it always
+	// reaches a GC safepoint promptly.
+	@:noCompletion private var __stateLock:Mutex;
+	// Released once by the last worker to retire, so `shutdown(true)` can drain
+	// without a condition variable.
+	@:noCompletion private var __drained:Lock;
 	#end
 
 	public function new(workerCount:Int) {
@@ -44,7 +51,8 @@ class TaskPool {
 		__running = 0;
 		__activeWorkers = workerCount;
 		__queue = new Deque();
-		__queueLock = new Condition();
+		__stateLock = new Mutex();
+		__drained = new Lock();
 
 		for (i in 0...workerCount) {
 			Thread.create(__workerLoop);
@@ -77,19 +85,18 @@ class TaskPool {
 		};
 
 		#if (cpp || neko || hl)
-		task.__registerCancelHook(() -> {
-			__cancelQueuedTask(cast task);
-		});
-
-		__queueLock.acquire();
+		// No cancel hook is registered: a task cancelled while queued is left in
+		// place and discarded by whichever worker pops it, because `__start()`
+		// refuses to start anything that is no longer PENDING.
+		__stateLock.acquire();
 		if (__isShutdown) {
-			__queueLock.release();
+			__stateLock.release();
 			throw new IllegalOperationError("Cannot submit tasks after shutdown.");
 		}
-		__queue.add(queuedTask);
 		__queued++;
-		__queueLock.signal();
-		__queueLock.release();
+		__stateLock.release();
+
+		__queue.add(queuedTask);
 		#else
 		if (task.__start()) {
 			try {
@@ -105,18 +112,19 @@ class TaskPool {
 
 	public function shutdown(?drain:Bool = true):Void {
 		#if (cpp || neko || hl)
-		__queueLock.acquire();
-		if (!__isShutdown) {
-			__isShutdown = true;
+		__stateLock.acquire();
+		var alreadyShutdown:Bool = __isShutdown;
+		__isShutdown = true;
+		var workers:Int = __activeWorkers;
+		__stateLock.release();
+
+		if (!alreadyShutdown) {
+			__wakeWorkersForShutdown(workers);
 		}
-		__queueLock.broadcast();
 
 		if (drain) {
-			while (__activeWorkers > 0) {
-				__queueLock.wait();
-			}
+			__awaitDrain();
 		}
-		__queueLock.release();
 		#else
 		__isShutdown = true;
 		#end
@@ -124,22 +132,17 @@ class TaskPool {
 
 	public function shutdownNow():Void {
 		#if (cpp || neko || hl)
-		var toCancel = new Array<Task<Dynamic>>();
+		__stateLock.acquire();
+		var alreadyShutdown:Bool = __isShutdown;
+		__isShutdown = true;
+		var workers:Int = __activeWorkers;
+		__stateLock.release();
 
-		__queueLock.acquire();
-		if (!__isShutdown) {
-			__isShutdown = true;
+		var toCancel:Array<Task<Dynamic>> = __drainQueuedTasks();
+
+		if (!alreadyShutdown) {
+			__wakeWorkersForShutdown(workers);
 		}
-		while (__queued > 0) {
-			var queuedTask = __queue.pop(false);
-			if (queuedTask == null) {
-				break;
-			}
-			__queued--;
-			toCancel.push(queuedTask.task);
-		}
-		__queueLock.broadcast();
-		__queueLock.release();
 
 		for (task in toCancel) {
 			task.cancel();
@@ -159,9 +162,9 @@ class TaskPool {
 
 	@:noCompletion private function get_queuedCount():Int {
 		#if (cpp || neko || hl)
-		__queueLock.acquire();
+		__stateLock.acquire();
 		var value = __queued;
-		__queueLock.release();
+		__stateLock.release();
 		return value;
 		#else
 		return 0;
@@ -170,9 +173,9 @@ class TaskPool {
 
 	@:noCompletion private function get_activeCount():Int {
 		#if (cpp || neko || hl)
-		__queueLock.acquire();
+		__stateLock.acquire();
 		var value = __running;
-		__queueLock.release();
+		__stateLock.release();
 		return value;
 		#else
 		return 0;
@@ -181,91 +184,112 @@ class TaskPool {
 
 	#if (cpp || neko || hl)
 	@:noCompletion private function __retainTask(task:Task<Dynamic>):Void {
-		__queueLock.acquire();
+		__stateLock.acquire();
 		__retainedTasks.push(task);
-		__queueLock.release();
+		__stateLock.release();
 	}
 
 	@:noCompletion private function __releaseTask(task:Task<Dynamic>):Void {
-		__queueLock.acquire();
+		__stateLock.acquire();
 		__retainedTasks.remove(task);
-		__queueLock.release();
+		__stateLock.release();
 	}
 
 	@:noCompletion private function __workerLoop():Void {
-		var queuedTask:QueuedTask = null;
 		while (true) {
-			var shouldRun:Bool = false;
-			queuedTask = null;
-
-			__queueLock.acquire();
-			while (__queued == 0 && !__isShutdown) {
-				__queueLock.wait();
+			// An idle worker parks here rather than on a condition variable.
+			// hxcpp wraps `Deque`'s blocking pop in a GC-free zone but does not
+			// wrap `Condition.wait()`, so a worker parked on a condition stays
+			// off every GC safepoint and deadlocks the collector as soon as any
+			// other thread allocates.
+			var queuedTask:QueuedTask = __queue.pop(true);
+			if (queuedTask == null || queuedTask.job == null) {
+				__retireWorker();
+				return;
 			}
 
-			if (__queued == 0 && __isShutdown) {
-				__activeWorkers--;
-				if (__activeWorkers == 0) {
-					__queueLock.broadcast();
-				}
-				__queueLock.release();
-				break;
-			}
+			__stateLock.acquire();
+			__queued--;
+			__stateLock.release();
 
-			queuedTask = __queue.pop(false);
-			if (queuedTask != null) {
-				__queued--;
-				if (queuedTask.task.__start()) {
-					__running++;
-					shouldRun = true;
-				}
-			}
-			__queueLock.release();
-
-			if (!shouldRun || queuedTask == null) {
+			var task:Task<Dynamic> = queuedTask.task;
+			if (!task.__start()) {
 				continue;
 			}
 
-			var task = queuedTask.task;
+			__stateLock.acquire();
+			__running++;
+			__stateLock.release();
+
 			try {
 				task.__complete(queuedTask.job());
 			} catch (error:Dynamic) {
 				task.__fail(error);
 			}
 
-			__queueLock.acquire();
+			__stateLock.acquire();
 			__running--;
-			if (__isShutdown && __running == 0 && __queued == 0 && __activeWorkers == 0) {
-				__queueLock.broadcast();
-			}
-			__queueLock.release();
+			__stateLock.release();
 		}
 	}
 
-	@:noCompletion private function __cancelQueuedTask(target:Task<Dynamic>):Void {
-		var removed = false;
-		var requeue = new Array<QueuedTask>();
+	@:noCompletion private function __retireWorker():Void {
+		__stateLock.acquire();
+		__activeWorkers--;
+		var isLast:Bool = __activeWorkers == 0;
+		__stateLock.release();
 
-		__queueLock.acquire();
-		while (__queued > 0) {
-			var queuedTask = __queue.pop(false);
+		if (isLast) {
+			__drained.release();
+		}
+	}
+
+	// One token per live worker: each token wakes exactly one parked worker and
+	// tells it to retire.
+	@:noCompletion private function __wakeWorkersForShutdown(workers:Int):Void {
+		for (i in 0...workers) {
+			__queue.add({task: null, job: null});
+		}
+	}
+
+	@:noCompletion private function __awaitDrain():Void {
+		__stateLock.acquire();
+		var alreadyDrained:Bool = __activeWorkers == 0;
+		__stateLock.release();
+
+		if (alreadyDrained) {
+			return;
+		}
+
+		// The last worker releases this exactly once; re-release so repeated or
+		// concurrent drains also pass through.
+		__drained.wait();
+		__drained.release();
+	}
+
+	@:noCompletion private function __drainQueuedTasks():Array<Task<Dynamic>> {
+		var drained:Array<Task<Dynamic>> = [];
+
+		while (true) {
+			var queuedTask:QueuedTask = __queue.pop(false);
 			if (queuedTask == null) {
 				break;
 			}
-			__queued--;
-			if (!removed && queuedTask.task == target) {
-				removed = true;
-			} else {
-				requeue.push(queuedTask);
-			}
-		}
-		while (requeue.length > 0) {
-			var queuedTask = requeue.shift();
-			__queue.add(queuedTask);
-			__queued++;
-		}
-		__queueLock.release();
-	}
 
+			if (queuedTask.job == null) {
+				// A retire token from an earlier shutdown. Put it back so the
+				// worker it was meant for still wakes.
+				__queue.add(queuedTask);
+				break;
+			}
+
+			__stateLock.acquire();
+			__queued--;
+			__stateLock.release();
+			drained.push(queuedTask.task);
+		}
+
+		return drained;
+	}
 	#end
 }
