@@ -33,6 +33,27 @@ class HTTPServerConfig {
 	public var tryFiles:Array<String>;
 	public var rewrites:Array<RewriteRule>;
 
+	/**
+		Path to the PEM certificate chain this server presents. Set together
+		with `tlsKeyPath` to serve HTTPS. Not available on the jvm target.
+	**/
+	public var tlsCertificatePath:String;
+
+	/**
+		Path to the PEM private key matching `tlsCertificatePath`.
+	**/
+	public var tlsKeyPath:String;
+
+	/**
+		Whether this configuration describes an HTTPS server, i.e. both a
+		certificate and a key path are set.
+	**/
+	public var tlsEnabled(get, never):Bool;
+
+	@:noCompletion private function get_tlsEnabled():Bool {
+		return tlsCertificatePath != null && tlsCertificatePath != "" && tlsKeyPath != null && tlsKeyPath != "";
+	}
+
 	public function new(address:String = "0.0.0.0", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
