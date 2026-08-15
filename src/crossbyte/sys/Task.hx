@@ -95,6 +95,7 @@ class Task<T> extends EventDispatcher {
 			__cancelHook = null;
 			didCancel = true;
 			#if (cpp || neko || hl)
+			__dispatchPending = true;
 			__notifyWaiters();
 			#end
 		}
@@ -228,6 +229,7 @@ class Task<T> extends EventDispatcher {
 			__cancelHook = null;
 			shouldDispatch = true;
 			#if (cpp || neko || hl)
+			__dispatchPending = true;
 			__notifyWaiters();
 			#end
 		}
@@ -255,6 +257,7 @@ class Task<T> extends EventDispatcher {
 			__cancelHook = null;
 			shouldDispatch = true;
 			#if (cpp || neko || hl)
+			__dispatchPending = true;
 			__notifyWaiters();
 			#end
 		}
@@ -279,13 +282,18 @@ class Task<T> extends EventDispatcher {
 
 	@:noCompletion private inline function __dispatchTerminalEvent(event:TaskDispatch<T>):Void {
 		#if (cpp || neko || hl)
+		// `__dispatchPending` is raised while the terminal state is published, not
+		// here. Setting it here leaves a window in which the task already reads as
+		// done but not pending, and a tick landing in that window detaches the
+		// listener for good before this event is ever queued.
 		if (!__canDispatchInline()) {
-			__lock.acquire();
-			__dispatchPending = true;
-			__lock.release();
 			__dispatchQueue.add(event);
 			return;
 		}
+
+		__lock.acquire();
+		__dispatchPending = false;
+		__lock.release();
 		#end
 		__dispatchNow(event);
 		__finalizeDispatchLifecycle();
