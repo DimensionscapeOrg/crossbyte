@@ -165,8 +165,14 @@ class ConfigTest extends utest.Test {
 		return ".";
 	}
 
+	private static var __fixtureCounter:Int = 0;
+
 	private function __writeTempFile(lines:Array<String>):String {
-		var path:String = haxe.io.Path.join([__tempDirectory(), "crossbyte-config-test.conf"]);
+		// Unique per fixture so concurrent test processes cannot delete or
+		// overwrite each other's file.
+		__fixtureCounter++;
+		var unique:String = Std.string(Std.int(Sys.time() * 1000)) + "-" + Std.string(__fixtureCounter);
+		var path:String = haxe.io.Path.join([__tempDirectory(), 'crossbyte-config-test-$unique.conf']);
 		sys.io.File.saveContent(path, lines.join("\n"));
 		return path;
 	}
