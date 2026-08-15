@@ -15,6 +15,11 @@ import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
 import sys.net.Host;
 import sys.net.Socket;
+#if (!java && !jvm)
+import sys.ssl.Certificate;
+import sys.ssl.Key;
+import sys.ssl.Socket as SSLSocket;
+#end
 
 /**
 	The ServerSocket class allows code to act as a server for Transport Control Protocol (TCP)
@@ -73,30 +78,145 @@ class ServerSocket extends EventDispatcher {
 	**/
 	public var localPort(default, null):Int;
 
+	/**
+		Indicates whether this server terminates TLS for accepted connections.
+	**/
+	public var secure(default, null):Bool;
+
+	/**
+		Maximum seconds an accepted TLS connection may spend completing its
+		handshake before the server drops it. Guards against clients that
+		open a connection and then stall, which would otherwise accumulate
+		half-open sockets.
+	**/
+	public var handshakeTimeout:Float = 10.0;
+
 	@:noCompletion private var __serverSocket:Socket;
 	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __hasListener:Bool = false;
+	@:noCompletion private var __hasCertificate:Bool = false;
+	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
 
 	/**
 		Creates a ServerSocket object.
+
+		@param secure When `true`, the server terminates TLS: a certificate
+			must be installed with `setCertificate()` before `listen()`, and
+			`connect` events are dispatched only after each client's handshake
+			completes. Handshakes progress across ticks and never block the
+			runtime loop.
 		@throws  SecurityError This error occurs ff the calling content is running outside the AIR
 				application security sandbox.
 	**/
-	public function new() {
+	public function new(secure:Bool = false) {
 		super();
+
+		#if (java || jvm)
+		if (secure) {
+			throw new CBError("Secure ServerSocket is not supported on the jvm target yet.");
+		}
+		#end
+
+		this.secure = secure;
+		__pendingHandshakes = [];
 
 		__init();
 	}
 
 	private function __init():Void {
+		#if (java || jvm)
 		__serverSocket = new sys.net.Socket();
+		#else
+		// sys.ssl.Socket extends sys.net.Socket, so the accept/select paths
+		// below are identical for both modes.
+		__serverSocket = secure ? new SSLSocket() : new sys.net.Socket();
+
+		if (secure) {
+			// sys.ssl.Socket leaves verifyCert null, which the stdlib maps to
+			// mbedTLS VERIFY_REQUIRED. On a *server* config that demands a
+			// client certificate, so every ordinary HTTPS client would fail
+			// the handshake. Servers request client certificates only when
+			// mTLS is explicitly enabled via requireClientCertificate().
+			(cast __serverSocket : SSLSocket).verifyCert = false;
+		}
+		#end
 		__serverSocket.setBlocking(false);
 		__serverSocket.setFastSend(true);
 		__closed = false;
 		bound = false;
 		listening = false;
 	}
+
+	#if (!java && !jvm)
+	/**
+		Installs the certificate chain and private key this server presents to
+		clients. Must be called on a secure server before `listen()`.
+
+		@param cert The certificate chain to present.
+		@param key The matching private key.
+		@throws Error When this server was not constructed with `secure` set.
+	**/
+	public function setCertificate(cert:Certificate, key:Key):Void {
+		__requireSecure("setCertificate");
+
+		(cast __serverSocket : SSLSocket).setCertificate(cert, key);
+		__hasCertificate = true;
+	}
+
+	/**
+		Adds an additional certificate selected by Server Name Indication,
+		allowing one listener to serve several hostnames.
+
+		@param serverNameMatch Predicate matching the client-offered hostname.
+		@param cert The certificate chain to present on a match.
+		@param key The matching private key.
+	**/
+	public function addSNICertificate(serverNameMatch:String->Bool, cert:Certificate, key:Key):Void {
+		__requireSecure("addSNICertificate");
+
+		(cast __serverSocket : SSLSocket).addSNICertificate(serverNameMatch, cert, key);
+		__hasCertificate = true;
+	}
+
+	/**
+		Requires connecting clients to present a certificate signed by `ca`
+		(mutual TLS). Clients that present no certificate, or one outside this
+		chain of trust, fail the handshake and are dropped before any
+		`connect` event is dispatched.
+
+		Must be called before `bind()`: the TLS configuration is materialized
+		at bind time.
+
+		@param ca The certificate authority that must have signed client
+			certificates.
+	**/
+	public function requireClientCertificate(ca:Certificate):Void {
+		__requireSecure("requireClientCertificate");
+
+		if (ca == null) {
+			throw new CBError("requireClientCertificate requires a certificate authority.");
+		}
+		if (bound) {
+			throw new CBError("requireClientCertificate must be called before bind().");
+		}
+
+		var sslSocket:SSLSocket = cast __serverSocket;
+		sslSocket.setCA(ca);
+		sslSocket.verifyCert = true;
+	}
+
+	@:noCompletion private function __requireSecure(field:String):Void {
+		if (!secure) {
+			throw new CBError('$field is only available on a ServerSocket constructed with secure = true.');
+		}
+		// The underlying TLS configuration is materialized during bind(), so
+		// installing material afterwards would silently have no effect.
+		if (bound || listening) {
+			throw new CBError('$field must be called before bind().');
+		}
+	}
+	#end
 
 	/**
 		Binds this socket to the specified local address and port.
@@ -149,6 +269,8 @@ class ServerSocket extends EventDispatcher {
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
 	public function close():Void {
+		__dropPendingHandshakes();
+
 		try {
 			__serverSocket.close();
 		} catch (e:Dynamic) {
@@ -190,6 +312,9 @@ class ServerSocket extends EventDispatcher {
 		} else {
 			if (__closed) {
 				throw new IOError("Operation attempted on invalid socket.");
+			}
+			if (secure && !__hasCertificate) {
+				throw new IOError("A secure ServerSocket requires setCertificate() before bind().");
 			}
 			if (backlog < 0) {
 				throw new RangeError("The supplied index is out of bounds.");
@@ -246,6 +371,8 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private function this_onTick(e:TickEvent):Void {
 		var sysSocket = null;
 
+		__pumpHandshakes();
+
 		try {
 			if (__serverSocket == null || !listening) {
 				return;
@@ -256,6 +383,16 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			sysSocket = __serverSocket.accept();
+
+			if (secure) {
+				// Defer the connect event: the peer is not authenticated (and
+				// no application bytes are readable) until TLS completes.
+				sysSocket.setBlocking(false);
+				__pendingHandshakes.push({socket: sysSocket, deadline: Sys.time() + handshakeTimeout});
+				__pumpHandshakes();
+				return;
+			}
+
 			var socket:CBSocket = __fromSocket(sysSocket);
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 		} catch (e:Error) {
@@ -299,6 +436,89 @@ class ServerSocket extends EventDispatcher {
 		return true;
 	}
 
+	/**
+		Number of connections currently completing their TLS handshake.
+		Always `0` on a plain server.
+	**/
+	public function pendingHandshakeCount():Int {
+		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
+	}
+
+	/**
+		Advances every in-flight TLS handshake by one non-blocking step.
+
+		`handshake()` on a non-blocking socket raises a blocked error until
+		enough of the peer's flight has arrived, so each connection may need
+		several ticks. Connections that complete are promoted to ordinary
+		`connect` events; those that fail or exceed `handshakeTimeout` are
+		closed without ever reaching application code.
+	**/
+	@:noCompletion private function __pumpHandshakes():Void {
+		#if (!java && !jvm)
+		if (__pendingHandshakes == null || __pendingHandshakes.length == 0) {
+			return;
+		}
+
+		var now:Float = Sys.time();
+		var stillPending:Array<PendingHandshake> = [];
+		var completed:Array<Socket> = [];
+
+		for (pending in __pendingHandshakes) {
+			var done:Bool = false;
+			var failed:Bool = false;
+
+			try {
+				(cast pending.socket : SSLSocket).handshake();
+				done = true;
+			} catch (e:Error) {
+				if (!__isBlockedError(e)) {
+					failed = true;
+				}
+			} catch (_:Dynamic) {
+				failed = true;
+			}
+
+			if (done) {
+				completed.push(pending.socket);
+			} else if (failed || now >= pending.deadline) {
+				try {
+					pending.socket.close();
+				} catch (_:Dynamic) {}
+			} else {
+				stillPending.push(pending);
+			}
+		}
+
+		__pendingHandshakes = stillPending;
+
+		// Dispatch only after the pending list is settled: a listener may
+		// close this server, and must not observe a half-updated queue.
+		for (socket in completed) {
+			try {
+				var cbSocket:CBSocket = __fromSocket(socket);
+				dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
+			} catch (_:Dynamic) {
+				try {
+					socket.close();
+				} catch (_:Dynamic) {}
+			}
+		}
+		#end
+	}
+
+	@:noCompletion private function __dropPendingHandshakes():Void {
+		if (__pendingHandshakes == null) {
+			return;
+		}
+
+		for (pending in __pendingHandshakes) {
+			try {
+				pending.socket.close();
+			} catch (_:Dynamic) {}
+		}
+		__pendingHandshakes = [];
+	}
+
 	@:noCompletion private function __isBlockedError(error:Error):Bool {
 		return switch (error) {
 			case Error.Blocked: true;
@@ -307,4 +527,9 @@ class ServerSocket extends EventDispatcher {
 			default: false;
 		}
 	}
+}
+
+typedef PendingHandshake = {
+	var socket:Socket;
+	var deadline:Float;
 }
