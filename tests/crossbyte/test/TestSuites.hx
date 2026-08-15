@@ -106,6 +106,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		#if cpp
 		runner.addCase(new crossbyte.net.SocketTest());
+		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
