@@ -202,6 +202,19 @@ class Vector<T> implements ArrayAccess<T> {
 	}
 
 	@:noCompletion private function __invoke(callback:Function, thisObject:Object, value:T, index:Int):Dynamic {
+		#if jvm
+		// The JVM backend's Reflect.callMethod cannot be trusted to signal
+		// arity mismatches (wrong-arity calls variously throw, null-pad, or
+		// return null depending on dispatch path), which breaks the
+		// try-and-fall-back scheme below. Resolve the closure's real arity
+		// from its generated invoke method and call it directly.
+		var f:Dynamic = callback;
+		return switch (__jvmArity(callback)) {
+			case 0: f();
+			case 1: f(value);
+			default: f(value, index);
+		}
+		#else
 		var owner:Dynamic = thisObject != null ? thisObject : null;
 		var args2:Array<Dynamic> = [value, index];
 		var args1:Array<Dynamic> = [value];
@@ -213,7 +226,23 @@ class Vector<T> implements ArrayAccess<T> {
 			return Reflect.callMethod(owner, callback, args1);
 		} catch (_:Dynamic) {}
 		return Reflect.callMethod(owner, callback, []);
+		#end
 	}
+
+	#if jvm
+	@:noCompletion private static function __jvmArity(callback:Function):Int {
+		var cls = java.Lib.toNativeType(Type.getClass(callback));
+		if (cls != null) {
+			var methods = cls.getDeclaredMethods();
+			for (i in 0...methods.length) {
+				if (methods[i].getName() == "invoke") {
+					return methods[i].getParameterTypes().length;
+				}
+			}
+		}
+		return 2;
+	}
+	#end
 
 	@:noCompletion private function __invokePredicate(callback:Function, thisObject:Object, value:T, index:Int):Bool {
 		return __invoke(callback, thisObject, value, index) == true;
