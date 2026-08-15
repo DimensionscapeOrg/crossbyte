@@ -11,6 +11,9 @@ All notable changes to CrossByte will be documented in this file.
 - EdDSA (Ed25519) JWT signing and verification per RFC 8037 via the native Ed25519 backend, replacing the runtime `"not implemented"` throw; verified against the RFC 8037 appendix A JWS vector
 - direct TLS termination in `ServerSocket` (`new ServerSocket(true)` + `setCertificate`/`addSNICertificate`, plus `requireClientCertificate()` for mutual TLS), with handshakes advanced across ticks so a slow or hostile peer never blocks the runtime loop, a `handshakeTimeout` guard against half-open connections, and `pendingHandshakeCount()` for metrics; `HTTPServerConfig.tlsCertificatePath`/`tlsKeyPath` turn `HTTPServer` into an HTTPS server (`docs/proposals/0002-direct-tls.md`)
 
+- graceful shutdown: `ServerSocket.stopAccepting()` releases the listening socket while established connections keep working (freeing the port for a successor process), and `HTTPServer.drain(timeout, ?onComplete)` stops accepting, waits for in-flight requests, then closes — pairs with `ProcessLifecycle` so a service stop finishes live responses instead of severing them (`docs/proposals/0003-graceful-shutdown.md`)
+- structured logging: `Logger` gains severity levels (`LogLevel`), `key=value` structured fields, optional JSON output, optional timestamps, and a replaceable `sink`; the existing `info`/`error`/`separator` helpers keep their exact output
+
 ### Changed
 
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit

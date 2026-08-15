@@ -132,6 +132,7 @@ class TestSuites {
 
 	public static function addUtils(runner:Runner):Void {
 		runner.addCase(new crossbyte.utils.UtilsTest());
+		runner.addCase(new crossbyte.utils.LoggerTest());
 	}
 
 	public static function addAll(runner:Runner):Void {
