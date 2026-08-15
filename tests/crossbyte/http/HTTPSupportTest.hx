@@ -11,15 +11,16 @@ import haxe.io.Bytes;
 import utest.Assert;
 
 class HTTPSupportTest extends utest.Test {
-	public function testRateLimiterLimitsAtEleventhRequestAndResetsWindow():Void {
-		var limiter = new RateLimiter(0.01);
+	public function testRateLimiterLimitsAtEleventhRequestAndRefills():Void {
+		var now = 0.0;
+		var limiter = new RateLimiter(10, 1.0, () -> now);
 
 		for (_ in 0...10) {
 			Assert.isFalse(limiter.isRateLimited("127.0.0.1"));
 		}
 		Assert.isTrue(limiter.isRateLimited("127.0.0.1"));
 
-		Sys.sleep(0.03);
+		now = 1.0;
 
 		Assert.isFalse(limiter.isRateLimited("127.0.0.1"));
 		Assert.isFalse(limiter.isRateLimited("192.168.0.2"));
