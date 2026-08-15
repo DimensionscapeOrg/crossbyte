@@ -10,6 +10,7 @@ class TestSuites {
 
 	public static function addCrypto(runner:Runner):Void {
 		runner.addCase(new crossbyte.crypto.CryptoTest());
+		runner.addCase(new crossbyte.crypto.SodiumExpansionTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
 	}
 
@@ -45,6 +46,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		#end
 		runner.addCase(new crossbyte.http.HTTPSupportTest());
+		runner.addCase(new crossbyte.http.RateLimiterTest());
 		runner.addCase(new crossbyte._internal.http.HttpTest());
 		runner.addCase(new crossbyte.http.HTTPHardeningTest());
 	}
@@ -86,6 +88,7 @@ class TestSuites {
 
 	public static function addSystem(runner:Runner):Void {
 		runner.addCase(new crossbyte.sys.NativeProcessTest());
+		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
 		runner.addCase(new crossbyte.sys.SysSupportTest());
 		runner.addCase(new crossbyte.sys.WorkerTest());
 		runner.addCase(new crossbyte.sys.TaskPoolTest());
