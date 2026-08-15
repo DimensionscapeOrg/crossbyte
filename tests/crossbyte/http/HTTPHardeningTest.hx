@@ -78,8 +78,8 @@ class HTTPHardeningTest extends utest.Test {
 	}
 
 	public function testRateLimiterReturns429AfterThreshold():Void {
-		// Default fixed-window limiter allows 10 requests per window per client.
-		var limiter = new RateLimiter(60.0);
+		// Default token-bucket limiter allows a burst of 10 per client.
+		var limiter = new RateLimiter();
 		for (_ in 0...10) {
 			Assert.isFalse(limiter.isRateLimited("203.0.113.7"));
 		}
