@@ -1,4 +1,4 @@
-package crossbyte.sys;
+﻿package crossbyte.sys;
 
 import crossbyte.core.CrossByte;
 import crossbyte.sys.TaskState;
@@ -9,8 +9,28 @@ import sys.thread.Mutex;
 
 @:access(crossbyte.core.CrossByte)
 class TaskPoolTest extends utest.Test {
+	// Pools created through `makePool` are shut down after every test. Without
+	// this, each case leaked its worker threads for the rest of the run.
+	private var __pools:Array<TaskPool> = [];
+
+	public function teardown():Void {
+		for (pool in __pools) {
+			try {
+				pool.shutdownNow();
+				pool.shutdown(true);
+			} catch (_:Dynamic) {}
+		}
+		__pools = [];
+	}
+
+	private function makePool(workerCount:Int):TaskPool {
+		var pool = new TaskPool(workerCount);
+		__pools.push(pool);
+		return pool;
+	}
+
 	public function testTasksRunAndComplete():Void {
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		var value = 0;
 		var task = pool.submit(() -> value = 5);
 		task.await();
@@ -22,7 +42,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testSubmitResultStoresAndReturnsResult():Void {
-		var pool = new TaskPool(2);
+		var pool = makePool(2);
 		var task = pool.submitResult(() -> 7);
 
 		Assert.equals(7, task.await());
@@ -32,7 +52,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testErrorsCaptureAndDispatchError():Void {
-		var pool = new TaskPool(2);
+		var pool = makePool(2);
 		var caught:Dynamic = null;
 		var task = pool.submitResult(() -> {
 			throw "bad";
@@ -53,7 +73,7 @@ class TaskPoolTest extends utest.Test {
 		#if (cpp || neko || hl)
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		var callbackRuntime:CrossByte = null;
 		var callbackCount = 0;
 		var task = pool.submitResult(() -> 42);
@@ -81,7 +101,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testFifoExecutionWithSingleWorker():Void {
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		var output:Array<Int> = [];
 
 		var tasks = [
@@ -102,7 +122,7 @@ class TaskPoolTest extends utest.Test {
 
 	public function testMultipleWorkersCanRunMultipleTasks():Void {
 		#if (cpp || neko || hl)
-		var pool = new TaskPool(4);
+		var pool = makePool(4);
 		var lock = new Mutex();
 		var running:Int = 0;
 		var maxRunning:Int = 0;
@@ -134,7 +154,7 @@ class TaskPoolTest extends utest.Test {
 
 	public function testCancelBeforeStartDispatchesCancel():Void {
 		#if (cpp || neko || hl)
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		var cancelled = false;
 		pool.submit(() -> {
 			Sys.sleep(0.2);
@@ -158,7 +178,7 @@ class TaskPoolTest extends utest.Test {
 
 	public function testCancelAfterStartFails():Void {
 		#if (cpp || neko || hl)
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		var started = false;
 		var task = pool.submit(() -> {
 			started = true;
@@ -175,7 +195,7 @@ class TaskPoolTest extends utest.Test {
 
 		pool.shutdownNow();
 		#else
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		var task = pool.submit(() -> {});
 		Assert.isFalse(task.cancel());
 		Assert.notEquals(TaskState.CANCELLED, task.state);
@@ -184,13 +204,13 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testAwaitReturnsResult():Void {
-		var pool = new TaskPool(2);
+		var pool = makePool(2);
 		var task = pool.submitResult(() -> 99);
 		Assert.equals(99, task.await());
 	}
 
 	public function testAwaitRethrowsErrorFromTask():Void {
-		var pool = new TaskPool(2);
+		var pool = makePool(2);
 		var task = pool.submitResult(() -> {
 			throw "boom";
 		});
@@ -199,8 +219,31 @@ class TaskPoolTest extends utest.Test {
 		Assert.equals("boom", task.error);
 	}
 
+	public function testIdleWorkersDoNotStallGarbageCollection():Void {
+		#if (cpp || neko || hl)
+		// Idle workers must park inside a GC-free zone. hxcpp does not wrap
+		// `Condition.wait()` in one, so a pool that parks there keeps its workers
+		// off every GC safepoint and the next collection triggered by this thread
+		// deadlocks the process instead of failing.
+		var pool = makePool(4);
+		pool.submit(() -> {}).await();
+
+		var sink:Array<Dynamic> = [];
+		for (i in 0...120000) {
+			sink.push({index: i, label: Std.string(i)});
+			if (i % 40000 == 0) {
+				sink = [];
+			}
+		}
+
+		Assert.equals(4, pool.workerCount);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testShutdownRejectsNewSubmits():Void {
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		pool.submit(() -> Sys.sleep(0.02));
 		pool.shutdown();
 
@@ -209,7 +252,7 @@ class TaskPoolTest extends utest.Test {
 
 	public function testShutdownNowCancelsQueuedTasks():Void {
 		#if (cpp || neko || hl)
-		var pool = new TaskPool(1);
+		var pool = makePool(1);
 		var running = false;
 
 		var first = pool.submit(() -> {
