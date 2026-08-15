@@ -18,7 +18,11 @@ class PriorityQueue<T:IComparable<T>> {
 
 	public function add(node:T) {
 		nodes.push(node);
-		nodes.sort(doSort);
+		// Capture-free comparator: a bound method reference here makes the
+		// JVM backend emit a closure typed against the unspecialized generic
+		// class, which fails Java 8 bytecode verification inside @:generic
+		// specializations (same genjvm constraint as OrderedMap.iterator).
+		nodes.sort((a:T, b:T) -> a.compareTo(b));
 		nLength++;
 	}
 
@@ -27,9 +31,5 @@ class PriorityQueue<T:IComparable<T>> {
 			return null;
 		nLength--;
 		return nodes.shift();
-	}
-
-	private function doSort(a:T, b:T):Int {
-		return a.compareTo(b);
 	}
 }
