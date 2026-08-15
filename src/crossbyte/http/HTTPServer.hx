@@ -4,6 +4,7 @@ import haxe.io.Path;
 import haxe.ds.ObjectMap;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ServerSocketConnectEvent;
+import crossbyte.events.TickEvent;
 import crossbyte.net.ServerSocket;
 import crossbyte.http.HTTPRequestHandler;
 import crossbyte.http.HTTPServerConfig;
@@ -62,6 +63,99 @@ class HTTPServer extends ServerSocket {
 		} catch (e:Dynamic) {
 			Logger.error('HTTP Server failed to start on ${__config.address}:${__config.port}: ' + e);
 			throw e;
+		}
+	}
+
+	/**
+		Number of client connections currently being served.
+	**/
+	public var activeConnections(get, never):Int;
+
+	private function get_activeConnections():Int {
+		return __connections;
+	}
+
+	/**
+		Whether `drain()` has been called and shutdown is in progress.
+	**/
+	public var draining(default, null):Bool = false;
+
+	/**
+		Gracefully shuts the server down: stops accepting new connections,
+		lets in-flight requests finish, then closes.
+
+		Intended as the body of a `ProcessLifecycle.onShutdown` callback so a
+		service stopped by the operating system does not sever live requests:
+
+		```haxe
+		ProcessLifecycle.onShutdown(() -> server.drain());
+		ProcessLifecycle.installDefaultHandlers();
+		```
+
+		The listening socket is released immediately, so a successor process
+		can bind the port while this one finishes its work. Connections still
+		open when `timeoutSeconds` elapses are closed regardless.
+
+		@param timeoutSeconds How long to wait for active connections before
+			forcing them closed. Values at or below zero close immediately.
+		@param onComplete Invoked once shutdown finishes, on the runtime
+			thread, whether it completed naturally or by timeout.
+	**/
+	public function drain(timeoutSeconds:Float = 30.0, ?onComplete:Void->Void):Void {
+		if (draining) {
+			return;
+		}
+		draining = true;
+
+		stopAccepting();
+		Logger.info('HTTP Server draining: ${__connections} active connection(s)');
+
+		if (__connections <= 0 || timeoutSeconds <= 0) {
+			__finishDrain(onComplete);
+			return;
+		}
+
+		var deadline:Float = Sys.time() + timeoutSeconds;
+		var runtime = __cbInstance;
+		if (runtime == null) {
+			// No runtime to poll on; complete synchronously rather than
+			// leaving the caller waiting for a callback that cannot fire.
+			__finishDrain(onComplete);
+			return;
+		}
+
+		var onTick:TickEvent->Void = null;
+		onTick = function(_:TickEvent):Void {
+			if (__connections > 0 && Sys.time() < deadline) {
+				return;
+			}
+
+			runtime.removeEventListener(TickEvent.TICK, onTick);
+			if (__connections > 0) {
+				Logger.info('HTTP Server drain timeout: closing ${__connections} connection(s)');
+			}
+			__finishDrain(onComplete);
+		};
+		runtime.addEventListener(TickEvent.TICK, onTick);
+	}
+
+	private function __finishDrain(onComplete:Void->Void):Void {
+		for (socket in __active.keys()) {
+			try {
+				(cast socket : crossbyte.net.Socket).close();
+			} catch (_:Dynamic) {}
+		}
+		__active = new ObjectMap();
+		__connections = 0;
+
+		try {
+			close();
+		} catch (_:Dynamic) {}
+
+		Logger.info("HTTP Server drained");
+
+		if (onComplete != null) {
+			onComplete();
 		}
 	}
 
