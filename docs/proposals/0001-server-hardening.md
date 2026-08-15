@@ -147,8 +147,8 @@ Rewrite `RateLimiter` as a token bucket, transport-agnostic:
 - TLS on `ServerSocket`/`HTTPServer` via `FlexSocket` (wss on
   `ServerWebSocket` is the only TLS server path today).
 - Linux/macOS libsodium vendoring.
-- Asymmetric JWT signers (EdDSA becomes cheap once this lands; RS256/ES256
-  need an mbedTLS bridge).
+- ~~Asymmetric JWT signers~~ — EdDSA landed as a follow-up to this change
+  set (RFC 8037, `Ed25519Signer`); RS256/ES256 still need an mbedTLS bridge.
 - WebAuthn primitives (P-256 ECDSA, COSE/CBOR) — candidate extension repo.
 - DB connection pooling, async facade, binary Postgres marshaling.
 - HTTP/2.
