@@ -1,0 +1,28 @@
+<xml>
+	<!-- Pulls in hxcpp's own mbedTLS build. That file is `pragma once`, so
+	     including it here is safe even when the program also uses sys.ssl,
+	     which includes it too. This is what puts the mbedtls_pk_*,
+	     mbedtls_mpi_*, and mbedtls_asn1_* symbols in the link. -->
+	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
+
+	<set name="MBEDTLS_DIR" value="${HXCPP}/project/thirdparty/mbedtls-2.9.0"/>
+
+	<files id="crossbyte-pk-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<compilerflag value="-I${MBEDTLS_DIR}/include"/>
+		<file name="${this_dir}/NativePk.cpp">
+			<depend name="${this_dir}/NativePk.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-pk-native"/>
+		<files id="hxcpp_ssl"/>
+
+		<lib name="advapi32.lib" if="windows" unless="static_link"/>
+		<lib name="crypt32.lib" if="windows" unless="static_link"/>
+		<lib name="ws2_32.lib" if="windows" unless="static_link"/>
+		<lib name="bcrypt.lib" if="windows" unless="static_link"/>
+	</target>
+</xml>
