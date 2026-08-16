@@ -79,6 +79,109 @@ class PkKeyFixture {
 		return __ec;
 	}
 
+	/**
+	 * The RSA public modulus as base64url, the form a JWK publishes as
+	 * `n`, or `null` when it cannot be read.
+	 *
+	 * Taken from the generated key rather than invented, so a JWKS test
+	 * built on it round-trips against a key mbedTLS will actually verify
+	 * with. The exponent is not extracted: these keys are generated with
+	 * OpenSSL's default of 65537, and a wrong exponent would fail the
+	 * signature check the test ends with anyway.
+	 */
+	public static function rsaModulusBase64Url():Null<String> {
+		if (rsa() == null) {
+			return null;
+		}
+
+		var line:Null<String> = __openssl(["rsa", "-pubin", "-in", haxe.io.Path.join([__directory(), "rsa-pub.pem"]), "-noout", "-modulus"]);
+		if (line == null) {
+			return null;
+		}
+
+		var marker:Int = line.indexOf("Modulus=");
+		if (marker < 0) {
+			return null;
+		}
+
+		var hex:String = StringTools.trim(line.substr(marker + "Modulus=".length));
+		hex = hex.split("\r").join("").split("\n").join("");
+		if (hex.length == 0 || hex.length % 2 != 0) {
+			return null;
+		}
+
+		try {
+			return crossbyte.auth.jwt.JWT.base64UrlEncodeBytes(haxe.io.Bytes.ofHex(hex));
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
+	/**
+	 * The P-256 public point split into its affine coordinates as
+	 * base64url, the form a JWK publishes as `x` and `y`.
+	 */
+	public static function ecCoordinatesBase64Url():Null<{x:String, y:String}> {
+		if (ec() == null) {
+			return null;
+		}
+
+		var text:Null<String> = __openssl(["ec", "-pubin", "-in", haxe.io.Path.join([__directory(), "ec-pub.pem"]), "-noout", "-text"]);
+		if (text == null) {
+			return null;
+		}
+
+		// The uncompressed point is printed as colon-separated hex between
+		// the "pub:" label and the curve line that follows it.
+		var start:Int = text.indexOf("pub:");
+		if (start < 0) {
+			return null;
+		}
+		var rest:String = text.substr(start + "pub:".length);
+		var end:Int = rest.indexOf("ASN1 OID");
+		if (end >= 0) {
+			rest = rest.substr(0, end);
+		}
+
+		var hex:StringBuf = new StringBuf();
+		for (i in 0...rest.length) {
+			var c:String = rest.charAt(i);
+			if ((c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F")) {
+				hex.add(c);
+			}
+		}
+
+		var point:haxe.io.Bytes;
+		try {
+			point = haxe.io.Bytes.ofHex(hex.toString());
+		} catch (_:Dynamic) {
+			return null;
+		}
+
+		// 0x04 then two 32-byte coordinates.
+		if (point.length != 65 || point.get(0) != 0x04) {
+			return null;
+		}
+
+		return {
+			x: crossbyte.auth.jwt.JWT.base64UrlEncodeBytes(point.sub(1, 32)),
+			y: crossbyte.auth.jwt.JWT.base64UrlEncodeBytes(point.sub(33, 32))
+		};
+	}
+
+	/** Runs `openssl` and returns its stdout, or `null` if it fails. */
+	private static function __openssl(args:Array<String>):Null<String> {
+		try {
+			var process = new sys.io.Process("openssl", args);
+			var out:String = process.stdout.readAll().toString();
+			var code:Int = process.exitCode();
+			process.close();
+			return code == 0 ? out : null;
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
 	private static function __directory():String {
 		var base:String = ".";
 		for (candidate in [Sys.getEnv("TEMP"), Sys.getEnv("TMP"), Sys.getEnv("TMPDIR"), "/tmp"]) {
