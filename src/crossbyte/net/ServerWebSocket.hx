@@ -67,13 +67,50 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
-		Creates a ServerSocket object.
-		@throws  SecurityError This error occurs ff the calling content is running outside the AIR
-				application security sandbox.
+		Client connections that have completed their handshake and not yet
+		closed. Maintained so `drain()` can shut them down deliberately.
+	**/
+	public var clientCount(get, never):Int;
+
+	private function get_clientCount():Int {
+		return __clients.length;
+	}
+
+	/**
+		Whether `drain()` has been called and shutdown is in progress.
+	**/
+	public var draining(default, null):Bool = false;
+
+	@:noCompletion private var __clients:Array<WebSocket> = [];
+
+	/**
+		Creates a ServerWebSocket.
+
+		@param secure When `true`, the server terminates TLS (`wss://`) and
+			requires a certificate via `cert` before listening.
+		@throws SecurityError This error occurs if the calling content is
+			running outside the AIR application security sandbox.
 	**/
 	public function new(secure:Bool = false) {
 		__isSecure = secure;
 		super();
+
+		// The server dispatches CONNECT to itself once a handshake
+		// completes, so it can observe its own connections without the
+		// WebSocket needing to know about a registry.
+		addEventListener(ServerSocketConnectEvent.CONNECT, __trackClient);
+	}
+
+	@:noCompletion private function __trackClient(e:ServerSocketConnectEvent):Void {
+		var client:WebSocket = cast e.socket;
+		if (client == null || __clients.indexOf(client) >= 0) {
+			return;
+		}
+
+		__clients.push(client);
+		client.addEventListener(Event.CLOSE, function(_) {
+			__clients.remove(client);
+		});
 	}
 
 	override function __init():Void {
@@ -134,11 +171,135 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
+		Stops accepting new connections while leaving established sessions
+		open and usable.
+
+		The listening socket is released, so a successor process can bind
+		the port immediately during a deploy. Unlike `close()`, no `close`
+		event is dispatched and the server is not marked closed. Safe to
+		call more than once.
+	**/
+	override public function stopAccepting():Void {
+		if (!listening && !bound) {
+			return;
+		}
+
+		if (__cbInstance != null) {
+			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+		}
+
+		try {
+			__webServerSocket.close();
+		} catch (_:Dynamic) {
+			// Best-effort: the listener may already be gone.
+		}
+
+		listening = false;
+		bound = false;
+		__listenerReleased = true;
+	}
+
+	/**
+		Gracefully shuts the server down.
+
+		A WebSocket session is long-lived by design, so unlike an HTTP
+		request there is nothing to "finish". Draining therefore means
+		telling clients to go away: every session is sent a close frame
+		with `closeCode`, and sessions still open when `timeoutSeconds`
+		elapses are dropped.
+
+		Sending a close frame rather than severing the socket is what lets
+		a client distinguish an orderly shutdown from a network failure,
+		and so reconnect sensibly instead of treating it as an error.
+
+		Pairs with `ProcessLifecycle`:
+
+		```haxe
+		ProcessLifecycle.onShutdown(() -> server.drain());
+		ProcessLifecycle.installDefaultHandlers();
+		```
+
+		@param timeoutSeconds How long to wait for clients to acknowledge
+			before dropping them. Values at or below zero close at once.
+		@param onComplete Invoked once shutdown finishes, on the runtime
+			thread.
+		@param closeCode WebSocket close code sent to clients. Defaults to
+			1001 ("going away"), the code meaning a server is shutting
+			down.
+	**/
+	public function drain(timeoutSeconds:Float = 30.0, ?onComplete:Void->Void, closeCode:Int = 1001):Void {
+		if (draining) {
+			return;
+		}
+		draining = true;
+
+		stopAccepting();
+
+		var pending:Array<WebSocket> = __clients.copy();
+		for (client in pending) {
+			try {
+				client.closeWith(closeCode, "server shutting down");
+			} catch (_:Dynamic) {
+				// A session that is already gone needs no close frame.
+			}
+		}
+
+		if (__clients.length == 0 || timeoutSeconds <= 0 || __cbInstance == null) {
+			__finishDrain(onComplete);
+			return;
+		}
+
+		var deadline:Float = Sys.time() + timeoutSeconds;
+		var runtime = __cbInstance;
+		var onTick:TickEvent->Void = null;
+
+		onTick = function(_:TickEvent):Void {
+			if (__clients.length > 0 && Sys.time() < deadline) {
+				return;
+			}
+
+			runtime.removeEventListener(TickEvent.TICK, onTick);
+			__finishDrain(onComplete);
+		};
+		runtime.addEventListener(TickEvent.TICK, onTick);
+	}
+
+	@:noCompletion private function __finishDrain(onComplete:Void->Void):Void {
+		for (client in __clients.copy()) {
+			try {
+				client.close();
+			} catch (_:Dynamic) {}
+		}
+		__clients = [];
+
+		try {
+			close();
+		} catch (_:Dynamic) {}
+
+		if (onComplete != null) {
+			onComplete();
+		}
+	}
+
+	/**
 		Closes the socket and stops listening for connections.
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
 	override public function close():Void {
+		// stopAccepting() may already have released the listener as the
+		// first half of a graceful shutdown; closing again is not an error.
+		if (__listenerReleased) {
+			listening = false;
+			bound = false;
+			__closed = true;
+			if (__cbInstance != null) {
+				__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+				__cbInstance = null;
+			}
+			return;
+		}
+
 		try {
 			__webServerSocket.close();
 		} catch (e:Dynamic) {

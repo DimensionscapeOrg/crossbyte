@@ -48,6 +48,26 @@ class WebSocket extends Socket {
 		}
 	}
 
+	/**
+	 * Closes the session with a WebSocket close frame carrying `code` and
+	 * `reason`, rather than severing the connection.
+	 *
+	 * This is what lets the peer distinguish an orderly shutdown from a
+	 * network failure and reconnect sensibly. Used by
+	 * `ServerWebSocket.drain()`, which sends 1001 ("going away").
+	 *
+	 * @param code WebSocket close code, for example 1000 (normal) or 1001
+	 *        (going away).
+	 * @param reason Optional human-readable reason.
+	 */
+	public function closeWith(code:Int = 1000, ?reason:String):Void {
+		if (__webSocket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
+		__webSocket.close(code, reason);
+	}
+
 	override public function connect(host:String, port:Int):Void {
 		if (__webSocket != null) {
 			close();
