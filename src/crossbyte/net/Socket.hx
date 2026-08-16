@@ -112,6 +112,47 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	public var timeout:Int;
 
+	/**
+		Maximum bytes allowed to accumulate in the outgoing buffer, or `0`
+		for no limit.
+
+		Writes are buffered until the operating system accepts them, so a
+		peer that stops reading — a stalled phone, a half-open connection,
+		a deliberately slow client — makes that buffer grow without bound.
+		On a server fanning out to many connections, one such peer can
+		exhaust process memory.
+
+		Setting a limit bounds that exposure. When the buffer exceeds it
+		after a flush, `outputOverflowPolicy` decides what happens.
+
+		Defaults to `0`, preserving the historical behavior. Servers should
+		set a limit sized to the largest message they legitimately send,
+		with headroom — a few megabytes suits most protocols.
+	**/
+	public var maxOutputBufferSize:Int = 0;
+
+	/**
+		What to do when the outgoing buffer exceeds `maxOutputBufferSize`.
+
+		Defaults to `CLOSE`, which is what a server wants for a slow
+		consumer: the connection is dropped and its memory reclaimed
+		without every call site having to handle an error.
+	**/
+	public var outputOverflowPolicy:OutputOverflowPolicy = CLOSE;
+
+	/**
+		Bytes currently waiting to be written to the operating system.
+
+		A value that keeps climbing across flushes means the peer is not
+		draining as fast as this side is producing. Useful as a metrics
+		gauge and as a signal to stop enqueueing more work.
+	**/
+	public var outputBufferLength(get, never):Int;
+
+	@:noCompletion private function get_outputBufferLength():Int {
+		return __output == null ? 0 : __output.length;
+	}
+
 	@:noCompletion private var __buffer:Bytes;
 	@:noCompletion private var __connected:Bool;
 	@:noCompletion private var __closed:Bool;
@@ -389,8 +430,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						not open.
 	**/
 	public function flush():Void {
-		// TODO: see if flush backpressure is an issue in OpenFL and remedy it as well
 		if (flushFull) {
+			// Already blocked with a retry pending; the limit still applies
+			// because callers may keep enqueueing while it drains.
+			__enforceOutputLimit();
 			return;
 		}
 
@@ -422,6 +465,33 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					throw new IOError("Operation attempted on invalid socket.");
 				}
 			}
+
+			__enforceOutputLimit();
+		}
+	}
+
+	/**
+		Applies `maxOutputBufferSize` once a flush has moved whatever the
+		operating system would accept. Anything still buffered is data the
+		peer is not draining.
+	**/
+	@:noCompletion private function __enforceOutputLimit():Void {
+		if (maxOutputBufferSize <= 0 || __output == null || __output.length <= maxOutputBufferSize) {
+			return;
+		}
+
+		var buffered:Int = __output.length;
+		var message:String = 'Socket output buffer reached $buffered bytes, exceeding the $maxOutputBufferSize byte limit; the peer is not reading.';
+
+		switch (outputOverflowPolicy) {
+			case CLOSE:
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+				}
+				close();
+
+			case THROW:
+				throw new IOError(message);
 		}
 	}
 

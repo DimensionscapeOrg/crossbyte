@@ -23,7 +23,8 @@ class StressMain {
 			new stress.TaskPoolDrainStress(),
 			new stress.ConnectionPoolStress(),
 			new stress.MetricsStress(),
-			new stress.TimerIdStress()
+			new stress.TimerIdStress(),
+			new stress.SocketBackpressureStress()
 		];
 
 		var failed:Int = 0;
