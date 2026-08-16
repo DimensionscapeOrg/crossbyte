@@ -137,6 +137,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.utils.LoggerTest());
 	}
 
+	public static function addMetrics(runner:Runner):Void {
+		runner.addCase(new crossbyte.metrics.MetricsTest());
+	}
+
 	public static function addAll(runner:Runner):Void {
 		addAuth(runner);
 		addCrypto(runner);
@@ -157,6 +161,7 @@ class TestSuites {
 		addResources(runner);
 		addTimers(runner);
 		addUtils(runner);
+		addMetrics(runner);
 	}
 
 	public static function addNativeSmoke(runner:Runner):Void {
