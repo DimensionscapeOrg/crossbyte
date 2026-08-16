@@ -29,8 +29,16 @@ import crossbyte.errors.ArgumentError;
  * timeout should fail at startup rather than behave unexpectedly later.
  */
 class Config {
-	@:noCompletion private static final __INTEGER:EReg = ~/^[+-]?(?:[0-9]+|0[xX][0-9a-fA-F]+)$/;
-	@:noCompletion private static final __NUMBER:EReg = ~/^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+	// Numeric patterns are built per call rather than held as statics:
+	// EReg carries mutable match state, so a shared instance is a data race
+	// when configuration is read from worker threads.
+	@:noCompletion private static inline function __integerPattern():EReg {
+		return ~/^[+-]?(?:[0-9]+|0[xX][0-9a-fA-F]+)$/;
+	}
+
+	@:noCompletion private static inline function __numberPattern():EReg {
+		return ~/^[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/;
+	}
 
 	@:noCompletion private var __values:Map<String, String>;
 
@@ -181,7 +189,7 @@ class Config {
 		// Std.parseInt stops at the first non-digit, so "80a80" would yield
 		// 80 -- a typo would silently become a different port. Require the
 		// whole value to be numeric.
-		if (!__INTEGER.match(raw)) {
+		if (!__integerPattern().match(raw)) {
 			throw new ArgumentError('Config value for "$key" is not an integer: "$raw"');
 		}
 
@@ -206,7 +214,7 @@ class Config {
 		var raw:String = StringTools.trim(getString(key));
 		// Same trailing-garbage hazard as getInt: "1.5abc" must not read
 		// as 1.5.
-		if (!__NUMBER.match(raw)) {
+		if (!__numberPattern().match(raw)) {
 			throw new ArgumentError('Config value for "$key" is not a number: "$raw"');
 		}
 		return Std.parseFloat(raw);
