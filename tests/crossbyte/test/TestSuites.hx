@@ -115,6 +115,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());
+		// Needs real sockets: these drive the server with a hand-written
+		// client rather than CrossByte's own, which is the only way a fault
+		// specific to a foreign peer shows up.
+		runner.addCase(new crossbyte.net.WebSocketConformanceTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
