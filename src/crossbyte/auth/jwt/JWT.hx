@@ -6,6 +6,7 @@ import haxe.Json;
 import crossbyte.auth.jwt._internal.sign.IJWTSigner;
 import crossbyte.auth.jwt._internal.sign.HS256Signer;
 import crossbyte.auth.jwt._internal.sign.Ed25519Signer;
+import crossbyte.auth.jwt._internal.sign.PkSigner;
 
 using StringTools;
 
@@ -30,8 +31,11 @@ class JWT {
 			case EdDSA(pubKeys, privKey, signKeyId):
 				new Ed25519Signer(pubKeys, privKey, signKeyId);
 
-			case RS256(_, _, _):
-				throw "RS256 signer not implemented on this target yet";
+			case RS256(pubKeys, privKey, signKeyId):
+				new PkSigner(JWTAlgorithm.RS256, pubKeys, privKey, signKeyId);
+
+			case ES256(pubKeys, privKey, signKeyId):
+				new PkSigner(JWTAlgorithm.ES256, pubKeys, privKey, signKeyId);
 		};
 
 		var jwt = new JWT(signer);

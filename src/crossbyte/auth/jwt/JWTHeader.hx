@@ -58,7 +58,7 @@ abstract JWTHeader(JWTHeaderData) {
 			return false;
 		}
 		return switch (algorithm) {
-			case HS256 | EdDSA | RS256: true;
+			case HS256 | EdDSA | RS256 | ES256: true;
 			default: false;
 		}
 	}
