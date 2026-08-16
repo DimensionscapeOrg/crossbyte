@@ -471,7 +471,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				var throwError = false;
 				if (Std.isOfType(e, Error) && __isBlockedError(cast e)) {
 					flushFull = true;
-					Timer.delay(__tryFlush, 0);
+					// The same queue a partial write uses. This used to be
+					// Timer.delay(__tryFlush, 0): per-socket work routed
+					// through the global timer, when the socket already sits
+					// in a registry that drains a writable queue every pump.
+					// Two mechanisms for one job, and the timer was the one
+					// that could take the whole runtime loop down with it,
+					// because an exception there unwinds through the tick
+					// dispatch instead of failing the one connection.
+					__queueWrite();
 				} else {
 					throwError = true;
 				}
@@ -1066,9 +1074,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	public inline function registryOnWritable():Void {
-		if (__isDirty) {
-			flush();
-		}
+		// `__isDirty` means "a writable retry is queued", so it is cleared
+		// as the queue dispatches. Without this a socket that blocks twice
+		// in a row never re-queues — __queueWrite() would see itself as
+		// already pending — and its buffered data is stranded silently.
+		__isDirty = false;
+
+		// __tryFlush rather than flush: flush() returns early while
+		// `flushFull` is set, so calling it here could never recover a
+		// fully blocked socket; only clearing that flag first does. That
+		// is why the timer was the sole recovery path for the blocked
+		// case even though the queue was already wired for the partial one.
+		__tryFlush();
 	}
 
 	// Event Handlers
