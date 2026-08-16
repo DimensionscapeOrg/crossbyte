@@ -156,13 +156,16 @@ class ServerWebSocket extends ServerSocket {
 		}
 		try {
 			this.localAddress = localAddress;
-			this.localPort = localPort;
 			__webServerSocket.bind(localAddress, localPort);
+
+			// Port 0 asks the operating system to choose. Report the port it
+			// actually assigned, matching ServerSocket: otherwise localPort
+			// stays 0 and a caller has no way to learn where to connect.
+			this.localPort = localPort == 0 ? __webServerSocket.host().port : localPort;
 			bound = true;
 		} catch (e:Dynamic) {
 			switch (e) {
 				case "Bind failed":
-					trace("bind fail");
 					throw new IOError("Operation attempted on invalid socket.");
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
