@@ -11,11 +11,21 @@
 #include <string>
 #include <mutex>
 
+// Windows x64 links the vendored static libsodium and needs no opt-in.
+//
 // hxcpp build variables used in Build.xml do not always map 1:1 to the exact
 // preprocessor defines exposed to custom native sources across hxcpp releases.
 // Accept both the hxcpp architecture macros and the compiler's native x64
 // macros so the compiled bridge and the link step agree on supported targets.
+#if !defined(CROSSBYTE_SODIUM_ENABLED)
 #if defined(_WIN32) && !defined(HXCPP_ARM64) && !defined(_M_ARM64) && !defined(_M_ARM64EC) && (defined(HXCPP_M64) || defined(_WIN64) || defined(_M_X64) || defined(__x86_64__))
+#define CROSSBYTE_SODIUM_ENABLED 1
+#endif
+#endif
+
+// Elsewhere the build defines CROSSBYTE_SODIUM_ENABLED when it has been told
+// to link a system libsodium (`-D crossbyte_sodium_system`).
+#if defined(CROSSBYTE_SODIUM_ENABLED)
 
 extern "C" {
 	int sodium_init(void);
