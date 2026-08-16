@@ -24,7 +24,8 @@ class StressMain {
 			new stress.ConnectionPoolStress(),
 			new stress.MetricsStress(),
 			new stress.TimerIdStress(),
-			new stress.SocketBackpressureStress()
+			new stress.SocketBackpressureStress(),
+			new stress.IdleTaskPoolGcStress()
 		];
 
 		var failed:Int = 0;

@@ -26,6 +26,7 @@ All notable changes to CrossByte will be documented in this file.
 - `RS256` and `ES256` JWT signers, replacing the runtime `"not implemented"` throw — this is what lets a service verify OpenID Connect tokens from Google, Microsoft, and other providers; `JWTSigner` gains an `ES256` constructor (`docs/proposals/0008-asymmetric-signatures.md`)
 - libsodium support beyond Windows: `-D crossbyte_sodium_system` links the system libsodium on Linux and macOS, so the whole `crossbyte.crypto` surface (AEAD, X25519, key exchange, Argon2id, Ed25519) works off Windows; a CI matrix job runs the crypto and auth suites on both (`docs/proposals/0009-libsodium-platforms.md`)
 - `ServerWebSocket` graceful shutdown: `stopAccepting()` releases the listener while sessions keep working, and `drain(timeout, ?onComplete, closeCode)` sends every session a close frame (1001 "going away") so clients can tell an orderly shutdown from a network failure; adds `clientCount`, `draining`, and `WebSocket.closeWith(code, reason)` (`docs/proposals/0010-websocket-drain.md`)
+- stress case guarding the `TaskPool` garbage-collector deadlock fixed in this release: idle pools are held parked while other threads allocate hard, which wedges the process on the pre-fix code and completes in milliseconds on the fixed code
 
 ### Changed
 
