@@ -24,6 +24,10 @@ class HTTPServer extends ServerSocket {
 	private var autoIndex:Array<String>;
 	private var php:PHPBridge;
 
+	@:noCompletion private var __requestsTotal:crossbyte.metrics.Counter;
+	@:noCompletion private var __requestSeconds:crossbyte.metrics.Histogram;
+	@:noCompletion private var __requestStarted:ObjectMap<Dynamic, Float>;
+
 	public function new(config:HTTPServerConfig) {
 		super(config.tlsEnabled);
 		__connections = 0;
@@ -53,6 +57,8 @@ class HTTPServer extends ServerSocket {
 			}
 			php = new PHPBridge(mode, docRoot, autoIndex);
 		}
+
+		__initMetrics();
 
 		addEventListener(ServerSocketConnectEvent.CONNECT, this_onConnect);
 
@@ -185,6 +191,7 @@ class HTTPServer extends ServerSocket {
 		var handler:HTTPRequestHandler = new HTTPRequestHandler(e.socket, __config, php);
 		__active.set(e.socket, handler);
 		__connections++;
+		__beginRequestTiming(e.socket);
 
 		handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, this_onResponse);
 
@@ -195,6 +202,7 @@ class HTTPServer extends ServerSocket {
 	private function cleanupSocket(sock:Dynamic):Void {
 		if (__active.exists(sock)) {
 			__active.remove(sock);
+			__endRequestTiming(sock);
 			if (__connections > 0) {
 				__connections--;
 			}
@@ -203,6 +211,60 @@ class HTTPServer extends ServerSocket {
 
 	private function this_onResponse(e:HTTPStatusEvent):Void {
 		Logger.info(e.toString());
+		__recordResponse(e);
+	}
+
+	/**
+		Registers this server's metrics when a registry is configured.
+
+		Series are created up front so a scrape before the first request
+		reports zero rather than omitting the series entirely — an absent
+		series and a genuinely idle server look identical to a collector
+		otherwise.
+	**/
+	@:noCompletion private function __initMetrics():Void {
+		var registry = __config.metrics;
+		if (registry == null) {
+			return;
+		}
+
+		var prefix:String = (__config.metricsPrefix == null || __config.metricsPrefix == "") ? "http" : __config.metricsPrefix;
+		__requestStarted = new ObjectMap();
+
+		__requestsTotal = registry.counter(prefix + "_requests_total", null, "Responses sent, labelled by status class.");
+		__requestSeconds = registry.histogram(prefix + "_request_seconds", null, null, "Time from accepting a connection to sending its response.");
+
+		// Bound to the live counter rather than mirrored, so the gauge
+		// cannot drift from the server's own accounting.
+		registry.gaugeFn(prefix + "_active_connections", () -> __connections, null, "Client connections currently being served.");
+	}
+
+	@:noCompletion private function __recordResponse(e:HTTPStatusEvent):Void {
+		if (__requestsTotal == null) {
+			return;
+		}
+
+		// Status class rather than exact code: "2xx" and "5xx" are what
+		// alerts are written against, and one series per code would grow
+		// cardinality for no operational gain.
+		var statusClass:String = Std.int(e.status / 100) + "xx";
+		__config.metrics.counter(__requestsTotal.name, ["status" => statusClass]).inc();
+	}
+
+	@:noCompletion private function __beginRequestTiming(socket:Dynamic):Void {
+		if (__requestStarted != null) {
+			__requestStarted.set(socket, Sys.time());
+		}
+	}
+
+	@:noCompletion private function __endRequestTiming(socket:Dynamic):Void {
+		if (__requestStarted == null || !__requestStarted.exists(socket)) {
+			return;
+		}
+
+		var started:Float = __requestStarted.get(socket);
+		__requestStarted.remove(socket);
+		__requestSeconds.observe(Sys.time() - started);
 	}
 
 	private function sanitizePath(docRoot:String, uriPath:String):{abs:String, isDir:Bool} {
