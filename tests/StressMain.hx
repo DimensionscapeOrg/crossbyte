@@ -26,6 +26,7 @@ class StressMain {
 			new stress.TimerIdStress(),
 			new stress.SocketBackpressureStress(),
 			new stress.SocketDeferredFlushStress(),
+			new stress.SocketBlockedWriteDrainStress(),
 			new stress.WebSocketRetentionStress(),
 			new stress.WebSocketFinalMessageStress(),
 			new stress.WebSocketBufferLimitStress(),

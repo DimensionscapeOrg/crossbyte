@@ -15,6 +15,7 @@ final class NativeSocketRegistry {
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
 	@:noCompletion private var __deregisterPending:DenseSet<Socket>;
 	@:noCompletion private var __writableQueue:Stack<Socket>;
+	@:noCompletion private var __writableSwap:Stack<Socket>;
 	@:noCompletion private var __readSnapshot:Array<Socket>;
 
 	public var capacity(get, null):Int;
@@ -40,6 +41,7 @@ final class NativeSocketRegistry {
 		__deregisterQueue = new Stack();
 		__deregisterPending = new DenseSet();
 		__writableQueue = new Stack();
+		__writableSwap = new Stack();
 		__readSnapshot = [];
 	}
 
@@ -49,6 +51,7 @@ final class NativeSocketRegistry {
 		__deregisterQueue.clear(true);
 		__deregisterPending.clear();
 		__writableQueue.clear();
+		__writableSwap.clear();
 		__readSnapshot.resize(0);
 		__isDirty = true;
 	}
@@ -84,8 +87,18 @@ final class NativeSocketRegistry {
 	}
 	public #if final inline #end function update(timeout:Float = 0):Void {
 		if (!__writableQueue.isEmpty) {
-			__writableQueue.forEach(__onFlushSocket);
-			__writableQueue.clear();
+			// Drained through a swap buffer, because a socket that is still
+			// blocked re-queues itself from inside this dispatch. Iterating
+			// the live queue and clearing it afterwards threw those away,
+			// so a socket only ever got one retry and whatever it still
+			// held was stranded — no error, no close, indistinguishable
+			// from data that was never sent.
+			var draining:Stack<Socket> = __writableQueue;
+			__writableQueue = __writableSwap;
+			__writableSwap = draining;
+
+			draining.forEach(__onFlushSocket);
+			draining.clear();
 		}
 		if (!__deregisterQueue.isEmpty) {
 			__deregisterQueue.forEach(__onDeregisterSocket);

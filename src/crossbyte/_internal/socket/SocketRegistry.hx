@@ -12,6 +12,7 @@ final class SocketRegistry {
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
 	@:noCompletion private var __deregisterPending:DenseSet<Socket>;
 	@:noCompletion private var __writableQueue:Stack<Socket>;
+	@:noCompletion private var __writableSwap:Stack<Socket>;
 
 	@:noCompletion private var __readSnapshot:Array<Socket>;
 
@@ -37,6 +38,7 @@ final class SocketRegistry {
 		__deregisterQueue = new Stack();
 		__deregisterPending = new DenseSet();
 		__writableQueue = new Stack();
+		__writableSwap = new Stack();
 		__readSnapshot = [];
 	}
 
@@ -45,6 +47,7 @@ final class SocketRegistry {
 		__deregisterQueue.clear(true);
 		__deregisterPending.clear();
 		__writableQueue.clear();
+		__writableSwap.clear();
 		__readSnapshot.resize(0);
 		__isDirty = true;
 	}
@@ -80,8 +83,16 @@ final class SocketRegistry {
 	}
 	public #if final inline #end function update(timeout:Float = 0):Void {
 		if (!__writableQueue.isEmpty) {
-			__writableQueue.forEach(__onFlushSocket);
-			__writableQueue.clear();
+			// Swapped before draining: a socket that is still blocked
+			// re-queues itself from inside this dispatch, and clearing the
+			// live queue afterwards discarded those, stranding whatever it
+			// still held.
+			var draining:Stack<Socket> = __writableQueue;
+			__writableQueue = __writableSwap;
+			__writableSwap = draining;
+
+			draining.forEach(__onFlushSocket);
+			draining.clear();
 		}
 
 		if (!__deregisterQueue.isEmpty) {
