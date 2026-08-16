@@ -191,5 +191,16 @@ class TestSuites {
 		addNet(runner);
 		addRPC(runner);
 		addTimers(runner);
+		// These three carry `#if cpp` cases of their own — SQLite in
+		// DBSupportTest, the named-pipe and shared-memory transports across
+		// the IPC suites, and the native helpers in UtilsTest. Registered
+		// only in addAll, which runs on the interpreter, those cases
+		// compiled out everywhere they were registered and were
+		// unregistered where they compiled: the same way the asymmetric JWT
+		// suite went unrun. Anything here that needs a native target has to
+		// be in this suite or it is not tested at all.
+		addDatabase(runner);
+		addIPC(runner);
+		addUtils(runner);
 	}
 }
