@@ -54,6 +54,9 @@ class Aedifex {
 		.task("cpp-timer-burst-audit", "haxe", ["ci/cpp-timer-burst-audit.hxml"], null, "Type-check the timer burst API surface for hxcpp targets.")
 		.task("localconnection-integration", "haxe", ["tests/integration/localconnection.hxml"], null, "Build the native local transport integration harness.")
 		.task("sample-websocket-echo-check", "haxe", ["check.hxml"], "samples/websocket-echo", "Type-check the websocket echo sample.")
+		// Unlike the other samples this one terminates on its own and reports
+		// a pass/fail exit status, so CI runs the built binary rather than
+		// stopping at the build. See the "Run websocket echo sample" step.
 		.task("sample-websocket-echo-cpp", "haxe", ["cpp.hxml"], "samples/websocket-echo", "Build the websocket echo sample.")
 		.task("sample-socket-chat-check", "haxe", ["check.hxml"], "samples/socket-chat", "Type-check the socket chat sample.")
 		.task("sample-socket-chat-server-cpp", "haxe", ["server-cpp.hxml"], "samples/socket-chat", "Build the socket chat server sample.")
