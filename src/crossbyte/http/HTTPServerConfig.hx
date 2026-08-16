@@ -34,6 +34,25 @@ class HTTPServerConfig {
 	public var rewrites:Array<RewriteRule>;
 
 	/**
+		Registry this server records request metrics into.
+
+		When set, the server publishes request counts by status class,
+		request duration, and a live connection gauge. Leave `null` to
+		record nothing.
+
+		This does not by itself expose an endpoint; add
+		`MetricsEndpoint.middleware(...)` to `middleware` to serve them.
+	**/
+	public var metrics:crossbyte.metrics.Metrics;
+
+	/**
+		Prefix for metric names published by this server, so several servers
+		in one process can be told apart. Defaults to `http`, yielding
+		`http_requests_total` and similar.
+	**/
+	public var metricsPrefix:String = "http";
+
+	/**
 		Path to the PEM certificate chain this server presents. Set together
 		with `tlsKeyPath` to serve HTTPS. Not available on the jvm target.
 	**/
