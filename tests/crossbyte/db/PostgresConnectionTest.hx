@@ -7,7 +7,14 @@ import utest.Assert;
 
 class PostgresConnectionTest extends utest.Test {
 	public function testSupportFlagHonorsBuildTarget():Void {
-		#if !php
+		// Postgres is native on cpp and PHP-backed on php; no other target
+		// has a driver. This asserted `false` everywhere but php, which
+		// stopped being true when the native bridge landed — and went
+		// unnoticed because the suite was registered only in `addAll`,
+		// where cpp cases compile out.
+		#if cpp
+		Assert.isTrue(PostgresConnection.isSupported);
+		#elseif !php
 		Assert.isFalse(PostgresConnection.isSupported);
 		#end
 	}
