@@ -170,7 +170,18 @@ class WebSocket {
 			__runtime.addEventListener(Event.TICK, __tickConnectListener);
 		} else {
 			__socket = socket;
-			__openConnection(null);
+
+			// An accepted TLS socket has completed TCP but not TLS. Without
+			// this it would handshake implicitly on its first read, with no
+			// bound, so a peer that connects and then stalls mid-handshake
+			// holds the socket indefinitely. Run the same deferred,
+			// timeout-guarded handshake the client path uses; the WebSocket
+			// upgrade follows once TLS completes.
+			if (__socket.isSecure) {
+				__initSSLHandshake();
+			} else {
+				__openConnection(null);
+			}
 		}
 	}
 
@@ -757,8 +768,17 @@ class WebSocket {
 			__runtime = CrossByte.current();
 		}
 		__runtime.addEventListener(Event.TICK, __tickProcessListener);
+
 		if (tickListener != null) {
 			__runtime.removeEventListener(Event.TICK, tickListener);
+		}
+
+		// Only a client sends the upgrade request; a server waits to receive
+		// one. This is keyed on the role rather than on whether a listener
+		// was passed, because an accepted TLS session also arrives here with
+		// a listener to retire -- and would otherwise start talking like a
+		// client.
+		if (__isClient != false) {
 			__doHandshake();
 		}
 	}
@@ -772,23 +792,36 @@ class WebSocket {
 	}
 
 	private function __onTickSSLHandshake(e:Event):Void {
-		var doClose:Bool = false;
+		// Three outcomes, kept distinct: completed, needs more data, or
+		// failed. Previously a non-`Blocked` error left the "retry" flag
+		// clear and fell through to __openConnection(), treating a failed
+		// handshake as a successful one.
+		var complete:Bool = false;
+		var failed:Bool = false;
+
 		try {
 			__socket.handshake();
+			complete = true;
 		} catch (e:Error) {
-			if (e == Error.Blocked #if HXCPP_DEBUGGER || e.match(Error.Custom(Blocked)) #end) {
-				doClose = true;
+			// Blocked only means the peer's next flight has not arrived
+			// yet. Anything else is terminal.
+			if (!(e == Error.Blocked #if HXCPP_DEBUGGER || e.match(Error.Custom(Blocked)) #end)) {
+				failed = true;
 			}
 		} catch (e:Dynamic) {
-			doClose = true;
+			failed = true;
 		}
 
-		if (doClose) {
-			if (Sys.time() - __timestamp > __timeout / 1000) {
-				__close(1015);
-			}
-		} else {
+		if (complete) {
 			__openConnection(__tickSSLHandshakeListener);
+			return;
+		}
+
+		// A terminal failure closes immediately instead of idling until the
+		// deadline; a merely stalled peer closes once the deadline passes.
+		if (failed || Sys.time() - __timestamp > __timeout / 1000) {
+			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
+			__close(1015);
 		}
 	}
 

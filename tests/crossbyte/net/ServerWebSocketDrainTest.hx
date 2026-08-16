@@ -30,6 +30,10 @@ class ServerWebSocketDrainTest extends utest.Test {
 		server.listen();
 
 		var port:Int = server.localPort;
+		// Binding to 0 must report the port the OS actually assigned;
+		// otherwise the rebind check below proves nothing, since binding
+		// to 0 again would simply pick another free port.
+		Assert.isTrue(port > 0);
 		Assert.isFalse(server.draining);
 
 		var completed:Bool = false;
