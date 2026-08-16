@@ -7,6 +7,7 @@ package crossbyte.auth;
 import haxe.Http;
 #end
 import haxe.Json;
+import crossbyte.utils.Logger;
 using StringTools;
 
 /**
@@ -68,7 +69,11 @@ class OAuth {
 			callback(token);
 		};
 		http.onError = function(error) {
-			trace('Error getting access token: ' + error);
+			// TODO: the caller is never told. `callback` fires only on
+			// success, so a failed exchange is indistinguishable from one
+			// still in flight. Surfacing it needs an error callback, which
+			// is a signature change.
+			Logger.error('OAuth access token request failed: ' + error);
 		};
 		http.request(true);
 		#end
@@ -101,7 +106,8 @@ class OAuth {
 			callback(token);
 		};
 		http.onError = function(error) {
-			trace('Error refreshing access token: ' + error);
+			// Same gap as getAccessToken: logged, never surfaced.
+			Logger.error('OAuth token refresh failed: ' + error);
 		};
 		http.request(true);
 		#end
