@@ -203,5 +203,23 @@ class TestSuites {
 		addDatabase(runner);
 		addIPC(runner);
 		addUtils(runner);
+		// ByteArray's growth guarantees hold everywhere except eval, whose
+		// shim cannot grow its storage in place. Those cases are guarded
+		// away from eval, so without registering them here they would run
+		// nowhere at all — the trap three other suites were already in.
+		//
+		// Only the ByteArray cases, not the whole of addIO: running that
+		// natively segfaults in FileTest.testMoveToMovesNestedDirectory-
+		// ContentsAndRemovesSource, a pre-existing native File.moveTo
+		// crash that has its own task. Registering the rest would trade one
+		// silent gap for a suite nobody can run.
+		// Just the growth guarantees, not the whole of addIO. The rest of
+		// that group is held back for two independent reasons, both found
+		// by trying: FileTest segfaults natively in moveTo, and the added
+		// runtime of the bulk ByteArray suites pushes
+		// NativeProcessTest.testStartEmitEventsAndExitCode past its
+		// three-second budget. Both have their own tasks; neither is a
+		// reason to leave these assertions running nowhere.
+		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
 	}
 }
