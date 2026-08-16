@@ -29,6 +29,7 @@ All notable changes to CrossByte will be documented in this file.
 - stress case guarding the `TaskPool` garbage-collector deadlock fixed in this release: idle pools are held parked while other threads allocate hard, which wedges the process on the pre-fix code and completes in milliseconds on the fixed code
 - `CrossByte.defaultSocketCapacity` (1024, was effectively 64): the poll backend's starting allocation is now tunable, sparing a ramping server roughly seven grow-and-rebuild cycles on the way to a thousand connections; it was never a ceiling, since the registry already grew on demand
 - `ServerApplication.defaultTicksPerSecond` (60): a service-oriented tick rate bounding added socket latency at ~17 ms instead of ~83 ms, applied only by the server entry point so `Application`, `HostApplication`, and child runtimes keep their existing timing (`docs/proposals/0011-poll-capacity-and-tick-rate.md`)
+- accepted `wss://` sessions now run the deferred, timeout-guarded TLS handshake the client path already used; previously a server-side handshake happened implicitly on first read with no bound, so a peer that completed TCP then stalled mid-TLS held the socket indefinitely (`docs/proposals/0012-websocket-tls-handshake.md`)
 
 ### Changed
 
@@ -43,6 +44,8 @@ All notable changes to CrossByte will be documented in this file.
 - `haxe.Timer` allocated its id from a static counter outside the lock guarding the timer map, so two threads creating timers concurrently could take the same id and the second registration evicted the first — a timer that silently never fired
 - `HTTPBackendRegistry` mutated a shared array without synchronization while `resolve()` read it from request threads; mutation now publishes a new array under a lock and lookups iterate a stable snapshot
 - `ProcessLifecycle` guards its callback list, so registering from a worker thread while the runtime thread dispatches can no longer drop or double-run a callback
+- a WebSocket TLS handshake that failed with a typed non-`Blocked` error was treated as a *successful* one and promoted to an open session; terminal failures now close immediately instead of idling until the deadline
+- `ServerWebSocket.bind()` did not resolve an ephemeral port: binding to 0 left `localPort` at 0, so callers could not discover the assigned port
 
 ## 1.0.0-rc.1 - 2026-04-28
 
