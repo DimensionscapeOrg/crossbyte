@@ -1239,7 +1239,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		if (length == 0)
 			return;
 
-		__resize(position + length);
+		// The blit below covers [position, position + length), so only a gap
+		// left by seeking past the end needs zeroing. On an append there is
+		// no gap and the fill is skipped entirely.
+		__resize(position + length, position);
 		blit(position, (bytes : ByteArrayData), offset, length);
 
 		position += length;
@@ -1391,7 +1394,22 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		length = bytes.length;
 	}
 
-	@:noCompletion private function __resize(size:Int):Void {
+	/**
+		Grows the buffer to at least `size`, zeroing the newly exposed
+		region.
+
+		That zeroing is not optional in general. A caller may seek past the
+		end and write there, or simply assign `length`, and the bytes in
+		between must read as zero rather than as whatever the allocator
+		last left in that memory — otherwise reading a grown ByteArray
+		discloses unrelated heap contents.
+
+		@param overwriteFrom When the caller guarantees it will itself write
+			every byte from this offset up to `size`, only the region below
+			it needs zeroing. Omit it and the whole grown region is zeroed,
+			which is always safe.
+	**/
+	@:noCompletion private function __resize(size:Int, overwriteFrom:Int = -1):Void {
 		if (size > __length) {
 			var capacity = ((size + 1) * 3) >> 1;
 			// Guard against integer overflow: if the geometric growth wraps
@@ -1403,7 +1421,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			var bytes = Bytes.alloc(capacity);
 			var cacheLength = length;
 			#if sys
-			bytes.fill(__length, size - __length, 0);
+			// Zero only up to the point the caller takes over. For an append
+			// — the common case, and the whole of the bulk write path — that
+			// is nothing at all, which spares a full pass over the grown
+			// region on every growth.
+			var zeroEnd:Int = (overwriteFrom < 0 || overwriteFrom > size) ? size : overwriteFrom;
+			if (zeroEnd > __length) {
+				bytes.fill(__length, zeroEnd - __length, 0);
+			}
 			#end
 
 			if (__length > 0) {

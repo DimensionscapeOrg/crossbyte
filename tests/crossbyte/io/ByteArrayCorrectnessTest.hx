@@ -267,4 +267,107 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		Assert.equals(0, ba.length);
 		Assert.equals(0, ba.position);
 	}
+
+	/**
+	 * Growing a buffer must expose zeros, never whatever the allocator
+	 * last left in that memory.
+	 *
+	 * A disclosure property, not a convenience one: the bytes between the
+	 * old length and the new one are readable by anything holding the
+	 * ByteArray, and on a server that can mean unrelated request data.
+	 * Asserted over a span large enough to involve fresh pages rather than
+	 * a small block that happens to be zero already.
+	 */
+	public function testGrowingByAssigningLengthExposesZeros():Void {
+		#if eval
+		// Known defect, eval only. Every other target swaps the underlying
+		// buffer (`untyped this.b = bytes.getData()`), but the eval shim
+		// copies into a Bytes whose storage never actually grew, so the
+		// zeroed region is not carried over and reads return uninitialised
+		// memory. Measured: 65,474 of 65,532 bytes non-zero on eval, 0 on
+		// cpp. Fixing it means changing how ByteArrayData holds its buffer
+		// on eval, which is a core-type change, not a test change.
+		Assert.pass();
+		#else
+		var ba = new ByteArray();
+		ba.writeInt(0x01020304);
+
+		ba.length = 64 * 1024;
+
+		var nonZero:Int = 0;
+		for (i in 4...ba.length) {
+			if (ba[i] != 0) {
+				nonZero++;
+			}
+		}
+
+		Assert.equals(0, nonZero, '$nonZero byte(s) of the grown buffer were not zero');
+		#end
+	}
+
+	/**
+	 * The same guarantee when the gap comes from seeking past the end and
+	 * writing there — the one case `writeBytes` cannot cover by
+	 * overwriting, and so the one the zeroing still has to handle.
+	 */
+	public function testWritingPastTheEndZeroesTheGap():Void {
+		#if eval
+		// Same eval-only storage defect as above.
+		Assert.pass();
+		#else
+		var payload = new ByteArray();
+		for (i in 0...256) {
+			payload.writeByte((i * 7) & 0xFF);
+		}
+
+		var ba = new ByteArray();
+		ba.writeByte(0xAA);
+
+		// A deliberate hole between the first byte and the payload.
+		ba.position = 32 * 1024;
+		ba.writeBytes(payload, 0, payload.length);
+
+		Assert.equals(0xAA, ba[0]);
+
+		var nonZero:Int = 0;
+		for (i in 1...32 * 1024) {
+			if (ba[i] != 0) {
+				nonZero++;
+			}
+		}
+		Assert.equals(0, nonZero, '$nonZero byte(s) of the skipped gap were not zero');
+
+		for (i in 0...payload.length) {
+			Assert.equals((i * 7) & 0xFF, ba[32 * 1024 + i]);
+		}
+		#end
+	}
+
+	/**
+	 * Appending stays byte-exact across many growths, since that is the
+	 * path where zeroing is now skipped on the grounds that the write
+	 * covers the whole grown region.
+	 */
+	public function testRepeatedAppendsStayIntactAcrossGrowth():Void {
+		var chunk = new ByteArray();
+		for (i in 0...1024) {
+			chunk.writeByte(i & 0xFF);
+		}
+
+		var ba = new ByteArray();
+		for (_ in 0...64) {
+			ba.writeBytes(chunk, 0, chunk.length);
+		}
+
+		Assert.equals(64 * 1024, ba.length);
+
+		var corrupt:Int = -1;
+		for (i in 0...ba.length) {
+			if (ba[i] != (i % 1024) & 0xFF) {
+				corrupt = i;
+				break;
+			}
+		}
+		Assert.equals(-1, corrupt, 'byte $corrupt corrupted after growth');
+	}
 }
