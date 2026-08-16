@@ -23,30 +23,12 @@ class WebsocketEvent {
 		this.code = code;
 
 		if (type == CLOSE && reason == null) {
-			switch (code) {
-				case 1000:
-					reason = "Normal closure";
-				case 1001:
-					reason = "Going away";
-				case 1002:
-					reason = "Protocol error";
-				case 1003:
-					reason = "Message too big";
-				case 1007:
-					reason = "Invalid data";
-				case 1008:
-					reason = "Policy violation";
-				case 1009:
-					reason = "Message too big";
-				case 1010:
-					reason = "Missing extension(s)";
-				case 1011:
-					reason = "Internal server error";
-				case 1015:
-					reason = "TLS handshake failed";
-				default:
-					reason = "";
-			}
+			// Shared with the public close event so both layers describe a
+			// code the same way. The table here previously reported 1003 as
+			// "Message too big" — that is 1009; 1003 is unsupported data —
+			// and had no entry for 1006, which is the code a peer that just
+			// disappears produces and therefore the most common of all.
+			reason = crossbyte.events.WebSocketCloseEvent.describe(code);
 		}
 
 		this.reason = reason;
