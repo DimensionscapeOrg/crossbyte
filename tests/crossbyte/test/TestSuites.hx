@@ -92,6 +92,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.MongoConnectionTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 		runner.addCase(new crossbyte.db.ConnectionPoolTest());
+		runner.addCase(new crossbyte.db.ConnectionPoolMetricsTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {

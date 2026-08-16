@@ -61,6 +61,76 @@ class ServerWebSocket extends ServerSocket {
 	**/
 	public var maxOutputBufferSize:Int = 0;
 
+	@:noCompletion private var __metrics:crossbyte.metrics.Metrics;
+	@:noCompletion private var __acceptedTotal:crossbyte.metrics.Counter;
+	@:noCompletion private var __closedTotal:crossbyte.metrics.Counter;
+
+	/**
+	 * Publishes this server's session metrics into `registry`.
+	 *
+	 * Everything here is an **aggregate across sessions** — a count, a
+	 * maximum, a sum. Nothing is labelled per peer, and that is a hard
+	 * constraint rather than a stylistic one: a label whose values are
+	 * client addresses or session ids creates a new time series per
+	 * connection, which a collector keeps long after the connection is
+	 * gone. On a server with real churn that is how a metrics pipeline is
+	 * brought down by the thing meant to observe it.
+	 *
+	 * The buffer gauges are what make a slow consumer visible.
+	 * `maxOutputBufferSize` bounds a single session, but a fleet of peers
+	 * each sitting just under the bound is invisible from the ceiling
+	 * alone; the max and the total together separate one stuck client from
+	 * a server-wide back-up.
+	 *
+	 * Call before `listen()` so the first accepted session is counted.
+	 *
+	 * @param registry Destination registry.
+	 * @param prefix Metric name prefix. Defaults to `websocket`.
+	 */
+	public function publishMetrics(registry:crossbyte.metrics.Metrics, prefix:String = "websocket"):Void {
+		if (registry == null) {
+			return;
+		}
+
+		__metrics = registry;
+		var name:String = (prefix == null || prefix == "") ? "websocket" : prefix;
+
+		registry.gaugeFn(name + "_sessions", () -> clientCount, null, "Sessions currently established.");
+
+		registry.gaugeFn(name + "_output_buffer_bytes_max", () -> __maxOutputBuffer(), null,
+			"Largest amount of unsent frame data held by any one session.");
+		registry.gaugeFn(name + "_output_buffer_bytes_total", () -> __totalOutputBuffer(), null,
+			"Unsent frame data held across all sessions.");
+
+		__acceptedTotal = registry.counter(name + "_sessions_accepted_total", null, "Sessions accepted since start.");
+		__closedTotal = registry.counter(name + "_sessions_closed_total", null, "Sessions closed since start.");
+	}
+
+	/**
+	 * Walks the live sessions on scrape rather than tracking a running
+	 * maximum, because a running maximum only ever rises: once one peer
+	 * stalls, the metric stays high forever and stops describing the
+	 * present. Cost is one pass over the session list per scrape.
+	 */
+	@:noCompletion private function __maxOutputBuffer():Int {
+		var peak:Int = 0;
+		for (client in __clients) {
+			var pending:Int = client.outputBufferLength;
+			if (pending > peak) {
+				peak = pending;
+			}
+		}
+		return peak;
+	}
+
+	@:noCompletion private function __totalOutputBuffer():Int {
+		var total:Int = 0;
+		for (client in __clients) {
+			total += client.outputBufferLength;
+		}
+		return total;
+	}
+
 	@:noCompletion private var __webServerSocket:FlexSocket;
 	@:noCompletion private var __isSecure:Bool;
 
@@ -126,8 +196,15 @@ class ServerWebSocket extends ServerSocket {
 		}
 
 		__clients.push(client);
+		if (__acceptedTotal != null) {
+			__acceptedTotal.inc();
+		}
+
 		client.addEventListener(Event.CLOSE, function(_) {
 			__clients.remove(client);
+			if (__closedTotal != null) {
+				__closedTotal.inc();
+			}
 		});
 	}
 

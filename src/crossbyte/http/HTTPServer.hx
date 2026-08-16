@@ -245,6 +245,44 @@ class HTTPServer extends ServerSocket {
 		// Bound to the live counter rather than mirrored, so the gauge
 		// cannot drift from the server's own accounting.
 		registry.gaugeFn(prefix + "_active_connections", () -> __connections, null, "Client connections currently being served.");
+
+		// Aggregates across connections, never a series per peer: a label
+		// carrying a client address would create a time series that
+		// outlives the connection it describes, and a server with real
+		// churn would take the metrics pipeline down with it.
+		//
+		// `maxOutputBufferSize` bounds one connection, but many peers each
+		// sitting just under that bound is invisible from the limit alone.
+		// The max identifies a single stuck client; the total identifies a
+		// server-wide back-up.
+		registry.gaugeFn(prefix + "_output_buffer_bytes_max", () -> __maxOutputBuffer(), null,
+			"Largest amount of undrained response data held for any one connection.");
+		registry.gaugeFn(prefix + "_output_buffer_bytes_total", () -> __totalOutputBuffer(), null,
+			"Undrained response data held across all connections.");
+	}
+
+	/**
+	 * Measured on scrape rather than tracked as a running maximum: a
+	 * running maximum only rises, so one stalled peer would pin it high
+	 * forever and it would stop describing the present.
+	 */
+	@:noCompletion private function __maxOutputBuffer():Int {
+		var peak:Int = 0;
+		for (socket in __active.keys()) {
+			var pending:Int = (cast socket : crossbyte.net.Socket).outputBufferLength;
+			if (pending > peak) {
+				peak = pending;
+			}
+		}
+		return peak;
+	}
+
+	@:noCompletion private function __totalOutputBuffer():Int {
+		var total:Int = 0;
+		for (socket in __active.keys()) {
+			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
+		}
+		return total;
 	}
 
 	@:noCompletion private function __recordResponse(e:HTTPStatusEvent):Void {
