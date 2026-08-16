@@ -1407,12 +1407,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__closed = true;
 	}
 
-	@:noCompletion private function __isBlockedError(error:Error):Bool {
-		return switch (error) {
-			case Error.Blocked: true;
-			case Error.Custom(value):
-				Std.isOfType(value, Error) && __isBlockedError(cast value);
-			default: false;
-		}
+	@:noCompletion private inline function __isBlockedError(error:Dynamic):Bool {
+		return crossbyte._internal.socket.BlockedError.isBlocked(error);
 	}
 }
