@@ -57,9 +57,36 @@ import crossbyte.Timer as CBTimer;
  */
 final class CrossByte extends EventDispatcher {
 	// ==== Public Static Variables ====
+	/**
+	 * Sockets a new runtime's poll backend is sized for up front.
+	 *
+	 * This is a starting allocation, not a ceiling: the registry grows
+	 * automatically when it is exceeded. What a larger value buys is
+	 * avoiding that growth, since each step disposes the poll backend,
+	 * allocates a new one, and re-registers every socket. Starting at 64,
+	 * a server ramping to a thousand connections pays for roughly seven
+	 * such rebuilds — precisely while it is busiest.
+	 *
+	 * Costs on the order of tens of kilobytes per runtime at the default.
+	 * Lower it for memory-constrained processes that hold few sockets;
+	 * raise it when a runtime is known to carry far more.
+	 *
+	 * Assign before creating a runtime; runtimes already created are
+	 * unaffected.
+	 */
+	public static var defaultSocketCapacity:Int = 1024;
+
 	// ==== Private Static Variables ====
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
 	@:noCompletion private static inline var DEFAULT_MAX_SOCKETS:Int = 64;
+
+	/**
+	 * Resolves the starting poll capacity, falling back to the historical
+	 * default if a caller sets a nonsensical value.
+	 */
+	@:noCompletion private static inline function __initialSocketCapacity():Int {
+		return defaultSocketCapacity > 0 ? defaultSocketCapacity : DEFAULT_MAX_SOCKETS;
+	}
 	
 	#if cpp
 	// Guards cross-thread access to the shared runtime registry
@@ -354,9 +381,9 @@ final class CrossByte extends EventDispatcher {
 		__registryLock.acquire();
 		__instanceCount++;
 		__registryLock.release();
-		__socketRegistry = new NativeSocketRegistry(DEFAULT_MAX_SOCKETS);
+		__socketRegistry = new NativeSocketRegistry(__initialSocketCapacity());
 		#else
-		__socketRegistry = new SocketRegistry(DEFAULT_MAX_SOCKETS);
+		__socketRegistry = new SocketRegistry(__initialSocketCapacity());
 		#end
 
 		__timer = new TimerScheduler();
