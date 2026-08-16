@@ -9,6 +9,8 @@ enum JWTSigner {
   HS256(secrets:Array<Secret>, ?signKeyId:String);
   /** EdDSA signer with verification keys and an optional signing private key. */
   EdDSA(pubKeys:StringMap<Bytes>, ?privKey:Bytes, ?signKeyId:String);
-  /** RSA-SHA256 signer with verification keys and an optional signing private key. */
+  /** RSA-SHA256 signer with PEM verification keys and an optional PEM signing private key. */
   RS256(pubKeys:StringMap<String>, ?privKey:String, ?signKeyId:String);
+  /** ECDSA P-256 signer with PEM verification keys and an optional PEM signing private key. */
+  ES256(pubKeys:StringMap<String>, ?privKey:String, ?signKeyId:String);
 }
