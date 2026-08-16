@@ -27,6 +27,8 @@ All notable changes to CrossByte will be documented in this file.
 - libsodium support beyond Windows: `-D crossbyte_sodium_system` links the system libsodium on Linux and macOS, so the whole `crossbyte.crypto` surface (AEAD, X25519, key exchange, Argon2id, Ed25519) works off Windows; a CI matrix job runs the crypto and auth suites on both (`docs/proposals/0009-libsodium-platforms.md`)
 - `ServerWebSocket` graceful shutdown: `stopAccepting()` releases the listener while sessions keep working, and `drain(timeout, ?onComplete, closeCode)` sends every session a close frame (1001 "going away") so clients can tell an orderly shutdown from a network failure; adds `clientCount`, `draining`, and `WebSocket.closeWith(code, reason)` (`docs/proposals/0010-websocket-drain.md`)
 - stress case guarding the `TaskPool` garbage-collector deadlock fixed in this release: idle pools are held parked while other threads allocate hard, which wedges the process on the pre-fix code and completes in milliseconds on the fixed code
+- `CrossByte.defaultSocketCapacity` (1024, was effectively 64): the poll backend's starting allocation is now tunable, sparing a ramping server roughly seven grow-and-rebuild cycles on the way to a thousand connections; it was never a ceiling, since the registry already grew on demand
+- `ServerApplication.defaultTicksPerSecond` (60): a service-oriented tick rate bounding added socket latency at ~17 ms instead of ~83 ms, applied only by the server entry point so `Application`, `HostApplication`, and child runtimes keep their existing timing (`docs/proposals/0011-poll-capacity-and-tick-rate.md`)
 
 ### Changed
 
