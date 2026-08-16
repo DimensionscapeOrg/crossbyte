@@ -113,6 +113,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
+		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
