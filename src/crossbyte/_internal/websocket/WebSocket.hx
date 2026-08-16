@@ -5,6 +5,7 @@ import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
 import crossbyte.io.ByteArray;
+import crossbyte._internal.socket.BlockedError;
 import crossbyte.utils.GlobalTimer;
 import crossbyte.utils.Logger;
 import haxe.crypto.Base64;
@@ -263,10 +264,7 @@ class WebSocket {
 				totalBytes += nBytes;
 				pending.addBytes(__buffer, 0, nBytes);
 			} catch (e:Error) {
-				if (e != Error.Blocked #if HXCPP_DEBUGGER && !e.match(Error.Custom(Blocked)) #end) {
-					if (e.match(Error.Custom("ssl network error"))) {
-						// break;
-					}
+				if (!BlockedError.isBlocked(e)) {
 					doClose = true;
 				}
 				break;
@@ -377,15 +375,12 @@ class WebSocket {
 		try {
 			accepted = __socket.output.writeBytes(__pendingOutput, 0, __pendingOutput.length);
 			__socket.output.flush();
-		} catch (e:Error) {
-			if (!(e == Error.Blocked #if HXCPP_DEBUGGER || e.match(Error.Custom(Blocked)) #end)) {
-				__close(1006, null);
-				return;
-			}
 		} catch (e:Dynamic) {
-			// sys.ssl.Socket reports a would-block as the string "Blocking"
-			// before it is mapped to a typed error.
-			if (Std.string(e).indexOf("Blocking") < 0) {
+			// One predicate for every spelling: the typed error, the
+			// debugger's Custom wrapper, and the bare string the TLS layer
+			// raises before anything maps it. Two catch blocks here used to
+			// cover different subsets of those.
+			if (!BlockedError.isBlocked(e)) {
 				__close(1006, null);
 				return;
 			}
@@ -970,14 +965,14 @@ class WebSocket {
 		try {
 			__socket.handshake();
 			complete = true;
-		} catch (e:Error) {
+		} catch (e:Dynamic) {
 			// Blocked only means the peer's next flight has not arrived
-			// yet. Anything else is terminal.
-			if (!(e == Error.Blocked #if HXCPP_DEBUGGER || e.match(Error.Custom(Blocked)) #end)) {
+			// yet. Anything else is terminal. The Dynamic catch is what
+			// covers the TLS layer's string form, which a typed catch here
+			// used to miss — turning a mid-handshake pause into a failure.
+			if (!BlockedError.isBlocked(e)) {
 				failed = true;
 			}
-		} catch (e:Dynamic) {
-			failed = true;
 		}
 
 		if (complete) {
