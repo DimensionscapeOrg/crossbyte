@@ -28,6 +28,28 @@ class HTTPServerMetricsTest extends utest.Test {
 		Assert.isTrue(text.indexOf("# TYPE http_request_seconds histogram") >= 0);
 		// The connection gauge exists and has settled back to zero.
 		Assert.isTrue(text.indexOf("http_active_connections 0") >= 0);
+
+		// Buffer pressure is published as aggregates across connections,
+		// and reads zero once everything has drained.
+		Assert.isTrue(text.indexOf("http_output_buffer_bytes_max 0") >= 0);
+		Assert.isTrue(text.indexOf("http_output_buffer_bytes_total 0") >= 0);
+
+		// The constraint that keeps this safe on a busy server: no series
+		// may carry a per-connection label. A peer address or socket id
+		// here would outlive the connection that produced it and grow
+		// without bound.
+		for (line in text.split("\n")) {
+			if (line.indexOf("http_") != 0) {
+				continue;
+			}
+			var brace:Int = line.indexOf("{");
+			if (brace < 0) {
+				continue;
+			}
+			var labels:String = line.substring(brace, line.indexOf("}") + 1);
+			Assert.isTrue(labels.indexOf("peer") < 0 && labels.indexOf("addr") < 0 && labels.indexOf("socket") < 0
+				&& labels.indexOf("connection") < 0, 'per-connection label found in $line');
+		}
 	}
 
 	public function testMetricsEndpointServesRegistry():Void {
