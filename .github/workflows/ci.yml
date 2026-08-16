@@ -266,6 +266,14 @@ jobs:
             Write-Host "::endgroup::"
           }
 
+      # Building a sample proves it typechecks and nothing more. This one
+      # drives a real client through a real handshake and exits non-zero if
+      # the echo does not come back intact — the check that was absent while
+      # a server could not receive a single client message.
+      - name: Run websocket echo sample
+        working-directory: export/websocket-echo
+        run: .\WebSocketEchoSample.exe
+
   extensions:
     name: Extensions | ${{ matrix.label }}
     runs-on: ubuntu-latest

@@ -133,17 +133,29 @@ The handshake bytes are now dropped unconditionally once the upgrade
 completes, with pipelined data (the `extra` case, which was already
 handled) preserved.
 
-Two reasons this survived, both worth fixing separately:
+Why this survived, and a correction worth recording. My first assumption
+was that the websocket echo sample would have caught it and simply was
+never run in CI. That is **wrong**, and measurably so: built against the
+pre-fix source the sample still passes, exit 0, echo intact.
 
-- The websocket echo sample is **compiled** in CI, never run. A build
-  that never executes proves the API typechecks, nothing more.
+The real reasons are narrower and more interesting:
+
 - The frame-level tests construct sessions directly and feed frames in,
-  skipping the handshake entirely — so they exercised the parser but
-  never the state it inherits from the handshake.
+  skipping the handshake entirely, so they exercise the parser but never
+  the buffer state it inherits from a handshake.
+- Every end-to-end exercise used **CrossByte's own client** on both ends,
+  and that client reaches the handshake buffer by a path which avoids the
+  fault. Only a raw client — a hand-rolled request and frame, which is
+  what a browser is — leaves the buffer in the state that breaks.
 
-`tests/stress/WebSocketFinalMessageStress.hx` covers the real path: a
-peer completes an actual handshake, sends a masked text frame, and the
-server must surface it.
+So the gap was not merely "samples are not run." It was that nothing
+tested CrossByte against a client other than itself, which is precisely
+the case every real deployment consists of.
+
+`tests/stress/WebSocketFinalMessageStress.hx` closes it: a raw peer
+completes an actual handshake, sends a masked text frame, and the server
+must surface it. That case fails against the pre-fix code; the sample
+does not.
 
 ### A closed socket mid-write took down the whole runtime loop
 
@@ -181,7 +193,10 @@ visible at all.
 | **Close frame on overflow** | The 1011 path closes the socket rather than sending a close frame first, matching the existing 1006 behaviour. A peer that has stopped reading would not see the frame anyway, but a peer that stopped reading *temporarily* would. |
 | **Sensible non-zero defaults** | Every limit here still defaults to `0`. Choosing real defaults is a 1.0 decision, and needs a view on what the largest legitimate message is per protocol. |
 | **Per-connection buffer metrics** | `outputBufferLength` is now available on WebSocket sessions too; binding it as a gauge still needs a cardinality-safe aggregate rather than one series per peer. |
-| **Samples are compiled in CI, never run** | `sample-websocket-echo-check` / `-cpp` only build. A sample that never executes proves the API typechecks and nothing else — it is precisely why a server that could not receive a single client message stayed green. Running the samples end to end, even briefly against a loopback peer, would have caught it on the first commit. |
+| ~~**The websocket echo sample was compiled, never run**~~ | Closed: the Windows native job now runs the built binary. Be clear about what that buys, though — the sample passes against the pre-fix source, so it would **not** have caught the bug above. What it does give is the first end-to-end round trip CI has ever executed, which covers gross regressions in the handshake, the write path, and the deferred-flush crash. The sample now also checks the echoed payload instead of accepting any bytes back, and reports failure with an explicit exit status rather than a thrown error (an uncaught throw leaves hxcpp exiting 127, which reads as "command not found" in a build log). |
+| **Nothing tests CrossByte against a non-CrossByte client** | The real gap the read-path bug exposed. Both ends of every end-to-end exercise are CrossByte, so a fault only a foreign client reaches stays invisible — and every real deployment is exactly that case. `WebSocketFinalMessageStress` is currently the only raw-client coverage; a small suite of hand-rolled conformance cases (fragmentation, control frames interleaved with data, pipelined frames, oversized payloads) would be worth more here than running the remaining samples. |
+| **The other samples are still only compiled** | Ten sample tasks still stop at a build. Several are long-running servers with no natural exit, so each needs its own decision about what "ran successfully" means. The websocket echo sample was the easy one: it already drove both ends and terminated. |
+| **The sample runs on Windows only** | It executes in the Windows native job, since that is where the samples are built. The path it covers is platform-independent, so the same run belongs on Linux and macOS; those jobs currently build only the crypto suite. |
 | **Frame tests bypass the handshake** | The protocol-error suites construct sessions directly and feed frames in, so they exercise the parser but never the buffer state it inherits from a real handshake. That gap is exactly where this bug lived. |
 | ~~**`trace()` in the WebSocket read loop**~~ | Closed. A normal disconnect used to print `Error Reason:,Eof` and `closed from remote host` through `trace` — unfilterable, and reading as an error when it is not one. Remote closes and heartbeat timeouts now go to `Logger.debug`, genuine read failures to `Logger.warn`. |
 | **`trace()` elsewhere in the library** | This pass covered the WebSocket read loop only. A sweep for `trace(` across the rest of `src/` is worth doing before 1.0, since any of it is unfilterable in a deployed server. |
