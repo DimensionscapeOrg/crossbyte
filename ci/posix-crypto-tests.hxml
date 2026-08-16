@@ -1,0 +1,6 @@
+-cp src
+-cp tests
+-lib utest
+-D crossbyte_sodium_system
+-main PosixCryptoMain
+--cpp export/ci-posix-crypto

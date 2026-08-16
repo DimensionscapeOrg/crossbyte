@@ -24,6 +24,7 @@ All notable changes to CrossByte will be documented in this file.
 - opt-in `HTTPServer` instrumentation via `HTTPServerConfig.metrics`/`metricsPrefix`: request counts labelled by status class, a request-duration histogram, and a connection gauge bound to the server's live counter (`docs/proposals/0007-metrics-wiring.md`)
 - `crossbyte.crypto.PublicKeySignature`: RSA and ECDSA over SHA-256 via the mbedTLS that already ships with hxcpp, including conversion between ASN.1 DER and the raw `r||s` form JWS carries
 - `RS256` and `ES256` JWT signers, replacing the runtime `"not implemented"` throw — this is what lets a service verify OpenID Connect tokens from Google, Microsoft, and other providers; `JWTSigner` gains an `ES256` constructor (`docs/proposals/0008-asymmetric-signatures.md`)
+- libsodium support beyond Windows: `-D crossbyte_sodium_system` links the system libsodium on Linux and macOS, so the whole `crossbyte.crypto` surface (AEAD, X25519, key exchange, Argon2id, Ed25519) works off Windows; a CI matrix job runs the crypto and auth suites on both (`docs/proposals/0009-libsodium-platforms.md`)
 
 ### Changed
 
