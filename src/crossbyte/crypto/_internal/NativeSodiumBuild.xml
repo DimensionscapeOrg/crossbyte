@@ -1,4 +1,16 @@
 <xml>
+	<!--
+		Windows x64 links a vendored static libsodium, so nothing needs
+		installing. Other platforms link the system libsodium, which is
+		opt-in via `-D crossbyte_sodium_system` because a build must not
+		fail on a machine that has not installed it:
+
+			linux:  apt-get install libsodium-dev   (or the distro equivalent)
+			macos:  brew install libsodium
+
+		Both paths define CROSSBYTE_SODIUM_ENABLED, which is what switches
+		NativeSodium.cpp from its stub to the real implementation.
+	-->
 	<files id="crossbyte-sodium-common">
 		<depend files="hxcpp-depends"/>
 		<file name="${this_dir}/NativeSodium.cpp">
@@ -8,11 +20,19 @@
 
 	<target id="haxe">
 		<files id="crossbyte-sodium-common"/>
+
 		<section if="windows">
 			<section if="HXCPP_M64">
 				<section unless="HXCPP_ARM64">
 					<lib name="${this_dir}/vendor/libsodium/windows/x64/libsodium.lib"/>
 				</section>
+			</section>
+		</section>
+
+		<section if="crossbyte_sodium_system">
+			<section unless="windows">
+				<compilerflag value="-DCROSSBYTE_SODIUM_ENABLED"/>
+				<lib name="-lsodium"/>
 			</section>
 		</section>
 	</target>

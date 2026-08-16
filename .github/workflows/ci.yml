@@ -149,6 +149,59 @@ jobs:
       - name: Type-check timer burst support
         run: haxelib run aedifex task cpp-timer-burst-audit .
 
+  posix-crypto:
+    name: Core | Crypto (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: macos-latest
+            label: macOS
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      # Windows links a vendored static libsodium; every other platform
+      # links the system one, which is the path this job exists to prove.
+      - name: Install libsodium (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsodium-dev
+
+      - name: Install libsodium (macOS)
+        if: runner.os == 'macOS'
+        run: brew install libsodium
+
+      - name: Install Haxe dependencies
+        run: |
+          haxelib install utest --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+
+      - name: Bootstrap hxcpp tools
+        run: |
+          set -euo pipefail
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+
+      - name: Build crypto suite against system libsodium
+        run: haxe ci/posix-crypto-tests.hxml
+
+      - name: Run crypto suite
+        run: ./export/ci-posix-crypto/PosixCryptoMain
+
   native-smoke:
     name: Core | Native Smoke
     runs-on: windows-latest
