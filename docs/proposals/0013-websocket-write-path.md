@@ -133,24 +133,38 @@ The handshake bytes are now dropped unconditionally once the upgrade
 completes, with pipelined data (the `extra` case, which was already
 handled) preserved.
 
-Why this survived, and a correction worth recording. My first assumption
-was that the websocket echo sample would have caught it and simply was
-never run in CI. That is **wrong**, and measurably so: built against the
-pre-fix source the sample still passes, exit 0, echo intact.
-
-The real reasons are narrower and more interesting:
+Why this survived is mundane, and the answer only looks interesting if
+you measure it wrong — which I did, twice, before getting it right.
 
 - The frame-level tests construct sessions directly and feed frames in,
   skipping the handshake entirely, so they exercise the parser but never
   the buffer state it inherits from a handshake.
-- Every end-to-end exercise used **CrossByte's own client** on both ends,
-  and that client reaches the handshake buffer by a path which avoids the
-  fault. Only a raw client — a hand-rolled request and frame, which is
-  what a browser is — leaves the buffer in the state that breaks.
+- The one exercise that *did* cover the real path — the websocket echo
+  sample — was compiled in CI and never run.
 
-So the gap was not merely "samples are not run." It was that nothing
-tested CrossByte against a client other than itself, which is precisely
-the case every real deployment consists of.
+That is all it took. Built against the pre-fix source the sample fails
+outright: `FAIL: no echo received within 5s.`, exit 1. Executing it at
+any point would have caught this on the commit that introduced it.
+
+**A retracted claim.** In between I asserted the opposite here: that the
+sample passed against pre-fix code, and therefore that the real gap was
+CrossByte only ever being tested against itself. That was an artifact of
+a broken experiment. I had been building "pre-fix" by putting an old copy
+of one file on an earlier `-cp` ahead of `-cp src`, which does not shadow
+anything — Haxe compiled `src` and ignored the override, so every such
+run silently tested the fixed code and passed. A deliberate syntax error
+in the override still compiled cleanly, which is what exposed it.
+
+The working method is to copy the whole `src` tree, replace the file in
+the copy, and build with only that copy on the classpath. Validated
+against a known-failing control before trusting any result from it.
+
+Two things worth keeping from the detour. Test-methodology notes are in
+`tests/stress/README.md`, because a reverted build that is not actually
+reverted looks exactly like a test with no teeth. And a conformance suite
+driven by a foreign client is still worth having on its own merits — not
+because CrossByte's client is blind to this fault, since it is not, but
+because a hand-written client can send what no cooperating client will.
 
 `tests/stress/WebSocketFinalMessageStress.hx` closes it: a raw peer
 completes an actual handshake, sends a masked text frame, and the server
@@ -193,8 +207,10 @@ visible at all.
 | **Close frame on overflow** | The 1011 path closes the socket rather than sending a close frame first, matching the existing 1006 behaviour. A peer that has stopped reading would not see the frame anyway, but a peer that stopped reading *temporarily* would. |
 | **Sensible non-zero defaults** | Every limit here still defaults to `0`. Choosing real defaults is a 1.0 decision, and needs a view on what the largest legitimate message is per protocol. |
 | **Per-connection buffer metrics** | `outputBufferLength` is now available on WebSocket sessions too; binding it as a gauge still needs a cardinality-safe aggregate rather than one series per peer. |
-| ~~**The websocket echo sample was compiled, never run**~~ | Closed: the Windows native job now runs the built binary. Be clear about what that buys, though — the sample passes against the pre-fix source, so it would **not** have caught the bug above. What it does give is the first end-to-end round trip CI has ever executed, which covers gross regressions in the handshake, the write path, and the deferred-flush crash. The sample now also checks the echoed payload instead of accepting any bytes back, and reports failure with an explicit exit status rather than a thrown error (an uncaught throw leaves hxcpp exiting 127, which reads as "command not found" in a build log). |
-| **Nothing tests CrossByte against a non-CrossByte client** | The real gap the read-path bug exposed. Both ends of every end-to-end exercise are CrossByte, so a fault only a foreign client reaches stays invisible — and every real deployment is exactly that case. `WebSocketFinalMessageStress` is currently the only raw-client coverage; a small suite of hand-rolled conformance cases (fragmentation, control frames interleaved with data, pipelined frames, oversized payloads) would be worth more here than running the remaining samples. |
+| ~~**The websocket echo sample was compiled, never run**~~ | Closed: the Windows native job runs the built binary. This is the check that was missing — the sample fails against the pre-fix source, so running it would have caught the read-path bug immediately. It now also compares the echoed payload instead of accepting any bytes back, and reports failure with an explicit exit status rather than a thrown error (an uncaught throw leaves hxcpp exiting 127, which reads as "command not found" in a build log). |
+| ~~**Only CrossByte's own client exercised the server**~~ | Closed by `tests/crossbyte/net/WebSocketConformanceTest.hx`: fourteen cases driven through a real handshake by `RawWebSocketClient`, which composes frames by hand. Covers fragmentation, a control frame between fragments, pipelined frames in one write, a frame split across writes, extended lengths, and every rejection RFC 6455 requires. Eight of the fourteen fail against the pre-fix source. Its value is not that CrossByte's client is blind to that particular fault — it is not — but that a hand-written client can send what no cooperating client will. |
+| **Six conformance cases pass against the pre-fix source** | The rejection cases that assert 1002 passed even with the read path broken, because a broken server closed *everything* with 1002. They were right for the wrong reason. Asserting a specific close code is weaker than it looks when one code is also the failure mode; pairing each rejection with a positive case on the same session would tighten it. |
+| **Conformance coverage is server-side only** | The suite drives CrossByte's *server* with a foreign client. The mirror case — CrossByte's client against a foreign server — is still untested, and the client parser has its own masking and continuation rules. A recorded byte-stream fixture would cover it without needing a second implementation to talk to. |
 | **The other samples are still only compiled** | Ten sample tasks still stop at a build. Several are long-running servers with no natural exit, so each needs its own decision about what "ran successfully" means. The websocket echo sample was the easy one: it already drove both ends and terminated. |
 | **The sample runs on Windows only** | It executes in the Windows native job, since that is where the samples are built. The path it covers is platform-independent, so the same run belongs on Linux and macOS; those jobs currently build only the crypto suite. |
 | **Frame tests bypass the handshake** | The protocol-error suites construct sessions directly and feed frames in, so they exercise the parser but never the buffer state it inherits from a real handshake. That gap is exactly where this bug lived. |

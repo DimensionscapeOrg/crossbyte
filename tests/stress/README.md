@@ -44,6 +44,24 @@ A stress case that cannot reproduce its bug is a rubber stamp. Verify a
 new case by temporarily reverting the fix it guards and confirming it
 fails; restore the fix and confirm it passes.
 
+**Verify that your reverted build is actually reverted.** Putting a
+pre-fix copy of one file on an earlier `-cp` and leaving `-cp src` after
+it does *not* shadow the original — Haxe compiled `src` and ignored the
+override entirely. Every "pre-fix" run done that way silently tested the
+fixed code and passed, which reads exactly like a case with no teeth, and
+led to a published claim that a test did not catch a bug when the
+experiment had never tested the buggy code at all.
+
+Two ways to avoid it. Copy the whole `src` tree, replace the file in the
+copy, and build with only that copy on the classpath — no `-cp src` at
+all. Or prove the mechanism first: put a deliberate syntax error in the
+override and confirm the build *fails*. If it compiles, the override is
+being ignored.
+
+Better still, run a **known-failing control** through the same pipeline.
+If a case you have already seen fail against pre-fix code now passes,
+the harness is lying to you, not the code.
+
 `TimerIdStress` is the cautionary example. Its first version called
 `timer.stop()` immediately after each construction — but `stop()` takes
 the same mutex, which serialized the threads and closed the very window
