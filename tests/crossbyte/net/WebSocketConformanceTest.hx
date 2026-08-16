@@ -43,14 +43,18 @@ class WebSocketConformanceTest extends utest.Test {
 	private var client:RawWebSocketClient;
 	private var received:Array<Bytes>;
 	private var closeCodes:Array<Int>;
+	private var metrics:crossbyte.metrics.Metrics;
 
 	public function setup():Void {
 		runtime = CrossByte.current();
 		received = [];
 		closeCodes = [];
+		metrics = new crossbyte.metrics.Metrics();
 
 		server = new ServerWebSocket();
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, __onConnect);
+		// Published before listen(), so the first accepted session counts.
+		server.publishMetrics(metrics);
 		server.bind(0, "127.0.0.1");
 		server.listen(4);
 	}
@@ -252,6 +256,54 @@ class WebSocketConformanceTest extends utest.Test {
 		var want:String = expected.toString();
 		Assert.isTrue(pumpUntil(() -> receivedText() == want), 'received "${receivedText()}" wanted "$want"');
 		Assert.equals(0, closeCodes.length);
+	}
+
+	/**
+	 * Session metrics track real connections, and — the part that matters
+	 * — the series count does not grow with them.
+	 *
+	 * A gauge labelled per peer would satisfy every other expectation here
+	 * and then grow without bound on a server with churn, because a
+	 * collector keeps a series long after the connection that named it has
+	 * gone.
+	 */
+	public function testSessionMetricsAreAggregatesNotPerPeerSeries():Void {
+		var before:Int = metrics.size();
+		Assert.isTrue(before > 0, "metrics must exist before the first connection");
+		Assert.equals(0.0, __metric("websocket_sessions"));
+
+		var peer = connect();
+		Assert.isTrue(pumpUntil(() -> __metric("websocket_sessions") == 1.0), "session gauge did not see the connection");
+		Assert.equals(1.0, __metric("websocket_sessions_accepted_total"));
+
+		peer.send(TEXT, Bytes.ofString("counted"));
+		Assert.isTrue(pumpUntil(() -> received.length > 0));
+
+		// A drained session holds nothing, so both buffer aggregates read
+		// zero rather than being absent.
+		Assert.equals(0.0, __metric("websocket_output_buffer_bytes_max"));
+		Assert.equals(0.0, __metric("websocket_output_buffer_bytes_total"));
+
+		peer.close();
+		Assert.isTrue(pumpUntil(() -> __metric("websocket_sessions_closed_total") == 1.0), "close was not counted");
+		Assert.equals(0.0, __metric("websocket_sessions"));
+
+		Assert.equals(before, metrics.size(), "a connection must not add a time series");
+	}
+
+	/** Reads one value out of the exposition text, as a collector would. */
+	private function __metric(name:String):Null<Float> {
+		for (line in metrics.toPrometheus().split("\n")) {
+			var trimmed:String = StringTools.trim(line);
+			if (trimmed == "" || trimmed.charAt(0) == "#") {
+				continue;
+			}
+			var space:Int = trimmed.lastIndexOf(" ");
+			if (space > 0 && trimmed.substr(0, space) == name) {
+				return Std.parseFloat(trimmed.substr(space + 1));
+			}
+		}
+		return null;
 	}
 
 	// --- rejection ---

@@ -40,6 +40,22 @@ typedef ConnectionPoolOptions<T> = {
 	 * Defaults to 10.
 	 */
 	@:optional var acquireTimeout:Float;
+
+	/**
+	 * Registry this pool publishes its own metrics into.
+	 *
+	 * Saturation is the failure this makes visible: a pool at its ceiling
+	 * looks identical to a slow database from the outside, and the wait
+	 * histogram is what separates them. Leave `null` to record nothing.
+	 */
+	@:optional var metrics:crossbyte.metrics.Metrics;
+
+	/**
+	 * Prefix for the metric names this pool publishes, so several pools in
+	 * one process can be told apart. Defaults to `db_pool`, yielding
+	 * `db_pool_connections_open` and similar.
+	 */
+	@:optional var metricsPrefix:String;
 };
 
 /**
@@ -85,6 +101,14 @@ class ConnectionPool<T> {
 	@:noCompletion private var __created:Int = 0;
 	@:noCompletion private var __borrowed:Int = 0;
 
+	@:noCompletion private var __metrics:crossbyte.metrics.Metrics;
+	@:noCompletion private var __acquiredTotal:crossbyte.metrics.Counter;
+	@:noCompletion private var __timeoutsTotal:crossbyte.metrics.Counter;
+	@:noCompletion private var __openedTotal:crossbyte.metrics.Counter;
+	@:noCompletion private var __retiredTotal:crossbyte.metrics.Counter;
+	@:noCompletion private var __waitSeconds:crossbyte.metrics.Histogram;
+	@:noCompletion private var __retiredName:String;
+
 	#if (cpp || neko || hl || java || jvm)
 	@:noCompletion private var __lock:Mutex;
 	#end
@@ -112,6 +136,45 @@ class ConnectionPool<T> {
 		#if (cpp || neko || hl || java || jvm)
 		__lock = new Mutex();
 		#end
+
+		__initMetrics(options.metrics, options.metricsPrefix);
+	}
+
+	/**
+	 * Registers this pool's metrics when a registry is configured.
+	 *
+	 * The three state gauges are bound to the pool's own accessors rather
+	 * than mirrored into separate counters, so they cannot drift from the
+	 * accounting they describe. Series are created up front, so a scrape
+	 * before the first acquire reports zero instead of omitting the series
+	 * — an absent series and an idle pool look identical to a collector
+	 * otherwise.
+	 */
+	@:noCompletion private function __initMetrics(registry:crossbyte.metrics.Metrics, prefix:String):Void {
+		if (registry == null) {
+			return;
+		}
+
+		__metrics = registry;
+		var name:String = (prefix == null || prefix == "") ? "db_pool" : prefix;
+
+		registry.gaugeFn(name + "_connections_open", () -> size(), null, "Connections currently open, idle or in use.");
+		registry.gaugeFn(name + "_connections_in_use", () -> inUse(), null, "Connections currently checked out.");
+		registry.gaugeFn(name + "_connections_idle", () -> available(), null, "Connections sitting idle and immediately available.");
+		// A constant, but published so a dashboard can compute saturation
+		// without the ceiling being hard-coded into the query.
+		registry.gaugeFn(name + "_connections_max", () -> maxSize, null, "Ceiling on connections this pool will create.");
+
+		__acquiredTotal = registry.counter(name + "_acquired_total", null, "Connections handed to a caller.");
+		__timeoutsTotal = registry.counter(name + "_acquire_timeouts_total", null, "Acquisitions that gave up before a connection came free.");
+		__openedTotal = registry.counter(name + "_opened_total", null, "Connections opened by the factory.");
+
+		__retiredName = name + "_retired_total";
+		__retiredTotal = registry.counter(__retiredName, null, "Connections closed and removed from the pool.");
+
+		// Wait time is the measurement that distinguishes a saturated pool
+		// from a slow database; both show up as slow queries otherwise.
+		__waitSeconds = registry.histogram(name + "_acquire_wait_seconds", null, null, "Time spent waiting for a connection to become available.");
 	}
 
 	/**
@@ -156,15 +219,27 @@ class ConnectionPool<T> {
 	 */
 	public function acquire(?timeoutSeconds:Float):T {
 		var timeout:Float = (timeoutSeconds == null) ? acquireTimeout : timeoutSeconds;
-		var deadline:Float = Sys.time() + timeout;
+		var started:Float = Sys.time();
+		var deadline:Float = started + timeout;
 
 		while (true) {
 			var candidate:Null<T> = __tryTake();
 			if (candidate != null) {
+				if (__metrics != null) {
+					// Observed on every acquire, not just the contended ones:
+					// a histogram whose zero bucket stops filling is how a
+					// pool that has started queueing announces itself.
+					__waitSeconds.observe(Sys.time() - started);
+					__acquiredTotal.inc();
+				}
 				return candidate;
 			}
 
 			if (Sys.time() >= deadline) {
+				if (__metrics != null) {
+					__timeoutsTotal.inc();
+					__waitSeconds.observe(Sys.time() - started);
+				}
 				throw new IllegalOperationError('ConnectionPool.acquire timed out after ${timeout}s with all $maxSize connection(s) in use.');
 			}
 
@@ -198,7 +273,7 @@ class ConnectionPool<T> {
 		if (closed) {
 			__created--;
 			__releaseLock();
-			__closeConnection(connection);
+			__closeConnection(connection, "pool_closed");
 			return;
 		}
 
@@ -223,7 +298,7 @@ class ConnectionPool<T> {
 		__created--;
 		__releaseLock();
 
-		__closeConnection(connection);
+		__closeConnection(connection, "discarded");
 	}
 
 	/**
@@ -270,7 +345,7 @@ class ConnectionPool<T> {
 		__releaseLock();
 
 		for (connection in toClose) {
-			__closeConnection(connection);
+			__closeConnection(connection, "pool_closed");
 		}
 	}
 
@@ -310,7 +385,7 @@ class ConnectionPool<T> {
 				return candidate;
 			}
 
-			__closeConnection(candidate);
+			__closeConnection(candidate, "failed_validation");
 			__acquireLock();
 			if (closed) {
 				__releaseLock();
@@ -349,10 +424,32 @@ class ConnectionPool<T> {
 			throw new IllegalOperationError("ConnectionPool factory returned null.");
 		}
 
+		if (__metrics != null) {
+			// Counted only once the factory has produced a usable
+			// connection, so a database refusing connections shows as a flat
+			// line here rather than a rising one.
+			__openedTotal.inc();
+		}
+
 		return connection;
 	}
 
-	@:noCompletion private function __closeConnection(connection:T):Void {
+	/**
+	 * Every retirement path funnels through here, so counting it here is
+	 * what keeps the total honest.
+	 *
+	 * `reason` is labelled rather than split into separate metrics because
+	 * the set is fixed and small — four values — and the distinction
+	 * matters operationally: connections retiring through
+	 * `failed_validation` mean the database is dropping them underneath
+	 * the pool, which is a different problem from an application calling
+	 * `discard()`.
+	 */
+	@:noCompletion private function __closeConnection(connection:T, reason:String = "released"):Void {
+		if (__metrics != null) {
+			__metrics.counter(__retiredName, ["reason" => reason]).inc();
+		}
+
 		if (__close == null) {
 			return;
 		}
