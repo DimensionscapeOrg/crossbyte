@@ -87,8 +87,11 @@ class Timer {
 		timeRemaining = delayCount;
 		running = true;
 		stopped = false;
-		id = ++__currentId;
 		__withLock(() -> {
+			// Allocated inside the lock: an unsynchronized increment lets two
+			// threads take the same id, and the second timers.set() then
+			// evicts the first timer, which silently never fires.
+			id = ++__currentId;
 			timerCount++;
 			timers.set(id, this);
 			if (timerCount == 1) {

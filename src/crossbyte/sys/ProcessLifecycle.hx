@@ -50,6 +50,25 @@ final class ProcessLifecycle {
 	@:noCompletion private static var __watchedRuntime:CrossByte = null;
 	@:noCompletion private static var __tickListener:TickEvent->Void = null;
 
+	// onShutdown() may be called from a worker thread while poll() runs on
+	// the runtime thread; without this, a registration racing the dispatch
+	// sweep can be silently dropped or double-run.
+	#if (cpp || neko || hl || java || jvm)
+	@:noCompletion private static final __lock:sys.thread.Mutex = new sys.thread.Mutex();
+	#end
+
+	@:noCompletion private static inline function __acquire():Void {
+		#if (cpp || neko || hl || java || jvm)
+		__lock.acquire();
+		#end
+	}
+
+	@:noCompletion private static inline function __release():Void {
+		#if (cpp || neko || hl || java || jvm)
+		__lock.release();
+		#end
+	}
+
 	/**
 	 * Arms the native shutdown-signal handlers and, when a CrossByte runtime
 	 * is current on this thread, a tick listener that dispatches shutdown
@@ -80,12 +99,18 @@ final class ProcessLifecycle {
 			return;
 		}
 
-		if (__dispatched) {
-			__invoke(callback);
-			return;
+		__acquire();
+		var alreadyDispatched:Bool = __dispatched;
+		if (!alreadyDispatched) {
+			__callbacks.push(callback);
 		}
+		__release();
 
-		__callbacks.push(callback);
+		// Run outside the lock so a callback registered after shutdown
+		// cannot deadlock by re-entering this API.
+		if (alreadyDispatched) {
+			__invoke(callback);
+		}
 	}
 
 	/**
@@ -112,12 +137,21 @@ final class ProcessLifecycle {
 			return false;
 		}
 
+		// Claim the dispatch under the lock so two threads polling at once
+		// cannot both run the callback list.
+		__acquire();
+		if (__dispatched) {
+			__release();
+			return false;
+		}
 		__dispatched = true;
+		var pending:Array<() -> Void> = __callbacks;
+		__callbacks = [];
+		__release();
 
-		for (callback in __callbacks) {
+		for (callback in pending) {
 			__invoke(callback);
 		}
-		__callbacks = [];
 		__detach();
 
 		if (exitOnShutdown) {
@@ -187,9 +221,11 @@ final class ProcessLifecycle {
 	 * Test hook: returns lifecycle state to its initial configuration.
 	 */
 	@:noCompletion public static function __resetForTesting():Void {
+		__acquire();
 		__requested = false;
 		__dispatched = false;
 		__callbacks = [];
+		__release();
 		__detach();
 		exitOnShutdown = true;
 		#if cpp
