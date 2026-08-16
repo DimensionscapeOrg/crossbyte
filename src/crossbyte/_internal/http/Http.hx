@@ -534,7 +534,11 @@ class Http {
 
 			line = StringTools.trim(line);
 			#if http_debug
-			trace(line);
+			// Still behind the compile flag, so it costs nothing by default,
+			// but routed through Logger so that when it is enabled the
+			// output honours the configured level and sink rather than
+			// going straight to stdout.
+			crossbyte.utils.Logger.trace(line);
 			#end
 
 			if (line == '') {
