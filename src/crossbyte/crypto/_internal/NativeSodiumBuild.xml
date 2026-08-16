@@ -1,18 +1,179 @@
 <xml>
 	<!--
-		Windows x64 links a vendored static libsodium, so nothing needs
-		installing. Other platforms link the system libsodium, which is
-		opt-in via `-D crossbyte_sodium_system` because a build must not
-		fail on a machine that has not installed it:
+		libsodium is compiled from vendored sources rather than linked
+		from a prebuilt library, so every platform hxcpp targets gets the
+		same crypto with no external dependency and nothing to install.
+		This mirrors how BLAKE3 is handled, and how hxcpp itself builds
+		mbedTLS, SQLite, PCRE2 and zlib.
 
-			linux:  apt-get install libsodium-dev   (or the distro equivalent)
-			macos:  brew install libsodium
+		The architecture-specific sources (AVX2, SSSE3, AES-NI, NEON and
+		so on) are safe to compile everywhere: each guards its whole body
+		on HAVE_*INTRIN_H macros that libsodium's own private/common.h
+		defines by compiler and target detection, so on a target without
+		the instruction set they reduce to empty translation units.
 
-		Both paths define CROSSBYTE_SODIUM_ENABLED, which is what switches
-		NativeSodium.cpp from its stub to the real implementation.
+		sodium/version.h is normally produced by configure; the generated
+		copy upstream ships for MSVC builds is vendored alongside the
+		sources. No autotools config.h is required -- no libsodium source
+		includes one.
+
+		File list generated from the vendored tree; regenerate it after
+		updating libsodium rather than editing by hand.
 	-->
+	<set name="CROSSBYTE_SODIUM_DIR" value="${this_dir}/vendor/libsodium/src"/>
+
+	<files id="crossbyte-sodium-vendor">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${CROSSBYTE_SODIUM_DIR}/include"/>
+		<compilerflag value="-I${CROSSBYTE_SODIUM_DIR}/include/sodium"/>
+
+		<!-- Build the static library form; nothing here is exported from a DLL. -->
+		<compilerflag value="-DSODIUM_STATIC=1"/>
+		<compilerflag value="-DSODIUM_EXPORT="/>
+
+		<!-- MSVC otherwise rejects libsodium's C99 for its own CRT warnings. -->
+		<compilerflag value="-D_CRT_SECURE_NO_WARNINGS" if="windows"/>
+
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis128l/aead_aegis128l.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis128l/aegis128l_aesni.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis128l/aegis128l_armcrypto.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis128l/aegis128l_soft.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis256/aead_aegis256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis256/aegis256_aesni.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis256/aegis256_armcrypto.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aegis256/aegis256_soft.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aes256gcm/aead_aes256gcm.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aes256gcm/aesni/aead_aes256gcm_aesni.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/aes256gcm/armcrypto/aead_aes256gcm_armcrypto.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/chacha20poly1305/aead_chacha20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_aead/xchacha20poly1305/aead_xchacha20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_auth/crypto_auth.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_auth/hmacsha256/auth_hmacsha256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_auth/hmacsha512/auth_hmacsha512.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_auth/hmacsha512256/auth_hmacsha512256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_box/crypto_box.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_box/crypto_box_easy.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_box/crypto_box_seal.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_box/curve25519xchacha20poly1305/box_curve25519xchacha20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_box/curve25519xchacha20poly1305/box_seal_curve25519xchacha20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_box/curve25519xsalsa20poly1305/box_curve25519xsalsa20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/ed25519/core_ed25519.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/ed25519/core_ristretto255.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/ed25519/ref10/ed25519_ref10.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/hchacha20/core_hchacha20.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/hsalsa20/core_hsalsa20.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/hsalsa20/ref2/core_hsalsa20_ref2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/keccak1600/armsha3/keccak1600_armsha3.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/keccak1600/keccak1600.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/keccak1600/ref/keccak1600_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/salsa/ref/core_salsa_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_core/softaes/softaes.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/generichash_blake2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-avx2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-sse41.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-compress-ssse3.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/blake2b-ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/blake2b/ref/generichash_blake2b.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_generichash/crypto_generichash.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_hash/crypto_hash.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_hash/sha256/cp/hash_sha256_cp.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_hash/sha256/hash_sha256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_hash/sha512/cp/hash_sha512_cp.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_hash/sha512/hash_sha512.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_ipcrypt/crypto_ipcrypt.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_ipcrypt/ipcrypt_aesni.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_ipcrypt/ipcrypt_armcrypto.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_ipcrypt/ipcrypt_soft.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_kdf/blake2b/kdf_blake2b.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_kdf/crypto_kdf.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_kdf/hkdf/kdf_hkdf_sha256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_kdf/hkdf/kdf_hkdf_sha512.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_kx/crypto_kx.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_onetimeauth/crypto_onetimeauth.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_onetimeauth/poly1305/donna/poly1305_donna.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_onetimeauth/poly1305/onetimeauth_poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_onetimeauth/poly1305/sse2/poly1305_sse2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2-core.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2-encoding.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2-fill-block-avx2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2-fill-block-avx512f.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2-fill-block-ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2-fill-block-ssse3.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2-fill-block-wasm32.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/argon2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/blake2b-long.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/pwhash_argon2i.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/argon2/pwhash_argon2id.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/crypto_pwhash.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/scryptsalsa208sha256/crypto_scrypt-common.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/scryptsalsa208sha256/nosse/pwhash_scryptsalsa208sha256_nosse.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/scryptsalsa208sha256/pbkdf2-sha256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/scryptsalsa208sha256/pwhash_scryptsalsa208sha256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/scryptsalsa208sha256/scrypt_platform.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_pwhash/scryptsalsa208sha256/sse/pwhash_scryptsalsa208sha256_sse.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/crypto_scalarmult.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/curve25519/ref10/x25519_ref10.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/curve25519/sandy2x/curve25519_sandy2x.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/curve25519/sandy2x/fe51_invert.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/curve25519/sandy2x/fe_frombytes_sandy2x.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/curve25519/scalarmult_curve25519.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/ed25519/ref10/scalarmult_ed25519_ref10.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_scalarmult/ristretto255/ref10/scalarmult_ristretto255_ref10.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_secretbox/crypto_secretbox.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_secretbox/crypto_secretbox_easy.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_secretbox/xchacha20poly1305/secretbox_xchacha20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_secretbox/xsalsa20poly1305/secretbox_xsalsa20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_secretstream/xchacha20poly1305/secretstream_xchacha20poly1305.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_shorthash/crypto_shorthash.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_shorthash/siphash24/ref/shorthash_siphash24_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_shorthash/siphash24/ref/shorthash_siphashx24_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_shorthash/siphash24/shorthash_siphash24.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_shorthash/siphash24/shorthash_siphashx24.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_sign/crypto_sign.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_sign/ed25519/ref10/keypair.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_sign/ed25519/ref10/obsolete.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_sign/ed25519/ref10/open.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_sign/ed25519/ref10/sign.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_sign/ed25519/sign_ed25519.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-avx2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/chacha20/dolbeau/chacha20_dolbeau-ssse3.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/chacha20/ref/chacha20_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/chacha20/stream_chacha20.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/crypto_stream.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa20/ref/salsa20_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa20/stream_salsa20.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa20/xmm6/salsa20_xmm6.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-avx2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa20/xmm6int/salsa20_xmm6int-sse2.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa2012/ref/stream_salsa2012_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa2012/stream_salsa2012.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa208/ref/stream_salsa208_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/salsa208/stream_salsa208.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/xchacha20/stream_xchacha20.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_stream/xsalsa20/stream_xsalsa20.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_verify/verify.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/shake128/ref/shake128_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/shake128/xof_shake128.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/shake256/ref/shake256_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/shake256/xof_shake256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/turboshake128/ref/turboshake128_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/turboshake128/xof_turboshake128.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/turboshake256/ref/turboshake256_ref.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/crypto_xof/turboshake256/xof_turboshake256.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/randombytes/internal/randombytes_internal_random.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/randombytes/randombytes.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/randombytes/sysrandom/randombytes_sysrandom.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/codecs.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/core.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/runtime.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/utils.c"/>
+		<file name="${CROSSBYTE_SODIUM_DIR}/sodium/version.c"/>
+	</files>
+
 	<files id="crossbyte-sodium-common">
 		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${CROSSBYTE_SODIUM_DIR}/include"/>
 		<file name="${this_dir}/NativeSodium.cpp">
 			<depend name="${this_dir}/NativeSodium.h"/>
 		</file>
@@ -20,20 +181,7 @@
 
 	<target id="haxe">
 		<files id="crossbyte-sodium-common"/>
-
-		<section if="windows">
-			<section if="HXCPP_M64">
-				<section unless="HXCPP_ARM64">
-					<lib name="${this_dir}/vendor/libsodium/windows/x64/libsodium.lib"/>
-				</section>
-			</section>
-		</section>
-
-		<section if="crossbyte_sodium_system">
-			<section unless="windows">
-				<compilerflag value="-DCROSSBYTE_SODIUM_ENABLED"/>
-				<lib name="-lsodium"/>
-			</section>
-		</section>
+		<files id="crossbyte-sodium-vendor"/>
+		<lib name="advapi32.lib" if="windows" unless="static_link"/>
 	</target>
 </xml>

@@ -174,16 +174,6 @@ jobs:
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
-      # Windows links a vendored static libsodium; every other platform
-      # links the system one, which is the path this job exists to prove.
-      - name: Install libsodium (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsodium-dev
-
-      - name: Install libsodium (macOS)
-        if: runner.os == 'macOS'
-        run: brew install libsodium
-
       - name: Install Haxe dependencies
         run: |
           haxelib install utest --quiet
@@ -196,7 +186,9 @@ jobs:
           (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
           (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
 
-      - name: Build crypto suite against system libsodium
+      # libsodium is compiled from vendored sources, so there is nothing
+      # to install; this job proves that build works off Windows.
+      - name: Build crypto suite
         run: haxe ci/posix-crypto-tests.hxml
 
       - name: Run crypto suite
