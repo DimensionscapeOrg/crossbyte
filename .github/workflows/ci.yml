@@ -189,6 +189,16 @@ jobs:
         working-directory: export/ci-native-tests
         run: .\NativeSmokeMain.exe
 
+      - name: Build concurrency stress suite
+        run: haxe ci/stress-tests.hxml
+
+      # Data races are invisible to the interpreter suites, which are
+      # single-threaded. These cases assert invariants under real thread
+      # contention and exit non-zero when one is violated.
+      - name: Run concurrency stress suite
+        working-directory: export/ci-stress-tests
+        run: .\StressMain.exe
+
       - name: Build native samples
         run: |
           $tasks = @(
