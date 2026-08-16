@@ -43,12 +43,16 @@ class WebSocketConformanceTest extends utest.Test {
 	private var client:RawWebSocketClient;
 	private var received:Array<Bytes>;
 	private var closeCodes:Array<Int>;
+	private var closeReasons:Array<String>;
+	private var closeExpected:Array<Bool>;
 	private var metrics:crossbyte.metrics.Metrics;
 
 	public function setup():Void {
 		runtime = CrossByte.current();
 		received = [];
 		closeCodes = [];
+		closeReasons = [];
+		closeExpected = [];
 		metrics = new crossbyte.metrics.Metrics();
 
 		server = new ServerWebSocket();
@@ -89,18 +93,18 @@ class WebSocketConformanceTest extends utest.Test {
 			received.push(data);
 		});
 
-		// The public socket reports a close without the code, so the close
-		// reason is taken from the session underneath it. Protocol errors
-		// sever the connection without sending a close frame, so this is
-		// the only place the code is observable.
-		var inner = session.__webSocket;
-		if (inner != null) {
-			var previous = inner.onclose;
-			inner.onclose = function(event):Void {
-				closeCodes.push(event.code);
-				previous(event);
-			};
-		}
+		// Read straight off the public close event. This used to require
+		// reaching through @:access into the session underneath, because
+		// the public layer dispatched a bare Event.CLOSE and dropped the
+		// code — the gap this event closes.
+		session.addEventListener(Event.CLOSE, function(e:Event):Void {
+			var closed = Std.downcast(e, crossbyte.events.WebSocketCloseEvent);
+			if (closed != null) {
+				closeCodes.push(closed.code);
+				closeReasons.push(closed.reason);
+				closeExpected.push(closed.expected);
+			}
+		});
 	}
 
 	private function connect():RawWebSocketClient {
@@ -289,6 +293,42 @@ class WebSocketConformanceTest extends utest.Test {
 		Assert.equals(0.0, __metric("websocket_sessions"));
 
 		Assert.equals(before, metrics.size(), "a connection must not add a time series");
+	}
+
+	/**
+	 * The close event carries enough for an application to respond
+	 * differently to a fault than to a routine disconnect.
+	 *
+	 * Without this an ordinary hangup and a peer dropped for sending a
+	 * malformed frame arrive as the same bare `Event.CLOSE`, so a server
+	 * has nothing to log, alert on, or count.
+	 */
+	public function testCloseEventDistinguishesFaultsFromRoutineDisconnects():Void {
+		var peer = connect();
+		peer.send(TEXT, Bytes.ofString("reserved"), true, true, RSV1);
+
+		Assert.isTrue(pumpUntil(() -> closeCodes.length > 0), "session stayed open");
+		Assert.equals(1002, closeCodes[0]);
+		Assert.equals("Protocol error", closeReasons[0]);
+		Assert.isFalse(closeExpected[0], "a protocol violation is not a routine close");
+		peer.close();
+	}
+
+	/**
+	 * A peer that simply goes away is 1006, and must not be reported as a
+	 * fault — it is what every closed browser tab produces.
+	 */
+	public function testPeerDisconnectReportsAnExpectedClose():Void {
+		var peer = connect();
+		peer.send(TEXT, Bytes.ofString("bye"));
+		Assert.isTrue(pumpUntil(() -> received.length > 0));
+
+		peer.close();
+
+		Assert.isTrue(pumpUntil(() -> closeCodes.length > 0), "the disconnect was never reported");
+		Assert.equals(1006, closeCodes[0]);
+		Assert.equals("Closed without a close frame", closeReasons[0]);
+		Assert.isTrue(closeExpected[0], "an ordinary disconnect must not read as a fault");
 	}
 
 	/** Reads one value out of the exposition text, as a collector would. */

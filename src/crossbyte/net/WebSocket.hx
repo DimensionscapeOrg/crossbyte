@@ -11,6 +11,7 @@ import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
+import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.io.ByteArray;
 import haxe.Serializer;
 import haxe.Timer;
@@ -624,10 +625,25 @@ class WebSocket extends Socket {
 		__connected = false;
 	}
 
-	@:noCompletion override private function socket_onClose(_):Void {
+	@:noCompletion override private function socket_onClose(event):Void {
 		__connected = false;
 		__webSocket = null;
-		dispatchEvent(new Event(Event.CLOSE));
+
+		// The session underneath knows why it ended; this used to drop that
+		// on the floor and dispatch a bare Event.CLOSE, so an application
+		// could not tell a peer disconnecting from a peer being dropped for
+		// a protocol violation. Dispatched under the Event.CLOSE type, so
+		// listeners that only care *that* it closed are unaffected.
+		var code:Int = 0;
+		var reason:String = null;
+
+		var closed:WebsocketEvent = Std.downcast(event, WebsocketEvent);
+		if (closed != null) {
+			code = (closed.code == null) ? 0 : closed.code;
+			reason = closed.reason;
+		}
+
+		dispatchEvent(new WebSocketCloseEvent(Event.CLOSE, code, reason));
 	}
 
 	@:noCompletion override private function socket_onError(e):Void {
