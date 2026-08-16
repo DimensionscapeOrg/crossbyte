@@ -6,11 +6,13 @@ import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
 import crossbyte.io.ByteArray;
 import crossbyte.utils.GlobalTimer;
+import crossbyte.utils.Logger;
 import haxe.crypto.Base64;
 import haxe.crypto.Sha1;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
+import haxe.io.Eof;
 import haxe.io.Error;
 
 /**
@@ -248,7 +250,6 @@ class WebSocket {
 		// so a temporarily full send buffer drains as soon as it has room.
 		__flushPendingOutput();
 
-		var hasData:Bool = false;
 		var doClose:Bool = false;
 		var totalBytes:Int = 0;
 		var pending:BytesBuffer = new BytesBuffer();
@@ -262,9 +263,6 @@ class WebSocket {
 				totalBytes += nBytes;
 				pending.addBytes(__buffer, 0, nBytes);
 			} catch (e:Error) {
-				if (totalBytes > 0) {
-					hasData = true;
-				}
 				if (e != Error.Blocked #if HXCPP_DEBUGGER && !e.match(Error.Custom(Blocked)) #end) {
 					if (e.match(Error.Custom("ssl network error"))) {
 						// break;
@@ -272,20 +270,40 @@ class WebSocket {
 					doClose = true;
 				}
 				break;
+			} catch (e:Eof) {
+				// A clean TCP FIN. The peer went away without sending a close
+				// frame, which is ordinary — a closed tab, a dropped mobile
+				// connection — and is reported as 1006 below, not logged as a
+				// failure.
+				doClose = true;
+				break;
 			} catch (e:Dynamic) {
-				trace("Error Reason:", e);
+				Logger.warn('WebSocket read failed, closing session: $e');
 				doClose = true;
 				break;
 			}
 		}
 
-		if (hasData) {
+		// Keyed on what was actually read, not on how the loop ended.
+		// Delivery used to be set only from inside the catch branches, so a
+		// loop that exited through `nBytes <= 0` — which is how a peer that
+		// has closed reads on some targets — silently discarded everything
+		// it had just buffered.
+		if (totalBytes > 0) {
 			__input.position = __input.length;
 			__appendBytes(__input, pending.getBytes());
 			__input.position = __inputPosition;
 			__onData();
-		} else if (doClose) {
-			trace('closed from remote host');
+		}
+
+		// Deliver before closing rather than instead of closing. These were
+		// alternatives, so a read that returned a complete message and then
+		// hit the peer's disconnect discarded that message — the last one
+		// sent before a disconnect is exactly the one worth keeping. The
+		// same branch also skipped the close when a genuine error arrived
+		// after data, leaving a failed session open.
+		if (doClose && __socket != null) {
+			Logger.debug("WebSocket closed by remote host");
 			__close(1006);
 		}
 	}
@@ -618,14 +636,19 @@ class WebSocket {
 				}
 
 				if (readyState == OPEN) {
+					// The handshake was parsed with getString, which does not
+					// move the cursor, so those bytes are still sitting in the
+					// buffer. They have to be dropped explicitly: anything left
+					// here is parsed as the start of the first frame, and the
+					// 'G' of "GET" (0x47) has RSV1 set, so the peer's first
+					// real message was rejected as a protocol error.
+					__input.clear();
+					__inputPosition = 0;
+
 					if (extra != null && extra.length > 0) {
-						__input.clear();
 						__appendBytes(__input, extra);
 						__input.position = 0;
-						__inputPosition = 0;
 						__onData();
-					} else {
-						__validateInputPosition();
 					}
 				}
 				// is it the client handshake or server response?
@@ -998,7 +1021,7 @@ class WebSocket {
 
 	private function __heartbeatInterval() {
 		if (__hasTimeoutPotential) {
-			trace("heartbeat close");
+			Logger.debug('WebSocket heartbeat timed out after ${__heartbeatDelay}ms, closing session');
 			__close(1006);
 			return;
 		}
