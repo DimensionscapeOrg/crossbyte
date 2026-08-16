@@ -28,6 +28,9 @@ All notable changes to CrossByte will be documented in this file.
 - jvm: `SwitchTable.make` dispatchers with mixed String/Int keys crashed with `ClassCastException` — a Dynamic-subject switch containing an Int case coerces the subject with `Jvm.toInt`; the macro now emits an if-chain through Dynamic-typed comparison/dispatch helpers
 - jvm: `Vector` `every`/`some`/`filter` always returned false/empty — `Reflect.callMethod` arity-mismatch behavior differs on jvm, breaking the callback-arity fallback; the closure's real arity is now resolved reflectively and called directly
 - with these fixes the jvm smoke suite passes fully on Java 8 (previously: 4 `VerifyError`s plus 2 failing tests)
+- `haxe.Timer` allocated its id from a static counter outside the lock guarding the timer map, so two threads creating timers concurrently could take the same id and the second registration evicted the first — a timer that silently never fired
+- `HTTPBackendRegistry` mutated a shared array without synchronization while `resolve()` read it from request threads; mutation now publishes a new array under a lock and lookups iterate a stable snapshot
+- `ProcessLifecycle` guards its callback list, so registering from a worker thread while the runtime thread dispatches can no longer drop or double-run a callback
 
 ## 1.0.0-rc.1 - 2026-04-28
 
