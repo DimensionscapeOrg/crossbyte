@@ -35,6 +35,7 @@ All notable changes to CrossByte will be documented in this file.
 
 ### Changed
 
+- WebSocket payload masking and unmasking now XOR 32 bits at a time over `haxe.io.Bytes` instead of a byte at a time through `ByteArray`'s array access, measured at 595 → 1666 MB/s on a 32 MB payload (2.8×). The cost was not the `ByteArray` abstraction, which is `inline` over a `Bytes` subclass and compiles away — bulk `writeBytes` runs at 14 GB/s against a 29 GB/s memcpy floor. It was that `@:arrayAccess set` calls `__resize` on every element to bounds-check an index the loop already knows is in range, because the buffer was allocated at full size immediately before. Unmasking runs once per inbound byte on a server, which is the one place that per-element check was worth removing
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed

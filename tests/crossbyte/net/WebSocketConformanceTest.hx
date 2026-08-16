@@ -224,6 +224,36 @@ class WebSocketConformanceTest extends utest.Test {
 		Assert.equals(0, closeCodes.length);
 	}
 
+	/**
+	 * Unmasking XORs whole 32-bit words and finishes the remainder a byte
+	 * at a time, so every payload length mod 4 has to be exercised — a
+	 * word loop that runs one iteration too far, or a tail that starts at
+	 * the wrong offset, corrupts only some lengths.
+	 *
+	 * Each frame also carries a different mask, since the client generates
+	 * a fresh one per frame, so this covers alignment against key rotation
+	 * rather than one lucky key.
+	 */
+	public function testMaskedPayloadsDecodeAtEveryWordBoundary():Void {
+		var peer = connect();
+		var expected:StringBuf = new StringBuf();
+
+		for (length in 0...13) {
+			var payload:Bytes = Bytes.alloc(length);
+			for (i in 0...length) {
+				// Distinct per frame and per offset, so a swap or a short
+				// read shows up as wrong text rather than a wrong count.
+				payload.set(i, "A".code + ((length * 3 + i) % 26));
+			}
+			peer.send(TEXT, payload);
+			expected.add(payload.toString());
+		}
+
+		var want:String = expected.toString();
+		Assert.isTrue(pumpUntil(() -> receivedText() == want), 'received "${receivedText()}" wanted "$want"');
+		Assert.equals(0, closeCodes.length);
+	}
+
 	// --- rejection ---
 
 	/**
