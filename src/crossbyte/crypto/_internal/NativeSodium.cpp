@@ -1,8 +1,8 @@
 // CrossByte native libsodium bridge.
 //
-// This bridge links against a vendored static libsodium build on supported
-// native Windows x64 targets. That keeps the crypto surface available without
-// requiring a separate DLL at runtime.
+// libsodium is vendored as source and compiled as part of this build, so the
+// crypto surface is available on every target hxcpp supports with no external
+// dependency and no DLL to ship.
 //
 // Every function here is a thin argument-checked pass-through: no
 // cryptographic logic lives in this file.
@@ -11,20 +11,15 @@
 #include <string>
 #include <mutex>
 
-// Windows x64 links the vendored static libsodium and needs no opt-in.
-//
-// hxcpp build variables used in Build.xml do not always map 1:1 to the exact
-// preprocessor defines exposed to custom native sources across hxcpp releases.
-// Accept both the hxcpp architecture macros and the compiler's native x64
-// macros so the compiled bridge and the link step agree on supported targets.
-#if !defined(CROSSBYTE_SODIUM_ENABLED)
-#if defined(_WIN32) && !defined(HXCPP_ARM64) && !defined(_M_ARM64) && !defined(_M_ARM64EC) && (defined(HXCPP_M64) || defined(_WIN64) || defined(_M_X64) || defined(__x86_64__))
+// libsodium is compiled from vendored sources as part of this build (see
+// NativeSodiumBuild.xml), so the bridge is available on every target hxcpp
+// supports rather than only where a prebuilt library happened to exist.
+// The stub below remains for targets that opt out by defining
+// CROSSBYTE_SODIUM_DISABLED.
+#if !defined(CROSSBYTE_SODIUM_DISABLED)
 #define CROSSBYTE_SODIUM_ENABLED 1
 #endif
-#endif
 
-// Elsewhere the build defines CROSSBYTE_SODIUM_ENABLED when it has been told
-// to link a system libsodium (`-D crossbyte_sodium_system`).
 #if defined(CROSSBYTE_SODIUM_ENABLED)
 
 extern "C" {
@@ -376,7 +371,7 @@ extern "C" bool crossbyte_crypto_sodium_available() {
 }
 
 extern "C" const char *crossbyte_crypto_sodium_status_message() {
-	return "libsodium is currently wired for native Windows x64 cpp targets.";
+	return "libsodium was excluded from this build (CROSSBYTE_SODIUM_DISABLED).";
 }
 
 extern "C" int crossbyte_crypto_ed25519_keypair(uint8_t *publicKey, uint8_t *secretKey) {
