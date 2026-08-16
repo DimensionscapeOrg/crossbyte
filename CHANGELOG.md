@@ -19,6 +19,9 @@ All notable changes to CrossByte will be documented in this file.
 - `crossbyte.metrics`: thread-safe `Counter`, `Gauge` (including gauges bound to a provider function), and `Histogram` (cumulative buckets, plus `time()` which records even when the body throws), a get-or-create `Metrics` registry with Prometheus-grammar validation, and `toPrometheus()` text exposition output (`docs/proposals/0005-metrics.md`)
 - socket write backpressure: `Socket.maxOutputBufferSize` bounds how much undrained data may accumulate for a peer that has stopped reading, `outputOverflowPolicy` chooses between closing the connection (default) and throwing, and `outputBufferLength` exposes the current depth; opt-in, so existing behavior is unchanged (`docs/proposals/0006-socket-backpressure.md`)
 - `ci/stress-tests.hxml`: a concurrency stress suite covering TaskPool drain completeness, ConnectionPool contention, Metrics registry contention, Timer id allocation, and socket backpressure — races the single-threaded interpreter suites cannot see; wired into the Windows native CI job (`tests/stress/README.md`)
+- `HTTPRequestHandler.respond()`: middleware can now answer a request itself (health checks, metrics, auth replies, small API routes) instead of only calling `next()` or failing with a status
+- `crossbyte.metrics.MetricsEndpoint`: middleware serving a registry in Prometheus text format, rejecting non-`GET`/`HEAD` with 405 and never letting a failed render break the request path
+- opt-in `HTTPServer` instrumentation via `HTTPServerConfig.metrics`/`metricsPrefix`: request counts labelled by status class, a request-duration histogram, and a connection gauge bound to the server's live counter (`docs/proposals/0007-metrics-wiring.md`)
 
 ### Changed
 

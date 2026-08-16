@@ -641,6 +641,29 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return null;
 	}
 
+	/**
+	 * Sends a response and ends the request.
+	 *
+	 * Intended for middleware that answers a request itself — a health
+	 * check, a metrics endpoint, an authentication failure, a small API
+	 * route — rather than letting it fall through to static-file routing.
+	 *
+	 * A middleware that calls this must **not** also call `next()`: the
+	 * request is already complete, and continuing the chain would attempt
+	 * a second response on the same connection.
+	 *
+	 * @param statusCode HTTP status to send.
+	 * @param contentType Value for the `Content-Type` header.
+	 * @param body Response body, sent as UTF-8. Suppressed for `HEAD`.
+	 * @param headers Optional additional response headers.
+	 * @param statusMessage Reason phrase; defaults to the standard text
+	 *        for `statusCode`.
+	 */
+	public function respond(statusCode:Int, contentType:String, body:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
+		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
+		__dispatchResponse(statusCode, reason, headers, contentType, body, __method == "HEAD");
+	}
+
 	@:noCompletion private function __dispatchResponse(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			content:String, headOnly:Bool = false):Void {
 		var clientAddress:String = __origin.remoteAddress;
