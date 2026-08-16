@@ -47,6 +47,7 @@ class TestSuites {
 		#if cpp
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
+		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
 		#end
 		runner.addCase(new crossbyte.http.HTTPSupportTest());
 		runner.addCase(new crossbyte.http.RateLimiterTest());
@@ -139,6 +140,7 @@ class TestSuites {
 
 	public static function addMetrics(runner:Runner):Void {
 		runner.addCase(new crossbyte.metrics.MetricsTest());
+		runner.addCase(new crossbyte.metrics.MetricsEndpointTest());
 	}
 
 	public static function addAll(runner:Runner):Void {
