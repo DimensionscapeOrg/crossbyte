@@ -64,6 +64,40 @@ class WebSocket {
 	private var __incomingOpcode:Int = -1;
 	private var __incomingMessageSize:Int = 0;
 	private var __output:ByteArray;
+
+	/**
+	 * Bytes handed to this session but not yet accepted by the socket.
+	 *
+	 * A non-blocking socket accepts only what fits in its send buffer, so
+	 * anything beyond that must be retained and retried rather than
+	 * discarded. Drained on every tick by `__flushPendingOutput()`.
+	 */
+	private var __pendingOutput:ByteArray;
+
+	/**
+	 * Maximum bytes allowed to accumulate in `__pendingOutput`, or `0` for
+	 * no limit.
+	 *
+	 * A peer that stops reading cannot be waited on forever: without a
+	 * bound its unread frames grow until the process runs out of memory,
+	 * which on a server fanning out to many sessions is one slow client
+	 * taking down everything.
+	 */
+	public var maxOutputBufferSize:Int = 0;
+
+	/**
+	 * Bytes still waiting for the socket to accept them.
+	 *
+	 * A value that keeps climbing across ticks means the peer is not
+	 * draining as fast as this side produces. Useful as a metrics gauge and
+	 * as a signal to stop enqueueing.
+	 */
+	public var outputBufferLength(get, never):Int;
+
+	private function get_outputBufferLength():Int {
+		return __pendingOutput == null ? 0 : __pendingOutput.length;
+	}
+
 	private var __connected:Bool = false;
 	private var __timestamp:Float;
 	private var __timeout:Int = 10000;
@@ -148,6 +182,9 @@ class WebSocket {
 		__output = new ByteArray();
 		__output.endian = BIG_ENDIAN;
 
+		__pendingOutput = new ByteArray();
+		__pendingOutput.endian = BIG_ENDIAN;
+
 		__incomingMessageBuffer = new ByteArray();
 		__incomingMessageBuffer.endian = BIG_ENDIAN;
 
@@ -207,6 +244,10 @@ class WebSocket {
 	}
 
 	private function __onTickProcess(e:Event):Void {
+		// Retry anything the socket could not take last time before reading,
+		// so a temporarily full send buffer drains as soon as it has room.
+		__flushPendingOutput();
+
 		var hasData:Bool = false;
 		var doClose:Bool = false;
 		var totalBytes:Int = 0;
@@ -272,12 +313,83 @@ class WebSocket {
 		__writeBytes(handshakeBytes);
 	}
 
-	private function __writeBytes(bytes:Bytes) {
+	private function __writeBytes(bytes:Bytes):Void {
+		if (bytes == null || bytes.length == 0) {
+			return;
+		}
+
+		__queueOutput(ByteArray.fromBytes(bytes), bytes.length);
+	}
+
+	/**
+	 * Appends `bytes` to the pending buffer and tries to push it to the
+	 * socket.
+	 *
+	 * Everything written by this session goes through here so that a
+	 * partially-accepted or momentarily-full socket retains the remainder
+	 * instead of losing it.
+	 */
+	private function __queueOutput(data:ByteArray, length:Int):Void {
+		if (data != null && length > 0) {
+			__pendingOutput.position = __pendingOutput.length;
+			__pendingOutput.writeBytes(data, 0, length);
+		}
+
+		__flushPendingOutput();
+	}
+
+	/**
+	 * Pushes as much of the pending buffer as the socket will accept.
+	 *
+	 * A non-blocking socket signals "no room right now" by accepting fewer
+	 * bytes than offered or by raising a blocked error. Neither is fatal
+	 * and neither may discard data: the unsent remainder is kept and
+	 * retried on the next tick. Only a genuine I/O failure closes the
+	 * session.
+	 */
+	private function __flushPendingOutput():Void {
+		if (__socket == null || __pendingOutput.length == 0) {
+			return;
+		}
+
+		// A blocked write leaves `accepted` at zero, so the buffer below is
+		// retained whole and retried on the next tick.
+		var accepted:Int = 0;
+
 		try {
-			__socket.output.writeBytes(bytes, 0, bytes.length);
+			accepted = __socket.output.writeBytes(__pendingOutput, 0, __pendingOutput.length);
 			__socket.output.flush();
-		} catch (e) {
-			trace(e);
+		} catch (e:Error) {
+			if (!(e == Error.Blocked #if HXCPP_DEBUGGER || e.match(Error.Custom(Blocked)) #end)) {
+				__close(1006, null);
+				return;
+			}
+		} catch (e:Dynamic) {
+			// sys.ssl.Socket reports a would-block as the string "Blocking"
+			// before it is mapped to a typed error.
+			if (Std.string(e).indexOf("Blocking") < 0) {
+				__close(1006, null);
+				return;
+			}
+		}
+
+		if (accepted >= __pendingOutput.length) {
+			__pendingOutput.clear();
+			return;
+		}
+
+		if (accepted > 0) {
+			var remaining:ByteArray = new ByteArray();
+			remaining.endian = BIG_ENDIAN;
+			remaining.writeBytes(__pendingOutput, accepted, __pendingOutput.length - accepted);
+			__pendingOutput = remaining;
+		}
+
+		// Only a peer that is not draining can push the buffer past its
+		// limit, and it will not recover on its own.
+		if (maxOutputBufferSize > 0 && __pendingOutput.length > maxOutputBufferSize) {
+			__pendingOutput.clear();
+			__close(1011, "output buffer limit exceeded");
 		}
 	}
 
@@ -976,15 +1088,11 @@ class WebSocket {
 			__output.writeBytes(frameMask);
 			__output.writeBytes(__maskedPayload);
 		}
-		// Write the frame to the socket
-		try {
-			__socket.output.writeBytes(__output, 0, __output.length);
-			__socket.output.flush();
-
-			__output.clear();
-		} catch (e:Dynamic) {
-			__close(1006, null);
-		}
+		// Hand the frame to the pending buffer rather than writing it
+		// directly: a momentarily full socket is a normal condition, and
+		// treating it as fatal here used to drop the session outright.
+		__queueOutput(__output, __output.length);
+		__output.clear();
 	}
 
 	private inline function __writePayloadLength(length:UInt, maskFlag:Int = 0x00):Void {

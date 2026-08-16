@@ -128,8 +128,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Defaults to `0`, preserving the historical behavior. Servers should
 		set a limit sized to the largest message they legitimately send,
 		with headroom — a few megabytes suits most protocols.
+
+		A property rather than a plain field so subclasses that do not use
+		this buffer can redirect it to the one they do use, instead of
+		silently accepting a limit that never applies.
 	**/
-	public var maxOutputBufferSize:Int = 0;
+	public var maxOutputBufferSize(get, set):Int;
+
+	@:noCompletion private var __maxOutputBufferSize:Int = 0;
+
+	@:noCompletion private function get_maxOutputBufferSize():Int {
+		return __maxOutputBufferSize;
+	}
+
+	@:noCompletion private function set_maxOutputBufferSize(value:Int):Int {
+		return __maxOutputBufferSize = value;
+	}
 
 	/**
 		What to do when the outgoing buffer exceeds `maxOutputBufferSize`.
@@ -476,12 +490,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		peer is not draining.
 	**/
 	@:noCompletion private function __enforceOutputLimit():Void {
-		if (maxOutputBufferSize <= 0 || __output == null || __output.length <= maxOutputBufferSize) {
+		// Read the property once: it is overridable, so a subclass may
+		// redirect it to a buffer of its own.
+		var limit:Int = maxOutputBufferSize;
+
+		if (limit <= 0 || __output == null || __output.length <= limit) {
 			return;
 		}
 
 		var buffered:Int = __output.length;
-		var message:String = 'Socket output buffer reached $buffered bytes, exceeding the $maxOutputBufferSize byte limit; the peer is not reading.';
+		var message:String = 'Socket output buffer reached $buffered bytes, exceeding the $limit byte limit; the peer is not reading.';
 
 		switch (outputOverflowPolicy) {
 			case CLOSE:
@@ -1002,6 +1020,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private inline function __tryFlush():Void {
 		flushFull = false;
+
+		// This is the retry half of a blocked write, scheduled on a timer,
+		// so the socket may have been closed in between — by the peer, by
+		// the application, or by the overflow policy. There is nothing left
+		// to retry, and throwing here would escape the timer into the
+		// runtime's tick dispatch and take down the caller's loop rather
+		// than the one connection.
+		if (__socket == null) {
+			return;
+		}
+
 		flush();
 	}
 

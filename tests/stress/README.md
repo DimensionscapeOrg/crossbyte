@@ -25,6 +25,9 @@ repository and was found this way:
 | `TaskPoolDrainStress` | Guards that `shutdown(drain = true)` runs every submitted job. Silently dropped work is near-impossible to diagnose from a call site. |
 | `IdleTaskPoolGcStress` | `TaskPool` parked idle workers on `Condition.wait()`, which on hxcpp never reaches a GC safepoint, so the next thread to allocate blocked forever inside the collector. Any application holding an idle pool could deadlock — the suite merely made it certain. |
 | `SocketBackpressureStress` | Guards that a bounded socket stops buffering for a peer that has stopped reading. Unbounded, a single stalled client buffered 22 MB and was never dropped. |
+| `SocketDeferredFlushStress` | A blocked write schedules its retry on a timer. If the socket closed first, the retry flushed a released socket and threw — from inside the tick dispatch, so it escaped `pump()` and stopped the loop for every other connection instead of failing one. |
+| `WebSocketRetentionStress` | The WebSocket write path treated a momentarily full send buffer as two different things in two places: one site discarded the bytes and only traced, the other closed the session with 1006. A peer that paused therefore lost either messages or its connection. |
+| `WebSocketBufferLimitStress` | The other side of the same boundary: retention must be bounded. Guards that a session carrying `ServerWebSocket.maxOutputBufferSize` is closed rather than retaining frames for a peer that never drains. |
 
 ## Writing a case
 
@@ -53,6 +56,35 @@ The lesson generalizes: **any synchronization inside the hot loop —
 including the harness's own bookkeeping lock — can mask the race you are
 hunting.** Keep the measured region free of locks and record results into
 thread-local buffers, merging them once at the end.
+
+### Getting a usable stack out of a failing case
+
+`StressMain` prints `haxe.CallStack.exceptionStack()` for a case that
+throws, but a release build often truncates it to the runtime frames —
+`__dispatchTick`, `__stepHost`, `pump` — with the actual culprit missing,
+because the dispatch helpers are `inline` and leave no frame behind.
+
+Rebuild the suite with **`-debug --no-inline`** to recover the full chain.
+That is what identified `SocketDeferredFlushStress`'s bug: with inlining
+on, the stack ended at `pump`; with it off, it named
+`Socket.flush ← Socket.__tryFlush ← Timer.delay`, which was the whole
+answer.
+
+Exceptions thrown from *timer callbacks* stay invisible even then, since
+the throw unwinds through `Timer.onTick`. Wrapping the `timer.__update()`
+loop in a temporary try/catch that prints and rethrows will name the
+offending timer; remove it once diagnosed.
+
+### A case that only fails in the full run is a finding, not a flake
+
+These cases share one process and one runtime, so state one case leaves
+behind is visible to the next. When a case passes alone and fails in the
+suite, resist the urge to isolate it — run it with the preceding case
+(`StressMain <name-fragment>` filters by class name) and find out what was
+left behind.
+
+`WebSocketRetentionStress` did exactly this, and the leftover was a real
+bug that crashed the whole runtime loop rather than one connection.
 
 ### Deadlocks are a special case
 

@@ -26,6 +26,7 @@ class WebSocket extends Socket {
 		var webSocket:WebSocket = new WebSocket();
 
 		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
+		webSocket.__webSocket.maxOutputBufferSize = webSocket.__maxOutputBufferSize;
 		webSocket.__init();
 
 		webSocket.__server = server;
@@ -35,6 +36,47 @@ class WebSocket extends Socket {
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
 	private var __server:ServerWebSocket;
+
+	/**
+		Bytes of unsent frame data allowed to accumulate for this session
+		before it is closed with 1011, or `0` for no limit.
+
+		A peer that stops reading — a slept phone, a half-open connection —
+		leaves everything sent to it buffered with nothing to reclaim it.
+		Frames are never dropped to stay under the limit; the session is
+		closed once it is clear the peer is not draining.
+
+		Overrides `Socket.maxOutputBufferSize` to bound the session's frame
+		buffer instead of the base socket's. A WebSocket writes through its
+		framing layer rather than the inherited output buffer, so a limit
+		left on the base would never be reached.
+	**/
+	@:noCompletion override private function get_maxOutputBufferSize():Int {
+		return __webSocket == null ? __maxOutputBufferSize : __webSocket.maxOutputBufferSize;
+	}
+
+	@:noCompletion override private function set_maxOutputBufferSize(value:Int):Int {
+		// Retained on the base too, so a limit assigned before the session
+		// exists is applied once it does.
+		__maxOutputBufferSize = value;
+
+		if (__webSocket != null) {
+			__webSocket.maxOutputBufferSize = value;
+		}
+
+		return value;
+	}
+
+	/**
+		Bytes of framed data still waiting for the socket to accept them.
+
+		Reports the session's frame buffer rather than the base socket's,
+		for the same reason `maxOutputBufferSize` does: a WebSocket writes
+		through its framing layer, so the inherited buffer stays empty.
+	**/
+	@:noCompletion override private function get_outputBufferLength():Int {
+		return __webSocket == null ? super.get_outputBufferLength() : __webSocket.outputBufferLength;
+	}
 
 	public function new() {
 		super();
@@ -98,6 +140,7 @@ class WebSocket extends Socket {
 		var __webPath = urlReg.matched(3);
 
 		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath);
+		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
 		__init();
 	}
 
