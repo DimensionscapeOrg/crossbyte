@@ -1,13 +1,18 @@
-# Proposal 0013 — WebSocket write path and accepted-connection limits
+# Proposal 0013 — WebSocket read/write paths and accepted-connection limits
 
 **Status:** Implemented on branch `main`
 
-**Motivation:** Two things, connected by the same question: what should a
-server do when a peer stops reading?
+**Motivation:** This began as one question — what should a server do when
+a peer stops reading? — and the WebSocket write path answered it two
+different ways in two places, both wrong. The limits added in proposal
+0006 also could not be reached on connections a server accepted, which is
+exactly where they matter.
 
-The WebSocket write path answered it two different ways in two places,
-both wrong. And the limits added in proposal 0006 could not be reached on
-connections a server accepted, which is exactly where they matter.
+Writing tests for the fix then exposed two defects considerably worse
+than the one it set out to correct: a server could not receive a client
+message at all, and a socket closed mid-write took down the entire
+runtime loop. Both are recorded below, because how they stayed hidden
+matters as much as what they were.
 
 ---
 
@@ -105,7 +110,42 @@ Frames carry a per-frame byte pattern rather than a counter in the first
 bytes only, so a dropped frame surfaces as a wrong value at a known index
 instead of merely a short count.
 
-### A worse bug the new tests uncovered
+### The read path could not receive a client message at all
+
+Adding a test for the read side turned up the largest defect here: **a
+WebSocket server never successfully received a message from a client.**
+
+The server-side handshake parses the HTTP request with
+`raw.getString(start, headerLength)`, which reads without moving the
+buffer cursor. The cleanup that followed called
+`__validateInputPosition()`, which only clears the buffer when
+`bytesAvailable` is zero — and it never was, because the request bytes
+were still sitting there unconsumed.
+
+So the buffer entered `OPEN` still holding the upgrade request. The first
+frame the peer sent was appended after it, and frame parsing began at
+offset zero: the `G` of `GET`. `0x47` has RSV1 set, so the very first
+check in the frame loop closed the session with 1002 as a protocol error.
+Every server-side session lost the client's first message and the
+connection along with it.
+
+The handshake bytes are now dropped unconditionally once the upgrade
+completes, with pipelined data (the `extra` case, which was already
+handled) preserved.
+
+Two reasons this survived, both worth fixing separately:
+
+- The websocket echo sample is **compiled** in CI, never run. A build
+  that never executes proves the API typechecks, nothing more.
+- The frame-level tests construct sessions directly and feed frames in,
+  skipping the handshake entirely — so they exercised the parser but
+  never the state it inherits from the handshake.
+
+`tests/stress/WebSocketFinalMessageStress.hx` covers the real path: a
+peer completes an actual handshake, sends a masked text frame, and the
+server must surface it.
+
+### A closed socket mid-write took down the whole runtime loop
 
 `WebSocketRetentionStress` passed alone and failed in the full suite,
 throwing `Operation attempted on invalid socket` out of `pump()` before it
@@ -141,4 +181,7 @@ visible at all.
 | **Close frame on overflow** | The 1011 path closes the socket rather than sending a close frame first, matching the existing 1006 behaviour. A peer that has stopped reading would not see the frame anyway, but a peer that stopped reading *temporarily* would. |
 | **Sensible non-zero defaults** | Every limit here still defaults to `0`. Choosing real defaults is a 1.0 decision, and needs a view on what the largest legitimate message is per protocol. |
 | **Per-connection buffer metrics** | `outputBufferLength` is now available on WebSocket sessions too; binding it as a gauge still needs a cardinality-safe aggregate rather than one series per peer. |
-| **`trace()` in the WebSocket read loop** | A normal remote close prints `Error Reason:,Eof` and `closed from remote host` on every disconnect. A server library should route that through `Logger` at debug level, not `trace` — it is unfiltered noise in any real deployment, and it reads as an error when it is not one. |
+| **Samples are compiled in CI, never run** | `sample-websocket-echo-check` / `-cpp` only build. A sample that never executes proves the API typechecks and nothing else — it is precisely why a server that could not receive a single client message stayed green. Running the samples end to end, even briefly against a loopback peer, would have caught it on the first commit. |
+| **Frame tests bypass the handshake** | The protocol-error suites construct sessions directly and feed frames in, so they exercise the parser but never the buffer state it inherits from a real handshake. That gap is exactly where this bug lived. |
+| ~~**`trace()` in the WebSocket read loop**~~ | Closed. A normal disconnect used to print `Error Reason:,Eof` and `closed from remote host` through `trace` — unfilterable, and reading as an error when it is not one. Remote closes and heartbeat timeouts now go to `Logger.debug`, genuine read failures to `Logger.warn`. |
+| **`trace()` elsewhere in the library** | This pass covered the WebSocket read loop only. A sweep for `trace(` across the rest of `src/` is worth doing before 1.0, since any of it is unfilterable in a deployed server. |
