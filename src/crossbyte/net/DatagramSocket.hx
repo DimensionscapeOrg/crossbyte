@@ -349,7 +349,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 				__dispatchIoError(Std.string(e));
 				return;
 			} catch (e:Dynamic) {
-				if (Std.string(e) == "Blocking") {
+				if (__isBlockedError(e)) {
 					return;
 				}
 				__dispatchIoError(Std.string(e));
@@ -437,13 +437,8 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		}
 	}
 
-	@:noCompletion private function __isBlockedError(error:HxIOError):Bool {
-		return switch (error) {
-			case HxIOError.Blocked: true;
-			case HxIOError.Custom(value):
-				Std.isOfType(value, HxIOError) && __isBlockedError(cast value);
-			default: false;
-		}
+	@:noCompletion private inline function __isBlockedError(error:Dynamic):Bool {
+		return crossbyte._internal.socket.BlockedError.isBlocked(error);
 	}
 
 	@:noCompletion private inline function get_bound():Bool {

@@ -490,24 +490,14 @@ class ServerWebSocket extends ServerSocket {
 		try {
 			return __webServerSocket.accept();
 		} catch (e:Error) {
-			#if (java || jvm)
-			// The enum switch-in-catch mis-compiles (VerifyError: bad type on
-			// operand stack) on the jvm target; match the transient Blocked case
-			// by string instead. Error.Blocked -> "Blocked", Custom(Blocked) ->
-			// "Custom(Blocked)"; both contain "Blocked".
-			if (Std.string(e).indexOf("Blocked") < 0) {
+			// One predicate, and no per-target branch: the enum switch that
+			// needed a jvm workaround here (VerifyError: bad type on operand
+			// stack, from matching inside a catch) now lives in a plain
+			// static function where that mis-compile does not apply.
+			if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
 				close();
 				dispatchEvent(new Event(Event.CLOSE));
 			}
-			#else
-			switch (e) {
-				case Error.Blocked:
-				case Error.Custom(Error.Blocked):
-				default:
-					close();
-					dispatchEvent(new Event(Event.CLOSE));
-			}
-			#end
 		} catch (e:Dynamic) {
 			// Do nothing.
 		}
