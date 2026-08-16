@@ -25,8 +25,28 @@ class StressMain {
 			new stress.MetricsStress(),
 			new stress.TimerIdStress(),
 			new stress.SocketBackpressureStress(),
+			new stress.SocketDeferredFlushStress(),
+			new stress.WebSocketRetentionStress(),
+			new stress.WebSocketBufferLimitStress(),
 			new stress.IdleTaskPoolGcStress()
 		];
+
+		// Optional case-name filter. These cases share one process and one
+		// runtime, so a failure that only appears in a full run is a
+		// different bug from one that reproduces alone; running a single
+		// case is how the two are told apart.
+		var filter:String = Sys.args()[0];
+		if (filter != null && filter != "") {
+			var wanted:String = filter.toLowerCase();
+			cases = cases.filter(function(c) {
+				return Type.getClassName(Type.getClass(c)).toLowerCase().indexOf(wanted) >= 0;
+			});
+
+			if (cases.length == 0) {
+				Sys.println('No stress case matches "$filter".');
+				Sys.exit(2);
+			}
+		}
 
 		var failed:Int = 0;
 		var started:Float = Sys.time();
@@ -41,10 +61,14 @@ class StressMain {
 			try {
 				result = stressCase.run();
 			} catch (error:Dynamic) {
+				// Without the stack a thrown case reports only a message,
+				// which for shared messages like "invalid socket" does not
+				// say which call raised it.
+				var stack:String = haxe.CallStack.toString(haxe.CallStack.exceptionStack());
 				result = {
 					name: Type.getClassName(Type.getClass(stressCase)),
 					passed: false,
-					details: ["threw: " + Std.string(error)]
+					details: ["threw: " + Std.string(error)].concat(stack.split("\n"))
 				};
 			}
 

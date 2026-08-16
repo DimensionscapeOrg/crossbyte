@@ -47,6 +47,20 @@ class ServerWebSocket extends ServerSocket {
 	**/
 	public var verifyCert(default, set):Null<Bool>;
 
+	/**
+		Applied to every session this server accepts as its
+		`WebSocket.maxOutputBufferSize`, or `0` to leave sessions unbounded.
+
+		Set here rather than per session because an application never sees an
+		accepted socket before the handshake response is written to it, so a
+		per-connection limit is only reachable from the server that accepted
+		it. Existing sessions are unaffected; assign before `listen()`.
+
+		Size it to the largest message this server legitimately sends, with
+		headroom.
+	**/
+	public var maxOutputBufferSize:Int = 0;
+
 	@:noCompletion private var __webServerSocket:FlexSocket;
 	@:noCompletion private var __isSecure:Bool;
 
@@ -105,6 +119,10 @@ class ServerWebSocket extends ServerSocket {
 		var client:WebSocket = cast e.socket;
 		if (client == null || __clients.indexOf(client) >= 0) {
 			return;
+		}
+
+		if (maxOutputBufferSize > 0) {
+			client.maxOutputBufferSize = maxOutputBufferSize;
 		}
 
 		__clients.push(client);

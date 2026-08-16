@@ -34,6 +34,30 @@ class HTTPServerConfig {
 	public var rewrites:Array<RewriteRule>;
 
 	/**
+		Bytes of undrained response data allowed to accumulate per accepted
+		connection before `outputOverflowPolicy` applies, or `0` for no
+		limit.
+
+		A client that stops reading mid-response — a dropped mobile
+		connection, a stalled proxy — leaves its response buffered in
+		memory with nothing to reclaim it. Setting a limit bounds that per
+		connection, which matters most on a server holding many at once.
+
+		Applied to every socket this server accepts, since an application
+		cannot reach those sockets before they are used. Defaults to `0`,
+		preserving existing behavior; size it to the largest response the
+		server legitimately sends, with headroom.
+	**/
+	public var maxOutputBufferSize:Int = 0;
+
+	/**
+		What to do when an accepted connection exceeds
+		`maxOutputBufferSize`. Defaults to closing it, which is what a
+		server wants for a client that has stopped reading.
+	**/
+	public var outputOverflowPolicy:crossbyte.net.OutputOverflowPolicy = CLOSE;
+
+	/**
 		Registry this server records request metrics into.
 
 		When set, the server publishes request counts by status class,

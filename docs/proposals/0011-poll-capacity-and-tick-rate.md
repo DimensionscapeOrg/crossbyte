@@ -36,17 +36,29 @@ descriptor set with `malloc(FDSIZE(max))` and drives `fd_count` /
 
 So capacity is a tuning value, not a platform constraint.
 
-## Correction 3: `POLL` mode does not remove tick latency
+## Correction 3: tick latency is specific to the `POLL` loop, and 12 is a deliberate default
 
-`ServerApplication` uses the `POLL` loop, which sounds like it would block
-on readiness. It does not: it calls `__socketRegistry.update(0)` — a zero
-timeout — then waits out the remainder of the frame in 1 ms sleeps. A
-socket that becomes readable just after the poll waits up to a full tick
-interval, ~83 ms at 12 ticks per second, before it is serviced.
+The `POLL` loop calls `__socketRegistry.update(0)` — a zero timeout — then
+waits out the remainder of the frame in 1 ms sleeps, so under *that* loop
+a socket becoming readable just after the poll waits up to a tick interval
+before it is serviced. The zero timeout is deliberate: the comment above
+it records that letting poll own the frame wait starved CrossByte timers
+with an idle Windows UDP socket registered.
 
-The zero timeout is deliberate; the comment above it records that letting
-poll own the frame wait starved CrossByte timers with an idle Windows UDP
-socket registered. So the fix is the tick rate, not the poll timeout.
+Two things I initially got wrong about this.
+
+First, it is not a property of the runtime, only of one supplied loop.
+`MainLoopType.CUSTOM(loop)` lets an application provide its own, and
+`pump(delta, socketTimeout)` takes a socket timeout — so a loop that wants
+readiness-driven wakeups can block in poll and get them, with tick rate no
+longer bounding I/O latency at all. The blocking configuration exists; the
+`POLL` loop simply does not choose it.
+
+Second, 12 ticks per second is a deliberate low-power threshold, not an
+oversight inherited from application-loop defaults. An idle service costs
+twelve wakeups a second instead of sixty. For a basic networked mechanism
+that is the right trade, and tick-rate scheduling is a normal way to run a
+server loop.
 
 ---
 
@@ -56,12 +68,15 @@ socket registered. So the fix is the tick rate, not the poll timeout.
   64). A starting allocation, documented as such, that a process can tune
   either way before creating runtimes. Non-positive values fall back to
   the historical default rather than producing a zero-sized backend.
-- **`ServerApplication.defaultTicksPerSecond`** (60). A *service* default
-  applied only by the server entry point, bounding added latency at
-  ~17 ms instead of ~83 ms. `Application`, `HostApplication`, and child
-  runtimes keep the general-purpose 12, so no existing application's
-  timing changes. Applied before `INIT`, so a subclass can still override
-  it.
+- **`ServerApplication.defaultTicksPerSecond`** (default `0`, meaning
+  inherit the runtime's 12). A documented seam for services whose latency
+  bound *is* tick cadence, applied before `INIT` so a subclass can still
+  override it. No timing changes for anyone who does not set it.
+
+  This shipped briefly as `60`. That was wrong: it silently changed the
+  cadence of every existing `ServerApplication`, and it treated a
+  deliberate low-power default as a deficiency. Raising tick rate is a
+  deployment decision, not something an entry point should assume.
 
 Both are plain statics rather than constructor parameters: they need to
 be settable before a runtime exists, and adding parameters would have
@@ -79,7 +94,7 @@ had `FD_SETSIZE` actually applied.
 
 | Growth item | Notes |
 |---|---|
-| **Readiness-driven waiting** | The real latency fix: block in poll for the remaining frame time so a ready socket wakes the loop immediately. Blocked on the Windows UDP timer-starvation behaviour the current zero timeout works around; needs a targeted reproduction first. |
+| **Readiness-driven waiting in the stock `POLL` loop** | Already reachable via `MainLoopType.CUSTOM` with a non-zero `pump` socket timeout; the open item is only whether `POLL` itself should offer it as an option. Doing so means solving the Windows UDP timer-starvation behaviour the zero timeout works around — needs a targeted reproduction first. |
 | **Growth without full rebuild** | `__grow()` re-registers every socket. An incremental resize would make the starting capacity matter less. |
 | **Capacity metrics** | Registry size and grow count are natural gauges, and would show whether a deployment's starting capacity is well chosen. |
 | **Per-runtime capacity** | Currently process-wide at construction time; a child runtime carrying far more sockets than its siblings cannot be sized independently. |

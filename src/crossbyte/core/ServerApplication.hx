@@ -23,21 +23,25 @@ import sys.thread.Thread;
 @:access(crossbyte.core.CrossByte)
 class ServerApplication extends Application {
 	/**
-	 * Tick rate a `ServerApplication` starts at.
+	 * Tick rate a `ServerApplication` starts at, or `0` to inherit the
+	 * runtime's own default.
 	 *
-	 * The loop polls sockets with a zero timeout and then waits out the
-	 * rest of the frame, so the tick interval bounds how long a ready
-	 * socket can sit unserviced. At the runtime's general-purpose default
-	 * of 12 ticks per second that is up to ~83 ms of added latency per
-	 * hop — reasonable for an application loop, poor for a network
-	 * service.
+	 * Defaults to `0`. The runtime ticks at 12 per second, a deliberately
+	 * low-power cadence: an idle service costs twelve wakeups a second
+	 * rather than sixty, which is what most networked mechanisms want when
+	 * nothing is happening.
 	 *
-	 * 60 keeps that under ~17 ms while leaving frames long enough that the
-	 * loop is not spinning. Raise it for latency-sensitive services, lower
-	 * it to trade responsiveness for fewer idle wakeups. Assign before
-	 * instantiating, or set `crossByte.tps` afterwards.
+	 * Raise it when tick cadence is your latency bound. The `POLL` loop
+	 * polls sockets with a zero timeout and then sleeps out the rest of the
+	 * frame — deliberately, so an idle registered socket cannot starve
+	 * timers — so under that loop a ready socket waits up to one tick
+	 * interval. A loop supplied through `MainLoopType.CUSTOM` can instead
+	 * pass a non-zero socket timeout to `pump`, letting readiness drive the
+	 * wakeup and making tick rate independent of I/O latency.
+	 *
+	 * Assign before instantiating, or set `crossByte.tps` afterwards.
 	 */
-	public static var defaultTicksPerSecond:UInt = 60;
+	public static var defaultTicksPerSecond:UInt = 0;
 
 	/**
 	 * Creates the primordial poll-driven application.

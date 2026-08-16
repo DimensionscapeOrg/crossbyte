@@ -188,6 +188,14 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
+		// Applied here because an application never sees this socket before
+		// it is written to, so a per-connection limit is only reachable from
+		// the server that accepted it.
+		if (__config.maxOutputBufferSize > 0) {
+			e.socket.maxOutputBufferSize = __config.maxOutputBufferSize;
+			e.socket.outputOverflowPolicy = __config.outputOverflowPolicy;
+		}
+
 		var handler:HTTPRequestHandler = new HTTPRequestHandler(e.socket, __config, php);
 		__active.set(e.socket, handler);
 		__connections++;

@@ -63,7 +63,7 @@ buffers the full payload in memory.
 
 | Growth item | Notes |
 |---|---|
-| **Default limits on accepted connections** | `HTTPServer`/`ServerWebSocket` could apply a configured limit to every socket they accept, so applications get protection without touching each socket. |
+| ~~**Default limits on accepted connections**~~ | Landed in proposal 0013: `HTTPServerConfig.maxOutputBufferSize` and `ServerWebSocket.maxOutputBufferSize` apply to every connection those servers accept. Still opt-in — the defaults remain `0`. |
 | **A drain event** | Only overflow is signalled. A "buffer emptied" event would let producers resume cleanly rather than polling `outputBufferLength`. |
 | **High/low watermarks** | A single threshold means a producer resumes at the same point it stopped. Separate watermarks avoid oscillating at the boundary. |
 | **Per-connection metrics** | `outputBufferLength` is pollable; binding it as a gauge per connection needs a cardinality-safe aggregate (max or histogram across connections, never one series per peer). |
