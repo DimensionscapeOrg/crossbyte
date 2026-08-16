@@ -8,6 +8,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.auth.jwt.EdDSAJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.PkJwtTest());
+		runner.addCase(new crossbyte.auth.jwt.JWKSetTest());
 	}
 
 	public static function addCrypto(runner:Runner):Void {
@@ -175,6 +176,12 @@ class TestSuites {
 
 	public static function addNativeSmoke(runner:Runner):Void {
 		addCrypto(runner);
+		// The asymmetric JWT and JWKS cases are guarded `#if (cpp &&
+		// windows)` because they need the mbedTLS bridge, but this suite is
+		// the only place that combination is built — and it was not
+		// registering them, so they compiled out everywhere they ran and
+		// were unregistered everywhere they compiled. They had never run.
+		addAuth(runner);
 		addCore(runner);
 		addErrors(runner);
 		addEvents(runner);
