@@ -279,16 +279,6 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	 * a small block that happens to be zero already.
 	 */
 	public function testGrowingByAssigningLengthExposesZeros():Void {
-		#if eval
-		// Known defect, eval only. Every other target swaps the underlying
-		// buffer (`untyped this.b = bytes.getData()`), but the eval shim
-		// copies into a Bytes whose storage never actually grew, so the
-		// zeroed region is not carried over and reads return uninitialised
-		// memory. Measured: 65,474 of 65,532 bytes non-zero on eval, 0 on
-		// cpp. Fixing it means changing how ByteArrayData holds its buffer
-		// on eval, which is a core-type change, not a test change.
-		Assert.pass();
-		#else
 		var ba = new ByteArray();
 		ba.writeInt(0x01020304);
 
@@ -302,7 +292,6 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		}
 
 		Assert.equals(0, nonZero, '$nonZero byte(s) of the grown buffer were not zero');
-		#end
 	}
 
 	/**
@@ -311,10 +300,6 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	 * overwriting, and so the one the zeroing still has to handle.
 	 */
 	public function testWritingPastTheEndZeroesTheGap():Void {
-		#if eval
-		// Same eval-only storage defect as above.
-		Assert.pass();
-		#else
 		var payload = new ByteArray();
 		for (i in 0...256) {
 			payload.writeByte((i * 7) & 0xFF);
@@ -340,7 +325,6 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		for (i in 0...payload.length) {
 			Assert.equals((i * 7) & 0xFF, ba[32 * 1024 + i]);
 		}
-		#end
 	}
 
 	/**
