@@ -1,0 +1,6 @@
+--cwd ../..
+-cp src
+-cp samples/windows-service
+-main WindowsServiceSample
+--cpp export/sample-windows-service-check
+-D no-compilation
