@@ -825,8 +825,12 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function deleteDirectory(deleteDirectoryContents:Bool = false):Void {
+		if (!FileSystem.exists(__path)) {
+			throw new Error("File or directory does not exist.", 3003);
+		}
+
 		if (deleteDirectoryContents) {
-			for (item in FileSystem.readDirectory(__path)) {
+			for (item in __listPath(__path)) {
 				__deletePath(Path.join([__path, item]));
 			}
 		}
@@ -946,7 +950,7 @@ final class File extends EventDispatcher {
 			throw new Error("Not a directory.", 3007);
 		}
 
-		var directories:Array<String> = FileSystem.readDirectory(__path);
+		var directories:Array<String> = __listPath(__path);
 		var files:Array<File> = [];
 
 		for (directory in directories) {
@@ -1001,7 +1005,7 @@ final class File extends EventDispatcher {
 		var files:Array<File> = [];
 
 		try {
-			var directoryItems:Array<String> = FileSystem.readDirectory(__path);
+			var directoryItems:Array<String> = __listPath(__path);
 
 			for (item in directoryItems) {
 				files.push(new File(Path.join([__path, item])));
@@ -1440,9 +1444,25 @@ final class File extends EventDispatcher {
 		}
 	}
 
+	/**
+		`FileSystem.readDirectory` does not fail the same way on every target. On hxcpp a
+		directory it cannot open comes back as `null` rather than throwing — `sys_read_dir`
+		returns `null()` when `FindFirstFileW` hands back `INVALID_HANDLE_VALUE` — and
+		iterating that null takes the process down with it, past any `catch` the caller
+		wrote. Every listing goes through here so a missing directory raises the same
+		catchable `Error` everywhere.
+	**/
+	@:noCompletion private static function __listPath(path:String):Array<String> {
+		var items:Array<String> = FileSystem.readDirectory(path);
+		if (items == null) {
+			throw new Error("File or directory does not exist.", 3003);
+		}
+		return items;
+	}
+
 	@:noCompletion private function __deletePath(path:String):Void {
 		if (FileSystem.isDirectory(path)) {
-			for (item in FileSystem.readDirectory(path)) {
+			for (item in __listPath(path)) {
 				__deletePath(Path.join([path, item]));
 			}
 			FileSystem.deleteDirectory(path);
