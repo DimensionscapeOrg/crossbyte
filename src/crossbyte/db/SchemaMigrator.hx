@@ -68,6 +68,23 @@ typedef SchemaMigratorOptions<T> = {
 	@:optional var rollback:T->Void;
 
 	/**
+	 * Serialises migrators against each other, held across the whole of
+	 * `migrate()` so that two processes cannot both read an empty bookkeeping
+	 * table and both apply the same migration. The shape a rolling deploy
+	 * produces, where several instances start within a second of each other.
+	 *
+	 * Advisory locks are engine-specific and there is no portable one, so this
+	 * is a seam rather than a default: PostgreSQL has `pg_advisory_lock(key)`
+	 * and MySQL `GET_LOCK(name, timeout)`; SQLite has no equivalent and does
+	 * not need one, since a single file is not shared between hosts.
+	 *
+	 * Needed together with `unlock`; supplying one alone is rejected.
+	 */
+	@:optional var lock:T->Void;
+
+	@:optional var unlock:T->Void;
+
+	/**
 	 * Allows a pending migration numbered below one already applied. Defaults
 	 * to `false`, which is what catches the merge that lands version 7 in a
 	 * database already holding 8: applying it now produces a schema no other
@@ -143,6 +160,7 @@ class SchemaMigrator<T> {
 	@:noCompletion private var __migrations:Array<Migration<T>> = [];
 	@:noCompletion private var __versions:Map<Int, Bool> = new Map();
 	@:noCompletion private var __transactional:Bool;
+	@:noCompletion private var __locking:Bool;
 
 	public function new(options:SchemaMigratorOptions<T>) {
 		if (options == null || options.execute == null || options.readApplied == null || options.recordApplied == null) {
@@ -157,8 +175,15 @@ class SchemaMigrator<T> {
 			throw new ArgumentError("SchemaMigrator needs begin, commit and rollback together, or none of them.");
 		}
 
+		if ((options.lock == null) != (options.unlock == null)) {
+			// A lock with no release would be taken once and held for the life
+			// of the process, blocking every other instance for good.
+			throw new ArgumentError("SchemaMigrator needs lock and unlock together, or neither.");
+		}
+
 		__options = options;
 		__transactional = supplied == 3;
+		__locking = options.lock != null;
 		tableName = options.tableName == null ? DEFAULT_TABLE_NAME : options.tableName;
 
 		if (!~/^[A-Za-z_][A-Za-z0-9_]*$/.match(tableName)) {
@@ -246,6 +271,34 @@ class SchemaMigrator<T> {
 	 * they were written against a schema that now does not exist.
 	 */
 	public function migrate(connection:T):MigrationReport {
+		if (!__locking) {
+			return __migrateNow(connection);
+		}
+
+		__options.lock(connection);
+
+		try {
+			var report:MigrationReport = __migrateNow(connection);
+			__options.unlock(connection);
+			return report;
+		} catch (e:Dynamic) {
+			// Released before rethrowing. A lock left held by a failed migration
+			// would stop every other instance from ever migrating, turning one
+			// bad deploy into a fleet that cannot start.
+			try {
+				__options.unlock(connection);
+			} catch (_:Dynamic) {}
+
+			#if cpp
+			cpp.Lib.rethrow(e);
+			#else
+			throw e;
+			#end
+			return null;
+		}
+	}
+
+	@:noCompletion private function __migrateNow(connection:T):MigrationReport {
 		__ensureTable(connection);
 
 		var applied:Map<Int, AppliedMigration> = __readApplied(connection);

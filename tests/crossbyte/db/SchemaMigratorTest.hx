@@ -244,6 +244,91 @@ class SchemaMigratorTest extends utest.Test {
 		Assert.same(["SELECT 1"], connection.executed);
 	}
 
+	public function testLockIsHeldAcrossTheWholeRunAndReleasedAfter():Void {
+		var connection = new FakeConnection();
+		var migrator = __lockingMigrator(connection).addAll(__twoMigrations());
+
+		migrator.migrate(connection);
+
+		// Taken before the bookkeeping table is even read, and released only
+		// once every migration is recorded. Anything narrower lets two
+		// processes both read an empty table and both apply migration 1.
+		Assert.equals("lock", connection.events[0]);
+		Assert.equals("unlock", connection.events[connection.events.length - 1]);
+		Assert.equals(1, __countEvents(connection, "lock"));
+		Assert.equals(1, __countEvents(connection, "unlock"));
+		Assert.same([1, 2], __recordedVersions(connection));
+	}
+
+	public function testLockIsReleasedWhenAMigrationFails():Void {
+		var connection = new FakeConnection();
+		connection.failOn = "CREATE TABLE b";
+
+		var migrator = __lockingMigrator(connection).addAll(__twoMigrations());
+
+		Assert.raises(() -> migrator.migrate(connection));
+
+		// The failure must not leave the lock held: every other instance would
+		// then block for good, turning one bad deploy into a fleet that cannot
+		// start.
+		Assert.equals(1, __countEvents(connection, "unlock"));
+		Assert.equals("unlock", connection.events[connection.events.length - 1]);
+	}
+
+	public function testLockIsReleasedWhenTheRunIsRefused():Void {
+		var connection = new FakeConnection();
+		__lockingMigrator(connection).add(Migration.ofSql(2, "second", "CREATE TABLE b (id INTEGER)")).migrate(connection);
+
+		// A refusal happens before any migration runs, which is a different
+		// path out of migrate() and just as capable of stranding the lock.
+		var late = __lockingMigrator(connection).addAll([
+			Migration.ofSql(1, "first", "CREATE TABLE a (id INTEGER)"),
+			Migration.ofSql(2, "second", "CREATE TABLE b (id INTEGER)")
+		]);
+
+		Assert.raises(() -> late.migrate(connection));
+		Assert.equals(__countEvents(connection, "lock"), __countEvents(connection, "unlock"));
+	}
+
+	public function testLockAndUnlockAreRequiredTogether():Void {
+		Assert.raises(() -> new SchemaMigrator<FakeConnection>({
+			execute: (c, sql) -> c.execute(sql),
+			readApplied: c -> c.recorded.copy(),
+			recordApplied: (c, row) -> c.recorded.push(row),
+			lock: c -> c.events.push("lock")
+		}));
+
+		Assert.raises(() -> new SchemaMigrator<FakeConnection>({
+			execute: (c, sql) -> c.execute(sql),
+			readApplied: c -> c.recorded.copy(),
+			recordApplied: (c, row) -> c.recorded.push(row),
+			unlock: c -> c.events.push("unlock")
+		}));
+	}
+
+	private function __lockingMigrator(connection:FakeConnection):SchemaMigrator<FakeConnection> {
+		return new SchemaMigrator<FakeConnection>({
+			execute: (c, sql) -> c.execute(sql),
+			readApplied: c -> c.recorded.copy(),
+			recordApplied: (c, row) -> c.recorded.push(row),
+			begin: c -> c.events.push("begin"),
+			commit: c -> c.events.push("commit"),
+			rollback: c -> c.events.push("rollback"),
+			lock: c -> c.events.push("lock"),
+			unlock: c -> c.events.push("unlock")
+		});
+	}
+
+	private function __countEvents(connection:FakeConnection, event:String):Int {
+		var count = 0;
+		for (entry in connection.events) {
+			if (entry == event) {
+				count++;
+			}
+		}
+		return count;
+	}
+
 	private function __migrator(connection:FakeConnection, transactional:Bool = true, allowOutOfOrder:Bool = false):SchemaMigrator<FakeConnection> {
 		var options:SchemaMigratorOptions<FakeConnection> = {
 			execute: (c, sql) -> c.execute(sql),

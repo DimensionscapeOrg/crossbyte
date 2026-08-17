@@ -104,19 +104,22 @@ a column destroys the data the incident needed.
 
 ## Testing
 
-Twelve cases in `SchemaMigratorTest`, driven against an in-memory fake
+Sixteen cases in `SchemaMigratorTest`, driven against an in-memory fake
 connection so every target runs them and the assertions are about the
 migrator's decisions rather than SQL dialects: version ordering independent of
 registration order, idempotent re-runs, drift detection, rename tolerance,
 rollback and run-abort on failure, failure without a transaction, out-of-order
 refusal and opt-in, `pending()` not applying anything, function-bodied
-migrations, checksum sensitivity, and each rejection above.
+migrations, checksum sensitivity, lock scope and release, and each rejection
+above.
 
 Verified the tests can fail, which for a component whose value is its refusals
 is the part that matters. Disabling the drift check, the out-of-order check
 and the rollback produced five failures across exactly those three cases and
-left the other nine passing — so they test what they claim and are not
-incidentally coupled.
+left the other nine passing. Removing the lock release on failure produced
+three more, across exactly the two cases that assert it — including the
+refusal path, which leaves `migrate()` before any migration runs and is just
+as capable of stranding the lock as a failing statement is.
 
 The checksum case includes the two mutations a naive join would miss:
 `["A", "B"]` must not hash equal to `["AB"]`, and reordering statements must
@@ -132,8 +135,14 @@ contain.
   is not transactional: a failed migration there has to be repaired by hand
   whatever is passed for `begin`/`commit`/`rollback`. Documented on the option
   rather than left to be discovered during an incident.
-- **No advisory lock.** Two processes migrating the same database
-  simultaneously is a real hazard for a service that scales horizontally, but
-  the lock primitive is engine-specific (`pg_advisory_lock`, `GET_LOCK`,
-  nothing portable in SQLite) and belongs behind its own seam rather than
-  guessed at here.
+- **The advisory lock is a seam, not a default.** `lock`/`unlock` are held
+  across the whole of `migrate()` so two processes cannot both read an empty
+  bookkeeping table and both apply migration 1 — the shape a rolling deploy
+  produces, where several instances start within a second of each other. It
+  cannot have a default because the primitive is engine-specific:
+  PostgreSQL has `pg_advisory_lock(key)`, MySQL `GET_LOCK(name, timeout)`, and
+  SQLite has no equivalent and needs none, since a single file is not shared
+  between hosts. The lock is released on every path out, including a refusal
+  that happens before any migration runs — one left held would stop every other
+  instance from ever migrating, turning one bad deploy into a fleet that cannot
+  start.
