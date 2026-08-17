@@ -1,0 +1,17 @@
+<xml>
+	<files id="crossbyte-sys-service-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<file name="${this_dir}/NativeServiceControl.cpp">
+			<depend name="${this_dir}/NativeServiceControl.h"/>
+			<depend name="${this_dir}/NativeLifecycle.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-sys-service-native"/>
+		<!-- StartServiceCtrlDispatcher, RegisterServiceCtrlHandlerEx and
+		     SetServiceStatus all live in advapi32. -->
+		<lib name="advapi32.lib" if="windows"/>
+	</target>
+</xml>
