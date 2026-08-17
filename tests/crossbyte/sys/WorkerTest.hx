@@ -153,6 +153,89 @@ class WorkerTest extends utest.Test {
 		#end
 	}
 
+	public function testEverythingQueuedIsDeliveredOnOneTick():Void {
+		#if (cpp || neko || hl)
+		var worker = new Worker();
+		var progress:Int = 0;
+		var completed:Bool = false;
+		var sent:Bool = false;
+
+		worker.addEventListener(ThreadEvent.PROGRESS, (_:ThreadEvent) -> progress++);
+		worker.addEventListener(ThreadEvent.COMPLETE, (_:ThreadEvent) -> completed = true);
+		worker.doWork = _ -> {
+			for (i in 0...64) {
+				worker.sendProgress(i);
+			}
+			worker.sendComplete("done");
+			sent = true;
+		};
+
+		worker.run();
+		// Waited on without pumping, so every message the worker sends is already
+		// queued before the runtime gets its first tick.
+		waitFor(() -> sent);
+		Assert.isTrue(sent);
+
+		CrossByte.current().pump(1 / 60, 0);
+
+		// A tick used to deliver exactly one message, so this took 65 of them --
+		// paced by the runtime's tick rate rather than by how often the host pumps.
+		Assert.equals(64, progress);
+		Assert.isTrue(completed);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testDeliveryPerTickIsBounded():Void {
+		#if (cpp || neko || hl)
+		var previous:Int = Worker.maxMessagesPerTick;
+		Worker.maxMessagesPerTick = 4;
+
+		var worker = new Worker();
+		var progress:Int = 0;
+		var sent:Bool = false;
+
+		worker.addEventListener(ThreadEvent.PROGRESS, (_:ThreadEvent) -> progress++);
+		worker.doWork = _ -> {
+			for (i in 0...10) {
+				worker.sendProgress(i);
+			}
+			sent = true;
+		};
+
+		worker.run();
+		waitFor(() -> sent);
+
+		var runtime = CrossByte.current();
+		runtime.pump(1 / 60, 0);
+		var afterFirstTick:Int = progress;
+		runtime.pump(1 / 60, 0);
+		var afterSecondTick:Int = progress;
+
+		// Restored before asserting so a failure here cannot leak the bound into
+		// whatever utest runs next.
+		Worker.maxMessagesPerTick = previous;
+		worker.cancel();
+
+		// The bound is what keeps a producer faster than the loop from holding the
+		// tick indefinitely, and with it the socket poll that runs after it.
+		Assert.equals(4, afterFirstTick);
+		Assert.equals(8, afterSecondTick);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	private static function waitFor(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
+		#if (cpp || neko || hl)
+		var deadline = Sys.time() + timeoutSeconds;
+		while (!done() && Sys.time() < deadline) {
+			Sys.sleep(0.001);
+		}
+		#end
+	}
+
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
 		#if (cpp || neko || hl)
 		var runtime = CrossByte.current();

@@ -19,6 +19,21 @@ private enum WorkerMessage {
 
 /** Lightweight background worker that reports progress and completion on the owning runtime. */
 class Worker extends EventDispatcher {
+	/**
+		How many queued messages one worker delivers per tick of its owning runtime.
+
+		A worker used to deliver exactly one, so a background job reporting progress
+		drained at the runtime's tick rate — twelve a second under the default `tps`,
+		however often the host pumped — and a job that reported faster than that fell
+		further behind the longer it ran, with the backlog held in the queue.
+
+		Draining is bounded rather than unbounded so that one talkative worker cannot
+		hold the tick and starve the socket poll that follows it. The default is far
+		above what any single producer emits between two ticks; set it to `0` or less
+		to drain until the queue is empty.
+	**/
+	public static var maxMessagesPerTick:Int = 256;
+
 	public var canceled(default, null):Bool;
 	public var completed(default, null):Bool;
 	public var cancelRequested(default, null):Bool;
@@ -234,31 +249,48 @@ class Worker extends EventDispatcher {
 	@:noCompletion private function __update(event:TickEvent):Void {
 		// A detached tick listener can still fire once under snapshot dispatch,
 		// after cancel()/clean() has nulled the queue — guard against that.
-		if (__messageQueue == null) {
+		var queue:Deque<WorkerMessage> = __messageQueue;
+		if (queue == null) {
 			return;
 		}
 
-		var msg = __messageQueue.pop(false);
+		var limit:Int = maxMessagesPerTick;
+		var drained:Int = 0;
 
-		if (msg == null) {
-			return;
-		}
+		while (limit <= 0 || drained < limit) {
+			// Re-read on every pass rather than trusting the reference this tick
+			// started with. A handler dispatched below is free to cancel(), clean()
+			// or run() the worker again, which nulls this queue or swaps a new one
+			// in; draining a queue that is no longer the worker's would deliver a
+			// finished run's backlog into its successor.
+			if (canceled || __messageQueue != queue) {
+				return;
+			}
 
-		switch (msg) {
-			case Error(message):
-				__detachRuntimeListener();
-				if (!canceled) {
-					__finishFailed(message);
-				}
-			case Complete(message):
-				__detachRuntimeListener();
-				if (!canceled) {
-					__finishCompleted(message);
-				}
-			case Progress(message):
-				if (!canceled) {
+			var msg = queue.pop(false);
+
+			if (msg == null) {
+				return;
+			}
+
+			drained++;
+
+			switch (msg) {
+				case Error(message):
+					__detachRuntimeListener();
+					if (!canceled) {
+						__finishFailed(message);
+					}
+					return;
+				case Complete(message):
+					__detachRuntimeListener();
+					if (!canceled) {
+						__finishCompleted(message);
+					}
+					return;
+				case Progress(message):
 					dispatchEvent(new ThreadEvent(ThreadEvent.PROGRESS, message));
-				}
+			}
 		}
 	}
 	#end
