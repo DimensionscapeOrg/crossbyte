@@ -3,3 +3,4 @@
 -lib utest
 -main TestMain
 --interp
+--macro crossbyte.test.SuiteCoverage.check()

@@ -7,6 +7,7 @@ import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
 
+@:suiteExempt("Hand-run diagnostic driven by SocketSmokeMain, which has no hxml. The echo path is covered by SocketTest; this exists to isolate one socket under a debugger.")
 class SocketSingleCase extends utest.Test {
 	public function testClientServerEchoOverLocalhost():Void {
 		var server = new ServerSocket();

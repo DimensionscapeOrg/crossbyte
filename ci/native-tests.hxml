@@ -5,3 +5,4 @@
 -D HXCPP_M64
 -main NativeSmokeMain
 --cpp export/ci-native-tests
+--macro crossbyte.test.SuiteCoverage.check()
