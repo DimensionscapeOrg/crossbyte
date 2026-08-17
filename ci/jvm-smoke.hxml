@@ -3,3 +3,4 @@
 -lib utest
 -main JvmSmokeMain
 --jvm export/jvm/CrossByteJvmSmoke.jar
+--macro crossbyte.test.SuiteCoverage.check()
