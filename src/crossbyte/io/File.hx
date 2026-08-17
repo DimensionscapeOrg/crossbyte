@@ -677,6 +677,10 @@ final class File extends EventDispatcher {
 				}
 		}*/
 
+		if (!FileSystem.exists(__path)) {
+			throw new Error("File or directory does not exist.", 3003);
+		}
+
 		try {
 			if (isDirectory) {
 				FileSystem.createDirectory(newPath);
@@ -692,10 +696,18 @@ final class File extends EventDispatcher {
 				}
 				HaxeFile.copy(__path, newPath);
 			}
+		} catch (e:Error) {
+			// A recursive call has already described the failure against the
+			// path it actually happened on. Re-wrapping it here would bury both.
+			throw e;
 		} catch (e:Dynamic) {
-			throw new Error("File or directory does not exist.", 3003);
+			// The source was checked above, so whatever went wrong is not what
+			// 3003 says. A permission denial, a full disk and a file held open
+			// by another process all used to be reported as a missing file,
+			// which sends whoever is reading the error looking for the wrong
+			// thing entirely.
+			throw new Error('Unable to copy "$__path" to "$newPath": ${Std.string(e)}', 3006);
 		}
-		// TODO: Error handing
 	}
 
 	/**

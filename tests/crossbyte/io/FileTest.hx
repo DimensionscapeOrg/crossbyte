@@ -392,6 +392,55 @@ class FileTest extends utest.Test {
 		Assert.raises(() -> directory.getDirectoryListing());
 	}
 
+	public function testCopyToReportsTheRealCauseRatherThanAMissingFile():Void {
+		var root = File.createTempDirectory();
+		var source = root.resolvePath("source.txt");
+		var blocker = root.resolvePath("blocker");
+
+		try {
+			source.save(ByteArray.fromBytes(Bytes.ofString("payload")));
+			// A file where copyTo will need a directory, so creating the parent
+			// of the destination fails for a reason that is not "missing source".
+			blocker.save(ByteArray.fromBytes(Bytes.ofString("in the way")));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		var message:String = null;
+
+		try {
+			source.copyTo(blocker.resolvePath("nested").resolvePath("copy.txt"), true);
+		} catch (e:Dynamic) {
+			message = Std.string(e);
+		}
+
+		Assert.notNull(message);
+		// The source is right there. Reporting this as "does not exist" sends
+		// whoever is reading the error looking for the wrong thing entirely --
+		// the same way the null-listing crash presented as a moveTo bug.
+		Assert.isFalse(message.indexOf("does not exist") >= 0);
+		Assert.isTrue(message.indexOf("source.txt") >= 0);
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testCopyToStillReportsAGenuinelyMissingSource():Void {
+		var root = File.createTempDirectory();
+		var missing = root.resolvePath("not-here.txt");
+		var message:String = null;
+
+		try {
+			missing.copyTo(root.resolvePath("copy.txt"), true);
+		} catch (e:Dynamic) {
+			message = Std.string(e);
+		}
+
+		Assert.notNull(message);
+		Assert.isTrue(message.indexOf("does not exist") >= 0);
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float):Void {
 		var runtime = CrossByte.current();
 		var deadline = Sys.time() + timeoutSeconds;
