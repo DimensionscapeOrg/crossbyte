@@ -307,6 +307,7 @@ jobs:
             "sample-socket-chat-server-cpp",
             "sample-udp-cpp",
             "sample-web-server-cpp",
+            "sample-windows-service-cpp",
             "sample-websocket-echo-cpp",
             "sample-worker-cpp"
           )

@@ -195,6 +195,28 @@ haxe check.hxml
 haxe cpp.hxml
 ```
 
+## Windows Service
+
+`windows-service` runs an `HTTPServer` that drains its in-flight requests when
+the Windows Service Control Manager stops it, and behaves the same way under
+`Ctrl+C` from a console. It is also the harness for verifying the service
+control path by hand, since nothing in CI installs a real service — see the
+sample's own README for the `sc create`/`sc stop` procedure and what to check.
+
+From the repository root:
+
+```sh
+aedifex task sample-windows-service-check <project-root>
+aedifex task sample-windows-service-cpp <project-root>
+```
+
+Raw HXML entrypoints:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
 ## Worker
 
 `worker` demonstrates `crossbyte.sys.Worker` progress and completion events in
