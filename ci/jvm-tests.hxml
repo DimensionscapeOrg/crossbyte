@@ -3,3 +3,4 @@
 -lib utest
 -main JvmTestMain
 --jvm export/jvm/CrossByteTests.jar
+--macro crossbyte.test.SuiteCoverage.check()

@@ -222,5 +222,9 @@ class TestSuites {
 		// three-second budget. Both have their own tasks; neither is a
 		// reason to leave these assertions running nowhere.
 		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
+		// The inverse shape: FileStreamTest's two async cases are guarded to
+		// skip on everything but cpp, so their real bodies exist only here.
+		// The coverage macro found them running nowhere at all.
+		runner.addCase(new crossbyte.io.FileStreamTest());
 	}
 }
