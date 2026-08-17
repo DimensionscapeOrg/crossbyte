@@ -42,6 +42,13 @@ final class ProcessLifecycle {
 	/**
 	 * When `true` (the default), the current CrossByte runtime's `exit()` is
 	 * called after shutdown callbacks complete.
+	 *
+	 * Set it to `false` when a shutdown callback finishes asynchronously.
+	 * `HTTPServer.drain(timeout, onComplete)` returns immediately and polls the
+	 * connection count on each tick, so exiting the runtime as soon as the
+	 * callback returns leaves the drain without another tick to finish on: it
+	 * never completes and `onComplete` never runs. The application then owns
+	 * calling `exit()` from its completion handler.
 	 */
 	public static var exitOnShutdown:Bool = true;
 

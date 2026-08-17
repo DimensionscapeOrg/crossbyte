@@ -1,0 +1,5 @@
+--cwd ../..
+-cp src
+-cp samples/windows-service
+-main WindowsServiceSample
+--cpp export/windows-service
