@@ -64,6 +64,56 @@ jobs:
             echo "::endgroup::"
           done
 
+  # The jvm target had no CI at all: both entry points existed, neither was
+  # ever built or run here. Three jvm defects were found and fixed by hand
+  # this release (a PriorityQueue VerifyError, a SwitchTable
+  # ClassCastException, Vector every/some/filter), with nothing to stop
+  # them coming back — and the full suite was in fact red when this job was
+  # added, over IPv6 text the jvm renders differently.
+  #
+  # Java 8 deliberately: it is the floor those VerifyError fixes were
+  # verified against, and a newer JVM would not reproduce them.
+  jvm-tests:
+    name: Core | JVM Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install test dependencies
+        run: haxelib install utest --quiet
+
+      - name: Build jvm suites
+        run: |
+          set -euo pipefail
+          haxe ci/jvm-smoke.hxml
+          haxe ci/jvm-tests.hxml
+
+      # The smoke jar covers the non-networking core; the full jar adds
+      # auth, db, http, net, ipc and system. Both run, because the smoke
+      # subset passing is exactly what let the full suite stay red unseen.
+      - name: Run jvm smoke suite
+        run: java -jar export/jvm/CrossByteJvmSmoke.jar
+
+      - name: Run jvm test suite
+        run: java -jar export/jvm/CrossByteTests.jar
+
   docs:
     name: Core | API Docs
     runs-on: ubuntu-latest

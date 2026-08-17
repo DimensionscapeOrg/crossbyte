@@ -111,6 +111,7 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
+		runner.addCase(new crossbyte._internal.net.IPv6Test());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		#if cpp
