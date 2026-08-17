@@ -309,6 +309,21 @@ final class CrossByte extends EventDispatcher {
 			throw "CrossByte.pump(delta) is only available for host-driven application instances.";
 		}
 
+		// Read the stop flag before claiming the thread, not after. This used to
+		// publish `this` as the thread's current runtime and rebind the thread's
+		// timer scheduler on the way in, so pumping a runtime that had already
+		// exited left a runtime which can never tick again as CrossByte.current()
+		// for the rest of that thread's life -- __finalizeExit's hand-back is
+		// guarded by __didExit and so does not run a second time. Everything that
+		// resolves the current runtime afterwards (a Worker's completion listener,
+		// a timer, a socket registration) then attached to the dead runtime and
+		// simply never fired, with nothing raised to say so.
+		if (!__getRunning()) {
+			__finalizeExit();
+			__releaseThreadLocal();
+			return;
+		}
+
 		#if cpp
 		__ownerThread = Thread.current();
 		__threadLocalStorage.value = this;
@@ -526,6 +541,28 @@ final class CrossByte extends EventDispatcher {
 		__pooledTickEventInUse = false;
 	}
 
+	// Hands the thread's current runtime back when it still points at this stopped
+	// instance. __finalizeExit does this too, but only on the one call that flips
+	// __didExit, so it cannot repair a claim made after that.
+	@:noCompletion private function __releaseThreadLocal():Void {
+		#if cpp
+		if (__threadLocalStorage.value != this) {
+			return;
+		}
+
+		__registryLock.acquire();
+		var primordial:CrossByte = __primordial;
+		var primordialThread:Thread = __primordialThread;
+		__registryLock.release();
+
+		if (!__isPrimordial && primordial != null && primordialThread != null && Thread.current() == primordialThread) {
+			__threadLocalStorage.value = primordial;
+		} else {
+			__threadLocalStorage.value = null;
+		}
+		#end
+	}
+
 	@:noCompletion private function __finalizeExit():Void {
 		if (__didExit) {
 			return;
@@ -539,19 +576,7 @@ final class CrossByte extends EventDispatcher {
 			__socketRegistry.clear();
 			__socketRegistry = null;
 		}
-		#if cpp
-		if (__threadLocalStorage.value == this) {
-			__registryLock.acquire();
-			var primordial:CrossByte = __primordial;
-			var primordialThread:Thread = __primordialThread;
-			__registryLock.release();
-			if (!__isPrimordial && primordial != null && primordialThread != null && Thread.current() == primordialThread) {
-				__threadLocalStorage.value = primordial;
-			} else {
-				__threadLocalStorage.value = null;
-			}
-		}
-		#end
+		__releaseThreadLocal();
 		#if (cpp && windows)
 		if (__isPrimordial) {
 			NativeWindowsRuntime.endTimingPeriod(1);

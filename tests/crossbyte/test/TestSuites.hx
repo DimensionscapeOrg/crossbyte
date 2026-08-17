@@ -204,27 +204,13 @@ class TestSuites {
 		addDatabase(runner);
 		addIPC(runner);
 		addUtils(runner);
-		// ByteArray's growth guarantees hold everywhere except eval, whose
-		// shim cannot grow its storage in place. Those cases are guarded
-		// away from eval, so without registering them here they would run
-		// nowhere at all — the trap three other suites were already in.
-		//
-		// Only the ByteArray cases, not the whole of addIO: running that
-		// natively segfaults in FileTest.testMoveToMovesNestedDirectory-
-		// ContentsAndRemovesSource, a pre-existing native File.moveTo
-		// crash that has its own task. Registering the rest would trade one
-		// silent gap for a suite nobody can run.
-		// Just the growth guarantees, not the whole of addIO. The rest of
-		// that group is held back for two independent reasons, both found
-		// by trying: FileTest segfaults natively in moveTo, and the added
-		// runtime of the bulk ByteArray suites pushes
-		// NativeProcessTest.testStartEmitEventsAndExitCode past its
-		// three-second budget. Both have their own tasks; neither is a
-		// reason to leave these assertions running nowhere.
-		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
-		// The inverse shape: FileStreamTest's two async cases are guarded to
-		// skip on everything but cpp, so their real bodies exist only here.
-		// The coverage macro found them running nowhere at all.
-		runner.addCase(new crossbyte.io.FileStreamTest());
+		// The whole IO group, not a hand-picked subset. Both halves of it
+		// need a native target and had been running on nothing:
+		// ByteArray's growth guarantees are guarded away from eval, whose
+		// shim cannot grow its storage in place, and FileStreamTest's two
+		// async cases skip everywhere except cpp. Registering only the two
+		// cases named above left the rest of FileTest and the File/socket
+		// IO cases native-untested.
+		addIO(runner);
 	}
 }

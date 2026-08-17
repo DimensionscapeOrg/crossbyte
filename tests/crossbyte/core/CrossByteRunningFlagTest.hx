@@ -51,6 +51,54 @@ class CrossByteRunningFlagTest extends utest.Test {
 		Assert.equals(1, exits);
 	}
 
+	public function testPumpingAnExitedRuntimeDoesNotClaimTheThread():Void {
+		#if cpp
+		var before = CrossByte.current();
+		var runtime = new CrossByte(false, DEFAULT, true);
+
+		runtime.pump(1 / 60, 0);
+		runtime.exit();
+		Assert.equals(before, CrossByte.current());
+
+		// pump() used to publish `this` as the thread's current runtime before it
+		// read the stop flag, so this call left a runtime that can never tick
+		// again as CrossByte.current() for the rest of the thread's life. Nothing
+		// threw; everything that later resolved the current runtime just stopped
+		// being serviced.
+		runtime.pump(1 / 60, 0);
+		Assert.equals(before, CrossByte.current());
+		Assert.notEquals(runtime, CrossByte.current());
+		Assert.isTrue(CrossByte.current().__getRunning());
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testTicksStillReachTheCurrentRuntimeAfterPumpingAnExitedOne():Void {
+		#if cpp
+		var stopped = new CrossByte(false, DEFAULT, true);
+		stopped.pump(1 / 60, 0);
+		stopped.exit();
+		stopped.pump(1 / 60, 0);
+
+		// The observable damage the claim did: work handed to the current runtime
+		// after that pump was never serviced again, silently.
+		var runtime = CrossByte.current();
+		var ticks = 0;
+		var listener = function(_:TickEvent):Void {
+			ticks++;
+		};
+
+		runtime.addEventListener(TickEvent.TICK, listener);
+		runtime.pump(1 / 60, 0);
+		runtime.removeEventListener(TickEvent.TICK, listener);
+
+		Assert.equals(1, ticks);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testSetRunningRoundTripsThroughAccessor():Void {
 		var runtime = new CrossByte(false, DEFAULT, true);
 
