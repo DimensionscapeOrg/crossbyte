@@ -2,6 +2,7 @@ package crossbyte.net;
 
 import crossbyte._internal.socket.IPollableSocket;
 import crossbyte.core.CrossByte;
+import crossbyte._internal.net.IPv6;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.IllegalOperationError;
@@ -200,7 +201,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 			var remote:Host = new Host(host);
 			__socket.connect(remote, port);
 			__connected = true;
-			__remoteAddress = remote.toString();
+			__remoteAddress = IPv6.compress(remote.toString());
 			__remotePort = port;
 			__bound = __getLocalEndpoint() != null;
 		} catch (e:Dynamic) {
@@ -370,9 +371,9 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 
 			dispatchEvent(new DatagramSocketDataEvent(
 				DatagramSocketDataEvent.DATA,
-				srcHost.toString(),
+				IPv6.compress(srcHost.toString()),
 				__tempAddress.port,
-				local != null ? local.host.toString() : "",
+				local != null ? IPv6.compress(local.host.toString()) : "",
 				local != null ? local.port : 0,
 				payload
 			));
@@ -455,7 +456,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 
 	@:noCompletion private inline function get_localAddress():String {
 		var local = __getLocalEndpoint();
-		return local != null ? local.host.toString() : "";
+		return local != null ? IPv6.compress(local.host.toString()) : "";
 	}
 
 	@:noCompletion private inline function get_localPort():Int {
