@@ -1410,6 +1410,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			which is always safe.
 	**/
 	@:noCompletion private function __resize(size:Int, overwriteFrom:Int = -1):Void {
+		#if eval
+		var grewFrom:Int = -1;
+		#end
+
 		if (size > __length) {
 			var capacity = ((size + 1) * 3) >> 1;
 			// Guard against integer overflow: if the geometric growth wraps
@@ -1439,11 +1443,39 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 			__setData(bytes);
 			length = cacheLength;
+			#if eval
+			// cacheLength, not __length: __setData leaves __length holding
+			// the capacity rather than the logical length, so starting from
+			// it would skip the bytes between the old end and that capacity
+			// — which is exactly where a stale byte was surviving.
+			grewFrom = cacheLength;
+			#end
 		}
 
 		if (length < size) {
 			length = size;
 		}
+
+		#if eval
+		// eval cannot swap a Bytes' backing store — it has no `b` field to
+		// assign — so __setData copies element by element instead, and that
+		// copy does not reach the newly exposed region: growth left it
+		// holding whatever was already in memory.
+		//
+		// Zeroed here rather than beside the fill above, because up there
+		// `length` has been restored to its old value and a write past it
+		// does not land. Only once the new length is in place does setting
+		// a grown index take effect. Bounded by the same overwriteFrom, so
+		// an append still pays nothing.
+		if (grewFrom >= 0) {
+			var zeroLimit:Int = (overwriteFrom < 0 || overwriteFrom > size) ? size : overwriteFrom;
+			var index:Int = grewFrom;
+			while (index < zeroLimit) {
+				set(index, 0);
+				index++;
+			}
+		}
+		#end
 	}
 
 	@:noCompletion private inline function __setData(bytes:Bytes):Void {
