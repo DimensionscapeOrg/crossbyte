@@ -1,0 +1,6 @@
+-cp src
+-cp tests
+-lib utest
+-main PostgresIntegrationMain
+--cpp export/ci-postgres-tests
+--macro crossbyte.test.SuiteCoverage.check()
