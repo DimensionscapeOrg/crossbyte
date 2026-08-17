@@ -352,6 +352,46 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testDeleteDirectoryOnAMissingPathThrowsInsteadOfCrashing():Void {
+		var directory = File.createTempDirectory();
+		directory.deleteDirectory(true);
+		Assert.isFalse(directory.exists);
+
+		// hxcpp answers a listing of a directory it cannot open with null rather than
+		// an exception, so this second call used to iterate null and take the whole
+		// process down — a segfault no `catch` could reach.
+		Assert.raises(() -> directory.deleteDirectory(true));
+		Assert.raises(() -> directory.deleteDirectory(false));
+	}
+
+	public function testMoveToLeavesASourceThatCanBeCleanedUpSafely():Void {
+		var source = File.createTempDirectory();
+		var nested = source.resolvePath("nested");
+		var destinationRoot = File.createTempDirectory();
+		var destination = destinationRoot.resolvePath("moved");
+
+		try {
+			nested.createDirectory();
+			nested.resolvePath("payload.txt").save(ByteArray.fromBytes(Bytes.ofString("payload")));
+			source.moveTo(destination, true);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		// The shape every one of these cases ends with: tearing down a source that
+		// moveTo already removed has to raise, not crash.
+		Assert.raises(() -> source.deleteDirectory(true));
+
+		try destinationRoot.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testGetDirectoryListingOnAMissingPathThrows():Void {
+		var directory = File.createTempDirectory();
+		directory.deleteDirectory(true);
+
+		Assert.raises(() -> directory.getDirectoryListing());
+	}
+
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float):Void {
 		var runtime = CrossByte.current();
 		var deadline = Sys.time() + timeoutSeconds;
