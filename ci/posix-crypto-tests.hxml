@@ -3,3 +3,4 @@
 -lib utest
 -main PosixCryptoMain
 --cpp export/ci-posix-crypto
+--macro crossbyte.test.SuiteCoverage.check()
