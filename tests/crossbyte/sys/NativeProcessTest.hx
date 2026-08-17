@@ -6,6 +6,12 @@ import utest.Assert;
 
 @:access(crossbyte.core.CrossByte)
 class NativeProcessTest extends utest.Test {
+	// Every wait below returns the moment its predicate holds, so this ceiling
+	// costs nothing when the child behaves and only decides how loaded a machine
+	// has to get before a passing test reports a failure. Spawning a process is
+	// not reliably a three-second operation on a busy CI runner.
+	private static inline var TIMEOUT:Float = 15.0;
+
 	public function testSupportFlagMatchesTarget():Void {
 		#if (sys && (windows || linux || mac || macos))
 		Assert.isTrue(NativeProcess.isSupported);
@@ -45,7 +51,7 @@ class NativeProcessTest extends utest.Test {
 		var info = getDefaultInfo();
 		proc.start(info);
 
-		pumpUntil(() -> exited, 3.0);
+		pumpUntil(() -> exited, TIMEOUT);
 
 		Assert.isTrue(exited);
 		Assert.equals(0, exitCode);
@@ -72,12 +78,12 @@ class NativeProcessTest extends utest.Test {
 		});
 
 		proc.start(getDefaultInfo());
-		waitUntil(() -> proc.exitCode == 0, 3.0);
+		waitUntil(() -> proc.exitCode == 0, TIMEOUT);
 
 		primordial.pump(1 / 60, 0);
 		Assert.isFalse(exited);
 
-		pumpRuntimeUntil(child, () -> exited, 3.0);
+		pumpRuntimeUntil(child, () -> exited, TIMEOUT);
 
 		Assert.isTrue(exited);
 		Assert.equals(child, exitRuntime);
