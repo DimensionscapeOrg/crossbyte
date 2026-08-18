@@ -761,6 +761,96 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals(406, response.status);
 		Assert.equals(1, __countOccurrences(response.raw, "HTTP/1.1 "));
 	}
+	public function testLiteralPlusInPathServesThePlusNamedFile():Void {
+		// Form decoding read the `+` as a space, so this request used to
+		// look up — and serve — the decoy. The decoy stays to keep the
+		// failure mode a wrong body rather than a soft 404.
+		var requestPath:String = null;
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				requestPath = handler.requestPath;
+				next();
+			}
+		], "GET /a+b.html HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			__saveFixture(config, "a+b.html", "plus is a literal");
+			__saveFixture(config, "a b.html", "decoy: the space-named file");
+		});
+
+		Assert.equals("/a+b.html", requestPath);
+		Assert.equals(200, response.status);
+		Assert.equals("17", response.headers.get("content-length"));
+		Assert.equals("plus is a literal", response.body);
+	}
+
+	public function testEncodedPlusDecodesToLiteralPlusAndQueryStaysRaw():Void {
+		var requestPath:String = null;
+		var queryString:String = null;
+		var response = __sendRequest([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				requestPath = handler.requestPath;
+				queryString = handler.queryString;
+				next();
+			}
+		], "GET /a%2Bb.html?q=a+b%20c HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			__saveFixture(config, "a+b.html", "plus is a literal");
+		});
+
+		Assert.equals("/a+b.html", requestPath);
+		Assert.equals("q=a+b%20c", queryString);
+		Assert.equals(200, response.status);
+		Assert.equals("plus is a literal", response.body);
+	}
+
+	public function testMalformedPercentEscapeReturns400():Void {
+		var nonHex = __sendRequest([], "GET /oops%zz.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		Assert.equals(400, nonHex.status);
+		Assert.equals("Bad Request", nonHex.body);
+
+		var truncated = __sendRequest([], "GET /oops%2 HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		Assert.equals(400, truncated.status);
+		Assert.equals("Bad Request", truncated.body);
+	}
+
+	public function testEncodedNulCannotSmuggleAPathPastTheBlacklist():Void {
+		// The filesystem reaches a C API through the string's `char*` and
+		// stops at the NUL; the blacklist compares the whole string and
+		// does not. Under the old decoder this request was checked as
+		// `secret.txt\0.html`, matched nothing, then truncated on open and
+		// served the blacklisted file.
+		var response = __sendRequest([], "GET /secret.txt%00.html HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			__saveFixture(config, "secret.txt", "the blacklisted contents");
+			config.blacklist.push(config.rootDirectory.resolvePath("secret.txt").nativePath);
+		});
+
+		Assert.equals(400, response.status);
+		Assert.equals("Bad Request", response.body);
+		Assert.isFalse(response.raw.indexOf("the blacklisted contents") >= 0);
+	}
+
+	public function testPercentDecodePathDecodesEscapesAndNothingElse():Void {
+		Assert.equals("/a+b", HTTPRequestHandler.__percentDecodePath("/a+b"));
+		Assert.equals("/a+b", HTTPRequestHandler.__percentDecodePath("/a%2Bb"));
+		Assert.equals("/a b", HTTPRequestHandler.__percentDecodePath("/a%20b"));
+		Assert.equals("/AB+", HTTPRequestHandler.__percentDecodePath("/%41%42%2b"));
+		// Adjacent escapes are one byte run read back as UTF-8, so a
+		// two-byte character survives as itself; re-encoding is used as
+		// the check because it is independent of the string's internal
+		// representation on any one target.
+		Assert.equals("%C3%A9", StringTools.urlEncode(HTTPRequestHandler.__percentDecodePath("%C3%A9")));
+
+		Assert.raises(() -> HTTPRequestHandler.__percentDecodePath("/secret.txt%00.html"));
+		Assert.raises(() -> HTTPRequestHandler.__percentDecodePath("/%"));
+		Assert.raises(() -> HTTPRequestHandler.__percentDecodePath("/%2"));
+		Assert.raises(() -> HTTPRequestHandler.__percentDecodePath("/%2G"));
+		Assert.raises(() -> HTTPRequestHandler.__percentDecodePath("/%G2"));
+	}
+
+	private static function __saveFixture(config:HTTPServerConfig, name:String, content:String):Void {
+		var bytes = new ByteArray();
+		bytes.writeUTFBytes(content);
+		config.rootDirectory.resolvePath(name).save(bytes);
+	}
+
 	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");

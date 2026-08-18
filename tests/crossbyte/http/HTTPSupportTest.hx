@@ -160,6 +160,12 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals("/api/v1", RewriteEngine.normalize("api//v1"));
 		Assert.equals("/", RewriteEngine.normalize(""));
 
+		// The handler already percent-decoded the path once; normalize
+		// must not decode again, or the `+` and `%` a single decode
+		// legitimately leaves behind name a different file.
+		Assert.equals("/a+b.html", RewriteEngine.normalize("/a+b.html"));
+		Assert.equals("/100%.html", RewriteEngine.normalize("/100%.html"));
+
 		var threw = false;
 		try {
 			RewriteEngine.normalize("/../../secret");
