@@ -78,6 +78,15 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Private Static Variables ====
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
+
+	/**
+	 * Shortest remaining frame budget worth handing to poll.
+	 *
+	 * Below this the syscall costs more than the wait is worth, and a backend
+	 * that returns immediately would spin on the remainder instead of
+	 * sleeping it off.
+	 */
+	@:noCompletion private static inline var MIN_POLL_WAIT:Float = 0.001;
 	@:noCompletion private static inline var DEFAULT_MAX_SOCKETS:Int = 64;
 
 	/**
@@ -635,13 +644,39 @@ final class CrossByte extends EventDispatcher {
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
 
-		if (!__socketRegistry.isEmpty) {
-			// Keep Poll as the readiness backend, but never let it own the frame
-			// wait. Windows UDP poll can otherwise starve CrossByte timers while
-			// an idle socket is registered.
-			__socketRegistry.update(0);
-			__dt = Timer.stamp() - frameStart;
+		if (__socketRegistry.isEmpty) {
+			// Nothing to wait on but the clock.
+			__wait(frameStart);
+			return;
 		}
+
+		// Spend what is left of the frame inside poll rather than beside it.
+		//
+		// This used to poll with a zero timeout and then sleep the remainder
+		// out, which meant sockets were serviced exactly once per tick: at the
+		// default 12 ticks a second, measured, a socket was polled every 84ms,
+		// so data arriving just after a poll waited that long to be seen and a
+		// request/response pair could pay it twice. Blocking here instead
+		// wakes the loop the moment a descriptor is ready, and returns at the
+		// deadline when nothing is, so the tick cadence is unchanged while the
+		// latency between the two disappears.
+		//
+		// The loop re-enters for whatever remains after dispatching, so a
+		// frame carrying several arrivals is not cut short by the first. The
+		// MIN_POLL_WAIT floor stops that becoming a spin when a backend
+		// returns immediately and repeatedly — the failure this replaces was
+		// Windows UDP poll doing exactly that with an idle socket registered,
+		// which is why the frame wait was kept out of poll's hands
+		// originally. Timers cannot be starved by it: the budget is bounded
+		// by the frame, and whatever it does not consume is slept off below.
+		var remaining:Float = __tickInterval - __dt;
+
+		while (remaining >= MIN_POLL_WAIT && __getRunning()) {
+			__socketRegistry.update(remaining);
+			__dt = Timer.stamp() - frameStart;
+			remaining = __tickInterval - __dt;
+		}
+
 		__wait(frameStart);
 	}
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
