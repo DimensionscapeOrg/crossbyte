@@ -2,6 +2,9 @@ package crossbyte.db;
 
 import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
+import crossbyte.db.postgres.PostgresParameter;
+import crossbyte.db.postgres._internal.PostgresWire;
+import haxe.io.Bytes;
 import utest.Assert;
 
 /**
@@ -166,6 +169,127 @@ class PostgresIntegrationTest extends utest.Test {
 		// A syntax error must surface. Returning an empty result set would let a
 		// broken query read as a query that matched nothing.
 		Assert.raises(() -> connection.request("SELECT * FROM a_table_that_does_not_exist"));
+		Assert.isTrue(connection.ping());
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testBoundParametersCarryValuesThatEscapingCannot():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		connection.request('CREATE TABLE ${table}_blob (id INTEGER PRIMARY KEY, payload BYTEA)');
+
+		// A NUL in the middle is the case the substitution path cannot express:
+		// PQescapeStringConn measures a C string, so everything from the zero
+		// byte onward is dropped and nothing reports it.
+		var ciphertext:Bytes = Bytes.ofHex("00DEADBEEF0000FF1A00");
+
+		connection.requestParams('INSERT INTO ${table}_blob (id, payload) VALUES ($1, $2)', [Text("1"), Binary(ciphertext)]);
+
+		var result = connection.requestParams('SELECT payload FROM ${table}_blob WHERE id = $1', [Text("1")]);
+
+		Assert.equals(1, result.rows.length);
+		// bytea comes back as its \x hex rendering, which is exact.
+		Assert.equals(ciphertext.toHex(), PostgresWire.decodeByteaHex(result.rows[0][0]).toHex());
+
+		try {
+			connection.request('DROP TABLE ${table}_blob');
+		} catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testBoundTextIsNotInterpretedAsSql():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// Stored verbatim rather than executed or mangled. If this ever comes
+		// back altered, the value reached the statement text.
+		var hostile:String = "'); DROP TABLE " + table + "; --";
+
+		connection.requestParams('INSERT INTO $table (id, label, amount) VALUES ($1, $2, $3)', [Text("1"), Text(hostile), Text("5")]);
+
+		var result = connection.requestParams('SELECT label, amount FROM $table WHERE id = $1', [Text("1")]);
+
+		Assert.equals(1, result.rows.length);
+		Assert.equals(hostile, result.rows[0][0].toString());
+		Assert.equals("5", result.rows[0][1].toString());
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testBoundNullIsDistinctFromAnEmptyString():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		connection.requestParams('INSERT INTO $table (id, label, amount) VALUES ($1, $2, $3)', [Text("1"), Null, Text("1")]);
+		connection.requestParams('INSERT INTO $table (id, label, amount) VALUES ($1, $2, $3)', [Text("2"), Text(""), Text("2")]);
+
+		var nulls = connection.requestParams('SELECT id FROM $table WHERE label IS NULL', []);
+		var empties = connection.requestParams('SELECT id FROM $table WHERE label = $1', [Text("")]);
+
+		Assert.equals(1, nulls.rows.length);
+		Assert.equals("1", nulls.rows[0][0].toString());
+		Assert.equals(1, empties.rows.length);
+		Assert.equals("2", empties.rows[0][0].toString());
+
+		// And the value itself survives the trip as NULL rather than "".
+		var back = connection.requestParams('SELECT label FROM $table WHERE id = $1', [Text("1")]);
+		Assert.isNull(back.rows[0][0]);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testBoundStatementReportsFieldsAndAffectedRows():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		connection.requestParams('INSERT INTO $table (id, label, amount) VALUES ($1, $2, $3)', [Text("1"), Text("a"), Text("1")]);
+		connection.requestParams('INSERT INTO $table (id, label, amount) VALUES ($1, $2, $3)', [Text("2"), Text("b"), Text("2")]);
+
+		var result = connection.requestParams('SELECT id, label FROM $table ORDER BY id', []);
+
+		Assert.same(["id", "label"], result.fields);
+		Assert.equals(2, result.rows.length);
+
+		connection.requestParams('UPDATE $table SET amount = $1', [Text("9")]);
+		Assert.equals(2, connection.affectedRows);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testBoundStatementFailureRaisesTheServerMessage():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		var message:String = null;
+
+		try {
+			connection.requestParams("SELECT * FROM a_table_that_does_not_exist WHERE id = $1", [Text("1")]);
+		} catch (e:Dynamic) {
+			message = Std.string(e);
+		}
+
+		Assert.notNull(message);
+		Assert.isTrue(message.indexOf("does not exist") >= 0);
+		// The connection stays usable, so one bad statement does not cost the
+		// pool a connection.
 		Assert.isTrue(connection.ping());
 		#else
 		Assert.pass();

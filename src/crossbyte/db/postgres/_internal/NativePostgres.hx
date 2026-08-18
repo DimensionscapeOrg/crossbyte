@@ -17,6 +17,12 @@ extern class NativePostgres {
 	@:native("crossbyte_postgres_request_json")
 	public static function requestJson(handle:VoidPointer, sql:String):String;
 
+	@:native("crossbyte_postgres_request_params")
+	public static function requestParams(handle:VoidPointer, sql:cpp.ConstCharStar, params:cpp.ConstPointer<cpp.UInt8>, paramsLength:Int):Int;
+
+	@:native("crossbyte_postgres_result_data")
+	public static function resultData():cpp.ConstPointer<cpp.UInt8>;
+
 	@:native("crossbyte_postgres_escape")
 	public static function escape(handle:VoidPointer, value:String):String;
 
