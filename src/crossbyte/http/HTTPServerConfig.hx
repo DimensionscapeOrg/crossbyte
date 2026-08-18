@@ -34,6 +34,23 @@ class HTTPServerConfig {
 	public var rewrites:Array<RewriteRule>;
 
 	/**
+		Seconds a request has to arrive in full — request line, headers and
+		body together. `0` disables the deadline. Defaults to 60.
+
+		The rate limiter cannot cover this window: it runs once a complete
+		header block exists, so a client trickling one byte at a time was
+		never rate limited and held a connection slot for as long as it
+		cared to. With `maxConnections` at its default of 256, tying up
+		every slot this way cost an attacker almost nothing. A connection
+		that misses the deadline is answered with `408 Request Timeout`
+		and closed.
+
+		Enforced by the owning server's sweep, which runs a few times a
+		second, so the deadline is precise to roughly a quarter second.
+	**/
+	public var requestTimeout:Float;
+
+	/**
 		Bytes of undrained response data allowed to accumulate per accepted
 		connection before `outputOverflowPolicy` applies, or `0` for no
 		limit.
@@ -102,7 +119,7 @@ class HTTPServerConfig {
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
 			maxConnections:Int = 256, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
-			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null) {
+			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60) {
 		this.address = address;
 		this.port = port;
 		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
@@ -136,6 +153,7 @@ class HTTPServerConfig {
 				conditions: []
 			}
 		] : rewrites;
+		this.requestTimeout = requestTimeout;
 	}
 }
 
