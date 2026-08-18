@@ -94,6 +94,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.ConnectionPoolTest());
 		runner.addCase(new crossbyte.db.ConnectionPoolMetricsTest());
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
+		runner.addCase(new crossbyte.db.PostgresWireTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {

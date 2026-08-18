@@ -7,6 +7,8 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
+import crossbyte.db.postgres._internal.PostgresWire;
+import haxe.io.Bytes;
 #if cpp
 import crossbyte.db.postgres._internal.NativePostgres;
 import crossbyte.ipc._internal.VoidPointer;
@@ -246,6 +248,63 @@ class PostgresConnection extends EventDispatcher {
 
 		__lastInsertRowID = __lastInsertId();
 		return new PostgresResultSet(rows);
+		#end
+	}
+
+	/**
+		Runs a statement with bound parameters, referenced as `$1`, `$2` and so
+		on in the statement text.
+
+		This is the path to use for anything carrying data. `request()` builds
+		SQL by substitution, so a value is only ever as safe as the escaping
+		applied to it — and no escaping can carry a NUL byte, because
+		`PQescapeStringConn` works on NUL-terminated C strings and stops at the
+		first zero. A ciphertext blob written that way is silently truncated,
+		with no error anywhere.
+
+		Bound values never enter the statement text at all, so quoting stops
+		being a question. Values come back as `haxe.io.Bytes` rather than
+		strings, since a `bytea` column and a `text` column holding invalid
+		UTF-8 both have to survive the trip.
+
+		```haxe
+		connection.requestParams("INSERT INTO events (id, payload) VALUES ($1, $2)",
+			[Text(Std.string(id)), Binary(ciphertext)]);
+
+		var rows = connection.requestParams("SELECT payload FROM events WHERE id = $1", [Text("7")]);
+		```
+
+		Only available on cpp, where the libpq bridge lives; other targets throw
+		rather than silently falling back to substitution, which would defeat
+		the point.
+	**/
+	public function requestParams(sql:String, ?params:Array<PostgresParameter>):PostgresRawResult {
+		__requireConnected();
+
+		#if cpp
+		var encoded:Bytes = PostgresWire.encodeParameters(params == null ? [] : params);
+		var data = cpp.NativeArray.address(encoded.getData(), 0);
+		var length:Int = NativePostgres.requestParams(__nativeHandle, sql == null ? "" : sql, cast data, encoded.length);
+
+		if (length < 0) {
+			throw new IOError("Postgres bridge returned no result block.");
+		}
+
+		var block:Bytes = Bytes.alloc(length);
+		var source = NativePostgres.resultData();
+
+		for (i in 0...length) {
+			block.set(i, source.at(i));
+		}
+
+		// Raises the server message for an error block, so a failed statement
+		// cannot read as a statement that matched nothing.
+		var result:PostgresRawResult = PostgresWire.decodeResult(block);
+		__lastAffectedRows = result.affectedRows;
+		__lastInsertRowID = result.lastInsertRowID;
+		return result;
+		#else
+		throw new IOError("Bound parameters need the native libpq bridge, which this target does not have.");
 		#end
 	}
 
