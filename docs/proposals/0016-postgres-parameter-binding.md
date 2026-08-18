@@ -84,11 +84,19 @@ reading a green local run.
 
 ## Seams left open
 
-- **`PostgresStatement` still substitutes.** Its `parameters` are named, and
-  `PQexecParams` is positional, so mapping one to the other means scanning the
-  statement for placeholders — the SQL parsing this design otherwise refuses to
-  do. `requestParams` is the binding path until that is designed properly;
-  the statement API is unchanged and still works exactly as before.
+- **`PostgresStatement.execute()` still substitutes, by design.** Its
+  `parameters` are named and `PQexecParams` is positional, so mapping one onto
+  the other means scanning statements for placeholders — and getting that wrong
+  around string literals, dollar-quoting or comments would reintroduce the bug
+  behind an API that looks safe. `executeParams(params)` binds positionally
+  instead, reporting results through the same machinery, and the named path is
+  unchanged and documented for what it cannot carry. A scanner good enough to
+  make the named path bind is a separate piece of work with its own risk.
+- **`MySQLStatement` cannot be given the same fix.** It runs on Haxe's
+  `sys.db.Mysql`, whose `Connection` exposes `request`, `escape` and `quote`
+  and no binding at all, so there is nothing to bind through. Documented on
+  `parameters` rather than left to be discovered; a bound path there needs a
+  native libmysqlclient bridge of the kind the Postgres driver has.
 - **No typed results.** Values are bytes, and callers convert. Returning typed
   values means an OID table and a decision about every type, which belongs in
   its own change.

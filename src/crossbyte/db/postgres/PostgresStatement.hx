@@ -261,3 +261,30 @@ class PostgresStatement extends EventDispatcher {
 		#end
 	}
 }
+
+/**
+ * The shape the statement result machinery expects, built from a bound result.
+ * Kept here rather than reaching into the connection's own private one, which
+ * exists for a different call path and is not this file's to depend on.
+ */
+private class BoundResultSet {
+	public var length(default, null):Int;
+
+	private var __rows:Array<Dynamic>;
+	private var __index:Int = 0;
+
+	public function new(rows:Array<Dynamic>) {
+		__rows = rows == null ? [] : rows;
+		length = __rows.length;
+	}
+
+	public function hasNext():Bool {
+		return __index < __rows.length;
+	}
+
+	public function next():Dynamic {
+		var out = __rows[__index];
+		__index++;
+		return out;
+	}
+}
