@@ -28,7 +28,6 @@ class HTTPServer extends ServerSocket {
 
 	@:noCompletion private var __requestsTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __requestSeconds:crossbyte.metrics.Histogram;
-	@:noCompletion private var __requestStarted:ObjectMap<Dynamic, Float>;
 	@:noCompletion private static inline var RECEIVE_SWEEP_INTERVAL:Float = 0.25;
 	@:noCompletion private var __sweepAccumulator:Float = 0;
 	@:noCompletion private var __sweepArmed:Bool = false;
@@ -119,6 +118,31 @@ class HTTPServer extends ServerSocket {
 		draining = true;
 
 		stopAccepting();
+
+		// An idle keep-alive connection is between requests: there is
+		// nothing in flight to wait for, so it closes now rather than
+		// holding the drain open for up to keepAliveTimeout. The rest are
+		// marked to close after the response they are working on, so the
+		// wall deadline is a backstop, not the norm. Snapshot before
+		// closing: close() re-enters cleanupSocket synchronously, which
+		// mutates __active mid-walk.
+		var idleSockets:Array<Dynamic> = [];
+		for (socket in __active.keys()) {
+			var handler:HTTPRequestHandler = __active.get(socket);
+			if (handler.__isIdle()) {
+				idleSockets.push(socket);
+			} else {
+				handler.__closeAfterResponse = true;
+			}
+		}
+		for (socket in idleSockets) {
+			try {
+				(cast socket : crossbyte.net.Socket).close();
+			} catch (_:Dynamic) {}
+		}
+
+		// After the walk __connections counts only in-flight work, which
+		// also makes this log line honest.
 		Logger.info('HTTP Server draining: ${__connections} active connection(s)');
 
 		if (__connections <= 0 || timeoutSeconds <= 0) {
@@ -204,10 +228,12 @@ class HTTPServer extends ServerSocket {
 		var handler:HTTPRequestHandler = new HTTPRequestHandler(e.socket, __config, php);
 		__active.set(e.socket, handler);
 		__connections++;
-		__beginRequestTiming(e.socket);
 		__armReceiveSweep();
 
-		handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, this_onResponse);
+		// A closure rather than the bare method: the response hook needs
+		// the handler for its per-request start stamp, and the event only
+		// carries the status.
+		handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> this_onResponse(e, handler));
 
 		e.socket.addEventListener("close", (_) -> cleanupSocket(e.socket));
 		e.socket.addEventListener("error", (_) -> cleanupSocket(e.socket));
@@ -221,9 +247,13 @@ class HTTPServer extends ServerSocket {
 	 * time out. Disarms itself the same way: the first sweep that finds no
 	 * active connections unsubscribes, so an idle or drained server leaves
 	 * nothing ticking.
+	 *
+	 * The sweep also reaps idle keep-alive connections — one walk, two
+	 * meanings of the same per-handler deadline — so it must arm when
+	 * either timeout is live, not only `requestTimeout`.
 	 */
 	@:noCompletion private function __armReceiveSweep():Void {
-		if (__sweepArmed || __config.requestTimeout <= 0) {
+		if (__sweepArmed || (__config.requestTimeout <= 0 && !(__config.keepAlive && __config.keepAliveTimeout > 0))) {
 			return;
 		}
 
@@ -253,24 +283,42 @@ class HTTPServer extends ServerSocket {
 		}
 		__sweepAccumulator = 0;
 
-		var now:Float = Sys.time();
+		// Snapshot before checking, same discipline as drain(): an expired
+		// idle connection is closed inside the check, and close()
+		// synchronously re-enters cleanupSocket, which mutates __active
+		// mid-iteration. Under keep-alive the sweep close is the routine
+		// end of every idle connection, not a rare fault.
+		var handlers:Array<HTTPRequestHandler> = [];
 		for (handler in __active) {
+			handlers.push(handler);
+		}
+
+		var now:Float = Sys.time();
+		for (handler in handlers) {
 			handler.__checkReceiveDeadline(now);
 		}
 	}
 	private function cleanupSocket(sock:Dynamic):Void {
 		if (__active.exists(sock)) {
 			__active.remove(sock);
-			__endRequestTiming(sock);
 			if (__connections > 0) {
 				__connections--;
 			}
 		}
 	}
 
-	private function this_onResponse(e:HTTPStatusEvent):Void {
+	private function this_onResponse(e:HTTPStatusEvent, handler:HTTPRequestHandler):Void {
 		Logger.info(e.toString());
 		__recordResponse(e);
+
+		// Observed per response, at response time. The old cleanup-time
+		// observation billed a request for the whole connection's life,
+		// which under keep-alive would charge request N for every request
+		// and idle gap before it — and count once per connection instead
+		// of once per response.
+		if (__requestSeconds != null) {
+			__requestSeconds.observe(Sys.time() - handler.__requestStartedAt);
+		}
 	}
 
 	/**
@@ -288,10 +336,9 @@ class HTTPServer extends ServerSocket {
 		}
 
 		var prefix:String = (__config.metricsPrefix == null || __config.metricsPrefix == "") ? "http" : __config.metricsPrefix;
-		__requestStarted = new ObjectMap();
 
 		__requestsTotal = registry.counter(prefix + "_requests_total", null, "Responses sent, labelled by status class.");
-		__requestSeconds = registry.histogram(prefix + "_request_seconds", null, null, "Time from accepting a connection to sending its response.");
+		__requestSeconds = registry.histogram(prefix + "_request_seconds", null, null, "Time from a request's first byte to its response being written.");
 
 		// Bound to the live counter rather than mirrored, so the gauge
 		// cannot drift from the server's own accounting.
@@ -346,21 +393,5 @@ class HTTPServer extends ServerSocket {
 		// cardinality for no operational gain.
 		var statusClass:String = Std.int(e.status / 100) + "xx";
 		__config.metrics.counter(__requestsTotal.name, ["status" => statusClass]).inc();
-	}
-
-	@:noCompletion private function __beginRequestTiming(socket:Dynamic):Void {
-		if (__requestStarted != null) {
-			__requestStarted.set(socket, Sys.time());
-		}
-	}
-
-	@:noCompletion private function __endRequestTiming(socket:Dynamic):Void {
-		if (__requestStarted == null || !__requestStarted.exists(socket)) {
-			return;
-		}
-
-		var started:Float = __requestStarted.get(socket);
-		__requestStarted.remove(socket);
-		__requestSeconds.observe(Sys.time() - started);
 	}
 }

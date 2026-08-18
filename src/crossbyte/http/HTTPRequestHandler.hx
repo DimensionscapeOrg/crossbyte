@@ -14,6 +14,7 @@ import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.utils.Logger;
 import crossbyte._internal.http.headers.AcceptEncoding;
+import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte._internal.php.PHPRequest;
 import crossbyte._internal.php.PHPResponse;
@@ -21,12 +22,21 @@ import crossbyte._internal.http.Http;
 import crossbyte._internal.http.RewriteEngine;
 
 /**
- * Incrementally parses and responds to a single HTTP request over a `Socket`.
+ * Incrementally parses and responds to HTTP requests over a `Socket`.
  *
  * The handler buffers incoming bytes until a complete request is available,
  * normalizes headers and request metadata, decodes supported request body
  * encodings before middleware/PHP routing, and dispatches
  * `HTTPStatusEvent.HTTP_RESPONSE_STATUS` whenever it sends a response.
+ *
+ * One handler serves a connection's whole life, not a single request.
+ * The phases are encoded by fields rather than an enum: receiving
+ * (request bytes arriving, `__awaitingBody` the body sub-state, deadline
+ * armed with `requestTimeout`), dispatching (request fully consumed,
+ * response being produced, deadline zeroed), idle (`__idle`, response
+ * finished and kept alive, the same deadline field re-armed with
+ * `keepAliveTimeout`), closed. With `keepAlive` off every response
+ * closes and the handler collapses back to one-shot behavior.
  */
 final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var MAX_BUFFER_SIZE:Int = 1024 * 1024; // 1 MB
@@ -48,9 +58,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __bodyBuf:ByteArray = null;
 	@:noCompletion private var __bodyComplete:Void->Void = null;
 	@:noCompletion private var __bodyIsChunked:Bool = false;
-	@:noCompletion private var __bodyTargetPhpPath:String = null;
-	@:noCompletion private var __bodyHeadOnly:Bool = false;
-	@:noCompletion private var __bodyOverrideScriptName:String = null;
 	@:noCompletion private var __chunkBytesRemaining:Int = -1;
 	@:noCompletion private var __requestBody:ByteArray;
 	@:noCompletion private var __scanA:Int = -1;
@@ -58,6 +65,38 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __scanC:Int = -1;
 	@:noCompletion private var __scanned:UInt = 0;
 	@:noCompletion private var __receiveDeadline:Float = 0;
+	// Waiting between requests on a kept-alive connection. While set,
+	// __receiveDeadline means "how long may this connection sit idle".
+	@:noCompletion private var __idle:Bool = false;
+	// True once the current request's framing -- headers AND body -- has
+	// been fully read out of __incomingBuffer. The load-bearing safety
+	// bit: a response written before this is set left unread request
+	// bytes behind, and keeping the connection would parse them as the
+	// next request.
+	@:noCompletion private var __requestConsumed:Bool = false;
+	// A response has been written for the current request slot; a second
+	// one would corrupt the stream. Cleared only where a new slot opens.
+	@:noCompletion private var __responded:Bool = false;
+	// The keep/close decision, made once at header-write time and acted
+	// on at finish, so the Connection header and the socket action can
+	// never disagree.
+	@:noCompletion private var __responseKeepAlive:Bool = false;
+	@:noCompletion private var __requestsServed:Int = 0;
+	@:noCompletion private var __processing:Bool = false;
+	@:noCompletion private var __reprocess:Bool = false;
+	// Which request slot the connection is on; bumped by every reset. A
+	// middleware continuation carries the value it was created under, so
+	// a stale next() from an already-answered request — even one that
+	// fires asynchronously, ticks after its slot was reset — cannot
+	// route its dispatch into a later request's state.
+	@:noCompletion private var __requestGeneration:Int = 0;
+	// When the current request's first byte arrived; the duration metric
+	// measures from here, never from connection accept, so request N is
+	// not billed for the idle time since request N-1.
+	@:noCompletion private var __requestStartedAt:Float;
+	// Pushed in by the server's drain(): the in-flight response goes out
+	// with Connection: close so shutdown does not sever it mid-work.
+	@:noCompletion private var __closeAfterResponse:Bool = false;
 	/** Uppercased request method, for example `GET` or `POST`. */
 	public var method(get, null):String;
 	/** Normalized request path without the query string. */
@@ -85,6 +124,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__requestBody = new ByteArray();
 		__setup();
 		__php = php;
+		__requestStartedAt = Sys.time();
 		__receiveDeadline = config.requestTimeout > 0 ? Sys.time() + config.requestTimeout : 0;
 	}
 
@@ -176,12 +216,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
+			if (__idle) {
+				// Any data while idle is by definition the first byte of
+				// the next request: leave the idle phase, stamp the
+				// request's start, and swap the deadline back to meaning
+				// "how long may this request take to arrive".
+				__idle = false;
+				__requestStartedAt = Sys.time();
+				__receiveDeadline = __config.requestTimeout > 0 ? Sys.time() + __config.requestTimeout : 0;
+				// This edge is a request-slot boundary just like a driver
+				// iteration, and must clear the previous slot's flag
+				// itself: a flood tripping the size check below never
+				// reaches __processBuffer, and a still-set __responded
+				// would swallow the 413 -- leaving the connection wedged
+				// with an over-limit buffer nothing will ever reclaim.
+				__responded = false;
+			}
+
 			if (__incomingBuffer.length > MAX_BUFFER_SIZE) {
 				__sendErrorResponse(413, "Payload Too Large");
-				if (__origin.connected) {
-					__origin.close();
-				}
-
 				return;
 			}
 
@@ -193,24 +246,61 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return;
 			}
 
-			__parseRequest();
+			__processBuffer();
 		} catch (error:Dynamic) {
 			Logger.error("Error reading data: " + error);
 			__sendErrorResponse(500, "Internal Server Error");
 		}
 	}
 
+	/**
+	 * Drives request parsing as a flat loop rather than recursion.
+	 *
+	 * A response tail that re-parsed pipelined surplus directly would
+	 * recurse request->response->request and overflow the stack on a
+	 * pipelined flood; and a re-parse starting before request N's
+	 * dispatch stack unwinds would let a contract-violating middleware
+	 * (respond() followed by next()) route its stale continuation
+	 * through request N+1's freshly reset state. So the funnel only
+	 * requests another pass, and the pass runs here, after the previous
+	 * iteration's stack has unwound. The iteration boundary is the guard
+	 * boundary: __responded opens a new request slot at the top of each
+	 * pass. Bounded because each iteration either consumes a complete
+	 * request from the buffer or returns without asking to go again.
+	 */
+	@:noCompletion private function __processBuffer():Void {
+		if (__processing) {
+			__reprocess = true;
+			return;
+		}
+
+		__processing = true;
+		do {
+			__reprocess = false;
+			if (__requestConsumed && !__responded) {
+				// A fully consumed request is mid-dispatch — an
+				// asynchronous middleware still holds the continuation.
+				// Parsing now would overwrite the in-flight request's
+				// state with the next request's; the bytes stay buffered
+				// and the response funnel collects them as pipelined
+				// surplus once the dispatch completes.
+				break;
+			}
+			__responded = false;
+			__parseRequest();
+		} while (__reprocess && __origin.connected);
+		__processing = false;
+	}
+
 	@:noCompletion private inline function __sendMethodNotAllowed():Void {
 		var hdrs:Array<URLRequestHeader> = [new URLRequestHeader("Allow", ALLOWED_METHODS.join(", "))];
 		__dispatchResponse(405, "Method Not Allowed", hdrs, "text/plain", "405 Method Not Allowed");
-		if (__origin.connected) {
-			__origin.close();
-		}
 	}
 
 	/**
-	 * Closes the connection with `408 Request Timeout` when the request has
-	 * not arrived in full by the configured deadline.
+	 * Enforces whichever deadline the connection's phase gave
+	 * `__receiveDeadline`: mid-request expiry answers `408 Request
+	 * Timeout`, idle expiry just closes.
 	 *
 	 * Called from the owning server's sweep rather than from a data event,
 	 * because the clients this exists for are precisely the ones that stop
@@ -225,6 +315,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__receiveDeadline = 0;
+
+		if (__idle) {
+			// An idle keep-alive connection reaching its deadline is the
+			// normal end of its life, not a client fault: close without
+			// a 408.
+			if (__origin.connected) {
+				__origin.close();
+			}
+			return;
+		}
+
 		__sendErrorResponse(408, "Request Timeout");
 	}
 
@@ -341,6 +442,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// The request is fully here; whatever time the response takes
 			// is the server's own and must not be billed to the client.
 			__receiveDeadline = 0;
+			// The one place consumption is recorded, because reaching here
+			// is the one guarantee the request's framing -- headers and
+			// body both -- has been read out of the buffer. Every response
+			// sent earlier (parse errors, the pre-request-line 429, a body
+			// cut short) must close, or the leftover bytes would be parsed
+			// as the next request -- for the 429, the same request forever.
+			__requestConsumed = true;
 			var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
 			if (__config.middleware != null && __config.middleware.length > 0) {
 				__runMiddleware(0, function() {
@@ -366,8 +474,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var alreadyCalled:Bool = false;
+		// The slot this continuation belongs to. A middleware that breaks
+		// the respond-xor-next contract and still calls next() after its
+		// response finished the slot finds the generation moved on and is
+		// ignored — including the asynchronous case, where the __responded
+		// guard alone cannot help because a later slot has already opened.
+		var slot:Int = __requestGeneration;
 		var next = function(?error:Dynamic):Void {
-			if (alreadyCalled) {
+			if (alreadyCalled || slot != __requestGeneration) {
 				return;
 			}
 			alreadyCalled = true;
@@ -444,6 +558,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
+	// Deliberately still close-per-request: this path writes its response
+	// by hand, bypassing both builders, and routing it through one would
+	// change its wire output in the same commit that changes connection
+	// lifecycle. Keeping preflights alive is a follow-up.
 	@:noCompletion private function __handleOptionsRequest():Void {
 		var response:String = "HTTP/1.1 204 No Content\r\n";
 
@@ -483,25 +601,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (__config.blacklist.indexOf(file.nativePath) != -1) {
 			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
-			if (__origin.connected) {
-				__origin.close();
-			}
 			return;
 		}
 		if (__config.whitelist.length > 0 && __config.whitelist.indexOf(file.nativePath) == -1) {
 			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
-			if (__origin.connected) {
-				__origin.close();
-			}
 			return;
 		}
 
 		if (!file.exists) {
+			// Keeps the connection: a routine 404 -- a page fetching a
+			// missing favicon -- must not cost the client a new handshake.
 			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
-
-			if (__origin.connected) {
-				__origin.close();
-			}
 			return;
 		}
 
@@ -511,8 +621,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__serveFile(indexFile, headOnly);
 			} else {
 				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
-				if (__origin.connected)
-					__origin.close();
 			}
 			return;
 		} else {
@@ -535,10 +643,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 				if (since != null && Math.floor(lastModifiedTime / 1000) <= Math.floor(since.getTime() / 1000)) {
 					var h:Array<URLRequestHeader> = [new URLRequestHeader("Accept-Ranges", "bytes"), lastModHeader];
 					__dispatchResponse(304, "Not Modified", h, "text/plain", "", true);
-					if (__origin.connected) {
-						__origin.close();
-					}
-
 					return;
 				}
 			} catch (_:Dynamic) {}
@@ -572,21 +676,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, file.data, false);
 			}
 		}
-
-		if (__origin.connected) {
-			__origin.close();
-		}
 	}
 
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			data:ByteArray, headOnly:Bool = false, ?contentLength:Int):Void {
-		var clientAddress:String = __origin.remoteAddress;
-		Logger.info('Client ' + clientAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
-
-		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
-		statusEvent.responseURL = __origin.remoteAddress;
-		statusEvent.responseHeaders = headers;
-		dispatchEvent(statusEvent);
+		// A response for this request slot has already been written (a
+		// middleware that called respond() and then next() anyway); a
+		// second one would corrupt the stream. Suppressed before the log
+		// and the status event so it neither logs, counts, nor touches
+		// the socket.
+		if (__responded) {
+			return;
+		}
 
 		if (!__origin.connected) {
 			return;
@@ -594,7 +695,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var response:String = "HTTP/1.1 " + statusCode + " " + statusMessage + "\r\n";
 		response += "Date: " + __formatHttpDate() + "\r\n";
-		response += "Connection: close\r\n";
+		__responseKeepAlive = __decideKeepAlive(statusCode);
+		response += "Connection: " + (__responseKeepAlive ? Connection.KEEP_ALIVE : Connection.CLOSE) + "\r\n";
 		response += "Content-Type: " + contentType + "\r\n";
 		response += "X-Content-Type-Options: nosniff\r\n";
 		response += "Server: CrossByte\r\n";
@@ -650,6 +752,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		response += "Content-Length: " + headerLen + "\r\n";
 		response += "\r\n";
 
+		// Logged and dispatched only once the response is certain to reach
+		// the wire: a nested rebuild (a 406 negotiation failure, a
+		// compression failure) replaces this response entirely, and an
+		// event fired earlier would count and time a response that was
+		// never sent — under per-response metrics, twice for one request.
+		Logger.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
+		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
+		statusEvent.responseURL = __origin.remoteAddress;
+		statusEvent.responseHeaders = headers;
+		dispatchEvent(statusEvent);
+
 		__origin.writeUTFBytes(response);
 
 		if (!headOnly && responseData != null && responseData.length > 0) {
@@ -657,8 +770,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__origin.flush();
-		__incomingBuffer.clear();
-		__resetHeaderScan();
+		__finishResponse();
 	}
 
 	@:noCompletion private function __findIndexFile(directory:File):Null<String> {
@@ -696,13 +808,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __dispatchResponse(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			content:String, headOnly:Bool = false):Void {
-		var clientAddress:String = __origin.remoteAddress;
-		Logger.info('Client ' + clientAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
-
-		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
-		statusEvent.responseURL = __origin.remoteAddress;
-		statusEvent.responseHeaders = headers;
-		dispatchEvent(statusEvent);
+		// Same guard as __dispatchResponseBytes: one response per request
+		// slot, suppressed before it can log, count, or touch the socket.
+		if (__responded) {
+			return;
+		}
 
 		if (!__origin.connected) {
 			return;
@@ -715,7 +825,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var response:String = "HTTP/1.1 " + statusCode + " " + statusMessage + "\r\n";
 		response += "Date: " + __formatHttpDate() + "\r\n";
-		response += "Connection: close\r\n";
+		__responseKeepAlive = __decideKeepAlive(statusCode);
+		response += "Connection: " + (__responseKeepAlive ? Connection.KEEP_ALIVE : Connection.CLOSE) + "\r\n";
 		response += "Content-Type: " + contentType + "\r\n";
 		response += "X-Content-Type-Options: nosniff\r\n";
 		response += "Server: CrossByte\r\n";
@@ -770,6 +881,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		response += "Content-Length: " + (responseData != null ? responseData.length : 0) + "\r\n";
 		response += "\r\n";
 
+		// Same placement rationale as __dispatchResponseBytes: log and
+		// count only what actually reaches the wire.
+		Logger.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
+		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
+		statusEvent.responseURL = __origin.remoteAddress;
+		statusEvent.responseHeaders = headers;
+		dispatchEvent(statusEvent);
+
 		__origin.writeUTFBytes(response);
 
 		if (!headOnly && responseData != null && responseData.length > 0) {
@@ -777,15 +896,194 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__origin.flush();
-		__incomingBuffer.clear();
+		__finishResponse();
+	}
+
+	/**
+	 * Whether the request's `Connection` header carries the given token.
+	 *
+	 * Token equality after splitting, never substring search: `close`
+	 * must not match a value of `not-close`, while `keep-alive, Upgrade`
+	 * must still match `keep-alive`. Duplicate Connection headers arrive
+	 * comma-folded by the header parser, so one split sees them all.
+	 */
+	@:noCompletion private function __hasConnectionToken(token:String):Bool {
+		var header:String = __headers.exists("connection") ? __headers.get("connection") : null;
+		if (header == null) {
+			return false;
+		}
+
+		for (raw in header.split(",")) {
+			if (StringTools.trim(raw).toLowerCase() == token) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether the response about to be written may leave the connection
+	 * open. Decided once, at header-write time, and stored in
+	 * `__responseKeepAlive` for `__finishResponse` to act on, so the
+	 * Connection header and the socket action can never disagree.
+	 */
+	@:noCompletion private function __decideKeepAlive(statusCode:Int):Bool {
+		if (!__config.keepAlive) {
+			return false;
+		}
+
+		if (__closeAfterResponse) {
+			return false;
+		}
+
+		// Nothing sent before the request was fully consumed may keep the
+		// connection: unread request bytes are still in the buffer and
+		// would be parsed as the next request. This one bit subsumes every
+		// early-error close -- 400s, 505, the containment 403, 415, 417,
+		// 501, 408, the pre-request-line 429 -- without listing them.
+		if (!__requestConsumed) {
+			return false;
+		}
+
+		// __requestsServed counts previous responses at decision time (the
+		// increment lands in __finishResponse), so a limit of N sends
+		// exactly N responses, the Nth carrying the close.
+		if (__config.keepAliveMaxRequests > 0 && (__requestsServed + 1) >= __config.keepAliveMaxRequests) {
+			return false;
+		}
+
+		var clientAllows:Bool = (__httpVersion == "HTTP/1.1" && !__hasConnectionToken(Connection.CLOSE))
+			|| (__httpVersion == "HTTP/1.0" && __hasConnectionToken(Connection.KEEP_ALIVE));
+		if (!clientAllows) {
+			return false;
+		}
+
+		// Statuses after which handler or connection state is suspect.
+		// 404/405/304/406/415/417/429 are deliberately absent: reached
+		// after consumption they are well-framed, routine answers -- the
+		// browser fetching a missing favicon must not pay a handshake for
+		// it -- and reached before consumption, the bit above closes.
+		// The streaming follow-up must add "response length known" here.
+		if (statusCode == 400 || statusCode == 408 || statusCode == 413 || statusCode >= 500) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * The single tail every buffered response runs through after its
+	 * flush: act on the keep/close decision, preserve pipelined surplus,
+	 * and arm the deadline for whichever phase comes next.
+	 *
+	 * Funneling every builder through here is also what fixes the
+	 * middleware that calls respond() without next(): the old builders
+	 * zeroed the deadline and left the socket open with nothing armed to
+	 * ever reclaim it, because only the routing paths carried a close.
+	 */
+	@:noCompletion private function __finishResponse():Void {
+		__requestsServed++;
+		__responded = true;
+
+		if (!__responseKeepAlive) {
+			// Surplus pipelined bytes are discarded with the close --
+			// identical to the old clear-and-close, whose clients re-send
+			// on a fresh connection. close() dispatches Event.CLOSE even
+			// when locally initiated, so the server's cleanupSocket
+			// accounting fires exactly as it always has.
+			if (__origin.connected) {
+				__origin.close();
+			}
+			return;
+		}
+
+		// The header loop and the body readers leave position exactly one
+		// byte past the request's framing, so everything beyond it is the
+		// next pipelined request and must survive the reset -- clearing
+		// it here is the hang the proposal exists to avoid.
+		var surplus:Int = __incomingBuffer.length - __incomingBuffer.position;
+		if (surplus > 0) {
+			// Allocate-and-swap rather than compacting in place: a
+			// ByteArray blit from a buffer into itself has no defined
+			// overlap semantics across targets.
+			var carried:ByteArray = new ByteArray();
+			carried.writeBytes(__incomingBuffer, __incomingBuffer.position, surplus);
+			carried.position = 0;
+			__incomingBuffer = carried;
+		} else {
+			__incomingBuffer.clear();
+		}
+
+		__resetForNextRequest(surplus > 0);
+
+		if (surplus > 0) {
+			// Pipelined surplus never passes through __onData, so the
+			// request stamp and the re-parse both happen here. Under an
+			// active driver loop this schedules one more iteration after
+			// the current dispatch stack unwinds.
+			__requestStartedAt = Sys.time();
+			__processBuffer();
+		}
+	}
+
+	/**
+	 * Clears every field that describes one request so the next request
+	 * on the same connection starts from nothing. The enumeration is the
+	 * point: any request-scoped field missing here leaks request N's
+	 * state into request N+1, which is exactly the class of bug
+	 * keep-alive introduces.
+	 *
+	 * Deliberately untouched: `__responded` (its clear point is the
+	 * driver loop's iteration boundary; clearing it here would unguard
+	 * the synchronous respond-then-next() window), `__requestsServed` and
+	 * `__closeAfterResponse` (connection-scoped), `__incomingBuffer` (the
+	 * funnel already preserved or cleared it), `__requestStartedAt`
+	 * (stamped where each request actually starts).
+	 */
+	@:noCompletion private function __resetForNextRequest(nextRequestPending:Bool):Void {
+		__requestGeneration++;
+		__headers.clear();
+		__method = null;
+		__filePath = null;
+		__httpVersion = null;
+		__queryString = "";
+		__requestPath = "/";
+		__requestContentEncodings = null;
+		__awaitingBody = false;
+		__expectBody = 0;
+		__bodyBuf = null;
+		__bodyComplete = null;
+		__bodyIsChunked = false;
+		__chunkBytesRemaining = -1;
+		// A fresh ByteArray rather than clear(): the old body must become
+		// collectable now, not stay referenced through a five-second idle
+		// window per megabyte a client happened to POST.
+		__requestBody = new ByteArray();
+		__requestConsumed = false;
+		// Unconditionally, same invariant as everywhere else: scan
+		// offsets die with the buffer they pointed into.
 		__resetHeaderScan();
+
+		if (nextRequestPending) {
+			// A pipelined request already sits in the buffer: straight
+			// back to receiving, request clock armed immediately.
+			__idle = false;
+			__receiveDeadline = __config.requestTimeout > 0 ? Sys.time() + __config.requestTimeout : 0;
+		} else {
+			// Between requests. The same deadline field now bounds idle
+			// time; zero when idle reaping is disabled.
+			__idle = true;
+			__receiveDeadline = (__config.keepAlive && __config.keepAliveTimeout > 0) ? Sys.time() + __config.keepAliveTimeout : 0;
+		}
+	}
+
+	@:noCompletion private inline function __isIdle():Bool {
+		return __idle;
 	}
 
 	@:noCompletion private function __sendErrorResponse(statusCode:Int, message:String):Void {
 		__dispatchResponse(statusCode, message, null, "text/plain", message);
-		if (__origin.connected) {
-			__origin.close();
-		}
 	}
 
 	@:noCompletion private function __parseContentEncodingHeader():Array<CompressionAlgorithm> {
@@ -828,6 +1126,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>):ResponseEncodingDecision {
 		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range")) {
+			return {encoding: null, reject: false};
+		}
+
+		// A 406 is itself the negotiation failure and always ships
+		// identity. Negotiating its body against the same Accept-Encoding
+		// that just failed would reject again and recurse
+		// builder -> 406 -> builder without bound: one request header
+		// ("Accept-Encoding: identity;q=0") was a stack overflow.
+		if (statusCode == 406) {
 			return {encoding: null, reject: false};
 		}
 
@@ -1237,10 +1544,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 			phpRes = __php.execute(phpReq);
 		} catch (e:Dynamic) {
 			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", true);
-			if (__origin.connected) {
-				__origin.close();
-			}
-
 			return;
 		}
 
@@ -1264,9 +1567,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var bodyBytes:ByteArray = phpRes.body;
 		__dispatchResponseBytes(phpRes.status, __statusMessage(phpRes.status), out, ctype, bodyBytes, (__method == "HEAD" || headOnly));
-		if (__origin.connected) {
-			__origin.close();
-		}
 	}
 
 	@:noCompletion private inline function __extractPathOnly():String {
@@ -1339,9 +1639,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 			var encodings = transferEncoding.toLowerCase().split(",");
 			if (encodings.length == 0 || StringTools.trim(encodings[encodings.length - 1]) != "chunked") {
 				__dispatchResponse(501, "Not Implemented", null, "text/plain", "Transfer-Encoding not supported");
-				if (__origin.connected) {
-					__origin.close();
-				}
 				return true;
 			}
 			chunked = true;
@@ -1488,15 +1785,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var onComplete = __bodyComplete;
-		__bodyOverrideScriptName = null;
 		__bodyBuf = null;
 		__expectBody = 0;
 		__awaitingBody = false;
 		__bodyComplete = null;
 		__bodyIsChunked = false;
 		__chunkBytesRemaining = -1;
-		__bodyTargetPhpPath = null;
-		__bodyHeadOnly = false;
 
 		if (onComplete != null) {
 			onComplete();
@@ -1533,10 +1827,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var file:File = new File(filePath);
 		if (!file.exists) {
 			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
-			if (__origin.connected) {
-				__origin.close();
-			}
-
 			return;
 		}
 
@@ -1546,9 +1836,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__handlePost(indexFile);
 			} else {
 				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
-				if (__origin.connected) {
-					__origin.close();
-				}
 			}
 			return;
 		}
