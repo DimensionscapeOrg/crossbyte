@@ -5,7 +5,7 @@ import cpp.ConstPointer;
 import cpp.RawPointer;
 import cpp.UInt8;
 
-@:buildXml('<include name="../../src/crossbyte/crypto/_internal/NativePkBuild.xml"/>')
+@:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/crypto/_internal/NativePkBuild.xml"/>')
 @:include("./NativePk.h")
 extern class NativePk {
 	@:native("crossbyte_pk_available")
