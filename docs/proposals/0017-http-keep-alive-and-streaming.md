@@ -1,6 +1,6 @@
 # Proposal 0017 — HTTP keep-alive and streaming responses
 
-**Status:** Draft
+**Status:** Keep-alive implemented; streaming still open
 
 **Motivation:** The server's response lifecycle is buffer everything, write,
 close. `Connection: close` is hardcoded into every response path — the three
