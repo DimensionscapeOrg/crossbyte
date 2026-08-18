@@ -2,6 +2,7 @@ package crossbyte.db;
 
 import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
+import crossbyte.db.postgres.PostgresStatement;
 import crossbyte.db.postgres.PostgresParameter;
 import crossbyte.db.postgres._internal.PostgresWire;
 import haxe.io.Bytes;
@@ -290,6 +291,65 @@ class PostgresIntegrationTest extends utest.Test {
 		Assert.isTrue(message.indexOf("does not exist") >= 0);
 		// The connection stays usable, so one bad statement does not cost the
 		// pool a connection.
+		Assert.isTrue(connection.ping());
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testStatementBindsRatherThanSubstituting():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// The same NUL-carrying value the substituting path silently truncates,
+		// now through the statement API rather than the connection.
+		connection.request('CREATE TABLE ${table}_stmt (id INTEGER PRIMARY KEY, payload BYTEA)');
+
+		var payload:Bytes = Bytes.ofHex("0011002200FF00");
+		var insert = new PostgresStatement();
+		insert.sqlConnection = connection;
+		insert.text = 'INSERT INTO ${table}_stmt (id, payload) VALUES ($1, $2)';
+		insert.executeParams([Text("1"), Binary(payload)]);
+
+		var select = new PostgresStatement();
+		select.sqlConnection = connection;
+		select.text = 'SELECT payload FROM ${table}_stmt WHERE id = $1';
+		select.executeParams([Text("1")]);
+
+		var result = select.getResult();
+		Assert.notNull(result);
+		Assert.equals(1, result.data.length);
+
+		var hex:String = Std.string(Reflect.field(result.data[0], "payload"));
+		Assert.equals(payload.toHex(), PostgresWire.decodeByteaHex(Bytes.ofString(hex)).toHex());
+
+		try {
+			connection.request('DROP TABLE ${table}_stmt');
+		} catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testStatementBoundFailureDispatchesAnError():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		var statement = new PostgresStatement();
+		statement.sqlConnection = connection;
+		statement.text = "SELECT * FROM a_table_that_does_not_exist WHERE id = $1";
+
+		var errored:Bool = false;
+		statement.addEventListener(crossbyte.events.SQLErrorEvent.ERROR, _ -> errored = true);
+		statement.executeParams([Text("1")]);
+
+		// Reported through the statement's own error event rather than thrown,
+		// matching how execute() reports a failure.
+		Assert.isTrue(errored);
 		Assert.isTrue(connection.ping());
 		#else
 		Assert.pass();
