@@ -8,42 +8,47 @@ import utest.Assert;
 
 /**
  * Byte-exact receipt of inbound bursts sized around the socket's internal
- * 4096-byte read buffer.
+ * read buffer.
+ *
+ * Every size here is derived from `Socket.READ_CHUNK` rather than written
+ * out, because the case being tested is the boundary itself. Hardcoding the
+ * number meant that raising the buffer left these cases passing while
+ * probing a size that no longer fills it — protection in name only.
  *
  * The read loop in crossbyte.net.Socket re-reads whenever a read fills its
  * buffer, and stops on a short read or a Blocked error. On eval/interp the
  * descriptor is blocking — setBlocking is a no-op there (see the vendored
- * sys.net.Socket) — so a burst of exactly 4096 * n bytes gives the loop no
- * way out: no short read, no Blocked, and the follow-up read parks the whole
- * runtime thread until the peer sends more or closes. The loop is therefore
- * gated on a zero-timeout select on eval, and these cases exist to keep it
- * that way.
+ * sys.net.Socket) — so a burst of exactly one buffer, or a whole multiple of
+ * one, gives the loop no way out: no short read, no Blocked, and the
+ * follow-up read parks the whole runtime thread until the peer sends more or
+ * closes. The loop is therefore gated on a zero-timeout select on eval, and
+ * these cases exist to keep it that way.
  *
  * A regression here fails by TIMEOUT, not by assertion: the interpreter
  * hangs inside pump(), the deadline loop never regains control, and the run
  * is bounded only by the CI job limit. A suite that suddenly takes minutes
  * instead of seconds is this test failing.
  *
- * 4095 and 4097 are controls — one byte under and over the buffer, they
- * exit the loop through the short-read path on every target and pass with
+ * One byte under and one byte over the buffer are the controls: both end on
+ * a short read, so they exit through that path on every target and pass with
  * or without the eval gate.
  */
 @:access(crossbyte.net.Socket)
 class SocketExactBufferReadTest extends utest.Test {
 	public function testExactSingleBufferBurstIsFullyReceived():Void {
-		__assertLoopbackRoundTrip(4096);
+		__assertLoopbackRoundTrip(Socket.READ_CHUNK);
 	}
 
 	public function testExactDoubleBufferBurstIsFullyReceived():Void {
-		__assertLoopbackRoundTrip(8192);
+		__assertLoopbackRoundTrip(Socket.READ_CHUNK * 2);
 	}
 
 	public function testOneByteUnderBufferBurstIsFullyReceived():Void {
-		__assertLoopbackRoundTrip(4095);
+		__assertLoopbackRoundTrip(Socket.READ_CHUNK - 1);
 	}
 
 	public function testOneByteOverBufferBurstIsFullyReceived():Void {
-		__assertLoopbackRoundTrip(4097);
+		__assertLoopbackRoundTrip(Socket.READ_CHUNK + 1);
 	}
 
 	/**
@@ -70,7 +75,7 @@ class SocketExactBufferReadTest extends utest.Test {
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
 			serverPeer = event.socket;
 			var payload = new ByteArray();
-			for (i in 0...4096) {
+			for (i in 0...Socket.READ_CHUNK) {
 				payload.writeByte(__expectedByte(i));
 			}
 			serverPeer.writeBytes(payload);
@@ -93,14 +98,14 @@ class SocketExactBufferReadTest extends utest.Test {
 			server.listen();
 			client.connect("127.0.0.1", server.localPort);
 
-			__pumpUntil(() -> closed && received.length >= 4096, 5.0);
+			__pumpUntil(() -> closed && received.length >= Socket.READ_CHUNK, 5.0);
 
-			Assert.equals(4096, received.length);
-			Assert.equals(-1, __firstMismatch(received, 4096));
+			Assert.equals(Socket.READ_CHUNK, received.length);
+			Assert.equals(-1, __firstMismatch(received, Socket.READ_CHUNK));
 			Assert.isTrue(closed);
 			// The whole point of the ordering: every byte was already
 			// delivered by the time CLOSE was dispatched.
-			Assert.equals(4096, bytesWhenClosed);
+			Assert.equals(Socket.READ_CHUNK, bytesWhenClosed);
 		} catch (e:Dynamic) {
 			__closeQuietly(client);
 			__closeQuietly(serverPeer);
