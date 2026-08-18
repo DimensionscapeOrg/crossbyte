@@ -223,4 +223,73 @@ class HTTPSupportTest extends utest.Test {
 
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
+
+	public function testBackrefExpansionDoesNotReprocessCapturedText():Void {
+		// Expansion used to run one String.replace per group, so a group whose
+		// captured value itself contained "$2" had that "$2" rewritten by the
+		// next pass: the request, not the rule author, decided part of the
+		// target. Here group 1 captures the literal text "$2".
+		Assert.equals("$2|Q", RewriteEngine.backrefs("^/(.+)/(.+)$", "/$2/Q", "$1|$2", false));
+
+		Assert.equals("/user?name=a$2b&id=ZZZ",
+			RewriteEngine.backrefs("^/u/(.+)/(.+)$", "/u/a$2b/ZZZ", "/user?name=$1&id=$2", false));
+	}
+
+	public function testBackrefExpansionFollowsModRewriteGroupNumbering():Void {
+		// mod_rewrite has $0-$9 only, so "$10" reads as group 1 followed by a
+		// literal zero rather than a tenth group.
+		Assert.equals("xa0y", RewriteEngine.backrefs("^/(a)(b)$", "/ab", "x$10y", false));
+
+		// $0 is not a group here, and a trailing "$" stays literal.
+		Assert.equals("$0", RewriteEngine.backrefs("^/(a)$", "/a", "$0", false));
+		Assert.equals("a$", RewriteEngine.backrefs("^/(a)$", "/a", "$1$", false));
+
+		// A group the pattern never captured is left as written.
+		Assert.equals("a-$5", RewriteEngine.backrefs("^/(a)$", "/a", "$1-$5", false));
+
+		// A pattern that does not match leaves the target untouched.
+		Assert.equals("$1", RewriteEngine.backrefs("^/(a)$", "/b", "$1", false));
+	}
+
+	public function testCompiledPatternsAreCachedPerCaseSensitivity():Void {
+		// Patterns are compiled once and reused across requests, so one source
+		// pattern held both with and without NC must not collapse into a
+		// single cached expression.
+		Assert.isTrue(RewriteEngine.reMatch("^/API$", "/API", false));
+		Assert.isFalse(RewriteEngine.reMatch("^/API$", "/api", false));
+		Assert.isTrue(RewriteEngine.reMatch("^/API$", "/api", true));
+		Assert.isFalse(RewriteEngine.reMatch("^/API$", "/api", false));
+
+		// Nor may a reused expression carry captures over from a prior call.
+		Assert.equals("/x/users", RewriteEngine.backrefs("^/API/(.+)$", "/api/users", "/x/$1", true));
+		Assert.equals("/x/posts", RewriteEngine.backrefs("^/API/(.+)$", "/api/posts", "/x/$1", true));
+		Assert.equals("/x/users", RewriteEngine.backrefs("^/API/(.+)$", "/api/users", "/x/$1", true));
+	}
+
+	public function testTryFilesFallsBackToLiteralEntries():Void {
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("app.html").save(ByteArray.fromBytes(Bytes.ofString("app")));
+
+			var cfg = new HTTPServerConfig("127.0.0.1", 8080, root, null, ["index.html"], null, null, null, null, null, false, null, null, null, 600,
+				false, 256, 0, false, "127.0.0.1", 8080, "php-cgi", "php.ini", 1, ["$uri", "$uri/", "/app.html"], []);
+
+			// Neither the path nor a directory index resolves, so the literal
+			// entry is what serves the request. The "$uri" entries ahead of it
+			// are inert: decide() tests both before the loop is reached.
+			var decision = RewriteEngine.decide(cfg, "/deep/link", "", "GET", new StringMap<String>());
+			Assert.notNull(decision);
+			Assert.equals("/app.html", decision.finalPath);
+			Assert.isTrue(decision.isStatic);
+
+			// A real file still wins over the literal fallback.
+			var direct = RewriteEngine.decide(cfg, "/app.html", "", "GET", new StringMap<String>());
+			Assert.notNull(direct);
+			Assert.equals("/app.html", direct.finalPath);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
 }
