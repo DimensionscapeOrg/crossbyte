@@ -68,8 +68,10 @@ routes silently swap priority in a refactor. The author who writes
 `/users/new` above `/users/:id` gets what the file says, in the order it
 says it.
 
-`:param` values are single segments, URL-decoded by the existing request
-path handling. `*rest` must be final and captures the remainder unsplit.
+`:param` values are single segments, decoded by the existing request path
+handling — percent-decoding per RFC 3986, so a literal `+` in a pattern
+matches a literal `+` in the path and only `%XX` means anything else.
+`*rest` must be final and captures the remainder unsplit.
 
 Matching sees the pre-rewrite request path: the rewrite decision is
 computed before middleware runs but applied only to requests the router

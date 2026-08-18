@@ -112,8 +112,17 @@ class RewriteEngine {
 			preserveURI: keep
 		};
 
+	/**
+	 * `p` arrives percent-decoded exactly once by the request handler.
+	 * Decoding it again here is not hygiene but corruption: a path whose
+	 * single decode legitimately contains `+` or `%` — `/a+b.html`, or
+	 * `/100%.html` from `/100%25.html` — would be form-decoded a second
+	 * time and made to name a different file. Double-encoded traversal
+	 * needs no second decode to stay caught: `%252e` decodes once to the
+	 * literal text `%2e`, which no filesystem reads as a dot.
+	 */
 	@:noCompletion public static function normalize(p:String):String {
-		var u:String = StringTools.urlDecode((p == null || p == "") ? "/" : p);
+		var u:String = (p == null || p == "") ? "/" : p;
 		u = ~/(\/+)/g.replace(u.replace("\\", "/"), "/");
 
 		if (!u.startsWith("/")) {

@@ -1,6 +1,7 @@
 package crossbyte.http;
 
 import haxe.ds.StringMap;
+import haxe.io.BytesBuffer;
 import haxe.io.Path;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -471,7 +472,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			pathOnly = pathOnly.substr(0, h);
 
 		try {
-			pathOnly = StringTools.urlDecode(pathOnly);
+			pathOnly = __percentDecodePath(pathOnly);
 			__requestPath = pathOnly;
 		} catch (_:Dynamic) {
 			__sendErrorResponse(400, "Bad Request");
@@ -1784,6 +1785,78 @@ final class HTTPRequestHandler extends EventDispatcher {
 			default: "application/octet-stream";
 		}
 		return mimeType;
+	}
+
+	/**
+	 * Decodes `%XX` escapes in a request path, and nothing else.
+	 *
+	 * `StringTools.urlDecode` is form decoding: it also reads `+` as a
+	 * space, a rule RFC 3986 confines to query strings. In a path `+` is an
+	 * ordinary literal, so `GET /a+b.html` must look up `a+b.html`. Escapes
+	 * are decoded as bytes and each maximal run is read back as UTF-8, so
+	 * `%C3%A9` arrives as one character, not two. A truncated or non-hex
+	 * escape throws; the caller answers it with `400 Bad Request`.
+	 *
+	 * A decoded NUL throws as well, and that one is load-bearing rather
+	 * than tidy. Every filesystem call underneath `File` reaches a C API
+	 * through the string's `char*`, which ends at the first NUL, while the
+	 * blacklist and whitelist compare whole Haxe strings that do not. So
+	 * `/secret.txt%00.html` would be checked as one name and opened as
+	 * another — a blacklist matching `secret.txt` finds no match, then
+	 * `exists()` and `load()` truncate and serve it. No legitimate path
+	 * carries a NUL, so it is refused here rather than defended against
+	 * at every use.
+	 */
+	@:noCompletion private static function __percentDecodePath(path:String):String {
+		if (path.indexOf("%") < 0) {
+			return path;
+		}
+
+		var out:StringBuf = new StringBuf();
+		var i:Int = 0;
+		var n:Int = path.length;
+		while (i < n) {
+			var c:Int = StringTools.fastCodeAt(path, i);
+			if (c != "%".code) {
+				out.addChar(c);
+				i++;
+				continue;
+			}
+
+			var bytes:BytesBuffer = new BytesBuffer();
+			while (i < n && StringTools.fastCodeAt(path, i) == "%".code) {
+				if (i + 2 >= n) {
+					throw "truncated percent escape";
+				}
+				var hi:Int = __hexDigit(StringTools.fastCodeAt(path, i + 1));
+				var lo:Int = __hexDigit(StringTools.fastCodeAt(path, i + 2));
+				if (hi < 0 || lo < 0) {
+					throw "invalid percent escape";
+				}
+				var b:Int = (hi << 4) | lo;
+				if (b == 0) {
+					throw "NUL byte in path";
+				}
+				bytes.addByte(b);
+				i += 3;
+			}
+			out.add(bytes.getBytes().toString());
+		}
+
+		return out.toString();
+	}
+
+	@:noCompletion private static function __hexDigit(c:Int):Int {
+		if (c >= "0".code && c <= "9".code) {
+			return c - "0".code;
+		}
+		if (c >= "a".code && c <= "f".code) {
+			return c - "a".code + 10;
+		}
+		if (c >= "A".code && c <= "F".code) {
+			return c - "A".code + 10;
+		}
+		return -1;
 	}
 
 	@:noCompletion private function __resolveSafePath(root:File, targetPath:String):File {
