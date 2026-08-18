@@ -18,6 +18,18 @@ import sys.thread.Deque;
 class MySQLStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 	public var itemClass:Class<Dynamic>;
+	/**
+		Named values substituted into `text` by `execute()`.
+
+		Substituted, not bound: the value becomes part of the statement, so it is
+		only as safe as `quote()` makes it and cannot carry a NUL byte — a blob
+		written this way is truncated at its first zero with nothing reported.
+
+		Unlike `PostgresStatement`, there is no bound alternative here: this driver
+		runs on Haxe's `sys.db.Mysql`, whose `Connection` exposes `request`,
+		`escape` and `quote` and no parameter binding at all. Binding would need a
+		native libmysqlclient bridge of the kind the Postgres driver has.
+	**/
 	public var parameters(default, null):FieldStruct<String>;
 	public var sqlConnection(get, set):MySQLConnection;
 	public var text:String;
