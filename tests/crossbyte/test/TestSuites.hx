@@ -51,11 +51,13 @@ class TestSuites {
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
 		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
+		runner.addCase(new crossbyte.http.RouterServerTest());
 		#end
 		runner.addCase(new crossbyte.http.HTTPSupportTest());
 		runner.addCase(new crossbyte.http.RateLimiterTest());
 		runner.addCase(new crossbyte._internal.http.HttpTest());
 		runner.addCase(new crossbyte.http.HTTPHardeningTest());
+		runner.addCase(new crossbyte.http.RouterTest());
 	}
 
 	public static function addIO(runner:Runner):Void {
