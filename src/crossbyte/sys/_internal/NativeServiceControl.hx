@@ -1,7 +1,7 @@
 package crossbyte.sys._internal;
 
 #if cpp
-@:buildXml('<include name="../../src/crossbyte/sys/_internal/NativeServiceControlBuild.xml"/>')
+@:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/sys/_internal/NativeServiceControlBuild.xml"/>')
 @:include("./NativeServiceControl.h")
 extern class NativeServiceControl {
 	/** Attach is still in flight; the dispatcher has neither been given a ServiceMain nor failed. */
