@@ -9,12 +9,14 @@ import crossbyte.net.ServerSocket;
 import crossbyte.http.HTTPRequestHandler;
 import crossbyte.http.HTTPServerConfig;
 import crossbyte.utils.Logger;
+import crossbyte.core.CrossByte;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte._internal.php.PHPMode;
 
 using StringTools;
 
 /** Lightweight static-and-middleware HTTP server built on `ServerSocket`. */
+@:access(crossbyte.http.HTTPRequestHandler)
 class HTTPServer extends ServerSocket {
 	private var __config:HTTPServerConfig;
 	private var __active:ObjectMap<Dynamic, HTTPRequestHandler>;
@@ -27,6 +29,9 @@ class HTTPServer extends ServerSocket {
 	@:noCompletion private var __requestsTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __requestSeconds:crossbyte.metrics.Histogram;
 	@:noCompletion private var __requestStarted:ObjectMap<Dynamic, Float>;
+	@:noCompletion private static inline var RECEIVE_SWEEP_INTERVAL:Float = 0.25;
+	@:noCompletion private var __sweepAccumulator:Float = 0;
+	@:noCompletion private var __sweepArmed:Bool = false;
 
 	public function new(config:HTTPServerConfig) {
 		super(config.tlsEnabled);
@@ -200,6 +205,7 @@ class HTTPServer extends ServerSocket {
 		__active.set(e.socket, handler);
 		__connections++;
 		__beginRequestTiming(e.socket);
+		__armReceiveSweep();
 
 		handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, this_onResponse);
 
@@ -207,6 +213,51 @@ class HTTPServer extends ServerSocket {
 		e.socket.addEventListener("error", (_) -> cleanupSocket(e.socket));
 	}
 
+
+	/**
+	 * Starts the receive-deadline sweep, once, when the first connection
+	 * arrives. Armed lazily because the runtime reference is only
+	 * guaranteed by then, and a server with no connections has nothing to
+	 * time out. Disarms itself the same way: the first sweep that finds no
+	 * active connections unsubscribes, so an idle or drained server leaves
+	 * nothing ticking.
+	 */
+	@:noCompletion private function __armReceiveSweep():Void {
+		if (__sweepArmed || __config.requestTimeout <= 0) {
+			return;
+		}
+
+		var runtime:CrossByte = __cbInstance != null ? __cbInstance : CrossByte.current();
+		if (runtime == null) {
+			return;
+		}
+
+		runtime.addEventListener(TickEvent.TICK, this_onReceiveSweep);
+		__sweepArmed = true;
+		__sweepAccumulator = 0;
+	}
+
+	@:noCompletion private function this_onReceiveSweep(e:TickEvent):Void {
+		if (__connections <= 0) {
+			var runtime:CrossByte = __cbInstance != null ? __cbInstance : CrossByte.current();
+			if (runtime != null) {
+				runtime.removeEventListener(TickEvent.TICK, this_onReceiveSweep);
+			}
+			__sweepArmed = false;
+			return;
+		}
+
+		__sweepAccumulator += e.delta;
+		if (__sweepAccumulator < RECEIVE_SWEEP_INTERVAL) {
+			return;
+		}
+		__sweepAccumulator = 0;
+
+		var now:Float = Sys.time();
+		for (handler in __active) {
+			handler.__checkReceiveDeadline(now);
+		}
+	}
 	private function cleanupSocket(sock:Dynamic):Void {
 		if (__active.exists(sock)) {
 			__active.remove(sock);
@@ -311,55 +362,5 @@ class HTTPServer extends ServerSocket {
 		var started:Float = __requestStarted.get(socket);
 		__requestStarted.remove(socket);
 		__requestSeconds.observe(Sys.time() - started);
-	}
-
-	private function sanitizePath(docRoot:String, uriPath:String):{abs:String, isDir:Bool} {
-		var p = StringTools.urlDecode(uriPath);
-		p = p.split("?")[0];
-		p = p.replace("\\", "/");
-		if (p.indexOf("..") >= 0) {
-			throw "403";
-		}
-
-		final rootNorm:String = Path.normalize(docRoot);
-		final rootNormSlash:String = rootNorm.endsWith("/") ? rootNorm : rootNorm + "/";
-
-		var abs:String = Path.normalize(rootNormSlash + (p.startsWith("/") ? p.substr(1) : p));
-		var absSlash:String = abs.endsWith("/") ? abs : abs + "/";
-
-		if (!(abs == rootNorm || abs.startsWith(rootNormSlash))) {
-			throw "403";
-		}
-
-		final isDir:Bool = sys.FileSystem.exists(abs) && sys.FileSystem.isDirectory(abs);
-		return {abs: abs, isDir: isDir};
-	}
-
-	private function pickIndex(absDir:String, autoIndex:Array<String>):Null<String> {
-		for (name in autoIndex) {
-			var path:String = Path.join([absDir, name]);
-			if (sys.FileSystem.exists(path)) {
-				return path;
-			}
-		}
-		return null;
-	}
-
-	private function contentType(path:String):String {
-		final ext = Path.extension(path).toLowerCase();
-		return switch ext {
-			case "html", "htm": "text/html; charset=utf-8";
-			case "css": "text/css; charset=utf-8";
-			case "js": "application/javascript; charset=utf-8";
-			case "png": "image/png";
-			case "jpg", "jpeg": "image/jpeg";
-			case "gif": "image/gif";
-			case "svg": "image/svg+xml";
-			case "webp": "image/webp";
-			case "ico": "image/x-icon";
-			case "json": "application/json; charset=utf-8";
-			case "txt": "text/plain; charset=utf-8";
-			default: "application/octet-stream";
-		}
 	}
 }

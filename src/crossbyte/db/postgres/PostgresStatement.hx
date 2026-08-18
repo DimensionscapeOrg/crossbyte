@@ -1,5 +1,6 @@
 package crossbyte.db.postgres;
 
+import crossbyte.db.postgres._internal.PostgresWire;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.events.EventDispatcher;
@@ -18,6 +19,15 @@ typedef PostgresResultSet = Dynamic;
 class PostgresStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 	public var itemClass:Class<Dynamic>;
+	/**
+		Named values substituted into `text` by `execute()`.
+
+		Substituted, not bound: the value becomes part of the statement, so it
+		is only ever as safe as `quote()` makes it, and no quoting can carry a
+		NUL byte — a blob written this way is truncated at its first zero with
+		nothing reported. Use `executeParams()` for anything carrying data that
+		did not come from your own source code.
+	**/
 	public var parameters(default, null):FieldStruct<String>;
 	public var sqlConnection(get, set):PostgresConnection;
 	public var text:String;
@@ -81,6 +91,69 @@ class PostgresStatement extends EventDispatcher {
 			__prefetch = 0;
 			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, e, "Execution failed")));
 		}
+	}
+
+	/**
+		Runs `text` with bound positional parameters, referenced as `$1`, `$2`
+		and so on, and reports results exactly as `execute()` does.
+
+		This is the path for values carrying data. `execute()` substitutes its
+		named `parameters` into the statement text, which cannot express a NUL
+		byte and leaves correctness resting on quoting; bound values never enter
+		the statement at all.
+
+		Text results keep the same contract as `execute()`: values arrive as
+		strings. A `bytea` column therefore arrives as its exact `\x` hex
+		rendering, which `PostgresWire.decodeByteaHex` turns back into bytes.
+
+		```haxe
+		statement.text = "INSERT INTO events (id, payload) VALUES ($1, $2)";
+		statement.executeParams([Text(Std.string(id)), Binary(ciphertext)]);
+		```
+	**/
+	public function executeParams(params:Array<PostgresParameter>, prefetch:Int = -1):Void {
+		if (__connection == null) {
+			throw "PostgresStatement: no connection set.";
+		}
+
+		__executing = true;
+		#if cpp
+		__resultQueue = new Deque();
+		#else
+		__resultQueue = [];
+		#end
+
+		__prefetch = prefetch;
+
+		try {
+			__resultSet = __toResultSet(__sqlConnection.requestParams(text, params));
+			__queueResult();
+			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+		} catch (e:Dynamic) {
+			__executing = false;
+			__prefetch = 0;
+			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, e, "Execution failed")));
+		}
+	}
+
+	// Bound results arrive as fields and rows of bytes; the statement API hands
+	// back row objects, so they are rebuilt here rather than in the connection,
+	// which has no opinion about shape.
+	@:noCompletion private function __toResultSet(result:crossbyte.db.postgres._internal.PostgresWire.PostgresRawResult):Dynamic {
+		var rows:Array<Dynamic> = [];
+
+		for (row in result.rows) {
+			var object:Dynamic = {};
+
+			for (i in 0...result.fields.length) {
+				var value = row[i];
+				Reflect.setField(object, result.fields[i], value == null ? null : value.toString());
+			}
+
+			rows.push(object);
+		}
+
+		return new BoundResultSet(rows);
 	}
 
 	public function next(prefetch:Int = -1):Void {

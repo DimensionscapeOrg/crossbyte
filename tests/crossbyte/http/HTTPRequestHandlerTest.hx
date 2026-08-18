@@ -379,7 +379,80 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals("GET, HEAD, OPTIONS, POST", response.headers.get("allow"));
 	}
 
-	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray):HTTPTestResponse {
+
+	public function testHeaderScanResumesAcrossChunkBoundaries():Void {
+		// The completeness scan carries its last three bytes between data
+		// events, so a CRLFCRLF split across arrivals must still be seen —
+		// and a rescan-from-zero regression would pass this test too slowly
+		// to notice, so the boundary placement is the real assertion here.
+		var handler = new HTTPRequestHandler(new Socket(), new HTTPServerConfig(), null);
+		var buffer = new ByteArray();
+
+		var chunks = ["GET / HT", "TP/1.1\r", "\nHost: x", "\r", "\n\r", "\n"];
+		for (i in 0...chunks.length - 1) {
+			buffer.position = buffer.length;
+			buffer.writeUTFBytes(chunks[i]);
+			buffer.position = 0;
+			Assert.isFalse(handler.__hasCompleteHeaderBlock(buffer));
+			Assert.equals(0, buffer.position);
+		}
+
+		buffer.position = buffer.length;
+		buffer.writeUTFBytes(chunks[chunks.length - 1]);
+		buffer.position = 0;
+		Assert.isTrue(handler.__hasCompleteHeaderBlock(buffer));
+		Assert.equals(0, buffer.position);
+
+		// Finding the block resets the scan, so a cleared buffer starts over
+		// rather than resuming at an offset into bytes that no longer exist.
+		buffer.clear();
+		buffer.writeUTFBytes("GET /two HTTP/1.1\nHost: y\n");
+		buffer.position = 0;
+		Assert.isFalse(handler.__hasCompleteHeaderBlock(buffer));
+		buffer.position = buffer.length;
+		buffer.writeUTFBytes("\n");
+		buffer.position = 0;
+		// Bare LF LF terminates a block too; the rewrite must keep that.
+		Assert.isTrue(handler.__hasCompleteHeaderBlock(buffer));
+	}
+
+	public function testReadLineKeepsByteExactSemantics():Void {
+		// One byte in, one code point out — no UTF-8 decoding. A header
+		// value carrying 0xE9 must read back as 0xE9, not as a decode error
+		// or a replacement character.
+		var handler = new HTTPRequestHandler(new Socket(), new HTTPServerConfig(), null);
+		var buffer = new ByteArray();
+		buffer.writeByte(0x41);
+		buffer.writeByte(0xE9);
+		buffer.writeByte(13);
+		buffer.writeByte(10);
+		buffer.position = 0;
+
+		var line = handler.__readLine(buffer);
+		Assert.notNull(line);
+		Assert.equals(4, line.length);
+		Assert.equals(0x41, line.charCodeAt(0));
+		Assert.equals(0xE9, line.charCodeAt(1));
+
+		// An incomplete line leaves the buffer where it started.
+		var partial = new ByteArray();
+		partial.writeUTFBytes("no newline yet");
+		partial.position = 0;
+		Assert.isNull(handler.__readLine(partial));
+		Assert.equals(0, partial.position);
+	}
+
+	public function testIncompleteRequestTimesOutWith408():Void {
+		// The rate limiter only runs once headers are complete, so a client
+		// that trickles and stops would otherwise hold a slot forever. The
+		// deadline is the only thing standing between that client and
+		// maxConnections exhaustion.
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: partial", null, false, null, config -> config.requestTimeout = 0.25);
+
+		Assert.equals(408, response.status);
+		Assert.equals("Request Timeout", response.body);
+	}
+	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
@@ -387,6 +460,9 @@ class HTTPRequestHandlerTest extends utest.Test {
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, middleware, null, corsEnabled);
+		if (configure != null) {
+			configure(config);
+		}
 		var server = new HTTPServer(config);
 		var client = new Socket();
 		var rawResponse = "";
