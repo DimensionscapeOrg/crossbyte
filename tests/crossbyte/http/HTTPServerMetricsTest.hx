@@ -24,7 +24,7 @@ class HTTPServerMetricsTest extends utest.Test {
 
 		// A served request must land in the counter under its status class.
 		Assert.isTrue(text.indexOf('http_requests_total{status="2xx"} 1') >= 0);
-		// The duration histogram observes on connection cleanup.
+		// The duration histogram observes once per response, at response time.
 		Assert.isTrue(text.indexOf("# TYPE http_request_seconds histogram") >= 0);
 		// The connection gauge exists and has settled back to zero.
 		Assert.isTrue(text.indexOf("http_active_connections 0") >= 0);
@@ -95,6 +95,10 @@ class HTTPServerMetricsTest extends utest.Test {
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+		// This harness pumps until the server closes the connection, so
+		// keep-alive would burn the whole timeout and leave the gauge
+		// assertions racing a connection that is deliberately still open.
+		config.keepAlive = false;
 		config.metrics = registry;
 		if (withEndpoint) {
 			config.middleware.push(MetricsEndpoint.middleware(registry));
@@ -144,8 +148,8 @@ class HTTPServerMetricsTest extends utest.Test {
 			@:privateAccess runtime.pump(0.008);
 		}
 
-		// One extra pump so the close-driven cleanup (which records the
-		// duration observation) runs before the caller inspects metrics.
+		// One extra pump so the close-driven cleanup (which settles the
+		// connection gauge) runs before the caller inspects metrics.
 		@:privateAccess runtime.pump(0.008);
 	}
 }

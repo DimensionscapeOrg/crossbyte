@@ -40,6 +40,11 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals(1, first.rewrites.length);
 		Assert.equals("^/api/.*$", first.rewrites[0].pattern);
 		Assert.isTrue(first.rootDirectory != null);
+		// Keep-alive defaults on: it is what HTTP/1.1 specifies and what
+		// removes the per-request handshake without client changes.
+		Assert.isTrue(first.keepAlive);
+		Assert.equals(5.0, first.keepAliveTimeout);
+		Assert.equals(100, first.keepAliveMaxRequests);
 
 		first.directoryIndex.push("fallback.htm");
 		first.customHeaders.push(new URLRequestHeader("X-Test", "one"));
