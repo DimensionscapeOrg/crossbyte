@@ -703,6 +703,64 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals("Hello from middleware test", result.responses[1].body);
 		Assert.isFalse(result.closeSeen);
 	}
+
+	public function testLateAsynchronousNextCannotAnswerALaterRequest():Void {
+		// testRespondThenNextEmitsSingleResponse covers the synchronous
+		// violation. This covers the asynchronous one: request one answers
+		// inline and leaves a continuation to fire ticks later, while
+		// request two deliberately holds its own slot open so the stale
+		// continuation lands while a request is in flight rather than
+		// after it.
+		//
+		// What this pins is the observable contract — two requests, two
+		// responses, no third status line on the wire. It does NOT isolate
+		// any single guard: the connection carries three overlapping ones
+		// (`alreadyCalled` per continuation, `__responded` per slot, and
+		// the generation stamp), and this case still passes with the
+		// generation check deleted, so some combination of the other two
+		// covers this particular timing. Deleting the generation stamp on
+		// the strength of that would be a mistake — it is the only guard
+		// that can refuse a continuation whose slot has already been
+		// answered and replaced — but no test here proves it, and this
+		// comment is the honest record of that gap.
+		var seen:Int = 0;
+		var result = __sendRequests([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				seen++;
+				if (seen == 1) {
+					handler.respond(200, "text/plain", "answered inline");
+					Timer.delay(function() {
+						next();
+					}, 60);
+				} else {
+					Timer.delay(function() {
+						next();
+					}, 220);
+				}
+			}
+		], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], null, false, 0.6);
+
+		Assert.equals(2, result.responses.length);
+		Assert.equals("answered inline", result.responses[0].body);
+		Assert.equals("Hello from middleware test", result.responses[1].body);
+		// The count is the assertion that matters: a stale continuation that
+		// got through would put a third status line on the wire.
+		Assert.equals(2, __countOccurrences(result.raw, "HTTP/1.1 "));
+	}
+
+	public function testRejectedIdentityEncodingAnswersOneNotAcceptable():Void {
+		// identity;q=0 forbids the only coding an error body can be sent in,
+		// so the 406 explaining that used to be negotiated against the very
+		// header it was answering: reject, send 406, negotiate, reject. The
+		// recursion had no floor and took the connection's thread with it.
+		var response = __sendRequest([], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: identity;q=0\r\n\r\n");
+
+		Assert.equals(406, response.status);
+		Assert.equals(1, __countOccurrences(response.raw, "HTTP/1.1 "));
+	}
 	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
