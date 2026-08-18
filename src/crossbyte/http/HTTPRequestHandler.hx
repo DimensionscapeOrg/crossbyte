@@ -2,11 +2,15 @@ package crossbyte.http;
 
 import haxe.ds.StringMap;
 import haxe.io.Path;
+import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.HTTPStatusEvent;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.File;
+import crossbyte.io.FileMode;
+import crossbyte.io.FileStream;
 import crossbyte.net.Socket;
 import crossbyte.http.HTTPContentCoding;
 import crossbyte.url.URL;
@@ -41,6 +45,44 @@ import crossbyte._internal.http.RewriteEngine;
 final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var MAX_BUFFER_SIZE:Int = 1024 * 1024; // 1 MB
 	@:noCompletion private static final ALLOWED_METHODS:Array<String> = ["GET", "HEAD", "OPTIONS", "POST"];
+
+	/**
+	 * Files at or below this size keep the buffered single-write path: the
+	 * per-tick pump only pays for itself once a body is large enough that
+	 * holding it whole is the greater cost.
+	 */
+	@:noCompletion private static inline var STREAM_THRESHOLD:Int = 256 * 1024;
+
+	/**
+	 * Bytes read from disk per pump iteration. Kept small because a partial
+	 * socket flush re-copies the entire unsent tail on every retry; slices
+	 * this size keep that recopy cheap where one huge write would price it
+	 * at the whole body per attempt.
+	 */
+	@:noCompletion private static inline var STREAM_SLICE:Int = 64 * 1024;
+
+	/**
+	 * Stop feeding slices while at least this much is already buffered on
+	 * the socket. This is the bound that makes streaming streaming: peak
+	 * per-transfer memory is the watermark plus one slice, not the file.
+	 */
+	@:noCompletion private static inline var STREAM_WATERMARK:Int = 256 * 1024;
+
+	/**
+	 * Most one pump invocation will write before returning to the runtime.
+	 * The watermark alone does not bound work: a peer fast enough to take
+	 * everything offered keeps the buffer below the watermark forever, so
+	 * without a budget a single burst would sit in the loop until the whole
+	 * file was written, starving every other connection the runtime owns.
+	 */
+	@:noCompletion private static inline var STREAM_BURST:Int = 512 * 1024;
+
+	/**
+	 * How long a transfer may make no progress before it is closed. The
+	 * pump is drain-driven, so a peer that stops reading produces no drains
+	 * and would otherwise hold its file handle and connection forever.
+	 */
+	@:noCompletion private static inline var STREAM_STALL_SECONDS:Float = 30;
 
 	@:noCompletion private var __origin:Socket;
 	@:noCompletion private var __incomingBuffer:ByteArray;
@@ -97,6 +139,22 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// Pushed in by the server's drain(): the in-flight response goes out
 	// with Connection: close so shutdown does not sever it mid-work.
 	@:noCompletion private var __closeAfterResponse:Bool = false;
+	@:noCompletion private var __streamSource:FileStream;
+	@:noCompletion private var __streamRemaining:Int = 0;
+	@:noCompletion private var __streamSlice:ByteArray;
+	@:noCompletion private var __streamLastBuffered:Int = 0;
+	@:noCompletion private var __streamStallDeadline:Float = 0;
+	@:noCompletion private var __streamPending:Bool = false;
+
+	/**
+	 * Largest socket output-buffer size observed while pumping a streamed
+	 * response; zero when nothing streamed. Exists for tests: the
+	 * bounded-memory guarantee — peak buffering near the watermark no
+	 * matter the file size — is otherwise unobservable from outside, and a
+	 * regression back to whole-file buffering would pass every
+	 * byte-equality assertion while defeating the point.
+	 */
+	@:noCompletion public var __streamPeakBuffered(default, null):Int = 0;
 	/** Uppercased request method, for example `GET` or `POST`. */
 	public var method(get, null):String;
 	/** Normalized request path without the query string. */
@@ -216,6 +274,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
+			// A response body is streaming out: bytes arriving now cannot be
+			// the next request, because a streamed response forces the
+			// connection closed at the end of the transfer (see
+			// __decideKeepAlive). Parsing them would interleave a second
+			// response into the current body and corrupt it. Consume and
+			// drop; letting them pile into the size check below would
+			// instead write a 413 into the middle of the body.
+			if (__streamSource != null) {
+				__incomingBuffer.clear();
+				__resetHeaderScan();
+				return;
+			}
+
 			if (__idle) {
 				// Any data while idle is by definition the first byte of
 				// the next request: leave the idle phase, stamp the
@@ -310,6 +381,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * timed out here.
 	 */
 	@:noCompletion private function __checkReceiveDeadline(now:Float):Void {
+		// A streamed body owns this sweep while it is in flight. It must not
+		// reach the 408 below: that path writes a whole response, and the
+		// status line for this one left with the head — a second one would
+		// land inside the body as though it were file content. The stall
+		// check closes instead, which is the only signal left.
+		//
+		// The sweep is the one periodic visit both cases already share, so
+		// they ride it together rather than arming a second timer. When
+		// keep-alive lands and responses end at a single __finishResponse
+		// funnel (keep-alive integration), this dispatch belongs there.
+		if (__streamSource != null) {
+			__checkStreamStall(now);
+			return;
+		}
+
 		if (__receiveDeadline <= 0 || now < __receiveDeadline) {
 			return;
 		}
@@ -632,6 +718,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// file.load();
 		var total:Int = file.size; // file.data.length;
+
+		// `File.size` is an Int, so a file past 2 GB has already overflowed
+		// by the time it is read here. Refusing the negative case keeps a
+		// nonsensical Content-Length off the wire — but it is only half a
+		// guard: a size that wraps to a positive value is indistinguishable
+		// from a genuine one, and such a file will be served truncated to
+		// whatever the wrapped number says. A 64-bit size on `File` is what
+		// actually fixes that; this only refuses the detectable half.
+		if (total < 0) {
+			Logger.error('Refusing to serve ${file.nativePath}: size does not fit in an Int.');
+			__sendErrorResponse(500, "Internal Server Error");
+			return;
+		}
+
 		var lastModifiedTime:Float = file.modificationDate.getTime();
 		var lastModHeader:URLRequestHeader = new URLRequestHeader("Last-Modified", __toHttpDate(lastModifiedTime));
 		var mimeType:String = __getMimeType(file.nativePath);
@@ -652,7 +752,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var rangeHdr:String = __headers.exists("range") ? __headers.get("range") : null;
 
 		if (rangeHdr != null) {
-			file.load();
 			var r:Dynamic = __parseRange(rangeHdr, total);
 			if (r == null) {
 				var h:Array<URLRequestHeader> = baseHeaders.concat([new URLRequestHeader("Content-Range", 'bytes */${total}')]);
@@ -662,20 +761,340 @@ final class HTTPRequestHandler extends EventDispatcher {
 				var end:Int = r.end;
 				var len:Int = end - start + 1;
 
-				var slice = new ByteArray();
-				slice.writeBytes(file.data, start, len);
-
 				var h = baseHeaders.concat([new URLRequestHeader("Content-Range", 'bytes ${start}-${end}/${total}')]);
-				__dispatchResponseBytes(206, "Partial Content", h, mimeType, slice, headOnly);
+				if (headOnly) {
+					// A ranged HEAD answers with the range's length and no
+					// body, so loading the file to cut a slice that is then
+					// discarded is pure cost — the same reason the 200 path
+					// has always short-circuited HEAD.
+					__dispatchResponseBytes(206, "Partial Content", h, mimeType, null, true, len);
+				} else if (__canStreamFile(206, h, total)) {
+					// The stream owns the close; falling through to the
+					// shared tail below would sever the transfer before its
+					// first slice reached the peer.
+					__streamFileResponse(206, "Partial Content", h, mimeType, file, start, len);
+					return;
+				} else {
+					file.load();
+					var slice = new ByteArray();
+					slice.writeBytes(file.data, start, len);
+					__dispatchResponseBytes(206, "Partial Content", h, mimeType, slice, false);
+				}
 			}
 		} else {
 			if (headOnly) {
 				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, null, true, total);
 			} else {
+				if (__canStreamFile(200, baseHeaders, total)) {
+					// The stream owns the close (see the range path above).
+					__streamFileResponse(200, "OK", baseHeaders, mimeType, file, 0, total);
+					return;
+				}
+
 				file.load();
 				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, file.data, false);
 			}
 		}
+	}
+
+	/**
+	 * Whether a file response can bypass whole-file buffering.
+	 *
+	 * Size decides first, and it decides against compression: a body big
+	 * enough to stream is exactly one whose whole-buffer `compress()` would
+	 * cost the memory this path exists to bound, so a large file is served
+	 * identity even to a client that offered gzip. Trading a compressed
+	 * body for a bounded one is the deliberate choice — the alternative is
+	 * that any gzip-capable client, which is every browser, defeats
+	 * streaming entirely. Only an outright refusal of identity keeps the
+	 * buffered path, because that path owns the 406.
+	 *
+	 * The gate is the file's size, not the response's: a small range of a
+	 * large file still streams, since the buffered alternative loads the
+	 * whole file just to cut the slice.
+	 */
+	@:noCompletion private function __canStreamFile(statusCode:Int, headers:Array<URLRequestHeader>, fileSize:Int):Bool {
+		if (fileSize <= STREAM_THRESHOLD) {
+			return false;
+		}
+
+		return !__resolveResponseEncoding(statusCode, headers).reject;
+	}
+
+	/**
+	 * Sends a file response without holding the whole body in memory.
+	 *
+	 * The buffered path loads the file and then copies it again into the
+	 * socket's output buffer, so a download costs twice its size in
+	 * resident memory for as long as the peer takes to drain it — and a
+	 * configured `maxOutputBufferSize` kills such a transfer for exceeding
+	 * a limit the server itself filled in one call. Here only the head is
+	 * written up front; the body follows in bounded bursts driven by the
+	 * socket's own drain, so peak memory per transfer is the watermark, not
+	 * the file.
+	 *
+	 * The head goes through `__dispatchResponseBytes` with a null body and
+	 * an explicit `contentLength` rather than through an extracted
+	 * header-assembly helper: the header set stays identical to the
+	 * buffered path's by construction, at a fraction of the diff.
+	 *
+	 * Known limitation: a client that half-closes its write side after
+	 * sending the request — legal, and what some download tools do — is
+	 * indistinguishable from one that hung up, because the socket read loop
+	 * reports EOF as a close either way. Such a transfer is abandoned
+	 * partway. Fixing it needs a half-close signal on `Socket`, not a
+	 * change here.
+	 */
+	@:noCompletion private function __streamFileResponse(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String, file:File,
+			fileOffset:Int, length:Int):Void {
+		var stream:FileStream = new FileStream();
+		try {
+			// Synchronous open: openAsync preloads the entire file, which is
+			// the exact cost this path exists to avoid.
+			stream.open(file, FileMode.READ);
+			// Seek once, here. Reads advance the position themselves, so a
+			// seek per slice would only re-derive what the stream already
+			// knows.
+			stream.position = fileOffset;
+		} catch (error:Dynamic) {
+			Logger.error('Failed to open ${file.nativePath} for streaming: ' + error);
+			try {
+				stream.close();
+			} catch (_:Dynamic) {}
+			// Nothing is on the wire yet, so a clean 500 is still possible.
+			__sendErrorResponse(500, "Internal Server Error");
+			return;
+		}
+
+		// Held across the head dispatch so both __decideKeepAlive and
+		// __finishResponse can see that a body is still to come. Cleared on
+		// every path out, so a failed head cannot poison a later decision.
+		__streamPending = true;
+
+		try {
+			__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, null, true, length);
+		} catch (error:Dynamic) {
+			__streamPending = false;
+			// The head write failed before the pump took ownership; release
+			// the file handle before the error takes its usual route, or it
+			// leaks until the collector notices.
+			try {
+				stream.close();
+			} catch (_:Dynamic) {}
+			throw error;
+		}
+
+		__streamPending = false;
+
+		if (!__origin.connected) {
+			try {
+				stream.close();
+			} catch (_:Dynamic) {}
+			return;
+		}
+
+		__streamSource = stream;
+		__streamRemaining = length;
+		__streamSlice = new ByteArray();
+		__streamPeakBuffered = 0;
+		__streamLastBuffered = 0;
+		__streamStallDeadline = Sys.time() + STREAM_STALL_SECONDS;
+
+		// The peer can vanish mid-transfer; without these the pump would
+		// keep reading a file for a connection that no longer exists.
+		__origin.addEventListener(Event.CLOSE, __onStreamSocketGone);
+		__origin.addEventListener(IOErrorEvent.IO_ERROR, __onStreamSocketGone);
+
+		// Resume on the socket's own drain rather than on a tick of our
+		// own. Every write queues the socket on the registry's writable
+		// queue, which the runtime drains each pass, so this fires whether
+		// the flush completed or blocked — the cadence follows the peer
+		// instead of the clock, and costs nothing on connections that are
+		// not mid-transfer.
+		__origin.__onWritableDrain = __pumpStream;
+
+		// First burst goes out now rather than a drain later.
+		__pumpStream();
+	}
+
+	@:noCompletion private function __onStreamSocketGone(_:Event):Void {
+		// Peer closed or errored mid-transfer: stop reading, release the
+		// file, and never write again — the response is unfinishable.
+		__stopStream();
+		if (__origin.connected) {
+			__origin.close();
+		}
+	}
+
+	/**
+	 * Feeds the streamed body one bounded burst at a time.
+	 *
+	 * Feeding pauses at the watermark so a slow peer bounds this
+	 * connection's memory instead of growing it, and the burst budget
+	 * bounds how long one invocation can hold the runtime when the peer is
+	 * fast enough to swallow everything offered. The connection closes only
+	 * when every slice is written and the socket buffer is empty: closing
+	 * with bytes still queued silently discards them, which is the
+	 * truncation hazard the buffered path's write-all-then-close lives with
+	 * and this path exists not to repeat.
+	 */
+	@:noCompletion private function __pumpStream():Void {
+		if (__streamSource == null) {
+			return;
+		}
+
+		var watermark:Int = STREAM_WATERMARK;
+		var limit:Int = __origin.maxOutputBufferSize;
+		if (limit > 0 && limit < watermark) {
+			// The overflow policy exists for writers that outrun the peer
+			// without bound; this pump is the bounded case, so it must stay
+			// under the socket's own limit or the policy would kill a
+			// healthy transfer mid-body.
+			watermark = limit;
+		}
+
+		var entryBuffered:Int = __origin.outputBufferLength;
+		if (entryBuffered < __streamLastBuffered) {
+			// The peer consumed something since the last visit: real
+			// progress, even if this burst turns out to write nothing.
+			__streamStallDeadline = Sys.time() + STREAM_STALL_SECONDS;
+		}
+
+		var budget:Int = STREAM_BURST;
+		var wrote:Bool = false;
+
+		try {
+			while (__streamRemaining > 0 && budget > 0) {
+				var buffered:Int = __origin.outputBufferLength;
+				if (buffered >= watermark) {
+					break;
+				}
+
+				var take:Int = STREAM_SLICE;
+				if (take > __streamRemaining) {
+					take = __streamRemaining;
+				}
+				if (take > budget) {
+					take = budget;
+				}
+				if (limit > 0 && take > limit - buffered) {
+					// Cap the slice to the remaining headroom so not even
+					// the final write can overshoot the enforced limit;
+					// buffered < watermark <= limit here, so at least one
+					// byte always fits and the pump cannot stall.
+					take = limit - buffered;
+				}
+
+				var before:Int = __streamSource.position;
+				__streamSource.readBytes(__streamSlice, 0, take);
+				var read:Int = __streamSource.position - before;
+				if (read < take) {
+					// The file shrank under a Content-Length already sent.
+					// FileStream discards short-read counts and leaves the
+					// destination's tail as it found it, so continuing here
+					// would put fabricated bytes on the wire as though they
+					// were file content. A truncated body the client can
+					// detect against the promised length beats a complete
+					// one that is quietly wrong.
+					Logger.error('Streamed file ${__requestPath} ended early; closing rather than sending fabricated bytes.');
+					__stopStream();
+					if (__origin.connected) {
+						__origin.close();
+					}
+					return;
+				}
+
+				__origin.writeBytes(__streamSlice, 0, take);
+				__streamRemaining -= take;
+				budget -= take;
+				wrote = true;
+
+				var pending:Int = __origin.outputBufferLength;
+				if (pending > __streamPeakBuffered) {
+					__streamPeakBuffered = pending;
+				}
+			}
+
+			if (wrote) {
+				// One flush per burst. Every writeBytes has already queued
+				// the socket, so flushing per slice would only repeat the
+				// same syscall against the same buffer.
+				__origin.flush();
+				__streamStallDeadline = Sys.time() + STREAM_STALL_SECONDS;
+			}
+		} catch (error:Dynamic) {
+			// Mid-body there is no in-band way to signal failure: the status
+			// and Content-Length are already on the wire, so the best
+			// available outcome is a short body the client can detect
+			// against the length it was promised.
+			Logger.error("Streamed file response failed mid-body: " + error);
+			__stopStream();
+			if (__origin.connected) {
+				__origin.close();
+			}
+			return;
+		}
+
+		__streamLastBuffered = __origin.outputBufferLength;
+
+		if (__streamRemaining == 0 && __streamLastBuffered == 0) {
+			// Matching the buffered tail's connection-per-request close, but
+			// only now: every byte has left this process.
+			__stopStream();
+			if (__origin.connected) {
+				__origin.close();
+			}
+		}
+	}
+
+	/**
+	 * Closes a transfer that has stopped making progress.
+	 *
+	 * A peer that stops reading without closing would otherwise hold the
+	 * file handle, the connection and its buffered bytes indefinitely: the
+	 * pump is drain-driven, and a peer that never drains produces no
+	 * drains. Closing is the whole response — no status can be sent,
+	 * because the status line left with the head.
+	 */
+	@:noCompletion private function __checkStreamStall(now:Float):Void {
+		if (__streamStallDeadline <= 0 || now < __streamStallDeadline) {
+			return;
+		}
+
+		Logger.error('Streamed response to ${__requestPath} stalled; closing.');
+		__stopStream();
+		if (__origin.connected) {
+			__origin.close();
+		}
+	}
+
+	/**
+	 * Releases everything a streamed response holds. Idempotent because one
+	 * transfer can reach it twice — from the pump that finishes or aborts
+	 * it, and again through the socket's CLOSE dispatch — and the second
+	 * pass must not touch a stream that is already gone.
+	 */
+	@:noCompletion private function __stopStream():Void {
+		if (__streamSource == null) {
+			return;
+		}
+
+		var stream:FileStream = __streamSource;
+		__streamSource = null;
+		__streamSlice = null;
+		__streamRemaining = 0;
+		__streamStallDeadline = 0;
+
+		// Cleared before the socket is touched: a drain dispatched during
+		// teardown would otherwise re-enter the pump with a half-released
+		// transfer.
+		__origin.__onWritableDrain = null;
+		__origin.removeEventListener(Event.CLOSE, __onStreamSocketGone);
+		__origin.removeEventListener(IOErrorEvent.IO_ERROR, __onStreamSocketGone);
+
+		try {
+			stream.close();
+		} catch (_:Dynamic) {}
 	}
 
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
@@ -929,6 +1348,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Connection header and the socket action can never disagree.
 	 */
 	@:noCompletion private function __decideKeepAlive(statusCode:Int):Bool {
+		// A streamed body forces the close. The response is not finished
+		// when its head is written -- the body follows over many ticks --
+		// so a kept-alive connection would let the next request's response
+		// interleave into it. Lifting this needs chunked framing and a
+		// finish the pump can defer to, which proposal 0017 carries as
+		// follow-up work.
+		if (__streamPending) {
+			return false;
+		}
+
 		if (!__config.keepAlive) {
 			return false;
 		}
@@ -985,6 +1414,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __finishResponse():Void {
 		__requestsServed++;
 		__responded = true;
+
+		if (__streamPending) {
+			// The head is on the wire but the body has not been pumped yet.
+			// The transfer owns the connection from here and closes it when
+			// it drains: closing now would cut the body before its first
+			// byte, and resetting for a next request would invite a second
+			// response into the middle of it.
+			return;
+		}
 
 		if (!__responseKeepAlive) {
 			// Surplus pipelined bytes are discarded with the close --

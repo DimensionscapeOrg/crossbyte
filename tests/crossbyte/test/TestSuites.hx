@@ -49,6 +49,7 @@ class TestSuites {
 	public static function addHttp(runner:Runner):Void {
 		#if cpp
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
+		runner.addCase(new crossbyte.http.HTTPStreamingTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
 		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
 		runner.addCase(new crossbyte.http.RouterServerTest());
