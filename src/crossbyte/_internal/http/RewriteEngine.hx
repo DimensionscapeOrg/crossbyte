@@ -7,6 +7,9 @@ import crossbyte.http.config.RewriteCondition;
 import crossbyte.http.config.RewriteConditionType;
 import crossbyte.http.config.RewriteFlag;
 import haxe.ds.StringMap;
+#if (cpp || neko || hl || java || jvm)
+import sys.thread.Tls;
+#end
 
 using StringTools;
 
@@ -69,28 +72,26 @@ class RewriteEngine {
 			}
 		}
 
-		for (c in cfg.tryFiles)
-			switch (c) {
-				case "$uri":
-					if (isFile(cfg, orig)) {
-						return d(orig, false, true, q, false);
-					}
-				case "$uri/":
-					var idx1:String = dirIndex(cfg, orig);
-					if (idx1 != null) {
-						return d(idx1, false, true, q, false);
-					}
-				default:
-					var literal:String = c;
-					if (isFile(cfg, literal)) {
-						return d(literal, false, true, q, false);
-					}
-
-					var idx2:String = dirIndex(cfg, literal);
-					if (idx2 != null) {
-						return d(idx2, false, true, q, false);
-					}
+		for (c in cfg.tryFiles) {
+			// `$uri` and `$uri/` are already settled: decide() opens by
+			// testing both against the request path and returns if either
+			// resolves, so reaching here means both have already failed.
+			// Testing them again costs two filesystem probes per request and
+			// cannot reach a different answer.
+			if (c == "$uri" || c == "$uri/") {
+				continue;
 			}
+
+			if (isFile(cfg, c)) {
+				return d(c, false, true, q, false);
+			}
+
+			var idx:String = dirIndex(cfg, c);
+			if (idx != null) {
+				return d(idx, false, true, q, false);
+			}
+		}
+
 		return null;
 	}
 
@@ -99,8 +100,7 @@ class RewriteEngine {
 	}
 
 	@:noCompletion public static function reMatch(pat:String, text:String, nocase:Bool):Bool {
-		var re:EReg = new EReg(pat, nocase ? "i" : "");
-		return re.match(text);
+		return __compile(pat, nocase).match(text);
 	}
 
 	@:noCompletion private static inline function d(fp:String, php:Bool, st:Bool, q:String, keep:Bool):Decision
@@ -192,26 +192,65 @@ class RewriteEngine {
 		return r.flags != null && r.flags.indexOf(f) != -1;
 	}
 
+	/**
+	 * Expands `$1` to `$9` in `target` with what `pat` captured from `text`.
+	 *
+	 * A single left-to-right pass rather than one `String.replace` per group,
+	 * because a replace loop reprocesses text it has already written: a
+	 * segment captured into `$1` whose own value contained `$2` had that
+	 * `$2` substituted by the next iteration, letting the request rather than
+	 * the rule author decide part of the rewritten target.
+	 *
+	 * `$0`, and `$10` upwards, are not groups. That matches mod_rewrite,
+	 * where `$10` reads as `$1` followed by a literal `0`. A group the
+	 * pattern never captured is left as written.
+	 */
 	@:noCompletion public static function backrefs(pat:String, text:String, target:String, nocase:Bool):String {
-		var re:EReg = new EReg((nocase ? "(?i)" : "") + pat, "");
+		var re:EReg = __compile(pat, nocase);
+
 		if (!re.match(text)) {
 			return target;
 		}
 
-		var out:String = target;
-		for (i in 1...10) {
-			var m:String = null;
-            
-			try {
-				m = re.matched(i);
-			} catch (_:Dynamic) {
-				m = null;
+		var out:StringBuf = new StringBuf();
+		var pos:Int = 0;
+		var length:Int = target.length;
+
+		// Runs between markers are copied whole rather than a character at a
+		// time, so a target carrying non-ASCII text is never taken apart.
+		while (pos < length) {
+			var marker:Int = target.indexOf("$", pos);
+
+			if (marker < 0) {
+				out.addSub(target, pos, length - pos);
+				break;
 			}
-			if (m != null)
-				out = out.replace("$" + i, m);
+
+			var group:Int = marker + 1 < length ? target.charCodeAt(marker + 1) - "0".code : -1;
+			var value:String = null;
+
+			if (group >= 1 && group <= 9) {
+				try {
+					value = re.matched(group);
+				} catch (_:Dynamic) {
+					value = null;
+				}
+			}
+
+			if (value == null) {
+				// Not a group reference, or a group this pattern never
+				// captured: the "$" stands as written.
+				out.addSub(target, pos, marker - pos + 1);
+				pos = marker + 1;
+				continue;
+			}
+
+			out.addSub(target, pos, marker - pos);
+			out.add(value);
+			pos = marker + 2;
 		}
 
-		return out;
+		return out.toString();
 	}
 
 	static function condsPass(conds:Array<RewriteCondition>, cfg:HTTPServerConfig, working:String, method:String, headers:Map<String, String>):Bool {
@@ -225,11 +264,11 @@ class RewriteEngine {
 					isFile(cfg, working);
 				case RewriteConditionType.DirExists: final a = abs(cfg, working); sys.FileSystem.exists(a) && sys.FileSystem.isDirectory(a);
 				case RewriteConditionType.Method:
-					var re:EReg = new EReg(c.pattern, "i");
+					var re:EReg = __compile(c.pattern, true);
 					re.match(method);
 				case RewriteConditionType.Header:
 					var v:String = headers != null ? headers.get(c.key) : null;
-					var re:EReg = new EReg(c.pattern, "i");
+					var re:EReg = __compile(c.pattern, true);
 					re.match(v == null ? "" : v);
 			}
 
@@ -243,6 +282,71 @@ class RewriteEngine {
 
 		return true;
 	}
+
+	/**
+	 * Compiled patterns, reused across requests.
+	 *
+	 * Every rule otherwise costs one `EReg` construction per request, and a
+	 * rule that matches costs two, since `backrefs` recompiles the pattern it
+	 * was just matched against. Patterns come from configuration, so the
+	 * working set is small and fixed, while compiling them is the most
+	 * expensive thing on this path.
+	 *
+	 * Held per thread rather than shared. An `EReg` carries the result of its
+	 * last `match()`, so two runtime threads serving requests through one
+	 * cached instance would read each other's captures.
+	 */
+	#if (cpp || neko || hl || java || jvm)
+	@:noCompletion private static final __patterns:Tls<PatternCache> = new Tls();
+	#else
+	@:noCompletion private static var __patterns:PatternCache;
+	#end
+
+	/**
+	 * Bounds the cache. Configuration supplies a fixed set far under this,
+	 * but `reMatch` and `backrefs` are reachable with caller-supplied
+	 * patterns, and dropping the cache is cheaper than growing it for good.
+	 */
+	@:noCompletion private static inline var PATTERN_LIMIT:Int = 256;
+
+	@:noCompletion private static function __compile(pattern:String, nocase:Bool):EReg {
+		var cache:PatternCache = #if (cpp || neko || hl || java || jvm) __patterns.value #else __patterns #end;
+
+		if (cache == null) {
+			cache = new PatternCache();
+			#if (cpp || neko || hl || java || jvm)
+			__patterns.value = cache;
+			#else
+			__patterns = cache;
+			#end
+		}
+
+		// Two maps rather than one keyed by pattern-plus-flag: the same source
+		// pattern compiled with and without `NC` is two different regular
+		// expressions, and building a composite key would allocate a string
+		// per rule per request, which is most of what this cache is here to
+		// avoid.
+		var entries:StringMap<EReg> = nocase ? cache.insensitive : cache.sensitive;
+		var compiled:EReg = entries.get(pattern);
+
+		if (compiled != null) {
+			return compiled;
+		}
+
+		compiled = new EReg(pattern, nocase ? "i" : "");
+
+		if (cache.size >= PATTERN_LIMIT) {
+			cache.sensitive = new StringMap<EReg>();
+			cache.insensitive = new StringMap<EReg>();
+			cache.size = 0;
+			entries = nocase ? cache.insensitive : cache.sensitive;
+		}
+
+		entries.set(pattern, compiled);
+		cache.size++;
+
+		return compiled;
+	}
 }
 
 typedef Decision = {
@@ -251,4 +355,16 @@ typedef Decision = {
 	var isStatic:Bool;
 	var query:String;
 	var preserveURI:Bool;
+}
+
+/**
+ * One thread's compiled patterns, with the entry count carried alongside so
+ * the limit check does not have to walk the map on every miss.
+ */
+private class PatternCache {
+	public var sensitive:StringMap<EReg> = new StringMap<EReg>();
+	public var insensitive:StringMap<EReg> = new StringMap<EReg>();
+	public var size:Int = 0;
+
+	public function new() {}
 }
