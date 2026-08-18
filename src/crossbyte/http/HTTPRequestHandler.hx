@@ -154,7 +154,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * regression back to whole-file buffering would pass every
 	 * byte-equality assertion while defeating the point.
 	 */
-	@:noCompletion public var __streamPeakBuffered(default, null):Int = 0;
+	@:noCompletion private var __streamPeakBuffered(default, null):Int = 0;
 	/** Uppercased request method, for example `GET` or `POST`. */
 	public var method(get, null):String;
 	/** Normalized request path without the query string. */

@@ -539,14 +539,26 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			__input.seek(position, FileSeek.SeekBegin);
 		}
 
-		var hxBytes = Bytes.alloc(length);
-		__input.readBytes(hxBytes, 0, length);
-
 		var byteArrayData:ByteArrayData = bytes;
 		if (byteArrayData.length < offset + length) {
 			byteArrayData.__resize(offset + length);
 		}
-		byteArrayData.blit(offset, hxBytes, 0, length);
+
+		// Read straight into the destination. This used to allocate a fresh
+		// `Bytes` per call and copy it across, which at a 64 KB slice is
+		// roughly sixteen thousand transient allocations and a second copy
+		// of every byte for each gigabyte streamed.
+		//
+		// The allocation was doing one thing besides holding bytes: it came
+		// zeroed, so a short read left the unread tail zero-filled rather
+		// than showing whatever the buffer previously held — which for a
+		// reused destination is real data from an earlier offset. The read
+		// count is honoured explicitly to keep that, since the destination
+		// is not freshly zeroed.
+		var read:Int = __input.readBytes(byteArrayData, offset, length);
+		if (read < length) {
+			byteArrayData.fill(offset + read, length - read, 0);
+		}
 
 		__positionDirty = true;
 	}
