@@ -452,6 +452,257 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals(408, response.status);
 		Assert.equals("Request Timeout", response.body);
 	}
+
+	public function testKeepAliveServesTwoSequentialRequestsOnOneSocket():Void {
+		// The core promise of the lifecycle change: one connect, two
+		// requests, two responses, no handshake in between.
+		var result = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /second.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		]);
+
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("keep-alive", result.responses[0].headers.get("connection"));
+		Assert.equals("Hello from middleware test", result.responses[0].body);
+		Assert.equals(200, result.responses[1].status);
+		Assert.equals("Second fixture body", result.responses[1].body);
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testPipelinedRequestsAnsweredInOrder():Void {
+		// Both requests land in one flush, so request two is sitting in
+		// __incomingBuffer when response one is written. The old
+		// clear-at-response would have silently discarded it; distinct
+		// bodies prove both answers arrive, in request order.
+		var result = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /second.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], null, true);
+
+		Assert.equals(2, result.responses.length);
+		Assert.equals("Hello from middleware test", result.responses[0].body);
+		Assert.equals("Second fixture body", result.responses[1].body);
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testConnectionCloseTokenClosesAfterResponse():Void {
+		// Token match, not substring: "Close" inside a multi-token value
+		// must count...
+		var closing = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\nConnection: foo, Close\r\n\r\n"
+		], null, false, 2.0);
+
+		Assert.equals(200, closing.responses[0].status);
+		Assert.equals("close", closing.responses[0].headers.get("connection"));
+		Assert.isTrue(closing.closeSeen);
+
+		// ...while a token merely containing "close" must not.
+		var kept = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\nConnection: not-close\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		]);
+
+		Assert.equals("keep-alive", kept.responses[0].headers.get("connection"));
+		Assert.equals(200, kept.responses[1].status);
+		Assert.isFalse(kept.closeSeen);
+	}
+
+	public function testHttp10WithoutTokenCloses():Void {
+		// HTTP/1.0 defaults to close; persistence is strictly opt-in.
+		var result = __sendRequests([], ["GET /index.html HTTP/1.0\r\n\r\n"], null, false, 2.0);
+
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("close", result.responses[0].headers.get("connection"));
+		Assert.isTrue(result.closeSeen);
+	}
+
+	public function testHttp10KeepAliveTokenKeepsOpen():Void {
+		var result = __sendRequests([], [
+			"GET /index.html HTTP/1.0\r\nConnection: keep-alive\r\n\r\n",
+			"GET /second.html HTTP/1.0\r\nConnection: keep-alive\r\n\r\n"
+		]);
+
+		Assert.equals("keep-alive", result.responses[0].headers.get("connection"));
+		Assert.equals("Second fixture body", result.responses[1].body);
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testKeepAliveDisabledMatchesLegacyBehavior():Void {
+		var result = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], config -> config.keepAlive = false, false, 2.0);
+
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("close", result.responses[0].headers.get("connection"));
+		Assert.isTrue(result.closeSeen);
+	}
+
+	public function testKeepAliveMaxRequestsClosesOnFinalResponse():Void {
+		// A limit of two means exactly two responses, the second already
+		// carrying the close -- never a third request answered, never a
+		// keep-alive header the server does not honor.
+		var result = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], config -> config.keepAliveMaxRequests = 2, false, 2.0);
+
+		Assert.equals("keep-alive", result.responses[0].headers.get("connection"));
+		Assert.equals("close", result.responses[1].headers.get("connection"));
+		Assert.isTrue(result.closeSeen);
+	}
+
+	public function testNotFoundKeepsConnectionUsable():Void {
+		// The proposal's motivating case: a page with a missing favicon
+		// must not pay a new handshake for the 404. tryFiles is pared
+		// down because its default "/index.html" fallback would otherwise
+		// turn the miss into a 200.
+		var result = __sendRequests([], [
+			"GET /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], config -> config.tryFiles = ["$uri"]);
+
+		Assert.equals(404, result.responses[0].status);
+		Assert.equals("keep-alive", result.responses[0].headers.get("connection"));
+		Assert.equals(200, result.responses[1].status);
+		Assert.equals("Hello from middleware test", result.responses[1].body);
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testErrorStatusForcesClose():Void {
+		// After a 5xx the handler's state is suspect; the response says
+		// close and the socket follows it.
+		var result = __sendRequests([
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				next(500);
+			}
+		], ["GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"], null, false, 2.0);
+
+		Assert.equals(500, result.responses[0].status);
+		Assert.equals("close", result.responses[0].headers.get("connection"));
+		Assert.isTrue(result.closeSeen);
+	}
+
+	public function testIdleTimeoutClosesWithoutA408():Void {
+		// Sitting idle between requests is not a client fault: the reap
+		// is a bare close, not a second response. Exactly one status line
+		// may appear on the wire.
+		var result = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], config -> config.keepAliveTimeout = 0.25, false, 2.0);
+
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("keep-alive", result.responses[0].headers.get("connection"));
+		Assert.isTrue(result.closeSeen);
+		Assert.equals(1, __countOccurrences(result.raw, "HTTP/1.1 "));
+		Assert.equals(-1, result.raw.indexOf("408"));
+	}
+
+	public function testMidRequestTimeoutOnReusedConnectionStill408s():Void {
+		// The deadline swaps meaning when a reused connection leaves the
+		// idle phase: a request that starts arriving and stalls gets the
+		// same 408 a first request would.
+		var result = __sendRequests([], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: partial"
+		], config -> config.requestTimeout = 0.25, false, 2.0);
+
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals(408, result.responses[1].status);
+		Assert.equals("Request Timeout", result.responses[1].body);
+		Assert.isTrue(result.closeSeen);
+	}
+
+	public function testPostBodyThenSecondRequestOnSameSocket():Void {
+		// Pins the consumption boundary: the POST body is read out of the
+		// buffer in full before the response, so the GET behind it is
+		// parsed from the preserved tail, not from body bytes.
+		var seenBody:String = null;
+		var result = __sendRequests([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				if (handler.method == "POST") {
+					seenBody = handler.requestText;
+					handler.respond(200, "text/plain", "posted:" + handler.requestText);
+				} else {
+					next();
+				}
+			}
+		], [
+			"POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Length: 11\r\n\r\nhello world",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		]);
+
+		Assert.equals("hello world", seenBody);
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("posted:hello world", result.responses[0].body);
+		Assert.equals(200, result.responses[1].status);
+		Assert.equals("Hello from middleware test", result.responses[1].body);
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testRespondThenNextEmitsSingleResponse():Void {
+		// A middleware that violates the respond-xor-next contract must
+		// produce one response, not two: the stale continuation is
+		// suppressed, and the connection stays usable for the request
+		// after it.
+		var result = __sendRequests([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				handler.respond(200, "text/plain", "from middleware");
+				next();
+			}
+		], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		]);
+
+		Assert.equals(2, result.responses.length);
+		Assert.equals("from middleware", result.responses[0].body);
+		Assert.equals("from middleware", result.responses[1].body);
+		Assert.equals(2, __countOccurrences(result.raw, "HTTP/1.1 "));
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testExpectContinueOnKeptAliveConnection():Void {
+		// The interim 100 is written raw, before the builders, and must
+		// neither count as the response nor confuse the per-response
+		// framing on a connection that stays open afterwards.
+		var bodyText:String = null;
+		var result = __sendRequests([
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				if (handler.method == "POST") {
+					bodyText = handler.requestText;
+					handler.respond(200, "text/plain", "got:" + handler.requestText);
+				} else {
+					next();
+				}
+			}
+		], [
+			"POST /index.html HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: 7\r\n\r\npayload",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		]);
+
+		Assert.equals("payload", bodyText);
+		Assert.isTrue(result.responses[0].raw.indexOf("HTTP/1.1 100 Continue") == 0);
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("got:payload", result.responses[0].body);
+		Assert.equals(200, result.responses[1].status);
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testHeadKeepsConnectionOpen():Void {
+		// HEAD advertises a length it never sends; the consumption logic
+		// must not wait for a body that is not coming, on either side.
+		var result = __sendRequests([], [
+			"HEAD /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		]);
+
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("", result.responses[0].body);
+		Assert.equals("26", result.responses[0].headers.get("content-length"));
+		Assert.equals(200, result.responses[1].status);
+		Assert.equals("Hello from middleware test", result.responses[1].body);
+		Assert.isFalse(result.closeSeen);
+	}
 	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
@@ -498,9 +749,13 @@ class HTTPRequestHandlerTest extends utest.Test {
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
 		var requestFailed:Dynamic = null;
 
+		// HEAD responses end at their header terminator; waiting for the
+		// advertised Content-Length would burn the whole pump timeout now
+		// that a HEAD response no longer ends its connection.
+		var headOnly:Bool = StringTools.startsWith(requestText, "HEAD ");
 		try {
 			client.connect("127.0.0.1", server.localPort);
-			__pumpUntil(() -> closeSeen || __isResponseComplete(rawResponse), 2.0);
+			__pumpUntil(() -> closeSeen || __isResponseComplete(rawResponse, headOnly), 2.0);
 			response = __parseResponse(rawResponse, rawResponseBytes);
 			try {
 				client.close();
@@ -524,24 +779,176 @@ class HTTPRequestHandlerTest extends utest.Test {
 		return response;
 	}
 
-	private static function __isResponseComplete(raw:String):Bool {
-		var headerEnd = raw.indexOf("\r\n\r\n");
-		if (headerEnd < 0) {
-			return false;
+	/**
+	 * Sends several requests over ONE socket and splits the byte stream
+	 * back into responses — the single-connect-many-responses shape that
+	 * keep-alive exists to produce and that `__sendRequest` cannot
+	 * observe.
+	 *
+	 * Sequential mode writes each request only after the previous
+	 * response is complete, asserting the connection is still open at
+	 * that moment; pipelined mode writes everything in one flush and
+	 * walks the same cursor over however many responses come back.
+	 * `waitAfter` keeps pumping after the last response so a test can
+	 * observe (or rule out) a server-initiated close.
+	 */
+	private function __sendRequests(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requests:Array<String>, ?configure:HTTPServerConfig->Void,
+			pipelined:Bool = false, waitAfter:Float = 0):{responses:Array<HTTPTestResponse>, closeSeen:Bool, raw:String} {
+		var root = File.createTempDirectory();
+		var indexFile = root.resolvePath("index.html");
+		var fixture = new ByteArray();
+		fixture.writeUTFBytes("Hello from middleware test");
+		indexFile.save(fixture);
+		// A second, distinct fixture so ordering tests can tell response
+		// N from response N+1 by body alone.
+		var secondFile = root.resolvePath("second.html");
+		var secondFixture = new ByteArray();
+		secondFixture.writeUTFBytes("Second fixture body");
+		secondFile.save(secondFixture);
+
+		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, middleware);
+		if (configure != null) {
+			configure(config);
+		}
+		var server = new HTTPServer(config);
+		var client = new Socket();
+		var rawResponse = "";
+		var closeSeen = false;
+		var serverClosedFirst = false;
+		var responses:Array<HTTPTestResponse> = [];
+		var requestFailed:Dynamic = null;
+
+		client.addEventListener(Event.CONNECT, _ -> {
+			client.writeUTFBytes(pipelined ? requests.join("") : requests[0]);
+			client.flush();
+		});
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			if (client.bytesAvailable > 0) {
+				var chunk:ByteArray = new ByteArray();
+				client.readBytes(chunk, 0, client.bytesAvailable);
+				for (i in 0...chunk.length) {
+					rawResponse += String.fromCharCode(chunk[i]);
+				}
+			}
+		});
+		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
+
+		try {
+			client.connect("127.0.0.1", server.localPort);
+
+			var cursor = 0;
+			for (i in 0...requests.length) {
+				var headOnly = StringTools.startsWith(requests[i], "HEAD ");
+				var sliceEnd = -1;
+				__pumpUntil(() -> {
+					sliceEnd = __responseEndAt(rawResponse, cursor, headOnly);
+					return sliceEnd >= 0;
+				}, 2.0);
+				if (sliceEnd < 0) {
+					throw 'response ${i} never completed; received: ${rawResponse.substr(cursor)}';
+				}
+
+				var slice = rawResponse.substring(cursor, sliceEnd);
+				var sliceBytes = new ByteArray();
+				for (j in cursor...sliceEnd) {
+					sliceBytes.writeByte(rawResponse.charCodeAt(j) & 0xFF);
+				}
+				responses.push(__parseResponse(slice, sliceBytes));
+				cursor = sliceEnd;
+
+				if (!pipelined && i < requests.length - 1) {
+					// The point of the sequential mode: the connection must
+					// still be open when the next request goes out.
+					Assert.isFalse(closeSeen);
+					client.writeUTFBytes(requests[i + 1]);
+					client.flush();
+				}
+			}
+
+			if (waitAfter > 0) {
+				__pumpUntil(() -> closeSeen, waitAfter);
+			}
+
+			// Snapshot before the harness closes its own end: Socket.close()
+			// dispatches Event.CLOSE for a locally initiated close too, so
+			// reading the flag afterwards would report every connection as
+			// closed and the keep-alive assertions would test nothing.
+			serverClosedFirst = closeSeen;
+
+			try {
+				client.close();
+			} catch (_:Dynamic) {}
+		} catch (error:Dynamic) {
+			requestFailed = error;
 		}
 
-		var headers = raw.substr(0, headerEnd).split("\r\n");
-		for (line in headers) {
+		try {
+			server.close();
+		} catch (_:Dynamic) {}
+		try {
+			root.deleteDirectory(true);
+		} catch (_:Dynamic) {}
+
+		if (requestFailed != null) {
+			throw requestFailed;
+		}
+
+		return {responses: responses, closeSeen: serverClosedFirst, raw: rawResponse};
+	}
+
+	private static function __countOccurrences(haystack:String, needle:String):Int {
+		var count = 0;
+		var at = haystack.indexOf(needle);
+		while (at >= 0) {
+			count++;
+			at = haystack.indexOf(needle, at + needle.length);
+		}
+		return count;
+	}
+
+	private static function __isResponseComplete(raw:String, headOnly:Bool = false):Bool {
+		return __responseEndAt(raw, 0, headOnly) >= 0;
+	}
+
+	/**
+	 * Absolute index one past the end of the response that starts at
+	 * `start`, or -1 while it is still incomplete. Skips leading 1xx
+	 * interim blocks (Expect: 100-continue), which carry no framing of
+	 * their own; without that skip a kept-alive connection never closes
+	 * and completeness would only ever be decided by the pump timeout.
+	 * `headOnly` ends the response at its header terminator, since a HEAD
+	 * response advertises a Content-Length it will never send.
+	 */
+	private static function __responseEndAt(raw:String, start:Int, headOnly:Bool):Int {
+		while (raw.indexOf("HTTP/1.1 100 ", start) == start || raw.indexOf("HTTP/1.0 100 ", start) == start) {
+			var interimEnd = raw.indexOf("\r\n\r\n", start);
+			if (interimEnd < 0) {
+				return -1;
+			}
+			start = interimEnd + 4;
+		}
+
+		var headerEnd = raw.indexOf("\r\n\r\n", start);
+		if (headerEnd < 0) {
+			return -1;
+		}
+
+		var bodyStart = headerEnd + 4;
+		if (headOnly) {
+			return bodyStart;
+		}
+
+		for (line in raw.substring(start, headerEnd).split("\r\n")) {
 			var lower = StringTools.trim(line).toLowerCase();
 			if (lower.indexOf("content-length:") == 0) {
-				var len:Int = Std.parseInt(StringTools.trim(line.substr(15)));
-				if (len == 0) {
-					return true;
+				var len:Null<Int> = Std.parseInt(StringTools.trim(lower.substr(15)));
+				if (len == null) {
+					return -1;
 				}
-				return raw.length >= headerEnd + 4 + len;
+				return raw.length >= bodyStart + len ? bodyStart + len : -1;
 			}
 		}
-		return false;
+		return -1;
 	}
 
 	private static function __parseResponse(raw:String, rawBytes:ByteArray):HTTPTestResponse {

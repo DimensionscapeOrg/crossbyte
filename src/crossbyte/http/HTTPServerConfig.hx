@@ -51,6 +51,46 @@ class HTTPServerConfig {
 	public var requestTimeout:Float;
 
 	/**
+		Whether one connection may carry more than one request.
+
+		Off, every response ends its connection, so every request pays TCP
+		setup — and a full TLS handshake when `tlsEnabled` is set — to be
+		answered: a page, its stylesheet and its favicon are three
+		handshakes. On, a response whose framing allows it leaves the
+		connection open for the next request, which is what HTTP/1.1
+		specifies and what every client already expects. Defaults to
+		`true`; `false` restores the one-shot close-per-request behavior
+		exactly.
+	**/
+	public var keepAlive:Bool;
+
+	/**
+		Seconds a kept-alive connection may sit idle between requests
+		before the server closes it. Defaults to 5; `0` and below disables
+		idle reaping.
+
+		Without a bound, every client that wanders off mid-session holds a
+		connection slot until its own end gives up, and `maxConnections`
+		fills with peers doing nothing. An idle connection reaching this
+		deadline is the normal end of its life, not a client fault, so it
+		is closed without a `408`. Enforced by the same sweep as
+		`requestTimeout`, so precision is roughly a quarter second.
+	**/
+	public var keepAliveTimeout:Float;
+
+	/**
+		Responses one connection may carry before the server closes it.
+		Defaults to 100; `0` and below means unlimited.
+
+		Bounds how long any single connection's accumulated state — peer
+		buffers, handler bookkeeping — can live, and gives a server behind
+		a load balancer a periodic chance to rebalance. A limit of 100
+		yields exactly 100 responses, the 100th carrying
+		`Connection: close`.
+	**/
+	public var keepAliveMaxRequests:Int;
+
+	/**
 		Bytes of undrained response data allowed to accumulate per accepted
 		connection before `outputOverflowPolicy` applies, or `0` for no
 		limit.
@@ -119,7 +159,8 @@ class HTTPServerConfig {
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
 			maxConnections:Int = 256, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
-			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60) {
+			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60,
+			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 100) {
 		this.address = address;
 		this.port = port;
 		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
@@ -154,6 +195,9 @@ class HTTPServerConfig {
 			}
 		] : rewrites;
 		this.requestTimeout = requestTimeout;
+		this.keepAlive = keepAlive;
+		this.keepAliveTimeout = keepAliveTimeout;
+		this.keepAliveMaxRequests = keepAliveMaxRequests;
 	}
 }
 
