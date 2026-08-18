@@ -167,6 +167,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return __output == null ? 0 : __output.length;
 	}
 
+	/**
+		Invoked after a queued flush attempt, for a writer that produces its
+		body incrementally instead of all at once.
+
+		A writer that hands the socket a whole response has nothing to wait
+		for, but one that streams needs to know when to offer the next
+		piece, and polling for that on a timer couples the transfer's pace
+		to the clock rather than to the peer. Every write queues the socket
+		on the registry's writable queue, which the runtime drains each
+		pass, so this fires whether the flush completed or blocked — and
+		only for sockets with something in flight.
+
+		Set it to `null` when the transfer ends. The callback runs inside
+		the registry's drain, so it must not close this socket's registry
+		registration out from under the loop; closing the socket is fine.
+	**/
+	@:noCompletion public var __onWritableDrain:Void->Void;
+
 	@:noCompletion private var __buffer:Bytes;
 	@:noCompletion private var __connected:Bool;
 	@:noCompletion private var __closed:Bool;
@@ -1026,20 +1044,35 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
 	}
 
-	@:noCompletion private inline function __tryFlush():Void {
+	@:noCompletion private function __tryFlush():Void {
 		flushFull = false;
 
-		// This is the retry half of a blocked write, scheduled on a timer,
-		// so the socket may have been closed in between — by the peer, by
-		// the application, or by the overflow policy. There is nothing left
-		// to retry, and throwing here would escape the timer into the
-		// runtime's tick dispatch and take down the caller's loop rather
-		// than the one connection.
+		// This is the retry half of a blocked write, dispatched from the
+		// registry's writable queue, so the socket may have been closed in
+		// between — by the peer, by the application, or by the overflow
+		// policy. There is nothing left to retry, and throwing here would
+		// escape into the runtime's dispatch and take down the caller's
+		// loop rather than the one connection.
 		if (__socket == null) {
 			return;
 		}
 
-		flush();
+		try {
+			flush();
+		} catch (e:Dynamic) {
+			// Same reasoning, for the error flush() raises itself: a peer
+			// that resets the connection makes this throw from inside the
+			// registry drain, where an escape costs every other connection
+			// in the loop rather than this one. The IO error is dispatched
+			// so the owner can react; the connection is left for the read
+			// side to reap, exactly as before.
+			__dispatchPooledIOError(Std.string(e));
+			return;
+		}
+
+		if (__onWritableDrain != null) {
+			__onWritableDrain();
+		}
 	}
 
 	@:noCompletion private function __retainPendingOutput(bytesWritten:Int, pendingLength:Int):Void {
