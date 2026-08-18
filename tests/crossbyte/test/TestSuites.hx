@@ -118,6 +118,11 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
+		// Deliberately unguarded: the exact-buffer read-loop hang it protects
+		// against lives on the interpreter, where sockets cannot be made
+		// non-blocking. Guarding it to cpp would run it only where the bug
+		// cannot happen.
+		runner.addCase(new crossbyte.net.SocketExactBufferReadTest());
 		#if cpp
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
