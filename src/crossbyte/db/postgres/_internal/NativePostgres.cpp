@@ -62,10 +62,16 @@ namespace {
 		void (*PQclear)(PGresult* res) = nullptr;
 		size_t (*PQescapeStringConn)(PGconn* conn, char* to, const char* from, size_t length, int* error) = nullptr;
 		int (*PQserverVersion)(const PGconn* conn) = nullptr;
+		PGresult* (*PQexecParams)(PGconn* conn, const char* command, int nParams, const Oid* paramTypes,
+			const char* const* paramValues, const int* paramLengths, const int* paramFormats, int resultFormat) = nullptr;
+		int (*PQgetlength)(const PGresult* res, int rowNum, int fieldNum) = nullptr;
 		bool loaded = false;
 		std::string loadedPath;
 		std::string lastError;
 		std::string scratch;
+		// Held apart from scratch because it carries NUL bytes, which is the
+		// whole reason this path exists: it cannot be returned as a C string.
+		std::vector<unsigned char> resultBlock;
 	};
 
 	LibPQApi g_api;
@@ -245,7 +251,9 @@ namespace {
 				loadSymbol(g_api.PQoidValue, "PQoidValue") &&
 				loadSymbol(g_api.PQclear, "PQclear") &&
 				loadSymbol(g_api.PQescapeStringConn, "PQescapeStringConn") &&
-				loadSymbol(g_api.PQserverVersion, "PQserverVersion");
+				loadSymbol(g_api.PQserverVersion, "PQserverVersion") &&
+				loadSymbol(g_api.PQexecParams, "PQexecParams") &&
+				loadSymbol(g_api.PQgetlength, "PQgetlength");
 
 			if (ok) {
 				g_api.loaded = true;
@@ -389,6 +397,169 @@ extern "C" const char* crossbyte_postgres_request_json(void* handle, const char*
 	g_api.PQclear(result);
 	g_api.scratch = out.str();
 	return g_api.scratch.c_str();
+}
+
+namespace {
+	// Little-endian, a byte at a time, so neither side depends on the host byte
+	// order. Mirrored by PostgresWire on the Haxe side.
+	void putInt(std::vector<unsigned char>& out, int value) {
+		out.push_back(static_cast<unsigned char>(value & 0xFF));
+		out.push_back(static_cast<unsigned char>((value >> 8) & 0xFF));
+		out.push_back(static_cast<unsigned char>((value >> 16) & 0xFF));
+		out.push_back(static_cast<unsigned char>((value >> 24) & 0xFF));
+	}
+
+	void putBytes(std::vector<unsigned char>& out, const unsigned char* data, int length) {
+		if (length > 0 && data != nullptr) {
+			out.insert(out.end(), data, data + length);
+		}
+	}
+
+	bool takeInt(const unsigned char* data, int length, int& cursor, int& value) {
+		if (cursor < 0 || cursor + 4 > length) {
+			return false;
+		}
+
+		value = static_cast<int>(static_cast<unsigned int>(data[cursor])
+			| (static_cast<unsigned int>(data[cursor + 1]) << 8)
+			| (static_cast<unsigned int>(data[cursor + 2]) << 16)
+			| (static_cast<unsigned int>(data[cursor + 3]) << 24));
+		cursor += 4;
+		return true;
+	}
+
+	void buildErrorBlock(const std::string& message) {
+		g_api.resultBlock.clear();
+		putInt(g_api.resultBlock, 1);
+		putInt(g_api.resultBlock, static_cast<int>(message.size()));
+		putBytes(g_api.resultBlock, reinterpret_cast<const unsigned char*>(message.data()), static_cast<int>(message.size()));
+	}
+}
+
+extern "C" int crossbyte_postgres_request_params(void* handle, const char* sql, const unsigned char* params, int paramsLength) {
+	if (handle == nullptr) {
+		buildErrorBlock("Postgres connection is not open.");
+		return static_cast<int>(g_api.resultBlock.size());
+	}
+
+	if (!g_api.loaded || g_api.PQexecParams == nullptr) {
+		buildErrorBlock("libpq is not loaded.");
+		return static_cast<int>(g_api.resultBlock.size());
+	}
+
+	int cursor = 0;
+	int count = 0;
+
+	if (params == nullptr || !takeInt(params, paramsLength, cursor, count) || count < 0) {
+		buildErrorBlock("Malformed parameter block.");
+		return static_cast<int>(g_api.resultBlock.size());
+	}
+
+	// Copied rather than pointed at: a zero-length parameter still has to be a
+	// valid non-null pointer for libpq, and the caller buffer is not promised
+	// to outlive the call.
+	std::vector<std::vector<unsigned char> > storage(static_cast<size_t>(count));
+	std::vector<const char*> values(static_cast<size_t>(count), nullptr);
+	std::vector<int> lengths(static_cast<size_t>(count), 0);
+	std::vector<int> formats(static_cast<size_t>(count), 0);
+
+	for (int i = 0; i < count; ++i) {
+		int format = 0;
+		int length = 0;
+
+		if (!takeInt(params, paramsLength, cursor, format) || !takeInt(params, paramsLength, cursor, length)) {
+			buildErrorBlock("Truncated parameter block.");
+			return static_cast<int>(g_api.resultBlock.size());
+		}
+
+		formats[static_cast<size_t>(i)] = format == 1 ? 1 : 0;
+
+		if (length < 0) {
+			// SQL NULL is a null pointer, which is how libpq tells it apart
+			// from a zero-length value.
+			values[static_cast<size_t>(i)] = nullptr;
+			lengths[static_cast<size_t>(i)] = 0;
+			continue;
+		}
+
+		if (cursor + length > paramsLength) {
+			buildErrorBlock("Truncated parameter block.");
+			return static_cast<int>(g_api.resultBlock.size());
+		}
+
+		storage[static_cast<size_t>(i)].assign(params + cursor, params + cursor + length);
+		// Guarantees a non-null data() for an empty parameter.
+		storage[static_cast<size_t>(i)].push_back(0);
+		cursor += length;
+
+		values[static_cast<size_t>(i)] = reinterpret_cast<const char*>(storage[static_cast<size_t>(i)].data());
+		lengths[static_cast<size_t>(i)] = length;
+	}
+
+	PGconn* connection = static_cast<PGconn*>(handle);
+	// resultFormat 0, so results arrive as text and bytea as its hex rendering,
+	// which is exact. Binary results would mean decoding every column type from
+	// its network representation by OID.
+	PGresult* result = g_api.PQexecParams(connection, sql == nullptr ? "" : sql, count, nullptr,
+		count == 0 ? nullptr : values.data(), count == 0 ? nullptr : lengths.data(),
+		count == 0 ? nullptr : formats.data(), 0);
+
+	if (result == nullptr) {
+		const char* message = g_api.PQerrorMessage(connection);
+		buildErrorBlock(message == nullptr ? "PQexecParams returned null." : message);
+		return static_cast<int>(g_api.resultBlock.size());
+	}
+
+	ExecStatusType status = g_api.PQresultStatus(result);
+
+	if (!(status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK || status == PGRES_SINGLE_TUPLE || status == PGRES_EMPTY_QUERY)) {
+		const char* message = g_api.PQerrorMessage(connection);
+		std::string copy = message == nullptr ? "Postgres query failed." : message;
+		g_api.PQclear(result);
+		buildErrorBlock(copy);
+		return static_cast<int>(g_api.resultBlock.size());
+	}
+
+	int rows = g_api.PQntuples(result);
+	int fields = g_api.PQnfields(result);
+
+	g_api.resultBlock.clear();
+	putInt(g_api.resultBlock, 0);
+	putInt(g_api.resultBlock, parseAffectedRows(result));
+	putInt(g_api.resultBlock, static_cast<int>(g_api.PQoidValue(result)));
+	putInt(g_api.resultBlock, fields);
+
+	for (int field = 0; field < fields; ++field) {
+		const char* name = g_api.PQfname(result, field);
+		int nameLength = name == nullptr ? 0 : static_cast<int>(std::strlen(name));
+		putInt(g_api.resultBlock, nameLength);
+		putBytes(g_api.resultBlock, reinterpret_cast<const unsigned char*>(name), nameLength);
+	}
+
+	putInt(g_api.resultBlock, rows);
+
+	for (int row = 0; row < rows; ++row) {
+		for (int field = 0; field < fields; ++field) {
+			if (g_api.PQgetisnull(result, row, field) == 1) {
+				putInt(g_api.resultBlock, -1);
+				continue;
+			}
+
+			// PQgetlength rather than strlen: a value may contain NUL bytes, and
+			// measuring it as a C string is exactly how they get lost.
+			int length = g_api.PQgetlength(result, row, field);
+			const char* value = g_api.PQgetvalue(result, row, field);
+			putInt(g_api.resultBlock, length);
+			putBytes(g_api.resultBlock, reinterpret_cast<const unsigned char*>(value), length);
+		}
+	}
+
+	g_api.PQclear(result);
+	return static_cast<int>(g_api.resultBlock.size());
+}
+
+extern "C" const unsigned char* crossbyte_postgres_result_data() {
+	return g_api.resultBlock.empty() ? reinterpret_cast<const unsigned char*>("") : g_api.resultBlock.data();
 }
 
 extern "C" const char* crossbyte_postgres_escape(void* handle, const char* value) {
