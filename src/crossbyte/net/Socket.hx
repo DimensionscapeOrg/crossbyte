@@ -6,6 +6,9 @@ import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
+#if cpp
+import sys.thread.Tls;
+#end
 import haxe.io.Eof;
 import haxe.io.Error;
 import haxe.Serializer;
@@ -185,7 +188,92 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	@:noCompletion public var __onWritableDrain:Void->Void;
 
-	@:noCompletion private var __buffer:Bytes;
+	/**
+	 * Bytes handed to one `readBytes` call. Larger than the 4 KB this used to
+	 * use, which cost a syscall every 4 KB: a megabyte arrived in 256 reads
+	 * where it now takes 16.
+	 */
+	@:noCompletion private static inline var READ_CHUNK:Int = 64 * 1024;
+
+	/**
+	 * Consumed bytes tolerated at the front of `__input` before the unread
+	 * tail is moved down. Compacting on every arrival — which is what
+	 * rebuilding the buffer per read amounted to — costs a copy of the whole
+	 * unread backlog each time, so a consumer that reads slower than the peer
+	 * writes paid for its backlog again on every event. Measured at 50x the
+	 * arriving bytes after 200 events, and rising, because the cost is
+	 * quadratic in the number of arrivals.
+	 */
+	@:noCompletion private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
+
+	/**
+	 * One read buffer per thread rather than one per socket.
+	 *
+	 * It holds bytes only between a `readBytes` and the append that follows
+	 * it, and nothing is dispatched in between, so no listener can re-enter
+	 * and find it changed underneath. Sharing it is what makes a large buffer
+	 * affordable: per socket, 64 KB across the default 256 connections would
+	 * be 16 MB of idle buffer, where one shared buffer is 64 KB no matter how
+	 * many connections a thread carries — less than the 1 MB those 256
+	 * sockets used to hold between them at 4 KB each.
+	 */
+	#if cpp
+	@:noCompletion private static final __readScratch:Tls<Bytes> = new Tls();
+	#else
+	@:noCompletion private static var __readScratch:Bytes;
+	#end
+
+	/**
+	 * Drops bytes already read out of `__input`, so appending does not grow
+	 * the buffer past what is still unread.
+	 *
+	 * A fully drained buffer — the common case, since most protocols consume
+	 * what they are given — resets in constant time. Otherwise the tail is
+	 * moved only once the consumed prefix is worth the move, which is what
+	 * turns compaction from a per-arrival cost into an amortised one.
+	 */
+	@:noCompletion private function __compactInput():Void {
+		var consumed:Int = __input.position;
+
+		if (consumed == 0) {
+			return;
+		}
+
+		if (consumed >= __input.length) {
+			__input.clear();
+			__input.endian = __endian;
+			return;
+		}
+
+		if (consumed < INPUT_COMPACT_THRESHOLD) {
+			return;
+		}
+
+		// Allocate and swap rather than move within the buffer: a ByteArray
+		// blit whose source and destination overlap has no defined behaviour
+		// across targets.
+		var remaining:Int = __input.length - consumed;
+		var carried:ByteArray = new ByteArray();
+		carried.writeBytes(__input, consumed, remaining);
+		carried.position = 0;
+		carried.endian = __endian;
+		__input = carried;
+	}
+
+	@:noCompletion private static function __scratch():Bytes {
+		var buffer:Bytes = #if cpp __readScratch.value #else __readScratch #end;
+
+		if (buffer == null) {
+			buffer = Bytes.alloc(READ_CHUNK);
+			#if cpp
+			__readScratch.value = buffer;
+			#else
+			__readScratch = buffer;
+			#end
+		}
+
+		return buffer;
+	}
 	@:noCompletion private var __connected:Bool;
 	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __endian:Endian;
@@ -271,8 +359,6 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__connected = false;
 		__closed = false;
 		__isConnecting = false;
-
-		__buffer = Bytes.alloc(4096);
 
 		if (port > 0 && port < 65535) {
 			connect(host, port);
@@ -1181,24 +1267,36 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		}
 
-		var b:BytesBuffer = new BytesBuffer();
 		var bLength = 0;
+		var readPos:Int = 0;
+		var appending:Bool = false;
 
 		if (connected || doConnect) {
+			// Arrivals are appended to the existing buffer, which grows
+			// geometrically and keeps its capacity. This used to allocate a
+			// fresh Bytes per arrival and copy the whole unread backlog into
+			// it, so the buffer was rebuilt from scratch on every event.
+			__compactInput();
+			readPos = __input.position;
+			__input.position = __input.length;
+			appending = true;
+
+			var scratch:Bytes = __scratch();
+
 			try {
 				var l:Int;
 
 				do {
-					l = __socket.input.readBytes(__buffer, 0, __buffer.length);
+					l = __socket.input.readBytes(scratch, 0, scratch.length);
 
 					if (l > 0) {
-						b.addBytes(__buffer, 0, l);
+						__input.writeBytes(scratch, 0, l);
 						bLength += l;
 					}
 					// The eval gate below runs inside this try on purpose: a
 					// select failure on a dying socket lands in the catches and
 					// closes the connection, the same as a failed read.
-				} while (l == __buffer.length #if eval && __evalShouldKeepReading() #end);
+				} while (l == scratch.length #if eval && __evalShouldKeepReading() #end);
 			} catch (e:Eof) {
 				doClose = true;
 			} catch (e:Error) {
@@ -1208,6 +1306,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			} catch (e:Dynamic) {
 				doClose = true;
 			}
+		}
+
+		if (appending) {
+			// Restored whether the loop ended cleanly, at EOF, or on a throw:
+			// leaving the write cursor in place would make the next read look
+			// like consumed data to every reader below.
+			__input.position = readPos;
 		}
 
 		// The lifecycle verdict is taken from the state this tick observed,
@@ -1238,23 +1343,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// down the runtime loop rather than the one connection. Not an eval
 		// problem; every target read in that order.
 		if (bLength > 0) {
-			var newData:Bytes = b.getBytes();
-
-			var rl:UInt = __input.length - __input.position;
-			if (rl < 0){
-				rl = 0;
-			}
-				
-
-			var newInput:Bytes = Bytes.alloc(rl + newData.length);
-			if (rl > 0) {
-				newInput.blit(0, __input, __input.position, rl);
-			}
-			
-			newInput.blit(rl, newData, 0, newData.length);
-			__input = newInput;
-			__input.endian = __endian;
-			__dispatchPooledSocketData(newData.length, 0);
+			__dispatchPooledSocketData(bLength, 0);
 		}
 
 		if (doClose) {
@@ -1279,14 +1368,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#if eval
 	/**
 		Whether the read loop above may safely go round again after a read
-		that filled `__buffer`.
+		that filled the shared read buffer.
 
 		That loop re-reads whenever a read fills the buffer. On targets with
 		real non-blocking sockets the extra read raises `Blocked` once the
 		burst is exhausted; on eval `setBlocking` is a no-op (see the vendored
 		sys.net.Socket), the descriptor stays blocking, and that same extra
 		read parks the whole runtime thread until the peer sends more or
-		closes. Any inbound burst of exactly a multiple of `__buffer.length`
+		closes. Any inbound burst of exactly a multiple of the read buffer size
 		bytes therefore hung the interpreter. A zero-timeout select is the
 		only non-blocking readability signal the eval target offers, so loop
 		continuation is gated on it there — and on it alone, leaving the
