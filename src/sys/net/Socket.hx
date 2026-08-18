@@ -475,6 +475,14 @@ class Socket {
 		crossbyte.net.Socket calls `setBlocking(false)` before every connect,
 		so a throw here would break every interp connection.
 
+		`setTimeout` is not a substitute, and this was measured rather than
+		assumed: the timeout does reach the recv and SO_RCVTIMEO expires on
+		schedule, but eval raises the expiry as an OCaml
+		`Unix.Unix_error(ETIMEDOUT, "recv")` that no Haxe catch intercepts —
+		not `haxe.Exception`, not `Dynamic`, not the catch inside SocketInput
+		below — and the interpreter aborts outright. Bounding a read that way
+		converts a stall into an uncatchable process death.
+
 		What the no-op costs the eval/interp target — and what interp test
 		results therefore do NOT cover: `connect()` blocks the whole runtime
 		thread for the duration of the TCP handshake; reads block instead of
