@@ -263,6 +263,35 @@ class WebSocket {
 				}
 				totalBytes += nBytes;
 				pending.addBytes(__buffer, 0, nBytes);
+
+				#if eval
+				// eval's setBlocking is a no-op (see the vendored
+				// sys.net.Socket), so this drain loop cannot rely on an empty
+				// read raising Blocked: with a blocking descriptor that read
+				// would park the whole runtime thread until the peer sends
+				// more or closes — which is why an interp WebSocket could not
+				// survive its first idle tick.
+				//
+				// A read shorter than the buffer already proves the socket is
+				// drained, so it exits without asking the kernel anything.
+				// Only a read that filled the buffer is ambiguous, and only
+				// that case pays for a zero-timeout select.
+				if (nBytes < __buffer.length) {
+					break;
+				}
+
+				// TLS keeps the old read-until-short-read behaviour. A select
+				// on the raw descriptor sees the socket, not the session:
+				// mbedtls decrypts whole records into its own buffer, so
+				// plaintext waiting there is invisible to select and gating
+				// on it would strand a fully received message. The probe sits
+				// inside the try on purpose — a select failure on a dying
+				// socket lands in the catches below and closes the session,
+				// the same as a failed read.
+				if (!__socket.isSecure && FlexSocket.select([__socket], [], [], 0).read.length == 0) {
+					break;
+				}
+				#end
 			} catch (e:Error) {
 				if (!BlockedError.isBlocked(e)) {
 					doClose = true;

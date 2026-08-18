@@ -464,7 +464,26 @@ class Socket {
 		select([this], null, null, -1);
 	}
 
-	public function setBlocking(b:Bool):Void {} // TODO: Don't know how to implement this...
+	/**
+		A deliberate no-op, not an unfinished one: Haxe 4.3.7's eval target has
+		no way to change a socket's blocking mode. `eval.vm.NativeSocket`
+		exposes no set-blocking primitive and no file-descriptor accessor, and
+		while `eval.luv` has `Stream.setBlocking`, nothing can construct a luv
+		handle from an existing NativeSocket (`eval.luv.Tcp` has no from-fd
+		constructor; `eval.luv.OsSocket` is an opaque abstract), so there is
+		nowhere to forward the flag. Do not "fix" this by throwing either:
+		crossbyte.net.Socket calls `setBlocking(false)` before every connect,
+		so a throw here would break every interp connection.
+
+		What the no-op costs the eval/interp target — and what interp test
+		results therefore do NOT cover: `connect()` blocks the whole runtime
+		thread for the duration of the TCP handshake; reads block instead of
+		raising `Blocked`, so read loops must gate on a zero-timeout `select`
+		rather than drain until a Blocked error; and the write-side
+		backpressure machinery (Blocked -> flushFull -> writable queue) never
+		engages, because a blocking send just waits.
+	**/
+	public function setBlocking(b:Bool):Void {}
 
 	public function setFastSend(b:Bool):Void {
 		socket.setFastSend(b);
@@ -859,68 +878,68 @@ class Socket {
 	public var custom:Dynamic;
 
 	public function new() {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function close():Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function read():String {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function write(content:String):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function connect(host:Host, port:Int):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function listen(connections:Int):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function shutdown(read:Bool, write:Bool):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function bind(host:Host, port:Int):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function accept():Socket {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function peer():{host:Host, port:Int} {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function host():{host:Host, port:Int} {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function setTimeout(timeout:Float):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function waitForRead():Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function setBlocking(b:Bool):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public function setFastSend(b:Bool):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 
 	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
 			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, and eval targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
 	}
 }
 

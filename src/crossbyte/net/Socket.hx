@@ -1162,7 +1162,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 						b.addBytes(__buffer, 0, l);
 						bLength += l;
 					}
-				} while (l == __buffer.length);
+					// The eval gate below runs inside this try on purpose: a
+					// select failure on a dying socket lands in the catches and
+					// closes the connection, the same as a failed read.
+				} while (l == __buffer.length #if eval && __evalShouldKeepReading() #end);
 			} catch (e:Eof) {
 				doClose = true;
 			} catch (e:Error) {
@@ -1174,20 +1177,34 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		}
 
-		if (doClose && connected) {
-			__cleanSocket();
-			__dispatchPooledSimpleEvent(Event.CLOSE);
-		} else if (doClose) {
-			__cleanSocket();
-			__dispatchPooledIOError("Connection failed");
-		} else if (doConnect) {
+		// The lifecycle verdict is taken from the state this tick observed,
+		// before anything below mutates it, so that ordering the three
+		// dispatches does not change which of them fires. A close decided
+		// while still connected is a peer hangup (CLOSE); one decided before
+		// the connection ever came up is a failure (ioError) — the same split
+		// the single if/else chain here used to make.
+		var closeWasConnected:Bool = connected;
+
+		// CONNECT, then any data, then CLOSE. A tick can legitimately carry
+		// all three: the handshake completes, the peer's first burst is
+		// already buffered, and its FIN is right behind it.
+		if (doConnect && !doClose) {
 			__connected = true;
 			__stopConnecting();
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
 			__dispatchPooledSimpleEvent(Event.CONNECT);
 		}
-		if (bLength > 0) {			
+
+		// Data is delivered before the close is announced. This block used to
+		// run after it, which lost the last bytes of every connection whose
+		// final payload arrived in the same tick as its FIN: a listener that
+		// tears down on CLOSE never saw them, and one that tried to read them
+		// from the CLOSE handler hit a socket already nulled by
+		// __cleanSocket() and threw IOError out of the tick dispatch — taking
+		// down the runtime loop rather than the one connection. Not an eval
+		// problem; every target read in that order.
+		if (bLength > 0) {
 			var newData:Bytes = b.getBytes();
 
 			var rl:UInt = __input.length - __input.position;
@@ -1207,6 +1224,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__dispatchPooledSocketData(newData.length, 0);
 		}
 
+		if (doClose) {
+			__cleanSocket();
+			if (closeWasConnected) {
+				__dispatchPooledSimpleEvent(Event.CLOSE);
+			} else {
+				__dispatchPooledIOError("Connection failed");
+			}
+		}
+
 		if (__socket != null) {
 			try {
 				flush();
@@ -1216,6 +1242,39 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		#end
 	}
+
+	#if eval
+	/**
+		Whether the read loop above may safely go round again after a read
+		that filled `__buffer`.
+
+		That loop re-reads whenever a read fills the buffer. On targets with
+		real non-blocking sockets the extra read raises `Blocked` once the
+		burst is exhausted; on eval `setBlocking` is a no-op (see the vendored
+		sys.net.Socket), the descriptor stays blocking, and that same extra
+		read parks the whole runtime thread until the peer sends more or
+		closes. Any inbound burst of exactly a multiple of `__buffer.length`
+		bytes therefore hung the interpreter. A zero-timeout select is the
+		only non-blocking readability signal the eval target offers, so loop
+		continuation is gated on it there — and on it alone, leaving the
+		Blocked-driven exit untouched everywhere else.
+
+		TLS is the exception, and deliberately keeps the old behaviour: a
+		select on the raw descriptor reports the *socket*, not the TLS
+		session. mbedtls reads whole records at a time, so plaintext already
+		decrypted into its buffer is invisible to select — gating on it would
+		report "nothing pending" while a complete message sat decrypted and
+		unread, stranding it until the peer happened to send more. A read
+		that may block is recoverable; silently withheld payload is not.
+	**/
+	@:noCompletion private function __evalShouldKeepReading():Bool {
+		if (Std.isOfType(__socket, sys.ssl.Socket)) {
+			return true;
+		}
+
+		return SysSocket.select([__socket], [], [], 0).read.length > 0;
+	}
+	#end
 
 	@:noCompletion private function __dispatchPooledSimpleEvent(type:String):Void {
 		if (!hasEventListener(type)) {
