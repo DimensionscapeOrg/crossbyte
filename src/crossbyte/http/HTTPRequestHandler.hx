@@ -1305,6 +1305,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case 401: "Unauthorized";
 			case 403: "Forbidden";
 			case 404: "Not Found";
+			case 405: "Method Not Allowed";
 			case 406: "Not Acceptable";
 			case 415: "Unsupported Media Type";
 			case 413: "Payload Too Large";

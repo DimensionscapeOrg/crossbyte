@@ -1,6 +1,6 @@
 # Proposal 0018 — HTTP router
 
-**Status:** Draft
+**Status:** Implemented
 
 **Motivation:** The server's dynamic surface is one typedef:
 `Middleware = (HTTPRequestHandler, ?Dynamic->Void) -> Void`. Everything else
@@ -71,6 +71,13 @@ says it.
 `:param` values are single segments, URL-decoded by the existing request
 path handling. `*rest` must be final and captures the remainder unsplit.
 
+Matching sees the pre-rewrite request path: the rewrite decision is
+computed before middleware runs but applied only to requests the router
+releases with `next()`. A matched route — its `405` included — therefore
+preempts any rewrite configured for the same path, the default
+`^/api/.*$` PHP rewrite among them; a deployment that wants both keeps
+routes and rewrites on disjoint paths.
+
 ## Semantics at the edges
 
 - **No route matches the path:** call `next()`. The router is a guest in the
@@ -83,9 +90,16 @@ path handling. `*rest` must be final and captures the remainder unsplit.
   `next()`, because falling through would turn a wrong-method API call into
   a filesystem probe, and the dispatch gate's own `405` lists the static
   methods rather than the route's.
-- **A handler throws:** `next(error)`, feeding the middleware chain's
-  existing error path and its `500`. The router adds no error vocabulary of
-  its own.
+- **The method is `OPTIONS` and no `options()` or `any()` route claims
+  it:** a path miss, not a `405`. A `405` carries no
+  `Access-Control-Allow-Methods`, which fails a browser's CORS preflight
+  outright — registering a `POST` route would silently remove working
+  cross-origin access to its path. Falling through lets the server's own
+  preflight handling answer as if the router were absent.
+- **A handler throws:** the middleware chain's existing error path
+  answers — a thrown `Int` becomes the response status, an intentional
+  escape hatch, and anything else becomes `500`. The router adds no error
+  vocabulary of its own.
 
 ## What this refuses to do
 
