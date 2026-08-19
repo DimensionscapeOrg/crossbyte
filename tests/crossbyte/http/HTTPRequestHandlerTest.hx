@@ -752,6 +752,39 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals(2, __countOccurrences(result.raw, "HTTP/1.1 "));
 	}
 
+	public function testUnmappedStatusGetsItsClassNotOK():Void {
+		// A middleware can raise any status through next(code). Every code the
+		// table did not know rendered "OK", so next(503) put
+		// "HTTP/1.1 503 OK" on the wire — contradicting itself, and reading as
+		// success to anything matching on the phrase.
+		var unavailable = __sendRequest([
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				next(503);
+			}
+		], "GET /index.html HTTP/1.1
+Host: localhost
+
+");
+
+		Assert.equals(503, unavailable.status);
+		Assert.isTrue(unavailable.raw.indexOf("503 Service Unavailable") >= 0);
+		Assert.isTrue(unavailable.raw.indexOf("503 OK") < 0);
+
+		// One with no phrase of its own falls back to its class.
+		var teapot = __sendRequest([
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				next(418);
+			}
+		], "GET /index.html HTTP/1.1
+Host: localhost
+
+");
+
+		Assert.equals(418, teapot.status);
+		Assert.isTrue(teapot.raw.indexOf("418 Client Error") >= 0);
+		Assert.isTrue(teapot.raw.indexOf("418 OK") < 0);
+	}
+
 	public function testRejectedIdentityEncodingAnswersOneNotAcceptable():Void {
 		// identity;q=0 forbids the only coding an error body can be sent in,
 		// so the 406 explaining that used to be negotiated against the very
