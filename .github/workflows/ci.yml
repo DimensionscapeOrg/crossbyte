@@ -207,6 +207,12 @@ jobs:
       - name: Type-check precision tick frame wait
         run: haxelib run aedifex task cpp-precision-tick-audit .
 
+      # The wheel is only reachable behind -D timer_wheel, so nothing
+      # else compiles it. The whole suite is run against it separately;
+      # this keeps the class itself from breaking unnoticed.
+      - name: Type-check timing wheel scheduler
+        run: haxelib run aedifex task cpp-timer-wheel-audit .
+
   posix-crypto:
     name: Core | Crypto (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
