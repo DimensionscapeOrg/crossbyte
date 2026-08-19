@@ -70,6 +70,60 @@ CrossByte currently includes:
   - PostgreSQL
   - MongoDB
 
+## Timers
+
+Every CrossByte runtime schedules its timers with a min-heap, and for almost
+everything that is the end of the story. It orders timers exactly, a
+one-millisecond delay costs what a six-hour delay costs, and thirty thousand
+recurring timers still leave it using well under a millisecond per frame. You
+should not have to think about it.
+
+The exception is a runtime holding thousands of *short* timers that it re-arms
+constantly — a deadline per connection, a cooldown per entity. That is where
+the heap's `O(log n)` starts to show, and CrossByte ships a timing wheel for
+it:
+
+```haxe
+class MyServer extends ServerApplication {
+	public function new() {
+		super(WHEEL);
+	}
+}
+```
+
+The choice belongs to the runtime rather than the build, because a process
+usually has more than one and they rarely want the same answer. A simulation
+thread carrying a timer per entity and a network thread carrying a handful can
+each have what suits them:
+
+```haxe
+var sim = CrossByte.make(DEFAULT, WHEEL);
+var net = CrossByte.make(POLL, HEAP);
+```
+
+Measured with one recurring timer per entity, CPU spent per simulated second
+at sixty ticks:
+
+| timers | heap | wheel |
+| --- | --- | --- |
+| 1,000 | 1ms | under 1ms |
+| 10,000 | 10ms | 2ms |
+| 30,000 | 44ms | 7ms |
+
+Arming and cancelling is roughly twice as fast.
+
+Before you switch, the other side of it. The wheel covers a fixed span ahead of
+now, and anything scheduled past that span waits in a list it rescans
+periodically — so if your timers are mostly long, you are paying for work the
+heap never does, and you should stay on the heap. Two smaller differences:
+timers due in the same tick fire in bucket order rather than by exact time, and
+a timer can be late by up to a tick. It will never be early; that one is
+guaranteed.
+
+The short version: reach for the wheel when you have actually seen the
+scheduler in a profile and your timers are numerous and short. Otherwise the
+default is already the right answer.
+
 ## Extensions
 
 CrossByte's extension story is intentional: features that benefit from native backends or external platform libraries can live in sibling haxelibs instead of bloating the core.
