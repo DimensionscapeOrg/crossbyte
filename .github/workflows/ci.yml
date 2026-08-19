@@ -207,7 +207,6 @@ jobs:
       - name: Type-check precision tick frame wait
         run: haxelib run aedifex task cpp-precision-tick-audit .
 
-
   posix-crypto:
     name: Core | Crypto (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
@@ -402,6 +401,24 @@ jobs:
       - name: Run websocket echo sample
         working-directory: export/websocket-echo
         run: .\WebSocketEchoSample.exe
+
+      # The other three samples that end on their own. Building a sample
+      # proves it typechecks; running one is the only thing that exercises
+      # the Application and ServerApplication bootstrap a user actually
+      # starts from, which no unit test touches. The web server one serves a
+      # real request through the real HTTP path and prints the body it got
+      # back, so a broken response is a failed job rather than a silent one.
+      - name: Run web server sample
+        working-directory: export/web-server
+        run: .\SimpleWebServerSample.exe
+
+      - name: Run simple application sample
+        working-directory: export/simple-application
+        run: .\SimpleApplicationSample.exe
+
+      - name: Run worker sample
+        working-directory: export/worker
+        run: .\WorkerSample.exe
 
   extensions:
     name: Extensions | ${{ matrix.label }}
