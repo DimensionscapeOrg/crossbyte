@@ -107,7 +107,14 @@ class EventDispatcher implements IEventDispatcher {
 			}
 		}
 
-		list.insert(idx, entry);
+		// Replaced rather than inserted into. Dispatch holds whichever array
+		// was current when it began and walks it without copying, so the list
+		// it is walking must never change underneath it. Paying for a copy
+		// here — where listeners are registered, typically once — instead of
+		// there, where events are dispatched forever, is the whole trade.
+		var next:Array<ListenerEntry> = list.copy();
+		next.insert(idx, entry);
+		eventMap.set(type, next);
 	}
 
 	/**
@@ -135,10 +142,19 @@ class EventDispatcher implements IEventDispatcher {
 
 		for (i in 0...list.length) {
 			if (list[i].listener == cast listener) {
-				list.splice(i, 1);
-				if (list.length == 0) {
+				if (list.length == 1) {
 					__eventMap.remove(type);
+					return;
 				}
+
+				// Replaced rather than spliced, for the reason given in
+				// addEventListener: a dispatch already walking this list keeps
+				// the array it started with, so a listener removed from inside
+				// a handler still runs for the event in flight — which is the
+				// behaviour the per-dispatch copy used to provide.
+				var next:Array<ListenerEntry> = list.copy();
+				next.splice(i, 1);
+				eventMap.set(type, next);
 				return;
 			}
 		}
@@ -222,15 +238,15 @@ class EventDispatcher implements IEventDispatcher {
 			return true;
 		}
 
-		// Snapshot the listener set at dispatch start. Listeners added during
-		// dispatch are intentionally not invoked until the next dispatch, and a
-		// listener removed during dispatch is still invoked for this dispatch
-		// (it was part of the captured set). `removeEventListener` splices the
-		// live list without mutating the entry objects, so the snapshot's
-		// captured `listener` references stay valid here.
-		var snapshot:Array<ListenerEntry> = list.copy();
-		for (i in 0...snapshot.length) {
-			var entry = snapshot[i];
+		// The list captured above *is* the snapshot: `addEventListener` and
+		// `removeEventListener` replace the array rather than mutate it, so
+		// nothing can change the one being walked here. Listeners added during
+		// dispatch are still not invoked until the next dispatch, and a
+		// listener removed during dispatch is still invoked for this one —
+		// the same contract a per-dispatch copy gave, without allocating an
+		// array every time an event is sent.
+		for (i in 0...len) {
+			var entry = list[i];
 			if (entry == null || entry.listener == null) {
 				continue;
 			}
@@ -240,17 +256,27 @@ class EventDispatcher implements IEventDispatcher {
 	}
 
 	private inline function __compactListeners(type:String, list:Array<ListenerEntry>):Void {
-		var idx = list.length - 1;
-		while (idx >= 0) {
-			var entry = list[idx];
-			if (entry == null || entry.listener == null) {
-				list.splice(idx, 1);
+		if (__eventMap == null) {
+			return;
+		}
+
+		// Built fresh rather than spliced, for the same reason add and remove
+		// build fresh: a dispatch may be walking this array right now, and
+		// removing from underneath it would make it skip entries.
+		var kept:Array<ListenerEntry> = [];
+		for (i in 0...list.length) {
+			var entry = list[i];
+			if (entry != null && entry.listener != null) {
+				kept.push(entry);
 			}
-			idx--;
 		}
-		if (list.length == 0 && __eventMap != null) {
+
+		if (kept.length == 0) {
 			__eventMap.remove(type);
+			return;
 		}
+
+		__eventMap.set(type, kept);
 	}
 }
 

@@ -44,6 +44,9 @@ class HaxePollBackend implements PollBackend {
 
 		#if cpp
 		__poll.prepare(__read, __write);
+		#else
+		__readAt = __index(__read);
+		__writeAt = __index(__write);
 		#end
 	}
 
@@ -57,8 +60,15 @@ class HaxePollBackend implements PollBackend {
 		var write = __write.copy();
 		var ready = Socket.select(read, write, [], timeout);
 
-		__fillIndexes(readIndexes, __read, ready.read);
-		__fillIndexes(writeIndexes, __write, ready.write);
+		if (__readAt == null) {
+			__readAt = __index(__read);
+		}
+		if (__writeAt == null) {
+			__writeAt = __index(__write);
+		}
+
+		__fillIndexes(readIndexes, __readAt, ready.read);
+		__fillIndexes(writeIndexes, __writeAt, ready.write);
 		#end
 	}
 
@@ -72,14 +82,32 @@ class HaxePollBackend implements PollBackend {
 	}
 
 	#if !cpp
-	private function __fillIndexes(indexes:Array<Int>, source:Array<Socket>, ready:Array<Socket>):Void {
+	/**
+	 * Position of each registered socket, rebuilt when the set it describes
+	 * changes rather than walked per readiness result.
+	 */
+	private var __readAt:haxe.ds.ObjectMap<Socket, Int>;
+	private var __writeAt:haxe.ds.ObjectMap<Socket, Int>;
+
+	private function __index(source:Array<Socket>):haxe.ds.ObjectMap<Socket, Int> {
+		var at:haxe.ds.ObjectMap<Socket, Int> = new haxe.ds.ObjectMap();
+		for (i in 0...source.length) {
+			at.set(source[i], i);
+		}
+		return at;
+	}
+
+	private function __fillIndexes(indexes:Array<Int>, at:haxe.ds.ObjectMap<Socket, Int>, ready:Array<Socket>):Void {
 		var count:Int = 0;
+
+		// Was a scan of the registered set per ready socket, so a busy pass
+		// cost registered x ready comparisons — 65,536 of them for 256 sockets
+		// all readable at once, every pump. The positions are fixed until the
+		// set changes, so they are looked up instead.
 		for (socket in ready) {
-			for (i in 0...source.length) {
-				if (source[i] == socket) {
-					indexes[count++] = i;
-					break;
-				}
+			var i:Null<Int> = at.get(socket);
+			if (i != null) {
+				indexes[count++] = i;
 			}
 		}
 
