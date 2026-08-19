@@ -898,6 +898,63 @@ Host: localhost
 		config.rootDirectory.resolvePath(name).save(bytes);
 	}
 
+	public function testPhpSourceIsNotServedWhenNoBridgeIsConfigured():Void {
+		// phpEnabled is false by default, and a .php file used to fall through
+		// to the static path when no bridge existed -- so a default server
+		// answered this with 200 and the file itself. PHP source is where
+		// credentials live; serving it verbatim hands them out.
+		var response = __sendRequest([], "GET /config.php HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			var secret = new ByteArray();
+			secret.writeUTFBytes("<?php $DB_PASSWORD = 'hunter2'; ?>");
+			config.rootDirectory.resolvePath("config.php").save(secret);
+		});
+
+		Assert.equals(404, response.status);
+		Assert.isFalse(response.body.indexOf("hunter2") >= 0);
+		Assert.isFalse(response.body.indexOf("<?php") >= 0);
+	}
+
+	public function testPhpSourceIsNotServedAsADirectoryIndex():Void {
+		// The same disclosure without naming the file: directoryIndex leads
+		// with index.php, so a directory resolves to it and reaches the static
+		// path through __serveFile's recursion rather than directly.
+		//
+		// Both config lines exist to make that route reachable, and this test
+		// passed without either of them while the hole was still open. The
+		// harness passes ["index.html"] as directoryIndex, so the directory
+		// never resolved to a .php file at all; and under the default tryFiles
+		// the /index.html fallback answers a directory request before the
+		// index is looked up. Either one alone is enough to make the test green
+		// against a server that would have handed over the source.
+		var response = __sendRequest([], "GET /private/ HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			config.tryFiles = ["$uri", "$uri/"];
+			config.directoryIndex = ["index.php", "index.html"];
+			var dir = config.rootDirectory.resolvePath("private");
+			dir.createDirectory();
+			var secret = new ByteArray();
+			secret.writeUTFBytes("<?php $API_KEY = 'sk-live-secret'; ?>");
+			dir.resolvePath("index.php").save(secret);
+		});
+
+		Assert.equals(404, response.status);
+		Assert.isFalse(response.body.indexOf("sk-live-secret") >= 0);
+	}
+
+	public function testUppercaseExtensionDoesNotBypassTheSourceGuard():Void {
+		// Windows opens config.PHP and config.php as the same file, so a guard
+		// that compared the extension literally would be bypassable by asking
+		// for the other case. __isPhp lowercases, and the guard reuses it
+		// rather than repeating the test.
+		var response = __sendRequest([], "GET /config.PHP HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			var secret = new ByteArray();
+			secret.writeUTFBytes("<?php $DB_PASSWORD = 'hunter2'; ?>");
+			config.rootDirectory.resolvePath("config.PHP").save(secret);
+		});
+
+		Assert.equals(404, response.status);
+		Assert.isFalse(response.body.indexOf("hunter2") >= 0);
+	}
+
 	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");

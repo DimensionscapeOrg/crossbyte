@@ -720,7 +720,28 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 			return;
 		} else {
-			if (__php != null && __isPhp(file.nativePath)) {
+			// Tested with `__isPhp` alone rather than with the bridge, because
+			// the answer to "would this have been executed" and the answer to
+			// "may this be sent as bytes" have to come from the same question.
+			// They did not: a source file was executed when a bridge existed
+			// and fell through to the static path when one did not, so a
+			// server with PHP off -- the default -- answered GET /config.php
+			// with 200 and the file, credentials and all. Source disclosure
+			// on a default configuration.
+			//
+			// 404 rather than 403: this server cannot serve the file in any
+			// form, and saying so without confirming it is there keeps the
+			// reply identical to one for a path that does not exist. The
+			// operator is told through the log instead, which is the half of
+			// the story an anonymous client should not get.
+			if (__isPhp(file.nativePath)) {
+				if (__php == null) {
+					Logger.warn("Refusing to serve PHP source with no bridge configured; set phpEnabled to execute it, or move it out of the web root.",
+						["path" => __requestPath]);
+					__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+					return;
+				}
+
 				__servePhp(file.nativePath, headOnly);
 				return;
 			}
