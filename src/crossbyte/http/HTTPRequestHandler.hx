@@ -2137,13 +2137,40 @@ final class HTTPRequestHandler extends EventDispatcher {
 			case 413: "Payload Too Large";
 			case 416: "Range Not Satisfiable";
 			case 417: "Expectation Failed";
+			case 422: "Unprocessable Content";
+			case 428: "Precondition Required";
 			case 429: "Too Many Requests";
+			case 431: "Request Header Fields Too Large";
 			case 500: "Internal Server Error";
-			case 502: "Bad Gateway";
 			case 501: "Not Implemented";
+			case 502: "Bad Gateway";
+			case 503: "Service Unavailable";
 			case 504: "Gateway Timeout";
 			case 505: "HTTP Version Not Supported";
-			default: "OK";
+			// A status with no phrase of its own gets one for its class rather
+			// than "OK", which is what this used to answer for everything it
+			// did not know. A middleware raising 503 through next(503) put
+			// "HTTP/1.1 503 OK" on the wire — a status line that contradicts
+			// itself, and reads as success to anything matching on the phrase
+			// rather than the code. HTTP/1.1 allows the phrase to be anything,
+			// including empty; it does not allow it to be a lie.
+			default: __statusClass(code);
+		}
+	}
+
+	@:noCompletion private inline function __statusClass(code:Int):String {
+		return if (code >= 100 && code < 200) {
+			"Informational";
+		} else if (code < 300) {
+			"Success";
+		} else if (code < 400) {
+			"Redirection";
+		} else if (code < 500) {
+			"Client Error";
+		} else if (code < 600) {
+			"Server Error";
+		} else {
+			"Unknown Status";
 		}
 	}
 
