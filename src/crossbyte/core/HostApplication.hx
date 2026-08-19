@@ -42,8 +42,8 @@ class HostApplication extends Application {
 	 * This constructor must still be called on the process main thread, just
 	 * like other primordial CrossByte application types.
 	 */
-	private function new():Void {
-		super(DEFAULT, true);
+	private function new(timers:TimerStrategy = HEAP):Void {
+		super(DEFAULT, true, timers);
 	}
 
 	/**

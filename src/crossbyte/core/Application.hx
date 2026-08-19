@@ -91,6 +91,7 @@ class Application extends EventDispatcher {
 	private var __crossByte:CrossByte;
 	private var __crossByteHostDriven:Bool;
 	private var __crossByteLoopType:MainLoopType;
+	private var __crossByteTimers:TimerStrategy;
 
 	private inline function get_crossByte():CrossByte {
 		return __crossByte;
@@ -104,13 +105,16 @@ class Application extends EventDispatcher {
 	 * `HostApplication`.
 	 *
 	 * @param loopType The main-loop strategy for the primordial `CrossByte`.
+	 * @param timers Which structure the primordial runtime schedules timers
+	 *        with. The heap suits almost everything; see `TimerStrategy`.
 	 * @param hostDriven Whether the host application, rather than CrossByte,
 	 *        is responsible for advancing the primordial runtime.
 	 */
-	private function new(loopType:MainLoopType = DEFAULT, hostDriven:Bool = false) {
+	private function new(loopType:MainLoopType = DEFAULT, hostDriven:Bool = false, timers:TimerStrategy = HEAP) {
 		super();
 		__crossByteLoopType = loopType;
 		__crossByteHostDriven = hostDriven;
+		__crossByteTimers = timers;
 
 		initialize();
 	}
@@ -131,7 +135,7 @@ class Application extends EventDispatcher {
 		}
 
 		__application = this;
-		__crossByte = new CrossByte(true, __crossByteLoopType, __crossByteHostDriven);
+		__crossByte = new CrossByte(true, __crossByteLoopType, __crossByteHostDriven, __crossByteTimers);
 		__crossByte.addEventListener(Event.INIT, __onInit);
 		__crossByte.addEventListener(Event.EXIT, __onExit);
 	}

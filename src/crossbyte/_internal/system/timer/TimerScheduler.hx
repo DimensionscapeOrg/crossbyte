@@ -1,6 +1,7 @@
 package crossbyte._internal.system.timer;
 
 import crossbyte._internal.system.timer.heap.TimerHeap;
+import crossbyte.core.TimerStrategy;
 
 /**
  * An abstract wrapper around `ITimerScheduler`, providing a unified and extensible
@@ -54,23 +55,22 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	}
 
 	/**
-	 * Creates a new `TimerScheduler`.
+	 * Creates a new `TimerScheduler` using the given strategy.
 	 *
-	 * The heap is the default and suits almost everything: it orders timers
-	 * exactly, and a delay of a microsecond costs what a delay of six hours
-	 * costs. Building with `-D timer_wheel` swaps in the timing wheel, which
-	 * trades that generality for arming and firing that do not grow with the
-	 * number of timers held — worth it for a runtime carrying a timer per
-	 * entity or per connection, and worse for one whose timers are mostly
-	 * long, since those wait in an overflow list the heap has no equivalent
-	 * of. See `TimerWheel` for the measurements behind that.
+	 * Resolved per instance rather than per build, because a process can run
+	 * several runtimes and they need not agree: a simulation thread holding a
+	 * timer per entity and a network thread holding a handful want different
+	 * structures, and a compile flag cannot say so. There is no cost to
+	 * deciding it here — this abstract already calls through `ITimerScheduler`
+	 * either way, so nothing was being saved by fixing it at build time.
+	 *
+	 * See `crossbyte.core.TimerStrategy` for which to pick.
 	 */
-	public inline function new() {
-		#if timer_wheel
-		this = new crossbyte._internal.system.timer.wheel.TimerWheel();
-		#else
-		this = new TimerHeap();
-		#end
+	public inline function new(strategy:TimerStrategy = HEAP) {
+		this = switch (strategy) {
+			case WHEEL: new crossbyte._internal.system.timer.wheel.TimerWheel();
+			case HEAP: new TimerHeap();
+		}
 	}
 
 	/**
