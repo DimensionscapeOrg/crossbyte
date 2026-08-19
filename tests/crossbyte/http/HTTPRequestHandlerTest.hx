@@ -9,6 +9,7 @@ import crossbyte.net.Socket;
 import crossbyte.utils.CompressionAlgorithm;
 import haxe.Timer;
 import crossbyte.http.HTTPTestSupport.HTTPTestResponse;
+import crossbyte.errors.ArgumentError;
 import utest.Assert;
 
 @:access(crossbyte.http.HTTPRequestHandler)
@@ -560,7 +561,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var result = __sendRequests([], [
 			"GET /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
-		], config -> config.tryFiles = ["$uri"]);
+		], config -> config.tryFiles = ["$uri", "$uri/"]);
 
 		Assert.equals(404, result.responses[0].status);
 		Assert.equals("keep-alive", result.responses[0].headers.get("connection"));
@@ -753,16 +754,92 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testPhpRewriteWithoutABridgeDoesNotCrash():Void {
-		// The shipped defaults rewrite every /api path to PHP while phpEnabled
-		// defaults to false, so a default server answering a request path a
-		// great many services use reached a null bridge and segfaulted -- not
-		// an error on that connection, the whole process.
-		var response = __sendRequest([], "GET /api/status HTTP/1.1
-Host: localhost
-
-");
+		// A PHP-flagged rewrite on a server with no bridge reached a null
+		// pointer and took the process down -- not an error on that connection,
+		// but the whole process, and every other connection with it.
+		//
+		// The rule is written out here because the defaults used to carry it:
+		// every /api path to /index.php with the PHP flag, while phpEnabled
+		// defaults to false. That is how a stock server segfaulted on a path a
+		// great many services use. The defaults ship empty now, so this test
+		// supplies its own -- and the guard still earns its place, because
+		// rewrites is a public array a PHP rule can be added to at any time.
+		var response = __sendRequest([], "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			config.rewrites = [
+				{pattern: "^/api/.*$", target: "/index.php", flags: ["L", "QSA", "PHP"], conditions: []}
+			];
+		});
 
 		Assert.equals(500, response.status);
+	}
+
+	public function testDirectoryIndexPrefersOneTheServerCanActuallyServe():Void {
+		// directoryIndex leads with index.php, so a directory holding both it
+		// and an index.html selected the PHP file -- which without a bridge
+		// cannot be served. Once serving it was refused the directory answered
+		// 404 with a usable index sitting right beside it. Selection now skips
+		// what cannot be delivered rather than picking it and failing later.
+		//
+		// tryFiles drops its /index.html entry because the fallback would
+		// otherwise answer the directory request before the index is resolved,
+		// and the test would pass without exercising the selection at all.
+		var response = __sendRequest([], "GET /both/ HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
+			config.tryFiles = ["$uri", "$uri/"];
+			config.directoryIndex = ["index.php", "index.html"];
+			var dir = config.rootDirectory.resolvePath("both");
+			dir.createDirectory();
+			var php = new ByteArray();
+			php.writeUTFBytes("<?php $SECRET = 1; ?>");
+			dir.resolvePath("index.php").save(php);
+			var html = new ByteArray();
+			html.writeUTFBytes("REAL HTML INDEX");
+			dir.resolvePath("index.html").save(html);
+		});
+
+		Assert.equals(200, response.status);
+		Assert.equals("REAL HTML INDEX", response.body);
+	}
+
+	public function testDefaultConfigShipsNoRewrites():Void {
+		// The defaults rewrote every /api path to /index.php with the PHP flag
+		// while phpEnabled defaulted to false, so a stock server crashed on a
+		// request path a great many services use. Nothing is routed anywhere
+		// now unless it is asked for.
+		var root = File.createTempDirectory();
+		var config = new HTTPServerConfig("127.0.0.1", 0, root);
+		Assert.equals(0, config.rewrites.length);
+
+		var response = __sendRequest([], "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		Assert.isTrue(response.status != 500);
+	}
+
+	public function testTryFilesMustBeSpelledInTheOrderTheServerUses():Void {
+		// $uri and $uri/ are tested before this list is read and before the
+		// rewrites, so a config that puts a literal first, omits them, or names
+		// one twice describes an order that does not happen. Rejecting it is the
+		// point: a config quietly meaning something else is how the /api default
+		// came to crash a stock server.
+		var root = File.createTempDirectory();
+
+		var valid = new HTTPServerConfig("127.0.0.1", 0, root);
+		valid.validate();
+		Assert.pass();
+
+		var literalFirst = new HTTPServerConfig("127.0.0.1", 0, root);
+		literalFirst.tryFiles = ["/index.html", "$uri", "$uri/"];
+		Assert.raises(() -> literalFirst.validate(), ArgumentError);
+
+		var swapped = new HTTPServerConfig("127.0.0.1", 0, root);
+		swapped.tryFiles = ["$uri/", "$uri"];
+		Assert.raises(() -> swapped.validate(), ArgumentError);
+
+		var omitted = new HTTPServerConfig("127.0.0.1", 0, root);
+		omitted.tryFiles = ["/index.html"];
+		Assert.raises(() -> omitted.validate(), ArgumentError);
+
+		var repeated = new HTTPServerConfig("127.0.0.1", 0, root);
+		repeated.tryFiles = ["$uri", "$uri/", "/index.html", "$uri"];
+		Assert.raises(() -> repeated.validate(), ArgumentError);
 	}
 
 	public function testUnmappedStatusGetsItsClassNotOK():Void {

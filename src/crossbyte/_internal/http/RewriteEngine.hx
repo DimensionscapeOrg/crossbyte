@@ -162,6 +162,15 @@ class RewriteEngine {
 		}
 
 		for (i in cfg.directoryIndex) {
+			// An index the server cannot serve is not an index. With PHP off
+			// there is no bridge to execute index.php, so offering it here
+			// made a directory holding both index.php and index.html resolve
+			// to the one that cannot be delivered and answer 404 with a
+			// perfectly good index sitting beside it.
+			if (!cfg.phpEnabled && isPhpPath(i)) {
+				continue;
+			}
+
 			var p:String = Path.join([a, i]);
 
 			if (sys.FileSystem.exists(p) && !sys.FileSystem.isDirectory(p)) {

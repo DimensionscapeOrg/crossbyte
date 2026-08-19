@@ -33,6 +33,7 @@ class HTTPServer extends ServerSocket {
 	@:noCompletion private var __sweepArmed:Bool = false;
 
 	public function new(config:HTTPServerConfig) {
+		config.validate();
 		super(config.tlsEnabled);
 		__connections = 0;
 		__config = config;
