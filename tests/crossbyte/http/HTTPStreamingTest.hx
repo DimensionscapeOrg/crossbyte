@@ -84,6 +84,97 @@ class HTTPStreamingTest extends utest.Test {
 	 * `large.bin` filled with the deterministic pattern, and returns the
 	 * parsed response together with the handler's observed peak buffering.
 	 */
+	public function testStreamedResponseKeepsTheConnectionUsable():Void {
+		// A streamed response used to force its connection closed, because
+		// the head is written long before the body finishes and settling at
+		// head time would either cut the body or let the next request's
+		// response interleave into it. Settling moved to the pump instead, so
+		// the body's own Content-Length frames it exactly as it does for a
+		// buffered response and the connection survives.
+		//
+		// Both bodies are checked byte-for-byte: a second response that began
+		// before the first had drained would corrupt the tail of the first,
+		// and a length assertion alone would not see it.
+		var root:File = File.createTempDirectory();
+		var size:Int = 512 * 1024;
+		root.resolvePath("large.bin").save(__makePattern(size));
+
+		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+		var server = new HTTPServer(config);
+		var client = new Socket();
+		var received = new ByteArray();
+		var closeSeen = false;
+		var failure:Dynamic = null;
+
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			if (client.bytesAvailable > 0) {
+				client.readBytes(received, received.length);
+			}
+		});
+		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
+
+		var request:String = "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n";
+		client.addEventListener(Event.CONNECT, _ -> {
+			client.writeUTFBytes(request);
+			client.flush();
+		});
+
+		try {
+			client.connect("127.0.0.1", server.localPort);
+
+			var firstEnd:Int = -1;
+			HTTPTestSupport.pumpUntil(function() {
+				firstEnd = HTTPTestSupport.responseEndAt(__asText(received), 0, false);
+				return closeSeen || firstEnd >= 0;
+			}, 20.0);
+
+			Assert.isTrue(firstEnd >= 0);
+			Assert.isFalse(closeSeen);
+
+			var head = HTTPTestSupport.parseResponse(__asText(received));
+			Assert.equals(200, head.status);
+			Assert.equals("keep-alive", head.headers.get("connection"));
+
+			// The whole first body, verified against the pattern.
+			var bodyStart:Int = firstEnd - size;
+			Assert.equals(0, __countPatternMismatches(received, bodyStart, size, 0));
+
+			client.writeUTFBytes(request);
+			client.flush();
+
+			var secondEnd:Int = -1;
+			HTTPTestSupport.pumpUntil(function() {
+				secondEnd = HTTPTestSupport.responseEndAt(__asText(received), firstEnd, false);
+				return closeSeen || secondEnd >= 0;
+			}, 20.0);
+
+			Assert.isTrue(secondEnd >= 0);
+			Assert.equals(0, __countPatternMismatches(received, secondEnd - size, size, 0));
+		} catch (error:Dynamic) {
+			failure = error;
+		}
+
+		try client.close() catch (_:Dynamic) {}
+		try server.close() catch (_:Dynamic) {}
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+
+		if (failure != null) {
+			throw failure;
+		}
+	}
+
+	/**
+	 * The received bytes as text, for the framing helpers. Only the header
+	 * blocks are read out of it; body assertions stay on the ByteArray.
+	 */
+	private static function __asText(bytes:ByteArray):String {
+		var out = new StringBuf();
+		for (i in 0...bytes.length) {
+			out.addChar(bytes[i]);
+		}
+		return out.toString();
+	}
+
 	private function __serveFixture(fileSize:Int, requestText:String):StreamedResult {
 		var root:File = File.createTempDirectory();
 		var fixtureFile:File = root.resolvePath("large.bin");
