@@ -83,7 +83,7 @@ class HTTPServerDrainTest extends utest.Test {
 
 		try {
 			client.connect("127.0.0.1", server.localPort);
-			__pumpUntil(() -> raw.indexOf("drain fixture") >= 0, 2.0);
+			HTTPTestSupport.pumpUntil(() -> raw.indexOf("drain fixture") >= 0, 2.0);
 			Assert.isTrue(raw.indexOf("drain fixture") >= 0);
 			Assert.equals(1, server.activeConnections);
 
@@ -96,7 +96,7 @@ class HTTPServerDrainTest extends utest.Test {
 			Assert.isTrue(completed);
 			Assert.equals(0, server.activeConnections);
 
-			__pumpUntil(() -> closeSeen, 2.0);
+			HTTPTestSupport.pumpUntil(() -> closeSeen, 2.0);
 			Assert.isTrue(closeSeen);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -146,7 +146,7 @@ class HTTPServerDrainTest extends utest.Test {
 
 		try {
 			client.connect("127.0.0.1", server.localPort);
-			__pumpUntil(() -> release != null, 2.0);
+			HTTPTestSupport.pumpUntil(() -> release != null, 2.0);
 			Assert.notNull(release);
 
 			var completed = false;
@@ -157,7 +157,7 @@ class HTTPServerDrainTest extends utest.Test {
 			Assert.equals(1, server.activeConnections);
 
 			release();
-			__pumpUntil(() -> completed && closeSeen && raw.indexOf("drain fixture") >= 0, 3.0);
+			HTTPTestSupport.pumpUntil(() -> completed && closeSeen && raw.indexOf("drain fixture") >= 0, 3.0);
 
 			Assert.isTrue(completed);
 			// The response that finished during the drain warned the
@@ -191,12 +191,4 @@ class HTTPServerDrainTest extends utest.Test {
 		return new HTTPServer(config);
 	}
 
-	private function __pumpUntil(done:Void->Bool, timeout:Float):Void {
-		var runtime = CrossByte.current();
-		var deadline:Float = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
-			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
-		}
-	}
 }
