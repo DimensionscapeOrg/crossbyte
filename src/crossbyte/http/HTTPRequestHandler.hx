@@ -1228,6 +1228,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __findIndexFile(directory:File):Null<String> {
 		for (index in __config.directoryIndex) {
+			// Same rule as RewriteEngine.dirIndex, and it has to be the same
+			// rule: two selectors that disagree resolve one directory two
+			// ways depending on which one reached it first.
+			if (__php == null && __isPhp(index)) {
+				continue;
+			}
+
 			var indexPath:File = directory.resolvePath(index);
 			if (indexPath.exists) {
 				return indexPath.nativePath;

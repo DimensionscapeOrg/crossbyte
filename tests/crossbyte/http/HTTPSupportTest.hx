@@ -37,8 +37,10 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals(3, first.tryFiles.length);
 		Assert.equals("$uri", first.tryFiles[0]);
 		Assert.equals("/index.html", first.tryFiles[2]);
-		Assert.equals(1, first.rewrites.length);
-		Assert.equals("^/api/.*$", first.rewrites[0].pattern);
+		// No rewrites by default. The defaults used to carry one sending every
+		// /api path to /index.php with the PHP flag while phpEnabled defaults
+		// to false, so a stock server crashed on a path many services use.
+		Assert.equals(0, first.rewrites.length);
 		Assert.isTrue(first.rootDirectory != null);
 		// Keep-alive defaults on: it is what HTTP/1.1 specifies and what
 		// removes the per-request handshake without client changes.
@@ -62,7 +64,10 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals(0, second.customHeaders.length);
 		Assert.equals(0, second.middleware.length);
 		Assert.equals(3, second.tryFiles.length);
-		Assert.equals(1, second.rewrites.length);
+		// The point of the pair: pushing onto one config's array must not be
+		// visible through another's.
+		Assert.equals(1, first.rewrites.length);
+		Assert.equals(0, second.rewrites.length);
 	}
 
 	public function testRewriteEngineSupportsStaticPhpAndPassThroughDecisions():Void {
