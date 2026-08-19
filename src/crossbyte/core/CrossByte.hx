@@ -196,7 +196,12 @@ final class CrossByte extends EventDispatcher {
 	public var tps(get, set):UInt;
 
 	/**
-	 * Largest elapsed time, in seconds, handed to `TickEvent` listeners.
+	 * Largest elapsed time, in seconds, handed to `TickEvent` listeners by
+	 * the runtime's own loop.
+	 *
+	 * `pump()` is not bounded by this: its delta is supplied by the caller
+	 * rather than measured, so capping it would override a host that meant
+	 * what it passed.
 	 *
 	 * The delta a tick carries is however long the previous frame actually
 	 * took, and that is not bounded by anything: a collection pause, a
@@ -231,6 +236,21 @@ final class CrossByte extends EventDispatcher {
 	#end
 	@:noCompletion private var __tps:UInt;
 	@:noCompletion private var __dt:Float = 0.0;
+
+	/**
+	 * When the current frame is due to end, as an absolute time.
+	 *
+	 * Carried forward by one tick interval per frame rather than recomputed
+	 * from whenever a frame happened to begin. Measuring the wait from the
+	 * frame's own start makes every overrun permanent — a frame that runs
+	 * two milliseconds long simply ends two milliseconds late and the next
+	 * one starts from there — so a runtime configured for 60 ticks a second
+	 * delivered closer to 55, silently, and anything counting ticks as
+	 * elapsed time drifted behind the clock for as long as it ran.
+	 *
+	 * Zero until the first frame establishes it.
+	 */
+	@:noCompletion private var __frameDeadline:Float = 0.0;
 	@:noCompletion private var __cpuTime:Float = 0.0;
 	@:noCompletion private var __sleepAccuracy:Float = 0.0;
 
@@ -272,6 +292,11 @@ final class CrossByte extends EventDispatcher {
 		}
 		__tps = value;
 		__tickInterval = 1 / __tps;
+
+		// The schedule restarts from here. Carrying the old deadline across a
+		// rate change would either stall for an interval that no longer
+		// applies, or read as debt and burn catch-up frames repaying it.
+		__frameDeadline = Timer.stamp() + __tickInterval;
 
 		return value;
 	}
@@ -703,12 +728,11 @@ final class CrossByte extends EventDispatcher {
 		// which is why the frame wait was kept out of poll's hands
 		// originally. Timers cannot be starved by it: the budget is bounded
 		// by the frame, and whatever it does not consume is slept off below.
-		var remaining:Float = __tickInterval - __dt;
+		var remaining:Float = __frameDeadline - Timer.stamp();
 
 		while (remaining >= MIN_POLL_WAIT && __getRunning()) {
 			__socketRegistry.update(remaining);
-			__dt = Timer.stamp() - frameStart;
-			remaining = __tickInterval - __dt;
+			remaining = __frameDeadline - Timer.stamp();
 		}
 
 		__wait(frameStart);
@@ -725,18 +749,44 @@ final class CrossByte extends EventDispatcher {
 		return __dt > cap ? cap : __dt;
 	}
 
+	/**
+	 * Moves the deadline on by one interval, giving up the debt when the
+	 * runtime has fallen further behind than a stall is worth chasing.
+	 *
+	 * Keeping the debt is what holds the configured rate: a frame that runs
+	 * long leaves the next one a shorter wait, so the average lands on the
+	 * interval instead of drifting past it. Keeping it without limit is the
+	 * other failure — after a suspend or a breakpoint the loop would run a
+	 * burst of zero-wait frames trying to repay minutes of debt, starving
+	 * everything else to catch up with a schedule nobody is watching. Past
+	 * `maxDelta`, the same bound the tick delta uses, the stall is declared
+	 * unrecoverable and the schedule restarts from now.
+	 */
+	@:noCompletion private #if final inline #end function __advanceDeadline():Void {
+		__frameDeadline += __tickInterval;
+
+		var now:Float = Timer.stamp();
+		var cap:Float = maxDelta > __tickInterval ? maxDelta : __tickInterval;
+
+		if (now - __frameDeadline > cap) {
+			__frameDeadline = now + __tickInterval;
+		}
+	}
+
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
 		#if precision_tick
 		var minSleep = 0.001;
 
-		while (__dt < __tickInterval) {
-			if (__dt + __sleepAccuracy > __tickInterval) {
+		while (Timer.stamp() < __frameDeadline) {
+			if (Timer.stamp() + __sleepAccuracy > __frameDeadline) {
 				minSleep = 0;
 			}
 
 			Sys.sleep(minSleep);
-			__dt = Timer.stamp() - frameStartTime;
 		}
+
+		__dt = Timer.stamp() - frameStartTime;
+		__advanceDeadline();
 		#else
 		// The bulk of the wait goes in one sleep, and only the last couple of
 		// milliseconds are stepped out. Stepping the whole remainder — which
@@ -744,15 +794,17 @@ final class CrossByte extends EventDispatcher {
 		// eighty per frame at the default tick rate, all of them to arrive at
 		// the same moment one sleep would have.
 		while (true) {
-			var remaining:Float = __tickInterval - __dt;
+			var remaining:Float = __frameDeadline - Timer.stamp();
 
 			if (remaining <= 0) {
 				break;
 			}
 
 			Sys.sleep(remaining > SLEEP_SLACK ? remaining - SLEEP_SLACK : 0.001);
-			__dt = Timer.stamp() - frameStartTime;
 		}
+
+		__dt = Timer.stamp() - frameStartTime;
+		__advanceDeadline();
 		#end
 	}
 }
