@@ -53,6 +53,7 @@ class Aedifex {
 		.task("cpp-api-audit", "haxe", ["ci/cpp-api-audit.hxml"], null, "Perform the hxcpp API surface audit build.")
 		.task("cpp-timer-burst-audit", "haxe", ["ci/cpp-timer-burst-audit.hxml"], null, "Type-check the timer burst API surface for hxcpp targets.")
 		.task("cpp-precision-tick-audit", "haxe", ["ci/cpp-precision-tick-audit.hxml"], null, "Type-check the precision tick frame wait, which no test suite compiles.")
+		.task("cpp-timer-wheel-audit", "haxe", ["ci/cpp-timer-wheel-audit.hxml"], null, "Type-check the timing wheel scheduler selected by -D timer_wheel.")
 		.task("localconnection-integration", "haxe", ["tests/integration/localconnection.hxml"], null, "Build the native local transport integration harness.")
 		.task("postgres-tests", "haxe", ["ci/postgres-tests.hxml"], null, "Build the PostgreSQL integration suite (needs a live server to run).")
 		.task("sample-websocket-echo-check", "haxe", ["check.hxml"], "samples/websocket-echo", "Type-check the websocket echo sample.")

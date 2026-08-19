@@ -152,6 +152,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.timer.GlobalTimerTest());
 		runner.addCase(new crossbyte.timer.HaxeTimerTest());
 		runner.addCase(new crossbyte.timer.TimerHeapTest());
+		runner.addCase(new crossbyte.timer.TimerWheelTest());
 	}
 
 	public static function addUtils(runner:Runner):Void {
