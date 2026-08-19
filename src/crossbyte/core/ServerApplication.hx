@@ -46,8 +46,8 @@ class ServerApplication extends Application {
 	/**
 	 * Creates the primordial poll-driven application.
 	 */
-	private function new():Void {
-		super(POLL);
+	private function new(timers:TimerStrategy = HEAP):Void {
+		super(POLL, false, timers);
 	}
 
 	/**

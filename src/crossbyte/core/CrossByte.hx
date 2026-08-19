@@ -137,14 +137,17 @@ final class CrossByte extends EventDispatcher {
 	 * instances after the primordial application has already been established.
 	 *
 	 * @param loopType The loop strategy to use for the child runtime.
+	 * @param timers Which structure schedules its timers. Per runtime rather
+	 *        than per process, so a thread holding a timer per entity and one
+	 *        holding a handful need not agree.
 	 * @return The newly created non-primordial CrossByte instance.
 	 */
-	public static function make(loopType:MainLoopType = DEFAULT):CrossByte {
+	public static function make(loopType:MainLoopType = DEFAULT, timers:TimerStrategy = HEAP):CrossByte {
 		if (__primordial == null) {
 			throw new IllegalOperationError("CrossByte.make() requires a primordial CrossByte instance. Create an Application, HostApplication, ServerApplication, or primordial CrossByte before creating child runtimes.");
 		}
 
-		var instance:CrossByte = new CrossByte(false, loopType);
+		var instance:CrossByte = new CrossByte(false, loopType, false, timers);
 		return instance;
 	}
 
@@ -226,6 +229,9 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Private Variables ====
 	@:noCompletion private var __tickInterval:Float;
+
+	/** Structure this runtime schedules timers with; see `TimerStrategy`. */
+	@:noCompletion private var __timerStrategy:TimerStrategy;
 	// Stop flag observed by the loop thread and written by exit() (possibly from
 	// another thread). On cpp it is an atomic 0/1 flag so the loop reliably sees
 	// the stop request; elsewhere a plain Bool is sufficient (single-threaded).
@@ -320,7 +326,8 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// ==== Constructor ====
-	private function new(isPrimordial:Bool, loopType:MainLoopType = DEFAULT, hostDriven:Bool = false) {
+	private function new(isPrimordial:Bool, loopType:MainLoopType = DEFAULT, hostDriven:Bool = false, timers:TimerStrategy = HEAP) {
+		__timerStrategy = timers;
 		super(this);
 		__isPrimordial = isPrimordial;
 		__loopType = loopType;
@@ -469,7 +476,7 @@ final class CrossByte extends EventDispatcher {
 		__socketRegistry = new SocketRegistry(__initialSocketCapacity());
 		#end
 
-		__timer = new TimerScheduler();
+		__timer = new TimerScheduler(__timerStrategy);
 		CBTimer.bindCurrentThread(__timer);
 		tps = DEFAULT_TICKS_PER_SECOND;
 		mainLoop = switch (__loopType) {
