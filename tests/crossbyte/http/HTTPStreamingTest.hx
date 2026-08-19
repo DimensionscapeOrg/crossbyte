@@ -122,14 +122,14 @@ class HTTPStreamingTest extends utest.Test {
 
 		try {
 			client.connect("127.0.0.1", server.localPort);
-			__pumpUntil(() -> closeSeen || __responseComplete(received), 15.0);
+			HTTPTestSupport.pumpUntil(() -> closeSeen || __responseComplete(received), 15.0);
 
 			// Let the transfer finish tearing itself down before anything is
 			// torn down around it. A stream still holding its FileStream
 			// when the fixture deletes the directory turns a pump bug into a
 			// file-locking error somewhere unrelated, and it is also the
 			// assertion that the pump releases what it holds at all.
-			__pumpUntil(() -> handler == null || handler.__streamSource == null, 5.0);
+			HTTPTestSupport.pumpUntil(() -> handler == null || handler.__streamSource == null, 5.0);
 			Assert.isTrue(handler == null || handler.__streamSource == null);
 
 			result = __parseResponse(received, handler != null ? handler.__streamPeakBuffered : -1);
@@ -254,14 +254,6 @@ class HTTPStreamingTest extends utest.Test {
 		return {status: status, headers: headers, body: body, peak: peak};
 	}
 
-	private function __pumpUntil(done:Void->Bool, timeout:Float):Void {
-		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
-			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
-		}
-	}
 }
 
 typedef StreamedResult = {

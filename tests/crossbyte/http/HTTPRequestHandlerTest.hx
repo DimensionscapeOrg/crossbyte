@@ -8,6 +8,7 @@ import crossbyte.io.File;
 import crossbyte.net.Socket;
 import crossbyte.utils.CompressionAlgorithm;
 import haxe.Timer;
+import crossbyte.http.HTTPTestSupport.HTTPTestResponse;
 import utest.Assert;
 
 @:access(crossbyte.http.HTTPRequestHandler)
@@ -903,8 +904,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var headOnly:Bool = StringTools.startsWith(requestText, "HEAD ");
 		try {
 			client.connect("127.0.0.1", server.localPort);
-			__pumpUntil(() -> closeSeen || __isResponseComplete(rawResponse, headOnly), 2.0);
-			response = __parseResponse(rawResponse, rawResponseBytes);
+			HTTPTestSupport.pumpUntil(() -> closeSeen || HTTPTestSupport.isResponseComplete(rawResponse, headOnly), 2.0);
+			response = HTTPTestSupport.parseResponse(rawResponse, rawResponseBytes);
 			try {
 				client.close();
 			} catch (_:Dynamic) {}
@@ -988,8 +989,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 			for (i in 0...requests.length) {
 				var headOnly = StringTools.startsWith(requests[i], "HEAD ");
 				var sliceEnd = -1;
-				__pumpUntil(() -> {
-					sliceEnd = __responseEndAt(rawResponse, cursor, headOnly);
+				HTTPTestSupport.pumpUntil(() -> {
+					sliceEnd = HTTPTestSupport.responseEndAt(rawResponse, cursor, headOnly);
 					return sliceEnd >= 0;
 				}, 2.0);
 				if (sliceEnd < 0) {
@@ -1001,7 +1002,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 				for (j in cursor...sliceEnd) {
 					sliceBytes.writeByte(rawResponse.charCodeAt(j) & 0xFF);
 				}
-				responses.push(__parseResponse(slice, sliceBytes));
+				responses.push(HTTPTestSupport.parseResponse(slice, sliceBytes));
 				cursor = sliceEnd;
 
 				if (!pipelined && i < requests.length - 1) {
@@ -1014,7 +1015,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			}
 
 			if (waitAfter > 0) {
-				__pumpUntil(() -> closeSeen, waitAfter);
+				HTTPTestSupport.pumpUntil(() -> closeSeen, waitAfter);
 			}
 
 			// Snapshot before the harness closes its own end: Socket.close()
@@ -1054,129 +1055,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 		return count;
 	}
 
-	private static function __isResponseComplete(raw:String, headOnly:Bool = false):Bool {
-		return __responseEndAt(raw, 0, headOnly) >= 0;
-	}
 
-	/**
-	 * Absolute index one past the end of the response that starts at
-	 * `start`, or -1 while it is still incomplete. Skips leading 1xx
-	 * interim blocks (Expect: 100-continue), which carry no framing of
-	 * their own; without that skip a kept-alive connection never closes
-	 * and completeness would only ever be decided by the pump timeout.
-	 * `headOnly` ends the response at its header terminator, since a HEAD
-	 * response advertises a Content-Length it will never send.
-	 */
-	private static function __responseEndAt(raw:String, start:Int, headOnly:Bool):Int {
-		while (raw.indexOf("HTTP/1.1 100 ", start) == start || raw.indexOf("HTTP/1.0 100 ", start) == start) {
-			var interimEnd = raw.indexOf("\r\n\r\n", start);
-			if (interimEnd < 0) {
-				return -1;
-			}
-			start = interimEnd + 4;
-		}
 
-		var headerEnd = raw.indexOf("\r\n\r\n", start);
-		if (headerEnd < 0) {
-			return -1;
-		}
 
-		var bodyStart = headerEnd + 4;
-		if (headOnly) {
-			return bodyStart;
-		}
-
-		for (line in raw.substring(start, headerEnd).split("\r\n")) {
-			var lower = StringTools.trim(line).toLowerCase();
-			if (lower.indexOf("content-length:") == 0) {
-				var len:Null<Int> = Std.parseInt(StringTools.trim(lower.substr(15)));
-				if (len == null) {
-					return -1;
-				}
-				return raw.length >= bodyStart + len ? bodyStart + len : -1;
-			}
-		}
-		return -1;
-	}
-
-	private static function __parseResponse(raw:String, rawBytes:ByteArray):HTTPTestResponse {
-		var originalRaw = raw;
-		var parseText = raw;
-		var parseBytes = rawBytes;
-		while (parseText.indexOf("HTTP/1.1 100 ") == 0 || parseText.indexOf("HTTP/1.0 100 ") == 0) {
-			var interimEnd = parseText.indexOf("\r\n\r\n");
-			if (interimEnd < 0) {
-				break;
-			}
-			var drop = interimEnd + 4;
-			parseText = parseText.substr(drop);
-			if (parseBytes != null) {
-				var next = new ByteArray();
-				if (parseBytes.length > drop) {
-					next.writeBytes(parseBytes, drop, parseBytes.length - drop);
-				}
-				parseBytes = next;
-			}
-		}
-
-		while (raw.indexOf("HTTP/1.1 100 ") == 0 || raw.indexOf("HTTP/1.0 100 ") == 0) {
-			var interimEnd = raw.indexOf("\r\n\r\n");
-			if (interimEnd < 0) {
-				break;
-			}
-			raw = raw.substr(interimEnd + 4);
-		}
-
-		var lineEnd = parseText.indexOf("\r\n");
-		var statusLine = parseText.substr(0, lineEnd);
-		var status = 0;
-		if (statusLine != null && statusLine.length >= 12) {
-			status = Std.parseInt(statusLine.substr(9, 3));
-		}
-
-		var body = "";
-		var headers:Map<String, String> = new Map();
-		var headerEnd = parseText.indexOf("\r\n\r\n");
-		if (headerEnd >= 0) {
-			var headerLines = parseText.substr(lineEnd + 2, headerEnd - lineEnd - 2).split("\r\n");
-			for (line in headerLines) {
-				var separator = line.indexOf(":");
-				if (separator > 0) {
-					headers.set(StringTools.trim(line.substr(0, separator)).toLowerCase(), StringTools.trim(line.substr(separator + 1)));
-				}
-			}
-			body = parseText.substr(headerEnd + 4);
-		}
-
-		var responseBody = new ByteArray();
-		if (parseBytes != null && headerEnd >= 0 && parseBytes.length >= (headerEnd + 4)) {
-			var bodyStart:Int = headerEnd + 4;
-			responseBody.writeBytes(parseBytes, bodyStart, parseBytes.length - bodyStart);
-		}
-
-		return {
-			status: status,
-			headers: headers,
-			body: body,
-			bodyBytes: responseBody,
-			raw: originalRaw
-		};
-	}
-
-	private function __pumpUntil(done:Void->Bool, timeout:Float):Void {
-		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
-			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
-		}
-	}
 }
 
-typedef HTTPTestResponse = {
-	var status:Int;
-	var headers:Map<String, String>;
-	var body:String;
-	var bodyBytes:ByteArray;
-	var raw:String;
-}
