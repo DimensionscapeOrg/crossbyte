@@ -275,16 +275,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
-			// A response body is streaming out: bytes arriving now cannot be
-			// the next request, because a streamed response forces the
-			// connection closed at the end of the transfer (see
-			// __decideKeepAlive). Parsing them would interleave a second
-			// response into the current body and corrupt it. Consume and
-			// drop; letting them pile into the size check below would
-			// instead write a 413 into the middle of the body.
+			// A response body is streaming out. Bytes arriving now are the
+			// next request on a kept-alive connection, and they are kept
+			// rather than parsed: answering one now would interleave a second
+			// response into the body going out. They are picked up when the
+			// transfer finishes and the connection settles, through the same
+			// surplus path a pipelined request takes after a buffered
+			// response.
 			if (__streamSource != null) {
-				__incomingBuffer.clear();
-				__resetHeaderScan();
+				if (__incomingBuffer.length > MAX_BUFFER_SIZE) {
+					// No status can be sent to explain this: the status line
+					// left with the head and the body is mid-flight. Dropping
+					// the connection is the only honest end.
+					Logger.error("Request buffer exceeded " + MAX_BUFFER_SIZE + " bytes while a response was streaming; closing.");
+					__stopStream();
+					if (__origin.connected) {
+						__origin.close();
+					}
+				}
+
 				return;
 			}
 
@@ -1039,12 +1048,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__streamLastBuffered = __origin.outputBufferLength;
 
 		if (__streamRemaining == 0 && __streamLastBuffered == 0) {
-			// Matching the buffered tail's connection-per-request close, but
-			// only now: every byte has left this process.
+			// Every byte has left this process, so the response the head
+			// promised is complete and the connection can be settled on the
+			// decision that head recorded — kept for the next request, or
+			// closed. Deferring to here is the whole reason a streamed
+			// response can be kept alive at all: the body is well framed by
+			// the Content-Length that went out with the head, so the only
+			// thing that ever made it unsafe was settling too early.
 			__stopStream();
-			if (__origin.connected) {
-				__origin.close();
-			}
+			__settleConnection();
 		}
 	}
 
@@ -1349,16 +1361,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Connection header and the socket action can never disagree.
 	 */
 	@:noCompletion private function __decideKeepAlive(statusCode:Int):Bool {
-		// A streamed body forces the close. The response is not finished
-		// when its head is written -- the body follows over many ticks --
-		// so a kept-alive connection would let the next request's response
-		// interleave into it. Lifting this needs chunked framing and a
-		// finish the pump can defer to, which proposal 0017 carries as
-		// follow-up work.
-		if (__streamPending) {
-			return false;
-		}
-
 		if (!__config.keepAlive) {
 			return false;
 		}
@@ -1418,13 +1420,26 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		if (__streamPending) {
 			// The head is on the wire but the body has not been pumped yet.
-			// The transfer owns the connection from here and closes it when
-			// it drains: closing now would cut the body before its first
-			// byte, and resetting for a next request would invite a second
-			// response into the middle of it.
+			// The transfer owns the connection from here and settles it when
+			// the last byte leaves: settling now would either cut the body
+			// before its first byte or, on a kept-alive connection, invite
+			// the next request's response into the middle of it. The keep or
+			// close decision has already been made and written into the
+			// header above; the pump acts on it through __settleConnection.
 			return;
 		}
 
+		__settleConnection();
+	}
+
+	/**
+	 * Ends the connection, or readies it for the request after this one.
+	 *
+	 * Split out of `__finishResponse` because a streamed response reaches
+	 * this point long after its head was written — the head decides, the
+	 * pump settles — while every buffered response reaches it immediately.
+	 */
+	@:noCompletion private function __settleConnection():Void {
 		if (!__responseKeepAlive) {
 			// Surplus pipelined bytes are discarded with the close --
 			// identical to the old clear-and-close, whose clients re-send
