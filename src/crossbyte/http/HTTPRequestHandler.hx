@@ -2035,6 +2035,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __servePhp(absPhpPath:String, headOnly:Bool, ?body:ByteArray, ?overrideScriptName:String):Void {
+		if (__php == null) {
+			// A rewrite routed here with the PHP flag on a server that has no
+			// PHP bridge, which the shipped defaults do to every /api path
+			// while phpEnabled defaults to false. Reaching the bridge anyway
+			// dereferenced null and took the process down -- a segfault on a
+			// default configuration, from a request path a great many services
+			// use. A 500 says the server is misconfigured; a crash says
+			// nothing and loses every other connection with it.
+			Logger.error("Request rewritten to PHP but no PHP bridge is configured; set phpEnabled or remove the PHP rewrite.");
+			__sendErrorResponse(500, "Internal Server Error");
+			return;
+		}
+
 		// final reqUri:String = (__queryString != "" ? (__extractPathOnly() + "?" + __queryString) : __extractPathOnly());
 
 		var hostHeader:String = __headers.exists("host") ? __headers.get("host") : null;
