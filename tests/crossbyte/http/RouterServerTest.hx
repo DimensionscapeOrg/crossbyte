@@ -141,11 +141,11 @@ class RouterServerTest extends utest.Test {
 
 		try {
 			client.connect("127.0.0.1", server.localPort);
-			__pumpUntil(() -> closeSeen || __isComplete(raw), 2.0);
+			HTTPTestSupport.pumpUntil(() -> closeSeen || __isComplete(raw), 2.0);
 			if (waitForClose) {
 				// The chain's error path closes the connection itself; give
 				// the close event time to arrive behind the response bytes.
-				__pumpUntil(() -> closeSeen, 1.0);
+				HTTPTestSupport.pumpUntil(() -> closeSeen, 1.0);
 			}
 			result = __parse(raw, closeSeen);
 			try {
@@ -171,54 +171,19 @@ class RouterServerTest extends utest.Test {
 	}
 
 	private static function __isComplete(raw:String):Bool {
-		var headerEnd = raw.indexOf("\r\n\r\n");
-		if (headerEnd < 0) {
-			return false;
-		}
-
-		for (line in raw.substr(0, headerEnd).split("\r\n")) {
-			var lower = StringTools.trim(line).toLowerCase();
-			if (StringTools.startsWith(lower, "content-length:")) {
-				var len:Null<Int> = Std.parseInt(StringTools.trim(lower.substr("content-length:".length)));
-				if (len == null) {
-					return false;
-				}
-				return raw.length >= headerEnd + 4 + len;
-			}
-		}
-		return false;
+		return HTTPTestSupport.isResponseComplete(raw);
 	}
 
+	/**
+	 * Adapts the shared parser to this suite's result, which additionally
+	 * carries whether the connection closed -- the router's 405 and its
+	 * throwing-handler 500 differ from a routed 200 in exactly that.
+	 */
 	private static function __parse(raw:String, closed:Bool):RouterRoundTrip {
-		var headerEnd = raw.indexOf("\r\n\r\n");
-		var head:Array<String> = (headerEnd >= 0 ? raw.substr(0, headerEnd) : raw).split("\r\n");
-
-		var status = 0;
-		if (head[0].length >= 12) {
-			status = Std.parseInt(head[0].substr(9, 3));
-		}
-
-		var headers:Map<String, String> = new Map();
-		for (i in 1...head.length) {
-			var line = head[i];
-			var separator = line.indexOf(":");
-			if (separator > 0) {
-				headers.set(StringTools.trim(line.substr(0, separator)).toLowerCase(), StringTools.trim(line.substr(separator + 1)));
-			}
-		}
-
-		var body = (headerEnd >= 0) ? raw.substr(headerEnd + 4) : "";
-		return {status: status, headers: headers, body: body, closed: closed, raw: raw};
+		var parsed = HTTPTestSupport.parseResponse(raw);
+		return {status: parsed.status, headers: parsed.headers, body: parsed.body, closed: closed, raw: parsed.raw};
 	}
 
-	private function __pumpUntil(done:Void->Bool, timeout:Float):Void {
-		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
-			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
-		}
-	}
 }
 
 typedef RouterRoundTrip = {

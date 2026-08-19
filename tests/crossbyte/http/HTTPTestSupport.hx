@@ -1,0 +1,183 @@
+package crossbyte.http;
+
+import crossbyte.core.CrossByte;
+import crossbyte.io.ByteArray;
+
+/**
+ * Wire-level helpers shared by the HTTP server tests.
+ *
+ * These lived separately in every suite in this package, and the copies had
+ * already drifted: five pump loops, three response parsers, two completeness
+ * predicates that disagreed about whether a response missing `Content-Length`
+ * was finished. A predicate fixed in one copy left the others deciding
+ * completeness by pump timeout instead — which reads as a slow test rather
+ * than a wrong one, so it goes unnoticed.
+ *
+ * What is deliberately not here is the server-and-client scaffold each suite
+ * builds around these. Those differ in ways that matter — the fixtures they
+ * write, the configuration they apply, whether they hold the connection open
+ * — and folding them together would mean a parameter per difference.
+ *
+ * Not a `utest.Test`, so the suite coverage macro has nothing to register.
+ */
+class HTTPTestSupport {
+	/**
+	 * Pumps the current runtime until `done` reports true or `timeout`
+	 * seconds pass. Returns whether it finished rather than timed out, so a
+	 * caller can assert on that instead of inferring it.
+	 *
+	 * The short sleep between pumps keeps a spin from starving the peer
+	 * socket's own progress on a loaded machine.
+	 */
+	public static function pumpUntil(done:Void->Bool, timeout:Float, step:Float = 1 / 60, sleepBetween:Float = 0.001):Bool {
+		var runtime:CrossByte = CrossByte.current();
+		var deadline:Float = Sys.time() + timeout;
+
+		while (!done() && Sys.time() < deadline) {
+			runtime.pump(step, 0);
+
+			if (sleepBetween > 0) {
+				Sys.sleep(sleepBetween);
+			}
+		}
+
+		return done();
+	}
+
+	/** Pumps `count` further times, for settling work that follows a close. */
+	public static function pumpMore(count:Int, step:Float = 1 / 60):Void {
+		var runtime:CrossByte = CrossByte.current();
+
+		for (i in 0...count) {
+			runtime.pump(step, 0);
+		}
+	}
+
+	/**
+	 * Whether a complete response begins at the start of `raw`.
+	 */
+	public static function isResponseComplete(raw:String, headOnly:Bool = false):Bool {
+		return responseEndAt(raw, 0, headOnly) >= 0;
+	}
+
+	/**
+	 * Absolute index one past the end of the response starting at `start`, or
+	 * -1 while it is still incomplete.
+	 *
+	 * Leading 1xx interim blocks are skipped, since they carry no framing of
+	 * their own; without that a response following `Expect: 100-continue` is
+	 * never seen as complete and the caller waits out its whole timeout.
+	 * `headOnly` ends the response at its header terminator, because a HEAD
+	 * response advertises a `Content-Length` it will never send.
+	 *
+	 * Being offset-aware is what lets a caller walk several responses off one
+	 * kept-alive connection instead of only ever inspecting the first.
+	 */
+	public static function responseEndAt(raw:String, start:Int, headOnly:Bool):Int {
+		while (raw.indexOf("HTTP/1.1 100 ", start) == start || raw.indexOf("HTTP/1.0 100 ", start) == start) {
+			var interimEnd:Int = raw.indexOf("\r\n\r\n", start);
+			if (interimEnd < 0) {
+				return -1;
+			}
+			start = interimEnd + 4;
+		}
+
+		var headerEnd:Int = raw.indexOf("\r\n\r\n", start);
+		if (headerEnd < 0) {
+			return -1;
+		}
+
+		var bodyStart:Int = headerEnd + 4;
+		if (headOnly) {
+			return bodyStart;
+		}
+
+		for (line in raw.substring(start, headerEnd).split("\r\n")) {
+			var lower:String = StringTools.trim(line).toLowerCase();
+			if (lower.indexOf("content-length:") == 0) {
+				// Parsed from the trimmed, lowercased copy rather than sliced
+				// out of the original at a fixed offset: a leading space made
+				// that arithmetic produce null, which then read as a
+				// zero-length body and declared a response complete before any
+				// of it had arrived.
+				var len:Null<Int> = Std.parseInt(StringTools.trim(lower.substr(15)));
+				if (len == null) {
+					return -1;
+				}
+				return raw.length >= bodyStart + len ? bodyStart + len : -1;
+			}
+		}
+
+		return -1;
+	}
+
+	/**
+	 * Splits one response out of `raw`, skipping any 1xx interim blocks ahead
+	 * of it. `bytes` supplies the body byte-exactly, for suites asserting on
+	 * compressed or binary payloads.
+	 */
+	public static function parseResponse(raw:String, ?bytes:ByteArray):HTTPTestResponse {
+		var originalRaw:String = raw;
+		var parseBytes:ByteArray = bytes;
+
+		while (raw.indexOf("HTTP/1.1 100 ") == 0 || raw.indexOf("HTTP/1.0 100 ") == 0) {
+			var interimEnd:Int = raw.indexOf("\r\n\r\n");
+			if (interimEnd < 0) {
+				break;
+			}
+
+			var drop:Int = interimEnd + 4;
+			raw = raw.substr(drop);
+
+			if (parseBytes != null) {
+				var next:ByteArray = new ByteArray();
+				if (parseBytes.length > drop) {
+					next.writeBytes(parseBytes, drop, parseBytes.length - drop);
+				}
+				parseBytes = next;
+			}
+		}
+
+		var lineEnd:Int = raw.indexOf("\r\n");
+		var status:Int = 0;
+		if (lineEnd >= 12) {
+			status = Std.parseInt(raw.substr(9, 3));
+		}
+
+		var headers:Map<String, String> = new Map();
+		var body:String = "";
+		var responseBody:ByteArray = new ByteArray();
+		var headerEnd:Int = raw.indexOf("\r\n\r\n");
+
+		if (headerEnd >= 0) {
+			for (line in raw.substr(lineEnd + 2, headerEnd - lineEnd - 2).split("\r\n")) {
+				var separator:Int = line.indexOf(":");
+				if (separator > 0) {
+					headers.set(StringTools.trim(line.substr(0, separator)).toLowerCase(), StringTools.trim(line.substr(separator + 1)));
+				}
+			}
+
+			body = raw.substr(headerEnd + 4);
+
+			if (parseBytes != null && parseBytes.length >= headerEnd + 4) {
+				responseBody.writeBytes(parseBytes, headerEnd + 4, parseBytes.length - (headerEnd + 4));
+			}
+		}
+
+		return {
+			status: status,
+			headers: headers,
+			body: body,
+			bodyBytes: responseBody,
+			raw: originalRaw
+		};
+	}
+}
+
+typedef HTTPTestResponse = {
+	var status:Int;
+	var headers:Map<String, String>;
+	var body:String;
+	var bodyBytes:ByteArray;
+	var raw:String;
+}

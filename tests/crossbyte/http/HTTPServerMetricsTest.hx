@@ -141,15 +141,14 @@ class HTTPServerMetricsTest extends utest.Test {
 	}
 
 	private function __pumpUntil(done:Void->Bool, timeout:Float):Void {
-		var runtime = CrossByte.current();
-		var deadline:Float = Sys.time() + timeout;
-
-		while (!done() && Sys.time() < deadline) {
-			@:privateAccess runtime.pump(0.008);
-		}
+		// A shorter step than the shared default, and no sleep between pumps:
+		// this suite reads gauges rather than a socket, so it wants the
+		// runtime stepped as tightly as possible rather than yielding to a
+		// peer.
+		HTTPTestSupport.pumpUntil(done, timeout, 0.008, 0);
 
 		// One extra pump so the close-driven cleanup (which settles the
 		// connection gauge) runs before the caller inspects metrics.
-		@:privateAccess runtime.pump(0.008);
+		HTTPTestSupport.pumpMore(1, 0.008);
 	}
 }
