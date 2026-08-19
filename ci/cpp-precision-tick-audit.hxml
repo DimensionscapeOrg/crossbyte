@@ -1,0 +1,5 @@
+-cp src
+--macro include('crossbyte.core')
+-D precision_tick
+--cpp export/audit-precision-tick
+--no-output

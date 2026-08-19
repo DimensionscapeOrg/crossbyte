@@ -199,6 +199,14 @@ jobs:
       - name: Type-check timer burst support
         run: haxelib run aedifex task cpp-timer-burst-audit .
 
+      # precision_tick swaps the frame wait for one that spins the tail
+      # rather than sleeping it. No test hxml defines it, so the branch
+      # compiled nowhere and could be broken by any edit to the loop
+      # without a single job noticing -- which is exactly what nearly
+      # happened when the wait was rewritten to anchor its deadline.
+      - name: Type-check precision tick frame wait
+        run: haxelib run aedifex task cpp-precision-tick-audit .
+
   posix-crypto:
     name: Core | Crypto (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
