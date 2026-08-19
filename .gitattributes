@@ -1,2 +1,17 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Fixtures under resources/ are embedded at compile time and compared
+# byte-for-byte by the suite (tests/crossbyte/resources/ResourcesTest.hx asserts
+# on exact "alpha\nbeta\ngamma\n" content), so their line endings have to be
+# identical on every platform. Without eol=lf a Windows checkout smudges them to
+# CRLF and those assertions fail with a diff that looks identical, because the
+# stray \r is invisible in the report.
+resources/** text eol=lf
+
+# Binary payloads have to round-trip a checkout untouched. Git infers this today
+# from the NUL bytes they carry; pin it so the inference cannot drift, and so a
+# binary fixture dropped under resources/ is not caught by the rule above.
+*.png binary
+src/crossbyte/_internal/brotli/codec/decode/dictionary.txt binary
+src/crossbyte/_internal/brotli/codec/dictionary/*.txt binary
