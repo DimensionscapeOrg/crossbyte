@@ -752,6 +752,19 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.equals(2, __countOccurrences(result.raw, "HTTP/1.1 "));
 	}
 
+	public function testPhpRewriteWithoutABridgeDoesNotCrash():Void {
+		// The shipped defaults rewrite every /api path to PHP while phpEnabled
+		// defaults to false, so a default server answering a request path a
+		// great many services use reached a null bridge and segfaulted -- not
+		// an error on that connection, the whole process.
+		var response = __sendRequest([], "GET /api/status HTTP/1.1
+Host: localhost
+
+");
+
+		Assert.equals(500, response.status);
+	}
+
 	public function testUnmappedStatusGetsItsClassNotOK():Void {
 		// A middleware can raise any status through next(code). Every code the
 		// table did not know rendered "OK", so next(503) put
