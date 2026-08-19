@@ -87,6 +87,18 @@ final class CrossByte extends EventDispatcher {
 	 * sleeping it off.
 	 */
 	@:noCompletion private static inline var MIN_POLL_WAIT:Float = 0.001;
+
+	/**
+	 * Slack left at the end of a long sleep for the operating system to
+	 * overshoot into, before the remainder is finished in short sleeps.
+	 *
+	 * A frame used to be waited out entirely in one-millisecond steps, which
+	 * at the default tick rate is over eighty sleeps per frame to accomplish
+	 * nothing. Sleeping the bulk in one call and stepping only the tail costs
+	 * a handful, and is why this margin exists rather than sleeping the whole
+	 * remainder and hoping.
+	 */
+	@:noCompletion private static inline var SLEEP_SLACK:Float = 0.002;
 	@:noCompletion private static inline var DEFAULT_MAX_SOCKETS:Int = 64;
 
 	/**
@@ -182,6 +194,28 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Public Variables ====
 	public var tps(get, set):UInt;
+
+	/**
+	 * Largest elapsed time, in seconds, handed to `TickEvent` listeners.
+	 *
+	 * The delta a tick carries is however long the previous frame actually
+	 * took, and that is not bounded by anything: a collection pause, a
+	 * blocking disk read, a breakpoint, or a machine resuming from sleep all
+	 * produce one enormous frame. Anything integrating against that delta —
+	 * a renderer, a physics step, an interpolation — takes a single step of
+	 * that size and passes through whatever it should have collided with, or
+	 * leaves the screen entirely. Capping it makes the recovery frame slow
+	 * rather than catastrophic, which is what every loop of this shape does.
+	 *
+	 * Timers are deliberately not capped by this. They are scheduled against
+	 * elapsed time, so shortening it would make a five second timer fire late
+	 * by however much the process stalled; the burst that a long stall would
+	 * otherwise release is bounded inside the scheduler instead.
+	 *
+	 * Raised to the tick interval when it is set below one, so a slow tick
+	 * rate does not clamp every ordinary frame.
+	 */
+	public var maxDelta:Float = 0.25;
 	public var cpuLoad(get, never):Float;
 	public var uptime(get, never):Float;
 
@@ -625,7 +659,7 @@ final class CrossByte extends EventDispatcher {
 	private #if final inline #end function __defaultMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
-		__dispatchTick(__dt);
+		__dispatchTick(__tickDelta());
 		if (!__getRunning()) {
 			return;
 		}
@@ -637,7 +671,7 @@ final class CrossByte extends EventDispatcher {
 	private #if final inline #end function __pollBasedMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
-		__dispatchTick(__dt);
+		__dispatchTick(__tickDelta());
 		if (!__getRunning()) {
 			return;
 		}
@@ -679,22 +713,46 @@ final class CrossByte extends EventDispatcher {
 
 		__wait(frameStart);
 	}
+	/**
+	 * The elapsed time a tick reports, bounded by `maxDelta`.
+	 *
+	 * Never below the tick interval, so configuring a slow tick rate does not
+	 * clamp every ordinary frame down to something shorter than the frame
+	 * actually was.
+	 */
+	@:noCompletion private #if final inline #end function __tickDelta():Float {
+		var cap:Float = maxDelta > __tickInterval ? maxDelta : __tickInterval;
+		return __dt > cap ? cap : __dt;
+	}
+
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
 		#if precision_tick
 		var minSleep = 0.001;
-		#end
 
 		while (__dt < __tickInterval) {
-			#if precision_tick
 			if (__dt + __sleepAccuracy > __tickInterval) {
 				minSleep = 0;
 			}
 
 			Sys.sleep(minSleep);
-			#else
-			Sys.sleep(0.001);
-			#end
 			__dt = Timer.stamp() - frameStartTime;
 		}
+		#else
+		// The bulk of the wait goes in one sleep, and only the last couple of
+		// milliseconds are stepped out. Stepping the whole remainder — which
+		// is what this did — costs a syscall per millisecond, so better than
+		// eighty per frame at the default tick rate, all of them to arrive at
+		// the same moment one sleep would have.
+		while (true) {
+			var remaining:Float = __tickInterval - __dt;
+
+			if (remaining <= 0) {
+				break;
+			}
+
+			Sys.sleep(remaining > SLEEP_SLACK ? remaining - SLEEP_SLACK : 0.001);
+			__dt = Timer.stamp() - frameStartTime;
+		}
+		#end
 	}
 }
