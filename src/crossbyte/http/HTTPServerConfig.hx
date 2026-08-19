@@ -3,6 +3,7 @@ package crossbyte.http;
 import crossbyte.io.File;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.http.config.RewriteRule;
+import crossbyte.errors.ArgumentError;
 
 /** Configuration object for `HTTPServer` routing, limits, headers, and PHP integration. */
 class HTTPServerConfig {
@@ -30,7 +31,46 @@ class HTTPServerConfig {
 	public var phpINIPath:String;
 	public var phpMode:Int;
 	public var corsAllowCredentials:Bool;
+	/**
+		Paths tried, in order, when resolving a request.
+
+		The order the server actually follows is fixed at the front and only
+		free at the back, so the list is required to be spelled the way it
+		runs — see `validate`, which rejects anything else rather than
+		silently reordering it:
+
+		1. `$uri` — the request path as a file
+		2. `$uri/` — the request path as a directory, resolved through
+		   `directoryIndex`
+		3. every rule in `rewrites`, in order
+		4. the remaining entries here, in order
+
+		The consequence worth knowing is that **an existing file wins over a
+		rewrite**, whatever the rules say. This is Apache's `RewriteCond !-f`
+		idiom applied for you rather than written out; to invert it for a
+		given rule, give that rule a `FileExists` condition with `negate` set
+		and it will run before the file is looked for. It is not nginx's
+		model, where `try_files` runs after the rewrite phase in the order
+		written.
+
+		Defaults to `["$uri", "$uri/", "/index.html"]`, the last entry making
+		an unmatched path serve the root index — a single-page application
+		fallback. Drop it to have unmatched paths answer 404 instead.
+	**/
 	public var tryFiles:Array<String>;
+
+	/**
+		Rewrite rules, applied in order after `tryFiles` has failed to resolve
+		the request against an existing file or directory index.
+
+		Empty by default. A rule carrying the `PHP` flag needs `phpEnabled`,
+		and the two shipped out of step until 1.0.0-rc.2: the defaults rewrote
+		every `/api` path to `/index.php` while PHP defaulted to off, so a
+		stock server took a null bridge and segfaulted on a request path a
+		great many services use. Nothing here is enabled unless it is asked
+		for now, and a `PHP` rewrite without a bridge answers 500 rather than
+		reaching one.
+	**/
 	public var rewrites:Array<RewriteRule>;
 
 	/**
@@ -186,18 +226,43 @@ class HTTPServerConfig {
 		this.phpINIPath = phpINIPath;
 		this.phpMode = phpMode;
 		this.tryFiles = (tryFiles == null) ? ["$uri", "$uri/", "/index.html"] : tryFiles;
-		this.rewrites = (rewrites == null) ? [
-			{
-				pattern: "^/api/.*$",
-				target: "/index.php",
-				flags: ["L", "QSA", "PHP"],
-				conditions: []
-			}
-		] : rewrites;
+		this.rewrites = (rewrites == null) ? [] : rewrites;
 		this.requestTimeout = requestTimeout;
 		this.keepAlive = keepAlive;
 		this.keepAliveTimeout = keepAliveTimeout;
 		this.keepAliveMaxRequests = keepAliveMaxRequests;
+	}
+
+	/**
+		Throws if this configuration describes a resolution order the server
+		will not follow. Called by `HTTPServer` on construction.
+
+		Only `tryFiles` is checked, and only its shape. `$uri` and `$uri/` are
+		tested by the resolver before it reads this list at all — before the
+		rewrite rules, and whether or not the list mentions them — so any
+		spelling other than those two first describes something that does not
+		happen. Listing a literal ahead of them does not give it priority;
+		leaving them out does not switch direct file serving off, which is the
+		reading most likely to be mistaken for a restriction.
+
+		Refusing at construction rather than warning is deliberate. The list
+		decides which bytes a request is answered with, a config that quietly
+		means something other than it says is how the `/api` default came to
+		crash a stock server, and the correction is to write the two entries
+		out.
+	**/
+	public function validate():Void {
+		if (tryFiles == null || tryFiles.length < 2 || tryFiles[0] != "$uri" || tryFiles[1] != "$uri/") {
+			throw new ArgumentError("tryFiles must begin with \"$uri\" then \"$uri/\", got " + Std.string(tryFiles)
+				+ ". Both are tested before every other entry and before the rewrite rules, whether or not this list names them, so any other order is not the order used.");
+		}
+
+		for (i in 2...tryFiles.length) {
+			if (tryFiles[i] == "$uri" || tryFiles[i] == "$uri/") {
+				throw new ArgumentError("tryFiles repeats \"" + tryFiles[i] + "\" at index " + i
+					+ "; it is only ever tested first, so the later entry does nothing.");
+			}
+		}
 	}
 }
 
