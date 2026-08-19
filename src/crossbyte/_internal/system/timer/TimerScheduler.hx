@@ -54,10 +54,23 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	}
 
 	/**
-	 * Creates a new `TimerScheduler` using a heap-based timer strategy.
+	 * Creates a new `TimerScheduler`.
+	 *
+	 * The heap is the default and suits almost everything: it orders timers
+	 * exactly, and a delay of a microsecond costs what a delay of six hours
+	 * costs. Building with `-D timer_wheel` swaps in the timing wheel, which
+	 * trades that generality for arming and firing that do not grow with the
+	 * number of timers held — worth it for a runtime carrying a timer per
+	 * entity or per connection, and worse for one whose timers are mostly
+	 * long, since those wait in an overflow list the heap has no equivalent
+	 * of. See `TimerWheel` for the measurements behind that.
 	 */
 	public inline function new() {
+		#if timer_wheel
+		this = new crossbyte._internal.system.timer.wheel.TimerWheel();
+		#else
 		this = new TimerHeap();
+		#end
 	}
 
 	/**
