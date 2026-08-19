@@ -15,6 +15,7 @@ final class SocketRegistry {
 	@:noCompletion private var __writableSwap:Stack<Socket>;
 
 	@:noCompletion private var __readSnapshot:Array<Socket>;
+	@:noCompletion private var __selectBuffer:Array<Socket>;
 
 	public var capacity(get, null):Int;
 	public var size(get, null):Int;
@@ -40,6 +41,7 @@ final class SocketRegistry {
 		__writableQueue = new Stack();
 		__writableSwap = new Stack();
 		__readSnapshot = [];
+		__selectBuffer = [];
 	}
 
 	public inline function clear():Void {
@@ -49,6 +51,7 @@ final class SocketRegistry {
 		__writableQueue.clear();
 		__writableSwap.clear();
 		__readSnapshot.resize(0);
+		__selectBuffer.resize(0);
 		__isDirty = true;
 	}
 
@@ -110,12 +113,24 @@ final class SocketRegistry {
 			__isDirty = false;
 		}
 
-		var read:Array<Socket> = __readSnapshot != null ? __readSnapshot.copy() : [];
-		if (read.length == 0) {
+		if (__readSnapshot == null || __readSnapshot.length == 0) {
 			return;
 		}
 
-		var res = Socket.select(read, [], [], timeout);
+		// Refilled into a buffer this registry keeps rather than a fresh array
+		// per pump. The list handed to select cannot be the snapshot itself:
+		// that is the DenseSet's own backing array, and select is free to
+		// treat what it is given as scratch. Reusing one array keeps that
+		// protection without allocating for it every pass.
+		var count:Int = __readSnapshot.length;
+		if (__selectBuffer.length != count) {
+			__selectBuffer.resize(count);
+		}
+		for (i in 0...count) {
+			__selectBuffer[i] = __readSnapshot[i];
+		}
+
+		var res = Socket.select(__selectBuffer, [], [], timeout);
 
 		for (s in res.read) {
 			var cb:IPollableSocket = cast s.custom;
