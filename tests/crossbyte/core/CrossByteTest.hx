@@ -105,6 +105,32 @@ class CrossByteTest extends utest.Test {
 		#end
 	}
 
+	public function testLoopReportsRealElapsedTimeAfterALongFrame():Void {
+		#if (cpp || neko || hl)
+		// A frame that ran long is reported as it ran. The runtime used to cap
+		// this at a quarter second, which cost more than it bought: the capped
+		// figure was also what haxe.Timer and the HTTP connection sweep
+		// subtracted from their own deadlines, so a stall silently made every
+		// one of them run slow, and a listener handed the capped delta had no
+		// way back to the real one. Bounding the step is the consumer's call,
+		// made where the right bound is actually known.
+		var runtime = new CrossByte(false, DEFAULT, true);
+		var reported:Float = -1;
+
+		runtime.addEventListener(crossbyte.events.TickEvent.TICK, event -> {
+			reported = event.delta;
+		});
+
+		runtime.__dt = 0.8;
+		runtime.__defaultMainLoop();
+		runtime.exit();
+
+		Assert.floatEquals(0.8, reported);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	@:noCompletion private static function throwsIllegalOperationError(fn:Void->Void):Bool {
 		try {
 			fn();

@@ -99,6 +99,16 @@ final class CrossByte extends EventDispatcher {
 	 * remainder and hoping.
 	 */
 	@:noCompletion private static inline var SLEEP_SLACK:Float = 0.002;
+
+	/**
+	 * Longest schedule debt, in seconds, the loop will try to repay.
+	 *
+	 * Internal on purpose. This bounds the loop's own recovery rather than
+	 * anything a listener is told, and a tick reports real elapsed time with
+	 * nothing to configure, so there is no setting for one to be confused
+	 * with the other.
+	 */
+	@:noCompletion private static inline var MAX_SCHEDULE_DEBT:Float = 0.25;
 	@:noCompletion private static inline var DEFAULT_MAX_SOCKETS:Int = 64;
 
 	/**
@@ -197,33 +207,6 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Public Variables ====
 	public var tps(get, set):UInt;
-
-	/**
-	 * Largest elapsed time, in seconds, handed to `TickEvent` listeners by
-	 * the runtime's own loop.
-	 *
-	 * `pump()` is not bounded by this: its delta is supplied by the caller
-	 * rather than measured, so capping it would override a host that meant
-	 * what it passed.
-	 *
-	 * The delta a tick carries is however long the previous frame actually
-	 * took, and that is not bounded by anything: a collection pause, a
-	 * blocking disk read, a breakpoint, or a machine resuming from sleep all
-	 * produce one enormous frame. Anything integrating against that delta —
-	 * a renderer, a physics step, an interpolation — takes a single step of
-	 * that size and passes through whatever it should have collided with, or
-	 * leaves the screen entirely. Capping it makes the recovery frame slow
-	 * rather than catastrophic, which is what every loop of this shape does.
-	 *
-	 * Timers are deliberately not capped by this. They are scheduled against
-	 * elapsed time, so shortening it would make a five second timer fire late
-	 * by however much the process stalled; the burst that a long stall would
-	 * otherwise release is bounded inside the scheduler instead.
-	 *
-	 * Raised to the tick interval when it is set below one, so a slow tick
-	 * rate does not clamp every ordinary frame.
-	 */
-	public var maxDelta:Float = 0.25;
 	public var cpuLoad(get, never):Float;
 	public var uptime(get, never):Float;
 
@@ -691,7 +674,7 @@ final class CrossByte extends EventDispatcher {
 	private #if final inline #end function __defaultMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
-		__dispatchTick(__tickDelta());
+		__dispatchTick(__dt);
 		if (!__getRunning()) {
 			return;
 		}
@@ -703,7 +686,7 @@ final class CrossByte extends EventDispatcher {
 	private #if final inline #end function __pollBasedMainLoop():Void {
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
-		__dispatchTick(__tickDelta());
+		__dispatchTick(__dt);
 		if (!__getRunning()) {
 			return;
 		}
@@ -744,17 +727,6 @@ final class CrossByte extends EventDispatcher {
 
 		__wait(frameStart);
 	}
-	/**
-	 * The elapsed time a tick reports, bounded by `maxDelta`.
-	 *
-	 * Never below the tick interval, so configuring a slow tick rate does not
-	 * clamp every ordinary frame down to something shorter than the frame
-	 * actually was.
-	 */
-	@:noCompletion private #if final inline #end function __tickDelta():Float {
-		var cap:Float = maxDelta > __tickInterval ? maxDelta : __tickInterval;
-		return __dt > cap ? cap : __dt;
-	}
 
 	/**
 	 * Moves the deadline on by one interval, giving up the debt when the
@@ -766,14 +738,14 @@ final class CrossByte extends EventDispatcher {
 	 * other failure — after a suspend or a breakpoint the loop would run a
 	 * burst of zero-wait frames trying to repay minutes of debt, starving
 	 * everything else to catch up with a schedule nobody is watching. Past
-	 * `maxDelta`, the same bound the tick delta uses, the stall is declared
+	 * `MAX_SCHEDULE_DEBT`, the stall is declared
 	 * unrecoverable and the schedule restarts from now.
 	 */
 	@:noCompletion private #if final inline #end function __advanceDeadline():Void {
 		__frameDeadline += __tickInterval;
 
 		var now:Float = Timer.stamp();
-		var cap:Float = maxDelta > __tickInterval ? maxDelta : __tickInterval;
+		var cap:Float = MAX_SCHEDULE_DEBT > __tickInterval ? MAX_SCHEDULE_DEBT : __tickInterval;
 
 		if (now - __frameDeadline > cap) {
 			__frameDeadline = now + __tickInterval;
