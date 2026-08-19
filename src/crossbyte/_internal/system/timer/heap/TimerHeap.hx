@@ -1,6 +1,5 @@
 package crossbyte._internal.system.timer.heap;
 
-import crossbyte.ds.PriorityQueue;
 import haxe.Timer as HxTimer;
 
 class TimerHeap implements ITimerScheduler {
@@ -8,16 +7,12 @@ class TimerHeap implements ITimerScheduler {
 	private static inline var EPS:Float = 1e-9;
 	#end
 
-	private static inline function comparatorFunc(a:TimerNode, b:TimerNode):Int {
-		return a.time < b.time ? -1 : (a.time > b.time ? 1 : 0);
-	}
-
 	public var size(get, never):Int;
 	public var isEmpty(get, never):Bool;
 	public var time(get, never):Float;
 	public final startTime:Float = HxTimer.stamp();
 
-	private final queue:PriorityQueue<TimerNode> = new PriorityQueue(comparatorFunc);
+	private final queue:TimerQueue = new TimerQueue();
 	private var nodes:Array<TimerNode> = [];
 	private var gens:Array<Int> = [];
 	private var free:Array<Int> = [];
