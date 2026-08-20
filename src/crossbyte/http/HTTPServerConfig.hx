@@ -56,9 +56,25 @@ class HTTPServerConfig {
 		model, where `try_files` runs after the rewrite phase in the order
 		written.
 
-		Defaults to `["$uri", "$uri/", "/index.html"]`, the last entry making
-		an unmatched path serve the root index — a single-page application
-		fallback. Drop it to have unmatched paths answer 404 instead.
+		Defaults to `["$uri", "$uri/"]`: the request path as a file, then as a
+		directory to be resolved to its index. A path matching neither answers
+		404.
+
+		It used to end with `"/index.html"` as well — a single-page application
+		fallback, on for every server whether or not it served an application.
+		The two failure modes are not comparable. An SPA that wanted the
+		fallback and does not have it breaks on the first refresh of a deep
+		link, which is loud, immediate, and one entry from fixed. A static site
+		that did not want it and had it answers **200 with the root index for
+		every path that does not exist**: a broken link looks alive to a
+		crawler, a monitor sees a healthy page, and a cache stores the wrong
+		body under the missing URL. Silent, and indistinguishable from working.
+
+		Add `"/index.html"` back as a final entry for an SPA:
+
+		```haxe
+		config.tryFiles = ["$uri", "$uri/", "/index.html"];
+		```
 	**/
 	public var tryFiles:Array<String>;
 
@@ -228,7 +244,7 @@ class HTTPServerConfig {
 		this.phpCGIPath = phpCGIPath;
 		this.phpINIPath = phpINIPath;
 		this.phpMode = phpMode;
-		this.tryFiles = (tryFiles == null) ? ["$uri", "$uri/", "/index.html"] : tryFiles;
+		this.tryFiles = (tryFiles == null) ? ["$uri", "$uri/"] : tryFiles;
 		this.rewrites = (rewrites == null) ? [] : rewrites;
 		this.requestTimeout = requestTimeout;
 		this.keepAlive = keepAlive;

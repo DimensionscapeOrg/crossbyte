@@ -656,11 +656,37 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.isTrue(result.closeSeen);
 	}
 
+	public function testDefaultConfigAnswers404ForAMissingPath():Void {
+		// No `configure` argument: the default is the point. It used to end
+		// tryFiles with "/index.html", so every unmatched path answered 200
+		// with the root index -- a single-page application fallback, on for
+		// everyone. That was documented, but the failure it produces is the
+		// silent one: a missing file answered 200 with unrelated HTML is
+		// cached as valid, passes an uptime check and hides a broken link.
+		// An SPA that wanted the fallback breaks loudly on the first refresh
+		// and is one config line from fixed.
+		var response = __sendRequest([], "GET /definitely-not-here.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+		Assert.equals(404, response.status);
+	}
+
+	public function testDefaultConfigStillServesTheDirectoryIndex():Void {
+		// The other half, and why this is not simply "drop an entry": "$uri/"
+		// still resolves a directory to its index, so the root goes on
+		// answering with index.html. Only the fallback for a path that
+		// resolves to nothing is gone.
+		var response = __sendRequest([], "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+		Assert.equals(200, response.status);
+		Assert.equals("Hello from middleware test", response.body);
+	}
+
 	public function testNotFoundKeepsConnectionUsable():Void {
 		// The proposal's motivating case: a page with a missing favicon
-		// must not pay a new handshake for the 404. tryFiles is pared
-		// down because its default "/index.html" fallback would otherwise
-		// turn the miss into a 200.
+		// must not pay a new handshake for the 404. tryFiles is set here
+		// rather than left to the default -- it is the same two entries the
+		// default now carries, but a test that needs a 404 should say so
+		// itself rather than depend on a default staying put.
 		var result = __sendRequests([], [
 			"GET /missing.html HTTP/1.1\r\nHost: localhost\r\n\r\n",
 			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -883,8 +909,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 		// 404 with a usable index sitting right beside it. Selection now skips
 		// what cannot be delivered rather than picking it and failing later.
 		//
-		// tryFiles drops its /index.html entry because the fallback would
-		// otherwise answer the directory request before the index is resolved,
+		// tryFiles is stated rather than defaulted: a "/index.html" entry
+		// would answer the directory request before the index is resolved,
 		// and the test would pass without exercising the selection at all.
 		var response = __sendRequest([], "GET /both/ HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
 			config.tryFiles = ["$uri", "$uri/"];
@@ -1102,10 +1128,10 @@ Host: localhost
 		// Both config lines exist to make that route reachable, and this test
 		// passed without either of them while the hole was still open. The
 		// harness passes ["index.html"] as directoryIndex, so the directory
-		// never resolved to a .php file at all; and under the default tryFiles
-		// the /index.html fallback answers a directory request before the
-		// index is looked up. Either one alone is enough to make the test green
-		// against a server that would have handed over the source.
+		// never resolved to a .php file at all; and a "/index.html" entry in
+		// tryFiles answers a directory request before the index is looked up.
+		// Either one alone is enough to make the test green against a server
+		// that would have handed over the source.
 		var response = __sendRequest([], "GET /private/ HTTP/1.1\r\nHost: localhost\r\n\r\n", null, false, null, config -> {
 			config.tryFiles = ["$uri", "$uri/"];
 			config.directoryIndex = ["index.php", "index.html"];
