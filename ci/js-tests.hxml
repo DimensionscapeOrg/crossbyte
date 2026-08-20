@@ -1,0 +1,17 @@
+# Runs the portable suite on Node.
+#
+# ci/js-build.hxml and ci/node-build.hxml prove CrossByte compiles for the
+# browser and for Node. Compiling is not running, and the gap has already cost
+# twice: ByteArray.__setData adopted an ArrayBuffer where the storage is a
+# Uint8Array, so every read and write on js was broken while every js build
+# stayed green. Reintroducing that bug turns this suite from 1013 passing
+# assertions into 37 failures.
+#
+# Only cases needing no threads, no listening socket and no database are here;
+# the rest of the suite still runs on cpp, interp and jvm.
+-cp src
+-cp tests
+-lib utest
+-lib hxnodejs
+-main JsTestMain
+--js export/js-tests/tests.js
