@@ -1,7 +1,9 @@
 package crossbyte.core;
 
 import crossbyte.events.Event;
+#if !js
 import sys.thread.Thread;
+#end
 
 /**
  * A primordial CrossByte application with a poll-driven main loop.
@@ -62,9 +64,11 @@ class ServerApplication extends Application {
 		}
 
 		// Ensure we're in the main thread
+		#if !js
 		if (Thread.current() != Application.__mainThread) {
 			throw "ServerApplication must only be instantiated in the main thread!";
 		}
+		#end
 
 		Application.__application = this;
 		__crossByte = new CrossByte(true, POLL, false);

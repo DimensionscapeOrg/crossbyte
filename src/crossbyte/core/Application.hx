@@ -4,7 +4,9 @@ import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.EventType;
 import crossbyte.core.MainLoopType;
+#if !js
 import sys.thread.Thread;
+#end
 
 /**
  * The base primordial CrossByte application.
@@ -30,7 +32,9 @@ import sys.thread.Thread;
 class Application extends EventDispatcher {
 	public static var application(get, never):Application;
 	private static var __application:Application;
+	#if !js
 	private static var __mainThread:Thread = Thread.current();
+	#end
 
 	/**
 	 * Adds an event listener to the global application dispatcher.
@@ -130,9 +134,11 @@ class Application extends EventDispatcher {
 		}
 
 		// Ensure we're in the main thread
+		#if !js
 		if (Thread.current() != __mainThread) {
 			throw "Application must only be instantiated in the main thread!";
 		}
+		#end
 
 		__application = this;
 		__crossByte = new CrossByte(true, __crossByteLoopType, __crossByteHostDriven, __crossByteTimers);
