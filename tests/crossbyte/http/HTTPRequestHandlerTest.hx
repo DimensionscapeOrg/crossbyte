@@ -420,6 +420,71 @@ class HTTPRequestHandlerTest extends utest.Test {
 		Assert.isFalse(response.headers.exists("content-length"));
 	}
 
+	public function testStaleMiddlewareContinuationCannotReachALaterRequest():Void {
+		// The request-generation guard, isolated.
+		//
+		// A middleware is supposed to respond or call next(), not both. One
+		// that responds and then calls next() later -- after an await, a timer,
+		// a worker completion -- is calling into a request that has already
+		// finished. The `alreadyCalled` latch beside the guard does not cover
+		// it, because next() was never called the first time; and __responded
+		// does not, because the connection has been reset for the next request
+		// and it is false again. Only the generation stamp can tell that the
+		// slot the continuation belongs to has closed.
+		//
+		// Firing the stale continuation from inside the SECOND request is what
+		// makes this the guard rather than a restatement of the latch: the
+		// generation only advances when request one is reset away, so a
+		// continuation fired any earlier still matches its own slot and proves
+		// nothing. Two earlier attempts at this test passed with the guard
+		// deleted for exactly that reason.
+		//
+		// What breaks without it is not an extra response but a substituted
+		// one: the revived chain runs request one's routing to completion and
+		// its body lands in request two's slot, so a client that asked for
+		// /second.html is served /index.html. Two responses, correct framing,
+		// wrong contents -- which is why the body assertions below matter more
+		// than the count.
+		var stale:Null<?Dynamic->Void> = null;
+		var runs:Int = 0;
+
+		var middleware = function(handler:HTTPRequestHandler, ?next:?Dynamic->Void):Void {
+			runs++;
+
+			if (runs == 1) {
+				// Respond and keep the continuation instead of calling it.
+				stale = next;
+				handler.respond(200, "text/plain", "first");
+				return;
+			}
+
+			if (stale != null) {
+				var fire = stale;
+				stale = null;
+				// Belongs to a request that is over. Must do nothing at all --
+				// running it would push request one's remaining chain, and its
+				// response, into request two's slot.
+				fire();
+			}
+
+			next();
+		};
+
+		var result = __sendRequests([middleware], ["GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n", "GET /second.html HTTP/1.1\r\nHost: localhost\r\n\r\n"]);
+
+		Assert.equals(2, result.responses.length);
+		Assert.equals(200, result.responses[0].status);
+		Assert.equals("first", result.responses[0].body);
+
+		// Request two is answered once, by its own routing, with its own body.
+		Assert.equals(200, result.responses[1].status);
+		Assert.equals("Second fixture body", result.responses[1].body);
+
+		// And nothing trailing: a revived chain would append a third response
+		// to the same connection.
+		Assert.equals(2, HTTPTestSupport.countResponses(result.raw));
+	}
+
 	public function testHeaderScanResumesAcrossChunkBoundaries():Void {
 		// The completeness scan carries its last three bytes between data
 		// events, so a CRLFCRLF split across arrivals must still be seen —
