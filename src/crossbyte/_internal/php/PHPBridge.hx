@@ -1,7 +1,49 @@
 package crossbyte._internal.php;
 
 // Not built for the browser: it launches and talks to a PHP CGI process.
-#if !js
+#if nodejs
+import crossbyte.errors.IllegalOperationError;
+
+/**
+ * The bridge's shape on Node, which cannot yet be one.
+ *
+ * Not for want of a transport or a way to start php-cgi. Both arrived with the
+ * Node work: `crossbyte.net.Socket` speaks to a FastCGI listener over
+ * `js.node.net`, and `crossbyte.sys.NativeProcess` launches a process over
+ * `child_process`. What stands in the way is the signature -- `execute()`
+ * returns a response, and Node has no synchronous socket read to produce one
+ * with. hxnodejs ships a `sys.net.Socket` that blocks, but it has no output
+ * side at all and its wait needs `deasync`, a native npm addon, so it is not a
+ * way round this.
+ *
+ * The way round it is to stop returning a response. A bridge that hands its
+ * result to a callback works on every target, and CrossByte is already shaped
+ * for it: middleware is `(HTTPRequestHandler, ?Dynamic->Void) -> Void`, and
+ * responses already stream. It would also stop a PHP request stalling a native
+ * runtime for its whole duration, which is what a blocking call in a tick does
+ * today. That is a change to the request handler on every target, though, and
+ * belongs in its own proposal rather than arriving as a side effect of a Node
+ * port.
+ *
+ * The type is kept rather than compiled away because `HTTPRequestHandler`
+ * threads it through a dozen places, and because `__php == null` is already the
+ * state the whole handler is written for -- it is what a server with PHP off
+ * looks like, which is the default everywhere. That includes refusing to serve
+ * a `.php` file as its own source, which is the part that would become a
+ * security hole if this type simply vanished.
+ */
+class PHPBridge {
+	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>) {
+		throw new IllegalOperationError("PHP is not available on Node yet: the bridge returns a response, and Node has no synchronous socket read to produce one with. Put PHP-FPM behind a proxy, or run the server on a native target.");
+	}
+
+	public function stop():Void {}
+
+	public function execute(req:PHPRequest):PHPResponse {
+		throw new IllegalOperationError("PHP is not available on Node yet.");
+	}
+}
+#elseif !js
 
 import haxe.io.Path;
 import crossbyte.events.Event;

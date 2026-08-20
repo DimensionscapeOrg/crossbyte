@@ -1,7 +1,7 @@
 package crossbyte.http;
 
 // Not built for the browser: it answers requests on an accepted connection and streams files from disk.
-#if !js
+#if !(js && !nodejs)
 
 import haxe.ds.StringMap;
 import haxe.io.BytesBuffer;
@@ -23,6 +23,7 @@ import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.utils.Logger;
 import crossbyte._internal.http.headers.AcceptEncoding;
 import crossbyte._internal.http.headers.Connection;
+import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte._internal.php.PHPRequest;
 import crossbyte._internal.php.PHPResponse;
@@ -455,7 +456,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var rawTarget:String = parts[1];
 		__httpVersion = parts[2];
 
-		if (!Http.validateHttpVersion(__httpVersion)) {
+		if (!HttpSyntax.validateHttpVersion(__httpVersion)) {
 			__sendErrorResponse(505, "HTTP Version Not Supported");
 			return;
 		}
@@ -2293,7 +2294,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		// RFC 7230 3.3.3: a message with both Transfer-Encoding and Content-Length is
 		// ambiguous and a vector for request smuggling. Reject it outright.
-		if (Http.hasConflictingFraming(transferEncoding != null, __headers.exists("content-length"))) {
+		if (HttpSyntax.hasConflictingFraming(transferEncoding != null, __headers.exists("content-length"))) {
 			__sendErrorResponse(400, "Bad Request");
 			return true;
 		}
@@ -2567,11 +2568,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __sanitizeHeaderValue(v:String):String {
-		return Http.sanitizeHeaderValue(v);
+		return HttpSyntax.sanitizeHeaderValue(v);
 	}
 
 	@:noCompletion private inline function __sanitizeHeaderName(n:String):String {
-		return Http.sanitizeHeaderName(n);
+		return HttpSyntax.sanitizeHeaderName(n);
 	}
 
 	/**

@@ -143,10 +143,11 @@ more consistent and is the recommendation, but it is a real decision.
 those paths get a JavaScript implementation or `compress` moves to tier B/C —
 which changes what "portable" means for `ByteArray`.
 
-**How much of the HTTP stack is portable.** The server is tier C. The request
-and response *parsing* is not obviously platform-bound and would be worth
-keeping in tier A, so that a browser client and a Node server share one
-understanding of the protocol.
+**How much of the HTTP stack is portable.** Settled. The rules -- supported
+versions, conflicting framing, header name and value sanitising -- are in
+`_internal.http.HttpSyntax`, which is tier A and compiles for the browser.
+`Http` is the client and stays tier C, keeping its four methods as forwards so
+there is still one implementation. The server is tier C and now runs on Node.
 
 ---
 
@@ -240,6 +241,25 @@ had a chance to ask what was assigned. And a secure server refuses outright:
 terminating TLS needs `sys.ssl`, hxnodejs has none, and `setCertificate()` takes
 types that do not exist there -- the same position the jvm target is already in.
 
+The HTTP server followed straight from it -- a server *is* a `ServerSocket`,
+and the request handler wanted a filesystem, which Node has. Two features
+refuse, and where they refuse is the point: `validate()`, so a misconfigured
+server fails at startup rather than when the first request finds out. TLS needs
+`sys.ssl`. PHP needs more explanation, because the obvious reasons are no
+longer the real one: launching php-cgi works now that `NativeProcess` runs on
+Node, and reaching a FastCGI listener works now that `Socket` does. What is
+left is the signature. `PHPBridge.execute()` returns a response, and Node has
+no synchronous socket read to produce one with -- hxnodejs ships a blocking
+`sys.net.Socket`, but it has no output side at all and its wait needs
+`deasync`, a native npm addon.
+
+The way round that is to stop returning a response. A bridge that hands its
+result to a callback works everywhere, and CrossByte is already shaped for it:
+middleware is `(HTTPRequestHandler, ?Dynamic->Void) -> Void` and responses
+already stream. It would also stop a PHP request stalling a native runtime for
+its whole duration, which is what a blocking call inside a tick does today. It
+is a change to the request handler on every target, so it wants its own
+proposal rather than arriving as a side effect of a Node port.
+
 What is still Node-shaped work rather than a gate: `DatagramSocket` over
-`dgram`, the `WebSocket` client, and the HTTP server on top of the
-`ServerSocket` that now exists.
+`dgram`, and the `WebSocket` client.

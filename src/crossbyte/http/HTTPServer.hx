@@ -1,7 +1,7 @@
 package crossbyte.http;
 
 // Not built for the browser: serving HTTP means listening on a port.
-#if !js
+#if !(js && !nodejs)
 
 import haxe.io.Path;
 import haxe.ds.ObjectMap;
@@ -41,7 +41,7 @@ class HTTPServer extends ServerSocket {
 		__connections = 0;
 		__config = config;
 
-		#if (!java && !jvm)
+		#if (!java && !jvm && !nodejs)
 		if (config.tlsEnabled) {
 			try {
 				setCertificate(sys.ssl.Certificate.loadFile(config.tlsCertificatePath), sys.ssl.Key.loadFile(config.tlsKeyPath));

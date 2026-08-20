@@ -5,6 +5,9 @@ import crossbyte.events.IOErrorEvent;
 import crossbyte.events.NativeProcessEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
+import crossbyte.http.HTTPServer;
+import crossbyte.http.HTTPServerConfig;
+import crossbyte.io.File;
 import crossbyte.events.TickEvent;
 import crossbyte.net.ServerSocket;
 import crossbyte.net.Socket;
@@ -32,6 +35,7 @@ import crossbyte.url.URLRequest;
 class NodeIntegrationMain extends Application {
 	private static inline var HTTP_PORT:Int = 50561;
 	private static inline var ECHO_PORT:Int = 50562;
+	private static inline var WEB_PORT:Int = 50563;
 	private static inline var TIMEOUT_MS:Int = 30000;
 	private static inline var ROUND_TRIP:String = "round-trip";
 
@@ -47,6 +51,8 @@ class NodeIntegrationMain extends Application {
 	private var echoServer:js.node.net.Server;
 	private var listener:ServerSocket;
 	private var accepted:Socket;
+	private var webServer:HTTPServer;
+	private var webRoot:String;
 
 	public function new() {
 		super();
@@ -332,10 +338,105 @@ class NodeIntegrationMain extends Application {
 
 		listener.close();
 		check("close() stopped the server listening", !listener.listening, "still listening");
+		startWebServer();
+	}
+
+	// ---- 5. crossbyte.http.HTTPServer on top of that ---------------------
+
+	private function startWebServer():Void {
+		webRoot = js.node.Path.join(js.node.Os.tmpdir(), "crossbyte-node-http-" + js.Node.process.pid);
+
+		if (!sys.FileSystem.exists(webRoot)) {
+			sys.FileSystem.createDirectory(webRoot);
+		}
+
+		sys.io.File.saveContent(js.node.Path.join(webRoot, "index.html"), "<h1>served-from-node</h1>");
+		sys.io.File.saveContent(js.node.Path.join(webRoot, "data.json"), "{\"served\":true}");
+
+		var config = new HTTPServerConfig();
+		config.address = "127.0.0.1";
+		config.port = WEB_PORT;
+		config.rootDirectory = new File(webRoot);
+		config.directoryIndex = ["index.html"];
+
+		var refusedPhp:String = null;
+
+		try {
+			config.phpEnabled = true;
+			config.validate();
+		} catch (e:Dynamic) {
+			refusedPhp = Std.string(e);
+		}
+
+		config.phpEnabled = false;
+		check("a PHP-enabled config refuses on Node", refusedPhp != null && refusedPhp.indexOf("PHP") >= 0,
+			refusedPhp == null ? "it did not refuse" : refusedPhp);
+
+		// Binds and listens in its constructor; calling bind() again here is
+		// a second bind on the same socket, which a native target refuses
+		// outright.
+		webServer = new HTTPServer(config);
+
+		check("HTTPServer is listening", webServer.listening, "not listening");
+
+		requestIndex();
+	}
+
+	private function requestIndex():Void {
+		var loader = new URLLoader();
+		var status:Int = -1;
+
+		loader.addEventListener(HTTPStatusEvent.HTTP_STATUS, function(e:HTTPStatusEvent):Void {
+			status = e.status;
+		});
+
+		loader.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			check("HTTPServer served the directory index", false, "io error: " + e.text);
+			stopWebServer();
+		});
+
+		loader.addEventListener(Event.COMPLETE, function(_):Void {
+			// "/" rather than "/index.html", so what is checked is that the
+			// directory index was chosen, not just that a file was read.
+			check("HTTPServer served the directory index", Std.string(loader.data).indexOf("served-from-node") >= 0, "got " + loader.data);
+			check("HTTPServer answered 200", status == 200, "status " + status);
+			requestFile();
+		});
+
+		loader.load(new URLRequest("http://127.0.0.1:" + WEB_PORT + "/"));
+	}
+
+	private function requestFile():Void {
+		var loader = new URLLoader();
+		var contentType:String = null;
+
+		loader.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			check("HTTPServer served a named file", false, "io error: " + e.text);
+			stopWebServer();
+		});
+
+		loader.addEventListener(Event.COMPLETE, function(_):Void {
+			check("HTTPServer served a named file", Std.string(loader.data).indexOf("\"served\":true") >= 0, "got " + loader.data);
+			stopWebServer();
+		});
+
+		loader.load(new URLRequest("http://127.0.0.1:" + WEB_PORT + "/data.json"));
+	}
+
+	private function stopWebServer():Void {
+		webServer.close();
+		check("HTTPServer stopped listening", !webServer.listening, "still listening");
+
+		try {
+			sys.FileSystem.deleteFile(js.node.Path.join(webRoot, "index.html"));
+			sys.FileSystem.deleteFile(js.node.Path.join(webRoot, "data.json"));
+			sys.FileSystem.deleteDirectory(webRoot);
+		} catch (_:Dynamic) {}
+
 		runSubprocess();
 	}
 
-	// ---- 5. NativeProcess over child_process -----------------------------
+	// ---- 6. NativeProcess over child_process -----------------------------
 
 	private function runSubprocess():Void {
 		var process = new NativeProcess();
