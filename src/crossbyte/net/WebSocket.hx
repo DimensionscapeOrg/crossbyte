@@ -1,9 +1,14 @@
 package crossbyte.net;
 
-// Not built for the browser. This frames WebSocket over a raw TCP socket, which is what a server does; in a browser crossbyte.net.Socket already speaks WebSocket natively, so connecting to a ws:// or wss:// URL with it is the browser equivalent.
-#if !js
+// Not built for the browser: this frames WebSocket over a raw TCP socket, and
+// in a browser crossbyte.net.Socket already speaks WebSocket natively, so
+// connecting to a ws:// or wss:// URL with it is the browser equivalent. Node
+// has no WebSocket of its own, so it frames one here like a native target.
+#if !(js && !nodejs)
 
+#if !nodejs
 import crossbyte._internal.websocket.FlexSocket;
+#end
 import crossbyte._internal.websocket.WebSocket as InternalWS;
 import crossbyte._internal.websocket.WebsocketEvent;
 import crossbyte.core.CrossByte;
@@ -26,6 +31,10 @@ import haxe.io.Error;
  * @author Christopher Speciale
  */
 class WebSocket extends Socket {
+	// The server half: `ServerWebSocket` accepts a connection and hands the
+	// raw socket here to be framed. Node has a `ServerSocket` now, but the
+	// upgrade path is its own piece of work, so this is the client only there.
+	#if !nodejs
 	public static function toWebSocket(socket:FlexSocket, server:ServerWebSocket):WebSocket {
 		var webSocket:WebSocket = new WebSocket();
 
@@ -37,9 +46,12 @@ class WebSocket extends Socket {
 
 		return webSocket;
 	}
+	#end
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
+	#if !nodejs
 	private var __server:ServerWebSocket;
+	#end
 
 	/**
 		Bytes of unsent frame data allowed to accumulate for this session
@@ -682,10 +694,15 @@ class WebSocket extends Socket {
 		__closed = false;
 		dispatchEvent(new Event(Event.CONNECT));
 
+		// An accepted session tells its server it is ready, once the upgrade
+		// has completed rather than when the TCP connection arrived. There are
+		// no accepted sessions on Node, so there is nothing to tell.
+		#if !nodejs
 		if (__server != null) {
 			__server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
 			__server = null;
 		}
+		#end
 	}
 
 	private function __init():Void {
