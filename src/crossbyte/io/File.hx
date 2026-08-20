@@ -11,9 +11,16 @@ import crossbyte.errors.Error;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.FileListEvent;
+#if (js && !nodejs)
+// No filesystem here. The class keeps its type and its API; the calls
+// refuse. See NoFileSystem for why this is a shim and not a stubbed class.
+import crossbyte.io._internal.NoFileSystem as FileSystem;
+import crossbyte.io._internal.NoFileSystem as HaxeFile;
+#else
 import sys.FileSystem;
 import sys.io.File as HaxeFile;
 import sys.io.Process;
+#end
 import haxe.io.Bytes;
 
 // @:noCompletion private typedef HaxeFile = sys.io.File;
@@ -1512,6 +1519,9 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private static function __getTempPath(dir:Bool):String {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("There is no temporary directory in a browser, and no environment to name one.");
+		#else
 		var path:String;
 
 		#if windows
@@ -1535,10 +1545,14 @@ final class File extends EventDispatcher {
 		}
 
 		return tempPath + ".tmp";
+		#end
 	}
 
 	#if windows
 	@:noCompletion private function __replaceWindowsEnvVars(path:String):String {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("A browser has no process environment to expand a path against.");
+		#else
 		// Define the regular expression to match the path component to be replaced
 		var pattern:EReg = ~/%(.+?)%/;
 
@@ -1562,10 +1576,14 @@ final class File extends EventDispatcher {
 			return StringTools.replace(path, matchedPath, envVarValue);
 		}
 		return path;
+		#end
 	}
 	#end
 
 	@:noCompletion private function __winGetHiddenAttr():Bool {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("Reading a file attribute means shelling out, and a browser has no shell.");
+		#else
 		// TODO don't use the command line for this.... instead we should add support in Lime to use
 		// the win api.
 		var process:Process = new Process('attrib "$nativePath"');
@@ -1577,6 +1595,7 @@ final class File extends EventDispatcher {
 		var flag:Bool = s.indexOf(" H ") > -1;
 
 		return flag;
+		#end
 	}
 
 	@:noCompletion private function __updateFileStats(?path:String):Void {
@@ -1727,6 +1746,9 @@ final class File extends EventDispatcher {
 
 	// #if desktop
 	@:noCompletion private function get_spaceAvailable():Float {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("Free disk space means shelling out, and a browser has neither a shell nor a disk to report on.");
+		#else
 		var cmd:String;
 		var args:Array<String>;
 		#if windows
@@ -1771,6 +1793,7 @@ final class File extends EventDispatcher {
 			}
 		}
 		return availableSpace;
+		#end
 	}
 
 	// #end

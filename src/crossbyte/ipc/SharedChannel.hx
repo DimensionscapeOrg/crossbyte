@@ -1,5 +1,8 @@
 package crossbyte.ipc;
 
+// Not built for the browser: shared memory and IPC handles between OS processes.
+#if !(js && !nodejs)
+
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
@@ -361,3 +364,4 @@ class SharedChannel extends EventDispatcher {
 		LocalConnection.__close(pipe);
 	}
 }
+#end

@@ -206,14 +206,21 @@ class System {
 	}
 
 	@:noCompletion private static inline function get_appDir():String {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
+		#else
 		if (__appDirPath == null) {
 			__appDirPath = Path.removeTrailingSlashes(Sys.getCwd());
 		}
 
 		return __appDirPath;
+		#end
 	}
 
 	@:noCompletion private static inline function get_appStorageDir():String {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
+		#else
 		if (__appStorageDirPath == null) {
 			#if windows
 			__appStorageDirPath = Sys.getEnv("APPDATA");
@@ -223,25 +230,37 @@ class System {
 		}
 
 		return __appStorageDirPath;
+		#end
 	}
 
 	@:noCompletion private static inline function get_desktopDir():String {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
+		#else
 		if (__desktopDirPath == null) {
 			__desktopDirPath = userDir + File.separator + "Desktop";
 		}
 
 		return __desktopDirPath;
+		#end
 	}
 
 	@:noCompletion private static inline function get_documentsDir():String {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
+		#else
 		if (__documentsDirPath == null) {
 			__documentsDirPath = userDir + File.separator + "Documents";
 		}
 
 		return __documentsDirPath;
+		#end
 	}
 
 	@:noCompletion private static inline function get_userDir():String {
+		#if js
+		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
+		#else
 		if (__userDirPath == null) {
 			#if windows
 			__userDirPath = Sys.getEnv("USERPROFILE");
@@ -251,6 +270,7 @@ class System {
 		}
 
 		return __userDirPath;
+		#end
 	}
 
 	@:noCompletion private static inline function get_processAffinity():Array<Bool> {

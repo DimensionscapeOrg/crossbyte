@@ -1,5 +1,8 @@
 package crossbyte._internal.http;
 
+// Not built for the browser. This drives HTTP over a raw socket with its own TLS; a page issues requests through fetch or XMLHttpRequest, which is a different shape and a separate piece of work.
+#if !(js && !nodejs)
+
 import haxe.exceptions.NotImplementedException;
 import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.socket.FlexSocket;
@@ -841,3 +844,4 @@ class Http {
 		return normalized + suffix;
 	}
 }
+#end

@@ -1,5 +1,8 @@
 package crossbyte.http;
 
+// Not built for the browser: serving HTTP means listening on a port.
+#if !(js && !nodejs)
+
 import haxe.io.Path;
 import haxe.ds.ObjectMap;
 import crossbyte.events.HTTPStatusEvent;
@@ -396,3 +399,4 @@ class HTTPServer extends ServerSocket {
 		__config.metrics.counter(__requestsTotal.name, ["status" => statusClass]).inc();
 	}
 }
+#end

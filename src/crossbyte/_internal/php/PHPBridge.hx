@@ -1,5 +1,8 @@
 package crossbyte._internal.php;
 
+// Not built for the browser: it launches and talks to a PHP CGI process.
+#if !(js && !nodejs)
+
 import haxe.io.Path;
 import crossbyte.events.Event;
 import crossbyte.core.CrossByte;
@@ -322,3 +325,4 @@ private class WindowsKillOnExit {
 	}
 	#end
 }
+#end

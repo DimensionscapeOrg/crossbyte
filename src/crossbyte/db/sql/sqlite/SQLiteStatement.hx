@@ -1,5 +1,8 @@
 package crossbyte.db.sql.sqlite;
 
+// Not built for the browser: a database driver needs a socket or a file, and credentials do not belong in a page.
+#if !(js && !nodejs)
+
 import crossbyte.FieldStruct;
 import crossbyte.errors.SQLError;
 import crossbyte.events.Event;
@@ -235,3 +238,4 @@ class SQLiteStatement extends EventDispatcher {
 		return __sqlConnection;
 	}
 }
+#end

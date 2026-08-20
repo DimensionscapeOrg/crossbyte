@@ -1,5 +1,8 @@
 package crossbyte.ipc;
 
+// Not built for the browser: shared memory and IPC handles between OS processes.
+#if !(js && !nodejs)
+
 import crossbyte.Object;
 import crossbyte.errors.ArgumentError;
 import haxe.Serializer;
@@ -218,3 +221,4 @@ class SharedObject {
 		}
 	}
 }
+#end

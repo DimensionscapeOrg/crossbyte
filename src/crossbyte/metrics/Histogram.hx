@@ -2,7 +2,11 @@ package crossbyte.metrics;
 
 import crossbyte.errors.ArgumentError;
 #if (cpp || neko || hl || java || jvm)
+#if (js && !nodejs)
+import crossbyte._internal.js.NoMutex as Mutex;
+#else
 import sys.thread.Mutex;
+#end
 #end
 
 /**
@@ -103,14 +107,14 @@ class Histogram {
 	 * failing path still contributes to the latency picture.
 	 */
 	public function time<T>(body:Void->T):T {
-		var started:Float = Sys.time();
+		var started:Float = #if (js && !nodejs) (Date.now().getTime() / 1000) #else Sys.time() #end;
 
 		try {
 			var result:T = body();
-			observe(Sys.time() - started);
+			observe(#if (js && !nodejs) (Date.now().getTime() / 1000) #else Sys.time() #end - started);
 			return result;
 		} catch (e:Dynamic) {
-			observe(Sys.time() - started);
+			observe(#if (js && !nodejs) (Date.now().getTime() / 1000) #else Sys.time() #end - started);
 			#if cpp
 			cpp.Lib.rethrow(e);
 			#else

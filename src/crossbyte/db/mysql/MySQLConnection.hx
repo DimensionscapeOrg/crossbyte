@@ -1,5 +1,8 @@
 package crossbyte.db.mysql;
 
+// Not built for the browser: a database driver needs a socket or a file, and credentials do not belong in a page.
+#if !(js && !nodejs)
+
 import crossbyte.errors.IOError;
 import crossbyte.errors.SQLError;
 import crossbyte.events.EventDispatcher;
@@ -249,3 +252,4 @@ class MySQLConnection extends EventDispatcher {
 		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(op, e, msg)));
 	}
 }
+#end

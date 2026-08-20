@@ -1,5 +1,8 @@
 package crossbyte.sys;
 
+// Not built for the browser: there are no subprocesses to start.
+#if !(js && !nodejs)
+
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.NativeProcessEvent;
 import crossbyte.events.ThreadEvent;
@@ -324,3 +327,4 @@ class NativeProcess extends EventDispatcher {
 		return __exitCode;
 	}
 }
+#end

@@ -1,5 +1,8 @@
 package crossbyte.net;
 
+// Not built for the browser. This frames WebSocket over a raw TCP socket, which is what a server does; in a browser crossbyte.net.Socket already speaks WebSocket natively, so connecting to a ws:// or wss:// URL with it is the browser equivalent.
+#if !(js && !nodejs)
+
 import crossbyte._internal.websocket.FlexSocket;
 import crossbyte._internal.websocket.WebSocket as InternalWS;
 import crossbyte._internal.websocket.WebsocketEvent;
@@ -719,3 +722,4 @@ class WebSocket extends Socket {
 		return __closed || __webSocket == null;
 	}
 }
+#end

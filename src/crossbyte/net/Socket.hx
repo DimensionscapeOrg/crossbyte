@@ -523,7 +523,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__socket.onclose = socket_onClose;
 		__socket.onerror = socket_onError;
 
-		CrossByte.instance.addEventListener(TickEvent.TICK, this_onTick);
+		CrossByte.current().addEventListener(TickEvent.TICK, this_onTick);
 		#else
 		__socket = new SysSocket();
 		@:privateAccess
@@ -594,7 +594,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (__output.length > 0) {
 			try {
 				#if (js && !nodejs)
-				var buffer:ArrayBuffer = __output;
+				var buffer:ArrayBuffer = (__output : haxe.io.Bytes).getData();
 				if (buffer.byteLength > __output.length)
 					buffer = buffer.slice(0, __output.length);
 				__socket.send(buffer);
@@ -1135,8 +1135,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__stopConnecting();
 
 		if (__cbInstance != null) {
+			#if !js
 			@:privateAccess
 			__cbInstance.deregisterSocket(this.__socket);
+			#end
 		}
 		__cbInstance = null;
 		__socket = null;
@@ -1215,8 +1217,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		if (__isDirty == false) {
 			__isDirty = true;
+			#if !js
 			@:privateAccess
 			__cbInstance.queueWritable(this.__socket);
+			#end
 		}
 	}
 

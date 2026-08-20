@@ -1,6 +1,10 @@
 package crossbyte;
 
+#if (js && !nodejs)
+import crossbyte.io._internal.NoFileSystem as FileSystem;
+#else
 import sys.FileSystem;
+#end
 import crossbyte.io.ByteArray;
 import crossbyte.sys.System;
 import haxe.Json;

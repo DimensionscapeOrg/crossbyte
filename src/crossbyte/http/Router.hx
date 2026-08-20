@@ -1,5 +1,8 @@
 package crossbyte.http;
 
+// Not built for the browser: it routes requests arriving at the HTTP server.
+#if !(js && !nodejs)
+
 import crossbyte.errors.ArgumentError;
 import crossbyte.http.HTTPServerConfig.Middleware;
 import crossbyte.url.URLRequestHeader;
@@ -375,3 +378,4 @@ private enum RouteSegment {
 	Param(name:String);
 	Rest(name:String);
 }
+#end

@@ -1,5 +1,8 @@
 package crossbyte._internal.socket;
 
+// Not built for the browser. This is a raw TCP socket with its own TLS, and a browser grants neither: it can open a WebSocket and nothing lower. Browser code reaches a ws:// or wss:// endpoint through crossbyte.net.Socket, which speaks WebSocket natively there.
+#if !(js && !nodejs)
+
 import haxe.extern.EitherType;
 import haxe.io.Input;
 import haxe.io.Output;
@@ -200,3 +203,4 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 		(this : Socket).write(content);
 	}
 }
+#end
