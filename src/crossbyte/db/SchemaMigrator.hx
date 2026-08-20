@@ -2,6 +2,7 @@ package crossbyte.db;
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.SQLError;
+import crossbyte.utils.Logger;
 
 /**
  * A row of the bookkeeping table: what was applied, and the fingerprint it had
@@ -277,25 +278,41 @@ class SchemaMigrator<T> {
 
 		__options.lock(connection);
 
-		try {
-			var report:MigrationReport = __migrateNow(connection);
-			__options.unlock(connection);
-			return report;
-		} catch (e:Dynamic) {
-			// Released before rethrowing. A lock left held by a failed migration
-			// would stop every other instance from ever migrating, turning one
-			// bad deploy into a fleet that cannot start.
-			try {
-				__options.unlock(connection);
-			} catch (_:Dynamic) {}
+		var report:MigrationReport = null;
+		var failure:Dynamic = null;
 
-			#if cpp
-			cpp.Lib.rethrow(e);
-			#else
-			throw e;
-			#end
-			return null;
+		try {
+			report = __migrateNow(connection);
+		} catch (e:Dynamic) {
+			failure = e;
 		}
+
+		// Released once, whichever way the run went. A lock left held by a
+		// failed migration would stop every other instance from ever
+		// migrating, turning one bad deploy into a fleet that cannot start.
+		//
+		// The release used to sit inside the try as well, so a failure to
+		// release was caught by the very handler that exists to release --
+		// unlocking a second time, and turning a run that had applied and
+		// recorded everything into a thrown error. An instance refusing to
+		// start after successfully migrating is a worse outcome than the stuck
+		// lock it was reporting, so the outcome of the run is reported as it
+		// happened and the stuck lock is logged instead.
+		try {
+			__options.unlock(connection);
+		} catch (unlockError:Dynamic) {
+			Logger.error("SchemaMigrator could not release its migration lock; another instance may block until it is cleared: " + Std.string(unlockError));
+		}
+
+		if (failure != null) {
+			#if cpp
+			cpp.Lib.rethrow(failure);
+			#else
+			throw failure;
+			#end
+		}
+
+		return report;
 	}
 
 	@:noCompletion private function __migrateNow(connection:T):MigrationReport {
@@ -328,21 +345,32 @@ class SchemaMigrator<T> {
 				name: migration.name,
 				checksum: migration.checksum
 			});
+
+			// Inside the try, because a commit fails too -- a disk that filled,
+			// a serialisation conflict, a connection lost between the last
+			// statement and this one. It sat outside, so that one path opened a
+			// transaction and neither closed nor undid it, and the connection
+			// went back to its caller -- and through a pool to the next
+			// borrower -- still inside it.
+			if (__transactional) {
+				__options.commit(connection);
+			}
 		} catch (e:Dynamic) {
 			if (__transactional) {
 				// Swallowed deliberately: the original failure is what the
 				// caller needs, and a rollback that also fails would otherwise
 				// replace it with a less useful one.
+				//
+				// Rolling back after a failed commit is correct on both shapes
+				// of engine: where the transaction is already aborted it is a
+				// no-op, and where the commit left it open it is the thing that
+				// closes it.
 				try {
 					__options.rollback(connection);
 				} catch (_:Dynamic) {}
 			}
 
 			throw new SQLError("migrate", Std.string(e), 'Migration ${migration.version} ("${migration.name}") failed: ${Std.string(e)}');
-		}
-
-		if (__transactional) {
-			__options.commit(connection);
 		}
 	}
 
