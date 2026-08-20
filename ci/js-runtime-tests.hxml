@@ -1,0 +1,17 @@
+# Runs the Node-only half of CrossByte against Node.
+#
+# ci/js-tests.hxml is the portable suite: no socket, no subprocess, no runtime
+# driving itself, because every case in it has to mean the same thing on the
+# browser build. That leaves everything written for Node specifically -- the
+# self-driven loop, sockets over js.node.net, URLLoader over Node's HTTP
+# client, NativeProcess over child_process -- with no suite to sit in.
+#
+# It is a program rather than a set of fixtures because what it covers is
+# asynchronous, and because one of those things owns the process: a loop that
+# drives itself cannot be tested from inside a harness already driving a
+# runtime of its own.
+-cp src
+-cp tests
+-lib hxnodejs
+-main NodeIntegrationMain
+--js export/js-runtime-tests/runtime.js

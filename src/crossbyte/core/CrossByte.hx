@@ -560,11 +560,95 @@ final class CrossByte extends EventDispatcher {
 		CBTimer.bindCurrentThread(__timer);
 
 		__dispatchInitIfNeeded();
+
+		#if js
+		// One turn of the JavaScript event loop at a time, rather than a loop
+		// that never gives it back. Spinning here would be the same code as
+		// below and would work in the sense that ticks would dispatch -- and
+		// nothing else would ever run: not a socket, not an HTTP response, not
+		// a repaint, because every one of those is delivered by the loop this
+		// would be holding.
+		__lastFrameStamp = Timer.stamp();
+		__frameDeadline = __lastFrameStamp + __tickInterval;
+		__scheduleFrame();
+		#else
 		while (__getRunning()) {
 			mainLoop();
 		}
 		__finalizeExit();
+		#end
 	}
+
+	#if js
+	/**
+	 * Asks the runtime for the next turn.
+	 *
+	 * The two targets are asked differently because they are paced
+	 * differently. Node is told when to come back, so the configured rate is
+	 * the rate, down to the millisecond its timers resolve to. A browser is
+	 * not: `requestAnimationFrame` arrives on the display's schedule and no
+	 * other, which is the right thing to align with in a page, and means a tps
+	 * above the refresh rate cannot be delivered. `__jsFrame` drops the turns
+	 * that arrive early, so a rate below it still means what it says.
+	 *
+	 * A browser also asks for both a frame and a timer, because a page that is
+	 * not visible is given no frames at all -- the callback is held until the
+	 * tab comes back. On its own that would stop the entire runtime for as long
+	 * as the user looked at something else: no timers, no socket handling, a
+	 * connection left to time out. Timers do keep running while hidden, so one
+	 * is armed beside the frame request and whichever arrives first takes the
+	 * turn. Browsers throttle a hidden page's timers to roughly one a second,
+	 * which the tick delta reports rather than conceals.
+	 */
+	@:noCompletion private function __scheduleFrame():Void {
+		#if nodejs
+		__frameTimeout = js.Node.setTimeout(__jsFrame, __frameWaitMs());
+		#else
+		__frameRequest = js.Browser.window.requestAnimationFrame(function(_):Void {
+			__jsFrame();
+		});
+		__frameTimeout = js.Browser.window.setTimeout(function():Void {
+			__jsFrame();
+		}, __frameWaitMs());
+		#end
+	}
+
+	/**
+	 * How long is left of the current frame, in whole milliseconds, floored at
+	 * zero for a frame already overdue.
+	 */
+	@:noCompletion private inline function __frameWaitMs():Int {
+		var remaining:Int = Math.round((__frameDeadline - Timer.stamp()) * 1000);
+		return remaining < 0 ? 0 : remaining;
+	}
+
+	@:noCompletion private function __jsFrame():Void {
+		// Whichever of the two did not fire is cancelled here, so exactly one
+		// pair is ever outstanding. Without this every early frame would leave
+		// its timer behind and the pending callbacks would multiply.
+		#if (js && !nodejs)
+		js.Browser.window.cancelAnimationFrame(__frameRequest);
+		js.Browser.window.clearTimeout(__frameTimeout);
+		#end
+
+		if (!__getRunning()) {
+			__finalizeExit();
+			return;
+		}
+
+		if (Timer.stamp() >= __frameDeadline) {
+			__advanceDeadline();
+			mainLoop();
+
+			if (!__getRunning()) {
+				__finalizeExit();
+				return;
+			}
+		}
+
+		__scheduleFrame();
+	}
+	#end
 
 	@:noCompletion private inline function __dispatchInitIfNeeded():Void {
 		if (!__didInit) {
@@ -679,9 +763,28 @@ final class CrossByte extends EventDispatcher {
 	#end
 
 	private var mainLoop:Void->Void;
+	#if js
+	// When the last frame ran, so the next one can report how long ago that
+	// was. The threaded loops measure a frame from inside their own wait;
+	// there is no wait here to measure from.
+	@:noCompletion private var __lastFrameStamp:Float = 0;
+	@:noCompletion private var __frameTimeout:Dynamic = null;
+	#if !nodejs
+	@:noCompletion private var __frameRequest:Int = 0;
+	#end
+	#end
 	private #if final inline #end function __defaultMainLoop():Void {
 #if js
-		throw new IllegalOperationError("CrossByte cannot own the loop in a browser; the page does. Drive the runtime with HostApplication.advance() from requestAnimationFrame.");
+		// No wait at the end, because there is nothing to wait with: the
+		// scheduler already asked to be woken at the deadline and gave the
+		// thread back in the meantime. What is left is the frame itself.
+		var frameStart:Float = Timer.stamp();
+		var delta:Float = frameStart - __lastFrameStamp;
+		__lastFrameStamp = frameStart;
+		__dt = delta;
+		__timer.advanceTime(delta);
+		__dispatchTick(delta);
+		__cpuTime = Timer.stamp() - frameStart;
 		#else
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
@@ -699,7 +802,12 @@ final class CrossByte extends EventDispatcher {
 	}
 	private #if final inline #end function __pollBasedMainLoop():Void {
 #if js
-		throw new IllegalOperationError("The POLL main loop needs a pollable socket set, which a browser does not provide. Drive the runtime from requestAnimationFrame with HostApplication instead.");
+		// Not a gap to be filled later: neither JavaScript target has a socket
+		// set to poll. A browser's WebSocket and Node's net sockets both
+		// deliver through callbacks, so there is no descriptor to wait on and
+		// nothing for a poll budget to spend. The DEFAULT loop is the whole of
+		// what a poll loop would do here.
+		throw new IllegalOperationError("The POLL main loop needs a pollable socket set, which no JavaScript target has -- sockets there are delivered by the runtime, not polled for. Use the DEFAULT main loop.");
 		#else
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
