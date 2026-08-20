@@ -218,6 +218,155 @@ class SocketTest extends utest.Test {
 		}
 	}
 
+	public function testHalfOpenPeerReceivesAResponseWrittenAfterItsFin():Void {
+		// The point of the whole policy. The client says everything it has to
+		// say, shuts its write side, and waits. Under CLOSE the server treats
+		// that FIN as the end of the conversation and the answer is never
+		// written; under HALF_OPEN it is written, and arrives.
+		var server = new ServerSocket();
+		var client = new Socket();
+		var serverPeer:Socket = null;
+		var peerClosed = false;
+		var answer:String = null;
+
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
+			serverPeer = event.socket;
+			serverPeer.peerShutdownPolicy = HALF_OPEN;
+			serverPeer.addEventListener(Event.PEER_CLOSE, _ -> {
+				peerClosed = true;
+				// Answering from here is the idiom the policy exists for: the
+				// request is complete precisely because the peer half-closed.
+				serverPeer.writeUTFBytes("answered-after-fin");
+				serverPeer.flush();
+			});
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		client.addEventListener(Event.CONNECT, _ -> {
+			client.writeUTFBytes("request");
+			client.flush();
+			client.shutdown(false, true);
+		});
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			answer = client.readUTFBytes(client.bytesAvailable);
+		});
+
+		try {
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> answer != null, 3.0);
+
+			Assert.isTrue(peerClosed);
+			Assert.equals("answered-after-fin", answer);
+			Assert.isTrue(serverPeer.peerShutdown);
+			// Still open: HALF_OPEN ends the read direction, not the socket.
+			Assert.isTrue(serverPeer.connected);
+
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+			throw e;
+		}
+	}
+
+	public function testDefaultPolicyStillClosesOnPeerFin():Void {
+		// The default has to stay exactly what it was, or every consumer that
+		// never heard of this proposal changes behaviour. A peer FIN closes,
+		// dispatches CLOSE and not PEER_CLOSE -- and peerShutdown is still set,
+		// so a CLOSE consumer can tell a graceful end from an error one.
+		var server = new ServerSocket();
+		var client = new Socket();
+		var serverPeer:Socket = null;
+		var closed = false;
+		var peerClosed = false;
+		var sawShutdownFlag = false;
+
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
+			serverPeer = event.socket;
+			serverPeer.addEventListener(Event.PEER_CLOSE, _ -> peerClosed = true);
+			serverPeer.addEventListener(Event.CLOSE, _ -> {
+				closed = true;
+				sawShutdownFlag = serverPeer.peerShutdown;
+			});
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		client.addEventListener(Event.CONNECT, _ -> {
+			client.writeUTFBytes("request");
+			client.flush();
+			client.shutdown(false, true);
+		});
+
+		try {
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> closed, 3.0);
+
+			Assert.isTrue(closed);
+			Assert.isFalse(peerClosed);
+			Assert.isTrue(sawShutdownFlag);
+
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+			throw e;
+		}
+	}
+
+	public function testHalfOpenStopsReadingRatherThanRepeatingTheFin():Void {
+		// A shut read direction reports Eof on every subsequent poll, so
+		// without a gate the policy branch re-enters each tick and PEER_CLOSE
+		// arrives over and over. Once is a fact; repeatedly is a busy loop.
+		var server = new ServerSocket();
+		var client = new Socket();
+		var serverPeer:Socket = null;
+		var peerCloseCount = 0;
+
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
+			serverPeer = event.socket;
+			serverPeer.peerShutdownPolicy = HALF_OPEN;
+			serverPeer.addEventListener(Event.PEER_CLOSE, _ -> peerCloseCount++);
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		client.addEventListener(Event.CONNECT, _ -> {
+			client.writeUTFBytes("request");
+			client.flush();
+			client.shutdown(false, true);
+		});
+
+		try {
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> peerCloseCount > 0, 3.0);
+
+			// Keep pumping well past the FIN: a repeat would land in here.
+			var settle:Float = Sys.time() + 0.5;
+			while (Sys.time() < settle) {
+				CrossByte.current().pump(1 / 60, 0);
+			}
+
+			Assert.equals(1, peerCloseCount);
+
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+			throw e;
+		}
+	}
+
 	public function testIpv6ClientServerEchoOnLoopback():Void {
 		var ipv6Supported = requireIpv6Loopback();
 		if (!ipv6Supported) {
