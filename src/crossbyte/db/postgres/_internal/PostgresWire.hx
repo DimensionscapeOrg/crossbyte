@@ -118,6 +118,11 @@ class PostgresWire {
 		var lastInsertRowID:Int = cursor.readInt();
 
 		var fieldCount:Int = cursor.readInt();
+
+		if (fieldCount < 0) {
+			throw new SQLError("request", 'fieldCount=$fieldCount', "Postgres bridge sent a negative field count.");
+		}
+
 		var fields:Array<String> = [];
 
 		for (_ in 0...fieldCount) {
@@ -125,6 +130,25 @@ class PostgresWire {
 		}
 
 		var rowCount:Int = cursor.readInt();
+
+		if (rowCount < 0) {
+			throw new SQLError("request", 'rowCount=$rowCount', "Postgres bridge sent a negative row count.");
+		}
+
+		// A row of no columns reads nothing, so with `fieldCount` at zero the
+		// loop below is bounded by the row count alone and not by the block
+		// holding anything: 20 bytes claiming twenty million rows allocated
+		// twenty million of them, and the count could have said two billion.
+		// Every other shape is self-limiting, because each column costs at
+		// least its four-byte length and the cursor runs out.
+		//
+		// It is also not a result Postgres produces. A statement returning no
+		// columns returns no rows.
+		if (fieldCount == 0 && rowCount > 0) {
+			throw new SQLError("request", 'rowCount=$rowCount fieldCount=0',
+				"Postgres bridge claimed rows in a result with no columns.");
+		}
+
 		var rows:Array<Array<Null<Bytes>>> = [];
 
 		for (_ in 0...rowCount) {
@@ -270,7 +294,17 @@ private class Cursor {
 	}
 
 	private inline function __require(count:Int):Void {
-		if (__position + count > __data.length) {
+		// Measured against what is left, rather than by adding to the position.
+		// `__position + count` overflows Int for a large count and wraps
+		// negative, and a negative is not greater than the length, so the test
+		// passed and handed `Bytes.sub` a span running off the end of the
+		// buffer. A 20-byte block claiming a field name of 2147483647 bytes
+		// segfaulted the process -- the exact failure this class exists to
+		// turn into an exception.
+		//
+		// The subtraction cannot overflow: `__position` never passes
+		// `__data.length`, because it only advances after this check succeeds.
+		if (count > __data.length - __position) {
 			throw new SQLError("request", 'need=$count at=$__position of=${__data.length}',
 				"Postgres bridge returned a truncated result block.");
 		}
