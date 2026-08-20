@@ -143,6 +143,31 @@ class HTTPTestSupport {
 	}
 
 	/**
+	 * How many complete responses `raw` holds.
+	 *
+	 * Walks them with `responseEndAt` rather than counting status lines, so a
+	 * body that happens to contain one is not mistaken for a response, and a
+	 * trailing partial response is not counted as arrived.
+	 */
+	public static function countResponses(raw:String):Int {
+		var count:Int = 0;
+		var cursor:Int = 0;
+
+		while (cursor < raw.length) {
+			var end:Int = responseEndAt(raw, cursor, false);
+
+			if (end < 0) {
+				break;
+			}
+
+			count++;
+			cursor = end;
+		}
+
+		return count;
+	}
+
+	/**
 	 * Splits one response out of `raw`, skipping any 1xx interim blocks ahead
 	 * of it. `bytes` supplies the body byte-exactly, for suites asserting on
 	 * compressed or binary payloads.
