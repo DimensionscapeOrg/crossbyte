@@ -184,8 +184,8 @@ class Timer {
 	}
 
 	public static inline function stamp():Float {
-		#if (js && !nodejs)
-		return Date.now().getTime() / 1000;
+		#if js
+		return __jsStamp() / 1000;
 		#elseif cpp
 		return untyped __global__.__time_stamp();
 		#elseif python
@@ -196,6 +196,31 @@ class Timer {
 		return 0;
 		#end
 	}
+
+	#if js
+	/**
+	 * `performance.now()`, which every browser and every Node since 16 has as
+	 * a global.
+	 *
+	 * The branch above used to be `js && !nodejs` and read `Date.now()`, which
+	 * left Node falling through to the `sys` branch -- and `sys` is not defined
+	 * for hxnodejs, even though `Sys` itself is there. So Node landed on the
+	 * final `return 0`, and every stamp came back as the same number. Nothing
+	 * failed: an interval measured against a constant is simply zero, so the
+	 * runtime reported no frame cost, the timer schedulers based themselves at
+	 * zero, and `Random`'s default seed -- which is a stamp -- was the same
+	 * value on every run of every program.
+	 *
+	 * `performance.now()` rather than `Date.now()` for both targets now. It is
+	 * monotonic, so a clock adjustment cannot make an elapsed interval come out
+	 * negative, and it is sub-millisecond, which matters when what is being
+	 * measured is the cost of one frame. That also puts the two JavaScript
+	 * targets on the same clock, which is the point of having both.
+	 */
+	private static inline function __jsStamp():Float {
+		return js.Syntax.code("(typeof performance !== 'undefined' ? performance.now() : Date.now())");
+	}
+	#end
 
 	private static inline function __withLock(fn:Void->Void):Void {
 		#if cpp
