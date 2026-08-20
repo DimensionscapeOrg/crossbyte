@@ -152,6 +152,91 @@ class ConnectionPoolTest extends utest.Test {
 		pool.close();
 	}
 
+	public function testDoubleDiscardDoesNotBreachTheCeiling():Void {
+		// release() guards against being called twice; discard() did not, and
+		// decremented __created unconditionally. Two discards of one connection
+		// therefore credited the pool with a slot it never gave up, and the
+		// ceiling -- the pool's single reason to exist -- stopped holding.
+		var pool = makePool(1);
+
+		var connection = pool.acquire();
+		pool.discard(connection);
+		pool.discard(connection);
+
+		Assert.equals(0, pool.size());
+
+		var replacement = pool.acquire();
+		Assert.equals(1, pool.size());
+		Assert.equals(1, pool.inUse());
+
+		// One connection, one ceiling: the next acquire must wait, not open a
+		// second. A pool whose count has drifted below reality opens without
+		// limit instead.
+		Assert.raises(() -> pool.acquire(), IllegalOperationError);
+
+		pool.release(replacement);
+		pool.close();
+	}
+
+	public function testForeignDiscardIsIgnored():Void {
+		// The same asymmetry from the other direction: a connection this pool
+		// never issued must not alter its accounting.
+		var pool = makePool(1);
+		var foreign = new FakeConnection(9999);
+
+		var held = pool.acquire();
+		pool.discard(foreign);
+
+		Assert.equals(1, pool.size());
+		Assert.equals(1, pool.inUse());
+		Assert.isFalse(foreign.closed);
+
+		pool.release(held);
+		pool.close();
+	}
+
+	public function testDiscardingAnIdleConnectionRemovesItFromThePool():Void {
+		// Discarding something already released closed it but left it sitting
+		// in the idle list, so the next acquire handed out a closed connection.
+		var pool = makePool(2);
+
+		var connection = pool.acquire();
+		pool.release(connection);
+		pool.discard(connection);
+
+		var next = pool.acquire();
+		Assert.isFalse(next.closed);
+
+		pool.release(next);
+		pool.close();
+	}
+
+	public function testConnectionStaysCountedWhileItIsValidated():Void {
+		// Validation runs unlocked, because it may talk to the server. The
+		// connection was discounted from __created for that whole window, so a
+		// second caller arriving mid-validation saw room that did not exist and
+		// opened a connection past the ceiling. It is still open while being
+		// checked, so it stays counted; only a failed check retires it.
+		var observed:Int = -1;
+		var pool:ConnectionPool<FakeConnection> = null;
+
+		pool = makePool(1, function(connection:FakeConnection):Bool {
+			observed = pool.size();
+			return true;
+		});
+
+		var first = pool.acquire();
+		pool.release(first);
+
+		var second = pool.acquire();
+
+		Assert.equals(1, observed);
+		Assert.equals(1, pool.size());
+
+		pool.release(second);
+		pool.close();
+	}
+
 	public function testCloseClosesIdleAndRejectsFurtherAcquire():Void {
 		var pool = makePool(2);
 

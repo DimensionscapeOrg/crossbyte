@@ -99,7 +99,19 @@ class ConnectionPool<T> {
 	@:noCompletion private var __validate:T->Bool;
 	@:noCompletion private var __idle:Array<T>;
 	@:noCompletion private var __created:Int = 0;
-	@:noCompletion private var __borrowed:Int = 0;
+	// The connections actually checked out, rather than a count of them.
+	// release() and discard() have to answer "did this pool issue this?" and a
+	// counter cannot: it made a foreign connection, or a second return of one
+	// already back, indistinguishable from a real return. Both then adjusted
+	// the accounting, and once __created drifts below the number of open
+	// connections the ceiling stops holding. maxSize is small, so the linear
+	// scan costs nothing beside the query the connection is for.
+	@:noCompletion private var __out:Array<T>;
+
+	// Slots reserved by a caller whose factory has not returned yet. Counted
+	// as in use because they are: the capacity is spoken for, there is simply
+	// no object to hold yet.
+	@:noCompletion private var __reserving:Int = 0;
 
 	@:noCompletion private var __metrics:crossbyte.metrics.Metrics;
 	@:noCompletion private var __acquiredTotal:crossbyte.metrics.Counter;
@@ -132,6 +144,7 @@ class ConnectionPool<T> {
 		__close = options.close;
 		__validate = options.validate;
 		__idle = [];
+		__out = [];
 
 		#if (cpp || neko || hl || java || jvm)
 		__lock = new Mutex();
@@ -202,7 +215,7 @@ class ConnectionPool<T> {
 	 */
 	public function inUse():Int {
 		__acquireLock();
-		var value:Int = __borrowed;
+		var value:Int = __out.length + __reserving;
 		__releaseLock();
 		return value;
 	}
@@ -263,12 +276,17 @@ class ConnectionPool<T> {
 
 		__acquireLock();
 
-		if (__borrowed <= 0 || __contains(__idle, connection)) {
+		var index:Int = __indexOf(__out, connection);
+
+		if (index < 0) {
+			// Not checked out: either this pool never issued it, or it has
+			// already been returned. Adjusting the accounting for either is
+			// what lets __created drift away from reality.
 			__releaseLock();
 			return;
 		}
 
-		__borrowed--;
+		__out.splice(index, 1);
 
 		if (closed) {
 			__created--;
@@ -292,9 +310,27 @@ class ConnectionPool<T> {
 		}
 
 		__acquireLock();
-		if (__borrowed > 0) {
-			__borrowed--;
+
+		var index:Int = __indexOf(__out, connection);
+
+		if (index >= 0) {
+			__out.splice(index, 1);
+		} else {
+			// It may already have been released, in which case it is sitting
+			// in the idle list. Closing it without taking it out of that list
+			// hands the next caller a dead connection.
+			index = __indexOf(__idle, connection);
+
+			if (index < 0) {
+				// This pool does not hold it. Retiring it anyway would credit
+				// the pool with a slot it never gave up.
+				__releaseLock();
+				return;
+			}
+
+			__idle.splice(index, 1);
 		}
+
 		__created--;
 		__releaseLock();
 
@@ -361,13 +397,15 @@ class ConnectionPool<T> {
 			var candidate:T = __idle.pop();
 
 			if (__validate == null) {
-				__borrowed++;
+				__out.push(candidate);
 				__releaseLock();
 				return candidate;
 			}
 
-			// Validation may talk to the server, so run it unlocked.
-			__created--;
+			// Validation may talk to the server, so run it unlocked. The
+			// connection stays counted in __created throughout: it is still
+			// open, and discounting it for the duration let another caller see
+			// room and open one past the ceiling in that window.
 			__releaseLock();
 
 			var healthy:Bool = false;
@@ -379,14 +417,14 @@ class ConnectionPool<T> {
 
 			if (healthy) {
 				__acquireLock();
-				__created++;
-				__borrowed++;
+				__out.push(candidate);
 				__releaseLock();
 				return candidate;
 			}
 
 			__closeConnection(candidate, "failed_validation");
 			__acquireLock();
+			__created--;
 			if (closed) {
 				__releaseLock();
 				throw new IllegalOperationError("ConnectionPool is closed.");
@@ -401,7 +439,7 @@ class ConnectionPool<T> {
 		// Reserve the slot before unlocking so concurrent callers cannot
 		// collectively exceed maxSize while this connection is opening.
 		__created++;
-		__borrowed++;
+		__reserving++;
 		__releaseLock();
 
 		var connection:T;
@@ -410,7 +448,7 @@ class ConnectionPool<T> {
 		} catch (e:Dynamic) {
 			__acquireLock();
 			__created--;
-			__borrowed--;
+			__reserving--;
 			__releaseLock();
 			__rethrow(e);
 			return null;
@@ -419,10 +457,15 @@ class ConnectionPool<T> {
 		if (connection == null) {
 			__acquireLock();
 			__created--;
-			__borrowed--;
+			__reserving--;
 			__releaseLock();
 			throw new IllegalOperationError("ConnectionPool factory returned null.");
 		}
+
+		__acquireLock();
+		__reserving--;
+		__out.push(connection);
+		__releaseLock();
 
 		if (__metrics != null) {
 			// Counted only once the factory has produced a usable
@@ -462,13 +505,13 @@ class ConnectionPool<T> {
 		}
 	}
 
-	@:noCompletion private static function __contains<T>(items:Array<T>, value:T):Bool {
-		for (item in items) {
-			if (item == value) {
-				return true;
+	@:noCompletion private static function __indexOf<T>(items:Array<T>, value:T):Int {
+		for (i in 0...items.length) {
+			if (items[i] == value) {
+				return i;
 			}
 		}
-		return false;
+		return -1;
 	}
 
 	@:noCompletion private static function __rethrow(e:Dynamic):Void {
