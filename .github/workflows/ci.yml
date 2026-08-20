@@ -367,6 +367,11 @@ jobs:
           haxe ci/js-tests.hxml
           node export/js-tests/tests.js
 
+      - name: Run Node-only suite on Node
+        run: |
+          haxe ci/js-runtime-tests.hxml
+          node export/js-runtime-tests/runtime.js
+
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 

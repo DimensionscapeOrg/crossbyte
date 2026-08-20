@@ -197,6 +197,27 @@ therefore one of three shapes, and which one is a statement about the target:
 - `#if !(js && !nodejs)` -- Node keeps it, the browser does not. Files, the
   environment, subprocess-free filesystem work.
 
+Step 3 turned out not to need `HostApplication` at all. The plan was a
+browser bootstrap that pumped the runtime from `requestAnimationFrame`, which
+would have left a web build with a different entry point from a desktop one --
+and the point of the exercise is that they are the same program. What actually
+stood in the way was narrower than "CrossByte cannot own the loop in a
+browser": the loop is a `while` that never returns, and a JavaScript runtime
+whose thread never comes back delivers nothing. Taking one turn at a time
+removes that without changing whose loop it is, so `Application` runs unchanged
+on both targets and `HostApplication` goes back to being what it says -- for a
+host that genuinely owns the frame.
+
+Two things about that are worth writing down, because neither is obvious from
+the desktop targets. A browser paces the runtime rather than the other way
+round: `requestAnimationFrame` arrives on the display's schedule, so a `tps`
+above the refresh rate cannot be delivered and one below it is kept by dropping
+the turns that arrive early. And a page that is not visible is given no frames
+at all -- the callback is simply held -- so a timer is armed beside the frame
+request and whichever arrives first takes the turn. Without it a backgrounded
+tab would stop the runtime dead: no timers, no socket handling, a connection
+left to time out while the user looked at something else.
+
 Subprocesses were listed as tier C and are now tier C in fact: `NativeProcess`
 runs on Node. The threads it uses on a native build turned out not to be part
 of the design -- they exist to keep a blocking pipe read off the runtime's
