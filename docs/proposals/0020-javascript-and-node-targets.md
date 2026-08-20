@@ -224,8 +224,22 @@ of the design -- they exist to keep a blocking pipe read off the runtime's
 thread, and nothing about Node's streams blocks, so the same events fall out of
 `child_process` with no worker at all.
 
-Sockets are the honest gap. The browser has one, over the page WebSocket, and
-it works. Node has none: the browser path needs the page API and the native
-path needs `select()`. `crossbyte.net.Socket` throws there, naming what it
-would take -- an implementation over `js.node.net`, which is a port and not a
-gate. That is the next piece of work, and it is what would give Node parity.
+Sockets are no longer the gap they were. The browser has one over the page
+WebSocket; Node has one over `js.node.net`, and a `ServerSocket` over
+`js.node.net.Server` to accept with. What an accepted connection needs in order
+to be indistinguishable from a dialled one lives in `Socket` rather than in
+`ServerSocket`, because on Node there is nothing to register for polling and
+what is left is only the state of a connected socket -- so both paths set it in
+one place.
+
+Two things about the Node server do not line up with a native one, and are
+written down rather than smoothed over. Node has no bind that is separate from
+listening, so a refused address arrives as a `close` event instead of an
+exception out of `bind()`, and a port of `0` reads as `0` until `listen()` has
+had a chance to ask what was assigned. And a secure server refuses outright:
+terminating TLS needs `sys.ssl`, hxnodejs has none, and `setCertificate()` takes
+types that do not exist there -- the same position the jvm target is already in.
+
+What is still Node-shaped work rather than a gate: `DatagramSocket` over
+`dgram`, the `WebSocket` client, and the HTTP server on top of the
+`ServerSocket` that now exists.

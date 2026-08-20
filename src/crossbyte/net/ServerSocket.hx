@@ -1,7 +1,7 @@
 package crossbyte.net;
 
 // Not built for the browser. A page cannot listen for inbound connections; there is no API for it and no port to bind. Run a server on Node or a native target.
-#if !js
+#if !(js && !nodejs)
 
 import haxe.Timer;
 import crossbyte.core.CrossByte;
@@ -16,12 +16,14 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
-#if !(js && !nodejs)
+#if nodejs
+import js.node.Net;
+import js.node.net.Server as NodeServer;
+import js.node.net.Socket as NodeSocket;
+#else
 import sys.net.Host;
 import sys.net.Socket;
-#end
 #if (!java && !jvm)
-#if !(js && !nodejs)
 import sys.ssl.Certificate;
 import sys.ssl.Key;
 import sys.ssl.Socket as SSLSocket;
@@ -98,12 +100,14 @@ class ServerSocket extends EventDispatcher {
 	**/
 	public var handshakeTimeout:Float = 10.0;
 
-	@:noCompletion private var __serverSocket:Socket;
+	@:noCompletion private var __serverSocket:#if nodejs NodeServer #else Socket #end;
 	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __hasListener:Bool = false;
 	@:noCompletion private var __hasCertificate:Bool = false;
+	#if !nodejs
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
+	#end
 	@:noCompletion private var __listenerReleased:Bool = false;
 
 	/**
@@ -124,15 +128,53 @@ class ServerSocket extends EventDispatcher {
 		if (secure) {
 			throw new CBError("Secure ServerSocket is not supported on the jvm target yet.");
 		}
+		#elseif nodejs
+		if (secure) {
+			throw new CBError("Secure ServerSocket is not supported on Node: terminating TLS needs sys.ssl, which hxnodejs does not provide. Put a TLS terminator in front, or run the server on a native target.");
+		}
 		#end
 
 		this.secure = secure;
+		#if !nodejs
 		__pendingHandshakes = [];
+		#end
 
 		__init();
 	}
 
 	private function __init():Void {
+		#if nodejs
+		__serverSocket = Net.createServer(function(connection:NodeSocket):Void {
+			if (!__hasListener) {
+				// Node has already accepted this; there is no way to tell it
+				// not to, the way a native server leaves a connection sitting
+				// in the backlog it never calls accept() on. With nobody
+				// listening for `connect` the socket would be handed to no one
+				// and stay open, holding a descriptor and Node's event loop
+				// with it, so it is refused here instead of leaked.
+				connection.destroy();
+				return;
+			}
+
+			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
+			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+		});
+
+		// A port already in use, or an address that is not local, reaches a
+		// Node server as an event rather than as a failed call -- see bind().
+		__serverSocket.on("error", function(_):Void {
+			if (__closed) {
+				return;
+			}
+
+			close();
+			dispatchEvent(new Event(Event.CLOSE));
+		});
+
+		__closed = false;
+		bound = false;
+		listening = false;
+		#else
 		#if (java || jvm)
 		__serverSocket = new sys.net.Socket();
 		#else
@@ -154,9 +196,10 @@ class ServerSocket extends EventDispatcher {
 		__closed = false;
 		bound = false;
 		listening = false;
+		#end
 	}
 
-	#if (!java && !jvm)
+	#if (!java && !jvm && !nodejs)
 	/**
 		Installs the certificate chain and private key this server presents to
 		clients. Must be called on a secure server before `listen()`.
@@ -254,6 +297,18 @@ class ServerSocket extends EventDispatcher {
 			throw new RangeError("Invalid socket port number specified.");
 		}
 
+		#if nodejs
+		// Node has no bind that is separate from listening: a server takes its
+		// address when it starts, and reports a refusal -- a port in use, an
+		// address that is not local -- as an event once it has tried. So this
+		// records the endpoint and listen() is where it is claimed, which means
+		// two visible differences on Node: a bind failure arrives as a close
+		// event rather than out of this call, and a port of 0 stays 0 in
+		// localPort until listen() has been able to ask what was assigned.
+		this.localAddress = localAddress;
+		this.localPort = localPort;
+		bound = true;
+		#else
 		try {
 			var host:Host = new Host(localAddress);
 			__serverSocket.bind(host, localPort);
@@ -269,6 +324,7 @@ class ServerSocket extends EventDispatcher {
 					throw new ArgumentError("One of the parameters is invalid");
 			}
 		}
+		#end
 	}
 
 	/**
@@ -277,7 +333,9 @@ class ServerSocket extends EventDispatcher {
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
 	public function close():Void {
+		#if !nodejs
 		__dropPendingHandshakes();
+		#end
 
 		// stopAccepting() may already have released the listening socket as
 		// the first half of a graceful shutdown; closing it again is not an
@@ -292,9 +350,11 @@ class ServerSocket extends EventDispatcher {
 		listening = false;
 		bound = false;
 		__closed = true;
+		#if !nodejs
 		if (__cbInstance != null) {
 			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
 		}
+		#end
 		__cbInstance = null;
 	}
 
@@ -335,6 +395,24 @@ class ServerSocket extends EventDispatcher {
 				backlog = 0x7FFFFFFF;
 			}
 
+			#if nodejs
+			if (!bound) {
+				throw new IOError("Operation attempted on invalid socket.");
+			}
+
+			__serverSocket.listen({port: localPort, host: localAddress, backlog: backlog}, function():Void {
+				// Where a port of 0 becomes the port the operating system
+				// picked. It cannot be known earlier: bind() only wrote the
+				// request down, and nothing had asked for a port yet.
+				var assigned:Dynamic = __serverSocket.address();
+
+				if (assigned != null && assigned.port != null) {
+					localPort = assigned.port;
+				}
+			});
+
+			listening = true;
+			#else
 			__serverSocket.listen(backlog);
 			/* @:privateAccess
 				__cbInstance.beginSocketPolling();
@@ -344,9 +422,11 @@ class ServerSocket extends EventDispatcher {
 			if (__hasListener) {
 				__cbInstance.addEventListener(Event.TICK, this_onTick);
 			}
+			#end
 		}
 	}
 
+	#if !nodejs
 	@:noCompletion private function __fromSocket(socket:sys.net.Socket):CBSocket {
 		socket.setFastSend(true);
 		socket.setBlocking(false);
@@ -423,14 +503,18 @@ class ServerSocket extends EventDispatcher {
 		}*/
 	}
 
+	#end
+
 	override public function addEventListener(type:String, listener:Dynamic->Void, priority:Int = 0):Void {
 		super.addEventListener(type, listener, priority);
 
 		if (type == Event.CONNECT) {
 			__hasListener = true;
+			#if !nodejs
 			if (listening) {
 				__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
 			}
+			#end
 		}
 	}
 
@@ -439,9 +523,11 @@ class ServerSocket extends EventDispatcher {
 
 		if (type == Event.CONNECT) {
 			__hasListener = false;
+			#if !nodejs
 			if (__cbInstance != null) {
 				__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
 			}
+			#end
 		}
 	}
 
@@ -454,7 +540,13 @@ class ServerSocket extends EventDispatcher {
 		Always `0` on a plain server.
 	**/
 	public function pendingHandshakeCount():Int {
+		#if nodejs
+		// Always zero, and not because none are in flight: a Node server never
+		// terminates TLS, so there is no handshake for it to be counting.
+		return 0;
+		#else
 		return __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
+		#end
 	}
 
 	/**
@@ -476,11 +568,13 @@ class ServerSocket extends EventDispatcher {
 			return;
 		}
 
+		#if !nodejs
 		__dropPendingHandshakes();
 
 		if (__cbInstance != null) {
 			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
 		}
+		#end
 
 		try {
 			__serverSocket.close();
@@ -503,7 +597,7 @@ class ServerSocket extends EventDispatcher {
 		closed without ever reaching application code.
 	**/
 	@:noCompletion private function __pumpHandshakes():Void {
-		#if (!java && !jvm)
+		#if (!java && !jvm && !nodejs)
 		if (__pendingHandshakes == null || __pendingHandshakes.length == 0) {
 			return;
 		}
@@ -555,6 +649,7 @@ class ServerSocket extends EventDispatcher {
 		#end
 	}
 
+	#if !nodejs
 	@:noCompletion private function __dropPendingHandshakes():Void {
 		if (__pendingHandshakes == null) {
 			return;
@@ -571,10 +666,13 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private inline function __isBlockedError(error:Dynamic):Bool {
 		return crossbyte._internal.socket.BlockedError.isBlocked(error);
 	}
+	#end
 }
 
+#if !nodejs
 typedef PendingHandshake = {
 	var socket:Socket;
 	var deadline:Float;
 }
+#end
 #end
