@@ -1,7 +1,7 @@
 package crossbyte.db.postgres._internal;
 
-// Not built for the browser: it binds directly to native code.
-#if !(js && !nodejs)
+// Not built for any JavaScript target: it binds directly to native code, which neither a browser nor Node can load.
+#if !js
 
 import crossbyte.ipc._internal.VoidPointer;
 

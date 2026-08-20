@@ -1,7 +1,7 @@
 package crossbyte._internal.php;
 
 // Not built for the browser: it launches and talks to a PHP CGI process.
-#if !(js && !nodejs)
+#if !js
 
 import haxe.io.Path;
 import crossbyte.events.Event;

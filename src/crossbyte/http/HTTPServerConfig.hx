@@ -1,7 +1,7 @@
 package crossbyte.http;
 
 // Not built for the browser: it configures the HTTP server, which cannot run in a page.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.io.File;
 import crossbyte.url.URLRequestHeader;

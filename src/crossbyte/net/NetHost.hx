@@ -1,7 +1,7 @@
 package crossbyte.net;
 
 // Not built for the browser: it accepts connections, which needs a listening socket.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.events.Event;
 import crossbyte.events.ServerSocketConnectEvent;

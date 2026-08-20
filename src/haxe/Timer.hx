@@ -184,7 +184,7 @@ class Timer {
 	}
 
 	public static inline function stamp():Float {
-		#if js
+		#if (js && !nodejs)
 		return Date.now().getTime() / 1000;
 		#elseif cpp
 		return untyped __global__.__time_stamp();

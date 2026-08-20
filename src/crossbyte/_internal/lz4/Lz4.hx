@@ -112,7 +112,7 @@ class Lz4 {
 			}
 		}
 
-		#if js
+		#if (js && !nodejs)
 		return Bytes.ofData(untyped oBuf.buffer);
 		#elseif hl
 		return oBuf.getData().toBytes(oBuf.length);

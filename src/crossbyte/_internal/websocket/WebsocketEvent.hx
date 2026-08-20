@@ -1,7 +1,7 @@
 package crossbyte._internal.websocket;
 
 // Not built for the browser: server-side WebSocket framing over a raw socket. A page uses the browser's own WebSocket through crossbyte.net.Socket.
-#if !(js && !nodejs)
+#if !js
 
 /**
  * ...

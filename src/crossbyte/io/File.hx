@@ -1519,7 +1519,7 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private static function __getTempPath(dir:Bool):String {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("There is no temporary directory in a browser, and no environment to name one.");
 		#else
 		var path:String;
@@ -1550,7 +1550,7 @@ final class File extends EventDispatcher {
 
 	#if windows
 	@:noCompletion private function __replaceWindowsEnvVars(path:String):String {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no process environment to expand a path against.");
 		#else
 		// Define the regular expression to match the path component to be replaced
@@ -1581,7 +1581,7 @@ final class File extends EventDispatcher {
 	#end
 
 	@:noCompletion private function __winGetHiddenAttr():Bool {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Reading a file attribute means shelling out, and a browser has no shell.");
 		#else
 		// TODO don't use the command line for this.... instead we should add support in Lime to use
@@ -1746,7 +1746,7 @@ final class File extends EventDispatcher {
 
 	// #if desktop
 	@:noCompletion private function get_spaceAvailable():Float {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Free disk space means shelling out, and a browser has neither a shell nor a disk to report on.");
 		#else
 		var cmd:String;

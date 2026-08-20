@@ -807,7 +807,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function compress(algorithm:CompressionAlgorithm = LZ4):Void {
 		/*#if lime
-			#if js
+			#if (js && !nodejs)
 			if (__length > #if lime_bytes_length_getter l #else length #end)
 			{
 				var cacheLength = #if lime_bytes_length_getter l #else length #end;
@@ -1157,7 +1157,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function uncompress(algorithm:CompressionAlgorithm = LZ4):Void {
 		/*#if lime
-			#if js
+			#if (js && !nodejs)
 			if (__length > #if lime_bytes_length_getter l #else length #end)
 			{
 				var cacheLength = #if lime_bytes_length_getter l #else length #end;
@@ -1492,7 +1492,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		__length = bytes.length;
 		#end
 
-		#if js
+		#if (js && !nodejs)
 		data = bytes.data;
 		#end
 	}
