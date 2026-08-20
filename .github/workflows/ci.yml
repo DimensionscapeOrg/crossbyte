@@ -362,6 +362,11 @@ jobs:
           haxelib install hxnodejs --always --quiet
           haxe ci/node-build.hxml
 
+      - name: Run portable suite on Node
+        run: |
+          haxe ci/js-tests.hxml
+          node export/js-tests/tests.js
+
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 
