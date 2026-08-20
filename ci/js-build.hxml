@@ -1,0 +1,15 @@
+# Compiles every CrossByte class that is available in a browser.
+#
+# There is no main and nothing is run: this asks the one question that rots
+# fastest, which is whether the portable half of the framework still compiles
+# without a filesystem, without threads and without a socket. A `Sys.` call
+# added to a file nobody thought was platform-bound fails here and nowhere
+# else, because every other target has a Sys.
+#
+# `include` pulls in the whole package tree, so a module excluded from the
+# browser build is skipped rather than failing -- which is what makes the pass
+# meaningful: everything not excluded has to compile.
+-cp src
+--macro include('crossbyte')
+--js export/js/crossbyte.js
+-D js-flatten

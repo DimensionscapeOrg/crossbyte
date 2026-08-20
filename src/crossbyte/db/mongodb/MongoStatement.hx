@@ -1,5 +1,8 @@
 package crossbyte.db.mongodb;
 
+// Not built for the browser: a database driver needs a socket or a file, and credentials do not belong in a page.
+#if !(js && !nodejs)
+
 import crossbyte.FieldStruct;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql._internal.ParamBinder;
@@ -180,3 +183,4 @@ class MongoStatement extends EventDispatcher {
 		#end
 	}
 }
+#end

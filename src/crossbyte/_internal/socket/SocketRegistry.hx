@@ -1,5 +1,8 @@
 package crossbyte._internal.socket;
 
+// Not built for the browser: it polls OS socket descriptors, which a page does not have. The browser socket is driven by the runtime tick instead.
+#if !(js && !nodejs)
+
 import crossbyte.ds.Stack;
 import sys.net.Socket;
 import crossbyte.ds.DenseSet;
@@ -152,3 +155,4 @@ final class SocketRegistry {
 		}
 	}
 }
+#end

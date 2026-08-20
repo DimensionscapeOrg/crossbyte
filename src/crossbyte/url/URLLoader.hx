@@ -1,5 +1,8 @@
 package crossbyte.url;
 
+// Not built for the browser. It loads over CrossByte's own raw-socket HTTP; a page issues requests through fetch or XMLHttpRequest, which is a separate implementation rather than a gate.
+#if !(js && !nodejs)
+
 import crossbyte._internal.http.Http;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
@@ -184,3 +187,4 @@ class URLLoader extends EventDispatcher {
 		}
 	}
 }
+#end

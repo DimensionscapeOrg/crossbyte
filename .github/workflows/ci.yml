@@ -354,6 +354,9 @@ jobs:
           haxe compile.hxml
           Pop-Location
 
+      - name: Build browser (js) target
+        run: haxe ci/js-build.hxml
+
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 

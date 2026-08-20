@@ -1,5 +1,8 @@
 package crossbyte._internal.http;
 
+// Not built for the browser: it belongs to the server-side HTTP stack, which needs a listening socket and a filesystem.
+#if !(js && !nodejs)
+
 import haxe.io.Path;
 import crossbyte.http.HTTPServerConfig;
 import crossbyte.http.config.RewriteRule;
@@ -386,3 +389,4 @@ private class PatternCache {
 
 	public function new() {}
 }
+#end

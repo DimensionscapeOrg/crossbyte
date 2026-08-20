@@ -1,5 +1,8 @@
 package crossbyte.ipc._internal;
 
+// Not built for the browser: shared memory and IPC handles between OS processes.
+#if !(js && !nodejs)
+
 import cpp.Pointer;
 import cpp.UInt8;
 import crossbyte.ipc._internal.VoidPointer;
@@ -19,3 +22,4 @@ extern class NativeSharedObject {
 	@:native('native_sharedObjectGetDataLength') private static function __getDataLength(handle:VoidPointer):Int;
 	@:native('native_sharedObjectGetCapacity') private static function __getCapacity(handle:VoidPointer):Int;
 }
+#end

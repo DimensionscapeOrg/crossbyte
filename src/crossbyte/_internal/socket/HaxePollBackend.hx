@@ -1,5 +1,8 @@
 package crossbyte._internal.socket;
 
+// Not built for the browser: it polls OS socket descriptors, which a page does not have. The browser socket is driven by the runtime tick instead.
+#if !(js && !nodejs)
+
 import crossbyte._internal.socket.poll.PollBackend;
 import sys.net.Socket;
 
@@ -116,3 +119,4 @@ class HaxePollBackend implements PollBackend {
 	}
 	#end
 }
+#end

@@ -1,5 +1,8 @@
 package crossbyte.events;
 
+// Not built for the browser: it carries an accepted connection, and a page cannot accept one.
+#if !(js && !nodejs)
+
 import crossbyte.events.Event;
 import crossbyte.net.Socket;
 
@@ -51,3 +54,4 @@ class ServerSocketConnectEvent extends Event {
 		return '[ServerSocketConnectEvent type=$type socket=$socket]';
 	}
 }
+#end

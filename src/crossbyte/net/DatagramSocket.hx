@@ -1,5 +1,8 @@
 package crossbyte.net;
 
+// Not built for the browser. UDP has no web equivalent -- WebRTC data channels are the nearest thing and are a different protocol with a different API, not a drop-in.
+#if !(js && !nodejs)
+
 import crossbyte._internal.socket.IPollableSocket;
 import crossbyte.core.CrossByte;
 import crossbyte._internal.net.IPv6;
@@ -17,9 +20,11 @@ import crossbyte.io.Endian;
 import haxe.io.Bytes;
 import haxe.io.Eof;
 import haxe.io.Error as HxIOError;
+#if !js
 import sys.net.Address;
 import sys.net.Host;
 import sys.net.UdpSocket;
+#end
 
 @:access(crossbyte.core.CrossByte)
 /**
@@ -500,3 +505,4 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		return value;
 	}
 }
+#end
