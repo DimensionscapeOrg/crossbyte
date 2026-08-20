@@ -261,5 +261,25 @@ its whole duration, which is what a blocking call inside a tick does today. It
 is a change to the request handler on every target, so it wants its own
 proposal rather than arriving as a side effect of a Node port.
 
+The WebSocket client went the same way, and is the clearest case yet of what
+these ports actually cost. The framing -- masking, fragment reassembly, ping and
+pong, close codes, a thousand lines of it -- is not platform code and did not
+move. What moved was the transport underneath: four call sites, plus the two
+tick handlers that exist only to poll a non-blocking socket for a connect that
+has completed and a read that would not block. Node reports both as events, so
+on Node there is no connect poll, no TLS pump and no drain loop, and the tick
+keeps only its sending half. `wss` works there even though a secure
+`ServerSocket` does not -- a client has to verify a certificate, a server has to
+present one, and Node will do the first without `sys.ssl`.
+
+It also turned up a real gap. `SecureRandom` threw on both JavaScript targets,
+so a WebSocket could not be constructed at all: a client masks every frame with
+a fresh key, and the key comes from there. Node has `crypto.randomBytes` and a
+browser has Web Crypto, both genuine CSPRNGs, and both are now used. The
+existing rule -- throw rather than fall back to something that only looks
+random -- is kept for the case a browser page has no `crypto` object, which is
+what being served over plain http from anywhere but localhost gets you.
+
 What is still Node-shaped work rather than a gate: `DatagramSocket` over
-`dgram`, and the `WebSocket` client.
+`dgram`, and the WebSocket *server* -- accepting a connection and upgrading it,
+which the `ServerSocket` that now exists on Node makes reachable.
