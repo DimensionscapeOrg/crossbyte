@@ -34,9 +34,13 @@ class HTTPSupportTest extends utest.Test {
 		Assert.notNull(first.tryFiles);
 		Assert.notNull(first.rewrites);
 		Assert.equals(2, first.directoryIndex.length);
-		Assert.equals(3, first.tryFiles.length);
+		// Two, not three. The third used to be "/index.html", which made a
+		// path matching neither of the first two answer 200 with the root
+		// index instead of 404 -- an SPA fallback every server carried
+		// whether or not it served an application.
+		Assert.equals(2, first.tryFiles.length);
 		Assert.equals("$uri", first.tryFiles[0]);
-		Assert.equals("/index.html", first.tryFiles[2]);
+		Assert.equals("$uri/", first.tryFiles[1]);
 		// No rewrites by default. The defaults used to carry one sending every
 		// /api path to /index.php with the PHP flag while phpEnabled defaults
 		// to false, so a stock server crashed on a path many services use.
@@ -63,7 +67,10 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals(2, second.directoryIndex.length);
 		Assert.equals(0, second.customHeaders.length);
 		Assert.equals(0, second.middleware.length);
-		Assert.equals(3, second.tryFiles.length);
+		// first got an entry pushed onto it just above; second keeps the
+		// default two, which is the independence being checked.
+		Assert.equals(3, first.tryFiles.length);
+		Assert.equals(2, second.tryFiles.length);
 		// The point of the pair: pushing onto one config's array must not be
 		// visible through another's.
 		Assert.equals(1, first.rewrites.length);
