@@ -158,6 +158,30 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var outputOverflowPolicy:OutputOverflowPolicy = CLOSE;
 
 	/**
+		What happens when the peer stops sending — see `PeerShutdownPolicy`.
+
+		Defaults to `CLOSE`, which is what this has always done. Set
+		`HALF_OPEN` for a protocol where a half-close marks the end of a
+		request rather than the end of the conversation, and read the hazard
+		on that value first: a departed peer is indistinguishable from a
+		half-closed one, so `HALF_OPEN` needs a bound of your own.
+	**/
+	public var peerShutdownPolicy:PeerShutdownPolicy = CLOSE;
+
+	/**
+		Whether the peer has stopped sending.
+
+		Set when a read ends in `Eof`, under either policy, so that a consumer
+		on `CLOSE` can still tell a graceful end from an error one. Once set,
+		nothing further will arrive and the socket stops attempting reads.
+
+		It does **not** mean the peer is still listening. A peer that shut only
+		its write side and a peer that vanished both land here; see
+		`PeerShutdownPolicy.HALF_OPEN`.
+	**/
+	public var peerShutdown(get, never):Bool;
+
+	/**
 		Bytes currently waiting to be written to the operating system.
 
 		A value that keeps climbing across flushes means the peer is not
@@ -283,6 +307,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __port:Int;
 	@:noCompletion private var __socket:#if sys SysSocket #else Dynamic #end;
 	@:noCompletion private var __timestamp:Float;
+	@:noCompletion private var __peerShutdown:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __isConnecting:Bool;
 	@:noCompletion private var __isDirty = false;
@@ -1256,6 +1281,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		var doConnect = false;
 		var doClose = false;
+		var doPeerClose = false;
 
 		if (!connected) {
 			var r = SysSocket.select([], [__socket], [], 0);
@@ -1271,7 +1297,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var readPos:Int = 0;
 		var appending:Bool = false;
 
-		if (connected || doConnect) {
+		if ((connected || doConnect) && !__peerShutdown) {
 			// Arrivals are appended to the existing buffer, which grows
 			// geometrically and keeps its capacity. This used to allocate a
 			// fresh Bytes per arrival and copy the whole unread backlog into
@@ -1298,7 +1324,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					// closes the connection, the same as a failed read.
 				} while (l == scratch.length #if eval && __evalShouldKeepReading() #end);
 			} catch (e:Eof) {
-				doClose = true;
+				// The peer sent FIN. That is all this says: it will send no
+				// more. Whether it is still reading -- half-closed and waiting
+				// for an answer -- or gone entirely is not knowable here, and
+				// a write would succeed either way by reaching only the kernel
+				// send buffer. So the fact is recorded and the policy decides.
+				__peerShutdown = true;
+
+				if (peerShutdownPolicy == HALF_OPEN) {
+					doPeerClose = true;
+				} else {
+					doClose = true;
+				}
 			} catch (e:Error) {
 				if (!__isBlockedError(e)) {
 					doClose = true;
@@ -1344,6 +1381,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// problem; every target read in that order.
 		if (bLength > 0) {
 			__dispatchPooledSocketData(bLength, 0);
+		}
+
+		// Announced after the data for the same reason CLOSE is: the peer's
+		// last bytes and its FIN routinely arrive in one tick, and a listener
+		// that tears down here must have seen them first.
+		if (doPeerClose && !doClose) {
+			__dispatchPooledSimpleEvent(Event.PEER_CLOSE);
 		}
 
 		if (doClose) {
@@ -1590,5 +1634,43 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private inline function __isBlockedError(error:Dynamic):Bool {
 		return crossbyte._internal.socket.BlockedError.isBlocked(error);
+	}
+
+	@:noCompletion private inline function get_peerShutdown():Bool {
+		return __peerShutdown;
+	}
+
+	/**
+		Shuts down one or both directions of the connection.
+
+		`shutdown(false, true)` is the half-close: it sends FIN, telling the
+		peer this side will write nothing further, while leaving this side able
+		to read whatever the peer still has to say. It is how a great many
+		hand-rolled TCP protocols mark the end of a request, and the only
+		end-of-request signal available to one that does not length-prefix.
+
+		The socket stays open either way. Closing is still `close()`.
+	**/
+	public function shutdown(read:Bool, write:Bool):Void {
+		if (__socket == null) {
+			return;
+		}
+
+		if (read) {
+			// Nothing more will be read, and the read loop must stop trying:
+			// on some targets a shut read direction reports Eof forever, which
+			// would otherwise re-enter the policy branch every tick.
+			__peerShutdown = true;
+		}
+
+		try {
+			__socket.shutdown(read, write);
+		} catch (e:Dynamic) {
+			// A peer that has already gone makes this fail, and there is
+			// nothing to recover: the direction being asked for is closed
+			// either way. Reported as a close rather than raised, so tearing
+			// down a dead connection is not itself an error path.
+			close();
+		}
 	}
 }
