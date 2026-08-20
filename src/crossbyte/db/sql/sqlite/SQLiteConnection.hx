@@ -136,11 +136,14 @@ class SQLiteConnection extends EventDispatcher {
 	@:noCompletion private var __connection:Connection;
 	@:noCompletion private var __sqlWorker:Worker;
 
-	#if cpp
+	// Gated the same way the imports above are, not on cpp alone. The queue is
+	// written by whichever thread calls the connection and read by the worker,
+	// so it needs a structure built for that -- and neko, hl, java and jvm all
+	// have real threads and both of these types. They were getting a plain
+	// Array instead, pushed and popped with no lock at all.
+	#if !php
 	@:noCompletion private var __sqlQueue:Deque<Function>;
 	@:noCompletion private var __sqlMutex:Mutex;
-	#else
-	@:noCompletion private var __sqlQueue:Array<Function>;
 	#end
 
 	public function new() {
@@ -242,13 +245,7 @@ class SQLiteConnection extends EventDispatcher {
 
 	public function analyze():Void {
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(__analyzeAsync);
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(__analyzeAsync);
-			#end
+			__addToQueue(__analyzeAsync);
 		} else {
 			__connection.request("ANALYZE;");
 			__dispatchSQLEvent(SQLEvent.ANALYZE);
@@ -257,13 +254,7 @@ class SQLiteConnection extends EventDispatcher {
 
 	public function begin(options:String = null):Void {
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(__beginAsync(options));
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(__beginAsync(options));
-			#end
+			__addToQueue(__beginAsync(options));
 		} else {
 			switch (options) {
 				case "IMMEDIATE":
@@ -280,13 +271,7 @@ class SQLiteConnection extends EventDispatcher {
 
 	public function deanalyze():Void {
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(deanalyzeAsync);
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(deanalyzeAsync);
-			#end
+			__addToQueue(deanalyzeAsync);
 		} else {
 			__connection.close();
 			open(__reference, __openMode, __initAutoCompact, __initPageSize);
@@ -299,12 +284,18 @@ class SQLiteConnection extends EventDispatcher {
 		if (__async) {
 			__sqlWorker.cancel();
 
-			#if cpp
+			#if !php
+			// Drained rather than replaced. The worker is parked inside
+			// pop(true) holding a reference to this queue, so swapping in a
+			// fresh one left it waiting on a queue nobody would ever add to
+			// again -- a thread parked for the life of the process, while
+			// every later job went to a queue with no consumer and silently
+			// never ran. Draining keeps the one the worker is waiting on, and
+			// the null wakes it so it can see it has been cancelled.
 			__sqlMutex.acquire();
-			__sqlQueue = new Deque();
+			while (__sqlQueue.pop(false) != null) {}
 			__sqlMutex.release();
-			#else
-			__sqlQueue = new Array();
+			__sqlQueue.add(null);
 			#end
 		}
 
@@ -313,9 +304,7 @@ class SQLiteConnection extends EventDispatcher {
 
 	public function close():Void {
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(function() {
+			__addToQueue(function() {
 				var event:Event;
 				try {
 					__connection.close();
@@ -326,20 +315,6 @@ class SQLiteConnection extends EventDispatcher {
 				__sqlWorker.sendProgress(event);
 				__sqlWorker.cancel();
 			});
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(function() {
-				var event:Event;
-				try {
-					__connection.close();
-					event = new SQLEvent(SQLEvent.CLOSE);
-				} catch (e:Dynamic) {
-					event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.CLOSE, "Execution failed"));
-				}
-				__sqlWorker.sendProgress(event);
-				__sqlWorker.cancel();
-			});
-			#end
 		} else {
 			__connection.close();
 			__dispatchSQLEvent(SQLEvent.CLOSE);
@@ -360,13 +335,7 @@ class SQLiteConnection extends EventDispatcher {
 
 	public function commit():Void {
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(__commitAsync);
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(__commitAsync);
-			#end
+			__addToQueue(__commitAsync);
 		} else {
 			__connection.commit();
 			__inTransaction = false;
@@ -377,13 +346,7 @@ class SQLiteConnection extends EventDispatcher {
 
 	public function compact():Void {
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(__compactAsync);
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(__compactAsync);
-			#end
+			__addToQueue(__compactAsync);
 		} else {
 			__connection.request("VACUUM;");
 			__dispatchSQLEvent(SQLEvent.COMPACT);
@@ -400,13 +363,7 @@ class SQLiteConnection extends EventDispatcher {
 	public function openAsync(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void {
 		__async = true;
 		__initSQLWorker();
-		#if cpp
-		__sqlMutex.acquire();
-		__sqlQueue.add(__openAsync(reference, openMode, autoCompact, pageSize));
-		__sqlMutex.release();
-		#else
-		__sqlQueue.unshift(__openAsync(reference, openMode, autoCompact, pageSize));
-		#end
+		__addToQueue(__openAsync(reference, openMode, autoCompact, pageSize));
 	}
 
 	/**
@@ -422,13 +379,7 @@ class SQLiteConnection extends EventDispatcher {
 		var resolved:String = __takeSavepoint(name, false);
 
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(__releaseSavePointAsync(resolved));
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(__releaseSavePointAsync(resolved));
-			#end
+			__addToQueue(__releaseSavePointAsync(resolved));
 		} else {
 			__connection.request('RELEASE $resolved;');
 			__dispatchSQLEvent(SQLEvent.RELEASE_SAVEPOINT);
@@ -437,13 +388,7 @@ class SQLiteConnection extends EventDispatcher {
 
 	public function rollback():Void {
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(__rollbackAsync);
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(__rollbackAsync);
-			#end
+			__addToQueue(__rollbackAsync);
 		} else {
 			__connection.rollback();
 			__inTransaction = false;
@@ -471,13 +416,7 @@ class SQLiteConnection extends EventDispatcher {
 		var resolved:String = __takeSavepoint(name, true);
 
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(rollbackToSavepointAsync(resolved));
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(rollbackToSavepointAsync(resolved));
-			#end
+			__addToQueue(rollbackToSavepointAsync(resolved));
 		} else {
 			__connection.request('ROLLBACK TO $resolved;');
 			__dispatchSQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT);
@@ -494,13 +433,7 @@ class SQLiteConnection extends EventDispatcher {
 		__savepoints.push(resolved);
 
 		if (__async) {
-			#if cpp
-			__sqlMutex.acquire();
-			__sqlQueue.add(__setSavepointAsync(resolved));
-			__sqlMutex.release();
-			#else
-			__sqlQueue.unshift(__setSavepointAsync(resolved));
-			#end
+			__addToQueue(__setSavepointAsync(resolved));
 		} else {
 			__connection.request('SAVEPOINT $resolved;');
 			__dispatchSQLEvent(SQLEvent.SET_SAVEPOINT);
@@ -805,11 +738,9 @@ class SQLiteConnection extends EventDispatcher {
 	}
 
 	private function __initSQLWorker():Void {
-		#if cpp
+		#if !php
 		__sqlMutex = new Mutex();
 		__sqlQueue = new Deque();
-		#else
-		__sqlQueue = new Array();
 		#end
 		__sqlWorker = new Worker();
 		__sqlWorker.addEventListener(ThreadEvent.COMPLETE, __onSQLWorkerComplete);
@@ -821,31 +752,35 @@ class SQLiteConnection extends EventDispatcher {
 
 	private function __sqlWork(m:Dynamic):Void {
 		while (!__sqlWorker.canceled) {
-			#if cpp
+			#if !php
+			// Blocks until there is work. The Array path this replaces spun:
+			// an empty queue fell through to haxe.Timer.delay(fn, 0), which
+			// schedules rather than waits, so an idle async connection burned
+			// a core on every target that was not hl or neko.
 			var job:Function = __sqlQueue.pop(true);
-			#else
-			var job:Function = __sqlQueue.pop();
+
 			if (job == null) {
-				#if (hl || neko)
-				Sys.sleep(0.001);
-				#else
-				haxe.Timer.delay(function() {}, 0);
-				#end
 				continue;
 			}
-			#end
 
 			job();
+			#end
 		}
 	}
 
+	/**
+		The one place a job is handed to the worker.
+
+		Every caller routes through here rather than opening the queue itself,
+		which is what makes the locking a single decision instead of eleven
+		copies of one -- and eleven copies is how the non-cpp half came to have
+		no locking at all.
+	**/
 	private function __addToQueue(job:Function):Void {
-		#if cpp
+		#if !php
 		__sqlMutex.acquire();
 		__sqlQueue.add(job);
 		__sqlMutex.release();
-		#else
-		__sqlQueue.unshift(job);
 		#end
 	}
 
