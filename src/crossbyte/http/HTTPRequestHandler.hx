@@ -750,15 +750,26 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// file.load();
 		var total:Int = file.size; // file.data.length;
 
-		// `File.size` is an Int, so a file past 2 GB has already overflowed
-		// by the time it is read here. Refusing the negative case keeps a
-		// nonsensical Content-Length off the wire — but it is only half a
-		// guard: a size that wraps to a positive value is indistinguishable
-		// from a genuine one, and such a file will be served truncated to
-		// whatever the wrapped number says. A 64-bit size on `File` is what
-		// actually fixes that; this only refuses the detectable half.
-		if (total < 0) {
-			Logger.error('Refusing to serve ${file.nativePath}: size does not fit in an Int.');
+		// `File.size` comes from `FileSystem.stat`, whose size is an Int, so a
+		// file past 2 GB has already wrapped by the time it is read here. The
+		// wrap lands in two bands and only one of them announces itself:
+		// between 2 and 4 GB it goes negative, and at 4 GB and above it comes
+		// back round positive -- 4 GB exactly reads as 0, 5 GB as 1 GB --
+		// where it is indistinguishable from a genuine size.
+		//
+		// Refusing only the negative band, which is what this did, left the
+		// second one being served truncated to whatever the wrapped number
+		// said, under a Content-Length stating that truncation as fact. A
+		// wrong answer delivered confidently, and nothing logged.
+		//
+		// The positive band is detectable without a 64-bit size: seek to the
+		// reported end and try to read one byte. A file that really is that
+		// long is at EOF; a wrapped one still has data there, because the
+		// wrapped value is always below 4 GB and so is reachable. That costs
+		// one open, seek and read per file served, which is real but small
+		// beside the transfer it protects.
+		if (total < 0 || !__sizeIsComplete(file, total)) {
+			Logger.error('Refusing to serve ${file.nativePath}: it is larger than an Int can express, so its size cannot be stated.');
 			__sendErrorResponse(500, "Internal Server Error");
 			return;
 		}
@@ -844,6 +855,53 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * large file still streams, since the buffered alternative loads the
 	 * whole file just to cut the slice.
 	 */
+	/**
+	 * Whether `reported` is the file's whole length rather than a wrapped one.
+	 *
+	 * Seeks to the reported end and reads a byte. At a true end that throws
+	 * `Eof`; anything read there means the file continues past the number
+	 * `stat` gave us, which on a 32-bit size means it wrapped.
+	 *
+	 * Static so it can be exercised directly: the wrap itself needs a file
+	 * over 4 GB to reproduce, but what this decides is the narrower question
+	 * of whether bytes exist beyond a stated length, and that is testable at
+	 * any size.
+	 *
+	 * An unopenable file answers `true`. It cannot be verified either way,
+	 * and the serve path that follows raises its own error for it; claiming a
+	 * size problem would name the wrong cause.
+	 */
+	@:noCompletion private static function __sizeIsComplete(file:File, reported:Int):Bool {
+		var stream:FileStream = new FileStream();
+
+		try {
+			stream.open(file, FileMode.READ);
+		} catch (_:Dynamic) {
+			try {
+				stream.close();
+			} catch (_:Dynamic) {}
+			return true;
+		}
+
+		var complete:Bool = true;
+
+		try {
+			stream.position = reported;
+			stream.readByte();
+			// A byte was there. The file outruns its stated length.
+			complete = false;
+		} catch (_:Dynamic) {
+			// Eof, or a seek that could not reach the position: either way
+			// nothing was found beyond the reported end.
+		}
+
+		try {
+			stream.close();
+		} catch (_:Dynamic) {}
+
+		return complete;
+	}
+
 	@:noCompletion private function __canStreamFile(statusCode:Int, headers:Array<URLRequestHeader>, fileSize:Int):Bool {
 		if (fileSize <= STREAM_THRESHOLD) {
 			return false;

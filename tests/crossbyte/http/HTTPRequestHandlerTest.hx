@@ -1032,6 +1032,46 @@ Host: localhost
 		Assert.isFalse(response.body.indexOf("hunter2") >= 0);
 	}
 
+	public function testReportedFileSizeIsVerifiedAgainstTheFileItself():Void {
+		// `FileSystem.stat` gives an Int, so a file past 2 GB wraps: between 2
+		// and 4 GB it goes negative and is caught on sight, but at 4 GB and up
+		// it comes back round positive and reads as a perfectly ordinary size.
+		// Such a file used to be served truncated to the wrapped number, under
+		// a Content-Length asserting that truncation was the whole file.
+		//
+		// Reproducing the wrap needs a file over 4 GB, which a test suite has
+		// no business creating. What the guard actually decides is narrower --
+		// whether any bytes exist past a stated length -- and a wrapped size is
+		// just one way to arrive at a length that is too small. That question
+		// is testable at any size, so it is tested at 100 bytes.
+		var root = File.createTempDirectory();
+		var payload = new ByteArray();
+		for (i in 0...100) {
+			payload.writeByte(i % 256);
+		}
+		var target = root.resolvePath("payload.bin");
+		target.save(payload);
+
+		// The truth: nothing lies beyond byte 100.
+		Assert.isTrue(HTTPRequestHandler.__sizeIsComplete(target, 100));
+
+		// A stated length short of the file, which is the shape a wrap
+		// produces. There is data at offset 50, so the length is not the
+		// file's own.
+		Assert.isFalse(HTTPRequestHandler.__sizeIsComplete(target, 50));
+		Assert.isFalse(HTTPRequestHandler.__sizeIsComplete(target, 0));
+
+		// A genuinely empty file reports zero and means it -- the case that
+		// must not be mistaken for a 4 GB file, which also reports zero.
+		var empty = root.resolvePath("empty.bin");
+		empty.save(new ByteArray());
+		Assert.isTrue(HTTPRequestHandler.__sizeIsComplete(empty, 0));
+
+		try {
+			root.deleteDirectory(true);
+		} catch (_:Dynamic) {}
+	}
+
 	private function __sendRequest(middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, ?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void):HTTPTestResponse {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
