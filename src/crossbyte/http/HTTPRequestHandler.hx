@@ -750,24 +750,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// file.load();
 		var total:Int = file.size; // file.data.length;
 
-		// `File.size` comes from `FileSystem.stat`, whose size is an Int, so a
-		// file past 2 GB has already wrapped by the time it is read here. The
-		// wrap lands in two bands and only one of them announces itself:
-		// between 2 and 4 GB it goes negative, and at 4 GB and above it comes
-		// back round positive -- 4 GB exactly reads as 0, 5 GB as 1 GB --
-		// where it is indistinguishable from a genuine size.
+		// `File.size` comes from `FileSystem.stat`, whose size is an Int and
+		// cannot describe a file past 2 GB. What it reports instead is not the
+		// same everywhere, and on the target this ships to it is worse than a
+		// wrap: measured on Windows/cpp, files of 3 GB and 5 GB both report
+		// **0**. The size is not truncated to its low bits, it is absent, and
+		// a huge file is indistinguishable from an empty one.
 		//
-		// Refusing only the negative band, which is what this did, left the
-		// second one being served truncated to whatever the wrapped number
-		// said, under a Content-Length stating that truncation as fact. A
-		// wrong answer delivered confidently, and nothing logged.
+		// So the `total < 0` test this used to be never fired here at all --
+		// it was written for a wrap that hxcpp does not produce, and every
+		// oversized file went straight past it.
 		//
-		// The positive band is detectable without a 64-bit size: seek to the
-		// reported end and try to read one byte. A file that really is that
-		// long is at EOF; a wrapped one still has data there, because the
-		// wrapped value is always below 4 GB and so is reachable. That costs
-		// one open, seek and read per file served, which is real but small
-		// beside the transfer it protects.
+		// The check deliberately does not care which way a target gets it
+		// wrong. It asks the file: seek to the reported end and read one byte.
+		// A file that really is that long is at EOF; one that is longer still
+		// has data there, whether the reported number came from a wrap, a
+		// clamp, or a failed stat returning zero. That costs one open, seek
+		// and read per file served, which is real but small beside the
+		// transfer it protects.
 		if (total < 0 || !__sizeIsComplete(file, total)) {
 			Logger.error('Refusing to serve ${file.nativePath}: it is larger than an Int can express, so its size cannot be stated.');
 			__sendErrorResponse(500, "Internal Server Error");
