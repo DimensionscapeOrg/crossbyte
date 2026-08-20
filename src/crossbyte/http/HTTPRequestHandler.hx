@@ -1,5 +1,8 @@
 package crossbyte.http;
 
+// Not built for the browser: it answers requests on an accepted connection and streams files from disk.
+#if !(js && !nodejs)
+
 import haxe.ds.StringMap;
 import haxe.io.BytesBuffer;
 import haxe.io.Path;
@@ -2600,6 +2603,4 @@ typedef ResponseEncodingDecision = {
 	var encoding:Null<CompressionAlgorithm>;
 	var reject:Bool;
 }
-
-
-
+#end

@@ -1,5 +1,8 @@
 package crossbyte.db;
 
+// Not built for the browser: a database driver needs a socket or a file, and credentials do not belong in a page.
+#if !(js && !nodejs)
+
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
 #if (cpp || neko || hl || java || jvm)
@@ -534,3 +537,4 @@ class ConnectionPool<T> {
 		#end
 	}
 }
+#end

@@ -1,5 +1,8 @@
 package crossbyte.net;
 
+// Not built for the browser: it listens, over UDP, neither of which a page can do.
+#if !(js && !nodejs)
+
 import crossbyte.errors.IOError;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.Event;
@@ -183,3 +186,4 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return __socket.localPort;
 	}
 }
+#end

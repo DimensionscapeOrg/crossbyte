@@ -1,5 +1,8 @@
 package crossbyte._internal.socket.poll;
 
+// Not built for the browser: it polls OS socket descriptors, which a page does not have. The browser socket is driven by the runtime tick instead.
+#if !(js && !nodejs)
+
 import sys.net.Socket;
 
 interface PollBackend {
@@ -10,3 +13,4 @@ interface PollBackend {
 	public function events(timeout:Float):Void;
 	public function dispose():Void;
 }
+#end

@@ -1,5 +1,8 @@
 package crossbyte.ipc._internal.win;
 
+// Not built for the browser: inter-process channels and native handle types have no counterpart in a page.
+#if !(js && !nodejs)
+
 import crossbyte.ipc._internal.VoidPointer;
 
 /**
@@ -12,3 +15,4 @@ abstract HANDLE(VoidPointer) to VoidPointer {
 		return cast ptr;
 	}
 }
+#end

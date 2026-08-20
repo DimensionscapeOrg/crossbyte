@@ -1,5 +1,8 @@
 package crossbyte.rpc;
 
+// Not built for the browser: a session is bound to a NetConnection, which spans transports a page does not have.
+#if !(js && !nodejs)
+
 import crossbyte.net.Reason;
 import crossbyte.utils.Logger;
 import crossbyte.core.CrossByte;
@@ -694,3 +697,4 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} catch (_:Dynamic) {}
 	}
 }
+#end

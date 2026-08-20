@@ -1,5 +1,8 @@
 package crossbyte.metrics;
 
+// Not built for the browser: it serves metrics over HTTP, which means listening.
+#if !(js && !nodejs)
+
 import crossbyte.errors.ArgumentError;
 import crossbyte.http.HTTPRequestHandler;
 
@@ -75,3 +78,4 @@ class MetricsEndpoint {
 		};
 	}
 }
+#end

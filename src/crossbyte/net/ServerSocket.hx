@@ -1,5 +1,8 @@
 package crossbyte.net;
 
+// Not built for the browser. A page cannot listen for inbound connections; there is no API for it and no port to bind. Run a server on Node or a native target.
+#if !(js && !nodejs)
+
 import haxe.Timer;
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
@@ -13,12 +16,16 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
+#if !js
 import sys.net.Host;
 import sys.net.Socket;
+#end
 #if (!java && !jvm)
+#if !js
 import sys.ssl.Certificate;
 import sys.ssl.Key;
 import sys.ssl.Socket as SSLSocket;
+#end
 #end
 
 /**
@@ -570,3 +577,4 @@ typedef PendingHandshake = {
 	var socket:Socket;
 	var deadline:Float;
 }
+#end

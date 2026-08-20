@@ -1,5 +1,8 @@
 package crossbyte.db.postgres._internal;
 
+// Not built for the browser: it binds directly to native code.
+#if !(js && !nodejs)
+
 import crossbyte.ipc._internal.VoidPointer;
 
 @:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/db/postgres/_internal/NativePostgresBuild.xml"/>')
@@ -29,3 +32,4 @@ extern class NativePostgres {
 	@:native("crossbyte_postgres_last_error")
 	public static function lastError():String;
 }
+#end
