@@ -306,6 +306,58 @@ class SchemaMigratorTest extends utest.Test {
 		}));
 	}
 
+	public function testCommitFailureRollsBackRatherThanLeavingTheTransactionOpen():Void {
+		// begin and the migration succeed; the commit is what fails. Nothing
+		// closed the transaction on that path, so the connection went back to
+		// its caller -- and, through a pool, to the next borrower -- still
+		// inside one. On SQLite that is a held write lock; on Postgres every
+		// later statement on it fails until someone rolls back.
+		var connection = new FakeConnection();
+		var migrator = new SchemaMigrator<FakeConnection>({
+			execute: (c, sql) -> c.execute(sql),
+			readApplied: c -> c.recorded.copy(),
+			recordApplied: (c, row) -> c.recorded.push(row),
+			begin: c -> c.events.push("begin"),
+			commit: function(c) {
+				c.events.push("commit");
+				throw "commit refused";
+			},
+			rollback: c -> c.events.push("rollback")
+		}).add(Migration.ofSql(1, "first", "CREATE TABLE a (id INTEGER)"));
+
+		Assert.raises(() -> migrator.migrate(connection), crossbyte.errors.SQLError);
+
+		Assert.same(["begin", "commit", "rollback"], connection.events);
+
+	}
+
+	public function testUnlockFailureNeitherRepeatsNorMasksASuccessfulRun():Void {
+		// unlock ran inside the try, so a failure there was caught by the same
+		// catch that exists to release the lock -- unlocking a second time, and
+		// turning a run that had applied and recorded everything into a thrown
+		// error. On a rolling deploy that is an instance refusing to start
+		// after successfully migrating.
+		var connection = new FakeConnection();
+		var unlocks:Int = 0;
+
+		var migrator = new SchemaMigrator<FakeConnection>({
+			execute: (c, sql) -> c.execute(sql),
+			readApplied: c -> c.recorded.copy(),
+			recordApplied: (c, row) -> c.recorded.push(row),
+			lock: c -> c.events.push("lock"),
+			unlock: function(c) {
+				unlocks++;
+				c.events.push("unlock");
+				throw "release refused";
+			}
+		}).add(Migration.ofSql(1, "first", "CREATE TABLE a (id INTEGER)"));
+
+		var report = migrator.migrate(connection);
+
+		Assert.same([1], report.applied);
+		Assert.equals(1, unlocks);
+	}
+
 	private function __lockingMigrator(connection:FakeConnection):SchemaMigrator<FakeConnection> {
 		return new SchemaMigrator<FakeConnection>({
 			execute: (c, sql) -> c.execute(sql),
