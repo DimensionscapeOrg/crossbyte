@@ -14,6 +14,8 @@ import crossbyte.db.postgres.PostgresStatement;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql.sqlite.CheckpointMode;
 import crossbyte.db.sql.sqlite.JournalMode;
+import crossbyte.core.CrossByte;
+import crossbyte.events.SQLEvent;
 import crossbyte.db.sql.sqlite.SQLiteConnection;
 import crossbyte.db.sql.sqlite.SQLiteMode;
 import crossbyte.db.sql.sqlite.SQLiteStatement;
@@ -155,6 +157,47 @@ class DBSupportTest extends utest.Test {
 		Assert.equals("keep_me_1", connection.__sanitizeSavePoint("keep_me_1"));
 		Assert.equals("a__DROP_TABLE_t____", connection.__sanitizeSavePoint("a; DROP TABLE t; --"));
 	}
+
+	#if (windows && cpp)
+	public function testAsyncQueueRunsEveryJobInOrderAndClosesCleanly():Void {
+		// The async queue had no coverage at all, which is how a change to it
+		// passed the whole suite while making the very first queued job
+		// recurse until the process died. Everything here goes through the
+		// worker thread: the open, each statement, and the close that stops
+		// the worker.
+		var connection = new SQLiteConnection();
+		var seen:Array<String> = [];
+
+		for (type in [SQLEvent.OPEN, SQLEvent.BEGIN, SQLEvent.SET_SAVEPOINT, SQLEvent.RELEASE_SAVEPOINT, SQLEvent.COMMIT, SQLEvent.CLOSE]) {
+			connection.addEventListener(type, event -> seen.push(event.type));
+		}
+
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		connection.begin();
+		connection.setSavepoint();
+		connection.releaseSavepoint();
+		connection.commit();
+		connection.close();
+
+		var runtime = CrossByte.current();
+		var deadline:Float = Sys.time() + 10.0;
+
+		while (Sys.time() < deadline && seen.indexOf(SQLEvent.CLOSE) < 0) {
+			runtime.pump(1 / 120, 0);
+		}
+
+		// Order matters as much as arrival: the queue is FIFO, and a job that
+		// ran out of turn would mean COMMIT before the savepoint it encloses.
+		Assert.same([
+			SQLEvent.OPEN,
+			SQLEvent.BEGIN,
+			SQLEvent.SET_SAVEPOINT,
+			SQLEvent.RELEASE_SAVEPOINT,
+			SQLEvent.COMMIT,
+			SQLEvent.CLOSE
+		], seen);
+	}
+	#end
 
 	#if windows
 	public function testSavepointsNestAndReleaseByNameOrByOmission():Void {
