@@ -807,7 +807,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function compress(algorithm:CompressionAlgorithm = LZ4):Void {
 		/*#if lime
-			#if (js && !nodejs)
+			#if js
 			if (__length > #if lime_bytes_length_getter l #else length #end)
 			{
 				var cacheLength = #if lime_bytes_length_getter l #else length #end;
@@ -1157,7 +1157,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function uncompress(algorithm:CompressionAlgorithm = LZ4):Void {
 		/*#if lime
-			#if (js && !nodejs)
+			#if js
 			if (__length > #if lime_bytes_length_getter l #else length #end)
 			{
 				var cacheLength = #if lime_bytes_length_getter l #else length #end;
@@ -1487,12 +1487,19 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			set(i, bytes.get(i));
 		}
 		__length = bytes.length;
+		#elseif js
+		// On js the storage lives in `b` as a Uint8Array, and getData() hands
+		// back the ArrayBuffer underneath it. Adopting the buffer left `b`
+		// without any of the typed-array methods that every read and write goes
+		// through, so the first blit died on `b.set is not a function`.
+		untyped this.b = bytes.b;
+		__length = bytes.length;
 		#else
 		untyped this.b = bytes.getData();
 		__length = bytes.length;
 		#end
 
-		#if (js && !nodejs)
+		#if js
 		data = bytes.data;
 		#end
 	}
