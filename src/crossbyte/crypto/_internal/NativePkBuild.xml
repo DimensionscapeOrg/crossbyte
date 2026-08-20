@@ -5,7 +5,12 @@
 	     mbedtls_mpi_*, and mbedtls_asn1_* symbols in the link. -->
 	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
 
-	<set name="MBEDTLS_DIR" value="${HXCPP}/project/thirdparty/mbedtls-2.9.0"/>
+	<!-- MBEDTLS_DIR is deliberately not set here. The ssl Build.xml included
+	     above pulls in mbedtls-files.xml, which sets it to whichever mbedtls
+	     hxcpp actually ships. Setting it here overrode that with a pinned
+	     version, and once hxcpp moved on the include path stopped existing:
+	     the native build only kept working because NativePk.obj was already
+	     in the object cache, and a clean tree could not build at all. -->
 
 	<files id="crossbyte-pk-native">
 		<depend files="hxcpp-depends"/>
