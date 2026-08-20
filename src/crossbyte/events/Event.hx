@@ -6,6 +6,15 @@ import crossbyte.Object;
 class Event {
 	public static inline var TICK:String = "tick";
 	public static inline var CLOSE:String = "close";
+
+	/**
+		The peer stopped sending, and the socket is staying open to write.
+
+		Dispatched instead of `CLOSE` when a read ends in `Eof` under
+		`PeerShutdownPolicy.HALF_OPEN`. `CLOSE` still follows later, when the
+		socket is actually closed.
+	**/
+	public static inline var PEER_CLOSE:String = "peerClose";
 	public static inline var CONNECT:String = "connect";
 	public static inline var COMPLETE:String = "complete";
 	public static inline var CANCEL:String = "cancel";
