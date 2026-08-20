@@ -4,6 +4,11 @@ import haxe.ds.StringMap;
 import haxe.ds.IntMap;
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
+#if (js && !nodejs)
+import js.Browser;
+import js.lib.ArrayBuffer;
+import js.html.WebSocket;
+#end
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 #if cpp
@@ -26,8 +31,10 @@ import crossbyte.io.Endian;
 import crossbyte.io.IDataInput;
 import crossbyte.io.IDataOutput;
 #if sys
+#if !js
 import sys.net.Host;
 import sys.net.Socket as SysSocket;
+#end
 #end
 
 /**
@@ -468,7 +475,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new SecurityError("Invalid socket port number specified.");
 		}
 
-		#if (js && html5)
+		#if (js && !nodejs)
 		__timestamp = Timer.stamp();
 		#else
 		var h:Host = null;
@@ -498,7 +505,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__input = new ByteArray();
 		__input.endian = __endian;
 
-		#if (js && html5)
+		#if (js && !nodejs)
 		if (Browser.location.protocol == "https:") {
 			secure = true;
 		}
@@ -586,7 +593,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		if (__output.length > 0) {
 			try {
-				#if (js && html5)
+				#if (js && !nodejs)
 				var buffer:ArrayBuffer = __output;
 				if (buffer.byteLength > __output.length)
 					buffer = buffer.slice(0, __output.length);
@@ -1137,7 +1144,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__isDirty = false;
 		flushFull = false;
 		#if js
-		CrossByte.current.removeEventListener(TickEvent.TICK, this_onTick);
+		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 		#else
 		__closed = true;
 		#end
@@ -1242,7 +1249,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
-		#if (js && html5)
+		#if (js && !nodejs)
 		if (__input.position == __input.length) {
 			__input.clear();
 		}
@@ -1270,7 +1277,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function this_onTick(?event:TickEvent):Void {
-		#if (js && html5)
+		#if (js && !nodejs)
 		if (__socket != null) {
 			flush();
 		}

@@ -8,7 +8,9 @@ import crossbyte.utils.ThreadPriority;
 import crossbyte.core._internal.NativeWindowsRuntime;
 #end
 import crossbyte.errors.IllegalOperationError;
+#if !js
 import sys.net.Socket;
+#end
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.TickEvent;
@@ -25,7 +27,7 @@ import sys.thread.Mutex;
 import haxe.ds.ObjectMap;
 #if cpp
 import crossbyte._internal.socket.NativeSocketRegistry;
-#else
+#elseif !js
 import crossbyte._internal.socket.SocketRegistry;
 #end
 import crossbyte.net.Socket as CBSocket;
@@ -132,7 +134,7 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private static var __threadLocalStorage:Tls<CrossByte> = new Tls();
 	@:noCompletion private static var __primordialThread:Thread;
 
-	#else
+	#elseif !js
 	@:noCompletion private var __socketRegistry:SocketRegistry;
 	#end	
 
@@ -419,7 +421,9 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
+		#if !js
 		__socketRegistry.update(socketTimeout);
+		#end
 		__cpuTime = Timer.stamp() - frameStart;
 	}
 
@@ -431,6 +435,7 @@ final class CrossByte extends EventDispatcher {
 
 	// Socket polling is now shared across cpp and non-cpp targets.
 	// `SocketRegistry` already exists on non-cpp, and both TCP/UDP transports rely on it.
+	#if !js
 	@:noCompletion private inline function registerSocket(socket:Socket):Void {
 		if (__socketRegistry != null) {
 			__socketRegistry.register(socket);
@@ -448,6 +453,7 @@ final class CrossByte extends EventDispatcher {
 			__socketRegistry.queueWritable(socket);
 		}
 	}
+	#end
 
 	@:noCompletion private inline function __setup():Void {
 		#if cpp
@@ -455,7 +461,7 @@ final class CrossByte extends EventDispatcher {
 		__instanceCount++;
 		__registryLock.release();
 		__socketRegistry = new NativeSocketRegistry(__initialSocketCapacity());
-		#else
+		#elseif !js
 		__socketRegistry = new SocketRegistry(__initialSocketCapacity());
 		#end
 
@@ -630,10 +636,12 @@ final class CrossByte extends EventDispatcher {
 		if (hasEventListener(Event.EXIT)) {
 			dispatchEvent(new Event(Event.EXIT));
 		}
+		#if !js
 		if (__socketRegistry != null) {
 			__socketRegistry.clear();
 			__socketRegistry = null;
 		}
+		#end
 		__releaseThreadLocal();
 		#if (cpp && windows)
 		if (__isPrimordial) {
@@ -678,7 +686,9 @@ final class CrossByte extends EventDispatcher {
 		if (!__getRunning()) {
 			return;
 		}
+		#if !js
 		__socketRegistry.update();
+		#end
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
 		__wait(frameStart);
@@ -721,7 +731,9 @@ final class CrossByte extends EventDispatcher {
 		var remaining:Float = __frameDeadline - Timer.stamp();
 
 		while (remaining >= MIN_POLL_WAIT && __getRunning()) {
+			#if !js
 			__socketRegistry.update(remaining);
+			#end
 			remaining = __frameDeadline - Timer.stamp();
 		}
 
