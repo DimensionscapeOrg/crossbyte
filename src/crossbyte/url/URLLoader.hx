@@ -1,7 +1,6 @@
 package crossbyte.url;
 
 // Not built for the browser. It loads over CrossByte's own raw-socket HTTP; a page issues requests through fetch or XMLHttpRequest, which is a separate implementation rather than a gate.
-#if !js
 
 import crossbyte._internal.http.Http;
 import crossbyte.events.Event;
@@ -10,7 +9,9 @@ import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ThreadEvent;
+#if !js
 import crossbyte.sys.Worker;
+#end
 import haxe.io.Bytes;
 
 /** Background-loading request helper with progress and status events. */
@@ -20,13 +21,16 @@ class URLLoader extends EventDispatcher {
 	public var bytesLoaded:Int;
 	public var data:Dynamic;
 
+	#if !js
 	@:noCompletion private var __loaderWorker:Worker;
+	#end
 	@:noCompletion private var __busy:Bool = false;
 
 	public function new() {
 		super();
 	}
 
+	#if !js
 	@:noCompletion private function __createURLLoaderWorker():Void {
 		__loaderWorker = new Worker();
 		__loaderWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
@@ -42,6 +46,7 @@ class URLLoader extends EventDispatcher {
 		dispatchEvent(new Event(Event.COMPLETE));
 		__disposeWorker();
 	}
+	#end
 
 	@:noCompletion private inline function __parseData(dataBytes:Bytes):Void {
 		switch (dataFormat) {
@@ -55,6 +60,7 @@ class URLLoader extends EventDispatcher {
 		}
 	}
 
+	#if !js
 	@:noCompletion private function __disposeWorker():Void {
 		if (__loaderWorker == null) {
 			__busy = false;
@@ -166,8 +172,34 @@ class URLLoader extends EventDispatcher {
 			__loaderWorker.sendError(e);
 		}
 	}
+	#end
 
 	public function load(request:URLRequest):Void {
+		#if js
+		if (__busy) {
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "URLLoader is already loading"));
+			return;
+		}
+
+		__busy = true;
+
+		// No worker: the runtime's own client is asynchronous, so there is no
+		// blocking call here for one to keep off the loop.
+		crossbyte.url._internal.JsHttpClient.send(request, function(status:Int):Void {
+			dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, status));
+		}, function(loaded:Int, total:Int):Void {
+			bytesLoaded = loaded;
+			bytesTotal = total;
+			dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, loaded, total));
+		}, function(dataBytes:Bytes):Void {
+			__busy = false;
+			__parseData(dataBytes);
+			dispatchEvent(new Event(Event.COMPLETE));
+		}, function(message:String):Void {
+			__busy = false;
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+		});
+		#else
 		if (__busy) {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "URLLoader is already loading"));
 			return;
@@ -178,13 +210,20 @@ class URLLoader extends EventDispatcher {
 			"request": request,
 			"dataFormat": dataFormat
 		});
+		#end
 	}
 
 	public function close():Void {
+		#if js
+		// The request is the runtime's to cancel and it does not offer a handle
+		// back, so this only stops a further load() being refused as busy. A
+		// response still in flight is discarded when it arrives.
+		__busy = false;
+		#else
 		if (__loaderWorker != null) {
 			__loaderWorker.cancel(true);
 			__disposeWorker();
 		}
+		#end
 	}
 }
-#end
