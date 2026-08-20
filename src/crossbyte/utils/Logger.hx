@@ -171,7 +171,7 @@ class Logger {
 			return;
 		}
 
-		#if js
+		#if (js && !nodejs)
 		// A browser has no stdout. The console is the equivalent sink, and a
 		// log line that vanished would be worse here than anywhere else --
 		// this is the thing that reports everything else going wrong.

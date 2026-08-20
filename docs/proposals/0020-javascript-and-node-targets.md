@@ -1,6 +1,6 @@
 # Proposal 0020 — JavaScript and Node targets
 
-**Status:** Draft
+**Status:** Implemented (baseline)
 
 **Motivation:** CrossByte runs on cpp, hl, neko, jvm and eval. All of those are
 desktop or server. A client written against CrossByte cannot be delivered to a
@@ -178,3 +178,27 @@ assumes a filesystem, real sockets and threads. Tier A needs its own run — the
 is a fact the build checks rather than a claim in this document. Without it,
 tier A rots on the first commit that adds a `Sys.` call to a file nobody thought
 was platform-bound.
+
+---
+
+## What landed
+
+Both targets compile the whole library, checked by `ci/js-build.hxml` and
+`ci/node-build.hxml` in CI. cpp, interp and jvm are unchanged.
+
+The three tiers turned out to be four, because Node is not one of them. It has
+a filesystem and a process environment through hxnodejs, but no `sys.thread`,
+no `sys.db`, and a `sys.net.Socket` without `select()` -- so it sits between
+the browser and a native build rather than beside either. Every gate is
+therefore one of three shapes, and which one is a statement about the target:
+
+- `#if (js && !nodejs)` -- the browser only. Node keeps the real thing.
+- `#if !js` -- neither JavaScript target. Threads, databases, native bindings.
+- `#if !(js && !nodejs)` -- Node keeps it, the browser does not. Files, the
+  environment, subprocess-free filesystem work.
+
+Sockets are the honest gap. The browser has one, over the page WebSocket, and
+it works. Node has none: the browser path needs the page API and the native
+path needs `select()`. `crossbyte.net.Socket` throws there, naming what it
+would take -- an implementation over `js.node.net`, which is a port and not a
+gate. That is the next piece of work, and it is what would give Node parity.

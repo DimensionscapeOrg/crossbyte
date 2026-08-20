@@ -1,7 +1,7 @@
 package crossbyte.db.mongodb;
 
-// Not built for the browser: a database driver needs a socket or a file, and credentials do not belong in a page.
-#if !(js && !nodejs)
+// Not built for any JavaScript target (Node included, which has no threads): a database driver needs a socket or a file, and credentials do not belong in a page.
+#if !js
 
 import crossbyte.FieldStruct;
 import crossbyte.db.sql.SQLResult;

@@ -1,7 +1,7 @@
 package crossbyte.sys;
 
-// Not built for the browser: there are no subprocesses to start.
-#if !(js && !nodejs)
+// Not built for any JavaScript target (Node included, which has no threads): there are no subprocesses to start.
+#if !js
 
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.NativeProcessEvent;

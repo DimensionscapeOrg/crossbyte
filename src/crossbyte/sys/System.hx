@@ -9,7 +9,7 @@ import crossbyte._internal.native.sys.NativeSystem;
 #end
 
 import crossbyte.core.CrossByte;
-#if !js
+#if !(js && !nodejs)
 import sys.io.Process;
 #end
 
@@ -96,7 +96,7 @@ class System {
 	@:noCompletion private static var __userDirPath:String;
 
 	public static inline function totalSystemMemory():Float {
-		#if js
+		#if (js && !nodejs)
 		// Reading physical memory means shelling out, and a browser has no shell nor any web API that reports it. Returning 0 would read as "no memory" rather than "cannot know".
 		throw new crossbyte.errors.IllegalOperationError("System.totalSystemMemory() is not available on this target.");
 		#else
@@ -135,7 +135,7 @@ class System {
 	}
 
 	public static inline function freeSystemMemory():Float {
-		#if js
+		#if (js && !nodejs)
 		// Same as totalSystemMemory: no shell, and no browser equivalent.
 		throw new crossbyte.errors.IllegalOperationError("System.freeSystemMemory() is not available on this target.");
 		#else
@@ -206,7 +206,7 @@ class System {
 	}
 
 	@:noCompletion private static inline function get_appDir():String {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__appDirPath == null) {
@@ -218,7 +218,7 @@ class System {
 	}
 
 	@:noCompletion private static inline function get_appStorageDir():String {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__appStorageDirPath == null) {
@@ -234,7 +234,7 @@ class System {
 	}
 
 	@:noCompletion private static inline function get_desktopDir():String {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__desktopDirPath == null) {
@@ -246,7 +246,7 @@ class System {
 	}
 
 	@:noCompletion private static inline function get_documentsDir():String {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__documentsDirPath == null) {
@@ -258,7 +258,7 @@ class System {
 	}
 
 	@:noCompletion private static inline function get_userDir():String {
-		#if js
+		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__userDirPath == null) {

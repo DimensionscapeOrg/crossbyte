@@ -1,7 +1,7 @@
 package crossbyte.io;
 
 // Not built for the browser. This is a synchronous, seekable handle on an open file, and a browser has no such thing -- its storage APIs are asynchronous and are not addressed by byte offset. crossbyte.io.File keeps its type there and refuses the operation instead; see NoFileSystem.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.events.ThreadEvent;
 import haxe.Json;

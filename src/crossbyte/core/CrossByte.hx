@@ -680,7 +680,7 @@ final class CrossByte extends EventDispatcher {
 
 	private var mainLoop:Void->Void;
 	private #if final inline #end function __defaultMainLoop():Void {
-		#if js
+#if js
 		throw new IllegalOperationError("CrossByte cannot own the loop in a browser; the page does. Drive the runtime with HostApplication.advance() from requestAnimationFrame.");
 		#else
 		var frameStart:Float = Timer.stamp();
@@ -698,7 +698,7 @@ final class CrossByte extends EventDispatcher {
 		#end
 	}
 	private #if final inline #end function __pollBasedMainLoop():Void {
-		#if js
+#if js
 		throw new IllegalOperationError("The POLL main loop needs a pollable socket set, which a browser does not provide. Drive the runtime from requestAnimationFrame with HostApplication instead.");
 		#else
 		var frameStart:Float = Timer.stamp();
@@ -773,7 +773,7 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
-		#if js
+#if js
 		#else
 		#if precision_tick
 		var minSleep = 0.001;

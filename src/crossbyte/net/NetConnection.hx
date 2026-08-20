@@ -1,7 +1,7 @@
 package crossbyte.net;
 
 // Not built for the browser. It wraps the Transport union across every transport CrossByte offers, most of which a page does not have; browser code connects with crossbyte.net.Socket directly.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;

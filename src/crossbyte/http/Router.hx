@@ -1,7 +1,7 @@
 package crossbyte.http;
 
 // Not built for the browser: it routes requests arriving at the HTTP server.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.http.HTTPServerConfig.Middleware;

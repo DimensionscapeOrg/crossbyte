@@ -1,7 +1,7 @@
 package crossbyte.http;
 
 // Not built for the browser: serving HTTP means listening on a port.
-#if !(js && !nodejs)
+#if !js
 
 import haxe.io.Path;
 import haxe.ds.ObjectMap;

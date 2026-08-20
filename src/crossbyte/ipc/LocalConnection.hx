@@ -1,7 +1,7 @@
 package crossbyte.ipc;
 
 // Not built for the browser. Local IPC means an OS channel between processes on one machine, and a page has neither the channel nor the processes.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;

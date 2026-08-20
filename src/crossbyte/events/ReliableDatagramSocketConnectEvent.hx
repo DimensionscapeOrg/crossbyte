@@ -1,7 +1,7 @@
 package crossbyte.events;
 
 // Not built for the browser: it carries a ReliableDatagramSocket, which is not built there either.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.net.ReliableDatagramSocket;
 
