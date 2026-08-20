@@ -7,7 +7,7 @@ import crossbyte._internal.brotli.codec.decode.streams.BrotliOutput;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
 import streams.*;
-#if !js
+#if !(js && !nodejs)
 import sys.io.FileInput;
 import sys.io.FileOutput;
 #end
@@ -76,7 +76,7 @@ static public function BrotliInitMemOutput(buffer:Array<UInt>):BrotliOutput {//,
   output.data_ = mem_output;
   return output;
 }
-#if js
+#if (js && !nodejs)
 #else
 static public function BrotliFileInputFunction(data:FileInput, buf:Vector<UInt>, buf_off:Int, count:Int):Int {
 	var bytes:Bytes = Bytes.alloc(count);

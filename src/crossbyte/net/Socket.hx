@@ -8,6 +8,7 @@ import crossbyte.events.TickEvent;
 import js.Browser;
 import js.lib.ArrayBuffer;
 import js.html.WebSocket;
+#elseif nodejs
 #end
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
@@ -477,6 +478,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		#if (js && !nodejs)
 		__timestamp = Timer.stamp();
+		#elseif nodejs
+			throw new crossbyte.errors.IllegalOperationError("crossbyte.net.Socket is not implemented on Node yet: the browser path needs the page WebSocket and the native path needs select(), and Node has neither. It needs an implementation over js.node.net, which is a port rather than a gate.");
 		#else
 		var h:Host = null;
 
@@ -524,6 +527,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__socket.onerror = socket_onError;
 
 		CrossByte.current().addEventListener(TickEvent.TICK, this_onTick);
+		#elseif nodejs
+			throw new crossbyte.errors.IllegalOperationError("crossbyte.net.Socket is not implemented on Node yet: the browser path needs the page WebSocket and the native path needs select(), and Node has neither. It needs an implementation over js.node.net, which is a port rather than a gate.");
 		#else
 		__socket = new SysSocket();
 		@:privateAccess
@@ -598,6 +603,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				if (buffer.byteLength > __output.length)
 					buffer = buffer.slice(0, __output.length);
 				__socket.send(buffer);
+				#elseif nodejs
+					throw new crossbyte.errors.IllegalOperationError("crossbyte.net.Socket is not implemented on Node yet: the browser path needs the page WebSocket and the native path needs select(), and Node has neither. It needs an implementation over js.node.net, which is a port rather than a gate.");
 				#else
 				var pendingLength = __output.length;
 				var bytesWritten = __socket.output.writeBytes(__output, 0, pendingLength);
@@ -1145,8 +1152,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__connected = false;
 		__isDirty = false;
 		flushFull = false;
-		#if js
+		#if (js && !nodejs)
 		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
+		#elseif nodejs
+			throw new crossbyte.errors.IllegalOperationError("crossbyte.net.Socket is not implemented on Node yet: the browser path needs the page WebSocket and the native path needs select(), and Node has neither. It needs an implementation over js.node.net, which is a port rather than a gate.");
 		#else
 		__closed = true;
 		#end
@@ -1271,6 +1280,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (__input.bytesAvailable > 0) {
 			__dispatchPooledSocketData(__input.bytesAvailable, 0);
 		}
+		#elseif nodejs
+			throw new crossbyte.errors.IllegalOperationError("crossbyte.net.Socket is not implemented on Node yet: the browser path needs the page WebSocket and the native path needs select(), and Node has neither. It needs an implementation over js.node.net, which is a port rather than a gate.");
 		#end
 	}
 
@@ -1285,6 +1296,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (__socket != null) {
 			flush();
 		}
+		#elseif nodejs
+			throw new crossbyte.errors.IllegalOperationError("crossbyte.net.Socket is not implemented on Node yet: the browser path needs the page WebSocket and the native path needs select(), and Node has neither. It needs an implementation over js.node.net, which is a port rather than a gate.");
 		#else
 		if (__socket == null) {
 			return;

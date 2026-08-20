@@ -1,7 +1,7 @@
 package crossbyte.ipc._internal;
 
 // Not built for the browser: an OS-level IPC channel.
-#if !(js && !nodejs)
+#if !js
 
 import cpp.Pointer;
 import cpp.UInt8;

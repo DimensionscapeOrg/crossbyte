@@ -1,7 +1,7 @@
 package crossbyte.http;
 
 // Not built for the browser: it answers requests on an accepted connection and streams files from disk.
-#if !(js && !nodejs)
+#if !js
 
 import haxe.ds.StringMap;
 import haxe.io.BytesBuffer;

@@ -1,0 +1,13 @@
+# Compiles every CrossByte class that is available on Node.
+#
+# Node is a JavaScript target with an operating system behind it, so it sits
+# between the browser and a native build: hxnodejs supplies a filesystem and a
+# process environment, but there is no sys.thread, no sys.db, and sys.net.Socket
+# is a partial stand-in without select(). What that leaves is checked here.
+#
+# Paired with ci/js-build.hxml. The two differ only in -lib hxnodejs, which is
+# what defines `nodejs` and so decides every `js && !nodejs` gate in the tree.
+-cp src
+-lib hxnodejs
+--macro include('crossbyte')
+--js export/node/crossbyte.js

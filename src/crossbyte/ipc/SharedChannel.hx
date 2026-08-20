@@ -1,7 +1,7 @@
 package crossbyte.ipc;
 
-// Not built for the browser: shared memory and IPC handles between OS processes.
-#if !(js && !nodejs)
+// Not built for any JavaScript target (Node included, which has no threads): shared memory and IPC handles between OS processes.
+#if !js
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
