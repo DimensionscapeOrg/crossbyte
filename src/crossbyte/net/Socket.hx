@@ -26,6 +26,7 @@ import haxe.Serializer;
 import haxe.Timer;
 import haxe.Unserializer;
 import crossbyte._internal.socket.IPollableSocket;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
@@ -1167,7 +1168,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private function __cleanSocket():Void {
 		try {
+			#if nodejs
+			// A js.node.net.Socket has no close(). This called one anyway, and
+			// the catch below swallowed the TypeError, so closing a socket on
+			// Node did nothing at all: the peer was never sent a FIN and the
+			// handle went on holding the event loop open. end() flushes what
+			// Node still has queued, sends the FIN, and releases the handle
+			// once the peer answers.
+			__socket.end();
+			#else
 			__socket.close();
+			#end
 		} catch (e:Dynamic) {}
 
 		__stopConnecting();
@@ -1672,20 +1683,60 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function get_localAddress():String {
+		#if nodejs
+		return __socket.localAddress;
+		#elseif (js && !nodejs)
+		return __refuseEndpoint("localAddress");
+		#else
 		return __socket.host().host.toString();
+		#end
 	}
 
 	@:noCompletion private function get_localPort():Int {
+		#if nodejs
+		return __socket.localPort;
+		#elseif (js && !nodejs)
+		return __refuseEndpoint("localPort");
+		#else
 		return __socket.host().port;
+		#end
 	}
 
 	@:noCompletion private function get_remoteAddress():String {
+		#if nodejs
+		return __socket.remoteAddress;
+		#elseif (js && !nodejs)
+		return __refuseEndpoint("remoteAddress");
+		#else
 		return __socket.peer().host.toString();
+		#end
 	}
 
 	@:noCompletion private function get_remotePort():Int {
+		#if nodejs
+		return __socket.remotePort;
+		#elseif (js && !nodejs)
+		return __refuseEndpoint("remotePort");
+		#else
 		return __socket.peer().port;
+		#end
 	}
+
+	#if (js && !nodejs)
+	/**
+	 * All four endpoint accessors called `host()` and `peer()` on the raw
+	 * socket, which a browser's WebSocket does not have -- so each threw a
+	 * TypeError about a missing method rather than saying what was actually
+	 * wrong.
+	 *
+	 * Typed as returning whatever the caller expects so one helper serves both
+	 * the String and the Int accessors. It never returns.
+	 */
+	@:noCompletion private function __refuseEndpoint<T>(what:String):T {
+		throw new IllegalOperationError("Socket." + what
+			+ " is not available in a browser: the connection is a WebSocket held by the page, and a page is not told either end of it.");
+	}
+	#end
 
 	@:noCompletion private function get_registryClosed():Bool {
 		return __closed || __socket == null;
@@ -1694,7 +1745,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private inline function __cleanupFailedConnect():Void {
 		if (__socket != null) {
 			try {
+				#if nodejs
+				// destroy() rather than the end() a clean close uses: a connect
+				// that failed has nothing queued worth flushing, and there may
+				// be no peer to send a FIN to.
+				__socket.destroy();
+				#else
 				__socket.close();
+				#end
 			} catch (_:Dynamic) {}
 		}
 		__socket = null;
@@ -1737,8 +1795,27 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__peerShutdown = true;
 		}
 
+		#if (js && !nodejs)
+		throw new IllegalOperationError("Socket.shutdown() is not available in a browser: a WebSocket closes both directions at once, so there is no half to close.");
+		#end
+
 		try {
+			#if nodejs
+			// end() is the write half, and it is the half that matters: it is
+			// the FIN that tells a peer no more requests are coming. Node has
+			// no read half to shut -- there is no shutdown(SHUT_RD) on a
+			// stream -- so pausing is the closest thing, and it at least stops
+			// data arriving for a direction the caller has declared finished.
+			if (write) {
+				__socket.end();
+			}
+
+			if (read) {
+				__socket.pause();
+			}
+			#else
 			__socket.shutdown(read, write);
+			#end
 		} catch (e:Dynamic) {
 			// A peer that has already gone makes this fail, and there is
 			// nothing to recover: the direction being asked for is closed
