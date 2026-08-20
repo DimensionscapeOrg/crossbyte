@@ -81,6 +81,66 @@ class DBParameterBindingTest extends utest.Test {
 		Assert.equals("a=<<K>> b=:missing", result);
 	}
 
+	public function testPlaceholderInALineCommentIsUntouched():Void {
+		// The sharpest case, and the reason the scanner tracks comments at all.
+		// Quoting means nothing inside a comment: escape() can wrap a value
+		// perfectly and it still ends the comment at its first newline, putting
+		// everything after it back into statement text. Measured before the
+		// scanner knew about comments, "-- audit :note" with a newline in the
+		// value produced a second line the server executed.
+		var params = lookupOf(["note" => "x" + String.fromCharCode(10) + "OR 1=1 --"]);
+		var sql = "SELECT * FROM t" + String.fromCharCode(10) + "-- audit :note" + String.fromCharCode(10) + "WHERE id = 1";
+
+		var result = ParamBinder.substitute(sql, params, wrapEscape);
+
+		Assert.equals(sql, result);
+		Assert.isFalse(result.indexOf("<<") >= 0);
+	}
+
+	public function testPlaceholderInABlockCommentIsUntouched():Void {
+		var params = lookupOf(["id" => "7"]);
+		var sql = "SELECT 1 /* filter :id */ FROM t WHERE x = :id";
+
+		var result = ParamBinder.substitute(sql, params, wrapEscape);
+
+		Assert.equals("SELECT 1 /* filter :id */ FROM t WHERE x = <<7>>", result);
+	}
+
+	public function testNestedBlockCommentDoesNotEndEarly():Void {
+		// Postgres nests block comments. Ending at the first close would drop
+		// the scanner back into statement context while the server is still
+		// inside the comment.
+		var params = lookupOf(["id" => "7"]);
+		var sql = "SELECT 1 /* outer /* inner :id */ still :id */ WHERE x = :id";
+
+		var result = ParamBinder.substitute(sql, params, wrapEscape);
+
+		Assert.equals("SELECT 1 /* outer /* inner :id */ still :id */ WHERE x = <<7>>", result);
+	}
+
+	public function testPlaceholderInAQuotedIdentifierIsUntouched():Void {
+		// "..." is an identifier in Postgres and SQLite and a string in MySQL's
+		// default mode; backticks are MySQL identifiers. It is not statement
+		// text under any of them, so nothing is substituted there.
+		var params = lookupOf(["id" => "7"]);
+
+		Assert.equals('SELECT "col:id" FROM t WHERE x = <<7>>', ParamBinder.substitute('SELECT "col:id" FROM t WHERE x = :id', params, wrapEscape));
+
+		var tick = String.fromCharCode(96);
+		Assert.equals("SELECT " + tick + "col:id" + tick + " FROM t WHERE x = <<7>>",
+			ParamBinder.substitute("SELECT " + tick + "col:id" + tick + " FROM t WHERE x = :id", params, wrapEscape));
+	}
+
+	public function testDoubledQuoteInsideAnIdentifierDoesNotEndIt():Void {
+		// The same doubling rule the single-quote path already honoured; an
+		// identifier that ends early would drop the scanner into statement
+		// context inside a name.
+		var params = lookupOf(["id" => "7"]);
+		var sql = 'SELECT "we""ird:id" FROM t WHERE x = :id';
+
+		Assert.equals('SELECT "we""ird:id" FROM t WHERE x = <<7>>', ParamBinder.substitute(sql, params, wrapEscape));
+	}
+
 	public function testIsolationWhitelistAcceptsCanonicalValues():Void {
 		Assert.equals("READ COMMITTED", IsolationLevel.ofString("read committed"));
 		Assert.equals("SERIALIZABLE", IsolationLevel.ofString("SERIALIZABLE"));
