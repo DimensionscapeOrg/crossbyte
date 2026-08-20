@@ -9,7 +9,9 @@ import crossbyte._internal.native.sys.NativeSystem;
 #end
 
 import crossbyte.core.CrossByte;
+#if !js
 import sys.io.Process;
+#end
 
 #if cpp
 #if windows
@@ -94,6 +96,10 @@ class System {
 	@:noCompletion private static var __userDirPath:String;
 
 	public static inline function totalSystemMemory():Float {
+		#if js
+		// Reading physical memory means shelling out, and a browser has no shell nor any web API that reports it. Returning 0 would read as "no memory" rather than "cannot know".
+		throw new crossbyte.errors.IllegalOperationError("System.totalSystemMemory() is not available on this target.");
+		#else
 		var cmd:String = "";
 		#if windows
 		cmd = "wmic computersystem get totalphysicalmemory";
@@ -125,9 +131,14 @@ class System {
 		return memoryInBytes;
 		#end
 		return 0;
+		#end
 	}
 
 	public static inline function freeSystemMemory():Float {
+		#if js
+		// Same as totalSystemMemory: no shell, and no browser equivalent.
+		throw new crossbyte.errors.IllegalOperationError("System.freeSystemMemory() is not available on this target.");
+		#else
 		var cmd:String = "";
 		#if windows
 		cmd = "wmic OS get FreePhysicalMemory";
@@ -165,6 +176,7 @@ class System {
 		#end
 
 		return 0;
+		#end
 	}
 
 	/**

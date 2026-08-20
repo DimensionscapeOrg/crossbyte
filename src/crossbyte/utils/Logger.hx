@@ -171,6 +171,13 @@ class Logger {
 			return;
 		}
 
+		#if js
+		// A browser has no stdout. The console is the equivalent sink, and a
+		// log line that vanished would be worse here than anywhere else --
+		// this is the thing that reports everything else going wrong.
+		js.Browser.console.log(line);
+		#else
 		Sys.println(line);
+		#end
 	}
 }
