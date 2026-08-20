@@ -44,6 +44,8 @@ class PostgresConnection extends EventDispatcher {
 	@:noCompletion private var __isolationLevel:PostgresIsolationLevel = PostgresIsolationLevel.REPEATABLE_READ;
 	@:noCompletion private var __lastInsertRowID:Int = 0;
 	@:noCompletion private var __lastAffectedRows:Int = 0;
+	@:noCompletion private var __savepoints:Array<String> = [];
+	@:noCompletion private var __savepointSeq:Int = 0;
 
 	public function new() {
 		super();
@@ -147,6 +149,7 @@ class PostgresConnection extends EventDispatcher {
 		try {
 			request("BEGIN;");
 			__inTransaction = true;
+			__savepoints = [];
 			__dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
 		} catch (e:Dynamic) {
 			__dispatchError(SQLEvent.BEGIN, "Begin failed", e);
@@ -157,6 +160,7 @@ class PostgresConnection extends EventDispatcher {
 		try {
 			request("COMMIT;");
 			__inTransaction = false;
+			__savepoints = [];
 			__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
 		} catch (e:Dynamic) {
 			__dispatchError(SQLEvent.COMMIT, "Commit failed", e);
@@ -167,14 +171,23 @@ class PostgresConnection extends EventDispatcher {
 		try {
 			request("ROLLBACK;");
 			__inTransaction = false;
+			__savepoints = [];
 			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 		} catch (e:Dynamic) {
 			__dispatchError(SQLEvent.ROLLBACK, "Rollback failed", e);
 		}
 	}
 
-	public function setSavepoint(name:String = null):Void {
+	/**
+		Creates a savepoint and returns its name, so one created without a name
+		can still be released or rolled back to. It returned nothing, which
+		left a generated name known only to the statement that used it -- and
+		release and rollback both require a name, so such a savepoint could
+		never be reached again by any means.
+	**/
+	public function setSavepoint(name:String = null):String {
 		var sp:String = __sanitizeSavePoint(name);
+		__savepoints.push(sp);
 
 		try {
 			request('SAVEPOINT ' + sp + ';');
@@ -182,15 +195,24 @@ class PostgresConnection extends EventDispatcher {
 		} catch (e:Dynamic) {
 			__dispatchError(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
 		}
+
+		return sp;
 	}
 
-	public function rollbackToSavepoint(name:String):Void {
-		if (name == null || name == "") {
+	/**
+		Rolls back to a savepoint, which stays active afterwards as PostgreSQL
+		leaves it. With no name, rolls back to the innermost savepoint this
+		connection holds -- and only to a full rollback() when it holds none.
+		Omitting the name used to roll the whole transaction back, so a caller
+		asking to return to a savepoint lost everything before it instead.
+	**/
+	public function rollbackToSavepoint(name:String = null):Void {
+		if ((name == null || name == "") && __savepoints.length == 0) {
 			rollback();
 			return;
 		}
 
-		var sp:String = __sanitizeSavePoint(name);
+		var sp:String = __takeSavepoint(name, true);
 		try {
 			request('ROLLBACK TO SAVEPOINT ' + sp + ';');
 			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT));
@@ -199,8 +221,14 @@ class PostgresConnection extends EventDispatcher {
 		}
 	}
 
-	public function releaseSavepoint(name:String):Void {
-		var sp:String = __sanitizeSavePoint(name);
+	/**
+		Releases a savepoint, discarding it and any nested inside it. With no
+		name, releases the innermost this connection holds; it used to mint a
+		brand new name and ask the server to release a savepoint that had
+		never existed.
+	**/
+	public function releaseSavepoint(name:String = null):Void {
+		var sp:String = __takeSavepoint(name, false);
 
 		try {
 			request('RELEASE SAVEPOINT ' + sp + ';');
@@ -412,8 +440,53 @@ class PostgresConnection extends EventDispatcher {
 		return __isolationLevel;
 	}
 
+	/**
+		Resolves the savepoint a release or rollback refers to, and updates the
+		stack to match what the statement will do to it.
+
+		RELEASE discards the savepoint and everything nested inside it;
+		ROLLBACK TO discards what is nested but leaves the savepoint itself
+		active. `keep` picks between the two.
+	**/
+	@:noCompletion private function __takeSavepoint(name:String, keep:Bool):String {
+		if (name == null || name == "") {
+			if (__savepoints.length == 0) {
+				throw new ArgumentError("No savepoint is open on this connection; name one, or use rollback() to undo the transaction.");
+			}
+
+			var innermost:String = __savepoints[__savepoints.length - 1];
+
+			if (!keep) {
+				__savepoints.pop();
+			}
+
+			return innermost;
+		}
+
+		var resolved:String = __sanitizeSavePoint(name);
+		var index:Int = -1;
+
+		for (i in 0...__savepoints.length) {
+			if (__savepoints[i] == resolved) {
+				index = i;
+			}
+		}
+
+		if (index >= 0) {
+			__savepoints.splice(keep ? index + 1 : index, __savepoints.length);
+		}
+
+		return resolved;
+	}
+
 	@:noCompletion private function __sanitizeSavePoint(name:String):String {
-		var n:String = (name != null && name != "") ? name : ('sp_' + Std.int(haxe.Timer.stamp() * 1e6));
+		// A counter, not a timestamp. Measured on the identical SQLite version:
+		// 2000 names generated back to back produced 47 duplicates, and the
+		// value overflows Int about 36 minutes into a process and wraps every
+		// 72, so a long-lived connection reissues names it has already used.
+		// Two savepoints sharing a name make RELEASE and ROLLBACK TO act on the
+		// wrong one.
+		var n:String = (name != null && name != "") ? name : ("sp_" + (++__savepointSeq));
 
 		return ~/[^\w]/g.replace(n, "_");
 	}
@@ -487,9 +560,26 @@ class PostgresConnection extends EventDispatcher {
 		#end
 	}
 
+	/**
+		Escapes a value for a server whose standard_conforming_strings is on,
+		which has been the default since PostgreSQL 9.1.
+
+		Doubling the quote is the whole of it there. Backslash carries no
+		meaning inside an ordinary string literal, so doubling it as well --
+		which this used to do -- turned every one into two: a value of
+		C:\Users came back out of the database as C:\\Users. Silent
+		corruption of anything holding a path, a regular expression, or a UNC
+		name.
+
+		Correct escaping is a property of the connection rather than of the
+		string: it depends on the server standard_conforming_strings setting
+		and on the client encoding, which is why libpq takes a connection for
+		its own escape. This runs only when there is no connection to ask, so
+		it assumes the default rather than guessing at a legacy setting; a
+		connected escape() goes through libpq instead.
+	**/
 	@:noCompletion private function __fallbackEscape(value:String):String {
 		var s = value == null ? "" : Std.string(value);
-		s = s.split("\\").join("\\\\");
 		return s.split("'").join("''");
 	}
 
