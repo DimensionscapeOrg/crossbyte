@@ -1,5 +1,8 @@
 package crossbyte.db;
 
+// Not built for the browser: a database driver needs a socket or a file, and credentials do not belong in a page.
+#if !(js && !nodejs)
+
 import crossbyte.errors.ArgumentError;
 import crossbyte.sys.Task;
 import crossbyte.sys.TaskPool;
@@ -162,3 +165,4 @@ class AsyncDatabase<T> {
 		pool.close();
 	}
 }
+#end

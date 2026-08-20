@@ -1,5 +1,8 @@
 package crossbyte.db.sql.sqlite;
 
+// Not built for the browser: a database driver needs a socket or a file, and credentials do not belong in a page.
+#if !(js && !nodejs)
+
 import sys.db.Sqlite;
 import crossbyte.Function;
 import crossbyte.Object;
@@ -1065,3 +1068,4 @@ typedef DBStats = {
 	var dbSizeBytes:Int64;
 	var freeBytes:Int64;
 }
+#end

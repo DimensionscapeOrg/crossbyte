@@ -1,5 +1,8 @@
 package crossbyte.ipc._internal;
 
+// Not built for the browser: an OS-level IPC channel.
+#if !(js && !nodejs)
+
 import cpp.Pointer;
 import cpp.UInt8;
 import crossbyte.ipc._internal.VoidPointer;
@@ -22,3 +25,4 @@ extern class NativeLocalConnection {
 	@:native('native_connectWithTimeout') private static function __connectWithTimeout(name:String, timeoutMs:Int):VoidPointer;
 	@:native('native_close') private static function __close(pipe:VoidPointer):Void;
 }
+#end

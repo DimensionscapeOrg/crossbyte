@@ -1,5 +1,8 @@
 package crossbyte.net;
 
+// Not built for the browser: it is a reliability layer over UDP, which the browser does not have.
+#if !(js && !nodejs)
+
 import crossbyte.Seq32;
 import crossbyte.Timer as CBTimer;
 import crossbyte.crypto.SecureRandom;
@@ -22,7 +25,9 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.ds.IntMap;
+#if !js
 import sys.net.Host;
+#end
 
 @:access(crossbyte.net.ReliableDatagramServerSocket)
 /**
@@ -1105,3 +1110,4 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return value;
 	}
 }
+#end

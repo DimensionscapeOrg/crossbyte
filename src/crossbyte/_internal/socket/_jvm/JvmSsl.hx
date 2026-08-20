@@ -1,5 +1,8 @@
 package crossbyte._internal.socket._jvm;
 
+// Not built for the browser: it polls OS socket descriptors, which a page does not have. The browser socket is driven by the runtime tick instead.
+#if !(js && !nodejs)
+
 /**
  * Compile-time stand-ins for the `sys.ssl.*` types on the java/jvm target.
  *
@@ -55,3 +58,4 @@ class JvmSslCertificate {
 class JvmSslKey {
 	public function new() {}
 }
+#end

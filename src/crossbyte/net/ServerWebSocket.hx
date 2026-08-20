@@ -1,5 +1,8 @@
 package crossbyte.net;
 
+// Not built for the browser, for the same reason as ServerSocket: accepting WebSocket connections means listening, which a page cannot do.
+#if !(js && !nodejs)
+
 import crossbyte._internal.websocket.FlexSocket;
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
@@ -15,14 +18,18 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
+#if !js
 import sys.net.Host;
+#end
 #if (java || jvm)
 // TLS is stubbed on the jvm target (see FlexSocket / JvmSsl).
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate as Certificate;
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslKey as Key;
 #else
+#if !js
 import sys.ssl.Certificate;
 import sys.ssl.Key;
+#end
 #end
 
 /**
@@ -517,3 +524,4 @@ class ServerWebSocket extends ServerSocket {
 		return cert = value;
 	}
 }
+#end
