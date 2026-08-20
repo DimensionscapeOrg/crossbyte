@@ -1,7 +1,7 @@
 package crossbyte._internal.http;
 
 // Not built for any JavaScript target (Node included, which has no threads): it belongs to the server-side HTTP stack, which needs a listening socket and a filesystem.
-#if !js
+#if !(js && !nodejs)
 
 import haxe.io.Path;
 import crossbyte.http.HTTPServerConfig;
