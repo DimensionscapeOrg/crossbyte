@@ -540,19 +540,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// nothing to register with the runtime.
 		var node = new NodeSocket();
 		__socket = node;
-		node.setNoDelay(true);
 		node.on(SocketEvent.Connect, function() {
 			socket_onOpen(null);
 		});
-		node.on(SocketEvent.Data, function(chunk) {
-			socket_onMessage(chunk);
-		});
-		node.on(SocketEvent.Error, function(_) {
-			socket_onError(null);
-		});
-		node.on(SocketEvent.Close, function(_) {
-			socket_onClose(null);
-		});
+		__bindNodeSocket(node);
 		node.connect({port: port, host: host});
 
 		CrossByte.current().addEventListener(TickEvent.TICK, this_onTick);
@@ -1340,6 +1331,69 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		#end
 	}
+
+	#if nodejs
+	/**
+	 * The handlers every Node socket needs, whether this side dialled it or
+	 * `ServerSocket` accepted it. Shared so the two cannot come to report
+	 * arriving data, a failure or a close differently -- which is the whole of
+	 * what a socket is from a caller's side.
+	 *
+	 * A connect handler is not among them: an accepted socket is connected
+	 * already, and there is no second event to wait for.
+	 */
+	@:noCompletion private function __bindNodeSocket(node:NodeSocket):Void {
+		node.setNoDelay(true);
+
+		node.on(SocketEvent.Data, function(chunk) {
+			socket_onMessage(chunk);
+		});
+		node.on(SocketEvent.Error, function(_) {
+			socket_onError(null);
+		});
+		node.on(SocketEvent.Close, function(_) {
+			socket_onClose(null);
+		});
+	}
+
+	/**
+	 * Wraps a connection Node has already accepted.
+	 *
+	 * `ServerSocket` reaches the same place on a native target by setting these
+	 * fields itself, because there the accepted thing is a `sys.net.Socket` and
+	 * has to be registered for polling. Here there is nothing to register --
+	 * Node delivers the bytes -- so what is left is the state a connected
+	 * socket has, and it is set here rather than there so that `connect()` and
+	 * `accept` produce the same object.
+	 *
+	 * @param node The socket Node handed to the server's connection listener.
+	 * @param cbInstance The runtime whose ticks will flush this socket's writes.
+	 */
+	@:allow(crossbyte.net.ServerSocket)
+	@:noCompletion private static function __adoptNodeSocket(node:NodeSocket, cbInstance:CrossByte):Socket {
+		var socket = new Socket();
+
+		socket.__socket = node;
+		socket.__connected = true;
+		socket.__closed = false;
+		socket.__timestamp = Timer.stamp();
+		socket.__host = node.remoteAddress;
+		socket.__port = node.remotePort;
+
+		socket.__output = new ByteArray();
+		socket.__output.endian = socket.__endian;
+
+		socket.__input = new ByteArray();
+		socket.__input.endian = socket.__endian;
+
+		socket.__cbInstance = cbInstance;
+		socket.__bindNodeSocket(node);
+
+		cbInstance.addEventListener(TickEvent.TICK, socket.this_onTick);
+
+		return socket;
+	}
+	#end
 
 	@:noCompletion private function socket_onOpen(_):Void {
 		__connected = true;

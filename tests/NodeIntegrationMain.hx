@@ -4,7 +4,9 @@ import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.NativeProcessEvent;
 import crossbyte.events.ProgressEvent;
+import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
+import crossbyte.net.ServerSocket;
 import crossbyte.net.Socket;
 import crossbyte.sys.NativeProcess;
 import crossbyte.sys.NativeProcessStartupInfo;
@@ -43,6 +45,8 @@ class NodeIntegrationMain extends Application {
 
 	private var httpServer:js.node.http.Server;
 	private var echoServer:js.node.net.Server;
+	private var listener:ServerSocket;
+	private var accepted:Socket;
 
 	public function new() {
 		super();
@@ -217,13 +221,121 @@ class NodeIntegrationMain extends Application {
 			check("Socket knows its local port", socket.localPort > 0, "got " + socket.localPort);
 			socket.close();
 			echoServer.close();
-			runSubprocess();
+			startListener();
 		});
 
 		socket.connect("127.0.0.1", ECHO_PORT);
 	}
 
-	// ---- 4. NativeProcess over child_process -----------------------------
+	// ---- 4. crossbyte.net.ServerSocket over js.node.net.Server -----------
+
+	private function startListener():Void {
+		listener = new ServerSocket();
+
+		check("ServerSocket is supported on Node", ServerSocket.isSupported, "reported unsupported");
+
+		var refusedSecure:String = null;
+
+		try {
+			new ServerSocket(true);
+		} catch (e:Dynamic) {
+			refusedSecure = Std.string(e);
+		}
+
+		check("a secure ServerSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("sys.ssl") >= 0,
+			refusedSecure == null ? "it did not refuse" : refusedSecure);
+
+		listener.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent):Void {
+			// Held in a field on purpose: the class documents that the
+			// application owns the accepted socket, and one only referenced by
+			// a local would be collectable the moment this returns.
+			accepted = e.socket;
+
+			check("ServerSocket accepted a connection", accepted != null, "no socket on the event");
+			check("accepted socket knows its peer", accepted.remoteAddress == "127.0.0.1", "got " + accepted.remoteAddress);
+
+			accepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+				if (accepted.bytesAvailable < ROUND_TRIP.length) {
+					return;
+				}
+
+				var request = accepted.readUTFBytes(ROUND_TRIP.length);
+				check("ServerSocket read the client bytes", request == ROUND_TRIP, "got " + request);
+				accepted.writeUTFBytes(request.toUpperCase());
+				accepted.flush();
+			});
+		});
+
+		// Port 0, so the run cannot collide with whatever else is on the
+		// machine -- and so that resolving the assigned port is covered.
+		listener.bind(0, "127.0.0.1");
+		listener.listen();
+
+		check("bind() marked the server bound", listener.bound, "not bound");
+		check("listen() marked the server listening", listener.listening, "not listening");
+
+		// listen() on Node claims the port asynchronously, so the assigned
+		// port is not readable until it has. A tick is the runtime's own way
+		// of waiting, and the loop is already running.
+		waitForPort(0);
+	}
+
+	private function waitForPort(attempts:Int):Void {
+		if (listener.localPort > 0) {
+			check("port 0 resolved to a real port", listener.localPort > 0, "got " + listener.localPort);
+			connectToListener();
+			return;
+		}
+
+		if (attempts > 200) {
+			check("port 0 resolved to a real port", false, "still 0 after " + attempts + " ticks");
+			finishListener();
+			return;
+		}
+
+		haxe.Timer.delay(function():Void {
+			waitForPort(attempts + 1);
+		}, 5);
+	}
+
+	private function connectToListener():Void {
+		var client = new Socket();
+
+		client.addEventListener(Event.CONNECT, function(_):Void {
+			client.writeUTFBytes(ROUND_TRIP);
+			client.flush();
+		});
+
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			check("client reached the ServerSocket", false, "io error: " + e.text);
+			finishListener();
+		});
+
+		client.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+			if (client.bytesAvailable < ROUND_TRIP.length) {
+				return;
+			}
+
+			var reply = client.readUTFBytes(ROUND_TRIP.length);
+			check("ServerSocket replied through the accepted socket", reply == ROUND_TRIP.toUpperCase(), "got " + reply);
+			client.close();
+			finishListener();
+		});
+
+		client.connect("127.0.0.1", listener.localPort);
+	}
+
+	private function finishListener():Void {
+		if (accepted != null) {
+			accepted.close();
+		}
+
+		listener.close();
+		check("close() stopped the server listening", !listener.listening, "still listening");
+		runSubprocess();
+	}
+
+	// ---- 5. NativeProcess over child_process -----------------------------
 
 	private function runSubprocess():Void {
 		var process = new NativeProcess();
