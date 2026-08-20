@@ -11,6 +11,7 @@ import crossbyte.io.File;
 import crossbyte.events.TickEvent;
 import crossbyte.net.ServerSocket;
 import crossbyte.net.Socket;
+import crossbyte.net.WebSocket;
 import crossbyte.sys.NativeProcess;
 import crossbyte.sys.NativeProcessStartupInfo;
 import crossbyte.url.URLLoader;
@@ -36,8 +37,11 @@ class NodeIntegrationMain extends Application {
 	private static inline var HTTP_PORT:Int = 50561;
 	private static inline var ECHO_PORT:Int = 50562;
 	private static inline var WEB_PORT:Int = 50563;
+	private static inline var WS_PORT:Int = 50564;
 	private static inline var TIMEOUT_MS:Int = 30000;
 	private static inline var ROUND_TRIP:String = "round-trip";
+	private static inline var WS_SHORT:String = "hello-over-websocket";
+	private static inline var WS_GUID:String = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 	private static var failures:Int = 0;
 	private static var checks:Int = 0;
@@ -53,6 +57,9 @@ class NodeIntegrationMain extends Application {
 	private var accepted:Socket;
 	private var webServer:HTTPServer;
 	private var webRoot:String;
+	private var wsServer:js.node.net.Server;
+	private var ws:WebSocket;
+	private var wsReceived:String = "";
 
 	public function new() {
 		super();
@@ -433,10 +440,185 @@ class NodeIntegrationMain extends Application {
 			sys.FileSystem.deleteDirectory(webRoot);
 		} catch (_:Dynamic) {}
 
+		startWebSocketServer();
+	}
+
+	// ---- 6. crossbyte.net.WebSocket framing over js.node.net -------------
+
+	private function startWebSocketServer():Void {
+		// Checked here because the WebSocket depends on it -- a client masks
+		// every frame with a fresh key, and the key comes from here. It threw
+		// on Node until Node's own CSPRNG was wired in, which meant a
+		// WebSocket could not be constructed at all.
+		var first = crossbyte.crypto.SecureRandom.getSecureRandomBytes(32);
+		var second = crossbyte.crypto.SecureRandom.getSecureRandomBytes(32);
+
+		check("SecureRandom returns the length asked for", first.length == 32, "got " + first.length);
+		check("SecureRandom does not repeat itself", first.toString() != second.toString(), "two draws came back identical");
+
+		// An RFC 6455 echo server written straight onto a Node socket rather
+		// than pulled from npm, so CI needs nothing installed. It answers the
+		// upgrade, unmasks what a client sends -- a client must mask, a server
+		// must not -- and sends the same payload back unmasked.
+		wsServer = js.node.Net.createServer(function(connection:js.node.net.Socket):Void {
+			var handshaken:Bool = false;
+			var buffer:js.node.Buffer = js.node.Buffer.alloc(0);
+
+			connection.on("error", function(_):Void {});
+
+			connection.on("data", function(chunk:js.node.Buffer):Void {
+				buffer = js.node.Buffer.concat([buffer, chunk]);
+
+				if (!handshaken) {
+					var head:Int = buffer.indexOf("\r\n\r\n");
+
+					if (head < 0) {
+						return;
+					}
+
+					var request:String = buffer.slice(0, head).toString();
+					buffer = buffer.slice(head + 4);
+
+					var keyHeader = ~/sec-websocket-key:(.+)/i;
+					var key:String = keyHeader.match(request) ? StringTools.trim(keyHeader.matched(1)) : "";
+					// The one line of the protocol a server cannot get wrong:
+					// the client refuses any accept token it did not derive
+					// itself from the key it sent.
+					var accept:String = haxe.crypto.Base64.encode(haxe.io.Bytes.ofHex(haxe.crypto.Sha1.encode(key + WS_GUID)));
+					connection.write("HTTP/1.1 101 Switching Protocols\r\n" + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n"
+						+ "Sec-WebSocket-Accept: " + accept + "\r\n\r\n");
+					handshaken = true;
+				}
+
+				buffer = echoFrames(connection, buffer);
+			});
+		});
+
+		wsServer.listen(WS_PORT, "127.0.0.1", function():Void {
+			connectWebSocket();
+		});
+	}
+
+	private static function echoFrames(connection:js.node.net.Socket, buffer:js.node.Buffer):js.node.Buffer {
+		while (buffer.length >= 2) {
+			var opcode:Int = buffer[0] & 0x0F;
+			var masked:Bool = (buffer[1] & 0x80) != 0;
+			var length:Int = buffer[1] & 0x7F;
+			var offset:Int = 2;
+
+			if (length == 126) {
+				length = buffer.readUInt16BE(2);
+				offset = 4;
+			} else if (length == 127) {
+				// Not produced by anything this harness sends; a 64-bit length
+				// would need a payload of 64 KB and up.
+				return js.node.Buffer.alloc(0);
+			}
+
+			var needed:Int = offset + (masked ? 4 : 0) + length;
+
+			if (buffer.length < needed) {
+				return buffer;
+			}
+
+			var mask:js.node.Buffer = null;
+
+			if (masked) {
+				mask = buffer.slice(offset, offset + 4);
+				offset += 4;
+			}
+
+			var payload:js.node.Buffer = js.node.Buffer.from(buffer.slice(offset, offset + length));
+
+			if (mask != null) {
+				for (i in 0...payload.length) {
+					payload[i] = payload[i] ^ mask[i % 4];
+				}
+			}
+
+			buffer = buffer.slice(needed);
+
+			switch (opcode) {
+				case 0x8:
+					connection.end(null);
+					return js.node.Buffer.alloc(0);
+				case 0x9:
+					connection.write(serverFrame(0x0A, payload));
+				case 0x0A:
+				default:
+					connection.write(serverFrame(opcode, payload));
+			}
+		}
+
+		return buffer;
+	}
+
+	private static function serverFrame(opcode:Int, payload:js.node.Buffer):js.node.Buffer {
+		var head:js.node.Buffer;
+
+		if (payload.length < 126) {
+			head = js.node.Buffer.from([0x80 | opcode, payload.length]);
+		} else {
+			head = js.node.Buffer.alloc(4);
+			head[0] = 0x80 | opcode;
+			head[1] = 126;
+			head.writeUInt16BE(payload.length, 2);
+		}
+
+		return js.node.Buffer.concat([head, payload]);
+	}
+
+	private function connectWebSocket():Void {
+		ws = new WebSocket();
+
+		ws.addEventListener(Event.CONNECT, function(_):Void {
+			check("WebSocket completed the upgrade handshake", true, "");
+			ws.writeUTFBytes(WS_SHORT);
+			ws.flush();
+		});
+
+		ws.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			check("WebSocket connected", false, "io error: " + e.text);
+			stopWebSocket();
+		});
+
+		ws.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+			wsReceived += ws.readUTFBytes(ws.bytesAvailable);
+
+			if (wsReceived == WS_SHORT) {
+				check("WebSocket echoed a short frame", true, "");
+				// Past 125 bytes the length moves into the extended 16-bit
+				// field, which is a different encoding path on the way out and
+				// a different parse on the way in.
+				wsReceived = "";
+				ws.writeUTFBytes(longMessage());
+				ws.flush();
+			} else if (wsReceived == longMessage()) {
+				check("WebSocket echoed an extended-length frame", true, "got " + wsReceived.length + " bytes");
+				stopWebSocket();
+			}
+		});
+
+		ws.connect("127.0.0.1", WS_PORT);
+	}
+
+	private static function longMessage():String {
+		var buf = new StringBuf();
+
+		for (i in 0...400) {
+			buf.add(String.fromCharCode(97 + (i % 26)));
+		}
+
+		return buf.toString();
+	}
+
+	private function stopWebSocket():Void {
+		ws.close();
+		wsServer.close();
 		runSubprocess();
 	}
 
-	// ---- 6. NativeProcess over child_process -----------------------------
+	// ---- 7. NativeProcess over child_process -----------------------------
 
 	private function runSubprocess():Void {
 		var process = new NativeProcess();

@@ -10,6 +10,9 @@ import sys.thread.Mutex;
 import php.Global;
 import php.Syntax;
 #end
+#if nodejs
+import js.node.Crypto;
+#end
 
 #if cpp
 @:cppFileCode('
@@ -41,10 +44,78 @@ final class SecureRandom {
 		return __getSecureRandomBytesPHP(length);
 		#elseif (java || jvm)
 		return __getSecureRandomBytesJava(length);
+		#elseif nodejs
+		return __getSecureRandomBytesNode(length);
+		#elseif js
+		return __getSecureRandomBytesBrowser(length);
 		#else
-		throw "Secure random bytes are currently only supported on native platforms (Windows/Unix)";
+		throw "Secure random bytes are not available on this target, and this will not fall back to a generator that only looks random.";
 		#end
 	}
+
+	#if nodejs
+	/**
+	 * Node's `crypto.randomBytes`, which is the platform CSPRNG -- OpenSSL's,
+	 * seeded from the operating system -- and not `Math.random`.
+	 */
+	@:noCompletion private static function __getSecureRandomBytesNode(length:Int):ByteArray {
+		if (length <= 0) {
+			return Bytes.alloc(0);
+		}
+
+		var buffer = Crypto.randomBytes(length);
+		// Sliced by its own region: a Node Buffer can be a window onto a
+		// larger pooled allocation, and taking .buffer whole would carry bytes
+		// belonging to something else.
+		return Bytes.ofData(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+	}
+	#end
+
+	#if (js && !nodejs)
+	// getRandomValues refuses more than this in one call, by specification.
+	@:noCompletion private static inline var WEB_CRYPTO_QUOTA:Int = 65536;
+
+	/**
+	 * Web Crypto's `getRandomValues`, which browsers are required to back with
+	 * a cryptographically secure generator.
+	 *
+	 * A page served over plain http from anywhere but localhost is not a
+	 * secure context and is given no `crypto` object at all. That throws here
+	 * rather than falling back to `Math.random`, which would hand back
+	 * something that passes every test a caller could write and is predictable
+	 * to anyone who wants it.
+	 */
+	@:noCompletion private static function __getSecureRandomBytesBrowser(length:Int):ByteArray {
+		if (length <= 0) {
+			return Bytes.alloc(0);
+		}
+
+		var webCrypto:js.html.Crypto = js.Browser.window.crypto;
+
+		if (webCrypto == null) {
+			throw "Secure random bytes need the Web Crypto API, which a page is only given in a secure context. Serve the page over https, or from localhost.";
+		}
+
+		var out = new js.lib.Uint8Array(length);
+		var offset:Int = 0;
+
+		// Filled a quota at a time, because one call for more than 65536 bytes
+		// is a QuotaExceededError rather than a short read -- so a caller
+		// asking for a large key would get an exception, not fewer bytes.
+		while (offset < length) {
+			var span:Int = length - offset;
+
+			if (span > WEB_CRYPTO_QUOTA) {
+				span = WEB_CRYPTO_QUOTA;
+			}
+
+			webCrypto.getRandomValues(new js.lib.Uint8Array(out.buffer, offset, span));
+			offset += span;
+		}
+
+		return Bytes.ofData(out.buffer);
+	}
+	#end
 
 	#if cpp
 	@:noCompletion static var __urandom:sys.io.FileInput = null;

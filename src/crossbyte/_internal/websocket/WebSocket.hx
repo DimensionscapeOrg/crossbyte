@@ -1,8 +1,16 @@
 package crossbyte._internal.websocket;
 
-// Not built for the browser: server-side WebSocket framing over a raw socket. A page uses the browser's own WebSocket through crossbyte.net.Socket.
-#if !js
+// Not built for the browser: a page reaches a ws:// endpoint through its own
+// WebSocket, which crossbyte.net.Socket already uses there. Node has no
+// WebSocket of its own, so it frames one here, over js.node.net.
+#if !(js && !nodejs)
 
+#if nodejs
+import js.node.Buffer;
+import js.node.Net;
+import js.node.Tls;
+import js.node.net.Socket as NodeSocket;
+#end
 import crossbyte.Function;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
@@ -60,7 +68,7 @@ class WebSocket {
 	public var readyState(default, null):Int = CONNECTING;
 	public var url(default, null):String;
 
-	private var __socket:FlexSocket;
+	private var __socket:#if nodejs NodeSocket #else FlexSocket #end;
 	private var __buffer:Bytes;
 	// TODO: Use frame buffer for partial frames
 	// private var __frameBuffer:ByteArray;
@@ -133,9 +141,11 @@ class WebSocket {
 	private var __tickSSLHandshakeListener:Event->Void;
 
 	public function new(url:String, ?protocols:Array<String>, ?origin:String) {
+		#if !nodejs
 		__tickConnectListener = __onTickConnect;
-		__tickProcessListener = __onTickProcess;
 		__tickSSLHandshakeListener = __onTickSSLHandshake;
+		#end
+		__tickProcessListener = __onTickProcess;
 		__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 
 		if (__isClient == null) {
@@ -180,7 +190,7 @@ class WebSocket {
 		}
 	}
 
-	private function __initSocket(?socket:FlexSocket):Void {
+	private function __initSocket(?socket:#if nodejs NodeSocket #else FlexSocket #end):Void {
 		__runtime = CrossByte.current();
 		__buffer = Bytes.alloc(4096);
 		__input = new ByteArray();
@@ -202,6 +212,14 @@ class WebSocket {
 
 		__timestamp = Sys.time();
 
+		#if nodejs
+		// Node's own socket, so there is no connect poll and no handshake
+		// pump: it reports both as events. wss is a `tls.connect` rather than
+		// a `net.connect`, and the TLS is Node's -- which is why secure works
+		// here even though a secure `ServerSocket` cannot, a client only
+		// having to verify a certificate where a server has to present one.
+		__connectNode();
+		#else
 		if (socket == null) {
 			__socket = new FlexSocket(__secure);
 			if (__secure) {
@@ -226,8 +244,82 @@ class WebSocket {
 				__openConnection(null);
 			}
 		}
+		#end
 	}
 
+	#if nodejs
+	/**
+	 * Opens the connection and wires the three things the framing layer needs
+	 * from a transport: bytes arriving, the peer going away, and a failure.
+	 *
+	 * Nothing here polls. The native path has to -- it drives a non-blocking
+	 * socket from the tick, watching `select` for a connect that has completed
+	 * and for a read that would not block. Node reports each of those as an
+	 * event, so the tick is left with only the one job it still has: pushing
+	 * whatever the framing layer has queued to send.
+	 */
+	private function __connectNode():Void {
+		var connected = function():Void {
+			__openConnection(null);
+		};
+
+		if (__secure) {
+			// `servername` is the SNI name, and without it a host serving
+			// several certificates on one address has no way to pick this
+			// one's -- the handshake then fails on a name mismatch that looks
+			// like a certificate error.
+			var tls = Tls.connect({port: __port, host: __host, servername: __host}, connected);
+			__socket = cast tls;
+		} else {
+			__socket = Net.connect({port: __port, host: __host}, connected);
+		}
+
+		__socket.on("data", function(chunk:Buffer):Void {
+			__receiveNode(chunk);
+		});
+
+		__socket.on("error", function(e:Dynamic):Void {
+			// Reported before the close that follows it, so the reason reaches
+			// the caller rather than only the fact.
+			__onError("WebSocket transport failed: " + Std.string(e));
+			__close(1006);
+		});
+
+		__socket.on("close", function(_):Void {
+			if (readyState != CLOSED) {
+				// 1006 rather than 1000: the peer went without a close frame,
+				// which is ordinary -- a dropped connection, a killed process
+				// -- and is exactly what 1006 is for.
+				__close(1006);
+			}
+		});
+	}
+
+	/**
+	 * Hands one arriving chunk to the framing layer.
+	 *
+	 * The same two lines the native read loop ends with, minus the loop: there
+	 * is nothing to drain, because Node has already done the draining and is
+	 * calling with what it drained.
+	 */
+	private function __receiveNode(chunk:Buffer):Void {
+		if (chunk == null || chunk.length == 0) {
+			return;
+		}
+
+		// Sliced by its own region: a Node Buffer can be a window onto a
+		// larger pooled allocation, and taking .buffer whole would carry bytes
+		// belonging to something else.
+		var region = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+
+		__input.position = __input.length;
+		__appendBytes(__input, Bytes.ofData(region));
+		__input.position = __inputPosition;
+		__onData();
+	}
+	#end
+
+	#if !nodejs
 	private function __connect():Void {
 		try {
 			__socket.setBlocking(false);
@@ -249,11 +341,18 @@ class WebSocket {
 		}
 	}
 
+	#end
+
 	private function __onTickProcess(e:Event):Void {
 		// Retry anything the socket could not take last time before reading,
 		// so a temporarily full send buffer drains as soon as it has room.
 		__flushPendingOutput();
 
+		// And on Node that is the whole of the tick's job. Reading is Node's:
+		// it calls __receiveNode when bytes arrive rather than waiting to be
+		// asked, so there is no drain loop, no blocked-read handling and no
+		// select probe to compile at all.
+		#if !nodejs
 		var doClose:Bool = false;
 		var totalBytes:Int = 0;
 		var pending:BytesBuffer = new BytesBuffer();
@@ -336,6 +435,7 @@ class WebSocket {
 			Logger.debug("WebSocket closed by remote host");
 			__close(1006);
 		}
+		#end
 	}
 
 	private function __doHandshake():Void {
@@ -405,8 +505,25 @@ class WebSocket {
 		var accepted:Int = 0;
 
 		try {
+			#if nodejs
+			// Node takes everything and buffers what it cannot send yet, so
+			// there is no partial accept to carry over -- which is why the
+			// remainder handling below never runs here.
+			//
+			// Copied into a buffer of its own first. `Buffer.hxFromBytes`
+			// wraps the storage it is given rather than copying it, and
+			// `__pendingOutput` is cleared and refilled by the very next
+			// frame -- `clear()` resets the length and keeps the array -- so
+			// handing Node a window onto it would let the next frame overwrite
+			// the one still queued for sending.
+			var frame:ByteArray = new ByteArray();
+			frame.writeBytes(__pendingOutput, 0, __pendingOutput.length);
+			__socket.write(Buffer.hxFromBytes(frame));
+			accepted = __pendingOutput.length;
+			#else
 			accepted = __socket.output.writeBytes(__pendingOutput, 0, __pendingOutput.length);
 			__socket.output.flush();
+			#end
 		} catch (e:Dynamic) {
 			// One predicate for every spelling: the typed error, the
 			// debugger's Custom wrapper, and the bare string the TLS layer
@@ -430,12 +547,23 @@ class WebSocket {
 			__pendingOutput = remaining;
 		}
 
+		#if nodejs
+		// The pending buffer is always empty by this point -- Node accepted
+		// all of it -- so the limit has to be measured against Node's own
+		// queue instead. Reading __pendingOutput.length here, as the branch
+		// below does, would make maxOutputBufferSize unenforceable on Node
+		// while still appearing to be enforced.
+		if (maxOutputBufferSize > 0 && __socket != null && __socket.writableLength > maxOutputBufferSize) {
+			__close(1011, "output buffer limit exceeded");
+		}
+		#else
 		// Only a peer that is not draining can push the buffer past its
 		// limit, and it will not recover on its own.
 		if (maxOutputBufferSize > 0 && __pendingOutput.length > maxOutputBufferSize) {
 			__pendingOutput.clear();
 			__close(1011, "output buffer limit exceeded");
 		}
+		#end
 	}
 
 	private function __handleControlFrame(opcode:WebSocketOpcode, payload:ByteArray):Void {
@@ -949,6 +1077,7 @@ class WebSocket {
 		return true;
 	}
 
+	#if !nodejs
 	private function __onConnect():Void {
 		if (__secure) {
 			__initSSLHandshake();
@@ -956,6 +1085,8 @@ class WebSocket {
 			__openConnection(__tickConnectListener);
 		}
 	}
+
+	#end
 
 	private function __openConnection(tickListener:Event->Void):Void {
 		__connected = true;
@@ -998,6 +1129,7 @@ class WebSocket {
 	 * the timeout is deliberately not set here. Run wss on cpp/hxcpp or jvm,
 	 * where the descriptor really is non-blocking and this path is bounded.
 	 */
+	#if !nodejs
 	private function __initSSLHandshake():Void {
 		__timeout = 3000;
 		__timestamp = Sys.time();
@@ -1040,6 +1172,8 @@ class WebSocket {
 		}
 	}
 
+	#end
+
 	private function __onError(errorMessage:String):Void {
 		onerror(new WebsocketEvent(WebsocketEvent.ERROR, this, errorMessage));
 	}
@@ -1068,7 +1202,11 @@ class WebSocket {
 		}
 
 		if (__connected) {
+			#if nodejs
+			__socket.end(null);
+			#else
 			__socket.close();
+			#end
 
 			if (__heartbeatID > 0) {
 				GlobalTimer.clearInterval(__heartbeatID);
@@ -1227,6 +1365,7 @@ class WebSocket {
 		__sendFrame(payload, WebSocketOpcode.PONG, true);
 	}
 
+	#if !nodejs
 	@:access(crossbyte._internal.websocket)
 	inline function fromAcceptedSocket(socket:FlexSocket):WebSocket {
 		var acceptedSocket:WebSocket = new AcceptedWebSocket();
@@ -1234,6 +1373,7 @@ class WebSocket {
 
 		return acceptedSocket;
 	}
+	#end
 }
 
 enum abstract BinaryType(String) to String from String {
@@ -1258,6 +1398,11 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 	public static inline var PONG:Int = 0x0A;
 }
 
+// The server half. `ServerWebSocket` accepts a connection and upgrades it,
+// which needs a `ServerSocket` handing out raw sockets to frame over -- Node
+// has one now, but the upgrade path is a separate piece of work from the
+// client, so neither this nor its entry point is built there yet.
+#if !nodejs
 @:private @:noCompletion class AcceptedWebSocket extends WebSocket {
 	private function new() {
 		__isClient = false;
@@ -1272,4 +1417,5 @@ inline function fromAcceptedSocket(socket:FlexSocket):WebSocket {
 
 	return acceptedSocket;
 }
+#end
 #end
