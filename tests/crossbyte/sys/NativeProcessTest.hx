@@ -13,7 +13,7 @@ class NativeProcessTest extends utest.Test {
 	private static inline var TIMEOUT:Float = 15.0;
 
 	public function testSupportFlagMatchesTarget():Void {
-		#if (sys && (windows || linux || mac || macos))
+		#if (nodejs || (sys && (windows || linux || mac || macos)))
 		Assert.isTrue(NativeProcess.isSupported);
 		#else
 		Assert.isFalse(NativeProcess.isSupported);

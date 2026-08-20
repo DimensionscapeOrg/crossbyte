@@ -197,6 +197,12 @@ therefore one of three shapes, and which one is a statement about the target:
 - `#if !(js && !nodejs)` -- Node keeps it, the browser does not. Files, the
   environment, subprocess-free filesystem work.
 
+Subprocesses were listed as tier C and are now tier C in fact: `NativeProcess`
+runs on Node. The threads it uses on a native build turned out not to be part
+of the design -- they exist to keep a blocking pipe read off the runtime's
+thread, and nothing about Node's streams blocks, so the same events fall out of
+`child_process` with no worker at all.
+
 Sockets are the honest gap. The browser has one, over the page WebSocket, and
 it works. Node has none: the browser path needs the page API and the native
 path needs `select()`. `crossbyte.net.Socket` throws there, naming what it
