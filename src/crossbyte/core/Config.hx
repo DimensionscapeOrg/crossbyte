@@ -90,7 +90,7 @@ class Config {
 	 *        throwing. Useful for an override file that may not exist.
 	 */
 	public function withFile(path:String, optional:Bool = false):Config {
-		#if js
+		#if (js && !nodejs)
 		// Config.withFile reads from disk, which a browser has no access to; build the Config from values, or load the file through your own transport first.
 		throw new crossbyte.errors.IllegalOperationError("Config.withFile reads from disk, which a browser has no access to; build the Config from values, or load the file through your own transport first.");
 		#else
@@ -133,7 +133,7 @@ class Config {
 	 *        `MYSERVICE_PORT` with prefix `MYSERVICE_` becomes `port`.
 	 */
 	public function withEnvironment(?prefix:String):Config {
-		#if js
+		#if (js && !nodejs)
 		// Config.withEnvironment reads process environment variables, which a browser does not have; supply the values directly instead.
 		throw new crossbyte.errors.IllegalOperationError("Config.withEnvironment reads process environment variables, which a browser does not have; supply the values directly instead.");
 		#else

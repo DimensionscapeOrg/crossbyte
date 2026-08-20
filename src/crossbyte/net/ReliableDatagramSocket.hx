@@ -1,7 +1,7 @@
 package crossbyte.net;
 
 // Not built for the browser: it is a reliability layer over UDP, which the browser does not have.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte.Seq32;
 import crossbyte.Timer as CBTimer;
@@ -25,7 +25,7 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.ds.IntMap;
-#if !js
+#if !(js && !nodejs)
 import sys.net.Host;
 #end
 

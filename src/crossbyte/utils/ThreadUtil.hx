@@ -12,7 +12,7 @@ class ThreadUtil {
 	public static var isPrimordial(get, never):Bool;
 
 	private static inline function get_isPrimordial():Bool {
-		#if js
+		#if (js && !nodejs)
 		// One thread, so the runtime that exists is the primordial one.
 		return CrossByte.__primordial != null;
 		#elseif cpp

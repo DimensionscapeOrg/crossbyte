@@ -357,6 +357,11 @@ jobs:
       - name: Build browser (js) target
         run: haxe ci/js-build.hxml
 
+      - name: Build Node target
+        run: |
+          haxelib install hxnodejs --always --quiet
+          haxe ci/node-build.hxml
+
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 

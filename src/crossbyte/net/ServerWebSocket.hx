@@ -1,7 +1,7 @@
 package crossbyte.net;
 
 // Not built for the browser, for the same reason as ServerSocket: accepting WebSocket connections means listening, which a page cannot do.
-#if !(js && !nodejs)
+#if !js
 
 import crossbyte._internal.websocket.FlexSocket;
 import crossbyte.core.CrossByte;
@@ -18,7 +18,7 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
-#if !js
+#if !(js && !nodejs)
 import sys.net.Host;
 #end
 #if (java || jvm)
@@ -26,7 +26,7 @@ import sys.net.Host;
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate as Certificate;
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslKey as Key;
 #else
-#if !js
+#if !(js && !nodejs)
 import sys.ssl.Certificate;
 import sys.ssl.Key;
 #end

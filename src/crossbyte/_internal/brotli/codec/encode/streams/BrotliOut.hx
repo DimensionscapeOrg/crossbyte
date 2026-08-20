@@ -1,7 +1,7 @@
 package crossbyte._internal.brotli.codec.encode.streams;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
-#if !js
+#if !(js && !nodejs)
 import sys.io.FileOutput;
 #end
 import crossbyte._internal.brotli.codec.DefaultFunctions;
@@ -12,7 +12,7 @@ import crossbyte._internal.brotli.codec.DefaultFunctions;
  */
 class BrotliOut
 {
-#if !js
+#if !(js && !nodejs)
 	var f_:FileOutput;
 
 	public function new(f:FileOutput) 
