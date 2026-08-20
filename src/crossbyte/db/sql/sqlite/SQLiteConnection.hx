@@ -4,6 +4,7 @@ import sys.db.Sqlite;
 import crossbyte.Function;
 import crossbyte.Object;
 import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SQLError;
 import crossbyte.events.Event;
@@ -124,6 +125,8 @@ class SQLiteConnection extends EventDispatcher {
 	public var readUncommitted(get, set):Bool;
 
 	@:noCompletion private var __async:Bool = false;
+	@:noCompletion private var __savepoints:Array<String> = [];
+	@:noCompletion private var __savepointSeq:Int = 0;
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __reference:String;
 	@:noCompletion private var __initAutoCompact:Bool;
@@ -367,6 +370,7 @@ class SQLiteConnection extends EventDispatcher {
 		} else {
 			__connection.commit();
 			__inTransaction = false;
+			__savepoints = [];
 			__dispatchSQLEvent(SQLEvent.COMMIT);
 		}
 	}
@@ -405,17 +409,28 @@ class SQLiteConnection extends EventDispatcher {
 		#end
 	}
 
+	/**
+		Releases a savepoint, discarding it and any nested inside it.
+
+		With no name, releases the innermost savepoint this connection still
+		holds. That used to mint a brand new name and issue `RELEASE` for a
+		savepoint that had never existed, which SQLite refuses outright -- so
+		the no-argument form could not work at all, and neither could
+		`setSavepoint()`, whose generated name was never returned to anyone.
+	**/
 	public function releaseSavepoint(name:String = null):Void {
+		var resolved:String = __takeSavepoint(name, false);
+
 		if (__async) {
 			#if cpp
 			__sqlMutex.acquire();
-			__sqlQueue.add(__releaseSavePointAsync(name));
+			__sqlQueue.add(__releaseSavePointAsync(resolved));
 			__sqlMutex.release();
 			#else
-			__sqlQueue.unshift(__releaseSavePointAsync(name));
+			__sqlQueue.unshift(__releaseSavePointAsync(resolved));
 			#end
 		} else {
-			__connection.request('RELEASE ${__sanitizeSavePoint(name)};');
+			__connection.request('RELEASE $resolved;');
 			__dispatchSQLEvent(SQLEvent.RELEASE_SAVEPOINT);
 		}
 	}
@@ -432,47 +447,118 @@ class SQLiteConnection extends EventDispatcher {
 		} else {
 			__connection.rollback();
 			__inTransaction = false;
+			__savepoints = [];
 			__dispatchSQLEvent(SQLEvent.ROLLBACK);
 		}
 	}
 
+	/**
+		Rolls back to a savepoint, cancelling any nested inside it. The
+		savepoint itself stays active, as SQLite leaves it.
+
+		With no name, rolls back to the innermost savepoint this connection
+		holds -- and only to a full `rollback()` when it holds none. It used to
+		roll the whole transaction back whenever the name was omitted, so a
+		caller asking to return to a savepoint lost everything before it
+		instead.
+	**/
 	public function rollbackToSavepoint(name:String = null):Void {
-		if (name == null) {
+		if (name == null && __savepoints.length == 0) {
 			rollback();
 			return;
 		}
 
+		var resolved:String = __takeSavepoint(name, true);
+
 		if (__async) {
 			#if cpp
 			__sqlMutex.acquire();
-			__sqlQueue.add(rollbackToSavepointAsync(name));
+			__sqlQueue.add(rollbackToSavepointAsync(resolved));
 			__sqlMutex.release();
 			#else
-			__sqlQueue.unshift(rollbackToSavepointAsync(name));
+			__sqlQueue.unshift(rollbackToSavepointAsync(resolved));
 			#end
 		} else {
-			__connection.request('ROLLBACK TO ${__sanitizeSavePoint(name)};');
+			__connection.request('ROLLBACK TO $resolved;');
 			__dispatchSQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT);
 		}
 	}
 
-	public function setSavepoint(name:String = null):Void {
+	/**
+		Creates a savepoint and returns its name, so one created without a name
+		can still be released or rolled back to. It returned nothing, which
+		left a generated name known only to the statement that used it.
+	**/
+	public function setSavepoint(name:String = null):String {
+		var resolved:String = __sanitizeSavePoint(name);
+		__savepoints.push(resolved);
+
 		if (__async) {
 			#if cpp
 			__sqlMutex.acquire();
-			__sqlQueue.add(__setSavepointAsync(name));
+			__sqlQueue.add(__setSavepointAsync(resolved));
 			__sqlMutex.release();
 			#else
-			__sqlQueue.unshift(__setSavepointAsync(name));
+			__sqlQueue.unshift(__setSavepointAsync(resolved));
 			#end
 		} else {
-			__connection.request('SAVEPOINT ${__sanitizeSavePoint(name)};');
+			__connection.request('SAVEPOINT $resolved;');
 			__dispatchSQLEvent(SQLEvent.SET_SAVEPOINT);
 		}
+
+		return resolved;
+	}
+
+	/**
+		Resolves the savepoint a release or rollback refers to and updates the
+		stack to match what the statement will do to it.
+
+		`RELEASE x` discards `x` and everything nested inside it; `ROLLBACK TO
+		x` discards what is nested inside but leaves `x` active. `keep` picks
+		between the two.
+	**/
+	@:noCompletion private function __takeSavepoint(name:String, keep:Bool):String {
+		if (name == null || name == "") {
+			if (__savepoints.length == 0) {
+				throw new IllegalOperationError("No savepoint is open on this connection; name one, or use rollback() to undo the transaction.");
+			}
+
+			var innermost:String = __savepoints[__savepoints.length - 1];
+
+			if (!keep) {
+				__savepoints.pop();
+			}
+
+			return innermost;
+		}
+
+		var resolved:String = __sanitizeSavePoint(name);
+		var index:Int = -1;
+
+		for (i in 0...__savepoints.length) {
+			if (__savepoints[i] == resolved) {
+				index = i;
+			}
+		}
+
+		if (index >= 0) {
+			// Everything created after it is gone either way; the savepoint
+			// itself survives a rollback and not a release.
+			__savepoints.splice(keep ? index + 1 : index, __savepoints.length);
+		}
+
+		return resolved;
 	}
 
 	@:noCompletion private inline function __sanitizeSavePoint(name:String):String {
-		var n:String = (name != null && name != "") ? name : ('sp_' + Std.int(haxe.Timer.stamp() * 1e6));
+		// A counter, not a timestamp. This read haxe.Timer.stamp() in
+		// microseconds through Std.int, which collides: 2000 names generated
+		// back to back produced 47 duplicates, and two savepoints sharing a
+		// name make RELEASE and ROLLBACK TO act on the wrong one. It also
+		// overflows Int about 36 minutes into a process and wraps every 72,
+		// so a long-lived connection reissues names it has already used. The
+		// same allocation haxe.Timer already does for its own ids.
+		var n:String = (name != null && name != "") ? name : ("sp_" + (++__savepointSeq));
 
 		return ~/[^\w]/g.replace(n, "_");
 	}
@@ -482,7 +568,7 @@ class SQLiteConnection extends EventDispatcher {
 			var event:Event;
 
 			try {
-				__connection.request('SAVEPOINT ${__sanitizeSavePoint(name)};');
+				__connection.request('SAVEPOINT $name;');
 				event = new SQLEvent(SQLEvent.SET_SAVEPOINT);
 			} catch (e:Dynamic) {
 				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.SET_SAVEPOINT, "Execution failed"));
@@ -496,7 +582,7 @@ class SQLiteConnection extends EventDispatcher {
 			var event:Event;
 
 			try {
-				__connection.request('ROLLBACK TO ${__sanitizeSavePoint(name)};');
+				__connection.request('ROLLBACK TO $name;');
 				event = new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT);
 			} catch (e:Dynamic) {
 				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Execution failed"));
@@ -511,6 +597,7 @@ class SQLiteConnection extends EventDispatcher {
 		try {
 			__connection.rollback();
 			__inTransaction = false;
+			__savepoints = [];
 			event = new SQLEvent(SQLEvent.ROLLBACK);
 		} catch (e:Dynamic) {
 			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ROLLBACK, "Execution failed"));
@@ -523,7 +610,7 @@ class SQLiteConnection extends EventDispatcher {
 			var event:Event;
 
 			try {
-				__connection.request('RELEASE ${__sanitizeSavePoint(name)};');
+				__connection.request('RELEASE $name;');
 				event = new SQLEvent(SQLEvent.RELEASE_SAVEPOINT);
 			} catch (e:Dynamic) {
 				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RELEASE_SAVEPOINT, "Execution failed"));
@@ -618,6 +705,7 @@ class SQLiteConnection extends EventDispatcher {
 		try {
 			__connection.commit();
 			__inTransaction = false;
+			__savepoints = [];
 			event = new SQLEvent(SQLEvent.COMMIT);
 		} catch (e:Dynamic) {
 			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.COMMIT, "Execution failed"));

@@ -24,6 +24,7 @@ import haxe.io.Path;
 import sys.FileSystem;
 import utest.Assert;
 
+@:access(crossbyte.db.sql.sqlite.SQLiteConnection)
 class DBSupportTest extends utest.Test {
 	public function testSQLResultStoresRowsAndMetadata():Void {
 		var rows = [{id: 1}, {id: 2}];
@@ -120,6 +121,73 @@ class DBSupportTest extends utest.Test {
 		Assert.isTrue(true);
 		#end
 	}
+
+	public function testGeneratedSavepointNamesDoNotRepeat():Void {
+		// The name came from haxe.Timer.stamp() in microseconds through
+		// Std.int. Measured on cpp: 2000 generated back to back produced 47
+		// duplicates, and the value overflows Int about 36 minutes into a
+		// process and wraps every 72, so a long-lived connection reissues
+		// names it has already used. Two savepoints sharing a name make
+		// RELEASE and ROLLBACK TO act on the wrong one.
+		var connection = new SQLiteConnection();
+		var seen = new Map<String, Bool>();
+		var distinct:Int = 0;
+
+		for (i in 0...2000) {
+			var name:String = connection.__sanitizeSavePoint(null);
+
+			if (!seen.exists(name)) {
+				seen.set(name, true);
+				distinct++;
+			}
+		}
+
+		// Asserted once rather than per name, so the suite total stays a count
+		// of behaviours rather than of loop iterations.
+		Assert.equals(2000, distinct);
+	}
+
+	public function testExplicitSavepointNameIsReducedToAnIdentifier():Void {
+		// The name is interpolated into SAVEPOINT/RELEASE/ROLLBACK TO, so it
+		// has to be an identifier and nothing else.
+		var connection = new SQLiteConnection();
+
+		Assert.equals("keep_me_1", connection.__sanitizeSavePoint("keep_me_1"));
+		Assert.equals("a__DROP_TABLE_t____", connection.__sanitizeSavePoint("a; DROP TABLE t; --"));
+	}
+
+	#if windows
+	public function testSavepointsNestAndReleaseByNameOrByOmission():Void {
+		// setSavepoint() returned nothing, so a savepoint made without a name
+		// could never be named again -- and releaseSavepoint() with no name
+		// generated a fresh one and asked SQLite to release a savepoint that
+		// had never existed. Measured against a real database before the fix:
+		// "RELEASE sp_410; (Sqlite error : SQL logic error)".
+		var connection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.begin();
+
+		var outer:String = connection.setSavepoint();
+		var inner:String = connection.setSavepoint();
+
+		Assert.notNull(outer);
+		Assert.notEquals(outer, inner);
+
+		// No name means the innermost, which SQLite leaves active after a
+		// rollback to it -- so releasing it by name still has to succeed.
+		connection.rollbackToSavepoint();
+		connection.releaseSavepoint(inner);
+
+		// And releasing the outer one discards it and anything left inside.
+		connection.releaseSavepoint(outer);
+
+		connection.commit();
+		Assert.isFalse(connection.inTransaction);
+
+		connection.close();
+		Assert.isFalse(connection.connected);
+	}
+	#end
 
 	#if windows
 	public function testSQLiteInMemoryOpenPragmasAndQueries():Void {
