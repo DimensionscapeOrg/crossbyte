@@ -4,6 +4,7 @@ package crossbyte._internal.http;
 #if !js
 
 import haxe.exceptions.NotImplementedException;
+import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.socket.FlexSocket;
 import crossbyte.http.HTTPBackend;
@@ -48,7 +49,6 @@ class Http {
 	private static inline final HEADER_CONTENT_LENGTH = "content-length";
 	private static inline final HEADER_CONTENT_ENCODING = "content-encoding";
 	private static inline final HEADER_TRANSFER_ENCODING = "transfer-encoding";
-	private static final SUPPORTED_VERSIONS:Array<HttpVersion> = [HttpVersion.HTTP_1, HttpVersion.HTTP_1_1];
 
 	public var onProgress:(bytesLoaded:Int, bytesTotal:Int) -> Void = (bytesLoaded:Int, bytesTotal:Int) -> {};
 	public var onError:(message:String, ?data:Bytes) -> Void = (message:String, ?data:Bytes) -> {};
@@ -161,29 +161,16 @@ class Http {
 		__parseResponse();
 	}
 
-	public static function validateHttpVersion(version:HttpVersion):Bool {
-		return SUPPORTED_VERSIONS.indexOf(version) > -1;
+	public static inline function validateHttpVersion(version:HttpVersion):Bool {
+		return HttpSyntax.validateHttpVersion(version);
 	}
 
 	/**
 	 * Strips CR, LF and control characters from a header value so it cannot be
 	 * used to inject additional headers or split the response (CRLF injection).
 	 */
-	public static function sanitizeHeaderValue(v:String):String {
-		if (v == null) {
-			return "";
-		}
-
-		var out:StringBuf = new StringBuf();
-		for (i in 0...v.length) {
-			var c:Int = v.charCodeAt(i);
-			// Drop CR, LF and all C0 control characters except horizontal tab.
-			if (c == 13 || c == 10 || (c < 32 && c != 9) || c == 127) {
-				continue;
-			}
-			out.addChar(c);
-		}
-		return out.toString();
+	public static inline function sanitizeHeaderValue(v:String):String {
+		return HttpSyntax.sanitizeHeaderValue(v);
 	}
 
 	/**
@@ -191,21 +178,8 @@ class Http {
 	 * and any embedded colon so a value cannot smuggle a new header name. Returns
 	 * an empty string when nothing valid remains (caller should then skip it).
 	 */
-	public static function sanitizeHeaderName(n:String):String {
-		if (n == null) {
-			return "";
-		}
-
-		var out:StringBuf = new StringBuf();
-		for (i in 0...n.length) {
-			var c:Int = n.charCodeAt(i);
-			// Reject control chars (incl. CR/LF/tab), space, DEL and the colon separator.
-			if (c < 32 || c == 127 || c == 32 || c == 58) {
-				continue;
-			}
-			out.addChar(c);
-		}
-		return out.toString();
+	public static inline function sanitizeHeaderName(n:String):String {
+		return HttpSyntax.sanitizeHeaderName(n);
 	}
 
 	/**
@@ -213,8 +187,8 @@ class Http {
 	 * RFC 7230 §3.3.3: a request that carries both `Transfer-Encoding` and
 	 * `Content-Length` is ambiguous and must not be processed.
 	 */
-	public static function hasConflictingFraming(hasTransferEncoding:Bool, hasContentLength:Bool):Bool {
-		return hasTransferEncoding && hasContentLength;
+	public static inline function hasConflictingFraming(hasTransferEncoding:Bool, hasContentLength:Bool):Bool {
+		return HttpSyntax.hasConflictingFraming(hasTransferEncoding, hasContentLength);
 	}
 
 	private static function __unsupportedVersionMessage(version:HTTPVersion):String {
