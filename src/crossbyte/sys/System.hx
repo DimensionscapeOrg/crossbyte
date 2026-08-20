@@ -96,7 +96,10 @@ class System {
 	@:noCompletion private static var __userDirPath:String;
 
 	public static inline function totalSystemMemory():Float {
-		#if (js && !nodejs)
+		#if nodejs
+		// Node reports this directly, with no shell involved.
+		return js.node.Os.totalmem();
+		#elseif (js && !nodejs)
 		// Reading physical memory means shelling out, and a browser has no shell nor any web API that reports it. Returning 0 would read as "no memory" rather than "cannot know".
 		throw new crossbyte.errors.IllegalOperationError("System.totalSystemMemory() is not available on this target.");
 		#else
@@ -135,7 +138,10 @@ class System {
 	}
 
 	public static inline function freeSystemMemory():Float {
-		#if (js && !nodejs)
+		#if nodejs
+		// Node reports this directly; the sys path shells out through a Process hxnodejs has no runtime for, so it compiled and then failed with "sys is not defined".
+		return js.node.Os.freemem();
+		#elseif (js && !nodejs)
 		// Same as totalSystemMemory: no shell, and no browser equivalent.
 		throw new crossbyte.errors.IllegalOperationError("System.freeSystemMemory() is not available on this target.");
 		#else
