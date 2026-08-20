@@ -18,6 +18,7 @@ class JsTestMain {
 			runner.addCase(new crossbyte.ds.CollectionsTest());
 			runner.addCase(new crossbyte.errors.ErrorsTest());
 			runner.addCase(new crossbyte.math.MathTest());
+			runner.addCase(new crossbyte.timer.TimerStampTest());
 			runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
 			runner.addCase(new crossbyte.utils.UtilsTest());
 			runner.addCase(new crossbyte.db.DBParameterBindingTest());
