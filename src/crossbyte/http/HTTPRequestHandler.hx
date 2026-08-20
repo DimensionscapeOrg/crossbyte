@@ -654,43 +654,48 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
-	// Deliberately still close-per-request: this path writes its response
-	// by hand, bypassing both builders, and routing it through one would
-	// change its wire output in the same commit that changes connection
-	// lifecycle. Keeping preflights alive is a follow-up.
+	/**
+	 * Answers a CORS preflight.
+	 *
+	 * Only the preflight-specific headers are built here. Everything a
+	 * response has in common with every other response -- date, server,
+	 * nosniff, the connection decision, the configured custom headers, the
+	 * origin and credentials headers, the log line and the status event --
+	 * comes from the shared builder, which is the point of routing through it.
+	 *
+	 * This wrote its own response and closed the connection by hand. That was
+	 * deliberate, to keep a wire-format change out of the commit that
+	 * introduced keep-alive, but it left preflights outside every guarantee
+	 * the builder makes: no `__responded` suppression, so a middleware that had
+	 * already answered could be followed by a second response on the same
+	 * connection; no check that the socket was still connected; no log line, so
+	 * preflights were invisible to an operator; no custom headers; and an
+	 * unconditional close, costing a fresh connection -- and a full TLS
+	 * handshake where enabled -- ahead of a great many ordinary requests.
+	 *
+	 * `Vary` is contributed twice: `Origin` by the builder, the two
+	 * request-header tokens here. Repeated field-lines combine, so the result
+	 * is the single line this used to write by hand.
+	 */
 	@:noCompletion private function __handleOptionsRequest():Void {
-		var response:String = "HTTP/1.1 204 No Content\r\n";
-
-		response += "Date: " + __formatHttpDate() + "\r\n";
-		response += "Server: CrossByte\r\n";
-		response += "X-Content-Type-Options: nosniff\r\n";
-		response += "Connection: close\r\n";
-
-		var allowOrigin = __computeAllowOrigin();
-		if (allowOrigin != null) {
-			response += "Access-Control-Allow-Origin: " + allowOrigin + "\r\n";
-		}
-		if (__config.corsAllowCredentials && allowOrigin != "*") {
-			response += "Access-Control-Allow-Credentials: true\r\n";
-		}
-		response += "Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers\r\n";
+		var headers:Array<URLRequestHeader> = [];
 
 		var reqMethod:String = __headers.exists("access-control-request-method") ? __headers.get("access-control-request-method") : null;
-		response += "Access-Control-Allow-Methods: " + (reqMethod != null ? reqMethod : __config.corsAllowedMethods.join(", ")) + "\r\n";
+		headers.push(new URLRequestHeader("Access-Control-Allow-Methods", reqMethod != null ? reqMethod : __config.corsAllowedMethods.join(", ")));
 
 		var reqHdrs:String = __headers.exists("access-control-request-headers") ? __headers.get("access-control-request-headers") : null;
-		response += "Access-Control-Allow-Headers: " + (reqHdrs != null ? reqHdrs : __config.corsAllowedHeaders.join(", ")) + "\r\n";
+		headers.push(new URLRequestHeader("Access-Control-Allow-Headers", reqHdrs != null ? reqHdrs : __config.corsAllowedHeaders.join(", ")));
 
 		if (__config.corsMaxAge > 0) {
-			response += "Access-Control-Max-Age: " + __config.corsMaxAge + "\r\n";
+			headers.push(new URLRequestHeader("Access-Control-Max-Age", Std.string(__config.corsMaxAge)));
 		}
-		response += "Allow: " + ALLOWED_METHODS.join(", ") + "\r\n";
-		response += "Content-Length: 0\r\n\r\n";
 
-		__origin.writeUTFBytes(response);
-		__origin.flush();
-		__origin.close();
+		headers.push(new URLRequestHeader("Vary", "Access-Control-Request-Method, Access-Control-Request-Headers"));
+		headers.push(new URLRequestHeader("Allow", ALLOWED_METHODS.join(", ")));
+
+		__dispatchResponse(204, "No Content", headers, "text/plain", "");
 	}
+
 
 	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false):Void {
 		var file:File = new File(filePath);
@@ -1259,8 +1264,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		for (header in __config.customHeaders) {
 			response = __appendHeader(response, header.name, header.value);
 		}
-		var headerLen:Int = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
-		response += "Content-Length: " + headerLen + "\r\n";
+		if (!__statusOmitsBody(statusCode)) {
+			var headerLen:Int = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
+			response += "Content-Length: " + headerLen + "\r\n";
+		}
 		response += "\r\n";
 
 		// Logged and dispatched only once the response is certain to reach
@@ -1396,7 +1403,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			response = __appendHeader(response, header.name, header.value);
 		}
 
-		response += "Content-Length: " + (responseData != null ? responseData.length : 0) + "\r\n";
+		if (!__statusOmitsBody(statusCode)) {
+			response += "Content-Length: " + (responseData != null ? responseData.length : 0) + "\r\n";
+		}
 		response += "\r\n";
 
 		// Same placement rationale as __dispatchResponseBytes: log and
@@ -2561,6 +2570,22 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private inline function __sanitizeHeaderName(n:String):String {
 		return Http.sanitizeHeaderName(n);
 	}
+
+	/**
+	 * Whether this status forbids a `Content-Length`.
+	 *
+	 * RFC 7230 3.3.2: a server must not send one on a 1xx or a 204. Such a
+	 * response carries no body by definition, and 3.3.3 has the client end it
+	 * at the blank line after the headers whatever the headers say -- so
+	 * omitting it is not merely allowed under keep-alive, it matches the
+	 * framing rule the client already applies. 304 is here on the same
+	 * reasoning: `Content-Length: 0` there asserts a zero-length
+	 * representation rather than describing the one the client already holds.
+	 */
+	@:noCompletion private inline function __statusOmitsBody(statusCode:Int):Bool {
+		return statusCode == 204 || statusCode == 304 || (statusCode >= 100 && statusCode < 200);
+	}
+
 
 	@:noCompletion private inline function __appendHeader(buf:String, name:String, value:String):String {
 		var safeName:String = __sanitizeHeaderName(name);
