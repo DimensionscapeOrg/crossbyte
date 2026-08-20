@@ -382,6 +382,44 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 
+	public function testCorsPreflightKeepsTheConnectionAlive():Void {
+		// The preflight used to write its own response and close by hand, so
+		// every one cost a fresh connection -- and a full TLS handshake where
+		// enabled -- immediately before the request it was clearing. Browsers
+		// send these ahead of a great many ordinary requests.
+		var result = __sendRequests([], [
+			"OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		], config -> config.corsEnabled = true);
+
+		Assert.equals(204, result.responses[0].status);
+		Assert.equals(200, result.responses[1].status);
+		Assert.isFalse(result.closeSeen);
+	}
+
+	public function testCorsPreflightGoesThroughTheSharedBuilder():Void {
+		// Proof that the preflight is built by the same path as every other
+		// response rather than by hand: a header configured on the server,
+		// which only the shared builder applies, has to appear on it.
+		var response = __sendRequest([], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\n\r\n", null, true, null, config -> {
+			config.customHeaders.push(new crossbyte.url.URLRequestHeader("X-Server-Tag", "shared-builder"));
+		});
+
+		Assert.equals(204, response.status);
+		Assert.equals("shared-builder", response.headers.get("x-server-tag"));
+	}
+
+	public function testBodilessStatusesCarryNoContentLength():Void {
+		// RFC 7230 3.3.2 forbids Content-Length on a 204, and 3.3.3 has the
+		// client end such a response at the blank line regardless -- so the
+		// header was both disallowed and redundant. The preflight sent
+		// "Content-Length: 0" for as long as it built its own response.
+		var response = __sendRequest([], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\n\r\n", null, true);
+
+		Assert.equals(204, response.status);
+		Assert.isFalse(response.headers.exists("content-length"));
+	}
+
 	public function testHeaderScanResumesAcrossChunkBoundaries():Void {
 		// The completeness scan carries its last three bytes between data
 		// events, so a CRLFCRLF split across arrivals must still be seen —

@@ -88,7 +88,7 @@ class HTTPTestSupport {
 		}
 
 		var bodyStart:Int = headerEnd + 4;
-		if (headOnly) {
+		if (headOnly || statusOmitsBody(raw, start)) {
 			return bodyStart;
 		}
 
@@ -109,6 +109,37 @@ class HTTPTestSupport {
 		}
 
 		return -1;
+	}
+
+	/**
+	 * Whether the response beginning at `start` is one RFC 7230 3.3.3 ends at
+	 * the header terminator whatever the headers say.
+	 *
+	 * A 1xx, 204 or 304 carries no body by definition, so the server sends no
+	 * `Content-Length` for one -- and a reader that waits for that header waits
+	 * forever. The same rule `headOnly` above encodes, arrived at from the
+	 * status line instead of from the request method.
+	 */
+	public static function statusOmitsBody(raw:String, start:Int = 0):Bool {
+		var lineEnd:Int = raw.indexOf("\r\n", start);
+
+		if (lineEnd < 0) {
+			return false;
+		}
+
+		var parts:Array<String> = raw.substring(start, lineEnd).split(" ");
+
+		if (parts.length < 2) {
+			return false;
+		}
+
+		var code:Null<Int> = Std.parseInt(parts[1]);
+
+		if (code == null) {
+			return false;
+		}
+
+		return code == 204 || code == 304 || (code >= 100 && code < 200);
 	}
 
 	/**
