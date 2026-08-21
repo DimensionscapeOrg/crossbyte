@@ -31,8 +31,12 @@ class Hash {
 	 * `Math.imul` is exactly a wrapping 32-bit multiply and every browser and
 	 * Node has it.
 	 */
-	@:pure private static inline function mul32(a:Int, b:Int):Int {
-		#if js
+	@:pure public static inline function mul32(a:Int, b:Int):Int {
+		// `!macro` matters: macro code always runs on the eval interpreter,
+		// whose Int is 32 bits and wraps on its own. Without the guard a build
+		// targeting js would try to put js.Syntax into the macro context,
+		// where there is no JavaScript to put it in.
+		#if (js && !macro)
 		return js.Syntax.code("Math.imul({0}, {1})", a, b);
 		#else
 		return a * b;

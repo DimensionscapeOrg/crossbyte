@@ -186,22 +186,22 @@ class RPCHandlerMacro {
 			function h1(op:Int):Int {
 				var x = op;
 				x ^= (x >>> 16);
-				x *= 0x7feb352d;
+				x = crossbyte.utils.Hash.mul32(x, 0x7feb352d);
 				x ^= (x >>> 15);
-				x *= 0x846ca68b;
+				x = crossbyte.utils.Hash.mul32(x, 0x846ca68b);
 				x ^= (x >>> 16);
 				x &= 0x7fffffff;
 				return x % mVal;
 			}
 
 			function h2(op:Int, d:Int):Int {
-				var x = op + d * 0x9e3779b9;
+				var x = op + crossbyte.utils.Hash.mul32(d, 0x9e3779b9);
 				x ^= (x >>> 17);
-				x *= 0xed5ad4bb;
+				x = crossbyte.utils.Hash.mul32(x, 0xed5ad4bb);
 				x ^= (x >>> 11);
-				x *= 0xac4c1b51;
+				x = crossbyte.utils.Hash.mul32(x, 0xac4c1b51);
 				x ^= (x >>> 15);
-				x *= 0x31848bab;
+				x = crossbyte.utils.Hash.mul32(x, 0x31848bab);
 				x ^= (x >>> 14);
 				x &= 0x7fffffff;
 				return x % n;
@@ -429,9 +429,9 @@ class RPCHandlerMacro {
 			var b = (function(op:Int) {
 				var x = op;
 				x ^= (x >>> 16);
-				x *= 0x7feb352d;
+				x = crossbyte.utils.Hash.mul32(x, 0x7feb352d);
 				x ^= (x >>> 15);
-				x *= 0x846ca68b;
+				x = crossbyte.utils.Hash.mul32(x, 0x846ca68b);
 				x ^= (x >>> 16);
 				x &= 0x7fffffff;
 				return x % RPC_M;
@@ -439,13 +439,13 @@ class RPCHandlerMacro {
 
 			var d = RPC_G[b];
 			var idx = (function(op:Int, d:Int) {
-				var y = op + d * 0x9e3779b9;
+				var y = op + crossbyte.utils.Hash.mul32(d, 0x9e3779b9);
 				y ^= (y >>> 17);
-				y *= 0xed5ad4bb;
+				y = crossbyte.utils.Hash.mul32(y, 0xed5ad4bb);
 				y ^= (y >>> 11);
-				y *= 0xac4c1b51;
+				y = crossbyte.utils.Hash.mul32(y, 0xac4c1b51);
 				y ^= (y >>> 15);
-				y *= 0x31848bab;
+				y = crossbyte.utils.Hash.mul32(y, 0x31848bab);
 				y ^= (y >>> 14);
 				y &= 0x7fffffff;
 				return y % RPC_N;
