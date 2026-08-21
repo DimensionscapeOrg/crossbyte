@@ -199,7 +199,7 @@ class ServerWebSocket extends ServerSocket {
 	public function new(secure:Bool = false) {
 		#if nodejs
 		if (secure) {
-			throw new CBError("A secure ServerWebSocket is not supported on Node: presenting a certificate needs sys.ssl, which hxnodejs does not provide. Put a TLS terminator in front, or run the server on a native target. A Node wss *client* does work -- verifying a certificate is Node's own job.");
+			throw new CBError("A secure ServerWebSocket is not supported on Node yet, for the same reason as ServerSocket: Node terminates TLS perfectly well through tls.createServer, but the certificate API here takes sys.ssl types hxnodejs has not got. A Node wss *client* does work, needing only to verify a certificate rather than name one.");
 		}
 		#end
 

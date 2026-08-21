@@ -130,7 +130,7 @@ class ServerSocket extends EventDispatcher {
 		}
 		#elseif nodejs
 		if (secure) {
-			throw new CBError("Secure ServerSocket is not supported on Node: terminating TLS needs sys.ssl, which hxnodejs does not provide. Put a TLS terminator in front, or run the server on a native target.");
+			throw new CBError("Secure ServerSocket is not supported on Node yet. Not because Node cannot terminate TLS -- tls.createServer takes a key and certificate as PEM and does it well -- but because setCertificate() here takes sys.ssl.Certificate and sys.ssl.Key, which hxnodejs has not got. Supporting it means a way to name certificate material that does not go through sys.ssl. Until then, put a TLS terminator in front, or run the server on a native target.");
 		}
 		#end
 
