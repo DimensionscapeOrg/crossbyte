@@ -8,7 +8,9 @@ import crossbyte.utils.MathUtil;
 import crossbyte.utils.ObjectPool;
 import crossbyte.utils.ObjectRecycler;
 #if cpp
+#if !eval
 import crossbyte.utils.Random;
+#end
 #end
 import crossbyte.utils.ThreadPriority;
 import crossbyte.utils.Version;
@@ -26,6 +28,29 @@ private typedef PooledState = {
 }
 
 class UtilsTest extends utest.Test {
+	// Not on eval: Random's shared seed is an AtomicInt and the interpreter has
+	// no atomics, so the class cannot even be referenced there. Which is part
+	// of why this went unnoticed -- the suite that runs everything runs on the
+	// one target that cannot see this class.
+	#if !eval
+	public function testASeededRandomGivesTheSameSequenceOnEveryTarget():Void {
+		// The one promise this class makes -- "reproducible results when
+		// seeded", in its own documentation -- and it was not keeping it. Its
+		// mixer multiplies by two constants chosen to overflow, and on js
+		// nothing overflowed, so seed 12345 produced a different sequence
+		// there than anywhere else. Reproducible per target is not
+		// reproducible; a replay, a procedural world or a shared simulation
+		// crossing targets would have diverged silently.
+		Random.reseed(12345);
+
+		Assert.equals(1200724404, Random.nextU32());
+		Assert.equals(-372313751, Random.nextU32());
+		Assert.equals(-1711358538, Random.nextU32());
+		Assert.equals(1611630670, Random.nextU32());
+		Assert.equals(-1896865725, Random.nextU32());
+	}
+	#end
+
 	public function testHashesAreTheSameNumberOnEveryTarget():Void {
 		// Known answers, not self-consistency. Every hash here multiplies by a
 		// constant chosen to overflow, and that overflow is the mixing step --
