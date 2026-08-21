@@ -63,6 +63,7 @@ class TestSuites {
 	}
 
 	public static function addIO(runner:Runner):Void {
+		runner.addCase(new crossbyte.io.StoreTest());
 		runner.addCase(new crossbyte.io.ByteArrayTest());
 		runner.addCase(new crossbyte.io.ByteArrayInputTest());
 		runner.addCase(new crossbyte.io.ByteArrayIOTest());

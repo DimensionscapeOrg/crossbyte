@@ -27,6 +27,11 @@ import utest.Runner;
 class PortableSuite {
 	public static function add(runner:Runner):Void {
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		// Not portable in the sense of needing nothing -- it needs a backend --
+		// but portable in the sense that matters: the same assertions run
+		// against IndexedDB here and a directory of files everywhere else, so
+		// neither backend grades its own homework.
+		runner.addCase(new crossbyte.io.StoreTest());
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte.ds.BloomFilterTest());
 		runner.addCase(new crossbyte.errors.ErrorsTest());

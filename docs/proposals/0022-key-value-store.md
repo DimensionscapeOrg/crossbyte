@@ -1,6 +1,6 @@
 # Proposal 0022 — A key/value store, and not a database
 
-**Status:** Draft
+**Status:** Implemented
 
 **Motivation:** A CrossByte client in a browser has nowhere to put anything.
 `crossbyte.io.File` refuses there, deliberately, and the framework offers no
@@ -240,3 +240,36 @@ What must be covered, because each is a way for a store to lie:
 - the same key, written on one target and read on another, gives the same
   bytes. The hash and the bloom filter both drifted between targets this month
   while every test passed, because every test compared a target to itself.
+
+---
+
+## What landed
+
+All four stages, in one pass, because step 2 did not turn up the problem it
+was staged to catch: the file backend was not awkward to write against the API,
+so there was nothing to reconsider before IndexedDB.
+
+`crossbyte.Future<T>` is the promoted `RPCResponse`, which now extends it and
+keeps only `requestId` and `op`. `then` is safe to call after completion, which
+the original was too -- an asynchronous result that silently never calls back
+because you registered a moment late is the classic way one gets lost.
+
+`crossbyte.io.Store` over `IStoreBackend`, with `FileStore` for every target
+with a filesystem and `IndexedDBStore` for a page. The file backend keys by hex
+rather than by the key itself: `a/b` is a path, `..` is the parent, `CON` is a
+device on Windows, and `Token` and `token` are one file on a case-insensitive
+volume and two keys everywhere. Writes go to a temporary file and are renamed,
+because rename is the only atomic thing a filesystem offers.
+
+The browser suite earned its place again. `testBinaryValuesAreNotTextAndSurviveIntact`
+failed there and only there, with "expected 256 but it is 385" -- and 385 is
+exactly `(256 + 1) * 3 >> 1`, `ByteArray`'s growth. The IndexedDB backend was
+storing the whole backing buffer instead of the logical length, padding
+included. The same mistake LZ4 was making in a page two commits earlier: handing
+back the container instead of the contents. Node could not have found it, and
+neither could any amount of reading.
+
+The four open questions are still open, and none of them blocked this. Streaming
+large values, cursors for `keys()`, and concurrency between two runtimes all
+remain future work; the on-disk location settled as `stores/<name>` under the
+application storage directory, which is what `open()` documents.
