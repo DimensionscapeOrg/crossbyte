@@ -1,8 +1,8 @@
 package crossbyte.net;
 
 #if (!java && !jvm)
-import sys.ssl.Certificate;
-import sys.ssl.Key;
+import crossbyte.net.Certificate;
+import crossbyte.net.Key;
 #end
 
 /**
@@ -43,8 +43,8 @@ class TLSTestFixture {
 			}
 
 			__cached = {
-				certificate: Certificate.loadFile(certPath),
-				key: Key.loadFile(keyPath),
+				certificate: Certificate.fromFile(certPath),
+				key: Key.fromFile(keyPath),
 				certificatePath: certPath,
 				keyPath: keyPath
 			};
