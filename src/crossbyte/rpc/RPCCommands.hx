@@ -1,7 +1,6 @@
 package crossbyte.rpc;
 
 // Not built for the browser: the command surface is bound to RPCSession.
-#if !(js && !nodejs)
 
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.NetConnection;
@@ -149,4 +148,3 @@ abstract class RPCCommands {
 		}
 	}
 }
-#end

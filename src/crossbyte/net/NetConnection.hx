@@ -1,7 +1,6 @@
 package crossbyte.net;
 
 // Not built for the browser. It wraps the Transport union across every transport CrossByte offers, most of which a page does not have; browser code connects with crossbyte.net.Socket directly.
-#if !(js && !nodejs)
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
@@ -10,13 +9,16 @@ import crossbyte.ipc.LocalConnection;
 #end
 import crossbyte.net.Endpoint.parseURL;
 import crossbyte.errors.SecurityError;
-import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.Event;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
+// The two events that belong to transports a page has not got.
+#if !(js && !nodejs)
+import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
+#end
 
 /**
  * High-level connection wrapper over CrossByte's supported stream transports.
@@ -75,6 +77,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 
 				socket.connect(endpoint.address, endpoint.port);
 				nc;
+			#if !(js && !nodejs)
 			case WEBSOCKET:
 				var socket = new WebSocket();
 				var nc = new WSConnection(socket);
@@ -98,6 +101,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 
 				socket.connect(endpoint.address, endpoint.port);
 				nc;
+			#end
 			#if !js
 			case LOCAL:
 				var connection = new LocalConnection();
@@ -231,6 +235,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return socket;
 	}
 
+	#if !(js && !nodejs)
 	/** Returns the wrapped WebSocket when this connection uses `Protocol.WEBSOCKET`. */
 	public static inline function toWebSocket(connection:NetConnection):WebSocket {
 		var socket:WebSocket = null;
@@ -279,6 +284,8 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	}
 	#end
 
+	#end
+
 	@:from
 	/** Wraps an existing TCP socket as a `NetConnection`. */
 	public static inline function fromSocket(socket:Socket):NetConnection {
@@ -312,6 +319,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return nc;
 	}
 
+	#if !(js && !nodejs)
 	@:from
 	/** Wraps an existing WebSocket as a `NetConnection`. */
 	public static inline function fromWebSocket(webSocket:WebSocket):NetConnection {
@@ -327,6 +335,8 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		var nc:NetConnection = new RUDPConnection(reliableDatagramSocket);
 		return nc;
 	}
+
+	#end
 
 	#if !js
 	@:from
@@ -645,6 +655,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 }
 
 @:allow(crossbyte.net.NetConnection)
+#if !(js && !nodejs)
 private class RUDPConnection extends NetConnectionBase implements INetConnection {
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
