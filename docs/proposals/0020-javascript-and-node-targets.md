@@ -280,6 +280,23 @@ existing rule -- throw rather than fall back to something that only looks
 random -- is kept for the case a browser page has no `crypto` object, which is
 what being served over plain http from anywhere but localhost gets you.
 
-What is still Node-shaped work rather than a gate: `DatagramSocket` over
-`dgram`, and the WebSocket *server* -- accepting a connection and upgrading it,
-which the `ServerSocket` that now exists on Node makes reachable.
+UDP went the same way, and brought the reliable layer with it: sequencing,
+acknowledgement and retransmission are protocol code over a datagram socket and
+needed no port at all. That turned out to be worth running rather than
+assuming. It compiled on the first try and then would not start, because
+`ReliableDatagramSocket` resolved a host through `sys.net.Host` -- and
+hxnodejs resolves one synchronously through `deasync`, a native npm addon.
+Requiring it is enough to stop the program loading, whether or not a name is
+ever passed.
+
+Which exposed something in the datagram socket underneath it. Node's extern
+predates `dgram`'s own `connect()`, so a connected socket is emulated here: the
+remote is remembered, `send()` names it every time, and a datagram from
+anywhere else is dropped. That filter compares the address a datagram reports
+against the one `connect()` was given -- so a name kept as given would match
+nothing and the socket would silently receive none of its peer's traffic. Both
+now refuse a name and say why, rather than accepting one and going quiet.
+
+What is still Node-shaped work rather than a gate: the WebSocket *server* --
+accepting a connection and upgrading it, which the `ServerSocket` that now
+exists on Node makes reachable.

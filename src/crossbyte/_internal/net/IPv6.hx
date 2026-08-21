@@ -24,6 +24,34 @@ class IPv6 {
 	 * more than being clever: mangling a hostname would be far worse than
 	 * leaving one platform's spelling alone.
 	 */
+	/**
+	 * Whether `address` is already a numeric address rather than a name that
+	 * would have to be looked up.
+	 *
+	 * Needed where a name cannot be resolved without going asynchronous. Node
+	 * resolves one only through a callback, and hxnodejs's synchronous
+	 * `sys.net.Host` gets there through `deasync`, a native npm addon -- so a
+	 * caller that hands a name to something whose signature cannot wait has to
+	 * be told, rather than have the name quietly kept and compared against the
+	 * numeric address a reply arrives from.
+	 *
+	 * Deliberately loose: it separates "this is a literal" from "this needs a
+	 * lookup", and is not a validator. A malformed literal is the operating
+	 * system's to reject, and it will.
+	 */
+	public static function isNumericAddress(address:String):Bool {
+		if (address == null || address == "") {
+			return false;
+		}
+
+		// Any colon means IPv6; there is no other reason for one in a host.
+		if (address.indexOf(":") >= 0) {
+			return true;
+		}
+
+		return ~/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.match(address);
+	}
+
 	public static function compress(address:String):String {
 		if (address == null || address.indexOf(":") < 0) {
 			return address;

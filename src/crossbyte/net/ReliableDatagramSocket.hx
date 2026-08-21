@@ -1,7 +1,7 @@
 package crossbyte.net;
 
 // Not built for the browser: it is a reliability layer over UDP, which the browser does not have.
-#if !js
+#if !(js && !nodejs)
 
 import crossbyte.Seq32;
 import crossbyte.Timer as CBTimer;
@@ -26,7 +26,10 @@ import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.ds.IntMap;
 #if !(js && !nodejs)
+#if !nodejs
 import sys.net.Host;
+#end
+import crossbyte._internal.net.IPv6;
 #end
 
 @:access(crossbyte.net.ReliableDatagramServerSocket)
@@ -239,6 +242,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__transport.bind();
 		}
 
+		#if nodejs
+		// No resolution step. hxnodejs resolves a name synchronously through
+		// `deasync`, a native npm addon that has to be installed and built --
+		// requiring it is enough to stop the program loading, whether or not a
+		// name is ever passed. A numeric address needs no lookup, and a name
+		// is refused for the same reason a connected DatagramSocket refuses
+		// one: a session is matched against the address a reply arrives from.
+		if (!IPv6.isNumericAddress(host)) {
+			throw new ArgumentError("A reliable datagram session needs a numeric address on Node, not a name: the session is matched against the address replies arrive from, and resolving a name there needs a callback this call cannot wait for.");
+		}
+
+		__remoteAddress = host;
+		#else
 		var resolved:Host;
 		try {
 			resolved = new Host(host);
@@ -247,6 +263,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		__remoteAddress = resolved.toString();
+		#end
 		__remotePort = port;
 		__remoteResponsePort = 0;
 		__incoming = false;
