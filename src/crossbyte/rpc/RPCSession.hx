@@ -1,7 +1,7 @@
 package crossbyte.rpc;
 
 // Not built for any JavaScript target (Node included, which has no threads): a session is bound to a NetConnection, which spans transports a page does not have.
-#if !js
+#if !(js && !nodejs)
 
 import crossbyte.net.Reason;
 import crossbyte.utils.Logger;
