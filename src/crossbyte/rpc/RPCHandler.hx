@@ -1,7 +1,6 @@
 package crossbyte.rpc;
 
 // Not built for the browser: it dispatches on an RPCSession, which is not built there.
-#if !(js && !nodejs)
 
 import crossbyte.net.NetConnection;
 import crossbyte.rpc.RPCCommands;
@@ -84,4 +83,3 @@ abstract class RPCHandler {
 	**/
 	abstract public function ping():Void;
 }
-#end
