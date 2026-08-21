@@ -24,8 +24,6 @@ import js.node.net.Socket as NodeSocket;
 import sys.net.Host;
 import sys.net.Socket;
 #if (!java && !jvm)
-import sys.ssl.Certificate;
-import sys.ssl.Key;
 import sys.ssl.Socket as SSLSocket;
 #end
 #end
@@ -130,7 +128,7 @@ class ServerSocket extends EventDispatcher {
 		}
 		#elseif nodejs
 		if (secure) {
-			throw new CBError("Secure ServerSocket is not supported on Node yet. Not because Node cannot terminate TLS -- tls.createServer takes a key and certificate as PEM and does it well -- but because setCertificate() here takes sys.ssl.Certificate and sys.ssl.Key, which hxnodejs has not got. Supporting it means a way to name certificate material that does not go through sys.ssl. Until then, put a TLS terminator in front, or run the server on a native target.");
+			throw new CBError("A secure ServerSocket is not implemented on Node yet. Nothing is in the way of it: Node terminates TLS through tls.createServer, and crossbyte.net.Certificate and Key already carry PEM there. What is missing is only that this listener is a js.node.net.Server, where a secure one would be a js.node.tls.Server built from that PEM. Until it is written, put a TLS terminator in front, or run the server on a native target.");
 		}
 		#end
 
@@ -211,7 +209,7 @@ class ServerSocket extends EventDispatcher {
 	public function setCertificate(cert:Certificate, key:Key):Void {
 		__requireSecure("setCertificate");
 
-		(cast __serverSocket : SSLSocket).setCertificate(cert, key);
+		(cast __serverSocket : SSLSocket).setCertificate(cert.__native, key.__native);
 		__hasCertificate = true;
 	}
 
@@ -226,7 +224,7 @@ class ServerSocket extends EventDispatcher {
 	public function addSNICertificate(serverNameMatch:String->Bool, cert:Certificate, key:Key):Void {
 		__requireSecure("addSNICertificate");
 
-		(cast __serverSocket : SSLSocket).addSNICertificate(serverNameMatch, cert, key);
+		(cast __serverSocket : SSLSocket).addSNICertificate(serverNameMatch, cert.__native, key.__native);
 		__hasCertificate = true;
 	}
 
@@ -253,7 +251,7 @@ class ServerSocket extends EventDispatcher {
 		}
 
 		var sslSocket:SSLSocket = cast __serverSocket;
-		sslSocket.setCA(ca);
+		sslSocket.setCA(ca.__native);
 		sslSocket.verifyCert = true;
 	}
 

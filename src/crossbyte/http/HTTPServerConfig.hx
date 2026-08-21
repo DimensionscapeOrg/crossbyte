@@ -279,7 +279,7 @@ class HTTPServerConfig {
 		}
 
 		if (tlsEnabled) {
-			throw new ArgumentError("tlsEnabled is not supported on Node yet. Node terminates TLS through tls.createServer, so this is a matter of how a certificate is named rather than whether one can be presented: tlsCertificatePath and tlsKeyPath are loaded through sys.ssl, which hxnodejs has not got. Until then, put a TLS terminator in front, or run the server on a native target.");
+			throw new ArgumentError("tlsEnabled is not implemented on Node yet. tlsCertificatePath and tlsKeyPath load fine there -- crossbyte.net.Certificate and Key read PEM on every target that has a filesystem -- but the listener underneath is a js.node.net.Server, and a secure one would be a js.node.tls.Server. Until that is written, put a TLS terminator in front, or run the server on a native target.");
 		}
 		#end
 
