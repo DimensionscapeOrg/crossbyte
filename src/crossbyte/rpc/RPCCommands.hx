@@ -1,7 +1,7 @@
 package crossbyte.rpc;
 
 // Not built for the browser: the command surface is bound to RPCSession.
-#if !js
+#if !(js && !nodejs)
 
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.NetConnection;
@@ -108,7 +108,15 @@ abstract class RPCCommands {
 
 	@:noCompletion private function __nextRequestId():Int {
 		do {
-			__requestIdSeed++;
+			// `| 0` because the guard below is the overflow handler, and it
+			// only fires if the increment actually wraps. It does on a target
+			// whose Int is 32 bits; on JavaScript an Int is a double, so
+			// 0x7FFFFFFF + 1 is 2147483648 -- positive, past the guard, and
+			// past the width of the field this id is written to on the wire.
+			// The id and the pending-response key would then stop agreeing,
+			// and the call would wait for a reply it could not match.
+			__requestIdSeed = (__requestIdSeed + 1) | 0;
+
 			if (__requestIdSeed <= 0) {
 				__requestIdSeed = 1;
 			}
