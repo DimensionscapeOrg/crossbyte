@@ -33,7 +33,10 @@ import crossbyte.errors.IllegalOperationError;
  * security hole if this type simply vanished.
  */
 class PHPBridge {
-	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>) {
+	/** Matches the native bridge's field so a caller reads the same shape. **/
+	public final timeoutSeconds:Float = 0;
+
+	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>, timeoutSeconds:Float = 0) {
 		throw new IllegalOperationError("PHP is not available on Node yet: the bridge returns a response, and Node has no synchronous socket read to produce one with. Put PHP-FPM behind a proxy, or run the server on a native target.");
 	}
 
@@ -58,6 +61,29 @@ import sys.io.Process;
 using StringTools;
 
 class PHPBridge {
+	/**
+		Seconds a single FastCGI exchange may take before it is abandoned.
+
+		`0` disables the deadline, which is what this class did unconditionally
+		before: no socket timeout, and a read loop that would wait for a peer
+		that had stopped talking. A CrossByte runtime serves every one of its
+		connections from one tick, so that was not one slow request -- it was
+		the server, stopped, until the backend came back or the process was
+		killed.
+	**/
+	public final timeoutSeconds:Float;
+
+	/** Thirty seconds: long enough for a slow page, short of forever. **/
+	public static inline var DEFAULT_TIMEOUT:Float = 30.0;
+
+	/**
+		How close to the deadline a failed read still counts as the deadline.
+
+		The socket timeout and the deadline are set to the same instant, so
+		whichever the operating system reports second lands marginally past it.
+	**/
+	private static inline var READ_DEADLINE_GRACE:Float = 0.1;
+
 	public final mode:PHPMode;
 	public final docRoot:String;
 	public final autoIndex:Array<String>;
@@ -66,8 +92,9 @@ class PHPBridge {
 
 	static final PAD_SCRATCH = Bytes.alloc(256);
 
-	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>) {
+	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>, timeoutSeconds:Float = DEFAULT_TIMEOUT) {
 		this.mode = mode;
+		this.timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 0;
 		this.docRoot = docRoot != null ? docRoot : "";
 		this.autoIndex = autoIndex != null ? autoIndex : ["index.php", "index.html"];
 
@@ -131,7 +158,28 @@ class PHPBridge {
 
 		var sock:Socket = new Socket();
 		sock.setFastSend(true);
-		sock.connect(new Host(host), port);
+
+		// Applies to connect and to every read below. A backend that is not
+		// listening at all fails here rather than blocking, which it did.
+		if (timeoutSeconds > 0) {
+			sock.setTimeout(timeoutSeconds);
+		}
+
+		var deadline:Float = timeoutSeconds > 0 ? Sys.time() + timeoutSeconds : 0;
+
+		try {
+			sock.connect(new Host(host), port);
+		} catch (e:Dynamic) {
+			try {
+				sock.close();
+			} catch (_:Dynamic) {}
+
+			if (deadline > 0 && Sys.time() >= deadline) {
+				throw new PHPTimeout(timeoutSeconds, "connecting");
+			}
+
+			throw e;
+		}
 
 		var env:Map<String, String> = new Map();
 		put(env, "GATEWAY_INTERFACE", "CGI/1.1");
@@ -187,21 +235,56 @@ class PHPBridge {
 		var rawBytes:BytesBuffer = new BytesBuffer();
 		var done:Bool = false;
 		while (!done) {
-			var hdr:Bytes = Bytes.alloc(8);
-			var r:Int = sock.input.readBytes(hdr, 0, 8);
-			if (r != 8)
-				throw "FastCGI short header";
-			var typ:Int = hdr.get(1);
-			var cLen:Int = (hdr.get(4) << 8) | hdr.get(5);
-			var pad:Int = hdr.get(6);
+			// Checked per record, not only per read. A socket timeout bounds
+			// one operation; a peer dribbling a byte at a time resets it
+			// forever and never trips it. The deadline bounds the exchange.
+			if (deadline > 0 && Sys.time() >= deadline) {
+				try {
+					sock.close();
+				} catch (_:Dynamic) {}
 
-			var content:Bytes = Bytes.alloc(cLen);
-			if (cLen > 0) {
-				sock.input.readFullBytes(content, 0, cLen);
+				throw new PHPTimeout(timeoutSeconds, "reading the response");
 			}
 
-			if (pad > 0) {
-				sock.input.readFullBytes(PAD_SCRATCH, 0, pad);
+			var hdr:Bytes = Bytes.alloc(8);
+			var typ:Int;
+			var content:Bytes;
+
+			// The clock decides what a read failure meant, because the socket
+			// cannot say. A read that expires on SO_RCVTIMEO surfaces as Eof
+			// here -- identical to a peer that closed -- so distinguishing the
+			// two by the error is not possible. Distinguishing them by the
+			// deadline is, and it is the distinction that matters: one is a
+			// backend that stopped answering, the other is one that hung up.
+			try {
+				var r:Int = sock.input.readBytes(hdr, 0, 8);
+				if (r != 8)
+					throw "FastCGI short header";
+				typ = hdr.get(1);
+				var cLen:Int = (hdr.get(4) << 8) | hdr.get(5);
+				var pad:Int = hdr.get(6);
+
+				content = Bytes.alloc(cLen);
+				if (cLen > 0) {
+					sock.input.readFullBytes(content, 0, cLen);
+				}
+
+				if (pad > 0) {
+					sock.input.readFullBytes(PAD_SCRATCH, 0, pad);
+				}
+			} catch (e:Dynamic) {
+				try {
+					sock.close();
+				} catch (_:Dynamic) {}
+
+				// The grace is because the socket timeout and this deadline
+				// are the same instant, and whichever is read second is a
+				// hair past it.
+				if (deadline > 0 && Sys.time() + READ_DEADLINE_GRACE >= deadline) {
+					throw new PHPTimeout(timeoutSeconds, "reading the response");
+				}
+
+				throw e;
 			}
 
 			switch (typ) {

@@ -63,7 +63,7 @@ class HTTPServer extends ServerSocket {
 				default:
 					throw "Invalid PHPMode enum";
 			}
-			php = new PHPBridge(mode, docRoot, autoIndex);
+			php = new PHPBridge(mode, docRoot, autoIndex, __config.phpTimeout);
 		}
 
 		__initMetrics();

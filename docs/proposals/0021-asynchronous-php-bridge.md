@@ -157,9 +157,15 @@ logging is commented out. A rewrite should either log them or say why not, and
 
 ## Staging
 
-1. **The deadline, on the blocking bridge.** A socket timeout and a `504` are
-   worth having on their own, and they land without touching the signature.
-   This is the availability fix and it should not wait for the rest.
+1. ~~**The deadline, on the blocking bridge.**~~ Done. `phpTimeout` defaults to
+   30 seconds, the FastCGI socket carries it, and an exchange that runs past it
+   answers `504 Gateway Timeout` instead of never answering. The clock decides
+   what a failed read meant, because the socket cannot: a read expiring on
+   `SO_RCVTIMEO` surfaces as `Eof`, which is exactly what a peer hanging up
+   looks like. Covered by a test whose peer is a listening socket that accepts
+   and never replies -- no PHP needed to reproduce the outage. Without the
+   deadline that test does not fail, it hangs: the suite was killed at 45
+   seconds and finishes in 14 with it.
 2. **`execute()` takes callbacks; the native bridge drives from the tick.**
    No new capability, same behaviour, asynchronously. The suite is the check:
    every existing PHP test must pass unchanged.

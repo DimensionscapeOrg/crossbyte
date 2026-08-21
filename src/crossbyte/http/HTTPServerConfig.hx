@@ -33,6 +33,24 @@ class HTTPServerConfig {
 	public var phpCGIPath:String;
 	public var phpINIPath:String;
 	public var phpMode:Int;
+
+	/**
+		Seconds a single PHP request may take before the server gives up on it
+		and answers `504 Gateway Timeout`. `0` disables the deadline.
+
+		Defaults to 30. There was no deadline at all before, and no socket
+		timeout either, so a php-fpm that accepted a connection and then said
+		nothing held the runtime for as long as it liked. That is not one slow
+		request: a CrossByte runtime serves all of its connections from one
+		tick, and `maxConnections` defaults to 256, so an unresponsive backend
+		stopped the server for every client at once and stayed stopped.
+
+		Note that `requestTimeout` does not cover this window -- it stops the
+		moment a request has been read, on the principle that the time a
+		response takes is the server's own. This is that principle's other
+		half: the server's own time still has a limit.
+	**/
+	public var phpTimeout:Float;
 	public var corsAllowCredentials:Bool;
 	/**
 		Paths tried, in order, when resolving a request.
@@ -218,7 +236,7 @@ class HTTPServerConfig {
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
 			maxConnections:Int = 256, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
-			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60,
+			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, phpTimeout:Float = 30, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60,
 			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 100) {
 		this.address = address;
 		this.port = port;
@@ -244,6 +262,7 @@ class HTTPServerConfig {
 		this.phpCGIPath = phpCGIPath;
 		this.phpINIPath = phpINIPath;
 		this.phpMode = phpMode;
+		this.phpTimeout = phpTimeout;
 		this.tryFiles = (tryFiles == null) ? ["$uri", "$uri/"] : tryFiles;
 		this.rewrites = (rewrites == null) ? [] : rewrites;
 		this.requestTimeout = requestTimeout;
