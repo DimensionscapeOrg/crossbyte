@@ -16,6 +16,10 @@ class JsTestMain {
 	public static function main():Void {
 		crossbyte.test.TestHarness.run(function(runner:utest.Runner):Void {
 			runner.addCase(new crossbyte.ds.CollectionsTest());
+			// Its index arithmetic is the kind that differs between a 32-bit
+			// Int and a double, so the target it was never run on is exactly
+			// the one worth running it on.
+			runner.addCase(new crossbyte.ds.BloomFilterTest());
 			runner.addCase(new crossbyte.errors.ErrorsTest());
 			runner.addCase(new crossbyte.math.MathTest());
 			runner.addCase(new crossbyte.timer.TimerStampTest());

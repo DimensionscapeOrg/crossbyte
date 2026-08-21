@@ -69,8 +69,21 @@ class BloomFilter {
 		return true;
 	}
 
-	// Derives the i-th bit position from two base hashes. `i * h2` may overflow
-	// Int and wrap negative, so the result is normalized back into [0, size).
+	// Derives the i-th bit position from two base hashes.
+	//
+	// `i * h2` overflows on a target whose Int is 32 bits, and the negative
+	// correction below is what puts it back in range. On JavaScript an Int is a
+	// double, so it does not overflow at all and the correction never fires --
+	// which means the two arrive at the same bit only when `size` divides 2^32,
+	// the amount they differ by. It does for a power of two, and both of this
+	// class's tests use one; at `size = 10000` the filters genuinely differ,
+	// measured.
+	//
+	// That is not a bug while the bits cannot leave this object -- there is no
+	// serialization here, and what a caller can observe (never a false
+	// negative, and a spread good enough to keep false positives rare) holds on
+	// both. It becomes one the moment a filter is written to a file or a wire,
+	// so anything adding that has to make this arithmetic explicit first.
 	private inline function __indexAt(h1:Int, h2:Int, i:Int):Int {
 		var index:Int = (h1 + i * h2) % size;
 		if (index < 0) {
