@@ -272,7 +272,7 @@ class NodeIntegrationMain extends Application {
 			refusedSecure = Std.string(e);
 		}
 
-		check("a secure ServerSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("sys.ssl") >= 0,
+		check("a secure ServerSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("tls.Server") >= 0,
 			refusedSecure == null ? "it did not refuse" : refusedSecure);
 
 		listener.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent):Void {
@@ -844,7 +844,7 @@ class NodeIntegrationMain extends Application {
 			refusedSecure = Std.string(e);
 		}
 
-		check("a secure ServerWebSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("sys.ssl") >= 0,
+		check("a secure ServerWebSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("tls.Server") >= 0,
 			refusedSecure == null ? "it did not refuse" : refusedSecure);
 
 		wsListener.addEventListener(ServerSocketConnectEvent.CONNECT, function(event:ServerSocketConnectEvent):Void {

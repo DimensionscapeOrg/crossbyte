@@ -26,14 +26,6 @@ import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
 #if !nodejs
 import sys.net.Host;
-#if (java || jvm)
-// TLS is stubbed on the jvm target (see FlexSocket / JvmSsl).
-import crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate as Certificate;
-import crossbyte._internal.socket._jvm.JvmSsl.JvmSslKey as Key;
-#else
-import sys.ssl.Certificate;
-import sys.ssl.Key;
-#end
 #end
 
 /**
@@ -164,7 +156,7 @@ class ServerWebSocket extends ServerSocket {
 
 	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
 		if (__isSecure) {
-			__webServerSocket.setCA(value);
+			__webServerSocket.setCA(value.__native);
 		}
 
 		return certAuthority = value;
@@ -199,7 +191,7 @@ class ServerWebSocket extends ServerSocket {
 	public function new(secure:Bool = false) {
 		#if nodejs
 		if (secure) {
-			throw new CBError("A secure ServerWebSocket is not supported on Node yet, for the same reason as ServerSocket: Node terminates TLS perfectly well through tls.createServer, but the certificate API here takes sys.ssl types hxnodejs has not got. A Node wss *client* does work, needing only to verify a certificate rather than name one.");
+			throw new CBError("A secure ServerWebSocket is not implemented on Node yet, for the same reason as ServerSocket: the listener is a js.node.net.Server, and a secure one would be a js.node.tls.Server. The credentials are no longer the obstacle -- crossbyte.net.Certificate and Key carry PEM on Node. A Node wss *client* already works, needing only to verify a certificate rather than present one.");
 		}
 		#end
 
@@ -599,7 +591,7 @@ class ServerWebSocket extends ServerSocket {
 
 	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key} {
 		if (__isSecure) {
-			__webServerSocket.setCertificate(value.certificate, value.key);
+			__webServerSocket.setCertificate(value.certificate.__native, value.key.__native);
 		}
 
 		return cert = value;
