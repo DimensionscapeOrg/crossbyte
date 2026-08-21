@@ -142,10 +142,9 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	@:noCompletion private var __webServerSocket:#if nodejs NodeServer #else FlexSocket #end;
-	@:noCompletion private var __isSecure:Bool;
 
 	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
-		if (__isSecure) {
+		if (secure) {
 			#if nodejs
 			// Kept for listen(), which builds the server from it. __tlsAuthority
 			// is ServerSocket's, and requireClientCertificate() fills the same
@@ -162,7 +161,7 @@ class ServerWebSocket extends ServerSocket {
 
 	#if !nodejs
 	@:noCompletion private function set_verifyCert(value:Bool):Bool {
-		if (__isSecure) {
+		if (secure) {
 			return verifyCert = __webServerSocket.verifyCert = value;
 		}
 
@@ -197,8 +196,17 @@ class ServerWebSocket extends ServerSocket {
 			running outside the AIR application security sandbox.
 	**/
 	public function new(secure:Bool = false) {
-		__isSecure = secure;
-		super();
+		// Passed up rather than kept here. This used to set a private
+		// secure and then call super() with no argument, so `secure` --
+		// the property ServerSocket exposes and this class inherits -- read
+		// false on a server that was terminating TLS. Two fields for one fact,
+		// and the public one was the wrong one.
+		//
+		// It also means a secure ServerWebSocket now refuses on the jvm target
+		// at construction, where before it was accepted and then had no TLS to
+		// give it. That refusal was always ServerSocket's, and skipping past
+		// it was never deliberate.
+		super(secure);
 
 		// The server dispatches CONNECT to itself once a handshake
 		// completes, so it can observe its own connections without the
@@ -236,9 +244,9 @@ class ServerWebSocket extends ServerSocket {
 		// `cert`. See ServerSocket.__makeNodeServer, which this mirrors.
 		__webServerSocket = null;
 		#else
-		__webServerSocket = new FlexSocket(__isSecure);
+		__webServerSocket = new FlexSocket(secure);
 
-		if (__isSecure) {
+		if (secure) {
 			verifyCert = false;
 		}
 
@@ -576,7 +584,7 @@ class ServerWebSocket extends ServerSocket {
 	public var cert(default, set):{certificate:Certificate, key:Key};
 
 	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key} {
-		if (__isSecure) {
+		if (secure) {
 			#if nodejs
 			// Kept, not applied: listen() builds the server from it. Assigning
 			// after listen() therefore does nothing, which is the same as on a
@@ -615,7 +623,7 @@ class ServerWebSocket extends ServerSocket {
 			__fromSockettoWebsocket(connection);
 		};
 
-		if (__isSecure) {
+		if (secure) {
 			if (cert == null) {
 				throw new IOError("A secure ServerWebSocket requires cert before listen().");
 			}
