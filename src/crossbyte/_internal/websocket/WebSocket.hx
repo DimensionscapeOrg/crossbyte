@@ -215,10 +215,20 @@ class WebSocket {
 		#if nodejs
 		// Node's own socket, so there is no connect poll and no handshake
 		// pump: it reports both as events. wss is a `tls.connect` rather than
-		// a `net.connect`, and the TLS is Node's -- which is why secure works
-		// here even though a secure `ServerSocket` cannot, a client only
+		// a `net.connect`, and the TLS is Node's -- which is why a secure
+		// client works here even though a secure server cannot, a client only
 		// having to verify a certificate where a server has to present one.
-		__connectNode();
+		if (socket == null) {
+			__connectNode();
+		} else {
+			// Accepted rather than dialled: already connected, so there is no
+			// connect event to wait for. __openConnection sends the upgrade
+			// request only for a client, and this is not one -- a server waits
+			// to receive one.
+			__socket = socket;
+			__bindNodeTransport();
+			__openConnection(null);
+		}
 		#else
 		if (socket == null) {
 			__socket = new FlexSocket(__secure);
@@ -274,6 +284,16 @@ class WebSocket {
 			__socket = Net.connect({port: __port, host: __host}, connected);
 		}
 
+		__bindNodeTransport();
+	}
+
+	/**
+	 * The three things the framing layer needs from a transport: bytes
+	 * arriving, the peer going away, and a failure. Shared by the socket this
+	 * side dialled and the one a server accepted, so the two cannot come to
+	 * report any of them differently.
+	 */
+	private function __bindNodeTransport():Void {
 		__socket.on("data", function(chunk:Buffer):Void {
 			__receiveNode(chunk);
 		});
@@ -1365,15 +1385,13 @@ class WebSocket {
 		__sendFrame(payload, WebSocketOpcode.PONG, true);
 	}
 
-	#if !nodejs
 	@:access(crossbyte._internal.websocket)
-	inline function fromAcceptedSocket(socket:FlexSocket):WebSocket {
+	inline function fromAcceptedSocket(socket:#if nodejs NodeSocket #else FlexSocket #end):WebSocket {
 		var acceptedSocket:WebSocket = new AcceptedWebSocket();
 		acceptedSocket.__initSocket(socket);
 
 		return acceptedSocket;
 	}
-	#end
 }
 
 enum abstract BinaryType(String) to String from String {
@@ -1398,11 +1416,6 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 	public static inline var PONG:Int = 0x0A;
 }
 
-// The server half. `ServerWebSocket` accepts a connection and upgrades it,
-// which needs a `ServerSocket` handing out raw sockets to frame over -- Node
-// has one now, but the upgrade path is a separate piece of work from the
-// client, so neither this nor its entry point is built there yet.
-#if !nodejs
 @:private @:noCompletion class AcceptedWebSocket extends WebSocket {
 	private function new() {
 		__isClient = false;
@@ -1411,11 +1424,10 @@ enum abstract WebSocketOpcode(Int) from Int to Int {
 }
 
 @:access(crossbyte._internal.websocket)
-inline function fromAcceptedSocket(socket:FlexSocket):WebSocket {
+inline function fromAcceptedSocket(socket:#if nodejs NodeSocket #else FlexSocket #end):WebSocket {
 	var acceptedSocket:WebSocket = new AcceptedWebSocket();
 	acceptedSocket.__initSocket(socket);
 
 	return acceptedSocket;
 }
-#end
 #end

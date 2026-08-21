@@ -1,9 +1,15 @@
 package crossbyte.net;
 
 // Not built for the browser, for the same reason as ServerSocket: accepting WebSocket connections means listening, which a page cannot do.
-#if !js
+#if !(js && !nodejs)
 
+#if nodejs
+import js.node.Net;
+import js.node.net.Server as NodeServer;
+import js.node.net.Socket as NodeSocket;
+#else
 import crossbyte._internal.websocket.FlexSocket;
+#end
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
 import crossbyte.net.WebSocket;
@@ -18,15 +24,13 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
-#if !(js && !nodejs)
+#if !nodejs
 import sys.net.Host;
-#end
 #if (java || jvm)
 // TLS is stubbed on the jvm target (see FlexSocket / JvmSsl).
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate as Certificate;
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslKey as Key;
 #else
-#if !(js && !nodejs)
 import sys.ssl.Certificate;
 import sys.ssl.Key;
 #end
@@ -39,20 +43,28 @@ import sys.ssl.Key;
 class ServerWebSocket extends ServerSocket {
 	// Note: use chrome://flags/#allow-insecure-localhost to allow local host certificates in chrome!
 
+	// The TLS surface as a whole. A Node server cannot present a certificate
+	// -- that needs sys.ssl -- so the constructor refuses a secure server
+	// there and none of this is built, rather than standing as an API that
+	// takes types which do not exist.
+	#if !nodejs
 	/**
 		The Certificate Authoritiy responsible for signing the SSL Certificate for a Secure WebSocket Server.
 	**/
 	public var certAuthority(default, set):Certificate;
+	#end
 
 	/**
 		Indicates whether or not ServerSocket features are supported in the run-time environment.
 	**/
 	public static var isSupported(default, null):Bool = #if html5 false #else true #end;
 
+	#if !nodejs
 	/**
 		Determines whether or not the Websocket Server should verify the Certificate.
 	**/
 	public var verifyCert(default, set):Null<Bool>;
+	#end
 
 	/**
 		Applied to every session this server accepts as its
@@ -138,9 +150,10 @@ class ServerWebSocket extends ServerSocket {
 		return total;
 	}
 
-	@:noCompletion private var __webServerSocket:FlexSocket;
+	@:noCompletion private var __webServerSocket:#if nodejs NodeServer #else FlexSocket #end;
 	@:noCompletion private var __isSecure:Bool;
 
+	#if !nodejs
 	@:noCompletion private function set_verifyCert(value:Bool):Bool {
 		if (__isSecure) {
 			return verifyCert = __webServerSocket.verifyCert = value;
@@ -156,6 +169,7 @@ class ServerWebSocket extends ServerSocket {
 
 		return certAuthority = value;
 	}
+	#end
 
 	/**
 		Client connections that have completed their handshake and not yet
@@ -183,6 +197,12 @@ class ServerWebSocket extends ServerSocket {
 			running outside the AIR application security sandbox.
 	**/
 	public function new(secure:Bool = false) {
+		#if nodejs
+		if (secure) {
+			throw new CBError("A secure ServerWebSocket is not supported on Node: presenting a certificate needs sys.ssl, which hxnodejs does not provide. Put a TLS terminator in front, or run the server on a native target. A Node wss *client* does work -- verifying a certificate is Node's own job.");
+		}
+		#end
+
 		__isSecure = secure;
 		super();
 
@@ -216,6 +236,30 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	override function __init():Void {
+		#if nodejs
+		__webServerSocket = Net.createServer(function(connection:NodeSocket):Void {
+			if (!__hasListener) {
+				// Node has already accepted this and there is no backlog to
+				// leave it sitting in, so a session nobody is listening for
+				// is refused rather than left holding a descriptor. Same
+				// reasoning as ServerSocket.
+				connection.destroy();
+				return;
+			}
+
+			connection.setNoDelay(true);
+			__fromSockettoWebsocket(connection);
+		});
+
+		__webServerSocket.on("error", function(_):Void {
+			if (__closed) {
+				return;
+			}
+
+			close();
+			dispatchEvent(new Event(Event.CLOSE));
+		});
+		#else
 		__webServerSocket = new FlexSocket(__isSecure);
 
 		if (__isSecure) {
@@ -224,6 +268,7 @@ class ServerWebSocket extends ServerSocket {
 
 		__webServerSocket.setBlocking(false);
 		__webServerSocket.setFastSend(true);
+		#end
 		__closed = false;
 		bound = false;
 		listening = false;
@@ -257,6 +302,16 @@ class ServerWebSocket extends ServerSocket {
 			throw new RangeError("Invalid socket port number specified.");
 		}
 		try {
+			#if nodejs
+			// Node has no bind separate from listening, so this records the
+			// endpoint and listen() claims it -- which means a refused address
+			// arrives as a close event rather than out of this call, and a
+			// port of 0 stays 0 until listen() can ask what was assigned.
+			// Exactly as ServerSocket behaves there.
+			this.localAddress = localAddress;
+			this.localPort = localPort;
+			bound = true;
+			#else
 			this.localAddress = localAddress;
 			__webServerSocket.bind(localAddress, localPort);
 
@@ -265,6 +320,7 @@ class ServerWebSocket extends ServerSocket {
 			// stays 0 and a caller has no way to learn where to connect.
 			this.localPort = localPort == 0 ? __webServerSocket.host().port : localPort;
 			bound = true;
+			#end
 		} catch (e:Dynamic) {
 			switch (e) {
 				case "Bind failed":
@@ -289,9 +345,11 @@ class ServerWebSocket extends ServerSocket {
 			return;
 		}
 
+		#if !nodejs
 		if (__cbInstance != null) {
 			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
 		}
+		#end
 
 		try {
 			__webServerSocket.close();
@@ -399,7 +457,9 @@ class ServerWebSocket extends ServerSocket {
 			bound = false;
 			__closed = true;
 			if (__cbInstance != null) {
+				#if !nodejs
 				__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+				#end
 				__cbInstance = null;
 			}
 			return;
@@ -414,7 +474,9 @@ class ServerWebSocket extends ServerSocket {
 		bound = false;
 		__closed = true;
 		if (__cbInstance != null) {
+			#if !nodejs
 			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+			#end
 			__cbInstance = null;
 		}
 	}
@@ -453,16 +515,34 @@ class ServerWebSocket extends ServerSocket {
 			backlog = 0x7FFFFFF;
 		}
 
+		#if nodejs
+		if (!bound) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
+		__webServerSocket.listen({port: localPort, host: localAddress, backlog: backlog}, function():Void {
+			var assigned:Dynamic = __webServerSocket.address();
+
+			if (assigned != null && assigned.port != null) {
+				localPort = assigned.port;
+			}
+		});
+
+		listening = true;
+		#else
 		__webServerSocket.listen(backlog);
 		listening = true;
 		if (__hasListener) {
 			__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
 		}
+		#end
 	}
 
-	@:noCompletion private function __fromSockettoWebsocket(socket:FlexSocket):WebSocket {
+	@:noCompletion private function __fromSockettoWebsocket(socket:#if nodejs NodeSocket #else FlexSocket #end):WebSocket {
+		#if !nodejs
 		socket.setFastSend(true);
 		socket.setBlocking(false);
+		#end
 
 		var webSocket:WebSocket = WebSocket.toWebSocket(socket, this);
 		/*var cbSocket = new WebSocket(); 
@@ -484,6 +564,7 @@ class ServerWebSocket extends ServerSocket {
 		return webSocket;
 	}
 
+	#if !nodejs
 	@:noCompletion override private function this_onTick(e:TickEvent):Void {
 		// Extracted from a single method with a local assigned inside try/catch and
 		// used afterwards: that shape mis-compiles (VerifyError) on the jvm target.
@@ -523,5 +604,6 @@ class ServerWebSocket extends ServerSocket {
 
 		return cert = value;
 	}
+	#end
 }
 #end

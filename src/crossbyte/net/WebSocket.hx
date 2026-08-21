@@ -6,7 +6,9 @@ package crossbyte.net;
 // has no WebSocket of its own, so it frames one here like a native target.
 #if !(js && !nodejs)
 
-#if !nodejs
+#if nodejs
+import js.node.net.Socket as NodeSocket;
+#else
 import crossbyte._internal.websocket.FlexSocket;
 #end
 import crossbyte._internal.websocket.WebSocket as InternalWS;
@@ -32,10 +34,8 @@ import haxe.io.Error;
  */
 class WebSocket extends Socket {
 	// The server half: `ServerWebSocket` accepts a connection and hands the
-	// raw socket here to be framed. Node has a `ServerSocket` now, but the
-	// upgrade path is its own piece of work, so this is the client only there.
-	#if !nodejs
-	public static function toWebSocket(socket:FlexSocket, server:ServerWebSocket):WebSocket {
+	// raw socket here to be framed.
+	public static function toWebSocket(socket:#if nodejs NodeSocket #else FlexSocket #end, server:ServerWebSocket):WebSocket {
 		var webSocket:WebSocket = new WebSocket();
 
 		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
@@ -46,12 +46,9 @@ class WebSocket extends Socket {
 
 		return webSocket;
 	}
-	#end
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
-	#if !nodejs
 	private var __server:ServerWebSocket;
-	#end
 
 	/**
 		Bytes of unsent frame data allowed to accumulate for this session
@@ -694,15 +691,14 @@ class WebSocket extends Socket {
 		__closed = false;
 		dispatchEvent(new Event(Event.CONNECT));
 
-		// An accepted session tells its server it is ready, once the upgrade
-		// has completed rather than when the TCP connection arrived. There are
-		// no accepted sessions on Node, so there is nothing to tell.
-		#if !nodejs
+		// An accepted session tells its server it is ready once the upgrade has
+		// completed, rather than when the TCP connection arrived -- which is
+		// what makes the server's CONNECT mean "ready to send" and not merely
+		// "attached".
 		if (__server != null) {
 			__server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, this));
 			__server = null;
 		}
-		#end
 	}
 
 	private function __init():Void {

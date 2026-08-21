@@ -297,6 +297,23 @@ against the one `connect()` was given -- so a name kept as given would match
 nothing and the socket would silently receive none of its peer's traffic. Both
 now refuse a name and say why, rather than accepting one and going quiet.
 
-What is still Node-shaped work rather than a gate: the WebSocket *server* --
-accepting a connection and upgrading it, which the `ServerSocket` that now
-exists on Node makes reachable.
+The WebSocket server closed the last of it. Nothing is now excluded from Node
+for any reason except that Node genuinely lacks the thing -- `sys.thread`,
+`sys.db`, `sys.ssl` as a *server*, native bindings -- rather than because the
+implementation happened to be written against a socket that polls.
+
+Which is the shape of the whole exercise, stated plainly. Very little of what
+looked platform-bound was. The HTTP request handler, the WebSocket framing, the
+reliable datagram protocol, the router, the rewrite engine: none of it moved.
+What moved, every time, was a handful of calls at the bottom -- connect, read,
+write, close -- and the tick handlers that exist only because a non-blocking
+socket has to be asked. Node answers those questions with events, so the asking
+goes away and the code above it does not notice.
+
+The exceptions are worth naming, because they are the honest limits rather than
+unfinished work. A browser has no filesystem, no socket and no threads, and
+`File`, `ServerSocket` and `Thread` say so. Node has no `sys.thread` and no
+`sys.db`. Node cannot present a TLS certificate, so a secure server -- HTTP or
+WebSocket -- refuses, though a secure client works. And PHP waits on a bridge
+that hands its result to a callback instead of returning it, which is a change
+to the request handler on every target and belongs in its own proposal.
