@@ -5,6 +5,7 @@ package crossbyte.net;
 
 #if nodejs
 import js.node.Net;
+import js.node.Tls;
 import js.node.net.Server as NodeServer;
 import js.node.net.Socket as NodeSocket;
 #else
@@ -39,12 +40,10 @@ class ServerWebSocket extends ServerSocket {
 	// -- that needs sys.ssl -- so the constructor refuses a secure server
 	// there and none of this is built, rather than standing as an API that
 	// takes types which do not exist.
-	#if !nodejs
 	/**
 		The Certificate Authoritiy responsible for signing the SSL Certificate for a Secure WebSocket Server.
 	**/
 	public var certAuthority(default, set):Certificate;
-	#end
 
 	/**
 		Indicates whether or not ServerSocket features are supported in the run-time environment.
@@ -145,6 +144,22 @@ class ServerWebSocket extends ServerSocket {
 	@:noCompletion private var __webServerSocket:#if nodejs NodeServer #else FlexSocket #end;
 	@:noCompletion private var __isSecure:Bool;
 
+	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
+		if (__isSecure) {
+			#if nodejs
+			// Kept for listen(), which builds the server from it. __tlsAuthority
+			// is ServerSocket's, and requireClientCertificate() fills the same
+			// field -- one place, so the two cannot disagree about which
+			// authority a client is checked against.
+			__tlsAuthority = value;
+			#else
+			__webServerSocket.setCA(value.__native);
+			#end
+		}
+
+		return certAuthority = value;
+	}
+
 	#if !nodejs
 	@:noCompletion private function set_verifyCert(value:Bool):Bool {
 		if (__isSecure) {
@@ -154,13 +169,6 @@ class ServerWebSocket extends ServerSocket {
 		return verifyCert = value;
 	}
 
-	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
-		if (__isSecure) {
-			__webServerSocket.setCA(value.__native);
-		}
-
-		return certAuthority = value;
-	}
 	#end
 
 	/**
@@ -189,12 +197,6 @@ class ServerWebSocket extends ServerSocket {
 			running outside the AIR application security sandbox.
 	**/
 	public function new(secure:Bool = false) {
-		#if nodejs
-		if (secure) {
-			throw new CBError("A secure ServerWebSocket is not implemented on Node yet, for the same reason as ServerSocket: the listener is a js.node.net.Server, and a secure one would be a js.node.tls.Server. The credentials are no longer the obstacle -- crossbyte.net.Certificate and Key carry PEM on Node. A Node wss *client* already works, needing only to verify a certificate rather than present one.");
-		}
-		#end
-
 		__isSecure = secure;
 		super();
 
@@ -229,28 +231,10 @@ class ServerWebSocket extends ServerSocket {
 
 	override function __init():Void {
 		#if nodejs
-		__webServerSocket = Net.createServer(function(connection:NodeSocket):Void {
-			if (!__hasListener) {
-				// Node has already accepted this and there is no backlog to
-				// leave it sitting in, so a session nobody is listening for
-				// is refused rather than left holding a descriptor. Same
-				// reasoning as ServerSocket.
-				connection.destroy();
-				return;
-			}
-
-			connection.setNoDelay(true);
-			__fromSockettoWebsocket(connection);
-		});
-
-		__webServerSocket.on("error", function(_):Void {
-			if (__closed) {
-				return;
-			}
-
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
-		});
+		// Built in listen(), not here: a Node TLS server takes its key and
+		// certificate when it is created, and those arrive afterwards through
+		// `cert`. See ServerSocket.__makeNodeServer, which this mirrors.
+		__webServerSocket = null;
 		#else
 		__webServerSocket = new FlexSocket(__isSecure);
 
@@ -512,6 +496,7 @@ class ServerWebSocket extends ServerSocket {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
+		__makeNodeServer();
 		__webServerSocket.listen({port: localPort, host: localAddress, backlog: backlog}, function():Void {
 			var assigned:Dynamic = __webServerSocket.address();
 
@@ -583,6 +568,7 @@ class ServerWebSocket extends ServerSocket {
 		}
 		return null;
 	}
+	#end
 
 	/**
 		The certificate for a Secure WebSocket Server.
@@ -591,10 +577,76 @@ class ServerWebSocket extends ServerSocket {
 
 	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key} {
 		if (__isSecure) {
+			#if nodejs
+			// Kept, not applied: listen() builds the server from it. Assigning
+			// after listen() therefore does nothing, which is the same as on a
+			// native server, where the TLS configuration is materialized when
+			// the listener is bound.
+			#else
 			__webServerSocket.setCertificate(value.certificate.__native, value.key.__native);
+			#end
 		}
 
 		return cert = value;
+	}
+
+	#if nodejs
+	/**
+	 * Builds the listener, plain or TLS. The mirror of
+	 * `ServerSocket.__makeNodeServer`, and deferred for the same reason: Node
+	 * takes a TLS server's key and certificate when the server is created, and
+	 * `cert` is assigned after the constructor.
+	 */
+	@:noCompletion override private function __makeNodeServer():Void {
+		if (__webServerSocket != null) {
+			return;
+		}
+
+		var accept = function(connection:NodeSocket):Void {
+			if (!__hasListener) {
+				// Node has already accepted this and there is no backlog to
+				// leave it sitting in, so a session nobody is listening for is
+				// refused rather than left holding a descriptor.
+				connection.destroy();
+				return;
+			}
+
+			connection.setNoDelay(true);
+			__fromSockettoWebsocket(connection);
+		};
+
+		if (__isSecure) {
+			if (cert == null) {
+				throw new IOError("A secure ServerWebSocket requires cert before listen().");
+			}
+
+			var options:Dynamic = {key: cert.key.__pem, cert: cert.certificate.__pem};
+
+			if (cert.key.__passphrase != null) {
+				options.passphrase = cert.key.__passphrase;
+			}
+
+			if (__tlsAuthority != null) {
+				options.ca = [__tlsAuthority.__pem];
+				options.requestCert = true;
+				options.rejectUnauthorized = true;
+			}
+
+			// tls.Server extends net.Server, so listen, close and address are
+			// the same calls below this point.
+			__webServerSocket = Tls.createServer(options, accept);
+		} else {
+			__webServerSocket = Net.createServer(accept);
+		}
+
+		__webServerSocket.on("error", function(_):Void {
+			if (__closed) {
+				return;
+			}
+
+			close();
+			dispatchEvent(new Event(Event.CLOSE));
+		});
 	}
 	#end
 }

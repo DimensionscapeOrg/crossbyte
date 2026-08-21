@@ -18,6 +18,7 @@ import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
 #if nodejs
 import js.node.Net;
+import js.node.Tls;
 import js.node.net.Server as NodeServer;
 import js.node.net.Socket as NodeSocket;
 #else
@@ -107,6 +108,14 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
 	#end
 	@:noCompletion private var __listenerReleased:Bool = false;
+	#if nodejs
+	// Collected as it arrives and handed to tls.createServer in listen(),
+	// because that is the moment Node will take it.
+	@:noCompletion private var __tlsCertificate:Certificate;
+	@:noCompletion private var __tlsKey:Key;
+	@:noCompletion private var __tlsAuthority:Certificate;
+	@:noCompletion private var __tlsSni:Array<{match:String->Bool, certificate:Certificate, key:Key}> = [];
+	#end
 
 	/**
 		Creates a ServerSocket object.
@@ -126,10 +135,6 @@ class ServerSocket extends EventDispatcher {
 		if (secure) {
 			throw new CBError("Secure ServerSocket is not supported on the jvm target yet.");
 		}
-		#elseif nodejs
-		if (secure) {
-			throw new CBError("A secure ServerSocket is not implemented on Node yet. Nothing is in the way of it: Node terminates TLS through tls.createServer, and crossbyte.net.Certificate and Key already carry PEM there. What is missing is only that this listener is a js.node.net.Server, where a secure one would be a js.node.tls.Server built from that PEM. Until it is written, put a TLS terminator in front, or run the server on a native target.");
-		}
 		#end
 
 		this.secure = secure;
@@ -142,33 +147,13 @@ class ServerSocket extends EventDispatcher {
 
 	private function __init():Void {
 		#if nodejs
-		__serverSocket = Net.createServer(function(connection:NodeSocket):Void {
-			if (!__hasListener) {
-				// Node has already accepted this; there is no way to tell it
-				// not to, the way a native server leaves a connection sitting
-				// in the backlog it never calls accept() on. With nobody
-				// listening for `connect` the socket would be handed to no one
-				// and stay open, holding a descriptor and Node's event loop
-				// with it, so it is refused here instead of leaked.
-				connection.destroy();
-				return;
-			}
-
-			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
-			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
-		});
-
-		// A port already in use, or an address that is not local, reaches a
-		// Node server as an event rather than as a failed call -- see bind().
-		__serverSocket.on("error", function(_):Void {
-			if (__closed) {
-				return;
-			}
-
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
-		});
-
+		// Nothing is built here. A Node TLS server takes its key, certificate,
+		// CA and SNI callback when it is created, and every one of those
+		// arrives after this through setCertificate(), requireClientCertificate()
+		// and addSNICertificate(). So the server is made in listen(), which is
+		// the same instant the native path calls "the point TLS configuration
+		// is materialized" -- it just has to be literal about it here.
+		__serverSocket = null;
 		__closed = false;
 		bound = false;
 		listening = false;
@@ -197,7 +182,7 @@ class ServerSocket extends EventDispatcher {
 		#end
 	}
 
-	#if (!java && !jvm && !nodejs)
+	#if (!java && !jvm)
 	/**
 		Installs the certificate chain and private key this server presents to
 		clients. Must be called on a secure server before `listen()`.
@@ -209,7 +194,12 @@ class ServerSocket extends EventDispatcher {
 	public function setCertificate(cert:Certificate, key:Key):Void {
 		__requireSecure("setCertificate");
 
+		#if nodejs
+		__tlsCertificate = cert;
+		__tlsKey = key;
+		#else
 		(cast __serverSocket : SSLSocket).setCertificate(cert.__native, key.__native);
+		#end
 		__hasCertificate = true;
 	}
 
@@ -224,7 +214,11 @@ class ServerSocket extends EventDispatcher {
 	public function addSNICertificate(serverNameMatch:String->Bool, cert:Certificate, key:Key):Void {
 		__requireSecure("addSNICertificate");
 
+		#if nodejs
+		__tlsSni.push({match: serverNameMatch, certificate: cert, key: key});
+		#else
 		(cast __serverSocket : SSLSocket).addSNICertificate(serverNameMatch, cert.__native, key.__native);
+		#end
 		__hasCertificate = true;
 	}
 
@@ -250,9 +244,13 @@ class ServerSocket extends EventDispatcher {
 			throw new CBError("requireClientCertificate must be called before bind().");
 		}
 
+		#if nodejs
+		__tlsAuthority = ca;
+		#else
 		var sslSocket:SSLSocket = cast __serverSocket;
 		sslSocket.setCA(ca.__native);
 		sslSocket.verifyCert = true;
+		#end
 	}
 
 	@:noCompletion private function __requireSecure(field:String):Void {
@@ -330,6 +328,87 @@ class ServerSocket extends EventDispatcher {
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
+	#if nodejs
+	/**
+	 * Builds the listener, plain or TLS, and wires what both need.
+	 *
+	 * `tls.Server` extends `net.Server`, so from here on the two are the same
+	 * object to the rest of this class -- listen, close, address and the error
+	 * event are all inherited. The only thing that differs is what was handed
+	 * to the constructor.
+	 */
+	@:noCompletion private function __makeNodeServer():Void {
+		if (__serverSocket != null) {
+			return;
+		}
+
+		var accept = function(connection:NodeSocket):Void {
+			if (!__hasListener) {
+				// Node has already accepted this; there is no way to tell it
+				// not to, the way a native server leaves a connection sitting
+				// in the backlog it never calls accept() on. With nobody
+				// listening for `connect` the socket would be handed to no one
+				// and stay open, holding a descriptor and Node's event loop
+				// with it, so it is refused here instead of leaked.
+				connection.destroy();
+				return;
+			}
+
+			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
+			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+		};
+
+		if (secure) {
+			var options:Dynamic = {key: __tlsKey.__pem, cert: __tlsCertificate.__pem};
+
+			if (__tlsKey.__passphrase != null) {
+				options.passphrase = __tlsKey.__passphrase;
+			}
+
+			if (__tlsAuthority != null) {
+				// Both flags, deliberately. requestCert on its own asks for a
+				// certificate and then accepts a client that declines to send
+				// one, which is not what requireClientCertificate() promises.
+				options.ca = [__tlsAuthority.__pem];
+				options.requestCert = true;
+				options.rejectUnauthorized = true;
+			}
+
+			if (__tlsSni.length > 0) {
+				var sni = __tlsSni;
+				options.SNICallback = function(servername:String, callback:Dynamic):Void {
+					for (entry in sni) {
+						if (entry.match(servername)) {
+							callback(null, Tls.createSecureContext({key: entry.key.__pem, cert: entry.certificate.__pem}));
+							return;
+						}
+					}
+
+					// An unmatched name is not a failure: the connection falls
+					// back to the default certificate, which is what a native
+					// server does with one too.
+					callback(null, null);
+				};
+			}
+
+			__serverSocket = Tls.createServer(options, accept);
+		} else {
+			__serverSocket = Net.createServer(accept);
+		}
+
+		// A port already in use, or an address that is not local, reaches a
+		// Node server as an event rather than as a failed call -- see bind().
+		__serverSocket.on("error", function(_):Void {
+			if (__closed) {
+				return;
+			}
+
+			close();
+			dispatchEvent(new Event(Event.CLOSE));
+		});
+	}
+	#end
+
 	public function close():Void {
 		#if !nodejs
 		__dropPendingHandshakes();
@@ -398,6 +477,7 @@ class ServerSocket extends EventDispatcher {
 				throw new IOError("Operation attempted on invalid socket.");
 			}
 
+			__makeNodeServer();
 			__serverSocket.listen({port: localPort, host: localAddress, backlog: backlog}, function():Void {
 				// Where a port of 0 becomes the port the operating system
 				// picked. It cannot be known earlier: bind() only wrote the
@@ -595,6 +675,9 @@ class ServerSocket extends EventDispatcher {
 		closed without ever reaching application code.
 	**/
 	@:noCompletion private function __pumpHandshakes():Void {
+		// Node terminates its own handshakes -- tls.createServer does not hand
+		// out a connection until one has completed -- so there is nothing here
+		// to pump and no pending set to pump it from.
 		#if (!java && !jvm && !nodejs)
 		if (__pendingHandshakes == null || __pendingHandshakes.length == 0) {
 			return;
