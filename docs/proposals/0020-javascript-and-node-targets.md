@@ -237,9 +237,14 @@ Two things about the Node server do not line up with a native one, and are
 written down rather than smoothed over. Node has no bind that is separate from
 listening, so a refused address arrives as a `close` event instead of an
 exception out of `bind()`, and a port of `0` reads as `0` until `listen()` has
-had a chance to ask what was assigned. And a secure server refuses outright:
-terminating TLS needs `sys.ssl`, hxnodejs has none, and `setCertificate()` takes
-types that do not exist there -- the same position the jvm target is already in.
+had a chance to ask what was assigned. And a secure server refuses -- for a
+reason worth stating precisely, because the obvious one is wrong. Node
+terminates TLS perfectly well: `tls.createServer` takes a key and a certificate
+as PEM and presents them. What it has not got is `sys.ssl`, and
+`setCertificate()` takes `sys.ssl.Certificate` and `sys.ssl.Key`. So this is a
+question of how certificate material is named, not of whether Node can serve
+it, and it is the one refusal on this list that is a missing abstraction rather
+than a missing capability.
 
 The HTTP server followed straight from it -- a server *is* a `ServerSocket`,
 and the request handler wanted a filesystem, which Node has. Two features
@@ -310,10 +315,21 @@ write, close -- and the tick handlers that exist only because a non-blocking
 socket has to be asked. Node answers those questions with events, so the asking
 goes away and the code above it does not notice.
 
-The exceptions are worth naming, because they are the honest limits rather than
-unfinished work. A browser has no filesystem, no socket and no threads, and
+The exceptions divide into two kinds, and it is worth keeping them apart.
+
+Genuine limits: a browser has no filesystem, no socket and no threads, and
 `File`, `ServerSocket` and `Thread` say so. Node has no `sys.thread` and no
-`sys.db`. Node cannot present a TLS certificate, so a secure server -- HTTP or
-WebSocket -- refuses, though a secure client works. And PHP waits on a bridge
-that hands its result to a callback instead of returning it, which is a change
-to the request handler on every target and belongs in its own proposal.
+`sys.db`.
+
+Unfinished work wearing a limit's clothes, which is the more dangerous
+category, because a refusal reads as final whether it is or not. Two are on the
+list. A secure server on Node refuses because `setCertificate()` takes
+`sys.ssl` types, not because Node cannot present a certificate -- it can, and
+the fix is a way to name PEM material that does not route through `sys.ssl`.
+And PHP waits on a bridge that hands its result to a callback instead of
+returning it, which is proposal 0021.
+
+Both were first written down here as though Node lacked the capability. It does
+not, in either case, and the difference matters: one of these is a week of
+someone's time and the other is a paragraph in a document telling them not to
+bother.
