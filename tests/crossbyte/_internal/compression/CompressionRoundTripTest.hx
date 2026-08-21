@@ -18,31 +18,29 @@ class CompressionRoundTripTest extends utest.Test {
 	 * The assertion this file did not have: that compressing makes the data
 	 * smaller.
 	 *
-	 * Everything here checked fidelity -- same length back, same bytes back --
-	 * and a codec that stores its input verbatim satisfies every one of those
-	 * perfectly. Three of the four do exactly that. `Deflater.compress` writes
-	 * stored blocks and nothing else: a `0x01` header, the length, its
-	 * complement, then the raw bytes. No Huffman coding, no LZ77. The output
-	 * is a valid deflate stream that any inflater accepts, and it is larger
-	 * than what went in.
+	 * Everything else here checks fidelity -- same length back, same bytes
+	 * back -- and a codec that stores its input verbatim satisfies every one
+	 * of those perfectly. Three of the four did exactly that.
+	 * `Deflater.compress` wrote stored blocks and nothing else: a `0x01`
+	 * header, the length, its complement, then the raw bytes. No Huffman
+	 * coding, no LZ77. gzip wrapped the same, and `Lz4.compress` emitted one
+	 * literal run without ever looking for a match. All three returned more
+	 * bytes than they were given, and every round-trip case above passed
+	 * throughout.
 	 *
-	 * That is not academic. `HTTPRequestHandler` serves `Content-Encoding:
-	 * gzip` and `deflate` through these, so a server negotiating gzip today
-	 * sends more bytes than it would uncompressed and makes the client
-	 * decompress them for nothing. A client negotiating `br` gets real
-	 * compression.
+	 * That was not academic. `HTTPRequestHandler` serves `Content-Encoding:
+	 * gzip` and `deflate` through these, so a server negotiating gzip sent
+	 * more bytes than it would have uncompressed and made the client
+	 * decompress them for nothing.
 	 *
-	 * Brotli is asserted, because it works. The other three warn rather than
-	 * fail: pinning "does not compress" as an expected result would make the
-	 * gap look intended, and failing would leave a red build for a defect that
-	 * needs a real encoder written. A warning says it out loud on every run
-	 * and stays visible until someone fixes it -- at which point this test
-	 * starts warning that they are compressing, and gets rewritten as an
-	 * assertion.
+	 * So this asserts, for all four: a codec that stops compressing fails
+	 * here rather than passing quietly on fidelity alone.
 	 */
 	public function testCompressionActuallyCompresses():Void {
 		// Twelve bytes repeated five hundred times. Any real encoder collapses
-		// this to almost nothing; brotli reaches 23 bytes.
+		// this to almost nothing -- the four land between 23 and 77 bytes --
+		// so a tenth of the input is a floor none of them can approach without
+		// having genuinely stopped working.
 		var sample = new ByteArray();
 
 		for (i in 0...500) {
@@ -50,17 +48,113 @@ class CompressionRoundTripTest extends utest.Test {
 		}
 
 		var original:Int = sample.length;
+		var ceiling:Int = Std.int(original / 10);
 
-		Assert.isTrue(measure(CompressionAlgorithm.BROTLI, original) < original / 4, "brotli did not compress a highly repetitive payload");
-
-		for (algorithm in [CompressionAlgorithm.DEFLATE, CompressionAlgorithm.GZIP, CompressionAlgorithm.LZ4]) {
+		for (algorithm in [
+			CompressionAlgorithm.BROTLI,
+			CompressionAlgorithm.DEFLATE,
+			CompressionAlgorithm.GZIP,
+			CompressionAlgorithm.LZ4
+		]) {
 			var size:Int = measure(algorithm, original);
 
-			if (size >= original) {
-				Assert.warn(algorithm + " does not compress: " + original + " bytes in, " + size
-					+ " out. It emits stored blocks, so the round-trip tests above pass and the output is bigger than the input.");
-			}
+			Assert.isTrue(size < ceiling,
+				algorithm + " did not compress a highly repetitive payload: " + original + " bytes in, " + size + " out");
 		}
+	}
+
+	/**
+	 * That data with nothing to find does not grow much.
+	 *
+	 * The other half of an encoder being real. Deflate answers this with the
+	 * stored block it falls back to, which costs five bytes per 64K; LZ4's
+	 * block format has no stored form at all, so a little expansion is
+	 * inherent there. Either way an encoder that inflates noise by a
+	 * noticeable fraction is broken, and on an HTTP body that is the case
+	 * where compressing is worse than not.
+	 */
+	public function testIncompressibleDataBarelyGrows():Void {
+		var n:Int = 4096;
+		var noise:Bytes = pseudoRandom(n);
+
+		// Room for a stored block header and a token per literal run, and no
+		// more: about 3% of the payload.
+		var ceiling:Int = n + Std.int(n / 64) + 64;
+
+		for (algorithm in [
+			CompressionAlgorithm.BROTLI,
+			CompressionAlgorithm.DEFLATE,
+			CompressionAlgorithm.GZIP,
+			CompressionAlgorithm.LZ4
+		]) {
+			var data = new ByteArray();
+			data.writeBytes(noise, 0, noise.length);
+
+			data.compress(algorithm);
+			var size:Int = data.length;
+
+			data.uncompress(algorithm);
+			Assert.equals(n, data.length, algorithm + " did not round-trip incompressible data");
+
+			Assert.isTrue(size <= ceiling, algorithm + " grew incompressible data from " + n + " to " + size);
+		}
+	}
+
+	/**
+	 * That a payload past 64K still works.
+	 *
+	 * Deflate's stored fallback has to emit more than one block above 65535,
+	 * and only the last may carry the final-block bit; the match finder's
+	 * window wraps somewhere in here too. Both are paths a small fixture never
+	 * reaches.
+	 */
+	public function testLargePayloadRoundTripsAndCompresses():Void {
+		var text = new ByteArray();
+		while (text.length < 70000) {
+			text.writeUTFBytes("CrossByte serves this body over HTTP. ");
+		}
+
+		var original:Int = text.length;
+
+		for (algorithm in [
+			CompressionAlgorithm.BROTLI,
+			CompressionAlgorithm.DEFLATE,
+			CompressionAlgorithm.GZIP,
+			CompressionAlgorithm.LZ4
+		]) {
+			var data = new ByteArray();
+			data.writeBytes(text, 0, original);
+
+			data.compress(algorithm);
+			var size:Int = data.length;
+
+			data.uncompress(algorithm);
+			Assert.equals(original, data.length, algorithm + " did not round-trip a large payload");
+			Assert.isTrue(size < Std.int(original / 10),
+				algorithm + " did not compress a large repetitive payload: " + original + " bytes in, " + size + " out");
+		}
+	}
+
+	/**
+	 * Deterministic noise, from shifts and xors only.
+	 *
+	 * The usual multiply-based generator is not portable here: Haxe's `*` is
+	 * not 32-bit on js, so past 2^53 it loses its low bits and the sequence
+	 * collapses into a short cycle -- which compresses, and would leave this
+	 * fixture testing the opposite of what it means to.
+	 */
+	private function pseudoRandom(n:Int):Bytes {
+		var b:Bytes = Bytes.alloc(n);
+		var state:Int = 0x12345678;
+
+		for (i in 0...n) {
+			state ^= state << 13;
+			state ^= state >>> 17;
+			state ^= state << 5;
+			b.set(i, (state >>> 16) & 0xFF);
+		}
+
+		return b;
 	}
 
 	/**

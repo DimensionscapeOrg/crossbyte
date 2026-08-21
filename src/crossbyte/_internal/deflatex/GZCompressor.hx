@@ -31,17 +31,25 @@ class GZCompressor {
 	 * @return The output bytes of compressed data
 	 */
 	public static function compress(file_name:String, stream:Bytes):Bytes {
+		// A name is only worth the header bytes when there is one to record.
+		// The member is unnamed otherwise, which is what a gzip HTTP body
+		// wants: there is no file, and inventing a name for one spends five
+		// bytes per response saying so.
+		var named:Bool = file_name != null && file_name.length > 0;
+
 		var output:BitsOutput = new BitsOutput();
 		output.writeByte(0x1f);
 		output.writeByte(0x8b);
 		output.writeByte(M_DEFLATE);
-		output.writeByte(F_NAME);
+		output.writeByte(named ? F_NAME : 0);
 		for (i in 0...6) {
 			output.writeByte(0);
 		}
 
-		output.writeString(file_name);
-		output.writeByte(0);
+		if (named) {
+			output.writeString(file_name);
+			output.writeByte(0);
+		}
 
 		var deflater:Deflater = new Deflater();
 		var result:Bytes = deflater.compress(stream);

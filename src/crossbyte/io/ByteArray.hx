@@ -854,7 +854,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		var bytes:Bytes = switch (algorithm) {
 			case CompressionAlgorithm.BROTLI: Brotli.compress(this);
 			case CompressionAlgorithm.DEFLATE: Deflater.apply(this);
-			case CompressionAlgorithm.GZIP: GZCompressor.compress("data", this);
+			case CompressionAlgorithm.GZIP: GZCompressor.compress(null, this);
 			case CompressionAlgorithm.LZ4: Lz4.compress(this);
 			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
