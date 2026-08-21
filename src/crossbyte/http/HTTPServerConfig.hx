@@ -272,14 +272,10 @@ class HTTPServerConfig {
 	**/
 	public function validate():Void {
 		#if nodejs
-		// Refused here rather than when the first .php request arrives, so a
-		// misconfigured server fails at startup where it is visible.
+		// Refused here rather than when the first request needing it arrives, so
+		// a misconfigured server fails at startup where it is visible.
 		if (phpEnabled) {
 			throw new ArgumentError("phpEnabled is not supported on Node yet: the PHP bridge returns a response, and Node has no synchronous socket read to produce one with. Put PHP-FPM behind a proxy, or run the server on a native target.");
-		}
-
-		if (tlsEnabled) {
-			throw new ArgumentError("tlsEnabled is not implemented on Node yet. tlsCertificatePath and tlsKeyPath load fine there -- crossbyte.net.Certificate and Key read PEM on every target that has a filesystem -- but the listener underneath is a js.node.net.Server, and a secure one would be a js.node.tls.Server. Until that is written, put a TLS terminator in front, or run the server on a native target.");
 		}
 		#end
 

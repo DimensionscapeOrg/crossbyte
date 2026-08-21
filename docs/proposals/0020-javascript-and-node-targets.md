@@ -322,14 +322,22 @@ Genuine limits: a browser has no filesystem, no socket and no threads, and
 `sys.db`.
 
 Unfinished work wearing a limit's clothes, which is the more dangerous
-category, because a refusal reads as final whether it is or not. Two are on the
-list. A secure server on Node refuses because `setCertificate()` takes
-`sys.ssl` types, not because Node cannot present a certificate -- it can, and
-the fix is a way to name PEM material that does not route through `sys.ssl`.
-And PHP waits on a bridge that hands its result to a callback instead of
-returning it, which is proposal 0021.
+category, because a refusal reads as final whether it is or not. Two were on
+the list, and both were first written down here as though Node lacked the
+capability.
 
-Both were first written down here as though Node lacked the capability. It does
-not, in either case, and the difference matters: one of these is a week of
-someone's time and the other is a paragraph in a document telling them not to
-bother.
+The first was TLS servers, and it is now done. What actually stood in the way
+was `setCertificate()` naming `sys.ssl.Certificate` -- a signature that decided
+which targets could implement the method. Once credentials became
+`crossbyte.net.Certificate` and `Key`, carrying PEM on Node and mbedtls
+elsewhere, the server itself was `Tls.createServer` in place of
+`Net.createServer` and nothing else: `tls.Server` extends `net.Server`, so
+every call after construction is the same one.
+
+The second is PHP, which waits on a bridge that hands its result to a callback
+instead of returning it. That is proposal 0021.
+
+The difference between the two categories is worth the paragraph. One of these
+is a week of someone's time; the other is a document telling them not to
+bother. Naming a platform type in a public signature is how the second gets
+mistaken for the first.

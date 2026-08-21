@@ -77,6 +77,8 @@ class NodeIntegrationMain extends Application {
 	private var wsListener:ServerWebSocket;
 	private var wsClient:WebSocket;
 	private var wsAccepted:WebSocket;
+	private var tlsServer:ServerSocket;
+	private var tlsAccepted:Socket;
 
 	public function new() {
 		super();
@@ -263,17 +265,6 @@ class NodeIntegrationMain extends Application {
 		listener = new ServerSocket();
 
 		check("ServerSocket is supported on Node", ServerSocket.isSupported, "reported unsupported");
-
-		var refusedSecure:String = null;
-
-		try {
-			new ServerSocket(true);
-		} catch (e:Dynamic) {
-			refusedSecure = Std.string(e);
-		}
-
-		check("a secure ServerSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("tls.Server") >= 0,
-			refusedSecure == null ? "it did not refuse" : refusedSecure);
 
 		listener.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent):Void {
 			// Held in a field on purpose: the class documents that the
@@ -836,6 +827,11 @@ class NodeIntegrationMain extends Application {
 		// would have to be one that the hand-written peer also had.
 		wsListener = new ServerWebSocket();
 
+		// Constructing one is the whole assertion: it threw until now. Its
+		// `secure` property is not checked because it would say false -- the
+		// class calls super() with no argument and tracks __isSecure itself,
+		// so the inherited flag has never described a ServerWebSocket on any
+		// target.
 		var refusedSecure:String = null;
 
 		try {
@@ -844,8 +840,7 @@ class NodeIntegrationMain extends Application {
 			refusedSecure = Std.string(e);
 		}
 
-		check("a secure ServerWebSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("tls.Server") >= 0,
-			refusedSecure == null ? "it did not refuse" : refusedSecure);
+		check("a secure ServerWebSocket constructs on Node", refusedSecure == null, "threw: " + refusedSecure);
 
 		wsListener.addEventListener(ServerSocketConnectEvent.CONNECT, function(event:ServerSocketConnectEvent):Void {
 			wsAccepted = cast event.socket;
@@ -909,6 +904,97 @@ class NodeIntegrationMain extends Application {
 		wsClient.connect("127.0.0.1", wsListener.localPort);
 	}
 
+	// ---- 10. a TLS listener on Node --------------------------------------
+
+	private function startTls():Void {
+		var fixture = crossbyte.net.TLSTestFixture.selfSigned();
+
+		if (fixture == null) {
+			// No certificate toolchain on this machine. Said out loud rather
+			// than passed quietly: a skipped TLS test that reports nothing is
+			// how a broken listener stays green.
+			Sys.println("  SKIP  TLS: no certificate toolchain on this machine");
+			runSubprocess();
+			return;
+		}
+
+		tlsServer = new ServerSocket(true);
+		check("a secure ServerSocket constructs on Node", tlsServer.secure, "not secure");
+		tlsServer.setCertificate(crossbyte.net.Certificate.fromFile(fixture.certificatePath), crossbyte.net.Key.fromFile(fixture.keyPath));
+
+		tlsServer.addEventListener(ServerSocketConnectEvent.CONNECT, function(event:ServerSocketConnectEvent):Void {
+			tlsAccepted = event.socket;
+			check("the TLS server accepted a connection", tlsAccepted != null, "no socket on the event");
+
+			tlsAccepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+				var text = tlsAccepted.readUTFBytes(tlsAccepted.bytesAvailable);
+				check("the TLS server read the encrypted request", text == "over-tls", "got " + text);
+				tlsAccepted.writeUTFBytes(text.toUpperCase());
+				tlsAccepted.flush();
+			});
+		});
+
+		tlsServer.bind(0, "127.0.0.1");
+		tlsServer.listen();
+
+		waitForTlsPort(0);
+	}
+
+	private function waitForTlsPort(attempts:Int):Void {
+		if (tlsServer.localPort > 0) {
+			connectOverTls();
+			return;
+		}
+
+		if (attempts > 200) {
+			check("the TLS server bound a port", false, "still 0 after " + attempts + " tries");
+			stopTls();
+			return;
+		}
+
+		haxe.Timer.delay(function():Void {
+			waitForTlsPort(attempts + 1);
+		}, 5);
+	}
+
+	private function connectOverTls():Void {
+		// Node's own TLS client, not ours. What is under test is whether this
+		// server speaks TLS, and two halves of the same codebase agreeing
+		// would not answer that. rejectUnauthorized is off only because the
+		// certificate is self-signed by the fixture.
+		var client = js.node.Tls.connect({port: tlsServer.localPort, host: "127.0.0.1", rejectUnauthorized: false});
+
+		client.on("secureConnect", function():Void {
+			check("a standard TLS client completed the handshake", true, "");
+			client.write("over-tls");
+		});
+
+		client.on("data", function(chunk:js.node.Buffer):Void {
+			check("the TLS client got the encrypted reply", chunk.toString() == "OVER-TLS", "got " + chunk.toString());
+			client.destroy();
+			stopTls();
+		});
+
+		client.on("error", function(e:Dynamic):Void {
+			check("a standard TLS client completed the handshake", false, Std.string(e));
+			stopTls();
+		});
+	}
+
+	private function stopTls():Void {
+		if (tlsAccepted != null) {
+			try {
+				tlsAccepted.close();
+			} catch (_:Dynamic) {}
+		}
+
+		try {
+			tlsServer.close();
+		} catch (_:Dynamic) {}
+
+		runSubprocess();
+	}
+
 	private function stopWebSocketServer2():Void {
 		try {
 			wsClient.close();
@@ -924,10 +1010,10 @@ class NodeIntegrationMain extends Application {
 			wsListener.close();
 		} catch (_:Dynamic) {}
 
-		runSubprocess();
+		startTls();
 	}
 
-	// ---- 10. NativeProcess over child_process ----------------------------
+	// ---- 11. NativeProcess over child_process ----------------------------
 
 	private function runSubprocess():Void {
 		var process = new NativeProcess();
