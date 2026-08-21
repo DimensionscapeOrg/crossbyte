@@ -130,7 +130,13 @@ const server = http.createServer((request, response) => {
     console.log('browser: ' + result.successes + ' successes, ' + result.failures + ' failures');
   }
 
-  if (!result || result.failures > 0) {
+  if (result && result.detail && result.detail.length > 0) {
+    for (const line of result.detail) {
+      console.error('  ' + line);
+    }
+  }
+
+  if (!result) {
     console.error(report);
   }
 
