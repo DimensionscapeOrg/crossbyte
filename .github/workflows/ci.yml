@@ -372,6 +372,17 @@ jobs:
           haxe ci/js-runtime-tests.hxml
           node export/js-runtime-tests/runtime.js
 
+      # Node is not a browser. It has no window, no document, and none of a
+      # page's restrictions, so a bundle it runs happily can still fail to load
+      # in one -- Random's seed was an AtomicInt, which Haxe implements on js
+      # with a SharedArrayBuffer that an ordinary page is not given, and it
+      # threw while loading before any test ran. Every js build stayed green.
+      - name: Run portable suite in a headless browser
+        run: |
+          npm install --no-save --no-audit --no-fund puppeteer
+          haxe ci/browser-tests.hxml
+          node ci/browser/run.js
+
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 

@@ -1,0 +1,16 @@
+# Builds the portable suite for a real browser.
+#
+# Deliberately without -lib hxnodejs: that defines `nodejs`, and the whole
+# point of this build is the target that has a `window` and none of Node's
+# conveniences. ci/js-tests.hxml runs the same cases under Node, which does
+# not answer whether they run in a page -- a bundle that loads fine there
+# threw "SharedArrayBuffer is not defined" in an ordinary page, while loading,
+# before a line of application code ran.
+#
+# Run it with `node ci/browser/run.js`.
+-cp src
+-cp tests
+-lib utest
+-main BrowserTestMain
+--js export/browser-tests/tests.js
+--macro crossbyte.test.SuiteCoverage.check()
