@@ -290,14 +290,6 @@ class HTTPServerConfig {
 		out.
 	**/
 	public function validate():Void {
-		#if nodejs
-		// Refused here rather than when the first request needing it arrives, so
-		// a misconfigured server fails at startup where it is visible.
-		if (phpEnabled) {
-			throw new ArgumentError("phpEnabled is not supported on Node yet: the PHP bridge returns a response, and Node has no synchronous socket read to produce one with. Put PHP-FPM behind a proxy, or run the server on a native target.");
-		}
-		#end
-
 		if (tryFiles == null || tryFiles.length < 2 || tryFiles[0] != "$uri" || tryFiles[1] != "$uri/") {
 			throw new ArgumentError("tryFiles must begin with \"$uri\" then \"$uri/\", got " + Std.string(tryFiles)
 				+ ". Both are tested before every other entry and before the rewrite rules, whether or not this list names them, so any other order is not the order used.");

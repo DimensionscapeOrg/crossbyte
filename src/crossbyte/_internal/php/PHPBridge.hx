@@ -1,62 +1,28 @@
 package crossbyte._internal.php;
 
 // Not built for the browser: it launches and talks to a PHP CGI process.
-#if nodejs
-import crossbyte.errors.IllegalOperationError;
-
-/**
- * The bridge's shape on Node, which cannot yet be one.
- *
- * Not for want of a transport or a way to start php-cgi. Both arrived with the
- * Node work: `crossbyte.net.Socket` speaks to a FastCGI listener over
- * `js.node.net`, and `crossbyte.sys.NativeProcess` launches a process over
- * `child_process`. What stands in the way is the signature -- `execute()`
- * returns a response, and Node has no synchronous socket read to produce one
- * with. hxnodejs ships a `sys.net.Socket` that blocks, but it has no output
- * side at all and its wait needs `deasync`, a native npm addon, so it is not a
- * way round this.
- *
- * The way round it is to stop returning a response. A bridge that hands its
- * result to a callback works on every target, and CrossByte is already shaped
- * for it: middleware is `(HTTPRequestHandler, ?Dynamic->Void) -> Void`, and
- * responses already stream. It would also stop a PHP request stalling a native
- * runtime for its whole duration, which is what a blocking call in a tick does
- * today. That is a change to the request handler on every target, though, and
- * belongs in its own proposal rather than arriving as a side effect of a Node
- * port.
- *
- * The type is kept rather than compiled away because `HTTPRequestHandler`
- * threads it through a dozen places, and because `__php == null` is already the
- * state the whole handler is written for -- it is what a server with PHP off
- * looks like, which is the default everywhere. That includes refusing to serve
- * a `.php` file as its own source, which is the part that would become a
- * security hole if this type simply vanished.
- */
-class PHPBridge {
-	/** Matches the native bridge's field so a caller reads the same shape. **/
-	public final timeoutSeconds:Float = 0;
-
-	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>, timeoutSeconds:Float = 0) {
-		throw new IllegalOperationError("PHP is not available on Node yet: the bridge returns a response, and Node has no synchronous socket read to produce one with. Put PHP-FPM behind a proxy, or run the server on a native target.");
-	}
-
-	public function stop():Void {}
-
-	public function execute(req:PHPRequest):PHPResponse {
-		throw new IllegalOperationError("PHP is not available on Node yet.");
-	}
-}
-#elseif !js
+#if !(js && !nodejs)
 
 import haxe.io.Path;
-import crossbyte.events.Event;
+import crossbyte.Future;
 import crossbyte.core.CrossByte;
+import crossbyte.events.Event;
+import crossbyte.events.TickEvent;
+import crossbyte.io.ByteArray;
+#if nodejs
+import crossbyte.events.IOErrorEvent;
+import crossbyte.events.ProgressEvent;
+import crossbyte.sys.NativeProcess;
+import crossbyte.sys.NativeProcessStartupInfo;
+#end
 import sys.FileSystem;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
+#if !nodejs
 import sys.net.Host;
 import sys.net.Socket;
 import sys.io.Process;
+#end
 
 using StringTools;
 
@@ -88,7 +54,22 @@ class PHPBridge {
 	public final docRoot:String;
 	public final autoIndex:Array<String>;
 
+	// Launch mode spawns php-cgi. Node has no sys.io.Process, so it uses
+	// CrossByte's own NativeProcess -- the portable subprocess API this
+	// framework already ships -- rather than a second bespoke wrapper. Both
+	// answer close(), which is all stop() needs of them.
+	#if nodejs
+	private var _proc:Null<NativeProcess> = null;
+	#else
 	private var _proc:Null<Process> = null;
+	#end
+	private var __pending:Array<{exchange:PHPExchange, release:Void->Void}> = [];
+	private var __runtime:Null<CrossByte> = null;
+	private var __sweeping:Bool = false;
+	#if !nodejs
+	private var __reading:Array<{exchange:PHPExchange, socket:Socket}> = [];
+	private var __scratch:Bytes = Bytes.alloc(8192);
+	#end
 
 	static final PAD_SCRATCH = Bytes.alloc(256);
 
@@ -124,7 +105,12 @@ class PHPBridge {
 					}
 				}
 				WindowsKillOnExit.attach();
+				#if nodejs
+				_proc = new NativeProcess();
+				_proc.start(new NativeProcessStartupInfo(cgiPath, args));
+				#else
 				_proc = new Process(cgiPath, args);
+				#end
 				CrossByte.current().addEventListener(Event.EXIT, _onExit);
 			case Connect(_, _):
 				// nothing to do we’ll just dial per call
@@ -140,13 +126,29 @@ class PHPBridge {
 		}
 	}
 
-	public function execute(req:PHPRequest):PHPResponse {
+	/**
+	 * Starts a FastCGI exchange and hands back its eventual response.
+	 *
+	 * This returned a `PHPResponse` before, and that signature was the whole
+	 * problem. A blocking round trip inside a tick stops the runtime for every
+	 * connection it serves, not just this one, and it cannot exist at all on a
+	 * target with no synchronous socket read -- which is why PHP was the last
+	 * thing unavailable on Node.
+	 *
+	 * `Future` rather than a callback pair, because the framework already has
+	 * one way of saying "later" and a second would be a second.
+	 */
+	public function execute(req:PHPRequest):Future<PHPResponse> {
+		var exchange = new PHPExchange(timeoutSeconds);
+
 		if (docRoot != "" && req.scriptFilename.indexOf("..") >= 0) {
-			throw "Traversal refused";
+			exchange.fail("Traversal refused");
+			return exchange.future;
 		}
 
 		var host:String;
 		var port:Int;
+
 		switch (mode) {
 			case Connect(a, p):
 				host = a;
@@ -154,31 +156,6 @@ class PHPBridge {
 			case Launch(a, p, _, _):
 				host = a;
 				port = p;
-		}
-
-		var sock:Socket = new Socket();
-		sock.setFastSend(true);
-
-		// Applies to connect and to every read below. A backend that is not
-		// listening at all fails here rather than blocking, which it did.
-		if (timeoutSeconds > 0) {
-			sock.setTimeout(timeoutSeconds);
-		}
-
-		var deadline:Float = timeoutSeconds > 0 ? Sys.time() + timeoutSeconds : 0;
-
-		try {
-			sock.connect(new Host(host), port);
-		} catch (e:Dynamic) {
-			try {
-				sock.close();
-			} catch (_:Dynamic) {}
-
-			if (deadline > 0 && Sys.time() >= deadline) {
-				throw new PHPTimeout(timeoutSeconds, "connecting");
-			}
-
-			throw e;
 		}
 
 		var env:Map<String, String> = new Map();
@@ -229,113 +206,212 @@ class PHPBridge {
 
 		out.add(Fcgi.rec(Fcgi.STDIN, 1, Bytes.alloc(0)));
 
-		sock.output.write(out.getBytes());
-		sock.output.flush();
+		var payload:Bytes = out.getBytes();
 
-		var rawBytes:BytesBuffer = new BytesBuffer();
-		var done:Bool = false;
-		while (!done) {
-			// Checked per record, not only per read. A socket timeout bounds
-			// one operation; a peer dribbling a byte at a time resets it
-			// forever and never trips it. The deadline bounds the exchange.
-			if (deadline > 0 && Sys.time() >= deadline) {
-				try {
-					sock.close();
-				} catch (_:Dynamic) {}
+		__begin(exchange, host, port, payload);
+		return exchange.future;
+	}
 
-				throw new PHPTimeout(timeoutSeconds, "reading the response");
+	/**
+	 * Opens the transport and starts the exchange.
+	 *
+	 * The two targets differ only in how bytes come back. Node is told and a
+	 * native build has to ask, so a native build reads from the tick it is
+	 * already being given; everything else -- the parser, the deadline, the
+	 * table -- is shared, and that is the point of the split.
+	 */
+	private function __begin(exchange:PHPExchange, host:String, port:Int, payload:Bytes):Void {
+		#if nodejs
+		var socket = new crossbyte.net.Socket();
+
+		socket.addEventListener(Event.CONNECT, function(_):Void {
+			socket.writeBytes(ByteArray.fromBytes(payload), 0, payload.length);
+			socket.flush();
+		});
+
+		socket.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+			if (exchange.settled) {
+				return;
 			}
 
-			var hdr:Bytes = Bytes.alloc(8);
-			var typ:Int;
-			var content:Bytes;
+			var available:Int = socket.bytesAvailable;
 
-			// The clock decides what a read failure meant, because the socket
-			// cannot say. A read that expires on SO_RCVTIMEO surfaces as Eof
-			// here -- identical to a peer that closed -- so distinguishing the
-			// two by the error is not possible. Distinguishing them by the
-			// deadline is, and it is the distinction that matters: one is a
-			// backend that stopped answering, the other is one that hung up.
+			if (available <= 0) {
+				return;
+			}
+
+			var chunk = new ByteArray();
+			socket.readBytes(chunk, 0, available);
+
+			if (exchange.receive(chunk, chunk.length)) {
+				exchange.succeed();
+				__finish(exchange, socket);
+			}
+		});
+
+		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			// Named, and never empty. A socket error can arrive with no text at
+			// all, and "PHP backend failed: " on its own tells an operator
+			// running more than one backend nothing about which one or why.
+			var reason:String = e.text != null && e.text != "" ? e.text : "the connection failed without saying why";
+			exchange.fail("PHP backend at " + host + ":" + port + " failed: " + reason);
+			__finish(exchange, socket);
+		});
+
+		socket.addEventListener(Event.CLOSE, function(_):Void {
+			// A peer that hung up before END_REQUEST. The response is
+			// incomplete, and serving half a page is worse than saying so.
+			exchange.fail("PHP backend at " + host + ":" + port + " closed the connection before finishing the response.");
+			__finish(exchange, socket);
+		});
+
+		__track(exchange, function():Void {
 			try {
-				var r:Int = sock.input.readBytes(hdr, 0, 8);
-				if (r != 8)
-					throw "FastCGI short header";
-				typ = hdr.get(1);
-				var cLen:Int = (hdr.get(4) << 8) | hdr.get(5);
-				var pad:Int = hdr.get(6);
+				socket.close();
+			} catch (_:Dynamic) {}
+		});
 
-				content = Bytes.alloc(cLen);
-				if (cLen > 0) {
-					sock.input.readFullBytes(content, 0, cLen);
-				}
+		socket.connect(host, port);
+		#else
+		var socket:Socket = new Socket();
+		socket.setFastSend(true);
 
-				if (pad > 0) {
-					sock.input.readFullBytes(PAD_SCRATCH, 0, pad);
-				}
-			} catch (e:Dynamic) {
+		try {
+			socket.connect(new Host(host), port);
+			socket.setBlocking(false);
+			socket.output.write(payload);
+			socket.output.flush();
+		} catch (e:Dynamic) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+
+			if (exchange.expired()) {
+				exchange.timeOut("connecting");
+			} else {
+				exchange.fail("Could not reach the PHP backend: " + Std.string(e));
+			}
+
+			return;
+		}
+
+		__reading.push({exchange: exchange, socket: socket});
+
+		__track(exchange, function():Void {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		});
+		#end
+	}
+
+	/**
+	 * Records an exchange so the deadline sweep can see it, and starts the
+	 * sweep if it is not already running.
+	 *
+	 * The tick listener is added with the first exchange and dropped with the
+	 * last, so a server with PHP configured and nothing using it costs nothing
+	 * per frame.
+	 */
+	private function __track(exchange:PHPExchange, release:Void->Void):Void {
+		__pending.push({exchange: exchange, release: release});
+
+		if (__runtime == null) {
+			__runtime = CrossByte.current();
+		}
+
+		if (__runtime != null && !__sweeping) {
+			__sweeping = true;
+			__runtime.addEventListener(TickEvent.TICK, __onTick);
+		}
+	}
+
+	private function __finish(exchange:PHPExchange, ?socket:Dynamic):Void {
+		for (entry in __pending) {
+			if (entry.exchange == exchange) {
+				entry.release();
+				__pending.remove(entry);
+				break;
+			}
+		}
+
+		#if !nodejs
+		for (entry in __reading) {
+			if (entry.exchange == exchange) {
+				__reading.remove(entry);
+				break;
+			}
+		}
+		#end
+
+		if (__pending.length == 0 && __sweeping && __runtime != null) {
+			__runtime.removeEventListener(TickEvent.TICK, __onTick);
+			__sweeping = false;
+		}
+	}
+
+	/**
+	 * One frame's worth of work: read whatever has arrived, then fail whatever
+	 * has run out of time.
+	 *
+	 * The deadline is swept here rather than left to a socket timeout because
+	 * a socket timeout bounds one read. A backend sending a byte a second
+	 * resets it forever and never trips it, while this notices.
+	 */
+	private function __onTick(_:TickEvent):Void {
+		#if !nodejs
+		var reading = __reading.copy();
+
+		for (entry in reading) {
+			if (entry.exchange.settled) {
+				continue;
+			}
+
+			var closed:Bool = false;
+
+			// Drains what is there and stops on the blocked error a
+			// non-blocking socket raises when it is empty, which is the normal
+			// end of a frame's reading rather than a failure.
+			while (true) {
+				var read:Int = 0;
+
 				try {
-					sock.close();
-				} catch (_:Dynamic) {}
-
-				// The grace is because the socket timeout and this deadline
-				// are the same instant, and whichever is read second is a
-				// hair past it.
-				if (deadline > 0 && Sys.time() + READ_DEADLINE_GRACE >= deadline) {
-					throw new PHPTimeout(timeoutSeconds, "reading the response");
-				}
-
-				throw e;
-			}
-
-			switch (typ) {
-				case Fcgi.STDOUT:
-					rawBytes.add(content);
-
-				case Fcgi.STDERR:
-					// c apture stderr but DO NOT terminate the read loop.
-					// var err = content.toString();
-					// Logger.log('[php-cgi] ' + err);
-
-				case Fcgi.END_REQUEST:
-					done = true;
-
-				default:
-			}
-		}
-		sock.close();
-
-		var buf:Bytes = rawBytes.getBytes();
-		var s:String = buf.toString();
-		var sep:Int = s.indexOf("\r\n\r\n");
-		var headers:Map<String, String> = new Map();
-		var status = 200;
-		var bodyBytes = Bytes.alloc(0);
-
-		if (sep >= 0) {
-			var headerLines:Array<String> = s.substr(0, sep).split("\r\n");
-			for (line in headerLines) {
-				var i:Int = line.indexOf(":");
-				if (i > 0) {
-					var hk:String = line.substr(0, i).toLowerCase();
-					var hv:String = StringTools.trim(line.substr(i + 1));
-					headers.set(hk, hv);
-					if (hk == "status") {
-						var sp:Array<String> = hv.split(" ");
-						if (sp.length > 0) {
-							var parsedStatus = Std.parseInt(sp[0]);
-							if (parsedStatus != null) {
-								status = parsedStatus;
-							}
-						}
+					read = entry.socket.input.readBytes(__scratch, 0, __scratch.length);
+				} catch (e:Dynamic) {
+					if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+						closed = true;
 					}
+
+					break;
+				}
+
+				if (read <= 0) {
+					break;
+				}
+
+				if (entry.exchange.receive(__scratch, read)) {
+					entry.exchange.succeed();
+					__finish(entry.exchange);
+					closed = false;
+					break;
 				}
 			}
-			bodyBytes = Bytes.ofString(s.substr(sep + 4));
-		} else {
-			bodyBytes = buf;
-		}
 
-		return {status: status, headers: headers, body: bodyBytes};
+			if (closed && !entry.exchange.settled) {
+				entry.exchange.fail("PHP backend closed the connection before finishing the response.");
+				__finish(entry.exchange);
+			}
+		}
+		#end
+
+		var waiting = __pending.copy();
+
+		for (entry in waiting) {
+			if (!entry.exchange.settled && entry.exchange.expired()) {
+				entry.exchange.timeOut("reading the response");
+				__finish(entry.exchange);
+			}
+		}
 	}
 
 	private inline function _onExit(e:Event):Void {
