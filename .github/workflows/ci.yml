@@ -16,7 +16,14 @@ concurrency:
 env:
   HAXE_VERSION: "4.3.7"
   HXCPP_REPO: "https://github.com/dimensionscape/hxcpp.git"
-  HXCPP_REF: "socket-fixes"
+  # The branch this project is developed against, not the one the upstream PR
+  # lives on. socket-fixes is kept clean and narrow so HaxeFoundation can take
+  # it; production is that fix plus the Windows file_write correction and a
+  # catch-up with upstream, and is what a local build uses. CI following the PR
+  # branch meant CI and every developer were testing different hxcpp -- benign
+  # while the suite passed on both, and widening with every upstream merge
+  # production took and socket-fixes did not.
+  HXCPP_REF: "production"
 
 jobs:
   core-tests:
