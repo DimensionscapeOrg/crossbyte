@@ -277,6 +277,170 @@ class StoreTest extends utest.Test {
 		Assert.raises(() -> Store.open("has/slash"), crossbyte.errors.ArgumentError);
 	}
 
+	public function testForEachVisitsEverythingWithoutHoldingIt(async:Async):Void {
+		Store.open(freshName()).then(store -> {
+			var written = 0;
+
+			for (i in 0...20) {
+				store.putString("k" + i, "v" + i).then(_ -> {
+					if (++written < 20) {
+						return;
+					}
+
+					var seen = new Map<String, String>();
+
+					store.forEach((key, value) -> {
+						value.position = 0;
+						seen.set(key, value.readUTFBytes(value.length));
+						return true;
+					}).then(_ -> {
+						var count = 0;
+						for (key in seen.keys()) {
+							count++;
+						}
+
+						Assert.equals(20, count, "forEach missed entries");
+						Assert.equals("v7", seen.get("k7"));
+
+						store.clear().then(_ -> {
+							store.close();
+							async.done();
+						}, failWith(async));
+					}, failWith(async));
+				}, failWith(async));
+			}
+		}, failWith(async));
+	}
+
+	public function testForEachStopsWhenAskedTo(async:Async):Void {
+		Store.open(freshName()).then(store -> {
+			var written = 0;
+
+			for (i in 0...10) {
+				store.putString("k" + i, "v").then(_ -> {
+					if (++written < 10) {
+						return;
+					}
+
+					var visited = 0;
+
+					// Returning false is the early exit a cursor exists for. If
+					// it were ignored, this would count ten and the method would
+					// be `keys()` with extra steps.
+					store.forEach((key, value) -> {
+						visited++;
+						return visited < 3;
+					}).then(_ -> {
+						Assert.equals(3, visited, "forEach did not stop when asked");
+
+						store.clear().then(_ -> {
+							store.close();
+							async.done();
+						}, failWith(async));
+					}, failWith(async));
+				}, failWith(async));
+			}
+		}, failWith(async));
+	}
+
+	public function testForEachHonoursAPrefix(async:Async):Void {
+		Store.open(freshName()).then(store -> {
+			store.putString("user:1", "a").then(_ -> {
+				store.putString("cache:1", "b").then(_ -> {
+					var seen:Array<String> = [];
+
+					store.forEach((key, _) -> {
+						seen.push(key);
+						return true;
+					}, "user:").then(_ -> {
+						Assert.equals(1, seen.length, "prefix ignored: " + seen);
+						Assert.equals("user:1", seen[0]);
+
+						store.clear().then(_ -> {
+							store.close();
+							async.done();
+						}, failWith(async));
+					}, failWith(async));
+				}, failWith(async));
+			}, failWith(async));
+		}, failWith(async));
+	}
+
+	public function testStringsRoundTripAndAbsentIsStillNull(async:Async):Void {
+		Store.open(freshName()).then(store -> {
+			store.putString("greeting", "hello ☃").then(_ -> {
+				store.getString("greeting").then(text -> {
+					// UTF-8 through the byte layer and back, including a
+					// character that is not one byte.
+					Assert.equals("hello ☃", text);
+
+					store.putString("empty", "").then(_ -> {
+						store.getString("empty").then(blank -> {
+							// An empty string is a value somebody stored.
+							Assert.equals("", blank);
+
+							store.getString("never").then(missing -> {
+								// Absent is still null, not "".
+								Assert.isNull(missing, "a missing key read as an empty string");
+
+								store.clear().then(_ -> {
+									store.close();
+									async.done();
+								}, failWith(async));
+							}, failWith(async));
+						}, failWith(async));
+					}, failWith(async));
+				}, failWith(async));
+			}, failWith(async));
+		}, failWith(async));
+	}
+
+	public function testTwoStoresOnOneNameDoNotCorruptEachOther(async:Async):Void {
+		// The concurrency question, answered by measurement rather than by a
+		// paragraph. Two Store instances over one name is what two CrossByte
+		// runtimes in a process look like to the backend, and the claim being
+		// tested is the modest one the design actually makes: writes are atomic
+		// per key, so interleaving them yields one whole value or the other and
+		// never half of each.
+		var name = freshName();
+
+		Store.open(name).then(first -> {
+			Store.open(name).then(second -> {
+				var done = 0;
+				var finish = function():Void {
+					if (++done < 2) {
+						return;
+					}
+
+					first.get("contested").then(value -> {
+						value.position = 0;
+						var text = value.readUTFBytes(value.length);
+
+						// Last writer wins, and which one that is is not
+						// promised. What is promised is that it is one of them
+						// entire.
+						Assert.isTrue(text == "from-first" || text == "from-second", "interleaved writes produced neither value: " + text);
+
+						first.getString("only-second").then(sideEffect -> {
+							Assert.equals("visible", sideEffect, "a write through one handle was invisible to the other");
+
+							first.clear().then(_ -> {
+								first.close();
+								second.close();
+								async.done();
+							}, failWith(async));
+						}, failWith(async));
+					}, failWith(async));
+				};
+
+				first.putString("contested", "from-first").then(_ -> finish(), failWith(async));
+				second.putString("contested", "from-second").then(_ -> {
+					second.putString("only-second", "visible").then(_ -> finish(), failWith(async));
+				}, failWith(async));
+			}, failWith(async));
+		}, failWith(async));
+	}
+
 	private function failWith(async:Async):String->Void {
 		return function(message:String):Void {
 			Assert.fail(message);

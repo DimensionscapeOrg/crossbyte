@@ -185,29 +185,48 @@ proposal exists to avoid abstracting.
 
 **Encryption, quotas, eviction.** Real concerns, none of them storage's.
 
-## Open questions
+## Open questions, resolved
 
-**Where a native store lives on disk.** `File.applicationStorageDirectory`
-exists and is the obvious answer, but a server process and a desktop client
-want different things, and a name collision between two CrossByte apps on one
-machine is silent data mixing. Probably `open(name)` resolves under the
-application storage directory with the name as a subdirectory, but that needs
-stating rather than assuming.
+**Where a native store lives on disk.** `stores/<name>` under
+`File.applicationStorageDirectory`, which is what `open()` documents. The name
+is validated to letters, digits, `.`, `-` and `_`, so it is a legal file name
+and a legal IndexedDB name without either target escaping it into something the
+other would not recognise.
 
-**Whether `put` of a large value should stream.** The HTTP layer already
-streams responses. A store that takes a whole `ByteArray` cannot hold a value
-larger than memory, which is fine for a session and not for a cached asset.
-Worth deciding before the API is public rather than after.
+**Whether `keys()` is honest at scale.** It is not, on its own, so `forEach`
+sits beside it. IndexedDB is walked with a real cursor and the file backend
+reads one value at a time, so neither holds the store in memory; returning
+`false` stops the walk. `keys()` stays, because when the list *is* the answer a
+cursor is a worse way to ask. Neither promises an ordering, and promising one
+would mean sorting, which would mean holding every key -- the thing `forEach`
+exists to avoid.
 
-**Concurrency between two runtimes.** Two CrossByte runtimes in one process
-opening the same store, or two processes doing so. IndexedDB has its own
-answer; a file store needs one, and "last writer wins" is an answer only if it
-is written down.
+**Concurrency between two runtimes.** Last writer wins, per key, and that is
+now a tested claim rather than a hoped-for one. The file backend writes to a
+temporary file and renames, so an interleaved write yields one whole value or
+the other and never half of each; IndexedDB serialises its own transactions.
+`testTwoStoresOnOneNameDoNotCorruptEachOther` opens two stores over one name --
+which is what two runtimes look like to a backend -- writes the same key from
+both, and asserts the survivor is one of them entire. Which one is deliberately
+not promised.
 
-**Whether `keys()` is honest at scale.** Returning every key is fine for
-hundreds and wrong for millions. A cursor is the general answer and a heavier
-API. Possibly `keys()` stays and is documented as small-collection only, with a
-cursor added when something needs it.
+**Whether `put` of a large value should stream.** Decided: no, and this is the
+one that was resolved by argument rather than by code.
+
+Streaming into IndexedDB means chunking a value across several keys behind a
+manifest, because IndexedDB has no partial write. That is a second on-disk
+format with its own atomicity problem -- a half-written chunk set is exactly
+the corruption the rename discipline exists to prevent -- in service of values
+this store is not for. It holds sessions, caches and queues waiting for a
+reconnect; a cached asset larger than memory belongs in a file, and on the
+targets that have files, `File` is right there.
+
+The current bound is also honest, which is what makes leaving it acceptable. A
+value too large fails: IndexedDB reports a quota error and the file backend
+runs out of memory. Neither truncates, and neither reports success. If
+something real ever needs a value that will not fit in memory, the answer is a
+streaming API on `File` and a key in the store pointing at it -- not a store
+pretending to be a filesystem.
 
 ## Staging
 
@@ -269,7 +288,11 @@ included. The same mistake LZ4 was making in a page two commits earlier: handing
 back the container instead of the contents. Node could not have found it, and
 neither could any amount of reading.
 
-The four open questions are still open, and none of them blocked this. Streaming
-large values, cursors for `keys()`, and concurrency between two runtimes all
-remain future work; the on-disk location settled as `stores/<name>` under the
-application storage directory, which is what `open()` documents.
+All four questions are now answered, three of them in code -- `forEach` for
+iteration at scale, a test for the concurrency claim, and the on-disk location
+`open()` documents -- and one by deciding against it. Streaming large values
+would mean chunking behind a manifest on IndexedDB, which is a second format
+with its own atomicity problem, in service of values this store is not for.
+`putString` and `getString` landed as the helpers, and UTF-8 is the only
+encoding offered: anything richer would make this store choose a serialisation
+format, and a format is a compatibility promise.
