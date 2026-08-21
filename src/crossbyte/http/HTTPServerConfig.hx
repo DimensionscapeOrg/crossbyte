@@ -279,7 +279,7 @@ class HTTPServerConfig {
 		}
 
 		if (tlsEnabled) {
-			throw new ArgumentError("tlsEnabled is not supported on Node: terminating TLS needs sys.ssl, which hxnodejs does not provide. Put a TLS terminator in front, or run the server on a native target.");
+			throw new ArgumentError("tlsEnabled is not supported on Node yet. Node terminates TLS through tls.createServer, so this is a matter of how a certificate is named rather than whether one can be presented: tlsCertificatePath and tlsKeyPath are loaded through sys.ssl, which hxnodejs has not got. Until then, put a TLS terminator in front, or run the server on a native target.");
 		}
 		#end
 
