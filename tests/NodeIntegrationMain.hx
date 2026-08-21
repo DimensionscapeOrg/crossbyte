@@ -827,20 +827,12 @@ class NodeIntegrationMain extends Application {
 		// would have to be one that the hand-written peer also had.
 		wsListener = new ServerWebSocket();
 
-		// Constructing one is the whole assertion: it threw until now. Its
-		// `secure` property is not checked because it would say false -- the
-		// class calls super() with no argument and tracks __isSecure itself,
-		// so the inherited flag has never described a ServerWebSocket on any
-		// target.
-		var refusedSecure:String = null;
-
-		try {
-			new ServerWebSocket(true);
-		} catch (e:Dynamic) {
-			refusedSecure = Std.string(e);
-		}
-
-		check("a secure ServerWebSocket constructs on Node", refusedSecure == null, "threw: " + refusedSecure);
+		var secureWs = new ServerWebSocket(true);
+		check("a secure ServerWebSocket constructs on Node", true, "");
+		// The property, not a private flag. It read false on a secure server
+		// until the constructor stopped keeping its own copy of the answer.
+		check("a secure ServerWebSocket says it is secure", secureWs.secure, "secure reported false");
+		check("a plain ServerWebSocket says it is not", !wsListener.secure, "secure reported true");
 
 		wsListener.addEventListener(ServerSocketConnectEvent.CONNECT, function(event:ServerSocketConnectEvent):Void {
 			wsAccepted = cast event.socket;
