@@ -8,6 +8,7 @@ import utest.Runner;
  * through a service container; anywhere `CROSSBYTE_PG_HOST` is unset the cases
  * skip and the run stays green.
  */
+@:topologyExempt("One case, needing a live PostgreSQL server no other suite has. A group of one would say less than this does.")
 @:access(crossbyte.core.CrossByte)
 class PostgresIntegrationMain {
 	public static function main():Void {
