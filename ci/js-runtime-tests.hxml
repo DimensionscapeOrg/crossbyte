@@ -15,3 +15,4 @@
 -lib hxnodejs
 -main NodeIntegrationMain
 --js export/js-runtime-tests/runtime.js
+--macro crossbyte.test.SuiteCoverage.check()

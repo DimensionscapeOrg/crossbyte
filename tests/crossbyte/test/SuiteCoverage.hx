@@ -22,6 +22,7 @@ import sys.io.File;
  */
 class SuiteCoverage {
 	private static inline var SUITES:String = "tests/crossbyte/test/TestSuites.hx";
+	private static inline var PORTABLE:String = "tests/crossbyte/test/PortableSuite.hx";
 	private static inline var ROOT:String = "tests";
 
 	public static function check():Void {
@@ -35,18 +36,75 @@ class SuiteCoverage {
 		var source:String = File.getContent(SUITES);
 		var groups:Map<String, GroupBody> = __parseGroups(source);
 
+		// Every `tests/*Main.hx`, and which groups each one calls. Without
+		// this the checker could only see two entry points and believed any
+		// group the others called was dead -- while a group a main hand-listed
+		// around was invisible to it entirely. `JsTestMain` kept its own copy
+		// of the portable set for exactly that reason, and the two drifted.
+		var entries:Map<String, Array<String>> = __parseEntryPoints();
+
 		var everywhere:Map<String, Bool> = __closure(groups, "addAll");
 		var natively:Map<String, Bool> = __closure(groups, "addNativeSmoke");
 
 		var problems:Array<String> = [];
 
-		// A group nothing calls is dead weight that still looks registered.
+		// A group nothing calls is dead weight that still looks registered --
+		// but "nothing" now includes the entry points, not just other groups.
 		for (name in groups.keys()) {
 			if (name == "addAll" || name == "addNativeSmoke") {
 				continue;
 			}
-			if (!__isReferenced(groups, name)) {
-				problems.push('group $name is defined but no other group calls it, so nothing it registers ever runs');
+			if (!__isReferenced(groups, name) && !__isCalledByAnEntryPoint(entries, name)) {
+				problems.push('group $name is defined but nothing calls it -- no other group, and no tests/*Main.hx -- so nothing it registers ever runs');
+			}
+		}
+
+		// A main that lists cases itself is a second copy of a group, and a
+		// second copy is the thing that drifts. Registering through a named
+		// group instead puts the topology in one file the rest of this
+		// function can actually read.
+		for (main in entries.keys()) {
+			var path:String = ROOT + "/" + main + ".hx";
+
+			// Some entry points list cases on purpose: a harness that isolates
+			// one group at a time behind `-D subset_*`, a target working around
+			// a compiler defect in specific cases, a suite needing a live
+			// server. Those say so in metadata, with the reason, rather than
+			// being tolerated silently.
+			if (__isTopologyExempt(path)) {
+				continue;
+			}
+
+			var strays:Array<String> = __casesDeclaredIn(path);
+
+			if (strays.length > 0) {
+				problems.push('$main registers ${strays.length} case(s) directly (${strays[0]}${strays.length > 1 ? ", ..." : ""}).
+'
+					+ '      Put them in a TestSuites group and call that instead, so one list describes what runs where.');
+			}
+		}
+
+		// Anything an entry point runs through a group has to be reachable from
+		// addAll too, so no case ends up running on one target and nowhere else.
+		for (main in entries.keys()) {
+			for (group in entries.get(main)) {
+				for (test in __closure(groups, group).keys()) {
+					if (!everywhere.exists(test)) {
+						problems.push('$test runs from $main via $group but is not reachable from addAll, so no other target runs it');
+					}
+				}
+			}
+		}
+
+		// The portable set is a second list by necessity -- naming TestSuites
+		// from a JavaScript build compiles groups that reference a listening
+		// socket and a thread lock -- so the one thing that keeps it honest is
+		// this: it may only name cases the full suite also runs.
+		for (test in __casesDeclaredIn(PORTABLE)) {
+			if (!everywhere.exists(test)) {
+				problems.push('$test is in PortableSuite but not reachable from addAll, so it runs on the JavaScript targets and nowhere else.
+'
+					+ '      Register it in the TestSuites group for its subsystem as well.');
 			}
 		}
 
@@ -70,8 +128,51 @@ class SuiteCoverage {
 			}
 		}
 
+		if (Context.defined("suite_topology")) {
+			__report(groups, entries);
+		}
+
 		if (problems.length > 0) {
 			Context.error("Test suite coverage check failed:\n  - " + problems.join("\n  - "), Context.currentPos());
+		}
+	}
+
+	/**
+	 * Prints which entry points reach each case, under `-D suite_topology`.
+	 *
+	 * Three times in one week a green run turned out to be a suite that never
+	 * compiled the code under test: a case guarded to cpp read on the
+	 * interpreter, a case registered in addAll checked against the native
+	 * smoke suite, a class the interpreter cannot even reference. Each cost
+	 * an hour of reading TestSuites to answer a question the compiler already
+	 * knows the answer to. It can simply say.
+	 */
+	private static function __report(groups:Map<String, GroupBody>, entries:Map<String, Array<String>>):Void {
+		var reach:Map<String, Array<String>> = new Map();
+
+		for (main in entries.keys()) {
+			for (group in entries.get(main)) {
+				for (test in __closure(groups, group).keys()) {
+					if (!reach.exists(test)) {
+						reach.set(test, []);
+					}
+
+					if (reach.get(test).indexOf(main) < 0) {
+						reach.get(test).push(main);
+					}
+				}
+			}
+		}
+
+		var names:Array<String> = [for (k in reach.keys()) k];
+		names.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+
+		Sys.println("Test topology -- which entry points run each case:");
+
+		for (name in names) {
+			var mains:Array<String> = reach.get(name);
+			mains.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+			Sys.println("  " + name + "  <-  " + mains.join(", "));
 		}
 	}
 
@@ -136,6 +237,81 @@ class SuiteCoverage {
 		for (s in group.subs) {
 			__walk(groups, s, seen, out);
 		}
+	}
+
+	/**
+	 * Maps each `tests/*Main.hx` to the TestSuites groups it calls.
+	 */
+	private static function __parseEntryPoints():Map<String, Array<String>> {
+		var out:Map<String, Array<String>> = new Map();
+
+		for (entry in FileSystem.readDirectory(ROOT)) {
+			if (entry.length < 7 || entry.substr(entry.length - 7) != "Main.hx") {
+				continue;
+			}
+
+			var source:String = File.getContent(ROOT + "/" + entry);
+			var calls:Array<String> = [];
+			var call:EReg = ~/(?:TestSuites\.(add[A-Z][A-Za-z0-9_]*)|PortableSuite\.(add))/;
+			var rest:String = source;
+
+			while (call.match(rest)) {
+				var matched:String = call.matched(1);
+				calls.push(matched != null ? matched : "PortableSuite.add");
+				rest = call.matchedRight();
+			}
+
+			out.set(entry.substr(0, entry.length - 3), calls);
+		}
+
+		return out;
+	}
+
+	/**
+	 * Whether an entry point carries `@:topologyExempt("reason")`.
+	 *
+	 * The reason is required and never read: it is there so the next person
+	 * finds an argument rather than a bare opt-out.
+	 */
+	private static function __isTopologyExempt(path:String):Bool {
+		if (!FileSystem.exists(path)) {
+			return false;
+		}
+
+		return ~/@:topologyExempt\(\s*"[^"]+"\s*\)/.match(File.getContent(path));
+	}
+
+	private static function __isCalledByAnEntryPoint(entries:Map<String, Array<String>>, name:String):Bool {
+		for (calls in entries) {
+			for (c in calls) {
+				if (c == name) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * The cases a file registers with a literal `addCase`, which in an entry
+	 * point means a list kept outside TestSuites.
+	 */
+	private static function __casesDeclaredIn(path:String):Array<String> {
+		if (!FileSystem.exists(path)) {
+			return [];
+		}
+
+		var out:Array<String> = [];
+		var addCase:EReg = ~/addCase\(new ([A-Za-z0-9_\.]+)\(\)\)/;
+		var rest:String = File.getContent(path);
+
+		while (addCase.match(rest)) {
+			out.push(addCase.matched(1));
+			rest = addCase.matchedRight();
+		}
+
+		return out;
 	}
 
 	private static function __isReferenced(groups:Map<String, GroupBody>, name:String):Bool {
