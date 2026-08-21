@@ -1,11 +1,13 @@
 package crossbyte.net;
 
 // Not built for the browser. It wraps the Transport union across every transport CrossByte offers, most of which a page does not have; browser code connects with crossbyte.net.Socket directly.
-#if !js
+#if !(js && !nodejs)
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
+#if !js
 import crossbyte.ipc.LocalConnection;
+#end
 import crossbyte.net.Endpoint.parseURL;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.DatagramSocketDataEvent;
@@ -96,6 +98,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 
 				socket.connect(endpoint.address, endpoint.port);
 				nc;
+			#if !js
 			case LOCAL:
 				var connection = new LocalConnection();
 				connection.onData = onData;
@@ -105,6 +108,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				connection.readEnabled = readEnabled;
 				connection.connect(endpoint.address);
 				new NetConnectionAdapter(connection);
+			#end
 			default:
 				throw('Protocol error');
 				null;
@@ -249,6 +253,12 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return socket;
 	}
 
+	// The IPC transport, and only it. Node has the other three -- TCP,
+	// WebSocket and reliable datagram all run there -- but LocalConnection
+	// needs an operating-system IPC channel and shared memory, which it has
+	// not got. Protocol.LOCAL is therefore not a case that exists there
+	// rather than one that fails at runtime.
+	#if !js
 	/** Returns the wrapped local IPC transport when this connection uses `Protocol.LOCAL`. */
 	public static inline function toLocalConnection(connection:NetConnection):LocalConnection {
 		var local:LocalConnection = null;
@@ -267,6 +277,7 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 
 		return local;
 	}
+	#end
 
 	@:from
 	/** Wraps an existing TCP socket as a `NetConnection`. */
@@ -317,11 +328,13 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 		return nc;
 	}
 
+	#if !js
 	@:from
 	/** Wraps an existing local IPC transport as a `NetConnection`. */
 	public static inline function fromLocalConnection(localConnection:LocalConnection):NetConnection {
 		return fromINetConnection(localConnection);
 	}
+	#end
 }
 
 @:allow(crossbyte.net.NetConnection)

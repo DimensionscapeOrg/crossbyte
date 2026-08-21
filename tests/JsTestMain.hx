@@ -24,6 +24,8 @@ class JsTestMain {
 			runner.addCase(new crossbyte.db.DBParameterBindingTest());
 			runner.addCase(new crossbyte.db.PostgresWireTest());
 			runner.addCase(new crossbyte.db.SchemaMigratorTest());
+			runner.addCase(new crossbyte.rpc.RPCTest());
+			runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
 		});
 	}
 }

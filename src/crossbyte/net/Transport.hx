@@ -7,13 +7,15 @@ enum Transport {
 	// Only TCP survives in a browser, and there it is a WebSocket underneath.
 	// The rest need a listening socket, UDP, or an OS IPC channel, and a page
 	// has none of them.
-	#if !js
+	#if !(js && !nodejs)
 	/** Plain datagram socket transport. */
 	UDP(socket:DatagramSocket);
 	/** WebSocket transport. */
 	WEBSOCKET(socket:WebSocket);
 	/** Reliable datagram transport. */
 	RUDP(socket:ReliableDatagramSocket);
+	#end
+	#if !js
 	/** Local IPC transport. */
 	LOCAL(connection:crossbyte.ipc.LocalConnection);
 	#end
