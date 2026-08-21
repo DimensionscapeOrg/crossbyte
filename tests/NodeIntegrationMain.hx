@@ -15,6 +15,7 @@ import crossbyte.net.DatagramSocket;
 import crossbyte.net.ReliableDatagramServerSocket;
 import crossbyte.net.ReliableDatagramSocket;
 import crossbyte.net.ServerSocket;
+import crossbyte.net.ServerWebSocket;
 import crossbyte.net.Socket;
 import crossbyte.net.WebSocket;
 import crossbyte.sys.NativeProcess;
@@ -73,6 +74,9 @@ class NodeIntegrationMain extends Application {
 	private var rdServer:ReliableDatagramServerSocket;
 	private var rdClient:ReliableDatagramSocket;
 	private var rdAccepted:ReliableDatagramSocket;
+	private var wsListener:ServerWebSocket;
+	private var wsClient:WebSocket;
+	private var wsAccepted:WebSocket;
 
 	public function new() {
 		super();
@@ -820,10 +824,110 @@ class NodeIntegrationMain extends Application {
 			rdServer.close();
 		} catch (_:Dynamic) {}
 
+		startWebSocketServer2();
+	}
+
+	// ---- 9. crossbyte.net.ServerWebSocket accepting on Node --------------
+
+	private function startWebSocketServer2():Void {
+		// Both halves of the framing, talking to each other. The client stage
+		// above proved the client against an echo server written by hand from
+		// the specification; this proves the server, and a bug shared by both
+		// would have to be one that the hand-written peer also had.
+		wsListener = new ServerWebSocket();
+
+		var refusedSecure:String = null;
+
+		try {
+			new ServerWebSocket(true);
+		} catch (e:Dynamic) {
+			refusedSecure = Std.string(e);
+		}
+
+		check("a secure ServerWebSocket refuses on Node", refusedSecure != null && refusedSecure.indexOf("sys.ssl") >= 0,
+			refusedSecure == null ? "it did not refuse" : refusedSecure);
+
+		wsListener.addEventListener(ServerSocketConnectEvent.CONNECT, function(event:ServerSocketConnectEvent):Void {
+			wsAccepted = cast event.socket;
+			check("the server accepted a session", wsAccepted != null, "no socket on the event");
+			check("the server counts its sessions", wsListener.clientCount == 1, "clientCount " + wsListener.clientCount);
+
+			wsAccepted.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+				var request = wsAccepted.readUTFBytes(wsAccepted.bytesAvailable);
+				check("the server read a masked client frame", request == WS_SHORT, "got " + request);
+				wsAccepted.writeUTFBytes(request.toUpperCase());
+				wsAccepted.flush();
+			});
+		});
+
+		wsListener.bind(0, "127.0.0.1");
+		wsListener.listen();
+
+		waitForListenerPort(0);
+	}
+
+	private function waitForListenerPort(attempts:Int):Void {
+		if (wsListener.localPort > 0) {
+			connectToOwnServer();
+			return;
+		}
+
+		if (attempts > 200) {
+			check("the server bound a port", false, "still 0 after " + attempts + " tries");
+			stopWebSocketServer2();
+			return;
+		}
+
+		haxe.Timer.delay(function():Void {
+			waitForListenerPort(attempts + 1);
+		}, 5);
+	}
+
+	private function connectToOwnServer():Void {
+		wsClient = new WebSocket();
+
+		wsClient.addEventListener(Event.CONNECT, function(_):Void {
+			check("the client completed the upgrade against our own server", true, "");
+			wsClient.writeUTFBytes(WS_SHORT);
+			wsClient.flush();
+		});
+
+		wsClient.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent):Void {
+			check("the client reached our own server", false, "io error: " + e.text);
+			stopWebSocketServer2();
+		});
+
+		wsClient.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+			var reply = wsClient.readUTFBytes(wsClient.bytesAvailable);
+			// Unmasked on the way back: a server must not mask, and a client
+			// that could not tell the difference would read a masked frame as
+			// noise.
+			check("the client read the server's unmasked reply", reply == WS_SHORT.toUpperCase(), "got " + reply);
+			stopWebSocketServer2();
+		});
+
+		wsClient.connect("127.0.0.1", wsListener.localPort);
+	}
+
+	private function stopWebSocketServer2():Void {
+		try {
+			wsClient.close();
+		} catch (_:Dynamic) {}
+
+		if (wsAccepted != null) {
+			try {
+				wsAccepted.close();
+			} catch (_:Dynamic) {}
+		}
+
+		try {
+			wsListener.close();
+		} catch (_:Dynamic) {}
+
 		runSubprocess();
 	}
 
-	// ---- 9. NativeProcess over child_process -----------------------------
+	// ---- 10. NativeProcess over child_process ----------------------------
 
 	private function runSubprocess():Void {
 		var process = new NativeProcess();
