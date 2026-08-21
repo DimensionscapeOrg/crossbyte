@@ -1,6 +1,8 @@
 package crossbyte.utils;
 
+#if (cpp || hl || java || cs)
 import haxe.atomic.AtomicInt;
+#end
 import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 
@@ -17,12 +19,36 @@ import haxe.io.Bytes;
  */
 final class Random {
 
-	/**
-	 * Shared atomic seed for static pseudo-random operations.
-	 * 
-	 * @see `reseed`
-	 */
-	public static final seed:AtomicInt = new AtomicInt(defaultSeed());
+	// The shared seed for the static methods.
+	//
+	// An AtomicInt where there are threads to race, and a plain Int where
+	// there are not -- the same reasoning as NoMutex. That is not a
+	// micro-optimisation: Haxe implements AtomicInt on js with a
+	// SharedArrayBuffer, which a page is only given when it is cross-origin
+	// isolated. This is a static initialiser, so an ordinary page did not get
+	// a degraded Random -- it threw "SharedArrayBuffer is not defined" while
+	// loading the bundle, before a line of application code ran. The
+	// interpreter has no atomics either, which is why the one suite that runs
+	// everything could not so much as name this class.
+	//
+	// Private now. It was public and nothing outside this class ever read it;
+	// `reseed` is the supported way to set it, and it does not vary by target.
+	#if (cpp || hl || java || cs)
+	@:noCompletion private static var __shared:AtomicInt = new AtomicInt(defaultSeed());
+	#else
+	@:noCompletion private static var __shared:Int = defaultSeed();
+	#end
+
+	@:noCompletion private static inline function __takeSeed():Int {
+		#if (cpp || hl || java || cs)
+		// Fetch-and-add: the value before the increment.
+		return __shared.add(1);
+		#else
+		var current:Int = __shared;
+		__shared = (current + 1) | 0;
+		return current;
+		#end
+	}
 
 	/**
 	 * Reseeds the shared static PRNG.
@@ -30,7 +56,13 @@ final class Random {
 	 * @param v The new seed value. If `0`, a default seed is used instead.
 	 */
 	public static inline function reseed(v:Int):Void {
-		seed.store(v != 0 ? v : 0x9E3779B9);
+		var value:Int = v != 0 ? v : 0x9E3779B9;
+
+		#if (cpp || hl || java || cs)
+		__shared.store(value);
+		#else
+		__shared = value;
+		#end
 	}
 
 	/**
@@ -39,8 +71,7 @@ final class Random {
 	 * @return A 32-bit pseudo-random integer.
 	 */
 	public static inline function nextU32():Int {
-		var n:Int = seed.add(1);
-		return __mix32(n);
+		return __mix32(__takeSeed());
 	}
 
 	/**
