@@ -1,4 +1,9 @@
+import crossbyte._internal.php.PHPBridge;
+import crossbyte._internal.php.PHPMode;
+import crossbyte._internal.php.PHPRequest;
+import crossbyte._internal.php.PHPResponse;
 import crossbyte.core.Application;
+import crossbyte.io.ByteArray;
 import crossbyte.events.Event;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.IOErrorEvent;
@@ -62,6 +67,10 @@ class NodeIntegrationMain extends Application {
 	private var echoServer:js.node.net.Server;
 	private var listener:ServerSocket;
 	private var accepted:Socket;
+	private var phpBackend:ServerSocket;
+	private var phpPeer:Socket;
+	private var phpAnswered:Bool = false;
+	private var silentPeer:Socket;
 	private var webServer:HTTPServer;
 	private var webRoot:String;
 	private var wsServer:js.node.net.Server;
@@ -374,6 +383,10 @@ class NodeIntegrationMain extends Application {
 		config.rootDirectory = new File(webRoot);
 		config.directoryIndex = ["index.html"];
 
+		// This refused until the bridge stopped reading synchronously: Node has
+		// no blocking socket read, so PHP could not be served here at all and
+		// validate() said so at startup. Stage 12 is the demonstration that it
+		// now can, and this is the config-level half of it.
 		var refusedPhp:String = null;
 
 		try {
@@ -384,8 +397,7 @@ class NodeIntegrationMain extends Application {
 		}
 
 		config.phpEnabled = false;
-		check("a PHP-enabled config refuses on Node", refusedPhp != null && refusedPhp.indexOf("PHP") >= 0,
-			refusedPhp == null ? "it did not refuse" : refusedPhp);
+		check("a PHP-enabled config is accepted on Node", refusedPhp == null, "still refused: " + refusedPhp);
 
 		// Binds and listens in its constructor; calling bind() again here is
 		// a second bind on the same socket, which a native target refuses
@@ -1054,7 +1066,7 @@ class NodeIntegrationMain extends Application {
 
 		process.addEventListener(NativeProcessEvent.EXIT, function(_):Void {
 			check("NativeProcess wrote to stdin", out.indexOf("[through-stdin]") >= 0, "got " + out);
-			report();
+			startPhpBackend();
 		});
 
 		process.start(new NativeProcessStartupInfo("node", ["-e", echoStdinScript()]));
@@ -1083,6 +1095,180 @@ class NodeIntegrationMain extends Application {
 		var q = String.fromCharCode(39);
 		return "let b=" + q + q + ";" + "process.stdin.on(" + q + "data" + q + ",c=>b+=c);" + "process.stdin.on(" + q + "end" + q + ",()=>process.stdout.write("
 			+ q + "[" + q + "+b+" + q + "]" + q + "))";
+	}
+
+	// ---- 12. the PHP bridge over Node's sockets --------------------------
+	//
+	// This one could not exist until the bridge stopped reading synchronously.
+	// Node has no blocking socket read, so PHP was refused outright at config
+	// validation; the refusal is gone and this is what replaces it.
+	//
+	// The backend is a socket that speaks FastCGI, not php-fpm. What is under
+	// test is the bridge, and standing up a real PHP to test it would make this
+	// a test of whether CI has PHP installed.
+
+	private function startPhpBackend():Void {
+		phpBackend = new ServerSocket();
+
+		phpBackend.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent):Void {
+			phpPeer = e.socket;
+
+			phpPeer.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
+				// The request arrives as records this test does not need to
+				// parse -- any of it means the bridge sent something.
+				if (phpAnswered) {
+					return;
+				}
+
+				phpAnswered = true;
+				phpPeer.readUTFBytes(phpPeer.bytesAvailable);
+
+				var payload = "Status: 201 Created
+Content-Type: text/plain
+X-From: fastcgi
+
+hello from php";
+				var body = ByteArray.fromBytes(haxe.io.Bytes.ofString(payload));
+				var stdout = fcgiRecord(6, body);
+
+				// Deliberately torn in half, mid-record. A response does not
+				// arrive in one piece and the blocking reader never had to care,
+				// because it simply asked the socket for more; an event-driven
+				// one is handed whatever turned up and has to carry the
+				// remainder. Splitting inside the header is the case that breaks
+				// a parser that assumes it can at least read eight bytes.
+				var firstHalf = new ByteArray();
+				firstHalf.writeBytes(stdout, 0, 3);
+				phpPeer.writeBytes(firstHalf, 0, firstHalf.length);
+				phpPeer.flush();
+
+				haxe.Timer.delay(function():Void {
+					var rest = new ByteArray();
+					rest.writeBytes(stdout, 3, stdout.length - 3);
+					rest.writeBytes(fcgiRecord(3, endRequestBody()), 0, 8 + 8);
+					phpPeer.writeBytes(rest, 0, rest.length);
+					phpPeer.flush();
+				}, 30);
+			});
+		});
+
+		phpBackend.bind(0, "127.0.0.1");
+		phpBackend.listen();
+
+		crossByte.addEventListener(TickEvent.TICK, waitForPhpPort);
+	}
+
+	private function waitForPhpPort(_):Void {
+		if (phpBackend.localPort == 0) {
+			return;
+		}
+
+		crossByte.removeEventListener(TickEvent.TICK, waitForPhpPort);
+		runPhp();
+	}
+
+	private function runPhp():Void {
+		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", phpBackend.localPort), "", ["index.php"], 5);
+
+		var started:Float = haxe.Timer.stamp();
+		var future = bridge.execute(phpRequest());
+
+		check("PHPBridge.execute returned before the backend answered", !future.completed, "it had already settled");
+
+		future.then(function(response:PHPResponse):Void {
+			check("PHP response carried the CGI status", response.status == 201, "got " + response.status);
+			check("PHP response carried a header", response.headers.get("x-from") == "fastcgi", "got " + response.headers.get("x-from"));
+			check("PHP response carried the body", response.body.toString() == "hello from php", "got " + response.body.toString());
+			check("PHP response reassembled a torn record", haxe.Timer.stamp() - started >= 0.02, "answered before the second half was sent");
+			phpBackend.close();
+			runPhpTimeout();
+		}, function(message:String):Void {
+			check("PHP exchange succeeded", false, message);
+			phpBackend.close();
+			runPhpTimeout();
+		});
+	}
+
+	private function runPhpTimeout():Void {
+		// The deadline, on Node. Native drives it from a tick; Node has no tick
+		// to read on, so the sweep is the only thing that can end this exchange.
+		var silent = new ServerSocket();
+
+		// The accepted socket is held, which is the whole point of this stage.
+		// Dropped on the floor it is collectable, Node tears the connection
+		// down, and the bridge reports a closed peer -- a real failure, but not
+		// the one under test. A backend that accepted and then said nothing is
+		// what has to be survived here.
+		silent.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent):Void {
+			silentPeer = e.socket;
+		});
+
+		silent.bind(0, "127.0.0.1");
+		silent.listen();
+
+		var armed:Bool = false;
+
+		crossByte.addEventListener(TickEvent.TICK, function await(_):Void {
+			if (silent.localPort == 0 || armed) {
+				return;
+			}
+
+			armed = true;
+			crossByte.removeEventListener(TickEvent.TICK, await);
+
+			var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", silent.localPort), "", ["index.php"], 0.4);
+			var started:Float = haxe.Timer.stamp();
+
+			bridge.execute(phpRequest()).then(function(_:PHPResponse):Void {
+				check("a silent PHP backend failed instead of hanging", false, "it produced a response");
+				silent.close();
+				report();
+			}, function(message:String):Void {
+				var elapsed:Float = haxe.Timer.stamp() - started;
+				check("a silent PHP backend failed instead of hanging", message.indexOf("did not respond within") >= 0, "got " + message);
+				check("the PHP deadline was honoured on Node", elapsed < 3, "took " + elapsed + "s");
+				silent.close();
+				report();
+			});
+		});
+	}
+
+	private function phpRequest():PHPRequest {
+		return {
+			requestMethod: "GET",
+			scriptFilename: "/var/www/index.php",
+			scriptName: "/index.php",
+			requestUri: "/index.php",
+			queryString: "",
+			contentType: "",
+			remoteAddr: "127.0.0.1",
+			serverName: "localhost",
+			serverPort: "80",
+			extraHeaders: new haxe.ds.StringMap(),
+			body: haxe.io.Bytes.alloc(0)
+		};
+	}
+
+	private static function fcgiRecord(type:Int, content:ByteArray):ByteArray {
+		var record = new ByteArray();
+		record.writeByte(1);
+		record.writeByte(type);
+		record.writeByte(0);
+		record.writeByte(1);
+		record.writeByte((content.length >> 8) & 0xFF);
+		record.writeByte(content.length & 0xFF);
+		record.writeByte(0);
+		record.writeByte(0);
+		record.writeBytes(content, 0, content.length);
+		return record;
+	}
+
+	private static function endRequestBody():ByteArray {
+		var body = new ByteArray();
+		for (_ in 0...8) {
+			body.writeByte(0);
+		}
+		return body;
 	}
 
 	// ---- reporting --------------------------------------------------------

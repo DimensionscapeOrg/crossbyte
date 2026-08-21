@@ -53,6 +53,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
 		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
 		runner.addCase(new crossbyte.http.RouterServerTest());
+		runner.addCase(new crossbyte.http.HTTPPhpTest());
 		#end
 		runner.addCase(new crossbyte._internal.php.PHPTimeoutTest());
 		runner.addCase(new crossbyte.http.HTTPSupportTest());

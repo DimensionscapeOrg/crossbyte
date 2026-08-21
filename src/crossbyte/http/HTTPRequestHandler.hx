@@ -2177,44 +2177,63 @@ final class HTTPRequestHandler extends EventDispatcher {
 			body: body
 		};
 
-		var phpRes:PHPResponse;
-		try {
-			phpRes = __php.execute(phpReq);
-		} catch (e:crossbyte._internal.php.PHPTimeout) {
-			// 504 rather than 502, and the distinction is not pedantry: a
-			// backend that answered badly and one that did not answer are
-			// different faults with different fixes, and only one of them is
-			// still consuming something on the other side. Logged for the
-			// operator, because a client cannot be told which upstream is
-			// wedged.
-			Logger.error("PHP backend timed out: " + e.toString(), ["path" => __requestPath]);
-			__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", true);
-			return;
-		} catch (e:Dynamic) {
-			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", true);
-			return;
-		}
+		// The tail of this method is now the callback, which is the whole of
+		// the handler-side change. execute() used to block here -- inside a
+		// tick, so for the duration of a PHP script nothing else on this
+		// runtime ran: no other request read, no response written, no timer
+		// advanced. maxConnections defaults to 256, so one slow page stalled
+		// up to 255 clients that had nothing to do with it.
+		__php.execute(phpReq).then(function(phpRes:PHPResponse):Void {
+			// The connection may have gone while PHP was thinking -- a client
+			// that gave up, or a drain() closing us down. __dispatchResponse
+			// guards against a second response on one request, but writing
+			// into a socket that has moved on to the next one would not be a
+			// second response, it would be a stray one.
+			if (__origin == null || !__origin.connected || __responded) {
+				return;
+			}
 
-		var ctype:String = phpRes.headers.exists("content-type") ? phpRes.headers.get("content-type") : "text/html; charset=utf-8";
+			var ctype:String = phpRes.headers.exists("content-type") ? phpRes.headers.get("content-type") : "text/html; charset=utf-8";
 
-		var out:Array<URLRequestHeader> = [];
-		if (phpRes.headers.exists("cache-control")) {
-			out.push(new URLRequestHeader("Cache-Control", phpRes.headers.get("cache-control")));
-		}
-		if (phpRes.headers.exists("location")) {
-			out.push(new URLRequestHeader("Location", phpRes.headers.get("location")));
-		}
-		if (phpRes.headers.exists("set-cookie")) {
-			for (cookie in phpRes.headers.get("set-cookie").split("\n")) {
-				var c:String = StringTools.trim(cookie);
-				if (c != "") {
-					out.push(new URLRequestHeader("Set-Cookie", c));
+			var out:Array<URLRequestHeader> = [];
+			if (phpRes.headers.exists("cache-control")) {
+				out.push(new URLRequestHeader("Cache-Control", phpRes.headers.get("cache-control")));
+			}
+			if (phpRes.headers.exists("location")) {
+				out.push(new URLRequestHeader("Location", phpRes.headers.get("location")));
+			}
+			if (phpRes.headers.exists("set-cookie")) {
+				for (cookie in phpRes.headers.get("set-cookie").split("
+")) {
+					var c:String = StringTools.trim(cookie);
+					if (c != "") {
+						out.push(new URLRequestHeader("Set-Cookie", c));
+					}
 				}
 			}
-		}
 
-		var bodyBytes:ByteArray = phpRes.body;
-		__dispatchResponseBytes(phpRes.status, __statusMessage(phpRes.status), out, ctype, bodyBytes, (__method == "HEAD" || headOnly));
+			var bodyBytes:ByteArray = phpRes.body;
+			__dispatchResponseBytes(phpRes.status, __statusMessage(phpRes.status), out, ctype, bodyBytes, (__method == "HEAD" || headOnly));
+		}, function(message:String):Void {
+			if (__origin == null || !__origin.connected || __responded) {
+				return;
+			}
+
+			// 504 against 502, distinguished by the message the bridge builds
+			// from PHPTimeout. A backend that answered badly and one that did
+			// not answer are different faults with different fixes, and only
+			// one of them still has something wedged on the other side. The
+			// operator gets the detail; a client cannot be told which upstream
+			// is stuck.
+			if (message != null && message.indexOf("did not respond within") >= 0) {
+				Logger.error("PHP backend timed out: " + message, ["path" => __requestPath]);
+				__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", true);
+				return;
+			}
+
+			Logger.error("PHP backend failed: " + message, ["path" => __requestPath]);
+			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", true);
+		});
 	}
 
 	@:noCompletion private inline function __extractPathOnly():String {

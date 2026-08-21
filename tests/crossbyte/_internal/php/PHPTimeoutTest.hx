@@ -1,7 +1,7 @@
 package crossbyte._internal.php;
 
 import crossbyte._internal.php.PHPBridge;
-import crossbyte._internal.php.PHPTimeout;
+import crossbyte.core.CrossByte;
 import haxe.io.Bytes;
 import utest.Assert;
 
@@ -26,11 +26,78 @@ class PHPTimeoutTest extends utest.Test {
 		listener.listen(1);
 
 		var port:Int = listener.host().port;
-		// Deliberately short. What is under test is that a bound exchange ends
-		// at all, not the accuracy of the bound.
 		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", port), "", ["index.php"], 0.5);
 
-		var request:PHPRequest = {
+		var started:Float = Sys.time();
+		var future = bridge.execute(request());
+		var returned:Float = Sys.time() - started;
+
+		// The assertion the blocking bridge could not have: execute() comes
+		// back at once. It used to sit here for the whole exchange, inside the
+		// tick, so a slow page stopped every other connection this runtime was
+		// serving. Half a second is the deadline; returning well inside it is
+		// the proof that the wait moved off the call.
+		Assert.isTrue(returned < 0.25, "execute() blocked for " + returned + "s instead of returning a Future");
+
+		var runtime = CrossByte.current();
+		var deadline:Float = Sys.time() + 15;
+
+		while (!future.completed && Sys.time() < deadline) {
+			runtime.pump(1 / 60, 0.0);
+			Sys.sleep(0.005);
+		}
+
+		var elapsed:Float = Sys.time() - started;
+
+		try {
+			listener.close();
+		} catch (_:Dynamic) {}
+
+		Assert.isTrue(future.completed, "the exchange never settled");
+		Assert.isFalse(future.succeeded, "a backend that said nothing produced a response");
+		Assert.isTrue(future.error.indexOf("did not respond within") >= 0, "not reported as a timeout: " + future.error);
+		Assert.isTrue(elapsed < 10, "the exchange took " + elapsed + "s, which is not a deadline");
+	}
+
+	public function testTheRuntimeKeepsTickingWhilePhpIsThinking():Void {
+		var listener = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(1);
+
+		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", listener.host().port), "", ["index.php"], 0.5);
+		var future = bridge.execute(request());
+
+		// The point of the whole change, stated as a measurement: the runtime
+		// goes on dispatching ticks while an exchange is outstanding. Under the
+		// blocking bridge this loop could not have run at all -- execute() had
+		// not returned yet.
+		var runtime = CrossByte.current();
+		var ticks:Int = 0;
+		var onTick = function(_):Void {
+			ticks++;
+		};
+
+		runtime.addEventListener(crossbyte.events.TickEvent.TICK, onTick);
+
+		var deadline:Float = Sys.time() + 15;
+
+		while (!future.completed && Sys.time() < deadline) {
+			runtime.pump(1 / 60, 0.0);
+			Sys.sleep(0.005);
+		}
+
+		runtime.removeEventListener(crossbyte.events.TickEvent.TICK, onTick);
+
+		try {
+			listener.close();
+		} catch (_:Dynamic) {}
+
+		Assert.isTrue(ticks > 1, "the runtime ticked " + ticks + " times while PHP was thinking");
+		Assert.isTrue(future.completed, "the exchange never settled");
+	}
+
+	private function request():PHPRequest {
+		return {
 			requestMethod: "GET",
 			scriptFilename: "/tmp/index.php",
 			scriptName: "/index.php",
@@ -43,30 +110,6 @@ class PHPTimeoutTest extends utest.Test {
 			extraHeaders: new haxe.ds.StringMap(),
 			body: Bytes.alloc(0)
 		};
-
-		var started:Float = Sys.time();
-		var timedOut:Bool = false;
-		var other:String = null;
-
-		try {
-			bridge.execute(request);
-		} catch (e:PHPTimeout) {
-			timedOut = true;
-		} catch (e:Dynamic) {
-			other = Std.string(e);
-		}
-
-		var elapsed:Float = Sys.time() - started;
-
-		try {
-			listener.close();
-		} catch (_:Dynamic) {}
-
-		Assert.isTrue(timedOut, other != null ? "expected a timeout, got: " + other : "the exchange did not time out");
-		// The upper bound is the assertion that matters. Without a deadline
-		// this call does not return at all, so any finite number here is the
-		// difference between a stalled request and a stalled server.
-		Assert.isTrue(elapsed < 15, "the exchange took " + elapsed + "s, which is not a deadline");
 	}
 
 	public function testTheDeadlineCanBeTurnedOff():Void {

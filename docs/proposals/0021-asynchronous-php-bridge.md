@@ -1,6 +1,6 @@
 # Proposal 0021 — An asynchronous PHP bridge
 
-**Status:** Draft
+**Status:** Implemented, except step 5
 
 **Motivation:** `PHPBridge.execute()` returns a response. Everything below
 follows from that one decision, and none of it is a PHP problem.
@@ -69,11 +69,19 @@ needs a blocking read to exist at all.
 
 ## The change
 
-`execute()` stops returning a response and hands it to a callback:
+`execute()` stops returning a response and hands back a `Future` for one:
 
 ```haxe
-public function execute(req:PHPRequest, onResponse:PHPResponse->Void, onError:String->Void):Void
+public function execute(req:PHPRequest):Future<PHPResponse>
 ```
+
+This proposal was drafted with a callback pair -- `onResponse` and `onError` as
+arguments -- and that is not what was built. `crossbyte.Future<T>` exists now,
+promoted out of `RPCResponse` where the same shape had already been written
+once. Taking callbacks here would have given the framework two ways of saying
+"later", differing only in which part of the codebase you were standing in. The
+handler consumes it as `.then(onResponse, onError)`, so the call site reads
+almost exactly as drafted; what changed is that the value has a name.
 
 Underneath, the bridge keeps a table of in-flight exchanges. Each holds its
 socket, its accumulated `STDOUT`, and a deadline. On the native targets the
@@ -166,13 +174,24 @@ logging is commented out. A rewrite should either log them or say why not, and
    and never replies -- no PHP needed to reproduce the outage. Without the
    deadline that test does not fail, it hangs: the suite was killed at 45
    seconds and finishes in 14 with it.
-2. **`execute()` takes callbacks; the native bridge drives from the tick.**
-   No new capability, same behaviour, asynchronously. The suite is the check:
-   every existing PHP test must pass unchanged.
-3. **`__servePhp`'s tail becomes the callback.** Handler-side only.
-4. **Node.** The transport underneath, and lifting the refusal in
-   `HTTPServerConfig.validate()`.
-5. **Reuse and streaming**, separately, if measurement justifies them.
+2. ~~**`execute()` returns a `Future`; the native bridge drives from the tick.**~~
+   Done, with one correction to the plan above: "every existing PHP test must
+   pass unchanged" could not hold, because the deadline test from step 1 was
+   written against a call that threw. It now pumps the runtime until the future
+   settles -- and gained the two assertions the blocking bridge made impossible:
+   that `execute()` returns before the deadline elapses, and that the runtime
+   goes on ticking while an exchange is outstanding. Parsing moved to
+   `PHPExchange`, which is fed bytes and knows nothing about where they came
+   from; that is what lets the native and Node transports share one parser.
+3. ~~**`__servePhp`'s tail becomes the callback.**~~ Done. Handler-side only, as
+   drafted.
+4. ~~**Node.**~~ Done. The refusal in `HTTPServerConfig.validate()` is gone, and
+   with it the last thing the `Launch` path needed from `sys.io.Process` --
+   Node uses `crossbyte.sys.NativeProcess` instead, which this framework already
+   ships. PHP is served on Node end to end, against a FastCGI backend stood up
+   in the suite.
+5. **Reuse and streaming**, separately, if measurement justifies them. Not done,
+   and still gated on measurement rather than on appetite.
 
 Step 1 is independently valuable and independently shippable. Steps 2 and 3
 have to land together to keep the suite green. Step 4 is the one this proposal
@@ -200,3 +219,32 @@ What is not covered today and has to be:
 
 CI runs the HTTP suite on cpp only (`#if cpp` in `TestSuites.addHttp`), so
 these belong there, and a run on interp or jvm will not see them.
+
+### What the tests ended up proving
+
+All four are covered, but not equally, and the difference is worth recording.
+
+- **A backend that accepts and never replies.** Covered on both transports, and
+  the native case fails loudly rather than hanging: without the deadline the
+  suite does not go red, it stops.
+- **A record header split across two reads.** Covered on Node, torn at three
+  bytes -- inside the eight-byte header, which is the split that breaks a parser
+  assuming it can always read a whole one.
+- **A second request pipelined while PHP is outstanding.** Covered, and load
+  bearing: with the handler's request-boundary guard disabled the static
+  response overtakes the PHP one and the test goes red. The first version of
+  this test did **not** have that property -- it sent both requests in a single
+  write, which the parse loop defers anyway, so it passed with the guard
+  disabled and proved nothing. Sending the second request as its own segment,
+  after PHP is genuinely in flight, is what puts a fresh parse in front of an
+  unanswered request.
+- **A client that closes mid-exchange.** Covered as a survival property -- the
+  server still answers a later client -- but *not* load bearing: with the
+  staleness guard removed it still passes, because a write into a socket that
+  has already gone is absorbed rather than fatal. Recorded here rather than
+  quietly counted as coverage.
+
+The general point, which cost a rebuild to learn: a test written against an
+asynchronous hazard can pass for reasons that have nothing to do with the
+hazard. Disabling the guard is the cheapest way to find out which kind you
+wrote.
