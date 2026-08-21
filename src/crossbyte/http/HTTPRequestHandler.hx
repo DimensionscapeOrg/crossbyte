@@ -2180,6 +2180,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var phpRes:PHPResponse;
 		try {
 			phpRes = __php.execute(phpReq);
+		} catch (e:crossbyte._internal.php.PHPTimeout) {
+			// 504 rather than 502, and the distinction is not pedantry: a
+			// backend that answered badly and one that did not answer are
+			// different faults with different fixes, and only one of them is
+			// still consuming something on the other side. Logged for the
+			// operator, because a client cannot be told which upstream is
+			// wedged.
+			Logger.error("PHP backend timed out: " + e.toString(), ["path" => __requestPath]);
+			__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", true);
+			return;
 		} catch (e:Dynamic) {
 			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", true);
 			return;
