@@ -1,6 +1,7 @@
 package crossbyte.utils;
 
 import haxe.atomic.AtomicInt;
+import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 
 /**
@@ -223,11 +224,18 @@ final class Random {
 
 	@:pure
 	@:noCompletion private static inline function __mix32(z:Int):Int {
+		// Through mul32 rather than `*`, because these two constants are chosen
+		// to overflow and the overflow is the mixing. Where an Int is 32 bits
+		// that wrap is free; on JavaScript an Int is a double and there is no
+		// wrap, so the same seed produced a different sequence -- which is the
+		// one promise this class makes, in its own words: "reproducible
+		// results when seeded". Measured at seed 12345, cpp and Node agreed on
+		// nothing.
 		z += 0x9E3779B9;
 		z ^= (z >>> 16);
-		z *= 0x85EBCA6B;
+		z = Hash.mul32(z, 0x85EBCA6B);
 		z ^= (z >>> 13);
-		z *= 0xC2B2AE35;
+		z = Hash.mul32(z, 0xC2B2AE35);
 		z ^= (z >>> 16);
 		return z;
 	}

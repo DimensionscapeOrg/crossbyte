@@ -214,6 +214,31 @@ class RPCTest extends utest.Test {
 		Assert.equals("player-42", response.result);
 	}
 
+	public function testPerfectHashDispatchReachesEveryMethod():Void {
+		var link = LinkedConnection.pair();
+		var handler = new WideHandler();
+		var commands = new WideCommands();
+		new RPCSession(link.server, null, handler);
+		new RPCSession<WideCommands>(link.client, commands);
+
+		// Through the typed surface, which is the lane the macro generates:
+		// `call` would take the runtime lane and never reach the perfect hash.
+		commands.m01(1);
+		commands.m02(2);
+		commands.m03(3);
+		commands.m04(4);
+		commands.m05(5);
+		commands.m06(6);
+		commands.m07(7);
+		commands.m08(8);
+		commands.m09(9);
+		commands.m10(10);
+
+		Assert.equals(10, handler.seen.length);
+		Assert.equals("m01:1", handler.seen[0]);
+		Assert.equals("m10:10", handler.seen[9]);
+	}
+
 	public function testRuntimeMessagesDoNotHitCompileTimeHandlerWhenOpcodeCollides():Void {
 		var link = LinkedConnection.pair();
 		var compileHandler = new TestHandler();
@@ -262,6 +287,82 @@ private class TestCommands extends RPCCommands {
 	@:rpc public function sendData(id:Int, enabled:Bool, ratio:Float, name:String, bytes:Bytes, ?tag:String):Void {}
 
 	@:rpc public function getName(id:Int):RPCResponse<String> {}
+}
+
+private class WideCommands extends RPCCommands {
+	public function new() {}
+
+	@:rpc public function m01(v:Int):Void {}
+
+	@:rpc public function m02(v:Int):Void {}
+
+	@:rpc public function m03(v:Int):Void {}
+
+	@:rpc public function m04(v:Int):Void {}
+
+	@:rpc public function m05(v:Int):Void {}
+
+	@:rpc public function m06(v:Int):Void {}
+
+	@:rpc public function m07(v:Int):Void {}
+
+	@:rpc public function m08(v:Int):Void {}
+
+	@:rpc public function m09(v:Int):Void {}
+
+	@:rpc public function m10(v:Int):Void {}
+}
+
+// Ten methods, because the handler macro switches from a direct switch to a
+// generated perfect hash above eight -- and that path had no test on any
+// target. It builds its tables at compile time on the eval interpreter and
+// emits the same arithmetic to run on the target, so the two have to agree
+// about what an opcode hashes to. They did not on js: every index differed,
+// and every dispatch would have thrown "Unknown RPC op".
+private class WideHandler extends RPCHandler {
+	public var seen:Array<String> = [];
+
+	public function new() {}
+
+	@:rpc public function m01(v:Int):Void {
+		seen.push("m01:" + v);
+	}
+
+	@:rpc public function m02(v:Int):Void {
+		seen.push("m02:" + v);
+	}
+
+	@:rpc public function m03(v:Int):Void {
+		seen.push("m03:" + v);
+	}
+
+	@:rpc public function m04(v:Int):Void {
+		seen.push("m04:" + v);
+	}
+
+	@:rpc public function m05(v:Int):Void {
+		seen.push("m05:" + v);
+	}
+
+	@:rpc public function m06(v:Int):Void {
+		seen.push("m06:" + v);
+	}
+
+	@:rpc public function m07(v:Int):Void {
+		seen.push("m07:" + v);
+	}
+
+	@:rpc public function m08(v:Int):Void {
+		seen.push("m08:" + v);
+	}
+
+	@:rpc public function m09(v:Int):Void {
+		seen.push("m09:" + v);
+	}
+
+	@:rpc public function m10(v:Int):Void {
+		seen.push("m10:" + v);
+	}
 }
 
 private class TestHandler extends RPCHandler {
