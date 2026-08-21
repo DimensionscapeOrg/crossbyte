@@ -44,7 +44,7 @@ class HTTPServer extends ServerSocket {
 		#if (!java && !jvm && !nodejs)
 		if (config.tlsEnabled) {
 			try {
-				setCertificate(sys.ssl.Certificate.loadFile(config.tlsCertificatePath), sys.ssl.Key.loadFile(config.tlsKeyPath));
+				setCertificate(crossbyte.net.Certificate.fromFile(config.tlsCertificatePath), crossbyte.net.Key.fromFile(config.tlsKeyPath));
 			} catch (e:Dynamic) {
 				Logger.error('HTTP Server failed to load TLS material: ' + e);
 				throw e;
