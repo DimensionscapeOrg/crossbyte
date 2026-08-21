@@ -176,6 +176,55 @@ class IndexedDBStore implements IStoreBackend {
 		};
 	}
 
+	public function forEach(prefix:Null<String>, visit:(key:String, value:ByteArray) -> Bool, done:String->Void):Void {
+		var request:Request;
+
+		try {
+			// A real cursor, which is the whole reason this method exists
+			// separately from keys(): IndexedDB hands over one record at a
+			// time and never materialises the store in memory.
+			request = __transaction(false).objectStore(OBJECT_STORE).openCursor();
+		} catch (e:Dynamic) {
+			done("Could not iterate the store: " + Std.string(e));
+			return;
+		}
+
+		request.onsuccess = function(_):Void {
+			var cursor:Dynamic = request.result;
+
+			// Null cursor means the end, not an error.
+			if (cursor == null) {
+				done(null);
+				return;
+			}
+
+			var key:String = Std.string(cursor.key);
+
+			if (prefix != null && !StringTools.startsWith(key, prefix)) {
+				// `continue` is a Haxe keyword, so IndexedDB's advance method
+				// cannot be named directly.
+				js.Syntax.code("{0}.continue()", cursor);
+				return;
+			}
+
+			var view:Uint8Array = cursor.value;
+			var value = ByteArray.fromBytes(haxe.io.Bytes.ofData(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)));
+
+			if (visit(key, value)) {
+				js.Syntax.code("{0}.continue()", cursor);
+				return;
+			}
+
+			// Stopping early means simply not asking for the next record. The
+			// transaction closes itself once nothing is pending.
+			done(null);
+		};
+
+		request.onerror = function(_):Void {
+			done("Could not iterate the store: " + __reason(request));
+		};
+	}
+
 	public function clear(done:String->Void):Void {
 		var request:Request;
 
