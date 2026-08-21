@@ -163,6 +163,44 @@ class FileStore implements IStoreBackend {
 		}
 	}
 
+	public function forEach(prefix:Null<String>, visit:(key:String, value:ByteArray) -> Bool, done:String->Void):Void {
+		try {
+			// The directory listing is unavoidable -- a filesystem has no
+			// cursor -- but the values are not, and those are what a large
+			// store is made of. One is read, handed over, and released before
+			// the next is touched.
+			for (entry in FileSystem.readDirectory(directory)) {
+				if (!StringTools.endsWith(entry, ENTRY_SUFFIX)) {
+					continue;
+				}
+
+				var key:String = __decode(entry.substr(0, entry.length - ENTRY_SUFFIX.length));
+
+				if (key == null || (prefix != null && !StringTools.startsWith(key, prefix))) {
+					continue;
+				}
+
+				var path:String = haxe.io.Path.join([directory, entry]);
+
+				// Deleted between listing and reading -- by another runtime, or
+				// by the visitor itself removing as it goes. Skipped, because a
+				// key that is gone is not an error for an iteration that has
+				// already promised nothing about ordering or a snapshot.
+				if (!FileSystem.exists(path)) {
+					continue;
+				}
+
+				if (!visit(key, ByteArray.fromBytes(SysFile.getBytes(path)))) {
+					break;
+				}
+			}
+
+			done(null);
+		} catch (e:Dynamic) {
+			done("Could not iterate the store: " + Std.string(e));
+		}
+	}
+
 	public function clear(done:String->Void):Void {
 		try {
 			for (entry in FileSystem.readDirectory(directory)) {

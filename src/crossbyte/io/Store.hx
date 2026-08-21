@@ -37,6 +37,15 @@ import crossbyte.io._internal.store.StoreBackend;
  * });
  * ```
  *
+ * A value is written and read whole, so one has to fit in memory. That is a
+ * real bound and it is deliberate: streaming into IndexedDB would mean chunking
+ * a value across several keys behind a manifest, which is a second format with
+ * its own half-written-set problem, in service of values this is not for. A
+ * cached asset larger than memory belongs in a file, and `File` is right there
+ * on every target that has one. Too large fails loudly either way -- a quota
+ * error in a page, an allocation failure elsewhere -- and never silently
+ * truncates.
+ *
  * @see `crossbyte.db` for a server's data, which is a different problem.
  */
 class Store {
@@ -193,6 +202,95 @@ class Store {
 			}
 
 			@:privateAccess future.__resolve(found);
+		});
+
+		return future;
+	}
+
+	/**
+	 * Visits every entry, or every entry under `prefix`, one at a time.
+	 *
+	 * Return `false` from `visit` to stop. Nothing holds the whole store in
+	 * memory -- IndexedDB is walked with a cursor and the file backend reads
+	 * one value at a time -- which is the difference between this and
+	 * `keys()`, and the reason both exist. Reach for `keys()` when the list is
+	 * the answer; reach for this when the values are, or when there may be
+	 * more of them than you would like to allocate at once.
+	 *
+	 * No ordering is promised. IndexedDB walks its own key order and a
+	 * directory listing is whatever the filesystem returns, and promising a
+	 * shared order would mean sorting -- which would mean holding every key,
+	 * which is what this avoids.
+	 *
+	 * The store may be modified during iteration, and an entry removed before
+	 * it is reached is skipped rather than reported. This is a walk, not a
+	 * snapshot.
+	 */
+	public function forEach(visit:(key:String, value:ByteArray) -> Bool, ?prefix:String):Future<Store> {
+		var future = new Future<Store>();
+
+		if (__closed) {
+			@:privateAccess future.__reject("This store is closed.");
+			return future;
+		}
+
+		if (visit == null) {
+			@:privateAccess future.__reject("A visitor is required.");
+			return future;
+		}
+
+		__backend.forEach(prefix, visit, function(error:String):Void {
+			if (error != null) {
+				@:privateAccess future.__reject(error);
+				return;
+			}
+
+			@:privateAccess future.__resolve(this);
+		});
+
+		return future;
+	}
+
+	/**
+	 * Writes `text` as UTF-8.
+	 *
+	 * A helper over `put`, and deliberately the only encoding offered. UTF-8
+	 * is unambiguous and identical on every target; anything richer means this
+	 * store choosing a serialisation format, and a format is a compatibility
+	 * promise across targets and across versions of the framework. A caller
+	 * with structured data picks its own and puts the bytes.
+	 */
+	public function putString(key:String, text:String):Future<Store> {
+		if (text == null) {
+			var future = new Future<Store>();
+			@:privateAccess future.__reject("A value is required; use remove() to delete a key.");
+			return future;
+		}
+
+		var data = new ByteArray();
+		data.writeUTFBytes(text);
+		return put(key, data);
+	}
+
+	/**
+	 * Reads a value written by `putString`, or `null` if the key is absent.
+	 *
+	 * Absent still reads as `null`, not as `""`. An empty string is a value
+	 * somebody stored.
+	 */
+	public function getString(key:String):Future<Null<String>> {
+		var future = new Future<Null<String>>();
+
+		get(key).then(function(value:Null<ByteArray>):Void {
+			if (value == null) {
+				@:privateAccess future.__resolve(null);
+				return;
+			}
+
+			value.position = 0;
+			@:privateAccess future.__resolve(value.readUTFBytes(value.length));
+		}, function(message:String):Void {
+			@:privateAccess future.__reject(message);
 		});
 
 		return future;
