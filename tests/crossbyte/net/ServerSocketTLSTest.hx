@@ -30,6 +30,20 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	#if (!java && !jvm)
+	public function testServerWebSocketReportsItsOwnSecureFlag():Void {
+		// ServerWebSocket used to set a private __isSecure and then call
+		// super() with no argument, so the `secure` property it inherits read
+		// false on a server that was terminating TLS. Two fields for one fact,
+		// and the public one was the wrong one. It is here rather than beside
+		// the other WebSocket cases because what it is really asserting is
+		// that the flag ServerSocket exposes describes the subclass too.
+		var plain = new ServerWebSocket();
+		Assert.isFalse(plain.secure);
+
+		var secure = new ServerWebSocket(true);
+		Assert.isTrue(secure.secure);
+	}
+
 	public function testSecureServerRequiresCertificateBeforeListen():Void {
 		var server = new ServerSocket(true);
 		Assert.isTrue(server.secure);
