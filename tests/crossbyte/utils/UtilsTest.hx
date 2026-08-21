@@ -26,6 +26,23 @@ private typedef PooledState = {
 }
 
 class UtilsTest extends utest.Test {
+	public function testHashesAreTheSameNumberOnEveryTarget():Void {
+		// Known answers, not self-consistency. Every hash here multiplies by a
+		// constant chosen to overflow, and that overflow is the mixing step --
+		// so a target that does not wrap computes a different function while
+		// looking perfectly healthy from inside. JavaScript did: fnv1a32 of
+		// "sendData" came back as -20905118279726560 rather than 622618135,
+		// and nothing noticed until two targets had to agree on an RPC opcode.
+		//
+		// A test that hashed something and compared it to itself would have
+		// passed throughout. These are the values every other target produces.
+		Assert.equals(622618135, Hash.fnv1a32String("sendData"));
+		Assert.equals(1603980681, Hash.fnv1a32String("crossbyte"));
+		Assert.equals(-2128831035, Hash.fnv1a32String("")); // the FNV offset basis, unchanged by an empty input
+		Assert.equals(1200724404, Hash.fmix32(12345));
+		Assert.equals(432767108, Hash.combineHash32(7, 99));
+	}
+
 	public function testBucketHelpersClampAndMapDeterministically():Void {
 		Assert.equals(1, Bucket.bucketCount(0, 5));
 		Assert.equals(10, Bucket.bucketCount(10, 0));
