@@ -1,9 +1,15 @@
 package crossbyte.net;
 
-// Not built for the browser. UDP has no web equivalent -- WebRTC data channels are the nearest thing and are a different protocol with a different API, not a drop-in.
-#if !js
+// Not built for the browser. UDP has no web equivalent -- WebRTC data channels are the nearest thing and are a different protocol with a different API, not a drop-in. Node has dgram, so it has real UDP.
+#if !(js && !nodejs)
 
+#if nodejs
+import js.node.Buffer;
+import js.node.Dgram;
+import js.node.dgram.Socket as NodeDatagram;
+#else
 import crossbyte._internal.socket.IPollableSocket;
+#end
 import crossbyte.core.CrossByte;
 import crossbyte._internal.net.IPv6;
 import crossbyte.errors.ArgumentError;
@@ -20,7 +26,7 @@ import crossbyte.io.Endian;
 import haxe.io.Bytes;
 import haxe.io.Eof;
 import haxe.io.Error as HxIOError;
-#if !(js && !nodejs)
+#if !js
 import sys.net.Address;
 import sys.net.Host;
 import sys.net.UdpSocket;
@@ -41,11 +47,11 @@ import sys.net.UdpSocket;
 	@event ioError Dispatched when an I/O error occurs while sending or receiving.
 	@event data Dispatched when a complete UDP payload has been received.
 **/
-class DatagramSocket extends EventDispatcher implements IPollableSocket {
+class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSocket #end {
 	/**
 		Indicates whether UDP sockets are supported by the current target.
 	**/
-	public static var isSupported(default, null):Bool = #if (sys && !eval) true #else false #end;
+	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval)) true #else false #end;
 
 	/**
 		Indicates whether the socket is currently bound to a local address and port.
@@ -116,8 +122,17 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 	@:noCompletion private var __registered:Bool = false;
 	@:noCompletion private var __remoteAddress:String = "";
 	@:noCompletion private var __remotePort:Int = 0;
+	#if nodejs
+	@:noCompletion private var __socket:NodeDatagram;
+	// Chosen from the first address this socket is given, because Node fixes
+	// the family when the socket is made where a sys.net.UdpSocket does not.
+	@:noCompletion private var __family:String = null;
+	@:noCompletion private var __localAddress:String = "";
+	@:noCompletion private var __localPort:Int = 0;
+	#else
 	@:noCompletion private var __socket:UdpSocket;
 	@:noCompletion private var __tempAddress:Address;
+	#end
 	@:noCompletion private var __timeout:Int = 20000;
 
 	/**
@@ -131,7 +146,9 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		super();
 
 		__readBuffer = Bytes.alloc(DEFAULT_BUFFER_SIZE);
+		#if !nodejs
 		__tempAddress = new Address();
+		#end
 		__initSocket();
 
 		if (host != null || port != 0) {
@@ -151,8 +168,20 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		__validatePort(localPort);
 
 		try {
+			#if nodejs
+			// Node binds asynchronously and reports a refusal as an event, so
+			// a failure here arrives as ioError rather than out of this call
+			// -- the same shape ServerSocket takes on Node, and for the same
+			// reason.
+			var socket = __nodeSocket(localAddress);
+			socket.bind(localPort, localAddress, function():Void {
+				__rememberLocalEndpoint();
+			});
+			__bound = true;
+			#else
 			__socket.bind(new Host(localAddress), localPort);
 			__bound = true;
+			#end
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
 				case "Bind failed":
@@ -203,12 +232,35 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		__validateRemotePort(port);
 
 		try {
+			#if nodejs
+			// Node grew a connect() for datagram sockets in v12, but the
+			// extern predates it. Emulated instead: the remote is remembered,
+			// send() names it every time, and __receiveNode drops anything
+			// from anywhere else -- which is the whole of what connecting a
+			// UDP socket does.
+			//
+			// That filter is why a name is refused here. A reply arrives
+			// carrying the numeric address it came from, so a name kept as
+			// given would match nothing and the socket would silently receive
+			// none of its peer's traffic. Resolving one needs a callback on
+			// Node, which connect() has no way to wait for.
+			if (!IPv6.isNumericAddress(host)) {
+				throw new ArgumentError("A connected DatagramSocket needs a numeric address on Node, not a name: a datagram reports the address it came from, and a session is matched on it. Resolve the name first, or leave the socket unconnected and name the destination in send().");
+			}
+
+			__nodeSocket(host);
+			__connected = true;
+			__remoteAddress = IPv6.compress(host);
+			__remotePort = port;
+			__rememberLocalEndpoint();
+			#else
 			var remote:Host = new Host(host);
 			__socket.connect(remote, port);
 			__connected = true;
 			__remoteAddress = IPv6.compress(remote.toString());
 			__remotePort = port;
 			__bound = __getLocalEndpoint() != null;
+			#end
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
 				case "Bind failed":
@@ -293,12 +345,24 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		__validateRemotePort(port);
 
 		try {
+			#if nodejs
+			// Copied into a buffer of its own: Buffer.hxFromBytes wraps the
+			// storage it is given rather than copying, and Node sends when it
+			// gets round to it -- so anything the caller wrote to this
+			// ByteArray in the meantime would go out instead of what it asked
+			// to send.
+			var payload:ByteArray = new ByteArray();
+			payload.writeBytes(bytes, offset, length);
+			__nodeSocket(address).send(Buffer.hxFromBytes(payload), 0, length, port, address);
+			__rememberLocalEndpoint();
+			#else
 			var host:Host = new Host(address);
 			var target:Address = new Address();
 			target.setHost(host);
 			target.port = port;
 			__socket.sendTo(cast bytes, offset, length, target);
 			__bound = __getLocalEndpoint() != null;
+			#end
 		} catch (e:HxIOError) {
 			__dispatchIoError(Std.string(e));
 			throw new IOError("Operation attempted on invalid socket.");
@@ -336,6 +400,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		}
 	}
 
+	#if !nodejs
 	public function registryOnReadable():Void {
 		if (!__receiving || __socket == null) {
 			return;
@@ -388,6 +453,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 	}
 
 	public inline function registryOnWritable():Void {}
+	#end
 
 	@:noCompletion private function __dispatchIoError(message:String):Void {
 		stopReceiving();
@@ -395,6 +461,13 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 	}
 
 	@:noCompletion private function __syncPolling():Void {
+		#if nodejs
+		// Nothing to synchronise. There is no descriptor to hand the registry
+		// -- Node calls __receiveNode when a datagram arrives -- so whether
+		// anything is delivered turns on __receiving alone, which the caller
+		// has already set.
+		return;
+		#else
 		var shouldPoll:Bool = __receiving && hasEventListener(DatagramSocketDataEvent.DATA);
 		if (shouldPoll && !__registered && __cbInstance != null && __socket != null) {
 			__cbInstance.registerSocket(__socket);
@@ -406,8 +479,10 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 			__cbInstance.deregisterSocket(__socket);
 			__registered = false;
 		}
+		#end
 	}
 
+	#if !nodejs
 	@:noCompletion private inline function __getLocalEndpoint():{host:Host, port:Int} {
 		if (__socket == null) {
 			return null;
@@ -419,7 +494,97 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 			return null;
 		}
 	}
+	#end
 
+	#if nodejs
+	@:noCompletion private function __initSocket():Void {
+		// IPv4, matching the "0.0.0.0" that bind() defaults to and the family
+		// most callers want. It is replaced below if an address turns up that
+		// needs the other one.
+		__makeNodeSocket("udp4");
+		__closed = false;
+	}
+
+	@:noCompletion private function __makeNodeSocket(family:String):Void {
+		__family = family;
+		__socket = Dgram.createSocket({type: family});
+
+		__socket.on("message", function(message:Buffer, remote:js.node.dgram.Socket.MessageRemoteInfo):Void {
+			__receiveNode(message, remote);
+		});
+
+		__socket.on("error", function(e:Dynamic):Void {
+			__dispatchIoError(Std.string(e));
+		});
+	}
+
+	/**
+	 * Returns the socket, swapping its address family first if the address
+	 * about to be used needs the other one.
+	 *
+	 * Node fixes the family when the socket is created; a `sys.net.UdpSocket`
+	 * does not, and takes whatever address it is later handed. So a socket
+	 * that has not been bound or connected yet is simply replaced, which is
+	 * free -- nothing has been done with it. One that has is left alone, and
+	 * Node reports the mismatch itself rather than having it hidden here.
+	 */
+	@:noCompletion private function __nodeSocket(forAddress:String):NodeDatagram {
+		var wanted:String = (forAddress != null && forAddress.indexOf(":") >= 0) ? "udp6" : "udp4";
+
+		if (wanted != __family && !__bound && !__connected) {
+			try {
+				__socket.close();
+			} catch (_:Dynamic) {}
+
+			__makeNodeSocket(wanted);
+		}
+
+		return __socket;
+	}
+
+	/**
+	 * Delivers one datagram.
+	 *
+	 * Two things gate it, and both are what the polled path does by asking the
+	 * operating system rather than by checking. `receive()` not having been
+	 * called means nothing should arrive, and a connected socket sees only its
+	 * peer -- Node's own `connect()` would enforce the second, but the extern
+	 * predates it, so the filter is here and the send path names the
+	 * destination every time instead.
+	 */
+	@:noCompletion private function __receiveNode(message:Buffer, remote:js.node.dgram.Socket.MessageRemoteInfo):Void {
+		if (!__receiving) {
+			return;
+		}
+
+		var source:String = IPv6.compress(remote.address);
+
+		if (__connected && (source != __remoteAddress || remote.port != __remotePort)) {
+			return;
+		}
+
+		var payload:ByteArray = ByteArray.fromBytes(Bytes.ofData(message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength)));
+		payload.endian = __endian;
+
+		dispatchEvent(new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, source, remote.port, __localAddress, __localPort, payload));
+	}
+
+	@:noCompletion private function __rememberLocalEndpoint():Void {
+		if (__socket == null) {
+			return;
+		}
+
+		try {
+			var local = __socket.address();
+
+			if (local != null) {
+				__localAddress = IPv6.compress(local.address);
+				__localPort = local.port;
+				__bound = true;
+			}
+		} catch (_:Dynamic) {}
+	}
+	#else
 	@:noCompletion private function __initSocket():Void {
 		__socket = new UdpSocket();
 		__socket.setBlocking(false);
@@ -430,6 +595,7 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		__socket.custom = this;
 		__closed = false;
 	}
+	#end
 
 	@:noCompletion private inline function __validatePort(port:Int):Void {
 		if (port < 0 || port > 65535) {
@@ -460,13 +626,24 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 	}
 
 	@:noCompletion private inline function get_localAddress():String {
+		#if nodejs
+		// Read from the socket when it was bound rather than asked for now:
+		// Node's address() throws on a socket that is not bound yet, where
+		// host() on a sys socket answers with the unbound endpoint.
+		return __localAddress;
+		#else
 		var local = __getLocalEndpoint();
 		return local != null ? IPv6.compress(local.host.toString()) : "";
+		#end
 	}
 
 	@:noCompletion private inline function get_localPort():Int {
+		#if nodejs
+		return __localPort;
+		#else
 		var local = __getLocalEndpoint();
 		return local != null ? local.port : 0;
+		#end
 	}
 
 	@:noCompletion private inline function get_receiving():Bool {
@@ -499,9 +676,14 @@ class DatagramSocket extends EventDispatcher implements IPollableSocket {
 		}
 
 		__timeout = value;
+		#if !nodejs
+		// A read timeout is a property of a blocking read, and Node has none:
+		// a datagram is delivered when it arrives or not at all. The value is
+		// still kept, so reading `timeout` back gives what was set.
 		if (__socket != null) {
 			__socket.setTimeout(value / 1000);
 		}
+		#end
 		return value;
 	}
 }

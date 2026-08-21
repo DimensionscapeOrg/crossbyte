@@ -9,6 +9,11 @@ import crossbyte.http.HTTPServer;
 import crossbyte.http.HTTPServerConfig;
 import crossbyte.io.File;
 import crossbyte.events.TickEvent;
+import crossbyte.events.DatagramSocketDataEvent;
+import crossbyte.events.ReliableDatagramSocketConnectEvent;
+import crossbyte.net.DatagramSocket;
+import crossbyte.net.ReliableDatagramServerSocket;
+import crossbyte.net.ReliableDatagramSocket;
 import crossbyte.net.ServerSocket;
 import crossbyte.net.Socket;
 import crossbyte.net.WebSocket;
@@ -38,6 +43,7 @@ class NodeIntegrationMain extends Application {
 	private static inline var ECHO_PORT:Int = 50562;
 	private static inline var WEB_PORT:Int = 50563;
 	private static inline var WS_PORT:Int = 50564;
+	private static inline var UDP_PORT:Int = 50565;
 	private static inline var TIMEOUT_MS:Int = 30000;
 	private static inline var ROUND_TRIP:String = "round-trip";
 	private static inline var WS_SHORT:String = "hello-over-websocket";
@@ -60,6 +66,13 @@ class NodeIntegrationMain extends Application {
 	private var wsServer:js.node.net.Server;
 	private var ws:WebSocket;
 	private var wsReceived:String = "";
+	private var receiver:DatagramSocket;
+	private var sender:DatagramSocket;
+	private var stray:DatagramSocket;
+	private var datagrams:Int = 0;
+	private var rdServer:ReliableDatagramServerSocket;
+	private var rdClient:ReliableDatagramSocket;
+	private var rdAccepted:ReliableDatagramSocket;
 
 	public function new() {
 		super();
@@ -453,8 +466,13 @@ class NodeIntegrationMain extends Application {
 		var first = crossbyte.crypto.SecureRandom.getSecureRandomBytes(32);
 		var second = crossbyte.crypto.SecureRandom.getSecureRandomBytes(32);
 
+		// Compared as hex, not through toString(): random bytes are not valid
+		// UTF-8, and decoding them as if they were throws on js.
+		var firstHex:String = (first : haxe.io.Bytes).toHex();
+		var secondHex:String = (second : haxe.io.Bytes).toHex();
+
 		check("SecureRandom returns the length asked for", first.length == 32, "got " + first.length);
-		check("SecureRandom does not repeat itself", first.toString() != second.toString(), "two draws came back identical");
+		check("SecureRandom does not repeat itself", firstHex != secondHex, "two draws came back identical");
 
 		// An RFC 6455 echo server written straight onto a Node socket rather
 		// than pulled from npm, so CI needs nothing installed. It answers the
@@ -615,10 +633,197 @@ class NodeIntegrationMain extends Application {
 	private function stopWebSocket():Void {
 		ws.close();
 		wsServer.close();
+		startDatagrams();
+	}
+
+	// ---- 7. crossbyte.net.DatagramSocket over dgram ----------------------
+
+	private function startDatagrams():Void {
+		check("DatagramSocket is supported on Node", DatagramSocket.isSupported, "reported unsupported");
+
+		receiver = new DatagramSocket();
+		receiver.addEventListener(DatagramSocketDataEvent.DATA, onDatagram);
+		receiver.bind(UDP_PORT, "127.0.0.1");
+		receiver.receive();
+
+		check("bind() marked the socket bound", receiver.bound, "not bound");
+
+		// Node binds asynchronously, so the local endpoint is not readable
+		// until it has. Sending before then would go to a port nothing holds.
+		waitForBind(0);
+	}
+
+	private function waitForBind(attempts:Int):Void {
+		if (receiver.localPort == UDP_PORT) {
+			check("the bound port is readable back", receiver.localPort == UDP_PORT, "got " + receiver.localPort);
+			sendDatagrams();
+			return;
+		}
+
+		if (attempts > 200) {
+			check("the bound port is readable back", false, "still " + receiver.localPort + " after " + attempts + " tries");
+			stopDatagrams();
+			return;
+		}
+
+		haxe.Timer.delay(function():Void {
+			waitForBind(attempts + 1);
+		}, 5);
+	}
+
+	private function sendDatagrams():Void {
+		sender = new DatagramSocket();
+
+		var first = new crossbyte.io.ByteArray();
+		first.writeUTFBytes("datagram-one");
+		sender.send(first, 0, first.length, "127.0.0.1", UDP_PORT);
+
+		// Connected: the destination comes from connect() rather than from
+		// the call, which is the whole difference between the two modes.
+		sender.connect("127.0.0.1", UDP_PORT);
+		check("connect() marked the socket connected", sender.connected, "not connected");
+
+		var second = new crossbyte.io.ByteArray();
+		second.writeUTFBytes("datagram-two");
+		sender.send(second, 0, second.length);
+	}
+
+	private function onDatagram(event:DatagramSocketDataEvent):Void {
+		datagrams++;
+		var text = event.data.readUTFBytes(event.data.bytesAvailable);
+
+		if (datagrams == 1) {
+			check("an unconnected send arrived", text == "datagram-one", "got " + text);
+			check("the datagram names its source", event.srcPort > 0, "src port " + event.srcPort);
+			check("the datagram names its destination", event.dstPort == UDP_PORT, "dst port " + event.dstPort);
+		} else if (datagrams == 2) {
+			check("a connected send arrived", text == "datagram-two", "got " + text);
+			checkStrayIsFiltered();
+		}
+	}
+
+	private function checkStrayIsFiltered():Void {
+		// A connected socket sees only its peer. The receiver is unconnected,
+		// so this one is: it is pointed at a port nothing is sending from, and
+		// must not be handed the receiver's traffic.
+		stray = new DatagramSocket();
+		stray.connect("127.0.0.1", UDP_PORT + 1);
+		stray.bind(UDP_PORT + 2, "127.0.0.1");
+
+		var seen:Bool = false;
+		stray.addEventListener(DatagramSocketDataEvent.DATA, function(_):Void {
+			seen = true;
+		});
+		stray.receive();
+
+		var payload = new crossbyte.io.ByteArray();
+		payload.writeUTFBytes("not-for-you");
+		sender.send(payload, 0, payload.length);
+
+		haxe.Timer.delay(function():Void {
+			check("a connected socket ignores traffic from anywhere else", !seen, "it took a datagram from the wrong peer");
+			stopDatagrams();
+		}, 120);
+	}
+
+	private function stopDatagrams():Void {
+		receiver.close();
+		sender.close();
+
+		if (stray != null) {
+			stray.close();
+		}
+
+		check("close() marked the socket closed", !receiver.bound, "still bound");
+		startReliableDatagrams();
+	}
+
+	// ---- 8. the reliable layer on top of it ------------------------------
+
+	private function startReliableDatagrams():Void {
+		// Pure protocol over DatagramSocket -- sequencing, acknowledgement,
+		// retransmission -- so nothing about it is platform code. Which is
+		// exactly why it is worth running rather than assuming: it came to
+		// Node as a gate change and no new lines, and a gate change that
+		// compiles is not a gate change that works.
+		rdServer = new ReliableDatagramServerSocket();
+		rdClient = new ReliableDatagramSocket();
+
+		rdServer.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(event:ReliableDatagramSocketConnectEvent):Void {
+			rdAccepted = event.socket;
+			check("the reliable server accepted a session", rdAccepted != null, "no socket on the event");
+
+			rdAccepted.addEventListener(DatagramSocketDataEvent.DATA, function(dataEvent:DatagramSocketDataEvent):Void {
+				dataEvent.data.position = 0;
+				var text = dataEvent.data.readUTFBytes(dataEvent.data.length);
+				check("a reliable message arrived intact", text == "reliable-over-node", "got " + text);
+				stopReliableDatagrams();
+			});
+		});
+
+		rdServer.bind(0, "127.0.0.1");
+		rdServer.listen();
+
+		waitForReliableBind(0);
+	}
+
+	private function waitForReliableBind(attempts:Int):Void {
+		if (rdServer.localPort > 0) {
+			rdClient.connect("127.0.0.1", rdServer.localPort);
+			waitForReliableHandshake(0);
+			return;
+		}
+
+		if (attempts > 200) {
+			check("the reliable server bound a port", false, "still 0 after " + attempts + " tries");
+			stopReliableDatagrams();
+			return;
+		}
+
+		haxe.Timer.delay(function():Void {
+			waitForReliableBind(attempts + 1);
+		}, 5);
+	}
+
+	private function waitForReliableHandshake(attempts:Int):Void {
+		if (rdClient.connected && rdAccepted != null && rdAccepted.connected) {
+			check("the reliable handshake completed", true, "");
+			var payload = new crossbyte.io.ByteArray();
+			payload.writeUTFBytes("reliable-over-node");
+			rdClient.send(payload);
+			return;
+		}
+
+		if (attempts > 400) {
+			check("the reliable handshake completed", false, "client " + rdClient.connected + ", accepted " + (rdAccepted != null));
+			stopReliableDatagrams();
+			return;
+		}
+
+		haxe.Timer.delay(function():Void {
+			waitForReliableHandshake(attempts + 1);
+		}, 5);
+	}
+
+	private function stopReliableDatagrams():Void {
+		try {
+			rdClient.close();
+		} catch (_:Dynamic) {}
+
+		if (rdAccepted != null) {
+			try {
+				rdAccepted.close();
+			} catch (_:Dynamic) {}
+		}
+
+		try {
+			rdServer.close();
+		} catch (_:Dynamic) {}
+
 		runSubprocess();
 	}
 
-	// ---- 7. NativeProcess over child_process -----------------------------
+	// ---- 9. NativeProcess over child_process -----------------------------
 
 	private function runSubprocess():Void {
 		var process = new NativeProcess();
