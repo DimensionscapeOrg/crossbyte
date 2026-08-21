@@ -1,7 +1,7 @@
 package crossbyte.net;
 
 // Not built for the browser: it listens, over UDP, neither of which a page can do.
-#if !js
+#if !(js && !nodejs)
 
 import crossbyte.errors.IOError;
 import crossbyte.events.DatagramSocketDataEvent;
