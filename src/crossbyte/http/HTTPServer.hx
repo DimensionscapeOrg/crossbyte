@@ -41,7 +41,7 @@ class HTTPServer extends ServerSocket {
 		__connections = 0;
 		__config = config;
 
-		#if (!java && !jvm && !nodejs)
+		#if (!java && !jvm)
 		if (config.tlsEnabled) {
 			try {
 				setCertificate(crossbyte.net.Certificate.fromFile(config.tlsCertificatePath), crossbyte.net.Key.fromFile(config.tlsKeyPath));

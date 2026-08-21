@@ -30,6 +30,8 @@ final class Key {
 	@:allow(crossbyte.net)
 	@:allow(crossbyte.http)
 	@:noCompletion private var __pem:String;
+	@:allow(crossbyte.net)
+	@:allow(crossbyte.http)
 	@:noCompletion private var __passphrase:String;
 	#else
 	@:allow(crossbyte.net)
