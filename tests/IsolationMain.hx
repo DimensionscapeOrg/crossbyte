@@ -1,3 +1,4 @@
+@:topologyExempt("Isolates one group, or one case, at a time behind -D subset_* to find which of them hangs. Naming cases individually is the entire purpose.")
 class IsolationMain {
 	public static function main():Void {
 		crossbyte.test.TestHarness.run(function(runner) {

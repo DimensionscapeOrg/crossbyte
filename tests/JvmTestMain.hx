@@ -7,6 +7,7 @@
  * That compiler defect is fixed by a Haxe upgrade (or restructuring each
  * trigger); it is not a CrossByte logic issue.
  */
+@:topologyExempt("Registers groups minus three cases that trip a Haxe 4.3.7 --jvm bytecode bug. The exclusions are a compiler workaround, not a topology, and belong beside the note explaining them.")
 class JvmTestMain {
 	public static function main():Void {
 		crossbyte.test.TestHarness.run(function(runner) {
