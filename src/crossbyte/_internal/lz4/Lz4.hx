@@ -112,9 +112,17 @@ class Lz4 {
 			}
 		}
 
-		#if (js && !nodejs)
-		return Bytes.ofData(untyped oBuf.buffer);
-		#elseif hl
+		// There was a browser branch here returning `Bytes.ofData(untyped
+		// oBuf.buffer)`. `oBuf` is a ByteArray and has no `buffer`, so that
+		// passed `undefined` to `ofData`, which reads `.hxBytes` off it and
+		// threw -- every LZ4 decode in a page, since the branch was written.
+		// Node never took it, so the js suite passed throughout.
+		//
+		// Even given a `buffer` it would have been wrong: that is the whole
+		// backing store, where only the first `oPos` bytes were written. The
+		// generic path below allocates exactly that many and is what every
+		// other target already used.
+		#if hl
 		return oBuf.getData().toBytes(oBuf.length);
 		#else
 		var bOut = Bytes.alloc(oPos);

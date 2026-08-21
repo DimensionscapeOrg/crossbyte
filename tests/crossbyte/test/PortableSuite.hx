@@ -27,6 +27,7 @@ import utest.Runner;
 class PortableSuite {
 	public static function add(runner:Runner):Void {
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte.ds.BloomFilterTest());
 		runner.addCase(new crossbyte.errors.ErrorsTest());
 		runner.addCase(new crossbyte.math.MathTest());
