@@ -227,5 +227,14 @@ class TestSuites {
 		// cases named above left the rest of FileTest and the File/socket
 		// IO cases native-untested.
 		addIO(runner);
+		// This group is arithmetic, and arithmetic is where the targets
+		// disagree. BloomFilter and the hash helpers were both fixed for
+		// assuming a 32-bit Int, which is a bug that only exists between
+		// targets -- and the compression codecs it also carries are bit
+		// packing and shift-based hashing, the same shape of thing. Their
+		// encoders emit a stream a decoder elsewhere has to read, so a
+		// target that packs bits differently produces output that is wrong
+		// rather than merely slower, and nothing else here would say so.
+		addDataStructures(runner);
 	}
 }
