@@ -47,20 +47,15 @@ class TestSuites {
 	}
 
 	public static function addHttp(runner:Runner):Void {
-		#if cpp
-		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
-		runner.addCase(new crossbyte.http.HTTPStreamingTest());
-		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
-		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
-		runner.addCase(new crossbyte.http.RouterServerTest());
-		runner.addCase(new crossbyte.http.HTTPPhpTest());
-		#end
-		runner.addCase(new crossbyte._internal.php.PHPTimeoutTest());
-		runner.addCase(new crossbyte.http.HTTPSupportTest());
-		runner.addCase(new crossbyte.http.RateLimiterTest());
+		// The server half lives in its own class so a JavaScript build can name
+		// it without dragging all of TestSuites in behind it.
+		ServerSuite.add(runner);
+
+		#if !js
+		// The client, which drives a raw socket with its own TLS and so exists
+		// on no JavaScript target. Its test also spawns threads.
 		runner.addCase(new crossbyte._internal.http.HttpTest());
-		runner.addCase(new crossbyte.http.HTTPHardeningTest());
-		runner.addCase(new crossbyte.http.RouterTest());
+		#end
 	}
 
 	public static function addIO(runner:Runner):Void {
