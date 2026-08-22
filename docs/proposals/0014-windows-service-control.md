@@ -1,6 +1,6 @@
 # Proposal 0014 — Windows service control
 
-**Status:** Implemented on branch `server-hardening`
+**Status:** Implemented
 
 **Motivation:** Proposal 0001 added `ProcessLifecycle` and proposal 0003
 gave it something worth calling — `HTTPServer.drain()`,

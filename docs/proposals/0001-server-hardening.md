@@ -1,6 +1,19 @@
 # Proposal 0001 — Server hardening: crypto expansion, shutdown hooks, real rate limiting
 
-**Status:** In progress on branch `server-hardening`
+**Status:** Implemented.
+
+All three parts landed: the libsodium expansion (`Aead`, `X25519`,
+`KeyExchange`, `GenericHash`, `HKDF`, `Argon2id`, `ConstantTime`,
+`SecureMemory`, covered by `SodiumExpansionTest`), `ProcessLifecycle`, and the
+token-bucket `RateLimiter` that replaced the fixed-window placeholder.
+
+Of what this proposal deferred, three items have since landed under their own
+proposals -- TLS on `ServerSocket` and `HTTPServer` (0002, prototype scope),
+Linux and macOS libsodium (0009, by vendoring the source rather than the
+system package), and DB connection pooling with an async facade (0004).
+Postgres parameter binding landed as 0016 but in text format; the binary
+marshaling named here was measured as no gain for the case that mattered and
+was not done. RS256/ES256, the WebAuthn primitives and HTTP/2 are still open.
 
 **Motivation:** CrossByte is adopted as the backend runtime for a production
 service that stores and routes end-to-end-encrypted content (initial
@@ -144,11 +157,16 @@ Rewrite `RateLimiter` as a token bucket, transport-agnostic:
 
 ## Explicitly deferred (tracked, not in this change set)
 
-- TLS on `ServerSocket`/`HTTPServer` via `FlexSocket` (wss on
-  `ServerWebSocket` is the only TLS server path today).
-- Linux/macOS libsodium vendoring.
+- ~~TLS on `ServerSocket`/`HTTPServer` via `FlexSocket`~~ — landed as 0002,
+  at prototype scope; that proposal lists the seams it deliberately left
+  open (ALPN, mTLS peer inspection, ACME, session resumption).
+- ~~Linux/macOS libsodium vendoring~~ — landed as 0009, by vendoring the
+  source rather than the system package the original approach assumed.
 - ~~Asymmetric JWT signers~~ — EdDSA landed as a follow-up to this change
   set (RFC 8037, `Ed25519Signer`); RS256/ES256 still need an mbedTLS bridge.
 - WebAuthn primitives (P-256 ECDSA, COSE/CBOR) — candidate extension repo.
-- DB connection pooling, async facade, binary Postgres marshaling.
+- ~~DB connection pooling, async facade~~ — landed as 0004. Binary Postgres
+  marshaling did not: 0016 binds parameters and reads results in text
+  format, because binary would mean decoding every column type from its
+  network representation by OID for no gain on the case that mattered.
 - HTTP/2.

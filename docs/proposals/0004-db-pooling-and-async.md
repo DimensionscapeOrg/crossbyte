@@ -1,6 +1,6 @@
 # Proposal 0004 — Connection pooling and an async database facade
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** Every CrossByte database driver is synchronous. Calling one
 from a tick handler blocks the runtime loop for the duration of the query —

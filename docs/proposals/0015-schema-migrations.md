@@ -1,6 +1,6 @@
 # Proposal 0015 — Schema migrations
 
-**Status:** Implemented on branch `server-hardening`
+**Status:** Implemented
 
 **Motivation:** CrossByte supplies every piece of a service skeleton except
 one. `Config`, `Logger`, `Metrics`, `ProcessLifecycle` with service control,

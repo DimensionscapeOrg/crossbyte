@@ -1,5 +1,12 @@
 # Proposal 0019 — half-close probe
 
+**Status:** Reference measurement, not a change.
+
+It proposes nothing and so cannot be implemented or rejected. It records what
+the platform actually does, so that the design in `0019-socket-half-close.md`
+can be checked against behaviour rather than against assumption, and so the
+same probe can be re-run when the target, the toolchain or the OS changes.
+
 Establishes what the platform does, since the design in
 `0019-socket-half-close.md` turns on behaviour that is not obvious and is worth
 being able to re-run on another target or OS.

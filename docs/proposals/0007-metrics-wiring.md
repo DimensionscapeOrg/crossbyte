@@ -1,6 +1,6 @@
 # Proposal 0007 — Built-in metrics and a scrape endpoint
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** Proposal 0005 added instruments and a registry, but
 nothing published anything. Every service had to hand-roll its own

@@ -1,6 +1,6 @@
 # Proposal 0008 — RS256 and ES256 signatures
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** `JWT.make` threw `"RS256 signer not implemented"` at
 runtime. That is the algorithm every mainstream OpenID Connect provider —

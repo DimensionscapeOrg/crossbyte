@@ -1,6 +1,6 @@
 # Proposal 0011 — Poll capacity and server tick rate
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** Two runtime defaults were sized for a general-purpose
 application loop rather than a network service: the poll backend started

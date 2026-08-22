@@ -1,7 +1,6 @@
 # Proposal 0010 — ServerWebSocket drain, and the TLS convergence question
 
-**Status:** Drain implemented on branch `main`; convergence assessed and
-scoped, not yet done
+**Status:** Drain implemented; convergence assessed and scoped, not yet done
 
 **Motivation:** Proposal 0003 gave `HTTPServer` graceful shutdown, leaving
 `ServerWebSocket` as the one server type that could only be severed. That

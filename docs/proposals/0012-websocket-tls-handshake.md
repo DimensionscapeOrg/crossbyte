@@ -1,6 +1,6 @@
 # Proposal 0012 — Deferred TLS handshake for accepted WebSocket sessions
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** Proposal 0010 identified that `ServerWebSocket` had no
 handshake timeout, so a peer that completed TCP and then stalled mid-TLS

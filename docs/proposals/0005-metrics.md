@@ -1,6 +1,6 @@
 # Proposal 0005 — Metrics
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** A server that cannot be observed cannot be operated. There
 was no way to answer "how many requests, how slow, how many connections in

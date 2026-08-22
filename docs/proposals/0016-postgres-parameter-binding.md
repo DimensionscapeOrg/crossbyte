@@ -1,6 +1,6 @@
 # Proposal 0016 — Postgres parameter binding
 
-**Status:** Implemented on branch `server-hardening`
+**Status:** Implemented
 
 **Motivation:** The driver had no parameter binding. Statements were assembled
 as SQL text with values escaped into them, and results came back as JSON with

@@ -1,6 +1,6 @@
 # Proposal 0013 — WebSocket read/write paths and accepted-connection limits
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** This began as one question — what should a server do when
 a peer stops reading? — and the WebSocket write path answered it two

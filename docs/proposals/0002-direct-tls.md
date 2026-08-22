@@ -1,6 +1,6 @@
 # Proposal 0002 — Direct TLS termination in `ServerSocket`
 
-**Status:** Implemented (prototype scope) on branch `server-hardening`
+**Status:** Implemented (prototype scope)
 
 **Motivation:** `ServerWebSocket` could serve `wss://`, but `ServerSocket`
 and everything built on it — including `HTTPServer` — were plaintext-only.

@@ -1,6 +1,6 @@
 # Proposal 0006 — Socket write backpressure
 
-**Status:** Implemented on branch `main`
+**Status:** Implemented
 
 **Motivation:** `Socket` buffers writes until the operating system accepts
 them, and that buffer had no ceiling. A peer that stops reading — a phone

@@ -1,6 +1,6 @@
 # Proposal 0003 — Graceful shutdown
 
-**Status:** Implemented on branch `server-hardening`
+**Status:** Implemented
 
 **Motivation:** Proposal 0001 added `ProcessLifecycle`, which converts an
 operating-system stop signal into an orderly callback on the runtime
