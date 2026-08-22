@@ -18,6 +18,7 @@ class TestSuites {
 	}
 
 	public static function addCore(runner:Runner):Void {
+		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.core.CrossByteTest());
 		runner.addCase(new crossbyte.core.CrossByteRunningFlagTest());
 		runner.addCase(new crossbyte.core.ConfigTest());

@@ -279,21 +279,18 @@ class Store {
 	 * somebody stored.
 	 */
 	public function getString(key:String):Future<Null<String>> {
-		var future = new Future<Null<String>>();
-
-		get(key).then(function(value:Null<ByteArray>):Void {
+		// `map` rather than a hand-built future with both arms forwarded, which
+		// is what this was: the failure arm in particular was three lines of
+		// nothing but passing a message along, and forgetting it is how an
+		// adapter turns a failure into a result that never arrives.
+		return get(key).map(function(value:Null<ByteArray>):Null<String> {
 			if (value == null) {
-				@:privateAccess future.__resolve(null);
-				return;
+				return null;
 			}
 
 			value.position = 0;
-			@:privateAccess future.__resolve(value.readUTFBytes(value.length));
-		}, function(message:String):Void {
-			@:privateAccess future.__reject(message);
+			return value.readUTFBytes(value.length);
 		});
-
-		return future;
 	}
 
 	/** Deletes everything in the store. */
