@@ -1804,7 +1804,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// carrying bytes above 0x7F read back exactly as they arrived.
 		var line:StringBuf = new StringBuf();
 		while (buffer.position < buffer.length) {
-			var b:Int = buffer.readByte();
+			// Unsigned, which is the whole claim above. `readByte` carries
+			// Flash's sign extension, so 0xE9 arrives as -23 and `addChar`
+			// gets a negative code point: harmless on a target whose String is
+			// bytes, and a `RangeError: Invalid code point -23` thrown out of
+			// request parsing on Node. Any byte above 0x7F anywhere in a
+			// request line or header did it -- a UTF-8 filename in a
+			// Content-Disposition, an accented Referer, a non-ASCII
+			// User-Agent.
+			var b:Int = buffer.readUnsignedByte();
 			line.addChar(b);
 			if (b == 10) {
 				return line.toString();

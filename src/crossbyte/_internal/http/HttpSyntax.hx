@@ -38,6 +38,23 @@ class HttpSyntax {
 	}
 
 	/**
+	 * Returns `true` when adding `incoming` bytes to an already-accumulated
+	 * `accumulated` total would exceed `limit`. A `limit <= 0` disables the cap.
+	 *
+	 * Left behind in `Http` when the other four rules moved here, which is the
+	 * whole reason the extraction did not buy what it was for: the tests kept
+	 * pointing at the forwarder, and the forwarder is native-only, so rules
+	 * that hold on every target were still only checked on some of them.
+	 */
+	public static function exceedsChunkedBodyLimit(accumulated:Int, incoming:Int, limit:Int):Bool {
+		if (limit <= 0) {
+			return false;
+		}
+
+		return (accumulated + incoming) > limit;
+	}
+
+	/**
 	 * Strips from a header value everything that could end the header early.
 	 */
 	public static function sanitizeHeaderValue(v:String):String {

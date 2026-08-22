@@ -23,6 +23,7 @@ import sys.io.File;
 class SuiteCoverage {
 	private static inline var SUITES:String = "tests/crossbyte/test/TestSuites.hx";
 	private static inline var PORTABLE:String = "tests/crossbyte/test/PortableSuite.hx";
+	private static inline var SERVER:String = "tests/crossbyte/test/ServerSuite.hx";
 	private static inline var ROOT:String = "tests";
 
 	public static function check():Void {
@@ -33,7 +34,16 @@ class SuiteCoverage {
 			return;
 		}
 
-		var source:String = File.getContent(SUITES);
+		// ServerSuite is a group in every sense except which file it is in,
+		// and it lives in its own file for a compiler reason rather than an
+		// organisational one: a JavaScript build that names TestSuites compiles
+		// every group in it, thread locks and poll backends included. Folded in
+		// here under its group name so the checks below cannot tell the
+		// difference -- otherwise moving cases out of TestSuites would be a way
+		// to make them invisible to the very check that exists to find cases
+		// nothing runs.
+		var source:String = File.getContent(SUITES) + (FileSystem.exists(SERVER) ? __asGroup(File.getContent(SERVER), "addHttpServer") : "");
+		source = StringTools.replace(source, "ServerSuite.add(runner)", "addHttpServer(runner)");
 		var groups:Map<String, GroupBody> = __parseGroups(source);
 
 		// Every `tests/*Main.hx`, and which groups each one calls. Without
@@ -217,6 +227,13 @@ class SuiteCoverage {
 		return groups;
 	}
 
+	/**
+	 * Renames a satellite suite's single `add` so it parses as a named group.
+	 */
+	private static function __asGroup(source:String, name:String):String {
+		return StringTools.replace(source, "public static function add(", "public static function " + name + "(");
+	}
+
 	private static function __closure(groups:Map<String, GroupBody>, entry:String):Map<String, Bool> {
 		var seen:Map<String, Bool> = new Map();
 		var out:Map<String, Bool> = new Map();
@@ -252,12 +269,21 @@ class SuiteCoverage {
 
 			var source:String = File.getContent(ROOT + "/" + entry);
 			var calls:Array<String> = [];
-			var call:EReg = ~/(?:TestSuites\.(add[A-Z][A-Za-z0-9_]*)|PortableSuite\.(add))/;
+			var call:EReg = ~/(?:TestSuites\.(add[A-Z][A-Za-z0-9_]*)|PortableSuite\.(add)|ServerSuite\.(add))/;
 			var rest:String = source;
 
 			while (call.match(rest)) {
 				var matched:String = call.matched(1);
-				calls.push(matched != null ? matched : "PortableSuite.add");
+
+				if (matched != null) {
+					calls.push(matched);
+				} else {
+					// Both are real groups an entry point may call directly;
+					// neither is a hand-written list, which is what this
+					// function exists to tell apart.
+					calls.push(call.matched(2) != null ? "PortableSuite.add" : "addHttpServer");
+				}
+
 				rest = call.matchedRight();
 			}
 
