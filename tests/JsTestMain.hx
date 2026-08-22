@@ -15,6 +15,18 @@
 **/
 class JsTestMain {
 	public static function main():Void {
-		crossbyte.test.TestHarness.run(crossbyte.test.PortableSuite.add);
+		crossbyte.test.TestHarness.run(function(runner:utest.Runner):Void {
+			crossbyte.test.PortableSuite.add(runner);
+			// The server suite as well, which the browser cannot have: it
+			// wants a listening socket and a document root. It ran only on cpp
+			// before, behind a gate older than the Node server itself, so the
+			// target most likely to be deployed as a web server was the one
+			// whose web server no test had ever executed.
+			//
+			// ServerSuite rather than TestSuites.addHttp: naming TestSuites
+			// here compiles every group in it, and the first attempt died on a
+			// poll backend and a thread lock this build will never reach.
+			crossbyte.test.ServerSuite.add(runner);
+		});
 	}
 }
