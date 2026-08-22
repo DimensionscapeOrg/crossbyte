@@ -1,7 +1,11 @@
 package crossbyte.metrics;
 
-// Not built for the browser: it serves metrics over HTTP, which means listening.
-#if !js
+// Not built for the browser: it serves metrics over HTTP, which means listening,
+// and a page cannot. Node can, and the gate used to exclude it anyway -- the
+// same "JavaScript means browser" reading that kept the HTTP server's own tests
+// off Node long after the server ran there. This is middleware over
+// HTTPRequestHandler and needs exactly what that needs.
+#if !(js && !nodejs)
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.http.HTTPRequestHandler;

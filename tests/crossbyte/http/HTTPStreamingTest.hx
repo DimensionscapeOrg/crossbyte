@@ -7,84 +7,85 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import crossbyte.net.Socket;
 import utest.Assert;
+import utest.Async;
 
 @:access(crossbyte.http.HTTPServer)
 @:access(crossbyte.http.HTTPRequestHandler)
+@:timeout(60000)
 class HTTPStreamingTest extends utest.Test {
 	// Several times the streaming watermark, with a deliberately unaligned
 	// tail so the final slice is a partial one — an off-by-slice bug at the
 	// end of the transfer cannot hide behind a size that divides evenly.
 	private static inline var LARGE_SIZE:Int = 2 * 1024 * 1024 + 137;
 
-	public function testLargeFileStreamsWithBoundedBuffer():Void {
-		var result = __serveFixture(LARGE_SIZE, "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n");
+	public function testLargeFileStreamsWithBoundedBuffer(async:Async):Void {
+		__serveFixture(async, LARGE_SIZE, "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n", function(result):Void {
+			Assert.equals(200, result.status);
+			Assert.equals(Std.string(LARGE_SIZE), result.headers.get("content-length"));
+			Assert.equals(LARGE_SIZE, result.body.length);
 
-		Assert.equals(200, result.status);
-		Assert.equals(Std.string(LARGE_SIZE), result.headers.get("content-length"));
-		Assert.equals(LARGE_SIZE, result.body.length);
+			// Byte-exactness at the seams a slice pump can get wrong: the very
+			// first and last bytes, and both sides of a slice boundary.
+			Assert.equals(__patternAt(0), result.body[0]);
+			Assert.equals(__patternAt(LARGE_SIZE - 1), result.body[LARGE_SIZE - 1]);
+			for (offset in [1, 65535, 65536, 65537, 131071, 262144, 1048576, LARGE_SIZE - 2]) {
+				Assert.equals(__patternAt(offset), result.body[offset]);
+			}
+			Assert.equals(0, __countPatternMismatches(result.body, 0, LARGE_SIZE, 0));
 
-		// Byte-exactness at the seams a slice pump can get wrong: the very
-		// first and last bytes, and both sides of a slice boundary.
-		Assert.equals(__patternAt(0), result.body[0]);
-		Assert.equals(__patternAt(LARGE_SIZE - 1), result.body[LARGE_SIZE - 1]);
-		for (offset in [1, 65535, 65536, 65537, 131071, 262144, 1048576, LARGE_SIZE - 2]) {
-			Assert.equals(__patternAt(offset), result.body[offset]);
-		}
-		Assert.equals(0, __countPatternMismatches(result.body, 0, LARGE_SIZE, 0));
-
-		// The claim streaming exists to make: memory held per transfer is
-		// bounded by watermark plus one slice, never the file. A regression
-		// back to whole-file buffering passes every assertion above and only
-		// this one catches it.
-		Assert.isTrue(result.peak > 0);
-		Assert.isTrue(result.peak <= HTTPRequestHandler.STREAM_WATERMARK + HTTPRequestHandler.STREAM_SLICE);
+			// The claim streaming exists to make: memory held per transfer is
+			// bounded by watermark plus one slice, never the file. A regression
+			// back to whole-file buffering passes every assertion above and only
+			// this one catches it.
+			Assert.isTrue(result.peak > 0);
+			Assert.isTrue(result.peak <= HTTPRequestHandler.STREAM_WATERMARK + HTTPRequestHandler.STREAM_SLICE);
+			async.done();
+		});
 	}
 
-	public function testRangeRequestStreamsPartialContent():Void {
+	public function testRangeRequestStreamsPartialContent(async:Async):Void {
 		// A span crossing the 128 KB, 192 KB and 256 KB slice boundaries, so
 		// the ranged pump must stitch several reads at a nonzero file offset.
 		var start:Int = 100000;
 		var end:Int = 300000;
 		var expected:Int = end - start + 1;
-		var result = __serveFixture(LARGE_SIZE, 'GET /large.bin HTTP/1.1\r\nHost: localhost\r\nRange: bytes=${start}-${end}\r\n\r\n');
-
-		Assert.equals(206, result.status);
-		Assert.equals('bytes ${start}-${end}/${LARGE_SIZE}', result.headers.get("content-range"));
-		Assert.equals(Std.string(expected), result.headers.get("content-length"));
-		Assert.equals(expected, result.body.length);
-		Assert.equals(__patternAt(start), result.body[0]);
-		Assert.equals(__patternAt(end), result.body[expected - 1]);
-		Assert.equals(0, __countPatternMismatches(result.body, 0, expected, start));
-		Assert.isTrue(result.peak > 0);
+		__serveFixture(async, LARGE_SIZE, 'GET /large.bin HTTP/1.1\r\nHost: localhost\r\nRange: bytes=${start}-${end}\r\n\r\n', function(result):Void {
+			Assert.equals(206, result.status);
+			Assert.equals('bytes ${start}-${end}/${LARGE_SIZE}', result.headers.get("content-range"));
+			Assert.equals(Std.string(expected), result.headers.get("content-length"));
+			Assert.equals(expected, result.body.length);
+			Assert.equals(__patternAt(start), result.body[0]);
+			Assert.equals(__patternAt(end), result.body[expected - 1]);
+			Assert.equals(0, __countPatternMismatches(result.body, 0, expected, start));
+			Assert.isTrue(result.peak > 0);
+			async.done();
+		});
 	}
 
-	public function testSmallFileKeepsBufferedPath():Void {
+	public function testSmallFileKeepsBufferedPath(async:Async):Void {
 		var size:Int = 32 * 1024;
-		var result = __serveFixture(size, "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n");
-
-		Assert.equals(200, result.status);
-		Assert.equals(size, result.body.length);
-		Assert.equals(0, __countPatternMismatches(result.body, 0, size, 0));
-		// An untouched peak proves the file went out through the buffered
-		// branch: the pump is the only writer of this field.
-		Assert.equals(0, result.peak);
+		__serveFixture(async, size, "GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n", function(result):Void {
+			Assert.equals(200, result.status);
+			Assert.equals(size, result.body.length);
+			Assert.equals(0, __countPatternMismatches(result.body, 0, size, 0));
+			// An untouched peak proves the file went out through the buffered
+			// branch: the pump is the only writer of this field.
+			Assert.equals(0, result.peak);
+			async.done();
+		});
 	}
 
-	public function testHeadOnLargeFileSendsNoBody():Void {
-		var result = __serveFixture(LARGE_SIZE, "HEAD /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n");
-
-		Assert.equals(200, result.status);
-		Assert.equals(Std.string(LARGE_SIZE), result.headers.get("content-length"));
-		Assert.equals(0, result.body.length);
-		Assert.equals(0, result.peak);
+	public function testHeadOnLargeFileSendsNoBody(async:Async):Void {
+		__serveFixture(async, LARGE_SIZE, "HEAD /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n", function(result):Void {
+			Assert.equals(200, result.status);
+			Assert.equals(Std.string(LARGE_SIZE), result.headers.get("content-length"));
+			Assert.equals(0, result.body.length);
+			Assert.equals(0, result.peak);
+			async.done();
+		});
 	}
 
-	/**
-	 * Serves one request against a temp-rooted server whose only file is
-	 * `large.bin` filled with the deterministic pattern, and returns the
-	 * parsed response together with the handler's observed peak buffering.
-	 */
-	public function testStreamedResponseKeepsTheConnectionUsable():Void {
+	public function testStreamedResponseKeepsTheConnectionUsable(async:Async):Void {
 		// A streamed response used to force its connection closed, because
 		// the head is written long before the body finishes and settling at
 		// head time would either cut the body or let the next request's
@@ -119,47 +120,58 @@ class HTTPStreamingTest extends utest.Test {
 			client.flush();
 		});
 
-		try {
-			client.connect("127.0.0.1", server.localPort);
+		function finish():Void {
+			try client.close() catch (_:Dynamic) {}
+			try server.close() catch (_:Dynamic) {}
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
 
-			var firstEnd:Int = -1;
-			HTTPTestSupport.pumpUntil(function() {
-				firstEnd = HTTPTestSupport.responseEndAt(__asText(received), 0, false);
-				return closeSeen || firstEnd >= 0;
-			}, 20.0);
+			if (failure != null) {
+				Assert.fail(Std.string(failure));
+			}
 
-			Assert.isTrue(firstEnd >= 0);
-			Assert.isFalse(closeSeen);
-
-			var head = HTTPTestSupport.parseResponse(__asText(received));
-			Assert.equals(200, head.status);
-			Assert.equals("keep-alive", head.headers.get("connection"));
-
-			// The whole first body, verified against the pattern.
-			var bodyStart:Int = firstEnd - size;
-			Assert.equals(0, __countPatternMismatches(received, bodyStart, size, 0));
-
-			client.writeUTFBytes(request);
-			client.flush();
-
-			var secondEnd:Int = -1;
-			HTTPTestSupport.pumpUntil(function() {
-				secondEnd = HTTPTestSupport.responseEndAt(__asText(received), firstEnd, false);
-				return closeSeen || secondEnd >= 0;
-			}, 20.0);
-
-			Assert.isTrue(secondEnd >= 0);
-			Assert.equals(0, __countPatternMismatches(received, secondEnd - size, size, 0));
-		} catch (error:Dynamic) {
-			failure = error;
+			async.done();
 		}
 
-		try client.close() catch (_:Dynamic) {}
-		try server.close() catch (_:Dynamic) {}
-		try root.deleteDirectory(true) catch (_:Dynamic) {}
+		try {
+			HTTPTestSupport.connectThen(client, server, function():Void {
+				var firstEnd:Int = -1;
 
-		if (failure != null) {
-			throw failure;
+				HTTPTestSupport.pumpUntilAsync(function() {
+					firstEnd = HTTPTestSupport.responseEndAt(__asText(received), 0, false);
+					return closeSeen || firstEnd >= 0;
+				}, 20.0, function(_):Void {
+					Assert.isTrue(firstEnd >= 0);
+					Assert.isFalse(closeSeen);
+
+					var head = HTTPTestSupport.parseResponse(__asText(received));
+					Assert.equals(200, head.status);
+					Assert.equals("keep-alive", head.headers.get("connection"));
+
+					// The whole first body, verified against the pattern.
+					var bodyStart:Int = firstEnd - size;
+					Assert.equals(0, __countPatternMismatches(received, bodyStart, size, 0));
+
+					// The second request goes out only now, which is the point:
+					// it has to reach a connection the first streamed response
+					// left usable.
+					client.writeUTFBytes(request);
+					client.flush();
+
+					var secondEnd:Int = -1;
+
+					HTTPTestSupport.pumpUntilAsync(function() {
+						secondEnd = HTTPTestSupport.responseEndAt(__asText(received), firstEnd, false);
+						return closeSeen || secondEnd >= 0;
+					}, 20.0, function(_):Void {
+						Assert.isTrue(secondEnd >= 0);
+						Assert.equals(0, __countPatternMismatches(received, secondEnd - size, size, 0));
+						finish();
+					});
+				});
+			});
+		} catch (error:Dynamic) {
+			failure = error;
+			finish();
 		}
 	}
 
@@ -175,7 +187,12 @@ class HTTPStreamingTest extends utest.Test {
 		return out.toString();
 	}
 
-	private function __serveFixture(fileSize:Int, requestText:String):StreamedResult {
+	/**
+	 * Serves one request against a temp-rooted server whose only file is
+	 * `large.bin` filled with the deterministic pattern, and hands the
+	 * parsed response together with the handler's observed peak buffering.
+	 */
+	private function __serveFixture(async:Async, fileSize:Int, requestText:String, done:StreamedResult->Void):Void {
 		var root:File = File.createTempDirectory();
 		var fixtureFile:File = root.resolvePath("large.bin");
 		fixtureFile.save(__makePattern(fileSize));
@@ -194,9 +211,6 @@ class HTTPStreamingTest extends utest.Test {
 		var client = new Socket();
 		var received = new ByteArray();
 		var closeSeen = false;
-		var result:StreamedResult = null;
-		var requestFailed:Dynamic = null;
-
 		client.addEventListener(Event.CONNECT, _ -> {
 			client.writeUTFBytes(requestText);
 			client.flush();
@@ -211,39 +225,47 @@ class HTTPStreamingTest extends utest.Test {
 		});
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
 
-		try {
-			client.connect("127.0.0.1", server.localPort);
-			HTTPTestSupport.pumpUntil(() -> closeSeen || __responseComplete(received), 15.0);
+		function finish(failure:Dynamic):Void {
+			var result:StreamedResult = failure == null ? __parseResponse(received, handler != null ? handler.__streamPeakBuffered : -1) : null;
 
-			// Let the transfer finish tearing itself down before anything is
-			// torn down around it. A stream still holding its FileStream
-			// when the fixture deletes the directory turns a pump bug into a
-			// file-locking error somewhere unrelated, and it is also the
-			// assertion that the pump releases what it holds at all.
-			HTTPTestSupport.pumpUntil(() -> handler == null || handler.__streamSource == null, 5.0);
-			Assert.isTrue(handler == null || handler.__streamSource == null);
-
-			result = __parseResponse(received, handler != null ? handler.__streamPeakBuffered : -1);
 			try {
 				client.close();
 			} catch (_:Dynamic) {}
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			try {
+				root.deleteDirectory(true);
+			} catch (_:Dynamic) {}
+
+			if (failure != null) {
+				Assert.fail("the request failed: " + Std.string(failure));
+				async.done();
+				return;
+			}
+
+			Assert.notNull(result);
+			done(result);
+		}
+
+		try {
+			HTTPTestSupport.connectThen(client, server, function():Void {
+				HTTPTestSupport.pumpUntilAsync(() -> closeSeen || __responseComplete(received), 15.0, function(_):Void {
+					// Let the transfer finish tearing itself down before anything
+					// is torn down around it. A stream still holding its
+					// FileStream when the fixture deletes the directory turns a
+					// pump bug into a file-locking error somewhere unrelated, and
+					// it is also the assertion that the pump releases what it
+					// holds at all.
+					HTTPTestSupport.pumpUntilAsync(() -> handler == null || handler.__streamSource == null, 5.0, function(_):Void {
+						Assert.isTrue(handler == null || handler.__streamSource == null);
+						finish(null);
+					});
+				});
+			});
 		} catch (error:Dynamic) {
-			requestFailed = error;
+			finish(error);
 		}
-
-		try {
-			server.close();
-		} catch (_:Dynamic) {}
-		try {
-			root.deleteDirectory(true);
-		} catch (_:Dynamic) {}
-
-		if (requestFailed != null) {
-			throw requestFailed;
-		}
-
-		Assert.notNull(result);
-		return result;
 	}
 
 	/**

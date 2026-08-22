@@ -7,35 +7,50 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import crossbyte.net.Socket;
 import utest.Assert;
+import utest.Async;
 
 /**
  * Graceful shutdown of `HTTPServer`.
+ *
+ * The three cases that touch no socket stay synchronous, because they mean the
+ * same thing on every target without help. The two that do -- and the one that
+ * needs the assigned port, which Node hands over a turn later -- go through the
+ * asynchronous pump.
  */
+@:timeout(20000)
 class HTTPServerDrainTest extends utest.Test {
-	public function testDrainWithNoTrafficCompletesImmediately():Void {
+	public function testDrainWithNoTrafficCompletesImmediately(async:Async):Void {
 		var server = __makeServer();
-		var port:Int = server.localPort;
 
-		Assert.isFalse(server.draining);
-		Assert.equals(0, server.activeConnections);
-		Assert.isTrue(server.listening);
+		// Asynchronous only for the port. Node has no bind separate from
+		// listen and claims the port on a later turn, so reading it here gives
+		// 0 -- and rebinding port 0 below would bind a fresh random port and
+		// assert nothing about the one just released.
+		HTTPTestSupport.pumpUntilAsync(() -> server.localPort != 0, 2.0, function(_):Void {
+			var port:Int = server.localPort;
 
-		var completed:Bool = false;
-		server.drain(30.0, () -> completed = true);
+			Assert.isFalse(server.draining);
+			Assert.equals(0, server.activeConnections);
+			Assert.isTrue(server.listening);
 
-		// With nothing in flight there is nothing to wait for, so shutdown
-		// finishes synchronously rather than deferring to a later tick.
-		Assert.isTrue(completed);
-		Assert.isTrue(server.draining);
-		Assert.isFalse(server.listening);
-		Assert.equals(0, server.activeConnections);
+			var completed:Bool = false;
+			server.drain(30.0, () -> completed = true);
 
-		// The listener was genuinely released: the port can be rebound.
-		var successor = new crossbyte.net.ServerSocket();
-		successor.bind(port, "127.0.0.1");
-		successor.listen();
-		Assert.isTrue(successor.listening);
-		successor.close();
+			// With nothing in flight there is nothing to wait for, so shutdown
+			// finishes synchronously rather than deferring to a later tick.
+			Assert.isTrue(completed);
+			Assert.isTrue(server.draining);
+			Assert.isFalse(server.listening);
+			Assert.equals(0, server.activeConnections);
+
+			// The listener was genuinely released: the port can be rebound.
+			var successor = new crossbyte.net.ServerSocket();
+			successor.bind(port, "127.0.0.1");
+			successor.listen();
+			Assert.isTrue(successor.listening);
+			successor.close();
+			async.done();
+		});
 	}
 
 	public function testDrainIsIdempotent():Void {
@@ -57,7 +72,7 @@ class HTTPServerDrainTest extends utest.Test {
 		Assert.isFalse(server.listening);
 	}
 
-	public function testDrainClosesIdleKeepAliveConnectionImmediately():Void {
+	public function testDrainClosesIdleKeepAliveConnectionImmediately(async:Async):Void {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
@@ -81,39 +96,43 @@ class HTTPServerDrainTest extends utest.Test {
 		});
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
 
-		try {
-			client.connect("127.0.0.1", server.localPort);
-			HTTPTestSupport.pumpUntil(() -> raw.indexOf("drain fixture") >= 0, 2.0);
-			Assert.isTrue(raw.indexOf("drain fixture") >= 0);
-			Assert.equals(1, server.activeConnections);
+		function cleanUp():Void {
+			try {
+				client.close();
+			} catch (_:Dynamic) {}
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			try {
+				root.deleteDirectory(true);
+			} catch (_:Dynamic) {}
 
-			// The connection is between requests: there is nothing in
-			// flight to wait for, so drain closes it in the walk and
-			// completes synchronously rather than sitting out any part of
-			// the 30 s wall.
-			var completed = false;
-			server.drain(30.0, () -> completed = true);
-			Assert.isTrue(completed);
-			Assert.equals(0, server.activeConnections);
-
-			HTTPTestSupport.pumpUntil(() -> closeSeen, 2.0);
-			Assert.isTrue(closeSeen);
-		} catch (e:Dynamic) {
-			Assert.fail(Std.string(e));
+			async.done();
 		}
 
-		try {
-			client.close();
-		} catch (_:Dynamic) {}
-		try {
-			server.close();
-		} catch (_:Dynamic) {}
-		try {
-			root.deleteDirectory(true);
-		} catch (_:Dynamic) {}
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> raw.indexOf("drain fixture") >= 0, 2.0, function(_):Void {
+				Assert.isTrue(raw.indexOf("drain fixture") >= 0);
+				Assert.equals(1, server.activeConnections);
+
+				// The connection is between requests: there is nothing in
+				// flight to wait for, so drain closes it in the walk and
+				// completes synchronously rather than sitting out any part of
+				// the 30 s wall.
+				var completed = false;
+				server.drain(30.0, () -> completed = true);
+				Assert.isTrue(completed);
+				Assert.equals(0, server.activeConnections);
+
+				HTTPTestSupport.pumpUntilAsync(() -> closeSeen, 2.0, function(_):Void {
+					Assert.isTrue(closeSeen);
+					cleanUp();
+				});
+			});
+		});
 	}
 
-	public function testDrainLetsInFlightRequestFinish():Void {
+	public function testDrainLetsInFlightRequestFinish(async:Async):Void {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
@@ -144,40 +163,44 @@ class HTTPServerDrainTest extends utest.Test {
 		});
 		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
 
-		try {
-			client.connect("127.0.0.1", server.localPort);
-			HTTPTestSupport.pumpUntil(() -> release != null, 2.0);
-			Assert.notNull(release);
+		function cleanUp():Void {
+			try {
+				client.close();
+			} catch (_:Dynamic) {}
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			try {
+				root.deleteDirectory(true);
+			} catch (_:Dynamic) {}
 
-			var completed = false;
-			server.drain(30.0, () -> completed = true);
-			// In-flight work holds the drain open; severing it here is
-			// exactly what drain() exists to avoid.
-			Assert.isFalse(completed);
-			Assert.equals(1, server.activeConnections);
-
-			release();
-			HTTPTestSupport.pumpUntil(() -> completed && closeSeen && raw.indexOf("drain fixture") >= 0, 3.0);
-
-			Assert.isTrue(completed);
-			// The response that finished during the drain warned the
-			// client the connection is ending, keep-alive or not.
-			Assert.isTrue(raw.toLowerCase().indexOf("connection: close") >= 0);
-			Assert.isTrue(raw.indexOf("drain fixture") >= 0);
-			Assert.isTrue(closeSeen);
-		} catch (e:Dynamic) {
-			Assert.fail(Std.string(e));
+			async.done();
 		}
 
-		try {
-			client.close();
-		} catch (_:Dynamic) {}
-		try {
-			server.close();
-		} catch (_:Dynamic) {}
-		try {
-			root.deleteDirectory(true);
-		} catch (_:Dynamic) {}
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> release != null, 2.0, function(_):Void {
+				Assert.notNull(release);
+
+				var completed = false;
+				server.drain(30.0, () -> completed = true);
+				// In-flight work holds the drain open; severing it here is
+				// exactly what drain() exists to avoid.
+				Assert.isFalse(completed);
+				Assert.equals(1, server.activeConnections);
+
+				release();
+
+				HTTPTestSupport.pumpUntilAsync(() -> completed && closeSeen && raw.indexOf("drain fixture") >= 0, 3.0, function(_):Void {
+					Assert.isTrue(completed);
+					// The response that finished during the drain warned the
+					// client the connection is ending, keep-alive or not.
+					Assert.isTrue(raw.toLowerCase().indexOf("connection: close") >= 0);
+					Assert.isTrue(raw.indexOf("drain fixture") >= 0);
+					Assert.isTrue(closeSeen);
+					cleanUp();
+				});
+			});
+		});
 	}
 
 	private function __makeServer():HTTPServer {
