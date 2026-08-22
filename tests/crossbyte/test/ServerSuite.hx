@@ -26,22 +26,23 @@ import utest.Runner;
 **/
 class ServerSuite {
 	public static function add(runner:Runner):Void {
-		// The socket round trips. Still cpp-only for the four heaviest, which
-		// is honest rather than settled: they are written against a
-		// synchronous pump and have to be converted case by case, and a
-		// conversion that compiles but never calls `async.done()` times out
-		// rather than fails -- so each is worth landing under its own green
-		// run rather than in one sweep.
-		#if cpp
+		// The socket round trips, on every target that can listen.
+		#if (cpp || neko || hl || nodejs)
+		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPStreamingTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
 		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
-		runner.addCase(new crossbyte.http.HTTPPhpTest());
+		runner.addCase(new crossbyte.http.RouterServerTest());
 		#end
 
-		#if (cpp || neko || hl || nodejs)
-		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
-		runner.addCase(new crossbyte.http.RouterServerTest());
+		// PHP stays native-only, and not for a reason the bridge shares: the
+		// test drives a FastCGI backend over `crossbyte.net.ServerSocket` and
+		// holds the accepted peer, which is fine on Node -- what it also does
+		// is construct `PHPMode.Launch` paths through `sys.io.Process` in the
+		// cases around it. The Node PHP path has its own coverage in the
+		// integration program, against the same kind of fake backend.
+		#if cpp
+		runner.addCase(new crossbyte.http.HTTPPhpTest());
 		#end
 
 		// No socket, but a filesystem and the rewrite engine, so a page has

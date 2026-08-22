@@ -1412,6 +1412,23 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// queued since the last one, exactly as the browser branch does.
 		if (__socket != null) {
 			flush();
+
+			// And then whoever is feeding this socket in slices. On the native
+			// targets that call comes from `registryOnWritable`, which the poll
+			// registry makes when the descriptor reports writable; Node has no
+			// registry and no descriptor, so nothing was making it at all. A
+			// streamed response therefore wrote its head and first slice and
+			// then stopped forever, waiting on a drain that could not arrive --
+			// so every identity response over the 256 KB streaming threshold
+			// hung its connection on Node, with the client left waiting on a
+			// body that was never coming.
+			//
+			// Once per tick rather than per write: the pump bounds itself by
+			// the watermark and by a burst budget, so it writes only what the
+			// peer has made room for however often it is asked.
+			if (__onWritableDrain != null) {
+				__onWritableDrain();
+			}
 		}
 		#else
 		if (__socket == null) {
