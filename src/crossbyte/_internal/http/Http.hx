@@ -38,10 +38,7 @@ class Http {
 	 * `accumulated` total would exceed `limit`. A `limit <= 0` disables the cap.
 	 */
 	public static function exceedsChunkedBodyLimit(accumulated:Int, incoming:Int, limit:Int):Bool {
-		if (limit <= 0) {
-			return false;
-		}
-		return (accumulated + incoming) > limit;
+		return HttpSyntax.exceedsChunkedBodyLimit(accumulated, incoming, limit);
 	}
 	private static inline final CRLF:String = "\r\n";
 	private static inline final CRLFCRLF:String = "\r\n\r\n";

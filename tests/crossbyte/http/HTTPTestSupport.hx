@@ -44,6 +44,72 @@ class HTTPTestSupport {
 		return done();
 	}
 
+	/**
+	 * Pumps until `done` reports true, then calls `then` with whether it
+	 * finished rather than timed out.
+	 *
+	 * This exists because `pumpUntil` above cannot work on Node, and does not
+	 * fail there in a way anyone would notice. Node delivers socket I/O by
+	 * returning to its event loop, and a `while` loop holding the thread never
+	 * returns to it -- so nothing arrives, `done` stays false, and the loop
+	 * spends its whole timeout before reporting a clean "timed out". Measured
+	 * rather than assumed: a probe doing this could not even read the port off
+	 * a listening server, because `listen()` resolves asynchronously there too.
+	 *
+	 * So on Node the pumping is spread across event loop turns. On every other
+	 * target this delegates to `pumpUntil` and calls `then` inline, which keeps
+	 * the native tests exactly as fast and exactly as debuggable as they were:
+	 * a failing assertion still unwinds through the test body rather than
+	 * arriving on some later turn with no stack.
+	 */
+	public static function pumpUntilAsync(done:Void->Bool, timeout:Float, then:Bool->Void, step:Float = 1 / 60):Void {
+		#if nodejs
+		var runtime:CrossByte = CrossByte.current();
+		var deadline:Float = Sys.time() + timeout;
+
+		function turn():Void {
+			runtime.pump(step, 0);
+
+			if (done()) {
+				then(true);
+				return;
+			}
+
+			if (Sys.time() >= deadline) {
+				then(false);
+				return;
+			}
+
+			// setTimeout rather than setImmediate: an immediate runs before
+			// the loop polls for I/O, so a tight chain of them starves the
+			// very sockets being waited on -- the same failure as the while
+			// loop, only harder to see.
+			js.Node.setTimeout(turn, 1);
+		}
+
+		turn();
+		#else
+		then(pumpUntil(done, timeout, step));
+		#end
+	}
+
+	/**
+	 * Waits for `server` to have a port, connects `client` to it, then calls
+	 * `then`.
+	 *
+	 * The wait is not ceremony. A native `ServerSocket` has bound by the time
+	 * its constructor returns, so `localPort` is readable immediately; Node has
+	 * no bind separate from listen and claims the port on a later turn, so
+	 * reading it straight away gives `0` and connecting to port 0 fails in a
+	 * way that has nothing to do with the case being tested.
+	 */
+	public static function connectThen(client:crossbyte.net.Socket, server:HTTPServer, then:Void->Void):Void {
+		pumpUntilAsync(() -> server.localPort != 0, 2.0, function(_):Void {
+			client.connect("127.0.0.1", server.localPort);
+			then();
+		});
+	}
+
 	/** Pumps `count` further times, for settling work that follows a close. */
 	public static function pumpMore(count:Int, step:Float = 1 / 60):Void {
 		var runtime:CrossByte = CrossByte.current();
@@ -51,6 +117,34 @@ class HTTPTestSupport {
 		for (i in 0...count) {
 			runtime.pump(step, 0);
 		}
+	}
+
+	/**
+	 * `pumpMore`, spread over event loop turns where that is the only way it
+	 * can mean anything.
+	 */
+	public static function pumpMoreAsync(count:Int, then:Void->Void, step:Float = 1 / 60):Void {
+		#if nodejs
+		var runtime:CrossByte = CrossByte.current();
+		var remaining:Int = count;
+
+		function turn():Void {
+			runtime.pump(step, 0);
+			remaining--;
+
+			if (remaining <= 0) {
+				then();
+				return;
+			}
+
+			js.Node.setTimeout(turn, 1);
+		}
+
+		turn();
+		#else
+		pumpMore(count, step);
+		then();
+		#end
 	}
 
 	/**
