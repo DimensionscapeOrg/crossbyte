@@ -1,5 +1,6 @@
 package crossbyte.io;
 
+import crossbyte.Future;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Store;
 import utest.Assert;
@@ -18,6 +19,18 @@ import utest.Async;
  * The browser runs these too, against IndexedDB, through the headless job.
  * That is the point of the API being one shape: the same assertions, both
  * backends, no target grading its own homework.
+ *
+ * ## Chained rather than nested
+ *
+ * These were written before `Future` could compose, so each step nested inside
+ * the one before it -- five levels deep in places, with a failure handler
+ * repeated at every level. The repetition was the real cost, not the
+ * indentation: six copies of `failWith(async)` in one case is six places to
+ * forget one, and a forgotten one turns a failing store into a case that hangs
+ * until utest times it out and reports something unrelated to what broke.
+ *
+ * `flatMap` carries a failure down the whole chain, so each case has one
+ * handler at its end and no intermediate one to omit.
  */
 class StoreTest extends utest.Test {
 	private static var counter:Int = 0;
@@ -45,101 +58,112 @@ class StoreTest extends utest.Test {
 		return data.readUTFBytes(data.length);
 	}
 
+	/**
+	 * Opens a fresh store, runs `body` against it, then clears and closes it.
+	 *
+	 * The open, the clear and the close were spelled out in every case, which
+	 * is three chances per case to leave a store behind -- and a store left
+	 * behind is a name the next run inherits, on backends that outlive the
+	 * process. The single failure handler is here for the same reason: a case
+	 * that chains through this cannot forget one, because there is only one.
+	 */
+	private function withStore<T>(async:Async, body:Store->Future<T>):Void {
+		var store:Store = null;
+
+		Store.open(freshName())
+			.flatMap(function(opened:Store):Future<T> {
+				store = opened;
+				return body(store);
+			})
+			.flatMap(_ -> store.clear())
+			.then(function(_):Void {
+				store.close();
+				async.done();
+			}, failWith(async));
+	}
+
 	public function testAValueSurvivesCloseAndReopen(async:Async):Void {
 		var name = freshName();
+		var reopened:Store = null;
 
-		Store.open(name).then(store -> {
-			store.put("token", bytesOf("abc123")).then(_ -> {
+		Store.open(name)
+			.flatMap(store -> store.put("token", bytesOf("abc123")))
+			.flatMap(function(store:Store):Future<Store> {
 				store.close();
 
 				// A new Store over the same name, which is what a reload is.
-				Store.open(name).then(reopened -> {
-					reopened.get("token").then(value -> {
-						Assert.notNull(value, "the value did not survive a reopen");
-						Assert.equals("abc123", textOf(value));
-						reopened.clear().then(_ -> {
-							reopened.close();
-							async.done();
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
+				return Store.open(name);
+			})
+			.flatMap(function(store:Store):Future<Null<ByteArray>> {
+				reopened = store;
+				return store.get("token");
+			})
+			.flatMap(function(value:Null<ByteArray>):Future<Store> {
+				Assert.notNull(value, "the value did not survive a reopen");
+				Assert.equals("abc123", textOf(value));
+				return reopened.clear();
+			})
+			.then(function(_):Void {
+				reopened.close();
+				async.done();
 			}, failWith(async));
-		}, failWith(async));
 	}
 
 	public function testAMissingKeyIsNullAndNotEmpty(async:Async):Void {
-		Store.open(freshName()).then(store -> {
-			store.get("never-written").then(value -> {
+		withStore(async, store -> store.get("never-written")
+			.flatMap(function(value:Null<ByteArray>):Future<Store> {
 				// Null means absent. An empty ByteArray would mean "a value of
 				// no bytes", and a caller that cannot tell those apart writes
 				// the wrong thing back.
 				Assert.isNull(value, "a key that was never written did not read as null");
-
-				store.put("empty", new ByteArray()).then(_ -> {
-					store.get("empty").then(stored -> {
-						Assert.notNull(stored, "a deliberately empty value read as absent");
-						Assert.equals(0, stored.length);
-						store.clear().then(_ -> {
-							store.close();
-							async.done();
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
-			}, failWith(async));
-		}, failWith(async));
+				return store.put("empty", new ByteArray());
+			})
+			.flatMap(_ -> store.get("empty"))
+			.map(function(stored:Null<ByteArray>):Bool {
+				Assert.notNull(stored, "a deliberately empty value read as absent");
+				Assert.equals(0, stored.length);
+				return true;
+			}));
 	}
 
 	public function testOverwriteAndRemove(async:Async):Void {
-		Store.open(freshName()).then(store -> {
-			store.put("k", bytesOf("first")).then(_ -> {
-				store.put("k", bytesOf("second")).then(_ -> {
-					store.get("k").then(value -> {
-						Assert.equals("second", textOf(value));
+		withStore(async, store -> store.put("k", bytesOf("first"))
+			.flatMap(_ -> store.put("k", bytesOf("second")))
+			.flatMap(_ -> store.get("k"))
+			.flatMap(function(value:Null<ByteArray>):Future<Store> {
+				Assert.equals("second", textOf(value));
+				return store.remove("k");
+			})
+			.flatMap(_ -> store.get("k"))
+			.flatMap(function(gone:Null<ByteArray>):Future<Store> {
+				Assert.isNull(gone, "the key survived remove()");
 
-						store.remove("k").then(_ -> {
-							store.get("k").then(gone -> {
-								Assert.isNull(gone, "the key survived remove()");
-
-								// Removing what is not there is not an error.
-								store.remove("k").then(_ -> {
-									store.close();
-									async.done();
-								}, failWith(async));
-							}, failWith(async));
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
-			}, failWith(async));
-		}, failWith(async));
+				// Removing what is not there is not an error.
+				return store.remove("k");
+			}));
 	}
 
 	public function testKeysAndPrefix(async:Async):Void {
-		Store.open(freshName()).then(store -> {
-			store.put("user:1", bytesOf("a")).then(_ -> {
-				store.put("user:2", bytesOf("b")).then(_ -> {
-					store.put("cache:1", bytesOf("c")).then(_ -> {
-						store.keys().then(all -> {
-							Assert.equals(3, all.length);
-
-							store.keys("user:").then(users -> {
-								users.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
-								Assert.equals(2, users.length);
-								Assert.equals("user:1", users[0]);
-								Assert.equals("user:2", users[1]);
-
-								store.clear().then(_ -> {
-									store.keys().then(empty -> {
-										Assert.equals(0, empty.length);
-										store.close();
-										async.done();
-									}, failWith(async));
-								}, failWith(async));
-							}, failWith(async));
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
-			}, failWith(async));
-		}, failWith(async));
+		withStore(async, store -> store.put("user:1", bytesOf("a"))
+			.flatMap(_ -> store.put("user:2", bytesOf("b")))
+			.flatMap(_ -> store.put("cache:1", bytesOf("c")))
+			.flatMap(_ -> store.keys())
+			.flatMap(function(all:Array<String>):Future<Array<String>> {
+				Assert.equals(3, all.length);
+				return store.keys("user:");
+			})
+			.flatMap(function(users:Array<String>):Future<Store> {
+				users.sort((a, b) -> a < b ? -1 : (a > b ? 1 : 0));
+				Assert.equals(2, users.length);
+				Assert.equals("user:1", users[0]);
+				Assert.equals("user:2", users[1]);
+				return store.clear();
+			})
+			.flatMap(_ -> store.keys())
+			.map(function(empty:Array<String>):Bool {
+				Assert.equals(0, empty.length);
+				return true;
+			}));
 	}
 
 	public function testKeysAreNotConstrainedByTheFilesystem(async:Async):Void {
@@ -148,30 +172,24 @@ class StoreTest extends utest.Test {
 		// differ only by case and would collide on a case-insensitive volume.
 		var awkward = ["a/b", "..", "CON", "Token", "token", "with space", "unicode-éè"];
 
-		Store.open(freshName()).then(store -> {
-			var remaining = awkward.length;
+		// `Future.all` rather than a countdown counter closed over by every
+		// callback, which is what this was -- and the counter version had to
+		// nest the whole tail of the case inside the last write for it to run
+		// at all.
+		withStore(async, store -> Future.all([for (i in 0...awkward.length) store.put(awkward[i], bytesOf("value-" + i))])
+			.flatMap(_ -> Future.all([for (key in awkward) store.get(key)]))
+			.flatMap(function(values:Array<Null<ByteArray>>):Future<Array<String>> {
+				for (i in 0...awkward.length) {
+					Assert.notNull(values[i], "lost the key " + awkward[i]);
+					Assert.equals("value-" + i, textOf(values[i]), "wrong value for the key " + awkward[i]);
+				}
 
-			for (i in 0...awkward.length) {
-				var key = awkward[i];
-
-				store.put(key, bytesOf("value-" + i)).then(_ -> {
-					store.get(key).then(value -> {
-						Assert.notNull(value, "lost the key " + key);
-						Assert.equals("value-" + i, textOf(value), "wrong value for the key " + key);
-
-						if (--remaining == 0) {
-							store.keys().then(all -> {
-								Assert.equals(awkward.length, all.length, "keys() lost one: " + all);
-								store.clear().then(_ -> {
-									store.close();
-									async.done();
-								}, failWith(async));
-							}, failWith(async));
-						}
-					}, failWith(async));
-				}, failWith(async));
-			}
-		}, failWith(async));
+				return store.keys();
+			})
+			.map(function(all:Array<String>):Bool {
+				Assert.equals(awkward.length, all.length, "keys() lost one: " + all);
+				return true;
+			}));
 	}
 
 	public function testBinaryValuesAreNotTextAndSurviveIntact(async:Async):Void {
@@ -180,41 +198,35 @@ class StoreTest extends utest.Test {
 			raw.writeByte(i);
 		}
 
-		Store.open(freshName()).then(store -> {
-			store.put("binary", raw).then(_ -> {
-				store.get("binary").then(value -> {
-					Assert.equals(256, value.length);
+		withStore(async, store -> store.put("binary", raw)
+			.flatMap(_ -> store.get("binary"))
+			.map(function(value:Null<ByteArray>):Bool {
+				Assert.equals(256, value.length);
 
-					var mismatch = -1;
-					value.position = 0;
-					for (i in 0...256) {
-						// Unsigned, because readByte() sign-extends by design --
-						// Flash semantics -- so byte 128 reads as -128 and the
-						// first draft of this test blamed the store for it.
-						if (value.readUnsignedByte() != i) {
-							mismatch = i;
-							break;
-						}
+				var mismatch = -1;
+				value.position = 0;
+				for (i in 0...256) {
+					// Unsigned, because readByte() sign-extends by design --
+					// Flash semantics -- so byte 128 reads as -128 and the
+					// first draft of this test blamed the store for it.
+					if (value.readUnsignedByte() != i) {
+						mismatch = i;
+						break;
 					}
+				}
 
-					// Every byte, including the NUL at zero, which a store that
-					// went through a string somewhere would have truncated at.
-					Assert.equals(-1, mismatch, "byte " + mismatch + " came back wrong");
-
-					store.clear().then(_ -> {
-						store.close();
-						async.done();
-					}, failWith(async));
-				}, failWith(async));
-			}, failWith(async));
-		}, failWith(async));
+				// Every byte, including the NUL at zero, which a store that
+				// went through a string somewhere would have truncated at.
+				Assert.equals(-1, mismatch, "byte " + mismatch + " came back wrong");
+				return true;
+			}));
 	}
 
 	public function testTheCallerCanReuseItsBuffer(async:Async):Void {
 		var buffer = bytesOf("original");
 
-		Store.open(freshName()).then(store -> {
-			store.put("k", buffer).then(_ -> {
+		withStore(async, store -> store.put("k", buffer)
+			.flatMap(function(_):Future<Null<ByteArray>> {
 				// The store copies on the way in, so this cannot reach back and
 				// change what was stored. Handing a backend a live view of a
 				// caller's buffer is how one write ends up holding another's
@@ -222,19 +234,18 @@ class StoreTest extends utest.Test {
 				// output both had to be fixed for.
 				buffer.clear();
 				buffer.writeUTFBytes("changed");
-
-				store.get("k").then(value -> {
-					Assert.equals("original", textOf(value));
-					store.clear().then(_ -> {
-						store.close();
-						async.done();
-					}, failWith(async));
-				}, failWith(async));
-			}, failWith(async));
-		}, failWith(async));
+				return store.get("k");
+			})
+			.map(function(value:Null<ByteArray>):Bool {
+				Assert.equals("original", textOf(value));
+				return true;
+			}));
 	}
 
 	public function testAClosedStoreRefusesRatherThanIgnoring(async:Async):Void {
+		// Deliberately not chained. `flatMap` exists to carry a failure past
+		// everything downstream, and here the failures are the result -- a case
+		// whose subject is the failure has to catch each one where it happens.
 		Store.open(freshName()).then(store -> {
 			store.close();
 
@@ -278,121 +289,85 @@ class StoreTest extends utest.Test {
 	}
 
 	public function testForEachVisitsEverythingWithoutHoldingIt(async:Async):Void {
-		Store.open(freshName()).then(store -> {
-			var written = 0;
+		withStore(async, function(store:Store):Future<Bool> {
+			var seen = new Map<String, String>();
 
-			for (i in 0...20) {
-				store.putString("k" + i, "v" + i).then(_ -> {
-					if (++written < 20) {
-						return;
+			return Future.all([for (i in 0...20) store.putString("k" + i, "v" + i)])
+				.flatMap(_ -> store.forEach(function(key:String, value:ByteArray):Bool {
+					value.position = 0;
+					seen.set(key, value.readUTFBytes(value.length));
+					return true;
+				}))
+				.map(function(_):Bool {
+					var count = 0;
+					for (key in seen.keys()) {
+						count++;
 					}
 
-					var seen = new Map<String, String>();
-
-					store.forEach((key, value) -> {
-						value.position = 0;
-						seen.set(key, value.readUTFBytes(value.length));
-						return true;
-					}).then(_ -> {
-						var count = 0;
-						for (key in seen.keys()) {
-							count++;
-						}
-
-						Assert.equals(20, count, "forEach missed entries");
-						Assert.equals("v7", seen.get("k7"));
-
-						store.clear().then(_ -> {
-							store.close();
-							async.done();
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
-			}
-		}, failWith(async));
+					Assert.equals(20, count, "forEach missed entries");
+					Assert.equals("v7", seen.get("k7"));
+					return true;
+				});
+		});
 	}
 
 	public function testForEachStopsWhenAskedTo(async:Async):Void {
-		Store.open(freshName()).then(store -> {
-			var written = 0;
+		withStore(async, function(store:Store):Future<Bool> {
+			var visited = 0;
 
-			for (i in 0...10) {
-				store.putString("k" + i, "v").then(_ -> {
-					if (++written < 10) {
-						return;
-					}
-
-					var visited = 0;
-
-					// Returning false is the early exit a cursor exists for. If
-					// it were ignored, this would count ten and the method would
-					// be `keys()` with extra steps.
-					store.forEach((key, value) -> {
-						visited++;
-						return visited < 3;
-					}).then(_ -> {
-						Assert.equals(3, visited, "forEach did not stop when asked");
-
-						store.clear().then(_ -> {
-							store.close();
-							async.done();
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
-			}
-		}, failWith(async));
+			return Future.all([for (i in 0...10) store.putString("k" + i, "v")])
+				// Returning false is the early exit a cursor exists for. If it
+				// were ignored, this would count ten and the method would be
+				// `keys()` with extra steps.
+				.flatMap(_ -> store.forEach(function(key:String, value:ByteArray):Bool {
+					visited++;
+					return visited < 3;
+				}))
+				.map(function(_):Bool {
+					Assert.equals(3, visited, "forEach did not stop when asked");
+					return true;
+				});
+		});
 	}
 
 	public function testForEachHonoursAPrefix(async:Async):Void {
-		Store.open(freshName()).then(store -> {
-			store.putString("user:1", "a").then(_ -> {
-				store.putString("cache:1", "b").then(_ -> {
-					var seen:Array<String> = [];
+		withStore(async, function(store:Store):Future<Bool> {
+			var seen:Array<String> = [];
 
-					store.forEach((key, _) -> {
-						seen.push(key);
-						return true;
-					}, "user:").then(_ -> {
-						Assert.equals(1, seen.length, "prefix ignored: " + seen);
-						Assert.equals("user:1", seen[0]);
-
-						store.clear().then(_ -> {
-							store.close();
-							async.done();
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
-			}, failWith(async));
-		}, failWith(async));
+			return store.putString("user:1", "a")
+				.flatMap(_ -> store.putString("cache:1", "b"))
+				.flatMap(_ -> store.forEach(function(key:String, _):Bool {
+					seen.push(key);
+					return true;
+				}, "user:"))
+				.map(function(_):Bool {
+					Assert.equals(1, seen.length, "prefix ignored: " + seen);
+					Assert.equals("user:1", seen[0]);
+					return true;
+				});
+		});
 	}
 
 	public function testStringsRoundTripAndAbsentIsStillNull(async:Async):Void {
-		Store.open(freshName()).then(store -> {
-			store.putString("greeting", "hello ☃").then(_ -> {
-				store.getString("greeting").then(text -> {
-					// UTF-8 through the byte layer and back, including a
-					// character that is not one byte.
-					Assert.equals("hello ☃", text);
-
-					store.putString("empty", "").then(_ -> {
-						store.getString("empty").then(blank -> {
-							// An empty string is a value somebody stored.
-							Assert.equals("", blank);
-
-							store.getString("never").then(missing -> {
-								// Absent is still null, not "".
-								Assert.isNull(missing, "a missing key read as an empty string");
-
-								store.clear().then(_ -> {
-									store.close();
-									async.done();
-								}, failWith(async));
-							}, failWith(async));
-						}, failWith(async));
-					}, failWith(async));
-				}, failWith(async));
-			}, failWith(async));
-		}, failWith(async));
+		withStore(async, store -> store.putString("greeting", "hello ☃")
+			.flatMap(_ -> store.getString("greeting"))
+			.flatMap(function(text:Null<String>):Future<Store> {
+				// UTF-8 through the byte layer and back, including a character
+				// that is not one byte.
+				Assert.equals("hello ☃", text);
+				return store.putString("empty", "");
+			})
+			.flatMap(_ -> store.getString("empty"))
+			.flatMap(function(blank:Null<String>):Future<Null<String>> {
+				// An empty string is a value somebody stored.
+				Assert.equals("", blank);
+				return store.getString("never");
+			})
+			.map(function(missing:Null<String>):Bool {
+				// Absent is still null, not "".
+				Assert.isNull(missing, "a missing key read as an empty string");
+				return true;
+			}));
 	}
 
 	public function testTwoStoresOnOneNameDoNotCorruptEachOther(async:Async):Void {
@@ -403,42 +378,45 @@ class StoreTest extends utest.Test {
 		// per key, so interleaving them yields one whole value or the other and
 		// never half of each.
 		var name = freshName();
+		var first:Store = null;
+		var second:Store = null;
 
-		Store.open(name).then(first -> {
-			Store.open(name).then(second -> {
-				var done = 0;
-				var finish = function():Void {
-					if (++done < 2) {
-						return;
-					}
+		Store.open(name)
+			.flatMap(function(opened:Store):Future<Store> {
+				first = opened;
+				return Store.open(name);
+			})
+			.flatMap(function(opened:Store):Future<Array<Store>> {
+				second = opened;
 
-					first.get("contested").then(value -> {
-						value.position = 0;
-						var text = value.readUTFBytes(value.length);
+				// Both writes outstanding together, which is the interleaving
+				// under test. `Future.all` is what waits for both without a
+				// completion count shared between two callbacks.
+				return Future.all([
+					first.putString("contested", "from-first"),
+					second.putString("contested", "from-second").flatMap(_ -> second.putString("only-second", "visible"))
+				]);
+			})
+			.flatMap(_ -> first.get("contested"))
+			.flatMap(function(value:Null<ByteArray>):Future<Null<String>> {
+				value.position = 0;
+				var text = value.readUTFBytes(value.length);
 
-						// Last writer wins, and which one that is is not
-						// promised. What is promised is that it is one of them
-						// entire.
-						Assert.isTrue(text == "from-first" || text == "from-second", "interleaved writes produced neither value: " + text);
+				// Last writer wins, and which one that is is not promised. What
+				// is promised is that it is one of them entire.
+				Assert.isTrue(text == "from-first" || text == "from-second", "interleaved writes produced neither value: " + text);
 
-						first.getString("only-second").then(sideEffect -> {
-							Assert.equals("visible", sideEffect, "a write through one handle was invisible to the other");
-
-							first.clear().then(_ -> {
-								first.close();
-								second.close();
-								async.done();
-							}, failWith(async));
-						}, failWith(async));
-					}, failWith(async));
-				};
-
-				first.putString("contested", "from-first").then(_ -> finish(), failWith(async));
-				second.putString("contested", "from-second").then(_ -> {
-					second.putString("only-second", "visible").then(_ -> finish(), failWith(async));
-				}, failWith(async));
+				return first.getString("only-second");
+			})
+			.flatMap(function(sideEffect:Null<String>):Future<Store> {
+				Assert.equals("visible", sideEffect, "a write through one handle was invisible to the other");
+				return first.clear();
+			})
+			.then(function(_):Void {
+				first.close();
+				second.close();
+				async.done();
 			}, failWith(async));
-		}, failWith(async));
 	}
 
 	private function failWith(async:Async):String->Void {
