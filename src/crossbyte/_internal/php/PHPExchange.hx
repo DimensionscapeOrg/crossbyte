@@ -80,17 +80,27 @@ class PHPExchange {
 		@:privateAccess future.__resolve(__toResponse());
 	}
 
-	public function fail(message:String):Void {
+	/**
+	 * Fails the exchange, optionally carrying the thing that went wrong.
+	 *
+	 * The `cause` is what lets a caller tell a timeout from a refused
+	 * connection without reading the message. `HTTPRequestHandler` answers
+	 * `504` for one and `502` for the other, and it decided that by searching
+	 * the message for "did not respond within" -- so rewording a `PHPTimeout`
+	 * would have silently changed a status code.
+	 */
+	public function fail(message:String, ?cause:Dynamic):Void {
 		if (settled) {
 			return;
 		}
 
 		settled = true;
-		@:privateAccess future.__reject(message);
+		@:privateAccess future.__fail(message, cause);
 	}
 
 	public function timeOut(phase:String):Void {
-		fail(new PHPTimeout(timeoutSeconds, phase).toString());
+		var expiry = new PHPTimeout(timeoutSeconds, phase);
+		fail(expiry.toString(), expiry);
 	}
 
 	/**
