@@ -4,6 +4,8 @@ import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.EventType;
 import crossbyte.events.IEventDispatcher;
+import crossbyte.events.TickEvent;
+import crossbyte.utils.Logger;
 
 /**
  * The eventual result of something that has not finished yet.
@@ -23,6 +25,18 @@ import crossbyte.events.IEventDispatcher;
  * something they read; the code that created it keeps the ability to complete
  * it through `@:allow`. A future anyone can resolve is a future nobody can
  * trust.
+ *
+ * ## `then` adds a handler; it does not replace one
+ *
+ * This is worth stating because the first version of this class did replace,
+ * and did it silently. `f.then(a); f.then(b);` ran only `b`, so a future
+ * observed by two places -- a caller and a logger, a handler and a metric --
+ * quietly lost one of them. Worse, `then` returns the future, which invites
+ * `f.then(a).then(b)`, and that expression ran only `b` as well: the shape the
+ * API advertised was the shape it punished.
+ *
+ * `then` now means "also do this". For "do this to the value", see `map`, and
+ * for "then start this other thing", `flatMap`.
  */
 @:allow(crossbyte)
 class Future<T> implements IEventDispatcher {
@@ -44,14 +58,33 @@ class Future<T> implements IEventDispatcher {
 	/** Why not, when it did not. */
 	public var error(default, null):String;
 
-	@:noCompletion private var __onResult:Null<T->Void>;
-	@:noCompletion private var __onError:Null<String->Void>;
+	/**
+	 * What went wrong, as the thing itself rather than as prose.
+	 *
+	 * `error` is a message for a human. This is for the code that has to
+	 * decide something -- and code that has to decide something from a message
+	 * ends up matching on its wording, which is how a `504 Gateway Timeout`
+	 * turns into a `502 Bad Gateway` the day somebody rewords an exception.
+	 * That exact match existed here before this field did.
+	 *
+	 * Null when the failure had nothing structured to offer.
+	 */
+	public var cause(default, null):Null<Dynamic>;
+
+	@:noCompletion private var __onResult:Array<T->Void> = [];
+	@:noCompletion private var __onError:Array<String->Void> = [];
 	@:noCompletion private var __dispatcher:Null<EventDispatcher>;
+
+	// Whether anyone has said what to do if this fails. Only used to decide
+	// whether a failure disappeared without trace; see __reportIfUnhandled.
+	@:noCompletion private var __failureObserved:Bool = false;
 
 	public function new() {}
 
 	/**
 	 * Registers what to do with the value, and optionally with a failure.
+	 *
+	 * Additive: every handler registered runs, in the order registered.
 	 *
 	 * Safe to call after the fact: a future that has already completed calls
 	 * back immediately rather than silently never calling. That asymmetry --
@@ -59,17 +92,185 @@ class Future<T> implements IEventDispatcher {
 	 * classic way an asynchronous API loses a result.
 	 */
 	public function then(onResult:T->Void, ?onError:String->Void):Future<T> {
-		__onResult = onResult;
-		__onError = onError;
+		if (onError != null) {
+			__failureObserved = true;
+		}
 
 		if (completed) {
-			__notify();
+			// Fired now and not retained. Retaining it would double-call if a
+			// handler registered from inside another handler, since the
+			// notification loop is still walking the list.
+			if (succeeded) {
+				if (onResult != null) {
+					__safely(() -> onResult(result), "result");
+				}
+			} else if (onError != null) {
+				__safely(() -> onError(error), "error");
+			}
+
+			return this;
+		}
+
+		if (onResult != null) {
+			__onResult.push(onResult);
+		}
+
+		if (onError != null) {
+			__onError.push(onError);
 		}
 
 		return this;
 	}
 
+	/**
+	 * Registers what to do only if this fails.
+	 *
+	 * `then(handler, onError)` can say the same thing, but only by supplying a
+	 * success handler it does not want.
+	 */
+	public function catchError(onError:String->Void):Future<T> {
+		if (onError == null) {
+			return this;
+		}
+
+		__failureObserved = true;
+
+		if (completed) {
+			if (!succeeded) {
+				__safely(() -> onError(error), "error");
+			}
+
+			return this;
+		}
+
+		__onError.push(onError);
+		return this;
+	}
+
+	/**
+	 * A future for `transform` applied to this one's value.
+	 *
+	 * Failure passes straight through, message and cause intact, because a
+	 * transformation has nothing to say about why the thing it was going to
+	 * transform never arrived. A `transform` that throws fails the new future
+	 * rather than escaping, for the same reason handlers are isolated.
+	 *
+	 * `Store.getString` was this written by hand -- make a future, forward one
+	 * arm through a conversion and the other arm unchanged -- and so is every
+	 * function that adapts one asynchronous result into another.
+	 */
+	public function map<U>(transform:T->U):Future<U> {
+		var mapped = new Future<U>();
+
+		then(function(value:T):Void {
+			try {
+				mapped.__resolve(transform(value));
+			} catch (e:Dynamic) {
+				mapped.__fail("The transformation on this value threw: " + Std.string(e), e);
+			}
+		}, (message:String) -> mapped.__fail(message, cause));
+
+		return mapped;
+	}
+
+	/**
+	 * A future for the future `next` starts from this one's value.
+	 *
+	 * The difference from `map` is what the function returns: `map` produces a
+	 * value, this produces something else that has not finished either. Without
+	 * it, one asynchronous step after another nests one indentation level per
+	 * step, which is how `StoreTest` ended up five deep.
+	 */
+	public function flatMap<U>(next:T->Future<U>):Future<U> {
+		var chained = new Future<U>();
+
+		then(function(value:T):Void {
+			var inner:Future<U> = null;
+
+			try {
+				inner = next(value);
+			} catch (e:Dynamic) {
+				chained.__fail("The continuation for this value threw: " + Std.string(e), e);
+				return;
+			}
+
+			if (inner == null) {
+				chained.__fail("The continuation for this value returned no future.", null);
+				return;
+			}
+
+			inner.then(v -> chained.__resolve(v), (message:String) -> chained.__fail(message, inner.cause));
+		}, (message:String) -> chained.__fail(message, cause));
+
+		return chained;
+	}
+
+	/**
+	 * One future for several, resolved with their values in the order given.
+	 *
+	 * Fails as soon as any of them fails, carrying that failure -- there is no
+	 * partial success to report, because the caller asked for all of them.
+	 * An empty list resolves immediately, which is the answer to "wait for
+	 * nothing" that does not require the caller to special-case it.
+	 */
+	public static function all<T>(futures:Array<Future<T>>):Future<Array<T>> {
+		var joined = new Future<Array<T>>();
+
+		if (futures == null || futures.length == 0) {
+			joined.__resolve([]);
+			return joined;
+		}
+
+		var values:Array<T> = [for (_ in futures) null];
+		var remaining:Int = futures.length;
+
+		for (i in 0...futures.length) {
+			var index:Int = i;
+			var future:Future<T> = futures[i];
+
+			if (future == null) {
+				joined.__fail("Future.all was given a null future at index " + index + ".", null);
+				return joined;
+			}
+
+			future.then(function(value:T):Void {
+				if (joined.completed) {
+					return;
+				}
+
+				// By index, not by arrival: the caller's order is the only one
+				// they can match their inputs against.
+				values[index] = value;
+				remaining--;
+
+				if (remaining == 0) {
+					joined.__resolve(values);
+				}
+			}, (message:String) -> joined.__fail(message, future.cause));
+		}
+
+		return joined;
+	}
+
+	/** A future that has already succeeded. */
+	public static function resolved<T>(value:T):Future<T> {
+		var future = new Future<T>();
+		future.__resolve(value);
+		return future;
+	}
+
+	/** A future that has already failed. */
+	public static function failed<T>(message:String, ?cause:Dynamic):Future<T> {
+		var future = new Future<T>();
+		future.__fail(message, cause);
+		return future;
+	}
+
 	public inline function addEventListener<U>(type:EventType<U>, listener:U->Void, priority:Int = 0):Void {
+		if (type == ERROR) {
+			__failureObserved = true;
+		}
+
 		__ensureDispatcher().addEventListener(type, listener, priority);
 	}
 
@@ -101,14 +302,25 @@ class Future<T> implements IEventDispatcher {
 		completed = true;
 		succeeded = true;
 		result = value;
-		__notify();
+
+		var handlers = __onResult;
+		__onResult = [];
+		__onError = [];
+
+		for (handler in handlers) {
+			__safely(() -> handler(value), "result");
+		}
 
 		if (hasEventListener(RESULT)) {
 			dispatchEvent(new Event(RESULT));
 		}
 	}
 
-	@:noCompletion private function __reject(message:String):Void {
+	@:noCompletion private inline function __reject(message:String):Void {
+		__fail(message, null);
+	}
+
+	@:noCompletion private function __fail(message:String, ?cause:Dynamic):Void {
 		if (completed) {
 			return;
 		}
@@ -116,21 +328,89 @@ class Future<T> implements IEventDispatcher {
 		completed = true;
 		succeeded = false;
 		error = message;
-		__notify();
+		this.cause = cause;
+
+		var handlers = __onError;
+		__onResult = [];
+		__onError = [];
+
+		for (handler in handlers) {
+			__safely(() -> handler(message), "error");
+		}
 
 		if (hasEventListener(ERROR)) {
 			dispatchEvent(new Event(ERROR));
 		}
+
+		if (!__failureObserved) {
+			__reportIfUnhandled();
+		}
 	}
 
-	@:noCompletion private function __notify():Void {
-		if (succeeded) {
-			if (__onResult != null) {
-				__onResult(result);
-			}
-		} else if (__onError != null) {
-			__onError(error);
+	/**
+	 * Runs a handler without letting it take anything else down with it.
+	 *
+	 * Three things went wrong without this, and all three were silent. A
+	 * throwing handler escaped into whoever resolved the future -- which for
+	 * the PHP bridge is the runtime tick, where an escape costs every other
+	 * connection rather than the one. It stopped the handlers registered after
+	 * it from running at all. And it skipped the event dispatch below, so
+	 * anyone observing by `RESULT` instead of by callback simply never heard.
+	 *
+	 * Reported rather than swallowed: the handler is the caller's code and the
+	 * bug is theirs to see.
+	 */
+	@:noCompletion private function __safely(run:Void->Void, phase:String):Void {
+		try {
+			run();
+		} catch (e:Dynamic) {
+			Logger.error("A Future " + phase + " handler threw and was contained: " + Std.string(e));
 		}
+	}
+
+	/**
+	 * Complains, one tick later, about a failure nobody was listening for.
+	 *
+	 * A future that fails with no error handler and no `ERROR` listener loses
+	 * the failure completely: no log, no exception, no return value anybody
+	 * checks. That is the worst way for an asynchronous API to behave, because
+	 * the symptom is a thing that simply never happens.
+	 *
+	 * A tick later, not immediately, because failing before the caller can
+	 * attach is legitimate and happens in this codebase -- `PHPBridge.execute`
+	 * refuses a traversal and returns an already-failed future, and the caller
+	 * attaches to it on the next line. Complaining at failure time would call
+	 * that unhandled every time.
+	 *
+	 * Quiet where there is no runtime to borrow a tick from, which is mostly
+	 * unit tests. A diagnostic that throws while diagnosing is worse than one
+	 * that is absent.
+	 */
+	@:noCompletion private function __reportIfUnhandled():Void {
+		var runtime:Null<crossbyte.core.CrossByte> = null;
+
+		try {
+			runtime = crossbyte.core.CrossByte.current();
+		} catch (_:Dynamic) {
+			return;
+		}
+
+		if (runtime == null) {
+			return;
+		}
+
+		var onTick:TickEvent->Void = null;
+		onTick = function(_:TickEvent):Void {
+			runtime.removeEventListener(TickEvent.TICK, onTick);
+
+			if (__failureObserved) {
+				return;
+			}
+
+			Logger.warn("A Future failed and nothing was listening: " + error);
+		};
+
+		runtime.addEventListener(TickEvent.TICK, onTick);
 	}
 
 	@:noCompletion private inline function __ensureDispatcher():EventDispatcher {

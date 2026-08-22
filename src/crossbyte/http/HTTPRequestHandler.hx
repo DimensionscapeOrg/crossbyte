@@ -27,6 +27,7 @@ import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte._internal.php.PHPRequest;
 import crossbyte._internal.php.PHPResponse;
+import crossbyte._internal.php.PHPTimeout;
 import crossbyte._internal.http.Http;
 import crossbyte._internal.http.RewriteEngine;
 
@@ -2191,7 +2192,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// runtime ran: no other request read, no response written, no timer
 		// advanced. maxConnections defaults to 256, so one slow page stalled
 		// up to 255 clients that had nothing to do with it.
-		__php.execute(phpReq).then(function(phpRes:PHPResponse):Void {
+		var exchange = __php.execute(phpReq);
+
+		exchange.then(function(phpRes:PHPResponse):Void {
 			// The connection may have gone while PHP was thinking -- a client
 			// that gave up, or a drain() closing us down. __dispatchResponse
 			// guards against a second response on one request, but writing
@@ -2227,13 +2230,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return;
 			}
 
-			// 504 against 502, distinguished by the message the bridge builds
-			// from PHPTimeout. A backend that answered badly and one that did
+			// 504 against 502. A backend that answered badly and one that did
 			// not answer are different faults with different fixes, and only
 			// one of them still has something wedged on the other side. The
 			// operator gets the detail; a client cannot be told which upstream
 			// is stuck.
-			if (message != null && message.indexOf("did not respond within") >= 0) {
+			//
+			// Decided from the failure itself, not from its wording. This read
+			// `message.indexOf("did not respond within") >= 0`, so rewording
+			// PHPTimeout would have turned every gateway timeout into a bad
+			// gateway with nothing to say it had.
+			if (Std.isOfType(exchange.cause, PHPTimeout)) {
 				Logger.error("PHP backend timed out: " + message, ["path" => __requestPath]);
 				__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", true);
 				return;

@@ -26,6 +26,7 @@ import utest.Runner;
 **/
 class PortableSuite {
 	public static function add(runner:Runner):Void {
+		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --
 		// but portable in the sense that matters: the same assertions run
