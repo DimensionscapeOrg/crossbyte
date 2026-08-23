@@ -211,8 +211,6 @@ final class File extends EventDispatcher {
 	**/
 	public static var applicationStorageDirectory(get, never):File;
 
-	// public static var cacheDirectory(get, never):File;
-	// TODO
 
 	/**
 		The user's desktop directory.
@@ -266,8 +264,6 @@ final class File extends EventDispatcher {
 	**/
 	public static var documentsDirectory(get, never):File;
 
-	// public var downloaded:Bool;
-	// TODO
 
 	/**
 		Indicates whether the referenced file or directory exists.  The value is true if the File object points
@@ -287,8 +283,6 @@ final class File extends EventDispatcher {
 	**/
 	public var exists(get, never):Bool;
 
-	// public var icon:Icon;
-	// TODO
 
 	/**
 		Indicates whether the reference is to a directory.  The value is true if the File object points to a directory; false otherwise.
@@ -329,13 +323,7 @@ final class File extends EventDispatcher {
 	**/
 	public var isHidden(get, never):Bool;
 
-	// public var isPackage:Bool;
-	// TODO
-	// public var isSymbolicLink:Bool;
-	// TODO
 	public static var lineEnding(get, never):String;
-
-	// TODO: platform specific
 
 	/**
 		The full path in the host operating system representation. On Mac OS and Linux, the forward
@@ -391,10 +379,6 @@ final class File extends EventDispatcher {
 	**/
 	public var parent(get, never):File;
 
-	// public static var permissionStatus:String;
-	// TODO
-	// public var preventBackup:Bool;
-	// TODO
 
 	/**
 		The host operating system's path component separator character.
@@ -411,11 +395,39 @@ final class File extends EventDispatcher {
 
 	public var spaceAvailable(get, null):Float;
 
-	// TODO
-	// public static var systemCharset:String;
-	// TODO: platorm specific code?
-	// public var url:String;
-	// TODO
+	/**
+		Members of the Adobe AIR `File` API that CrossByte does not implement.
+
+		They were eleven bare `// TODO` markers next to commented-out
+		declarations, which recorded that something was missing without
+		recording what or why. Listed here so the gap can be judged rather than
+		rediscovered:
+
+		- `cacheDirectory` — a per-user cache location distinct from
+		  `applicationStorageDirectory`. Implementable: it is a known path per
+		  OS. The only reason it is absent is that nothing has needed it.
+		- `isSymbolicLink` — needs `lstat`, which the Haxe standard library
+		  does not expose. Worth having: `HTTPRequestHandler` contains static
+		  serving to its document root by comparing normalized paths, and a
+		  symlink pointing out of the root is not visible to a comparison of
+		  strings. Following symlinks in a document root is what most servers
+		  do by default, so this is a policy CrossByte cannot currently offer
+		  rather than a hole it currently has.
+		- `url` — the `file://` form of `nativePath`. Small, and unambiguous.
+		- `systemCharset` — the operating system's default text encoding.
+		  CrossByte reads and writes UTF-8 throughout, so exposing this would
+		  invite an encoding this class does not honour anywhere else.
+		- `downloaded` — whether the file came from the internet: an NTFS
+		  alternate data stream on Windows, a quarantine extended attribute on
+		  macOS. Per-OS metadata with no portable meaning.
+		- `preventBackup` — an iOS backup exclusion flag. No meaning on the
+		  platforms CrossByte targets.
+		- `permissionStatus` — AIR's mobile file-access permission model. Same.
+		- `isPackage` — whether a directory is a macOS bundle. macOS only.
+		- `icon` — needs an `Icon` type and image decoding, neither of which
+		  belongs in a networking runtime.
+	**/
+
 
 	/**
 		The user's directory.
@@ -1584,8 +1596,11 @@ final class File extends EventDispatcher {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Reading a file attribute means shelling out, and a browser has no shell.");
 		#else
-		// TODO don't use the command line for this.... instead we should add support in Lime to use
-		// the win api.
+		// Shelling out to `attrib` costs a process per call. GetFileAttributesW
+		// through a `@:cppInclude` bridge would not, in the style the sodium
+		// and blake3 bridges already use -- but only on cpp, and this method
+		// is reachable from every target with a filesystem, so the shell stays
+		// until there is a path for the others.
 		var process:Process = new Process('attrib "$nativePath"');
 		var r:String = process.stdout.readLine();
 
@@ -1664,14 +1679,6 @@ final class File extends EventDispatcher {
 		return name;
 	}
 
-	@:noCompletion private static inline function get_separator():String {
-		#if windows
-		return "\\";
-		#else
-		return "/";
-		#end
-	}
-
 	@:noCompletion private function get_size():Int {
 		if (__fileStatsDirty) {
 			__updateFileStats();
@@ -1734,67 +1741,121 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function get_parent():File {
-		// TODO:Can we optimize this?
 		var path:String = Path.removeTrailingSlashes(__path);
 
 		var lastIndex:Int = path.lastIndexOf(separator);
 		if (lastIndex == path.indexOf(separator)) {
 			lastIndex += 1;
 		}
-		return lastIndex != -1 ? new File(__path.substring(0, (lastIndex - path.length) + path.length)) : null;
+		// `(lastIndex - path.length) + path.length` is `lastIndex`; the round
+		// trip through the length cancels exactly and always did. That
+		// expression is what the "can we optimize this?" note here was
+		// pointing at, so it is answered rather than left asked.
+		return lastIndex != -1 ? new File(__path.substring(0, lastIndex)) : null;
 	}
 
-	// #if desktop
+	/**
+	 * Free bytes on the volume holding this path.
+	 *
+	 * Bytes on every target, which it was not: the POSIX branch returned
+	 * `df -k` output unconverted, so one target reported bytes and another
+	 * reported kilobytes for the same question.
+	 *
+	 * Three separate things were wrong here, and all of them answered rather
+	 * than failed -- a wrong number is worse than an error for a caller asking
+	 * "have I room to write this":
+	 *
+	 * - Windows matched the line containing "Total bytes", which is the
+	 *   volume's capacity. `fsutil` prints free space on the line above, as
+	 *   "Total free bytes". A 930 GB disk with 75 GB free reported 930 GB.
+	 * - POSIX required `df`'s first column to equal this path, but that column
+	 *   is the device. It never matched, so the loop fell through and returned
+	 *   zero -- and zero is a legitimate reading, so nothing looked wrong.
+	 * - Node compiled and then threw `ReferenceError: sys is not defined` at
+	 *   runtime, because `sys.io.Process` type-checks there (hxnodejs allows
+	 *   the `sys` package) and generates nothing.
+	 */
 	@:noCompletion private function get_spaceAvailable():Float {
 		#if (js && !nodejs)
-		throw new crossbyte.errors.IllegalOperationError("Free disk space means shelling out, and a browser has neither a shell nor a disk to report on.");
+		throw new crossbyte.errors.IllegalOperationError("Free disk space means asking the filesystem, and a browser has neither a filesystem nor a disk to report on.");
+		#elseif nodejs
+		// The syscall directly, no shell and no output parsing. Node has had
+		// statfsSync since 18.15; older ones are told so rather than handed a
+		// zero they cannot distinguish from a full disk.
+		var fs:Dynamic = js.Syntax.code("require('fs')");
+
+		if (fs.statfsSync == null) {
+			throw new crossbyte.errors.IllegalOperationError("Reading free disk space needs fs.statfsSync, which arrived in Node 18.15; this is " + js.Node.process.version + ".");
+		}
+
+		var stats:Dynamic = fs.statfsSync(__path);
+		return stats.bsize * stats.bavail;
 		#else
-		var cmd:String;
-		var args:Array<String>;
-		#if windows
-		cmd = "fsutil";
-		args = ["volume", "diskfree", Path.addTrailingSlash(__path)];
-		#else
-		cmd = "df";
-		args = ["-k", __path];
-		#end
+		// Sys.systemName(), not `#if windows`. That define says which target the
+		// compiler was aimed at, not which machine is running -- eval does not
+		// set it at all, so on Windows this took the `df` branch, found no df,
+		// and reported a full disk as empty. A conditional that is right on
+		// four targets and silently wrong on the fifth is worse than a runtime
+		// check that is right on all of them.
+		var onWindows:Bool = Sys.systemName() == "Windows";
+		var cmd:String = onWindows ? "fsutil" : "df";
+		var args:Array<String> = onWindows ? ["volume", "diskfree", Path.addTrailingSlash(__path)] : ["-k", __path];
 
 		var process:Process = new Process(cmd, args);
-
 		var output:String = process.stdout.readAll().toString();
+
+		// Before close(), not after. Asking a closed process for its exit code
+		// raises `process_exit` on eval, which is how this method announced
+		// itself the first time anything actually called it.
+		var status:Int = process.exitCode();
 		process.close();
 
-		if (process.exitCode() > 0) {
+		if (status > 0) {
 			return 0;
 		}
 
-		var lines = output.split("\n");
-		var availableSpace:Float = 0.0;
-		var parts:Array<String>;
+		var whitespace:EReg = ~/\s+/;
 
-		for (line in lines) {
+		for (line in output.split("
+")) {
+			var text:String = StringTools.trim(line);
+
+			if (text == "") {
+				continue;
+			}
+
 			try {
-				// Parse the output to extract the available space
-				#if windows
-				if (line.indexOf("Total bytes") >= 0) {
-					parts = line.split(":");
-					availableSpace = Std.parseFloat(StringTools.replace(StringTools.trim(parts[1]), ",", ""));
-					break;
+				if (onWindows) {
+					// "Total free bytes : 80,872,067,072 ( 75.3 GB)". Matched by
+					// its own prefix: the next line, "Total bytes", is the
+					// volume's capacity, and an indexOf on that string is what
+					// used to return a 930 GB disk as 930 GB free.
+					if (StringTools.startsWith(text, "Total free bytes")) {
+						var value:String = text.substring(text.indexOf(":") + 1);
+						return Std.parseFloat(StringTools.replace(StringTools.trim(value), ",", ""));
+					}
+				} else {
+					// The Available column of the first data row, in 1K blocks.
+					// Not matched against this path: df names the device there,
+					// so the old comparison never matched and fell through to
+					// zero -- a reading indistinguishable from a full disk.
+					var parts:Array<String> = whitespace.split(text);
+
+					if (parts.length >= 4 && parts[0] != "Filesystem") {
+						var blocks:Null<Float> = Std.parseFloat(parts[3]);
+
+						if (blocks != null && !Math.isNaN(blocks)) {
+							return blocks * 1024;
+						}
+					}
 				}
-				#else
-				parts = new EReg("\\s+", "").split(line);
-				if (parts.length >= 4 && parts[0] == __path) {
-					availableSpace = Std.parseFloat(parts[3]);
-					break;
-				}
-				#end
 			} catch (e:Dynamic) {
 				return 0;
 			}
 		}
-		return availableSpace;
+
+		return 0;
 		#end
 	}
-
 	// #end
 }

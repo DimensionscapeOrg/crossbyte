@@ -9,6 +9,42 @@ import sys.io.File as HaxeFile;
 import utest.Assert;
 
 class FileTest extends utest.Test {
+	public function testSpaceAvailableReportsFreeBytes():Void {
+		// Nothing ever called this, which is how it came to be wrong on every
+		// target at once: it reported a Windows volume's total capacity rather
+		// than its free space, returned zero on POSIX because it compared df's
+		// device column against a path, and threw `ReferenceError: sys is not
+		// defined` on Node.
+		//
+		// A greater-than-zero assertion is what is portably available -- the
+		// real free figure is not knowable from here without reimplementing the
+		// thing under test -- and it is enough to catch three of those four:
+		// the POSIX zero, the Node throw, and eval taking the POSIX branch on
+		// a Windows machine. The capacity-for-free confusion was found by
+		// reading what `fsutil` actually prints.
+		var free:Float = File.applicationStorageDirectory.spaceAvailable;
+
+		Assert.isTrue(free > 0, "reported " + free + " bytes free");
+		Assert.isFalse(Math.isNaN(free));
+		// Bytes, not kilobytes and not blocks. A machine with under a megabyte
+		// free would fail this, and would deserve to.
+		Assert.isTrue(free > 1024 * 1024, "implausibly small for bytes: " + free);
+	}
+
+	public function testParentTrimsTheLastSegment():Void {
+		var root = File.createTempDirectory();
+		var nested = root.resolvePath("child");
+
+		// Compared without trailing separators: createTempDirectory() hands
+		// back a path with one and parent strips it, which is pre-existing and
+		// not what this case is about.
+		Assert.equals(haxe.io.Path.removeTrailingSlashes(root.nativePath), haxe.io.Path.removeTrailingSlashes(nested.parent.nativePath));
+
+		try {
+			root.deleteDirectory(true);
+		} catch (_:Dynamic) {}
+	}
+
 	public function testSaveUpdatesExistsAndSize():Void {
 		var root = File.createTempDirectory();
 		var file = root.resolvePath("saved.bin");
