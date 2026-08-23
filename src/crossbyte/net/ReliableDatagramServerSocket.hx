@@ -3,11 +3,17 @@ package crossbyte.net;
 // Not built for the browser: it listens, over UDP, neither of which a page can do.
 #if !(js && !nodejs)
 
+import crossbyte.Future;
+import crossbyte._internal.net.stun.StunMessage;
+import crossbyte._internal.net.stun.StunMessage.StunAddress;
+import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.TickEvent;
+import crossbyte.io.ByteArray;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
@@ -64,6 +70,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __connections:StringMap<ReliableDatagramSocket>;
+
+	// One outstanding reflexive-address query, if any. Held here rather than in
+	// a client of its own because the question is about this socket's port, and
+	// only this class can ask from it.
+	@:noCompletion private var __stunRequest:StunMessage;
+	@:noCompletion private var __stunFuture:Future<StunAddress>;
+	@:noCompletion private var __stunDeadline:Float = 0;
+	@:noCompletion private var __stunTick:TickEvent->Void;
 	@:noCompletion private var __socket:DatagramSocket;
 
 	/**
@@ -104,6 +118,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		try {
 			__socket.removeEventListener(DatagramSocketDataEvent.DATA, __onData);
 		} catch (_:Dynamic) {}
+
+		__settleStun(null, "The server socket closed before the STUN server replied.");
 
 		var connections:Array<ReliableDatagramSocket> = [];
 		for (connection in __connections) {
@@ -219,11 +235,151 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return socket;
 	}
 
+	/**
+		Asks a STUN server what address and port this server appears as from
+		outside.
+
+		The answer is about *this* socket, which is the only reason this lives
+		here rather than in a client of its own. A NAT holds one mapping per
+		socket, so a reflexive address discovered on some other port describes
+		somewhere nobody can reach this server -- and the port peers dial is
+		this one. `StunClient` binds its own socket and answers the more general
+		"what is my public address"; this answers "where can I be reached", and
+		for a peer-to-peer mesh only the second one is actionable.
+
+		The request goes out through the bound socket and the reply is picked
+		out of ordinary inbound traffic by its transaction id, so an ongoing
+		query costs no extra socket and does not disturb any session.
+
+		One at a time: a second call while one is outstanding is refused rather
+		than queued, because the two would race for the same reply.
+
+		@throws IOError if this server is closed, unbound, or not listening.
+	**/
+	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<StunAddress> {
+		var future = new Future<StunAddress>();
+
+		if (__closed || !bound || !listening) {
+			@:privateAccess future.__fail("A reflexive address can only be discovered from a bound, listening server socket.",
+				new IOError("Operation attempted on invalid socket."));
+			return future;
+		}
+
+		if (server == null || server == "") {
+			@:privateAccess future.__fail("A STUN server address is required.", new ArgumentError("server"));
+			return future;
+		}
+
+		if (__stunFuture != null) {
+			@:privateAccess future.__fail("A reflexive address query is already outstanding on this server socket.", null);
+			return future;
+		}
+
+		__stunRequest = StunMessage.bindingRequest();
+		__stunFuture = future;
+		__stunDeadline = Sys.time() + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
+
+		var runtime:CrossByte = CrossByte.current();
+
+		__stunTick = function(_:TickEvent):Void {
+			if (__stunFuture != null && Sys.time() >= __stunDeadline) {
+				// UDP reports nothing when it is dropped, so a silent network
+				// and a wrong server address look identical from here; the
+				// deadline is the only thing that ends this.
+				__settleStun(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs + "ms.");
+			}
+		};
+
+		runtime.addEventListener(TickEvent.TICK, __stunTick);
+
+		try {
+			var payload:ByteArray = __stunRequest.encode();
+			__socket.send(payload, 0, payload.length, server, port);
+		} catch (e:Dynamic) {
+			__settleStun(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + Std.string(e));
+		}
+
+		return future;
+	}
+
+	@:noCompletion private function __settleStun(address:Null<StunAddress>, error:String):Void {
+		var future = __stunFuture;
+
+		if (future == null) {
+			return;
+		}
+
+		__stunFuture = null;
+		__stunRequest = null;
+
+		if (__stunTick != null) {
+			try {
+				CrossByte.current().removeEventListener(TickEvent.TICK, __stunTick);
+			} catch (_:Dynamic) {}
+
+			__stunTick = null;
+		}
+
+		if (address != null) {
+			@:privateAccess future.__resolve(address);
+		} else {
+			@:privateAccess future.__fail(error, null);
+		}
+	}
+
+	/**
+		Whether this datagram was the reply to an outstanding STUN query.
+
+		Checked before the reliable-protocol decode, because a STUN message is
+		not one of those and would otherwise be dropped as noise -- which is
+		exactly what happened to it before this existed.
+	**/
+	@:noCompletion private function __takeStunReply(data:ByteArray):Bool {
+		if (__stunFuture == null || __stunRequest == null) {
+			return false;
+		}
+
+		var response:StunMessage = StunMessage.decode(data);
+
+		// Not STUN, or an answer to somebody else's question. The transaction
+		// check is what stops an unrelated sender handing this server an
+		// address it would then publish to every peer.
+		if (response == null || !__stunRequest.matches(response)) {
+			return false;
+		}
+
+		if (response.type == StunMessage.BINDING_ERROR) {
+			var reported:String = response.errorMessage();
+			__settleStun(null, "The STUN server refused the request" + (reported != null ? ": " + reported : "."));
+			return true;
+		}
+
+		if (response.type != StunMessage.BINDING_SUCCESS) {
+			return true;
+		}
+
+		var address:StunAddress = response.mappedAddress();
+
+		if (address == null) {
+			__settleStun(null, "The STUN server replied without a mapped address, so this socket's public address is still unknown.");
+			return true;
+		}
+
+		__settleStun(address, null);
+		return true;
+	}
+
 	@:noCompletion private inline function __endpointKey(address:String, port:Int):String {
 		return address + ":" + port;
 	}
 
 	@:noCompletion private function __onData(e:DatagramSocketDataEvent):Void {
+		// Before the reliable decode: a STUN reply is not a reliable frame, so
+		// it would fall through as noise.
+		if (__takeStunReply(e.data)) {
+			return;
+		}
+
 		var key:String = __endpointKey(e.srcAddress, e.srcPort);
 		var connection:ReliableDatagramSocket = __connections.get(key);
 		var frame = ReliableDatagramProtocol.decode(e.data);

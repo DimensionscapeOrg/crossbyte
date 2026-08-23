@@ -11,6 +11,146 @@ import crossbyte.io.ByteArray;
 import utest.Assert;
 
 class ReliableDatagramSocketTest extends utest.Test {
+	public function testAServerLearnsWhereItIsReachable():Void {
+		if (!requireDatagramSupport()) return;
+
+		// A STUN server of our own, so this needs no network and no third
+		// party. It answers the binding request with an address of its
+		// choosing, which is what a real one does -- the point is that the
+		// reply is picked out of ordinary inbound traffic on a socket already
+		// carrying reliable sessions, and matched to the request that asked.
+		var stun = new crossbyte.net.DatagramSocket();
+		var sawRequest = false;
+
+		stun.addEventListener(crossbyte.events.DatagramSocketDataEvent.DATA, function(e:crossbyte.events.DatagramSocketDataEvent):Void {
+			var request = crossbyte._internal.net.stun.StunMessage.decode(e.data);
+
+			if (request == null || request.type != crossbyte._internal.net.stun.StunMessage.BINDING_REQUEST) {
+				return;
+			}
+
+			sawRequest = true;
+
+			var reply = new crossbyte._internal.net.stun.StunMessage(crossbyte._internal.net.stun.StunMessage.BINDING_SUCCESS, request.transactionId,
+				[crossbyte._internal.net.stun.StunMessage.xorMappedAddress("198.51.100.23", 61000)]);
+
+			var payload = reply.encode();
+			stun.send(payload, 0, payload.length, e.srcAddress, e.srcPort);
+		});
+
+		var server = new ReliableDatagramServerSocket();
+		var discovered:Dynamic = null;
+		var failure:String = null;
+
+		try {
+			stun.bind(0, "127.0.0.1");
+			stun.receive();
+
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			server.discoverPublicAddress("127.0.0.1", stun.localPort, 3000)
+				.then(function(address):Void {
+					discovered = address;
+				}, function(error:String):Void {
+					failure = error;
+				});
+
+			pumpUntil(() -> discovered != null || failure != null, 4.0);
+
+			Assert.isTrue(sawRequest, "the binding request never reached the server");
+			Assert.isNull(failure, "discovery failed: " + failure);
+			Assert.notNull(discovered, "no reflexive address was reported");
+			Assert.equals("198.51.100.23", discovered.address);
+			Assert.equals(61000, discovered.port);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+		try stun.close() catch (_:Dynamic) {}
+	}
+
+	public function testAForgedReplyIsIgnored():Void {
+		if (!requireDatagramSupport()) return;
+
+		// The reply carries somebody else's transaction. A datagram socket
+		// accepts from anyone, so without the check this would be believed --
+		// and a peer that believes it publishes an address of the sender's
+		// choosing to every other peer in the mesh.
+		var liar = new crossbyte.net.DatagramSocket();
+
+		liar.addEventListener(crossbyte.events.DatagramSocketDataEvent.DATA, function(e:crossbyte.events.DatagramSocketDataEvent):Void {
+			var wrong = new ByteArray();
+			for (i in 0...12) {
+				wrong.writeByte(0xE0 + i);
+			}
+			wrong.position = 0;
+
+			var reply = new crossbyte._internal.net.stun.StunMessage(crossbyte._internal.net.stun.StunMessage.BINDING_SUCCESS, wrong,
+				[crossbyte._internal.net.stun.StunMessage.xorMappedAddress("203.0.113.66", 1234)]);
+
+			var payload = reply.encode();
+			liar.send(payload, 0, payload.length, e.srcAddress, e.srcPort);
+		});
+
+		var server = new ReliableDatagramServerSocket();
+		var discovered:Dynamic = null;
+		var failure:String = null;
+
+		try {
+			liar.bind(0, "127.0.0.1");
+			liar.receive();
+
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			server.discoverPublicAddress("127.0.0.1", liar.localPort, 1000)
+				.then(function(address):Void {
+					discovered = address;
+				}, function(error:String):Void {
+					failure = error;
+				});
+
+			pumpUntil(() -> discovered != null || failure != null, 3.0);
+
+			Assert.isNull(discovered, "an address from a mismatched transaction was accepted");
+			Assert.notNull(failure, "the query neither succeeded nor timed out");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+		try liar.close() catch (_:Dynamic) {}
+	}
+
+	public function testDiscoveryRefusesWhatItCannotDo():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var beforeListening:String = null;
+
+		// Unbound: there is no port to ask about.
+		server.discoverPublicAddress("127.0.0.1", 3478, 500).catchError(message -> beforeListening = message);
+		Assert.notNull(beforeListening, "discovery was attempted from an unbound server");
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			var second:String = null;
+			server.discoverPublicAddress("127.0.0.1", 65530, 2000);
+			// Two outstanding queries would race for one reply.
+			server.discoverPublicAddress("127.0.0.1", 65530, 2000).catchError(message -> second = message);
+
+			Assert.notNull(second, "a second concurrent query was accepted");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+	}
+
 	public function testAServerDialsOutFromItsOwnPort():Void {
 		if (!requireDatagramSupport()) return;
 
