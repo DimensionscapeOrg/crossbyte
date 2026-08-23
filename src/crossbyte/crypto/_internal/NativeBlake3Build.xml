@@ -1,17 +1,75 @@
 <xml>
+	<!--
+		BLAKE3 with its vectorised backends compiled in.
+
+		These were all switched off — BLAKE3_NO_SSE2, NO_SSE41, NO_AVX2,
+		NO_AVX512, with only the portable path built — on the grounds of
+		keeping the native backend deterministic across hxcpp releases. The
+		determinism that argument protects is real but it is about the build,
+		not the output: BLAKE3 is specified so that every implementation
+		produces identical bytes, and blake3_dispatch.c picks between them at
+		runtime by CPUID. The known-answer vectors in CryptoTest are what hold
+		that claim honest, and they pass unchanged with these enabled.
+
+		What it cost was the entire reason to vendor BLAKE3 instead of using
+		the BLAKE2b libsodium already provides: speed. Measured on this
+		machine, 16 MB hashed eight times, portable against AVX2 —
+		977 MB/s to 3,459 MB/s, and blake3_simd_degree from 1 to 8.
+
+		Unlike libsodium's vectorised sources, BLAKE3's do not guard their own
+		bodies: blake3_avx2.c includes <immintrin.h> and uses the intrinsics
+		unconditionally. So they are compiled only where the instruction set
+		can exist, and each carries the flag its own translation unit needs
+		rather than the whole project being built for one architecture.
+
+		AVX-512 stays off deliberately. It is the one backend whose benefit is
+		not reliably a benefit: many Intel parts drop their clock while
+		executing it, so a short hash can leave the rest of the process slower
+		than it found it, and toolchain support for /arch:AVX512 is less even
+		than for AVX2. AVX2 is where the large majority of the win already is.
+	-->
+	<set name="CROSSBYTE_BLAKE3_DIR" value="${this_dir}/vendor/blake3"/>
+
+	<!--
+		x86 vector backends cannot be compiled for ARM at all. One flag rather
+		than a condition repeated on every element below, so the two halves —
+		the defines that tell dispatch what exists, and the files that provide
+		it — cannot drift apart.
+	-->
+	<set name="CROSSBYTE_BLAKE3_NO_SIMD" value="1" if="HXCPP_ARM64"/>
+	<set name="CROSSBYTE_BLAKE3_NO_SIMD" value="1" if="HXCPP_ARMV7"/>
+
 	<files id="crossbyte-blake3-common">
 		<depend files="hxcpp-depends"/>
-		<compilerflag value="-I${this_dir}/vendor/blake3"/>
-		<!-- Keep the native backend deterministic across hxcpp releases by
-		     using the portable BLAKE3 path in CI and default native builds. -->
-		<compilerflag value="-DBLAKE3_NO_SSE2"/>
-		<compilerflag value="-DBLAKE3_NO_SSE41"/>
-		<compilerflag value="-DBLAKE3_NO_AVX2"/>
+		<compilerflag value="-I${CROSSBYTE_BLAKE3_DIR}"/>
+
 		<compilerflag value="-DBLAKE3_NO_AVX512"/>
+
+		<!-- Nothing to dispatch to where the instructions do not exist. -->
+		<compilerflag value="-DBLAKE3_NO_SSE2" if="CROSSBYTE_BLAKE3_NO_SIMD"/>
+		<compilerflag value="-DBLAKE3_NO_SSE41" if="CROSSBYTE_BLAKE3_NO_SIMD"/>
+		<compilerflag value="-DBLAKE3_NO_AVX2" if="CROSSBYTE_BLAKE3_NO_SIMD"/>
+
 		<file name="${this_dir}/NativeBlake3.cpp"/>
-		<file name="${this_dir}/vendor/blake3/blake3.c"/>
-		<file name="${this_dir}/vendor/blake3/blake3_portable.c"/>
-		<file name="${this_dir}/vendor/blake3/blake3_dispatch.c"/>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3.c"/>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_portable.c"/>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_dispatch.c"/>
+
+		<!--
+			SSE2 is baseline on x86-64 and MSVC has no switch for SSE4.1, so
+			only the GNU-style toolchains need to be told. AVX2 is above every
+			baseline and must be asked for on both.
+		-->
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_sse2.c" unless="CROSSBYTE_BLAKE3_NO_SIMD">
+			<compilerflag value="-msse2" unless="windows"/>
+		</file>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_sse41.c" unless="CROSSBYTE_BLAKE3_NO_SIMD">
+			<compilerflag value="-msse4.1" unless="windows"/>
+		</file>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_avx2.c" unless="CROSSBYTE_BLAKE3_NO_SIMD">
+			<compilerflag value="-mavx2" unless="windows"/>
+			<compilerflag value="/arch:AVX2" if="windows"/>
+		</file>
 	</files>
 
 	<target id="haxe">
