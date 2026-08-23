@@ -1,5 +1,7 @@
 package crossbyte.net;
 
+import crossbyte.Future;
+
 // Not built for the browser: it accepts connections, which needs a listening socket.
 #if !(js && !nodejs)
 
@@ -100,6 +102,15 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
 		throw new crossbyte.errors.IllegalOperationError("A " + protocol
 			+ " host cannot dial from its listening endpoint: accepting and connecting are separate sockets on a stream transport. Use NetConnection for an outgoing session.");
+	}
+
+	/**
+	 * Always refuses, for the same reason as `dial`: there is no single
+	 * endpoint here whose outside appearance would mean anything.
+	 */
+	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
+		throw new crossbyte.errors.IllegalOperationError("A " + protocol
+			+ " host has no listening endpoint to discover: accepting and connecting are separate sockets on a stream transport.");
 	}
 
 	public var localAddress(get, never):String;
@@ -266,6 +277,14 @@ private class RUDPHost implements INetHost {
 	 */
 	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
 		return NetConnection.fromReliableDatagramSocket(__server.connect(address, port, timeoutMs));
+	}
+
+	/**
+	 * Asks through the socket this host listens on, so the answer describes the
+	 * port peers actually dial.
+	 */
+	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
+		return __server.discoverPublicAddress(server, port, timeoutMs);
 	}
 
 	public var localAddress(get, never):String;

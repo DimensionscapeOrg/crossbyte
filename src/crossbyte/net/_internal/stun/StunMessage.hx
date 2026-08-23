@@ -1,7 +1,8 @@
-package crossbyte._internal.net.stun;
+package crossbyte.net._internal.stun;
 
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
+import crossbyte.net.ReflexiveAddress;
 
 /**
 	A STUN message, per RFC 5389.
@@ -199,8 +200,8 @@ class StunMessage {
 		the private address it was sent to report on. XOR against a constant the
 		NAT does not know about is what stops that.
 	**/
-	public function mappedAddress():Null<StunAddress> {
-		var fallback:Null<StunAddress> = null;
+	public function mappedAddress():Null<ReflexiveAddress> {
+		var fallback:Null<ReflexiveAddress> = null;
 
 		for (attribute in attributes) {
 			if (attribute.type == ATTR_XOR_MAPPED_ADDRESS) {
@@ -236,7 +237,7 @@ class StunMessage {
 		return null;
 	}
 
-	private function __readAddress(value:ByteArray, xored:Bool):Null<StunAddress> {
+	private function __readAddress(value:ByteArray, xored:Bool):Null<ReflexiveAddress> {
 		if (value == null || value.length < 8) {
 			return null;
 		}
@@ -306,10 +307,4 @@ class StunAttribute {
 		this.type = type;
 		this.value = value;
 	}
-}
-
-/** An address as somebody else sees it. */
-typedef StunAddress = {
-	var address:String;
-	var port:Int;
 }

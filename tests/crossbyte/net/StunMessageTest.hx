@@ -1,7 +1,7 @@
 package crossbyte.net;
 
-import crossbyte._internal.net.stun.StunMessage;
-import crossbyte._internal.net.stun.StunMessage.StunAttribute;
+import crossbyte.net._internal.stun.StunMessage;
+import crossbyte.net._internal.stun.StunMessage.StunAttribute;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import utest.Assert;

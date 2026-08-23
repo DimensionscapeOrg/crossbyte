@@ -4,8 +4,7 @@ package crossbyte.net;
 // address through RTCPeerConnection's ICE gathering instead.
 #if !(js && !nodejs)
 import crossbyte.Future;
-import crossbyte._internal.net.stun.StunMessage;
-import crossbyte._internal.net.stun.StunMessage.StunAddress;
+import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.events.DatagramSocketDataEvent;
@@ -30,15 +29,27 @@ import crossbyte.io.ByteArray;
 	});
 	```
 
-	## Discovering for a socket you already own
+	## Asking about a port you are already using
 
-	`discover` binds a socket of its own, which answers "what is my public
-	address" and no more. A peer that intends to be *reached* wants the mapping
-	for the port it is actually listening on, because a NAT holds one mapping
-	per socket -- so `discoverFor` takes the port to ask about. That is the same
-	distinction `ReliableDatagramServerSocket.connect` exists for.
+	This binds a socket of its own, so it answers for a port nothing else
+	holds. That is the general question and it is the one most callers want.
+
+	It is not the question a peer-to-peer mesh asks. A NAT keeps one mapping
+	per socket, so what matters there is how the *listening* port appears --
+	and that port is held by the listener, which no second socket can bind.
+	`ReliableDatagramServerSocket.discoverPublicAddress` asks through the
+	socket that already owns it, and is the right call for that case.
 **/
 class StunClient {
+	/**
+		Whether this target can ask at all.
+
+		Discovery needs a UDP socket. Reported rather than assumed, in the same
+		way `DatagramSocket` and the reliable sockets report it, so a caller can
+		branch instead of finding out from a failed future.
+	**/
+	public static var isSupported(default, null):Bool = DatagramSocket.isSupported;
+
 	/** The port STUN is registered on, and where public servers listen. */
 	public static inline var DEFAULT_PORT:Int = 3478;
 
@@ -49,21 +60,8 @@ class StunClient {
 		to report -- a request that reaches nothing looks exactly like one still
 		in flight -- so a deadline is the only thing that ends this.
 	**/
-	public static function discover(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000):Future<StunAddress> {
-		return discoverFor(0, server, port, timeoutMs);
-	}
-
-	/**
-		The same question, asked from `localPort`.
-
-		Use this when the answer has to describe a port other peers will dial.
-		A mapping belongs to a socket, so asking from an arbitrary port returns
-		an address that says nothing about where this peer can be reached.
-
-		@param localPort The port to ask from, or `0` for any.
-	**/
-	public static function discoverFor(localPort:Int, server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000):Future<StunAddress> {
-		var future = new Future<StunAddress>();
+	public static function discover(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
+		var future = new Future<ReflexiveAddress>();
 
 		if (server == null || server == "") {
 			@:privateAccess future.__fail("A STUN server address is required.", new ArgumentError("server"));
@@ -77,7 +75,7 @@ class StunClient {
 		var settled:Bool = false;
 		var onTick:TickEvent->Void = null;
 
-		function finish(address:Null<StunAddress>, error:String):Void {
+		function finish(address:Null<ReflexiveAddress>, error:String):Void {
 			if (settled) {
 				return;
 			}
@@ -125,7 +123,7 @@ class StunClient {
 				return;
 			}
 
-			var address:StunAddress = response.mappedAddress();
+			var address:ReflexiveAddress = response.mappedAddress();
 
 			if (address == null) {
 				// A success carrying no address is a server that answered
@@ -145,7 +143,7 @@ class StunClient {
 		};
 
 		try {
-			socket.bind(localPort, "0.0.0.0");
+			socket.bind(0, "0.0.0.0");
 			socket.receive();
 
 			var payload:ByteArray = request.encode();
