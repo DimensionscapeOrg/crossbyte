@@ -87,6 +87,21 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 private typedef DisconnectHandler = (INetConnection, Reason) -> Void;
 
 private class BaseNetHost<TServer:ServerSocket> implements INetHost {
+	public var canDial(get, never):Bool;
+
+	@:noCompletion private inline function get_canDial():Bool {
+		return false;
+	}
+
+	/**
+	 * Always refuses. Accepting and connecting are separate sockets on a stream
+	 * transport, so there is no listening endpoint here to leave from.
+	 */
+	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+		throw new crossbyte.errors.IllegalOperationError("A " + protocol
+			+ " host cannot dial from its listening endpoint: accepting and connecting are separate sockets on a stream transport. Use NetConnection for an outgoing session.");
+	}
+
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
 	public var isRunning(get, null):Bool = false;
@@ -235,6 +250,24 @@ private class WebSocketHost extends BaseNetHost<ServerWebSocket> {
 
 @:allow(crossbyte.net.NetHost)
 private class RUDPHost implements INetHost {
+	public var canDial(get, never):Bool;
+
+	@:noCompletion private inline function get_canDial():Bool {
+		return true;
+	}
+
+	/**
+	 * Opens a reliable session from the port this host is bound to.
+	 *
+	 * The session is registered with the underlying server so its replies
+	 * arrive through the same pump that feeds accepted ones. It does not
+	 * surface through `onAccept`: it was initiated here, and the caller
+	 * already holds it.
+	 */
+	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+		return NetConnection.fromReliableDatagramSocket(__server.connect(address, port, timeoutMs));
+	}
+
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
 	public var isRunning(get, never):Bool;
