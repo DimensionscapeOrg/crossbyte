@@ -111,6 +111,14 @@ class NodeIntegrationMain extends Application {
 
 		check("Event.INIT reached the application", true, "");
 
+		// File.spaceAvailable compiled cleanly here and then threw
+		// `ReferenceError: sys is not defined` when called: it shelled out
+		// through sys.io.Process, which type-checks on Node because hxnodejs
+		// allows the `sys` package but generates nothing for it. It reads the
+		// filesystem directly now.
+		var free:Float = File.applicationStorageDirectory.spaceAvailable;
+		check("File.spaceAvailable answers on Node", free > 1024 * 1024, "reported " + free + " bytes free");
+
 		crossByte.tps = 60;
 		loopStarted = haxe.Timer.stamp();
 		crossByte.addEventListener(TickEvent.TICK, onTick);
