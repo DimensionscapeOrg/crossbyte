@@ -613,6 +613,54 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return socket;
 	}
 
+	/**
+	 * A session this side initiates, over a transport somebody else owns.
+	 *
+	 * The mirror of `__createAccepted`, and it exists because dialling out from
+	 * a socket that is already bound and listening is not a thing a caller can
+	 * assemble from the public API -- `connect()` always makes its own
+	 * transport. A peer-to-peer mesh needs exactly that, because hole punching
+	 * only works when the port a peer dials out from is the port it is
+	 * reachable on, and that is one socket.
+	 *
+	 * `server` is kept rather than nulled, which is the difference that matters.
+	 * The server's data pump routes frames to the session registered for their
+	 * source endpoint, so a dialled session that is registered gets its replies
+	 * through one listener and one owner. Attaching a second listener to the
+	 * shared transport instead -- which is what assembling this from outside
+	 * forces -- leaves both the server and the session reading the same socket,
+	 * and leaves the server free to accept a duplicate session for an endpoint
+	 * the dialled one already holds.
+	 */
+	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:String, remotePort:Int,
+			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int):ReliableDatagramSocket {
+		var socket = new ReliableDatagramSocket();
+		var temporaryTransport = socket.__transport;
+		socket.__teardownTransportListener();
+
+		if (temporaryTransport != null) {
+			temporaryTransport.close();
+		}
+
+		// Set before the handshake begins, or the first retransmission window
+		// is measured against the default rather than what the caller asked for.
+		if (timeoutMs > 0) {
+			socket.timeout = timeoutMs;
+		}
+
+		socket.__ownsTransport = false;
+		socket.__incoming = false;
+		socket.__mode = mode;
+		socket.__server = server;
+		socket.__transport = transport;
+		socket.__remoteAddress = remoteAddress;
+		socket.__remotePort = remotePort;
+		socket.__remoteResponsePort = 0;
+		socket.__resetSequences();
+		socket.__beginHandshake();
+		return socket;
+	}
+
 	@:noCompletion private function __acceptFrame(frame:ReliableDatagramFrame):Void {
 		if (__closed || frame == null) {
 			return;
