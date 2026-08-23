@@ -2015,11 +2015,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private static function __normalizeContainmentPath(path:String):String {
 		var normalized:String = Path.normalize(path);
-		#if windows
-		normalized = normalized.split("/").join("\\").toLowerCase();
-		#else
-		normalized = normalized.split("\\").join("/");
-		#end
+
+		// Runtime, because this decides whether a request escapes the document
+		// root and `#if windows` says which target the compiler was aimed at
+		// rather than which machine is serving. eval, Node and the JVM all run
+		// on Windows without it, and all three skipped the case fold -- so
+		// `C:\WWW\index.html` was judged not to be inside `C:\www`. That
+		// direction is fail-closed, a legitimate request refused rather than a
+		// forbidden one allowed, which is why nothing caught it.
+		if (crossbyte.sys.System.isWindows) {
+			normalized = normalized.split("/").join("\\").toLowerCase();
+		} else {
+			normalized = normalized.split("\\").join("/");
+		}
+
 		return __trimTrailingSeparators(normalized);
 	}
 
@@ -2035,20 +2044,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (last != "/" && last != "\\") {
 			return false;
 		}
-		#if windows
-		if (path.length == 3 && path.charAt(1) == ":") {
+		// "C:\" is a root, not a path with a trailing separator to trim.
+		if (crossbyte.sys.System.isWindows && path.length == 3 && path.charAt(1) == ":") {
 			return false;
 		}
-		#end
 		return true;
 	}
 
 	@:noCompletion private static inline function __pathSeparator():String {
-		#if windows
-		return "\\";
-		#else
-		return "/";
-		#end
+		return crossbyte.sys.System.isWindows ? "\\" : "/";
 	}
 
 	@:noCompletion private static final HTTP_DATE_DAYS:Array<String> = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

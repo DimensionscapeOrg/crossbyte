@@ -595,16 +595,20 @@ class PostgresConnection extends EventDispatcher {
 
 		var cwd = Sys.getCwd();
 		var exeDir = Path.directory(Sys.programPath());
-		#if windows
-		__pushCandidate(candidates, Path.join([cwd, "php", "libpq.dll"]));
-		__pushCandidate(candidates, Path.join([cwd, "..", "php", "libpq.dll"]));
-		__pushCandidate(candidates, Path.join([exeDir, "libpq.dll"]));
-		__pushCandidate(candidates, Path.join([exeDir, "..", "..", "..", "..", "php", "libpq.dll"]));
-		__pushCandidate(candidates, "libpq.dll");
-		#else
-		__pushCandidate(candidates, "libpq.so.5");
-		__pushCandidate(candidates, "libpq.so");
-		#end
+		// Runtime: this file is not cpp-only -- it builds for eval, the JVM and
+		// Node -- and `#if windows` is unset on all three, so a Windows host
+		// would have gone looking for libpq.so. Unreachable while the driver
+		// itself is cpp-only, and wrong the moment that stops being true.
+		if (crossbyte.sys.System.isWindows) {
+			__pushCandidate(candidates, Path.join([cwd, "php", "libpq.dll"]));
+			__pushCandidate(candidates, Path.join([cwd, "..", "php", "libpq.dll"]));
+			__pushCandidate(candidates, Path.join([exeDir, "libpq.dll"]));
+			__pushCandidate(candidates, Path.join([exeDir, "..", "..", "..", "..", "php", "libpq.dll"]));
+			__pushCandidate(candidates, "libpq.dll");
+		} else {
+			__pushCandidate(candidates, "libpq.so.5");
+			__pushCandidate(candidates, "libpq.so");
+		}
 		return candidates;
 	}
 
@@ -619,11 +623,7 @@ class PostgresConnection extends EventDispatcher {
 		}
 
 		if (FileSystem.exists(trimmed) && FileSystem.isDirectory(trimmed)) {
-			#if windows
-			trimmed = Path.join([trimmed, "libpq.dll"]);
-			#else
-			trimmed = Path.join([trimmed, "libpq.so"]);
-			#end
+			trimmed = Path.join([trimmed, crossbyte.sys.System.isWindows ? "libpq.dll" : "libpq.so"]);
 		}
 
 		if (candidates.indexOf(trimmed) == -1) {
