@@ -24,8 +24,31 @@ interface INetHost {
 	public var onDisconnect(get, set):(INetConnection, Reason) -> Void;
 	/** Called when the host or one of its accepted transports reports an error. */
 	public var onError(get, set):Reason->Void;
+	/**
+	 * Whether this host can open outgoing sessions from its own listening
+	 * endpoint.
+	 *
+	 * True only for connectionless transports, where one socket serves both
+	 * directions. A listening TCP or WebSocket host cannot: accepting and
+	 * dialling are different sockets there, and no flag changes that.
+	 *
+	 * It is a declared capability rather than an assumption because it is the
+	 * one that decides whether a transport can mesh. Hole punching needs the
+	 * port a peer dials out from to be the port it is reachable on, so a host
+	 * that answers `false` here cannot carry a peer-to-peer topology however
+	 * well it carries a client-server one.
+	 */
+	public var canDial(get, never):Bool;
+
 	/** Binds the host to a local address and port. */
 	public function bind(address:String, port:Int):Void;
+
+	/**
+	 * Opens an outgoing session from this host's listening endpoint.
+	 *
+	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
+	 */
+	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection;
 	/** Starts accepting incoming connections. */
 	public function listen():Void;
 	/** Stops the listener and closes the host. */
