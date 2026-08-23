@@ -4,8 +4,7 @@ package crossbyte.net;
 #if !(js && !nodejs)
 
 import crossbyte.Future;
-import crossbyte._internal.net.stun.StunMessage;
-import crossbyte._internal.net.stun.StunMessage.StunAddress;
+import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
@@ -75,7 +74,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	// a client of its own because the question is about this socket's port, and
 	// only this class can ask from it.
 	@:noCompletion private var __stunRequest:StunMessage;
-	@:noCompletion private var __stunFuture:Future<StunAddress>;
+	@:noCompletion private var __stunFuture:Future<ReflexiveAddress>;
 	@:noCompletion private var __stunDeadline:Float = 0;
 	@:noCompletion private var __stunTick:TickEvent->Void;
 	@:noCompletion private var __socket:DatagramSocket;
@@ -256,8 +255,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		@throws IOError if this server is closed, unbound, or not listening.
 	**/
-	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<StunAddress> {
-		var future = new Future<StunAddress>();
+	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
+		var future = new Future<ReflexiveAddress>();
 
 		if (__closed || !bound || !listening) {
 			@:privateAccess future.__fail("A reflexive address can only be discovered from a bound, listening server socket.",
@@ -302,7 +301,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return future;
 	}
 
-	@:noCompletion private function __settleStun(address:Null<StunAddress>, error:String):Void {
+	@:noCompletion private function __settleStun(address:Null<ReflexiveAddress>, error:String):Void {
 		var future = __stunFuture;
 
 		if (future == null) {
@@ -358,7 +357,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return true;
 		}
 
-		var address:StunAddress = response.mappedAddress();
+		var address:ReflexiveAddress = response.mappedAddress();
 
 		if (address == null) {
 			__settleStun(null, "The STUN server replied without a mapped address, so this socket's public address is still unknown.");

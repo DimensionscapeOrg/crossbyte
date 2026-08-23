@@ -23,16 +23,16 @@ class ReliableDatagramSocketTest extends utest.Test {
 		var sawRequest = false;
 
 		stun.addEventListener(crossbyte.events.DatagramSocketDataEvent.DATA, function(e:crossbyte.events.DatagramSocketDataEvent):Void {
-			var request = crossbyte._internal.net.stun.StunMessage.decode(e.data);
+			var request = crossbyte.net._internal.stun.StunMessage.decode(e.data);
 
-			if (request == null || request.type != crossbyte._internal.net.stun.StunMessage.BINDING_REQUEST) {
+			if (request == null || request.type != crossbyte.net._internal.stun.StunMessage.BINDING_REQUEST) {
 				return;
 			}
 
 			sawRequest = true;
 
-			var reply = new crossbyte._internal.net.stun.StunMessage(crossbyte._internal.net.stun.StunMessage.BINDING_SUCCESS, request.transactionId,
-				[crossbyte._internal.net.stun.StunMessage.xorMappedAddress("198.51.100.23", 61000)]);
+			var reply = new crossbyte.net._internal.stun.StunMessage(crossbyte.net._internal.stun.StunMessage.BINDING_SUCCESS, request.transactionId,
+				[crossbyte.net._internal.stun.StunMessage.xorMappedAddress("198.51.100.23", 61000)]);
 
 			var payload = reply.encode();
 			stun.send(payload, 0, payload.length, e.srcAddress, e.srcPort);
@@ -87,8 +87,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 			}
 			wrong.position = 0;
 
-			var reply = new crossbyte._internal.net.stun.StunMessage(crossbyte._internal.net.stun.StunMessage.BINDING_SUCCESS, wrong,
-				[crossbyte._internal.net.stun.StunMessage.xorMappedAddress("203.0.113.66", 1234)]);
+			var reply = new crossbyte.net._internal.stun.StunMessage(crossbyte.net._internal.stun.StunMessage.BINDING_SUCCESS, wrong,
+				[crossbyte.net._internal.stun.StunMessage.xorMappedAddress("203.0.113.66", 1234)]);
 
 			var payload = reply.encode();
 			liar.send(payload, 0, payload.length, e.srcAddress, e.srcPort);
