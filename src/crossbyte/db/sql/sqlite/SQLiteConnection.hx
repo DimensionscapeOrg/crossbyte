@@ -145,6 +145,9 @@ class SQLiteConnection extends EventDispatcher {
 	// have real threads and both of these types. They were getting a plain
 	// Array instead, pushed and popped with no lock at all.
 	#if !php
+	// Set by the close job, on the worker thread, from inside the work loop --
+	// so the next pass of that loop exits without anyone needing to wake it.
+	@:noCompletion private var __sqlClosing:Bool = false;
 	@:noCompletion private var __sqlQueue:Deque<Function>;
 	@:noCompletion private var __sqlMutex:Mutex;
 	#end
@@ -315,8 +318,30 @@ class SQLiteConnection extends EventDispatcher {
 				} catch (e:Dynamic) {
 					event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.CLOSE, "Execution failed"));
 				}
+
 				__sqlWorker.sendProgress(event);
-				__sqlWorker.cancel();
+
+				// sendComplete, not cancel. cancel() detaches the runtime
+				// listener and frees the message queue immediately, on this
+				// thread -- so every event queued here and not yet drained by
+				// the main thread was destroyed, this CLOSE among them. Whether
+				// that happened depended on a tick landing while the worker was
+				// still running, which is why it surfaced as an occasional
+				// failure rather than a broken feature: with no tick at all
+				// during the run, all six events of an open-through-close
+				// sequence were lost, every time.
+				//
+				// A Complete message travels the same queue in order, so
+				// everything sent before it is dispatched first and the
+				// listener is detached when it is drained, on the main thread,
+				// with nothing outstanding.
+				__sqlWorker.sendComplete();
+
+				// The loop this job is running inside checks the flag on its
+				// next pass and returns, so the worker thread ends without
+				// being blocked in pop(true) waiting for work that will never
+				// arrive.
+				__sqlClosing = true;
 			});
 		} else {
 			__connection.close();
@@ -741,6 +766,7 @@ class SQLiteConnection extends EventDispatcher {
 	}
 
 	private function __initSQLWorker():Void {
+		__sqlClosing = false;
 		#if !php
 		__sqlMutex = new Mutex();
 		__sqlQueue = new Deque();
@@ -754,7 +780,7 @@ class SQLiteConnection extends EventDispatcher {
 	}
 
 	private function __sqlWork(m:Dynamic):Void {
-		while (!__sqlWorker.canceled) {
+		while (!__sqlWorker.canceled && !__sqlClosing) {
 			#if !php
 			// Blocks until there is work. The Array path this replaces spun:
 			// an empty queue fell through to haxe.Timer.delay(fn, 0), which
