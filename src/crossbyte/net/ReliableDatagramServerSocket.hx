@@ -3,6 +3,7 @@ package crossbyte.net;
 // Not built for the browser: it listens, over UDP, neither of which a page can do.
 #if !(js && !nodejs)
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.Event;
@@ -11,6 +12,11 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 import haxe.ds.StringMap;
+#if nodejs
+import crossbyte._internal.net.IPv6;
+#else
+import sys.net.Host;
+#end
 
 @:access(crossbyte.net.ReliableDatagramSocket)
 /**
@@ -141,6 +147,78 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__socket.receive();
 	}
 
+	/**
+		Opens a reliable session to `address`:`port` from the port this server is
+		already bound to.
+
+		The distinction from `ReliableDatagramSocket.connect` is the local port.
+		That call makes its own transport and so leaves from an arbitrary port;
+		this one leaves from the one peers already reach this server on. For a
+		peer-to-peer mesh that difference is the whole thing: hole punching
+		works only when the port a peer dials out from is the port it is
+		reachable on, and a NAT will only hold that mapping open for one socket.
+
+		The returned session is registered with this server, so its replies
+		arrive through the same data pump that feeds accepted sessions. It is
+		reported through `ReliableDatagramSocketConnectEvent.CONNECT` when the
+		handshake completes, exactly as an accepted one is, and it takes
+		`socketMode` for the same reason.
+
+		Requires `listen()`: the server's pump is what routes the replies, so a
+		session dialled from a bound-but-not-listening server would send its
+		handshake and never hear the answer.
+
+		@param timeoutMs Session timeout in milliseconds, or `0` for the default.
+		@throws IOError if this server is closed, unbound, or not listening.
+		@throws ArgumentError if the address cannot be resolved, or a session to
+		this endpoint already exists.
+	**/
+	public function connect(address:String, port:Int, timeoutMs:Int = 0):ReliableDatagramSocket {
+		if (__closed) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
+		if (!bound) {
+			throw new IOError("Cannot dial from a server socket that is not bound.");
+		}
+
+		if (!listening) {
+			throw new IOError("Cannot dial from a server socket that is not listening: replies are routed by the listen pump, so nothing would deliver them.");
+		}
+
+		var resolved:String;
+
+		#if nodejs
+		// Same rule the socket's own connect() states: a session is matched
+		// against the address replies arrive from, and resolving a name on Node
+		// needs a callback this call cannot wait for.
+		if (!IPv6.isNumericAddress(address)) {
+			throw new ArgumentError("A reliable datagram session needs a numeric address on Node, not a name: the session is matched against the address replies arrive from, and resolving a name there needs a callback this call cannot wait for.");
+		}
+
+		resolved = address;
+		#else
+		try {
+			resolved = new Host(address).toString();
+		} catch (_:Dynamic) {
+			throw new ArgumentError("One of the parameters is invalid");
+		}
+		#end
+
+		var key:String = __endpointKey(resolved, port);
+
+		// Refused rather than replaced. A second session to an endpoint that
+		// already has one would take over its routing entry and strand the
+		// first, which is a difficult thing to notice from the outside.
+		if (__connections.exists(key)) {
+			throw new ArgumentError("A reliable datagram session to " + key + " already exists on this server.");
+		}
+
+		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs);
+		__connections.set(key, socket);
+		return socket;
+	}
+
 	@:noCompletion private inline function __endpointKey(address:String, port:Int):String {
 		return address + ":" + port;
 	}
@@ -171,6 +249,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	}
 
 	@:noCompletion private function __onSocketConnected(socket:ReliableDatagramSocket):Void {
+		// Only sessions a peer opened to us. A session `connect()` dialled is
+		// registered here too, because that is how its replies get routed, but
+		// it was initiated rather than accepted -- and whoever dialled it
+		// already holds it. Announcing it as a new arrival would have every
+		// caller wire it up twice.
+		if (!socket.__incoming) {
+			return;
+		}
+
 		dispatchEvent(new ReliableDatagramSocketConnectEvent(ReliableDatagramSocketConnectEvent.CONNECT, socket));
 	}
 
