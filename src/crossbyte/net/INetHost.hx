@@ -1,5 +1,7 @@
 package crossbyte.net;
 
+import crossbyte.Future;
+
 /**
  * Common listener contract for server-side transport hosts.
  *
@@ -49,6 +51,24 @@ interface INetHost {
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
 	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection;
+
+	/**
+	 * Asks a STUN server how this host's listening endpoint appears from
+	 * outside.
+	 *
+	 * Available exactly where `dial` is, and for the same reason rather than a
+	 * coincidence: both need one socket to serve accepting and connecting
+	 * alike. A host that cannot dial from its listening endpoint has no single
+	 * endpoint to ask about either, so `canDial` gates both and there is no
+	 * second flag to drift out of step with the first.
+	 *
+	 * The answer describes this port specifically. A NAT keeps one mapping per
+	 * socket, so an address discovered anywhere else says nothing about where
+	 * this host can be reached -- which is the only thing worth publishing.
+	 *
+	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
+	 */
+	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress>;
 	/** Starts accepting incoming connections. */
 	public function listen():Void;
 	/** Stops the listener and closes the host. */
