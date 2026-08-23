@@ -26,6 +26,7 @@ import utest.Runner;
 **/
 class PortableSuite {
 	public static function add(runner:Runner):Void {
+		runner.addCase(new crossbyte.net.StunMessageTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --
@@ -34,6 +35,9 @@ class PortableSuite {
 		// neither backend grades its own homework.
 		runner.addCase(new crossbyte.io.StoreTest());
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
+		runner.addCase(new crossbyte._internal.http.h2.hpack.HpackTest());
+		runner.addCase(new crossbyte._internal.http.h2.H2Test());
+		runner.addCase(new crossbyte._internal.http.h2.H2ServerTest());
 		runner.addCase(new crossbyte.ds.BloomFilterTest());
 		runner.addCase(new crossbyte.errors.ErrorsTest());
 		runner.addCase(new crossbyte.math.MathTest());

@@ -1,0 +1,162 @@
+package crossbyte.net;
+
+// Needs UDP, which a page has not got. A browser discovers its own reflexive
+// address through RTCPeerConnection's ICE gathering instead.
+#if !(js && !nodejs)
+import crossbyte.Future;
+import crossbyte._internal.net.stun.StunMessage;
+import crossbyte._internal.net.stun.StunMessage.StunAddress;
+import crossbyte.core.CrossByte;
+import crossbyte.errors.ArgumentError;
+import crossbyte.events.DatagramSocketDataEvent;
+import crossbyte.events.TickEvent;
+import crossbyte.io.ByteArray;
+
+/**
+	Asks a STUN server what address it sees this socket as.
+
+	A peer behind NAT cannot answer that locally. `localAddress` is the private
+	side of the mapping, and the address a peer must publish for others to dial
+	is the public side -- which only something outside the NAT can report. That
+	is the whole of what STUN does here, and it is the first thing any
+	peer-to-peer transport needs: without it a peer can only advertise an
+	address nobody else can reach.
+
+	```haxe
+	StunClient.discover("stun.l.google.com", 19302).then(function(address) {
+		trace("the world sees " + address.address + ":" + address.port);
+	}, function(error) {
+		trace("could not find out: " + error);
+	});
+	```
+
+	## Discovering for a socket you already own
+
+	`discover` binds a socket of its own, which answers "what is my public
+	address" and no more. A peer that intends to be *reached* wants the mapping
+	for the port it is actually listening on, because a NAT holds one mapping
+	per socket -- so `discoverFor` takes the port to ask about. That is the same
+	distinction `ReliableDatagramServerSocket.connect` exists for.
+**/
+class StunClient {
+	/** The port STUN is registered on, and where public servers listen. */
+	public static inline var DEFAULT_PORT:Int = 3478;
+
+	/**
+		Asks `server` for this host's reflexive address.
+
+		@param timeoutMs How long to wait before giving up. UDP has no failure
+		to report -- a request that reaches nothing looks exactly like one still
+		in flight -- so a deadline is the only thing that ends this.
+	**/
+	public static function discover(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000):Future<StunAddress> {
+		return discoverFor(0, server, port, timeoutMs);
+	}
+
+	/**
+		The same question, asked from `localPort`.
+
+		Use this when the answer has to describe a port other peers will dial.
+		A mapping belongs to a socket, so asking from an arbitrary port returns
+		an address that says nothing about where this peer can be reached.
+
+		@param localPort The port to ask from, or `0` for any.
+	**/
+	public static function discoverFor(localPort:Int, server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000):Future<StunAddress> {
+		var future = new Future<StunAddress>();
+
+		if (server == null || server == "") {
+			@:privateAccess future.__fail("A STUN server address is required.", new ArgumentError("server"));
+			return future;
+		}
+
+		var request:StunMessage = StunMessage.bindingRequest();
+		var socket = new DatagramSocket();
+		var runtime:CrossByte = CrossByte.current();
+		var deadline:Float = Sys.time() + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
+		var settled:Bool = false;
+		var onTick:TickEvent->Void = null;
+
+		function finish(address:Null<StunAddress>, error:String):Void {
+			if (settled) {
+				return;
+			}
+
+			settled = true;
+
+			if (onTick != null) {
+				runtime.removeEventListener(TickEvent.TICK, onTick);
+			}
+
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+
+			if (address != null) {
+				@:privateAccess future.__resolve(address);
+			} else {
+				@:privateAccess future.__fail(error, null);
+			}
+		}
+
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(event:DatagramSocketDataEvent):Void {
+			if (settled) {
+				return;
+			}
+
+			var response:StunMessage = StunMessage.decode(event.data);
+
+			// Anything can arrive on a bound UDP port. Not a STUN message, or
+			// not an answer to the question this client asked, means keep
+			// waiting rather than fail -- and refusing a mismatched
+			// transaction is what stops somebody handing this peer an address
+			// of their choosing.
+			if (response == null || !request.matches(response)) {
+				return;
+			}
+
+			if (response.type == StunMessage.BINDING_ERROR) {
+				var reported:String = response.errorMessage();
+				finish(null, "The STUN server refused the request" + (reported != null ? ": " + reported : "."));
+				return;
+			}
+
+			if (response.type != StunMessage.BINDING_SUCCESS) {
+				return;
+			}
+
+			var address:StunAddress = response.mappedAddress();
+
+			if (address == null) {
+				// A success carrying no address is a server that answered
+				// without answering; saying so beats waiting out the deadline.
+				finish(null, "The STUN server replied without a mapped address, so this host's public address is still unknown.");
+				return;
+			}
+
+			finish(address, null);
+		});
+
+		onTick = function(_:TickEvent):Void {
+			if (!settled && Sys.time() >= deadline) {
+				finish(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs
+					+ "ms. UDP reports nothing when it is dropped, so a silent network and a wrong address look the same from here.");
+			}
+		};
+
+		try {
+			socket.bind(localPort, "0.0.0.0");
+			socket.receive();
+
+			var payload:ByteArray = request.encode();
+			socket.send(payload, 0, payload.length, server, port);
+
+			runtime.addEventListener(TickEvent.TICK, onTick);
+		} catch (e:Dynamic) {
+			finish(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + Std.string(e));
+		}
+
+		return future;
+	}
+}
+#end
