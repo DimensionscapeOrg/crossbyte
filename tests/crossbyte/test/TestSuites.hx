@@ -52,10 +52,29 @@ class TestSuites {
 		// it without dragging all of TestSuites in behind it.
 		ServerSuite.add(runner);
 
+		// HPACK is pure byte manipulation -- no socket, no thread -- so unlike
+		// the client below it means the same thing on every target, browser
+		// included. Also in PortableSuite, which is how js reaches it.
+		runner.addCase(new crossbyte._internal.http.h2.hpack.HpackTest());
+		runner.addCase(new crossbyte._internal.http.h2.H2Test());
+		runner.addCase(new crossbyte._internal.http.h2.H2ServerTest());
+
 		#if !js
 		// The client, which drives a raw socket with its own TLS and so exists
 		// on no JavaScript target. Its test also spawns threads.
 		runner.addCase(new crossbyte._internal.http.HttpTest());
+		// The backend end to end, which needs a listening socket and a thread,
+		// so it sits with the client rather than in PortableSuite.
+		//
+		// Not on eval. A pooled HTTP/2 connection keeps a reader thread parked
+		// on a socket between requests, and eval raises a peer reset as a
+		// native Unix_error that no Haxe catch can see -- it kills the thread,
+		// and a send on a reset socket kills the process outright. That is a
+		// property of the target's socket layer, not of the pool: the same
+		// reset is an ordinary catchable error everywhere else.
+		#if (cpp || hl || neko || java || jvm)
+		runner.addCase(new crossbyte.http.HTTP2BackendTest());
+		#end
 		#end
 	}
 
@@ -116,6 +135,7 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
+		runner.addCase(new crossbyte.net.StunMessageTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		// Deliberately unguarded: the exact-buffer read-loop hang it protects
