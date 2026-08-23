@@ -24,14 +24,52 @@ import sys.io.Process;
 #end
 /** Cross-platform system information and process-level utility accessors. */
 class System {
-	public static inline var PLATFORM:String =
-		#if windows
-		"windows";
-		#elseif linux
-		"linux";
-		#else
-		"undefined";
-		#end
+	/**
+		The operating system this process is running on: `"windows"`,
+		`"linux"`, `"mac"`, `"browser"`, or whatever `Sys.systemName()` reports
+		lowercased.
+
+		This was `#if windows ... #elseif linux ... #else "undefined"`, which
+		is a question about the compiler rather than about the machine. Haxe
+		sets `windows` for cpp, hl and neko; it does not set it for eval, the
+		JVM or Node. So three of CrossByte's targets reported `"undefined"`
+		while running on Windows, and every conditional in this class that
+		followed the same pattern took the branch written for somebody else.
+	**/
+	public static var PLATFORM(get, never):String;
+
+	/**
+		Whether this process is running on Windows.
+
+		Ask this rather than `#if windows` for anything decided while running.
+		The define is still right for choosing types and native includes at
+		compile time, and still wrong for choosing a command, an environment
+		variable or a path separator.
+	**/
+	public static var isWindows(get, never):Bool;
+
+	@:noCompletion private static var __platform:String;
+
+	@:noCompletion private static function get_PLATFORM():String {
+		if (__platform == null) {
+			#if (js && !nodejs)
+			__platform = "browser";
+			#else
+			__platform = switch (Sys.systemName()) {
+				case "Windows": "windows";
+				case "Linux": "linux";
+				case "Mac": "mac";
+				case other: other.toLowerCase();
+			};
+			#end
+		}
+
+		return __platform;
+	}
+
+	@:noCompletion private static inline function get_isWindows():Bool {
+		return PLATFORM == "windows";
+	}
 
 	public static var appDir(get, never):String;
 
@@ -103,37 +141,44 @@ class System {
 		// Reading physical memory means shelling out, and a browser has no shell nor any web API that reports it. Returning 0 would read as "no memory" rather than "cannot know".
 		throw new crossbyte.errors.IllegalOperationError("System.totalSystemMemory() is not available on this target.");
 		#else
-		var cmd:String = "";
-		#if windows
-		cmd = "wmic computersystem get totalphysicalmemory";
-		#elseif linux
-		cmd = "grep MemTotal /proc/meminfo";
-		#end
+		var cmd:String = switch (PLATFORM) {
+			case "windows": "wmic computersystem get totalphysicalmemory";
+			case "linux": "grep MemTotal /proc/meminfo";
+			// No command for this platform. Returned an empty string to
+			// Process before, which is a spawn failure rather than an answer.
+			default: "";
+		};
+
+		if (cmd == "") {
+			return 0;
+		}
+
 		var process:Process = new Process(cmd);
 		var output:String = process.stdout.readAll().toString();
+
+		// Before close(), not after: a closed process raises `process_exit`
+		// when asked for its exit code on eval.
+		var status:Int = process.exitCode();
 		process.close();
 
-		if (process.exitCode() > 0) {
+		if (status > 0) {
 			return 0;
 		}
 
 		var lines = output.split("\n");
-		#if windows
-		return Std.parseFloat(lines[1]);
-		#elseif linux
-		var memLine = lines[0]; // On Linux, the total memory info is in the first line
-		var parts = memLine.split(":");
+
+		if (isWindows) {
+			return Std.parseFloat(lines[1]);
+		}
+
+		// On Linux the total is on the first line, in kB.
+		var parts = lines[0].split(":");
+
 		if (parts.length != 2) {
 			return 0;
 		}
 
-		// Extract memory size in kB and convert to bytes
-		var memoryInKB = Std.parseFloat(StringTools.trim(parts[1]));
-		var memoryInBytes = memoryInKB * 1024;
-
-		return memoryInBytes;
-		#end
-		return 0;
+		return Std.parseFloat(StringTools.trim(parts[1])) * 1024;
 		#end
 	}
 
@@ -145,43 +190,39 @@ class System {
 		// Same as totalSystemMemory: no shell, and no browser equivalent.
 		throw new crossbyte.errors.IllegalOperationError("System.freeSystemMemory() is not available on this target.");
 		#else
-		var cmd:String = "";
-		#if windows
-		cmd = "wmic OS get FreePhysicalMemory";
-		#elseif linux
-		cmd = "grep MemAvailable /proc/meminfo";
-		#end
+		var cmd:String = switch (PLATFORM) {
+			case "windows": "wmic OS get FreePhysicalMemory";
+			case "linux": "grep MemAvailable /proc/meminfo";
+			default: "";
+		};
+
+		if (cmd == "") {
+			return 0;
+		}
+
 		var process:Process = new Process(cmd);
 		var output:String = process.stdout.readAll().toString();
+		var status:Int = process.exitCode();
 		process.close();
 
-		if (process.exitCode() > 0) {
+		if (status > 0) {
 			return 0;
 		}
 
 		var lines = output.split("\n");
 
-		#if windows
-		var availableMemory:Float = Std.parseFloat(lines[1]);
+		// Both report kB; both are returned as bytes.
+		if (isWindows) {
+			return Std.parseFloat(lines[1]) * 1024;
+		}
 
-		availableMemory *= 1024;
-
-		return availableMemory;
-		#elseif linux
-		var memLine = lines[0];
-		var parts = memLine.split(":");
+		var parts = lines[0].split(":");
 
 		if (parts.length != 2) {
 			return 0;
 		}
 
-		var availableMemoryInKB = Std.parseFloat(StringTools.trim(parts[1]));
-		var availableMemoryInBytes = availableMemoryInKB * 1024;
-
-		return availableMemoryInBytes;
-		#end
-
-		return 0;
+		return Std.parseFloat(StringTools.trim(parts[1])) * 1024;
 		#end
 	}
 
@@ -228,11 +269,15 @@ class System {
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__appStorageDirPath == null) {
-			#if windows
-			__appStorageDirPath = Sys.getEnv("APPDATA");
-			#else
-			__appStorageDirPath = Sys.getEnv("HOME");
-			#end
+			// This decides where `Store` keeps its files, so getting it wrong
+			// is not cosmetic: on Node under Windows the old `#if windows`
+			// was false, so it read HOME. With HOME set -- Git Bash sets it --
+			// that is the profile root rather than AppData, so a store written
+			// by a native build was invisible to a Node one on the same
+			// machine. With HOME unset, which is the normal state for a
+			// Windows service, `getEnv` returns null and the path became the
+			// literal string "undefined", relative to the working directory.
+			__appStorageDirPath = isWindows ? Sys.getEnv("APPDATA") : Sys.getEnv("HOME");
 		}
 
 		return __appStorageDirPath;
@@ -268,11 +313,7 @@ class System {
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__userDirPath == null) {
-			#if windows
-			__userDirPath = Sys.getEnv("USERPROFILE");
-			#else
-			__userDirPath = Sys.getEnv("HOME");
-			#end
+			__userDirPath = isWindows ? Sys.getEnv("USERPROFILE") : Sys.getEnv("HOME");
 		}
 
 		return __userDirPath;

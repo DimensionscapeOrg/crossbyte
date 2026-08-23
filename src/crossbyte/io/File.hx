@@ -391,7 +391,11 @@ final class File extends EventDispatcher {
 		of backslashes in a String literal represent a single backslash in the
 		String.
 	**/
-	public static inline var separator:String = #if windows "\\" #else "/" #end;
+	public static var separator(get, never):String;
+
+	@:noCompletion private static inline function get_separator():String {
+		return System.isWindows ? "\\" : "/";
+	}
 
 	public var spaceAvailable(get, null):Float;
 
@@ -1431,8 +1435,12 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public static function getRootDirectories():Array<File> {
-		#if windows
+		if (!System.isWindows) {
+			return [new File(separator)];
+		}
+
 		var rootDirs:Array<File> = [];
+
 		for (letter in __driveLetters) {
 			if (FileSystem.exists(letter)) {
 				rootDirs.push(new File(letter));
@@ -1440,9 +1448,6 @@ final class File extends EventDispatcher {
 		}
 
 		return rootDirs;
-		#else
-		return [new File(separator)];
-		#end
 	}
 
 	@:noCompletion private function __canonicalize(cpath:String, seg:String):String {
@@ -1536,15 +1541,15 @@ final class File extends EventDispatcher {
 		#else
 		var path:String;
 
-		#if windows
-		path = Sys.getEnv("TEMP");
-		#else
-		path = Sys.getEnv("TMPDIR");
+		if (System.isWindows) {
+			path = Sys.getEnv("TEMP");
+		} else {
+			path = Sys.getEnv("TMPDIR");
 
-		if (path == null) {
-			path = "/tmp";
+			if (path == null) {
+				path = "/tmp";
+			}
 		}
-		#end
 
 		var tempPath = "";
 
@@ -1560,7 +1565,6 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	#if windows
 	@:noCompletion private function __replaceWindowsEnvVars(path:String):String {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no process environment to expand a path against.");
@@ -1590,7 +1594,6 @@ final class File extends EventDispatcher {
 		return path;
 		#end
 	}
-	#end
 
 	@:noCompletion private function __winGetHiddenAttr():Bool {
 		#if (js && !nodejs)
@@ -1598,13 +1601,21 @@ final class File extends EventDispatcher {
 		#else
 		// Shelling out to `attrib` costs a process per call. GetFileAttributesW
 		// through a `@:cppInclude` bridge would not, in the style the sodium
-		// and blake3 bridges already use -- but only on cpp, and this method
-		// is reachable from every target with a filesystem, so the shell stays
+		// and blake3 bridges already use -- but only on cpp, and this is
+		// reachable from every target with a filesystem, so the shell stays
 		// until there is a path for the others.
+		#if nodejs
+		// Node has no sys.io.Process. It type-checks here, because hxnodejs
+		// allows the `sys` package, and generates nothing -- the same trap
+		// that made spaceAvailable throw `ReferenceError: sys is not defined`
+		// once anything called it.
+		var r:String = js.Syntax.code("require('child_process').execSync({0}).toString()", 'attrib "' + nativePath + '"');
+		#else
 		var process:Process = new Process('attrib "$nativePath"');
 		var r:String = process.stdout.readLine();
 
 		process.close();
+		#end
 
 		var s:String = r.split(nativePath)[0];
 		var flag:Bool = s.indexOf(" H ") > -1;
@@ -1698,11 +1709,9 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function set_nativePath(path:String):String {
-		#if windows
-		if (path.indexOf("%") > -1) {
+		if (System.isWindows && path.indexOf("%") > -1) {
 			path = __replaceWindowsEnvVars(path);
 		}
-		#end
 		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/) {
 			path = Path.addTrailingSlash(path);
 		}
@@ -1712,7 +1721,9 @@ final class File extends EventDispatcher {
 
 		__updateFileStats(path);
 
-		return __path = path.indexOf(#if windows "/" #else "\\" #end) > 0 ? __formatPath(path) : path;
+		// Reformat when the path carries the *other* platform's separator, so
+		// that what is stored is joined on `separator` throughout.
+		return __path = path.indexOf(System.isWindows ? "/" : "\\") > 0 ? __formatPath(path) : path;
 	}
 
 	@:noCompletion private function get_exists():Bool {
@@ -1720,11 +1731,11 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function get_isHidden():Bool {
-		#if windows
-		return __winGetHiddenAttr();
-		#else
-		return name.charAt(0) == ".";
-		#end
+		// The dotfile convention is not Windows's, and Windows's attribute is
+		// not a convention. Asked at runtime because eval, Node and the JVM
+		// all run on Windows without the compiler saying so, and all three
+		// used to answer the dotfile question there.
+		return System.isWindows ? __winGetHiddenAttr() : name.charAt(0) == ".";
 	}
 
 	@:noCompletion private function get_isDirectory():Bool {
@@ -1733,11 +1744,7 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private static function get_lineEnding():String {
-		#if windows
-		return "\r\n";
-		#else
-		return "\n";
-		#end
+		return System.isWindows ? "\r\n" : "\n";
 	}
 
 	@:noCompletion private function get_parent():File {

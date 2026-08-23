@@ -1,6 +1,7 @@
 package crossbyte.sys;
 
 import crossbyte.io.File;
+import crossbyte.sys.System;
 import haxe.io.Path;
 import utest.Assert;
 
@@ -34,8 +35,54 @@ class SysSupportTest extends utest.Test {
 		Assert.equals("CANCELLED", Type.enumConstructor(WorkerState.CANCELLED));
 	}
 
+	public function testThePlatformIsIdentifiedAtRuntimeAndNotByTheCompiler():Void {
+		// `#if windows` names the target the compiler was aimed at. Haxe sets
+		// it for cpp, hl and neko and does not set it for eval, the JVM or
+		// Node -- so on Windows those three answered every platform question
+		// with the branch written for POSIX. It was invisible because the
+		// tests asked the same broken way.
+		//
+		// "undefined" is the old System.PLATFORM's signature on exactly those
+		// targets, and the only value that cannot be right anywhere.
+		Assert.notEquals("undefined", System.PLATFORM);
+		Assert.equals(System.PLATFORM == "windows", System.isWindows);
+		Assert.equals(Sys.systemName() == "Windows", System.isWindows);
+
+		// Derived from the same question, and wrong in the same places: File
+		// joins every path it builds on this, so on eval and Node under
+		// Windows it produced forward slashes against an OS handing it
+		// backslashes.
+		Assert.equals(System.isWindows ? "\\" : "/", File.separator);
+		Assert.equals(System.isWindows ? "
+" : "
+", File.lineEnding);
+	}
+
+	public function testTheStorageDirectoryDoesNotDependOnHOME():Void {
+		// This is where Store keeps its files. Under Windows the old
+		// conditional was false on Node, so it read HOME: the profile root
+		// when Git Bash had set it -- a different location than a native build
+		// uses, for the same data -- and null when nothing had, which reached
+		// callers as a relative directory named "undefined".
+		var storage:String = System.appStorageDir;
+
+		Assert.notNull(storage);
+		Assert.notEquals("", storage);
+		Assert.notEquals("undefined", storage);
+		Assert.notEquals("null", storage);
+
+		if (System.isWindows) {
+			Assert.equals(Sys.getEnv("APPDATA"), storage);
+			Assert.notEquals(Sys.getEnv("USERPROFILE"), storage, "storage fell back to the profile root");
+		}
+	}
+
 	public function testSystemDirectoryGettersStayDistinctAndCached():Void {
-		var expectedUser = #if windows Sys.getEnv("USERPROFILE") #else Sys.getEnv("HOME") #end;
+		// Runtime, like the code under test. This assertion used `#if windows`
+		// too, so on eval -- which does not set that define even on Windows --
+		// it expected HOME and got HOME, and the two were wrong together. A
+		// test that reproduces the bug it is checking for cannot see it.
+		var expectedUser = System.isWindows ? Sys.getEnv("USERPROFILE") : Sys.getEnv("HOME");
 		var expectedDesktop = expectedUser + File.separator + "Desktop";
 		var expectedDocuments = expectedUser + File.separator + "Documents";
 
@@ -47,11 +94,7 @@ class SysSupportTest extends utest.Test {
 		Assert.equals(expectedDocuments, System.documentsDir);
 		Assert.notEquals(System.desktopDir, System.documentsDir);
 
-		#if windows
-		Assert.equals(Sys.getEnv("APPDATA"), System.appStorageDir);
-		#else
-		Assert.equals(Sys.getEnv("HOME"), System.appStorageDir);
-		#end
+		Assert.equals(System.isWindows ? Sys.getEnv("APPDATA") : Sys.getEnv("HOME"), System.appStorageDir);
 	}
 
 	public function testSystemFallbackPropertiesStaySafeOnNonCppTargets():Void {

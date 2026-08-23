@@ -119,6 +119,20 @@ class NodeIntegrationMain extends Application {
 		var free:Float = File.applicationStorageDirectory.spaceAvailable;
 		check("File.spaceAvailable answers on Node", free > 1024 * 1024, "reported " + free + " bytes free");
 
+		// Node is where the platform conditionals hurt most, and where
+		// SysSupportTest cannot reach: `#if windows` is never set here, so on
+		// Windows this target answered every platform question with the branch
+		// written for POSIX. PLATFORM read "undefined" and appStorageDir read
+		// HOME -- the profile root when Git Bash had set it, a different place
+		// than a native build uses for the same data, and the literal string
+		// "undefined" when nothing had.
+		check("System.PLATFORM identifies the host on Node", crossbyte.sys.System.PLATFORM != "undefined",
+			"reported " + crossbyte.sys.System.PLATFORM);
+
+		var storage:String = crossbyte.sys.System.appStorageDir;
+		check("System.appStorageDir does not depend on HOME", storage != null && storage != "undefined" && storage != Sys.getEnv("HOME"),
+			"reported " + storage + " with HOME=" + Sys.getEnv("HOME"));
+
 		crossByte.tps = 60;
 		loopStarted = haxe.Timer.stamp();
 		crossByte.addEventListener(TickEvent.TICK, onTick);
