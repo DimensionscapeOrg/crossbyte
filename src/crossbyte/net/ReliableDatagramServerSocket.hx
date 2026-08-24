@@ -5,6 +5,7 @@ package crossbyte.net;
 
 import crossbyte.Future;
 import crossbyte.net._internal.stun.StunMessage;
+import crossbyte.net.ice.IceAgent;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
@@ -77,6 +78,12 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	@:noCompletion private var __stunFuture:Future<ReflexiveAddress>;
 	@:noCompletion private var __stunDeadline:Float = 0;
 	@:noCompletion private var __stunTick:TickEvent->Void;
+
+	// An attached agent, and the tick that moves its clock. Separate from the
+	// reflexive query above: that one asks a server a single question, this one
+	// runs an exchange with a peer for as long as it takes.
+	@:noCompletion private var __ice:IceAgent;
+	@:noCompletion private var __iceTick:TickEvent->Void;
 	@:noCompletion private var __socket:DatagramSocket;
 
 	/**
@@ -119,6 +126,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		} catch (_:Dynamic) {}
 
 		__settleStun(null, "The server socket closed before the STUN server replied.");
+		detachIceAgent();
 
 		var connections:Array<ReliableDatagramSocket> = [];
 		for (connection in __connections) {
@@ -339,6 +347,98 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return LocalAddress.forDestination(destination);
 	}
 
+	/**
+		Runs an ICE agent over the socket this server already listens on.
+
+		This is the join between the two halves. The agent knows how to find a
+		path and nothing about sockets; the server holds the one socket that can
+		be used to look. Attaching wires the three things the agent needs: its
+		checks go out through this socket, STUN arriving here is handed to it,
+		and its clock is driven from the runtime tick.
+
+		It has to be *this* socket. A NAT keeps one mapping per socket, so a
+		check sent from anywhere else opens a hole for a port the peer was never
+		told about, and the path it proves would not be the path the session
+		then uses.
+
+		Checks are separated from ordinary traffic before the reliable decode,
+		because a STUN message is not a reliable frame and would otherwise be
+		dropped as noise -- and, in the other direction, anything the agent does
+		not recognise is passed straight on, since a peer keeps checking while
+		its session is already carrying data.
+
+		```haxe
+		var agent = new IceAgent(controlling);
+		server.attachIceAgent(agent);
+
+		agent.connected.then(function(pair) {
+			var session = server.connect(pair.remote.address, pair.remote.port);
+		});
+		```
+
+		@param agent The agent to run. Its `onSend` is replaced.
+		@throws IOError if this server is closed, unbound, or not listening --
+		the socket has to exist before anything can be sent from it.
+		@throws ArgumentError if an agent is already attached. Two agents on one
+		socket would each answer the other's checks.
+	**/
+	public function attachIceAgent(agent:IceAgent):Void {
+		if (agent == null) {
+			throw new ArgumentError("An agent is required.");
+		}
+
+		if (__closed || !bound || !listening) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
+		if (__ice != null) {
+			throw new ArgumentError("An ICE agent is already attached to this server socket.");
+		}
+
+		__ice = agent;
+
+		agent.onSend = function(payload:ByteArray, address:String, port:Int):Void {
+			if (__closed) {
+				return;
+			}
+
+			try {
+				__socket.send(payload, 0, payload.length, address, port);
+			} catch (_:Dynamic) {
+				// A check to an address that cannot be routed is an ordinary
+				// outcome of trying every candidate, not a fault. The agent's
+				// own retransmission budget is what decides that pair is dead.
+			}
+		};
+
+		__iceTick = function(_:TickEvent):Void {
+			agent.poll(Sys.time());
+		};
+
+		CrossByte.current().addEventListener(TickEvent.TICK, __iceTick);
+	}
+
+	/**
+		Stops running an attached agent, leaving the socket otherwise untouched.
+
+		The agent itself is not closed: a caller may want to inspect what it
+		found. Detaching only stops this server driving it.
+	**/
+	public function detachIceAgent():Void {
+		if (__iceTick != null) {
+			try {
+				CrossByte.current().removeEventListener(TickEvent.TICK, __iceTick);
+			} catch (_:Dynamic) {}
+
+			__iceTick = null;
+		}
+
+		if (__ice != null) {
+			__ice.onSend = function(_, _, _):Void {};
+			__ice = null;
+		}
+	}
+
 	@:noCompletion private function __settleStun(address:Null<ReflexiveAddress>, error:String):Void {
 		var future = __stunFuture;
 
@@ -414,6 +514,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		// Before the reliable decode: a STUN reply is not a reliable frame, so
 		// it would fall through as noise.
 		if (__takeStunReply(e.data)) {
+			return;
+		}
+
+		// Then the agent, which takes any other STUN message: a check from a
+		// peer, or an answer to one of its own. It reports whether it did, so
+		// everything else falls through to the session below rather than being
+		// swallowed by a component that had no use for it.
+		if (__ice != null && __ice.receive(e.data, e.srcAddress, e.srcPort, Sys.time())) {
 			return;
 		}
 

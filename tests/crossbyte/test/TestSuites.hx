@@ -138,6 +138,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.StunMessageTest());
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
 		runner.addCase(new crossbyte.net.ice.IceAgentTest());
+		// Real sockets, so this one is not portable and is not in the
+		// portable list. It is the join between the agent and the socket it
+		// has to run on, which no amount of in-memory testing reaches.
+		runner.addCase(new crossbyte.net.ice.IceOverDatagramTest());
 		// Needs no guard here: this group never runs on a JavaScript target,
 		// and everywhere it does run the class exists. Its first case is the
 		// one that matters most -- it asserts that the support flag and the
