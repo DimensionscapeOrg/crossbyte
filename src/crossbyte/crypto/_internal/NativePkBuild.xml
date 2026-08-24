@@ -23,7 +23,13 @@
 
 	<target id="haxe">
 		<files id="crossbyte-pk-native"/>
-		<files id="hxcpp_ssl"/>
+
+		<!-- hxcpp_ssl is deliberately NOT listed here. The ssl Build.xml
+		     included above already adds it to this same target, so naming it
+		     again passed SSL.obj to the linker twice and every full link
+		     warned LNK4042. The include is what puts the mbedtls_pk_*,
+		     mbedtls_mpi_* and mbedtls_asn1_* symbols in; this line only
+		     duplicated them. -->
 
 		<lib name="advapi32.lib" if="windows" unless="static_link"/>
 		<lib name="crypt32.lib" if="windows" unless="static_link"/>

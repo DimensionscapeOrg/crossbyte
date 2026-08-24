@@ -26,6 +26,9 @@ import haxe.Serializer;
 import haxe.Timer;
 import haxe.Unserializer;
 import crossbyte._internal.socket.IPollableSocket;
+#if cpp
+import crossbyte._internal.socket.AlpnSocket;
+#end
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SecurityError;
@@ -117,6 +120,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		dispatched in a ServerSocketConnectEvent by a ServerSocket object.
 	 */
 	public var remotePort(get, never):Int;
+
+	/**
+		The application protocol this connection negotiated over TLS, such as
+		`"h2"` or `"http/1.1"`, or `null` when none was negotiated.
+
+		Read this on the socket carried by a `ServerSocketConnectEvent` to see
+		what a client agreed to during the handshake. It is `null` on a plain
+		TCP connection, before the handshake completes, when the server never
+		called `ServerSocket.setALPN()`, and on targets where
+		`ServerSocket.alpnSupported` is `false`.
+	**/
+	public var alpnProtocol(get, never):Null<String>;
+
 	public var registryClosed(get, never):Bool;
 
 	@SuppressWarnings("checkstyle:FieldDocComment")
@@ -1780,6 +1796,25 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		return __refuseEndpoint("remoteAddress");
 		#else
 		return __socket.peer().host.toString();
+		#end
+	}
+
+	@:noCompletion private function get_alpnProtocol():Null<String> {
+		if (__socket == null) {
+			return null;
+		}
+
+		#if nodejs
+		// Only a TLS socket carries the field, and Node reports `false` rather
+		// than null when the handshake negotiated nothing.
+		var negotiated:Dynamic = (cast __socket : Dynamic).alpnProtocol;
+		return Std.isOfType(negotiated, String) ? negotiated : null;
+		#elseif cpp
+		// A plain TCP client reaches here too; sys.ssl.Socket extends
+		// sys.net.Socket, so the cast is only safe after the check.
+		return Std.isOfType(__socket, sys.ssl.Socket) ? AlpnSocket.negotiated(cast __socket) : null;
+		#else
+		return null;
 		#end
 	}
 

@@ -2,6 +2,7 @@ package crossbyte._internal.http;
 
 import crossbyte.http.HTTPBackend;
 import crossbyte.http.HTTPBackendRegistry;
+import crossbyte.http.HTTPCancelToken;
 import crossbyte.http.HTTPRequestContext;
 import crossbyte.io.ByteArray;
 import crossbyte.utils.CompressionAlgorithm;
@@ -16,6 +17,61 @@ import utest.Assert;
 
 @:access(crossbyte._internal.http.Http)
 class HttpTest extends utest.Test {
+	// ------------------------------------------------------ cancel token
+
+	public function testCancelTokenRunsHandlersOnceAndOnlyOnce():Void {
+		var token = new HTTPCancelToken();
+		var runs:Int = 0;
+		token.onCancel(() -> runs++);
+
+		Assert.isFalse(token.cancelled);
+		token.cancel();
+		Assert.isTrue(token.cancelled);
+		Assert.equals(1, runs);
+
+		// Idempotent: a consumer that cancels twice, or two consumers sharing
+		// one token, must not double-release whatever the handler frees.
+		token.cancel();
+		Assert.equals(1, runs);
+	}
+
+	public function testHandlerRegisteredAfterCancellationRunsImmediately():Void {
+		var token = new HTTPCancelToken();
+		token.cancel();
+
+		// The race this closes: a request cancelled in the instant between a
+		// backend accepting it and registering its handler would otherwise run
+		// to completion with nothing left to stop it.
+		var ran:Bool = false;
+		token.onCancel(() -> ran = true);
+		Assert.isTrue(ran);
+	}
+
+	public function testEveryHandlerRunsEvenWhenOneThrows():Void {
+		var token = new HTTPCancelToken();
+		var second:Bool = false;
+
+		token.onCancel(() -> throw "handler exploded");
+		token.onCancel(() -> second = true);
+		token.cancel();
+
+		// Each handler releases a different resource; one failing must not
+		// strand the rest.
+		Assert.isTrue(second);
+	}
+
+	public function testRemovedHandlerDoesNotRun():Void {
+		var token = new HTTPCancelToken();
+		var ran:Bool = false;
+		var handler = () -> ran = true;
+
+		token.onCancel(handler);
+		token.removeHandler(handler);
+		token.cancel();
+
+		Assert.isFalse(ran);
+	}
+
 	public function testValidateHttpVersionOnlyAllowsImplementedVersions():Void {
 		Assert.isTrue(Http.validateHttpVersion(HttpVersion.HTTP_1));
 		Assert.isTrue(Http.validateHttpVersion(HttpVersion.HTTP_1_1));
@@ -23,12 +79,37 @@ class HttpTest extends utest.Test {
 		Assert.isFalse(Http.validateHttpVersion(HttpVersion.HTTP_3));
 	}
 
-	public function testConstructorRejectsUnsupportedVersions():Void {
+	public function testVersionWithNoBackendAnywhereIsRejected():Void {
 		HTTPBackendRegistry.clear();
 
-		Assert.raises(() -> new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2), NotImplementedException);
+		// HTTP/3 is QUIC and nothing here implements it, so it still fails at
+		// construction. HTTP/2 no longer does -- see the next case.
 		Assert.raises(() -> new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_3), NotImplementedException);
 
+		HTTPBackendRegistry.clear();
+	}
+
+	public function testHttp2WorksWithoutRegisteringAnything():Void {
+		HTTPBackendRegistry.clear();
+
+		// The bundled backend registers itself on demand. Requiring a caller
+		// to register a class that ships in this library was a chore, not a
+		// choice, and the error it produced read as "unsupported".
+		var http = new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2);
+		Assert.notNull(http);
+		Assert.isTrue(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
+
+		HTTPBackendRegistry.clear();
+	}
+
+	public function testAutoRegistrationCanBeTurnedOff():Void {
+		HTTPBackendRegistry.clear();
+		HTTPBackendRegistry.autoRegisterBundled = false;
+
+		// The escape hatch for a program that wants only backends it chose.
+		Assert.raises(() -> new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2), NotImplementedException);
+
+		HTTPBackendRegistry.autoRegisterBundled = true;
 		HTTPBackendRegistry.clear();
 	}
 
@@ -66,6 +147,25 @@ class HttpTest extends utest.Test {
 		Assert.equals(5000, backend.lastContext.timeout);
 		Assert.equals("TestAgent", backend.lastContext.userAgent);
 		Assert.isFalse(backend.lastContext.followRedirects);
+		Assert.notNull(backend.lastContext.onHeaders);
+
+		HTTPBackendRegistry.clear();
+	}
+
+	public function testRegisteredBackendReportsResponseHeaders():Void {
+		HTTPBackendRegistry.clear();
+		HTTPBackendRegistry.register(new FakeHTTP2Backend());
+
+		var reported:Array<Map<String, String>> = [];
+		var http = new Http("https://example.com/resource", "GET", null, null, null, null, HttpVersion.HTTP_2);
+		http.onHeaders = headers -> reported.push(headers);
+		http.load();
+
+		// Without this a backend could parse a response and have no way to
+		// hand any of it back but the body.
+		Assert.equals(1, reported.length);
+		Assert.equals("text/plain", reported[0].get("content-type"));
+		Assert.equals("2", reported[0].get("content-length"));
 
 		HTTPBackendRegistry.clear();
 	}
@@ -92,17 +192,89 @@ class HttpTest extends utest.Test {
 		HTTPBackendRegistry.clear();
 	}
 
-	public function testUnregisterBackendRemovesHttp2Support():Void {
+	public function testUnregisteringACustomBackendFallsBackToTheBundledOne():Void {
 		HTTPBackendRegistry.clear();
 		var backend = new FakeHTTP2Backend();
 
 		HTTPBackendRegistry.register(backend);
 		Assert.isTrue(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
+		// Registered last, so it wins over anything registered on demand.
+		Assert.equals(backend, HTTPBackendRegistry.resolve(HttpVersion.HTTP_2));
+
 		Assert.isTrue(HTTPBackendRegistry.unregister(backend));
-		Assert.isFalse(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
-		Assert.raises(() -> new Http("https://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2), NotImplementedException);
+
+		// Support does not disappear with it: HTTP/2 is a capability of the
+		// library, and removing one implementation of it leaves the bundled
+		// one. Removing the *last* backend used to mean losing the protocol.
+		Assert.isTrue(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
+		Assert.isFalse(backend == HTTPBackendRegistry.resolve(HttpVersion.HTTP_2));
 
 		HTTPBackendRegistry.clear();
+	}
+
+	public function testLoadReportsResponseHeadersAndJoinsRepeatedFields():Void {
+		var fixture = serveOnce("HTTP/1.1 200 OK
+"
+			+ "Content-Length: 2
+"
+			+ "X-Multi: a
+"
+			+ "X-Multi: b
+"
+			+ "Set-Cookie: one=1
+"
+			+ "Set-Cookie: two=2
+"
+			+ "
+hi");
+		var reported:Array<Map<String, String>> = [];
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/headers');
+		http.onHeaders = headers -> reported.push(headers);
+		http.load();
+		fixture.waitDone();
+
+		Assert.equals(1, reported.length);
+		var headers = reported[0];
+
+		// Lowercased on the way in, so a caller never has to guess the casing
+		// a server chose.
+		Assert.equals("2", headers.get("content-length"));
+
+		// Repeated ordinary fields join with ", "...
+		Assert.equals("a, b", headers.get("x-multi"));
+
+		// ...but set-cookie joins with a newline: its values contain commas of
+		// their own, so a comma join could not be undone.
+		// Built from a char code rather than written as a literal newline in
+		// the source: a literal one carries the file's line ending, so the
+		// expected value silently becomes CRLF on a CRLF checkout.
+		Assert.equals("one=1" + String.fromCharCode(10) + "two=2", headers.get("set-cookie"));
+	}
+
+	public function testLoadReportsOnlyTheFinalHeaderBlockAfterAnInformationalResponse():Void {
+		var fixture = serveOnce("HTTP/1.1 100 Continue
+
+" + "HTTP/1.1 200 OK
+Content-Length: 2
+X-Final: yes
+
+hi");
+		var reported:Array<Map<String, String>> = [];
+		var completed:Bytes = null;
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/continue');
+		http.onHeaders = headers -> reported.push(headers);
+		http.onComplete = data -> completed = data;
+		http.load();
+		fixture.waitDone();
+
+		// A 1xx block is discarded and re-read, so the caller sees one header
+		// block rather than an interim one it would have to know to ignore.
+		Assert.equals(1, reported.length);
+		Assert.equals("yes", reported[0].get("x-final"));
+		Assert.notNull(completed);
+		Assert.equals("hi", completed.toString());
 	}
 
 	public function testResolveLocationHandlesAbsoluteAndRootRelativeUrls():Void {
@@ -475,7 +647,12 @@ private class FakeHTTP2Backend implements HTTPBackend {
 	public function load(context:HTTPRequestContext):Void {
 		lastContext = context;
 		var bytes = Bytes.ofString(response);
+		var headers:Map<String, String> = ["content-type" => "text/plain", "content-length" => Std.string(bytes.length)];
+
+		// The order HTTPRequestContext documents: status, headers, progress,
+		// then exactly one of onComplete/onError.
 		context.onStatus(200);
+		context.onHeaders(headers);
 		context.onProgress(0, bytes.length);
 		context.onProgress(bytes.length, bytes.length);
 		context.onComplete(bytes);

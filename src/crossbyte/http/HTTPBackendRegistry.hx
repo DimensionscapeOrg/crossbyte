@@ -52,7 +52,68 @@ class HTTPBackendRegistry {
 		return removed;
 	}
 
+	/**
+	 * Whether an unresolved HTTP/2 request may fall back to the bundled
+	 * backend.
+	 *
+	 * On by default, because a program that asked for HTTP/2 and got told to
+	 * register a class shipped in the same library has been given a chore, not
+	 * a choice. Set it to `false` before the first request to guarantee that
+	 * only backends you registered are ever used.
+	 *
+	 * The cost is that `crossbyte.http.HTTP2Backend` -- and the framing layer
+	 * behind it -- is reachable from here, so it links into any build that
+	 * makes HTTP requests at all rather than only into ones that ask for
+	 * HTTP/2. That is the trade: a working default against a smaller binary
+	 * for programs that never wanted the feature.
+	 */
+	public static var autoRegisterBundled:Bool = true;
+
+	private static var __bundledRegistered:Bool = false;
+
 	public static function resolve(version:HTTPVersion):Null<HTTPBackend> {
+		var found:Null<HTTPBackend> = __search(version);
+		if (found != null) {
+			return found;
+		}
+
+		if (!__registerBundled(version)) {
+			return null;
+		}
+
+		return __search(version);
+	}
+
+	/**
+	 * Registers the bundled HTTP/2 backend, once, if that is what was asked
+	 * for. Returns whether anything was added.
+	 *
+	 * Registered rather than returned directly so an explicitly registered
+	 * backend still wins: `__search` walks newest first, so anything the
+	 * caller adds afterwards takes precedence over this.
+	 */
+	private static function __registerBundled(version:HTTPVersion):Bool {
+		#if !js
+		if (!autoRegisterBundled || __bundledRegistered || version != HTTPVersion.HTTP_2) {
+			return false;
+		}
+
+		__acquire();
+		if (__bundledRegistered) {
+			__release();
+			return false;
+		}
+		__bundledRegistered = true;
+		__release();
+
+		register(new HTTP2Backend());
+		return true;
+		#else
+		return false;
+		#end
+	}
+
+	private static function __search(version:HTTPVersion):Null<HTTPBackend> {
 		__acquire();
 		var snapshot:Array<HTTPBackend> = __backends;
 		__release();
@@ -76,6 +137,10 @@ class HTTPBackendRegistry {
 	@:noCompletion public static function clear():Void {
 		__acquire();
 		__backends = [];
+		// Cleared too, or a test that empties the registry would find the
+		// bundled backend permanently absent rather than re-registered on
+		// demand like it is in a fresh process.
+		__bundledRegistered = false;
 		__release();
 	}
 
