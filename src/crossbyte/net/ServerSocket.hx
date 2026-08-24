@@ -151,6 +151,18 @@ class ServerSocket extends EventDispatcher {
 		}
 		#end
 
+		#if eval
+		if (secure) {
+			// eval's sys.ssl.Socket implements setCertificate and
+			// addSNICertificate as stubs that throw, so a TLS server there
+			// cannot present a certificate and never could. Refused here, at
+			// construction, rather than several calls later from inside the
+			// standard library with a bare "Not implemented" and no hint that
+			// the target is the reason.
+			throw new CBError("Secure ServerSocket is not supported on the eval target: sys.ssl.Socket cannot install a certificate there.");
+		}
+		#end
+
 		this.secure = secure;
 		#if !nodejs
 		__pendingHandshakes = [];
