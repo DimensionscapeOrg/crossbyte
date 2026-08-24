@@ -7,6 +7,7 @@ import haxe.Int64;
 import haxe.crypto.Crc32;
 import haxe.crypto.Hmac;
 import haxe.crypto.Hmac.HashMethod;
+import haxe.crypto.Md5;
 import haxe.io.Bytes;
 
 /**
@@ -55,6 +56,40 @@ class StunMessage {
 	public static inline var ATTR_FINGERPRINT:Int = 0x8028;
 	public static inline var ATTR_ICE_CONTROLLED:Int = 0x8029;
 	public static inline var ATTR_ICE_CONTROLLING:Int = 0x802A;
+
+	// TURN, RFC 8656. The same framing with different methods: the low twelve
+	// bits of the type are the method and the two class bits say request,
+	// indication, success or error -- which is why an allocate request is
+	// 0x0003 and its success response 0x0103.
+	public static inline var ALLOCATE_REQUEST:Int = 0x0003;
+
+	public static inline var ALLOCATE_SUCCESS:Int = 0x0103;
+	public static inline var ALLOCATE_ERROR:Int = 0x0113;
+	public static inline var REFRESH_REQUEST:Int = 0x0004;
+	public static inline var REFRESH_SUCCESS:Int = 0x0104;
+	public static inline var REFRESH_ERROR:Int = 0x0114;
+	public static inline var SEND_INDICATION:Int = 0x0016;
+	public static inline var DATA_INDICATION:Int = 0x0017;
+	public static inline var CREATE_PERMISSION_REQUEST:Int = 0x0008;
+	public static inline var CREATE_PERMISSION_SUCCESS:Int = 0x0108;
+	public static inline var CREATE_PERMISSION_ERROR:Int = 0x0118;
+
+	public static inline var ATTR_LIFETIME:Int = 0x000D;
+	public static inline var ATTR_XOR_PEER_ADDRESS:Int = 0x0012;
+	public static inline var ATTR_DATA:Int = 0x0013;
+	public static inline var ATTR_REALM:Int = 0x0014;
+	public static inline var ATTR_NONCE:Int = 0x0015;
+	public static inline var ATTR_XOR_RELAYED_ADDRESS:Int = 0x0016;
+	public static inline var ATTR_REQUESTED_TRANSPORT:Int = 0x0019;
+
+	/** The IANA protocol number for UDP, which is the only transport TURN relays here. **/
+	public static inline var TRANSPORT_UDP:Int = 17;
+
+	/** Sent when the server wants credentials it has not been given yet. **/
+	public static inline var UNAUTHORIZED:Int = 401;
+
+	/** Sent when the nonce a request was signed against has expired. **/
+	public static inline var STALE_NONCE:Int = 438;
 
 	/**
 		XORed into the CRC so a STUN fingerprint cannot be mistaken for the
@@ -257,6 +292,49 @@ class StunMessage {
 		return fallback;
 	}
 
+	/**
+		A named address attribute, XOR-decoded, or null.
+
+		`mappedAddress` answers the one question a binding response is asked;
+		TURN carries three more of the same shape -- the relayed address an
+		allocation was granted, and the peer an indication came from or is bound
+		for -- and they are read identically.
+	**/
+	public function addressOf(attributeType:Int):Null<ReflexiveAddress> {
+		for (attribute in attributes) {
+			if (attribute.type == attributeType) {
+				return __readAddress(attribute.value, true);
+			}
+		}
+
+		return null;
+	}
+
+	/** The value of a text attribute such as `REALM` or `NONCE`, or null. **/
+	public function textOf(attributeType:Int):Null<String> {
+		var value = attribute(attributeType);
+
+		if (value == null) {
+			return null;
+		}
+
+		value.position = 0;
+		return value.length > 0 ? value.readUTFBytes(value.length) : "";
+	}
+
+	/** A 32-bit attribute such as `LIFETIME`, or a default when absent. **/
+	public function uintOf(attributeType:Int, orElse:Int = 0):Int {
+		var value = attribute(attributeType);
+
+		if (value == null || value.length < 4) {
+			return orElse;
+		}
+
+		value.endian = Endian.BIG_ENDIAN;
+		value.position = 0;
+		return value.readInt();
+	}
+
 	/** The error a binding error response carries, or null. */
 	public function errorMessage():Null<String> {
 		for (attribute in attributes) {
@@ -318,6 +396,10 @@ class StunMessage {
 		against something other than itself.
 	**/
 	public static function xorMappedAddress(address:String, port:Int):StunAttribute {
+		return new StunAttribute(ATTR_XOR_MAPPED_ADDRESS, __writeXorAddress(address, port));
+	}
+
+	@:noCompletion private static function __writeXorAddress(address:String, port:Int):ByteArray {
 		var parts:Array<String> = address.split(".");
 		var value = new ByteArray();
 		value.endian = Endian.BIG_ENDIAN;
@@ -333,7 +415,7 @@ class StunMessage {
 		}
 
 		value.position = 0;
-		return new StunAttribute(ATTR_XOR_MAPPED_ADDRESS, value);
+		return value;
 	}
 
 	// ------------------------------------------------------------------
@@ -480,6 +562,87 @@ class StunMessage {
 		return null;
 	}
 
+	/**
+		`XOR-PEER-ADDRESS`, naming the far peer in a TURN exchange.
+
+		The same obscuring as a mapped address and for the same reason: a NAT
+		that rewrote anything resembling an address in a passing packet would
+		otherwise corrupt the very field that says who to relay to.
+	**/
+	public static function xorPeerAddress(address:String, port:Int):StunAttribute {
+		return new StunAttribute(ATTR_XOR_PEER_ADDRESS, __writeXorAddress(address, port));
+	}
+
+	/**
+		`XOR-RELAYED-ADDRESS`, the address an allocation was granted.
+
+		Only a relay writes one. It is here for the same reason
+		`xorMappedAddress` is: so the parser can be tested against something
+		other than itself.
+	**/
+	public static function xorRelayed(address:String, port:Int):StunAttribute {
+		return new StunAttribute(ATTR_XOR_RELAYED_ADDRESS, __writeXorAddress(address, port));
+	}
+
+	/** `DATA`, the payload a relay carries in either direction. **/
+	public static function data(payload:ByteArray):StunAttribute {
+		var bytes = new ByteArray();
+
+		if (payload != null && payload.length > 0) {
+			bytes.writeBytes(payload, 0, payload.length);
+		}
+
+		bytes.position = 0;
+		return new StunAttribute(ATTR_DATA, bytes);
+	}
+
+	/** `REQUESTED-TRANSPORT`, which for a data relay is always UDP. **/
+	public static function requestedTransport(protocol:Int = TRANSPORT_UDP):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.writeByte(protocol);
+		bytes.writeByte(0);
+		bytes.writeShort(0);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_REQUESTED_TRANSPORT, bytes);
+	}
+
+	/** `LIFETIME`, in seconds: how long an allocation should outlive this request. **/
+	public static function lifetime(seconds:Int):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.writeInt(seconds);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_LIFETIME, bytes);
+	}
+
+	/** A text attribute, which is how `REALM` and `NONCE` are echoed back. **/
+	public static function text(attributeType:Int, value:String):StunAttribute {
+		var bytes = new ByteArray();
+
+		if (value != null) {
+			bytes.writeUTFBytes(value);
+		}
+
+		bytes.position = 0;
+		return new StunAttribute(attributeType, bytes);
+	}
+
+	/**
+		The key a long-term credential signs with.
+
+		Not the password. TURN hashes the username, realm and password together,
+		so a server can hold the digest rather than the password itself and a
+		credential is bound to the realm it was issued for. MD5 is what RFC 8656
+		specifies here, and it is specified for exactly this -- the digest is a
+		key derivation over values the server already knows, not a signature
+		anybody is asked to trust on its own; the signature over the message is
+		HMAC-SHA1, the same as everywhere else.
+	**/
+	public static function longTermKey(username:String, realm:String, password:String):Bytes {
+		return Md5.make(Bytes.ofString(username + ":" + realm + ":" + password));
+	}
+
 	/** `SOFTWARE`, which is advisory and never covered by anything. **/
 	public static function software(name:String):StunAttribute {
 		var bytes = new ByteArray();
@@ -534,9 +697,21 @@ class StunMessage {
 		a plain binding request to a public STUN server does not need it.
 	**/
 	public function encodeSigned(password:String, withFingerprint:Bool = true):ByteArray {
+		return encodeSignedWithKey(Bytes.ofString(password), withFingerprint);
+	}
+
+	/**
+		The same, keyed with bytes rather than a password.
+
+		Short-term credentials use the password directly; long-term ones use a
+		digest of the username, realm and password. The message layer does not
+		care which, and taking the key rather than deriving it is what keeps
+		that decision with the caller who knows the credential's kind.
+	**/
+	public function encodeSignedWithKey(key:Bytes, withFingerprint:Bool = true):ByteArray {
 		var out = encode();
 
-		__appendIntegrity(out, password);
+		__appendIntegrity(out, key);
 
 		if (withFingerprint) {
 			__appendFingerprint(out);
@@ -556,6 +731,11 @@ class StunMessage {
 		not a malformed one; it is simply not one this can accept.
 	**/
 	public function verifyIntegrity(password:String):Bool {
+		return verifyIntegrityWithKey(Bytes.ofString(password));
+	}
+
+	/** The same, keyed with bytes: see `encodeSignedWithKey`. **/
+	public function verifyIntegrityWithKey(key:Bytes):Bool {
 		if (raw == null) {
 			return false;
 		}
@@ -567,7 +747,7 @@ class StunMessage {
 		}
 
 		var covered = __covered(raw, at, (at - HEADER_LENGTH) + 4 + INTEGRITY_LENGTH);
-		var expected = new Hmac(HashMethod.SHA1).make(__utf8(password), covered);
+		var expected = new Hmac(HashMethod.SHA1).make(key, covered);
 		var difference:Int = 0;
 
 		// Compared without a short circuit. A verifier that returns as soon as
@@ -609,10 +789,10 @@ class StunMessage {
 		return expected == found;
 	}
 
-	@:noCompletion private function __appendIntegrity(out:ByteArray, password:String):Void {
+	@:noCompletion private function __appendIntegrity(out:ByteArray, key:Bytes):Void {
 		__setLength(out, (out.length - HEADER_LENGTH) + 4 + INTEGRITY_LENGTH);
 
-		var mac = new Hmac(HashMethod.SHA1).make(__utf8(password), __copy(out, out.length));
+		var mac = new Hmac(HashMethod.SHA1).make(key, __copy(out, out.length));
 
 		out.endian = Endian.BIG_ENDIAN;
 		out.position = out.length;
@@ -733,9 +913,6 @@ class StunMessage {
 		return out;
 	}
 
-	@:noCompletion private static function __utf8(text:String):Bytes {
-		return Bytes.ofString(text);
-	}
 }
 
 /** One type/length/value attribute. */
