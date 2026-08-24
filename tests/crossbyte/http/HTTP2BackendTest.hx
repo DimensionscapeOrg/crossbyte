@@ -153,6 +153,46 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isTrue(server.decoderTableNames.indexOf("user-agent") >= 0);
 	}
 
+	public function testAnIdlePooledConnectionIsReaped():Void {
+		var server = new H2MuxServer(1);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+		var origin = 'http://127.0.0.1:${server.port}';
+
+		Assert.equals("/once", get(server.port, "/once"));
+
+		// Pooled, which is the saving: the next request to this host skips the
+		// handshakes and starts with a warm HPACK table.
+		Assert.equals(1, H2ConnectionPool.sessionCount(origin));
+
+		// But a pool that never lets go is a leak. Each session holds a socket
+		// and a parked reader thread, so a program that talks to many hosts
+		// accumulates one of each per host for as long as it runs.
+		var previous = H2ConnectionPool.idleTimeoutSeconds;
+		H2ConnectionPool.idleTimeoutSeconds = 0;
+		var reaped = H2ConnectionPool.reapIdle();
+		H2ConnectionPool.idleTimeoutSeconds = previous;
+
+		Assert.equals(1, reaped);
+		Assert.equals(0, H2ConnectionPool.sessionCount(origin));
+	}
+
+	public function testReapingLeavesABusyConnectionAlone():Void {
+		var server = new H2MuxServer(1);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+		var origin = 'http://127.0.0.1:${server.port}';
+
+		Assert.equals("/keep", get(server.port, "/keep"));
+
+		// The default allowance is generous, so a connection used a moment ago
+		// is nowhere near idle and must survive a sweep.
+		Assert.equals(0, H2ConnectionPool.reapIdle());
+		Assert.equals(1, H2ConnectionPool.sessionCount(origin));
+	}
+
 	// ------------------------------------------------------ cancellation
 
 	public function testCancellingOneStreamLeavesTheConnectionUsable():Void {
