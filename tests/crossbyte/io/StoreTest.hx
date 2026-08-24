@@ -35,6 +35,9 @@ import utest.Async;
 class StoreTest extends utest.Test {
 	private static var counter:Int = 0;
 
+	/** Every name handed out, so `teardownClass` can take back what the run made. */
+	private static var created:Array<String> = [];
+
 	/**
 	 * A store name nothing else is using.
 	 *
@@ -42,9 +45,86 @@ class StoreTest extends utest.Test {
 	 * file backend outlives a process: a shared name would let one run's
 	 * leftovers decide the next run's result, which is the sort of test that
 	 * passes until it is the only thing standing between you and a bug.
+	 *
+	 * Recorded on the way out, because a name is a directory (or a database)
+	 * somebody has to remove later, and later is `teardownClass`.
 	 */
 	private function freshName():String {
-		return "test-" + (counter++) + "-" + Std.int(haxe.Timer.stamp() * 1000);
+		var name = "test-" + (counter++) + "-" + Std.int(haxe.Timer.stamp() * 1000);
+		created.push(name);
+		return name;
+	}
+
+	/**
+	 * Removes every store this run created.
+	 *
+	 * Fresh names are the right design and litter is their cost: each case
+	 * leaves a store the next run will never look at, and 462 of them had
+	 * piled up under a roaming profile before anyone counted. The pile is
+	 * paid for here rather than by sharing names, which would buy back the
+	 * flakiness the naming exists to prevent.
+	 *
+	 * One name at a time rather than `Future.all`, so the run cannot end out
+	 * from under the sweep -- and the failure arm walks on exactly like the
+	 * success arm, because utest carries on after a failed case and one store
+	 * that will not clear must not strand every store behind it.
+	 */
+	@:timeout(10000)
+	public function teardownClass(async:Async):Void {
+		removeCreated(0, async);
+	}
+
+	private static function removeCreated(index:Int, async:Async):Void {
+		if (index >= created.length) {
+			created = [];
+			async.done();
+			return;
+		}
+
+		var name = created[index];
+		var store:Store = null;
+
+		Store.open(name)
+			.flatMap(function(opened:Store):Future<Store> {
+				store = opened;
+				return opened.clear();
+			})
+			.then(function(_):Void {
+				store.close();
+				removeStoreDirectory(name);
+				removeCreated(index + 1, async);
+			}, function(_):Void {
+				if (store != null) {
+					store.close();
+				}
+				removeCreated(index + 1, async);
+			});
+	}
+
+	/**
+	 * Removes what `clear()` leaves behind: the container itself.
+	 *
+	 * Clearing empties a store without removing it -- the file backend keeps
+	 * the now-empty directory and IndexedDB keeps the database. Here the
+	 * directory is within reach of the same filesystem the backend uses, so
+	 * the sweep finishes the job; the browser offers no handle on the
+	 * database through the Store API, so there the empty shell stays.
+	 *
+	 * The path restates FileStore's private layout, `<storage>/stores/<name>`.
+	 * That coupling is accepted over exposing the path on the API for one
+	 * test's benefit, and a drift in it shows up as directories in the
+	 * verification listing rather than as anything silent.
+	 */
+	private static function removeStoreDirectory(name:String):Void {
+		#if !(js && !nodejs)
+		try {
+			var directory = haxe.io.Path.join([File.applicationStorageDirectory.nativePath, "stores", name]);
+
+			if (sys.FileSystem.exists(directory)) {
+				sys.FileSystem.deleteDirectory(directory);
+			}
+		} catch (_:Dynamic) {}
+		#end
 	}
 
 	private function bytesOf(text:String):ByteArray {
