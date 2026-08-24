@@ -36,6 +36,7 @@ class PortableSuite {
 		// cases here assert on both sides of that: a target without mbedTLS
 		// has to say so rather than fail somewhere further along.
 		runner.addCase(new crossbyte.net.rtc.DtlsCertificateTest());
+		runner.addCase(new crossbyte.net.rtc.DtlsTransportTest());
 		// Arithmetic and ordering with no socket in it, so it belongs here for
 		// the same reason the STUN codec does -- and it belongs on the browser
 		// especially, which is the one target that will be talking ICE to a
