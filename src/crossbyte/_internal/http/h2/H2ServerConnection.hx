@@ -38,6 +38,29 @@ class H2ServerConnection {
 	 */
 	public static inline var DEFAULT_MAX_CONCURRENT_STREAMS:Int = 128;
 
+	/** Streams abandoned before their response, per window, before this gives up. */
+	public static inline var DEFAULT_MAX_RESET_STREAMS:Int = 200;
+
+	/** Seconds the reset budget is measured over. */
+	public static inline var DEFAULT_RESET_WINDOW:Float = 30.0;
+
+	/**
+	 * Streams the peer may abandon before their response within
+	 * `resetWindowSeconds`, after which the connection is closed with
+	 * ENHANCE_YOUR_CALM. Negative disables the check.
+	 *
+	 * This is the Rapid Reset defence (CVE-2023-44487), and it exists because
+	 * SETTINGS_MAX_CONCURRENT_STREAMS does not provide one: a stream that is
+	 * reset is closed, so it frees its slot immediately. A peer that opens a
+	 * stream and resets it at once therefore never approaches the limit while
+	 * still making the server do the work of every request -- routing,
+	 * allocation, a handler each -- without bound. Counting the abandonments
+	 * is what the concurrency limit cannot see.
+	 */
+	public var maxResetStreams:Int = DEFAULT_MAX_RESET_STREAMS;
+
+	public var resetWindowSeconds:Float = DEFAULT_RESET_WINDOW;
+
 	/** Called once per complete request. */
 	public var onRequest:H2ServerRequest->Void = _ -> {};
 
@@ -63,6 +86,8 @@ class H2ServerConnection {
 	private var __connectionSendWindow:Int;
 	private var __connectionUnacknowledged:Int = 0;
 	private var __openStreams:Int = 0;
+	private var __resetCount:Int = 0;
+	private var __resetWindowStart:Float = -1;
 
 	// A header block spans HEADERS plus any CONTINUATION frames, and §6.10
 	// forbids any other frame in between, on any stream.
@@ -587,10 +612,52 @@ class H2ServerConnection {
 		}
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
-		if (target != null) {
-			target.close();
-			__forget(frame.streamId);
-			__writable.remove(frame.streamId);
+		if (target == null) {
+			// Already finished, so the reset costs nothing and means nothing.
+			// A client that cancels a download it has already read enough of
+			// does exactly this, and must not be counted against anyone.
+			return;
+		}
+
+		target.close();
+		__forget(frame.streamId);
+		__writable.remove(frame.streamId);
+
+		__noteAbandonedStream();
+	}
+
+	/**
+	 * Records a stream abandoned before it was answered, and gives up on the
+	 * connection if they arrive faster than any client would need.
+	 *
+	 * A sliding count rather than a rate: the window restarts once it has
+	 * elapsed, so a burst is what trips this and a steady trickle of genuine
+	 * cancellations never does.
+	 */
+	private function __noteAbandonedStream():Void {
+		if (maxResetStreams < 0) {
+			return;
+		}
+
+		var now:Float = haxe.Timer.stamp();
+		// >= rather than >: a window of W seconds has elapsed *at* W, and it
+		// makes a window of zero mean what it reads like -- every reset starts
+		// its own, so nothing accumulates. With > that depended on whether the
+		// clock had ticked between two calls, which it does natively and does
+		// not on the interpreter.
+		if (__resetWindowStart < 0 || (now - __resetWindowStart) >= resetWindowSeconds) {
+			__resetWindowStart = now;
+			__resetCount = 0;
+		}
+
+		__resetCount++;
+
+		if (__resetCount > maxResetStreams) {
+			// ENHANCE_YOUR_CALM rather than PROTOCOL_ERROR: nothing the peer
+			// sent was malformed, there was simply too much of it, and §7 has
+			// a code that says exactly that.
+			throw new H2ConnectionError(H2ErrorCode.ENHANCE_YOUR_CALM,
+				'Peer abandoned $__resetCount streams before their responses within ${resetWindowSeconds}s');
 		}
 	}
 
