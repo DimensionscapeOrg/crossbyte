@@ -37,6 +37,9 @@
 		<file name="${this_dir}/NativeDtls.cpp">
 			<depend name="${this_dir}/NativeDtls.h"/>
 		</file>
+		<file name="${this_dir}/NativeDtlsSession.cpp">
+			<depend name="${this_dir}/NativeDtlsSession.h"/>
+		</file>
 	</files>
 
 	<target id="haxe">
