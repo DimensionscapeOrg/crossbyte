@@ -1,0 +1,49 @@
+<xml>
+	<!-- Pulls in hxcpp's own mbedTLS build. That is what puts the mbedtls_*
+	     symbols in the link, and it sets MBEDTLS_DIR to whichever mbedtls hxcpp
+	     actually ships -- pinning a version here is what broke the crypto build
+	     once already. The file is `pragma once`, so including it from more than
+	     one bridge is safe. -->
+	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
+
+	<files id="crossbyte-dtls-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<compilerflag value="-I${MBEDTLS_DIR}/include"/>
+
+		<!-- hxcpp does not compile mbedtls against its stock config. It passes
+		     MBEDTLS_USER_CONFIG_FILE, and that file turns on MBEDTLS_THREADING_C
+		     -- which adds a mutex member to mbedtls_ctr_drbg_context,
+		     mbedtls_entropy_context, mbedtls_hmac_drbg_context and
+		     mbedtls_ssl_cookie_ctx.
+
+		     Any file that declares one of those must agree with the library
+		     about how big it is. Compiled against the stock config this one gets
+		     the smaller struct while the library writes the larger one, so
+		     seeding a drbg on the stack runs off the end of it: the call reports
+		     success and the process dies later somewhere with no visible
+		     connection to the cause.
+
+		     The macros are set here rather than by pointing at hxcpp's config
+		     file, because that is passed as `-DMBEDTLS_USER_CONFIG_FILE=<...>`
+		     and the angle brackets do not survive a Windows command line. The
+		     duplication is guarded: NativeDtls.cpp fails to compile if these
+		     ever stop matching what hxcpp uses. -->
+		<compilerflag value="-I${HXCPP}/project/thirdparty/config/mbedtls/include"/>
+		<compilerflag value="-DMBEDTLS_THREADING_C"/>
+		<compilerflag value="-DMBEDTLS_THREADING_ALT" if="windows"/>
+		<compilerflag value="-DMBEDTLS_THREADING_PTHREAD" unless="windows"/>
+
+		<file name="${this_dir}/NativeDtls.cpp">
+			<depend name="${this_dir}/NativeDtls.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-dtls-native"/>
+
+		<!-- hxcpp_ssl is deliberately NOT listed: the ssl Build.xml above adds
+		     it to this same target already, and naming it twice hands SSL.obj
+		     to the linker twice for an LNK4042. -->
+	</target>
+</xml>
