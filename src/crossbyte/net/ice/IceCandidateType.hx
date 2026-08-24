@@ -1,4 +1,4 @@
-package crossbyte.net;
+package crossbyte.net.ice;
 
 /**
 	How a candidate address was come by.
