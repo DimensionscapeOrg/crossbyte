@@ -1,6 +1,7 @@
-package crossbyte.net;
+package crossbyte.net.ice;
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.net.ReflexiveAddress;
 import haxe.Int64;
 import utest.Assert;
 

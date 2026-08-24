@@ -1,4 +1,4 @@
-package crossbyte.net;
+package crossbyte.net.ice;
 
 import crossbyte.errors.ArgumentError;
 import haxe.Int64;
