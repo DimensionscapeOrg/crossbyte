@@ -673,8 +673,22 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		switch (frame.type) {
 			case CONNECT:
-				if (__incoming && !__connected) {
-					__sendHandshakeAttempt();
+				// Answered whichever side dialled, which is what makes hole
+				// punching possible. The guard here was `__incoming`, on the
+				// reading that only an accepted session answers a CONNECT --
+				// true of a client and a server, and false of two peers behind
+				// NAT. Those must dial each other at the same moment, because
+				// each side's outbound datagram is what opens its own mapping
+				// for the other; so both are outgoing, both sent CONNECT, and
+				// neither would answer. Both sessions then sat retransmitting
+				// until they timed out, which is a peer-to-peer connection
+				// failing for no reason the peers could see.
+				//
+				// HANDSHAKE is the same frame an accepted session replies with,
+				// so the client-and-server case is unchanged: it took this
+				// branch before and takes it now.
+				if (!__connected) {
+					__sendControl(HANDSHAKE, __outSequence);
 				}
 			case HANDSHAKE:
 				__onHandshake(frame.sequence);
