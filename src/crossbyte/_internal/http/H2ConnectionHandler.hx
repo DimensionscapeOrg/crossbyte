@@ -37,6 +37,11 @@ class H2ConnectionHandler {
 	private final __php:PHPBridge;
 	private final __connection:H2ServerConnection;
 
+	// Advanced on every read. An HTTP/2 connection is idle between requests
+	// by design, so silence alone means nothing -- what matters is silence
+	// for longer than the configuration allows.
+	private var __lastActivity:Float;
+
 	/**
 	 * @param buffered Bytes already read off the socket, if this connection was
 	 *        identified by looking at them. Fed to the frame layer before
@@ -52,6 +57,8 @@ class H2ConnectionHandler {
 		__connection.resetWindowSeconds = config.http2ResetWindowSeconds;
 		__connection.onRequest = __serve;
 		__connection.onConnectionError = __onConnectionError;
+
+		__lastActivity = haxe.Timer.stamp();
 
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.addEventListener(Event.CLOSE, __onClosed);
@@ -84,7 +91,43 @@ class H2ConnectionHandler {
 			return;
 		}
 
+		__lastActivity = haxe.Timer.stamp();
 		__connection.receive(inbound, 0, inbound.length);
+	}
+
+	/**
+	 * Closes the connection if it has gone quiet for longer than allowed.
+	 *
+	 * Two deadlines, because silence means different things. With no stream
+	 * open the peer is simply between requests, which HTTP/2 is designed for,
+	 * so it gets the keep-alive idle allowance. With a stream open it owes a
+	 * request body that never came, and that is the request timeout.
+	 *
+	 * Without this an HTTP/2 connection was never reaped at all: the sweep
+	 * only walked HTTP/1.1 handlers, so a peer could open connections and go
+	 * silent, and each one lived until the process did.
+	 */
+	public function checkDeadline(now:Float):Void {
+		var idle:Float = now - __lastActivity;
+		var limit:Float = __connection.openStreams > 0 ? __config.requestTimeout : __config.keepAliveTimeout;
+
+		if (limit <= 0 || idle < limit) {
+			return;
+		}
+
+		Logger.info('HTTP/2 connection idle for ${Math.round(idle)}s; closing.');
+		close();
+	}
+
+	/** Ends the connection, telling the peer why before the socket goes. */
+	public function close():Void {
+		try {
+			__connection.goAway(H2ErrorCode.NO_ERROR);
+		} catch (_:Dynamic) {}
+
+		if (__socket.connected) {
+			__socket.close();
+		}
 	}
 
 	private function __serve(request:H2ServerRequest):Void {

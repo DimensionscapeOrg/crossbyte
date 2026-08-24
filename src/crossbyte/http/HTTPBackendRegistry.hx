@@ -64,8 +64,13 @@ class HTTPBackendRegistry {
 	 * The cost is that `crossbyte.http.HTTP2Backend` -- and the framing layer
 	 * behind it -- is reachable from here, so it links into any build that
 	 * makes HTTP requests at all rather than only into ones that ask for
-	 * HTTP/2. That is the trade: a working default against a smaller binary
-	 * for programs that never wanted the feature.
+	 * HTTP/2. Measured at roughly 170 KB on a 4 MB native binary.
+	 *
+	 * Setting this to `false` stops the registration but not the linkage: the
+	 * reference still exists, so the code is still reachable. Compile with
+	 * `-D crossbyte_no_http2` to remove the reference entirely and let dead
+	 * code elimination take the subsystem with it. Explicit registration keeps
+	 * working either way, because the reference is then the caller's own.
 	 */
 	public static var autoRegisterBundled:Bool = true;
 
@@ -93,7 +98,7 @@ class HTTPBackendRegistry {
 	 * caller adds afterwards takes precedence over this.
 	 */
 	private static function __registerBundled(version:HTTPVersion):Bool {
-		#if !js
+		#if (!js && !crossbyte_no_http2)
 		if (!autoRegisterBundled || __bundledRegistered || version != HTTPVersion.HTTP_2) {
 			return false;
 		}

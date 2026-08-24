@@ -57,6 +57,7 @@ class H2ClientSession {
 	private final __progress:Lock = new Lock();
 
 	private var __activeStreams:Int = 0;
+	private var __lastUsed:Float = 0;
 	private var __stopped:Bool = false;
 	private var __failure:String = null;
 
@@ -68,12 +69,35 @@ class H2ClientSession {
 		connection.onStreamClosed = __onStreamClosed;
 		connection.onWindowBlocked = __onWindowBlocked;
 
+		__lastUsed = haxe.Timer.stamp();
+
 		connection.start();
 		Thread.create(__read);
 	}
 
 	private inline function get_active():Int {
 		return __activeStreams;
+	}
+
+	/**
+	 * Seconds since this session last had a request in flight, or `-1` while
+	 * one still is.
+	 *
+	 * A pooled connection is meant to outlive the request that opened it --
+	 * that is the whole saving. What it must not do is outlive the program's
+	 * interest in the host, holding a socket and a parked reader thread for a
+	 * server nobody is talking to any more.
+	 *
+	 * Busy reports `-1` rather than `0` so the two cannot be confused: with a
+	 * timeout of zero, "idle for no time at all" and "not idle" would
+	 * otherwise both satisfy the same comparison, and a connection carrying a
+	 * request would be closed under it.
+	 */
+	public function idleSeconds():Float {
+		if (__activeStreams > 0) {
+			return -1;
+		}
+		return haxe.Timer.stamp() - __lastUsed;
 	}
 
 	/**
@@ -128,6 +152,7 @@ class H2ClientSession {
 		// on a window, so the state is re-checked below.
 		__waiters.set(target.id, waiter);
 		__activeStreams++;
+		__lastUsed = 0;
 
 		var alreadyDone:Bool = target.isClosed();
 		__lock.release();
@@ -325,6 +350,12 @@ class H2ClientSession {
 		__lock.acquire();
 		if (__waiters.remove(streamId)) {
 			__activeStreams--;
+		}
+		if (__activeStreams <= 0) {
+			// Stamped as the last stream leaves, so the idle clock measures
+			// time with nothing in flight rather than time since the
+			// connection opened.
+			__lastUsed = haxe.Timer.stamp();
 		}
 		__lock.release();
 	}
