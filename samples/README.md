@@ -195,6 +195,30 @@ haxe check.hxml
 haxe cpp.hxml
 ```
 
+## HTTP/2
+
+`http2` starts a localhost `HTTPServer` with `http2Enabled`, then fetches from
+it twice concurrently over HTTP/2.
+
+One listener serves both versions: each connection is served as whichever one
+it is speaking, decided by ALPN over TLS and by the connection preface over
+cleartext. A browser pointed at the running sample gets HTTP/1.1 on the same
+port.
+
+From the repository root:
+
+```sh
+aedifex task sample-http2-check <project-root>
+aedifex task sample-http2-cpp <project-root>
+```
+
+Raw HXML entrypoints:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
 ## Windows Service
 
 `windows-service` runs an `HTTPServer` that drains its in-flight requests when

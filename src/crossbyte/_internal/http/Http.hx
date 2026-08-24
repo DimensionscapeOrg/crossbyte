@@ -9,6 +9,7 @@ import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.socket.FlexSocket;
 import crossbyte.http.HTTPBackend;
 import crossbyte.http.HTTPBackendRegistry;
+import crossbyte.http.HTTPCancelToken;
 import crossbyte.http.HTTPContentCoding;
 import crossbyte.http.HTTPRequestContext;
 import crossbyte.http.HTTPVersion;
@@ -51,6 +52,16 @@ class Http {
 	public var onError:(message:String, ?data:Bytes) -> Void = (message:String, ?data:Bytes) -> {};
 	public var onComplete:(data:Bytes) -> Void = (data:Bytes) -> {};
 	public var onStatus:(status:Int) -> Void = (status:Int) -> {};
+	public var onHeaders:(headers:Map<String, String>) -> Void = (headers:Map<String, String>) -> {};
+
+	/**
+	 * Abandons this request from another thread.
+	 *
+	 * `load()` blocks, so cancellation cannot come from the thread running
+	 * it. Handing the token out before the request starts is what makes it
+	 * reachable at all.
+	 */
+	public var cancelToken:HTTPCancelToken = new HTTPCancelToken();
 
 	private var __socket:FlexSocket;
 	private var __url:URL;
@@ -100,6 +111,17 @@ class Http {
 
 		if (!__usesBuiltInBackend()) {
 			__loadWithBackend();
+			return;
+		}
+
+		// The only way to interrupt a blocking read is to close the socket
+		// underneath it. Crude next to an HTTP/2 stream reset, but HTTP/1.1
+		// has no in-band way to abandon a response: the connection is the
+		// unit, so the connection is what goes.
+		cancelToken.onCancel(__abortSocket);
+
+		if (cancelToken.cancelled) {
+			onError("Request cancelled");
 			return;
 		}
 
@@ -158,6 +180,22 @@ class Http {
 		__parseResponse();
 	}
 
+	/**
+	 * Closes the socket out from under a blocking read.
+	 *
+	 * Called from whichever thread cancelled, which is not the thread inside
+	 * `load()`. That read then fails and unwinds through the ordinary error
+	 * path, which is the point: there is nothing else to poll.
+	 */
+	private function __abortSocket():Void {
+		try {
+			if (__socket != null) {
+				__socket.close();
+			}
+		} catch (_:Dynamic) {}
+		__connected = false;
+	}
+
 	public static inline function validateHttpVersion(version:HttpVersion):Bool {
 		return HttpSyntax.validateHttpVersion(version);
 	}
@@ -189,7 +227,12 @@ class Http {
 	}
 
 	private static function __unsupportedVersionMessage(version:HTTPVersion):String {
-		return version + " is not supported by the built-in HTTP client. Register an HTTPBackend to provide support.";
+		// Names the call rather than the concept. The previous wording said an
+		// HTTPBackend was needed without saying that one ships in this
+		// library, which read as "unsupported" when it meant "one line away".
+		return version
+			+ " has no registered HTTPBackend. HTTP/2 ships with CrossByte and registers itself on demand; "
+			+ "if that was disabled, call HTTPBackendRegistry.register(new HTTP2Backend()).";
 	}
 
 	private function __usesBuiltInBackend():Bool {
@@ -226,7 +269,9 @@ class Http {
 			onProgress: onProgress,
 			onError: onError,
 			onComplete: onComplete,
-			onStatus: onStatus
+			onStatus: onStatus,
+			onHeaders: onHeaders,
+			cancelToken: cancelToken
 		};
 	}
 
@@ -554,6 +599,11 @@ class Http {
 				}
 			}
 		}
+
+		// Only reached once the blank line closed a final (non-1xx) block;
+		// every failure above returns instead, and an informational block is
+		// discarded and re-read before control gets here.
+		onHeaders(__responseHeaders);
 	}
 
 	private function __handleRequest():Void {
