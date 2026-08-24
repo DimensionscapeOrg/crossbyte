@@ -73,6 +73,12 @@ class IceAgent {
 	/** Transmissions before a pair is given up on, RFC 5389's Rc. **/
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
+	/**
+		The refusal one peer sends when both claim the same role, RFC 8445
+		section 7.3.1.1.
+	**/
+	public static inline var ROLE_CONFLICT:Int = 487;
+
 	private static inline var TRANSACTION_LENGTH:Int = 12;
 
 	/**
@@ -93,6 +99,16 @@ class IceAgent {
 		together -- and if both claim it anyway, the tiebreakers resolve it.
 	**/
 	public var controlling(default, null):Bool;
+
+	/**
+		Fires when a role conflict made this agent change sides.
+
+		Worth surfacing rather than hiding: every pair priority is computed from
+		the role, so the order this agent works its list in has just changed,
+		and a caller tracking which peer is expected to nominate now has it the
+		other way round.
+	**/
+	public dynamic function onRoleChanged(controlling:Bool):Void {}
 
 	/** This peer's credentials, which the other side verifies checks against. **/
 	public var localCredentials(default, null):IceCredentials;
@@ -265,9 +281,11 @@ class IceAgent {
 				__answer(message, fromAddress, fromPort, now);
 			case StunMessage.BINDING_SUCCESS:
 				__accept(message, fromAddress, fromPort, now);
+			case StunMessage.BINDING_ERROR:
+				__refused(message, now);
 			default:
-				// An error response, or something else entirely. It was still a
-				// STUN message, so it is not the caller's to handle.
+				// Something else entirely. It was still a STUN message, so it is
+				// not the caller's to handle.
 		}
 
 		return true;
@@ -312,6 +330,9 @@ class IceAgent {
 
 		check.state = IN_PROGRESS;
 		check.attempts++;
+		// Recorded, because a refusal that comes back may be answering a claim
+		// this agent has since abandoned. See __refused.
+		check.sentAsControlling = controlling;
 		// Doubling from 500ms, so seven attempts span roughly 31 seconds.
 		check.nextAttemptAt = now + INITIAL_RTO * Math.pow(2, check.attempts - 1);
 
@@ -355,6 +376,18 @@ class IceAgent {
 		// is what makes it a check for this session rather than a stray
 		// datagram or somebody else's.
 		if (!localCredentials.addressedByUsername(username) || !request.verifyIntegrity(localCredentials.password)) {
+			return;
+		}
+
+		// Before answering: the sender may have claimed the same role this
+		// agent holds, and one of the two has to give way before either can
+		// trust the ordering it computed.
+		if (__resolveRoleConflict(request)) {
+			var refusal = new StunMessage(StunMessage.BINDING_ERROR, request.transactionId, [
+				StunMessage.errorCode(ROLE_CONFLICT, "Role Conflict")
+			]);
+
+			onSend(refusal.encodeSigned(localCredentials.password), fromAddress, fromPort);
 			return;
 		}
 
@@ -430,6 +463,150 @@ class IceAgent {
 		}
 
 		__settleIfFinished();
+	}
+
+	/**
+		Settles two peers who both claim the same role, RFC 8445 section
+		7.3.1.1.
+
+		This is not a defensive check against a broken peer. Roles are agreed
+		out of band, and any exchange that can be raced -- both sides offering
+		at once, a restart, a signalling path that reordered two messages -- can
+		leave both convinced they are controlling. Nothing detects that until a
+		check arrives, because until then each side is internally consistent.
+
+		The larger tiebreaker keeps the role it claimed. What differs between
+		the two cases is who acts: a controlling agent that loses switches
+		itself, while a controlling agent that wins refuses the check and makes
+		the *sender* switch. That asymmetry is the whole mechanism -- both peers
+		apply the same comparison to the same two numbers and exactly one of
+		them moves.
+
+		@return Whether to refuse this check with a 487 rather than answer it.
+	**/
+	@:noCompletion private function __resolveRoleConflict(request:StunMessage):Bool {
+		var claim = request.iceRoleClaim();
+
+		if (claim == null || claim.controlling != controlling) {
+			// No claim, or the two disagree about who is what, which is the
+			// arrangement that works.
+			return false;
+		}
+
+		var wins = Int64.compare(tiebreaker, claim.tiebreaker) >= 0;
+
+		if (controlling) {
+			// Both controlling. The larger keeps it and refuses; the smaller
+			// gives way.
+			if (wins) {
+				return true;
+			}
+
+			__switchRole();
+			return false;
+		}
+
+		// Both controlled, which is the mirror: the larger takes the role
+		// rather than keeping it, and the smaller refuses so the sender takes
+		// it instead.
+		if (wins) {
+			__switchRole();
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+		A check this agent sent was refused.
+
+		The only refusal acted on is a role conflict, and acting on it means
+		changing sides and asking again -- with a new transaction, because the
+		old one has been answered and a peer is entitled to ignore a repeat of
+		it.
+	**/
+	@:noCompletion private function __refused(response:StunMessage, now:Float):Void {
+		var check = __checkByTransaction(response);
+
+		if (check == null || remoteCredentials == null) {
+			return;
+		}
+
+		if (!response.verifyIntegrity(remoteCredentials.password)) {
+			return;
+		}
+
+		if (response.errorCodeValue() != ROLE_CONFLICT) {
+			// Any other refusal is this pair failing, not the session.
+			check.state = FAILED;
+			__settleIfFinished();
+			return;
+		}
+
+		// Only if this refusal is about the role currently held. A check sent
+		// while claiming to be controlling can be refused *after* an inbound
+		// check has already made this agent controlled, and acting on that
+		// stale answer puts it straight back into the conflict it just left.
+		//
+		// Measured without this guard: the two still converge, but the role
+		// changes more than once, and every change throws away the priority of
+		// every pair and the nomination in progress. So the cost is round trips
+		// and churn rather than deadlock -- which is worse to diagnose, because
+		// it looks like it works. Retried under the new role instead, which is
+		// what the refusal was asking for.
+		if (check.sentAsControlling == controlling) {
+			__switchRole();
+		}
+
+		check.transaction = __freshTransaction();
+		check.attempts = 0;
+		check.state = WAITING;
+		__transmit(check, now);
+	}
+
+	/**
+		Changes sides, and rebuilds everything that depended on the old one.
+
+		Pair priority is computed from the role, so every pair this agent holds
+		is now carrying a number both peers would no longer agree on. Rebuilding
+		them rather than leaving them is the difference between switching roles
+		and merely relabelling: the point of the switch is that the two peers go
+		back to sorting the same list the same way.
+
+		Progress is kept. A pair that has already answered is a path that
+		demonstrably works, and that fact does not depend on who is nominating.
+	**/
+	@:noCompletion private function __switchRole():Void {
+		controlling = !controlling;
+
+		for (check in __checks) {
+			check.pair = new IceCandidatePair(check.pair.local, check.pair.remote, controlling);
+		}
+
+		var revalued:Array<IceCandidatePair> = [];
+
+		for (pair in __valid) {
+			revalued.push(new IceCandidatePair(pair.local, pair.remote, controlling));
+		}
+
+		__valid = revalued;
+		__valid.sort(function(a:IceCandidatePair, b:IceCandidatePair):Int {
+			return Int64.compare(b.priority, a.priority);
+		});
+
+		__checks.sort(function(a:IceCheck, b:IceCheck):Int {
+			return Int64.compare(b.pair.priority, a.pair.priority);
+		});
+
+		if (selectedPair != null) {
+			selectedPair = new IceCandidatePair(selectedPair.local, selectedPair.remote, controlling);
+		}
+
+		// A newly controlling agent has a nomination to make; a newly controlled
+		// one must not make the one it had started.
+		__nominating = false;
+
+		onRoleChanged(controlling);
 	}
 
 	@:noCompletion private function __learnPeerReflexive(mapped:ReflexiveAddress, remote:IceCandidate):Void {
@@ -602,11 +779,20 @@ class IceAgent {
 
 /** One pair, and where its checking has got to. */
 private class IceCheck {
+	/** Reassigned when the role changes, since its priority is computed from it. **/
 	public var pair:IceCandidatePair;
 	public var transaction:ByteArray;
 	public var state:IceCandidatePairState = WAITING;
 	public var attempts:Int = 0;
 	public var nextAttemptAt:Float = 0;
+
+	/**
+		The role claimed when this check last went out.
+
+		Kept so a refusal arriving after the role already changed can be told
+		from one that is still current.
+	**/
+	public var sentAsControlling:Bool = false;
 
 	/** Whether this peer is asking for this pair to be the one used. **/
 	public var nominate:Bool = false;

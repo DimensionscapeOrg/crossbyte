@@ -1,6 +1,7 @@
 package crossbyte.net.ice;
 
 import crossbyte.io.ByteArray;
+import haxe.Int64;
 import crossbyte.net._internal.stun.StunMessage;
 import utest.Assert;
 
@@ -265,6 +266,182 @@ class IceAgentTest extends utest.Test {
 		}
 
 		Assert.isTrue(learned, "the address the check actually arrived from was never learned");
+	}
+
+	// ------------------------------------------------------------------
+	// Role conflicts
+	// ------------------------------------------------------------------
+
+	/**
+		Both peers claiming to be in charge, which is not an exotic case.
+
+		Roles are agreed out of band, and any exchange that can be raced -- both
+		sides offering at once, a restart, a signalling path that reordered two
+		messages -- leaves both convinced they are controlling. Nothing detects
+		it until a check arrives, because until then each side is perfectly
+		consistent with itself.
+
+		The larger tiebreaker keeps the role. Here Bob has it, so Alice is the
+		one who moves, and the two still converge.
+	**/
+	public function testTwoAgentsBothClaimingControlStillConverge():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"), Int64.make(0, 100));
+		var bob = new IceAgent(true, credentials("bob"), Int64.make(0, 200));
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+
+		Assert.isTrue(wire.run(() -> alice.state == CONNECTED && bob.state == CONNECTED),
+			"two agents that both claimed the controlling role never resolved it");
+
+		// Exactly one of them moved, and it was the one with less to say about it.
+		Assert.isFalse(alice.controlling, "the smaller tiebreaker kept the controlling role");
+		Assert.isTrue(bob.controlling, "the larger tiebreaker gave up the controlling role");
+	}
+
+	/**
+		The mirror case, where neither peer thinks it is in charge.
+
+		Left alone this is worse than the conflict above: nobody nominates, so
+		both sides check happily forever and neither ever selects a pair. The
+		same comparison resolves it, with the larger tiebreaker taking the role
+		rather than keeping it.
+	**/
+	public function testTwoAgentsBothClaimingToBeControlledStillConverge():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(false, credentials("alice"), Int64.make(0, 900));
+		var bob = new IceAgent(false, credentials("bob"), Int64.make(0, 300));
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+
+		Assert.isTrue(wire.run(() -> alice.state == CONNECTED && bob.state == CONNECTED),
+			"two agents that both declined the controlling role never resolved it");
+
+		Assert.isTrue(alice.controlling, "the larger tiebreaker did not take the controlling role");
+		Assert.isFalse(bob.controlling);
+	}
+
+	/**
+		Exactly one side moves, and it does so once.
+
+		This is the case that catches a role change resolving the conflict and
+		then undoing itself. A check sent while claiming one role can be refused
+		after an inbound check has already changed it, and an agent that acted
+		on that stale refusal would switch straight back into the conflict it
+		had just left.
+
+		What that costs was measured rather than assumed: the two peers still
+		converge, so nothing hangs and no other case here notices. What they
+		lose is a round trip and the priority of every pair, recomputed each
+		time the role moves. A fault that still arrives at the right answer is
+		the kind nothing finds later, which is why it is asserted on directly
+		instead of being left to the convergence cases.
+	**/
+	public function testARoleChangeHappensOnceAndDoesNotUndoItself():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"), Int64.make(0, 100));
+		var bob = new IceAgent(true, credentials("bob"), Int64.make(0, 200));
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+
+		var aliceChanges = 0;
+		var bobChanges = 0;
+		alice.onRoleChanged = _ -> aliceChanges++;
+		bob.onRoleChanged = _ -> bobChanges++;
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+		wire.run(() -> alice.state == CONNECTED && bob.state == CONNECTED);
+
+		Assert.equals(1, aliceChanges, "the agent that gave way changed role more than once");
+		Assert.equals(0, bobChanges, "the agent that kept its role changed anyway");
+	}
+
+	/**
+		Roles agreed correctly are left alone.
+
+		A conflict check that fired on every exchange would be worse than none:
+		it would move an agent that had nothing wrong with it.
+	**/
+	public function testAgentsWithOppositeRolesNeverSwitch():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"), Int64.make(0, 100));
+		var bob = new IceAgent(false, credentials("bob"), Int64.make(0, 200));
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+
+		var changes = 0;
+		alice.onRoleChanged = _ -> changes++;
+		bob.onRoleChanged = _ -> changes++;
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+		wire.run(() -> alice.state == CONNECTED && bob.state == CONNECTED);
+
+		Assert.equals(0, changes, "a role was changed when the two peers already disagreed correctly");
+		Assert.isTrue(alice.controlling);
+		Assert.isFalse(bob.controlling);
+	}
+
+	/**
+		After a switch, both peers are sorting by the same numbers again.
+
+		Pair priority is computed from the role, so an agent that changed sides
+		without recomputing would be relabelled rather than switched -- still
+		ordering its list the old way while the peer orders it the new way,
+		which is the disagreement the roles exist to prevent.
+	**/
+	public function testPairPrioritiesAreRecomputedWhenTheRoleChanges():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"), Int64.make(0, 100));
+		var bob = new IceAgent(true, credentials("bob"), Int64.make(0, 200));
+		var wire = new Wire(alice, ALICE_ADDRESS, bob, BOB_ADDRESS);
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+		wire.run(() -> alice.state == CONNECTED && bob.state == CONNECTED);
+
+		if (alice.selectedPair == null || bob.selectedPair == null) {
+			Assert.fail("the conflict was resolved without either side selecting a pair");
+			return;
+		}
+
+		// The same pair seen from both ends, so after the switch the two agree
+		// on what it is worth -- which is only true if both recomputed.
+		Assert.equals(Int64.toStr(alice.selectedPair.priority), Int64.toStr(bob.selectedPair.priority),
+			"the two peers disagree on the priority of the pair they both selected");
 	}
 
 	public function testAgentCredentialsRefuseWeakValues():Void {
