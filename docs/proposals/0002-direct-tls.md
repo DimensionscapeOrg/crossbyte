@@ -56,7 +56,7 @@ insertion point so it can land without reworking what exists:
 | Growth item | Where it plugs in |
 |---|---|
 | **ACME / auto-certificates** | A cert provider that calls `setCertificate()` before `listen()` and re-installs on renewal. Needs a listener-level cert-swap path (today certificates are immutable once listening) plus an HTTP-01/ALPN-01 challenge responder. This is what would remove Caddy from the self-host stack. |
-| **ALPN** (`h2`, `http/1.1` negotiation) | Requires an ALPN passthrough on `sys.ssl.Socket`/mbedTLS that Haxe's stdlib does not expose today; a native bridge like the sodium/blake3 ones. Prerequisite for any HTTP/2 work. |
+| ~~**ALPN** (`h2`, `http/1.1` negotiation)~~ | Done. The passthrough Haxe's stdlib does not expose is a native bridge, as this row expected -- `AlpnSocket` and `NativeAlpn` alongside the sodium and blake3 ones. `ServerSocket.setALPN()` offers protocols, `Socket.alpnProtocol` reports what a peer agreed to, and `ServerSocket.alpnSupported` says where that reaches the handshake rather than being accepted and ignored. It was the prerequisite named here, and HTTP/2 followed it. |
 | **mTLS peer inspection** | `requireClientCertificate()` enforces client certificates today, but the accepted `crossbyte.net.Socket` does not yet surface `peerCertificate()`, so applications cannot read the verified client identity. |
 | **Handshake fairness under load** | Today every pending handshake is stepped each tick. At thousands of concurrent handshakes this wants a per-tick budget and a readiness-driven queue (poll for readable before stepping) rather than a linear sweep. |
 | **Session resumption / tickets** | mbedTLS supports it; needs stdlib or bridge exposure. Meaningful only once measured. |
