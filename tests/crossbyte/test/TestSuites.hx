@@ -141,6 +141,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.rtc.DtlsTransportTest());
 		runner.addCase(new crossbyte.net.rtc.SctpPacketTest());
 		runner.addCase(new crossbyte.net.rtc.SctpAssociationTest());
+		runner.addCase(new crossbyte.net.rtc.SctpDataTransferTest());
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
 		runner.addCase(new crossbyte.net.ice.IceAgentTest());
 		// Real sockets, so this one is not portable and is not in the
