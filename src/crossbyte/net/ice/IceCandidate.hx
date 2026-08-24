@@ -1,6 +1,7 @@
-package crossbyte.net;
+package crossbyte.net.ice;
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.net.ReflexiveAddress;
 
 /**
 	One address a peer might be reachable at, and how good it is thought to be.
