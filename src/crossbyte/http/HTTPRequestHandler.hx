@@ -30,6 +30,8 @@ import crossbyte._internal.php.PHPResponse;
 import crossbyte._internal.php.PHPTimeout;
 import crossbyte._internal.http.Http;
 import crossbyte._internal.http.RewriteEngine;
+import crossbyte._internal.http.HTTP1ResponseWriter;
+import crossbyte._internal.http.HTTPResponseWriter;
 
 /**
  * Incrementally parses and responds to HTTP requests over a `Socket`.
@@ -91,6 +93,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var STREAM_STALL_SECONDS:Float = 30;
 
 	@:noCompletion private var __origin:Socket;
+	@:noCompletion private var __writer:HTTPResponseWriter;
 	@:noCompletion private var __incomingBuffer:ByteArray;
 	@:noCompletion private var __config:HTTPServerConfig;
 	@:noCompletion private var __headers:Map<String, String>;
@@ -179,14 +182,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * @param config Server configuration used for routing and response behavior.
 	 * @param php Optional PHP bridge used when routing requests into PHP handlers.
 	 */
-	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge) {
+	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?writer:HTTPResponseWriter) {
 		super();
 		__origin = socket;
+		__writer = writer != null ? writer : new HTTP1ResponseWriter(socket);
 		__config = config;
 		__incomingBuffer = new ByteArray();
 		__headers = new Map<String, String>();
 		__requestBody = new ByteArray();
-		__setup();
+
+		// Only the HTTP/1.1 path parses this socket. Under HTTP/2 the frame
+		// layer owns every read and hands whole requests over already decoded,
+		// so subscribing here would have two readers racing one socket.
+		if (writer == null) {
+			__setup();
+		}
 		__php = php;
 		__requestStartedAt = Sys.time();
 		__receiveDeadline = config.requestTimeout > 0 ? Sys.time() + config.requestTimeout : 0;
@@ -354,6 +364,31 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * pass. Bounded because each iteration either consumes a complete
 	 * request from the buffer or returns without asking to go again.
 	 */
+	/**
+	 * Adopts bytes read before this handler existed.
+	 *
+	 * A cleartext listener serving both versions has to look at the first
+	 * bytes to tell them apart, so by the time the right handler is chosen
+	 * those bytes are already off the socket. Dropping them would corrupt the
+	 * first request on every connection.
+	 */
+	@:noCompletion private function __adoptBuffered(data:ByteArray):Void {
+		if (data == null || data.length == 0) {
+			return;
+		}
+
+		// Appended at the end without moving the read cursor, exactly as
+		// __onData does. writeBytes writes at the current position and
+		// advances it, so doing this the obvious way leaves the parser looking
+		// past everything it was just given.
+		var resume:Int = __incomingBuffer.position;
+		__incomingBuffer.position = __incomingBuffer.length;
+		__incomingBuffer.writeBytes(data, 0, data.length);
+		__incomingBuffer.position = resume;
+
+		__processBuffer();
+	}
+
 	@:noCompletion private function __processBuffer():Void {
 		if (__processing) {
 			__reprocess = true;
@@ -540,25 +575,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var continueDispatch = function():Void {
-			// The request is fully here; whatever time the response takes
-			// is the server's own and must not be billed to the client.
-			__receiveDeadline = 0;
-			// The one place consumption is recorded, because reaching here
-			// is the one guarantee the request's framing -- headers and
-			// body both -- has been read out of the buffer. Every response
-			// sent earlier (parse errors, the pre-request-line 429, a body
-			// cut short) must close, or the leftover bytes would be parsed
-			// as the next request -- for the 429, the same request forever.
-			__requestConsumed = true;
-			var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
-			if (__config.middleware != null && __config.middleware.length > 0) {
-				__runMiddleware(0, function() {
-					__continueRequestDispatch(decision);
-				});
-				return;
-			}
-
-			__continueRequestDispatch(decision);
+			__dispatchParsedRequest();
 		}
 
 		if (__beginRequestBodyRead(continueDispatch)) {
@@ -566,6 +583,77 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		continueDispatch();
+	}
+
+	/**
+	 * Runs rewrite, middleware and dispatch for a request whose method, path,
+	 * query, headers and body are already populated.
+	 *
+	 * Extracted from the HTTP/1.1 parser so the HTTP/2 path can reach it too.
+	 * Everything from here down is protocol-agnostic; everything above it is
+	 * how the request was framed.
+	 */
+	@:noCompletion private function __dispatchParsedRequest():Void {
+		// The request is fully here; whatever time the response takes
+		// is the server's own and must not be billed to the client.
+		__receiveDeadline = 0;
+		// The one place consumption is recorded, because reaching here
+		// is the one guarantee the request's framing -- headers and
+		// body both -- has been read out of the buffer. Every response
+		// sent earlier (parse errors, the pre-request-line 429, a body
+		// cut short) must close, or the leftover bytes would be parsed
+		// as the next request -- for the 429, the same request forever.
+		__requestConsumed = true;
+		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+		if (__config.middleware != null && __config.middleware.length > 0) {
+			__runMiddleware(0, function() {
+				__continueRequestDispatch(decision);
+			});
+			return;
+		}
+
+		__continueRequestDispatch(decision);
+	}
+
+	/**
+	 * Serves a request the HTTP/2 layer already decoded.
+	 *
+	 * The HTTP/1.1 entry point is `__parseRequest`, which reaches the same
+	 * dispatch after turning bytes into these same fields. This one starts
+	 * where that finishes.
+	 */
+	@:noCompletion private function __serveDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
+			body:ByteArray):Void {
+		__method = method;
+		__queryString = queryString;
+		__headers = headers;
+		__requestBody = body != null ? body : new ByteArray();
+		// HTTP/2 carries no version token; the value only reaches logging and
+		// the HTTP/1.1 keep-alive rules, neither of which applies here.
+		__httpVersion = "HTTP/2";
+
+		var pathOnly:String;
+		try {
+			pathOnly = __percentDecodePath(requestPath);
+		} catch (_:Dynamic) {
+			__sendErrorResponse(400, "Bad Request");
+			return;
+		}
+		__requestPath = pathOnly;
+
+		// The same containment the HTTP/1.1 parser applies, and for the same
+		// reason: this is what stops a request target escaping the document
+		// root. Reaching dispatch without it would leave the traversal check
+		// on one protocol's path only -- and the dispatch fallback below
+		// serves __filePath directly, so an unresolved one is served as-is.
+		var resolvedFile:File = __resolveSafePath(__config.rootDirectory, pathOnly);
+		if (resolvedFile == null) {
+			__sendErrorResponse(403, "Forbidden");
+			return;
+		}
+		__filePath = resolvedFile.nativePath;
+
+		__dispatchParsedRequest();
 	}
 
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
@@ -1010,7 +1098,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// the flush completed or blocked — the cadence follows the peer
 		// instead of the clock, and costs nothing on connections that are
 		// not mid-transfer.
-		__origin.__onWritableDrain = __pumpStream;
+		__writer.onDrain = __pumpStream;
 
 		// First burst goes out now rather than a drain later.
 		__pumpStream();
@@ -1043,7 +1131,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var watermark:Int = STREAM_WATERMARK;
-		var limit:Int = __origin.maxOutputBufferSize;
+		var limit:Int = __writer.maxBufferedBytes;
 		if (limit > 0 && limit < watermark) {
 			// The overflow policy exists for writers that outrun the peer
 			// without bound; this pump is the bounded case, so it must stay
@@ -1052,7 +1140,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			watermark = limit;
 		}
 
-		var entryBuffered:Int = __origin.outputBufferLength;
+		var entryBuffered:Int = __writer.bufferedBytes;
 		if (entryBuffered < __streamLastBuffered) {
 			// The peer consumed something since the last visit: real
 			// progress, even if this burst turns out to write nothing.
@@ -1064,7 +1152,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		try {
 			while (__streamRemaining > 0 && budget > 0) {
-				var buffered:Int = __origin.outputBufferLength;
+				var buffered:Int = __writer.bufferedBytes;
 				if (buffered >= watermark) {
 					break;
 				}
@@ -1103,12 +1191,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 					return;
 				}
 
-				__origin.writeBytes(__streamSlice, 0, take);
+				__writer.writeBody(__streamSlice, 0, take);
 				__streamRemaining -= take;
 				budget -= take;
 				wrote = true;
 
-				var pending:Int = __origin.outputBufferLength;
+				var pending:Int = __writer.bufferedBytes;
 				if (pending > __streamPeakBuffered) {
 					__streamPeakBuffered = pending;
 				}
@@ -1134,7 +1222,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		__streamLastBuffered = __origin.outputBufferLength;
+		__streamLastBuffered = __writer.bufferedBytes;
 
 		if (__streamRemaining == 0 && __streamLastBuffered == 0) {
 			// Every byte has left this process, so the response the head
@@ -1145,6 +1233,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// the Content-Length that went out with the head, so the only
 			// thing that ever made it unsafe was settling too early.
 			__stopStream();
+
+			// The body is complete, so the response is too. HTTP/1.1 framed it
+			// with the Content-Length that went out in the head and has
+			// nothing left to say; HTTP/2 has to close the stream, or the
+			// client sits waiting on a request it believes is still running.
+			__writer.endResponse();
+
 			__settleConnection();
 		}
 	}
@@ -1190,7 +1285,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// Cleared before the socket is touched: a drain dispatched during
 		// teardown would otherwise re-enter the pump with a half-released
 		// transfer.
-		__origin.__onWritableDrain = null;
+		__writer.onDrain = null;
 		__origin.removeEventListener(Event.CLOSE, __onStreamSocketGone);
 		__origin.removeEventListener(IOErrorEvent.IO_ERROR, __onStreamSocketGone);
 
@@ -1210,25 +1305,29 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		if (!__origin.connected) {
+		if (!__writer.connected) {
 			return;
 		}
 
-		var response:String = "HTTP/1.1 " + statusCode + " " + statusMessage + "\r\n";
-		response += "Date: " + __formatHttpDate() + "\r\n";
+		// Assembled as fields rather than concatenated into a status line and
+		// header block. Everything above this point decides a response; how it
+		// reaches the wire belongs to the writer, and that split is what lets
+		// the same response go out as HTTP/1.1 or as HTTP/2.
+		var fields:Array<URLRequestHeader> = [];
+		fields.push(new URLRequestHeader("Date", __formatHttpDate()));
+		fields.push(new URLRequestHeader("Content-Type", contentType));
+		fields.push(new URLRequestHeader("X-Content-Type-Options", "nosniff"));
+		fields.push(new URLRequestHeader("Server", "CrossByte"));
+
 		__responseKeepAlive = __decideKeepAlive(statusCode);
-		response += "Connection: " + (__responseKeepAlive ? Connection.KEEP_ALIVE : Connection.CLOSE) + "\r\n";
-		response += "Content-Type: " + contentType + "\r\n";
-		response += "X-Content-Type-Options: nosniff\r\n";
-		response += "Server: CrossByte\r\n";
 
 		if (headers != null) {
 			for (h in headers) {
-				response = __appendHeader(response, h.name, h.value);
+				fields.push(h);
 			}
 		}
 
-		var responseData = data;
+		var responseData:ByteArray = data;
 		if (!headOnly && responseData != null && responseData.length > 0) {
 			var responseEncoding = __resolveResponseEncoding(statusCode, headers);
 			if (responseEncoding.reject) {
@@ -1244,12 +1343,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 					__sendErrorResponse(500, "Internal Server Error");
 					return;
 				}
-			}
 
-			if (responseEncoding.encoding != null) {
 				var headerValue = __encodingToHeaderValue(responseEncoding.encoding);
 				if (headerValue != null) {
-					response += "Content-Encoding: " + headerValue + "\r\n";
+					fields.push(new URLRequestHeader("Content-Encoding", headerValue));
 				}
 			}
 		}
@@ -1257,44 +1354,58 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (__config.corsEnabled) {
 			var allowOrigin = __computeAllowOrigin();
 			if (allowOrigin != null) {
-				response += "Access-Control-Allow-Origin: " + allowOrigin + "\r\n";
+				fields.push(new URLRequestHeader("Access-Control-Allow-Origin", allowOrigin));
 			}
 			if (__config.corsAllowCredentials && allowOrigin != "*") {
-				response += "Access-Control-Allow-Credentials: true\r\n";
+				fields.push(new URLRequestHeader("Access-Control-Allow-Credentials", "true"));
 			}
-			response += "Vary: Origin\r\n";
-			response += "Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges, Last-Modified\r\n";
+			fields.push(new URLRequestHeader("Vary", "Origin"));
+			fields.push(new URLRequestHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges, Last-Modified"));
 		}
 
 		for (header in __config.customHeaders) {
-			response = __appendHeader(response, header.name, header.value);
+			fields.push(header);
 		}
+
+		var length:Null<Int> = null;
 		if (!__statusOmitsBody(statusCode)) {
-			var headerLen:Int = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
-			response += "Content-Length: " + headerLen + "\r\n";
+			length = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
 		}
-		response += "\r\n";
 
 		// Logged and dispatched only once the response is certain to reach
 		// the wire: a nested rebuild (a 406 negotiation failure, a
 		// compression failure) replaces this response entirely, and an
 		// event fired earlier would count and time a response that was
-		// never sent — under per-response metrics, twice for one request.
+		// never sent -- under per-response metrics, twice for one request.
 		Logger.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
 		statusEvent.responseURL = __origin.remoteAddress;
 		statusEvent.responseHeaders = headers;
 		dispatchEvent(statusEvent);
 
-		__origin.writeUTFBytes(response);
+		__writer.writeHead({
+			statusCode: statusCode,
+			statusMessage: statusMessage,
+			headers: fields,
+			contentLength: length,
+			keepAlive: __responseKeepAlive
+		});
 
 		if (!headOnly && responseData != null && responseData.length > 0) {
-			__origin.writeBytes(responseData, 0, responseData.length);
+			__writer.writeBody(responseData, 0, responseData.length);
 		}
 
-		__origin.flush();
+		__writer.flush();
+
+		// Only when the body is complete. A streaming response has just had
+		// its head written and ends when the pump drains.
+		if (!__streamPending) {
+			__writer.endResponse();
+		}
+
 		__finishResponse();
 	}
+
 
 	@:noCompletion private function __findIndexFile(directory:File):Null<String> {
 		for (index in __config.directoryIndex) {
@@ -1338,98 +1449,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __dispatchResponse(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
 			content:String, headOnly:Bool = false):Void {
-		// Same guard as __dispatchResponseBytes: one response per request
-		// slot, suppressed before it can log, count, or touch the socket.
-		if (__responded) {
-			return;
-		}
-
-		if (!__origin.connected) {
-			return;
-		}
-
+		// Was a near-verbatim second copy of __dispatchResponseBytes, differing
+		// only in taking a String. Two copies of the header-assembly rules is
+		// one too many to keep in step, and the duplicate would have needed the
+		// same rewrite to reach a writer.
 		var bodyBytes:ByteArray = new ByteArray();
 		if (!headOnly && content != null && content.length > 0) {
 			bodyBytes.writeUTFBytes(content);
 		}
 
-		var response:String = "HTTP/1.1 " + statusCode + " " + statusMessage + "\r\n";
-		response += "Date: " + __formatHttpDate() + "\r\n";
-		__responseKeepAlive = __decideKeepAlive(statusCode);
-		response += "Connection: " + (__responseKeepAlive ? Connection.KEEP_ALIVE : Connection.CLOSE) + "\r\n";
-		response += "Content-Type: " + contentType + "\r\n";
-		response += "X-Content-Type-Options: nosniff\r\n";
-		response += "Server: CrossByte\r\n";
-
-		if (headers != null) {
-			for (h in headers) {
-				response = __appendHeader(response, h.name, h.value);
-			}
-		}
-
-		var responseData = bodyBytes;
-		if (!headOnly && responseData != null && responseData.length > 0) {
-			var responseEncoding = __resolveResponseEncoding(statusCode, headers);
-			if (responseEncoding.reject) {
-				__sendErrorResponse(406, "Not Acceptable");
-				return;
-			}
-			if (responseEncoding.encoding != null) {
-				responseData = new ByteArray();
-				responseData.writeBytes(bodyBytes, 0, bodyBytes.length);
-				try {
-					responseData.compress(responseEncoding.encoding);
-				} catch (_:Dynamic) {
-					__sendErrorResponse(500, "Internal Server Error");
-					return;
-				}
-			}
-			if (responseEncoding.encoding != null) {
-				var headerValue = __encodingToHeaderValue(responseEncoding.encoding);
-				if (headerValue != null) {
-					response += "Content-Encoding: " + headerValue + "\r\n";
-				}
-			}
-		}
-
-		if (__config.corsEnabled) {
-			var allowOrigin = __computeAllowOrigin();
-			if (allowOrigin != null) {
-				response += "Access-Control-Allow-Origin: " + allowOrigin + "\r\n";
-			}
-			if (__config.corsAllowCredentials && allowOrigin != "*") {
-				response += "Access-Control-Allow-Credentials: true\r\n";
-			}
-			response += "Vary: Origin\r\n";
-			response += "Access-Control-Expose-Headers: Content-Length, Content-Range, Accept-Ranges, Last-Modified\r\n";
-		}
-
-		for (header in __config.customHeaders) {
-			response = __appendHeader(response, header.name, header.value);
-		}
-
-		if (!__statusOmitsBody(statusCode)) {
-			response += "Content-Length: " + (responseData != null ? responseData.length : 0) + "\r\n";
-		}
-		response += "\r\n";
-
-		// Same placement rationale as __dispatchResponseBytes: log and
-		// count only what actually reaches the wire.
-		Logger.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
-		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
-		statusEvent.responseURL = __origin.remoteAddress;
-		statusEvent.responseHeaders = headers;
-		dispatchEvent(statusEvent);
-
-		__origin.writeUTFBytes(response);
-
-		if (!headOnly && responseData != null && responseData.length > 0) {
-			__origin.writeBytes(responseData, 0, responseData.length);
-		}
-
-		__origin.flush();
-		__finishResponse();
+		__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, bodyBytes, headOnly);
 	}
+
 
 	/**
 	 * Whether the request's `Connection` header carries the given token.
@@ -1461,6 +1492,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * Connection header and the socket action can never disagree.
 	 */
 	@:noCompletion private function __decideKeepAlive(statusCode:Int):Bool {
+		if (__writer.ownsConnection) {
+			// Not this response's decision. Under HTTP/2 the connection
+			// carries other streams and is ended by the frame layer, and the
+			// checks below all reason from an HTTP/1.x version token this
+			// request does not have -- so they would answer "close" for every
+			// HTTP/2 response and take the connection down after each one.
+			return true;
+		}
+
 		if (!__config.keepAlive) {
 			return false;
 		}
@@ -1540,7 +1580,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * pump settles — while every buffered response reaches it immediately.
 	 */
 	@:noCompletion private function __settleConnection():Void {
-		if (!__responseKeepAlive) {
+		if (!__responseKeepAlive && !__writer.ownsConnection) {
 			// Surplus pipelined bytes are discarded with the close --
 			// identical to the old clear-and-close, whose clients re-send
 			// on a fresh connection. close() dispatches Event.CLOSE even

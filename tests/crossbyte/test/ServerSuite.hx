@@ -33,6 +33,7 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
 		runner.addCase(new crossbyte.http.HTTPServerMetricsTest());
 		runner.addCase(new crossbyte.http.RouterServerTest());
+		runner.addCase(new crossbyte.http.HTTPServerH2Test());
 		#end
 
 		// PHP stays native-only, and not for a reason the bridge shares: the

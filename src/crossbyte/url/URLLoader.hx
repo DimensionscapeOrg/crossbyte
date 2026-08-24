@@ -3,6 +3,7 @@ package crossbyte.url;
 // Not built for the browser. It loads over CrossByte's own raw-socket HTTP; a page issues requests through fetch or XMLHttpRequest, which is a separate implementation rather than a gate.
 
 import crossbyte._internal.http.Http;
+import crossbyte.http.HTTPCancelToken;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.IOErrorEvent;
@@ -25,6 +26,16 @@ class URLLoader extends EventDispatcher {
 	@:noCompletion private var __loaderWorker:Worker;
 	#end
 	@:noCompletion private var __busy:Bool = false;
+
+	/**
+	 * Cancels the load in progress.
+	 *
+	 * Created per `load()` and handed to the worker, because the request runs
+	 * on a thread this one does not: by the time `load()` could return a
+	 * handle the request would be over. `close()` is the ordinary way to reach
+	 * it; this is here for code that wants to cancel from somewhere else.
+	 */
+	public var cancelToken(default, null):HTTPCancelToken;
 
 	public function new() {
 		super();
@@ -143,6 +154,12 @@ class URLLoader extends EventDispatcher {
 			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, request.httpVersion, request.idleTimeout,
 				request.userAgent, request.followRedirects);
 
+			// The token was created on the calling thread and travels with the
+			// message, so close() can reach a request that has already started.
+			if (message.cancelToken != null) {
+				http.cancelToken = message.cancelToken;
+			}
+
 			function onComplete(dataBytes:Bytes):Void {
 				__loaderWorker.sendComplete(dataBytes);
 			}
@@ -205,10 +222,14 @@ class URLLoader extends EventDispatcher {
 			return;
 		}
 		__busy = true;
+		// A fresh token per load: cancelling one request must not poison the
+		// next one this loader makes.
+		cancelToken = new HTTPCancelToken();
 		__createURLLoaderWorker();
 		__loaderWorker.run({
 			"request": request,
-			"dataFormat": dataFormat
+			"dataFormat": dataFormat,
+			"cancelToken": cancelToken
 		});
 		#end
 	}
@@ -220,6 +241,15 @@ class URLLoader extends EventDispatcher {
 		// response still in flight is discarded when it arrives.
 		__busy = false;
 		#else
+		// Cancelled before the worker is torn down. The token reaches the
+		// request itself -- an HTTP/2 stream is reset, freeing the slot it held
+		// on a shared connection, and an HTTP/1.1 socket is closed out from
+		// under its blocking read. Killing the worker alone left the peer
+		// holding a request nobody was coming back for.
+		if (cancelToken != null) {
+			cancelToken.cancel();
+		}
+
 		if (__loaderWorker != null) {
 			__loaderWorker.cancel(true);
 			__disposeWorker();

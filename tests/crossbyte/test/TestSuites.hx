@@ -143,9 +143,16 @@ class TestSuites {
 		// non-blocking. Guarding it to cpp would run it only where the bug
 		// cannot happen.
 		runner.addCase(new crossbyte.net.SocketExactBufferReadTest());
+		// Registered outside the socket gate below. Most of its cases need a
+		// listening socket and are guarded inside the class, but its jvm branch
+		// only asserts that constructing a secure ServerSocket throws -- and
+		// registering the class under `#if cpp` meant that branch compiled on
+		// jvm and ran on nothing. A case that executes nowhere reads as
+		// protection while providing none.
+		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
+
 		#if cpp
 		runner.addCase(new crossbyte.net.SocketTest());
-		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());
 		// Needs real sockets: these drive the server with a hand-written

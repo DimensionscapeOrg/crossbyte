@@ -139,6 +139,21 @@ class HTTPServerConfig {
 		`true`; `false` restores the one-shot close-per-request behavior
 		exactly.
 	**/
+	/**
+		Offer HTTP/2 on this listener, alongside HTTP/1.1.
+
+		Opt-in but not exclusive: each connection is served as whichever
+		version it turns out to be speaking. Over TLS that is settled by ALPN,
+		which the listener advertises as `h2` and `http/1.1`. Over cleartext
+		there is nothing to negotiate -- RFC 9113 3.1 retired the
+		`Upgrade: h2c` handshake, leaving prior knowledge -- so the first bytes
+		decide: an HTTP/2 client opens with a connection preface no HTTP/1.1
+		client would send.
+
+		Leaving it off keeps the listener HTTP/1.1 only, and costs nothing.
+	**/
+	public var http2Enabled:Bool;
+
 	public var keepAlive:Bool;
 
 	/**
@@ -237,7 +252,7 @@ class HTTPServerConfig {
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
 			maxConnections:Int = 256, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
 			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, phpTimeout:Float = 30, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60,
-			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 100) {
+			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 100, http2Enabled:Bool = false) {
 		this.address = address;
 		this.port = port;
 		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
@@ -267,6 +282,7 @@ class HTTPServerConfig {
 		this.rewrites = (rewrites == null) ? [] : rewrites;
 		this.requestTimeout = requestTimeout;
 		this.keepAlive = keepAlive;
+		this.http2Enabled = http2Enabled;
 		this.keepAliveTimeout = keepAliveTimeout;
 		this.keepAliveMaxRequests = keepAliveMaxRequests;
 	}

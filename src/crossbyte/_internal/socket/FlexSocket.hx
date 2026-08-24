@@ -19,6 +19,9 @@ import sys.ssl.Certificate;
 import sys.ssl.Key;
 import sys.ssl.Socket as SSLSocket;
 #end
+#if cpp
+import crossbyte._internal.socket.AlpnSocket;
+#end
 
 typedef HostInfo = {port:Int, host:Host};
 typedef Sockets = {write:Array<Socket>, read:Array<Socket>, others:Array<Socket>};
@@ -28,6 +31,16 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	public static var DEFAULT_CA(get, set):Null<Certificate>;
 
 	public static var DEFAULT_VERIFY_CERT(get, set):Null<Bool>;
+
+	/**
+	 * Whether `setALPN` on a secure socket actually reaches the TLS handshake.
+	 *
+	 * ALPN rides on hxcpp's mbedTLS, so only the cpp target negotiates one.
+	 * Elsewhere `setALPN` is accepted and ignored and `getALPN` stays `null`,
+	 * which lets a caller offer `h2` unconditionally and fall back to
+	 * HTTP/1.1 on the targets that cannot reach it.
+	 */
+	public static var alpnSupported(default, null):Bool = #if cpp true #else false #end;
 
 	private static inline function get_DEFAULT_CA():Null<Certificate> {
 		return SSLSocket.DEFAULT_CA;
@@ -67,10 +80,45 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 
 	public inline function new(secure:Bool = false) {
 		if (secure) {
+			// AlpnSocket only adds a hook to buildSSLConfig, so it behaves
+			// exactly like SSLSocket until setALPN is called.
+			#if cpp
+			this = new AlpnSocket();
+			#else
 			this = new SSLSocket();
+			#end
 		} else {
 			this = new Socket();
 		}
+	}
+
+	/**
+	 * Advertises `protocols` during the TLS handshake, most preferred first.
+	 *
+	 * Must be called before `connect`, which is where the TLS configuration is
+	 * built. Does nothing on targets where `alpnSupported` is `false`.
+	 */
+	public inline function setALPN(protocols:Null<Array<String>>):Void {
+		__requireSSL("setALPN", this);
+
+		#if cpp
+		(cast this : AlpnSocket).setALPN(protocols);
+		#end
+	}
+
+	/**
+	 * The protocol agreed during the handshake, or `null` when none was
+	 * negotiated, the handshake has not completed, or the target does not
+	 * support ALPN.
+	 */
+	public inline function getALPN():Null<String> {
+		__requireSSL("getALPN", this);
+
+		#if cpp
+		return AlpnSocket.negotiated(cast this);
+		#else
+		return null;
+		#end
 	}
 
 	private inline function get_custom():Dynamic {
