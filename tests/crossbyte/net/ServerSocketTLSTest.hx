@@ -35,6 +35,10 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	#if (!java && !jvm)
+	// Everything below builds a secure ServerSocket, which eval refuses at
+	// construction because its sys.ssl.Socket cannot install a certificate.
+	// The refusal itself is asserted in the #else at the end.
+	#if !eval
 	public function testServerWebSocketReportsItsOwnSecureFlag():Void {
 		// ServerWebSocket used to set a private __isSecure and then call
 		// super() with no argument, so the `secure` property it inherits read
@@ -70,7 +74,6 @@ class ServerSocketTLSTest extends utest.Test {
 	// class runs there: constructing a secure server, the guards that reject
 	// TLS material on a plain one, and the bind-time precondition all work
 	// without a certificate ever being handed over.
-	#if !eval
 	public function testSecureServerAcceptsCertificateAndListens():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
@@ -123,6 +126,21 @@ class ServerSocketTLSTest extends utest.Test {
 		server.close();
 	}
 
+	#else
+	public function testSecureServerIsRejectedOnEval():Void {
+		// Loudly, at construction, and saying which target and why. Before
+		// this it surfaced several calls later from inside the standard
+		// library as a bare "Not implemented", with nothing pointing at the
+		// target as the reason.
+		Assert.raises(() -> new ServerSocket(true), CBError);
+
+		try {
+			new ServerSocket(true);
+			Assert.fail("expected a refusal");
+		} catch (e:CBError) {
+			Assert.isTrue(e.message.indexOf("eval") >= 0, "the message should name the target: " + e.message);
+		}
+	}
 	#end
 
 	#if cpp

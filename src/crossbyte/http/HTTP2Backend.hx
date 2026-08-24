@@ -48,6 +48,20 @@ import haxe.io.Bytes;
  * slot stays held until the response arrives or the timeout fires.
  */
 class HTTP2Backend implements HTTPBackend {
+	/**
+	 * Whether this target can carry an HTTP/2 request at all.
+	 *
+	 * False on eval, and not for want of an implementation: that target raises
+	 * socket errors as native exceptions no Haxe `catch` can see, so a peer
+	 * reset kills the reader thread a pooled connection parks on -- or, on a
+	 * send, the process. Everything would appear to work until the first
+	 * reset, which is the worst way for it not to work.
+	 *
+	 * The framing and HPACK layers are unaffected and run everywhere,
+	 * including the browser. This is about driving a socket with them.
+	 */
+	public static var isSupported(default, null):Bool = #if eval false #else true #end;
+
 	/** Our SETTINGS, sent at the head of every connection. */
 	public var settings:H2Settings;
 
@@ -60,6 +74,14 @@ class HTTP2Backend implements HTTPBackend {
 	}
 
 	public function load(context:HTTPRequestContext):Void {
+		if (!isSupported) {
+			// Refused at the door rather than part way through a request that
+			// would have looked fine until something reset it.
+			context.onError("HTTP/2 is not supported on this target: socket errors cannot be caught here, "
+				+ "so a connection reset would take down the reader thread or the process. Use HTTP/1.1.");
+			return;
+		}
+
 		var url:URL = new URL(context.url);
 		var secure:Bool = url.scheme == "https";
 		var port:Int = url.port != null ? url.port : (secure ? 443 : 80);

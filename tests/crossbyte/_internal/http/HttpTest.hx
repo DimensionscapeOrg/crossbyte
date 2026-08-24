@@ -89,6 +89,38 @@ class HttpTest extends utest.Test {
 		HTTPBackendRegistry.clear();
 	}
 
+	public function testHttp2RefusesLoudlyWhereItCannotWork():Void {
+		HTTPBackendRegistry.clear();
+
+		var error:String = null;
+		var completed:Bool = false;
+
+		// example.com is never contacted: on a target that cannot support
+		// HTTP/2 the backend refuses before opening a socket, and on one that
+		// can this asserts nothing about the refusal at all.
+		var http = new Http("http://example.com/", "GET", null, null, null, null, HttpVersion.HTTP_2, 1000);
+		http.onError = (message, ?data) -> error = message;
+		http.onComplete = _ -> completed = true;
+
+		#if eval
+		http.load();
+
+		// The failure mode this exists to prevent: eval raises socket errors
+		// as native exceptions no catch can see, so a pooled connection would
+		// look healthy right up until a peer reset killed its reader thread or
+		// the process. Refused at the door instead, saying so.
+		Assert.notNull(error);
+		Assert.isFalse(completed);
+		Assert.isTrue(error.indexOf("not supported on this target") >= 0, "the message should say why: " + error);
+		#else
+		// Everywhere else the capability is simply claimed, and the rest of
+		// this suite exercises it for real.
+		Assert.isTrue(crossbyte.http.HTTP2Backend.isSupported);
+		#end
+
+		HTTPBackendRegistry.clear();
+	}
+
 	public function testHttp2WorksWithoutRegisteringAnything():Void {
 		HTTPBackendRegistry.clear();
 
