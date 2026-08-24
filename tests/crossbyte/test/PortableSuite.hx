@@ -27,6 +27,11 @@ import utest.Runner;
 class PortableSuite {
 	public static function add(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.StunMessageTest());
+		// Arithmetic and ordering with no socket in it, so it belongs here for
+		// the same reason the STUN codec does -- and it belongs on the browser
+		// especially, which is the one target that will be talking ICE to a
+		// stack it did not write.
+		runner.addCase(new crossbyte.net.IceCandidateTest());
 		// The one guarded entry here, and not the kind of guard that makes a
 		// case run nowhere: it still runs on Node through this list and on cpp,
 		// jvm and the interpreter through `addNet`. The browser is excluded
