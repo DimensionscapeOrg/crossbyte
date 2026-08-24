@@ -50,8 +50,15 @@ import sys.net.UdpSocket;
 class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSocket #end {
 	/**
 		Indicates whether UDP sockets are supported by the current target.
+
+		Neko is excluded despite being a sys target, because its
+		`sys.net.UdpSocket` constructor throws "Not available on this platform".
+		This said `true` there and then threw on the first socket, which is the
+		one thing a support flag exists to prevent -- a caller checks it so it
+		can take the other path, and a flag that lies leaves no other path to
+		take.
 	**/
-	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval)) true #else false #end;
+	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval && !neko)) true #else false #end;
 
 	/**
 		Indicates whether the socket is currently bound to a local address and port.

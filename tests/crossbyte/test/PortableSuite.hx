@@ -27,6 +27,21 @@ import utest.Runner;
 class PortableSuite {
 	public static function add(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.StunMessageTest());
+		// The one guarded entry here, and not the kind of guard that makes a
+		// case run nowhere: it still runs on Node through this list and on cpp,
+		// jvm and the interpreter through `addNet`. The browser is excluded
+		// because `LocalAddress` does not exist there at all, along with the
+		// rest of the UDP family, so there is no branch of it to execute.
+		//
+		// It is worth having on Node specifically. That is where its least
+		// ordinary code lives: `DatagramSocket` emulates connect() rather than
+		// calling it, so `LocalAddress` reaches past it to the real one, and
+		// nothing else covers that path. It binds an ephemeral socket and
+		// closes it -- no listener, no peer, and no traffic, because asking the
+		// routing table sends none.
+		#if !(js && !nodejs)
+		runner.addCase(new crossbyte.net.LocalAddressTest());
+		#end
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --

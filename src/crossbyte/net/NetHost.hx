@@ -113,6 +113,27 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 			+ " host has no listening endpoint to discover: accepting and connecting are separate sockets on a stream transport.");
 	}
 
+	/**
+	 * Answers, where `discoverPublicAddress` refuses.
+	 *
+	 * The refusal above is about there being no single endpoint whose outside
+	 * appearance means anything. That objection does not apply here: this asks
+	 * the routing table which interface reaches the peer, and a host with two
+	 * sockets still has exactly one answer to that. What it needs from the host
+	 * is only that it is running, so `localPort` is settled and the address has
+	 * something to pair with.
+	 */
+	public function localAddressFor(destination:String):Future<String> {
+		if (!isRunning) {
+			var future = new Future<String>();
+			@:privateAccess future.__fail("A local address can only be reported for a running host, because otherwise there is no port to pair it with.",
+				new crossbyte.errors.IllegalOperationError("Host is not running."));
+			return future;
+		}
+
+		return LocalAddress.forDestination(destination);
+	}
+
 	public var localAddress(get, never):String;
 	public var localPort(get, never):Int;
 	public var isRunning(get, null):Bool = false;
@@ -285,6 +306,14 @@ private class RUDPHost implements INetHost {
 	 */
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
 		return __server.discoverPublicAddress(server, port, timeoutMs);
+	}
+
+	/**
+	 * Delegated too, so the bound-and-listening check is the socket's own
+	 * rather than a second copy of it here.
+	 */
+	public function localAddressFor(destination:String):Future<String> {
+		return __server.localAddressFor(destination);
 	}
 
 	public var localAddress(get, never):String;

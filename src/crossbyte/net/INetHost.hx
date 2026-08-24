@@ -69,6 +69,33 @@ interface INetHost {
 	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
 	 */
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress>;
+
+	/**
+	 * The address a peer at `destination` would reach this host on without
+	 * leaving the local network.
+	 *
+	 * The companion to `discoverPublicAddress`, and available where that one is
+	 * not: this asks the routing table rather than the network, so it needs no
+	 * server, sends no packet, and does not care whether the host has one
+	 * endpoint or two. Every host can answer it, including the stream hosts
+	 * that refuse `dial`.
+	 *
+	 * It exists because a reflexive address is the wrong one for a peer on the
+	 * same network. Reaching it would mean asking the NAT to route a packet
+	 * back in to the network it came from, which plenty of consumer equipment
+	 * will not do -- while the two peers are one hop apart on the same subnet.
+	 *
+	 * No port comes back, and that is deliberate. A reflexive address carries a
+	 * translated port because a NAT assigned one; nothing translates a local
+	 * address, so the port to dial is `localPort`.
+	 *
+	 * @param destination The peer's address, numeric. Which one it is matters:
+	 * a peer on this subnet and a peer across the internet are reached on
+	 * different interfaces.
+	 * @throws crossbyte.errors.IllegalOperationError when the host is not
+	 * running, because `localPort` has nothing to pair the answer with.
+	 */
+	public function localAddressFor(destination:String):Future<String>;
 	/** Starts accepting incoming connections. */
 	public function listen():Void;
 	/** Stops the listener and closes the host. */

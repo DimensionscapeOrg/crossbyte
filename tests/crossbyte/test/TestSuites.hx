@@ -136,6 +136,12 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
 		runner.addCase(new crossbyte.net.StunMessageTest());
+		// Needs no guard here: this group never runs on a JavaScript target,
+		// and everywhere it does run the class exists. Its first case is the
+		// one that matters most -- it asserts that the support flag and the
+		// behaviour agree, which is how the interpreter and neko earn a real
+		// assertion out of having no UDP at all rather than a skip.
+		runner.addCase(new crossbyte.net.LocalAddressTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		// Deliberately unguarded: the exact-buffer read-loop hang it protects
