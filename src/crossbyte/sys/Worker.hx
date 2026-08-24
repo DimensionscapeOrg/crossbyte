@@ -263,7 +263,21 @@ class Worker extends EventDispatcher {
 			// or run() the worker again, which nulls this queue or swaps a new one
 			// in; draining a queue that is no longer the worker's would deliver a
 			// finished run's backlog into its successor.
-			if (canceled || __messageQueue != queue) {
+			// cancelRequested, not canceled. The two are not the same state:
+			// canceled is set by __finishCompleted and __finishFailed as well
+			// as by cancel(), so it means "no longer running" rather than "was
+			// called off", and reading it here says the drain stops because
+			// the producer finished -- which is exactly when the last messages
+			// still need delivering.
+			//
+			// No test distinguishes the two, and that is stated rather than
+			// implied: cancel() detaches the listener and frees the queue, so
+			// the checks above catch that path first, and the completion paths
+			// run inside this loop and return immediately after. The change is
+			// so the code means what it says. It cost a debugging session to
+			// work that out from the old spelling, during a hunt for a lost-
+			// message bug that turned out to be in SQLiteConnection.close().
+			if (cancelRequested || __messageQueue != queue) {
 				return;
 			}
 
