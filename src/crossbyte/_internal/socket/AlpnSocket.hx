@@ -32,6 +32,7 @@ import sys.ssl.Socket as SSLSocket;
  */
 class AlpnSocket extends SSLSocket {
 	@:noCompletion private var __alpn:Null<Array<String>>;
+	@:noCompletion private var __configuredWith:Dynamic = null;
 
 	public function new() {
 		super();
@@ -71,17 +72,39 @@ class AlpnSocket extends SSLSocket {
 		}
 
 		var context:Dynamic = @:privateAccess socket.ssl;
-		return context == null ? null : NativeAlpn.get_alpn(context);
+		return context == null ? null : NativeAlpn.selected(context);
 	}
 
 	@:noCompletion private override function buildSSLConfig(server:Bool):Dynamic {
 		var conf:Dynamic = super.buildSSLConfig(server);
 
 		if (__alpn != null && __alpn.length > 0) {
-			NativeAlpn.conf_set_alpn(conf, __alpn);
+			NativeAlpn.set(conf, __alpn);
+			// Held so close() can hand back the exact config the list was
+			// installed against. mbedTLS stores that list by reference and
+			// never owns it, so nothing else will release it.
+			__configuredWith = conf;
 		}
 
 		return conf;
+	}
+
+	/**
+	 * Releases the ALPN list before the socket goes.
+	 *
+	 * The list is native memory mbedTLS points at but does not own, so it
+	 * outlives the socket unless something says otherwise. This is that
+	 * something: a socket collected without `close()` leaks one small
+	 * allocation, which is why the native side also replaces any stale entry
+	 * for a reused config rather than trusting this to always run.
+	 */
+	public override function close():Void {
+		if (__configuredWith != null) {
+			NativeAlpn.release(__configuredWith);
+			__configuredWith = null;
+		}
+
+		super.close();
 	}
 }
 #end

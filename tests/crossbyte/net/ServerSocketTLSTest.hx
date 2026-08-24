@@ -3,6 +3,7 @@ package crossbyte.net;
 import crossbyte.errors.Error as CBError;
 #if cpp
 import crossbyte._internal.socket.AlpnSocket;
+import crossbyte._internal.socket.NativeAlpn;
 #end
 import utest.Assert;
 
@@ -125,6 +126,67 @@ class ServerSocketTLSTest extends utest.Test {
 	#end
 
 	#if cpp
+	public function testAlpnBridgeRefusesAHandleThatIsNotAnSslConfig():Void {
+		// The bridge reads mbedTLS handles back out of hxcpp objects whose
+		// layout is private to its SSL.cpp. That is only safe because every
+		// cast is guarded by hxcpp's own class id, so the wrong object is
+		// refused rather than reinterpreted -- and if that layout ever changes
+		// this is what fails, loudly, instead of corrupting memory.
+		Assert.isTrue(NativeAlpn.isAvailable());
+		Assert.isTrue(NativeAlpn.set("not a config", ["h2"]) < 0);
+		Assert.isTrue(NativeAlpn.set(null, ["h2"]) < 0);
+		Assert.isNull(NativeAlpn.selected("not a context"));
+
+		// Releasing a handle that was never configured must be a no-op, not a
+		// free of something it does not own.
+		NativeAlpn.release("not a config");
+		Assert.pass();
+	}
+
+	public function testAlpnListsAreReplacedAndReleasedWithoutLeaking():Void {
+		// mbedTLS stores the list by reference and never frees it, so the
+		// bridge owns every allocation. This churns install, replace and
+		// release across many configs: a double free or a stale entry keyed by
+		// a reused address shows up here as a crash rather than as drift.
+		for (i in 0...500) {
+			var conf = cpp.NativeSsl.conf_new(false);
+
+			Assert.equals(0, NativeAlpn.set(conf, ["h2", "http/1.1"]));
+			// Replaced, which must free the first list rather than orphan it.
+			Assert.equals(0, NativeAlpn.set(conf, ["h2"]));
+			// Cleared through the empty-list path, which must not hand NULL to
+			// mbedtls_ssl_conf_alpn_protocols -- that walks the list before
+			// testing it and segfaults.
+			Assert.equals(0, NativeAlpn.set(conf, []));
+			Assert.equals(0, NativeAlpn.set(conf, ["h2"]));
+
+			NativeAlpn.release(conf);
+			// Idempotent: a socket closed twice must not free twice.
+			NativeAlpn.release(conf);
+
+			if (i % 100 == 0) {
+				cpp.vm.Gc.run(true);
+			}
+		}
+
+		cpp.vm.Gc.run(true);
+		Assert.pass();
+	}
+
+	public function testAlpnRejectsNamesMbedtlsWillNotAccept():Void {
+		var conf = cpp.NativeSsl.conf_new(false);
+
+		// Empty names and names over 255 bytes are rejected by mbedTLS itself
+		// (RFC 7301 3.1). The bridge must surface that rather than install a
+		// list it already handed over.
+		Assert.isTrue(NativeAlpn.set(conf, [""]) != 0);
+		Assert.isTrue(NativeAlpn.set(conf, [StringTools.rpad("", "x", 300)]) != 0);
+
+		// Still usable afterwards, so a rejected call left nothing behind.
+		Assert.equals(0, NativeAlpn.set(conf, ["h2"]));
+		NativeAlpn.release(conf);
+	}
+
 	public function testAlpnIsNegotiatedOverARealHandshake():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
