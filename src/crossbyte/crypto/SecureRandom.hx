@@ -29,6 +29,20 @@ import js.node.Crypto;
  */
 final class SecureRandom {
 	/**
+	 * Whether this target has a CSPRNG to draw from.
+	 *
+	 * `getSecureRandomBytes` throws where it does not, on purpose -- but a
+	 * caller that would rather take a different path than catch an exception
+	 * has no way to ask, and anything built on this inherits the same problem.
+	 * The condition is the same one the branches below use, kept beside them so
+	 * the two cannot drift.
+	 *
+	 * False on the interpreter and on neko, which have no such source. Neither
+	 * is a deployment target, but code that runs in the test suite meets them.
+	 */
+	public static var isSupported(default, null):Bool = #if (cpp || php || java || jvm || nodejs || js) true #else false #end;
+
+	/**
 	 * Returns `length` bytes from the platform CSPRNG.
 	 *
 	 * On unsupported targets this throws rather than silently falling back to a
