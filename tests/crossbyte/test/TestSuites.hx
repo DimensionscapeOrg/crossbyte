@@ -136,6 +136,7 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
 		runner.addCase(new crossbyte.net.StunMessageTest());
+		runner.addCase(new crossbyte.net.TurnClientTest());
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
 		runner.addCase(new crossbyte.net.ice.IceAgentTest());
 		// Real sockets, so this one is not portable and is not in the

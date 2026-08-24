@@ -27,6 +27,11 @@ import utest.Runner;
 class PortableSuite {
 	public static function add(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.StunMessageTest());
+		// Owns no socket -- a relay is talked to through one the caller
+		// supplies -- so the whole exchange runs here, including on the
+		// browser, where the relay itself could only ever be reached
+		// through RTCPeerConnection.
+		runner.addCase(new crossbyte.net.TurnClientTest());
 		// Arithmetic and ordering with no socket in it, so it belongs here for
 		// the same reason the STUN codec does -- and it belongs on the browser
 		// especially, which is the one target that will be talking ICE to a

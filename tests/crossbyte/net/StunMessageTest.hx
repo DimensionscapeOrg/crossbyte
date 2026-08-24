@@ -338,7 +338,7 @@ class StunMessageTest extends utest.Test {
 		var partial = fromHex(upToIntegrity);
 
 		var message = new StunMessage(StunMessage.BINDING_REQUEST, transaction());
-		message.__appendIntegrity(partial, RFC5769_PASSWORD);
+		message.__appendIntegrity(partial, haxe.io.Bytes.ofString(RFC5769_PASSWORD));
 
 		Assert.equals("9aeaa70cbfd8cb56781ef2b5b2d3f249c1b571a2", toHex(partial, 80, 20));
 
