@@ -450,6 +450,83 @@ class H2ServerTest extends utest.Test {
 		Assert.equals(0, refused);
 	}
 
+	// --------------------------------------------------------- rapid reset
+
+	public function testAFloodOfAbandonedStreamsClosesTheConnection():Void {
+		var link = new ResetFlood(5);
+
+		// CVE-2023-44487. The concurrency limit cannot see this: a reset
+		// stream is a closed stream, so it frees its slot at once and the peer
+		// never approaches the cap while still making the server route,
+		// allocate and dispatch every request.
+		for (id in [1, 3, 5, 7, 9, 11, 13]) {
+			link.openThenReset(id);
+		}
+
+		Assert.notNull(link.failure);
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, link.failure.code);
+		Assert.isTrue(link.connection.closed);
+
+		// §6.8: said out loud, so the peer learns why rather than seeing a
+		// socket vanish.
+		var goAway = link.lastGoAway();
+		Assert.notNull(goAway);
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM,
+			(goAway.payload.get(4) << 24) | (goAway.payload.get(5) << 16) | (goAway.payload.get(6) << 8) | goAway.payload.get(7));
+	}
+
+	public function testAFewAbandonedStreamsAreTolerated():Void {
+		var link = new ResetFlood(5);
+
+		// Cancelling is legal and ordinary. Under the budget nothing happens.
+		for (id in [1, 3, 5]) {
+			link.openThenReset(id);
+		}
+
+		Assert.isNull(link.failure);
+		Assert.isFalse(link.connection.closed);
+	}
+
+	public function testResettingAnAnsweredStreamIsNotHeldAgainstThePeer():Void {
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+
+		var server = new H2ServerConnection(out.write, settings);
+		server.maxResetStreams = 1;
+		// Answered immediately, so every reset below arrives after the fact.
+		server.onRequest = request -> server.respond(request.streamId, 200, [], Bytes.ofString("ok"));
+
+		var failure:H2ConnectionError = null;
+		server.onConnectionError = e -> failure = e;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		var encoder = new HpackEncoder(4096);
+		for (id in [1, 3, 5, 7, 9]) {
+			server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, id, encoder.encode(requestFields([]))));
+			server.receive(frame(H2FrameType.RST_STREAM, 0, id, Bytes.ofHex("00000008")));
+		}
+
+		// A client cancelling a download it has already read enough of does
+		// exactly this. Counting it would close connections over ordinary use.
+		Assert.isNull(failure);
+		Assert.isFalse(server.closed);
+	}
+
+	public function testTheResetBudgetIsPerWindowRatherThanForever():Void {
+		var link = new ResetFlood(2, 0);
+
+		// A window of zero elapses between every reset, so the count restarts
+		// each time and a steady trickle never accumulates. The budget is what
+		// a burst spends, not a lifetime allowance.
+		for (id in [1, 3, 5, 7, 9, 11, 13, 15]) {
+			link.openThenReset(id);
+		}
+
+		Assert.isNull(link.failure);
+		Assert.isFalse(link.connection.closed);
+	}
+
 	// ---------------------------------------------------------------- utils
 
 	private static function requestFields(extra:Array<HpackHeader>):Array<HpackHeader> {
@@ -755,6 +832,75 @@ private class BlockedServer {
 			}
 		}
 		return false;
+	}
+
+	private function __collect():Void {
+		for (frame in Collector.parse(__collector.bytes())) {
+			__frames.push(frame);
+		}
+	}
+}
+
+/**
+ * A server driven by a peer that opens streams and abandons them.
+ *
+ * Requests are deliberately never answered, so every reset lands on a stream
+ * the server still considered live -- which is the whole shape of the attack.
+ */
+private class ResetFlood {
+	public final connection:H2ServerConnection;
+	public var failure:H2ConnectionError = null;
+
+	private var __collector:Collector;
+	private var __encoder:HpackEncoder = new HpackEncoder(4096);
+	private var __frames:Array<H2Frame> = [];
+
+	public function new(budget:Int, ?window:Float) {
+		__collector = new Collector();
+
+		var settings = new H2Settings();
+		settings.enablePush = false;
+
+		connection = new H2ServerConnection(__collector.write, settings);
+		connection.maxResetStreams = budget;
+		if (window != null) {
+			connection.resetWindowSeconds = window;
+		}
+
+		// Held open on purpose: an answered stream is gone before its reset
+		// arrives, and then there is nothing to abandon.
+		connection.onRequest = _ -> {};
+		connection.onConnectionError = e -> failure = e;
+		connection.receive(Bytes.ofString(H2Connection.PREFACE));
+		__collect();
+	}
+
+	public function openThenReset(streamId:Int):Void {
+		var fields = [new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/flood")];
+
+		var open = new BytesBuffer();
+		var block = __encoder.encode(fields);
+		H2Frame.writeHeader(open, block.length, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, streamId);
+		open.addBytes(block, 0, block.length);
+		connection.receive(open.getBytes());
+
+		var reset = new BytesBuffer();
+		var code = Bytes.ofHex("00000008");
+		H2Frame.writeHeader(reset, 4, H2FrameType.RST_STREAM, 0, streamId);
+		reset.addBytes(code, 0, code.length);
+		connection.receive(reset.getBytes());
+
+		__collect();
+	}
+
+	public function lastGoAway():Null<H2Frame> {
+		var found:H2Frame = null;
+		for (frame in __frames) {
+			if (frame.type == H2FrameType.GOAWAY) {
+				found = frame;
+			}
+		}
+		return found;
 	}
 
 	private function __collect():Void {

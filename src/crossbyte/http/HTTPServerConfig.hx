@@ -154,6 +154,26 @@ class HTTPServerConfig {
 	**/
 	public var http2Enabled:Bool;
 
+	/**
+		Streams a peer may abandon before their response, within
+		`http2ResetWindowSeconds`, before the connection is closed. Negative
+		disables the check.
+
+		This is the Rapid Reset defence (CVE-2023-44487). The concurrency limit
+		does not provide one, because a reset stream is a closed stream and
+		frees its slot immediately -- so a peer opening and instantly resetting
+		streams never approaches that limit while still making the server route
+		and dispatch every one of them.
+
+		The default is generous enough that ordinary cancellation never reaches
+		it; lower it only if you are being abused, and raise it only if a
+		legitimate client genuinely cancels in bursts.
+	**/
+	public var http2MaxResetStreams:Int;
+
+	/** Seconds the `http2MaxResetStreams` budget is measured over. **/
+	public var http2ResetWindowSeconds:Float;
+
 	public var keepAlive:Bool;
 
 	/**
@@ -283,6 +303,8 @@ class HTTPServerConfig {
 		this.requestTimeout = requestTimeout;
 		this.keepAlive = keepAlive;
 		this.http2Enabled = http2Enabled;
+		this.http2MaxResetStreams = crossbyte._internal.http.h2.H2ServerConnection.DEFAULT_MAX_RESET_STREAMS;
+		this.http2ResetWindowSeconds = crossbyte._internal.http.h2.H2ServerConnection.DEFAULT_RESET_WINDOW;
 		this.keepAliveTimeout = keepAliveTimeout;
 		this.keepAliveMaxRequests = keepAliveMaxRequests;
 	}
