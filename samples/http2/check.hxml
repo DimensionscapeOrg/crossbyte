@@ -1,0 +1,6 @@
+--cwd ../..
+-cp src
+-cp samples/http2
+-main Http2Sample
+--cpp export/sample-http2-check
+-D no-compilation

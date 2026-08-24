@@ -1,6 +1,9 @@
 package crossbyte.net;
 
 import crossbyte.errors.Error as CBError;
+#if cpp
+import crossbyte._internal.socket.AlpnSocket;
+#end
 import utest.Assert;
 
 /**
@@ -24,6 +27,7 @@ class ServerSocketTLSTest extends utest.Test {
 		Assert.raises(() -> server.setCertificate(null, null), CBError);
 		Assert.raises(() -> server.addSNICertificate((_) -> true, null, null), CBError);
 		Assert.raises(() -> server.requireClientCertificate(null), CBError);
+		Assert.raises(() -> server.setALPN(["h2"]), CBError);
 		#end
 
 		server.close();
@@ -60,6 +64,12 @@ class ServerSocketTLSTest extends utest.Test {
 		server.close();
 	}
 
+	// Both of the cases below install a certificate, and eval's
+	// sys.ssl.Socket.setCertificate is a stub that throws. The rest of this
+	// class runs there: constructing a secure server, the guards that reject
+	// TLS material on a plain one, and the bind-time precondition all work
+	// without a certificate ever being handed over.
+	#if !eval
 	public function testSecureServerAcceptsCertificateAndListens():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
@@ -81,10 +91,85 @@ class ServerSocketTLSTest extends utest.Test {
 		// silently not apply and must be rejected instead.
 		Assert.raises(() -> server.setCertificate(fixture.certificate, fixture.key), CBError);
 		Assert.raises(() -> server.requireClientCertificate(fixture.certificate), CBError);
+		Assert.raises(() -> server.setALPN(["h2"]), CBError);
 
 		server.close();
 		Assert.isFalse(server.listening);
 	}
+
+	public function testSecureServerAcceptsAlpnBeforeBind():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			// No certificate toolchain available on this machine.
+			Assert.pass();
+			return;
+		}
+
+		var server = new ServerSocket(true);
+		server.setCertificate(fixture.certificate, fixture.key);
+
+		// Accepted on every target. Where ALPN cannot reach the handshake the
+		// call is a no-op rather than an error, so a server can offer h2
+		// unconditionally and keep serving HTTP/1.1 where it is not available.
+		server.setALPN(["h2", "http/1.1"]);
+		server.setALPN(null);
+		server.setALPN(["h2"]);
+
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		Assert.isTrue(server.listening);
+
+		server.close();
+	}
+
+	#end
+
+	#if cpp
+	public function testAlpnIsNegotiatedOverARealHandshake():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		// Driven through AlpnSocket rather than ServerSocket: a secure
+		// ServerSocket defers its accept and handshake to the runtime tick
+		// loop, which a synchronous case has no way to turn. AlpnSocket is
+		// what ServerSocket installs as its listener, so this covers the same
+		// negotiation one layer down; the event-loop path belongs to the
+		// integration harness.
+		var port:Int = 48242;
+		var server = new AlpnSocket();
+		server.verifyCert = false;
+		server.setCertificate(fixture.certificate.__native, fixture.key.__native);
+		server.setALPN(["h2", "http/1.1"]);
+		server.bind(new sys.net.Host("127.0.0.1"), port);
+		server.listen(1);
+
+		var client = sys.thread.Thread.create(() -> {
+			try {
+				var c = new AlpnSocket();
+				c.verifyCert = false;
+				// Deliberately the reverse order: mbedTLS resolves ALPN by
+				// server preference, so agreement on h2 cannot be an echo of
+				// what the client asked for first.
+				c.setALPN(["http/1.1", "h2"]);
+				c.connect(new sys.net.Host("127.0.0.1"), port);
+				sys.thread.Thread.readMessage(true);
+				c.close();
+			} catch (_:Dynamic) {}
+		});
+
+		var accepted = server.accept();
+		accepted.handshake();
+
+		Assert.equals("h2", AlpnSocket.negotiated(accepted));
+
+		client.sendMessage("done");
+		accepted.close();
+		server.close();
+	}
+	#end
 	#else
 	public function testSecureServerIsRejectedOnJvm():Void {
 		Assert.raises(() -> new ServerSocket(true), CBError);

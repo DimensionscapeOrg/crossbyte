@@ -34,7 +34,7 @@ haxelib install aedifex
 
 - evented applications and services
 - TCP, WebSocket, and reliable datagram networking
-- HTTP clients and lightweight HTTP server flows
+- HTTP clients and lightweight HTTP server flows, HTTP/1.1 and HTTP/2
 - request/response RPC over live connections
 - file, byte, and stream-heavy workflows
 - headless runtimes, tools, and backend infrastructure

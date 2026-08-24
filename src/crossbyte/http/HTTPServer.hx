@@ -9,7 +9,11 @@ import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.net.ServerSocket;
+import crossbyte.net.Socket as CBSocket;
 import crossbyte.http.HTTPRequestHandler;
+import crossbyte._internal.http.H2ConnectionHandler;
+import crossbyte._internal.http.H2PrefaceSniffer;
+import crossbyte.io.ByteArray;
 import crossbyte.http.HTTPServerConfig;
 import crossbyte.utils.Logger;
 import crossbyte.core.CrossByte;
@@ -48,6 +52,14 @@ class HTTPServer extends ServerSocket {
 			} catch (e:Dynamic) {
 				Logger.error('HTTP Server failed to load TLS material: ' + e);
 				throw e;
+			}
+
+			if (config.http2Enabled) {
+				// Both, in preference order. Advertising only h2 would turn
+				// every HTTP/1.1 client into a failed handshake, and a TLS
+				// listener has no second chance to negotiate: ALPN happens
+				// once, before any request exists to fall back on.
+				setALPN(["h2", "http/1.1"]);
 			}
 		}
 		#end
@@ -209,6 +221,54 @@ class HTTPServer extends ServerSocket {
 	}
 
 	private function this_onConnect(e:ServerSocketConnectEvent):Void {
+		if (__config.http2Enabled) {
+			if (__config.maxOutputBufferSize > 0) {
+				e.socket.maxOutputBufferSize = __config.maxOutputBufferSize;
+				e.socket.outputOverflowPolicy = __config.outputOverflowPolicy;
+			}
+
+			if (secure) {
+				// ALPN already settled it during the handshake, which is the
+				// whole reason the listener advertises both.
+				if (e.socket.alpnProtocol == "h2") {
+					__serveHttp2(e.socket, null);
+				} else {
+					__serveHttp1(e.socket);
+				}
+				return;
+			}
+
+			// Cleartext has no negotiation to read, so the first bytes decide.
+			new H2PrefaceSniffer(e.socket, __onProtocolDecided);
+			return;
+		}
+
+		__serveHttp1(e.socket);
+	}
+
+	/** Routes a sniffed cleartext connection to the handler it turned out to need. */
+	@:noCompletion private function __onProtocolDecided(socket:CBSocket, buffered:ByteArray, isHttp2:Bool):Void {
+		if (isHttp2) {
+			__serveHttp2(socket, buffered);
+		} else {
+			__serveHttp1(socket, buffered);
+		}
+	}
+
+	/**
+	 * Hands a connection to the frame layer.
+	 *
+	 * None of the HTTP/1.1 per-connection bookkeeping applies: streams are the
+	 * unit of concurrency here, not connections, so the concurrency limit and
+	 * the keep-alive sweep have nothing to count.
+	 */
+	@:noCompletion private function __serveHttp2(socket:CBSocket, buffered:ByteArray):Void {
+		new H2ConnectionHandler(socket, __config, php, buffered);
+	}
+
+	@:noCompletion private function __serveHttp1(socket:CBSocket, buffered:ByteArray = null):Void {
+		var e = {socket: socket};
+
 		if (__connections >= __maxConnections) {
 			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
 			try {
@@ -241,6 +301,12 @@ class HTTPServer extends ServerSocket {
 
 		e.socket.addEventListener("close", (_) -> cleanupSocket(e.socket));
 		e.socket.addEventListener("error", (_) -> cleanupSocket(e.socket));
+
+		// Fed last, so the handler is fully wired before the request it was
+		// chosen for reaches it.
+		if (buffered != null && buffered.length > 0) {
+			@:privateAccess handler.__adoptBuffered(buffered);
+		}
 	}
 
 

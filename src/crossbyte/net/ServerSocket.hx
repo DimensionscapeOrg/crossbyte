@@ -27,6 +27,9 @@ import sys.net.Socket;
 #if (!java && !jvm)
 import sys.ssl.Socket as SSLSocket;
 #end
+#if cpp
+import crossbyte._internal.socket.AlpnSocket;
+#end
 #end
 
 /**
@@ -72,6 +75,16 @@ class ServerSocket extends EventDispatcher {
 	public static var isSupported(default, null):Bool = #if !html5 true #else false #end;
 
 	/**
+		Whether `setALPN()` reaches the TLS handshake on this target.
+
+		ALPN rides on hxcpp's mbedTLS natively and on Node's own TLS stack.
+		Elsewhere `setALPN()` is accepted and ignored, so a server can offer
+		`h2` unconditionally and simply keep serving HTTP/1.1 where the
+		handshake cannot advertise it.
+	**/
+	public static var alpnSupported(default, null):Bool = #if (cpp || nodejs) true #else false #end;
+
+	/**
 		Indicates whether the server socket is listening for incoming connections.
 	**/
 	public var listening(default, null):Bool;
@@ -115,6 +128,7 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private var __tlsKey:Key;
 	@:noCompletion private var __tlsAuthority:Certificate;
 	@:noCompletion private var __tlsSni:Array<{match:String->Bool, certificate:Certificate, key:Key}> = [];
+	@:noCompletion private var __tlsAlpn:Array<String>;
 	#end
 
 	/**
@@ -163,7 +177,13 @@ class ServerSocket extends EventDispatcher {
 		#else
 		// sys.ssl.Socket extends sys.net.Socket, so the accept/select paths
 		// below are identical for both modes.
+		#if cpp
+		// AlpnSocket only adds a hook to buildSSLConfig; until setALPN() is
+		// called it is an ordinary SSLSocket.
+		__serverSocket = secure ? new AlpnSocket() : new sys.net.Socket();
+		#else
 		__serverSocket = secure ? new SSLSocket() : new sys.net.Socket();
+		#end
 
 		if (secure) {
 			// sys.ssl.Socket leaves verifyCert null, which the stdlib maps to
@@ -250,6 +270,33 @@ class ServerSocket extends EventDispatcher {
 		var sslSocket:SSLSocket = cast __serverSocket;
 		sslSocket.setCA(ca.__native);
 		sslSocket.verifyCert = true;
+		#end
+	}
+
+	/**
+		Advertises `protocols` to connecting clients during the TLS handshake,
+		in descending order of preference.
+
+		Server preference wins: a client offering `["http/1.1", "h2"]` against a
+		server offering `["h2", "http/1.1"]` negotiates `h2`. Read the result
+		for a given client from `Socket.alpnProtocol` on the socket carried by
+		the `connect` event.
+
+		Must be called before `bind()`: the TLS configuration is materialized
+		at bind time. Does nothing when `alpnSupported` is `false`.
+
+		@param protocols Protocol names such as `["h2", "http/1.1"]`. Passing
+			`null` or an empty array disables ALPN.
+		@throws Error When this server was not constructed with `secure` set,
+			or when it is already bound.
+	**/
+	public function setALPN(protocols:Null<Array<String>>):Void {
+		__requireSecure("setALPN");
+
+		#if nodejs
+		__tlsAlpn = protocols;
+		#elseif cpp
+		(cast __serverSocket : AlpnSocket).setALPN(protocols);
 		#end
 	}
 
@@ -372,6 +419,10 @@ class ServerSocket extends EventDispatcher {
 				options.ca = [__tlsAuthority.__pem];
 				options.requestCert = true;
 				options.rejectUnauthorized = true;
+			}
+
+			if (__tlsAlpn != null && __tlsAlpn.length > 0) {
+				options.ALPNProtocols = __tlsAlpn;
 			}
 
 			if (__tlsSni.length > 0) {

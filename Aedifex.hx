@@ -79,6 +79,8 @@ class Aedifex {
 		.task("sample-rudp-cpp", "haxe", ["cpp.hxml"], "samples/rudp", "Build the reliable datagram sample.")
 		.task("sample-web-server-check", "haxe", ["check.hxml"], "samples/web-server", "Type-check the web server sample.")
 		.task("sample-web-server-cpp", "haxe", ["cpp.hxml"], "samples/web-server", "Build the web server sample.")
+		.task("sample-http2-check", "haxe", ["check.hxml"], "samples/http2", "Type-check the HTTP/2 sample.")
+		.task("sample-http2-cpp", "haxe", ["cpp.hxml"], "samples/http2", "Build the HTTP/2 sample.")
 		.task("sample-windows-service-check", "haxe", ["check.hxml"], "samples/windows-service", "Type-check the Windows service sample.")
 		.task("sample-windows-service-cpp", "haxe", ["cpp.hxml"], "samples/windows-service", "Build the Windows service sample.")
 		.task("sample-worker-check", "haxe", ["check.hxml"], "samples/worker", "Type-check the worker sample.")
