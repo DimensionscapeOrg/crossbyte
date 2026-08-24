@@ -400,6 +400,86 @@ class StunMessage {
 		return new StunAttribute(controlling ? ATTR_ICE_CONTROLLING : ATTR_ICE_CONTROLLED, bytes);
 	}
 
+	/**
+		`ERROR-CODE`, split into a class and a number the way RFC 5389 stores it.
+
+		The wire format is not the integer: the hundreds digit goes in three bits
+		of one byte and the remainder in the next, so 487 travels as a 4 and an
+		87. Reassembling it is what `errorCodeValue` does, and writing it is
+		what a peer refusing a check has to do.
+	**/
+	public static function errorCode(code:Int, reason:String):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.writeShort(0);
+		bytes.writeByte(Std.int(code / 100) & 0x07);
+		bytes.writeByte(code % 100);
+
+		if (reason != null && reason.length > 0) {
+			bytes.writeUTFBytes(reason);
+		}
+
+		bytes.position = 0;
+		return new StunAttribute(ATTR_ERROR_CODE, bytes);
+	}
+
+	/**
+		The numeric code of an error response, or zero.
+
+		`errorMessage` renders the code and reason together for a human;
+		anything deciding what to *do* about a refusal needs the number, and
+		parsing it back out of that string would be a way to get it wrong.
+	**/
+	public function errorCodeValue():Int {
+		for (attribute in attributes) {
+			if (attribute.type != ATTR_ERROR_CODE || attribute.value.length < 4) {
+				continue;
+			}
+
+			attribute.value.endian = Endian.BIG_ENDIAN;
+			attribute.value.position = 0;
+			attribute.value.readUnsignedShort();
+
+			var codeClass:Int = attribute.value.readUnsignedByte() & 0x07;
+			var codeNumber:Int = attribute.value.readUnsignedByte();
+
+			return codeClass * 100 + codeNumber;
+		}
+
+		return 0;
+	}
+
+	/**
+		The tiebreaker from whichever role attribute is present, or null.
+
+		Returned alongside which role the sender claimed, because the two are
+		only meaningful together: the same number means "switch" or "refuse"
+		depending on which side of the conflict it arrived from.
+	**/
+	public function iceRoleClaim():Null<{controlling:Bool, tiebreaker:Int64}> {
+		for (attribute in attributes) {
+			var controlling = attribute.type == ATTR_ICE_CONTROLLING;
+
+			if (!controlling && attribute.type != ATTR_ICE_CONTROLLED) {
+				continue;
+			}
+
+			if (attribute.value.length < 8) {
+				continue;
+			}
+
+			attribute.value.endian = Endian.BIG_ENDIAN;
+			attribute.value.position = 0;
+
+			var high = attribute.value.readInt();
+			var low = attribute.value.readInt();
+
+			return {controlling: controlling, tiebreaker: Int64.make(high, low)};
+		}
+
+		return null;
+	}
+
 	/** `SOFTWARE`, which is advisory and never covered by anything. **/
 	public static function software(name:String):StunAttribute {
 		var bytes = new ByteArray();
