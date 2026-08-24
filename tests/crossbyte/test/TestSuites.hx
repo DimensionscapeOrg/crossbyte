@@ -137,6 +137,7 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
 		runner.addCase(new crossbyte.net.StunMessageTest());
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
+		runner.addCase(new crossbyte.net.ice.IceAgentTest());
 		// Needs no guard here: this group never runs on a JavaScript target,
 		// and everywhere it does run the class exists. Its first case is the
 		// one that matters most -- it asserts that the support flag and the
