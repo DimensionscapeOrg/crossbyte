@@ -151,6 +151,70 @@ class ReliableDatagramSocketTest extends utest.Test {
 		try server.close() catch (_:Dynamic) {}
 	}
 
+	public function testTwoServersDiallingEachOtherBothConnect():Void {
+		if (!requireDatagramSupport()) return;
+
+		// Simultaneous open, which is what hole punching is made of. Each peer
+		// dials the other's reflexive address from the port it listens on; the
+		// outbound datagram opens that peer's own NAT mapping, so the other
+		// side's arrives at something willing to receive it. Neither peer is
+		// the server in the usual sense -- both dial, both are dialled.
+		//
+		// There is no NAT on loopback, so what this proves is the half that
+		// lives in CrossByte: that two sessions opened toward each other over
+		// one socket apiece complete rather than colliding. The retransmit in
+		// __beginHandshake is what covers the skew between them, and a peer
+		// that dialled first must accept the other's CONNECT arriving at a
+		// session it has already created.
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+		var delivered:String = null;
+
+		try {
+			alice.socketMode = ReliableDatagramSocketMode.STREAM;
+			bob.socketMode = ReliableDatagramSocketMode.STREAM;
+			alice.bind(0, "127.0.0.1");
+			alice.listen();
+			bob.bind(0, "127.0.0.1");
+			bob.listen();
+
+			// Both, before either has heard anything. Dialling one after the
+			// other completes would be an ordinary client and server and would
+			// prove nothing about the case that matters.
+			var toBob = alice.connect("127.0.0.1", bob.localPort);
+			var toAlice = bob.connect("127.0.0.1", alice.localPort);
+
+			pumpUntil(() -> toBob.connected && toAlice.connected, 5.0);
+
+			Assert.isTrue(toBob.connected, "alice's session to bob never completed");
+			Assert.isTrue(toAlice.connected, "bob's session to alice never completed");
+
+			// Each still sees the other arriving from its listening port, which
+			// is the property that makes the mapping reusable.
+			Assert.equals(bob.localPort, toBob.remotePort);
+			Assert.equals(alice.localPort, toAlice.remotePort);
+
+			toAlice.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+				if (toAlice.bytesAvailable > 0) {
+					delivered = toAlice.readUTFBytes(toAlice.bytesAvailable);
+				}
+			});
+
+			var payload = new ByteArray();
+			payload.writeUTFBytes("punched through");
+			toBob.writeBytes(payload, 0, payload.length);
+			toBob.flush();
+
+			pumpUntil(() -> delivered != null, 3.0);
+			Assert.equals("punched through", delivered, "the punched session could not carry data");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try alice.close() catch (_:Dynamic) {}
+		try bob.close() catch (_:Dynamic) {}
+	}
+
 	public function testAServerDialsOutFromItsOwnPort():Void {
 		if (!requireDatagramSupport()) return;
 
