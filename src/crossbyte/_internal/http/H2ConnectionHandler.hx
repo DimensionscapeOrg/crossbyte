@@ -48,6 +48,8 @@ class H2ConnectionHandler {
 		__php = php;
 
 		__connection = new H2ServerConnection(__send);
+		__connection.maxResetStreams = config.http2MaxResetStreams;
+		__connection.resetWindowSeconds = config.http2ResetWindowSeconds;
 		__connection.onRequest = __serve;
 		__connection.onConnectionError = __onConnectionError;
 
