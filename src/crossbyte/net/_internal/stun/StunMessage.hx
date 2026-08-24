@@ -3,6 +3,11 @@ package crossbyte.net._internal.stun;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.net.ReflexiveAddress;
+import haxe.Int64;
+import haxe.crypto.Crc32;
+import haxe.crypto.Hmac;
+import haxe.crypto.Hmac.HashMethod;
+import haxe.io.Bytes;
 
 /**
 	A STUN message, per RFC 5389.
@@ -40,8 +45,26 @@ class StunMessage {
 	public static inline var BINDING_ERROR:Int = 0x0111;
 
 	public static inline var ATTR_MAPPED_ADDRESS:Int = 0x0001;
+	public static inline var ATTR_USERNAME:Int = 0x0006;
+	public static inline var ATTR_MESSAGE_INTEGRITY:Int = 0x0008;
 	public static inline var ATTR_ERROR_CODE:Int = 0x0009;
 	public static inline var ATTR_XOR_MAPPED_ADDRESS:Int = 0x0020;
+	public static inline var ATTR_PRIORITY:Int = 0x0024;
+	public static inline var ATTR_USE_CANDIDATE:Int = 0x0025;
+	public static inline var ATTR_SOFTWARE:Int = 0x8022;
+	public static inline var ATTR_FINGERPRINT:Int = 0x8028;
+	public static inline var ATTR_ICE_CONTROLLED:Int = 0x8029;
+	public static inline var ATTR_ICE_CONTROLLING:Int = 0x802A;
+
+	/**
+		XORed into the CRC so a STUN fingerprint cannot be mistaken for the
+		start of some other protocol that also begins with a checksum. RFC 5389
+		section 15.5 picks the ASCII of "STUN" for it.
+	**/
+	private static inline var FINGERPRINT_XOR:Int = 0x5354554E;
+
+	/** SHA-1 output, and so the length of every MESSAGE-INTEGRITY value. **/
+	private static inline var INTEGRITY_LENGTH:Int = 20;
 
 	private static inline var HEADER_LENGTH:Int = 20;
 	private static inline var TRANSACTION_LENGTH:Int = 12;
@@ -61,6 +84,20 @@ class StunMessage {
 	public var transactionId(default, null):ByteArray;
 
 	public var attributes(default, null):Array<StunAttribute>;
+
+	/**
+		Exactly the bytes this was decoded from, kept because integrity cannot
+		be checked against a re-encoding.
+
+		Attribute padding is not specified: RFC 5389 says the padding bytes are
+		ignored, and implementations differ on what they put there -- the test
+		vectors in RFC 5769 pad a username with spaces where this encoder writes
+		zeros. Both are correct on the wire and they hash differently, so a
+		receiver that re-encodes a message to verify it would reject perfectly
+		valid traffic from anyone whose padding it did not happen to match.
+		Null for a message built locally, which has no received bytes to check.
+	**/
+	public var raw(default, null):Null<ByteArray>;
 
 	public function new(type:Int, transactionId:ByteArray, ?attributes:Array<StunAttribute>) {
 		this.type = type;
@@ -166,7 +203,9 @@ class StunMessage {
 			}
 		}
 
-		return new StunMessage(type, transactionId, attributes);
+		var message = new StunMessage(type, transactionId, attributes);
+		message.raw = bytes;
+		return message;
 	}
 
 	/** Whether `other` answers this exchange and not somebody else's. */
@@ -295,6 +334,327 @@ class StunMessage {
 
 		value.position = 0;
 		return new StunAttribute(ATTR_XOR_MAPPED_ADDRESS, value);
+	}
+
+	// ------------------------------------------------------------------
+	// Attributes a connectivity check needs
+	// ------------------------------------------------------------------
+
+	/**
+		`USERNAME`, which for ICE is the peer's fragment and then ours, joined
+		by a colon.
+
+		Not decoration: it is what tells a receiver which of possibly several
+		ongoing sessions a check belongs to, and it is covered by
+		MESSAGE-INTEGRITY, so an attacker cannot retarget a check by editing it.
+	**/
+	public static function username(value:String):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.writeUTFBytes(value);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_USERNAME, bytes);
+	}
+
+	/**
+		`PRIORITY`: what the sender would give a peer-reflexive candidate learned
+		from this check.
+
+		A check can arrive from a mapping neither peer knew about, because a NAT
+		allocated one for this particular destination. The receiver turns that
+		into a peer-reflexive candidate, and this is the priority it gets --
+		sent rather than guessed, so both sides still agree on the ordering.
+	**/
+	public static function priority(value:Int):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.writeInt(value);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_PRIORITY, bytes);
+	}
+
+	/**
+		`USE-CANDIDATE`, which carries no value at all.
+
+		The controlling peer sets it to say "this is the pair we are using".
+		Its presence is the whole message, which is why the value is empty --
+		and why a parser that assumes every attribute has a body mishandles it.
+	**/
+	public static function useCandidate():StunAttribute {
+		return new StunAttribute(ATTR_USE_CANDIDATE, new ByteArray());
+	}
+
+	/**
+		`ICE-CONTROLLING` or `ICE-CONTROLLED`, carrying the 64-bit tiebreaker.
+
+		Both peers pick a random tiebreaker and state their role. If they turn
+		out to have claimed the same role, the one with the larger tiebreaker
+		keeps it -- which is why this is 64 bits of randomness rather than a
+		flag: two peers must not collide.
+	**/
+	public static function iceRole(controlling:Bool, tiebreaker:Int64):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.writeInt(tiebreaker.high);
+		bytes.writeInt(tiebreaker.low);
+		bytes.position = 0;
+		return new StunAttribute(controlling ? ATTR_ICE_CONTROLLING : ATTR_ICE_CONTROLLED, bytes);
+	}
+
+	/** `SOFTWARE`, which is advisory and never covered by anything. **/
+	public static function software(name:String):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.writeUTFBytes(name);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_SOFTWARE, bytes);
+	}
+
+	/** The value of the first attribute of `type`, or null. **/
+	public function attribute(type:Int):Null<ByteArray> {
+		for (candidate in attributes) {
+			if (candidate.type == type) {
+				return candidate.value;
+			}
+		}
+
+		return null;
+	}
+
+	/** Whether the controlling peer marked this check as the chosen pair. **/
+	public function hasUseCandidate():Bool {
+		for (candidate in attributes) {
+			if (candidate.type == ATTR_USE_CANDIDATE) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	// ------------------------------------------------------------------
+	// Integrity
+	// ------------------------------------------------------------------
+
+	/**
+		Encodes, appending `MESSAGE-INTEGRITY` and optionally `FINGERPRINT`.
+
+		Both are computed over the message *as if they were already in it*: the
+		header's length field is rewritten to cover the attribute about to be
+		appended, and only then is the hash taken over everything before it.
+		That is not an implementation quirk to work around -- it is what RFC
+		5389 sections 15.4 and 15.5 specify, and getting it wrong produces a
+		message that verifies perfectly against your own code and against
+		nobody else's. It is the reason the tests here are pinned to RFC 5769's
+		vectors rather than to a round trip.
+
+		For ICE these use short-term credentials, where the key is the peer's
+		password with nothing derived from it.
+
+		@param password The credential the receiver will verify against.
+		@param withFingerprint Whether to append `FINGERPRINT`. ICE requires it;
+		a plain binding request to a public STUN server does not need it.
+	**/
+	public function encodeSigned(password:String, withFingerprint:Bool = true):ByteArray {
+		var out = encode();
+
+		__appendIntegrity(out, password);
+
+		if (withFingerprint) {
+			__appendFingerprint(out);
+		}
+
+		out.position = 0;
+		return out;
+	}
+
+	/**
+		Whether this message carries a `MESSAGE-INTEGRITY` that `password`
+		produces.
+
+		Checked against `raw` -- the bytes that actually arrived -- for the
+		reason that field exists. Returns false rather than throwing when there
+		is no integrity attribute at all, because an unauthenticated message is
+		not a malformed one; it is simply not one this can accept.
+	**/
+	public function verifyIntegrity(password:String):Bool {
+		if (raw == null) {
+			return false;
+		}
+
+		var at = __attributeOffset(raw, ATTR_MESSAGE_INTEGRITY);
+
+		if (at < 0 || at + 4 + INTEGRITY_LENGTH > raw.length) {
+			return false;
+		}
+
+		var covered = __covered(raw, at, (at - HEADER_LENGTH) + 4 + INTEGRITY_LENGTH);
+		var expected = new Hmac(HashMethod.SHA1).make(__utf8(password), covered);
+		var difference:Int = 0;
+
+		// Compared without a short circuit. A verifier that returns as soon as
+		// two bytes differ leaks, in its timing, how much of a forged tag was
+		// right -- which is enough to build the rest of one a byte at a time.
+		for (i in 0...INTEGRITY_LENGTH) {
+			difference = difference | (expected.get(i) ^ raw[at + 4 + i]);
+		}
+
+		return difference == 0;
+	}
+
+	/**
+		Whether the `FINGERPRINT` matches, when there is one.
+
+		This is not a security check and cannot be: anyone able to alter a
+		message can recompute a CRC. It exists to tell STUN traffic apart from
+		whatever else shares a port -- which is exactly the problem a peer using
+		one socket for both STUN and its own protocol has.
+	**/
+	public function verifyFingerprint():Bool {
+		if (raw == null) {
+			return false;
+		}
+
+		var at = __attributeOffset(raw, ATTR_FINGERPRINT);
+
+		if (at < 0 || at + 8 > raw.length) {
+			return false;
+		}
+
+		var covered = __covered(raw, at, (at - HEADER_LENGTH) + 8);
+		var expected:Int = Crc32.make(covered) ^ FINGERPRINT_XOR;
+
+		raw.endian = Endian.BIG_ENDIAN;
+		raw.position = at + 4;
+		var found:Int = raw.readInt();
+
+		return expected == found;
+	}
+
+	@:noCompletion private function __appendIntegrity(out:ByteArray, password:String):Void {
+		__setLength(out, (out.length - HEADER_LENGTH) + 4 + INTEGRITY_LENGTH);
+
+		var mac = new Hmac(HashMethod.SHA1).make(__utf8(password), __copy(out, out.length));
+
+		out.endian = Endian.BIG_ENDIAN;
+		out.position = out.length;
+		out.writeShort(ATTR_MESSAGE_INTEGRITY);
+		out.writeShort(INTEGRITY_LENGTH);
+
+		for (i in 0...INTEGRITY_LENGTH) {
+			out.writeByte(mac.get(i));
+		}
+	}
+
+	@:noCompletion private function __appendFingerprint(out:ByteArray):Void {
+		__setLength(out, (out.length - HEADER_LENGTH) + 8);
+
+		var crc:Int = Crc32.make(__copy(out, out.length)) ^ FINGERPRINT_XOR;
+
+		out.endian = Endian.BIG_ENDIAN;
+		out.position = out.length;
+		out.writeShort(ATTR_FINGERPRINT);
+		out.writeShort(4);
+		out.writeInt(crc);
+	}
+
+	/**
+		Rewrites the header's length field in place.
+
+		The field always states the body length the message will have once the
+		attribute being computed is part of it, which is what makes the hash
+		cover a message that does not exist yet.
+	**/
+	@:noCompletion private static function __setLength(bytes:ByteArray, length:Int):Void {
+		var position = bytes.position;
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.position = 2;
+		bytes.writeShort(length);
+		bytes.position = position;
+	}
+
+	/**
+		The offset of an attribute within encoded bytes, walking the list rather
+		than searching for the tag.
+
+		Searching would find the same four bytes occurring inside some other
+		attribute's value -- a transaction id or a software name can contain
+		anything -- and hash the wrong span.
+	**/
+	@:noCompletion private static function __attributeOffset(bytes:ByteArray, type:Int):Int {
+		if (bytes == null || bytes.length < HEADER_LENGTH) {
+			return -1;
+		}
+
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.position = 2;
+
+		var bodyLength:Int = bytes.readUnsignedShort();
+		var limit:Int = HEADER_LENGTH + bodyLength;
+
+		if (limit > bytes.length) {
+			limit = bytes.length;
+		}
+
+		var offset:Int = HEADER_LENGTH;
+
+		while (offset + 4 <= limit) {
+			bytes.position = offset;
+
+			var attributeType:Int = bytes.readUnsignedShort();
+			var attributeLength:Int = bytes.readUnsignedShort();
+
+			if (attributeType == type) {
+				return offset;
+			}
+
+			var padding:Int = (4 - (attributeLength % 4)) % 4;
+			offset += 4 + attributeLength + padding;
+		}
+
+		return -1;
+	}
+
+	/**
+		A copy of the first `length` bytes.
+
+		Byte by byte rather than through the underlying storage, because that
+		route differs per target -- and one of them, hl, is where reaching for
+		it has already broken a build. A STUN message is a hundred bytes; the
+		loop costs nothing worth counting.
+	**/
+	/**
+		The span a hash covers, with the length field it must state.
+
+		One call rather than a copy followed by a rewrite. Those were two calls
+		once, and the rewrite took a `ByteArray` where the copy produced a
+		`Bytes` -- so it silently went through an implicit conversion, edited a
+		temporary, and left the bytes being hashed carrying the original length.
+		Signing was unaffected, because there the real message had already been
+		rewritten before being copied, so the two paths disagreed and only one
+		of them was wrong.
+	**/
+	@:noCompletion private static function __covered(bytes:ByteArray, upTo:Int, statedLength:Int):Bytes {
+		var out = __copy(bytes, upTo);
+		out.set(2, (statedLength >> 8) & 0xFF);
+		out.set(3, statedLength & 0xFF);
+		return out;
+	}
+
+	@:noCompletion private static function __copy(bytes:ByteArray, length:Int):Bytes {
+		var out = Bytes.alloc(length);
+		var position = bytes.position;
+
+		bytes.position = 0;
+
+		for (i in 0...length) {
+			out.set(i, bytes.readUnsignedByte());
+		}
+
+		bytes.position = position;
+		return out;
+	}
+
+	@:noCompletion private static function __utf8(text:String):Bytes {
+		return Bytes.ofString(text);
 	}
 }
 
