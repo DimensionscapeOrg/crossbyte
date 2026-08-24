@@ -21,6 +21,7 @@ import sys.ssl.Socket as SSLSocket;
 #end
 #if cpp
 import crossbyte._internal.socket.AlpnSocket;
+import crossbyte._internal.socket.NativeAlpn;
 #end
 
 typedef HostInfo = {port:Int, host:Host};
@@ -40,7 +41,7 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	 * which lets a caller offer `h2` unconditionally and fall back to
 	 * HTTP/1.1 on the targets that cannot reach it.
 	 */
-	public static var alpnSupported(default, null):Bool = #if cpp true #else false #end;
+	public static var alpnSupported(default, null):Bool = #if cpp NativeAlpn.isAvailable() #else false #end;
 
 	private static inline function get_DEFAULT_CA():Null<Certificate> {
 		return SSLSocket.DEFAULT_CA;

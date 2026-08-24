@@ -1,0 +1,26 @@
+<xml>
+	<!-- Pulls in hxcpp's own mbedTLS build. That file is `pragma once`, so
+	     including it here is safe even when the program also uses sys.ssl,
+	     which includes it too. This is what puts the mbedtls_ssl_* symbols in
+	     the link and, just as importantly, sets MBEDTLS_DIR to whichever
+	     mbedtls hxcpp actually ships -- pinning a version here is what broke
+	     the crypto build once already. -->
+	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
+
+	<files id="crossbyte-alpn-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<compilerflag value="-I${MBEDTLS_DIR}/include"/>
+		<file name="${this_dir}/NativeAlpn.cpp">
+			<depend name="${this_dir}/NativeAlpn.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-alpn-native"/>
+
+		<!-- hxcpp_ssl is deliberately NOT listed. The ssl Build.xml included
+		     above already adds it to this same target, and naming it again
+		     passes SSL.obj to the linker twice for an LNK4042 warning. -->
+	</target>
+</xml>

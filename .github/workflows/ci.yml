@@ -23,9 +23,7 @@ env:
   # branch meant CI and every developer were testing different hxcpp -- benign
   # while the suite passed on both, and widening with every upstream merge
   # production took and socket-fixes did not.
-  # ALPN lives on this branch, and nothing that negotiates h2 over TLS
-  # builds without it. Move back to production once it merges.
-  HXCPP_REF: "feature/ssl-alpn"
+  HXCPP_REF: "production"
 
 jobs:
   core-tests:
