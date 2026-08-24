@@ -143,6 +143,20 @@ class ServerWebSocket extends ServerSocket {
 
 	@:noCompletion private var __webServerSocket:#if nodejs NodeServer #else FlexSocket #end;
 
+	// Sessions accepted whose upgrade has not completed, and when to give up
+	// on each.
+	//
+	// `ServerSocket` bounds this for its own accepts by deferring the TLS
+	// handshake and sweeping deadlines from the tick. This class overrides
+	// `this_onTick` and accepts through its own path, so it never populated
+	// that queue and never swept it -- proposal 0010 recorded the gap and it
+	// is this list that closes it. One deadline covers both ways an upgrade
+	// can stall: a peer that finishes the TCP connection and then says nothing
+	// during TLS, and one that completes TLS and never sends the HTTP upgrade.
+	// Neither is distinguishable from a slow client until the clock runs out,
+	// which is exactly why there has to be a clock.
+	@:noCompletion private var __pendingUpgrades:Array<PendingUpgrade> = [];
+
 	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
 		if (secure) {
 			#if nodejs
@@ -214,11 +228,61 @@ class ServerWebSocket extends ServerSocket {
 		addEventListener(ServerSocketConnectEvent.CONNECT, __trackClient);
 	}
 
+	/**
+		Sessions waiting to finish arriving, and the clock on them.
+
+		Target neutral on purpose. Only *recording* an accept belongs to the
+		native path, because that is where this class does its own accepting;
+		Node's server hands connections to a callback instead and does not yet
+		record them, so a stalled upgrade there is still unbounded. That gap is
+		named rather than hidden -- the machinery to close it is here, and what
+		it needs is one push in the Node connection handler.
+	**/
+	@:noCompletion private function __clearPendingUpgrade(session:WebSocket):Void {
+		for (pending in __pendingUpgrades) {
+			if (pending.session == session) {
+				__pendingUpgrades.remove(pending);
+				return;
+			}
+		}
+	}
+
+	@:noCompletion private function __reapStalledUpgrades():Void {
+		if (__pendingUpgrades.length == 0) {
+			return;
+		}
+
+		var now:Float = Sys.time();
+		var still:Array<PendingUpgrade> = [];
+
+		for (pending in __pendingUpgrades) {
+			// Gone on its own, by close or by error. Nothing owed here.
+			if (pending.session == null || !pending.session.connected) {
+				continue;
+			}
+
+			if (now < pending.deadline) {
+				still.push(pending);
+				continue;
+			}
+
+			try {
+				pending.session.close();
+			} catch (_:Dynamic) {}
+		}
+
+		__pendingUpgrades = still;
+	}
+
 	@:noCompletion private function __trackClient(e:ServerSocketConnectEvent):Void {
 		var client:WebSocket = cast e.socket;
 		if (client == null || __clients.indexOf(client) >= 0) {
 			return;
 		}
+
+		// It arrived, so it is no longer owed a deadline. CONNECT is dispatched
+		// once the upgrade completes, which is the only moment that is true.
+		__clearPendingUpgrade(client);
 
 		if (maxOutputBufferSize > 0) {
 			client.maxOutputBufferSize = maxOutputBufferSize;
@@ -553,12 +617,27 @@ class ServerWebSocket extends ServerSocket {
 	@:noCompletion override private function this_onTick(e:TickEvent):Void {
 		// Extracted from a single method with a local assigned inside try/catch and
 		// used afterwards: that shape mis-compiles (VerifyError) on the jvm target.
+		__reapStalledUpgrades();
+
 		var socket:FlexSocket = __acceptPending();
 		if (socket != null) {
-			__fromSockettoWebsocket(socket);
+			var accepted = __fromSockettoWebsocket(socket);
+
+			if (accepted != null && handshakeTimeout > 0) {
+				__pendingUpgrades.push({session: accepted, deadline: Sys.time() + handshakeTimeout});
+			}
 		}
 	}
 
+	/**
+		Closes sessions that were accepted and never finished arriving.
+
+		Without this a peer completes the TCP connection, stalls, and holds a
+		socket for as long as it likes -- bounded only by the operating
+		system's own limits, which is a slow way to lose a server rather than
+		a fast one. `handshakeTimeout` is inherited from `ServerSocket` and
+		means the same thing here.
+	**/
 	@:noCompletion private function __acceptPending():FlexSocket {
 		try {
 			return __webServerSocket.accept();
@@ -657,5 +736,10 @@ class ServerWebSocket extends ServerSocket {
 		});
 	}
 	#end
+}
+/** One accepted session and the moment its upgrade stops being awaited. */
+private typedef PendingUpgrade = {
+	var session:WebSocket;
+	var deadline:Float;
 }
 #end

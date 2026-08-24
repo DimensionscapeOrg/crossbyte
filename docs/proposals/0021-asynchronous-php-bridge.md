@@ -1,6 +1,6 @@
 # Proposal 0021 — An asynchronous PHP bridge
 
-**Status:** Implemented, except step 5
+**Status:** Implemented. Step 5 measured: reuse is not justified, streaming remains open.
 
 **Motivation:** `PHPBridge.execute()` returns a response. Everything below
 follows from that one decision, and none of it is a PHP problem.
@@ -190,8 +190,29 @@ logging is commented out. A rewrite should either log them or say why not, and
    Node uses `crossbyte.sys.NativeProcess` instead, which this framework already
    ships. PHP is served on Node end to end, against a FastCGI backend stood up
    in the suite.
-5. **Reuse and streaming**, separately, if measurement justifies them. Not done,
-   and still gated on measurement rather than on appetite.
+5. **Reuse and streaming**, separately, if measurement justifies them. The
+   measurement is now taken, and it splits the two apart.
+
+   ~~**Connection reuse.**~~ Not justified, and not merely undone. Opening and
+   discarding a loopback TCP connection costs **0.062 ms**, measured over 500
+   of them against a backend that answers immediately -- the floor, since a
+   real script only makes the connection a smaller share. A PHP page taking
+   5 ms spends 1.2% of its time on the connection; at 50 ms, 0.1%. Pooling
+   FastCGI connections would buy that back and pay for it in state: a pool has
+   a size, an idle policy, and a way to be wrong about whether a socket the
+   backend has since closed is still usable. For a backend on loopback or a
+   unix socket -- which is where php-fpm lives -- the trade is not worth
+   making. It would look different for a backend across a network, where a
+   connection is a round trip rather than a memcpy, and that is the condition
+   to re-measure under rather than a reason to build it now.
+
+   **Response streaming** stays open, and the measurement above says nothing
+   about it. It is not a latency question: a PHP response is accumulated whole
+   in `PHPExchange.stdout` before anything is written to the client, so the
+   cost is memory proportional to the largest response, and the fix is the one
+   `__serveFile` already applies to static files. That is worth doing when
+   something needs to serve a large PHP response, and is bounded by the same
+   watermark machinery rather than needing anything new.
 
 Step 1 is independently valuable and independently shippable. Steps 2 and 3
 have to land together to keep the suite green. Step 4 is the one this proposal

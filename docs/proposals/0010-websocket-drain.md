@@ -1,6 +1,6 @@
 # Proposal 0010 — ServerWebSocket drain, and the TLS convergence question
 
-**Status:** Drain implemented; convergence assessed and scoped, not yet done
+**Status:** Drain implemented. The handshake timeout that convergence was really about is now in place on the native path; Node still needs it.
 
 **Motivation:** Proposal 0003 gave `HTTPServer` graceful shutdown, leaving
 `ServerWebSocket` as the one server type that could only be severed. That
@@ -91,7 +91,7 @@ handshake work.
 
 | Growth item | Notes |
 |---|---|
-| **Deferred handshake + timeout** | The convergence item above; closes the half-open `wss://` exposure. |
+| ~~**Deferred handshake + timeout**~~ | Done on the native path, though not the way this proposal expected. Rather than moving `ServerWebSocket` onto `ServerSocket`'s deferred accept -- which would have touched the accept loop the upgrade depends on -- it keeps its own list of accepted-but-unfinished sessions and reaps them from the tick it already overrides. One deadline covers both stalls, TLS and the HTTP upgrade, where the deferred path would only have covered the first. `handshakeTimeout` is inherited and means the same thing. **Node still has the exposure**: its server hands connections to a callback rather than accepting in the tick, so nothing records them yet; the reaper is target neutral and waits on that one push. |
 | **Drain with live sessions** | Needs a client harness; would also cover close-frame delivery end to end. |
 | **`ServerWebSocket` metrics** | Sessions, handshake queue depth, and drain progress are all natural gauges now that a registry exists. |
 | **Per-session backpressure** | `Socket.maxOutputBufferSize` is not applied to accepted sessions; a fan-out server wants it there most. |
