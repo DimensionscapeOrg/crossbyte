@@ -301,6 +301,44 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return future;
 	}
 
+	/**
+		The address a peer at `destination` would reach this server on, without
+		leaving the local network.
+
+		The other candidate a peer can offer, and the one `discoverPublicAddress`
+		cannot produce. Two peers behind the same NAT discover reflexive
+		addresses on its outside, and dialling those means asking the NAT to
+		route a packet back in to the network it came from -- hairpinning, which
+		plenty of consumer equipment does not do. They are usually sitting on the
+		same subnet, one hop apart, and the address that works is the local one.
+
+		Unlike the reflexive answer this needs nothing on the network and no
+		server: it is a routing table lookup, and the socket it asks with sends
+		no packet. `destination` need not even be reachable.
+
+		The port is not part of the answer, and that absence is the point. A
+		reflexive address comes back with a translated port because a NAT
+		assigned one; nothing translates a local address, so the port a peer
+		should dial is `localPort` and no query is needed to learn it.
+
+		@param destination The peer's address, numeric. Which one it is matters:
+		a peer on this subnet and a peer across the internet are reached on
+		different interfaces, and this answers for the one named.
+		@throws IOError if this server is closed, unbound, or not listening --
+		in which case `localPort` is not settled either, so the answer would have
+		nothing to pair with.
+	**/
+	public function localAddressFor(destination:String):Future<String> {
+		if (__closed || !bound || !listening) {
+			var future = new Future<String>();
+			@:privateAccess future.__fail("A local address can only be reported for a bound, listening server socket.",
+				new IOError("Operation attempted on invalid socket."));
+			return future;
+		}
+
+		return LocalAddress.forDestination(destination);
+	}
+
 	@:noCompletion private function __settleStun(address:Null<ReflexiveAddress>, error:String):Void {
 		var future = __stunFuture;
 
