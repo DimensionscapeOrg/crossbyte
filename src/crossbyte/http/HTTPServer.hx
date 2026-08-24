@@ -27,6 +27,10 @@ using StringTools;
 class HTTPServer extends ServerSocket {
 	private var __config:HTTPServerConfig;
 	private var __active:ObjectMap<Dynamic, HTTPRequestHandler>;
+
+	// Kept apart from __active rather than widened into it: the two hold
+	// different handlers and the sweep asks each a different question.
+	private var __activeHttp2:ObjectMap<Dynamic, H2ConnectionHandler>;
 	private var __maxConnections:Int;
 	private var __connections:Int;
 	private var docRoot:String;
@@ -66,6 +70,7 @@ class HTTPServer extends ServerSocket {
 		docRoot = config.rootDirectory.nativePath;
 		autoIndex = (config.directoryIndex != null && config.directoryIndex.length > 0) ? config.directoryIndex : ["index.php", "index.html"];
 		__active = new ObjectMap();
+		__activeHttp2 = new ObjectMap();
 		__maxConnections = config.maxConnections;
 
 		if (__config.phpEnabled) {
@@ -196,7 +201,19 @@ class HTTPServer extends ServerSocket {
 				(cast socket : crossbyte.net.Socket).close();
 			} catch (_:Dynamic) {}
 		}
+
+		// Closed through the handler rather than the socket, so the peer gets a
+		// GOAWAY naming the last stream it processed instead of a connection
+		// that simply stops -- which is the difference between a client that
+		// knows what to retry and one that guesses.
+		for (handler in __activeHttp2) {
+			try {
+				handler.close();
+			} catch (_:Dynamic) {}
+		}
+
 		__active = new ObjectMap();
+		__activeHttp2 = new ObjectMap();
 		__connections = 0;
 
 		try {
@@ -263,7 +280,23 @@ class HTTPServer extends ServerSocket {
 	 * the keep-alive sweep have nothing to count.
 	 */
 	@:noCompletion private function __serveHttp2(socket:CBSocket, buffered:ByteArray):Void {
-		new H2ConnectionHandler(socket, __config, php, buffered);
+		if (__connections >= __maxConnections) {
+			// Counted against the same ceiling as HTTP/1.1. Left out, the limit
+			// was one a peer could ignore entirely by speaking HTTP/2.
+			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+			return;
+		}
+
+		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered);
+		__activeHttp2.set(socket, handler);
+		__connections++;
+		__armReceiveSweep();
+
+		socket.addEventListener("close", (_) -> cleanupSocket(socket));
+		socket.addEventListener("error", (_) -> cleanupSocket(socket));
 	}
 
 	@:noCompletion private function __serveHttp1(socket:CBSocket, buffered:ByteArray = null):Void {
@@ -363,14 +396,30 @@ class HTTPServer extends ServerSocket {
 			handlers.push(handler);
 		}
 
+		var http2:Array<H2ConnectionHandler> = [];
+		for (handler in __activeHttp2) {
+			http2.push(handler);
+		}
+
 		var now:Float = Sys.time();
 		for (handler in handlers) {
 			handler.__checkReceiveDeadline(now);
+		}
+		for (handler in http2) {
+			handler.checkDeadline(now);
 		}
 	}
 	private function cleanupSocket(sock:Dynamic):Void {
 		if (__active.exists(sock)) {
 			__active.remove(sock);
+			if (__connections > 0) {
+				__connections--;
+			}
+			return;
+		}
+
+		if (__activeHttp2.exists(sock)) {
+			__activeHttp2.remove(sock);
 			if (__connections > 0) {
 				__connections--;
 			}

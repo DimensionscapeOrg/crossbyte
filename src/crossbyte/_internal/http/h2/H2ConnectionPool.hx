@@ -30,6 +30,17 @@ class H2ConnectionPool {
 	 */
 	public static var maxSessionsPerOrigin:Int = 4;
 
+	/**
+	 * Seconds a session may sit with nothing in flight before it is closed.
+	 * Negative keeps them forever.
+	 *
+	 * Reuse is the point of the pool, but an unbounded one is a leak: every
+	 * origin ever contacted keeps a socket and a parked reader thread, and a
+	 * program that talks to many hosts accumulates one of each per host for
+	 * as long as it runs.
+	 */
+	public static var idleTimeoutSeconds:Float = 90;
+
 	private static final __sessions:Map<String, Array<H2ClientSession>> = new Map();
 	private static final __gates:Map<String, Mutex> = new Map();
 	private static final __lock:Mutex = new Mutex();
@@ -103,14 +114,23 @@ class H2ConnectionPool {
 		}
 
 		var index:Int = list.length - 1;
+		var expired:Array<H2ClientSession> = [];
+
 		while (index >= 0) {
 			var candidate:H2ClientSession = list[index];
 			if (candidate.dead) {
 				// Reaped on the way past rather than by a sweep: a dead
 				// session is only interesting to whoever next wants one.
 				list.splice(index, 1);
+			} else if (__isExpired(candidate)) {
+				// Closed outside the lock below: close() wakes waiters and
+				// touches the socket, which is more than should happen with a
+				// pool-wide lock held.
+				list.splice(index, 1);
+				expired.push(candidate);
 			} else if (candidate.hasCapacity()) {
 				__lock.release();
+				__closeAll(expired);
 				return candidate;
 			}
 			index--;
@@ -119,17 +139,84 @@ class H2ConnectionPool {
 		if (list.length == 0) {
 			__sessions.remove(origin);
 			__lock.release();
+			__closeAll(expired);
 			return null;
 		}
 
 		if (list.length >= maxSessionsPerOrigin) {
 			var fallback:H2ClientSession = list[list.length - 1];
 			__lock.release();
+			__closeAll(expired);
 			return fallback;
 		}
 
 		__lock.release();
+		__closeAll(expired);
 		return null;
+	}
+
+	/**
+	 * Whether a session has been idle long enough to close.
+	 *
+	 * `>=` rather than `>`, so a timeout of N means "idle for at least N" and
+	 * a timeout of zero reaps anything not carrying a request. With `>` that
+	 * read depended on whether the clock ticked between the request finishing
+	 * and the sweep -- true natively, false on the jvm.
+	 */
+	private static function __isExpired(session:H2ClientSession):Bool {
+		if (idleTimeoutSeconds < 0) {
+			return false;
+		}
+
+		var idle:Float = session.idleSeconds();
+		return idle >= 0 && idle >= idleTimeoutSeconds;
+	}
+
+	private static function __closeAll(sessions:Array<H2ClientSession>):Void {
+		for (session in sessions) {
+			try {
+				session.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+
+	/**
+	 * Closes every session idle past `idleTimeoutSeconds`, returning how many
+	 * went.
+	 *
+	 * `acquire` already reaps what it walks past, which is enough for a
+	 * program that keeps making requests. This is for one that stops: nothing
+	 * else would ever look again, and the sockets would outlive the interest
+	 * in them.
+	 */
+	public static function reapIdle():Int {
+		if (idleTimeoutSeconds < 0) {
+			return 0;
+		}
+
+		__lock.acquire();
+		var expired:Array<H2ClientSession> = [];
+
+		for (origin in __sessions.keys()) {
+			var list:Array<H2ClientSession> = __sessions.get(origin);
+			var index:Int = list.length - 1;
+			while (index >= 0) {
+				var candidate:H2ClientSession = list[index];
+				if (candidate.dead || __isExpired(candidate)) {
+					list.splice(index, 1);
+					expired.push(candidate);
+				}
+				index--;
+			}
+
+			if (list.length == 0) {
+				__sessions.remove(origin);
+			}
+		}
+		__lock.release();
+
+		__closeAll(expired);
+		return expired.length;
 	}
 
 	private static function __gateFor(origin:String):Mutex {

@@ -44,6 +44,9 @@ class H2ServerConnection {
 	/** Seconds the reset budget is measured over. */
 	public static inline var DEFAULT_RESET_WINDOW:Float = 30.0;
 
+	/** Compressed bytes one header block may span, across every CONTINUATION. */
+	public static inline var DEFAULT_MAX_HEADER_BLOCK:Int = 256 * 1024;
+
 	/**
 	 * Streams the peer may abandon before their response within
 	 * `resetWindowSeconds`, after which the connection is closed with
@@ -61,6 +64,18 @@ class H2ServerConnection {
 
 	public var resetWindowSeconds:Float = DEFAULT_RESET_WINDOW;
 
+	/**
+	 * Compressed bytes a single header block may occupy across all of its
+	 * CONTINUATION frames. Negative disables the check.
+	 *
+	 * SETTINGS_MAX_FRAME_SIZE bounds each frame and nothing bounded the run:
+	 * a peer could send a HEADERS without END_HEADERS and then CONTINUATION
+	 * frames forever, and every one of them was appended to a buffer that only
+	 * grew. SETTINGS_MAX_HEADER_LIST_SIZE does not help either -- it limits
+	 * what the block decodes to, and this never reaches the decoder.
+	 */
+	public var maxHeaderBlockSize:Int = DEFAULT_MAX_HEADER_BLOCK;
+
 	/** Called once per complete request. */
 	public var onRequest:H2ServerRequest->Void = _ -> {};
 
@@ -72,6 +87,9 @@ class H2ServerConnection {
 
 	/** True once a GOAWAY has been written and the connection is finished. */
 	public var closed(default, null):Bool = false;
+
+	/** Streams open right now, which is what makes a connection busy rather than idle. */
+	public var openStreams(get, never):Int;
 
 	private final __write:Bytes->Void;
 	private final __decoder:HpackDecoder;
@@ -94,6 +112,7 @@ class H2ServerConnection {
 	private var __continuationStreamId:Int = -1;
 	private var __continuationEndsStream:Bool = false;
 	private var __continuationBuffer:BytesBuffer = null;
+	private var __continuationLength:Int = 0;
 
 	/**
 	 * @param write Sink for outbound bytes. A function rather than an
@@ -114,6 +133,10 @@ class H2ServerConnection {
 
 		__prefaceRemaining = H2Connection.PREFACE.length;
 		__connectionSendWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+	}
+
+	private inline function get_openStreams():Int {
+		return __openStreams;
 	}
 
 	/**
@@ -522,11 +545,32 @@ class H2ServerConnection {
 		__continuationStreamId = frame.streamId;
 		__continuationEndsStream = frame.has(H2Flags.END_STREAM);
 		__continuationBuffer = new BytesBuffer();
+		__continuationLength = 0;
+		__appendHeaderFragment(payload);
+	}
+
+	/**
+	 * Adds a fragment to the open header block, refusing one that has grown
+	 * past what any real request needs.
+	 *
+	 * A connection error rather than a stream error: the frames are still
+	 * arriving, the block cannot be decoded, and HPACK is connection state --
+	 * so there is no way to resynchronise the dynamic table with the peer and
+	 * carry on. Resetting the stream would leave the rest of the run to be
+	 * read as though it were new frames.
+	 */
+	private function __appendHeaderFragment(payload:Bytes):Void {
+		if (maxHeaderBlockSize >= 0 && (__continuationLength + payload.length) > maxHeaderBlockSize) {
+			throw new H2ConnectionError(H2ErrorCode.ENHANCE_YOUR_CALM,
+				'Header block exceeded $maxHeaderBlockSize bytes across its CONTINUATION frames');
+		}
+
 		__continuationBuffer.addBytes(payload, 0, payload.length);
+		__continuationLength += payload.length;
 	}
 
 	private function __continueHeaders(frame:H2Frame):Void {
-		__continuationBuffer.addBytes(frame.payload, 0, frame.payload.length);
+		__appendHeaderFragment(frame.payload);
 
 		if (!frame.has(H2Flags.END_HEADERS)) {
 			return;
@@ -538,6 +582,7 @@ class H2ServerConnection {
 
 		__continuationStreamId = -1;
 		__continuationBuffer = null;
+		__continuationLength = 0;
 
 		try {
 			__completeHeaders(streamId, block, endsStream);

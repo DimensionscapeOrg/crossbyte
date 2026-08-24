@@ -527,6 +527,57 @@ class H2ServerTest extends utest.Test {
 		Assert.isFalse(link.connection.closed);
 	}
 
+	public function testAnEndlessHeaderBlockIsRefused():Void {
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+
+		var server = new H2ServerConnection(out.write, settings);
+		server.maxHeaderBlockSize = 4096;
+
+		var failure:H2ConnectionError = null;
+		server.onConnectionError = e -> failure = e;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		// A HEADERS that never ends, followed by CONTINUATION frames that keep
+		// arriving. Each frame is within SETTINGS_MAX_FRAME_SIZE, so the
+		// per-frame limit never fires; nothing bounded the run itself, and the
+		// buffer only grew. SETTINGS_MAX_HEADER_LIST_SIZE does not help --
+		// that limits what the block decodes to, and this never reaches the
+		// decoder.
+		var filler = Bytes.alloc(1024);
+		server.receive(frame(H2FrameType.HEADERS, 0, 1, filler));
+		for (_ in 0...8) {
+			if (failure != null) {
+				break;
+			}
+			server.receive(frame(H2FrameType.CONTINUATION, 0, 1, filler));
+		}
+
+		Assert.notNull(failure);
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
+		Assert.isTrue(server.closed);
+	}
+
+	public function testAHeaderBlockUnderTheLimitStillAssembles():Void {
+		var link = new Loopback();
+		var seen:String = null;
+
+		link.serveWith((request, server) -> {
+			seen = request.header("x-big");
+			server.respond(request.streamId, 200, []);
+		});
+
+		// The cap must not catch a large-but-legitimate block: this one spans
+		// CONTINUATION frames and is well under the limit.
+		link.clientFrameLimit(H2Frame.MIN_MAX_FRAME_SIZE);
+		var big = StringTools.rpad("", "abcdefgh", 40000);
+		var stream = link.request("GET", "/big", [new HpackHeader("x-big", big)]);
+
+		Assert.equals(big, seen);
+		Assert.equals(200, stream.status);
+	}
+
 	// ---------------------------------------------------------------- utils
 
 	private static function requestFields(extra:Array<HpackHeader>):Array<HpackHeader> {
