@@ -112,9 +112,21 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private static inline var DEFAULT_BUFFER_SIZE:Int = 65535;
 	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 64;
 
+	// Failed reads in a row, with nothing succeeding between them, before the
+	// socket is called broken rather than merely complained at. Generous on
+	// purpose: the cost of guessing high is a socket that stays deaf a little
+	// longer than it might, and the cost of guessing low is the bug this
+	// replaces -- one stray ICMP silencing a working socket.
+	@:noCompletion private static inline var MAX_CONSECUTIVE_READ_FAILURES:Int = 64;
+
 	@:noCompletion private var __bound:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __closed:Bool = false;
+
+	// Reads that failed with nothing succeeding in between. A stray ICMP error
+	// produces one; a socket that has genuinely stopped working produces them
+	// without end, which is the difference this counts.
+	@:noCompletion private var __consecutiveReadFailures:Int = 0;
 	@:noCompletion private var __connected:Bool = false;
 	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
 	@:noCompletion private var __readBuffer:Bytes;
@@ -417,19 +429,21 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				if (__isBlockedError(e)) {
 					return;
 				}
-				__dispatchIoError(Std.string(e));
+				__onReadFailed(Std.string(e));
 				return;
 			} catch (e:Dynamic) {
 				if (__isBlockedError(e)) {
 					return;
 				}
-				__dispatchIoError(Std.string(e));
+				__onReadFailed(Std.string(e));
 				return;
 			}
 
 			if (bytesReady <= 0) {
 				return;
 			}
+
+			__consecutiveReadFailures = 0;
 
 			var packetBytes:Bytes = Bytes.alloc(bytesReady);
 			packetBytes.blit(0, __readBuffer, 0, bytesReady);
@@ -454,6 +468,38 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	public inline function registryOnWritable():Void {}
 	#end
+
+	/**
+		A read that failed, on a socket that has no connection to lose.
+
+		This used to go straight to `__dispatchIoError`, which calls
+		`stopReceiving()` -- so one failed read deafened the socket for good. On
+		a connectionless socket that is the wrong reading of what a read error
+		is. Send a datagram to a port nothing listens on and the peer's stack
+		answers ICMP port unreachable; Windows reports that back to the sender
+		as an error on a *later* read, which is then consumed by it. The
+		datagram it complains about is already gone, and the socket is fine.
+
+		Measured before changing anything: one datagram to a closed local port
+		and a socket that had just completed a STUN exchange stopped receiving
+		entirely, reporting `Custom(Socket operation failed)`. For a
+		peer-to-peer mesh that is not an edge case -- dialling peers that have
+		since left is ordinary -- and one departed peer should not silence
+		every other.
+
+		So a failed read ends this tick's loop and nothing more. A socket that
+		is genuinely broken keeps failing, and the run counter is what tells
+		the two apart: nothing succeeds in between, the count climbs, and the
+		error is reported for real rather than swallowed.
+	**/
+	@:noCompletion private function __onReadFailed(message:String):Void {
+		__consecutiveReadFailures++;
+
+		if (__consecutiveReadFailures >= MAX_CONSECUTIVE_READ_FAILURES) {
+			__consecutiveReadFailures = 0;
+			__dispatchIoError(message);
+		}
+	}
 
 	@:noCompletion private function __dispatchIoError(message:String):Void {
 		stopReceiving();

@@ -49,7 +49,14 @@ class NodeIntegrationMain extends Application {
 	private static inline var ECHO_PORT:Int = 50562;
 	private static inline var WEB_PORT:Int = 50563;
 	private static inline var WS_PORT:Int = 50564;
-	private static inline var UDP_PORT:Int = 50565;
+	// Assigned by the OS, not chosen here. This was a fixed 50565, which
+	// Windows reserves in blocks for Hyper-V and WSL -- and those blocks move
+	// between boots, so the same unchanged test passed one day and failed the
+	// next with "still 0 after 201 tries". Confirmed rather than guessed:
+	// `netsh int ipv4 show excludedportrange protocol=udp` listed 50474-50573.
+	// Every other stage in this file already binds 0 and reads back; this one
+	// now does too.
+	private var udpPort:Int = 0;
 	private static inline var TIMEOUT_MS:Int = 30000;
 	private static inline var ROUND_TRIP:String = "round-trip";
 	private static inline var WS_SHORT:String = "hello-over-websocket";
@@ -672,7 +679,7 @@ class NodeIntegrationMain extends Application {
 
 		receiver = new DatagramSocket();
 		receiver.addEventListener(DatagramSocketDataEvent.DATA, onDatagram);
-		receiver.bind(UDP_PORT, "127.0.0.1");
+		receiver.bind(0, "127.0.0.1");
 		receiver.receive();
 
 		check("bind() marked the socket bound", receiver.bound, "not bound");
@@ -683,8 +690,9 @@ class NodeIntegrationMain extends Application {
 	}
 
 	private function waitForBind(attempts:Int):Void {
-		if (receiver.localPort == UDP_PORT) {
-			check("the bound port is readable back", receiver.localPort == UDP_PORT, "got " + receiver.localPort);
+		if (receiver.localPort != 0) {
+			udpPort = receiver.localPort;
+			check("the bound port is readable back", udpPort != 0, "got " + udpPort);
 			sendDatagrams();
 			return;
 		}
@@ -705,11 +713,11 @@ class NodeIntegrationMain extends Application {
 
 		var first = new crossbyte.io.ByteArray();
 		first.writeUTFBytes("datagram-one");
-		sender.send(first, 0, first.length, "127.0.0.1", UDP_PORT);
+		sender.send(first, 0, first.length, "127.0.0.1", udpPort);
 
 		// Connected: the destination comes from connect() rather than from
 		// the call, which is the whole difference between the two modes.
-		sender.connect("127.0.0.1", UDP_PORT);
+		sender.connect("127.0.0.1", udpPort);
 		check("connect() marked the socket connected", sender.connected, "not connected");
 
 		var second = new crossbyte.io.ByteArray();
@@ -724,7 +732,7 @@ class NodeIntegrationMain extends Application {
 		if (datagrams == 1) {
 			check("an unconnected send arrived", text == "datagram-one", "got " + text);
 			check("the datagram names its source", event.srcPort > 0, "src port " + event.srcPort);
-			check("the datagram names its destination", event.dstPort == UDP_PORT, "dst port " + event.dstPort);
+			check("the datagram names its destination", event.dstPort == udpPort, "dst port " + event.dstPort);
 		} else if (datagrams == 2) {
 			check("a connected send arrived", text == "datagram-two", "got " + text);
 			checkStrayIsFiltered();
@@ -736,8 +744,8 @@ class NodeIntegrationMain extends Application {
 		// so this one is: it is pointed at a port nothing is sending from, and
 		// must not be handed the receiver's traffic.
 		stray = new DatagramSocket();
-		stray.connect("127.0.0.1", UDP_PORT + 1);
-		stray.bind(UDP_PORT + 2, "127.0.0.1");
+		stray.connect("127.0.0.1", udpPort + 1);
+		stray.bind(udpPort + 2, "127.0.0.1");
 
 		var seen:Bool = false;
 		stray.addEventListener(DatagramSocketDataEvent.DATA, function(_):Void {

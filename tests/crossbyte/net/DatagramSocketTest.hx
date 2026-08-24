@@ -12,6 +12,76 @@ import utest.Assert;
 
 @:access(crossbyte.net.DatagramSocket)
 class DatagramSocketTest extends utest.Test {
+	public function testADeadPeerDoesNotDeafenTheSocket():Void {
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		// Sending to a port nothing listens on makes the peer's stack answer
+		// ICMP port unreachable, and Windows reports that back to the sender as
+		// an error on a later read. That read error used to reach
+		// __dispatchIoError, which calls stopReceiving() -- so one datagram to
+		// a departed peer silenced the socket for every other peer too.
+		//
+		// A connectionless socket has no connection to lose: the datagram the
+		// error complains about is already gone, and nothing about the socket
+		// has changed. Measured before the fix, a socket that had just
+		// completed an exchange stopped receiving entirely.
+		var listener = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var received:String = null;
+
+		listener.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			e.data.position = 0;
+			received = e.data.readUTFBytes(e.data.length);
+		});
+
+		try {
+			listener.bind(0, "127.0.0.1");
+			listener.receive();
+
+			sender.bind(0, "127.0.0.1");
+			sender.receive();
+
+			// Port 1 on loopback: reliably nothing, reliably an ICMP answer.
+			var knock = new ByteArray();
+			knock.writeUTFBytes("nobody home");
+			sender.send(knock, 0, knock.length, "127.0.0.1", 1);
+
+			// Let the ICMP find its way back before the real traffic starts.
+			pumpUntil(() -> false, 0.3);
+
+			// The sender must still be able to receive. Have the listener
+			// answer it, so this exercises the sender's read path rather than
+			// only its write path.
+			var answered = false;
+
+			sender.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+				answered = true;
+			});
+
+			var hello = new ByteArray();
+			hello.writeUTFBytes("still here");
+			sender.send(hello, 0, hello.length, "127.0.0.1", listener.localPort);
+
+			pumpUntil(() -> received != null, 2.0);
+			Assert.equals("still here", received, "the sender could not deliver after touching a closed port");
+
+			var back = new ByteArray();
+			back.writeUTFBytes("so am i");
+			listener.send(back, 0, back.length, "127.0.0.1", sender.localPort);
+
+			pumpUntil(() -> answered, 2.0);
+			Assert.isTrue(answered, "the sender stopped receiving after one datagram to a closed port");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try listener.close() catch (_:Dynamic) {}
+		try sender.close() catch (_:Dynamic) {}
+	}
+
 	public function testBindEphemeralPortSetsLocalEndpoint():Void {
 		if (!requireDatagramSupport()) return;
 
