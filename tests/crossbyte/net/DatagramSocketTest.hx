@@ -12,6 +12,69 @@ import utest.Assert;
 
 @:access(crossbyte.net.DatagramSocket)
 class DatagramSocketTest extends utest.Test {
+	public function testAFailedSendDoesNotDeafenTheSocket():Void {
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		// Sending to an address the socket cannot reach -- here an IPv6
+		// destination from a socket bound to IPv4 -- fails at the `sendto`, and
+		// is supposed to. What must not follow is the socket going deaf.
+		//
+		// It did. `send` routed the failure into __dispatchIoError, which calls
+		// stopReceiving, so one unroutable destination stopped every other peer
+		// being heard from -- permanently, and with nothing to say why. ICE
+		// finds a path by trying every candidate a peer offered and expecting
+		// most of them to fail, so this was one failed check away on every
+		// connection, and a browser interoperability run is what finally
+		// surfaced it.
+		var listener = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var received:String = null;
+
+		try {
+			listener.bind(0, "127.0.0.1");
+			listener.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+				e.data.position = 0;
+				received = e.data.readUTFBytes(e.data.length);
+			});
+			listener.receive();
+
+			sender.bind(0, "127.0.0.1");
+
+			var doomed = new ByteArray();
+			doomed.writeUTFBytes("nowhere");
+
+			var refused = false;
+
+			try {
+				listener.send(doomed, 0, doomed.length, "2001:db8::1", 9);
+			} catch (_:Dynamic) {
+				refused = true;
+			}
+
+			Assert.isTrue(refused, "sending to an unreachable family should fail, or this proves nothing");
+
+			// The whole point: still listening, having been told about one
+			// destination it could not reach.
+			Assert.isTrue(listener.receiving, "one failed send stopped the socket receiving");
+
+			var hello = new ByteArray();
+			hello.writeUTFBytes("still here");
+			sender.send(hello, 0, hello.length, "127.0.0.1", listener.localPort);
+
+			pumpUntil(() -> received != null, 2.0);
+
+			Assert.equals("still here", received, "the socket stopped hearing other peers after one send failed");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try listener.close() catch (_:Dynamic) {}
+		try sender.close() catch (_:Dynamic) {}
+	}
+
 	public function testADeadPeerDoesNotDeafenTheSocket():Void {
 		if (!DatagramSocket.isSupported) {
 			Assert.isFalse(DatagramSocket.isSupported);
