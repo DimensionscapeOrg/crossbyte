@@ -30,7 +30,7 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	one port can carry all of it.
 
 	```haxe
-	var connection = new PeerConnection(controlling);
+	var connection = new PeerConnection(weOffer);
 	connection.bind(0, "0.0.0.0");
 
 	// `description()` goes to the peer over whatever channel the application
@@ -54,14 +54,28 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	retransmitting everything instantly, the other never -- and nothing would
 	name the cause.
 
-	## Who is what
+	## Who is what: two roles, not one
 
-	One peer is constructed `controlling` and the other not, decided by the
-	application (conventionally, whoever initiates). Everything else follows
-	from that one bit: the controlling peer nominates the ICE pair, opens the
-	DTLS handshake as its client, opens the SCTP association, and takes the even
-	data channel streams. Passing the same value on both sides produces two
-	peers that each wait politely for the other, forever.
+	There are two of these and they are decided separately, which is easy to
+	miss because for two CrossByte peers they usually land on opposite sides and
+	one bit would appear to serve.
+
+	**The ICE role** follows the offer. The peer that offers is controlling: it
+	nominates the pair. That is settled by `isOfferer` and can still change
+	during checking, if both peers turn out to have claimed it and the
+	tiebreakers say otherwise.
+
+	**The DTLS role** is negotiated in the description. An offer says `actpass`
+	-- whichever you like -- and the answer chooses `active` or `passive`. The
+	DTLS client is the one that sends the ClientHello, and everything above DTLS
+	follows *it* rather than the ICE role: RFC 8831 has the DTLS client open the
+	SCTP association, and RFC 8832 gives it the even data channel streams.
+
+	A browser makes the distinction unavoidable. It offers, so it is
+	ICE-controlling, and it offers `actpass`, so a peer answering it is
+	ICE-controlled and the DTLS client at the same time. A connection that drove
+	both from one bit would have to be wrong about one of them -- and would be
+	wrong quietly, since the ICE half would still connect.
 
 	## Native only
 
@@ -78,8 +92,23 @@ class PeerConnection {
 	**/
 	public static var isSupported(default, null):Bool = DatagramSocket.isSupported && IceAgent.isSupported && DtlsTransport.isSupported;
 
-	/** Whether this peer nominates, dials, associates, and takes even streams. **/
-	public var controlling(default, null):Bool;
+	/**
+		Whether this peer offered, and so nominates the ICE pair.
+
+		May change during checking if both peers claimed it; see `IceAgent`. It
+		decides nothing above ICE.
+	**/
+	public var iceControlling(default, null):Bool;
+
+	/**
+		Whether this peer sends the DTLS ClientHello.
+
+		Also whether it opens the SCTP association and takes the even data
+		channel streams, both of which follow the DTLS role rather than the ICE
+		one. Undecided until a description has been exchanged: an offerer
+		proposes `actpass` and learns its role from the answer.
+	**/
+	public var dtlsClient(default, null):Bool;
 
 	/** This peer's certificate. Its fingerprint is in `description()`. **/
 	public var certificate(default, null):DtlsCertificate;
@@ -114,35 +143,46 @@ class PeerConnection {
 	@:noCompletion private var __peerPort:Int;
 	@:noCompletion private var __tick:TickEvent->Void;
 	@:noCompletion private var __closed:Bool = false;
+	@:noCompletion private var __isOfferer:Bool;
 
 	/**
-		@param controlling Whether this peer drives the connection. The two
-		peers must pass opposite values.
+		@param isOfferer Whether this peer produces the offer. The two peers must
+		pass opposite values. It makes this peer ICE-controlling, and it decides
+		what `description()` proposes for the DTLS role -- an offerer proposes
+		`actpass` and takes whatever the answer leaves it, while an answerer
+		takes the client role unless the offer has already claimed it.
 		@param certificate An existing identity to present, generated when
 		omitted -- which is the normal case, a certificate here only having to
 		outlive the session.
 	**/
-	public function new(controlling:Bool, ?certificate:DtlsCertificate, ?credentials:IceCredentials) {
+	public function new(isOfferer:Bool, ?certificate:DtlsCertificate, ?credentials:IceCredentials) {
 		if (!isSupported) {
 			throw new ArgumentError("A peer connection cannot run on this target: it needs a UDP socket, a CSPRNG and mbedTLS, and one of them is missing here. Check PeerConnection.isSupported. In a browser, use RTCPeerConnection -- this class is what it talks to.");
 		}
 
-		this.controlling = controlling;
+		this.__isOfferer = isOfferer;
+		this.iceControlling = isOfferer;
+
+		// An answerer is the DTLS client by convention, which is what a browser
+		// expects when it offers `actpass`. An offerer does not know yet and
+		// finds out from the answer; until then this value is not used, because
+		// nothing above ICE starts before a description has been exchanged.
+		this.dtlsClient = !isOfferer;
+
 		this.certificate = certificate != null ? certificate : DtlsCertificate.generate();
 		this.credentials = credentials != null ? credentials : IceCredentials.generate();
 		this.ready = new Future<PeerConnection>();
 
-		agent = new IceAgent(controlling, this.credentials);
+		agent = new IceAgent(isOfferer, this.credentials);
 		agent.connected.then(pair -> __onPathFound(pair), error -> __fail("No path to the peer was found: " + error));
 
-		// A role conflict makes the agent change sides, and everything above it
-		// keys off the same bit: who is the DTLS client, who opens the
-		// association, who takes the even streams. A connection that kept its
-		// original answer would have both peers claiming the same half of each
-		// of those, each waiting for the other. The conflict resolves during
-		// checking, so this lands before any of them have started.
+		// A role conflict changes which peer nominates, and nothing else. It
+		// used to overwrite the DTLS role too, on the assumption that the two
+		// were the same bit -- they are not, and a peer that rewrote its DTLS
+		// role here would abandon a handshake already agreed in the
+		// description over an ICE detail settled afterwards.
 		agent.onRoleChanged = function(nowControlling:Bool):Void {
-			controlling = nowControlling;
+			iceControlling = nowControlling;
 		};
 	}
 
@@ -222,7 +262,11 @@ class PeerConnection {
 			usernameFragment: credentials.usernameFragment,
 			password: credentials.password,
 			fingerprint: certificate.fingerprint,
-			candidates: candidates
+			candidates: candidates,
+			// An offer leaves the choice open; an answer states what this peer
+			// has settled on, which `connect` has already worked out if the
+			// offer arrived first.
+			setup: __isOfferer ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE)
 		};
 	}
 
@@ -248,6 +292,7 @@ class PeerConnection {
 		}
 
 		__remote = remote;
+		__resolveDtlsRole(remote.setup);
 
 		for (candidate in remote.candidates) {
 			agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
@@ -358,6 +403,29 @@ class PeerConnection {
 		}
 	}
 
+	/**
+		Settles which end sends the ClientHello, from what the peer proposed.
+
+		`actpass` leaves it here, and an answerer keeps the client role it
+		already assumed. A peer that has committed gets the opposite, because
+		both ends taking the same role is two peers waiting for a handshake
+		neither will open -- and both taking *different* halves of it is a
+		handshake that completes and an SCTP association that never does, since
+		the association is opened by the DTLS client.
+
+		A description carrying no setup at all is a CrossByte peer from before
+		this was negotiated, or an application passing the structure directly.
+		The value each side already holds is opposite by construction, so
+		leaving it alone is right.
+	**/
+	@:noCompletion private function __resolveDtlsRole(offered:Null<String>):Void {
+		if (offered == null || offered == SessionDescription.SETUP_ACTPASS) {
+			return;
+		}
+
+		dtlsClient = !SessionDescription.isClient(offered);
+	}
+
 	@:noCompletion private function __onPathFound(pair:IceCandidatePair):Void {
 		if (__closed || __dtls != null) {
 			return;
@@ -366,10 +434,11 @@ class PeerConnection {
 		__peerAddress = pair.remote.address;
 		__peerPort = pair.remote.port;
 
-		// The controlling agent takes the DTLS client role, which is the
-		// convention browsers follow -- and it must be a convention both sides
-		// share, or both wait for a ClientHello that neither sends.
-		__dtls = new DtlsTransport(certificate, __remote.fingerprint, controlling);
+		// The DTLS role, not the ICE one. A peer answering a browser is
+		// ICE-controlled and the DTLS client at once, and using the ICE role
+		// here would have it wait for a ClientHello the browser is waiting for
+		// it to send.
+		__dtls = new DtlsTransport(certificate, __remote.fingerprint, dtlsClient);
 
 		__dtls.onSend = function(payload:ByteArray):Void {
 			// To the nominated pair, always. The path ICE proved is the path
@@ -404,7 +473,10 @@ class PeerConnection {
 
 		__association.established.then(_ -> __onAssociated(), error -> __fail(error));
 
-		if (controlling) {
+		// RFC 8831: the DTLS client opens the association. Following the ICE
+		// role here would have both peers listen, or both associate, whenever
+		// the two roles differ -- which is every connection with a browser.
+		if (dtlsClient) {
 			__association.associate(haxe.Timer.stamp());
 		} else {
 			__association.listen();
@@ -417,7 +489,10 @@ class PeerConnection {
 		}
 
 		__transfer = new SctpDataTransfer(__association);
-		__channels = new DataChannelSet(__transfer, controlling);
+		// RFC 8832: the DTLS client takes the even streams. Two peers that
+		// disagreed about which of them that is would collide on every channel
+		// they opened at the same moment.
+		__channels = new DataChannelSet(__transfer, dtlsClient);
 		__channels.onChannel = channel -> onChannel(channel);
 
 		connected = true;

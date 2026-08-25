@@ -41,13 +41,10 @@ class BrowserInteropPeer {
 		var offer:Dynamic = haxe.Json.parse(offerLine);
 		var remote = SessionDescription.fromSdp(offer.sdp);
 
-		var answerSetup = SessionDescription.answerSetupFor(remote.setup);
-
-		// The DTLS client is the controlling peer throughout this stack, so the
-		// role chosen in the answer is the same bit the connection is built
-		// with. Answering `active` and then constructing a passive connection
-		// would be two peers waiting for one ClientHello.
-		connection = new PeerConnection(SessionDescription.isClient(answerSetup));
+		// The answerer, which makes this peer ICE-controlled. It says nothing
+		// about the DTLS role: the browser offers `actpass`, so this end takes
+		// the client half, and `connect` below is what settles that.
+		connection = new PeerConnection(false);
 		connection.bind(0, "0.0.0.0");
 
 		// Bound to the wildcard, so the socket cannot say where it is. The
@@ -89,9 +86,11 @@ class BrowserInteropPeer {
 			finished = true;
 		});
 
-		say({event: "answer", sdp: SessionDescription.toSdp(connection.description(), answerSetup)});
-
+		// Before describing this end, because the answer has to state which DTLS
+		// role was taken and that is not known until the offer has been read.
 		connection.connect(remote);
+
+		say({event: "answer", sdp: SessionDescription.toSdp(connection.description())});
 
 		// Driven here rather than from the tick, so the process exits when the
 		// exchange is done rather than idling until something kills it.
