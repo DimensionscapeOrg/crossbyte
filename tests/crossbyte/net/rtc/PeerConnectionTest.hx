@@ -147,6 +147,85 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		The two roles are separate, and a browser is what makes that visible.
+
+		A browser offers, so it is ICE-controlling, and it offers `actpass`, so
+		the peer answering it is ICE-controlled *and* the DTLS client at the same
+		time. One bit cannot hold both.
+
+		This drives the answering side exactly as the interop peer does and
+		checks it lands on that combination. Before the roles were separated it
+		took the ICE role for both -- so it declined to send the ClientHello a
+		browser was waiting for, and would have declined to open the SCTP
+		association even if the handshake had somehow completed.
+	**/
+	public function testAnAnswererIsIceControlledAndTheDtlsClient():Void {
+		if (unsupported()) return;
+
+		var answerer = new PeerConnection(false);
+
+		try {
+			answerer.bind(0, "127.0.0.1");
+
+			// An offer as a browser writes one: it is controlling, and it leaves
+			// the DTLS role to the answer.
+			answerer.connect({
+				usernameFragment: "OfFr",
+				password: "an-offerers-password-long-enough",
+				fingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+				candidates: [],
+				setup: "actpass"
+			});
+
+			Assert.isFalse(answerer.iceControlling, "the answerer should not be nominating");
+			Assert.isTrue(answerer.dtlsClient, "the answerer takes the client role an actpass offer leaves it");
+
+			// And it says so in its own description, since the offerer has to be
+			// told which half was taken.
+			Assert.equals("active", answerer.description().setup);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		answerer.close();
+	}
+
+	/**
+		The offerer learns its DTLS role from the answer.
+
+		It proposes `actpass` having no opinion, and an answer of `active` makes
+		it the server. A peer that assumed the client role because it was
+		ICE-controlling would send a ClientHello into another ClientHello.
+	**/
+	public function testAnOffererTakesWhateverTheAnswerLeavesIt():Void {
+		if (unsupported()) return;
+
+		var offerer = new PeerConnection(true);
+
+		try {
+			offerer.bind(0, "127.0.0.1");
+
+			Assert.equals("actpass", offerer.description().setup, "an offer should leave the DTLS role open");
+			Assert.isTrue(offerer.iceControlling);
+
+			offerer.connect({
+				usernameFragment: "AnSw",
+				password: "an-answerers-password-long-enough",
+				fingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+				candidates: [],
+				setup: "active"
+			});
+
+			Assert.isFalse(offerer.dtlsClient, "the answer claimed the client role, so the offerer is the server");
+			Assert.isTrue(offerer.iceControlling, "answering did not change who nominates");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		offerer.close();
+	}
+
+	/**
 		A description without a fingerprint is refused before anything is built.
 
 		The alternative is a connection that is encrypted and unauthenticated,

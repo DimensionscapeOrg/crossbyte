@@ -58,11 +58,13 @@ class SessionDescription {
 	/**
 		Renders a description as an offer or an answer.
 
-		@param setup Which DTLS role to claim. An offer usually says `actpass`;
-		an answer must say `active` or `passive`, and must say the opposite of
-		what it is answering.
+		@param setup Which DTLS role to claim, overriding what the description
+		already says. Rarely wanted: `PeerConnection.description()` fills the
+		field in from the role it has settled on, and passing a different value
+		here writes a document that disagrees with the connection sending it.
+		Omitted, the description's own answer is used.
 	**/
-	public static function toSdp(description:PeerDescription, setup:String = SETUP_ACTPASS):String {
+	public static function toSdp(description:PeerDescription, ?setup:String):String {
 		if (description == null) {
 			throw new ArgumentError("A description is required.");
 		}
@@ -70,6 +72,8 @@ class SessionDescription {
 		if (description.fingerprint == null || description.fingerprint.length == 0) {
 			throw new ArgumentError("A description with no fingerprint cannot be written as SDP: the fingerprint is the whole of what authenticates the peer, and a document without one describes a session anybody could answer.");
 		}
+
+		var role:String = setup != null ? setup : (description.setup != null ? description.setup : SETUP_ACTPASS);
 
 		var lines:Array<String> = [
 			"v=0",
@@ -86,7 +90,7 @@ class SessionDescription {
 			"a=ice-ufrag:" + description.usernameFragment,
 			"a=ice-pwd:" + description.password,
 			"a=fingerprint:sha-256 " + description.fingerprint,
-			"a=setup:" + setup,
+			"a=setup:" + role,
 			"a=sctp-port:" + SctpPortDefault,
 			"a=max-message-size:" + MaxMessageSize
 		];
@@ -191,8 +195,13 @@ class SessionDescription {
 	/**
 		Whether a peer claiming `setup` is the DTLS client.
 
-		Which is also whether it should be the controlling peer here, the two
-		being the same bit throughout this stack.
+		Which is *not* the same as being ICE-controlling, though for two peers
+		that both use `PeerConnection` the two usually land on opposite sides
+		and one could be mistaken for the other. A browser separates them
+		plainly: it offers, so it nominates, and it offers `actpass`, so the
+		peer answering it is the DTLS client while the browser keeps the ICE
+		role. What follows the value here is the handshake, the SCTP
+		association, and which end takes the even data channel streams.
 	**/
 	public static function isClient(setup:String):Bool {
 		return setup == SETUP_ACTIVE;
