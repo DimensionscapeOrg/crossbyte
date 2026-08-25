@@ -149,6 +149,9 @@ class TestSuites {
 		// portable list. It is the join between the agent and the socket it
 		// has to run on, which no amount of in-memory testing reaches.
 		runner.addCase(new crossbyte.net.ice.IceOverDatagramTest());
+		// The capstone: the whole stack over real sockets. Real sockets is
+		// also why it is here and not in the portable list.
+		runner.addCase(new crossbyte.net.rtc.PeerConnectionTest());
 		// Needs no guard here: this group never runs on a JavaScript target,
 		// and everywhere it does run the class exists. Its first case is the
 		// one that matters most -- it asserts that the support flag and the
