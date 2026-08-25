@@ -18,6 +18,7 @@ class Aedifex {
 		.task("interp-tests", "haxe", ["ci/interp-tests.hxml"], null, "Run the fast interpreted CrossByte test suite.")
 		.task("native-tests", "haxe", ["ci/native-tests.hxml"], null, "Build the native CrossByte smoke test executable.")
 		.task("jvm-smoke-tests", "haxe", ["ci/jvm-smoke.hxml"], null, "Build the jvm smoke test jar (core non-networking suites). Run with: java -jar export/jvm/CrossByteJvmSmoke.jar")
+		.task("browser-interop", "haxe", ["ci/browser-interop.hxml"], null, "Build the peer that talks to a real browser. Run with: node ci/interop/run.js")
 		.task("docs-api", "haxe", ["ci/docs-api.hxml"], null, "Generate CrossByte API XML/doc build artifacts.")
 		.task("docs-site", "haxelib", [
 			"run",

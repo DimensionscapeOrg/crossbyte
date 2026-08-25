@@ -1,0 +1,109 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CrossByte WebRTC interop</title>
+<body>
+<pre id="log"></pre>
+<script>
+// The browser half of the interoperability test.
+//
+// A plain RTCPeerConnection, doing nothing unusual: it creates a data channel,
+// offers, takes an answer, and expects a message back. Everything unusual is on
+// the other side of the wire.
+//
+// The harness drives this through page.evaluate rather than the page reaching
+// out on its own, so there is one process deciding the order of events and no
+// second signalling channel to get wrong.
+
+const log = [];
+
+function note(line) {
+  log.push(line);
+  document.getElementById('log').textContent = log.join('\n');
+}
+
+window.__interop = {
+  log,
+  offer: null,
+  ready: false,
+  echoed: null,
+  failed: null,
+  iceState: null
+};
+
+let connection = null;
+let channel = null;
+
+// A data channel created before the offer is what puts an m=application line
+// in it. Without one the offer describes a session with nothing to carry, and
+// the far side has nothing to answer.
+window.__createOffer = async function () {
+  connection = new RTCPeerConnection({ iceServers: [] });
+
+  connection.oniceconnectionstatechange = () => {
+    window.__interop.iceState = connection.iceConnectionState;
+    note('ice: ' + connection.iceConnectionState);
+  };
+
+  connection.onconnectionstatechange = () => {
+    note('connection: ' + connection.connectionState);
+
+    if (connection.connectionState === 'failed') {
+      window.__interop.failed = 'connection failed';
+    }
+  };
+
+  channel = connection.createDataChannel('interop');
+
+  channel.onopen = () => {
+    note('channel open');
+    window.__interop.ready = true;
+    channel.send('from the browser');
+  };
+
+  channel.onmessage = event => {
+    note('message: ' + event.data);
+    window.__interop.echoed = event.data;
+  };
+
+  channel.onerror = event => {
+    window.__interop.failed = 'channel error: ' + (event && event.error ? event.error.message : 'unknown');
+  };
+
+  const offer = await connection.createOffer();
+  await connection.setLocalDescription(offer);
+
+  // Waiting for gathering to finish rather than trickling. The far side takes
+  // one description and starts checking; trickle would need a second signalling
+  // path for candidates alone, which is more moving parts than this test needs
+  // to establish what it is establishing.
+  await new Promise(resolve => {
+    if (connection.iceGatheringState === 'complete') {
+      resolve();
+      return;
+    }
+
+    const done = () => {
+      if (connection.iceGatheringState === 'complete') {
+        connection.removeEventListener('icegatheringstatechange', done);
+        resolve();
+      }
+    };
+
+    connection.addEventListener('icegatheringstatechange', done);
+    // Chrome occasionally settles without firing the final transition; this
+    // stops the test hanging on an event that is not coming.
+    setTimeout(resolve, 3000);
+  });
+
+  window.__interop.offer = connection.localDescription.sdp;
+  note('offer gathered');
+  return connection.localDescription.sdp;
+};
+
+window.__acceptAnswer = async function (sdp) {
+  await connection.setRemoteDescription({ type: 'answer', sdp });
+  note('answer accepted');
+  return true;
+};
+</script>
+</body>
