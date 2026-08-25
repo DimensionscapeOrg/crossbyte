@@ -143,6 +143,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.rtc.SctpAssociationTest());
 		runner.addCase(new crossbyte.net.rtc.SctpDataTransferTest());
 		runner.addCase(new crossbyte.net.rtc.DataChannelTest());
+		runner.addCase(new crossbyte.net.rtc.SessionDescriptionTest());
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
 		runner.addCase(new crossbyte.net.ice.IceAgentTest());
 		// Real sockets, so this one is not portable and is not in the

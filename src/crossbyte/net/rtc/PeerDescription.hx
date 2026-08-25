@@ -41,4 +41,15 @@ typedef PeerDescription = {
 
 	/** Everywhere the peer might be reachable. **/
 	var candidates:Array<CandidateDescription>;
+
+	/**
+		Which side of the DTLS handshake this peer will take, in SDP's words.
+
+		`active` is the client, `passive` the server, and `actpass` says the
+		peer will take whichever the answer leaves it. Optional here because two
+		CrossByte peers settle it from the ICE role instead -- it matters when
+		the peer on the other end is a browser, which states it in the offer and
+		expects the answer to choose.
+	**/
+	@:optional var setup:String;
 }

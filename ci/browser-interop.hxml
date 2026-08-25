@@ -1,0 +1,15 @@
+# Builds the CrossByte half of the browser interoperability test.
+#
+# This is the only test in the repository whose result depends on another
+# implementation. Everything else proves this code agrees with itself; a real
+# RTCPeerConnection is what says whether the wire formats are the ones the rest
+# of the world uses.
+#
+# Run it with `node ci/interop/run.js` once built.
+-cp src
+-cp tests
+-cp tests/interop
+-D windows
+-D HXCPP_M64
+-main BrowserInteropPeer
+--cpp export/interop

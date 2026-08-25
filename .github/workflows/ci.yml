@@ -390,6 +390,21 @@ jobs:
           haxe ci/browser-tests.hxml
           node ci/browser/run.js
 
+      # The only job here whose result depends on an implementation nobody in
+      # this repository wrote. Every other test proves this code agrees with
+      # itself, which is worth a great deal and is not the same thing: a
+      # checksum byte order, a chunk layout or an integrity scheme can be
+      # perfectly self-consistent and understood by nothing else alive.
+      #
+      # It runs after the native smoke build because it needs the same
+      # toolchain, and it found a real bug the first time it ran -- one failed
+      # send deafening a UDP socket, which every other test had missed because
+      # none of them sent to somewhere unreachable.
+      - name: Interoperate with a real browser
+        run: |
+          haxe ci/browser-interop.hxml
+          node ci/interop/run.js
+
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 

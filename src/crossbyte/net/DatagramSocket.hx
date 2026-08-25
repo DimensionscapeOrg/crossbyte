@@ -383,7 +383,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			__bound = __getLocalEndpoint() != null;
 			#end
 		} catch (e:HxIOError) {
-			__dispatchIoError(Std.string(e));
+			__dispatchSendError(Std.string(e));
 			throw new IOError("Operation attempted on invalid socket.");
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
@@ -510,6 +510,35 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	@:noCompletion private function __dispatchIoError(message:String):Void {
 		stopReceiving();
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+	}
+
+	/**
+		Reports a send that failed, without deafening the socket.
+
+		A datagram that could not be sent is one datagram. Nothing about the
+		socket has changed: it is still bound, still readable, and still the
+		only way anything reaches this endpoint -- so stopping reception because
+		one destination was unroutable throws away every other peer over an
+		error about one of them.
+
+		That is not hypothetical. ICE finds a path by trying every candidate a
+		peer offered, and most of them fail: a candidate on a network this host
+		cannot reach, or an IPv6 address on a socket bound to IPv4, refuses at
+		the `sendto` and is meant to. Routing that into `__dispatchIoError` --
+		which is what this did -- meant the first such attempt stopped the
+		socket receiving, permanently and silently. A browser interoperability
+		run found it: every check went out, none came back, and nothing said
+		why.
+
+		The caller still gets an `IOError` thrown, and the event still fires, so
+		nothing that was reported before is reported less. What no longer
+		happens is the socket going deaf over it.
+
+		This is the same rule the read path already follows for the same reason.
+		See `__onReadFailed`.
+	**/
+	@:noCompletion private function __dispatchSendError(message:String):Void {
 		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 	}
 
