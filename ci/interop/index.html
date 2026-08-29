@@ -4,14 +4,14 @@
 <body>
 <pre id="log"></pre>
 <script>
-// The browser half of the interoperability test.
+// The browser half of the interoperability test, in either direction.
 //
-// A plain RTCPeerConnection, doing nothing unusual: it creates a data channel,
-// offers, takes an answer, and expects a message back. Everything unusual is on
-// the other side of the wire.
+// A plain RTCPeerConnection doing nothing unusual: it either offers and takes
+// an answer, or takes an offer and answers. Everything unusual is on the other
+// side of the wire.
 //
 // The harness drives this through page.evaluate rather than the page reaching
-// out on its own, so there is one process deciding the order of events and no
+// out on its own, so one process decides the order of events and there is no
 // second signalling channel to get wrong.
 
 const log = [];
@@ -23,26 +23,15 @@ function note(line) {
 
 window.__interop = {
   log,
-  offer: null,
   ready: false,
   echoed: null,
-  failed: null,
-  iceState: null
+  failed: null
 };
 
 let connection = null;
-let channel = null;
 
-// A data channel created before the offer is what puts an m=application line
-// in it. Without one the offer describes a session with nothing to carry, and
-// the far side has nothing to answer.
-window.__createOffer = async function () {
+function makeConnection() {
   connection = new RTCPeerConnection({ iceServers: [] });
-
-  connection.oniceconnectionstatechange = () => {
-    window.__interop.iceState = connection.iceConnectionState;
-    note('ice: ' + connection.iceConnectionState);
-  };
 
   connection.onconnectionstatechange = () => {
     note('connection: ' + connection.connectionState);
@@ -52,31 +41,29 @@ window.__createOffer = async function () {
     }
   };
 
-  channel = connection.createDataChannel('interop');
+  connection.oniceconnectionstatechange = () => note('ice: ' + connection.iceConnectionState);
 
-  channel.onopen = () => {
-    note('channel open');
-    window.__interop.ready = true;
-    channel.send('from the browser');
+  // The offering direction: CrossByte opens the channel, so this is how the
+  // browser learns about it.
+  connection.ondatachannel = event => {
+    const channel = event.channel;
+    note('channel arrived: ' + channel.label);
+
+    channel.onmessage = message => {
+      note('message: ' + message.data);
+      window.__interop.echoed = message.data;
+      channel.send('echo:' + message.data);
+    };
   };
 
-  channel.onmessage = event => {
-    note('message: ' + event.data);
-    window.__interop.echoed = event.data;
-  };
+  return connection;
+}
 
-  channel.onerror = event => {
-    window.__interop.failed = 'channel error: ' + (event && event.error ? event.error.message : 'unknown');
-  };
-
-  const offer = await connection.createOffer();
-  await connection.setLocalDescription(offer);
-
-  // Waiting for gathering to finish rather than trickling. The far side takes
-  // one description and starts checking; trickle would need a second signalling
-  // path for candidates alone, which is more moving parts than this test needs
-  // to establish what it is establishing.
-  await new Promise(resolve => {
+// Waiting for gathering to finish rather than trickling. The far side takes one
+// description and starts checking; trickle would need a second signalling path
+// for candidates alone, which is more moving parts than this test needs.
+function gathered() {
+  return new Promise(resolve => {
     if (connection.iceGatheringState === 'complete') {
       resolve();
       return;
@@ -94,8 +81,28 @@ window.__createOffer = async function () {
     // stops the test hanging on an event that is not coming.
     setTimeout(resolve, 3000);
   });
+}
 
-  window.__interop.offer = connection.localDescription.sdp;
+/** The browser offers. A channel created first is what puts m=application in it. */
+window.__createOffer = async function () {
+  makeConnection();
+
+  const channel = connection.createDataChannel('interop');
+
+  channel.onopen = () => {
+    note('channel open');
+    window.__interop.ready = true;
+    channel.send('from the browser');
+  };
+
+  channel.onmessage = message => {
+    note('message: ' + message.data);
+    window.__interop.echoed = message.data;
+  };
+
+  await connection.setLocalDescription(await connection.createOffer());
+  await gathered();
+
   note('offer gathered');
   return connection.localDescription.sdp;
 };
@@ -104,6 +111,18 @@ window.__acceptAnswer = async function (sdp) {
   await connection.setRemoteDescription({ type: 'answer', sdp });
   note('answer accepted');
   return true;
+};
+
+/** CrossByte offers; the browser answers and waits to be given a channel. */
+window.__answerOffer = async function (sdp) {
+  makeConnection();
+
+  await connection.setRemoteDescription({ type: 'offer', sdp });
+  await connection.setLocalDescription(await connection.createAnswer());
+  await gathered();
+
+  note('answer gathered');
+  return connection.localDescription.sdp;
 };
 </script>
 </body>
