@@ -8,6 +8,7 @@ import cpp.ConstPointer;
 import cpp.Pointer;
 import cpp.RawPointer;
 import cpp.UInt8;
+import crossbyte.net.rtc._internal.ClientHelloAssembly;
 import crossbyte.net.rtc._internal.NativeDtlsSession;
 #end
 
@@ -99,6 +100,11 @@ class DtlsTransport {
 	@:noCompletion private var __handle:Int = -1;
 	@:noCompletion private var __closed:Bool = false;
 
+	#if cpp
+	/** Only a server reads a ClientHello, so only a server needs one. **/
+	@:noCompletion private var __assembly:ClientHelloAssembly;
+	#end
+
 	/**
 		@param certificate This peer's own, whose fingerprint the far side has
 		already been given.
@@ -123,6 +129,10 @@ class DtlsTransport {
 		this.established = new Future<DtlsTransport>();
 
 		#if cpp
+		if (!isClient) {
+			__assembly = new ClientHelloAssembly();
+		}
+
 		__handle = NativeDtlsSession.open(!isClient, certificate.certificatePem, certificate.privateKeyPem);
 
 		if (__handle <= 0) {
@@ -194,6 +204,19 @@ class DtlsTransport {
 
 		for (i in 0...payload.length) {
 			bytes.set(i, payload.readUnsignedByte());
+		}
+
+		// A server's first job is to read a ClientHello, and a browser's is
+		// large enough to be sent in pieces that mbedtls will not put back
+		// together. A client never sees one, so it never takes this path.
+		if (__assembly != null) {
+			bytes = __assembly.accept(bytes);
+
+			// Held: fragments still to come, and nothing to hand over yet. The
+			// datagram was still DTLS, which is what the caller asked.
+			if (bytes == null) {
+				return true;
+			}
 		}
 
 		NativeDtlsSession.feed(__handle, __constPtr(bytes), bytes.length);

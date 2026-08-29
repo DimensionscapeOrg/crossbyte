@@ -139,6 +139,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.TurnClientTest());
 		runner.addCase(new crossbyte.net.rtc.DtlsCertificateTest());
 		runner.addCase(new crossbyte.net.rtc.DtlsTransportTest());
+		runner.addCase(new crossbyte.net.rtc.ClientHelloAssemblyTest());
 		runner.addCase(new crossbyte.net.rtc.SctpPacketTest());
 		runner.addCase(new crossbyte.net.rtc.SctpAssociationTest());
 		runner.addCase(new crossbyte.net.rtc.SctpDataTransferTest());
