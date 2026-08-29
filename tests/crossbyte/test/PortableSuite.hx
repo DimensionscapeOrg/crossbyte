@@ -37,6 +37,7 @@ class PortableSuite {
 		// has to say so rather than fail somewhere further along.
 		runner.addCase(new crossbyte.net.rtc.DtlsCertificateTest());
 		runner.addCase(new crossbyte.net.rtc.DtlsTransportTest());
+		runner.addCase(new crossbyte.net.rtc.ClientHelloAssemblyTest());
 		runner.addCase(new crossbyte.net.rtc.SctpPacketTest());
 		runner.addCase(new crossbyte.net.rtc.SctpAssociationTest());
 		runner.addCase(new crossbyte.net.rtc.SctpDataTransferTest());

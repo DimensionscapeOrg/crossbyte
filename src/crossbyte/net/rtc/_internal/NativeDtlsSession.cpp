@@ -8,6 +8,7 @@
 #endif
 
 #include <mbedtls/ctr_drbg.h>
+#include <mbedtls/debug.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/error.h>
 #include <mbedtls/pem.h>
@@ -20,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -135,6 +137,36 @@ int recvCallback(void *ctx, unsigned char *buf, size_t len)
    memcpy(buf, front.empty() ? (const uint8_t *)"" : &front[0], size);
    session->inbound.pop_front();
    return (int)size;
+}
+
+// A handshake that fails gives back a number and nothing else, and the number
+// names a check rather than a cause -- BAD_HS_CLIENT_HELLO is returned from
+// two dozen places in mbedtls, each a different reason a peer's first message
+// was unacceptable. Setting CROSSBYTE_DTLS_DEBUG to a level from 1 to 4 puts
+// mbedtls's own account of the handshake on stderr, which turns that number
+// into the line of the message it objected to.
+void debugCallback(void *ctx, int level, const char *file, int line, const char *message)
+{
+   fprintf(stderr, "dtls %d %s:%d %s", level, file, line, message);
+   fflush(stderr);
+}
+
+// Zero unless asked for. Reading it once and remembering keeps a handshake from
+// consulting the environment on every session.
+int debugLevel()
+{
+   static int level = -1;
+
+   if (level < 0)
+   {
+      const char *requested = getenv("CROSSBYTE_DTLS_DEBUG");
+      level = requested ? atoi(requested) : 0;
+
+      if (level < 0)
+         level = 0;
+   }
+
+   return level;
 }
 
 void setTimer(void *ctx, uint32_t intermediateMs, uint32_t finishMs)
@@ -268,6 +300,12 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
       // be constructed without an expected fingerprint to compare against.
       mbedtls_ssl_conf_authmode(&session->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
       mbedtls_ssl_conf_rng(&session->conf, mbedtls_ctr_drbg_random, &g_drbg);
+
+      if (debugLevel() > 0)
+      {
+         mbedtls_debug_set_threshold(debugLevel());
+         mbedtls_ssl_conf_dbg(&session->conf, debugCallback, 0);
+      }
 
       ret = mbedtls_ssl_conf_own_cert(&session->conf, &session->cert, &session->key);
 
