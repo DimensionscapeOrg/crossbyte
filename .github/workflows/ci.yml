@@ -400,6 +400,12 @@ jobs:
       # toolchain, and it found a real bug the first time it ran -- one failed
       # send deafening a UDP socket, which every other test had missed because
       # none of them sent to somewhere unreachable.
+      #
+      # Four cases, so it is not quick: both signalling directions, against a
+      # browser publishing its addresses and one hiding them behind .local mDNS
+      # names. The hiding one is the browser every visitor actually runs, and
+      # the only configuration where the path has to be learned from an
+      # incoming check rather than dialled.
       - name: Interoperate with a real browser
         run: |
           haxe ci/browser-interop.hxml

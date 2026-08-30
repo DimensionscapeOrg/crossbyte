@@ -100,7 +100,7 @@ class BrowserInteropPeer {
 		gatherToward([]);
 
 		connection.ready.then(function(_):Void {
-			say({event: "ready", dtlsClient: connection.dtlsClient, iceControlling: connection.iceControlling});
+			say({event: "ready", dtlsClient: connection.dtlsClient, iceControlling: connection.iceControlling, path: path()});
 
 			var channel = connection.createDataChannel("interop");
 
@@ -130,8 +130,15 @@ class BrowserInteropPeer {
 
 		Bound to the wildcard, so the socket cannot say where it is. Each of the
 		peer's own candidates is a destination to ask about -- whichever
-		interface reaches it is the address to advertise -- and with no peer
-		candidates yet, the default route answers the same question generally.
+		interface reaches it is the address to advertise.
+
+		The default route is asked as well, always, and not only when there are
+		no destinations to aim at. A browser publishes its host candidates as
+		`.local` mDNS names, which resolve to nothing here, so asking only about
+		them yields nothing and the peer advertises loopback alone. That passes
+		this test, both ends being on one machine, and describes a peer no
+		browser on any other machine could reach -- a green run for a connection
+		that does not work.
 	**/
 	static function gatherToward(destinations:Array<String>):Void {
 		var asked = new Map<String, Bool>();
@@ -148,15 +155,38 @@ class BrowserInteropPeer {
 			}, function(_):Void {});
 		}
 
-		if (destinations.length == 0) {
-			LocalAddress.primary().then(function(local:String):Void {
-				addHost(local);
-			}, function(_):Void {});
-		}
+		LocalAddress.primary().then(function(local:String):Void {
+			addHost(local);
+		}, function(_):Void {});
 
 		// Loopback as well: a socket on the wildcard is reachable there too, and
 		// it costs one candidate.
 		addHost("127.0.0.1");
+	}
+
+	/**
+		What the connection settled on, which is the whole of what the mDNS case
+		proves.
+
+		A browser publishes no address anything here can dial, so every pair
+		built from its description is unreachable and the path has to be learned
+		the other way round -- from the source address of a check the browser
+		sent, which ICE calls a peer-reflexive candidate. Reporting the type
+		lets the harness assert that is what happened, rather than observing a
+		connection and assuming why.
+	**/
+	static function path():Dynamic {
+		var pair = connection.agent.selectedPair;
+
+		if (pair == null) {
+			return null;
+		}
+
+		return {
+			remoteType: (pair.remote.type : String),
+			remoteAddress: pair.remote.address,
+			localAddress: pair.local.address
+		};
 	}
 
 	static var advertised:Map<String, Bool> = new Map();
@@ -173,7 +203,7 @@ class BrowserInteropPeer {
 	/** The answering direction, where the browser opens the channel. **/
 	static function watchForChannel():Void {
 		connection.ready.then(function(_):Void {
-			say({event: "ready", dtlsClient: connection.dtlsClient, iceControlling: connection.iceControlling});
+			say({event: "ready", dtlsClient: connection.dtlsClient, iceControlling: connection.iceControlling, path: path()});
 		}, function(error:String):Void {
 			say({event: "failed", reason: error});
 			finished = true;
