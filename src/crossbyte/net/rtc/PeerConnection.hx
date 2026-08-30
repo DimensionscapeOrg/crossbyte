@@ -14,6 +14,7 @@ import crossbyte.net.ice.IceAgent;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.ice.IceCandidatePair;
 import crossbyte.net.ice.IceCredentials;
+import crossbyte.net.TurnClient;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net.rtc.PeerDescription;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
@@ -109,10 +110,20 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	those are most of them. It does not cover a symmetric NAT, which makes a
 	fresh mapping per destination so that the address a STUN server reports is
 	not the one the peer would reach. Two of those, or one of those and a
-	firewall that drops unsolicited datagrams, need traffic relayed by a server
-	both peers can reach. `TurnClient` speaks that protocol and takes its
-	transport the way every layer here does, but nothing routes a connection
-	through it yet.
+	firewall that drops unsolicited datagrams, leave no datagram either peer can
+	send that the other receives. `gatherRelayed` is the answer to that: a TURN
+	server both peers can reach agrees to forward between them, and the address
+	it lends becomes a candidate like any other.
+
+	It is asked for last and used last on purpose. Every byte crosses a third
+	party twice and somebody pays for the bandwidth, so ICE prefers any direct
+	path it can prove -- a relayed candidate carries the lowest priority there
+	is. It is worth having because the alternative is no connection at all.
+
+	Gathering it does not commit the connection to it. Relayed, reflexive and
+	host candidates are checked together and the best one that works wins, which
+	is the whole point of ICE and the reason all three can simply be asked for
+	up front.
 
 	The one thing this does require is that this peer advertise an address the
 	browser can reach. Gathering only toward the candidates a browser offered
@@ -370,6 +381,13 @@ class PeerConnection {
 		}
 
 		__pollReflexive(now);
+
+		// Before the agent, so an allocation that is still being asked for keeps
+		// asking and a granted one keeps being refreshed whatever else is happening.
+		if (__turn != null) {
+			__turn.poll(now);
+		}
+
 		agent.poll(now);
 
 		if (__dtls != null) {
@@ -396,6 +414,11 @@ class PeerConnection {
 		// Closing before the server answered: the caller is holding a future,
 		// and leaving it forever pending is worse than saying what happened.
 		__settleReflexive(null, "The connection closed before the STUN server replied.");
+		__settleRelayed(null, "The connection closed before the relay answered.");
+
+		if (__turn != null) {
+			__turn.close();
+		}
 
 		if (__tick != null) {
 			try {
@@ -493,6 +516,193 @@ class PeerConnection {
 
 		__send(__reflexiveRequest.encode(), server, port);
 		return future;
+	}
+
+	/**
+		Asks a TURN server to relay for this connection, and adds the address it
+		lends as a candidate.
+
+		For the peer no direct path reaches. A symmetric NAT gives a socket a
+		fresh mapping per destination, so what `gatherReflexive` learned describes
+		the route to the STUN server and nothing about the route to the peer; two
+		of those, or one and a firewall that drops anything unsolicited, and there
+		is no datagram either end can send that the other will receive. A relay is
+		the address both can reach.
+
+		Allocated through this connection's own socket, for the same reason the
+		reflexive query is: the permissions a relay grants describe traffic from
+		the socket that asked, and an allocation made on another one would forward
+		for a connection that does not exist.
+
+		Once it is granted, checks and data addressed to a peer over the relayed
+		candidate are wrapped for the server to forward, and what comes back is
+		unwrapped and handled as though it had arrived directly -- so nothing
+		above ICE knows or needs to.
+
+		@return The candidate that was added, or a failure naming why none was.
+	**/
+	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478):Future<IceCandidate> {
+		var future = new Future<IceCandidate>();
+
+		if (__closed || __socket == null) {
+			@:privateAccess future.__fail("A relay can only be allocated through a bound connection; call bind first.", null);
+			return future;
+		}
+
+		if (server == null || server == "") {
+			@:privateAccess future.__fail("A TURN server address is required.", new ArgumentError("server"));
+			return future;
+		}
+
+		if (__turn != null) {
+			@:privateAccess future.__fail("This connection already has a relay allocated.", null);
+			return future;
+		}
+
+		var relay = new TurnClient(server, port, username, password);
+		__turn = relay;
+		__relayedFuture = future;
+
+		// Out to the server directly. The relay is reached the ordinary way; it
+		// is only traffic for a peer that gets wrapped.
+		relay.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
+			__send(payload, address, sendPort);
+		};
+
+		relay.onData = function(payload:ByteArray, fromAddress:String, fromPort:Int):Void {
+			__onRelayed(payload, fromAddress, fromPort);
+		};
+
+		relay.allocated.then(function(relayed:ReflexiveAddress):Void {
+			if (__closed) {
+				return;
+			}
+
+			var candidate = new IceCandidate(RELAYED, relayed.address, relayed.port);
+			__relayedCandidate = candidate;
+
+			// The candidate and the way to send from it, together: its address is
+			// the server's, so a datagram addressed there straightforwardly would
+			// arrive at the relay as ordinary traffic rather than as something to
+			// forward.
+			agent.addLocalCandidate(candidate, function(payload:ByteArray, address:String, peerPort:Int):Void {
+				__relayTo(payload, address, peerPort);
+			});
+
+			__localCandidates.push(candidate);
+			__settleRelayed(candidate, null);
+		}, function(error:String):Void {
+			__settleRelayed(null, error);
+		});
+
+		relay.allocate(__clock());
+		return future;
+	}
+
+	/** The relayed candidate, once a server has granted one. **/
+	public var relayedCandidate(get, never):Null<IceCandidate>;
+
+	@:noCompletion private function get_relayedCandidate():Null<IceCandidate> {
+		return __relayedCandidate;
+	}
+
+	@:noCompletion private var __turn:TurnClient;
+	@:noCompletion private var __relayedCandidate:IceCandidate;
+	@:noCompletion private var __relayedFuture:Future<IceCandidate>;
+	@:noCompletion private var __permitted:Map<String, Float> = new Map();
+
+	/** Whether the nominated pair reaches the peer through the relay. **/
+	@:noCompletion private var __peerRelayed:Bool = false;
+
+	/**
+		How long a permission is assumed to last before it is asked for again.
+
+		RFC 8656 gives one five minutes. Renewed well inside that, because a
+		permission that lapses does not fail loudly -- the relay simply drops what
+		it is asked to forward, and the connection goes quiet for no stated reason.
+	**/
+	private static inline var PERMISSION_REFRESH:Float = 240;
+
+	/**
+		Wraps one datagram for the relay to forward, permitting the peer first.
+
+		A relay forwards to an address only once it has been told to expect it,
+		and a Send indication to a peer with no permission is discarded without
+		any reply -- which from here looks exactly like a peer that is not there.
+	**/
+	@:noCompletion private function __relayTo(payload:ByteArray, address:String, port:Int):Void {
+		if (__turn == null) {
+			return;
+		}
+
+		var now = __clock();
+
+		// Asked about by absence rather than by age against a zero: the clock
+		// here counts from when the program started, so early on "never
+		// granted" and "granted moments ago" are the same small number and a
+		// permission would be skipped for the first four minutes of a process.
+		if (!__permitted.exists(address) || now - __permitted.get(address) >= PERMISSION_REFRESH) {
+			__permitted.set(address, now);
+			__turn.permit(address, now);
+		}
+
+		__turn.sendTo(payload, address, port);
+	}
+
+	/**
+		A datagram the relay forwarded, put back where it would have arrived.
+
+		The same demultiplexing as anything off the socket, and deliberately so:
+		by this point the wrapper is gone and what is left is exactly what the peer
+		sent. What it is told in addition is which candidate it came in on, so that
+		an answer goes back out the same way rather than straight at an address
+		nothing here can reach.
+	**/
+	@:noCompletion private function __onRelayed(payload:ByteArray, fromAddress:String, fromPort:Int):Void {
+		if (__closed || payload == null || payload.length == 0) {
+			return;
+		}
+
+		var now = __clock();
+
+		payload.position = 0;
+		var first:Int = payload.readUnsignedByte();
+		payload.position = 0;
+
+		if (first < 4) {
+			agent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+			return;
+		}
+
+		if (first >= 20 && first <= 63 && __dtls != null) {
+			__dtls.receive(payload, now);
+		}
+	}
+
+	@:noCompletion private function __settleRelayed(candidate:Null<IceCandidate>, error:String):Void {
+		var future = __relayedFuture;
+		__relayedFuture = null;
+
+		if (future == null) {
+			return;
+		}
+
+		if (candidate == null) {
+			@:privateAccess future.__fail(error, null);
+			return;
+		}
+
+		@:privateAccess future.__resolve(candidate);
+	}
+
+	/**
+		The time every layer here is driven from.
+
+		One clock, so that a permission granted during a poll and a retransmission
+		scheduled during a receive are measured against the same thing.
+	**/
+	@:noCompletion private function __clock():Float {
+		return haxe.Timer.stamp();
 	}
 
 	/** The first retransmission gap, doubling after each, from RFC 5389. **/
@@ -607,6 +817,17 @@ class PeerConnection {
 				return;
 			}
 
+			// Then the relay, which recognises its own by message type and hands
+			// back anything else. Its replies and the traffic it forwards share the
+			// STUN byte range with every connectivity check on this socket, and
+			// where they came from cannot decide it -- the server may have been
+			// named as a hostname, and it answers from whatever that resolved to.
+			e.data.position = 0;
+
+			if (__turn != null && __turn.receive(e.data, e.srcAddress, e.srcPort, now)) {
+				return;
+			}
+
 			e.data.position = 0;
 			agent.receive(e.data, e.srcAddress, e.srcPort, now);
 			return;
@@ -648,6 +869,11 @@ class PeerConnection {
 		__peerAddress = pair.remote.address;
 		__peerPort = pair.remote.port;
 
+		// Which of this peer's addresses the path was proved on. It matters only
+		// when it is the relayed one, and then it matters entirely: the session's
+		// records have to travel the same way its connectivity checks did.
+		__peerRelayed = __relayedCandidate != null && pair.local.sameAs(__relayedCandidate);
+
 		// The DTLS role, not the ICE one. A peer answering a browser is
 		// ICE-controlled and the DTLS client at once, and using the ICE role
 		// here would have it wait for a ClientHello the browser is waiting for
@@ -655,10 +881,14 @@ class PeerConnection {
 		__dtls = new DtlsTransport(certificate, __remote.fingerprint, dtlsClient);
 
 		__dtls.onSend = function(payload:ByteArray):Void {
-			// To the nominated pair, always. The path ICE proved is the path
-			// the session uses; sending anywhere else would open a NAT mapping
-			// the peer knows nothing about.
-			__send(payload, __peerAddress, __peerPort);
+			// To the nominated pair, always, and by the route it was nominated on.
+			// The path ICE proved is the path the session uses; sending anywhere
+			// else would open a NAT mapping the peer knows nothing about.
+			if (__peerRelayed) {
+				__relayTo(payload, __peerAddress, __peerPort);
+			} else {
+				__send(payload, __peerAddress, __peerPort);
+			}
 		};
 
 		__dtls.established.then(_ -> __onSecured(), error -> __fail(error));

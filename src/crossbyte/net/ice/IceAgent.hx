@@ -144,6 +144,12 @@ class IceAgent {
 	public dynamic function onSend(payload:ByteArray, address:String, port:Int):Void {}
 
 	@:noCompletion private var __locals:Array<IceCandidate> = [];
+
+	/** How to send from a candidate that is not simply the shared socket. **/
+	@:noCompletion private var __senders:Array<{candidate:IceCandidate, send:(ByteArray, String, Int) -> Void}> = [];
+
+	/** Which candidate the datagram being handled arrived on, if not the socket. **/
+	@:noCompletion private var __arrivedVia:IceCandidate = null;
 	@:noCompletion private var __remotes:Array<IceCandidate> = [];
 	@:noCompletion private var __checks:Array<IceCheck> = [];
 	@:noCompletion private var __valid:Array<IceCandidatePair> = [];
@@ -170,10 +176,26 @@ class IceAgent {
 		started -- gathering a reflexive address takes a round trip to a STUN
 		server, and waiting for it before trying the host candidates would delay
 		the case that needs no server at all.
+
+		@param send How to send from this candidate, when that is not simply the
+		socket `onSend` writes to. A relayed candidate is the case that needs it:
+		its address belongs to a TURN server, and reaching a peer through it means
+		wrapping the datagram for the relay to forward rather than addressing the
+		peer directly. Host and reflexive candidates share the one socket and want
+		nothing here.
+
+		The alternative would be for `onSend` to say which candidate a datagram is
+		leaving from and let the caller sort it out. That puts the routing table in
+		every caller; this keeps it where the knowledge already is, since whoever
+		obtained a relayed address is the only thing that knows how to use it.
 	**/
-	public function addLocalCandidate(candidate:IceCandidate):Void {
+	public function addLocalCandidate(candidate:IceCandidate, ?send:(ByteArray, String, Int) -> Void):Void {
 		if (candidate == null) {
 			throw new ArgumentError("A candidate is required.");
+		}
+
+		if (send != null) {
+			__senders.push({candidate: candidate, send: send});
 		}
 
 		if (!__known(__locals, candidate)) {
@@ -265,7 +287,7 @@ class IceAgent {
 		case once a session is carrying data -- so a caller should pass it on
 		rather than dropping it.
 	**/
-	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float):Bool {
+	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate):Bool {
 		if (state == CLOSED || payload == null) {
 			return false;
 		}
@@ -275,6 +297,14 @@ class IceAgent {
 		if (message == null) {
 			return false;
 		}
+
+		// An answer has to leave the way the request arrived. A check that came
+		// through a relay came from a peer with no other path here, and replying
+		// straight back at the address it appears to be from sends the answer
+		// somewhere it will be dropped -- while the request itself looked
+		// perfectly ordinary, having been unwrapped before it got here.
+		var previous = __arrivedVia;
+		__arrivedVia = via;
 
 		switch (message.type) {
 			case StunMessage.BINDING_REQUEST:
@@ -288,6 +318,7 @@ class IceAgent {
 				// not the caller's to handle.
 		}
 
+		__arrivedVia = previous;
 		return true;
 	}
 
@@ -336,7 +367,7 @@ class IceAgent {
 		// Doubling from 500ms, so seven attempts span roughly 31 seconds.
 		check.nextAttemptAt = now + INITIAL_RTO * Math.pow(2, check.attempts - 1);
 
-		onSend(message.encodeSigned(remoteCredentials.password), check.pair.remote.address, check.pair.remote.port);
+		__sendVia(check.pair.local, message.encodeSigned(remoteCredentials.password), check.pair.remote.address, check.pair.remote.port);
 	}
 
 	@:noCompletion private function __nominate(now:Float):Void {
@@ -387,7 +418,7 @@ class IceAgent {
 				StunMessage.errorCode(ROLE_CONFLICT, "Role Conflict")
 			]);
 
-			onSend(refusal.encodeSigned(localCredentials.password), fromAddress, fromPort);
+			__sendVia(__arrivedVia, refusal.encodeSigned(localCredentials.password), fromAddress, fromPort);
 			return;
 		}
 
@@ -397,9 +428,9 @@ class IceAgent {
 			StunMessage.xorMappedAddress(fromAddress, fromPort)
 		]);
 
-		onSend(response.encodeSigned(localCredentials.password), fromAddress, fromPort);
+		__sendVia(__arrivedVia, response.encodeSigned(localCredentials.password), fromAddress, fromPort);
 
-		var pair = __pairFrom(fromAddress, fromPort);
+		var pair = __pairFrom(fromAddress, fromPort, __arrivedVia);
 
 		if (pair == null) {
 			return;
@@ -609,6 +640,25 @@ class IceAgent {
 		onRoleChanged(controlling);
 	}
 
+	/**
+		Sends from a particular candidate.
+
+		Falls back to `onSend` for every candidate that shares the socket, which
+		is all of them but a relayed one.
+	**/
+	@:noCompletion private function __sendVia(via:IceCandidate, payload:ByteArray, address:String, port:Int):Void {
+		if (via != null) {
+			for (entry in __senders) {
+				if (entry.candidate.sameAs(via)) {
+					entry.send(payload, address, port);
+					return;
+				}
+			}
+		}
+
+		onSend(payload, address, port);
+	}
+
 	@:noCompletion private function __learnPeerReflexive(mapped:ReflexiveAddress, remote:IceCandidate):Void {
 		var discovered = new IceCandidate(PEER_REFLEXIVE, mapped.address, mapped.port, remote.component);
 
@@ -686,7 +736,7 @@ class IceAgent {
 		which is the same discovery this side makes from a response -- seen from
 		the other end.
 	**/
-	@:noCompletion private function __pairFrom(address:String, port:Int):Null<IceCandidatePair> {
+	@:noCompletion private function __pairFrom(address:String, port:Int, ?via:IceCandidate):Null<IceCandidatePair> {
 		var remote:IceCandidate = null;
 
 		for (candidate in __remotes) {
@@ -701,9 +751,25 @@ class IceAgent {
 			__remotes.push(remote);
 		}
 
-		// The local half is this peer's best candidate that could reach it. One
-		// socket serves every local candidate here, so which is named affects
-		// the priority and nothing about where the datagram goes.
+		// The local half is whichever of this peer's addresses the request came
+		// in on, when that is known. It used to be simply the first that could
+		// reach the remote at all, on the reasoning that one socket serves every
+		// local candidate so the choice moved the priority and nothing else.
+		//
+		// A relayed candidate breaks that. Its address belongs to a server, and
+		// naming it is what decides a datagram gets wrapped for that server to
+		// forward rather than addressed at the peer directly -- so a check that
+		// arrived through a relay and was answered on a host candidate would go
+		// straight out at an address the peer is not reachable at, while looking
+		// from here like an ordinary triggered check.
+		if (via != null) {
+			for (local in __locals) {
+				if (local.sameAs(via) && local.canReach(remote)) {
+					return new IceCandidatePair(local, remote, controlling);
+				}
+			}
+		}
+
 		for (local in __locals) {
 			if (local.canReach(remote)) {
 				return new IceCandidatePair(local, remote, controlling);

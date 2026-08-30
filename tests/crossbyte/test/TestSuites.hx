@@ -155,6 +155,7 @@ class TestSuites {
 		// also why it is here and not in the portable list.
 		runner.addCase(new crossbyte.net.rtc.PeerConnectionTest());
 		runner.addCase(new crossbyte.net.rtc.PeerConnectionGatheringTest());
+		runner.addCase(new crossbyte.net.rtc.PeerConnectionRelayTest());
 		// Needs no guard here: this group never runs on a JavaScript target,
 		// and everywhere it does run the class exists. Its first case is the
 		// one that matters most -- it asserts that the support flag and the
