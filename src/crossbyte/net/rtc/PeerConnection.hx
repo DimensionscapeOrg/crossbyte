@@ -95,9 +95,16 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 
 	So browser interoperability needs no mDNS resolver, and one would not help
 	much if it were here: those names only resolve on the link the browser is on,
-	and a peer on that link can already be reached the way just described. What
-	a peer *elsewhere* needs is a reflexive or relayed candidate, which is
-	`TurnClient` and the agent's reflexive gathering, not name resolution.
+	and a peer on that link can already be reached the way just described.
+
+	A browser on some *other* network is a different problem and an open one.
+	What it needs is a reflexive or relayed candidate -- an address a peer
+	elsewhere can send to -- and those have to be discovered over this very
+	socket, since a second socket gets its own translation and an address that
+	describes nothing. `TurnClient` and the STUN codec are built for it and take
+	their transport the same way every layer here does. What is missing is the
+	wiring: this class keeps its socket to itself, so there is currently no way
+	to put a request out through it or route an answer back in.
 
 	The one thing this does require is that this peer advertise an address the
 	browser can reach. Gathering only toward the candidates a browser offered
@@ -219,9 +226,10 @@ class PeerConnection {
 
 		@param localAddress Binding to a concrete address also records it as a
 		host candidate. A wildcard bind does not -- `0.0.0.0` names every
-		interface and so names none -- and a caller behind one should gather
-		with `LocalAddress` and `addLocalCandidate`, or through the agent's
-		reflexive discovery.
+		interface and so names none -- so a caller behind one should ask
+		`LocalAddress` which interface reaches the peer and pass the answer to
+		`addLocalCandidate`. Reflexive and relayed candidates go in the same
+		way, but nothing here discovers them yet; see the class documentation.
 	**/
 	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
 		if (__closed || __socket != null) {
