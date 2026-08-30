@@ -14,6 +14,15 @@
 // passes the first and cannot complete the second -- which is exactly what it
 // did until the roles were separated.
 //
+// Both are run twice more, against a browser hiding its addresses and one not.
+// By default Chrome publishes every host candidate as a random .local mDNS
+// name -- a privacy measure, so a page cannot fingerprint a visitor's network
+// -- and nothing here resolves those. This test used to switch that off, which
+// made it a test of a browser no visitor runs. It is left on now, and what
+// carries the connection instead is asserted rather than assumed: the browser
+// can still reach CrossByte, whose addresses are real, and the check it sends
+// teaches CrossByte where it is. ICE calls that a peer-reflexive candidate.
+//
 // Usage: node ci/interop/run.js
 // Needs puppeteer and the peer built by `haxe ci/browser-interop.hxml`.
 
@@ -145,7 +154,86 @@ async function probeReachable(sdp) {
   probe.close();
 }
 
-async function browserOffers(page) {
+/**
+ * Asserts how the connection was made, not merely that it was.
+ *
+ * With the browser hiding its addresses, every candidate it publishes is a
+ * .local name that resolves to nothing here, so no pair built from its
+ * description can be dialled. What is left is the check the browser sends to
+ * CrossByte -- whose addresses are real -- and the source address on it, which
+ * ICE turns into a peer-reflexive candidate. If that is the mechanism, the
+ * selected pair says prflx; anything else means the connection was made some
+ * way this test did not intend and does not describe.
+ */
+function checkPath(ready, mdns, browserSdp, peerSdp) {
+  const path = ready.path;
+
+  if (!path) {
+    throw new Error('the peer reported no selected pair');
+  }
+
+  const hostCandidates = browserSdp.split(/\r?\n/)
+    .filter(line => /^a=candidate:/.test(line) && / typ host/.test(line));
+  const named = hostCandidates.filter(line => /\.local /.test(line));
+
+  if (mdns) {
+    // Should Chrome ever stop hiding these, this case would quietly go back to
+    // proving the easy one, so the premise is checked before the conclusion.
+    if (hostCandidates.length === 0 || named.length !== hostCandidates.length) {
+      throw new Error('expected every browser host candidate to be a .local name, got:\n  ' +
+        hostCandidates.join('\n  '));
+    }
+
+    if (path.remoteType !== 'prflx') {
+      throw new Error('with the browser hiding its addresses the path can only be learned from an ' +
+        'incoming check, so the remote candidate should be peer-reflexive; got ' + JSON.stringify(path));
+    }
+  } else {
+    if (named.length > 0) {
+      throw new Error('expected the browser to publish real addresses with mDNS off, got:\n  ' +
+        hostCandidates.join('\n  '));
+    }
+
+    // Here CrossByte's own checks reach an address the browser published, so
+    // the pair it settles on is one it built rather than one it was taught.
+    if (path.remoteType !== 'host') {
+      throw new Error('with real addresses on both sides the selected pair should be a host one; got ' +
+        JSON.stringify(path));
+    }
+  }
+
+  // Everything above would hold for a peer reachable only over loopback, which
+  // is a connection that works because both ends share a machine and would not
+  // otherwise. Asserting the *selected* pair is not loopback would be checking
+  // something nobody here decides -- both of CrossByte's candidates carry the
+  // same priority and the controlling agent picks -- so what is asserted is
+  // what the peer offered. Gathering only toward the browser's candidates left
+  // it advertising 127.0.0.1 alone, and this is that regression.
+  const advertised = peerSdp.split(/\r?\n/)
+    .filter(line => /^a=candidate:/.test(line))
+    .map(line => line.split(' ')[4]);
+  const routable = advertised.filter(address => address !== '127.0.0.1' && address !== '::1');
+
+  if (hasRoutableAddress() && routable.length === 0) {
+    throw new Error('CrossByte advertised nothing but loopback while this machine has a routable ' +
+      'address, so no browser anywhere else could have reached it: ' + JSON.stringify(advertised));
+  }
+
+  console.log('    path: ' + path.localAddress + ' -> ' + path.remoteAddress + ' (' + path.remoteType +
+    '), advertised ' + advertised.join(', '));
+}
+
+/** Whether this machine has an address a peer elsewhere could use. */
+function hasRoutableAddress() {
+  for (const addresses of Object.values(require('os').networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) return true;
+    }
+  }
+  return false;
+}
+
+async function browserOffers(page, mdns) {
   console.log('\n=== the browser offers, CrossByte answers ===');
   console.log('  CrossByte should end up ICE-controlled and the DTLS client');
 
@@ -185,13 +273,14 @@ async function browserOffers(page) {
       throw new Error('the answering peer took the wrong roles: ' + JSON.stringify(ready));
     }
 
+    checkPath(ready, mdns, offer, answer.sdp);
     console.log('  passed: answered, and took the ICE-controlled / DTLS-client pair');
   } finally {
     peer.kill();
   }
 }
 
-async function crossbyteOffers(page) {
+async function crossbyteOffers(page, mdns) {
   console.log('\n=== CrossByte offers, the browser answers ===');
   console.log('  CrossByte should end up ICE-controlling and the DTLS server');
 
@@ -236,6 +325,7 @@ async function crossbyteOffers(page) {
       throw new Error('the offering peer took the wrong roles: ' + JSON.stringify(ready));
     }
 
+    checkPath(ready, mdns, answer, offer.sdp);
     console.log('  passed: offered, and took the ICE-controlling / DTLS-server pair');
   } finally {
     peer.kill();
@@ -245,51 +335,53 @@ async function crossbyteOffers(page) {
 (async () => {
   await new Promise(resolve => server.listen(PORT, '127.0.0.1', resolve));
 
-  const browser = await puppeteer.launch({
-    args: [
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      // Without this Chrome replaces every host candidate with a random .local
-      // mDNS name, which nothing here resolves -- so the two peers would
-      // exchange candidates neither could dial and the test would fail for a
-      // reason unrelated to the code under test. It is a privacy measure aimed
-      // at pages fingerprinting a visitor's network, and turning it off is
-      // appropriate for a loopback test and nowhere else. A deployment facing
-      // real browsers reaches them through reflexive or relayed candidates
-      // instead; see PeerConnection's documentation.
-      '--disable-features=WebRtcHideLocalIpsWithMdns'
-    ]
-  });
-
   let failed = null;
 
-  for (const direction of [browserOffers, crossbyteOffers]) {
-    const page = await browser.newPage();
-    const pageErrors = [];
-    page.on('pageerror', error => pageErrors.push(String(error)));
-    page.on('console', message => {
-      if (message.type() === 'error') pageErrors.push('console.error: ' + message.text());
+  // mDNS on is the browser everyone actually runs, and the harder case: no
+  // address CrossByte can dial, so the path has to be learned from an incoming
+  // check. Off is kept as well, because it is the only configuration where
+  // CrossByte's own checks reach a candidate the browser published -- the
+  // sending half of ICE, which the other configuration never exercises.
+  for (const mdns of [true, false]) {
+    console.log('\n########  browser ' + (mdns ? 'hiding its addresses (.local mDNS names)' :
+      'publishing real addresses') + '  ########');
+
+    const browser = await puppeteer.launch({
+      args: [
+        '--no-sandbox',
+        '--disable-dev-shm-usage'
+      ].concat(mdns ? [] : ['--disable-features=WebRtcHideLocalIpsWithMdns'])
     });
 
-    try {
-      await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'domcontentloaded' });
-      await direction(page);
+    for (const direction of [browserOffers, crossbyteOffers]) {
+      const page = await browser.newPage();
+      const pageErrors = [];
+      page.on('pageerror', error => pageErrors.push(String(error)));
+      page.on('console', message => {
+        if (message.type() === 'error') pageErrors.push('console.error: ' + message.text());
+      });
 
-      if (pageErrors.length > 0) {
-        throw new Error('the page reported errors:\n  ' + pageErrors.join('\n  '));
+      try {
+        await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'domcontentloaded' });
+        await direction(page, mdns);
+
+        if (pageErrors.length > 0) {
+          throw new Error('the page reported errors:\n  ' + pageErrors.join('\n  '));
+        }
+      } catch (error) {
+        failed = failed || error.message;
+        console.error('\nFAILED (' + direction.name + ', mdns ' + mdns + '): ' + error.message);
+        const log = await page.evaluate('(window.__interop && window.__interop.log || []).join("\n")').catch(() => '');
+        if (log) console.error('browser log:\n' + log);
+        if (pageErrors.length) console.error('page errors:\n  ' + pageErrors.join('\n  '));
       }
-    } catch (error) {
-      failed = failed || error.message;
-      console.error('\nFAILED (' + direction.name + '): ' + error.message);
-      const log = await page.evaluate('(window.__interop && window.__interop.log || []).join("\\n")').catch(() => '');
-      if (log) console.error('browser log:\n' + log);
-      if (pageErrors.length) console.error('page errors:\n  ' + pageErrors.join('\n  '));
+
+      await page.close();
     }
 
-    await page.close();
+    await browser.close();
   }
 
-  await browser.close();
   server.close();
 
   if (failed) {
@@ -300,5 +392,6 @@ async function crossbyteOffers(page) {
   console.log('');
   console.log('INTEROP PASSED');
   console.log('  a real RTCPeerConnection and CrossByte opened a data channel and');
-  console.log('  exchanged messages, in both directions and both role pairings.');
+  console.log('  exchanged messages, in both directions and both role pairings,');
+  console.log('  against a browser publishing its addresses and one hiding them.');
 })();

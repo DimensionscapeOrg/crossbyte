@@ -77,6 +77,34 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	both from one bit would have to be wrong about one of them -- and would be
 	wrong quietly, since the ICE half would still connect.
 
+	## Browsers hide their addresses, and it does not matter
+
+	A browser does not publish the addresses of the machine it runs on. Every
+	host candidate it offers is a random name ending in `.local`, registered with
+	the local multicast DNS responder and meaningless anywhere else -- a privacy
+	measure, so that a page cannot learn a visitor's network layout simply by
+	opening a peer connection.
+
+	Nothing here resolves those names, so every pair built from a browser's
+	description is one that cannot be dialled, and the checks sent to it fail to
+	resolve and are dropped. The connection is made anyway, from the other
+	direction: this peer's addresses are real, so the browser's own checks arrive,
+	and the source address one arrives from is a place the browser demonstrably
+	is. ICE calls that a peer-reflexive candidate, and it is what the mechanism
+	exists for.
+
+	So browser interoperability needs no mDNS resolver, and one would not help
+	much if it were here: those names only resolve on the link the browser is on,
+	and a peer on that link can already be reached the way just described. What
+	a peer *elsewhere* needs is a reflexive or relayed candidate, which is
+	`TurnClient` and the agent's reflexive gathering, not name resolution.
+
+	The one thing this does require is that this peer advertise an address the
+	browser can reach. Gathering only toward the candidates a browser offered
+	yields nothing at all, since none of them resolve -- ask `LocalAddress` for
+	the default route as well, or the peer ends up advertising loopback and
+	reachable only from its own machine.
+
 	## Native only
 
 	DTLS needs mbedTLS, which hxcpp links and the other targets do not have.
