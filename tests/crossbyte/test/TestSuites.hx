@@ -154,6 +154,7 @@ class TestSuites {
 		// The capstone: the whole stack over real sockets. Real sockets is
 		// also why it is here and not in the portable list.
 		runner.addCase(new crossbyte.net.rtc.PeerConnectionTest());
+		runner.addCase(new crossbyte.net.rtc.PeerConnectionGatheringTest());
 		// Needs no guard here: this group never runs on a JavaScript target,
 		// and everywhere it does run the class exists. Its first case is the
 		// one that matters most -- it asserts that the support flag and the

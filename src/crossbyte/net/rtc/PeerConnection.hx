@@ -14,6 +14,7 @@ import crossbyte.net.ice.IceAgent;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.ice.IceCandidatePair;
 import crossbyte.net.ice.IceCredentials;
+import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net.rtc.PeerDescription;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
 import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
@@ -97,14 +98,21 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	much if it were here: those names only resolve on the link the browser is on,
 	and a peer on that link can already be reached the way just described.
 
-	A browser on some *other* network is a different problem and an open one.
-	What it needs is a reflexive or relayed candidate -- an address a peer
-	elsewhere can send to -- and those have to be discovered over this very
-	socket, since a second socket gets its own translation and an address that
-	describes nothing. `TurnClient` and the STUN codec are built for it and take
-	their transport the same way every layer here does. What is missing is the
-	wiring: this class keeps its socket to itself, so there is currently no way
-	to put a request out through it or route an answer back in.
+	A browser on some *other* network is a different problem. What it needs is
+	an address a peer elsewhere can send to, and `gatherReflexive` asks a STUN
+	server for one. That has to happen over this very socket, which is why it is
+	a method here rather than something a caller could assemble outside: a NAT
+	keeps one translation per socket, so an address discovered on a second
+	socket describes a mapping nothing will ever send to.
+
+	That covers a NAT that gives a socket one mapping whatever it talks to, and
+	those are most of them. It does not cover a symmetric NAT, which makes a
+	fresh mapping per destination so that the address a STUN server reports is
+	not the one the peer would reach. Two of those, or one of those and a
+	firewall that drops unsolicited datagrams, need traffic relayed by a server
+	both peers can reach. `TurnClient` speaks that protocol and takes its
+	transport the way every layer here does, but nothing routes a connection
+	through it yet.
 
 	The one thing this does require is that this peer advertise an address the
 	browser can reach. Gathering only toward the candidates a browser offered
@@ -361,6 +369,7 @@ class PeerConnection {
 			return;
 		}
 
+		__pollReflexive(now);
 		agent.poll(now);
 
 		if (__dtls != null) {
@@ -383,6 +392,10 @@ class PeerConnection {
 
 		__closed = true;
 		connected = false;
+
+		// Closing before the server answered: the caller is holding a future,
+		// and leaving it forever pending is worse than saying what happened.
+		__settleReflexive(null, "The connection closed before the STUN server replied.");
 
 		if (__tick != null) {
 			try {
@@ -418,6 +431,162 @@ class PeerConnection {
 		raw -- it lives inside the DTLS records. Anything else is noise on a
 		public port, and is dropped rather than guessed at.
 	**/
+	/**
+		Asks a STUN server what address this connection appears from, and adds
+		the answer as a candidate.
+
+		A peer behind NAT cannot work this out locally: `bind` records the
+		private side of the mapping, and the side another peer has to dial is
+		the public one, which only something outside the NAT can report.
+
+		The question is asked through the socket this connection already owns,
+		and it has to be. A NAT keeps its translation per socket, so an address
+		discovered on a socket of its own -- which is what `StunClient` binds --
+		answers a question about a mapping this connection does not have and no
+		peer will ever send to.
+
+		Candidates may arrive after checking has started, so this need not
+		finish before `connect`. Host candidates are tried meanwhile, and the
+		reflexive one joins the checking when it lands.
+
+		@param timeoutMs How long to keep asking. UDP reports nothing when a
+		datagram is dropped, so a server that never answers and one that was
+		never reached look identical from here and only a deadline ends it.
+
+		@return The candidate that was added, or a failure naming why none was.
+		One query at a time: a second while one is outstanding fails rather than
+		displacing it, and chaining off this future asks the next server.
+	**/
+	public function gatherReflexive(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<IceCandidate> {
+		var future = new Future<IceCandidate>();
+
+		if (__closed || __socket == null) {
+			@:privateAccess future.__fail("A reflexive address can only be discovered through a bound connection; call bind first.", null);
+			return future;
+		}
+
+		if (server == null || server == "") {
+			@:privateAccess future.__fail("A STUN server address is required.", new ArgumentError("server"));
+			return future;
+		}
+
+		if (__reflexiveFuture != null) {
+			@:privateAccess future.__fail("A reflexive query is already outstanding on this connection.", null);
+			return future;
+		}
+
+		var now:Float = haxe.Timer.stamp();
+
+		__reflexiveRequest = StunMessage.bindingRequest();
+		__reflexiveFuture = future;
+		__reflexiveServer = server;
+		__reflexivePort = port;
+		__reflexiveDeadline = now + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
+
+		// RFC 5389's schedule: ask, and if nothing comes back ask again after
+		// twice as long each time. A single datagram carrying the only question
+		// this connection asks about its own address is a thing to lose to one
+		// dropped packet, and the deadline alone would report the loss as a
+		// server that is not there.
+		__reflexiveInterval = RETRANSMIT_FIRST;
+		__reflexiveNextAttempt = now + __reflexiveInterval;
+
+		__send(__reflexiveRequest.encode(), server, port);
+		return future;
+	}
+
+	/** The first retransmission gap, doubling after each, from RFC 5389. **/
+	private static inline var RETRANSMIT_FIRST:Float = 0.5;
+
+	@:noCompletion private var __reflexiveRequest:StunMessage;
+	@:noCompletion private var __reflexiveFuture:Future<IceCandidate>;
+	@:noCompletion private var __reflexiveServer:String;
+	@:noCompletion private var __reflexivePort:Int = 0;
+	@:noCompletion private var __reflexiveDeadline:Float = 0;
+	@:noCompletion private var __reflexiveNextAttempt:Float = 0;
+	@:noCompletion private var __reflexiveInterval:Float = 0;
+
+	/** Asks again, or gives up. **/
+	@:noCompletion private function __pollReflexive(now:Float):Void {
+		if (__reflexiveFuture == null) {
+			return;
+		}
+
+		if (now >= __reflexiveDeadline) {
+			__settleReflexive(null, "No reply from the STUN server at " + __reflexiveServer + ":" + __reflexivePort
+				+ " within the time allowed, so this connection still has no address to advertise beyond its own network.");
+			return;
+		}
+
+		if (now >= __reflexiveNextAttempt) {
+			__reflexiveInterval *= 2;
+			__reflexiveNextAttempt = now + __reflexiveInterval;
+			__send(__reflexiveRequest.encode(), __reflexiveServer, __reflexivePort);
+		}
+	}
+
+	/**
+		Whether this STUN message is the answer being waited for.
+
+		Decided by the transaction alone, and deliberately not by where it came
+		from: the server may have been named as a hostname, and the datagram
+		arrives from whichever address that resolved to. The transaction is
+		ninety-six bits chosen at random per request, which is what RFC 5389
+		gives an implementation to recognise its own replies by.
+	**/
+	@:noCompletion private function __receiveReflexive(payload:ByteArray, now:Float):Bool {
+		if (__reflexiveFuture == null || __reflexiveRequest == null) {
+			return false;
+		}
+
+		var response = StunMessage.decode(payload);
+
+		if (response == null || !__reflexiveRequest.matches(response)) {
+			return false;
+		}
+
+		if (response.type == StunMessage.BINDING_ERROR) {
+			var reported:String = response.errorMessage();
+			__settleReflexive(null, "The STUN server refused the request" + (reported != null ? ": " + reported : "."));
+			return true;
+		}
+
+		if (response.type != StunMessage.BINDING_SUCCESS) {
+			return true;
+		}
+
+		var mapped:ReflexiveAddress = response.mappedAddress();
+
+		if (mapped == null) {
+			__settleReflexive(null, "The STUN server replied without a mapped address, so this connection's public address is still unknown.");
+			return true;
+		}
+
+		__settleReflexive(mapped, null);
+		return true;
+	}
+
+	@:noCompletion private function __settleReflexive(mapped:Null<ReflexiveAddress>, error:String):Void {
+		var future = __reflexiveFuture;
+
+		__reflexiveFuture = null;
+		__reflexiveRequest = null;
+		__reflexiveServer = null;
+
+		if (future == null) {
+			return;
+		}
+
+		if (mapped == null) {
+			@:privateAccess future.__fail(error, null);
+			return;
+		}
+
+		var candidate = IceCandidate.serverReflexive(mapped);
+		addLocalCandidate(candidate);
+		@:privateAccess future.__resolve(candidate);
+	}
+
 	@:noCompletion private function __onDatagram(e:DatagramSocketDataEvent):Void {
 		if (__closed || e.data == null || e.data.length == 0) {
 			return;
@@ -430,6 +599,15 @@ class PeerConnection {
 		e.data.position = 0;
 
 		if (first < 4) {
+			// The answer to this connection's own question about its address,
+			// if that is what it is. Offered here first because it shares the
+			// socket and the byte range with everything ICE sends; the
+			// transaction says which, and the agent would only refuse it.
+			if (__receiveReflexive(e.data, now)) {
+				return;
+			}
+
+			e.data.position = 0;
 			agent.receive(e.data, e.srcAddress, e.srcPort, now);
 			return;
 		}
