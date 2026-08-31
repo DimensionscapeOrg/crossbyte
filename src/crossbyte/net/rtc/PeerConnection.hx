@@ -267,7 +267,11 @@ class PeerConnection {
 		var bound:String = __socket.localAddress;
 
 		if (bound != null && bound.length > 0 && bound != "0.0.0.0" && bound != "::") {
-			addLocalCandidate(IceCandidate.host(bound, __socket.localPort));
+			// Kept, because it is the base of anything reflexive gathered later:
+			// a NAT's view of this connection is a place to be reached and not
+			// one to send from, and the address that sends is this one.
+			__hostCandidate = IceCandidate.host(bound, __socket.localPort);
+			addLocalCandidate(__hostCandidate);
 		}
 
 		__tick = function(_:TickEvent):Void {
@@ -606,6 +610,9 @@ class PeerConnection {
 		return __relayedCandidate;
 	}
 
+	/** This connection's own address, when the bind named one. **/
+	@:noCompletion private var __hostCandidate:IceCandidate;
+
 	@:noCompletion private var __turn:TurnClient;
 	@:noCompletion private var __relayedCandidate:IceCandidate;
 	@:noCompletion private var __relayedFuture:Future<IceCandidate>;
@@ -792,7 +799,12 @@ class PeerConnection {
 			return;
 		}
 
-		var candidate = IceCandidate.serverReflexive(mapped);
+		// With the host candidate as its base, so that pairing collapses the
+		// two rather than sending every check twice from the one socket. Null
+		// when the bind was a wildcard, which leaves the reflexive candidate
+		// standing on its own -- there is no recorded address it is a view of.
+		var candidate = IceCandidate.serverReflexive(mapped, IceCandidate.COMPONENT_RTP, IceCandidate.DEFAULT_LOCAL_PREFERENCE,
+			__hostCandidate);
 		addLocalCandidate(candidate);
 		@:privateAccess future.__resolve(candidate);
 	}

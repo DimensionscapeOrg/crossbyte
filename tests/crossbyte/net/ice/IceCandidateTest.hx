@@ -349,6 +349,115 @@ class IceCandidateTest extends utest.Test {
 		Assert.equals(1, pairs.length);
 	}
 
+	/**
+		A reflexive candidate pairs as the address it was discovered through.
+
+		Nothing sends from a reflexive address -- it is where a NAT put this
+		peer, and the datagram still leaves the socket that asked -- so RFC 8445
+		section 6.1.2.2 replaces it with its base when a pair is formed, and
+		6.1.2.4 drops what that leaves redundant. Without it a peer behind NAT
+		sends every check twice, from one socket, to the same place.
+
+		The addresses here differ, which is the whole point: this is the normal
+		case, not the one where a NAT happened to change nothing.
+	**/
+	public function testAReflexiveCandidatePairsAsItsBase():Void {
+		var host = IceCandidate.host("192.168.1.5", 50000);
+		var reflexive = IceCandidate.serverReflexive({address: "203.0.113.7", port: 50000},
+			IceCandidate.COMPONENT_RTP, IceCandidate.DEFAULT_LOCAL_PREFERENCE, host);
+
+		var pairs = IceCandidatePair.pair([host, reflexive], [IceCandidate.host("10.0.0.7", 50000)], true);
+
+		Assert.equals(1, pairs.length);
+
+		if (pairs.length != 1) {
+			return;
+		}
+
+		// The host pair is the one kept, because the reflexive pair ranks below
+		// it and pruning keeps the better of two that do the same thing.
+		Assert.equals("192.168.1.5", pairs[0].local.address);
+		Assert.equals("host", (pairs[0].local.type : String));
+	}
+
+	/**
+		A relayed candidate is a path of its own and is not collapsed.
+
+		RFC 8445 section 5.1.1.2 makes a relayed candidate its own base: the
+		relay really does send from that address, so it is somewhere else to
+		try rather than another view of somewhere already being tried. A rule
+		that collapsed it would throw away the only candidate that works when
+		nothing direct does.
+	**/
+	public function testARelayedCandidateIsNotCollapsed():Void {
+		var host = IceCandidate.host("192.168.1.5", 50000);
+		var reflexive = IceCandidate.serverReflexive({address: "203.0.113.7", port: 50000},
+			IceCandidate.COMPONENT_RTP, IceCandidate.DEFAULT_LOCAL_PREFERENCE, host);
+		var relayed = new IceCandidate(RELAYED, "198.51.100.20", 60000);
+
+		var pairs = IceCandidatePair.pair([host, reflexive, relayed], [IceCandidate.host("10.0.0.7", 50000)], true);
+
+		Assert.equals(2, pairs.length);
+
+		if (pairs.length != 2) {
+			return;
+		}
+
+		// Highest first, and a relayed candidate is the lowest there is.
+		Assert.equals("host", (pairs[0].local.type : String));
+		Assert.equals("relay", (pairs[1].local.type : String));
+	}
+
+	/**
+		A reflexive candidate with no recorded base stands on its own.
+
+		A wildcard bind names every interface and so names none, which leaves
+		nothing to record as the base. Collapsing onto a base that was guessed
+		would drop a pair that was not redundant, so an unrecorded one means the
+		candidate is paired as itself -- which is what happened before any of
+		this and still works, one socket serving whatever is named.
+	**/
+	public function testAReflexiveCandidateWithoutABaseIsPairedAsItself():Void {
+		var reflexive = IceCandidate.serverReflexive({address: "203.0.113.7", port: 50000});
+		var pairs = IceCandidatePair.pair([reflexive], [IceCandidate.host("10.0.0.7", 50000)], true);
+
+		Assert.equals(1, pairs.length);
+
+		if (pairs.length != 1) {
+			return;
+		}
+
+		Assert.equals("203.0.113.7", pairs[0].local.address);
+		Assert.equals("srflx", (pairs[0].local.type : String));
+	}
+
+	/**
+		Collapsing does not cost the peer a candidate to aim at.
+
+		Pruning decides which checks this peer sends and nothing else. The
+		reflexive address is what the *other* peer dials, and a rule that
+		removed it from the list would take away the only address a peer
+		outside the NAT could use.
+	**/
+	public function testCollapsingDoesNotRemoveTheCandidateItself():Void {
+		var host = IceCandidate.host("192.168.1.5", 50000);
+		var reflexive = IceCandidate.serverReflexive({address: "203.0.113.7", port: 50000},
+			IceCandidate.COMPONENT_RTP, IceCandidate.DEFAULT_LOCAL_PREFERENCE, host);
+
+		Assert.equals("203.0.113.7", reflexive.address);
+		Assert.equals(host, reflexive.base);
+		Assert.equals(host, reflexive.baseOrSelf());
+
+		// A host candidate is its own base, and by RFC 8445 section 5.1.1.2 a
+		// relayed one is too.
+		Assert.isNull(host.base);
+		Assert.equals(host, host.baseOrSelf());
+
+		var relayed = new IceCandidate(RELAYED, "198.51.100.20", 60000);
+		Assert.isNull(relayed.base);
+		Assert.equals(relayed, relayed.baseOrSelf());
+	}
+
 	public function testPairingNothingIsEmptyRatherThanAFailure():Void {
 		Assert.equals(0, IceCandidatePair.pair([], [IceCandidate.host("10.0.0.7", 50000)], true).length);
 		Assert.equals(0, IceCandidatePair.pair([IceCandidate.host("10.0.0.2", 50000)], [], true).length);
