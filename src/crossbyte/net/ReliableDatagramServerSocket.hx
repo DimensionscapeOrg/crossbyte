@@ -74,6 +74,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	// One outstanding reflexive-address query, if any. Held here rather than in
 	// a client of its own because the question is about this socket's port, and
 	// only this class can ask from it.
+	/**
+		The first gap before asking a STUN server again, doubling after each.
+
+		RFC 5389's schedule. A question asked once over UDP is a question lost
+		to one dropped datagram, and the loss is reported as a server that is
+		not there.
+	**/
+	private static inline var STUN_RETRANSMIT_FIRST:Float = 0.5;
+
 	@:noCompletion private var __stunRequest:StunMessage;
 	@:noCompletion private var __stunFuture:Future<ReflexiveAddress>;
 	@:noCompletion private var __stunDeadline:Float = 0;
@@ -287,21 +296,48 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__stunDeadline = Sys.time() + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
 
 		var runtime:CrossByte = CrossByte.current();
+		var interval:Float = STUN_RETRANSMIT_FIRST;
+		var nextAttempt:Float = Sys.time() + interval;
+
+		function ask():Void {
+			var payload:ByteArray = __stunRequest.encode();
+			__socket.send(payload, 0, payload.length, server, port);
+		}
 
 		__stunTick = function(_:TickEvent):Void {
-			if (__stunFuture != null && Sys.time() >= __stunDeadline) {
+			if (__stunFuture == null) {
+				return;
+			}
+
+			var now:Float = Sys.time();
+
+			if (now >= __stunDeadline) {
 				// UDP reports nothing when it is dropped, so a silent network
 				// and a wrong server address look identical from here; the
 				// deadline is the only thing that ends this.
 				__settleStun(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs + "ms.");
+				return;
+			}
+
+			if (now >= nextAttempt) {
+				interval *= 2;
+				nextAttempt = now + interval;
+
+				// The same request, transaction and all: a reply to any of them
+				// answers the question, and a fresh transaction each time would
+				// leave earlier answers unrecognisable.
+				try {
+					ask();
+				} catch (e:Dynamic) {
+					__settleStun(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + Std.string(e));
+				}
 			}
 		};
 
 		runtime.addEventListener(TickEvent.TICK, __stunTick);
 
 		try {
-			var payload:ByteArray = __stunRequest.encode();
-			__socket.send(payload, 0, payload.length, server, port);
+			ask();
 		} catch (e:Dynamic) {
 			__settleStun(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + Std.string(e));
 		}

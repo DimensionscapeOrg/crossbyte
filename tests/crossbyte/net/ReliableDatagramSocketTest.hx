@@ -71,6 +71,81 @@ class ReliableDatagramSocketTest extends utest.Test {
 		try stun.close() catch (_:Dynamic) {}
 	}
 
+	/**
+		A lost binding request is asked again.
+
+		The listening port's public address is what every peer is told to dial,
+		and the question asking for it goes out over UDP like anything else. Sent
+		once, a single dropped datagram loses the whole query and is reported as
+		a server that is not there -- which sends whoever reads it looking at
+		their configuration for a fault that is not in it.
+	**/
+	public function testADroppedBindingRequestIsAskedAgain():Void {
+		if (!ReliableDatagramSocket.isSupported) {
+			Assert.isFalse(ReliableDatagramSocket.isSupported);
+			return;
+		}
+
+		var stun = new DatagramSocket();
+		var requests = 0;
+
+		stun.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			var request = crossbyte.net._internal.stun.StunMessage.decode(e.data);
+
+			if (request == null) {
+				return;
+			}
+
+			requests++;
+
+			// Two on the floor, so an answer can only come from a third request
+			// that something chose to send.
+			if (requests <= 2) {
+				return;
+			}
+
+			var reply = new crossbyte.net._internal.stun.StunMessage(crossbyte.net._internal.stun.StunMessage.BINDING_SUCCESS,
+				request.transactionId, [crossbyte.net._internal.stun.StunMessage.xorMappedAddress("198.51.100.77", 62000)]);
+
+			var payload = reply.encode();
+			stun.send(payload, 0, payload.length, e.srcAddress, e.srcPort);
+		});
+
+		var server = new ReliableDatagramServerSocket();
+		var discovered:Dynamic = null;
+		var failure:String = null;
+
+		try {
+			stun.bind(0, "127.0.0.1");
+			stun.receive();
+
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			server.discoverPublicAddress("127.0.0.1", stun.localPort, 9000)
+				.then(function(address):Void {
+					discovered = address;
+				}, function(error:String):Void {
+					failure = error;
+				});
+
+			pumpUntil(() -> discovered != null || failure != null, 11.0);
+
+			Assert.isNull(failure, "two dropped requests ended the query: " + failure);
+			Assert.notNull(discovered, "nothing asked again after a dropped request");
+			Assert.isTrue(requests >= 3, "expected the request to be repeated, saw " + requests);
+
+			if (discovered != null) {
+				Assert.equals("198.51.100.77", discovered.address);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try server.close() catch (_:Dynamic) {}
+		try stun.close() catch (_:Dynamic) {}
+	}
+
 	public function testAForgedReplyIsIgnored():Void {
 		if (!requireDatagramSupport()) return;
 

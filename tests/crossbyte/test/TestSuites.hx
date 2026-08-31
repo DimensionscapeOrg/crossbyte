@@ -128,6 +128,11 @@ class TestSuites {
 
 	public static function addNet(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.DatagramSocketTest());
+		// Native only, like DatagramSocketTest beside it. These cases pump the
+		// runtime to wait for a datagram, and pumping means Sys.sleep, which on
+		// node blocks the very loop the socket is delivered on -- so the query
+		// never completes and every case times out.
+		runner.addCase(new crossbyte.net.StunClientTest());
 		runner.addCase(new crossbyte.net.EndpointTest());
 		runner.addCase(new crossbyte.net.NetConnectionTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
