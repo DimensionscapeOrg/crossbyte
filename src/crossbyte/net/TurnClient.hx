@@ -41,12 +41,37 @@ import haxe.io.Bytes;
 	the relay grants describe traffic from somewhere else -- and it means the
 	whole exchange can be tested against a server standing in memory.
 
-	## What this does not do
+	## Channels, and why they are off unless asked for
 
-	Channel binding, RFC 8656 section 12. Once a peer is settled, a four-byte
-	channel header can replace the thirty-six a Send indication costs. It is
-	worth having on a busy relay and it changes nothing about whether a
-	connection works, so it is left out rather than half-built.
+	A Send indication costs thirty-six bytes of STUN wrapper on every datagram.
+	RFC 8656 section 12 replaces that with a channel: bind a number to a peer
+	once, and everything afterwards carries a four-byte header instead. On a
+	relay forwarding a stream of kilobyte chunks that is most of three percent
+	of the traffic, paid on every packet, in both directions.
+
+	`useChannels` turns it on, and it is off by default because getting it
+	wrong is not a slower connection but a dead one. A `ChannelData` message is
+	not STUN -- its first two bits are not zero, which is exactly how it is told
+	apart -- so a relay that binds a channel and then drops what it is sent over
+	it has no way to say so. UDP reports nothing, the datagrams stop, and there
+	is nothing to fall back from.
+
+	That is not hypothetical. node-turn, which this repository tests against,
+	answers a ChannelBind with success and forwards over the channel in the
+	peer-to-client direction, while its receive path rejects every datagram
+	whose top two bits are set -- so a client that believes the success and
+	starts sending `ChannelData` is talking to nothing. Widely deployed relays
+	are not like this and browsers bind channels by default; the point is only
+	that a saving of thirty-two bytes is not worth a connection that dies
+	silently against a relay nobody checked first.
+
+	Once on, it happens on its own. The first datagram for a peer goes as an
+	indication and asks for a channel at the same time; once the relay agrees,
+	the rest go as `ChannelData`. A relay that refuses the bind outright is the
+	safe case -- the indications simply keep working.
+
+	Channels last ten minutes and are rebound well inside that. A binding that
+	lapses does not fail loudly either, so it is rebound at eight.
 **/
 class TurnClient {
 	/** How long an allocation is asked to last, in seconds. **/
@@ -64,6 +89,26 @@ class TurnClient {
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
 	private static inline var TRANSACTION_LENGTH:Int = 12;
+
+	/**
+		The range RFC 8656 reserves for channels.
+
+		Chosen so a `ChannelData` message cannot be mistaken for anything else
+		sharing the socket: its first byte lands between 0x40 and 0x7F, where
+		RFC 7983 has neither STUN below 4 nor DTLS from 20 to 63.
+	**/
+	public static inline var FIRST_CHANNEL:Int = 0x4000;
+
+	public static inline var LAST_CHANNEL:Int = 0x7FFE;
+
+	/** Channel number, then length: what a bound peer costs per datagram. **/
+	public static inline var CHANNEL_HEADER:Int = 4;
+
+	/** RFC 8656 gives a binding ten minutes. **/
+	public static inline var CHANNEL_LIFETIME:Float = 600;
+
+	/** Rebound at eight, so a lost bind has another go before it lapses. **/
+	private static inline var CHANNEL_REFRESH:Float = 480;
 
 	/**
 		Whether a relay can be used from here.
@@ -112,6 +157,22 @@ class TurnClient {
 	@:noCompletion private var __lifetime:Int = DEFAULT_LIFETIME;
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __permitted:Array<String> = [];
+
+	/** Peers with a channel bound, or one asked for. **/
+	/**
+		Whether to ask for a channel per peer, trading thirty-two bytes a
+		datagram for a relay that has to implement RFC 8656 section 12 in both
+		directions. Off unless set; see the class documentation for what a
+		half-implementation does.
+	**/
+	public var useChannels:Bool = false;
+
+	@:noCompletion private var __channels:Array<TurnChannel> = [];
+
+	@:noCompletion private var __nextChannel:Int = FIRST_CHANNEL;
+
+	/** The last time anything told this client, so `sendTo` can have one. **/
+	@:noCompletion private var __clock:Float = 0;
 
 	/**
 		Requests waiting for the one in flight to finish.
@@ -196,6 +257,13 @@ class TurnClient {
 			return;
 		}
 
+		var channel = __channelFor(peerAddress, peerPort);
+
+		if (channel != null && channel.bound) {
+			onSend(__channelData(channel.number, payload), serverAddress, serverPort);
+			return;
+		}
+
 		var indication = new StunMessage(StunMessage.SEND_INDICATION, __transaction(), [
 			StunMessage.xorPeerAddress(peerAddress, peerPort),
 			StunMessage.data(payload)
@@ -205,6 +273,82 @@ class TurnClient {
 		// RFC 8656 does not authenticate them, the permission list being what
 		// decides whose traffic the relay will carry.
 		onSend(indication.encode(), serverAddress, serverPort);
+	}
+
+	/**
+		Asks for a channel to a peer, so later datagrams cost four bytes.
+
+		Idempotent, and safe to call before the relay has answered anything: a
+		peer already bound and fresh is left alone, and everything keeps going
+		as indications until a bind succeeds.
+
+		A channel bind installs a permission as well, which is why RFC 8656
+		describes it as doing both -- but the permission is still asked for
+		separately, since it has to be in place for the indications that carry
+		the traffic in the meantime.
+	**/
+	public function bindChannel(peerAddress:String, peerPort:Int, now:Float):Void {
+		if (__closed || !active || !useChannels || peerAddress == null) {
+			return;
+		}
+
+		__clock = now;
+		var channel = __channelFor(peerAddress, peerPort);
+
+		if (channel != null && now - channel.askedAt < CHANNEL_REFRESH) {
+			return;
+		}
+
+		if (channel == null) {
+			if (__nextChannel > LAST_CHANNEL) {
+				// Sixteen thousand peers on one allocation is not a case this
+				// will meet, and silently reusing a number would send one
+				// peer's traffic to another.
+				return;
+			}
+
+			channel = new TurnChannel(__nextChannel++, peerAddress, peerPort);
+			__channels.push(channel);
+		}
+
+		channel.askedAt = now;
+
+		__request(StunMessage.CHANNEL_BIND_REQUEST, [
+			StunMessage.channelNumber(channel.number),
+			StunMessage.xorPeerAddress(peerAddress, peerPort)
+		], now);
+	}
+
+	/** The channel bound to a peer, if one was ever asked for. **/
+	@:noCompletion private function __channelFor(address:String, port:Int):Null<TurnChannel> {
+		for (channel in __channels) {
+			if (channel.address == address && channel.port == port) {
+				return channel;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+		`ChannelData`: two bytes of channel, two of length, then the payload.
+
+		No padding. RFC 8656 section 12.4 requires it only over a stream
+		transport, where a reader has to find the end of one message to find the
+		start of the next; a datagram already has an end.
+	**/
+	@:noCompletion private function __channelData(number:Int, payload:ByteArray):ByteArray {
+		var out = new ByteArray();
+		out.writeByte((number >> 8) & 0xFF);
+		out.writeByte(number & 0xFF);
+		out.writeByte((payload.length >> 8) & 0xFF);
+		out.writeByte(payload.length & 0xFF);
+
+		payload.position = 0;
+		out.writeBytes(payload, 0, payload.length);
+		payload.position = 0;
+		out.position = 0;
+		return out;
 	}
 
 	/**
@@ -224,10 +368,22 @@ class TurnClient {
 			__transmit(now);
 		}
 
+		__clock = now;
+
 		// Refreshed at half the lifetime, so a lost refresh has one more chance
 		// before the allocation the whole connection rests on disappears.
 		if (active && __pending == null && now >= __refreshAt) {
 			__request(StunMessage.REFRESH_REQUEST, [StunMessage.lifetime(__lifetime)], now);
+		}
+
+		// And every channel well inside its ten minutes. One that lapses is not
+		// reported: the relay simply stops recognising what it is sent.
+		if (active) {
+			for (channel in __channels) {
+				if (channel.bound && now - channel.askedAt >= CHANNEL_REFRESH) {
+					bindChannel(channel.address, channel.port, now);
+				}
+			}
 		}
 
 		__drain(now);
@@ -254,6 +410,15 @@ class TurnClient {
 			return false;
 		}
 
+		__clock = now;
+
+		// Before decoding: a ChannelData message is not STUN, and its first two
+		// bytes are a channel number that would read as a message type nothing
+		// here has.
+		if (__deliverChannelData(payload)) {
+			return true;
+		}
+
 		var message = StunMessage.decode(payload);
 
 		if (message == null) {
@@ -268,6 +433,15 @@ class TurnClient {
 			case StunMessage.REFRESH_SUCCESS:
 				__refreshed(message, now);
 			case StunMessage.CREATE_PERMISSION_SUCCESS:
+				__pending = null;
+				__drain(now);
+			case StunMessage.CHANNEL_BIND_SUCCESS:
+				__channelBound(message, now);
+			case StunMessage.CHANNEL_BIND_ERROR:
+				// The relay would not, so this peer keeps costing a wrapper.
+				// Not a failure of the connection: indications still work, and
+				// treating it as one would give up a working path over a
+				// saving.
 				__pending = null;
 				__drain(now);
 			case StunMessage.ALLOCATE_ERROR, StunMessage.REFRESH_ERROR, StunMessage.CREATE_PERMISSION_ERROR:
@@ -288,6 +462,71 @@ class TurnClient {
 	}
 
 	// ------------------------------------------------------------------
+
+	/**
+		Unwraps a `ChannelData` message, if that is what this is.
+
+		@return Whether it was. A channel number is one this client handed out,
+		so anything else -- including a datagram that merely starts in the same
+		byte range -- is left for whoever else is on the socket.
+	**/
+	@:noCompletion private function __deliverChannelData(payload:ByteArray):Bool {
+		if (payload.length < CHANNEL_HEADER) {
+			return false;
+		}
+
+		payload.position = 0;
+		var number = (payload.readUnsignedByte() << 8) | payload.readUnsignedByte();
+		var length = (payload.readUnsignedByte() << 8) | payload.readUnsignedByte();
+
+		if (number < FIRST_CHANNEL || number > LAST_CHANNEL || CHANNEL_HEADER + length > payload.length) {
+			payload.position = 0;
+			return false;
+		}
+
+		var channel = null;
+
+		for (known in __channels) {
+			if (known.number == number && known.bound) {
+				channel = known;
+				break;
+			}
+		}
+
+		if (channel == null) {
+			payload.position = 0;
+			return false;
+		}
+
+		var data = new ByteArray();
+
+		if (length > 0) {
+			payload.readBytes(data, 0, length);
+		}
+
+		data.position = 0;
+		payload.position = 0;
+		onData(data, channel.address, channel.port);
+		return true;
+	}
+
+	@:noCompletion private function __channelBound(message:StunMessage, now:Float):Void {
+		if (__pending == null || __pendingType != StunMessage.CHANNEL_BIND_REQUEST || !__pending.matches(message)) {
+			return;
+		}
+
+		var number = __pending.uintOf(StunMessage.ATTR_CHANNEL_NUMBER, 0) >> 16;
+
+		for (channel in __channels) {
+			if (channel.number == number) {
+				channel.bound = true;
+				channel.askedAt = now;
+			}
+		}
+
+		__pending = null;
+		__drain(now);
+	}
 
 	@:noCompletion private function __request(type:Int, attributes:Array<StunAttribute>, now:Float):Void {
 		if (__pending != null) {
@@ -428,5 +667,29 @@ class TurnClient {
 
 	@:noCompletion private static function __transaction():ByteArray {
 		return SecureRandom.getSecureRandomBytes(TRANSACTION_LENGTH);
+	}
+}
+
+/**
+	One channel: a number the relay agreed stands for a peer.
+
+	`askedAt` is when the bind was last requested rather than when it was
+	granted, because that is what the retry and the refresh are both measured
+	against -- and a bind that was never answered should not look fresh.
+**/
+private class TurnChannel {
+	public var number(default, null):Int;
+	public var address(default, null):String;
+	public var port(default, null):Int;
+
+	/** Whether the relay has agreed. Until then traffic goes as indications. **/
+	public var bound:Bool = false;
+
+	public var askedAt:Float = 0;
+
+	public function new(number:Int, address:String, port:Int) {
+		this.number = number;
+		this.address = address;
+		this.port = port;
 	}
 }

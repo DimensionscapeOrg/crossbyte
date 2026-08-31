@@ -321,6 +321,182 @@ class PeerConnectionRelayTest extends utest.Test {
 		server.close();
 	}
 
+	/**
+		Asked for, a channel carries the traffic and the wrapper goes away.
+
+		Thirty-six bytes of STUN around every datagram becomes four. The
+		connection is the same one either way, which is the point: nothing above
+		the relay knows or has to.
+	**/
+	public function testChannelsCarryTheTrafficWhenAskedFor():Void {
+		if (unsupported()) return;
+
+		var server = new FakeTurnServer();
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		var heard:String = null;
+
+		try {
+			server.start();
+			alice.bind(0, "127.0.0.2");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			var failure:String = null;
+
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port, true).then(_ -> relays++, e -> failure = e);
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port, true).then(_ -> relays++, e -> failure = e);
+
+			pumpUntil(() -> relays == 2 || failure != null, 10.0);
+
+			Assert.isNull(failure, failure);
+
+			if (relays != 2) {
+				Assert.fail("only " + relays + " allocations were granted");
+				return;
+			}
+
+			bob.onChannel = function(channel:DataChannel):Void {
+				channel.onMessage = text -> heard = text;
+			};
+
+			alice.connect(relayOnly(bob));
+			bob.connect(relayOnly(alice));
+
+			pumpUntil(() -> alice.connected && bob.connected, 25.0);
+
+			Assert.isTrue(alice.connected, "the offering peer never connected over a channel");
+			Assert.isTrue(bob.connected, "the answering peer never connected over a channel");
+
+			if (!alice.connected || !bob.connected) {
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open, 8.0);
+
+			if (!chat.open) {
+				Assert.fail("the data channel never opened over a relay channel");
+				return;
+			}
+
+			chat.send("four bytes instead of thirty-six");
+			pumpUntil(() -> heard != null, 8.0);
+			Assert.equals("four bytes instead of thirty-six", heard);
+
+			// Both peers bound one, and the traffic really went through them
+			// rather than the connection quietly staying on indications.
+			Assert.equals(2, server.channels);
+			Assert.isTrue(server.overChannel > 0, "a channel was bound and then never used");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
+	/** Not asked for, nothing is bound and nothing changes. **/
+	public function testChannelsAreNotAskedForUnlessWanted():Void {
+		if (unsupported()) return;
+
+		var server = new FakeTurnServer();
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			server.start();
+			alice.bind(0, "127.0.0.2");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, _ -> {});
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, _ -> {});
+			pumpUntil(() -> relays == 2, 10.0);
+
+			alice.connect(relayOnly(bob));
+			bob.connect(relayOnly(alice));
+			pumpUntil(() -> alice.connected && bob.connected, 25.0);
+
+			Assert.isTrue(alice.connected, "the default path stopped working");
+			Assert.equals(0, server.channels);
+			Assert.equals(0, server.overChannel);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
+	/**
+		A relay that refuses to bind is the safe half of getting this wrong.
+
+		Told no, the client keeps wrapping every datagram in an indication and
+		the connection is the same one at the old price. It is the relay that
+		says yes and then drops what arrives that has nothing to fall back
+		from -- see `TurnClient`, and node-turn, which does exactly that.
+	**/
+	public function testARelayThatRefusesAChannelStillCarriesTheConnection():Void {
+		if (unsupported()) return;
+
+		var server = new FakeTurnServer();
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		var heard:String = null;
+
+		try {
+			server.refuseChannels = true;
+			server.start();
+			alice.bind(0, "127.0.0.2");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port, true).then(_ -> relays++, _ -> {});
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port, true).then(_ -> relays++, _ -> {});
+			pumpUntil(() -> relays == 2, 10.0);
+
+			bob.onChannel = function(channel:DataChannel):Void {
+				channel.onMessage = text -> heard = text;
+			};
+
+			alice.connect(relayOnly(bob));
+			bob.connect(relayOnly(alice));
+			pumpUntil(() -> alice.connected && bob.connected, 25.0);
+
+			Assert.isTrue(alice.connected, "a refused channel took the connection with it");
+
+			if (!alice.connected || !bob.connected) {
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open, 8.0);
+
+			if (!chat.open) {
+				Assert.fail("the data channel never opened after the refusal");
+				return;
+			}
+
+			chat.send("still going");
+			pumpUntil(() -> heard != null, 8.0);
+			Assert.equals("still going", heard);
+
+			Assert.equals(0, server.channels, "a refused bind was recorded as one");
+			Assert.equals(0, server.overChannel, "traffic went over a channel that was refused");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
 	/** There is no socket to allocate through before `bind`. **/
 	public function testRelayingBeforeBindingIsRefused():Void {
 		if (unsupported()) return;
@@ -403,6 +579,22 @@ private class FakeTurnServer {
 	/** Whether every peer sent to had been permitted first. **/
 	public var permittedBeforeFirstSend(default, null):Bool = true;
 
+	/** Datagrams a client sent wrapped in a channel rather than an indication. **/
+	public var overChannel(default, null):Int = 0;
+
+	/** Channels bound. **/
+	public var channels(default, null):Int = 0;
+
+	/**
+		Refuse to bind a channel, as a relay without them would.
+
+		The safe half of getting channels wrong: a client told no keeps using
+		indications. The dangerous half -- agreeing and then dropping what
+		arrives -- is what `TurnClient` documents and why they are off by
+		default.
+	**/
+	public var refuseChannels:Bool = false;
+
 	/** Refuse even correctly signed requests, as a relay with other credentials would. **/
 	public var rejectCredentials:Bool = false;
 
@@ -441,9 +633,20 @@ private class FakeTurnServer {
 	}
 
 	private function __onControl(e:DatagramSocketDataEvent):Void {
+		if (ignoreEverything) {
+			return;
+		}
+
+		// Before the STUN parse, because ChannelData is not STUN: its first two
+		// bits are set, which is exactly what tells it apart. A relay that
+		// parses first and asks afterwards drops every one of these silently.
+		if (__forwardChannelData(e)) {
+			return;
+		}
+
 		var message = StunMessage.decode(e.data);
 
-		if (message == null || ignoreEverything) {
+		if (message == null) {
 			return;
 		}
 
@@ -457,6 +660,8 @@ private class FakeTurnServer {
 					e.srcPort);
 			case StunMessage.SEND_INDICATION:
 				__forward(message, e.srcAddress, e.srcPort);
+			case StunMessage.CHANNEL_BIND_REQUEST:
+				__bind(message, e.srcAddress, e.srcPort);
 			default:
 		}
 	}
@@ -504,6 +709,75 @@ private class FakeTurnServer {
 		]), from, fromPort);
 	}
 
+	/**
+		Binds a channel number to a peer, and permits it at the same time.
+
+		RFC 8656 section 12 has a ChannelBind do both, which is why a client
+		that has one still works without asking for a permission separately.
+	**/
+	private function __bind(message:StunMessage, from:String, fromPort:Int):Void {
+		var allocation = __find(from, fromPort);
+		var peer = message.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
+		var number = message.uintOf(StunMessage.ATTR_CHANNEL_NUMBER, 0) >> 16;
+
+		if (refuseChannels || allocation == null || peer == null || number < 0x4000 || number > 0x7FFE) {
+			__reply(new StunMessage(StunMessage.CHANNEL_BIND_ERROR, message.transactionId,
+				[StunMessage.errorCode(400, "Bad Request")]), from, fromPort);
+			return;
+		}
+
+		if (allocation.permitted.indexOf(peer.address) < 0) {
+			allocation.permitted.push(peer.address);
+		}
+
+		allocation.channels.set(number, peer.address + ":" + peer.port);
+		channels++;
+
+		__reply(new StunMessage(StunMessage.CHANNEL_BIND_SUCCESS, message.transactionId), from, fromPort);
+	}
+
+	/**
+		A client's ChannelData, unwrapped and sent on to the peer it stands for.
+
+		@return Whether that is what this was. A number outside the range or one
+		no channel was bound to belongs to somebody else on the socket.
+	**/
+	private function __forwardChannelData(e:DatagramSocketDataEvent):Bool {
+		if (e.data.length < 4) {
+			return false;
+		}
+
+		e.data.position = 0;
+		var number = (e.data.readUnsignedByte() << 8) | e.data.readUnsignedByte();
+		var length = (e.data.readUnsignedByte() << 8) | e.data.readUnsignedByte();
+
+		if (number < 0x4000 || number > 0x7FFE || 4 + length > e.data.length) {
+			e.data.position = 0;
+			return false;
+		}
+
+		var allocation = __find(e.srcAddress, e.srcPort);
+
+		if (allocation == null || !allocation.channels.exists(number)) {
+			e.data.position = 0;
+			return false;
+		}
+
+		var peer = allocation.channels.get(number).split(":");
+		var payload = new ByteArray();
+
+		if (length > 0) {
+			e.data.readBytes(payload, 0, length);
+		}
+
+		e.data.position = 0;
+		payload.position = 0;
+		overChannel++;
+		forwarded++;
+		allocation.relay.send(payload, 0, payload.length, peer[0], Std.parseInt(peer[1]));
+		return true;
+	}
+
 	private function __permit(message:StunMessage, from:String, fromPort:Int):Void {
 		var allocation = __find(from, fromPort);
 		var peer = message.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
@@ -543,6 +817,25 @@ private class FakeTurnServer {
 		}
 
 		e.data.position = 0;
+
+		// Over the channel if one stands for this peer, which is the direction
+		// that saves the bytes on the way back.
+		var key = e.srcAddress + ":" + e.srcPort;
+
+		for (number in allocation.channels.keys()) {
+			if (allocation.channels.get(number) == key) {
+				var framed = new ByteArray();
+				framed.writeByte((number >> 8) & 0xFF);
+				framed.writeByte(number & 0xFF);
+				framed.writeByte((e.data.length >> 8) & 0xFF);
+				framed.writeByte(e.data.length & 0xFF);
+				framed.writeBytes(e.data, 0, e.data.length);
+				framed.position = 0;
+
+				__socket.send(framed, 0, framed.length, allocation.address, allocation.port);
+				return;
+			}
+		}
 
 		__reply(new StunMessage(StunMessage.DATA_INDICATION, __transaction(), [
 			StunMessage.xorPeerAddress(e.srcAddress, e.srcPort),
@@ -589,6 +882,9 @@ private class Allocation {
 	public var port:Int;
 	public var relay:DatagramSocket;
 	public var permitted:Array<String> = [];
+
+	/** Channel number to "address:port" of the peer it stands for. **/
+	public var channels:Map<Int, String> = new Map();
 
 	public function new(address:String, port:Int) {
 		this.address = address;
