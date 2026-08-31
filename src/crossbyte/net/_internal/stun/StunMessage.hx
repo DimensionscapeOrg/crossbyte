@@ -70,10 +70,14 @@ class StunMessage {
 	public static inline var REFRESH_ERROR:Int = 0x0114;
 	public static inline var SEND_INDICATION:Int = 0x0016;
 	public static inline var DATA_INDICATION:Int = 0x0017;
+	public static inline var CHANNEL_BIND_REQUEST:Int = 0x0009;
+	public static inline var CHANNEL_BIND_SUCCESS:Int = 0x0109;
+	public static inline var CHANNEL_BIND_ERROR:Int = 0x0119;
 	public static inline var CREATE_PERMISSION_REQUEST:Int = 0x0008;
 	public static inline var CREATE_PERMISSION_SUCCESS:Int = 0x0108;
 	public static inline var CREATE_PERMISSION_ERROR:Int = 0x0118;
 
+	public static inline var ATTR_CHANNEL_NUMBER:Int = 0x000C;
 	public static inline var ATTR_LIFETIME:Int = 0x000D;
 	public static inline var ATTR_XOR_PEER_ADDRESS:Int = 0x0012;
 	public static inline var ATTR_DATA:Int = 0x0013;
@@ -608,6 +612,23 @@ class StunMessage {
 	}
 
 	/** `LIFETIME`, in seconds: how long an allocation should outlive this request. **/
+	/**
+		`CHANNEL-NUMBER`: two bytes of channel, then two reserved and zero.
+
+		Four bytes for a two-byte value, which is RFC 8656 leaving room it never
+		used. Writing the number alone would make an attribute the length field
+		says is two and every relay reads as malformed.
+	**/
+	public static function channelNumber(number:Int):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.writeByte((number >> 8) & 0xFF);
+		bytes.writeByte(number & 0xFF);
+		bytes.writeByte(0);
+		bytes.writeByte(0);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_CHANNEL_NUMBER, bytes);
+	}
+
 	public static function lifetime(seconds:Int):StunAttribute {
 		var bytes = new ByteArray();
 		bytes.endian = Endian.BIG_ENDIAN;

@@ -543,9 +543,16 @@ class PeerConnection {
 		unwrapped and handled as though it had arrived directly -- so nothing
 		above ICE knows or needs to.
 
+		@param useChannels Whether to ask the relay for a channel per peer, which
+		costs four bytes a datagram where an indication costs thirty-six. Off by
+		default: a relay that agrees to a channel and then drops what it is sent
+		over it cannot say so, and the connection stops with nothing to report.
+		See `TurnClient` for the one that does exactly that.
+
 		@return The candidate that was added, or a failure naming why none was.
 	**/
-	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478):Future<IceCandidate> {
+	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478,
+			useChannels:Bool = false):Future<IceCandidate> {
 		var future = new Future<IceCandidate>();
 
 		if (__closed || __socket == null) {
@@ -564,6 +571,7 @@ class PeerConnection {
 		}
 
 		var relay = new TurnClient(server, port, username, password);
+		relay.useChannels = useChannels;
 		__turn = relay;
 		__relayedFuture = future;
 
@@ -652,6 +660,13 @@ class PeerConnection {
 			__permitted.set(address, now);
 			__turn.permit(address, now);
 		}
+
+		// And a channel, which costs four bytes a datagram where an indication
+		// costs thirty-six. Asked for every time and ignored when one is
+		// already fresh; until the relay agrees, `sendTo` keeps using
+		// indications, so a relay that will not bind is a connection at the old
+		// price rather than no connection.
+		__turn.bindChannel(address, port, now);
 
 		__turn.sendTo(payload, address, port);
 	}
@@ -842,6 +857,17 @@ class PeerConnection {
 
 			e.data.position = 0;
 			agent.receive(e.data, e.srcAddress, e.srcPort, now);
+			return;
+		}
+
+		// A relay's ChannelData, which is neither STUN nor DTLS and says so by
+		// where its first byte lands: RFC 7983 leaves 64 to 127 free, and RFC
+		// 8656 puts channel numbers there for exactly this reason.
+		if (first >= 0x40 && first <= 0x7F) {
+			if (__turn != null) {
+				__turn.receive(e.data, e.srcAddress, e.srcPort, now);
+			}
+
 			return;
 		}
 
