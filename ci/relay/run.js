@@ -56,8 +56,22 @@ const server = new Turn({
   listeningPort: PORT,
   relayIps: ['127.0.0.1'],
   debugLevel: 'ALL',
-  debug: (level, message) => events.push(String(message))
+  debug: (level, message) => {
+    const line = String(message);
+    events.push(line);
+
+    // How many times the server forwarded, which for a message of a hundred
+    // and twenty-eight kilobytes is a count in the hundreds and for a greeting
+    // that fits in one datagram is a handful. It says the chunks really did
+    // cross one at a time rather than the far end having been reached some
+    // other way.
+    if (/relaying data/i.test(line)) {
+      relayed++;
+    }
+  }
 });
+
+let relayed = 0;
 
 server.start();
 console.log('node-turn on 127.0.0.1:' + PORT + ', long-term credentials, realm "' + REALM + '"');
@@ -83,6 +97,13 @@ peer.on('exit', code => {
     failures.push('the peers did not exchange a message through the relay');
   }
 
+  // A message far larger than a datagram, so the chunking, the ordering and the
+  // acknowledgements all cross the relay rather than only a greeting that fits
+  // in one packet.
+  if (!/128KB message crossed intact/.test(output)) {
+    failures.push('a message larger than one datagram did not survive the relay');
+  }
+
   // The path has to be the relayed one. Nothing else was offered, so anything
   // else would mean the peers found each other some way this does not describe.
   if (!/connected over relay -> relay/.test(output)) {
@@ -102,8 +123,16 @@ peer.on('exit', code => {
     failures.push('the server never relayed any data, so nothing crossed it');
   }
 
+  // A hundred and twenty-eight kilobytes is a hundred and twenty-eight chunks
+  // of a kilobyte, and each one is forwarded on its own. A handful of forwards
+  // would mean the large message arrived some way this does not describe.
+  if (relayed < 128) {
+    failures.push('the server forwarded only ' + relayed + ' datagrams, too few for the message that crossed');
+  }
+
   console.log('');
   console.log('the server logged ' + events.length + ' events, ' + granted + ' allocations granted');
+  console.log('it forwarded ' + relayed + ' datagrams between the two peers');
 
   if (failures.length > 0 || code !== 0) {
     console.error('');

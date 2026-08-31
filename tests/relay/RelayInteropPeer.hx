@@ -102,6 +102,43 @@ class RelayInteropPeer {
 			return;
 		}
 
+		Sys.println("one message crossed");
+
+		// And one that does not fit in a datagram. SCTP cuts a message into
+		// chunks of a kilobyte, so this is a hundred and twenty-eight of them
+		// wrapped, forwarded, unwrapped, acknowledged the same way back, and
+		// put in order at the far end -- none of which a fourteen byte message
+		// exercises at all. It is also the size at which the relay's own
+		// thirty-six bytes of overhead would start to matter, if anything here
+		// were near a path MTU.
+		var large = new StringBuf();
+
+		for (i in 0...131072) {
+			large.addChar(65 + (i % 26));
+		}
+
+		var sent = large.toString();
+		heard = null;
+
+		chat.send(sent);
+		pump(() -> heard != null, 60);
+
+		if (heard == null) {
+			Sys.println("FAILED   a 128KB message never arrived");
+			return;
+		}
+
+		if (heard.length != sent.length) {
+			Sys.println("FAILED   a 128KB message arrived at " + heard.length + " bytes instead of " + sent.length);
+			return;
+		}
+
+		if (heard != sent) {
+			Sys.println("FAILED   a 128KB message arrived the right length and the wrong bytes");
+			return;
+		}
+
+		Sys.println("128KB message crossed intact");
 		Sys.println("SUCCESS  a data channel message crossed a relay nobody here wrote");
 
 		alice.close();
