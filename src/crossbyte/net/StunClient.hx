@@ -54,11 +54,25 @@ class StunClient {
 	public static inline var DEFAULT_PORT:Int = 3478;
 
 	/**
+		The first gap before asking again, doubling after each, from RFC 5389.
+
+		A question asked once over UDP is a question lost to one dropped
+		datagram, and the loss is reported as a server that is not there --
+		which sends whoever reads it looking at their configuration for a fault
+		that is not in it.
+	**/
+	private static inline var RETRANSMIT_FIRST:Float = 0.5;
+
+	/**
 		Asks `server` for this host's reflexive address.
 
-		@param timeoutMs How long to wait before giving up. UDP has no failure
-		to report -- a request that reaches nothing looks exactly like one still
-		in flight -- so a deadline is the only thing that ends this.
+		The request is repeated on RFC 5389's schedule until the deadline, each
+		gap twice the last. Over UDP the alternative is losing the whole query
+		to a single dropped datagram.
+
+		@param timeoutMs How long to keep asking before giving up. UDP has no
+		failure to report -- a request that reaches nothing looks exactly like
+		one still in flight -- so a deadline is the only thing that ends this.
 	**/
 	public static function discover(server:String, port:Int = DEFAULT_PORT, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
 		var future = new Future<ReflexiveAddress>();
@@ -74,6 +88,9 @@ class StunClient {
 		var deadline:Float = Sys.time() + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
 		var settled:Bool = false;
 		var onTick:TickEvent->Void = null;
+		var interval:Float = RETRANSMIT_FIRST;
+		var nextAttempt:Float = Sys.time() + interval;
+		var ask:Void->Void = null;
 
 		function finish(address:Null<ReflexiveAddress>, error:String):Void {
 			if (settled) {
@@ -135,10 +152,36 @@ class StunClient {
 			finish(address, null);
 		});
 
+		ask = function():Void {
+			var payload:ByteArray = request.encode();
+			socket.send(payload, 0, payload.length, server, port);
+		};
+
 		onTick = function(_:TickEvent):Void {
-			if (!settled && Sys.time() >= deadline) {
+			if (settled) {
+				return;
+			}
+
+			var now:Float = Sys.time();
+
+			if (now >= deadline) {
 				finish(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs
 					+ "ms. UDP reports nothing when it is dropped, so a silent network and a wrong address look the same from here.");
+				return;
+			}
+
+			if (now >= nextAttempt) {
+				interval *= 2;
+				nextAttempt = now + interval;
+
+				// The same request, transaction and all: a reply to any of them
+				// answers the question, and a fresh transaction each time would
+				// leave earlier answers unrecognisable.
+				try {
+					ask();
+				} catch (e:Dynamic) {
+					finish(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + Std.string(e));
+				}
 			}
 		};
 
@@ -146,9 +189,7 @@ class StunClient {
 			socket.bind(0, "0.0.0.0");
 			socket.receive();
 
-			var payload:ByteArray = request.encode();
-			socket.send(payload, 0, payload.length, server, port);
-
+			ask();
 			runtime.addEventListener(TickEvent.TICK, onTick);
 		} catch (e:Dynamic) {
 			finish(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + Std.string(e));
