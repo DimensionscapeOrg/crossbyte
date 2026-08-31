@@ -52,6 +52,45 @@ class StunMessageTest extends utest.Test {
 	/** The credential both of those were signed with. **/
 	private static inline var RFC5769_PASSWORD:String = "VOkJxbRl1RmTxUk/WvJxBt";
 
+	/**
+		RFC 5769 section 2.4, the long-term credential sample.
+
+		A different scheme from the two above, and the one TURN uses. Short-term
+		credentials key the HMAC with the password itself; long-term ones key it
+		with MD5 of username, realm and password joined by colons, so an
+		implementation can have the integrity exactly right and still get every
+		long-term exchange wrong.
+
+		Worth pinning here rather than against a relay: the suite's TURN server is
+		one this repository wrote, and it verifies a request with the very code
+		that produced it, so the two would agree about a key derived wrongly. This
+		is the same request produced by an implementation that is not this one.
+	**/
+	private static inline var RFC5769_LONG_TERM_REQUEST:String = "000100602112a442"
+		+ "78ad3433c6ad72c029da412e"
+		+ "00060012" + "e3839ee38388e383aae38383e382afe382b9" + "0000"
+		+ "0015001c" + "662f2f3439396b39353464364f4c33346f4c39465354767936347341"
+		+ "0014000b" + "6578616d706c652e6f726700"
+		+ "00080014" + "f67024656dd64a3e02b8e0712e85c9a28ca89666";
+
+	/** Six characters of Japanese, which SASLprep leaves alone. **/
+	private static inline var RFC5769_LONG_TERM_USERNAME:String = "\u30DE\u30C8\u30EA\u30C3\u30AF\u30B9";
+
+	private static inline var RFC5769_LONG_TERM_REALM:String = "example.org";
+
+	private static inline var RFC5769_LONG_TERM_NONCE:String = "f//499k954d6OL34oL9FSTvy64sA";
+
+	/**
+		The password *after* SASLprep, which is what the key is derived from.
+
+		The RFC writes it with a soft hyphen, a feminine ordinal and a Roman
+		numeral nine, and SASLprep maps those to nothing, "a" and "IX" -- so an
+		implementation that prepares its inputs and one that does not derive
+		different keys from the same password. Nothing here prepares anything, so
+		the prepared form is what is passed; see `longTermKey`.
+	**/
+	private static inline var RFC5769_LONG_TERM_PASSWORD:String = "TheMatrIX";
+
 	private static function fromHex(hex:String):ByteArray {
 		var bytes = new ByteArray();
 		bytes.endian = Endian.BIG_ENDIAN;
@@ -288,6 +327,64 @@ class StunMessageTest extends utest.Test {
 	}
 
 	// ------------------------------------------------------------------
+	/**
+		The key a long-term credential produces, against the published sample.
+
+		MD5 of "username:realm:password", and every part of that is a decision
+		something else has to have made the same way -- the order, the colons, and
+		that it is the raw digest rather than its hex.
+	**/
+	public function testTheLongTermKeyMatchesThePublishedSample():Void {
+		var key = StunMessage.longTermKey(RFC5769_LONG_TERM_USERNAME, RFC5769_LONG_TERM_REALM, RFC5769_LONG_TERM_PASSWORD);
+
+		Assert.notNull(key);
+		Assert.equals(16, key.length);
+		Assert.equals("e8ca7ad59d5eb0518e312911d2dab2a9", key.toHex());
+	}
+
+	/** And a message signed with it verifies. **/
+	public function testTheLongTermSampleVerifies():Void {
+		var message = StunMessage.decode(fromHex(RFC5769_LONG_TERM_REQUEST));
+
+		Assert.notNull(message);
+
+		if (message == null) {
+			return;
+		}
+
+		var key = StunMessage.longTermKey(RFC5769_LONG_TERM_USERNAME, RFC5769_LONG_TERM_REALM, RFC5769_LONG_TERM_PASSWORD);
+
+		Assert.isTrue(message.verifyIntegrityWithKey(key),
+			"the RFC 5769 long-term sample did not verify, so no relay would accept anything signed here");
+
+		Assert.equals(RFC5769_LONG_TERM_USERNAME, message.textOf(StunMessage.ATTR_USERNAME));
+		Assert.equals(RFC5769_LONG_TERM_REALM, message.textOf(StunMessage.ATTR_REALM));
+		Assert.equals(RFC5769_LONG_TERM_NONCE, message.textOf(StunMessage.ATTR_NONCE));
+	}
+
+	/**
+		And building one from its parts reproduces the sample byte for byte.
+
+		The stronger direction. Verifying proves this can read what somebody else
+		wrote; reproducing proves a relay reading what this writes sees what it
+		expects -- the attribute encoding, the padding, and the length field
+		counting the integrity attribute that has not been appended yet.
+	**/
+	public function testALongTermRequestIsBuiltByteForByte():Void {
+		var key = StunMessage.longTermKey(RFC5769_LONG_TERM_USERNAME, RFC5769_LONG_TERM_REALM, RFC5769_LONG_TERM_PASSWORD);
+		var transaction = fromHex("78ad3433c6ad72c029da412e");
+
+		var message = new StunMessage(StunMessage.BINDING_REQUEST, transaction, [
+			StunMessage.text(StunMessage.ATTR_USERNAME, RFC5769_LONG_TERM_USERNAME),
+			StunMessage.text(StunMessage.ATTR_NONCE, RFC5769_LONG_TERM_NONCE),
+			StunMessage.text(StunMessage.ATTR_REALM, RFC5769_LONG_TERM_REALM)
+		]);
+
+		var encoded = message.encodeSignedWithKey(key, false);
+
+		Assert.equals(RFC5769_LONG_TERM_REQUEST, toHex(encoded, 0, encoded.length));
+	}
+
 	// Integrity, against RFC 5769
 	// ------------------------------------------------------------------
 
