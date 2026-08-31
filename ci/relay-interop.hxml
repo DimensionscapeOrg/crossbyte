@@ -1,0 +1,16 @@
+# Builds the CrossByte half of the relay interoperability test.
+#
+# The suite proves the TURN exchange against a server this repository wrote,
+# which verifies a request with the very code that produced it -- so the two
+# would agree about anything they are both wrong about. This half talks to
+# node-turn, an implementation of RFC 5389 and 5766 written by somebody else,
+# which is what makes an accepted allocation evidence rather than an echo.
+#
+# Run it with `node ci/relay/run.js` once built.
+-cp src
+-cp tests
+-cp tests/relay
+-D windows
+-D HXCPP_M64
+-main RelayInteropPeer
+--cpp export/relay

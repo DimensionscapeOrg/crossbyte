@@ -386,7 +386,7 @@ jobs:
       # threw while loading before any test ran. Every js build stayed green.
       - name: Run portable suite in a headless browser
         run: |
-          npm install --no-save --no-audit --no-fund puppeteer
+          npm install --no-save --no-audit --no-fund puppeteer node-turn
           haxe ci/browser-tests.hxml
           node ci/browser/run.js
 
@@ -410,6 +410,25 @@ jobs:
         run: |
           haxe ci/browser-interop.hxml
           node ci/interop/run.js
+
+      # The other test whose result depends on somebody else's code, and for
+      # the same reason. The suite connects two peers through a relay written
+      # here, which verifies a request with the very code that produced it --
+      # so the two agree about anything they are both wrong about. Long-term
+      # credentials are the obvious place for that, the key being MD5 of
+      # username, realm and password rather than the password itself, but it
+      # applies equally to permissions and to how relayed data is wrapped.
+      #
+      # node-turn implements RFC 5389 and 5766. What it accepts is evidence.
+      #
+      # node-turn is installed alongside puppeteer above rather than here.
+      # `--no-save` prunes whatever is not in package.json, so installing one
+      # of them separately uninstalls the other, and the only reason that would
+      # not break the browser test today is the order these steps run in.
+      - name: Interoperate with a real TURN server
+        run: |
+          haxe ci/relay-interop.hxml
+          node ci/relay/run.js
 
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
