@@ -638,6 +638,24 @@ class StunMessage {
 		key derivation over values the server already knows, not a signature
 		anybody is asked to trust on its own; the signature over the message is
 		HMAC-SHA1, the same as everywhere else.
+
+		## The three strings are used exactly as given
+
+		RFC 8489 says to run the username and password through SASLprep first, and
+		this does not. SASLprep maps a soft hyphen to nothing, a feminine ordinal
+		to "a" and a Roman numeral nine to "IX", among much else -- so for any
+		credential outside printable ASCII, an implementation that prepares its
+		inputs and one that does not derive different keys from the same password,
+		and every request signed with the wrong one is refused with nothing said
+		about why.
+
+		For ASCII credentials, which is what a relay hands out in practice, the
+		preparation is the identity and there is nothing between the two. Pass an
+		already-prepared password if a server ever issues one that is not.
+
+		Pinned to RFC 5769 section 2.4, whose sample is signed with a long-term
+		credential -- against the prepared form of its password, since that is the
+		part this can answer for.
 	**/
 	public static function longTermKey(username:String, realm:String, password:String):Bytes {
 		return Md5.make(Bytes.ofString(username + ":" + realm + ":" + password));
