@@ -484,7 +484,7 @@ class IceAgent {
 			// know it could be reached: a mapping its NAT made for this
 			// destination alone. That is a peer-reflexive candidate, and it is
 			// often the only one that works.
-			__learnPeerReflexive(mapped, check.pair.remote);
+			__learnPeerReflexive(mapped, check.pair.remote, check.pair.local);
 		}
 
 		__addValid(check.pair);
@@ -659,8 +659,13 @@ class IceAgent {
 		onSend(payload, address, port);
 	}
 
-	@:noCompletion private function __learnPeerReflexive(mapped:ReflexiveAddress, remote:IceCandidate):Void {
-		var discovered = new IceCandidate(PEER_REFLEXIVE, mapped.address, mapped.port, remote.component);
+	@:noCompletion private function __learnPeerReflexive(mapped:ReflexiveAddress, remote:IceCandidate, base:IceCandidate):Void {
+		// The base is the candidate the check went out from, which is what a
+		// peer's view of this agent is a view *of*. Without it the discovered
+		// address would pair as a place of its own and every check would go out
+		// twice from the one socket.
+		var discovered = new IceCandidate(PEER_REFLEXIVE, mapped.address, mapped.port, remote.component, null,
+			IceCandidate.DEFAULT_LOCAL_PREFERENCE, base);
 
 		if (!__known(__locals, discovered)) {
 			__locals.push(discovered);

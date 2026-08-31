@@ -110,16 +110,32 @@ class IceCandidatePair {
 		again through STUN is one place, and checking it twice would spend a
 		check to learn nothing.
 
-		## What this does not do yet
+		## Reflexive candidates pair as their base
 
-		RFC 8445 section 6.1.2.4 prunes further: a reflexive candidate is
-		replaced by the host candidate it was discovered through, and pairs that
-		become duplicates are dropped. That needs each candidate to know its
-		base, which is not modelled here, so a peer behind no NAT -- where the
-		reflexive address equals the host address -- forms one redundant pair per
-		remote candidate. It costs a check, not a wrong answer, and it is named
-		here rather than half-implemented, because pruning by a base that was
-		guessed rather than recorded would drop pairs that were not redundant.
+		Nothing can send *from* a reflexive address. It is where a NAT put this
+		peer, learned by asking, and a datagram aimed at a peer still leaves the
+		socket the question went out of -- so RFC 8445 section 6.1.2.2 replaces
+		a reflexive local candidate with its base when forming pairs, and
+		section 6.1.2.4 then drops any pair left redundant: same local base,
+		same remote.
+
+		This is not a nicety. A peer that gathers a reflexive address has, for
+		every remote candidate, one pair through the host and one through the
+		reflexive view of it -- and with a single socket both send the same
+		datagram to the same place. Pairing by base collapses them, and the
+		higher-priority pair is the one kept, which is the host.
+
+		A reflexive candidate still earns its place: it is what the *peer* is
+		told to aim at, and pruning here changes nothing about what `description`
+		advertises. What it decides is only which checks this peer sends.
+
+		A relayed candidate is not collapsed. RFC 8445 section 5.1.1.2 makes it
+		its own base, because a relay lends an address that really does send --
+		it is a path in its own right rather than another view of one.
+
+		A reflexive candidate whose base was never recorded is left alone, since
+		pruning by a base that was guessed rather than known would drop pairs
+		that were not redundant.
 
 		@param controlling Whether this peer is the controlling one. The two
 		peers must pass opposite values, or they will sort the same pairs
@@ -138,7 +154,13 @@ class IceCandidatePair {
 		for (local in localsOnce) {
 			for (remote in remotesOnce) {
 				if (local.canReach(remote)) {
-					pairs.push(new IceCandidatePair(local, remote, controlling));
+					// The base, so a reflexive candidate is checked as the
+					// address that actually sends. RFC 8445 ranks the pair by
+					// the candidate as gathered and substitutes afterwards;
+					// ranking the substituted pair reaches the same order, since
+					// the pair that survives a collapse is the highest of them
+					// and the highest is the base itself.
+					pairs.push(new IceCandidatePair(local.baseOrSelf(), remote, controlling));
 				}
 			}
 		}
@@ -149,7 +171,7 @@ class IceCandidatePair {
 			return Int64.compare(b.priority, a.priority);
 		});
 
-		return pairs;
+		return __pruned(pairs);
 	}
 
 	/**
@@ -168,6 +190,36 @@ class IceCandidatePair {
 
 	public function toString():String {
 		return local + " -> " + remote + " (pair priority " + Int64.toStr(priority) + ")";
+	}
+
+	/**
+		Drops every pair a higher-priority one already covers.
+
+		Sorted first, so the first pair seen for a given local and remote is the
+		best of them and the rest are the redundant ones. Two pairs match when
+		their locals are the same place and their remotes are -- which after the
+		substitution above means a host pair and the reflexive pair that
+		collapsed onto it.
+	**/
+	@:noCompletion private static function __pruned(pairs:Array<IceCandidatePair>):Array<IceCandidatePair> {
+		var kept:Array<IceCandidatePair> = [];
+
+		for (pair in pairs) {
+			var redundant = false;
+
+			for (existing in kept) {
+				if (existing.local.sameAs(pair.local) && existing.remote.sameAs(pair.remote)) {
+					redundant = true;
+					break;
+				}
+			}
+
+			if (!redundant) {
+				kept.push(pair);
+			}
+		}
+
+		return kept;
 	}
 
 	@:noCompletion private static function __distinct(candidates:Array<IceCandidate>):Array<IceCandidate> {

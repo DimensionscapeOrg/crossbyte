@@ -40,6 +40,28 @@ import crossbyte.net.ReflexiveAddress;
 **/
 class IceCandidate {
 	/**
+		The address this one was discovered through, when that is another.
+
+		A reflexive candidate is somewhere a NAT put this peer, learned by
+		asking. Nothing can send *from* it -- the datagram leaves the socket the
+		question went out of, and the translation happens on the way -- so the
+		address that does the sending is the base, and RFC 8445 uses it wherever
+		what matters is where a check comes from rather than where a peer should
+		aim.
+
+		Null means the candidate is its own base, which is a host candidate and,
+		by RFC 8445 section 5.1.1.2, a relayed one: a relay lends an address that
+		really does send, so it is a path in its own right rather than another
+		view of one.
+	**/
+	public var base(default, null):Null<IceCandidate>;
+
+	/** This candidate's base, or itself when it is one. **/
+	public inline function baseOrSelf():IceCandidate {
+		return base != null ? base : this;
+	}
+
+	/**
 		The component a media stream's data travels on, and the only one a data
 		transport has.
 
@@ -96,7 +118,7 @@ class IceCandidate {
 		hold.
 	**/
 	public function new(type:IceCandidateType, address:String, port:Int, component:Int = COMPONENT_RTP, ?priority:Null<Int>,
-			localPreference:Int = DEFAULT_LOCAL_PREFERENCE) {
+			localPreference:Int = DEFAULT_LOCAL_PREFERENCE, ?base:IceCandidate) {
 		if (address == null || address.length == 0) {
 			throw new ArgumentError("A candidate needs an address.");
 		}
@@ -117,6 +139,7 @@ class IceCandidate {
 		this.port = port;
 		this.component = component;
 		this.priority = priority != null ? priority : computePriority(type, localPreference, component);
+		this.base = base;
 	}
 
 	/**
@@ -141,12 +164,12 @@ class IceCandidate {
 		somewhere nobody can reach.
 	**/
 	public static function serverReflexive(reflexive:ReflexiveAddress, component:Int = COMPONENT_RTP,
-			localPreference:Int = DEFAULT_LOCAL_PREFERENCE):IceCandidate {
+			localPreference:Int = DEFAULT_LOCAL_PREFERENCE, ?base:IceCandidate):IceCandidate {
 		if (reflexive == null) {
 			throw new ArgumentError("A reflexive candidate needs a discovered address.");
 		}
 
-		return new IceCandidate(SERVER_REFLEXIVE, reflexive.address, reflexive.port, component, null, localPreference);
+		return new IceCandidate(SERVER_REFLEXIVE, reflexive.address, reflexive.port, component, null, localPreference, base);
 	}
 
 	/**

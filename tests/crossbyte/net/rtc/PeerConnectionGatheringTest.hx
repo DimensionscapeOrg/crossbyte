@@ -82,6 +82,21 @@ class PeerConnectionGatheringTest extends utest.Test {
 			}
 
 			Assert.isTrue(carried, "the reflexive address never reached the description");
+
+			// And it knows the address it was discovered through. Nothing sends
+			// from a reflexive address -- the datagram leaves the socket that
+			// asked, and the translation happens on the way -- so ICE pairs it
+			// as its base, and a candidate that did not record one would be
+			// checked as a place of its own and send every check twice.
+			Assert.notNull(gathered.base, "the reflexive candidate recorded no base");
+
+			if (gathered.base == null) {
+				return;
+			}
+
+			Assert.equals("127.0.0.1", gathered.base.address);
+			Assert.equals(connection.localPort, gathered.base.port);
+			Assert.equals("host", (gathered.base.type : String));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
