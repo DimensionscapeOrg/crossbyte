@@ -198,6 +198,111 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		Assert.equals(0x8001, ba.readUnsignedShort());
 	}
 
+	/**
+		The word-at-a-time integer accessors agree with the byte-at-a-time
+		definition, in both orders, at every alignment.
+
+		`readInt`, `readShort` and their writers moved from four (or two)
+		bounds-checked byte accesses to one `getInt32`/`getUInt16` plus a swap
+		for big-endian streams -- most network traffic, and all of STUN and
+		SCTP. `getInt32` is little-endian by definition on every target, so the
+		swap is where a mistake would live, and a wrong swap still round-trips
+		perfectly against itself: write then read gives the value back while
+		every byte on the wire is reversed. So the bytes are checked, not just
+		the round trip.
+
+		Every offset from zero to seven, because a word access at an odd offset
+		is the case a naive implementation gets wrong and no round-trip test
+		notices.
+	**/
+	public function testIntegerAccessorsAgreeWithTheByteDefinition():Void {
+		var values = [0, 1, -1, 255, 256, 65535, 65536, 0x7FFFFFFF, -0x80000000, 0x12345678, -0x12345678];
+
+		for (endian in [Endian.LITTLE_ENDIAN, Endian.BIG_ENDIAN]) {
+			for (offset in 0...8) {
+				for (value in values) {
+					var written = new ByteArray();
+					written.endian = endian;
+
+					for (_ in 0...offset) {
+						written.writeByte(0xAA);
+					}
+
+					written.writeInt(value);
+
+					// The bytes themselves, against the definition: big-endian
+					// is most significant first, little-endian is not.
+					for (i in 0...4) {
+						var shift = endian == Endian.BIG_ENDIAN ? (3 - i) * 8 : i * 8;
+						Assert.equals((value >>> shift) & 0xFF, written[offset + i],
+							"writeInt byte " + i + " at offset " + offset + " for " + value + " (" + endian + ")");
+					}
+
+					written.position = offset;
+					Assert.equals(value, written.readInt(), "readInt at offset " + offset + " for " + value);
+					Assert.equals(offset + 4, written.position, "readInt left the position wrong");
+				}
+
+				// Shorts, signed and unsigned, over the whole 16-bit range's
+				// interesting points.
+				for (value in [0, 1, 0x7FFF, 0x8000, 0xFFFF, 0x1234]) {
+					var written = new ByteArray();
+					written.endian = endian;
+
+					for (_ in 0...offset) {
+						written.writeByte(0xAA);
+					}
+
+					written.writeShort(value);
+
+					for (i in 0...2) {
+						var shift = endian == Endian.BIG_ENDIAN ? (1 - i) * 8 : i * 8;
+						Assert.equals((value >>> shift) & 0xFF, written[offset + i],
+							"writeShort byte " + i + " at offset " + offset + " for " + value);
+					}
+
+					written.position = offset;
+					Assert.equals(value, written.readUnsignedShort(), "readUnsignedShort at offset " + offset);
+
+					written.position = offset;
+					var signed = (value & 0x8000) != 0 ? value - 0x10000 : value;
+					Assert.equals(signed, written.readShort(), "readShort at offset " + offset + " for " + value);
+				}
+			}
+		}
+	}
+
+	/**
+		A read that cannot be satisfied throws and moves nothing.
+
+		The multi-byte readers used to lean on `readUnsignedByte` for their
+		bounds check, one byte at a time, so a truncated stream advanced the
+		position by however many bytes happened to be there before throwing --
+		leaving the caller to catch an error and then find its cursor somewhere
+		it never put it. Checking the whole width up front makes the read
+		atomic, which is what a caller that catches `EOFError` and retries on a
+		longer buffer needs.
+	**/
+	public function testATruncatedReadThrowsWithoutMovingThePosition():Void {
+		for (available in 0...4) {
+			var partial = new ByteArray();
+
+			for (_ in 0...available) {
+				partial.writeByte(0x5A);
+			}
+
+			partial.position = 0;
+			Assert.raises(() -> partial.readInt(), EOFError);
+			Assert.equals(0, partial.position, "readInt moved the position past a truncated read");
+		}
+
+		var one = new ByteArray();
+		one.writeByte(0x5A);
+		one.position = 0;
+		Assert.raises(() -> one.readUnsignedShort(), EOFError);
+		Assert.equals(0, one.position, "readUnsignedShort moved the position past a truncated read");
+	}
+
 	public function testReadVarIntRoundTrips():Void {
 		var ba = new ByteArray();
 		var values:Array<Int> = [0, 1, 127, 128, 16383, 16384, 2097151, 0x0FFFFFFF];

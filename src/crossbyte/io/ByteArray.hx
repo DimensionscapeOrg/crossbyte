@@ -935,16 +935,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readInt():Int {
-		var ch1 = readUnsignedByte();
-		var ch2 = readUnsignedByte();
-		var ch3 = readUnsignedByte();
-		var ch4 = readUnsignedByte();
+		var at = position;
 
-		if (endian == LITTLE_ENDIAN) {
-			return (ch4 << 24) | (ch3 << 16) | (ch2 << 8) | ch1;
-		} else {
-			return (ch1 << 24) | (ch2 << 16) | (ch3 << 8) | ch4;
+		if (at + 4 > __available()) {
+			throw new EOFError();
 		}
+
+		position = at + 4;
+		var value = getInt32(at);
+		return __endian == LITTLE_ENDIAN ? value : __swap32(value);
 	}
 
 	public function readInt64():Int64 {
@@ -1074,22 +1073,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	#end
 
 	public function readShort():Int {
-		var ch1 = readUnsignedByte();
-		var ch2 = readUnsignedByte();
-
-		var value;
-
-		if (endian == LITTLE_ENDIAN) {
-			value = ((ch2 << 8) | ch1);
-		} else {
-			value = ((ch1 << 8) | ch2);
-		}
-
-		if ((value & 0x8000) != 0) {
-			return value - 0x10000;
-		} else {
-			return value;
-		}
+		var value = readUnsignedShort();
+		return (value & 0x8000) != 0 ? value - 0x10000 : value;
 	}
 
 	public function readUnsignedByte():Int {
@@ -1102,27 +1087,22 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readUnsignedInt():Int {
-		var ch1 = readUnsignedByte();
-		var ch2 = readUnsignedByte();
-		var ch3 = readUnsignedByte();
-		var ch4 = readUnsignedByte();
-
-		if (endian == LITTLE_ENDIAN) {
-			return (ch4 << 24) | (ch3 << 16) | (ch2 << 8) | ch1;
-		} else {
-			return (ch1 << 24) | (ch2 << 16) | (ch3 << 8) | ch4;
-		}
+		// Identical to `readInt` on a 32-bit Int: the sign bit is the same bit
+		// either way, and Haxe has no wider integer to widen it into. The two
+		// names are kept because callers read differently for each.
+		return readInt();
 	}
 
 	public function readUnsignedShort():Int {
-		var ch1 = readUnsignedByte();
-		var ch2 = readUnsignedByte();
+		var at = position;
 
-		if (endian == LITTLE_ENDIAN) {
-			return (ch2 << 8) + ch1;
-		} else {
-			return (ch1 << 8) | ch2;
+		if (at + 2 > __available()) {
+			throw new EOFError();
 		}
+
+		position = at + 2;
+		var value = getUInt16(at);
+		return __endian == LITTLE_ENDIAN ? value : (((value >> 8) & 0xFF) | ((value << 8) & 0xFF00));
 	}
 
 	public function readUTF():String {
@@ -1267,18 +1247,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function writeInt(value:Int):Void {
 		__resize(position + 4);
-
-		if (endian == LITTLE_ENDIAN) {
-			set(position++, value & 0xFF);
-			set(position++, (value >> 8) & 0xFF);
-			set(position++, (value >> 16) & 0xFF);
-			set(position++, (value >> 24) & 0xFF);
-		} else {
-			set(position++, (value >> 24) & 0xFF);
-			set(position++, (value >> 16) & 0xFF);
-			set(position++, (value >> 8) & 0xFF);
-			set(position++, value & 0xFF);
-		}
+		setInt32(position, __endian == LITTLE_ENDIAN ? value : __swap32(value));
+		position += 4;
 	}
 
 	public function writeInt64(value:Int64):Void {
@@ -1328,14 +1298,8 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function writeShort(value:Int):Void {
 		__resize(position + 2);
-
-		if (endian == LITTLE_ENDIAN) {
-			set(position++, value & 0xFF);
-			set(position++, (value >> 8) & 0xFF);
-		} else {
-			set(position++, (value >> 8) & 0xFF);
-			set(position++, value & 0xFF);
-		}
+		setUInt16(position, __endian == LITTLE_ENDIAN ? value : (((value >> 8) & 0xFF) | ((value << 8) & 0xFF00)));
+		position += 2;
 	}
 
 	public function writeUnsignedInt(value:Int):Void {
@@ -1523,6 +1487,30 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	@:noCompletion private inline function get_endian():Endian {
 		return __endian;
+	}
+
+	/**
+		How many bytes are readable, honouring lime's length getter where that
+		is what backs the buffer.
+
+		One place rather than repeated at every bounds check, which is what the
+		multi-byte readers now do instead of leaning on `readUnsignedByte` to
+		check once per byte.
+	**/
+	@:noCompletion private inline function __available():Int {
+		return #if lime_bytes_length_getter l #else length #end;
+	}
+
+	/**
+		Reverses a 32-bit value's bytes.
+
+		`getInt32` and `setInt32` are little-endian by definition on every
+		target, so a big-endian stream -- which is most network traffic, and all
+		of STUN and SCTP -- is one word access and this, rather than four
+		bounds-checked byte accesses and a shift for each.
+	**/
+	@:noCompletion private inline function __swap32(value:Int):Int {
+		return ((value >>> 24) & 0xFF) | ((value >>> 8) & 0xFF00) | ((value << 8) & 0xFF0000) | (value << 24);
 	}
 
 	@:noCompletion private inline function set_endian(value:Endian):Endian {
