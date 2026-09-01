@@ -291,6 +291,18 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return future;
 		}
 
+		// The transaction id is what the reply will be believed by, and a weak
+		// one would let an off-path party who can guess it answer with an
+		// address of its choosing. Refusing beats falling back: this target
+		// still runs the reliable protocol -- its sequence seeds degrade
+		// deliberately, being hardening rather than the security boundary --
+		// but discovery's answer is only worth having if it cannot be forged.
+		if (!crossbyte.crypto.SecureRandom.isSupported) {
+			@:privateAccess future.__fail("Discovering a public address needs a cryptographically secure random source for the "
+				+ "STUN transaction id, which this target does not have.", null);
+			return future;
+		}
+
 		__stunRequest = StunMessage.bindingRequest();
 		__stunFuture = future;
 		__stunDeadline = Sys.time() + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);

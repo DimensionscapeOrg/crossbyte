@@ -1,0 +1,14 @@
+# Runs the support-flag probe on python: the one target CI can execute that has
+# UDP but no CSPRNG, which is the combination where a support flag can lie.
+#
+# StunClient.isSupported said true there while the first line of discover()
+# threw -- the exact bug class DatagramSocket.isSupported documents from the
+# neko days, and the reason this is a run step rather than an assertion in a
+# suite: every suite CI runs has a CSPRNG, so on those targets the invariant
+# cannot fail and a test of it would be a vacuous control.
+#
+# Run it with `python export/python-support/flagprobe.py` once built.
+-cp src
+-cp tests/support
+-main FlagProbe
+-python export/python-support/flagprobe.py
