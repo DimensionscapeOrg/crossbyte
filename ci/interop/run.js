@@ -267,6 +267,18 @@ async function browserOffers(page, mdns) {
       throw new Error('expected the peer to echo, got: ' + JSON.stringify(result.echoed));
     }
 
+    // Binary, and empty binary. RFC 8831 gives a zero-length message a
+    // protocol id of its own, carried as one zero byte -- a subtlety both ends
+    // of a homogeneous pair could get wrong together, which is why the browser
+    // referees it.
+    if (result.binaryEchoed !== '1,2,3,0,250,255') {
+      throw new Error('binary did not survive the round trip: ' + JSON.stringify(result.binaryEchoed));
+    }
+
+    if (!result.emptyBinaryEchoed) {
+      throw new Error('an empty binary message did not survive the round trip');
+    }
+
     const ready = peer.events.find(event => event.event === 'ready');
 
     if (!ready || ready.dtlsClient !== true || ready.iceControlling !== false) {

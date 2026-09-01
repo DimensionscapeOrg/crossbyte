@@ -25,6 +25,12 @@ window.__interop = {
   log,
   ready: false,
   echoed: null,
+  // Binary crosses as PPID 53 and an *empty* binary message as PPID 57 --
+  // RFC 8831 gives zero-length messages protocol ids of their own, carried as
+  // one zero byte, and that is exactly the subtlety two implementations could
+  // fumble in the same way. A real browser is the referee.
+  binaryEchoed: null,
+  emptyBinaryEchoed: false,
   failed: null
 };
 
@@ -88,14 +94,30 @@ window.__createOffer = async function () {
   makeConnection();
 
   const channel = connection.createDataChannel('interop');
+  channel.binaryType = 'arraybuffer';
 
   channel.onopen = () => {
     note('channel open');
     window.__interop.ready = true;
     channel.send('from the browser');
+    channel.send(new Uint8Array([1, 2, 3, 0, 250, 255]));
+    channel.send(new ArrayBuffer(0));
   };
 
   channel.onmessage = message => {
+    if (message.data instanceof ArrayBuffer) {
+      const bytes = Array.from(new Uint8Array(message.data));
+      note('binary echo: [' + bytes.join(',') + ']');
+
+      if (bytes.length === 0) {
+        window.__interop.emptyBinaryEchoed = true;
+      } else {
+        window.__interop.binaryEchoed = bytes.join(',');
+      }
+
+      return;
+    }
+
     note('message: ' + message.data);
     window.__interop.echoed = message.data;
   };

@@ -180,6 +180,26 @@ class DataChannelTest extends utest.Test {
 
 		Assert.equals(1, received, "an empty message was swallowed");
 		Assert.equals("", text);
+
+		// And the binary flavour, which has an identifier of its own. Both
+		// travel as one byte of zero -- RFC 8831 section 6.6, since SCTP cannot
+		// carry a message of no bytes -- and this pair being two ends of the
+		// same code, it cannot referee that wire shape: both ends once omitted
+		// the byte, agreed with each other perfectly, and were discarded
+		// without a word by a real browser. `ci/interop/run.js` is the referee;
+		// what this holds is that an empty binary message is delivered empty.
+		var bytesSeen:Int = 0;
+		var bytesLength:Int = -1;
+		accepted.onBytes = payload -> {
+			bytesSeen++;
+			bytesLength = payload.length;
+		};
+
+		channel.sendBytes(new crossbyte.io.ByteArray());
+		pair.run(() -> bytesSeen > 0);
+
+		Assert.equals(1, bytesSeen, "an empty binary message was swallowed");
+		Assert.equals(0, bytesLength, "the placeholder byte leaked into the delivered payload");
 	}
 
 	/**

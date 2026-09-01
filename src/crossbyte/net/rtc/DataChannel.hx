@@ -102,11 +102,22 @@ class DataChannel {
 			payload.writeUTFBytes(text);
 		}
 
-		payload.position = 0;
-
 		// The empty case has an identifier of its own, since nothing else
-		// distinguishes an empty string from no payload.
-		var protocolId:Int = payload.length > 0 ? SctpDataChunk.PPID_STRING : SctpDataChunk.PPID_STRING_EMPTY;
+		// distinguishes an empty string from no payload -- and it is carried
+		// as one byte of zero, because SCTP cannot carry a message of no bytes
+		// at all. RFC 8831 section 6.6 spells both halves out, and the
+		// receiving side ignores the content whenever the identifier says
+		// empty. Sending an actually-empty chunk instead is not a shorter
+		// spelling of the same thing: a real browser's SCTP discards it
+		// without a word, which is how this line got its shape.
+		var protocolId:Int = SctpDataChunk.PPID_STRING;
+
+		if (payload.length == 0) {
+			protocolId = SctpDataChunk.PPID_STRING_EMPTY;
+			payload.writeByte(0);
+		}
+
+		payload.position = 0;
 		__transfer.send(id, payload, protocolId, ordered, __now());
 	}
 
@@ -115,9 +126,19 @@ class DataChannel {
 		__requireOpen();
 
 		var length:Int = payload == null ? 0 : payload.length;
-		var protocolId:Int = length > 0 ? SctpDataChunk.PPID_BINARY : SctpDataChunk.PPID_BINARY_EMPTY;
 
-		__transfer.send(id, payload != null ? payload : new ByteArray(), protocolId, ordered, __now());
+		// One zero byte for the empty case, same as `send` and for the same
+		// reason: the identifier says empty, the placeholder satisfies SCTP,
+		// and the receiver never reads it.
+		if (length == 0) {
+			var placeholder = new ByteArray();
+			placeholder.writeByte(0);
+			placeholder.position = 0;
+			__transfer.send(id, placeholder, SctpDataChunk.PPID_BINARY_EMPTY, ordered, __now());
+			return;
+		}
+
+		__transfer.send(id, payload, SctpDataChunk.PPID_BINARY, ordered, __now());
 	}
 
 	public function close():Void {
