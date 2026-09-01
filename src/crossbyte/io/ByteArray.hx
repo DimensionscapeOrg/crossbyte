@@ -1373,10 +1373,29 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			it needs zeroing. Omit it and the whole grown region is zeroed,
 			which is always safe.
 	**/
+	/**
+		Makes at least `size` bytes readable, zeroing anything newly exposed.
+
+		@param overwriteFrom Where the caller is about to start writing. Bytes
+		from the old end up to there are zeroed; bytes from there on are the
+		caller's to fill and are left alone, which is what spares an append --
+		the common case, and the whole of the bulk write path -- a pass over
+		everything it is about to overwrite anyway.
+
+		The zeroing runs against the old *logical* length and outside the growth
+		branch, both deliberately. It used to sit inside that branch and start
+		from the old capacity, which meant a gap opened without a reallocation
+		was never zeroed at all, and one opened with a reallocation was only
+		zeroed past the capacity the old buffer had -- while the blit below
+		carried every stale byte beneath that capacity into the new buffer. The
+		effect either way was old contents readable through a hole the caller
+		skipped over, which is a thing a buffer being reused for something else
+		must never do.
+	**/
 	@:noCompletion private function __resize(size:Int, overwriteFrom:Int = -1):Void {
-		#if eval
-		var grewFrom:Int = -1;
-		#end
+		// The logical end before anything moves: everything above this is
+		// either capacity nobody has been shown or bytes already given back.
+		var exposedFrom:Int = length;
 
 		if (size > __length) {
 			var capacity = ((size + 1) * 3) >> 1;
@@ -1388,16 +1407,6 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			}
 			var bytes = Bytes.alloc(capacity);
 			var cacheLength = length;
-			#if sys
-			// Zero only up to the point the caller takes over. For an append
-			// — the common case, and the whole of the bulk write path — that
-			// is nothing at all, which spares a full pass over the grown
-			// region on every growth.
-			var zeroEnd:Int = (overwriteFrom < 0 || overwriteFrom > size) ? size : overwriteFrom;
-			if (zeroEnd > __length) {
-				bytes.fill(__length, zeroEnd - __length, 0);
-			}
-			#end
 
 			if (__length > 0) {
 				length = __length;
@@ -1407,39 +1416,19 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 			__setData(bytes);
 			length = cacheLength;
-			#if eval
-			// cacheLength, not __length: __setData leaves __length holding
-			// the capacity rather than the logical length, so starting from
-			// it would skip the bytes between the old end and that capacity
-			// — which is exactly where a stale byte was surviving.
-			grewFrom = cacheLength;
-			#end
 		}
 
 		if (length < size) {
 			length = size;
 		}
 
-		#if eval
-		// eval cannot swap a Bytes' backing store — it has no `b` field to
-		// assign — so __setData copies element by element instead, and that
-		// copy does not reach the newly exposed region: growth left it
-		// holding whatever was already in memory.
-		//
-		// Zeroed here rather than beside the fill above, because up there
-		// `length` has been restored to its old value and a write past it
-		// does not land. Only once the new length is in place does setting
-		// a grown index take effect. Bounded by the same overwriteFrom, so
-		// an append still pays nothing.
-		if (grewFrom >= 0) {
-			var zeroLimit:Int = (overwriteFrom < 0 || overwriteFrom > size) ? size : overwriteFrom;
-			var index:Int = grewFrom;
-			while (index < zeroLimit) {
-				set(index, 0);
-				index++;
-			}
+		// Everything between the old end and where the caller takes over. An
+		// append leaves nothing here, so it costs a comparison and no more.
+		var exposedTo:Int = (overwriteFrom < 0 || overwriteFrom > size) ? size : overwriteFrom;
+
+		if (exposedTo > exposedFrom) {
+			fill(exposedFrom, exposedTo - exposedFrom, 0);
 		}
-		#end
 	}
 
 	@:noCompletion private inline function __setData(bytes:Bytes):Void {
