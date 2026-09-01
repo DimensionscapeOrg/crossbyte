@@ -5,6 +5,7 @@ package crossbyte.net;
 
 import crossbyte.Future;
 import crossbyte.net._internal.stun.StunMessage;
+import crossbyte.net._internal.stun.StunQuery;
 import crossbyte.net.ice.IceAgent;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
@@ -75,17 +76,13 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	// a client of its own because the question is about this socket's port, and
 	// only this class can ask from it.
 	/**
-		The first gap before asking a STUN server again, doubling after each.
-
-		RFC 5389's schedule. A question asked once over UDP is a question lost
-		to one dropped datagram, and the loss is reported as a server that is
-		not there.
+		The question outstanding, if one is: its transaction, its schedule, and
+		how to read a reply. See `StunQuery`, which the other two places that
+		ask a STUN server share.
 	**/
-	private static inline var STUN_RETRANSMIT_FIRST:Float = 0.5;
+	@:noCompletion private var __stunQuery:StunQuery;
 
-	@:noCompletion private var __stunRequest:StunMessage;
 	@:noCompletion private var __stunFuture:Future<ReflexiveAddress>;
-	@:noCompletion private var __stunDeadline:Float = 0;
 	@:noCompletion private var __stunTick:TickEvent->Void;
 
 	// An attached agent, and the tick that moves its clock. Separate from the
@@ -303,16 +300,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return future;
 		}
 
-		__stunRequest = StunMessage.bindingRequest();
+		var query = new StunQuery(Sys.time(), timeoutMs);
+		__stunQuery = query;
 		__stunFuture = future;
-		__stunDeadline = Sys.time() + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
 
 		var runtime:CrossByte = CrossByte.current();
-		var interval:Float = STUN_RETRANSMIT_FIRST;
-		var nextAttempt:Float = Sys.time() + interval;
 
 		function ask():Void {
-			var payload:ByteArray = __stunRequest.encode();
+			var payload:ByteArray = query.request.encode();
 			__socket.send(payload, 0, payload.length, server, port);
 		}
 
@@ -323,7 +318,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 			var now:Float = Sys.time();
 
-			if (now >= __stunDeadline) {
+			if (query.expired(now)) {
 				// UDP reports nothing when it is dropped, so a silent network
 				// and a wrong server address look identical from here; the
 				// deadline is the only thing that ends this.
@@ -331,13 +326,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				return;
 			}
 
-			if (now >= nextAttempt) {
-				interval *= 2;
-				nextAttempt = now + interval;
-
-				// The same request, transaction and all: a reply to any of them
-				// answers the question, and a fresh transaction each time would
-				// leave earlier answers unrecognisable.
+			if (query.shouldRetransmit(now)) {
 				try {
 					ask();
 				} catch (e:Dynamic) {
@@ -495,7 +484,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 
 		__stunFuture = null;
-		__stunRequest = null;
+		__stunQuery = null;
 
 		if (__stunTick != null) {
 			try {
@@ -520,37 +509,24 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		exactly what happened to it before this existed.
 	**/
 	@:noCompletion private function __takeStunReply(data:ByteArray):Bool {
-		if (__stunFuture == null || __stunRequest == null) {
+		if (__stunFuture == null || __stunQuery == null) {
 			return false;
 		}
 
-		var response:StunMessage = StunMessage.decode(data);
-
-		// Not STUN, or an answer to somebody else's question. The transaction
-		// check is what stops an unrelated sender handing this server an
-		// address it would then publish to every peer.
-		if (response == null || !__stunRequest.matches(response)) {
-			return false;
+		// Not STUN, or an answer to somebody else's question, stays somebody
+		// else's: the transaction check is what stops an unrelated sender
+		// handing this server an address it would then publish to every peer.
+		switch (__stunQuery.interpret(data)) {
+			case NOT_OURS:
+				return false;
+			case ANSWERED(address):
+				__settleStun(address, null);
+			case REFUSED(reason):
+				__settleStun(null, "The STUN server refused the request" + (reason != null ? ": " + reason : "."));
+			case ANSWERED_WITHOUT_ADDRESS:
+				__settleStun(null, "The STUN server replied without a mapped address, so this socket's public address is still unknown.");
 		}
 
-		if (response.type == StunMessage.BINDING_ERROR) {
-			var reported:String = response.errorMessage();
-			__settleStun(null, "The STUN server refused the request" + (reported != null ? ": " + reported : "."));
-			return true;
-		}
-
-		if (response.type != StunMessage.BINDING_SUCCESS) {
-			return true;
-		}
-
-		var address:ReflexiveAddress = response.mappedAddress();
-
-		if (address == null) {
-			__settleStun(null, "The STUN server replied without a mapped address, so this socket's public address is still unknown.");
-			return true;
-		}
-
-		__settleStun(address, null);
 		return true;
 	}
 

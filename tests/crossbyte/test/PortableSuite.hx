@@ -32,6 +32,7 @@ class PortableSuite {
 		// browser, where the relay itself could only ever be reached
 		// through RTCPeerConnection.
 		runner.addCase(new crossbyte.net.TurnClientTest());
+		runner.addCase(new crossbyte.net.StunQueryTest());
 		// The class exists everywhere and generates only on native, so the
 		// cases here assert on both sides of that: a target without mbedTLS
 		// has to say so rather than fail somewhere further along.
