@@ -122,6 +122,9 @@ class BenchMain {
 		}, 65536);
 		#end
 
+		// The portable backend unless `crossbyte-lz4` is installed and
+		// `-D crossbyte_lz4_native` is set, in which case this measures that
+		// instead -- worth knowing before reading the number as the ceiling.
 		Bench.run("LZ4 round trip 64KB", function():Void {
 			var work = new ByteArray();
 			work.writeBytes(chunk, 0, chunk.length);
