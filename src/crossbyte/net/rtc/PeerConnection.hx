@@ -16,6 +16,7 @@ import crossbyte.net.ice.IceCandidatePair;
 import crossbyte.net.ice.IceCredentials;
 import crossbyte.net.TurnClient;
 import crossbyte.net._internal.stun.StunMessage;
+import crossbyte.net._internal.stun.StunQuery;
 import crossbyte.net.rtc.PeerDescription;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
 import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
@@ -504,21 +505,17 @@ class PeerConnection {
 
 		var now:Float = haxe.Timer.stamp();
 
-		__reflexiveRequest = StunMessage.bindingRequest();
+		// The schedule is RFC 5389's -- ask, and if nothing comes back ask
+		// again after twice as long each time -- because a single datagram
+		// carrying the only question this connection asks about its own
+		// address is a thing to lose to one dropped packet, and a deadline
+		// alone would report the loss as a server that is not there.
+		__reflexiveQuery = new StunQuery(now, timeoutMs);
 		__reflexiveFuture = future;
 		__reflexiveServer = server;
 		__reflexivePort = port;
-		__reflexiveDeadline = now + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
 
-		// RFC 5389's schedule: ask, and if nothing comes back ask again after
-		// twice as long each time. A single datagram carrying the only question
-		// this connection asks about its own address is a thing to lose to one
-		// dropped packet, and the deadline alone would report the loss as a
-		// server that is not there.
-		__reflexiveInterval = RETRANSMIT_FIRST;
-		__reflexiveNextAttempt = now + __reflexiveInterval;
-
-		__send(__reflexiveRequest.encode(), server, port);
+		__send(__reflexiveQuery.request.encode(), server, port);
 		return future;
 	}
 
@@ -727,16 +724,16 @@ class PeerConnection {
 		return haxe.Timer.stamp();
 	}
 
-	/** The first retransmission gap, doubling after each, from RFC 5389. **/
-	private static inline var RETRANSMIT_FIRST:Float = 0.5;
+	/**
+		The question outstanding, if one is: its transaction, its schedule, and
+		how to read a reply. `StunQuery` owns all three, shared with the other
+		two places here that ask a STUN server the same thing.
+	**/
+	@:noCompletion private var __reflexiveQuery:StunQuery;
 
-	@:noCompletion private var __reflexiveRequest:StunMessage;
 	@:noCompletion private var __reflexiveFuture:Future<IceCandidate>;
 	@:noCompletion private var __reflexiveServer:String;
 	@:noCompletion private var __reflexivePort:Int = 0;
-	@:noCompletion private var __reflexiveDeadline:Float = 0;
-	@:noCompletion private var __reflexiveNextAttempt:Float = 0;
-	@:noCompletion private var __reflexiveInterval:Float = 0;
 
 	/** Asks again, or gives up. **/
 	@:noCompletion private function __pollReflexive(now:Float):Void {
@@ -744,16 +741,14 @@ class PeerConnection {
 			return;
 		}
 
-		if (now >= __reflexiveDeadline) {
+		if (__reflexiveQuery.expired(now)) {
 			__settleReflexive(null, "No reply from the STUN server at " + __reflexiveServer + ":" + __reflexivePort
 				+ " within the time allowed, so this connection still has no address to advertise beyond its own network.");
 			return;
 		}
 
-		if (now >= __reflexiveNextAttempt) {
-			__reflexiveInterval *= 2;
-			__reflexiveNextAttempt = now + __reflexiveInterval;
-			__send(__reflexiveRequest.encode(), __reflexiveServer, __reflexivePort);
+		if (__reflexiveQuery.shouldRetransmit(now)) {
+			__send(__reflexiveQuery.request.encode(), __reflexiveServer, __reflexivePort);
 		}
 	}
 
@@ -767,34 +762,21 @@ class PeerConnection {
 		gives an implementation to recognise its own replies by.
 	**/
 	@:noCompletion private function __receiveReflexive(payload:ByteArray, now:Float):Bool {
-		if (__reflexiveFuture == null || __reflexiveRequest == null) {
+		if (__reflexiveFuture == null || __reflexiveQuery == null) {
 			return false;
 		}
 
-		var response = StunMessage.decode(payload);
-
-		if (response == null || !__reflexiveRequest.matches(response)) {
-			return false;
+		switch (__reflexiveQuery.interpret(payload)) {
+			case NOT_OURS:
+				return false;
+			case ANSWERED(mapped):
+				__settleReflexive(mapped, null);
+			case REFUSED(reason):
+				__settleReflexive(null, "The STUN server refused the request" + (reason != null ? ": " + reason : "."));
+			case ANSWERED_WITHOUT_ADDRESS:
+				__settleReflexive(null, "The STUN server replied without a mapped address, so this connection's public address is still unknown.");
 		}
 
-		if (response.type == StunMessage.BINDING_ERROR) {
-			var reported:String = response.errorMessage();
-			__settleReflexive(null, "The STUN server refused the request" + (reported != null ? ": " + reported : "."));
-			return true;
-		}
-
-		if (response.type != StunMessage.BINDING_SUCCESS) {
-			return true;
-		}
-
-		var mapped:ReflexiveAddress = response.mappedAddress();
-
-		if (mapped == null) {
-			__settleReflexive(null, "The STUN server replied without a mapped address, so this connection's public address is still unknown.");
-			return true;
-		}
-
-		__settleReflexive(mapped, null);
 		return true;
 	}
 
@@ -802,7 +784,7 @@ class PeerConnection {
 		var future = __reflexiveFuture;
 
 		__reflexiveFuture = null;
-		__reflexiveRequest = null;
+		__reflexiveQuery = null;
 		__reflexiveServer = null;
 
 		if (future == null) {
