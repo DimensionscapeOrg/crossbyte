@@ -404,6 +404,77 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	 * writing there — the one case `writeBytes` cannot cover by
 	 * overwriting, and so the one the zeroing still has to handle.
 	 */
+	/**
+		A gap that needs no growth is zeroed too.
+
+		`testWritingPastTheEndZeroesTheGap` leaves its hole by seeking 32KB past
+		the end of a one-byte array, which forces a reallocation -- and the
+		zeroing lived inside that reallocation, so the case it covers is the
+		only case it could ever have caught.
+
+		The buffer here keeps its capacity and loses only its length, which is
+		the ordinary way to reuse one. Everything between the new end and the
+		capacity is still holding the old contents, and a later write past the
+		end exposes all of it: bytes the caller never wrote, readable by
+		whoever the buffer is handed to. Ninety-six of ninety-six, measured
+		before this was fixed.
+	**/
+	public function testAGapThatNeedsNoGrowthIsZeroedAsWell():Void {
+		var ba = new ByteArray();
+
+		// Well past any initial capacity, so shrinking leaves a large region of
+		// live bytes sitting behind the logical end.
+		for (_ in 0...4096) {
+			ba.writeByte(0xC5);
+		}
+
+		ba.length = 4;
+		Assert.equals(4, ba.length);
+
+		// No growth: the capacity from before comfortably covers this.
+		ba.position = 100;
+		ba.writeByte(0x11);
+
+		var stale:Int = 0;
+
+		for (i in 4...100) {
+			if (ba[i] != 0) {
+				stale++;
+			}
+		}
+
+		Assert.equals(0, stale, stale + " byte(s) of the skipped gap still held the old contents");
+		Assert.equals(0x11, ba[100]);
+	}
+
+	/** The same for the bulk path, which zeroes only up to where it writes. **/
+	public function testABulkWritePastTheEndZeroesOnlyTheGap():Void {
+		var ba = new ByteArray();
+
+		for (_ in 0...4096) {
+			ba.writeByte(0xC5);
+		}
+
+		ba.length = 4;
+
+		var payload = new ByteArray();
+
+		for (i in 0...16) {
+			payload.writeByte((i * 3) & 0xFF);
+		}
+
+		ba.position = 64;
+		ba.writeBytes(payload, 0, payload.length);
+
+		for (i in 4...64) {
+			Assert.equals(0, ba[i], "byte " + i + " of the gap was not zeroed");
+		}
+
+		for (i in 0...16) {
+			Assert.equals((i * 3) & 0xFF, ba[64 + i], "the payload did not land intact");
+		}
+	}
+
 	public function testWritingPastTheEndZeroesTheGap():Void {
 		var payload = new ByteArray();
 		for (i in 0...256) {
