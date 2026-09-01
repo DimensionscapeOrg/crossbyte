@@ -1,6 +1,8 @@
 package crossbyte.net.rtc._internal.sctp;
 
 import crossbyte.io.ByteArray;
+import haxe.ds.Vector;
+import haxe.io.Bytes;
 
 /**
 	CRC-32C, the checksum SCTP uses.
@@ -10,8 +12,25 @@ import crossbyte.io.ByteArray;
 	so a packet checksummed with the wrong one is a packet every SCTP
 	implementation in the world discards.
 
-	Table driven, built once. The straightforward bit-at-a-time loop is eight
-	times the work for a value computed over every packet in both directions.
+	## Slicing-by-eight
+
+	The textbook table walk takes one byte per step: a table lookup, a shift
+	and an XOR, each depending on the last. Intel's slicing construction takes
+	eight, by splitting the state across eight tables whose entries answer
+	"what does this byte contribute once seven more have gone by" -- the
+	lookups become independent of each other, which is what lets the processor
+	overlap them, and the message is read a word at a time instead of a byte.
+
+	The performance suite is what put this here. The single-table version,
+	pulling each byte through the stream API, ran at a shade over 600 MB/s and
+	was nearly the entire cost of an SCTP packet in either direction -- the
+	framing around it was close to free. Same vectors before and after: the
+	catalogue check value and RFC 3720's, in `SctpPacketTest`.
+
+	Bytes are read with `Bytes.getInt32`, which is little-endian by definition
+	on every target -- and little-endian is what the reflected form of the
+	algorithm wants, so the packing and the arithmetic agree by construction
+	rather than by luck.
 **/
 class Crc32c {
 	/**
@@ -22,7 +41,13 @@ class Crc32c {
 	**/
 	private static inline var POLYNOMIAL:Int = 0x82F63B78;
 
-	private static var __table:Array<Int> = __buildTable();
+	/**
+		Eight 256-entry tables, flat: table `k` starts at `k * 256`.
+
+		Table 0 is the ordinary one-byte table; table `k` answers for a byte
+		that will be followed by `k` more before the word is done.
+	**/
+	private static var __tables:Vector<Int> = __buildTables();
 
 	/**
 		The checksum of `length` bytes from `offset`.
@@ -41,15 +66,35 @@ class Crc32c {
 			end = bytes.length;
 		}
 
+		// The ByteArray's own storage -- the conversion is a view, not a copy
+		// -- read by direct index rather than through the stream API, whose
+		// position bookkeeping was a real cost at one call per byte.
+		var data:Bytes = bytes;
+		var tables = __tables;
 		var crc:Int = seed;
-		var position:Int = bytes.position;
-		bytes.position = offset;
+		var i:Int = offset;
 
-		for (_ in offset...end) {
-			crc = __table[(crc ^ bytes.readUnsignedByte()) & 0xFF] ^ (crc >>> 8);
+		while (i + 8 <= end) {
+			var low:Int = crc ^ data.getInt32(i);
+			var high:Int = data.getInt32(i + 4);
+
+			crc = tables[1792 + (low & 0xFF)]
+				^ tables[1536 + ((low >>> 8) & 0xFF)]
+				^ tables[1280 + ((low >>> 16) & 0xFF)]
+				^ tables[1024 + (low >>> 24)]
+				^ tables[768 + (high & 0xFF)]
+				^ tables[512 + ((high >>> 8) & 0xFF)]
+				^ tables[256 + ((high >>> 16) & 0xFF)]
+				^ tables[high >>> 24];
+
+			i += 8;
 		}
 
-		bytes.position = position;
+		while (i < end) {
+			crc = tables[(crc ^ data.get(i)) & 0xFF] ^ (crc >>> 8);
+			i++;
+		}
+
 		return crc ^ 0xFFFFFFFF;
 	}
 
@@ -61,8 +106,8 @@ class Crc32c {
 		return of(bytes);
 	}
 
-	private static function __buildTable():Array<Int> {
-		var table:Array<Int> = [];
+	private static function __buildTables():Vector<Int> {
+		var tables = new Vector<Int>(2048);
 
 		for (i in 0...256) {
 			var value:Int = i;
@@ -71,9 +116,18 @@ class Crc32c {
 				value = (value & 1) != 0 ? (value >>> 1) ^ POLYNOMIAL : value >>> 1;
 			}
 
-			table.push(value);
+			tables[i] = value;
 		}
 
-		return table;
+		// Each further table is the previous one advanced by a byte of zeros:
+		// what that entry's contribution becomes after one more byte passes.
+		for (k in 1...8) {
+			for (i in 0...256) {
+				var previous:Int = tables[(k - 1) * 256 + i];
+				tables[k * 256 + i] = (previous >>> 8) ^ tables[previous & 0xFF];
+			}
+		}
+
+		return tables;
 	}
 }

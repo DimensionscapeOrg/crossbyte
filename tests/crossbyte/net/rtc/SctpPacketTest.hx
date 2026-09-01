@@ -36,6 +36,44 @@ class SctpPacketTest extends utest.Test {
 	}
 
 	/**
+		The fast path agrees with the definition at every boundary.
+
+		The implementation reads eight bytes a word pair at a time and finishes
+		the tail a byte at a time, and the published vectors never exercise an
+		odd offset -- their lengths land where they land. A slicing table built
+		in the wrong order, a word read off by one, or a tail loop that starts a
+		byte early would all pass the aligned vectors and corrupt some real
+		packet later. So every offset up to eight and every length across two
+		word boundaries is compared against the one-bit-at-a-time definition,
+		computed here from the polynomial with no tables to be wrong in.
+	**/
+	public function testTheFastPathAgreesWithTheDefinitionAtEveryBoundary():Void {
+		var bytes = counting(64);
+
+		for (offset in 0...9) {
+			for (length in 0...18) {
+				Assert.equals(reference(bytes, offset, length), Crc32c.of(bytes, offset, length),
+					"disagrees at offset " + offset + " length " + length);
+			}
+		}
+	}
+
+	/** Castagnoli, one bit at a time, straight from the polynomial. **/
+	static function reference(bytes:ByteArray, offset:Int, length:Int):Int {
+		var crc = 0xFFFFFFFF;
+
+		for (i in offset...offset + length) {
+			crc = crc ^ bytes[i];
+
+			for (_ in 0...8) {
+				crc = (crc & 1) != 0 ? (crc >>> 1) ^ 0x82F63B78 : crc >>> 1;
+			}
+		}
+
+		return crc ^ 0xFFFFFFFF;
+	}
+
+	/**
 		It is not the CRC-32 already in the standard library.
 
 		Worth asserting rather than assuming: the two are one letter apart in
