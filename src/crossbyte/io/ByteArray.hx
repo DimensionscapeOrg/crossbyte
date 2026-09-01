@@ -1202,7 +1202,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:keep public inline function writeByte(value:Int):Void {
-		__resize(position + 1);
+		if (!__room(1)) {
+			__resize(position + 1, position);
+		}
+
 		set(position++, value & 0xFF);
 	}
 
@@ -1246,7 +1249,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeInt(value:Int):Void {
-		__resize(position + 4);
+		if (!__room(4)) {
+			__resize(position + 4, position);
+		}
+
 		setInt32(position, __endian == LITTLE_ENDIAN ? value : __swap32(value));
 		position += 4;
 	}
@@ -1297,7 +1303,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function writeShort(value:Int):Void {
-		__resize(position + 2);
+		if (!__room(2)) {
+			__resize(position + 2, position);
+		}
+
 		setUInt16(position, __endian == LITTLE_ENDIAN ? value : (((value >> 8) & 0xFF) | ((value << 8) & 0xFF00)));
 		position += 2;
 	}
@@ -1498,6 +1507,38 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		of STUN and SCTP -- is one word access and this, rather than four
 		bounds-checked byte accesses and a shift for each.
 	**/
+	/**
+		Makes room for `count` bytes at the cursor, cheaply where it can.
+
+		`__resize` handles growth, gap zeroing and the length bookkeeping, and
+		none of that is needed for a write landing inside a buffer that already
+		has the capacity and starts at or before the current end -- which is
+		every append an encoder makes, and encoding is what this class spends
+		its life doing. A call out to it per field was most of the difference
+		between reading a word and writing one.
+
+		Two conditions, both necessary. The capacity has to cover the write, or
+		the buffer must grow. And the cursor must not be past the logical end,
+		or there is a gap between them that has to be zeroed before the caller's
+		bytes land -- the case the previous commit was about.
+
+		@return Whether the fast path applied; the caller falls back when not.
+	**/
+	@:noCompletion private inline function __room(count:Int):Bool {
+		var at = position;
+		var end = at + count;
+
+		if (end > __length || at > length) {
+			return false;
+		}
+
+		if (length < end) {
+			length = end;
+		}
+
+		return true;
+	}
+
 	@:noCompletion private inline function __swap32(value:Int):Int {
 		return ((value >>> 24) & 0xFF) | ((value >>> 8) & 0xFF00) | ((value << 8) & 0xFF0000) | (value << 24);
 	}
