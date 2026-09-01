@@ -199,12 +199,13 @@ class DtlsTransport {
 			return false;
 		}
 
-		var bytes = haxe.io.Bytes.alloc(payload.length);
-		payload.position = 0;
-
-		for (i in 0...payload.length) {
-			bytes.set(i, payload.readUnsignedByte());
-		}
+		// The datagram's own storage, not a copy. A `ByteArray` is a
+		// `haxe.io.Bytes` underneath, `feed` copies into the native session's
+		// queue before returning, and the assembly blits what it keeps --
+		// nothing holds this reference past the call, so the byte-at-a-time
+		// copy that used to sit here bought nothing and cost a pass over every
+		// record the connection ever received.
+		var bytes:haxe.io.Bytes = payload;
 
 		// A server's first job is to read a ClientHello, and a browser's is
 		// large enough to be sent in pieces that mbedtls will not put back
@@ -249,14 +250,9 @@ class DtlsTransport {
 			throw new ArgumentError("A DTLS record carries at most " + MAX_DATAGRAM + " bytes, and this is " + payload.length + ".");
 		}
 
-		var bytes = haxe.io.Bytes.alloc(payload.length);
-		payload.position = 0;
-
-		for (i in 0...payload.length) {
-			bytes.set(i, payload.readUnsignedByte());
-		}
-
-		NativeDtlsSession.write(__handle, __constPtr(bytes), bytes.length);
+		// The caller's storage, not a copy: the native session encrypts into
+		// its own buffers before returning, so nothing here outlives the call.
+		NativeDtlsSession.write(__handle, __constPtr(payload), payload.length);
 		__flush();
 		#end
 	}
@@ -326,15 +322,21 @@ class DtlsTransport {
 				return;
 			}
 
-			var bytes = haxe.io.Bytes.alloc(size);
-			var written = NativeDtlsSession.take(__handle, __ptr(bytes), size);
+			// Straight into the ByteArray the handler receives -- its backing
+			// store is a `haxe.io.Bytes` the native session can fill, so the
+			// second full copy this used to make of every outbound record is
+			// gone.
+			var out = new ByteArray(size);
+			var written = NativeDtlsSession.take(__handle, __ptr(out), size);
 
 			if (written <= 0) {
 				return;
 			}
 
-			var out = new ByteArray();
-			out.writeBytes(ByteArray.fromBytes(bytes), 0, written);
+			if (written < size) {
+				out.length = written;
+			}
+
 			out.position = 0;
 			onSend(out);
 		}
@@ -348,15 +350,17 @@ class DtlsTransport {
 				return;
 			}
 
-			var bytes = haxe.io.Bytes.alloc(size);
-			var read = NativeDtlsSession.read(__handle, __ptr(bytes), size);
+			var out = new ByteArray(size);
+			var read = NativeDtlsSession.read(__handle, __ptr(out), size);
 
 			if (read <= 0) {
 				return;
 			}
 
-			var out = new ByteArray();
-			out.writeBytes(ByteArray.fromBytes(bytes), 0, read);
+			if (read < size) {
+				out.length = read;
+			}
+
 			out.position = 0;
 			onMessage(out);
 		}
