@@ -34,6 +34,7 @@ haxelib install aedifex
 
 - evented applications and services
 - TCP, WebSocket, and reliable datagram networking
+- peer-to-peer connections through NAT, including WebRTC data channels to and from browsers
 - HTTP clients and lightweight HTTP server flows, HTTP/1.1 and HTTP/2
 - request/response RPC over live connections
 - file, byte, and stream-heavy workflows
@@ -49,6 +50,11 @@ CrossByte currently includes:
 - HTTP and middleware
 - URL loading and request utilities
 - TCP, WebSocket, and RUDP transport layers
+- NAT traversal and WebRTC:
+  - `PeerConnection` and `DataChannel` -- the full stack, ICE to SCTP over DTLS, interoperable with a browser's `RTCPeerConnection` in either signalling direction (CI proves both against headless Chrome)
+  - `StunClient` and per-connection reflexive gathering, so a peer behind NAT can learn the address the world sees
+  - `TurnClient` and relayed candidates for the peers no direct path reaches, verified in CI against an independent TURN server
+  - hole punching on the reliable datagram sockets, for the same problem without the browser
 - RPC sessions, commands, handlers, and typed responses
 - IPC primitives such as `LocalConnection`, `SharedChannel`, and `SharedObject`
 - file APIs, `ByteArray`, `ByteArrayInput`, and `ByteArrayOutput`

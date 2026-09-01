@@ -5,13 +5,17 @@
 		"crossbyte",
 		"networking",
 		"http",
+		"webrtc",
+		"p2p",
+		"udp",
+		"websocket",
 		"rpc",
 		"server",
 		"ipc",
 		"tools"
 	],
 	"classPath": "src",
-	"description": "Cross-platform Haxe runtime and networking framework for event-driven applications, services, IPC, RPC, and systems-oriented tools.",
+	"description": "Cross-platform Haxe runtime and networking framework for event-driven applications and services: TCP, WebSocket, HTTP/1.1 and HTTP/2, reliable UDP, WebRTC data channels with STUN/TURN NAT traversal, IPC, RPC, and systems tools.",
 	"contributors": [
 		"Dimensionscape"
 	],
