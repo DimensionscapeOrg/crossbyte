@@ -217,6 +217,22 @@ aedifex task docs-site <project-root>
 In the examples above, `<project-root>` is usually `.` when you are already in
 the repository root.
 
+### Benchmarks
+
+A performance suite lives in `tests/bench` and covers the paths that run once
+per unit of real work -- per datagram, per connectivity check, per event -- so
+a regression there is a regression multiplied by traffic. Build and run it
+natively:
+
+```sh
+haxe ci/bench.hxml
+./export/bench/BenchMain.exe
+```
+
+It reports the best of several samples per case; the numbers compare shapes of
+code on one machine in one sitting and are not comparable across machines. CI
+runs it so it cannot rot, and ignores the numbers.
+
 ## CI
 
 The repository CI covers:

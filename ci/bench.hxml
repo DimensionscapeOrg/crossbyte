@@ -1,0 +1,14 @@
+# Builds the performance suite for the native target, where the numbers mean
+# what they say. Other targets compile it too, but their numbers measure the
+# target rather than the code, which is occasionally the question and usually
+# not.
+#
+# Run it with `export/bench/BenchMain.exe` once built. The harness reports the
+# best of several samples per case -- see tests/bench/Bench.hx for why best,
+# and why these numbers gate nothing in CI.
+-cp src
+-cp tests/bench
+-D windows
+-D HXCPP_M64
+-main BenchMain
+--cpp export/bench

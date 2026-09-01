@@ -439,6 +439,14 @@ jobs:
           haxe ci/relay-interop.hxml
           node ci/relay/run.js
 
+      # Informational: the numbers from a shared runner measure the runner's
+      # mood and gate nothing. The step exists so the suite cannot rot -- a
+      # benchmark that stopped compiling is one nobody has run in a while.
+      - name: Build and run the performance suite (informational)
+        run: |
+          haxe ci/bench.hxml
+          ./export/bench/BenchMain.exe
+
       - name: Build native smoke harness
         run: haxe ci/native-tests.hxml
 
