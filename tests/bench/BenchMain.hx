@@ -83,6 +83,27 @@ class BenchMain {
 				kilobyte.readUnsignedByte();
 			}
 		}, 1024);
+
+		// Big-endian is the network order and the one that pays for a swap;
+		// little-endian is the bare word load.
+		var little = filled(1024);
+		little.endian = crossbyte.io.Endian.LITTLE_ENDIAN;
+
+		Bench.run("readInt x256 (little-endian, no swap)", function():Void {
+			little.position = 0;
+
+			for (_ in 0...256) {
+				little.readInt();
+			}
+		}, 1024);
+
+		Bench.run("writeInt x256 (big-endian stream)", function():Void {
+			var out = new ByteArray();
+
+			for (i in 0...256) {
+				out.writeInt(i);
+			}
+		}, 1024);
 	}
 
 	static function checksumsAndHashes():Void {
