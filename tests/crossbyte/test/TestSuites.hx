@@ -141,6 +141,7 @@ class TestSuites {
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
 		runner.addCase(new crossbyte.net.StunMessageTest());
+		runner.addCase(new crossbyte.net.StunQueryTest());
 		runner.addCase(new crossbyte.net.TurnClientTest());
 		runner.addCase(new crossbyte.net.rtc.DtlsCertificateTest());
 		runner.addCase(new crossbyte.net.rtc.DtlsTransportTest());
