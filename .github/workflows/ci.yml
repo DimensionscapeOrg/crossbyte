@@ -425,6 +425,15 @@ jobs:
       # `--no-save` prunes whatever is not in package.json, so installing one
       # of them separately uninstalls the other, and the only reason that would
       # not break the browser test today is the order these steps run in.
+      # The one target CI can execute that has UDP but no CSPRNG, which is the
+      # combination where a support flag can lie. StunClient.isSupported said
+      # true on it while the first line of discover() threw; every suite above
+      # runs where a CSPRNG exists, so only this step can catch a relapse.
+      - name: Check support flags on a CSPRNG-less target
+        run: |
+          haxe ci/python-support.hxml
+          python export/python-support/flagprobe.py
+
       - name: Interoperate with a real TURN server
         run: |
           haxe ci/relay-interop.hxml

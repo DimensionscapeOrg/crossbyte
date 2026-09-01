@@ -44,11 +44,17 @@ class StunClient {
 	/**
 		Whether this target can ask at all.
 
-		Discovery needs a UDP socket. Reported rather than assumed, in the same
-		way `DatagramSocket` and the reliable sockets report it, so a caller can
-		branch instead of finding out from a failed future.
+		Discovery needs a UDP socket, and it needs a cryptographically secure
+		source for the transaction id -- both, not either. The id is what a
+		reply is believed by, so it is the whole of what stops an off-path
+		party who can guess it from handing this host an address of its
+		choosing; drawn from a weak generator it would still look random and
+		defend nothing. HashLink, python and lua have UDP and no CSPRNG, and
+		this flag used to say `true` there while the first thing `discover`
+		did threw -- a flag that lies leaves a caller no other path to take,
+		which is the one thing a support flag exists to prevent.
 	**/
-	public static var isSupported(default, null):Bool = DatagramSocket.isSupported;
+	public static var isSupported(default, null):Bool = DatagramSocket.isSupported && crossbyte.crypto.SecureRandom.isSupported;
 
 	/** The port STUN is registered on, and where public servers listen. */
 	public static inline var DEFAULT_PORT:Int = 3478;
@@ -79,6 +85,16 @@ class StunClient {
 
 		if (server == null || server == "") {
 			@:privateAccess future.__fail("A STUN server address is required.", new ArgumentError("server"));
+			return future;
+		}
+
+		// Before anything is built: a caller that skipped the flag gets the
+		// same failed future a checked caller would branch around, rather than
+		// a throw from the first line that needed the CSPRNG.
+		if (!isSupported) {
+			@:privateAccess future.__fail("STUN discovery is not available here: it needs a UDP socket and a cryptographically secure "
+				+ "random source for the transaction id, and this target lacks at least one. Check StunClient.isSupported.",
+				null);
 			return future;
 		}
 
