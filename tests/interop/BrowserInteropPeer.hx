@@ -217,6 +217,14 @@ class BrowserInteropPeer {
 				opened.send("echo:" + text);
 				echoed = true;
 			};
+
+			// Bytes come back verbatim, empty ones included: an empty binary
+			// message travels as PPID 57 rather than 53, and echoing it is what
+			// makes the browser judge that both directions of both ids agree.
+			opened.onBytes = function(payload:crossbyte.io.ByteArray):Void {
+				say({event: "bytes", length: payload.length});
+				opened.sendBytes(payload);
+			};
 		};
 	}
 
