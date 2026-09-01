@@ -939,16 +939,12 @@ class StunMessage {
 	}
 
 	@:noCompletion private static function __copy(bytes:ByteArray, length:Int):Bytes {
+		// One blit, not a byte loop with a bounds check per byte. This runs
+		// once for every signed message that arrives -- each connectivity
+		// check, each relay response -- and it neither needs nor touches the
+		// stream position.
 		var out = Bytes.alloc(length);
-		var position = bytes.position;
-
-		bytes.position = 0;
-
-		for (i in 0...length) {
-			out.set(i, bytes.readUnsignedByte());
-		}
-
-		bytes.position = position;
+		out.blit(0, bytes, 0, length);
 		return out;
 	}
 
