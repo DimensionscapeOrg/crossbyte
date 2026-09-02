@@ -242,7 +242,12 @@ class HTTP2BackendTest extends utest.Test {
 		// The reset reaches the server on its own schedule -- it is read in the
 		// drain loop, after the responses this test already waited for -- so
 		// this waits for the observation rather than assuming it has landed.
-		var deadline:Float = Sys.time() + 3;
+		//
+		// Ten seconds, matching the two Lock.wait calls above rather than the
+		// three this used to allow: the loop leaves the moment the reset is seen,
+		// so the budget only matters on a machine slow enough to need it, and a
+		// busy one was enough to spend three seconds and fail a working reset.
+		var deadline:Float = Sys.time() + 10;
 		while (server.resetStreamIds.indexOf(1) < 0 && Sys.time() < deadline) {
 			Sys.sleep(0.01);
 		}
