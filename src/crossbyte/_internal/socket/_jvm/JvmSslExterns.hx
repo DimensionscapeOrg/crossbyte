@@ -158,6 +158,35 @@ extern class SSLContext {
 	static function getInstance(protocol:String):SSLContext;
 	function init(km:Null<java.NativeArray<KeyManager>>, tm:Null<java.NativeArray<TrustManager>>, sr:Null<SecureRandom>):Void;
 	function createSSLEngine():SSLEngine;
+	function getSocketFactory():SSLSocketFactory;
+}
+
+/**
+	The blocking client socket. Unusable by the runtime itself -- that is why
+	the backend is built on SSLEngine -- but exactly right as an independent
+	peer in a test, where it exercises the server against the JDK's own TLS
+	stack rather than against more of CrossByte.
+**/
+@:native("java.net.Socket")
+extern class JNetSocket {
+	function setSoTimeout(milliseconds:Int):Void;
+}
+
+@:native("javax.net.ssl.SSLSocketFactory")
+extern class SSLSocketFactory {
+	// Returns java.net.Socket, not SSLSocket. Declaring the narrower type
+	// compiles and then fails to link: the descriptor is part of the name.
+	@:overload function createSocket(host:String, port:Int):JNetSocket;
+}
+
+@:native("javax.net.ssl.SSLSocket")
+extern class SSLSocket extends JNetSocket {
+	function startHandshake():Void;
+	function getSSLParameters():SSLParameters;
+	function setSSLParameters(params:SSLParameters):Void;
+	function getApplicationProtocol():String;
+	function getSession():SSLSession;
+	function close():Void;
 }
 
 @:native("java.util.Base64")

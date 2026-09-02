@@ -1864,6 +1864,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// A plain TCP client reaches here too; sys.ssl.Socket extends
 		// sys.net.Socket, so the cast is only safe after the check.
 		return Std.isOfType(__socket, sys.ssl.Socket) ? AlpnSocket.negotiated(cast __socket) : null;
+		#elseif (java || jvm)
+		// Asked for dynamically rather than through the type. Naming
+		// JvmSslSocket here pulls its java.nio imports into the initialisation
+		// macro's context, where the java package is unreachable and the build
+		// fails on Buffer rather than on anything to do with ALPN. A plain
+		// client socket has no such method and answers null.
+		var holder:Dynamic = __socket;
+		var negotiated:Dynamic = try {
+			holder.getALPN();
+		} catch (e:Dynamic) {
+			null;
+		}
+		return Std.isOfType(negotiated, String) ? negotiated : null;
 		#else
 		return null;
 		#end
