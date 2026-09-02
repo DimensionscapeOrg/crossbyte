@@ -161,6 +161,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A refused connection took the full connect timeout to report -- twenty
+  seconds by default, measured at 20001ms, for a refusal the operating system
+  had reported in two. The tick that completes a connection asked `select` about
+  writability alone, and on Windows a failed connect is reported in the
+  exception set and never becomes writable, so nothing noticed it until the
+  deadline expired. The socket is now asked about on both sets and a refusal is
+  reported as soon as it arrives, in 2004ms on the machine that measured it,
+  which is the platform's own latency. It arrives as an `ioError`, not a
+  `close`: a connection that never came up is a different fact from one that
+  hung up, and a caller retries them differently. POSIX reports a failed connect
+  as writable rather than exceptional, so it was never affected and is
+  unchanged.
 - A failed `bind`, `connect`, `send` or listener `close` reported "Operation
   attempted on invalid socket." on `ServerSocket`, `ServerWebSocket` and
   `DatagramSocket`, whatever had actually gone wrong. The socket was usually

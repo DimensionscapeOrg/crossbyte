@@ -200,6 +200,49 @@ class SocketTest extends utest.Test {
 		192.0.2.1 is TEST-NET-1 -- a valid numeric address that is not an
 		interface on any machine, so the operating system must refuse it.
 	**/
+	/**
+		A connection that is refused is reported as a failure, promptly.
+
+		The other half of the verdict `testAOneShotPeerConnectsDeliversAndClose
+		sWithoutError` pins: a connection that never came up must arrive as an
+		ioError and never as a CLOSE, because a caller retries one and not the
+		other.
+
+		The timing is the other half again. The completion tick used to ask
+		select about writability alone, and a refused connect is reported on
+		Windows in the exception set and never becomes writable -- so nothing
+		noticed until the connect timeout, twenty seconds by default, for a
+		refusal the operating system had already reported. Measured at 20001ms
+		before this was fixed. The deadline here is far below that and far
+		above what the refusal actually costs.
+	**/
+	public function testARefusedConnectionIsReportedAsAFailureNotAClose():Void {
+		var client = new Socket();
+		var events:Array<String> = [];
+
+		client.addEventListener(Event.CONNECT, _ -> events.push("connect"));
+		client.addEventListener(Event.CLOSE, _ -> events.push("close"));
+		client.addEventListener(IOErrorEvent.IO_ERROR, _ -> events.push("ioerror"));
+
+		try {
+			// Port 1 on loopback: nothing listens there.
+			client.connect("127.0.0.1", 1);
+			pumpUntil(() -> events.length > 0, 8.0);
+
+			Assert.isTrue(events.indexOf("ioerror") >= 0,
+				"a refused connection was not reported as a failure within the deadline: " + events);
+			Assert.isTrue(events.indexOf("close") < 0,
+				"a connection that never came up was reported as a hangup, which a caller cannot tell from a real one");
+			Assert.isTrue(events.indexOf("connect") < 0,
+				"CONNECT was dispatched for a connection that was refused");
+
+			closeQuietly(client);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			throw e;
+		}
+	}
+
 	public function testAFailedBindSaysWhatFailed():Void {
 		var server = new ServerSocket();
 		var message:String = null;
