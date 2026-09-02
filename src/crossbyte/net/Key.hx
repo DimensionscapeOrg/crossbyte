@@ -42,16 +42,6 @@ final class Key {
 
 	private function new() {}
 
-	#if (java || jvm)
-	// The jvm target has no TLS backend at all -- JvmSslCertificate and
-	// JvmSslKey are empty placeholders, and a secure ServerSocket or
-	// ServerWebSocket refuses there outright. So nothing on jvm can reach a
-	// point where a key is useful, and constructing one would hand back
-	// an object that looks like credentials and is not.
-	private static function refuse():Void {
-		throw new crossbyte.errors.IllegalOperationError("TLS is not implemented on the jvm target, so a key cannot be loaded there. A secure ServerSocket already refuses for the same reason.");
-	}
-	#end
 
 	/**
 	 * Reads a PEM private key from disk.
@@ -73,8 +63,6 @@ final class Key {
 		// the passphrase travels with it rather than being applied here.
 		key.__pem = File.getContent(path);
 		key.__passphrase = password;
-		#elseif (java || jvm)
-		refuse();
 		#else
 		key.__native = NativeKey.loadFile(path, false, password);
 		#end
@@ -101,8 +89,6 @@ final class Key {
 		#if nodejs
 		key.__pem = pem;
 		key.__passphrase = password;
-		#elseif (java || jvm)
-		refuse();
 		#else
 		key.__native = NativeKey.readPEM(pem, false, password);
 		#end

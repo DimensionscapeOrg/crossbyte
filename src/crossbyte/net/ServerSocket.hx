@@ -24,7 +24,9 @@ import js.node.net.Socket as NodeSocket;
 #else
 import sys.net.Host;
 import sys.net.Socket;
-#if (!java && !jvm)
+#if (java || jvm)
+import crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket as SSLSocket;
+#else
 import sys.ssl.Socket as SSLSocket;
 #end
 #if cpp
@@ -145,12 +147,6 @@ class ServerSocket extends EventDispatcher {
 	public function new(secure:Bool = false) {
 		super();
 
-		#if (java || jvm)
-		if (secure) {
-			throw new CBError("Secure ServerSocket is not supported on the jvm target yet.");
-		}
-		#end
-
 		#if eval
 		if (secure) {
 			// eval's sys.ssl.Socket implements setCertificate and
@@ -185,7 +181,10 @@ class ServerSocket extends EventDispatcher {
 		listening = false;
 		#else
 		#if (java || jvm)
-		__serverSocket = new sys.net.Socket();
+		// JvmSslSocket extends sys.net.Socket, so the accept and select paths
+		// below do not care which of the two this is -- the same arrangement
+		// sys.ssl.Socket gives every other sys target.
+		__serverSocket = secure ? new SSLSocket() : new sys.net.Socket();
 		#else
 		// sys.ssl.Socket extends sys.net.Socket, so the accept/select paths
 		// below are identical for both modes.
@@ -214,7 +213,6 @@ class ServerSocket extends EventDispatcher {
 		#end
 	}
 
-	#if (!java && !jvm)
 	/**
 		Installs the certificate chain and private key this server presents to
 		clients. Must be called on a secure server before `listen()`.
@@ -322,7 +320,6 @@ class ServerSocket extends EventDispatcher {
 			throw new CBError('$field must be called before bind().');
 		}
 	}
-	#end
 
 	/**
 		Binds this socket to the specified local address and port.
@@ -748,7 +745,7 @@ class ServerSocket extends EventDispatcher {
 		// Node terminates its own handshakes -- tls.createServer does not hand
 		// out a connection until one has completed -- so there is nothing here
 		// to pump and no pending set to pump it from.
-		#if (!java && !jvm && !nodejs)
+		#if !nodejs
 		if (__pendingHandshakes == null || __pendingHandshakes.length == 0) {
 			return;
 		}
