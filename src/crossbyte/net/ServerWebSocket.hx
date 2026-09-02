@@ -370,11 +370,18 @@ class ServerWebSocket extends ServerSocket {
 			bound = true;
 			#end
 		} catch (e:Dynamic) {
-			switch (e) {
-				case "Bind failed":
-					throw new IOError("Operation attempted on invalid socket.");
+			// Std.string rather than a bare switch on the value, and a
+			// default that throws: the two cases listed here used to be the
+			// only ones handled, so any other failure fell straight through
+			// and bind() returned as though it had worked, leaving the
+			// caller to listen on a socket that was never bound.
+			switch (Std.string(e)) {
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
+				default:
+					// "Bind failed" included. The socket is not what was
+					// invalid -- the address or the port would not take.
+					throw new IOError("Could not bind to " + localAddress + ":" + localPort + ": " + Std.string(e));
 			}
 		}
 	}
@@ -516,7 +523,7 @@ class ServerWebSocket extends ServerSocket {
 		try {
 			__webServerSocket.close();
 		} catch (e:Dynamic) {
-			throw new CBError("Operation attempted on invalid socket.");
+			throw new CBError("The listening socket could not be closed: " + Std.string(e));
 		}
 		listening = false;
 		bound = false;

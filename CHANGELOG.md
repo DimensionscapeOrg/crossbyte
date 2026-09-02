@@ -161,6 +161,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A failed `bind`, `connect`, `send` or listener `close` reported "Operation
+  attempted on invalid socket." on `ServerSocket`, `ServerWebSocket` and
+  `DatagramSocket`, whatever had actually gone wrong. The socket was usually
+  fine -- an address that is not an interface on this machine, a port already
+  taken, a peer that is gone -- and the caught error was discarded rather than
+  reported, so the one line of evidence a failure produced named a cause that
+  had not happened. Each now says which operation failed, against which address
+  and port, and carries the underlying error. `ServerSocket.bind` and
+  `ServerWebSocket.bind` additionally matched only two error strings with no
+  `default`, so anything else fell through the `switch` and `bind()` returned as
+  though it had succeeded, leaving the caller to listen on a socket that was
+  never bound; both now report every failure. The same fabrication in
+  `Socket.flush` is what made the connect-event race above unreadable for weeks.
 - A native client socket could report a healthy connection as failed,
   intermittently and rarely. A non-blocking connect that completed immediately
   -- which a loopback connect does now and then on Windows -- dispatched the

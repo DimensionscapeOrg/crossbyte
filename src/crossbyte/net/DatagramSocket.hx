@@ -203,12 +203,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#end
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
-				case "Bind failed":
-					throw new IOError("Operation attempted on invalid socket.");
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
-					throw new IOError("Operation attempted on invalid socket.");
+					// Named for what actually failed, and carrying the reason.
+					// "Bind failed" used to be answered with "Operation
+					// attempted on invalid socket.", which describes a socket
+					// that was in fact fine -- it was the address or the port
+					// that would not take.
+					throw new IOError("Could not bind to " + localAddress + ":" + localPort + ": " + Std.string(e));
 			}
 		}
 	}
@@ -282,12 +285,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#end
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
-				case "Bind failed":
-					throw new IOError("Operation attempted on invalid socket.");
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
-					throw new IOError("Operation attempted on invalid socket.");
+					// Named for what actually failed, and carrying the reason.
+					// "Bind failed" used to be answered with "Operation
+					// attempted on invalid socket.", which describes a socket
+					// that was in fact fine -- it was the address or the port
+					// that would not take.
+					throw new IOError("Could not connect to " + host + ":" + port + ": " + Std.string(e));
 			}
 		}
 	}
@@ -383,14 +389,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			__bound = __getLocalEndpoint() != null;
 			#end
 		} catch (e:HxIOError) {
+			// The listener already gets the real reason; so does the caller.
 			__dispatchSendError(Std.string(e));
-			throw new IOError("Operation attempted on invalid socket.");
+			throw new IOError("Send to " + address + ":" + port + " failed: " + Std.string(e));
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
 				case "Unresolved host":
 					throw new ArgumentError("One of the parameters is invalid");
 				default:
-					throw new IOError("Operation attempted on invalid socket.");
+					throw new IOError("Send to " + address + ":" + port + " failed: " + Std.string(e));
 			}
 		}
 	}

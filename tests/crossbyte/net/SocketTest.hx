@@ -187,6 +187,38 @@ class SocketTest extends utest.Test {
 		already makes closes the window. Pinned as: no CONNECT at the instant
 		connect() returns.
 	**/
+	/**
+		A bind that fails says what failed.
+
+		Every one of these catch blocks used to answer with "Operation attempted
+		on invalid socket." -- a message describing a socket that was perfectly
+		fine, when it was the address that would not take. The same fabrication
+		in `Socket.flush` cost weeks on an unrelated intermittent, because the
+		one line of evidence a red run produced named a cause that had not
+		happened. The rule this pins: a caught error is reported, never replaced.
+
+		192.0.2.1 is TEST-NET-1 -- a valid numeric address that is not an
+		interface on any machine, so the operating system must refuse it.
+	**/
+	public function testAFailedBindSaysWhatFailed():Void {
+		var server = new ServerSocket();
+		var message:String = null;
+
+		try {
+			server.bind(0, "192.0.2.1");
+		} catch (e:Dynamic) {
+			message = Std.string(e);
+		}
+
+		closeServerQuietly(server);
+
+		Assert.notNull(message, "binding an address this machine does not have was not reported at all");
+		Assert.isTrue(message.indexOf("192.0.2.1") >= 0,
+			"the failure does not say which address would not bind: " + message);
+		Assert.isTrue(message.indexOf("invalid socket") < 0,
+			"a bind failure was reported as an invalid socket, which it was not: " + message);
+	}
+
 	public function testConnectIsNeverDispatchedSynchronously():Void {
 		var server = new ServerSocket();
 		var client = new Socket();
