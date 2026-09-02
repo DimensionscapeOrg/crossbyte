@@ -307,6 +307,8 @@ class ServerSocket extends EventDispatcher {
 		__tlsAlpn = protocols;
 		#elseif cpp
 		(cast __serverSocket : AlpnSocket).setALPN(protocols);
+		#elseif (java || jvm)
+		(cast __serverSocket : SSLSocket).setALPN(protocols);
 		#end
 	}
 
