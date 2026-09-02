@@ -5,6 +5,19 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- TLS on the jvm target. A secure `ServerSocket` refused at construction there
+  and `Certificate`/`Key` refused to load anything, so the jvm build had no
+  HTTPS server and no WSS. It now terminates TLS through `SSLEngine`, verified
+  against `openssl s_client`: TLS 1.3, certificate accepted, handshake
+  completed. Java ships two TLS APIs and only `SSLEngine` suits a poll-driven
+  runtime -- `SSLSocket` is blocking -- so the engine is driven over the same
+  NIO channel the plain socket uses and reports an unfinished handshake by
+  throwing `Blocked`, which is what the existing handshake pump already treats
+  as "come back next tick". Nothing above the socket changed. Certificates load
+  from PEM; private keys from unencrypted PKCS#8, with PKCS#1 and encrypted
+  keys refused by name and told how to convert rather than misparsed. Server
+  Name Indication, client certificates and ALPN are not implemented yet and say
+  so.
 - A performance suite in `tests/bench`, covering the paths that run once per unit of real work -- per datagram, per connectivity check, per event -- so a regression there is multiplied by traffic. It reports the best of several calibrated samples per case; CI builds and runs it so it cannot rot, and ignores the numbers, because a shared runner's timings gate nothing honestly. Its first run found both of the performance fixes below.
 - `StunClient` has tests. It had none -- nothing in the repository named it -- while `StunMessage` was pinned to RFC 5769's vectors and `TurnClient` had cases of its own, so the class a caller reaches for first was the one thing in that corner nobody checked. Seven cases against a server bound in the test, covering what a real one could not be asked to do: drop a request, refuse one, answer without an address, and answer a question nobody asked.
 - `TurnClient.useChannels` and `PeerConnection.gatherRelayed`'s `useChannels` argument: RFC 8656 channels, which replace the thirty-six byte Send indication wrapper on every relayed datagram with four. Off unless asked for, because a relay that binds a channel and then drops what it is sent over it cannot say so -- a `ChannelData` message is not STUN, and one implementation tested here answers the bind with success while rejecting every datagram whose top two bits are set. A relay that refuses the bind outright is the safe case and keeps working on indications.

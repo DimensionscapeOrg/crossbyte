@@ -50,16 +50,6 @@ final class Certificate {
 
 	private function new() {}
 
-	#if (java || jvm)
-	// The jvm target has no TLS backend at all -- JvmSslCertificate and
-	// JvmSslKey are empty placeholders, and a secure ServerSocket or
-	// ServerWebSocket refuses there outright. So nothing on jvm can reach a
-	// point where one of these is useful, and constructing one would hand back
-	// an object that looks like credentials and is not.
-	private static function refuse():Void {
-		throw new crossbyte.errors.IllegalOperationError("TLS is not implemented on the jvm target, so a certificate cannot be loaded there. A secure ServerSocket already refuses for the same reason.");
-	}
-	#end
 
 	/**
 	 * Reads a PEM certificate from disk.
@@ -76,8 +66,6 @@ final class Certificate {
 
 		#if nodejs
 		certificate.__pem = File.getContent(path);
-		#elseif (java || jvm)
-		refuse();
 		#else
 		certificate.__native = NativeCertificate.loadFile(path);
 		#end
@@ -102,8 +90,6 @@ final class Certificate {
 
 		#if nodejs
 		certificate.__pem = pem;
-		#elseif (java || jvm)
-		refuse();
 		#else
 		certificate.__native = NativeCertificate.fromString(pem);
 		#end

@@ -1,9 +1,7 @@
 package crossbyte.net;
 
-#if (!java && !jvm)
 import crossbyte.net.Certificate;
 import crossbyte.net.Key;
-#end
 
 /**
  * Generates a throwaway self-signed certificate for TLS tests.
@@ -14,8 +12,7 @@ import crossbyte.net.Key;
  * callers skip rather than fail on machines without OpenSSL.
  */
 class TLSTestFixture {
-	#if (!java && !jvm)
-	private static var __cached:TLSFixtureData;
+		private static var __cached:TLSFixtureData;
 	private static var __attempted:Bool = false;
 
 	public static function selfSigned():TLSFixtureData {
@@ -64,14 +61,11 @@ class TLSTestFixture {
 		}
 		return ".";
 	}
-	#end
 }
 
-#if (!java && !jvm)
 typedef TLSFixtureData = {
 	var certificate:Certificate;
 	var key:Key;
 	var certificatePath:String;
 	var keyPath:String;
 }
-#end
