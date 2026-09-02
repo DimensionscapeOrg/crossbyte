@@ -467,6 +467,61 @@ class ReliableDatagramSocketTest extends utest.Test {
 		closeServerQuietly(server);
 	}
 
+	/**
+		A frame that cannot go out reports why, and takes the connection down.
+
+		`__sendRaw` is the single exit every frame leaves through -- data,
+		acks and keep-alives alike -- and several of its callers run from
+		timers and from the transport's own receive handler. A throw escaping
+		here would unwind through those rather than fail this connection, so
+		the failure has to leave as an ioError and a close.
+
+		The reason has to travel with it. Reporting that a send failed without
+		saying why is the fault that made an unrelated intermittent unreadable
+		for weeks elsewhere in this package.
+	**/
+	public function testASendThatCannotGoOutReportsWhyAndCloses():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var errors:Array<String> = [];
+		var closes = 0;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> accepted = event.socket);
+			server.listen();
+
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 2.0);
+			Assert.isTrue(client.connected, "the pair never connected, so there was nothing to fail");
+
+			client.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> errors.push(e.text));
+			client.addEventListener(Event.CLOSE, _ -> closes++);
+
+			// The transport underneath is closed, so the next frame cannot
+			// leave. This is what a socket dying under a live connection does.
+			@:privateAccess client.__transport.close();
+			@:privateAccess client.__sendRaw(bytesOf("frame"));
+
+			Assert.equals(1, errors.length, "a frame that could not be sent was not reported");
+			Assert.isTrue(errors[0].length > 0, "the ioError carried no reason for the failure");
+			Assert.equals(1, closes, "a send that failed left the connection open");
+			Assert.isFalse(client.connected, "the connection still reported itself up after its transport had gone");
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(accepted);
+			closeServerQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(accepted);
+		closeServerQuietly(server);
+	}
+
 	public function testConnectionTimeoutDispatchesIOErrorAndCloses():Void {
 		if (!requireDatagramSupport()) return;
 
