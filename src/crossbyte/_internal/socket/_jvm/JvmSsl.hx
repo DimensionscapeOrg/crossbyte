@@ -41,6 +41,7 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private var __key:JvmSslKey;
 	@:noCompletion private var __ca:JvmSslCertificate;
 	@:noCompletion private var __hostname:String;
+	@:noCompletion private var __alpn:Array<String>;
 
 	// Per-connection engine state.
 	@:noCompletion private var __engine:SSLEngine;
@@ -69,6 +70,33 @@ class JvmSslSocket extends sys.net.Socket {
 
 	public function setHostname(name:String):Void {
 		__hostname = name;
+	}
+
+	/**
+		Offers these protocol names during the handshake.
+
+		Built into the JDK, unlike the cpp path, which needed a native extension
+		to reach mbedTLS's ALPN at all. `null` or an empty list disables it.
+	**/
+	public function setALPN(protocols:Null<Array<String>>):Void {
+		__alpn = (protocols != null && protocols.length > 0) ? protocols : null;
+	}
+
+	/** The protocol agreed on, or null when none was. **/
+	public function getALPN():Null<String> {
+		if (__engine == null) {
+			return null;
+		}
+
+		// The JDK reports "no agreement" as an empty string and "not yet
+		// negotiated" as null; both mean there is nothing to report.
+		var negotiated = try {
+			__engine.getApplicationProtocol();
+		} catch (e:Dynamic) {
+			null;
+		}
+
+		return (negotiated == null || negotiated == "") ? null : negotiated;
 	}
 
 	public function addSNICertificate(cbServernameMatch:String->Bool, cert:JvmSslCertificate, key:JvmSslKey):Void {
@@ -115,6 +143,7 @@ class JvmSslSocket extends sys.net.Socket {
 		accepted.__certificate = __certificate;
 		accepted.__key = __key;
 		accepted.__ca = __ca;
+		accepted.__alpn = __alpn;
 		accepted.verifyCert = verifyCert;
 		accepted.__startEngine(false);
 		return accepted;
@@ -175,6 +204,17 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private function __startEngine(clientMode:Bool):Void {
 		__engine = __buildContext().createSSLEngine();
 		__engine.setUseClientMode(clientMode);
+
+		if (__alpn != null) {
+			var names:java.NativeArray<String> = new java.NativeArray(__alpn.length);
+			for (i in 0...__alpn.length) {
+				names[i] = __alpn[i];
+			}
+
+			var parameters = __engine.getSSLParameters();
+			parameters.setApplicationProtocols(names);
+			__engine.setSSLParameters(parameters);
+		}
 
 		var session = __engine.getSession();
 		__netIn = ByteBuffer.allocate(session.getPacketBufferSize());

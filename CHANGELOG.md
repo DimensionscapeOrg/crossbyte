@@ -5,6 +5,13 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- ALPN on the jvm target, so a TLS listener there can negotiate `h2`. The JDK
+  exposes it through `SSLParameters`, where the cpp path needed a native
+  extension to reach mbedTLS at all. `ServerSocket.setALPN`, `FlexSocket`'s
+  accessors and `Socket.alpnProtocol` all report it. Verified by hand against
+  the JDK's own client offering the reverse preference order, so agreement on
+  the server's first choice is a negotiation and not an echo; it is not covered
+  by CI, for the reason recorded in `ServerSocketTLSTest`.
 - TLS on the jvm target. A secure `ServerSocket` refused at construction there
   and `Certificate`/`Key` refused to load anything, so the jvm build had no
   HTTPS server and no WSS. It now terminates TLS through `SSLEngine`, verified
