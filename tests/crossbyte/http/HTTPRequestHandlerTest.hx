@@ -109,8 +109,16 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testIfModifiedSinceReturns304(async:Async):Void {
-		// Nested rather than sequential because it has to be: the second
-		// request carries the Last-Modified the first one answered with.
+		// Nested rather than sequential because it has to be: the second request
+		// carries the Last-Modified the first one answered with. Both requests
+		// share one root so they serve the same file -- Last-Modified is the mtime
+		// at second granularity, and two temp files created a moment apart can land
+		// in different seconds, which returned 200 and failed this intermittently.
+		var root = File.createTempDirectory();
+		var fixture = new ByteArray();
+		fixture.writeUTFBytes("Hello from middleware test");
+		root.resolvePath("index.html").save(fixture);
+
 		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n", function(first):Void {
 			var lastModified = first.headers.get("last-modified");
 
@@ -120,9 +128,12 @@ class HTTPRequestHandlerTest extends utest.Test {
 			__sendRequest(async, [], 'GET /index.html HTTP/1.1\r\nHost: localhost\r\nIf-Modified-Since: ${lastModified}\r\n\r\n', function(second):Void {
 				Assert.equals(304, second.status);
 				Assert.equals("", second.body);
+				try {
+					root.deleteDirectory(true);
+				} catch (_:Dynamic) {}
 				async.done();
-			});
-		});
+			}, null, false, null, null, root);
+		}, null, false, null, null, root);
 	}
 
 	public function testMiddlewareHelpersAreAvailableAndCaseInsensitive(async:Async):Void {
@@ -1339,12 +1350,19 @@ Host: localhost
 	}
 
 	private function __sendRequest(async:Async, middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, done:HTTPTestResponse->Void,
-			?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void):Void {
-		var root = File.createTempDirectory();
-		var indexFile = root.resolvePath("index.html");
-		var fixture = new ByteArray();
-		fixture.writeUTFBytes("Hello from middleware test");
-		indexFile.save(fixture);
+			?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void, ?sharedRoot:File):Void {
+		// A caller can hand in a root so two requests hit the same file. A
+		// conditional request needs that: Last-Modified is the file's mtime at
+		// second granularity, and two temp files created a moment apart can fall
+		// either side of a second boundary, which is what made the 304 case flaky.
+		var ownsRoot:Bool = sharedRoot == null;
+		var root = ownsRoot ? File.createTempDirectory() : sharedRoot;
+		if (ownsRoot) {
+			var indexFile = root.resolvePath("index.html");
+			var fixture = new ByteArray();
+			fixture.writeUTFBytes("Hello from middleware test");
+			indexFile.save(fixture);
+		}
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"], null, null, null, middleware, null, corsEnabled);
 		if (configure != null) {
@@ -1406,9 +1424,11 @@ Host: localhost
 			try {
 				server.close();
 			} catch (_:Dynamic) {}
-			try {
-				root.deleteDirectory(true);
-			} catch (_:Dynamic) {}
+			if (ownsRoot) {
+				try {
+					root.deleteDirectory(true);
+				} catch (_:Dynamic) {}
+			}
 
 			if (failure != null) {
 				Assert.fail("the request failed: " + Std.string(failure));
