@@ -572,7 +572,6 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw "Socket can only be initiated in a CrossByte threaded instance";
 		}
 
-		var isPendingConnect = false;
 		try {
 			__socket.setBlocking(false);
 			__socket.connect(h, port);
@@ -584,7 +583,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				}
 				return;
 			}
-			isPendingConnect = true;
+			// A would-block is the normal case on a target with real non-blocking
+			// sockets: the connect is in flight, and the tick below waits for it to
+			// become writable. Nothing to record -- both completions defer there.
 		} catch (e:Dynamic) {
 			__cleanupFailedConnect();
 			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
@@ -596,14 +597,32 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__socket.setFastSend(true);
 		__socket.custom = this;
 
-		if (isPendingConnect) {
-			__startConnecting();
-		} else {
-			__connected = true;
-			@:privateAccess
-			__cbInstance.registerSocket(__socket);
-			__dispatchPooledSimpleEvent(Event.CONNECT);
-		}
+		#if eval
+		// eval's sockets are blocking -- setBlocking is a no-op there (see the
+		// read loop) -- so a connect that returns has genuinely completed and the
+		// socket is writable now. There is no tick-driven writability signal to
+		// defer to, and forcing the connect through one hangs: the first read the
+		// completion tick makes would block on a socket with nothing to say yet.
+		// Announce the connect here, which is what every target did before the
+		// deferral below and what eval still needs.
+		__connected = true;
+		@:privateAccess
+		__cbInstance.registerSocket(__socket);
+		__dispatchPooledSimpleEvent(Event.CONNECT);
+		#else
+		// Both completions -- pending, and the immediate one a loopback connect
+		// can return on Windows -- wait for the tick to confirm the socket is
+		// writable before CONNECT is dispatched. The tick gates that dispatch on
+		// a select() for writability (see this_onTick); a non-blocking connect
+		// that returns success has not necessarily finished the handshake, so a
+		// write from a CONNECT listener fired synchronously here could reach a
+		// socket the OS was not yet ready to send on and fail with an end-of-file
+		// the connect raced. Deferring makes the two completions behave
+		// identically and the notification tick-driven like every other socket
+		// event, instead of re-entering user code from inside connect() on a
+		// socket that has never been pumped.
+		__startConnecting();
+		#end
 		#end
 	}
 
@@ -666,7 +685,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					throwError = true;
 				}
 				if (throwError) {
-					throw new IOError("Operation attempted on invalid socket.");
+					// The real write error, not a fabricated one. This used to
+					// throw "Operation attempted on invalid socket." for every
+					// non-blocking-related failure -- a message naming a cause
+					// (a null socket) that had nothing to do with what actually
+					// happened, which is why an intermittent write failure here
+					// was unreadable for so long. Surface what was caught.
+					throw new IOError("Socket write failed: " + Std.string(e));
 				}
 			}
 
@@ -1530,12 +1555,23 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// while still connected is a peer hangup (CLOSE); one decided before
 		// the connection ever came up is a failure (ioError) — the same split
 		// the single if/else chain here used to make.
-		var closeWasConnected:Bool = connected;
+		// A connect that completes this tick counts as connected for the verdict
+		// below: the peer sent data, so the connection came up. Without the
+		// `|| doConnect` a one-shot peer -- accept, write, close -- whose data and
+		// FIN arrive in the same tick the connect completes would be reported as a
+		// failed connection (ioError) rather than a hangup after a clean exchange
+		// (CLOSE).
+		var closeWasConnected:Bool = connected || doConnect;
 
 		// CONNECT, then any data, then CLOSE. A tick can legitimately carry
 		// all three: the handshake completes, the peer's first burst is
-		// already buffered, and its FIN is right behind it.
-		if (doConnect && !doClose) {
+		// already buffered, and its FIN is right behind it. The connect is
+		// announced even when the close is decided in the same tick -- the
+		// connection did come up, and a listener that sets up its data handling
+		// on CONNECT must run before the data and the close reach it. The guard
+		// here used to also require `!doClose`, which silently dropped CONNECT for
+		// exactly that case and, with it, turned the close into an ioError.
+		if (doConnect) {
 			__connected = true;
 			__stopConnecting();
 			@:privateAccess
