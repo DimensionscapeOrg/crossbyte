@@ -1481,10 +1481,25 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var doPeerClose = false;
 
 		if (!connected) {
-			var r = SysSocket.select([], [__socket], [], 0);
+			// Asked about on both sets. A connect that fails is reported in the
+			// exception set on Windows and never becomes writable, so watching
+			// writability alone could not see it: a refused connection sat here
+			// until the connect timeout -- twenty seconds by default, for a
+			// refusal the operating system had reported in two.
+			//
+			// POSIX reports a failed connect as writable instead, so there the
+			// connect is announced and the failure surfaces on the first read.
+			// Watching the exception set costs nothing there and closes the gap
+			// on Windows.
+			var r = SysSocket.select([], [__socket], [__socket], 0);
 
 			if (r.write.length > 0 && r.write[0] == __socket) {
 				doConnect = true;
+			} else if (r.others.length > 0 && r.others[0] == __socket) {
+				// Never came up, so closeWasConnected stays false below and this
+				// leaves as an ioError rather than a CLOSE. A connection that
+				// failed is a different fact from one that hung up.
+				doClose = true;
 			} else if (Sys.time() - __timestamp > timeout / 1000) {
 				doClose = true;
 			}
