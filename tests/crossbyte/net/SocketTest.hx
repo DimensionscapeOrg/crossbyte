@@ -172,6 +172,116 @@ class SocketTest extends utest.Test {
 		Assert.equals(8, second.bytesLoaded);
 	}
 
+	/**
+		The connect event comes from the tick that confirms the socket is
+		writable, never synchronously from inside connect().
+
+		It used to fire synchronously whenever a non-blocking connect completed
+		immediately -- which a loopback connect intermittently does on Windows --
+		and a CONNECT listener that wrote then reached a socket the OS had
+		reported connected but not finished the handshake on, whose write failed
+		with Eof. That surfaced, through a since-corrected flush message, as an
+		"invalid socket" failure on a connection that was in fact healthy: a rare
+		red run that never reproduced under a debugger because the window is one
+		instruction wide. Deferring the event to the writability check the tick
+		already makes closes the window. Pinned as: no CONNECT at the instant
+		connect() returns.
+	**/
+	public function testConnectIsNeverDispatchedSynchronously():Void {
+		var server = new ServerSocket();
+		var client = new Socket();
+		var connectedSynchronously = false;
+		var connected = false;
+
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		client.addEventListener(Event.CONNECT, _ -> connected = true);
+		try {
+			client.connect("127.0.0.1", server.localPort);
+			// No tick has run yet. A synchronous dispatch would already show here.
+			connectedSynchronously = connected;
+			pumpUntil(() -> connected, 3.0);
+
+			Assert.isFalse(connectedSynchronously,
+				"connect dispatched CONNECT synchronously, before any tick confirmed the socket was writable");
+			Assert.isTrue(connected, "CONNECT never arrived from the tick");
+
+			closeQuietly(client);
+			closeServerQuietly(server);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeServerQuietly(server);
+			throw e;
+		}
+	}
+
+	/**
+		A one-shot peer -- accept, write, close -- delivers CONNECT, then the
+		data, then CLOSE, and never an ioError.
+
+		Its data and FIN follow the connection coming up so closely that all
+		three can land in one client tick. That tick must still announce CONNECT,
+		because the connection did come up, and end in CLOSE, because the peer
+		hung up cleanly after a complete exchange -- not ioError, which means the
+		connect failed. The tick guard used to drop CONNECT whenever a close was
+		decided in the same tick, and the dropped CONNECT flipped the close
+		verdict to a failure the connection never suffered.
+	**/
+	public function testAOneShotPeerConnectsDeliversAndClosesWithoutError():Void {
+		var server = new ServerSocket();
+		var client = new Socket();
+		var serverPeer:Socket = null;
+		var events:Array<String> = [];
+		var received = new ByteArray();
+
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
+			serverPeer = event.socket;
+			// A full read chunk, then close at once. The burst and the FIN reach
+			// the client together, so they land in the same tick the connect
+			// completes -- the arrangement the fix is about. A short payload can
+			// arrive a tick later, when CONNECT and the close no longer coincide
+			// and the old guard was never exercised.
+			var payload = new ByteArray();
+			for (i in 0...Socket.READ_CHUNK) {
+				payload.writeByte(i & 0xFF);
+			}
+			serverPeer.writeBytes(payload);
+			serverPeer.flush();
+			serverPeer.close();
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		client.addEventListener(Event.CONNECT, _ -> events.push("connect"));
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			client.readBytes(received, received.length, client.bytesAvailable);
+			events.push("data");
+		});
+		client.addEventListener(Event.CLOSE, _ -> events.push("close"));
+		client.addEventListener(IOErrorEvent.IO_ERROR, _ -> events.push("ioerror"));
+
+		try {
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> events.indexOf("close") >= 0 || events.indexOf("ioerror") >= 0, 3.0);
+
+			Assert.isTrue(events.indexOf("ioerror") < 0, "a clean one-shot exchange was reported as a connection failure");
+			Assert.isTrue(events.indexOf("connect") >= 0, "CONNECT was never dispatched for a connection that came up");
+			Assert.isTrue(events.indexOf("close") >= 0, "CLOSE was never dispatched");
+			Assert.isTrue(events.indexOf("connect") < events.indexOf("close"), "CONNECT must precede CLOSE");
+			Assert.equals(Socket.READ_CHUNK, received.length);
+
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(serverPeer);
+			closeServerQuietly(server);
+			throw e;
+		}
+	}
+
 	public function testClientServerEchoOverLocalhost():Void {
 		var server = new ServerSocket();
 		var client = new Socket();

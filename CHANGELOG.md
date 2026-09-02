@@ -161,6 +161,26 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A native client socket could report a healthy connection as failed,
+  intermittently and rarely. A non-blocking connect that completed immediately
+  -- which a loopback connect does now and then on Windows -- dispatched the
+  connect event synchronously from inside `connect()`, and a listener that wrote
+  on it reached a socket the operating system had reported connected but not
+  finished establishing; the write failed with an end-of-file the connect had
+  raced. Two further faults kept it unreadable. `flush()` reported every
+  non-blocking-related write failure as "Operation attempted on invalid socket."
+  -- a fabricated message naming a cause, a null socket, that had nothing to do
+  with what happened -- so the real end-of-file never once appeared in a red run.
+  And the completion tick dropped the connect event whenever the peer's data and
+  FIN landed in the same tick the connect completed, which turned a clean
+  one-shot exchange into a reported connection failure. The connect event is now
+  dispatched from the writability check the tick already makes rather than
+  synchronously, so a listener writes only once the socket is genuinely ready;
+  `flush()` surfaces the real error; and the tick announces the connect even when
+  the connection closes in the same pass. The eval interpreter, whose sockets are
+  blocking and have no writability tick to defer to, keeps its synchronous
+  dispatch; the browser and Node paths were asynchronous here already. All three
+  were unaffected.
 - Writing past the end of a `ByteArray` could expose bytes the caller never wrote. The zeroing of a skipped gap lived inside the reallocation branch and started from the old *capacity*, so a gap opened without a reallocation was never zeroed at all, and one opened with a reallocation was only zeroed above the capacity the old buffer had -- while the copy into the new buffer carried every stale byte beneath it across. Shrinking a buffer to reuse it and then writing past the new end handed back the previous contents: ninety-six of ninety-six bytes, measured. The existing case covered only the reallocating path, which is why it had always passed. Zeroing now runs against the old logical length in both paths, and two cases cover the gap that needs no growth.
 - An empty data channel message sent to a browser vanished without a word. RFC 8831 gives zero-length messages payload protocol identifiers of their own and has them travel as one byte of zero, because SCTP cannot carry a message of no bytes; the receive side here honoured that convention and the send side never did, shipping an actually-empty chunk that a real browser's SCTP discards silently. Every internal test passed, both ends of a homogeneous pair agreeing on the broken shape -- the browser interoperability run now exchanges binary and empty-binary messages with headless Chrome precisely so that class of agreement cannot survive review.
 - `StunClient.isSupported` lied on HashLink, python and lua. It derived from `DatagramSocket.isSupported` alone, and those targets have UDP but no CSPRNG -- so the flag said `true` while the first line of `discover()` threw, which is the one thing a support flag exists to prevent and the same bug class the neko UDP flag had. It now also requires `SecureRandom.isSupported`, since the transaction id is what a reply is believed by and one drawn from a weak generator would let an off-path party hand this host an address of its choosing. `discover()` and `ReliableDatagramServerSocket.discoverPublicAddress` fail their future with the reason named rather than throwing, and CI now runs a probe on python -- the one CSPRNG-less UDP target it can execute -- because every suite runs where a CSPRNG exists and an in-suite assertion of this could never fail.
