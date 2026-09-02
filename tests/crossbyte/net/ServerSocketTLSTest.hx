@@ -140,6 +140,20 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 	#end
 
+	// The jvm end-to-end handshake and its ALPN negotiation are deliberately not
+	// here. Both need a blocking TLS client on a thread of its own while the
+	// runtime is pumped, and two such cases sharing one runtime interfered with
+	// each other and with the socket cases around them: a clean run, then nine
+	// failures, then a hang, over three consecutive runs. That is worse than no
+	// coverage, because a suite that fails at random teaches people to ignore it.
+	//
+	// They belong in an integration harness beside ci/interop and ci/relay,
+	// which is where the note at the top of this class already puts the native
+	// end-to-end handshake. The backend was verified against openssl s_client --
+	// TLS 1.3, verify return code 0 -- and ALPN against the JDK's own client
+	// offering the reverse preference order, so the server's choice won rather
+	// than being echoed back. Both by hand, both reproducible, neither in CI.
+
 	#if cpp
 	public function testAlpnBridgeRefusesAHandleThatIsNotAnSslConfig():Void {
 		// The bridge reads mbedTLS handles back out of hxcpp objects whose

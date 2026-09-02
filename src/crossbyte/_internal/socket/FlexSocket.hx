@@ -104,6 +104,8 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 
 		#if cpp
 		(cast this : AlpnSocket).setALPN(protocols);
+		#elseif (java || jvm)
+		(cast this : SSLSocket).setALPN(protocols);
 		#end
 	}
 
@@ -117,6 +119,8 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 
 		#if cpp
 		return AlpnSocket.negotiated(cast this);
+		#elseif (java || jvm)
+		return (cast this : SSLSocket).getALPN();
 		#else
 		return null;
 		#end
