@@ -22,19 +22,16 @@ class ServerSocketTLSTest extends utest.Test {
 		Assert.equals(0, server.pendingHandshakeCount());
 		Assert.equals(10.0, server.handshakeTimeout);
 
-		#if (!java && !jvm)
 		// TLS configuration is meaningless on a plain listener and must not
 		// silently no-op.
 		Assert.raises(() -> server.setCertificate(null, null), CBError);
 		Assert.raises(() -> server.addSNICertificate((_) -> true, null, null), CBError);
 		Assert.raises(() -> server.requireClientCertificate(null), CBError);
 		Assert.raises(() -> server.setALPN(["h2"]), CBError);
-		#end
 
 		server.close();
 	}
 
-	#if (!java && !jvm)
 	// Everything below builds a secure ServerSocket, which eval refuses at
 	// construction because its sys.ssl.Socket cannot install a certificate.
 	// The refusal itself is asserted in the #else at the end.
@@ -248,11 +245,6 @@ class ServerSocketTLSTest extends utest.Test {
 		client.sendMessage("done");
 		accepted.close();
 		server.close();
-	}
-	#end
-	#else
-	public function testSecureServerIsRejectedOnJvm():Void {
-		Assert.raises(() -> new ServerSocket(true), CBError);
 	}
 	#end
 }
