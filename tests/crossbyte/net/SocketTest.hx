@@ -243,6 +243,64 @@ class SocketTest extends utest.Test {
 		}
 	}
 
+	/**
+		A retry that fails reports the error and does not escape.
+
+		`__tryFlush` is the second half of a blocked write, run from the
+		registry's writable queue. Anything it throws unwinds through the
+		runtime's drain and costs every other connection in that pass rather
+		than this one, so a write that fails has to leave as an ioError on this
+		socket and nothing more.
+
+		The drain callback must not run either. It means "the buffer emptied",
+		and it did not.
+	**/
+	public function testAFailedWritableRetryReportsAndDoesNotEscape():Void {
+		var socket = socketWithOutput("payload");
+
+		// A real descriptor that has been closed: the write reaches the socket
+		// layer and fails there, which is the shape a peer reset produces.
+		var dead = new SysSocket();
+		dead.close();
+		socket.__socket = dead;
+
+		var errors:Array<String> = [];
+		var drained = false;
+		socket.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> errors.push(e.text));
+		socket.__onWritableDrain = () -> drained = true;
+
+		// Must not throw out of here.
+		socket.__tryFlush();
+
+		Assert.equals(1, errors.length, "a retry that failed did not report an ioError");
+		Assert.isTrue(errors[0].length > 0, "the ioError carried no reason");
+		Assert.isFalse(drained, "the writable-drain callback ran after the flush had failed");
+	}
+
+	/**
+		A retry on a socket that is already gone does nothing at all.
+
+		Between a write blocking and the queue draining, the socket may have
+		been closed -- by the peer, by the application, or by the overflow
+		policy. There is nothing to retry and nothing to report; what matters
+		is that it does not throw into the drain.
+	**/
+	public function testARetryOnAClosedSocketIsSilent():Void {
+		var socket = socketWithOutput("payload");
+		socket.flushFull = true;
+
+		var errors = 0;
+		var drained = false;
+		socket.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
+		socket.__onWritableDrain = () -> drained = true;
+
+		socket.__tryFlush();
+
+		Assert.equals(0, errors, "a retry on a socket that was already gone reported an error");
+		Assert.isFalse(drained, "the drain callback ran for a socket with nothing to drain");
+		Assert.isFalse(socket.flushFull, "flushFull was left set, so the socket would never be queued again");
+	}
+
 	public function testAFailedBindSaysWhatFailed():Void {
 		var server = new ServerSocket();
 		var message:String = null;
