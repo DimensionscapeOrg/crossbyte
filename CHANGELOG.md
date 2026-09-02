@@ -181,6 +181,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The jvm socket layer exhausted the machine's ephemeral ports under sustained
+  use. `sys.net.Socket.select` opened a fresh `java.nio.channels.Selector` on
+  every call, and on Windows a `Selector` builds its wakeup pipe from a loopback
+  socket pair -- so each call cost two sockets and left them in TIME_WAIT for
+  the best part of a minute. The socket registry calls `select` once per tick,
+  so a runtime at sixty ticks a second put a hundred and twenty sockets a second
+  beyond reach and worked through the whole ephemeral range, about sixteen
+  thousand on Windows, in roughly two minutes. Everything socket-shaped then
+  failed at once: "Address already in use" out of a connect, and "Unable to
+  establish loopback connection" out of the JVM's own pipe setup. The selector
+  is now opened once per thread and kept. Measured over two thousand calls:
+  1796 sockets stranded before, none after, and the calls themselves 3.6 times
+  faster because opening the selector was most of what they did. `waitForRead`
+  had the same fault and the same fix.
 - A refused connection took the full connect timeout to report -- twenty
   seconds by default, measured at 20001ms, for a refusal the operating system
   had reported in two. The tick that completes a connection asked `select` about

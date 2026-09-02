@@ -760,16 +760,26 @@ class Socket {
 	}
 
 	public function waitForRead():Void {
-		var selector = Selector.open();
+		// The selector `select` uses, for the same reason: opening one here
+		// costs a loopback socket pair on Windows, and closing it leaves them
+		// in TIME_WAIT. Cancelled and flushed after, so the next caller on
+		// this thread starts clean.
+		var selector = __threadSelector();
 		try {
 			if (channel.isBlocking())
 				channel.configureBlocking(false);
 			channel.register(selector, SelectionKey.OP_READ);
 			selector.select();
 		} catch (e:Dynamic) {}
-		try
-			selector.close()
-		catch (e:Dynamic) {}
+		try {
+			var keys = selector.keys().iterator();
+			while (keys.hasNext()) {
+				var k:SelectionKey = keys.next();
+				k.cancel();
+			}
+
+			selector.selectNow();
+		} catch (e:Dynamic) {}
 	}
 
 	public function setBlocking(b:Bool):Void {
@@ -789,13 +799,48 @@ class Socket {
 			throw e;
 	}
 
+	/**
+		The selector `select` uses: one per thread, opened once and kept.
+
+		It used to be opened and closed on every call. On Windows a `Selector`
+		builds its wakeup pipe out of a loopback socket pair, so each open cost
+		two sockets and each close left them in TIME_WAIT for the best part of a
+		minute. `SocketRegistry` calls `select` once per tick, so a runtime at
+		sixty ticks a second put a hundred and twenty sockets a second into
+		TIME_WAIT and worked through the whole ephemeral range -- about sixteen
+		thousand on Windows -- in a couple of minutes. Everything socket-shaped
+		then failed at once: "Address already in use" out of a connect, and
+		"Unable to establish loopback connection" out of the JVM's own pipe
+		setup. Measured at two thousand calls leaving one thousand seven hundred
+		and ninety-six sockets behind.
+
+		Keeping it is safe because the call already cancels every key it
+		registers before returning. The `selectNow` at the end is what makes
+		those cancellations take effect, so the next call starts clean.
+
+		Per thread rather than shared: each runtime ticks on its own thread, and
+		a `Selector` is not safe to use from several at once.
+	**/
+	@:noCompletion private static var __selectors:JThreadLocal = new JThreadLocal();
+
+	@:noCompletion private static function __threadSelector():Selector {
+		var existing:Dynamic = __selectors.get();
+
+		if (existing == null) {
+			existing = Selector.open();
+			__selectors.set(existing);
+		}
+
+		return cast existing;
+	}
+
 	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
 			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
 		var resRead:Array<Socket> = [];
 		var resWrite:Array<Socket> = [];
 		var resOthers:Array<Socket> = [];
 
-		var selector = Selector.open();
+		var selector = __threadSelector();
 		// Track interest ops per socket so a socket present in both read and
 		// write lists gets a single registration with ORed interest ops.
 		var sockets:Array<Socket> = [];
@@ -868,13 +913,23 @@ class Socket {
 				var k:SelectionKey = keys.next();
 				k.cancel();
 			}
+
+			// Cancelling only marks a key; the registration is not released
+			// until the next select. Without this, the next call would register
+			// the same channel again and be met with a CancelledKeyException.
+			selector.selectNow();
 		} catch (e:Dynamic) {}
-		try
-			selector.close()
-		catch (e:Dynamic) {}
 
 		return {read: resRead, write: resWrite, others: resOthers};
 	}
+}
+
+/** Haxe ships no extern for it, and only this module needs one. **/
+@:native("java.lang.ThreadLocal")
+extern class JThreadLocal {
+	function new();
+	function get():Dynamic;
+	function set(value:Dynamic):Void;
 }
 
 #else
