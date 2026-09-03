@@ -1,10 +1,13 @@
 package crossbyte.net;
 
 #if (java || jvm)
+import crossbyte._internal.socket._jvm.JvmSslExterns.JArrayList;
 import crossbyte._internal.socket._jvm.JvmSslExterns.KeyManager;
 import crossbyte._internal.socket._jvm.JvmSslExterns.KeyManagerFactory;
 import crossbyte._internal.socket._jvm.JvmSslExterns.KeyStore;
 import crossbyte._internal.socket._jvm.JvmSslExterns.SSLContext;
+import crossbyte._internal.socket._jvm.JvmSslExterns.SNIHostName;
+import crossbyte._internal.socket._jvm.JvmSslExterns.SNIServerName;
 import crossbyte._internal.socket._jvm.JvmSslExterns.SSLSocket;
 import crossbyte._internal.socket._jvm.JvmSslExterns.TrustManagerFactory;
 
@@ -21,6 +24,9 @@ import crossbyte._internal.socket._jvm.JvmSslExterns.TrustManagerFactory;
  * meanwhile.
  */
 class JvmTlsPeer {
+	/** Hex of the certificate the server presented on the last handshake. **/
+	public static var presented(default, null):Null<String>;
+
 	/**
 	 * Connects, handshakes, and reports the agreed ALPN protocol.
 	 *
@@ -32,7 +38,7 @@ class JvmTlsPeer {
 	 *        one, or null to present nothing.
 	 */
 	public static function handshake(host:String, port:Int, trusted:Certificate, ?protocols:Array<String>,
-			?present:{certificate:Certificate, key:Key}):Null<String> {
+			?present:{certificate:Certificate, key:Key}, ?serverName:String):Null<String> {
 		var blank:java.NativeArray<java.StdTypes.Char16> = new java.NativeArray(0);
 
 		var trust = KeyStore.getInstance(KeyStore.getDefaultType());
@@ -66,6 +72,16 @@ class JvmTlsPeer {
 		// the test process alive long after the suite had finished reporting.
 		peer.setSoTimeout(10000);
 
+		if (serverName != null) {
+			// Forced rather than taken from the connect address: an IP literal
+			// carries no SNI, and these connect to 127.0.0.1.
+			var names = new JArrayList<SNIServerName>();
+			names.add(cast new SNIHostName(serverName));
+			var withName = peer.getSSLParameters();
+			withName.setServerNames(cast names);
+			peer.setSSLParameters(withName);
+		}
+
 		if (protocols != null && protocols.length > 0) {
 			var names:java.NativeArray<String> = new java.NativeArray(protocols.length);
 			for (i in 0...protocols.length) {
@@ -78,6 +94,15 @@ class JvmTlsPeer {
 		}
 
 		peer.startHandshake();
+
+		// Whatever the server chose to present, kept so a caller can tell one
+		// certificate from another -- which is the whole of what SNI does.
+		presented = try {
+			var chain = peer.getSession().getPeerCertificates();
+			chain.length > 0 ? haxe.io.Bytes.ofData(chain[0].getEncoded()).toHex() : null;
+		} catch (e:Dynamic) {
+			null;
+		}
 
 		var negotiated = try {
 			peer.getApplicationProtocol();
