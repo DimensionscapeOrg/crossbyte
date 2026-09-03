@@ -42,6 +42,7 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private var __ca:JvmSslCertificate;
 	@:noCompletion private var __hostname:String;
 	@:noCompletion private var __alpn:Array<String>;
+	@:noCompletion private var __sni:Array<crossbyte._internal.socket._jvm.JvmSniKeyManager.SniEntry>;
 
 	// Per-connection engine state.
 	@:noCompletion private var __engine:SSLEngine;
@@ -99,8 +100,23 @@ class JvmSslSocket extends sys.net.Socket {
 		return (negotiated == null || negotiated == "") ? null : negotiated;
 	}
 
+	/**
+		Adds a certificate chosen by the hostname the client asks for.
+
+		Order is preference: the first entry whose predicate matches wins, and a
+		name none of them claims falls back to the certificate installed with
+		`setCertificate`.
+	**/
 	public function addSNICertificate(cbServernameMatch:String->Bool, cert:JvmSslCertificate, key:JvmSslKey):Void {
-		throw "Server Name Indication is not supported by the jvm TLS backend yet.";
+		if (cbServernameMatch == null || cert == null || key == null) {
+			throw "addSNICertificate needs a predicate, a certificate and a key.";
+		}
+
+		if (__sni == null) {
+			__sni = [];
+		}
+
+		__sni.push({matches: cbServernameMatch, certificate: cert.native, key: key.native});
 	}
 
 	public function peerCertificate():JvmSslCertificate {
@@ -144,6 +160,7 @@ class JvmSslSocket extends sys.net.Socket {
 		accepted.__key = __key;
 		accepted.__ca = __ca;
 		accepted.__alpn = __alpn;
+		accepted.__sni = __sni;
 		accepted.verifyCert = verifyCert;
 		accepted.__startEngine(false);
 		return accepted;
@@ -248,9 +265,23 @@ class JvmSslSocket extends sys.net.Socket {
 			chain[0] = __certificate.native;
 			store.setKeyEntry("crossbyte", cast __key.native, blank, chain);
 
-			var factory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-			factory.init(store, blank);
-			managers = factory.getKeyManagers();
+			if (__sni != null && __sni.length > 0) {
+				// One key manager of our own, rather than the default one built
+				// from the store: choosing per requested hostname is something
+				// only a key manager can do.
+				var picker = new crossbyte._internal.socket._jvm.JvmSniKeyManager({
+					matches: function(_) return true,
+					certificate: __certificate.native,
+					key: __key.native
+				}, __sni);
+
+				managers = new java.NativeArray(1);
+				managers[0] = cast picker;
+			} else {
+				var factory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+				factory.init(store, blank);
+				managers = factory.getKeyManagers();
+			}
 		}
 
 		var trust:Null<java.NativeArray<TrustManager>> = null;

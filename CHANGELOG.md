@@ -5,6 +5,13 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Server Name Indication on the jvm target: `addSNICertificate` now presents
+  the certificate matching the hostname a client asked for, falling back to the
+  one installed with `setCertificate` for a name no entry claims. Selecting per
+  name is a key manager's job -- `SSLParameters.setSNIMatchers` only decides
+  which names a server will accept, not what it answers them with -- so the
+  backend supplies one. With this, the jvm TLS surface matches what the other
+  targets offer: certificates, ALPN, client certificates and SNI.
 - Client certificates on the jvm target. `requireClientCertificate` already
   installed a trust store there, but a trust store only says which authorities
   would be acceptable -- the handshake was never asking for a certificate, so
