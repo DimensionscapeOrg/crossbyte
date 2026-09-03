@@ -5,6 +5,15 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Client-side TLS on the jvm target, and with it OAuth token requests, which
+  threw there. `FlexSocket(secure)` handed back a socket that did a plain TCP
+  connect and spoke no TLS, so every https request through CrossByte's own HTTP
+  client was unencrypted or broken; it now terminates TLS as the client,
+  verifying the certificate against the JDK's trust store and checking the
+  hostname against it. `OAuth` routes through that client on jvm rather than
+  `haxe.Http`, which reaches HTTPS through a `sys.ssl.Socket` that does not
+  compile there. Verified against a live HTTPS server: 200 OK from a real host,
+  and a token request that reached a real endpoint and parsed its reply.
 - Server Name Indication on the jvm target: `addSNICertificate` now presents
   the certificate matching the hostname a client asked for, falling back to the
   one installed with `setCertificate` for a name no entry claims. Selecting per
