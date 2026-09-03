@@ -5,6 +5,13 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Client certificates on the jvm target. `requireClientCertificate` already
+  installed a trust store there, but a trust store only says which authorities
+  would be acceptable -- the handshake was never asking for a certificate, so
+  the store was never consulted and an unauthenticated peer was accepted. The
+  engine now demands one whenever `verifyCert` is set. A client presenting
+  nothing is refused with "Empty client certificate chain"; one presenting a
+  trusted certificate completes.
 - ALPN on the jvm target, so a TLS listener there can negotiate `h2`. The JDK
   exposes it through `SSLParameters`, where the cpp path needed a native
   extension to reach mbedTLS at all. `ServerSocket.setALPN`, `FlexSocket`'s

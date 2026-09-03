@@ -140,19 +140,162 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 	#end
 
-	// The jvm end-to-end handshake and its ALPN negotiation are deliberately not
-	// here. Both need a blocking TLS client on a thread of its own while the
-	// runtime is pumped, and two such cases sharing one runtime interfered with
-	// each other and with the socket cases around them: a clean run, then nine
-	// failures, then a hang, over three consecutive runs. That is worse than no
-	// coverage, because a suite that fails at random teaches people to ignore it.
-	//
-	// They belong in an integration harness beside ci/interop and ci/relay,
-	// which is where the note at the top of this class already puts the native
-	// end-to-end handshake. The backend was verified against openssl s_client --
-	// TLS 1.3, verify return code 0 -- and ALPN against the JDK's own client
-	// offering the reverse preference order, so the server's choice won rather
-	// than being echoed back. Both by hand, both reproducible, neither in CI.
+	#if (java || jvm)
+	/**
+		A real handshake, against the JDK's own TLS client.
+
+		The peer is `javax.net.ssl.SSLSocket` -- the blocking API this backend
+		deliberately does not use -- so this proves the SSLEngine server
+		interoperates with an independent implementation rather than that two
+		halves of the same code agree.
+
+		The client runs on its own thread because it blocks; the server is driven
+		by pumping the runtime, which is how a secure ServerSocket completes a
+		handshake in production: through the pump on the tick, not inline.
+	**/
+	public function testARealHandshakeCompletesAgainstTheJdkClient():Void {
+		__againstTheJdk(null, null, function(server, outcome) {
+			Assert.isNull(outcome.error, "the JDK client could not complete the handshake: " + outcome.error);
+			Assert.equals(1, outcome.accepted, "the server never reported an accepted TLS connection");
+		});
+	}
+
+	/**
+		ALPN is negotiated, by server preference.
+
+		The client offers the reverse order, so agreement on `h2` cannot be an
+		echo of what it asked for first -- the same trick the cpp case uses
+		against mbedTLS.
+	**/
+	public function testAlpnIsNegotiatedAgainstTheJdkClient():Void {
+		__againstTheJdk(["h2", "http/1.1"], ["http/1.1", "h2"], function(server, outcome) {
+			Assert.isNull(outcome.error, "the JDK client could not complete the handshake: " + outcome.error);
+			Assert.equals("h2", outcome.agreed, "the client and server did not agree on the server's first choice");
+			Assert.equals("h2", outcome.reported, "the server does not report the protocol it negotiated");
+		});
+	}
+
+	/**
+		A client that presents no certificate is refused when one is required.
+
+		`requireClientCertificate` installs a trust store, which on its own only
+		says which authorities would be acceptable. The handshake has to actually
+		ask, and this is what catches it not asking: without the demand the
+		connection completes and the server accepts an unauthenticated peer.
+	**/
+	public function testAClientWithNoCertificateIsRefusedWhenOneIsRequired():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		// The server's verdict is what is asserted, not the client's. Under
+		// TLS 1.3 the certificate travels after the server's Finished, so a
+		// client's startHandshake can return successfully and only learn later
+		// that it was rejected. What matters here is that the server refused.
+		__againstTheJdk(null, null, function(server, outcome) {
+			Assert.equals(0, outcome.accepted, "a client presenting no certificate was accepted");
+		}, function(server) server.requireClientCertificate(fixture.certificate));
+	}
+
+	/** And is let through when it presents one the server trusts. **/
+	public function testAClientWithTheRightCertificateIsAccepted():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		__againstTheJdk(null, null, function(server, outcome) {
+			Assert.isNull(outcome.error, "a client presenting a trusted certificate was refused: " + outcome.error);
+			Assert.equals(1, outcome.accepted, "the server did not accept an authenticated client");
+		}, function(server) server.requireClientCertificate(fixture.certificate), true);
+	}
+
+	/**
+		Runs one secure server against one JDK client and hands back what both
+		saw. The listener is closed on every path: a case that leaves one bound
+		strands a port and breaks the socket cases after it.
+	**/
+	private function __againstTheJdk(serverAlpn:Null<Array<String>>, clientAlpn:Null<Array<String>>,
+			check:(ServerSocket, {error:String, accepted:Int, agreed:String, reported:String}) -> Void,
+			?configure:ServerSocket->Void, presentCertificate:Bool = false):Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			// No certificate toolchain on this machine.
+			Assert.pass();
+			return;
+		}
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var server = new ServerSocket(true);
+		var accepted = 0;
+		var reported:String = null;
+
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT,
+			function(e:crossbyte.events.ServerSocketConnectEvent) {
+				accepted++;
+				reported = e.socket.alpnProtocol;
+			});
+
+		server.setCertificate(fixture.certificate, fixture.key);
+
+		if (serverAlpn != null) {
+			server.setALPN(serverAlpn);
+		}
+
+		if (configure != null) {
+			configure(server);
+		}
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			var port = server.localPort;
+			var agreed:String = null;
+			var error:String = null;
+			var finished = false;
+
+			sys.thread.Thread.create(() -> {
+				try {
+					agreed = JvmTlsPeer.handshake("127.0.0.1", port, fixture.certificate, clientAlpn,
+						presentCertificate ? {certificate: fixture.certificate, key: fixture.key} : null);
+				} catch (e:Dynamic) {
+					error = Std.string(e);
+				}
+
+				finished = true;
+			});
+
+			var deadline = Sys.time() + 20;
+			while (Sys.time() < deadline && !finished) {
+				runtime.pump(1 / 60, 0);
+				Sys.sleep(0.002);
+			}
+
+			// A few more passes so a connection completing on the client's last
+			// breath still reaches the pump before the assertions read it.
+			var settle = Sys.time() + 0.5;
+			while (Sys.time() < settle) {
+				runtime.pump(1 / 60, 0);
+				Sys.sleep(0.002);
+			}
+
+			check(server, {error: error, accepted: accepted, agreed: agreed, reported: reported});
+		} catch (e:Dynamic) {
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			throw e;
+		}
+
+		try {
+			server.close();
+		} catch (_:Dynamic) {}
+	}
+	#end
 
 	#if cpp
 	public function testAlpnBridgeRefusesAHandleThatIsNotAnSslConfig():Void {
