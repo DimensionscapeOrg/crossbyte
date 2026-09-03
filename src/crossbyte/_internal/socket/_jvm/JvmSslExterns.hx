@@ -18,9 +18,12 @@ package crossbyte._internal.socket._jvm;
 	  is `javax.net.ssl.SSLEngineResult$Status`; written with a dot it compiles
 	  and then throws `NoSuchMethodError` at runtime against a type whose
 	  descriptor names a package.
-	- An extern's kind has to match Java's. `SSLSession` is an interface;
-	  declared as a class it compiles and throws `IncompatibleClassChangeError`
-	  when first called.
+	- An extern's kind has to match Java's. `SSLSession`, `List`, `KeyManager`
+	  and `TrustManager` are interfaces; any of them declared as a class compiles
+	  and then throws `IncompatibleClassChangeError` the first time it is used.
+	  This one has been made three times here. If something fails with "Found
+	  interface X, but class was expected", the extern for X says `extern class`
+	  and Java says `interface`.
 
 	Both failures are invisible until the code runs, which is why the backend
 	has an end-to-end case rather than only unit ones.
@@ -32,11 +35,70 @@ extern class SecureRandom {}
 extern interface Key {}
 
 @:native("java.security.PrivateKey")
-extern interface PrivateKey extends Key {}
+extern interface PrivateKey extends Key {
+	function getAlgorithm():String;
+}
 
 @:native("java.security.cert.Certificate")
 extern class Certificate {
 	function getEncoded():java.NativeArray<java.types.Int8>;
+}
+
+@:native("java.security.cert.X509Certificate")
+extern class X509Certificate extends Certificate {}
+
+@:native("java.security.Principal")
+extern interface Principal {}
+
+/** An interface in Java, like SSLSession. **/
+@:native("java.util.List")
+extern interface JList<T> {
+	function size():Int;
+	function get(index:Int):T;
+}
+
+@:native("javax.net.ssl.SNIServerName")
+extern class SNIServerName {}
+
+@:native("javax.net.ssl.SNIHostName")
+extern class SNIHostName extends SNIServerName {
+	function new(name:String);
+	function getAsciiName():String;
+}
+
+@:native("java.util.ArrayList")
+extern class JArrayList<T> implements JList<T> {
+	function new();
+	function add(item:T):Bool;
+	function size():Int;
+	function get(index:Int):T;
+}
+
+/** The session mid-handshake, which is where the requested names live. **/
+@:native("javax.net.ssl.ExtendedSSLSession")
+extern class ExtendedSSLSession {
+	function getRequestedServerNames():JList<SNIServerName>;
+}
+
+/**
+	Extended so a certificate can be chosen per requested hostname.
+
+	`SSLParameters.setSNIMatchers` only filters which names are acceptable; it
+	cannot present a different certificate for each. Selecting one is the key
+	manager's job, and only the "Engine" overloads are consulted when the
+	handshake runs on an `SSLEngine` rather than an `SSLSocket`.
+**/
+@:native("javax.net.ssl.X509ExtendedKeyManager")
+extern class X509ExtendedKeyManager implements KeyManager {
+	function new();
+	function chooseEngineServerAlias(keyType:String, issuers:java.NativeArray<Principal>, engine:SSLEngine):String;
+	function chooseEngineClientAlias(keyType:java.NativeArray<String>, issuers:java.NativeArray<Principal>, engine:SSLEngine):String;
+	function chooseServerAlias(keyType:String, issuers:java.NativeArray<Principal>, socket:JNetSocket):String;
+	function chooseClientAlias(keyType:java.NativeArray<String>, issuers:java.NativeArray<Principal>, socket:JNetSocket):String;
+	function getServerAliases(keyType:String, issuers:java.NativeArray<Principal>):java.NativeArray<String>;
+	function getClientAliases(keyType:String, issuers:java.NativeArray<Principal>):java.NativeArray<String>;
+	function getCertificateChain(alias:String):java.NativeArray<X509Certificate>;
+	function getPrivateKey(alias:String):PrivateKey;
 }
 
 @:native("java.security.spec.KeySpec")
@@ -131,6 +193,7 @@ extern class SSLParameters {
 	function new();
 	function setApplicationProtocols(protocols:java.NativeArray<String>):Void;
 	function getApplicationProtocols():java.NativeArray<String>;
+	function setServerNames(names:JList<SNIServerName>):Void;
 }
 
 @:native("javax.net.ssl.SSLEngine")
@@ -141,6 +204,7 @@ extern class SSLEngine {
 	function beginHandshake():Void;
 	function getHandshakeStatus():SSLEngineResultHandshakeStatus;
 	function getSession():SSLSession;
+	function getHandshakeSession():Null<SSLSession>;
 	function getDelegatedTask():Null<java.lang.Runnable>;
 	function wrap(src:java.nio.ByteBuffer, dst:java.nio.ByteBuffer):SSLEngineResult;
 	function unwrap(src:java.nio.ByteBuffer, dst:java.nio.ByteBuffer):SSLEngineResult;
