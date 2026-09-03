@@ -205,6 +205,14 @@ class JvmSslSocket extends sys.net.Socket {
 		__engine = __buildContext().createSSLEngine();
 		__engine.setUseClientMode(clientMode);
 
+		// A trust store on its own only says which authorities are acceptable;
+		// without this the client is never asked for a certificate and the
+		// store is never consulted. `verifyCert` is what requireClientCertificate
+		// sets, so the two travel together.
+		if (!clientMode && verifyCert == true) {
+			__engine.setNeedClientAuth(true);
+		}
+
 		if (__alpn != null) {
 			var names:java.NativeArray<String> = new java.NativeArray(__alpn.length);
 			for (i in 0...__alpn.length) {
