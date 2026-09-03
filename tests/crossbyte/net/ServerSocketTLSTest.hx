@@ -260,6 +260,97 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	/**
+		The jvm client speaks TLS, and verifies what it is given.
+
+		`FlexSocket(true)` used to hand back a socket that did a plain TCP
+		connect and no TLS at all, which is why OAuth refused to run here. It now
+		terminates TLS as the client.
+
+		Verification is asserted through its refusal. The server presents a
+		self-signed certificate, which is not in the JDK's default trust store,
+		so a client that checks must reject it -- and one that connects happily
+		is not checking. The refusal has to name the certificate rather than be
+		any old failure, or a plain connection error would pass this too.
+
+		Reaching a real HTTPS host would be the other half and is not done here:
+		a case that needs the internet fails for reasons that have nothing to do
+		with this library.
+	**/
+	public function testTheJvmClientTerminatesTlsAndVerifies():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var server = new ServerSocket(true);
+
+		// A ServerSocket only registers its accept tick once something is
+		// listening for connections, so without this it never accepts and the
+		// client waits on a handshake that has no other end.
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT,
+			function(e:crossbyte.events.ServerSocketConnectEvent) {});
+		server.setCertificate(fixture.certificate, fixture.key);
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			var port = server.localPort;
+			var failure:String = null;
+			var connected = false;
+			var finished = false;
+
+			sys.thread.Thread.create(() -> {
+				var client = new crossbyte._internal.socket.FlexSocket(true);
+
+				try {
+					client.setTimeout(10);
+					client.connect("127.0.0.1", port);
+					connected = true;
+				} catch (e:Dynamic) {
+					failure = Std.string(e);
+				}
+
+				try {
+					client.close();
+				} catch (_:Dynamic) {}
+
+				finished = true;
+			});
+
+			var deadline = Sys.time() + 20;
+			while (Sys.time() < deadline && !finished) {
+				runtime.pump(1 / 60, 0);
+				Sys.sleep(0.002);
+			}
+
+			Assert.isTrue(finished, "the client neither connected nor failed within the deadline");
+			Assert.isFalse(connected, "a self-signed certificate was accepted, so the client is not verifying");
+			Assert.notNull(failure, "the client reported no failure");
+			// Specifically a failure from the TLS layer. Matching loosely on
+			// "certificate" was not enough: with the client's engine removed
+			// entirely, connect refused with "set a certificate before
+			// listening", which contains the word and passed a test that should
+			// have caught exactly that.
+			Assert.isTrue(failure.indexOf("SSLHandshakeException") >= 0,
+				"the refusal did not come from the TLS layer, so this may not be a verification failure at all: " + failure);
+			Assert.isTrue(failure.indexOf("PKIX") >= 0 || failure.indexOf("Validator") >= 0,
+				"the refusal is not a certificate-validation failure: " + failure);
+		} catch (e:Dynamic) {
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			throw e;
+		}
+
+		try {
+			server.close();
+		} catch (_:Dynamic) {}
+	}
+
+	/**
 		Runs one secure server against one JDK client and hands back what both
 		saw. The listener is closed on every path: a case that leaves one bound
 		strands a port and breaks the socket cases after it.

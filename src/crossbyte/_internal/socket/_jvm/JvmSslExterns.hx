@@ -194,6 +194,7 @@ extern class SSLParameters {
 	function setApplicationProtocols(protocols:java.NativeArray<String>):Void;
 	function getApplicationProtocols():java.NativeArray<String>;
 	function setServerNames(names:JList<SNIServerName>):Void;
+	function setEndpointIdentificationAlgorithm(algorithm:String):Void;
 }
 
 @:native("javax.net.ssl.SSLEngine")

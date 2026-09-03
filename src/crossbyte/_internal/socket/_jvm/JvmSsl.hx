@@ -7,6 +7,7 @@ import crossbyte._internal.socket._jvm.JvmSslExterns;
 import crossbyte._internal.socket._jvm.JvmSslExterns.Certificate as JCertificate;
 import crossbyte._internal.socket._jvm.JvmSslExterns.KeyManager;
 import crossbyte._internal.socket._jvm.JvmSslExterns.KeyManagerFactory;
+import crossbyte._internal.socket._jvm.JvmSslExterns.JArrayList;
 import crossbyte._internal.socket._jvm.JvmSslExterns.KeyStore;
 import crossbyte._internal.socket._jvm.JvmSslExterns.PrivateKey;
 import crossbyte._internal.socket._jvm.JvmSslExterns.SSLContext;
@@ -167,6 +168,55 @@ class JvmSslSocket extends sys.net.Socket {
 	}
 
 	/**
+		Connects and terminates TLS as the client.
+
+		`Http` reaches here for every https request: `FlexSocket(secure)` builds
+		one of these and calls connect, which until now did a plain TCP connect
+		and handed back a socket that spoke no TLS at all.
+
+		The channel stays blocking, as it is for any client connect, so the
+		handshake below runs to completion here rather than being driven by a
+		pump -- a blocking read cannot report "would block", so the loop cannot
+		spin.
+
+		The certificate is verified against the JDK's default trust store, and
+		the hostname is checked against the certificate. Both matter: a client
+		that skips the second accepts any valid certificate for any host, which
+		is most of the value of TLS gone. `verifyCert = false` is not honoured
+		here -- it fails closed rather than open, which is the safe direction to
+		be incomplete in.
+	**/
+	override public function connect(host:sys.net.Host, port:Int):Void {
+		super.connect(host, port);
+
+		if (__hostname == null) {
+			__hostname = host.host;
+		}
+
+		__startEngine(true);
+
+		// A blocking channel never reports "would block", so this settles; the
+		// count is a guard against a peer that answers with nothing at all.
+		var attempts = 0;
+
+		while (!__handshaken && attempts < 10000) {
+			attempts++;
+
+			try {
+				handshake();
+			} catch (e:haxe.io.Error) {
+				// Only Blocked reaches here, and only if the channel were made
+				// non-blocking underneath us.
+				Sys.sleep(0.002);
+			}
+		}
+
+		if (!__handshaken) {
+			throw "The TLS handshake with " + __hostname + " did not complete.";
+		}
+	}
+
+	/**
 		Advances the handshake, or reports that it needs more from the peer.
 
 		@throws haxe.io.Error.Blocked The handshake is unfinished and the socket
@@ -228,6 +278,18 @@ class JvmSslSocket extends sys.net.Socket {
 		// sets, so the two travel together.
 		if (!clientMode && verifyCert == true) {
 			__engine.setNeedClientAuth(true);
+		}
+
+		if (clientMode && __hostname != null) {
+			var parameters = __engine.getSSLParameters();
+
+			// The name goes out as SNI, and the same name is what the
+			// certificate is then checked against.
+			var names = new JArrayList<JvmSslExterns.SNIServerName>();
+			names.add(cast new JvmSslExterns.SNIHostName(__hostname));
+			parameters.setServerNames(cast names);
+			parameters.setEndpointIdentificationAlgorithm("HTTPS");
+			__engine.setSSLParameters(parameters);
 		}
 
 		if (__alpn != null) {
@@ -341,9 +403,56 @@ class JvmSslSocket extends sys.net.Socket {
 		return true;
 	}
 
-	/** Reads from the wire and decrypts whatever arrived complete. **/
+	/**
+		Decrypts one record out of what is already buffered.
+
+		@return Whether it got anywhere. False means the buffer holds less than a
+		whole record and more has to come off the wire first.
+	**/
+	@:noCompletion private function __consume():Bool {
+		__netIn.flip();
+		__appIn.compact();
+		var result = __engine.unwrap(__netIn, __appIn);
+		__appIn.flip();
+		__netIn.compact();
+
+		switch (result.getStatus().name()) {
+			case "BUFFER_UNDERFLOW":
+				return false;
+
+			case "BUFFER_OVERFLOW":
+				var grown = ByteBuffer.allocate(__appIn.capacity() * 2);
+				grown.put(__appIn);
+				grown.flip();
+				__appIn = grown;
+				return true;
+
+			case "CLOSED":
+				throw new haxe.io.Eof();
+
+			default:
+				return result.bytesConsumed() > 0 || result.bytesProduced() > 0;
+		}
+	}
+
+	/**
+		Reads from the wire and decrypts whatever arrived complete.
+
+		What is already buffered is tried before the channel is touched. A single
+		read routinely carries several records -- a TLS 1.3 server sends its
+		whole flight, four thousand bytes of it, in one go -- and going back to
+		the channel before those are consumed blocks waiting for bytes the peer
+		has already sent, or worse, for bytes it is waiting on an answer from us
+		before it will send. That deadlock is what a client handshake looked
+		like: the flight arrived, one record of it was read, and the connection
+		then sat until the peer gave up and closed.
+	**/
 	@:noCompletion private function __unwrap():Void {
 		var socket:java.nio.channels.SocketChannel = cast this.channel;
+
+		if (__netIn.position() > 0 && __consume()) {
+			return;
+		}
 
 		var read = try {
 			socket.read(__netIn);
@@ -355,30 +464,10 @@ class JvmSslSocket extends sys.net.Socket {
 			throw new haxe.io.Eof();
 		}
 
-		__netIn.flip();
-		__appIn.compact();
-		var result = __engine.unwrap(__netIn, __appIn);
-		__appIn.flip();
-		__netIn.compact();
-
-		switch (result.getStatus().name()) {
-			case "BUFFER_UNDERFLOW":
-				// Half a record. Nothing to do until the peer sends the rest,
-				// and nothing to gain from spinning if this pass read nothing.
-				if (read == 0) {
-					throw haxe.io.Error.Blocked;
-				}
-			case "BUFFER_OVERFLOW":
-				var grown = ByteBuffer.allocate(__appIn.capacity() * 2);
-				grown.put(__appIn);
-				grown.flip();
-				__appIn = grown;
-			case "CLOSED":
-				throw new haxe.io.Eof();
-			default:
-				if (read == 0 && result.bytesProduced() == 0 && result.bytesConsumed() == 0) {
-					throw haxe.io.Error.Blocked;
-				}
+		// Nothing arrived, or what arrived is still less than a whole record.
+		// Either way there is nothing to do until the peer sends more.
+		if (read == 0 || !__consume()) {
+			throw haxe.io.Error.Blocked;
 		}
 	}
 
@@ -388,12 +477,14 @@ class JvmSslSocket extends sys.net.Socket {
 			handshake();
 		}
 
-		if (!__appIn.hasRemaining()) {
+		// Until there is plaintext, or until __unwrap says there is nothing
+		// further to be had. A record is not always application data: after a
+		// TLS 1.3 handshake the peer sends session tickets, and consuming one
+		// advances the stream while producing nothing to hand back. Answering
+		// "would block" for those would report an idle connection on a socket
+		// with a response already arriving.
+		while (!__appIn.hasRemaining()) {
 			__unwrap();
-		}
-
-		if (!__appIn.hasRemaining()) {
-			throw haxe.io.Error.Blocked;
 		}
 
 		var take = __appIn.remaining();
