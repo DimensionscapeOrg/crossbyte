@@ -1,9 +1,12 @@
 package crossbyte.auth;
 
 #if !(java || jvm)
-// haxe.Http pulls in sys.ssl.Socket for HTTPS, which does not compile on the
-// jvm target (broken std java.net.SslSocket). Token requests are unsupported
-// there until CrossByte provides a jvm HTTPS client.
+// haxe.Http reaches HTTPS through sys.ssl.Socket, which does not compile on the
+// jvm target. There, CrossByte's own client is used instead: it goes through
+// FlexSocket, which now terminates TLS on jvm as well. The other targets are
+// left on haxe.Http rather than moved wholesale, since nothing here covers a
+// live token exchange and changing four working targets to fix one is a poor
+// trade.
 import haxe.Http;
 #end
 import haxe.Json;
@@ -55,9 +58,6 @@ class OAuth {
 	 * @param onError Called with a description when the exchange fails.
 	 */
 	public function getAccessToken(code:String, callback:(OAuthToken) -> Void, ?onError:(String) -> Void):Void {
-		#if (java || jvm)
-		throw "OAuth token requests are not yet supported on the jvm target (the std HTTPS/SSL socket is unavailable).";
-		#else
 		__requestToken("OAuth access token request", [
 			"grant_type=" + __encode("authorization_code"),
 			"code=" + __encode(code),
@@ -65,7 +65,6 @@ class OAuth {
 			"client_id=" + __encode(config.clientId),
 			"client_secret=" + __encode(config.clientSecret)
 		], callback, onError);
-		#end
 	}
 
 	/**
@@ -81,21 +80,31 @@ class OAuth {
 	 * @param onError Called with a description when the refresh fails.
 	 */
 	public function refreshAccessToken(refreshToken:String, callback:(OAuthToken) -> Void, ?onError:(String) -> Void):Void {
-		#if (java || jvm)
-		throw "OAuth token requests are not yet supported on the jvm target (the std HTTPS/SSL socket is unavailable).";
-		#else
 		__requestToken("OAuth token refresh", [
 			"grant_type=" + __encode("refresh_token"),
 			"refresh_token=" + __encode(refreshToken),
 			"client_id=" + __encode(config.clientId),
 			"client_secret=" + __encode(config.clientSecret)
 		], callback, onError);
-		#end
 	}
 
-	#if !(java || jvm)
 	@:noCompletion private function __requestToken(operation:String, params:Array<String>, callback:(OAuthToken) -> Void,
 			onError:Null<(String) -> Void>):Void {
+		#if (java || jvm)
+		// CrossByte's own client, which reaches HTTPS through FlexSocket.
+		var http = new crossbyte._internal.http.Http(config.tokenUrl, "POST", null, params.join("&"),
+			"application/x-www-form-urlencoded");
+
+		http.onComplete = function(data:haxe.io.Bytes):Void {
+			__handleTokenResponse(operation, data.toString(), callback, onError);
+		};
+
+		http.onError = function(message:String, ?data:haxe.io.Bytes):Void {
+			__fail(operation, message, onError);
+		};
+
+		http.load();
+		#else
 		var http = new Http(config.tokenUrl);
 		http.setPostData(params.join("&"));
 		http.setHeader("Content-Type", "application/x-www-form-urlencoded");
@@ -109,8 +118,8 @@ class OAuth {
 		};
 
 		http.request(true);
+		#end
 	}
-	#end
 
 	/**
 	 * Turns a token endpoint's response body into either a token or a failure.
