@@ -538,7 +538,13 @@ private class SocketInput extends haxe.io.Input {
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
 		if (channel == null)
 			throw "Invalid handle";
-		var bb = ByteBuffer.allocate(len);
+
+		// Wrapped, not allocated. This used to allocate a buffer the size of the
+		// read and then copy every byte out of it into the caller's, on every
+		// read -- sixty-four kilobytes of each per chunk on the framework's own
+		// read path. The write side beside this has always wrapped; the two are
+		// now the same shape.
+		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
 		var n:Int = try {
 			channel.read(bb);
 		} catch (e:Dynamic) {
@@ -548,9 +554,6 @@ private class SocketInput extends haxe.io.Input {
 			throw Blocked;
 		if (n < 0)
 			throw new haxe.io.Eof();
-		bb.flip();
-		var data = buf.getData();
-		bb.get(data, pos, n);
 		return n;
 	}
 

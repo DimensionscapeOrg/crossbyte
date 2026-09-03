@@ -204,6 +204,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The jvm socket read path allocated and copied on every read. `readBytes`
+  allocated a `ByteBuffer` the size of the read and then copied every byte out
+  of it into the caller's buffer -- sixty-four kilobytes of each per chunk on
+  the framework's own read path -- while the write beside it had always wrapped
+  the caller's array and done neither. It wraps now too. Loopback throughput
+  went from about 1200-1500 MB/s to about 3000 MB/s on the machine that
+  measured it.
 - The jvm socket layer exhausted the machine's ephemeral ports under sustained
   use. `sys.net.Socket.select` opened a fresh `java.nio.channels.Selector` on
   every call, and on Windows a `Selector` builds its wakeup pipe from a loopback
