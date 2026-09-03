@@ -214,13 +214,60 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	/**
+		Server Name Indication picks the certificate matching the name asked for.
+
+		Two certificates are needed to say anything: with one, a server that
+		selects correctly and a server that ignores the name entirely look
+		exactly alike. So the client asks for each name in turn and the
+		certificate it is actually handed is compared against both.
+
+		The name is set explicitly on the client rather than taken from the
+		connect address, because an IP literal carries no SNI at all and these
+		connect to 127.0.0.1.
+	**/
+	public function testSniPresentsTheCertificateForTheNameAsked():Void {
+		var fallback = TLSTestFixture.selfSigned();
+		var alternate = TLSTestFixture.selfSignedFor("alt.example");
+
+		if (fallback == null || alternate == null) {
+			// No certificate toolchain on this machine.
+			Assert.pass();
+			return;
+		}
+
+		var fallbackHex = __hexOf(fallback);
+		var alternateHex = __hexOf(alternate);
+		Assert.notEquals(fallbackHex, alternateHex, "the two fixtures are the same certificate, so this proves nothing");
+
+		// A name the entry claims gets the alternate certificate.
+		__againstTheJdk(null, null, function(server, outcome) {
+			Assert.isNull(outcome.error, "the handshake for the claimed name failed: " + outcome.error);
+			Assert.equals(alternateHex, JvmTlsPeer.presented, "the server did not present the certificate for the name asked for");
+		}, function(server) server.addSNICertificate(function(name) return name == "alt.example",
+			alternate.certificate, alternate.key), false, alternate.certificate, "alt.example");
+
+		// A name no entry claims falls back to the one installed with
+		// setCertificate.
+		__againstTheJdk(null, null, function(server, outcome) {
+			Assert.isNull(outcome.error, "the handshake for the unclaimed name failed: " + outcome.error);
+			Assert.equals(fallbackHex, JvmTlsPeer.presented, "an unclaimed name did not fall back to the default certificate");
+		}, function(server) server.addSNICertificate(function(name) return name == "alt.example",
+			alternate.certificate, alternate.key), false, fallback.certificate, "other.example");
+	}
+
+	private function __hexOf(fixture:crossbyte.net.TLSTestFixture.TLSFixtureData):String {
+		return haxe.io.Bytes.ofData(@:privateAccess fixture.certificate.__native.native.getEncoded()).toHex();
+	}
+
+	/**
 		Runs one secure server against one JDK client and hands back what both
 		saw. The listener is closed on every path: a case that leaves one bound
 		strands a port and breaks the socket cases after it.
 	**/
 	private function __againstTheJdk(serverAlpn:Null<Array<String>>, clientAlpn:Null<Array<String>>,
 			check:(ServerSocket, {error:String, accepted:Int, agreed:String, reported:String}) -> Void,
-			?configure:ServerSocket->Void, presentCertificate:Bool = false):Void {
+			?configure:ServerSocket->Void, presentCertificate:Bool = false, ?trust:Certificate,
+			?serverName:String):Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
 			// No certificate toolchain on this machine.
@@ -260,8 +307,9 @@ class ServerSocketTLSTest extends utest.Test {
 
 			sys.thread.Thread.create(() -> {
 				try {
-					agreed = JvmTlsPeer.handshake("127.0.0.1", port, fixture.certificate, clientAlpn,
-						presentCertificate ? {certificate: fixture.certificate, key: fixture.key} : null);
+					agreed = JvmTlsPeer.handshake("127.0.0.1", port, trust != null ? trust : fixture.certificate,
+						clientAlpn, presentCertificate ? {certificate: fixture.certificate, key: fixture.key} : null,
+						serverName);
 				} catch (e:Dynamic) {
 					error = Std.string(e);
 				}
