@@ -49,7 +49,6 @@ class HTTPServer extends ServerSocket {
 		__connections = 0;
 		__config = config;
 
-		#if (!java && !jvm)
 		if (config.tlsEnabled) {
 			try {
 				setCertificate(crossbyte.net.Certificate.fromFile(config.tlsCertificatePath), crossbyte.net.Key.fromFile(config.tlsKeyPath));
@@ -66,7 +65,6 @@ class HTTPServer extends ServerSocket {
 				setALPN(["h2", "http/1.1"]);
 			}
 		}
-		#end
 		docRoot = config.rootDirectory.nativePath;
 		autoIndex = (config.directoryIndex != null && config.directoryIndex.length > 0) ? config.directoryIndex : ["index.php", "index.html"];
 		__active = new ObjectMap();

@@ -24,10 +24,9 @@ class FlexSocketTest extends utest.Test {
 			var ignored = socket.getALPN();
 		}));
 
-		Assert.equals(#if cpp true #else false #end, FlexSocket.alpnSupported);
+		Assert.equals(#if (cpp || java || jvm) true #else false #end, FlexSocket.alpnSupported);
 	}
 
-	#if (!java && !jvm)
 	public function testSecureSocketAcceptsAlpnBeforeConnecting():Void {
 		var socket = new FlexSocket(true);
 		Assert.isTrue(socket.isSecure);
@@ -44,7 +43,6 @@ class FlexSocketTest extends utest.Test {
 
 		closeQuietly(socket);
 	}
-	#end
 
 	public function testBindListenSelectAcceptAndReadOverLocalhost():Void {
 		var server = new FlexSocket();
