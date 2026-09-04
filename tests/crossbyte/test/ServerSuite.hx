@@ -27,7 +27,7 @@ import utest.Runner;
 class ServerSuite {
 	public static function add(runner:Runner):Void {
 		// The socket round trips, on every target that can listen.
-		#if (cpp || neko || hl || nodejs)
+		#if (cpp || neko || hl || nodejs || java || jvm)
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPStreamingTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
@@ -45,6 +45,12 @@ class ServerSuite {
 		#if cpp
 		runner.addCase(new crossbyte.http.HTTPPhpTest());
 		#end
+
+		// Registered outside the gate above: its socket case is guarded inside
+		// the class, and the configuration case needs nothing and should run
+		// everywhere the server does -- including Node, where `tlsEnabled`
+		// decides whether a listener is secure just the same.
+		runner.addCase(new crossbyte.http.HTTPServerTLSTest());
 
 		// No socket, but a filesystem and the rewrite engine, so a page has
 		// none of it.

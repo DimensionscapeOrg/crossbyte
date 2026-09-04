@@ -260,6 +260,98 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	/**
+		TLS carries application data, not just a handshake.
+
+		Every other jvm case here stops once the handshake completes, and that
+		is the wrong place to stop: a connection can negotiate TLS perfectly and
+		then move nothing. It did. The certificate, ALPN, client-certificate and
+		SNI cases all passed while an HTTPS request over the same socket got a
+		completed handshake and no reply, because nothing had ever asked the
+		data path to do anything.
+
+		The peer is the JDK's own blocking SSLSocket, so what is being checked
+		is a round trip through a foreign implementation rather than agreement
+		between two halves of this one.
+	**/
+	#if (java || jvm)
+	public function testTlsCarriesDataAndNotJustAHandshake():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var server = new ServerSocket(true);
+		var received:String = null;
+		var accepted:crossbyte.net.Socket = null;
+
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT,
+			function(e:crossbyte.events.ServerSocketConnectEvent) {
+				var peer = e.socket;
+				accepted = peer;
+
+				peer.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) {
+					received = peer.readUTFBytes(peer.bytesAvailable);
+					peer.writeUTFBytes("pong");
+					peer.flush();
+				});
+			});
+
+		server.setCertificate(fixture.certificate, fixture.key);
+
+		var answer:String = null;
+		var failure:String = null;
+		var finished = false;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			var port = server.localPort;
+
+			sys.thread.Thread.create(() -> {
+				try {
+					answer = JvmTlsPeer.exchange("127.0.0.1", port, fixture.certificate, "ping");
+				} catch (e:Dynamic) {
+					failure = Std.string(e);
+				}
+
+				finished = true;
+			});
+
+			var deadline = Sys.time() + 20;
+			while (Sys.time() < deadline && !finished) {
+				runtime.pump(1 / 60, 0);
+				Sys.sleep(0.002);
+			}
+		} catch (e:Dynamic) {
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			throw e;
+		}
+
+		// The accepted peer too, not just the listener: one left registered
+		// keeps being polled for the rest of the suite.
+		if (accepted != null) {
+			try {
+				accepted.close();
+			} catch (_:Dynamic) {}
+		}
+
+		try {
+			server.close();
+		} catch (_:Dynamic) {}
+
+		Assert.isTrue(finished, "the peer neither answered nor failed within the deadline");
+		Assert.isNull(failure, "the exchange failed: " + failure);
+		Assert.equals("ping", received, "the server did not receive what the client sent");
+		Assert.equals("pong", answer, "the client did not receive what the server sent");
+	}
+	#end
+
+	/**
 		`verifyCert = false` is honoured, and only when asked for.
 
 		The pair matters more than either half. The case below proves the client

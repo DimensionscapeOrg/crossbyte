@@ -247,7 +247,7 @@ class HTTPServerConfig {
 
 	/**
 		Path to the PEM certificate chain this server presents. Set together
-		with `tlsKeyPath` to serve HTTPS. Not available on the jvm target.
+		with `tlsKeyPath` to serve HTTPS.
 	**/
 	public var tlsCertificatePath:String;
 

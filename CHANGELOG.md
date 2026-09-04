@@ -5,6 +5,17 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- The HTTP server suite runs on the jvm target. Its cases were gated to
+  `cpp || neko || hl || nodejs`, written when the server was native-only and
+  never widened, so the whole of `HTTPServer` -- routing, streaming, draining,
+  metrics, HTTP/2 -- executed nowhere on jvm. All of it passes there, and does
+  now: 458 further assertions on a target that had none of them.
+- TLS carries application data, and there is a case that says so. Every jvm TLS
+  test stopped at the handshake, which turned out to be the wrong place to
+  stop -- certificates, ALPN, client certificates and SNI all passed while the
+  data path moved nothing. The round trip is against the JDK's own blocking
+  `SSLSocket`, so it is a foreign implementation rather than two halves of this
+  one agreeing.
 - `verifyCert = false` is honoured by the jvm TLS client. It was accepted and
   ignored: the client verified regardless, so a self-signed development server
   was unreachable from jvm no matter what the caller asked for. The JDK
@@ -214,6 +225,37 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- TLS on the jvm target stranded incoming data. The handshake completed, the
+  connection looked healthy, and a request sent over it was never answered --
+  an HTTPS server there accepted connections and replied to none of them. A TLS
+  read takes whole records off the channel, so the tail of a handshake
+  routinely arrives in the same read as the peer's first application record,
+  which is what a client that sends its request the moment it connects
+  produces: every HTTPS client. Those bytes then sat in the TLS layer while
+  `select` reported an idle socket, and nothing came back for them until the
+  peer gave up and closed -- the close being the only thing that made the
+  channel readable again. `SocketRegistry` now asks each socket whether it is
+  holding readable bytes the kernel no longer has, before selecting rather than
+  after, since asking afterwards would spend the whole poll timeout waiting for
+  data already in hand. Buffered means decrypted and ready, not merely present:
+  a partial record answers no, or the registry would hold its select at a zero
+  timeout and spin.
+- HTTPS did not work on the jvm target at all. `HTTPServer` built a secure
+  listener from `tlsCertificatePath` and then skipped installing the
+  certificate behind a `#if (!java && !jvm)` gate left from before that target
+  had TLS, so the server had nothing to present. Nothing caught it because
+  nothing tested HTTPS through `HTTPServer` on any target: the socket layer had
+  TLS cases and the HTTP layer had request cases, and the seam between them was
+  joined by no test. It has one now, and it runs everywhere the server can
+  listen.
+- `ServerSocket.alpnSupported` and `FlexSocket.alpnSupported` reported `false`
+  on jvm after ALPN started working there. The flags were read, not merely
+  advertised: `HTTP2Backend` refuses HTTP/2 over TLS wherever `alpnSupported`
+  is false, so the target that could negotiate `h2` was the one being told it
+  could not.
+- A socket accepted by a TLS listener reported `secure == false`. The field was
+  set only by the browser constructor, so every server-side socket denied being
+  encrypted regardless of what it was carrying.
 - The jvm socket read path allocated and copied on every read. `readBytes`
   allocated a `ByteBuffer` the size of the read and then copied every byte out
   of it into the caller's buffer -- sixty-four kilobytes of each per chunk on

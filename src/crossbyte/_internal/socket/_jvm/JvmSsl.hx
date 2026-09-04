@@ -492,6 +492,54 @@ class JvmSslSocket extends sys.net.Socket {
 		}
 	}
 
+	/**
+		Whether this socket holds bytes the kernel no longer has.
+
+		A TLS read takes whole records off the channel, so the end of the
+		handshake routinely arrives in the same read as the first application
+		record -- a client that sends a request the instant it connects, which
+		is to say every HTTPS client, lands exactly there. Those bytes then sit
+		here while the channel looks idle, and a reactor that asks only the
+		kernel what is readable never comes back for them.
+
+		`SocketRegistry` asks this so a socket in that state is serviced anyway.
+		Without it the request was stranded until something else disturbed the
+		connection: in the case that found this, the peer's own timeout and
+		close ten seconds later.
+	**/
+	public function hasBufferedInput():Bool {
+		if (!__handshaken) {
+			return false;
+		}
+
+		if (__appIn != null && __appIn.hasRemaining()) {
+			return true;
+		}
+
+		if (__netIn == null || __netIn.position() == 0) {
+			return false;
+		}
+
+		// Bytes present is not the same as bytes readable, and answering the
+		// first question got this wrong once already: a partial record sits in
+		// __netIn until the rest of it arrives, and reporting that as readable
+		// pinned the registry's select to a zero timeout and span the pump.
+		// __consume decodes what is whole and says so, and only plaintext it
+		// actually produced counts -- a record can be consumed and yield none,
+		// which is what a TLS 1.3 session ticket is.
+		return try {
+			__consume() && __appIn.hasRemaining();
+		} catch (e:Dynamic) {
+			// A close arrived mid-record. False rather than true: a closed
+			// connection is readable to the kernel anyway, so select reports it
+			// on this same pass and the read path sees it either way. Answering
+			// true instead makes a socket nobody has deregistered yet claim to
+			// be readable on every pump, which holds the select at a zero
+			// timeout and spins the runtime for the rest of its life.
+			false;
+		}
+	}
+
 	/** Hands back decrypted bytes, filling from the wire when none are held. **/
 	@:noCompletion private function __readApp(buffer:haxe.io.Bytes, position:Int, length:Int):Int {
 		if (!__handshaken) {

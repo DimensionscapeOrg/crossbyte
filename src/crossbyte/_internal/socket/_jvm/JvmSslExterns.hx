@@ -135,7 +135,15 @@ extern class KeyFactory {
 }
 
 @:native("java.io.InputStream")
-extern class JInputStream {}
+extern class JInputStream {
+	overload function read(b:java.NativeArray<java.types.Int8>):Int;
+}
+
+@:native("java.io.OutputStream")
+extern class JOutputStream {
+	overload function write(b:java.NativeArray<java.types.Int8>):Void;
+	function flush():Void;
+}
 
 @:native("java.io.ByteArrayInputStream")
 extern class ByteArrayInputStream extends JInputStream {
@@ -266,6 +274,8 @@ extern class SSLSocketFactory {
 @:native("javax.net.ssl.SSLSocket")
 extern class SSLSocket extends JNetSocket {
 	function startHandshake():Void;
+	function getInputStream():JInputStream;
+	function getOutputStream():JOutputStream;
 	function getSSLParameters():SSLParameters;
 	function setSSLParameters(params:SSLParameters):Void;
 	function getApplicationProtocol():String;
