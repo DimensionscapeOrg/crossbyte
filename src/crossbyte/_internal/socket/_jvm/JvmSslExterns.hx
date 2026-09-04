@@ -101,6 +101,25 @@ extern class X509ExtendedKeyManager implements KeyManager {
 	function getPrivateKey(alias:String):PrivateKey;
 }
 
+/**
+	Extended so verification can be turned off deliberately.
+
+	Only the "Engine" overloads are consulted on an `SSLEngine` handshake, the
+	same as the key manager, so a trust manager that implements the two-argument
+	forms alone is quietly never asked.
+**/
+@:native("javax.net.ssl.X509ExtendedTrustManager")
+extern class X509ExtendedTrustManager implements TrustManager {
+	function new();
+	overload function checkClientTrusted(chain:java.NativeArray<X509Certificate>, authType:String):Void;
+	overload function checkClientTrusted(chain:java.NativeArray<X509Certificate>, authType:String, socket:JNetSocket):Void;
+	overload function checkClientTrusted(chain:java.NativeArray<X509Certificate>, authType:String, engine:SSLEngine):Void;
+	overload function checkServerTrusted(chain:java.NativeArray<X509Certificate>, authType:String):Void;
+	overload function checkServerTrusted(chain:java.NativeArray<X509Certificate>, authType:String, socket:JNetSocket):Void;
+	overload function checkServerTrusted(chain:java.NativeArray<X509Certificate>, authType:String, engine:SSLEngine):Void;
+	function getAcceptedIssuers():java.NativeArray<X509Certificate>;
+}
+
 @:native("java.security.spec.KeySpec")
 extern interface KeySpec {}
 
