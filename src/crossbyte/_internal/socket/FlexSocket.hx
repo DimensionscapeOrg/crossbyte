@@ -10,7 +10,7 @@ import sys.net.Host;
 import sys.net.Socket;
 #if (java || jvm)
 // Haxe's sys.ssl.Socket (java.net.SslSocket) does not compile on the jvm
-// target, so TLS is stubbed there until a jvm SSL backend exists.
+// target, so TLS there goes through CrossByte's own SSLEngine-based backend.
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate as Certificate;
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslKey as Key;
 import crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket as SSLSocket;
@@ -36,12 +36,15 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	/**
 	 * Whether `setALPN` on a secure socket actually reaches the TLS handshake.
 	 *
-	 * ALPN rides on hxcpp's mbedTLS, so only the cpp target negotiates one.
-	 * Elsewhere `setALPN` is accepted and ignored and `getALPN` stays `null`,
-	 * which lets a caller offer `h2` unconditionally and fall back to
-	 * HTTP/1.1 on the targets that cannot reach it.
+	 * Negotiated on cpp, through hxcpp's mbedTLS, and on jvm, through the JDK's
+	 * SSLParameters. Elsewhere `setALPN` is accepted and ignored and `getALPN`
+	 * stays `null`, which lets a caller offer `h2` unconditionally and fall
+	 * back to HTTP/1.1 on the targets that cannot reach it.
 	 */
-	public static var alpnSupported(default, null):Bool = #if cpp NativeAlpn.isAvailable() #else false #end;
+	// True on jvm because the JDK carries ALPN in SSLParameters, so unlike cpp
+	// -- where it needs a native extension built against mbedTLS, and so has to
+	// be asked about at runtime -- there is nothing that can be missing.
+	public static var alpnSupported(default, null):Bool = #if cpp NativeAlpn.isAvailable() #elseif (java || jvm) true #else false #end;
 
 	private static inline function get_DEFAULT_CA():Null<Certificate> {
 		return SSLSocket.DEFAULT_CA;

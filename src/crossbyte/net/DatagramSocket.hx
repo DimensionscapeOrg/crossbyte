@@ -481,6 +481,14 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	}
 
 	public inline function registryOnWritable():Void {}
+
+	/**
+		Never. UDP carries no TLS here, so the kernel is the only place a
+		datagram can be waiting.
+	**/
+	public inline function registryHasBufferedInput():Bool {
+		return false;
+	}
 	#end
 
 	/**

@@ -133,7 +133,37 @@ final class SocketRegistry {
 			__selectBuffer[i] = __readSnapshot[i];
 		}
 
-		var res = Socket.select(__selectBuffer, [], [], timeout);
+		// A TLS socket can hold bytes the kernel has already handed over: reads
+		// there come off the channel a whole record at a time, so the end of a
+		// handshake regularly arrives together with the first application
+		// record -- which is what a client sending its request the moment it
+		// connects produces, and that is every HTTPS client. select() then
+		// reports an idle socket with a request already sitting in it.
+		//
+		// Selecting first and asking these second would make the wait itself
+		// the bug: a pump blocking for `timeout` before looking at data it
+		// already has. So they go first, and finding any drops the select to a
+		// poll.
+		var wait:Float = timeout;
+
+		// Only the jvm backend can answer yes -- it is the one that decrypts in
+		// front of the channel. Gating the sweep keeps every other target's
+		// pump exactly as it was rather than paying a call per socket per pump
+		// for an answer that is structurally always false.
+		#if (java || jvm)
+		for (i in 0...count) {
+			var cb:IPollableSocket = cast __selectBuffer[i].custom;
+
+			if (cb == null || cb.registryClosed || !cb.registryHasBufferedInput()) {
+				continue;
+			}
+
+			wait = 0;
+			cb.registryOnReadable();
+		}
+		#end
+
+		var res = Socket.select(__selectBuffer, [], [], wait);
 
 		for (s in res.read) {
 			var cb:IPollableSocket = cast s.custom;

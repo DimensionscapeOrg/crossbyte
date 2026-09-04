@@ -119,5 +119,49 @@ class JvmTlsPeer {
 		peer.close();
 		return (negotiated == null || negotiated == "") ? null : negotiated;
 	}
+
+	/**
+	 * Connects, handshakes, sends `send`, and returns what came back.
+	 *
+	 * The handshake cases above stop at the handshake, which turned out to be
+	 * exactly the wrong place to stop: TLS can be negotiated perfectly and then
+	 * carry nothing, and for a while on jvm that is precisely what it did.
+	 *
+	 * @return The bytes read back as a string, or null if the peer sent none.
+	 */
+	public static function exchange(host:String, port:Int, trusted:Certificate, send:String):Null<String> {
+		var trust = KeyStore.getInstance(KeyStore.getDefaultType());
+		trust.load(null, null);
+		trust.setCertificateEntry("ca", @:privateAccess trusted.__native.native);
+
+		var trustFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+		trustFactory.init(trust);
+
+		var context = SSLContext.getInstance("TLS");
+		context.init(null, trustFactory.getTrustManagers(), null);
+
+		var peer:SSLSocket = cast context.getSocketFactory().createSocket(host, port);
+		peer.setSoTimeout(10000);
+		peer.startHandshake();
+
+		var out = peer.getOutputStream();
+		out.write(haxe.io.Bytes.ofString(send).getData());
+		out.flush();
+
+		var buffer:java.NativeArray<java.types.Int8> = new java.NativeArray(4096);
+		var read = try {
+			peer.getInputStream().read(buffer);
+		} catch (e:Dynamic) {
+			-1;
+		}
+
+		peer.close();
+
+		if (read <= 0) {
+			return null;
+		}
+
+		return haxe.io.Bytes.ofData(buffer).sub(0, read).toString();
+	}
 }
 #end
