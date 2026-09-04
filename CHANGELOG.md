@@ -5,6 +5,13 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- The core socket suites run on the jvm target: `SocketTest`,
+  `ServerSocketDrainTest`, `ServerWebSocketDrainTest` and
+  `WebSocketConformanceTest` were registered `#if cpp`, so the socket layer's
+  own cases -- including the WebSocket conformance run against a hand-written
+  client -- executed on one target only. Both jvm faults above were found by
+  turning them on, and the first of them hung the suite rather than failing it,
+  which is what a frozen runtime looks like from outside.
 - The HTTP server suite runs on the jvm target. Its cases were gated to
   `cpp || neko || hl || nodejs`, written when the server was native-only and
   never widened, so the whole of `HTTPServer` -- routing, streaming, draining,
@@ -225,6 +232,24 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebSocket server on the jvm target stopped the runtime. `setBlocking` there
+  did nothing when it was called before `bind()` -- there is no channel to
+  configure until then -- and `bind()` opened one hardcoded to blocking, so the
+  request was discarded. `ServerWebSocket` calls `accept()` each tick and reads
+  "would block" as "nobody is waiting", which on a blocking listener is instead
+  a native `accept0()` that parks the caller. That caller is the runtime's own
+  thread, so an idle WSS listener froze the whole instance: every timer, every
+  other socket. `ServerSocket` escaped it only by chance, because it selects
+  before it accepts. The jvm socket now remembers what `setBlocking` asked for
+  and opens the listening channel that way.
+- TCP addresses on the jvm target were reported uncompressed -- `::1` came back
+  as `0:0:0:0:0:0:0:1`. `IPv6.compress` exists for exactly this, and its
+  documentation names this exact difference, but it was applied in
+  `DatagramSocket` and `LocalAddress` and never in the TCP socket beside them:
+  the same address read one way over UDP and another over TCP on one target.
+  An application comparing what it bound against what it was told back is the
+  obvious thing to write and it silently failed, and an address in an HTTP
+  whitelist or blacklist written canonically matched nothing.
 - TLS on the jvm target stranded incoming data. The handshake completed, the
   connection looked healthy, and a request sent over it was never answered --
   an HTTPS server there accepted connections and replied to none of them. A TLS

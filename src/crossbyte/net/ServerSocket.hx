@@ -590,7 +590,10 @@ class ServerSocket extends EventDispatcher {
 		cbSocket.secure = secure;
 		cbSocket.__timestamp = Sys.time();
 
-		cbSocket.__host = socket.peer().host.toString();
+		// Canonical for the same reason `Socket.localAddress` is: a peer
+		// address that reads differently per target is one a whitelist written
+		// on one of them silently fails to match on another.
+		cbSocket.__host = crossbyte._internal.net.IPv6.compress(socket.peer().host.toString());
 		cbSocket.__port = socket.peer().port;
 
 		cbSocket.__output = new ByteArray();

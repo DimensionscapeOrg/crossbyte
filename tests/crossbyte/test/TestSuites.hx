@@ -183,7 +183,14 @@ class TestSuites {
 		// protection while providing none.
 		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
 
-		#if cpp
+		// jvm as well as cpp. These were cpp-only, and running them on jvm was
+		// how two faults there were found: a listener that ignored
+		// setBlocking(false) when it was called before bind(), so the first
+		// accept() on an idle port blocked the runtime's own thread; and TCP
+		// addresses reported uncompressed, which no UDP case could catch
+		// because DatagramSocket already canonicalised and the socket beside
+		// it did not.
+		#if (cpp || java || jvm)
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());

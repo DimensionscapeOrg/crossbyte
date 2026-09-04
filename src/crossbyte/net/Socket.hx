@@ -1826,7 +1826,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("localAddress");
 		#else
-		return __socket.host().host.toString();
+		// Canonical, because the platforms disagree: hxcpp renders `::1` and
+		// the jvm `0:0:0:0:0:0:0:1` for the same address. DatagramSocket has
+		// compressed since IPv6.compress was written -- its doc names this very
+		// difference -- and the TCP socket beside it never did, so an
+		// application comparing what it bound against what it was told back
+		// worked over UDP and failed over TCP on the same target.
+		return crossbyte._internal.net.IPv6.compress(__socket.host().host.toString());
 		#end
 	}
 
@@ -1846,7 +1852,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#elseif (js && !nodejs)
 		return __refuseEndpoint("remoteAddress");
 		#else
-		return __socket.peer().host.toString();
+		return crossbyte._internal.net.IPv6.compress(__socket.peer().host.toString());
 		#end
 	}
 
