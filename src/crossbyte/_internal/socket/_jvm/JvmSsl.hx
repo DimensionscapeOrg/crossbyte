@@ -179,12 +179,13 @@ class JvmSslSocket extends sys.net.Socket {
 		pump -- a blocking read cannot report "would block", so the loop cannot
 		spin.
 
-		The certificate is verified against the JDK's default trust store, and
-		the hostname is checked against the certificate. Both matter: a client
-		that skips the second accepts any valid certificate for any host, which
-		is most of the value of TLS gone. `verifyCert = false` is not honoured
-		here -- it fails closed rather than open, which is the safe direction to
-		be incomplete in.
+		By default the certificate is verified against the JDK's default trust
+		store and the hostname is checked against the certificate. Both matter:
+		a client that skips the second accepts any valid certificate for any
+		host, which is most of the value of TLS gone.
+
+		`verifyCert = false` turns both off, for the self-signed development
+		server the setting exists for. It has to be asked for: unset verifies.
 	**/
 	override public function connect(host:sys.net.Host, port:Int):Void {
 		super.connect(host, port);
@@ -283,12 +284,21 @@ class JvmSslSocket extends sys.net.Socket {
 		if (clientMode && __hostname != null) {
 			var parameters = __engine.getSSLParameters();
 
-			// The name goes out as SNI, and the same name is what the
-			// certificate is then checked against.
+			// The name goes out as SNI so the server knows which of its hosts
+			// is being asked for, and the same name is then checked against the
+			// certificate that comes back.
 			var names = new JArrayList<JvmSslExterns.SNIServerName>();
 			names.add(cast new JvmSslExterns.SNIHostName(__hostname));
 			parameters.setServerNames(cast names);
-			parameters.setEndpointIdentificationAlgorithm("HTTPS");
+
+			// Only the check is optional. Sending the name is how a virtual
+			// host picks a certificate at all, so a client that is not
+			// verifying still has to ask for the right one -- dropping SNI here
+			// would quietly get it served the wrong host.
+			if (verifyCert != false) {
+				parameters.setEndpointIdentificationAlgorithm("HTTPS");
+			}
+
 			__engine.setSSLParameters(parameters);
 		}
 
@@ -348,6 +358,17 @@ class JvmSslSocket extends sys.net.Socket {
 
 		var trust:Null<java.NativeArray<TrustManager>> = null;
 		var ca = __ca != null ? __ca : DEFAULT_CA;
+
+		if (verifyCert == false) {
+			// Asked for explicitly, and it means the peer is no longer
+			// authenticated: the traffic is still encrypted, but anything able
+			// to sit in the middle can present its own certificate. Unset --
+			// the default -- verifies.
+			var accepting:java.NativeArray<TrustManager> = new java.NativeArray(1);
+			accepting[0] = cast new crossbyte._internal.socket._jvm.JvmTrustAll();
+			trust = accepting;
+			ca = null;
+		}
 
 		if (ca != null) {
 			var store = KeyStore.getInstance(KeyStore.getDefaultType());

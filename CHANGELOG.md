@@ -5,6 +5,16 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `verifyCert = false` is honoured by the jvm TLS client. It was accepted and
+  ignored: the client verified regardless, so a self-signed development server
+  was unreachable from jvm no matter what the caller asked for. The JDK
+  consults only the three-argument `X509ExtendedTrustManager` overloads on an
+  `SSLEngine` handshake, so a trust manager implementing the two-argument forms
+  alone is silently never asked. Verification stays on unless it is turned off
+  explicitly, and turning it off does not stop the client sending SNI --
+  choosing which host to talk to is not the same decision as whether to check
+  the answer, and dropping the name would quietly serve it the wrong
+  certificate.
 - Client-side TLS on the jvm target, and with it OAuth token requests, which
   threw there. `FlexSocket(secure)` handed back a socket that did a plain TCP
   connect and spoke no TLS, so every https request through CrossByte's own HTTP

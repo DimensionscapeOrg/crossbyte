@@ -260,6 +260,32 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	/**
+		`verifyCert = false` is honoured, and only when asked for.
+
+		The pair matters more than either half. The case below proves the client
+		refuses a certificate it cannot build a path to; this one proves the
+		refusal is a decision rather than an inability to connect at all, and
+		that turning verification off actually turns it off.
+
+		What it buys is a self-signed development server, which is the reason the
+		setting exists. What it costs is authentication: the traffic is still
+		encrypted and the peer is no longer identified.
+	**/
+	public function testTheJvmClientCanBeToldNotToVerify():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		var outcome = __clientAgainstSelfSigned(fixture, false);
+
+		Assert.isTrue(outcome.connected,
+			"verifyCert = false did not stop the client verifying: " + outcome.failure);
+		Assert.isNull(outcome.failure, "the client failed even with verification off: " + outcome.failure);
+	}
+
+	/**
 		The jvm client speaks TLS, and verifies what it is given.
 
 		`FlexSocket(true)` used to hand back a socket that did a plain TCP
@@ -283,6 +309,30 @@ class ServerSocketTLSTest extends utest.Test {
 			return;
 		}
 
+		var outcome = __clientAgainstSelfSigned(fixture, true);
+
+		Assert.isFalse(outcome.connected, "a self-signed certificate was accepted, so the client is not verifying");
+		Assert.notNull(outcome.failure, "the client reported no failure");
+
+		// Specifically a failure from the TLS layer. Matching loosely on
+		// "certificate" was not enough: with the client's engine removed
+		// entirely, connect refused with "set a certificate before listening",
+		// which contains the word and passed a test that should have caught
+		// exactly that.
+		Assert.isTrue(outcome.failure.indexOf("SSLHandshakeException") >= 0,
+			"the refusal did not come from the TLS layer: " + outcome.failure);
+		Assert.isTrue(outcome.failure.indexOf("PKIX") >= 0 || outcome.failure.indexOf("Validator") >= 0,
+			"the refusal is not a certificate-validation failure: " + outcome.failure);
+	}
+
+	/**
+		Runs CrossByte's own TLS client against a server presenting `fixture`.
+
+		The listener is closed on every path: a case that leaves one bound
+		strands a port and breaks the socket cases after it.
+	**/
+	private function __clientAgainstSelfSigned(fixture:crossbyte.net.TLSTestFixture.TLSFixtureData,
+			verify:Bool):{connected:Bool, failure:String} {
 		var runtime = crossbyte.core.CrossByte.current();
 		var server = new ServerSocket(true);
 
@@ -293,13 +343,14 @@ class ServerSocketTLSTest extends utest.Test {
 			function(e:crossbyte.events.ServerSocketConnectEvent) {});
 		server.setCertificate(fixture.certificate, fixture.key);
 
+		var connected = false;
+		var failure:String = null;
+
 		try {
 			server.bind(0, "127.0.0.1");
 			server.listen();
 
 			var port = server.localPort;
-			var failure:String = null;
-			var connected = false;
 			var finished = false;
 
 			sys.thread.Thread.create(() -> {
@@ -307,6 +358,11 @@ class ServerSocketTLSTest extends utest.Test {
 
 				try {
 					client.setTimeout(10);
+
+					if (!verify) {
+						client.verifyCert = false;
+					}
+
 					client.connect("127.0.0.1", port);
 					connected = true;
 				} catch (e:Dynamic) {
@@ -327,17 +383,6 @@ class ServerSocketTLSTest extends utest.Test {
 			}
 
 			Assert.isTrue(finished, "the client neither connected nor failed within the deadline");
-			Assert.isFalse(connected, "a self-signed certificate was accepted, so the client is not verifying");
-			Assert.notNull(failure, "the client reported no failure");
-			// Specifically a failure from the TLS layer. Matching loosely on
-			// "certificate" was not enough: with the client's engine removed
-			// entirely, connect refused with "set a certificate before
-			// listening", which contains the word and passed a test that should
-			// have caught exactly that.
-			Assert.isTrue(failure.indexOf("SSLHandshakeException") >= 0,
-				"the refusal did not come from the TLS layer, so this may not be a verification failure at all: " + failure);
-			Assert.isTrue(failure.indexOf("PKIX") >= 0 || failure.indexOf("Validator") >= 0,
-				"the refusal is not a certificate-validation failure: " + failure);
 		} catch (e:Dynamic) {
 			try {
 				server.close();
@@ -348,6 +393,8 @@ class ServerSocketTLSTest extends utest.Test {
 		try {
 			server.close();
 		} catch (_:Dynamic) {}
+
+		return {connected: connected, failure: failure};
 	}
 
 	/**
