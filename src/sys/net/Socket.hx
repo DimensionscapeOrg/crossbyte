@@ -625,6 +625,16 @@ class Socket {
 	private var serverChannel:ServerSocketChannel;
 	private var __timeout:Float = 0.0;
 
+	// What setBlocking was last asked for, so a channel opened later starts
+	// that way. Before bind() there is no server channel to configure, so the
+	// call had nowhere to land and was silently dropped -- and bind() then
+	// opened one hardcoded to blocking. A caller that did the natural thing,
+	// setBlocking(false) before bind(), got a blocking listener anyway, and the
+	// first accept() on an idle port blocked the thread that was polling it.
+	// For ServerWebSocket that thread is the runtime's, so the whole instance
+	// stopped. ServerSocket escaped it only by selecting before it accepts.
+	private var __blocking:Bool = true;
+
 	public function new():Void {
 		var ch = SocketChannel.open();
 		ch.configureBlocking(true);
@@ -701,7 +711,7 @@ class Socket {
 		try {
 			if (serverChannel == null) {
 				serverChannel = ServerSocketChannel.open();
-				serverChannel.configureBlocking(true);
+				serverChannel.configureBlocking(__blocking);
 			}
 			var addr = new InetSocketAddress(host.wrapped, port);
 			serverChannel.bind(cast addr);
@@ -786,6 +796,8 @@ class Socket {
 	}
 
 	public function setBlocking(b:Bool):Void {
+		__blocking = b;
+
 		try {
 			if (channel != null)
 				channel.configureBlocking(b);
