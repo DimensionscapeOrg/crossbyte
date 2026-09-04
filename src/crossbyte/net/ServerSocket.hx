@@ -84,7 +84,7 @@ class ServerSocket extends EventDispatcher {
 		`h2` unconditionally and simply keep serving HTTP/1.1 where the
 		handshake cannot advertise it.
 	**/
-	public static var alpnSupported(default, null):Bool = #if (cpp || nodejs) true #else false #end;
+	public static var alpnSupported(default, null):Bool = #if (cpp || nodejs || java || jvm) true #else false #end;
 
 	/**
 		Indicates whether the server socket is listening for incoming connections.
@@ -581,6 +581,13 @@ class ServerSocket extends EventDispatcher {
 		var cbSocket = new CBSocket();
 		cbSocket.__socket = socket;
 		cbSocket.__connected = true;
+
+		// A peer accepted by a TLS listener is a TLS connection, and until now
+		// nothing said so: `secure` was set only by the browser constructor, so
+		// every server-side socket reported false regardless of what it was
+		// carrying. Read by `registryHasBufferedInput`, which has to know
+		// whether asking the TLS layer about buffered bytes is even meaningful.
+		cbSocket.secure = secure;
 		cbSocket.__timestamp = Sys.time();
 
 		cbSocket.__host = socket.peer().host.toString();

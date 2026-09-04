@@ -1908,6 +1908,33 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 	#end
 
+	/**
+		Whether the TLS layer is holding bytes `select` cannot see.
+
+		Asked dynamically rather than through the jvm socket's type: naming
+		`JvmSslSocket` here pulls `java.nio` into the init-macro context and the
+		build fails on "cannot access the java package while in a macro". The
+		same reason `alpnProtocol` asks the way it does.
+	**/
+	@:noCompletion public function registryHasBufferedInput():Bool {
+		#if (java || jvm)
+		if (!secure || __socket == null) {
+			return false;
+		}
+
+		var holder:Dynamic = __socket;
+		var buffered:Dynamic = try {
+			holder.hasBufferedInput();
+		} catch (e:Dynamic) {
+			false;
+		}
+
+		return buffered == true;
+		#else
+		return false;
+		#end
+	}
+
 	@:noCompletion private function get_registryClosed():Bool {
 		return __closed || __socket == null;
 	}
