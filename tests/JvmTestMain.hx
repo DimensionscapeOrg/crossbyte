@@ -1,39 +1,33 @@
 /**
  * JVM test entry point.
  *
- * Runs the suite on the jvm target, excluding the cases that trip a Haxe 4.3.7
- * `--jvm` bytecode bug (VerifyError: inconsistent stackmap on new+conditional /
- * switch-table patterns): RPCTest, CollectionsTest, and CompressionRoundTripTest.
- * That compiler defect is fixed by a Haxe upgrade (or restructuring each
- * trigger); it is not a CrossByte logic issue.
+ * Runs the whole suite. It used to run it minus RPCTest, CollectionsTest and
+ * CompressionRoundTripTest, which tripped a Haxe 4.3.7 `--jvm` bytecode bug --
+ * a VerifyError that kills the process at class-load rather than failing a
+ * case, so the exclusion was the only way to see any result at all.
+ *
+ * Two of those three no longer trip it and had not for some time; the note
+ * outlived the problem. The third was real, and was a property of the test
+ * rather than of `crossbyte.rpc`: constructing an `RPCSession` for its side
+ * effects and discarding the result leaves an uninitialised reference live
+ * across a branch, which the verifier rejects. Binding each construction to a
+ * local fixes it, and production RPC on jvm turned out never to have been the
+ * problem -- it simply had no coverage saying so.
+ *
+ * The lesson worth keeping: an exclusion written for a real reason is not
+ * re-tested by anything, so it stays long after the reason goes. Try removing
+ * one occasionally.
+ *
+ * With nothing left to exclude this calls `addAll` rather than listing the
+ * groups. The list had already drifted: it named every group `addAll` did
+ * except `addMetrics`, which nothing explained and which was therefore not a
+ * decision but an omission, and one no amount of reading either file would
+ * have flagged.
  */
-@:topologyExempt("Registers groups minus three cases that trip a Haxe 4.3.7 --jvm bytecode bug. The exclusions are a compiler workaround, not a topology, and belong beside the note explaining them.")
 class JvmTestMain {
 	public static function main():Void {
 		crossbyte.test.TestHarness.run(function(runner) {
-			crossbyte.test.TestSuites.addAuth(runner);
-			crossbyte.test.TestSuites.addCrypto(runner);
-			crossbyte.test.TestSuites.addCore(runner);
-			crossbyte.test.TestSuites.addFoundation(runner);
-			crossbyte.test.TestSuites.addErrors(runner);
-			crossbyte.test.TestSuites.addEvents(runner);
-			// addDataStructures minus the two VerifyError cases (Collections, Compression):
-			runner.addCase(new crossbyte.ds.Array2DTest());
-			runner.addCase(new crossbyte.ds.BloomFilterTest());
-			runner.addCase(new crossbyte.ds.OrderedMapTest());
-			runner.addCase(new crossbyte.ds.BitmapDataTest());
-			crossbyte.test.TestSuites.addMath(runner);
-			crossbyte.test.TestSuites.addHttp(runner);
-			crossbyte.test.TestSuites.addIO(runner);
-			crossbyte.test.TestSuites.addURL(runner);
-			crossbyte.test.TestSuites.addIPC(runner);
-			crossbyte.test.TestSuites.addDatabase(runner);
-			crossbyte.test.TestSuites.addSystem(runner);
-			crossbyte.test.TestSuites.addNet(runner);
-			// addRPC skipped: Haxe 4.3.7 --jvm VerifyError crashes the verifier.
-			crossbyte.test.TestSuites.addResources(runner);
-			crossbyte.test.TestSuites.addTimers(runner);
-			crossbyte.test.TestSuites.addUtils(runner);
+			crossbyte.test.TestSuites.addAll(runner);
 		});
 	}
 }
