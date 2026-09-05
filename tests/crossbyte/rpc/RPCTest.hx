@@ -11,14 +11,27 @@ import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 import utest.Assert;
 
+/**
+	Every `RPCSession` here is bound to a local, including the ones constructed
+	purely to wire themselves onto a connection.
+
+	Not style. Discarding the result of `new` leaves Haxe 4.3.7's `--jvm`
+	backend with an uninitialised reference live across a branch, and the
+	verifier rejects the whole class: "Inconsistent stackmap frames". That is
+	not a failing test, it is a `VerifyError` at class-load that takes the
+	process with it, which is why this suite was skipped on jvm entirely.
+
+	`crossbyte.rpc` itself was never the problem and works there unchanged. It
+	simply had nothing running to say so.
+**/
 class RPCTest extends utest.Test {
 	public function testOneWayCallDecodesScalarsBytesAndOptionals():Void {
 		var link = LinkedConnection.pair();
 		var commands = new TestCommands();
 		var handler = new TestHandler();
 
-		new RPCSession<TestCommands>(link.client, commands);
-		new RPCSession(link.server, null, handler);
+		var clientSession = new RPCSession<TestCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
 
 		commands.sendData(7, true, 1.25, "alpha", Bytes.ofString("abc"), "tagged");
 
@@ -48,8 +61,8 @@ class RPCTest extends utest.Test {
 		var result:String = null;
 		var error:String = null;
 
-		new RPCSession<TestCommands>(link.client, commands);
-		new RPCSession(link.server, null, serverHandler);
+		var clientSession = new RPCSession<TestCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, serverHandler);
 
 		var response = commands.getName(42).then(value -> result = value, message -> error = message);
 
@@ -66,8 +79,8 @@ class RPCTest extends utest.Test {
 		var serverHandler = new TestHandler();
 		link.client.bufferInbound = true;
 
-		new RPCSession<TestCommands>(link.client, commands);
-		new RPCSession(link.server, null, serverHandler);
+		var clientSession = new RPCSession<TestCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, serverHandler);
 
 		var first = commands.getName(1);
 		var second = commands.getName(2);
@@ -88,8 +101,8 @@ class RPCTest extends utest.Test {
 		var commands = new TestCommands();
 		var serverHandler = new TestHandler();
 
-		new RPCSession<TestCommands>(link.client, commands);
-		new RPCSession(link.server, null, serverHandler);
+		var clientSession = new RPCSession<TestCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, serverHandler);
 
 		var response = commands.getName(9);
 
@@ -123,7 +136,7 @@ class RPCTest extends utest.Test {
 	public function testUnknownOpDoesNotCollideIntoHandler():Void {
 		var link = LinkedConnection.pair();
 		var handler = new TestHandler();
-		new RPCSession(link.server, null, handler);
+		var serverSession = new RPCSession(link.server, null, handler);
 		var closed:Bool = false;
 		var errored:Bool = false;
 		link.server.onClose = _ -> closed = true;
@@ -149,8 +162,8 @@ class RPCTest extends utest.Test {
 		var handler = new ContractHandler();
 		var label:String = null;
 
-		new RPCSession<ContractCommands>(link.client, commands);
-		new RPCSession(link.server, null, handler);
+		var clientSession = new RPCSession<ContractCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
 
 		commands.announce(7, "hello");
 		commands.getLabel(7).then(value -> label = value);
@@ -166,8 +179,8 @@ class RPCTest extends utest.Test {
 		var commands = new ContractCommands();
 		var handler = new ContractHandler();
 
-		new RPCSession<ContractCommands>(link.client, commands);
-		new RPCSession(link.server, null, handler);
+		var clientSession = new RPCSession<ContractCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
 
 		commands.ping();
 		commands.announce(12, "still-fine");
@@ -218,8 +231,8 @@ class RPCTest extends utest.Test {
 		var link = LinkedConnection.pair();
 		var handler = new WideHandler();
 		var commands = new WideCommands();
-		new RPCSession(link.server, null, handler);
-		new RPCSession<WideCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
+		var clientSession = new RPCSession<WideCommands>(link.client, commands);
 
 		// Through the typed surface, which is the lane the macro generates:
 		// `call` would take the runtime lane and never reach the perfect hash.

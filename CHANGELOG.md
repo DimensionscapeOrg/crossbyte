@@ -5,6 +5,18 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- The jvm target runs the whole suite. It ran everything except `RPCTest`,
+  `CollectionsTest` and `CompressionRoundTripTest`, excluded for a Haxe 4.3.7
+  `--jvm` bytecode bug that raises a `VerifyError` at class-load and takes the
+  process with it -- not a failing case but no result at all. Two of the three
+  had stopped tripping it some time ago and nothing re-checked, because nothing
+  re-checks an exclusion. The third was real, and belonged to the test rather
+  than to `crossbyte.rpc`: constructing an `RPCSession` for its side effects
+  and discarding the result leaves an uninitialised reference live across a
+  branch. Binding each construction to a local settles it. RPC on jvm needed no
+  change and never had coverage saying so; it does now. The entry point also
+  calls `addAll` instead of listing groups, which is how `addMetrics` came to
+  be missing from it -- not a decision, and not visible in either file.
 - The core socket suites run on the jvm target: `SocketTest`,
   `ServerSocketDrainTest`, `ServerWebSocketDrainTest` and
   `WebSocketConformanceTest` were registered `#if cpp`, so the socket layer's
