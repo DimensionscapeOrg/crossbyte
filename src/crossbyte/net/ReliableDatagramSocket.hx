@@ -132,6 +132,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __connectionTimeoutHandle:Int = -1;
 	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
 	@:noCompletion private var __inFrameCache:IntMap<ByteArray>;
+	@:noCompletion private var __inFrameCacheSize:Int = 0;
 	@:noCompletion private var __inSequence:Seq32 = 0;
 	@:noCompletion private var __incoming:Bool = false;
 	@:noCompletion private var __input:ByteArray;
@@ -163,6 +164,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		super();
 
 		__inFrameCache = new IntMap();
+		__inFrameCacheSize = 0;
 		__outFrameCache = new IntMap();
 		__outFrameTimerCache = new IntMap();
 		__outgoingQueue = [];
@@ -733,7 +735,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__inSequence++;
 			__drainBufferedPackets();
 		} else if (__shouldBufferPacket(sequence)) {
-			__inFrameCache.set(sequence, payload);
+			__cacheFrame(sequence, payload);
 		}
 
 		__sendAck();
@@ -762,12 +764,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __inSequence + DELIVERY_WINDOW;
 	}
 
-	@:noCompletion private function __inFrameCacheCount():Int {
-		var count:Int = 0;
-		for (sequence in __inFrameCache.keys()) {
-			count++;
+	// Every insert into the out-of-order cache runs through here, and every
+	// removal decrements alongside the `remove`, so `__inFrameCacheSize` tracks
+	// the map exactly. The count used to be recovered by walking `keys()`, which
+	// cost an O(n) iteration plus an iterator allocation for every buffered
+	// datagram.
+	@:noCompletion private function __cacheFrame(sequence:Seq32, payload:ByteArray):Void {
+		if (!__inFrameCache.exists(sequence)) {
+			__inFrameCacheSize++;
 		}
-		return count;
+
+		__inFrameCache.set(sequence, payload);
+	}
+
+	@:noCompletion private inline function __inFrameCacheCount():Int {
+		return __inFrameCacheSize;
 	}
 
 	@:noCompletion private function __beginHandshake():Void {
@@ -858,6 +869,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__outFrameTimerCache = new IntMap();
 		__outFrameCache = new IntMap();
 		__inFrameCache = new IntMap();
+		__inFrameCacheSize = 0;
 		__outgoingQueue.resize(0);
 		__input = __createBuffer();
 		__output = __createBuffer();
@@ -883,6 +895,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		while (__inFrameCache.exists(__inSequence)) {
 			var payload:ByteArray = __inFrameCache.get(__inSequence);
 			__inFrameCache.remove(__inSequence);
+			__inFrameCacheSize--;
 			__dispatchPayload(payload);
 			__inSequence++;
 		}
