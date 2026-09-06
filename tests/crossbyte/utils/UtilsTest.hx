@@ -243,8 +243,14 @@ class UtilsTest extends utest.Test {
 		Assert.equals(first, reused);
 		Assert.equals(0, recycler.localSize());
 
-		var second:PooledState = {id: 2, state: "second"};
-		var third:PooledState = {id: 3, state: "third"};
+		// Acquired from the pool, not built here. A pool only accepts back what
+		// it handed out -- `release` checks that -- so recycling a foreign
+		// object throws "foreign or already-released object". The check is
+		// `#if debug`, so this passed in release builds and made the whole
+		// suite unrunnable in a debug one, which is where a GC investigation
+		// most needs it.
+		var second:PooledState = pool.acquire();
+		var third:PooledState = pool.acquire();
 		recycler.recycle(reused);
 		recycler.recycle(second);
 		recycler.recycle(third);
