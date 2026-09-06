@@ -33,7 +33,12 @@ class NetHostTest extends utest.Test {
 			pumpUntil(() -> accepted != null, 2.0);
 
 			Assert.notNull(accepted);
-			Assert.equals(Protocol.TCP, accepted.protocol);
+			// Guarded: a failed `Assert.notNull` does not stop the test -- utest
+			// records it and carries on -- and reading a field off the null that
+			// follows is a SIGSEGV on hxcpp release, not a catchable error.
+			if (accepted != null) {
+				Assert.equals(Protocol.TCP, accepted.protocol);
+			}
 			Assert.equals(server.localPort, host.localPort);
 
 			client.close();
@@ -87,7 +92,12 @@ class NetHostTest extends utest.Test {
 		server.dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 
 		Assert.notNull(accepted);
-		Assert.equals(Protocol.WEBSOCKET, accepted.protocol);
+		// Guarded: a failed `Assert.notNull` does not stop the test -- utest
+		// records it and carries on -- and reading a field off the null that
+		// follows is a SIGSEGV on hxcpp release, not a catchable error.
+		if (accepted != null) {
+			Assert.equals(Protocol.WEBSOCKET, accepted.protocol);
+		}
 		closeHostQuietly(host);
 	}
 
@@ -114,7 +124,12 @@ class NetHostTest extends utest.Test {
 			pumpUntil(() -> accepted != null && accepted.connected, 2.0);
 
 			Assert.notNull(accepted);
-			Assert.equals(Protocol.RUDP, accepted.protocol);
+			// Guarded: a failed `Assert.notNull` does not stop the test -- utest
+			// records it and carries on -- and reading a field off the null that
+			// follows is a SIGSEGV on hxcpp release, not a catchable error.
+			if (accepted != null) {
+				Assert.equals(Protocol.RUDP, accepted.protocol);
+			}
 			Assert.equals(server.localPort, host.localPort);
 
 			client.close();
