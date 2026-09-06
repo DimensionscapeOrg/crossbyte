@@ -60,9 +60,17 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 			Assert.isTrue(sawRequest, "the binding request never reached the server");
 			Assert.isNull(failure, "discovery failed: " + failure);
+			// Guarded, not just asserted. utest records a failed assertion and
+			// carries on, so on a timeout `discovered` is still null when the
+			// next line reads a field off it -- and a null field access on
+			// hxcpp release is a SIGSEGV, not a catchable error, so the whole
+			// process dies and takes the run's results with it.
 			Assert.notNull(discovered, "no reflexive address was reported");
-			Assert.equals("198.51.100.23", discovered.address);
-			Assert.equals(61000, discovered.port);
+
+			if (discovered != null) {
+				Assert.equals("198.51.100.23", discovered.address);
+				Assert.equals(61000, discovered.port);
+			}
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -336,8 +344,16 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 			// The assertion. Bob sees the session arriving from Alice's
 			// listening port, which is what makes Alice reachable there.
-			Assert.equals(alice.localPort, acceptedByBob.remotePort,
-				"dialled from port " + acceptedByBob.remotePort + " rather than the server's " + alice.localPort);
+			//
+			// Guarded: the wait above can time out under load, and a failed
+			// `Assert.notNull` does not stop the test -- utest records it and
+			// carries on. Reading a field off the null that follows is a
+			// SIGSEGV on hxcpp release, not a catchable error, so it killed the
+			// process and took the whole run's results with it.
+			if (acceptedByBob != null) {
+				Assert.equals(alice.localPort, acceptedByBob.remotePort,
+					"dialled from port " + acceptedByBob.remotePort + " rather than the server's " + alice.localPort);
+			}
 
 			var payload = new ByteArray();
 			payload.writeUTFBytes("punched");

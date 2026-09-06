@@ -652,7 +652,12 @@ class SocketTest extends utest.Test {
 			Assert.notNull(serverPeer);
 			Assert.equals("pong", echoed);
 			Assert.equals("::1", server.localAddress);
-			Assert.equals("::1", serverPeer.localAddress);
+			// Guarded: a failed `Assert.notNull` does not stop the test -- utest
+			// records it and carries on -- and reading a field off the null that
+			// follows is a SIGSEGV on hxcpp release, not a catchable error.
+			if (serverPeer != null) {
+				Assert.equals("::1", serverPeer.localAddress);
+			}
 			Assert.equals(0, serverPeer.__socket.peer().host.ip);
 			Assert.equals("::1", client.remoteAddress);
 		} catch (e:Dynamic) {
