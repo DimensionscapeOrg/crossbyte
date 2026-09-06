@@ -83,7 +83,7 @@ class RUDPHardeningTest extends utest.Test {
 		var seq:Int = 1;
 		while (socket.__inFrameCacheCount() < ReliableDatagramSocket.DELIVERY_WINDOW) {
 			if (socket.__shouldBufferPacket(seq)) {
-				socket.__inFrameCache.set(seq, payloadOf("x"));
+				socket.__cacheFrame(seq, payloadOf("x"));
 			}
 			seq++;
 		}
@@ -99,7 +99,7 @@ class RUDPHardeningTest extends utest.Test {
 	public function testAlreadyCachedSequenceIsNotRebuffered():Void {
 		var socket = makeSocket();
 		socket.__inSequence = 0;
-		socket.__inFrameCache.set(5, payloadOf("y"));
+		socket.__cacheFrame(5, payloadOf("y"));
 
 		Assert.isFalse(socket.__shouldBufferPacket(5));
 	}
@@ -144,6 +144,7 @@ class RUDPHardeningTest extends utest.Test {
 	private static function makeSocket():ReliableDatagramSocket {
 		var socket:ReliableDatagramSocket = Type.createEmptyInstance(ReliableDatagramSocket);
 		socket.__inFrameCache = new IntMap();
+		socket.__inFrameCacheSize = 0;
 		socket.__inSequence = 0;
 		return socket;
 	}
