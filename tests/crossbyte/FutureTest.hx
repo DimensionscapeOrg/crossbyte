@@ -14,8 +14,11 @@ import utest.Assert;
  * the shape the fluent return type advertises -- ran only `b`. All four are
  * one-line demonstrations, and none of them had one.
  *
- * Needs no socket, no thread and no filesystem, so it runs on every target
- * including the browser.
+ * Needs no socket and no filesystem, so it runs on every target including the
+ * browser. One case is the exception and says why: a future is finished by one
+ * piece of code and read by another, and nothing in that shape keeps the two on
+ * the same thread, so the threaded targets check that it survives being used
+ * that way.
  */
 @:access(crossbyte.Future)
 class FutureTest extends utest.Test {
@@ -248,4 +251,69 @@ class FutureTest extends utest.Test {
 		Assert.notNull(got, "waiting for nothing never finished");
 		Assert.equals(0, got.length);
 	}
+
+	#if (cpp || neko || hl || java || jvm)
+	/**
+		Handlers attached on one thread while another resolves.
+
+		This is the ordinary way to use a future -- finish it on a worker, read
+		it on the runtime thread -- and before `Future` took a lock it was
+		unsafe in the worst way. `then` pushes onto a handler array while
+		resolution walks that same array, and a push that has to grow it frees
+		the buffer the walk is still reading. The symptom is not a lost
+		callback; it is heap corruption, surfacing later and somewhere else as a
+		collector crash on a pointer that was never an object.
+
+		The functional claim is the observable half: every handler runs exactly
+		once, whether it was attached before the resolution or after it.
+	**/
+	public function testHandlersMayBeAttachedWhileAnotherThreadResolves():Void {
+		var attachedPerRound:Int = 40;
+		var rounds:Int = 60;
+
+		for (round in 0...rounds) {
+			var future = new Future<Int>();
+			var finished = new sys.thread.Deque<Int>();
+			var start = new sys.thread.Lock();
+
+			// A plain counter under a mutex rather than a Deque of results:
+			// `Deque<Int>.pop(false)` cannot signal "empty" as null on a static
+			// target, so draining one in a loop never terminates there.
+			var guard = new sys.thread.Mutex();
+			var fired:Int = 0;
+			var wrongValue:Int = 0;
+
+			sys.thread.Thread.create(function():Void {
+				// Both threads wait on the same gate, so the resolution lands
+				// in the middle of the attaching rather than before or after.
+				start.wait();
+				@:privateAccess future.__resolve(round);
+				finished.add(1);
+			});
+
+			start.release();
+
+			for (i in 0...attachedPerRound) {
+				future.then(function(value:Int):Void {
+					guard.acquire();
+					fired++;
+					if (value != round) {
+						wrongValue++;
+					}
+					guard.release();
+				}, _ -> {});
+			}
+
+			finished.pop(true);
+
+			guard.acquire();
+			var count:Int = fired;
+			var wrong:Int = wrongValue;
+			guard.release();
+
+			Assert.equals(attachedPerRound, count);
+			Assert.equals(0, wrong);
+		}
+	}
+	#end
 }

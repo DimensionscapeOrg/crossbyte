@@ -6,6 +6,9 @@ import crossbyte.events.EventType;
 import crossbyte.events.IEventDispatcher;
 import crossbyte.events.TickEvent;
 import crossbyte.utils.Logger;
+#if (cpp || neko || hl || java || jvm)
+import sys.thread.Mutex;
+#end
 
 /**
  * The eventual result of something that has not finished yet.
@@ -79,6 +82,27 @@ class Future<T> implements IEventDispatcher {
 	// whether a failure disappeared without trace; see __reportIfUnhandled.
 	@:noCompletion private var __failureObserved:Bool = false;
 
+	/**
+		Guards the completion state and the handler lists.
+
+		A future exists to be finished by one piece of code and read by another,
+		and there is nothing in that shape which keeps the two on one thread --
+		resolving from a worker and calling `then` from the runtime thread is
+		the obvious way to use this. Without a lock those two race: `then`
+		pushes onto a handler array while resolution walks it, and a push that
+		grows the array frees the buffer the walk is still reading. That is not
+		a lost callback, it is heap corruption.
+
+		Handlers never run while it is held. They are the caller's code, they
+		are allowed to call back into this future -- registering from inside a
+		handler is expected here -- and holding a lock across code we do not
+		control invites a deadlock. So state changes under the lock, the handler
+		list is swapped out, and the calls happen after the release.
+	**/
+	#if (cpp || neko || hl || java || jvm)
+	@:noCompletion private final __lock:Mutex = new Mutex();
+	#end
+
 	public function new() {}
 
 	/**
@@ -92,6 +116,8 @@ class Future<T> implements IEventDispatcher {
 	 * classic way an asynchronous API loses a result.
 	 */
 	public function then(onResult:T->Void, ?onError:String->Void):Future<T> {
+		__acquire();
+
 		if (onError != null) {
 			__failureObserved = true;
 		}
@@ -100,12 +126,21 @@ class Future<T> implements IEventDispatcher {
 			// Fired now and not retained. Retaining it would double-call if a
 			// handler registered from inside another handler, since the
 			// notification loop is still walking the list.
-			if (succeeded) {
+			//
+			// Read out under the lock and fired after it: the value cannot
+			// change once completed, but reading it while another thread is
+			// still writing it can.
+			var wasSuccessful:Bool = succeeded;
+			var value:Null<T> = result;
+			var failure:String = error;
+			__release();
+
+			if (wasSuccessful) {
 				if (onResult != null) {
-					__safely(() -> onResult(result), "result");
+					__safely(() -> onResult(value), "result");
 				}
 			} else if (onError != null) {
-				__safely(() -> onError(error), "error");
+				__safely(() -> onError(failure), "error");
 			}
 
 			return this;
@@ -119,6 +154,7 @@ class Future<T> implements IEventDispatcher {
 			__onError.push(onError);
 		}
 
+		__release();
 		return this;
 	}
 
@@ -133,17 +169,23 @@ class Future<T> implements IEventDispatcher {
 			return this;
 		}
 
+		__acquire();
 		__failureObserved = true;
 
 		if (completed) {
-			if (!succeeded) {
-				__safely(() -> onError(error), "error");
+			var wasSuccessful:Bool = succeeded;
+			var failure:String = error;
+			__release();
+
+			if (!wasSuccessful) {
+				__safely(() -> onError(failure), "error");
 			}
 
 			return this;
 		}
 
 		__onError.push(onError);
+		__release();
 		return this;
 	}
 
@@ -295,7 +337,10 @@ class Future<T> implements IEventDispatcher {
 	}
 
 	@:noCompletion private function __resolve(value:T):Void {
+		__acquire();
+
 		if (completed) {
+			__release();
 			return;
 		}
 
@@ -306,6 +351,7 @@ class Future<T> implements IEventDispatcher {
 		var handlers = __onResult;
 		__onResult = [];
 		__onError = [];
+		__release();
 
 		for (handler in handlers) {
 			__safely(() -> handler(value), "result");
@@ -321,7 +367,10 @@ class Future<T> implements IEventDispatcher {
 	}
 
 	@:noCompletion private function __fail(message:String, ?cause:Dynamic):Void {
+		__acquire();
+
 		if (completed) {
+			__release();
 			return;
 		}
 
@@ -333,6 +382,8 @@ class Future<T> implements IEventDispatcher {
 		var handlers = __onError;
 		__onResult = [];
 		__onError = [];
+		var observed:Bool = __failureObserved;
+		__release();
 
 		for (handler in handlers) {
 			__safely(() -> handler(message), "error");
@@ -342,7 +393,7 @@ class Future<T> implements IEventDispatcher {
 			dispatchEvent(new Event(ERROR));
 		}
 
-		if (!__failureObserved) {
+		if (!observed) {
 			__reportIfUnhandled();
 		}
 	}
@@ -360,6 +411,18 @@ class Future<T> implements IEventDispatcher {
 	 * Reported rather than swallowed: the handler is the caller's code and the
 	 * bug is theirs to see.
 	 */
+	@:noCompletion private inline function __acquire():Void {
+		#if (cpp || neko || hl || java || jvm)
+		__lock.acquire();
+		#end
+	}
+
+	@:noCompletion private inline function __release():Void {
+		#if (cpp || neko || hl || java || jvm)
+		__lock.release();
+		#end
+	}
+
 	@:noCompletion private function __safely(run:Void->Void, phase:String):Void {
 		try {
 			run();
