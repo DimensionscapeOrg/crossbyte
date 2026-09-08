@@ -5,6 +5,7 @@ import crossbyte._internal.websocket.WebSocket as InternalWebSocket;
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:access(crossbyte.core.CrossByte)
 @:access(crossbyte.events.EventDispatcher)
@@ -99,7 +100,7 @@ class WebSocketTest extends utest.Test {
 		ws.__input = maskedFrame(0x02, Bytes.ofString("hello"));
 		ws.__onData();
 
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals("hello", received.readUTFBytes(received.length));
 	}
 
@@ -121,7 +122,7 @@ class WebSocketTest extends utest.Test {
 		ws.__onData();
 
 		Assert.equals(1, calls);
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals("hello", received.readUTFBytes(received.length));
 	}
 
@@ -154,7 +155,7 @@ class WebSocketTest extends utest.Test {
 		ws.__input = maskedFrame(0x02, payload);
 		ws.__onData();
 
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals(payload.length, received.length);
 		Assert.equals(0, received[0]);
 		Assert.equals(129, received[129]);
@@ -172,7 +173,7 @@ class WebSocketTest extends utest.Test {
 		ws.__input = maskedFrame(0x02, payload);
 		ws.__onData();
 
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals(payload.length, received.length);
 		Assert.equals(0x41, received[0]);
 		Assert.equals(0x5A, received[received.length - 1]);
@@ -309,7 +310,7 @@ class WebSocketTest extends utest.Test {
 		ws.__onData();
 
 		Assert.equals(InternalWebSocket.OPEN, ws.readyState);
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals("ready", received.readUTFBytes(received.length));
 	}
 
@@ -343,7 +344,7 @@ class WebSocketTest extends utest.Test {
 		ws.__onData();
 
 		Assert.equals(1, opened);
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals("after", received.readUTFBytes(received.length));
 	}
 
@@ -362,7 +363,7 @@ class WebSocketTest extends utest.Test {
 
 		child.addEventListener("tick", ws.__tickConnectListener);
 		var listenersBefore:Array<Dynamic> = cast @:privateAccess child.__eventMap.get("tick");
-		Assert.notNull(listenersBefore);
+		Require.notNull(listenersBefore);
 		Assert.isTrue(listenersBefore.length > 0);
 
 		primordial.pump(0, 0);

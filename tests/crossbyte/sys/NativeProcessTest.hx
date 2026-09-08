@@ -3,6 +3,7 @@ package crossbyte.sys;
 import crossbyte.core.CrossByte;
 import crossbyte.events.NativeProcessEvent;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:access(crossbyte.core.CrossByte)
 class NativeProcessTest extends utest.Test {
@@ -57,7 +58,7 @@ class NativeProcessTest extends utest.Test {
 		Assert.equals(0, exitCode);
 		Assert.isTrue(stdoutClosed);
 		Assert.isTrue(stderrClosed);
-		Assert.notNull(output);
+		Require.notNull(output);
 		Assert.isTrue(output.indexOf("nativeprocess_smoke") >= 0);
 		#else
 		Assert.pass();

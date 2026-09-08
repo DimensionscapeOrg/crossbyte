@@ -7,6 +7,7 @@ package crossbyte.net;
 #if !(js && !nodejs)
 import utest.Assert;
 import utest.Async;
+import crossbyte.test.Require;
 
 /**
 	These need no network and no peer. The routing table is local, and asking it
@@ -161,7 +162,7 @@ class LocalAddressTest extends utest.Test {
 			Assert.fail("a hostname was accepted and answered with " + address);
 			async.done();
 		}, function(error) {
-			Assert.notNull(error);
+			Require.notNull(error);
 			Assert.isTrue(error.indexOf("numeric") >= 0, "the refusal does not say what was wrong with the argument: " + error);
 			async.done();
 		});

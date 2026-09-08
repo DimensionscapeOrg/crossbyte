@@ -1,6 +1,7 @@
 package crossbyte.auth;
 
 import utest.Assert;
+import crossbyte.test.Require;
 
 class AuthSupportTest extends utest.Test {
 	public function testOAuthConfigStoresConstructorValues():Void {
@@ -91,7 +92,7 @@ class AuthSupportTest extends utest.Test {
 			token -> delivered = token, message -> failure = message);
 
 		Assert.isNull(failure);
-		Assert.notNull(delivered);
+		Require.notNull(delivered);
 		Assert.equals("at", delivered.accessToken);
 		Assert.equals("rt", delivered.refreshToken);
 		Assert.equals("Bearer", delivered.tokenType);
@@ -111,7 +112,7 @@ class AuthSupportTest extends utest.Test {
 			token -> delivered = token, message -> failure = message);
 
 		Assert.isNull(delivered);
-		Assert.notNull(failure);
+		Require.notNull(failure);
 		// The provider's own reason, not just "it failed".
 		Assert.isTrue(failure.indexOf("invalid_grant") >= 0);
 		Assert.isTrue(failure.indexOf("authorization code has expired") >= 0);
@@ -125,7 +126,7 @@ class AuthSupportTest extends utest.Test {
 		OAuth.__handleTokenResponse("exchange", '{"token_type":"Bearer"}', token -> delivered = token, message -> failure = message);
 
 		Assert.isNull(delivered);
-		Assert.notNull(failure);
+		Require.notNull(failure);
 		Assert.isTrue(failure.indexOf("no access_token") >= 0);
 	}
 
@@ -136,7 +137,7 @@ class AuthSupportTest extends utest.Test {
 		OAuth.__handleTokenResponse("exchange", "<html>502 Bad Gateway</html>", token -> delivered = token, message -> failure = message);
 
 		Assert.isNull(delivered);
-		Assert.notNull(failure);
+		Require.notNull(failure);
 		Assert.isTrue(failure.indexOf("malformed response") >= 0);
 	}
 

@@ -5,6 +5,7 @@ import crossbyte.crypto.Ed25519;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * EdDSA JWT signing per RFC 8037.
@@ -62,7 +63,7 @@ class EdDSAJwtTest extends utest.Test {
 		});
 
 		var verified = jwt.verifyToken(token);
-		Assert.notNull(verified);
+		Require.notNull(verified);
 		Assert.equals("subject", verified.subject);
 		Assert.equals("issuer-a", verified.issuer);
 

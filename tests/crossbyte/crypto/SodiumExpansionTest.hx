@@ -3,6 +3,7 @@ package crossbyte.crypto;
 import crossbyte.crypto.password.Argon2id;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * Tests for the expanded libsodium bridge (proposal 0001):
@@ -73,7 +74,7 @@ class SodiumExpansionTest extends utest.Test {
 		Assert.equals(XCHACHA_CIPHERTEXT_HEX + XCHACHA_TAG_HEX, sealed.toHex());
 
 		var opened = Aead.decrypt(sealed, nonce, key, aad);
-		Assert.notNull(opened);
+		Require.notNull(opened);
 		Assert.equals(plaintext.toHex(), opened.toHex());
 		#else
 		Assert.isFalse(Aead.isAvailable());
@@ -114,7 +115,7 @@ class SodiumExpansionTest extends utest.Test {
 		var emptySealed = Aead.encrypt(Bytes.alloc(0), nonce, key);
 		Assert.equals(Aead.TAG_BYTES, emptySealed.length);
 		var emptyOpened = Aead.decrypt(emptySealed, nonce, key);
-		Assert.notNull(emptyOpened);
+		Require.notNull(emptyOpened);
 		Assert.equals(0, emptyOpened.length);
 
 		// Misuse throws rather than silently proceeding.
@@ -179,7 +180,7 @@ class SodiumExpansionTest extends utest.Test {
 		var nonce = Aead.generateNonce();
 		var sealed = Aead.encrypt(Bytes.ofString("kx roundtrip"), nonce, clientKeys.tx);
 		var opened = Aead.decrypt(sealed, nonce, serverKeys.rx);
-		Assert.notNull(opened);
+		Require.notNull(opened);
 		Assert.equals("kx roundtrip", opened.toString());
 
 		Assert.isTrue(throwsDynamic(() -> KeyExchange.clientSessionKeys(client.publicKey, Bytes.alloc(1), server.publicKey)));

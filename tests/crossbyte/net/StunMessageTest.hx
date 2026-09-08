@@ -6,6 +6,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import haxe.Int64;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
 	The STUN wire format.
@@ -135,7 +136,7 @@ class StunMessageTest extends utest.Test {
 		var request = new StunMessage(StunMessage.BINDING_REQUEST, transaction());
 		var decoded = StunMessage.decode(request.encode());
 
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 		Assert.equals(StunMessage.BINDING_REQUEST, decoded.type);
 		Assert.isTrue(request.matches(decoded), "the transaction did not survive the round trip");
 	}
@@ -156,10 +157,10 @@ class StunMessageTest extends utest.Test {
 		var response = new StunMessage(StunMessage.BINDING_SUCCESS, transaction(), [attribute]);
 
 		var decoded = StunMessage.decode(response.encode());
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 
 		var address = decoded.mappedAddress();
-		Assert.notNull(address, "a success response carrying an address reported none");
+		Require.notNull(address, "a success response carrying an address reported none");
 		Assert.equals("192.168.1.100", address.address);
 		Assert.equals(54321, address.port);
 	}
@@ -200,7 +201,7 @@ class StunMessageTest extends utest.Test {
 		var response = new StunMessage(StunMessage.BINDING_SUCCESS, transaction(), [new StunAttribute(StunMessage.ATTR_MAPPED_ADDRESS, value)]);
 		var address = StunMessage.decode(response.encode()).mappedAddress();
 
-		Assert.notNull(address);
+		Require.notNull(address);
 		Assert.equals("203.0.113.7", address.address);
 		Assert.equals(3478, address.port);
 	}
@@ -246,11 +247,11 @@ class StunMessageTest extends utest.Test {
 		]);
 
 		var decoded = StunMessage.decode(response.encode());
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 		Assert.equals(2, decoded.attributes.length);
 
 		var address = decoded.mappedAddress();
-		Assert.notNull(address, "the attribute after an odd-length one was lost to padding");
+		Require.notNull(address, "the attribute after an odd-length one was lost to padding");
 		Assert.equals("203.0.113.42", address.address);
 		Assert.equals(40404, address.port);
 	}
@@ -321,7 +322,7 @@ class StunMessageTest extends utest.Test {
 		var response = new StunMessage(StunMessage.BINDING_ERROR, transaction(), [new StunAttribute(StunMessage.ATTR_ERROR_CODE, value)]);
 		var reported = StunMessage.decode(response.encode()).errorMessage();
 
-		Assert.notNull(reported);
+		Require.notNull(reported);
 		Assert.isTrue(reported.indexOf("401") == 0, "got " + reported);
 		Assert.isTrue(reported.indexOf("Unauthorized") > 0, "got " + reported);
 	}
@@ -337,7 +338,7 @@ class StunMessageTest extends utest.Test {
 	public function testTheLongTermKeyMatchesThePublishedSample():Void {
 		var key = StunMessage.longTermKey(RFC5769_LONG_TERM_USERNAME, RFC5769_LONG_TERM_REALM, RFC5769_LONG_TERM_PASSWORD);
 
-		Assert.notNull(key);
+		Require.notNull(key);
 		Assert.equals(16, key.length);
 		Assert.equals("e8ca7ad59d5eb0518e312911d2dab2a9", key.toHex());
 	}
@@ -399,7 +400,7 @@ class StunMessageTest extends utest.Test {
 	public function testTheRfcSampleRequestVerifies():Void {
 		var message = StunMessage.decode(fromHex(RFC5769_REQUEST));
 
-		Assert.notNull(message);
+		Require.notNull(message);
 		Assert.isTrue(message.verifyIntegrity(RFC5769_PASSWORD), "the RFC 5769 sample request did not verify, so this would interoperate with nothing");
 		Assert.isTrue(message.verifyFingerprint());
 	}
@@ -407,14 +408,14 @@ class StunMessageTest extends utest.Test {
 	public function testTheRfcSampleResponseVerifies():Void {
 		var message = StunMessage.decode(fromHex(RFC5769_RESPONSE));
 
-		Assert.notNull(message);
+		Require.notNull(message);
 		Assert.isTrue(message.verifyIntegrity(RFC5769_PASSWORD));
 		Assert.isTrue(message.verifyFingerprint());
 
 		// And it still decodes as what it is, with the integrity attributes
 		// sitting alongside the address rather than confusing the parser.
 		var mapped = message.mappedAddress();
-		Assert.notNull(mapped);
+		Require.notNull(mapped);
 		Assert.equals("192.0.2.1", mapped.address);
 		Assert.equals(32853, mapped.port);
 	}
@@ -461,7 +462,7 @@ class StunMessageTest extends utest.Test {
 
 		var message = StunMessage.decode(bytes);
 
-		Assert.notNull(message);
+		Require.notNull(message);
 		Assert.isFalse(message.verifyIntegrity(RFC5769_PASSWORD), "a message with an edited username still verified");
 	}
 
@@ -492,7 +493,7 @@ class StunMessageTest extends utest.Test {
 	public function testAMessageWithoutIntegrityIsRefusedRatherThanThrowing():Void {
 		var plain = StunMessage.decode(new StunMessage(StunMessage.BINDING_REQUEST, transaction()).encode());
 
-		Assert.notNull(plain);
+		Require.notNull(plain);
 		Assert.isFalse(plain.verifyIntegrity("anything"));
 		Assert.isFalse(plain.verifyFingerprint());
 
@@ -522,7 +523,7 @@ class StunMessageTest extends utest.Test {
 
 		var signed = StunMessage.decode(message.encodeSigned("secret"));
 
-		Assert.notNull(signed);
+		Require.notNull(signed);
 		Assert.isTrue(signed.verifyIntegrity("secret"), "a decoy attribute header inside a value confused the span that gets hashed");
 		Assert.isTrue(signed.verifyFingerprint());
 	}
@@ -537,18 +538,18 @@ class StunMessageTest extends utest.Test {
 
 		var decoded = StunMessage.decode(message.encodeSigned("shared secret"));
 
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 		Assert.isTrue(decoded.verifyIntegrity("shared secret"));
 		Assert.isTrue(decoded.verifyFingerprint());
 		Assert.isTrue(decoded.hasUseCandidate());
 
 		var username = decoded.attribute(StunMessage.ATTR_USERNAME);
-		Assert.notNull(username);
+		Require.notNull(username);
 		username.position = 0;
 		Assert.equals("theirfrag:myfrag", username.readUTFBytes(username.length));
 
 		var priority = decoded.attribute(StunMessage.ATTR_PRIORITY);
-		Assert.notNull(priority);
+		Require.notNull(priority);
 		priority.endian = Endian.BIG_ENDIAN;
 		priority.position = 0;
 		Assert.equals(1845494015, priority.readInt());
@@ -589,7 +590,7 @@ class StunMessageTest extends utest.Test {
 		var message = new StunMessage(StunMessage.BINDING_REQUEST, transaction(), [StunMessage.useCandidate()]);
 		var decoded = StunMessage.decode(message.encode());
 
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 		Assert.isTrue(decoded.hasUseCandidate());
 		Assert.equals(0, decoded.attribute(StunMessage.ATTR_USE_CANDIDATE).length);
 	}

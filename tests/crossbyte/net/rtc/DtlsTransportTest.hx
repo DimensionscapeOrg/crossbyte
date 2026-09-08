@@ -3,6 +3,7 @@ package crossbyte.net.rtc;
 import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
 	Two DTLS sessions handed each other's datagrams, with no network between
@@ -91,7 +92,7 @@ class DtlsTransportTest extends utest.Test {
 		pair.client.established.then(_ -> {}, error -> failure = error);
 		pair.run(() -> failure != null);
 
-		Assert.notNull(failure, "a certificate that was not the one signalled was accepted");
+		Require.notNull(failure, "a certificate that was not the one signalled was accepted");
 		Assert.isFalse(pair.client.connected, "the transport reported itself connected to the wrong peer");
 		Assert.isTrue(failure.indexOf("fingerprint") >= 0, "the refusal does not say what was wrong: " + failure);
 

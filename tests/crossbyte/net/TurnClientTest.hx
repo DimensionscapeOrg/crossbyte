@@ -5,6 +5,7 @@ import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunMessage.StunAttribute;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
 	A relay standing in memory, and a client talking to it.
@@ -180,12 +181,12 @@ class TurnClientTest extends utest.Test {
 		Assert.equals(StunMessage.SEND_INDICATION, indication.type);
 
 		var peer = indication.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
-		Assert.notNull(peer);
+		Require.notNull(peer);
 		Assert.equals("198.51.100.4", peer.address);
 		Assert.equals(40000, peer.port);
 
 		var carried = indication.attribute(StunMessage.ATTR_DATA);
-		Assert.notNull(carried);
+		Require.notNull(carried);
 		carried.position = 0;
 		Assert.equals("to the peer", carried.readUTFBytes(carried.length));
 	}
