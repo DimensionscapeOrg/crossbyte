@@ -123,6 +123,37 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.isTrue(input.eof());
 	}
 
+	public function testWriteIntAtPatchesAnIntegerThatStraddlesTheSeam():Void {
+		// The chunk holding the first byte of the patch does not have to hold
+		// the other three. A cached chunk is allocated to exactly what was
+		// written into it, so here the first is three bytes long and a patch at
+		// position 1 runs two bytes past its end -- which setInt32 on that
+		// chunk did, into whatever the allocator had put next to it.
+		var output = new ByteArrayOutput(3);
+		output.writeByte(0x11);
+		output.writeByte(0x22);
+		output.writeByte(0x33);
+
+		output.reserve(4);
+		output.writeInt(0);
+		Assert.equals(7, output.bytesWritten);
+
+		output.writeIntAt(1, 0x44556677);
+
+		var bytes:Bytes = output;
+		Assert.equals(7, bytes.length);
+
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.equals(0x11, input.readByte());
+		Assert.equals(0x44556677, input.readInt());
+
+		// The byte after the patch is the one that was already there, not a
+		// casualty of a write that ran long.
+		Assert.equals(0x00, input.readByte());
+		Assert.equals(0x00, input.readByte());
+		Assert.isTrue(input.eof());
+	}
+
 	public function testWriteIntAtCanPatchAcrossChunkBoundary():Void {
 		var output = new ByteArrayOutput(2);
 		output.writeShort(0x1122);

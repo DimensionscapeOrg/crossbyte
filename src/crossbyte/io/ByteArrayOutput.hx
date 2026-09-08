@@ -296,7 +296,17 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		if (this.byteCache != null) {
 			for (bytes in this.byteCache) {
 				if (position < chunkStart + bytes.length) {
-					bytes.setInt32(position - chunkStart, value);
+					// Only when all four bytes are inside this chunk. A cached
+					// chunk is allocated to exactly the number of bytes that
+					// were written into it, so one can end in the middle of the
+					// integer being patched -- and setInt32 on the chunk that
+					// merely holds the first byte writes the other three past
+					// the end of it.
+					if (position + 4 <= chunkStart + bytes.length) {
+						bytes.setInt32(position - chunkStart, value);
+					} else {
+						__writeIntAcrossChunks(position, value);
+					}
 					return;
 				}
 				chunkStart += bytes.length;
@@ -304,6 +314,36 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 		}
 
 		current.setInt32(position - chunkStart, value);
+	}
+
+	/**
+	 * Patches a 32-bit integer that straddles the seam between two chunks.
+	 *
+	 * Encoded through a four byte scratch so the bytes land in whatever order
+	 * `setInt32` would have written them, rather than an order assumed here.
+	 */
+	@:noCompletion private function __writeIntAcrossChunks(position:Int, value:Int):Void {
+		var scratch:Bytes = Bytes.alloc(4);
+		scratch.setInt32(0, value);
+
+		for (i in 0...4) {
+			__setByteAt(position + i, scratch.get(i));
+		}
+	}
+
+	@:noCompletion private function __setByteAt(position:Int, value:Int):Void {
+		var chunkStart:Int = 0;
+		if (this.byteCache != null) {
+			for (bytes in this.byteCache) {
+				if (position < chunkStart + bytes.length) {
+					bytes.set(position - chunkStart, value);
+					return;
+				}
+				chunkStart += bytes.length;
+			}
+		}
+
+		current.set(position - chunkStart, value);
 	}
 
 	/**
