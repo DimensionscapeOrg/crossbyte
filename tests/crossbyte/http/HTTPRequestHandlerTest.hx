@@ -12,6 +12,7 @@ import crossbyte.http.HTTPTestSupport.HTTPTestResponse;
 import crossbyte.errors.ArgumentError;
 import utest.Assert;
 import utest.Async;
+import crossbyte.test.Require;
 
 @:access(crossbyte.http.HTTPRequestHandler)
 // Every case here waits on a socket, and some wait on a server-side timeout
@@ -621,7 +622,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 		buffer.position = 0;
 
 		var line = handler.__readLine(buffer);
-		Assert.notNull(line);
+		Require.notNull(line);
 		Assert.equals(4, line.length);
 		Assert.equals(0x41, line.charCodeAt(0));
 		Assert.equals(0xE9, line.charCodeAt(1));

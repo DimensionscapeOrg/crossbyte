@@ -4,6 +4,7 @@ import crossbyte.crypto.PublicKeySignature;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * RS256 and ES256 JWTs over the mbedTLS bridge.
@@ -72,7 +73,7 @@ class PkJwtTest extends utest.Test {
 		var token = jwt.generateToken({sub: "subject", iat: now - 5, exp: now + 60, iss: "issuer-a", aud: "aud-a"});
 
 		var verified = jwt.verifyToken(token);
-		Assert.notNull(verified);
+		Require.notNull(verified);
 		Assert.equals("subject", verified.subject);
 
 		// A tampered payload must not verify.
@@ -99,7 +100,7 @@ class PkJwtTest extends utest.Test {
 		var token = jwt.generateToken({sub: "subject", iat: now - 5, exp: now + 60, iss: "issuer-a", aud: "aud-a"});
 
 		var verified = jwt.verifyToken(token);
-		Assert.notNull(verified);
+		Require.notNull(verified);
 		Assert.equals("subject", verified.subject);
 
 		// hxcpp builds mbedTLS with MBEDTLS_ECDSA_DETERMINISTIC, so nonces

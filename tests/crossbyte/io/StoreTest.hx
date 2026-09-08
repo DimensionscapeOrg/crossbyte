@@ -5,6 +5,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.Store;
 import utest.Assert;
 import utest.Async;
+import crossbyte.test.Require;
 
 /**
  * The store, wherever it has a backend.
@@ -200,7 +201,7 @@ class StoreTest extends utest.Test {
 			})
 			.flatMap(_ -> store.get("empty"))
 			.map(function(stored:Null<ByteArray>):Bool {
-				Assert.notNull(stored, "a deliberately empty value read as absent");
+				Require.notNull(stored, "a deliberately empty value read as absent");
 				Assert.equals(0, stored.length);
 				return true;
 			}));

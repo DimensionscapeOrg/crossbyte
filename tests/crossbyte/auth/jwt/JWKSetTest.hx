@@ -3,6 +3,7 @@ package crossbyte.auth.jwt;
 import crossbyte.crypto.PublicKeySignature;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * JWK Set ingestion.
@@ -225,7 +226,7 @@ class JWKSetTest extends utest.Test {
 		Assert.notNull(token);
 
 		var verified = jwt.verifyToken(token);
-		Assert.notNull(verified, "a token signed with the private key did not verify against the JWKS-derived public key");
+		Require.notNull(verified, "a token signed with the private key did not verify against the JWKS-derived public key");
 		Assert.equals("jwks", verified.subject);
 	}
 	#end

@@ -6,6 +6,7 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:suiteExempt("Hand-run diagnostic driven by SocketSmokeMain, which has no hxml. The echo path is covered by SocketTest; this exists to isolate one socket under a debugger.")
 class SocketSingleCase extends utest.Test {
@@ -89,7 +90,7 @@ class SocketSingleCase extends utest.Test {
 			client.connect("::1", server.localPort);
 			pumpUntil(() -> echoed != null, 2.0);
 			Assert.isTrue(connected);
-			Assert.notNull(serverPeer);
+			Require.notNull(serverPeer);
 			Assert.equals("pong", echoed);
 			Assert.equals("::1", server.localAddress);
 			Assert.equals("::1", serverPeer.localAddress);

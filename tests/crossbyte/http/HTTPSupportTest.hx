@@ -9,6 +9,7 @@ import crossbyte.url.URLRequestHeader;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 class HTTPSupportTest extends utest.Test {
 	public function testRateLimiterLimitsAtEleventhRequestAndRefills():Void {
@@ -133,32 +134,32 @@ class HTTPSupportTest extends utest.Test {
 			);
 
 			var staticDecision = RewriteEngine.decide(cfg, "/asset.txt", "", "GET", new StringMap<String>());
-			Assert.notNull(staticDecision);
+			Require.notNull(staticDecision);
 			Assert.equals("/asset.txt", staticDecision.finalPath);
 			Assert.isTrue(staticDecision.isStatic);
 			Assert.isFalse(staticDecision.toPHP);
 
 			var dirDecision = RewriteEngine.decide(cfg, "/", "", "GET", new StringMap<String>());
-			Assert.notNull(dirDecision);
+			Require.notNull(dirDecision);
 			Assert.equals("/index.html", dirDecision.finalPath);
 			Assert.isTrue(dirDecision.isStatic);
 
 			var passThrough = RewriteEngine.decide(cfg, "/blog", "", "GET", new StringMap<String>());
-			Assert.notNull(passThrough);
+			Require.notNull(passThrough);
 			Assert.equals("/about.html", passThrough.finalPath);
 			Assert.isTrue(passThrough.isStatic);
 			Assert.isFalse(passThrough.toPHP);
 
 			var headers = new StringMap<String>();
 			var phpDecision = RewriteEngine.decide(cfg, "/API/users", "page=2", "GET", headers);
-			Assert.notNull(phpDecision);
+			Require.notNull(phpDecision);
 			Assert.equals("/index.php", phpDecision.finalPath);
 			Assert.isTrue(phpDecision.toPHP);
 			Assert.equals("page=2&path=users", phpDecision.query);
 			Assert.isTrue(phpDecision.preserveURI);
 
 			var blockedByMethod = RewriteEngine.decide(cfg, "/api/users", "page=2", "POST", headers);
-			Assert.notNull(blockedByMethod);
+			Require.notNull(blockedByMethod);
 			Assert.equals("/index.html", blockedByMethod.finalPath);
 			Assert.isTrue(blockedByMethod.isStatic);
 		} catch (e:Dynamic) {
@@ -234,7 +235,7 @@ class HTTPSupportTest extends utest.Test {
 			var headers = new StringMap<String>();
 			headers.set("User-Agent", "Mobile Safari");
 			var allowed = RewriteEngine.decide(cfg, "/content/mobile", "", "GET", headers);
-			Assert.notNull(allowed);
+			Require.notNull(allowed);
 			Assert.equals("/mobile.html", allowed.finalPath);
 
 			headers.set("User-Agent", "Desktop");
@@ -301,13 +302,13 @@ class HTTPSupportTest extends utest.Test {
 			// entry is what serves the request. The "$uri" entries ahead of it
 			// are inert: decide() tests both before the loop is reached.
 			var decision = RewriteEngine.decide(cfg, "/deep/link", "", "GET", new StringMap<String>());
-			Assert.notNull(decision);
+			Require.notNull(decision);
 			Assert.equals("/app.html", decision.finalPath);
 			Assert.isTrue(decision.isStatic);
 
 			// A real file still wins over the literal fallback.
 			var direct = RewriteEngine.decide(cfg, "/app.html", "", "GET", new StringMap<String>());
-			Assert.notNull(direct);
+			Require.notNull(direct);
 			Assert.equals("/app.html", direct.finalPath);
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));

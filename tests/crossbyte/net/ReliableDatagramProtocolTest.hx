@@ -4,6 +4,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 import utest.Assert;
+import crossbyte.test.Require;
 
 class ReliableDatagramProtocolTest extends utest.Test {
 	public function testEncodeDecodeRoundTripWithAckAndPayload():Void {
@@ -13,7 +14,7 @@ class ReliableDatagramProtocolTest extends utest.Test {
 		var encoded = ReliableDatagramProtocol.encode(PACKET, 42, payload, true, 17);
 		var decoded = ReliableDatagramProtocol.decode(encoded);
 
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 		Assert.equals(ReliableDatagramFrameType.PACKET, decoded.type);
 		Assert.equals(42, decoded.sequence);
 		Assert.equals(17, decoded.ack);
@@ -25,7 +26,7 @@ class ReliableDatagramProtocolTest extends utest.Test {
 	public function testControlFrameWithoutPayload():Void {
 		var decoded = ReliableDatagramProtocol.decode(ReliableDatagramProtocol.encode(ACK, 99));
 
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 		Assert.equals(ReliableDatagramFrameType.ACK, decoded.type);
 		Assert.equals(99, decoded.sequence);
 		Assert.isNull(decoded.ack);

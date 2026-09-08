@@ -2,6 +2,7 @@ package crossbyte.auth.jwt;
 
 import utest.Assert;
 import haxe.Json;
+import crossbyte.test.Require;
 
 class JWTTest extends utest.Test {
 	public function testGeneratesAndVerifiesHS256Token():Void {
@@ -19,7 +20,7 @@ class JWTTest extends utest.Test {
 		});
 
 		var verified = jwt.verifyToken(token);
-		Assert.notNull(verified);
+		Require.notNull(verified);
 		Assert.equals("subject", verified.subject);
 		Assert.equals("Chris", verified.name);
 		Assert.equals("issuer-a", verified.issuer);
@@ -63,7 +64,7 @@ class JWTTest extends utest.Test {
 		});
 
 		var verified = jwt.verifyToken(token);
-		Assert.notNull(verified);
+		Require.notNull(verified);
 		Assert.equals("subject", verified.subject);
 	}
 

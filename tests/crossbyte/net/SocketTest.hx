@@ -10,6 +10,7 @@ import crossbyte.io.ByteArray;
 import haxe.io.Error;
 import sys.net.Socket as SysSocket;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:access(crossbyte.net.Socket)
 class SocketTest extends utest.Test {
@@ -313,7 +314,7 @@ class SocketTest extends utest.Test {
 
 		closeServerQuietly(server);
 
-		Assert.notNull(message, "binding an address this machine does not have was not reported at all");
+		Require.notNull(message, "binding an address this machine does not have was not reported at all");
 		Assert.isTrue(message.indexOf("192.0.2.1") >= 0,
 			"the failure does not say which address would not bind: " + message);
 		Assert.isTrue(message.indexOf("invalid socket") < 0,

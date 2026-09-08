@@ -4,6 +4,7 @@ import crossbyte._internal.websocket.WebSocket;
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:access(crossbyte._internal.websocket.WebSocket)
 class WebSocketFrameTest extends utest.Test {
@@ -30,7 +31,7 @@ class WebSocketFrameTest extends utest.Test {
 		ws.__onData();
 
 		Assert.equals(WebSocket.OPEN, ws.readyState);
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals("hello", received.readUTFBytes(received.length));
 	}
 
@@ -201,7 +202,7 @@ class WebSocketFrameTest extends utest.Test {
 		ws.__onData();
 
 		Assert.equals(WebSocket.OPEN, ws.readyState);
-		Assert.notNull(received);
+		Require.notNull(received);
 		Assert.equals("héllo", received.readUTFBytes(received.length));
 	}
 
