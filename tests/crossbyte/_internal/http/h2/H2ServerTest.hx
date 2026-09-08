@@ -8,6 +8,7 @@ import haxe.io.Eof;
 import haxe.io.Input;
 import haxe.io.Output;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * The server half of HTTP/2.
@@ -62,7 +63,7 @@ class H2ServerTest extends utest.Test {
 		// What an HTTP/1.1 client reaching an h2c-only port actually sends.
 		server.receive(Bytes.ofString("GET / HTTP/1.1\r\nHost: x\r\n\r\n"));
 
-		Assert.notNull(failure);
+		Require.notNull(failure);
 		Assert.equals(H2ErrorCode.PROTOCOL_ERROR, failure.code);
 		Assert.isTrue(server.closed);
 	}
@@ -192,7 +193,7 @@ class H2ServerTest extends utest.Test {
 		// bad request would be a denial of service any client could trigger.
 		var reset = firstResetFor([new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http")]);
 
-		Assert.notNull(reset);
+		Require.notNull(reset);
 		Assert.equals(H2FrameType.RST_STREAM, reset.type);
 		Assert.equals(1, reset.streamId);
 	}
@@ -275,7 +276,7 @@ class H2ServerTest extends utest.Test {
 		H2Frame.writeHeader(header, 1000000, H2FrameType.DATA, 0, 1);
 		server.receive(header.getBytes());
 
-		Assert.notNull(failure);
+		Require.notNull(failure);
 		Assert.equals(H2ErrorCode.FRAME_SIZE_ERROR, failure.code);
 	}
 
@@ -470,7 +471,7 @@ class H2ServerTest extends utest.Test {
 		// §6.8: said out loud, so the peer learns why rather than seeing a
 		// socket vanish.
 		var goAway = link.lastGoAway();
-		Assert.notNull(goAway);
+		Require.notNull(goAway);
 		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM,
 			(goAway.payload.get(4) << 24) | (goAway.payload.get(5) << 16) | (goAway.payload.get(6) << 8) | goAway.payload.get(7));
 	}
@@ -554,7 +555,7 @@ class H2ServerTest extends utest.Test {
 			server.receive(frame(H2FrameType.CONTINUATION, 0, 1, filler));
 		}
 
-		Assert.notNull(failure);
+		Require.notNull(failure);
 		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
 		Assert.isTrue(server.closed);
 	}

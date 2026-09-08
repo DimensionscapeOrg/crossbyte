@@ -4,6 +4,7 @@ import crossbyte.io.File;
 import crossbyte.io.ByteArray;
 import crossbyte.net.TLSTestFixture;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
 	HTTPS end to end through `HTTPServer`, from a configuration to a response.
@@ -118,7 +119,7 @@ class HTTPServerTLSTest extends utest.Test {
 
 		Assert.isTrue(finished, "the client neither answered nor failed within the deadline");
 		Assert.isNull(failure, "the request over TLS failed: " + failure);
-		Assert.notNull(response, "no response came back");
+		Require.notNull(response, "no response came back");
 		Assert.isTrue(response.indexOf("200") >= 0, "the server did not answer 200: " + response.substr(0, 120));
 		Assert.isTrue(response.indexOf("over tls") >= 0, "the body did not come back: " + response.substr(0, 200));
 	}

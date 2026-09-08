@@ -7,6 +7,7 @@ import haxe.io.BytesBuffer;
 import haxe.io.BytesInput;
 import haxe.io.BytesOutput;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * The HTTP/2 framing layer and client connection.
@@ -239,7 +240,7 @@ class H2Test extends utest.Test {
 			}
 		}
 
-		Assert.notNull(echoed);
+		Require.notNull(echoed);
 		// §6.7: the opaque data comes back byte for byte.
 		Assert.equals("0102030405060708", echoed.payload.toHex());
 	}
@@ -350,10 +351,10 @@ class H2Test extends utest.Test {
 			}
 		}
 
-		Assert.notNull(headers);
+		Require.notNull(headers);
 		// With a body, HEADERS must not carry END_STREAM -- the DATA does.
 		Assert.isFalse(headers.has(H2Flags.END_STREAM));
-		Assert.notNull(data);
+		Require.notNull(data);
 		Assert.equals("payload", data.payload.toString());
 		Assert.isTrue(data.has(H2Flags.END_STREAM));
 	}

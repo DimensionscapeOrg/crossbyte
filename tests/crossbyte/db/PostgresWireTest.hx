@@ -5,6 +5,7 @@ import crossbyte.db.postgres._internal.PostgresWire;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * The byte protocol between the driver and the libpq bridge, tested without a
@@ -111,7 +112,7 @@ class PostgresWireTest extends utest.Test {
 			raised = Std.string(e);
 		}
 
-		Assert.notNull(raised);
+		Require.notNull(raised);
 		Assert.isTrue(raised.indexOf("does not exist") >= 0);
 	}
 

@@ -25,6 +25,7 @@ import crossbyte.errors.ArgumentError;
 import haxe.io.Path;
 import sys.FileSystem;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:access(crossbyte.db.sql.sqlite.SQLiteConnection)
 class DBSupportTest extends utest.Test {
@@ -263,7 +264,7 @@ class DBSupportTest extends utest.Test {
 		create.text = "CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);";
 		create.execute();
 		var createResult = create.getResult();
-		Assert.notNull(createResult);
+		Require.notNull(createResult);
 		Assert.isTrue(createResult.complete);
 
 		var insert = new SQLiteStatement();
@@ -280,7 +281,7 @@ class DBSupportTest extends utest.Test {
 		select.text = "SELECT name FROM items;";
 		select.execute();
 		var selectResult = select.getResult();
-		Assert.notNull(selectResult);
+		Require.notNull(selectResult);
 		Assert.equals(1, selectResult.data.length);
 		Assert.equals("alpha", Reflect.field(selectResult.data[0], "name"));
 
