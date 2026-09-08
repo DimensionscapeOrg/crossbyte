@@ -668,13 +668,19 @@ class ServerSocketTLSTest extends utest.Test {
 		// what ServerSocket installs as its listener, so this covers the same
 		// negotiation one layer down; the event-loop path belongs to the
 		// integration harness.
-		var port:Int = 48242;
 		var server = new AlpnSocket();
 		server.verifyCert = false;
 		server.setCertificate(fixture.certificate.__native, fixture.key.__native);
 		server.setALPN(["h2", "http/1.1"]);
-		server.bind(new sys.net.Host("127.0.0.1"), port);
+
+		// Port 0 and read back what was assigned, the way every other
+		// listener in these tests does it. A fixed port fails outright when
+		// anything else on the machine holds it -- including this test's own
+		// listener from the previous run, still in TIME_WAIT.
+		server.bind(new sys.net.Host("127.0.0.1"), 0);
 		server.listen(1);
+
+		var port:Int = server.host().port;
 
 		var client = sys.thread.Thread.create(() -> {
 			try {
