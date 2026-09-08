@@ -43,7 +43,12 @@ class LocalConnectionTest extends utest.Test {
 			client.onReady = () -> readyCount++;
 			client.connect(name);
 
-			pumpUntil(() -> server.connected && client.connected, 2.0);
+			// Waits for what the assertions below actually check. `connected`
+			// flips before the ready callbacks have been dispatched -- they are
+			// queued onto the runtime tick when they cannot run inline -- so
+			// waiting on it alone let the send go out against a half-ready pair
+			// and left readyCount at 1 with nothing delivered.
+			pumpUntil(() -> readyCount == 2 && server.connected && client.connected, 2.0);
 			client.send(bytesOf("hello local"));
 			pumpUntil(() -> received != null, 2.0);
 
@@ -71,13 +76,22 @@ class LocalConnectionTest extends utest.Test {
 		var client = new LocalConnection();
 		var received:String = null;
 
+		var readyCount = 0;
+
 		try {
+			server.onReady = () -> readyCount++;
 			server.onData = input -> received = input.readUTFBytes(input.length);
 			server.readEnabled = false;
 			server.listen(name);
+
+			client.onReady = () -> readyCount++;
 			client.connect(name);
 
-			pumpUntil(() -> server.connected && client.connected, 2.0);
+			// Both ends ready, not merely connected: `connected` flips before
+			// the ready callbacks are dispatched, and a send against a
+			// half-ready pair is lost with nothing to say so. That is what made
+			// the round-trip case above fail intermittently.
+			pumpUntil(() -> readyCount == 2 && server.connected && client.connected, 2.0);
 			client.send(bytesOf("deferred"));
 			pumpUntil(() -> true, 0.05);
 			Assert.isNull(received);
