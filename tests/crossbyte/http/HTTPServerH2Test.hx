@@ -186,6 +186,7 @@ Host: localhost
 			HTTPTestSupport.pumpUntilAsync(() -> done, 5.0, function(_):Void {
 				try client.close() catch (_:Dynamic) {}
 				try server.close() catch (_:Dynamic) {}
+				try root.deleteDirectory(true) catch (_:Dynamic) {}
 
 				Assert.isTrue(response.indexOf("HTTP/1.1 200") == 0, "expected an HTTP/1.1 response, got: " + response.substr(0, 40));
 				Assert.isTrue(response.indexOf("Hello over h2") >= 0);
@@ -238,6 +239,22 @@ Host: localhost
 		var headers = new Map<String, String>();
 		var payload = new BytesBuffer();
 		var payloadLength = 0;
+
+		// One teardown shared by the success path and the timeout path.
+		// The document root is a temp directory of our own making, and a
+		// driver that leaks one per request leaks thousands over a week of
+		// runs.
+		var shutdown = function():Void {
+			try {
+				client.close();
+			} catch (_:Dynamic) {}
+			try {
+				server.close();
+			} catch (_:Dynamic) {}
+			try {
+				root.deleteDirectory(true);
+			} catch (_:Dynamic) {}
+		};
 
 		client.addEventListener(Event.CONNECT, _ -> {
 			var out = new BytesBuffer();
@@ -320,12 +337,7 @@ Host: localhost
 				if (frame.streamId == 1 && frame.has(H2Flags.END_STREAM)) {
 					finished = true;
 					var received:Bytes = payloadLength > 0 ? payload.getBytes() : Bytes.alloc(0);
-					try {
-						client.close();
-					} catch (_:Dynamic) {}
-					try {
-						server.close();
-					} catch (_:Dynamic) {}
+					shutdown();
 					done(status, headers, received);
 					return;
 				}
@@ -349,12 +361,7 @@ Host: localhost
 			}, 10.0, function(reached:Bool):Void {
 				if (!reached && !finished) {
 					finished = true;
-					try {
-						client.close();
-					} catch (_:Dynamic) {}
-					try {
-						server.close();
-					} catch (_:Dynamic) {}
+					shutdown();
 					Assert.fail("Timed out waiting for the HTTP/2 response");
 					async.done();
 				}
