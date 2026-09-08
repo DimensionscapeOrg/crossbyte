@@ -152,12 +152,18 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @param size Number of bytes to reserve beyond current offset.
 	 */
 	public inline function reserve(size:Int):Void {
-		var newSize:Int = size + length;
-		if (newSize <= this.size) {
+		// Against the room left in the active chunk, not against the total.
+		// `length` is that total, so the old guard asked whether
+		// size + length <= length -- false for every positive size, which
+		// made it dead code. Every call therefore allocated a fresh chunk
+		// and abandoned whatever was still free in the one it left behind,
+		// so a codec reserving per value paid two allocations and a copy
+		// for each one.
+		if (validateSize(size)) {
 			return;
 		}
 
-		this_resize(newSize);
+		this_resize(size + length);
 		this.__outputPosition = 0;
 	}
 
@@ -186,7 +192,11 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	}
 
 	@:noCompletion private inline function __validateSizeErr(pos, size):Void {
-		throw 'ByteArrayOutput overflow (' + (pos + size) + ' > ' + length + ')';
+		// Against the active chunk, because that is what validateSizeAt just
+		// measured. Reporting the total capacity here named a number the
+		// check never looked at, and read as a contradiction once more than
+		// one chunk was in play.
+		throw 'ByteArrayOutput overflow (' + (pos + size) + ' > ' + current.length + ')';
 	}
 
 	/**

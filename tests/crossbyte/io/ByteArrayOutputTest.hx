@@ -91,6 +91,38 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.equals(5, output.bytesWritten);
 	}
 
+	public function testReserveThatFitsKeepsTheChunkItAlreadyHas():Void {
+		// reserve() takes a new chunk only when the active one cannot hold the
+		// bytes. It used to take one every time -- the guard compared the
+		// request plus the total capacity against that same total, which is
+		// never smaller -- so a codec reserving per value allocated per value
+		// and abandoned the free tail of the chunk it left behind.
+		var output = new ByteArrayOutput(16);
+		output.writeByte(0x11);
+
+		output.reserve(4);
+		Assert.equals(16, output.length, "a reserve that fits should not allocate");
+
+		output.writeInt(0x22334455);
+		Assert.equals(5, output.bytesWritten);
+
+		// One that does not fit still grows, and still starts a new chunk.
+		output.reserve(32);
+		Assert.equals(48, output.length, "a reserve that does not fit should allocate");
+
+		output.writeInt(0x66778899);
+		Assert.equals(9, output.bytesWritten);
+
+		var bytes:Bytes = output;
+		Assert.equals(9, bytes.length);
+
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.equals(0x11, input.readByte());
+		Assert.equals(0x22334455, input.readInt());
+		Assert.equals(0x66778899, input.readInt());
+		Assert.isTrue(input.eof());
+	}
+
 	public function testWriteIntAtCanPatchAcrossChunkBoundary():Void {
 		var output = new ByteArrayOutput(2);
 		output.writeShort(0x1122);
