@@ -193,6 +193,11 @@ class HTTPStreamingTest extends utest.Test {
 	 * parsed response together with the handler's observed peak buffering.
 	 */
 	private function __serveFixture(async:Async, fileSize:Int, requestText:String, done:StreamedResult->Void):Void {
+		// A HEAD response carries the entity headers of the GET it mirrors,
+		// content-length included, but no body at all. Without this the
+		// completion predicate below waits for a body that is never coming
+		// and the test finishes only if the server happens to close first.
+		var headOnly:Bool = StringTools.startsWith(requestText, "HEAD ");
 		var root:File = File.createTempDirectory();
 		var fixtureFile:File = root.resolvePath("large.bin");
 		fixtureFile.save(__makePattern(fileSize));
@@ -250,7 +255,7 @@ class HTTPStreamingTest extends utest.Test {
 
 		try {
 			HTTPTestSupport.connectThen(client, server, function():Void {
-				HTTPTestSupport.pumpUntilAsync(() -> closeSeen || __responseComplete(received), 15.0, function(_):Void {
+				HTTPTestSupport.pumpUntilAsync(() -> closeSeen || __responseComplete(received, headOnly), 15.0, function(_):Void {
 					// Let the transfer finish tearing itself down before anything
 					// is torn down around it. A stream still holding its
 					// FileStream when the fixture deletes the directory turns a
@@ -319,10 +324,14 @@ class HTTPStreamingTest extends utest.Test {
 		return text.toString();
 	}
 
-	private static function __responseComplete(bytes:ByteArray):Bool {
+	private static function __responseComplete(bytes:ByteArray, headOnly:Bool):Bool {
 		var headerEnd:Int = __headerEnd(bytes);
 		if (headerEnd < 0) {
 			return false;
+		}
+
+		if (headOnly) {
+			return true;
 		}
 
 		var head:String = __headerText(bytes, headerEnd);
