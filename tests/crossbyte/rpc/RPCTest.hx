@@ -10,6 +10,7 @@ import crossbyte.net.Transport;
 import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
 	Every `RPCSession` here is bound to a local, including the ones constructed
@@ -203,7 +204,7 @@ class RPCTest extends utest.Test {
 		var clientSession = new RPCSession(link.client);
 		clientSession.call(101, [7, true, 1.25, "alpha", Bytes.ofString("abc"), null]);
 
-		Assert.notNull(captured);
+		Require.notNull(captured);
 		Assert.equals(6, captured.length);
 		Assert.equals(7, captured[0]);
 		Assert.isTrue(captured[1]);

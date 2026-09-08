@@ -7,6 +7,7 @@ import crossbyte.events.IOErrorEvent;
 import haxe.io.Bytes;
 import sys.io.File as HaxeFile;
 import utest.Assert;
+import crossbyte.test.Require;
 
 class FileTest extends utest.Test {
 	public function testSpaceAvailableReportsFreeBytes():Void {
@@ -244,7 +245,7 @@ class FileTest extends utest.Test {
 
 			pumpUntil(() -> directoryEvent != null, 2.0);
 
-			Assert.notNull(directoryEvent);
+			Require.notNull(directoryEvent);
 			Assert.equals(1, directoryEvent.files.length);
 			Assert.equals(child.nativePath, directoryEvent.files[0].nativePath);
 			Assert.equals("child.txt", directoryEvent.files[0].name);
@@ -450,7 +451,7 @@ class FileTest extends utest.Test {
 			message = Std.string(e);
 		}
 
-		Assert.notNull(message);
+		Require.notNull(message);
 		// The source is right there. Reporting this as "does not exist" sends
 		// whoever is reading the error looking for the wrong thing entirely --
 		// the same way the null-listing crash presented as a moveTo bug.
@@ -471,7 +472,7 @@ class FileTest extends utest.Test {
 			message = Std.string(e);
 		}
 
-		Assert.notNull(message);
+		Require.notNull(message);
 		Assert.isTrue(message.indexOf("does not exist") >= 0);
 
 		try root.deleteDirectory(true) catch (_:Dynamic) {}

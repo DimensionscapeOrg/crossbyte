@@ -6,6 +6,7 @@ import crossbyte.net.rtc._internal.sctp.Crc32c;
 import crossbyte.net.rtc._internal.sctp.SctpPacket;
 import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
 	The framing a WebRTC data channel is written in.
@@ -308,7 +309,7 @@ class SctpPacketTest extends utest.Test {
 
 		var decoded = SctpPacket.decode(packet, false);
 
-		Assert.notNull(decoded);
+		Require.notNull(decoded);
 		Assert.equals(0, decoded.chunks.length, "a chunk claiming four hundred bytes in a sixteen byte packet was accepted");
 	}
 

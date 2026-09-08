@@ -9,6 +9,7 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
+import crossbyte.test.Require;
 
 class ReliableDatagramSocketTest extends utest.Test {
 	public function testAServerLearnsWhereItIsReachable():Void {
@@ -428,7 +429,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			pumpUntil(() -> delivered != null, 2.0);
 
 			Assert.isTrue(client.connected);
-			Assert.notNull(accepted);
+			Require.notNull(accepted);
 			Assert.isTrue(accepted.connected);
 			Assert.equals("reliable", delivered);
 		} catch (e:Dynamic) {

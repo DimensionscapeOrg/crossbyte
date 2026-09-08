@@ -8,6 +8,7 @@ import utest.Assert;
 import crossbyte._internal.lz4.Lz4;
 import crossbyte._internal.deflatex.HuffmanTree;
 import crossbyte._internal.deflatex.HuffmanTable;
+import crossbyte.test.Require;
 
 /**
  * Round-trip / robustness coverage for the internal compression primitives:
@@ -263,7 +264,7 @@ class CompressionRoundTripTest extends utest.Test {
 		// that the table is produced without crashing.
 		var tree:HuffmanTree = new HuffmanTree(freqVector([5]), 15);
 		var table:HuffmanTable = tree.getTable();
-		Assert.notNull(table);
+		Require.notNull(table);
 		Assert.notNull(table.codeLen);
 	}
 

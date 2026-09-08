@@ -222,6 +222,11 @@ class TestSuites {
 	}
 
 	public static function addUtils(runner:Runner):Void {
+		// The suite's own assertion helper, registered in a group the native
+		// smoke build actually runs -- `addFoundation` is not one of them, and
+		// a test for a mechanism a hundred call sites depend on is worth
+		// nothing if it executes nowhere.
+		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.utils.UtilsTest());
 		runner.addCase(new crossbyte.utils.LoggerTest());
 	}

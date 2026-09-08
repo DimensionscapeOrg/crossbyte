@@ -3,6 +3,7 @@ package crossbyte;
 import crossbyte.Future;
 import crossbyte.errors.ArgumentError;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * `crossbyte.Future`.
@@ -166,7 +167,7 @@ class FutureTest extends utest.Test {
 		}
 
 		Assert.isFalse(escaped);
-		Assert.notNull(caught);
+		Require.notNull(caught);
 		Assert.isTrue(caught.indexOf("exploded") >= 0, "got " + caught);
 	}
 
@@ -248,7 +249,7 @@ class FutureTest extends utest.Test {
 		var got:Array<Int> = null;
 		Future.all([]).then(values -> got = values);
 
-		Assert.notNull(got, "waiting for nothing never finished");
+		Require.notNull(got, "waiting for nothing never finished");
 		Assert.equals(0, got.length);
 	}
 

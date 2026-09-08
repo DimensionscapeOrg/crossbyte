@@ -14,6 +14,7 @@ import sys.net.Socket as SysSocket;
 import sys.thread.Lock;
 import sys.thread.Thread;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:access(crossbyte._internal.http.Http)
 class HttpTest extends utest.Test {
@@ -109,7 +110,7 @@ class HttpTest extends utest.Test {
 		// as native exceptions no catch can see, so a pooled connection would
 		// look healthy right up until a peer reset killed its reader thread or
 		// the process. Refused at the door instead, saying so.
-		Assert.notNull(error);
+		Require.notNull(error);
 		Assert.isFalse(completed);
 		Assert.isTrue(error.indexOf("not supported on this target") >= 0, "the message should say why: " + error);
 		#else
@@ -164,7 +165,7 @@ class HttpTest extends utest.Test {
 		http.load();
 
 		Assert.isNull(error);
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("ok", completed.toString());
 		Assert.same([200], statusCodes);
 		Assert.equals(2, progress[progress.length - 1].loaded);
@@ -216,7 +217,7 @@ class HttpTest extends utest.Test {
 
 		http.load();
 
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("second", completed.toString());
 		Assert.isNull(first.lastContext);
 		Assert.notNull(second.lastContext);
@@ -305,7 +306,7 @@ hi");
 		// block rather than an interim one it would have to know to ignore.
 		Assert.equals(1, reported.length);
 		Assert.equals("yes", reported[0].get("x-final"));
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("hi", completed.toString());
 	}
 
@@ -367,7 +368,7 @@ hi");
 		fixture.waitDone();
 
 		Assert.isNull(error);
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("hello", completed.toString());
 		Assert.same([200], statusCodes);
 		Assert.equals(0, progress[0].loaded);
@@ -392,7 +393,7 @@ hi");
 		http.load();
 		fixture.waitDone();
 
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("hello world", completed.toString());
 		Assert.equals(-1, progress[0].total);
 		Assert.equals(11, progress[progress.length - 1].loaded);
@@ -413,7 +414,7 @@ hi");
 		http.load();
 		fixture.waitDone();
 
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("hello from gzip", completed.toString());
 	}
 
@@ -431,7 +432,7 @@ hi");
 		http.load();
 		fixture.waitDone();
 
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("hello from lz4", completed.toString());
 	}
 
@@ -449,7 +450,7 @@ hi");
 		http.load();
 		fixture.waitDone();
 
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals("hello from brotli", completed.toString());
 	}
 
@@ -468,7 +469,7 @@ hi");
 		fixture.waitDone();
 
 		Assert.equals("Unsupported content encoding: zstd", message);
-		Assert.notNull(errorData);
+		Require.notNull(errorData);
 		Assert.equals("hello", errorData.toString());
 	}
 
@@ -491,7 +492,7 @@ hi");
 		fixture.waitDone();
 
 		Assert.equals("HTTP error 404", message);
-		Assert.notNull(errorData);
+		Require.notNull(errorData);
 		Assert.equals("compressed missing", errorData.toString());
 	}
 
@@ -513,7 +514,7 @@ hi");
 
 		Assert.isFalse(completeCalled);
 		Assert.equals("HTTP error 404", errorMessage);
-		Assert.notNull(errorData);
+		Require.notNull(errorData);
 		Assert.equals("missing", errorData.toString());
 	}
 
@@ -533,7 +534,7 @@ hi");
 		fixture.waitDone();
 
 		Assert.isNull(error);
-		Assert.notNull(completed);
+		Require.notNull(completed);
 		Assert.equals(0, completed.length);
 		Assert.isTrue(fixture.request.indexOf("POST /submit HTTP/1.1") == 0);
 		Assert.isTrue(fixture.request.indexOf("X-Test: yes") >= 0);

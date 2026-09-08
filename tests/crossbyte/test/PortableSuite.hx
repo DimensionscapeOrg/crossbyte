@@ -65,6 +65,12 @@ class PortableSuite {
 		#if !(js && !nodejs)
 		runner.addCase(new crossbyte.net.LocalAddressTest());
 		#end
+		// Also in `addUtils`, the way HpackTest is in two places: twelve cases
+		// registered here call `Require.notNull`, so the mechanism they depend
+		// on has to be checked on the targets that reach them. It needs
+		// nothing -- a null check and a throw -- so it runs everywhere,
+		// browser included.
+		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --

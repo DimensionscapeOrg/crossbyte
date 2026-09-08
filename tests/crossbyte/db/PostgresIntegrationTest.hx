@@ -7,6 +7,7 @@ import crossbyte.db.postgres.PostgresParameter;
 import crossbyte.db.postgres._internal.PostgresWire;
 import haxe.io.Bytes;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * The first tests in this repository that talk to a real PostgreSQL server.
@@ -287,7 +288,7 @@ class PostgresIntegrationTest extends utest.Test {
 			message = Std.string(e);
 		}
 
-		Assert.notNull(message);
+		Require.notNull(message);
 		Assert.isTrue(message.indexOf("does not exist") >= 0);
 		// The connection stays usable, so one bad statement does not cost the
 		// pool a connection.
@@ -319,7 +320,7 @@ class PostgresIntegrationTest extends utest.Test {
 		select.executeParams([Text("1")]);
 
 		var result = select.getResult();
-		Assert.notNull(result);
+		Require.notNull(result);
 		Assert.equals(1, result.data.length);
 
 		var hex:String = Std.string(Reflect.field(result.data[0], "payload"));

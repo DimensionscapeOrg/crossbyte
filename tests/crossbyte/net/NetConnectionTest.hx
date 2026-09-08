@@ -6,6 +6,7 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
+import crossbyte.test.Require;
 
 @:access(crossbyte.net.Socket)
 @:access(crossbyte.net.WebSocket)
@@ -35,7 +36,7 @@ class NetConnectionTest extends utest.Test {
 
 			wrapped = NetConnection.fromSocketWith(accepted, null, () -> readyCount++, null, null);
 
-			Assert.notNull(wrapped);
+			Require.notNull(wrapped);
 			Assert.equals(1, readyCount);
 			Assert.isTrue(wrapped.connected);
 		} catch (e:Dynamic) {

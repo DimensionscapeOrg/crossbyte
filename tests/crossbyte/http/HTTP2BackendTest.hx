@@ -18,6 +18,7 @@ import sys.net.Socket as SysSocket;
 import sys.thread.Lock;
 import sys.thread.Thread;
 import utest.Assert;
+import crossbyte.test.Require;
 
 /**
  * `HTTP2Backend` end to end, over a real socket against a scripted h2c server.
@@ -67,10 +68,10 @@ class HTTP2BackendTest extends utest.Test {
 
 		Assert.isNull(error);
 		Assert.equals(200, status);
-		Assert.notNull(body);
+		Require.notNull(body);
 		Assert.equals("hello h2c", body.toString());
 
-		Assert.notNull(headers);
+		Require.notNull(headers);
 		Assert.equals("text/plain", headers.get("content-type"));
 		// :status is reported through onStatus, not left among the fields.
 		Assert.isFalse(headers.exists(":status"));
@@ -89,7 +90,7 @@ class HTTP2BackendTest extends utest.Test {
 		server.waitDone();
 
 		var sent:Map<String, String> = server.requestHeaders;
-		Assert.notNull(sent);
+		Require.notNull(sent);
 
 		Assert.equals("GET", sent.get(":method"));
 		Assert.equals("http", sent.get(":scheme"));
@@ -392,7 +393,7 @@ class HTTP2BackendTest extends utest.Test {
 		http.load();
 		server.waitDone();
 
-		Assert.notNull(error);
+		Require.notNull(error);
 		Assert.isFalse(completed);
 		Assert.isTrue(error.indexOf("REFUSED_STREAM") >= 0);
 	}
