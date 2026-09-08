@@ -16,6 +16,7 @@ import haxe.io.BytesBuffer;
 import sys.net.Host;
 import sys.net.Socket as SysSocket;
 import sys.thread.Lock;
+import sys.thread.Mutex;
 import sys.thread.Thread;
 import utest.Assert;
 import crossbyte.test.Require;
@@ -224,7 +225,7 @@ class HTTP2BackendTest extends utest.Test {
 
 		// Both requests are on the connection before either is answered, so
 		// this cancels one that is genuinely open.
-		while (!server.sawBothBeforeResponding) {
+		while (!server.sawBothArrive()) {
 			Sys.sleep(0.01);
 		}
 		doomed.cancelToken.cancel();
@@ -249,10 +250,10 @@ class HTTP2BackendTest extends utest.Test {
 		// so the budget only matters on a machine slow enough to need it, and a
 		// busy one was enough to spend three seconds and fail a working reset.
 		var deadline:Float = Sys.time() + 10;
-		while (server.resetStreamIds.indexOf(1) < 0 && Sys.time() < deadline) {
+		while (!server.sawReset(1) && Sys.time() < deadline) {
 			Sys.sleep(0.01);
 		}
-		Assert.isTrue(server.resetStreamIds.indexOf(1) >= 0, "server never saw RST_STREAM for the cancelled stream");
+		Assert.isTrue(server.sawReset(1), "server never saw RST_STREAM for the cancelled stream");
 	}
 
 	public function testCancellingBeforeTheRequestStartsNeverOpensAStream():Void {
@@ -331,7 +332,7 @@ class HTTP2BackendTest extends utest.Test {
 		// Both on one connection, and the server held the first open until the
 		// second had been received.
 		Assert.equals(1, server.connections);
-		Assert.isTrue(server.sawBothBeforeResponding);
+		Assert.isTrue(server.sawBothArrive());
 	}
 
 	public function testDeadConnectionIsNotHandedToTheNextRequest():Void {
@@ -671,8 +672,21 @@ private class H2MuxServer {
 	public var error:Dynamic = null;
 	public var connections:Int = 0;
 	public var streamIds:Array<Int> = [];
-	public var sawBothBeforeResponding:Bool = false;
-	public var resetStreamIds:Array<Int> = [];
+	// Also written by the connection thread and spun on by the test's, so it
+	// goes through the same lock. A bool cannot tear, but nothing obliges one
+	// thread to ever observe the other's write, and a spin loop with no
+	// barrier is exactly where that shows up as a hang rather than a failure.
+	private var __sawBothBeforeResponding:Bool = false;
+	// Written by the connection thread, read by the test's. Both go through
+	// `__resetLock` and `sawReset`: an unguarded `push` here against an
+	// `indexOf` there is not just a torn read, it is a push that may reallocate
+	// the array while the other thread walks it. The visible symptom was
+	// milder and more confusing -- the reset arrived and was recorded, and the
+	// polling thread spun out its whole ten-second deadline without ever seeing
+	// it, reporting a reset the client had definitely sent as one the server
+	// never got.
+	private var __resetStreamIds:Array<Int> = [];
+	private var __resetLock:Mutex = new Mutex();
 
 	private var __ready:Lock = new Lock();
 	private var __closed:Lock = new Lock();
@@ -764,7 +778,7 @@ private class H2MuxServer {
 			var id = ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8);
 
 			if (type == (H2FrameType.RST_STREAM : Int)) {
-				resetStreamIds.push(id);
+				__recordReset(id);
 			}
 
 			if (type == (H2FrameType.HEADERS : Int)) {
@@ -784,7 +798,9 @@ private class H2MuxServer {
 		}
 
 		if (__holdUntilAll) {
-			sawBothBeforeResponding = true;
+			__resetLock.acquire();
+			__sawBothBeforeResponding = true;
+			__resetLock.release();
 
 			// Held here until the test says go. Without it the flag above and
 			// the responses below are the same instant, so a test trying to
@@ -822,11 +838,34 @@ private class H2MuxServer {
 					}
 
 					if (header.get(3) == (H2FrameType.RST_STREAM : Int)) {
-						resetStreamIds.push(((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8));
+						__recordReset(((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8));
 					}
 				}
 			} catch (_:Dynamic) {}
 		}
+	}
+
+	/** Whether both requests reached the server before either was answered. **/
+	public function sawBothArrive():Bool {
+		__resetLock.acquire();
+		var seen:Bool = __sawBothBeforeResponding;
+		__resetLock.release();
+		return seen;
+	}
+
+	/** Records a reset seen on the connection thread. **/
+	private function __recordReset(id:Int):Void {
+		__resetLock.acquire();
+		__resetStreamIds.push(id);
+		__resetLock.release();
+	}
+
+	/** Whether the peer reset this stream. Safe to ask from another thread. **/
+	public function sawReset(id:Int):Bool {
+		__resetLock.acquire();
+		var seen:Bool = __resetStreamIds.indexOf(id) >= 0;
+		__resetLock.release();
+		return seen;
 	}
 
 	/** Lets a gated fixture send its responses. */
