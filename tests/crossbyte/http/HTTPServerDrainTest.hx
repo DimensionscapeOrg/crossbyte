@@ -19,6 +19,20 @@ import utest.Async;
  */
 @:timeout(20000)
 class HTTPServerDrainTest extends utest.Test {
+	// Every server here is handed a temp directory as its document root.
+	// They are collected rather than deleted inline because a drain test
+	// is still tearing the server down when its last assertion runs.
+	private var __roots:Array<File> = [];
+
+	public function teardown():Void {
+		for (root in __roots) {
+			try {
+				root.deleteDirectory(true);
+			} catch (_:Dynamic) {}
+		}
+		__roots = [];
+	}
+
 	public function testDrainWithNoTrafficCompletesImmediately(async:Async):Void {
 		var server = __makeServer();
 
@@ -211,6 +225,7 @@ class HTTPServerDrainTest extends utest.Test {
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+		__roots.push(root);
 		return new HTTPServer(config);
 	}
 
