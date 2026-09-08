@@ -302,6 +302,12 @@ class ServerSocketTLSTest extends utest.Test {
 
 		var answer:String = null;
 		var failure:String = null;
+		// The worker below writes what the assertions here read, and then
+		// releases the lock. Read back after a wait() that returned true,
+		// those writes are published rather than raced for: a plain flag
+		// polled from this thread promises nothing about what the other
+		// one wrote before setting it.
+		var handoff = new sys.thread.Lock();
 		var finished = false;
 
 		try {
@@ -317,13 +323,13 @@ class ServerSocketTLSTest extends utest.Test {
 					failure = Std.string(e);
 				}
 
-				finished = true;
+				handoff.release();
 			});
 
 			var deadline = Sys.time() + 20;
 			while (Sys.time() < deadline && !finished) {
 				runtime.pump(1 / 60, 0);
-				Sys.sleep(0.002);
+				finished = handoff.wait(0.002);
 			}
 		} catch (e:Dynamic) {
 			try {
@@ -443,6 +449,12 @@ class ServerSocketTLSTest extends utest.Test {
 			server.listen();
 
 			var port = server.localPort;
+			// The worker below writes what the assertions here read, and then
+			// releases the lock. Read back after a wait() that returned true,
+			// those writes are published rather than raced for: a plain flag
+			// polled from this thread promises nothing about what the other
+			// one wrote before setting it.
+			var handoff = new sys.thread.Lock();
 			var finished = false;
 
 			sys.thread.Thread.create(() -> {
@@ -465,13 +477,13 @@ class ServerSocketTLSTest extends utest.Test {
 					client.close();
 				} catch (_:Dynamic) {}
 
-				finished = true;
+				handoff.release();
 			});
 
 			var deadline = Sys.time() + 20;
 			while (Sys.time() < deadline && !finished) {
 				runtime.pump(1 / 60, 0);
-				Sys.sleep(0.002);
+				finished = handoff.wait(0.002);
 			}
 
 			Assert.isTrue(finished, "the client neither connected nor failed within the deadline");
@@ -533,6 +545,12 @@ class ServerSocketTLSTest extends utest.Test {
 			var port = server.localPort;
 			var agreed:String = null;
 			var error:String = null;
+			// The worker below writes what the assertions here read, and then
+			// releases the lock. Read back after a wait() that returned true,
+			// those writes are published rather than raced for: a plain flag
+			// polled from this thread promises nothing about what the other
+			// one wrote before setting it.
+			var handoff = new sys.thread.Lock();
 			var finished = false;
 
 			sys.thread.Thread.create(() -> {
@@ -544,13 +562,13 @@ class ServerSocketTLSTest extends utest.Test {
 					error = Std.string(e);
 				}
 
-				finished = true;
+				handoff.release();
 			});
 
 			var deadline = Sys.time() + 20;
 			while (Sys.time() < deadline && !finished) {
 				runtime.pump(1 / 60, 0);
-				Sys.sleep(0.002);
+				finished = handoff.wait(0.002);
 			}
 
 			// A few more passes so a connection completing on the client's last
