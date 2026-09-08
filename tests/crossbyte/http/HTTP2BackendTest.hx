@@ -241,6 +241,15 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals("/survivor", survivorBody);
 		Assert.equals(1, server.connections);
 
+		// Which stream the cancelled request actually got, rather than stream 1.
+		// The two requests are opened on two threads, so whichever opens first
+		// takes id 1 and the other takes 3 -- and when the survivor won that
+		// race this looked for a reset on a stream nobody had cancelled. That
+		// was the intermittent failure here: the reset was sent and the fixture
+		// read it, against an id the assertion was not watching.
+		var doomedId:Int = server.streamIdFor("/doomed");
+		Assert.isTrue(doomedId > 0, "the cancelled request never reached the server");
+
 		// The reset reaches the server on its own schedule -- it is read in the
 		// drain loop, after the responses this test already waited for -- so
 		// this waits for the observation rather than assuming it has landed.
@@ -250,10 +259,15 @@ class HTTP2BackendTest extends utest.Test {
 		// so the budget only matters on a machine slow enough to need it, and a
 		// busy one was enough to spend three seconds and fail a working reset.
 		var deadline:Float = Sys.time() + 10;
-		while (!server.sawReset(1) && Sys.time() < deadline) {
+		while (!server.sawReset(doomedId) && Sys.time() < deadline) {
 			Sys.sleep(0.01);
 		}
-		Assert.isTrue(server.sawReset(1), "server never saw RST_STREAM for the cancelled stream");
+		Assert.isTrue(server.sawReset(doomedId),
+			"server never saw RST_STREAM for the cancelled stream " + doomedId);
+
+		// And only that one: cancelling must not disturb the other request.
+		var survivorId:Int = server.streamIdFor("/survivor");
+		Assert.isFalse(server.sawReset(survivorId), "the surviving stream was reset too");
 	}
 
 	public function testCancellingBeforeTheRequestStartsNeverOpensAStream():Void {
@@ -686,6 +700,13 @@ private class H2MuxServer {
 	// it, reporting a reset the client had definitely sent as one the server
 	// never got.
 	private var __resetStreamIds:Array<Int> = [];
+
+	// Which stream carried which request. Stream ids are assigned in the order
+	// the client opens them, and a test that opens two requests on two threads
+	// does not decide that order -- so a case asking "was the cancelled stream
+	// reset?" has to look the id up by path rather than assume it.
+	private var __streamPaths:Map<String, Int> = new Map();
+
 	private var __resetLock:Mutex = new Mutex();
 
 	private var __ready:Lock = new Lock();
@@ -789,6 +810,9 @@ private class H2MuxServer {
 					}
 				}
 				streamIds.push(id);
+				__resetLock.acquire();
+				__streamPaths.set(path, id);
+				__resetLock.release();
 				pending.push({id: id, path: path});
 
 				if (!__holdUntilAll) {
@@ -858,6 +882,18 @@ private class H2MuxServer {
 		__resetLock.acquire();
 		__resetStreamIds.push(id);
 		__resetLock.release();
+	}
+
+	/**
+		The id of the stream that carried `path`, or -1 if it has not arrived.
+
+		Safe to ask from another thread.
+	**/
+	public function streamIdFor(path:String):Int {
+		__resetLock.acquire();
+		var id:Int = __streamPaths.exists(path) ? __streamPaths.get(path) : -1;
+		__resetLock.release();
+		return id;
 	}
 
 	/** Whether the peer reset this stream. Safe to ask from another thread. **/
