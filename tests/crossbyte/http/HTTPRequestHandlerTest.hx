@@ -1067,6 +1067,12 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var config = new HTTPServerConfig("127.0.0.1", 0, root);
 		Assert.equals(0, config.rewrites.length);
 
+		// The request below builds a root of its own; this one existed only
+		// to construct the configuration being inspected.
+		try {
+			root.deleteDirectory(true);
+		} catch (_:Dynamic) {}
+
 		__sendRequest(async, [], "GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
 			Assert.isTrue(response.status != 500);
 			async.done();
@@ -1100,6 +1106,10 @@ class HTTPRequestHandlerTest extends utest.Test {
 		var repeated = new HTTPServerConfig("127.0.0.1", 0, root);
 		repeated.tryFiles = ["$uri", "$uri/", "/index.html", "$uri"];
 		Assert.raises(() -> repeated.validate(), ArgumentError);
+
+		try {
+			root.deleteDirectory(true);
+		} catch (_:Dynamic) {}
 	}
 
 	public function testUnmappedStatusGetsItsClassNotOK(async:Async):Void {

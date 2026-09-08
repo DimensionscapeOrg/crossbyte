@@ -372,9 +372,9 @@ final class File extends EventDispatcher {
 		```hx
 		import crossbyte.io.File;
 
-		var tempFile:File = File.createTempDirectory();
-		trace(tempFile.parent.nativePath);
-		tempFile.deleteFile();
+		var tempDirectory:File = File.createTempDirectory();
+		trace(tempDirectory.parent.nativePath);
+		tempDirectory.deleteDirectory();
 		```
 	**/
 	public var parent(get, never):File;
