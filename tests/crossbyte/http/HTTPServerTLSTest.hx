@@ -110,11 +110,21 @@ class HTTPServerTLSTest extends utest.Test {
 			try {
 				server.close();
 			} catch (_:Dynamic) {}
+			try {
+				root.deleteDirectory(true);
+			} catch (_:Dynamic) {}
 			throw e;
 		}
 
 		try {
 			server.close();
+		} catch (_:Dynamic) {}
+
+		// The document root is a temp directory of our own making, and
+		// nothing below reads from it again. Left behind, one per run, it
+		// is litter the next developer gets to wonder about.
+		try {
+			root.deleteDirectory(true);
 		} catch (_:Dynamic) {}
 
 		Assert.isTrue(finished, "the client neither answered nor failed within the deadline");
