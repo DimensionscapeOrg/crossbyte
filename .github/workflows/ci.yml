@@ -215,7 +215,7 @@ jobs:
         run: haxelib run aedifex task cpp-precision-tick-audit .
 
   posix-crypto:
-    name: Core | Crypto (${{ matrix.label }})
+    name: Core | Crypto, System (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -258,6 +258,16 @@ jobs:
 
       - name: Run crypto suite
         run: ./export/ci-posix-crypto/PosixCryptoMain
+
+      # System reaches a different implementation per platform, and only the
+      # Windows one had a job compiling it -- the group that covers it runs
+      # from the native smoke suite. Both POSIX implementations are built and
+      # run here for the same reason libsodium is above.
+      - name: Build system suite
+        run: haxe ci/posix-system-tests.hxml
+
+      - name: Run system suite
+        run: ./export/ci-posix-system/PosixSystemMain
 
   postgres:
     name: Data | Postgres
