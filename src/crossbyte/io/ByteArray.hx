@@ -59,10 +59,6 @@ import format.amf3.Writer as AMF3Writer;
 **/
 @:access(haxe.io.Bytes)
 @:access(crossbyte.utils.ByteArrayData)
-// TODO: Remove if bug that breaks `byteArray.endian = BIG_ENDIAN` is fixed
-#if !doc_gen
-@:forward(endian, objectEncoding)
-#end
 @:transitive
 abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
@@ -102,13 +98,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	**/
 	public var bytesAvailable(get, never):UInt;
 
-	#if doc_gen
 	/**
 		Changes or reads the byte order for the data; either
 		`Endian.BIG_ENDIAN` or `Endian.LITTLE_ENDIAN`.
 	**/
 	public var endian(get, set):Endian;
-	#end
 
 	/**
 		The length of the ByteArray object, in bytes.
@@ -119,7 +113,6 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	**/
 	public var length(get, set):UInt;
 
-	#if doc_gen
 	/**
 	 * Used to determine whether the ActionScript 3.0, ActionScript 2.0, or
 	 * ActionScript 1.0 format should be used when writing to, or reading from, a
@@ -139,7 +132,6 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	 * `haxe.Unserializer` or `haxe.JSON` if needed.
 	**/
 	public var objectEncoding(get, set):ObjectEncoding;
-	#end
 
 	/**
 		Moves, or returns the current position, in bytes, of the file pointer into
