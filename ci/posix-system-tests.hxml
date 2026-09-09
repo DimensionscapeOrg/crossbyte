@@ -1,0 +1,15 @@
+# Runs the system suite against Linux and macOS.
+#
+# `crossbyte.sys.System` dispatches to a different class per platform, and the
+# only one CI ever compiled was the Windows implementation -- the group that
+# covers it runs from the native smoke suite, which is a Windows job. macOS
+# therefore reported zero processors for as long as it has been supported,
+# with nothing to catch it.
+#
+# Paired with ci/posix-crypto-tests.hxml, which runs on the same two runners.
+-cp src
+-cp tests
+-lib utest
+-main PosixSystemMain
+--cpp export/ci-posix-system
+--macro crossbyte.test.SuiteCoverage.check()
