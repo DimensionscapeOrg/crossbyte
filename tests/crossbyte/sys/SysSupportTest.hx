@@ -53,9 +53,13 @@ class SysSupportTest extends utest.Test {
 		// Windows it produced forward slashes against an OS handing it
 		// backslashes.
 		Assert.equals(System.isWindows ? "\\" : "/", File.separator);
-		Assert.equals(System.isWindows ? "
-" : "
-", File.lineEnding);
+		// Escapes, not newlines typed inside the quotes. Written the second
+		// way each branch is whatever line ending this file happens to be
+		// saved with, so both sides always agreed and the assertion could
+		// not fail -- and any tool that rewrote the file flipped them
+		// invisibly, because .gitattributes normalises endings so a diff
+		// shows nothing.
+		Assert.equals(System.isWindows ? "\r\n" : "\n", File.lineEnding);
 	}
 
 	public function testTheStorageDirectoryDoesNotDependOnHOME():Void {
