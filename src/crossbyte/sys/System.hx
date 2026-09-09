@@ -18,6 +18,8 @@ import sys.io.Process;
 @:access(crossbyte._internal.native.sys.win.WinNativeSystem)
 #elseif linux
 @:access(crossbyte._internal.native.sys.linux.LinuxNativeSystem)
+#elseif (mac || macos)
+@:access(crossbyte._internal.native.sys.mac.MacNativeSystem)
 #else
 @:access(crossbyte._internal.native.sys.NativeSystem)
 #end

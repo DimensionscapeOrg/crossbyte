@@ -101,6 +101,37 @@ class SysSupportTest extends utest.Test {
 		Assert.equals(System.isWindows ? Sys.getEnv("APPDATA") : Sys.getEnv("HOME"), System.appStorageDir);
 	}
 
+	public function testProcessorCountIsAnswerableOnEverySupportedNativePlatform():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		// Zero means the query fell through to the dispatcher's default rather
+		// than reaching a platform that can answer it, which is what macOS did
+		// before it had an implementation of its own.
+		Assert.isTrue(System.processorCount >= 1, "expected at least one processor, got " + System.processorCount);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAffinityReportsWhatThePlatformCanActuallyDo():Void {
+		#if (cpp && (windows || linux))
+		// Where affinity exists, the mask describes the processors that exist.
+		var affinity:Array<Bool> = System.processAffinity;
+		Assert.notNull(affinity);
+		Assert.equals(System.processorCount, affinity.length);
+		#elseif (cpp && (mac || macos))
+		// macOS has no process-level affinity to report -- there is no
+		// sched_setaffinity, and thread_policy_set is a per-thread hint the
+		// scheduler may ignore. The empty mask is the honest answer, and these
+		// are pinned so that implementing it later has to be a deliberate
+		// change to the contract rather than an accident.
+		Assert.equals(0, System.processAffinity.length);
+		Assert.isFalse(System.hasProcessAffinity(0));
+		Assert.isFalse(System.setProcessAffinity(0, true));
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testSystemFallbackPropertiesStaySafeOnNonCppTargets():Void {
 		#if cpp
 		Assert.isTrue(System.processorCount >= 0);
