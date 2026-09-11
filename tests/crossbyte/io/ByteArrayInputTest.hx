@@ -116,11 +116,6 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntRejectsOverlongEncoding():Void {
-		#if final
-		Assert.pass();
-		return;
-		#end
-
 		var bytes = Bytes.alloc(6);
 		for (i in 0...6) {
 			bytes.set(i, 0x80);
@@ -131,17 +126,23 @@ class ByteArrayInputTest extends utest.Test {
 	}
 
 	public function testReadVarUIntRejectsOverflow():Void {
-		#if final
-		Assert.pass();
-		return;
-		#end
-
 		var bytes = Bytes.alloc(5);
 		bytes.set(0, 0xFF);
 		bytes.set(1, 0xFF);
 		bytes.set(2, 0xFF);
 		bytes.set(3, 0xFF);
 		bytes.set(4, 0x0F);
+
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.raises(() -> input.readVarUInt(), String);
+	}
+
+	public function testReadVarUIntRejectsAVarintTheBufferEndsInside():Void {
+		// Every byte asks for another and the buffer runs out. The bound was
+		// `#if !final`, so a release build kept reading past the end.
+		var bytes = Bytes.alloc(2);
+		bytes.set(0, 0x80);
+		bytes.set(1, 0x80);
 
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
 		Assert.raises(() -> input.readVarUInt(), String);
