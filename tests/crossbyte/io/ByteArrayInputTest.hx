@@ -146,4 +146,22 @@ class ByteArrayInputTest extends utest.Test {
 		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
 		Assert.raises(() -> input.readVarUInt(), String);
 	}
+
+	public function testReadVarUTFRejectsALengthTheBufferCannotHold():Void {
+		// The length is a varint, so a peer can name up to 2^31-1. __need
+		// tested `position + n > length`, and that sum overflows at this size
+		// and wraps negative -- so the guard passed and readUTFBytes went
+		// ahead and read off the end. This one failed in ordinary builds too,
+		// not just `final`.
+		var bytes = Bytes.alloc(6);
+		bytes.set(0, 0xFF);
+		bytes.set(1, 0xFF);
+		bytes.set(2, 0xFF);
+		bytes.set(3, 0xFF);
+		bytes.set(4, 0x07);
+		bytes.set(5, 0x41);
+
+		var input:ByteArrayInput = ByteArray.fromBytes(bytes);
+		Assert.raises(() -> input.readVarUTF(), String);
+	}
 }

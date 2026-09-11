@@ -77,7 +77,11 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 
 	@:noCompletion private inline function __need(n:Int):Void {
 		#if !final
-		if (this.position + n > this.length)
+		// Against the bytes remaining rather than `position + n`. That sum
+		// overflows for a large n and wraps negative, so the comparison
+		// succeeded and the read went ahead -- and readVarUTF can hand this
+		// a length the peer chose, up to 2^31-1.
+		if (n < 0 || n > this.length - this.position)
 			throw "ByteArrayInput underflow";
 		#end
 	}
