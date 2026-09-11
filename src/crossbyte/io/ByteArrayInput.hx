@@ -14,6 +14,9 @@ import crossbyte.io.ByteArray;
  * - **Zero-copy reads**: uses direct getters on the backing buffer where possible.
  * - **Explicit cursoring**: all reads advance `position` by the number of bytes consumed.
  * - **Safety outside `final`**: out-of-range accesses throw helpful errors in normal builds.
+ * - **Always checked**: the varint decoders are the exception. They read a value
+ *   or a length a remote peer chose, so `readVarUInt` and the length `readVarUTF`
+ *   decodes are bounded in every build, `final` included.
  * - **Interop**: can be implicitly created from `ByteArrayData` or `ByteArray`.
  *
  * ### Typical usage
@@ -237,7 +240,8 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 *   both encode to small unsigned varints.
 	 *
 	 * @return The decoded signed `Int`.
-	 * @throws String In debug builds if the varint is malformed/too long or overflows.
+	 * @throws String If the varint is malformed, too long or overflows. Checked in
+	 *                every build, including `final`.
 	 *
 	 * @see readVarUInt For the underlying unsigned representation.
 	 */
@@ -256,8 +260,10 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * Each byte contributes 7 payload bits; the high bit (0x80) indicates continuation.
 	 *
 	 * @return The decoded unsigned value as `UInt` (stored in an `Int` domain).
-	 * @throws String In debug builds if more than 5 bytes are encountered (`"varuint too long"`)
-	 *                or if the decoded value does not fit (`"varuint overflow"`).
+	 * @throws String If more than 5 bytes are encountered (`"varuint too long"`), if
+	 *                the decoded value does not fit (`"varuint overflow"`), or if the
+	 *                buffer ends mid-varint (`"ByteArrayInput underflow"`). Checked in
+	 *                every build, including `final`.
 	 *
 	 * @example
 	 * ```haxe
@@ -268,22 +274,31 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 		var shift:Int = 0;
 		var result:Int = 0;
 		while (true) {
-			__need(1);
+			// Checked in every build, unlike the rest of this class. These
+			// bytes are whatever a remote peer sent, so a truncated or hostile
+			// varint has to be an error rather than a read past the buffer.
+			if (this.position >= this.length) {
+				throw "ByteArrayInput underflow";
+			}
 			var b:Int = this.get(this.position++);
 			result |= (b & 0x7F) << shift;
 			if ((b & 0x80) == 0){
 				break;
 			}				
 			shift += 7;
-			#if !final
-			if (shift > 35)
+			// 28 is the last shift a 32 bit value can use, so this bounds the
+			// loop at the five bytes the format allows and keeps the shift
+			// under the word size. Haxe leaves `<<` unspecified at or above
+			// that, and most targets mask the amount, so a sixth byte folded
+			// silently back over the value rather than overflowing. The old
+			// bound of 35 admitted that sixth byte.
+			if (shift > 28) {
 				throw "varuint too long";
-			#end
+			}
 		}
-		#if !final
-		if (result < 0)
+		if (result < 0) {
 			throw "varuint overflow";
-		#end
+		}
 		return result;
 	}
 
@@ -297,10 +312,16 @@ abstract ByteArrayInput(ByteArrayData) from ByteArrayData to ByteArrayInput from
 	 * (though this implementation expects a non-negative decoded length).
 	 *
 	 * @return The decoded string.
-	 * @throws String In debug builds if reading would exceed `length` or if the length is invalid.
+	 * @throws String If the decoded length exceeds the bytes remaining. Checked in
+	 *                every build, including `final`.
 	 */
 	public inline function readVarUTF():String {
 		var len:Int = readVarUInt();
+		// Same reason as the decoder above: the length is the peer's, and
+		// readUTFBytes only bounds itself outside `final`.
+		if (len > this.length - this.position) {
+			throw "ByteArrayInput underflow";
+		}
 		return readUTFBytes(len);
 	}
 }
