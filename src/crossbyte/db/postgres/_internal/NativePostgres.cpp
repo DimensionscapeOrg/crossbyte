@@ -482,7 +482,10 @@ extern "C" int crossbyte_postgres_request_params(void* handle, const char* sql, 
 			continue;
 		}
 
-		if (cursor + length > paramsLength) {
+		// Difference, not sum: `cursor + length` overflows for a large length,
+		// and signed overflow is undefined, so the truncation check this is
+		// here to perform could be optimised away.
+		if (length > paramsLength - cursor) {
 			buildErrorBlock("Truncated parameter block.");
 			return static_cast<int>(g_api.resultBlock.size());
 		}
