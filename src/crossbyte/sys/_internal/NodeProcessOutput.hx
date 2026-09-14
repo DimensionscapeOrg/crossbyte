@@ -42,7 +42,8 @@ class NodeProcessOutput extends Output {
 			throw Error.Custom("Cannot write null bytes.");
 		}
 
-		if (pos < 0 || len < 0 || pos + len > s.length) {
+		// Difference, not sum: `pos + len` overflows for a large len.
+		if (pos < 0 || len < 0 || pos > s.length || len > s.length - pos) {
 			throw Error.OutsideBounds;
 		}
 
