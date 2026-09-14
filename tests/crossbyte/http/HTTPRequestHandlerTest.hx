@@ -1608,6 +1608,47 @@ Host: localhost
 		return count;
 	}
 
+	public function testOversizedChunkSizeIsRejectedOnEveryTarget(async:Async):Void {
+		// 0xFFFFFFFF passes the hex pattern, and Std.parseInt then answers
+		// four different ways: -1 on eval and cpp, a thrown
+		// NumberFormatException on jvm, and 4294967295 on node -- which is
+		// neither null nor negative, so node accepted it and went on to wait
+		// for a four gigabyte chunk. A malformed size is a client error on
+		// every target, not a 500 and not a promise of more body.
+		__sendRequest(async, [], "POST /index.html HTTP/1.1
+Host: localhost
+Transfer-Encoding: chunked
+
+FFFFFFFF
+", function(response):Void {
+			Assert.equals(400, response.status);
+			async.done();
+		});
+	}
+
+	public function testChunkSizeWithLeadingZerosStillDecodes(async:Async):Void {
+		// The digit bound counts significant digits, so a padded size is
+		// still a size. RFC 9112 7.1 allows the zeros.
+		var bodyText:String = null;
+		__sendRequest(async, [
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				next();
+			}
+		], "POST /index.html HTTP/1.1
+Host: localhost
+Transfer-Encoding: chunked
+
+0000004
+Wiki
+0
+
+", function(response):Void {
+			Assert.equals("Wiki", bodyText);
+			async.done();
+		});
+	}
+
 	public function testObsFoldedHeaderLineIsRejected(async:Async):Void {
 		// RFC 9112 5.2: a server receiving obs-fold in a request MUST reject it
 		// with 400, or replace the fold with spaces before parsing. Reading the

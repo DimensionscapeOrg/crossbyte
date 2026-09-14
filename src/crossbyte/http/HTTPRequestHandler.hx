@@ -2506,6 +2506,26 @@ final class HTTPRequestHandler extends EventDispatcher {
 					return false;
 				}
 
+				// Leading zeros are legal in a chunk-size, so only the significant
+				// digits are counted. Past seven of them Std.parseInt stops
+				// agreeing with itself across targets, and the check below is
+				// written for exactly one of the four answers: eval and cpp return
+				// -1, jvm throws NumberFormatException, and node returns a number
+				// too large for Int -- 0xFFFFFFFF arrives as 4294967295, which is
+				// not null and not negative, so it was accepted and this counter
+				// went on to expect a four gigabyte chunk.
+				//
+				// Seven digits is 0xFFFFFFF, far above any body this server will
+				// hold, and every target parses it identically.
+				var firstSignificant:Int = 0;
+				while (firstSignificant < hex.length - 1 && hex.charCodeAt(firstSignificant) == 48) {
+					firstSignificant++;
+				}
+				if (hex.length - firstSignificant > 7) {
+					__sendErrorResponse(400, "Bad Request");
+					return false;
+				}
+
 				var parsed:Null<Int> = Std.parseInt("0x" + hex);
 				if (parsed == null || parsed < 0) {
 					__sendErrorResponse(400, "Bad Request");
