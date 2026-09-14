@@ -888,14 +888,22 @@ class WebSocket {
 	}
 
 	private inline function __isValidCloseCode(code:Int):Bool {
-		// Codes reserved or invalid for use in a close frame (RFC 6455 7.4).
-		if (code < 1000) {
+		// RFC 6455 7.4. The ranges carry the rule, not just the handful of
+		// holes inside them: 1000-2999 belongs to the protocol and only the
+		// assigned part of it may travel, 3000-3999 is for libraries and
+		// 4000-4999 is private. Accepting anything at or above 1000 let a
+		// peer close with 1016, 2000 or 65535 -- none of which mean
+		// anything -- when the answer to an unknown code is 1002.
+		if (code >= 3000 && code <= 4999) {
+			return true;
+		}
+		if (code < 1000 || code > 1014) {
 			return false;
 		}
-		if (code == 1004 || code == 1005 || code == 1006 || code == 1015) {
-			return false;
-		}
-		return true;
+		// 1004 was never assigned; 1005 and 1006 are what a local close
+		// reports when no code arrived, so neither may appear on the wire.
+		// 1015 is the same kind of code and is already past the bound above.
+		return code != 1004 && code != 1005 && code != 1006;
 	}
 
 	private function __isValidUTF8(bytes:ByteArray, offset:Int, length:Int):Bool {
