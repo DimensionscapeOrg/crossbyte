@@ -163,4 +163,35 @@ class ByteArrayTest extends utest.Test {
 		Assert.equals("br", Std.string(CompressionAlgorithm.BROTLI));
 		Assert.equals("lz4", Std.string(CompressionAlgorithm.LZ4));
 	}
+
+	public function testReadUTFBytesRejectsALengthThatWouldOverflowTheBoundsCheck():Void {
+		// The guard was `position + length > this.length`. Int arithmetic, so a
+		// length near 2^31 wraps the sum negative -- which is not greater than
+		// the length, so the check passed and the read ran off the buffer.
+		var bytes = ByteArray.fromBytes(Bytes.ofString("abcd"));
+		bytes.position = 1;
+
+		Assert.raises(() -> bytes.readUTFBytes(2147483647));
+		Assert.raises(() -> bytes.readUTFBytes(-1));
+
+		// The honest overrun still fails, and a legitimate read still works.
+		Assert.raises(() -> bytes.readUTFBytes(4));
+		bytes.position = 1;
+		Assert.equals("bcd", bytes.readUTFBytes(3));
+	}
+
+	public function testReadBytesRejectsALengthThatWouldOverflowTheBoundsCheck():Void {
+		// Same sum, twice over: it decided whether the source read fit, and it
+		// was also the size handed to __resize for the destination.
+		var source = ByteArray.fromBytes(Bytes.ofString("abcd"));
+		source.position = 1;
+		var destination = new ByteArray();
+
+		Assert.raises(() -> source.readBytes(destination, 0, 2147483647));
+		Assert.raises(() -> source.readBytes(destination, 0, -1));
+
+		source.position = 1;
+		source.readBytes(destination, 0, 3);
+		Assert.equals(3, destination.length);
+	}
 }

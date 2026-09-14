@@ -213,7 +213,12 @@ Array<int> crossbyte_socket_peer_info(Dynamic socket) {
 int crossbyte_socket_send_to(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address) {
 	SOCKET nativeSocket = crossbyte_val_sock(socket);
 	int bufferLength = buffer->length;
-	if (position < 0 || length < 0 || position > bufferLength || position + length > bufferLength) {
+	// `length > bufferLength - position` rather than `position + length >
+	// bufferLength`. position is already known to be within the buffer, so
+	// the subtraction cannot go negative, while the sum overflows for a
+	// large length -- and signed overflow is undefined here, so a compiler
+	// is entitled to assume it cannot happen and drop the test.
+	if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
 		hx::Throw(HX_CSTRING("Invalid data position"));
 	}
 
@@ -256,7 +261,12 @@ int crossbyte_socket_send_to(Dynamic socket, Array<unsigned char> buffer, int po
 int crossbyte_socket_recv_from(Dynamic socket, Array<unsigned char> buffer, int position, int length, Dynamic address) {
 	SOCKET nativeSocket = crossbyte_val_sock(socket);
 	int bufferLength = buffer->length;
-	if (position < 0 || length < 0 || position > bufferLength || position + length > bufferLength) {
+	// `length > bufferLength - position` rather than `position + length >
+	// bufferLength`. position is already known to be within the buffer, so
+	// the subtraction cannot go negative, while the sum overflows for a
+	// large length -- and signed overflow is undefined here, so a compiler
+	// is entitled to assume it cannot happen and drop the test.
+	if (position < 0 || length < 0 || position > bufferLength || length > bufferLength - position) {
 		hx::Throw(HX_CSTRING("Invalid data position"));
 	}
 
