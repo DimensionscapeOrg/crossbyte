@@ -1608,6 +1608,52 @@ Host: localhost
 		return count;
 	}
 
+	public function testObsFoldedHeaderLineIsRejected(async:Async):Void {
+		// RFC 9112 5.2: a server receiving obs-fold in a request MUST reject it
+		// with 400, or replace the fold with spaces before parsing. Reading the
+		// continuation as a header of its own desyncs us from any intermediary
+		// that folds -- and the continuation here carries a framing header,
+		// which is exactly request smuggling.
+		__sendRequest(async, [], "GET /index.html HTTP/1.1
+Host: localhost
+X-Note: first
+	Transfer-Encoding: chunked
+
+", function(response):Void {
+			Assert.equals(400, response.status);
+			async.done();
+		});
+	}
+
+	public function testHeaderLineWithNoFieldNameIsRejected(async:Async):Void {
+		// A line with no colon is not a header. It used to be skipped, which
+		// left this server and anything in front of it disagreeing about what
+		// the message contained.
+		__sendRequest(async, [], "GET /index.html HTTP/1.1
+Host: localhost
+garbage
+
+", function(response):Void {
+			Assert.equals(400, response.status);
+			async.done();
+		});
+	}
+
+	public function testWhitespaceBeforeTheHeaderColonIsRejected(async:Async):Void {
+		// RFC 9112 5.1: a server MUST reject with 400 any request carrying
+		// whitespace between a field name and its colon. Trimming it away
+		// instead means a proxy that rejects and an origin that accepts read
+		// the same bytes differently.
+		__sendRequest(async, [], "GET /index.html HTTP/1.1
+Host: localhost
+Content-Length : 0
+
+", function(response):Void {
+			Assert.equals(400, response.status);
+			async.done();
+		});
+	}
+
 
 
 

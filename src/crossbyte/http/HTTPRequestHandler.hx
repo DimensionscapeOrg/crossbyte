@@ -540,6 +540,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return;
 			}
 
+			// Read before trimming, because trimming is what hid it. A line
+			// opening with SP or HTAB is an obs-fold: a continuation of the
+			// header above it rather than a header of its own. RFC 9112 5.2
+			// requires a server to reject the message or replace the fold with
+			// spaces, and reading it as a fresh header is how a framing header
+			// written on a folded line takes effect here and nowhere upstream.
+			var lead:Int = headerLine.charCodeAt(0);
+			if (lead == 32 || lead == 9) {
+				__sendErrorResponse(400, "Bad Request");
+				return;
+			}
+
 			headerLine = StringTools.trim(headerLine);
 			if (headerLine.length == 0) {
 				break;
@@ -547,10 +559,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 			var sep:Int = headerLine.indexOf(":");
 			if (sep <= 0) {
-				continue;
+				// No field name at all. Skipping the line left this server and
+				// anything in front of it disagreeing about what the message
+				// contained, which is the same desync by a quieter route.
+				__sendErrorResponse(400, "Bad Request");
+				return;
 			}
 
-			var key:String = StringTools.trim(headerLine.substr(0, sep)).toLowerCase();
+			var name:String = headerLine.substr(0, sep);
+			// RFC 9112 5.1: no whitespace sits between a field name and its
+			// colon, and a server MUST answer 400 rather than trim it away.
+			// Accepting `Content-Length : 5` where a proxy rejects it is the
+			// same disagreement that obs-fold produces.
+			if (StringTools.rtrim(name) != name) {
+				__sendErrorResponse(400, "Bad Request");
+				return;
+			}
+
+			var key:String = name.toLowerCase();
 			var value:String = StringTools.trim(headerLine.substr(sep + 1));
 
 			if (__headers.exists(key)) {
