@@ -395,6 +395,50 @@ class WebSocketConformanceTest extends utest.Test {
 	}
 
 	/**
+	 * RFC 6455 7.4 assigns 1000-1014 within the protocol range and leaves
+	 * 1016-2999 unassigned. An unassigned code carries no meaning, so a peer
+	 * sending one is a protocol error rather than a close to be echoed back.
+	 */
+	public function testUnassignedCloseCodeIsRejected():Void {
+		var peer = connect();
+		peer.send(CLOSE, __closeCode(1016));
+
+		Assert.isTrue(pumpUntil(() -> closeCodes.length > 0), "session stayed open");
+		Assert.equals(1002, closeCodes[0]);
+	}
+
+	/**
+	 * 4000-4999 is the private range and ends there. Nothing above it is a
+	 * close code at all, and two bytes can carry up to 65535.
+	 */
+	public function testCloseCodePastThePrivateRangeIsRejected():Void {
+		var peer = connect();
+		peer.send(CLOSE, __closeCode(5000));
+
+		Assert.isTrue(pumpUntil(() -> closeCodes.length > 0), "session stayed open");
+		Assert.equals(1002, closeCodes[0]);
+	}
+
+	/**
+	 * The other half of the bound: a private-range code is a peer's business
+	 * and comes back as itself.
+	 */
+	public function testPrivateRangeCloseCodeIsAccepted():Void {
+		var peer = connect();
+		peer.send(CLOSE, __closeCode(4000));
+
+		Assert.isTrue(pumpUntil(() -> closeCodes.length > 0), "session stayed open");
+		Assert.equals(4000, closeCodes[0]);
+	}
+
+	private function __closeCode(code:Int):Bytes {
+		var payload:Bytes = Bytes.alloc(2);
+		payload.set(0, (code >> 8) & 0xFF);
+		payload.set(1, code & 0xFF);
+		return payload;
+	}
+
+	/**
 	 * A continuation with no message in progress has nothing to continue.
 	 */
 	public function testContinuationWithoutAStartedMessageIsRejected():Void {
