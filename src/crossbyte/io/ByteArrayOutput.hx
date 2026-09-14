@@ -185,7 +185,10 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @return `true` if valid, `false` otherwise.
 	 */
 	public inline function validateSizeAt(size:Int, pos:Int):Bool {
-		if (pos + size > current.length) {
+		// Difference, not sum. `pos + size` overflows for a large size and
+		// wraps negative, so a write that could never fit was reported as
+		// valid.
+		if (size < 0 || size > current.length - pos) {
 			return false;
 		}
 		return true;

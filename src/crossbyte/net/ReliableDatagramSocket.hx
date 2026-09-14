@@ -966,7 +966,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			length = totalLength - offset;
 		}
 
-		if (length < 0 || offset + length > totalLength) {
+		// Against the bytes left after `offset` rather than `offset +
+		// length`. That sum overflows for a large length and wraps
+		// negative, so the range check passed and the send read past the
+		// end of the buffer.
+		if (length < 0 || length > totalLength - offset) {
 			throw new RangeError("The supplied index is out of bounds.");
 		}
 

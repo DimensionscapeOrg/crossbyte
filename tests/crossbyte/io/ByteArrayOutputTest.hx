@@ -168,4 +168,20 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.equals(0x55667788, input.readInt());
 		Assert.isTrue(input.eof());
 	}
+
+	public function testValidateSizeRejectsASizeThatWouldOverflowTheCheck():Void {
+		// The guard was `pos + size > current.length`. That sum wraps negative
+		// for a size near 2^31, and a negative is not greater than the length,
+		// so a write that could never fit was reported as valid.
+		var output = new ByteArrayOutput(8);
+		output.writeByte(0x11);
+
+		Assert.isFalse(output.validateSize(2147483647));
+		Assert.isFalse(output.validateSizeAt(2147483647, 1));
+		Assert.isFalse(output.validateSize(-1));
+
+		// A real fit is still a fit.
+		Assert.isTrue(output.validateSize(7));
+		Assert.isFalse(output.validateSize(8));
+	}
 }

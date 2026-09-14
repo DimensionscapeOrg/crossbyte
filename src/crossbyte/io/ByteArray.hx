@@ -896,11 +896,18 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		if (length == 0)
 			length = this.length - position;
 
-		if (position + length > this.length) {
+		// Against the bytes remaining rather than `position + length`. That
+		// sum overflows for a large length and wraps negative, which is not
+		// greater than this.length -- so the guard passed and the read ran
+		// off the end of the buffer.
+		if (offset < 0 || length < 0 || length > this.length - position) {
 			throw new EOFError();
 		}
 
-		if ((bytes : ByteArrayData).length < offset + length) {
+		// Same shape on the destination: `offset + length` decided both the
+		// test and the size passed to __resize, so an overflow asked for a
+		// negative allocation.
+		if ((bytes : ByteArrayData).length - offset < length) {
 			(bytes : ByteArrayData).__resize(offset + length);
 		}
 
@@ -1103,7 +1110,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	public function readUTFBytes(length:Int):String {
-		if (position + length > #if lime_bytes_length_getter l #else this.length #end) {
+		// Difference, not sum: see readBytes. `length` is a caller's number
+		// and can be large enough to wrap the addition.
+		if (length < 0 || length > (#if lime_bytes_length_getter l #else this.length #end) - position) {
 			throw new EOFError();
 		}
 
