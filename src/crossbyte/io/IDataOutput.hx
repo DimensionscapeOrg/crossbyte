@@ -80,12 +80,12 @@ interface IDataOutput {
 	public function writeInt(value:Int):Void;
 
 	/**
-		Writes a multibyte string to the file stream, byte stream, or byte array, using
-		the specified character set.
+		Writes a string as UTF-8.
+
 		@param	value	The string value to be written.
-		@param	charSet	The string denoting the character set to use. Possible character
-		set strings include "shift-jis", "cn-gb", "iso-8859-1", and others. For a complete
-		list, see Supported Character Sets.
+		@param	charSet	Accepted for source compatibility and **ignored**. The
+		string is encoded as UTF-8, exactly as `writeUTFBytes` would. Transcode
+		the bytes yourself if you need another encoding.
 	**/
 	public function writeMultiByte(value:String, charSet:String):Void;
 

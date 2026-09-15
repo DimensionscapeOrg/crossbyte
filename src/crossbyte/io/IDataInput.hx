@@ -91,18 +91,13 @@ interface IDataInput {
 	public function readInt():Int;
 
 	/**
-		Reads a multibyte string of specified length from the file stream, byte stream, or
-		byte array using the specified character set.
+		Reads `length` bytes and decodes them as UTF-8.
+
 		@param	length	The number of bytes from the byte stream to read.
-		@param	charSet	The string denoting the character set to use to interpret the
-		bytes. Possible character set strings include "shift-jis", "cn-gb", "iso-8859-1",
-		and others. For a complete list, see Supported Character Sets.
-		**Note:** If the value for the `charSet` parameter is not recognized by the current
-		system, then Adobe® Flash® Player or Adobe® AIR® uses the system's default code page
-		as the character set. For example, a value for the `charSet` parameter, as in
-		`myTest.readMultiByte(22, "iso-8859-01")`, that uses `01` instead of `1` might work
-		on your development system, but not on another system. On the other system, Flash
-		Player or the AIR runtime will use the system's default code page.
+		@param	charSet	Accepted for source compatibility and **ignored**. No
+		character set conversion happens: the bytes are decoded as UTF-8, exactly
+		as `readUTFBytes` would. Passing "shift-jis" does not decode Shift-JIS.
+		Transcode the bytes yourself if you need another encoding.
 		@returns	UTF-8 encoded string.
 		@throws	EOFError	There is not sufficient data available to read.
 	**/
