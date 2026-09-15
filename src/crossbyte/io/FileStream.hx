@@ -56,7 +56,7 @@ import format.amf3.Tools as AMF3Tools;
 	dispatched as operations proceed.
 
 	A File object that is opened synchronously behaves much like a ByteArray object; a file
-	opened asynchronously behaves much like a Socket or URLStream object. When a File object
+	opened asynchronously behaves much like a Socket object. When a File object
 	is opened synchronously, the caller pauses while the requested data is read from or written
 	to the underlying file. When opened asynchronously, any data written to the stream is
 	immediately buffered and later written to the file.
