@@ -512,6 +512,44 @@ Content-Length: " + encoded.length + "
 		Http.MAX_DECOMPRESSED_BODY_SIZE = previous;
 	}
 
+	public function testABrotliBombIsAbandonedRatherThanDecoded():Void {
+		// The same shape as the gzip case, against the coding the modern web
+		// actually sends. Brotli decodes through a ported codec that returns
+		// everything at once, so the ceiling had to go down into the function
+		// every decoded byte passes through rather than measuring the result.
+		var previous:Int = Http.MAX_DECOMPRESSED_BODY_SIZE;
+		Http.MAX_DECOMPRESSED_BODY_SIZE = 16 * 1024;
+
+		try {
+			var encoded = new ByteArray();
+			encoded.length = 128 * 1024;
+			encoded.compress(CompressionAlgorithm.BROTLI);
+
+			var fixture = serveOnceWithBody("HTTP/1.1 200 OK
+Content-Encoding: br
+Content-Length: " + encoded.length + "
+
+", encoded);
+			var http = new Http('http://127.0.0.1:${fixture.port}/brbomb');
+			var completed:Bytes = null;
+			var failure:String = null;
+
+			http.onComplete = data -> completed = data;
+			http.onError = (message, ?data) -> failure = message;
+
+			http.load();
+			fixture.waitDone();
+
+			Assert.isNull(completed);
+			var error:String = Require.notNull(failure, "a brotli bomb decoded to the end");
+			Assert.isTrue(error.indexOf("Failed to decode response body") == 0, error);
+		} catch (e:Dynamic) {
+			Assert.fail("brotli bomb test failed: " + Std.string(e));
+		}
+
+		Http.MAX_DECOMPRESSED_BODY_SIZE = previous;
+	}
+
 	public function testStackedContentCodingsAreRefused():Void {
 		// Codings multiply, so three of them is three ratios on top of each
 		// other. Refused before anything is decoded, which is why the body

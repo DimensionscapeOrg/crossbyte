@@ -31,10 +31,10 @@ class BrotliCodec {
 		__initializeDictionaries();
 	}
 
-	public function decompressArray(content:Array<UInt>):Array<UInt> {
+	public function decompressArray(content:Array<UInt>, maxOutputSize:UInt = 0):Array<UInt> {
 		var output = new Array<UInt>();
 		var input:BrotliInput = BrotliInitMemInput(content, content.length);
-		var decoded:BrotliOutput = BrotliInitMemOutput(output);
+		var decoded:BrotliOutput = BrotliInitMemOutput(output, maxOutputSize);
 
 		if (BrotliDecompress(input, decoded) != 1) {
 			throw "Brotli decompression failed";
