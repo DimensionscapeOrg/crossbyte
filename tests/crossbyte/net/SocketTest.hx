@@ -22,6 +22,35 @@ class SocketTest extends utest.Test {
 		Assert.isTrue(throwsIOError(() -> socket.writeObject({value: 1})));
 	}
 
+	public function testTheConstructorAttemptsEveryPortConnectAccepts():Void {
+		// 65535 is a valid TCP port. The constructor tested `port < 65535`
+		// while connect() accepts `port <= 65535`, so the highest port was
+		// the one number the two disagreed about: connect(h, 65535) dialled,
+		// new Socket(h, 65535) silently did not.
+		ConstructorProbeSocket.lastPort = null;
+		new ConstructorProbeSocket("127.0.0.1", 65535);
+		Assert.equals(65535, ConstructorProbeSocket.lastPort);
+
+		ConstructorProbeSocket.lastPort = null;
+		new ConstructorProbeSocket("127.0.0.1", 1);
+		Assert.equals(1, ConstructorProbeSocket.lastPort);
+
+		// Out of range, and the 0 that means "leave it disconnected", are
+		// left alone rather than dialled.
+		for (port in [0, 65536, -1]) {
+			ConstructorProbeSocket.lastPort = null;
+			new ConstructorProbeSocket("127.0.0.1", port);
+			Assert.isNull(ConstructorProbeSocket.lastPort, "port " + port + " should not have been attempted");
+		}
+	}
+
+	public function testConnectRefusesAPortOutsideTheRange():Void {
+		var socket = new Socket();
+
+		Assert.raises(() -> socket.connect("127.0.0.1", 65536));
+		Assert.raises(() -> socket.connect("127.0.0.1", -1));
+	}
+
 	public function testCloseToleratesPartiallyInitializedSocket():Void {
 		var socket = new Socket();
 		socket.__socket = new SysSocket();
@@ -757,5 +786,25 @@ class SocketTest extends utest.Test {
 	private static function readOutput(socket:Socket):String {
 		socket.__output.position = 0;
 		return socket.__output.readUTFBytes(socket.__output.length);
+	}
+}
+
+/**
+	A Socket whose `connect` records the call instead of making it, so the
+	constructor's port guard can be checked without opening anything.
+
+	`lastPort` is static on purpose: Haxe runs member initialisers after the
+	super() call, so an instance field would be reset to null by the very
+	construction being observed.
+**/
+private class ConstructorProbeSocket extends Socket {
+	public static var lastPort:Null<Int>;
+
+	public function new(host:String, port:Int) {
+		super(host, port);
+	}
+
+	override public function connect(host:String, port:Int):Void {
+		lastPort = port;
 	}
 }
