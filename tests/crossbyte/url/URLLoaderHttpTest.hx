@@ -10,6 +10,7 @@ import sys.net.Socket as SysSocket;
 import sys.thread.Lock;
 import sys.thread.Thread;
 import utest.Assert;
+import crossbyte.test.Require;
 
 class URLLoaderHttpTest extends utest.Test {
 	public function testLoadsFixedLengthTextAndReportsPublicEvents():Void {
@@ -254,7 +255,12 @@ class URLLoaderHttpTest extends utest.Test {
 
 		fixture.waitDone();
 
-		Assert.equals("Download failed", result.error);
+		// The cause travels with the message now. It used to be dropped, so a
+		// bad chunk size, a truncated chunk and a missing terminator all
+		// reached the caller as the same four words.
+		var error:String = Require.notNull(result.error);
+		Assert.equals(0, error.indexOf("Download failed"), error);
+		Assert.isTrue(error.indexOf("Invalid chunk terminator") > 0, error);
 		Assert.isFalse(result.complete);
 	}
 

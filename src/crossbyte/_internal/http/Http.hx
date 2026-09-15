@@ -285,12 +285,13 @@ class Http {
 		var isChunked:Bool = false;
 		if (transferEncodingHeader != null) {
 			var encodings:Array<String> = transferEncodingHeader.toLowerCase().split(",");
-			for (i in 0...encodings.length) {
-				if (StringTools.trim(encodings[i]) == "chunked") {
-					isChunked = true;
-					break;
-				}
-			}
+			// Only when chunked is the *final* coding, which is the test the
+			// server half already makes. RFC 9112 6.1: anything applied after
+			// it means the body is not framed by chunks, so reading it as
+			// though it were takes the next coding's bytes for chunk headers.
+			// A body that is not chunk-framed falls through to reading until
+			// the connection closes, which is what 6.1 prescribes.
+			isChunked = encodings.length > 0 && StringTools.trim(encodings[encodings.length - 1]) == "chunked";
 		}
 
 		var contentLengthHeader:String = __responseHeaders.get(HEADER_CONTENT_LENGTH);
@@ -367,6 +368,32 @@ class Http {
 						}
 
 						var hexStr:String = StringTools.trim(sizeLine);
+
+						// Checked as hex before it is parsed, the way the
+						// Content-Length parser below checks its own field.
+						// Std.parseInt stops at the first character it cannot use,
+						// so "10junk" and "10 20" both came back as 16 -- a size
+						// line this client read differently from whatever wrote it,
+						// and nothing said so.
+						if (hexStr.length == 0 || !~/^[0-9a-fA-F]+$/.match(hexStr)) {
+							throw "Invalid chunk size: " + hexStr;
+						}
+
+						// Seven significant digits at most, leading zeros not
+						// counted. Past that Std.parseInt answers differently on
+						// every target: -1 on eval and cpp, a thrown
+						// NumberFormatException on jvm, and on node a number too
+						// large for Int, which is neither null nor negative and so
+						// walked straight past the test below. 0xFFFFFFF is already
+						// far beyond MAX_CHUNKED_BODY_SIZE.
+						var firstSignificant:Int = 0;
+						while (firstSignificant < hexStr.length - 1 && hexStr.charCodeAt(firstSignificant) == 48) {
+							firstSignificant++;
+						}
+						if (hexStr.length - firstSignificant > 7) {
+							throw "Invalid chunk size: " + hexStr;
+						}
+
 						var parsed:Null<Int> = Std.parseInt('0x' + hexStr);
 						if (parsed == null || parsed < 0) {
 							throw "Invalid chunk size: " + hexStr;
@@ -431,7 +458,12 @@ class Http {
 			}
 		} catch (e:Dynamic) {
 			__close();
-			onError("Download failed");
+			// `e` was bound and then dropped, so every way a body can fail --
+			// a chunk size that is not one, a truncated chunk, a missing
+			// terminator, an early EOF -- reached the caller as the same four
+			// words. The three messages above this one all name the thing that
+			// went wrong.
+			onError("Download failed: " + Std.string(e));
 			return;
 		}
 
