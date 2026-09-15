@@ -520,9 +520,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		@throws IOError The data is not valid compressed data; it was not
 						compressed with the same compression algorithm used to
 						compress.
+
+		@param maxOutputSize Bytes the decoded result may reach before this
+		       gives up, or `0` for no limit. Compression ratios have no
+		       ceiling -- a megabyte of zeros returns as roughly a gigabyte --
+		       so anything decoding bytes it did not author wants to name one.
 	**/
-	public inline function uncompress(algorithm:CompressionAlgorithm = LZ4):Void {
-		this.uncompress(algorithm);
+	public inline function uncompress(algorithm:CompressionAlgorithm = LZ4, maxOutputSize:Int = 0):Void {
+		this.uncompress(algorithm, maxOutputSize);
 	}
 
 	/**
@@ -1136,7 +1141,20 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return result;
 	}
 
-	public function uncompress(algorithm:CompressionAlgorithm = LZ4):Void {
+	@:noCompletion private static function __withinLimit(bytes:Bytes, maxOutputSize:Int):Bytes {
+		if (maxOutputSize > 0 && bytes != null && bytes.length > maxOutputSize) {
+			throw new Exception("Decoded stream exceeded " + maxOutputSize + " bytes");
+		}
+		return bytes;
+	}
+
+	/**
+		@param maxOutputSize Bytes the decoded result may reach before this
+		       gives up, or `0` for no limit. Compression ratios have no
+		       ceiling -- a megabyte of zeros returns as roughly a gigabyte --
+		       so anything decoding bytes it did not author wants to name one.
+	**/
+	public function uncompress(algorithm:CompressionAlgorithm = LZ4, maxOutputSize:Int = 0):Void {
 		/*#if lime
 			#if js
 			if (__length > #if lime_bytes_length_getter l #else length #end)
@@ -1183,10 +1201,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			position = 0; */
 
 		var bytes:Bytes = switch (algorithm) {
-			case CompressionAlgorithm.BROTLI: Brotli.decompress(this);
-			case CompressionAlgorithm.DEFLATE: Inflater.apply(this);
-			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this);
-			case CompressionAlgorithm.LZ4: Lz4.decompress(this);
+			// Deflate and gzip take the ceiling into the read loop, so a stream
+			// that keeps expanding is abandoned partway and the memory is never
+			// taken. Brotli and LZ4 decode all at once here, so theirs can only
+			// be checked afterwards -- it stops the result being handed on and
+			// stops a second coding being applied to it, but the allocation has
+			// already happened by then.
+			case CompressionAlgorithm.BROTLI: __withinLimit(Brotli.decompress(this), maxOutputSize);
+			case CompressionAlgorithm.DEFLATE: Inflater.apply(this, maxOutputSize);
+			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this, maxOutputSize);
+			case CompressionAlgorithm.LZ4: __withinLimit(Lz4.decompress(this), maxOutputSize);
 			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 

@@ -68,7 +68,13 @@ class GZCompressor {
 	 * @param stream The input stream for the compressed data
 	 * @return The output bytes with the decompressed data
 	 */
-	public static function decompress(stream:Bytes):Bytes {
+	/**
+		@param maxOutputSize Bytes to produce before giving up, or `0` for no
+		       limit. A gzip member says nothing trustworthy about how far it
+		       expands, so a caller inflating a stream it did not author wants
+		       to name a ceiling.
+	**/
+	public static function decompress(stream:Bytes, maxOutputSize:Int = 0):Bytes {
 		var input:BitsInput = new BitsInput(stream);
 		var id1:Int = input.readByte();
 		var id2:Int = input.readByte();
@@ -93,6 +99,7 @@ class GZCompressor {
 		}
 
 		var inflater:Inflater = new Inflater();
+		inflater.maxOutputSize = maxOutputSize;
 		var length:Int = input.length - input.position - 8;
 		var content:Bytes = Bytes.alloc(length);
 		input.readBytes(content, 0, length);
