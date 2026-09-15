@@ -8,11 +8,54 @@ class ErrorsTest extends utest.Test {
 		Assert.equals("Error", err.name);
 		Assert.equals(0, err.errorID);
 		Assert.equals("Error", err.toString());
-		Assert.notNull(err.getCallStack());
 
 		var withMessage = new Error("boom", 7);
 		Assert.equals("boom", withMessage.toString());
 		Assert.equals(7, withMessage.errorID);
+	}
+
+	public function testAnErrorCarriesItsOwnCallStack():Void {
+		// Constructed in a named function so the frame has something to say.
+		var never = __makeUnthrownError();
+		var atConstruction = never.getCallStack();
+		Assert.notNull(atConstruction);
+
+		var atThrow = "";
+		try {
+			__throwFromHere();
+			Assert.fail("__throwFromHere did not throw");
+		} catch (thrown:Error) {
+			atThrow = thrown.getCallStack();
+		}
+
+		// The error's stack is its own. Reading it after an unrelated exception
+		// has been caught used to hand back *that* exception's stack, because
+		// the value came from CallStack.exceptionStack() -- global state -- and
+		// not from the error at all.
+		Assert.equals(atConstruction, never.getCallStack());
+		Assert.isTrue(never.getCallStack().indexOf("__throwFromHere") < 0,
+			"an unrelated exception leaked into this error's stack");
+
+		// How much stack a build records is the build's business: a release cpp
+		// build has none without -D HXCPP_STACK_TRACE, and there every stack
+		// here is legitimately empty. Where there are frames at all, check that
+		// each error names its own site.
+		if (atThrow.length > 0) {
+			Assert.isTrue(atThrow.indexOf("__throwFromHere") >= 0,
+				"expected the throw site in the stack, got: " + atThrow);
+			// Never thrown, and it still knows where it was made. This was
+			// empty before, for every error, until one was thrown and caught.
+			Assert.isTrue(atConstruction.indexOf("__makeUnthrownError") >= 0,
+				"expected the construction site in the stack, got: " + atConstruction);
+		}
+	}
+
+	private function __makeUnthrownError():Error {
+		return new Error("never thrown", 1);
+	}
+
+	private function __throwFromHere():Void {
+		throw new Error("thrown", 2);
 	}
 
 	public function testNamedErrorSubclassesPreserveIdentity():Void {
