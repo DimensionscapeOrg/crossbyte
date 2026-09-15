@@ -61,11 +61,11 @@ import haxe.io.Bytes;
 	For example, the following File object would only work on Windows:
 
 	```hx
-		new File("C:\Documents and Settings\joe\My Documents\test.txt")
+		new File("C:\\Documents and Settings\\joe\\My Documents\\test.txt")
 	```
 
 	The application storage directory is particularly useful. It gives an application-specific
-	storage directory for the AIR application. It is defined by the File.applicationStorageDirectory
+	storage directory for the application. It is defined by the File.applicationStorageDirectory
 	property.
 
 	@event cancel    			Dispatched when a pending asynchronous operation is canceled.
@@ -225,12 +225,12 @@ final class File extends EventDispatcher {
 
 		```hx
 		import crossbyte.io.File;
+
 		var desktop:File = File.desktopDirectory;
+		var files:Array<File> = desktop.getDirectoryListing();
 
-		var files:Array = desktop.getDirectoryListing();
-
-		for (var i:uint = 0; i < files.length; i++) {
-			trace(files[i].nativePath);
+		for (file in files) {
+			trace(file.nativePath);
 		}
 		```
 	**/
@@ -258,7 +258,7 @@ final class File extends EventDispatcher {
 		var directory:File = File.documentsDirectory;
 		directory = directory.resolvePath("CrossByte Test");
 
-		File.createDirectory(directory);
+		directory.createDirectory();
 		trace(directory.exists); // true
 		```
 	**/
@@ -293,10 +293,11 @@ final class File extends EventDispatcher {
 		```hx
 		import crossbyte.io.File;
 
-		var userDirFiles:Array = File.userDirectory.getDirectoryListing();
-		for (var i:uint = 0; i < userDirFiles.length; i++) {
-			if (userDirFiles[i].isDirectory) {
-				trace(userDirFiles[i].nativePath);
+		var userDirFiles:Array<File> = File.userDirectory.getDirectoryListing();
+
+		for (file in userDirFiles) {
+			if (file.isDirectory) {
+				trace(file.nativePath);
 			}
 		}
 		```
@@ -313,10 +314,11 @@ final class File extends EventDispatcher {
 		```hx
 		import crossbyte.io.File;
 
-		var userDirFiles:Array = File.userDirectory.getDirectoryListing();
-		for (var i:uint = 0; i < userDirFiles.length; i++) {
-			if (userDirFiles[i].isHidden) {
-				trace(userDirFiles[i].nativePath);
+		var userDirFiles:Array<File> = File.userDirectory.getDirectoryListing();
+
+		for (file in userDirFiles) {
+			if (file.isHidden) {
+				trace(file.nativePath);
 			}
 		}
 		```
@@ -451,9 +453,10 @@ final class File extends EventDispatcher {
 		```hx
 		import crossbyte.io.File;
 
-		var files:Array = File.userDirectory.listDirectory();
-		for (var i:uint = 0; i < files.length; i++) {
-			trace(files[i].nativePath);
+		var files:Array<File> = File.userDirectory.getDirectoryListing();
+
+		for (file in files) {
+			trace(file.nativePath);
 		}
 		```
 
@@ -641,7 +644,7 @@ final class File extends EventDispatcher {
 		The resulting copied file is named test2.txt in the same directory. When
 		you set the overwrite parameter to true, the operation overwrites any existing test2.txt file.
 
-		```haxe
+		```hx
 		import crossbyte.io.File;
 
 		var sourceFile:File = File.documentsDirectory.resolvePath("CrossByte Test/test1.txt");
@@ -655,6 +658,7 @@ final class File extends EventDispatcher {
 		resulting copied file is named test2.txt. The try and catch statements show how to respond to errors.
 
 		```hx
+		import crossbyte.errors.Error;
 		import crossbyte.io.File;
 
 		var sourceFile:File = File.documentsDirectory;
@@ -662,13 +666,10 @@ final class File extends EventDispatcher {
 		var destination:File = File.documentsDirectory;
 		destination = destination.resolvePath("CrossByte Test/test2.txt");
 
-		try
-		{
+		try {
 			sourceFile.copyTo(destination, true);
-		}
-		catch (error:Error)
-		{
-			trace("Error:", error.message);
+		} catch (error:Error) {
+			trace("Error: " + error.message);
 		}
 		```
 	**/
@@ -765,12 +766,12 @@ final class File extends EventDispatcher {
 		var destination:File = File.documentsDirectory;
 		destination = destination.resolvePath("CrossByte Test/test2.txt");
 
-		sourceFile.copyToAsync(destination, true);
-		sourceFile.addEventListener(Event.COMPLETE, fileCopiedHandler);
-
-		function fileCopiedHandler(event:Event):void {
+		function fileCopiedHandler(event:Event):Void {
 			trace("Done.");
 		}
+
+		sourceFile.addEventListener(Event.COMPLETE, fileCopiedHandler);
+		sourceFile.copyToAsync(destination, true);
 		```
 	**/
 	public function copyToAsync(newLocation:File, overwrite:Bool = false):Void {
@@ -853,7 +854,7 @@ final class File extends EventDispatcher {
 		import crossbyte.io.File;
 
 		var directory:File = File.documentsDirectory.resolvePath("Empty Junk Directory/");
-		File.createDirectory(directory);
+		directory.createDirectory();
 		trace(directory.exists); // true
 		directory.deleteDirectory();
 		trace(directory.exists); // false
@@ -974,9 +975,10 @@ final class File extends EventDispatcher {
 		import crossbyte.io.File;
 
 		var directory:File = File.userDirectory;
-		var list:Array = directory.getDirectoryListing();
-		for (var i:uint = 0; i < list.length; i++) {
-			trace(list[i].nativePath);
+		var list:Array<File> = directory.getDirectoryListing();
+
+		for (file in list) {
+			trace(file.nativePath);
 		}
 		```
 	**/
@@ -1011,16 +1013,15 @@ final class File extends EventDispatcher {
 		import crossbyte.events.FileListEvent;
 		import crossbyte.io.File;
 
-		var directory:File = File.userDirectory;
-		directory.getDirectoryListingAsync();
-		directory.addEventListener(FileListEvent.DIRECTORY_LISTING, directoryListingHandler);
-
-		function directoryListingHandler(event:FileListEvent):void {
-			var list:Array = event.files;
-			for (var i:uint = 0; i < list.length; i++) {
-				trace(list[i].nativePath);
+		function directoryListingHandler(event:FileListEvent):Void {
+			for (file in event.files) {
+				trace(file.nativePath);
 			}
 		}
+
+		var directory:File = File.userDirectory;
+		directory.addEventListener(FileListEvent.DIRECTORY_LISTING, directoryListingHandler);
+		directory.getDirectoryListingAsync();
 		```
 	**/
 	public function getDirectoryListingAsync():Void {
@@ -1196,6 +1197,7 @@ final class File extends EventDispatcher {
 		file.
 
 		```hx
+		import crossbyte.errors.Error;
 		import crossbyte.io.File;
 
 		var sourceFile:File = File.documentsDirectory;
@@ -1203,13 +1205,10 @@ final class File extends EventDispatcher {
 		var destination:File = File.documentsDirectory;
 		destination = destination.resolvePath("CrossByte Test/test2.txt");
 
-		try
-		{
+		try {
 			sourceFile.moveTo(destination, true);
-		}
-		catch (error:Error)
-		{
-			trace("Error:" + error.message);
+		} catch (error:Error) {
+			trace("Error: " + error.message);
 		}
 		```
 	**/
@@ -1261,14 +1260,13 @@ final class File extends EventDispatcher {
 			var destination:File = File.documentsDirectory;
 			destination = destination.resolvePath("CrossByte Test/test2.txt");
 
-			sourceFile.moveToAsync(destination, true);
-			sourceFile.addEventListener(Event.COMPLETE, fileMoveCompleteHandler);
-
-			function fileMoveCompleteHandler(event:Event):void
-			{
-				trace("Done.")
+			function fileMoveCompleteHandler(event:Event):Void {
+				trace("Done.");
 			}
-		```
+
+			sourceFile.addEventListener(Event.COMPLETE, fileMoveCompleteHandler);
+			sourceFile.moveToAsync(destination, true);
+			```
 	**/
 	public function moveToAsync(newLocation:File, overwrite:Bool = false):Void {
 		__fileWorker = new Worker();
@@ -1427,10 +1425,11 @@ final class File extends EventDispatcher {
 
 		```hx
 		import crossbyte.io.File;
-		var rootDirs:Array = File.getRootDirectories();
 
-		for (var i:uint = 0; i < rootDirs.length; i++) {
-			trace(rootDirs[i].nativePath);
+		var rootDirs:Array<File> = File.getRootDirectories();
+
+		for (dir in rootDirs) {
+			trace(dir.nativePath);
 		}
 		```
 	**/
