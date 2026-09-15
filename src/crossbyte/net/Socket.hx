@@ -357,54 +357,25 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Creates a new Socket object. If no parameters are specified, an
 		initially disconnected socket is created. If parameters are specified,
 		a connection is attempted to the specified host and port.
+
 		**Note:** It is strongly advised to use the constructor form **without
 		parameters**, then add any event listeners, then call the `connect`
 		method with `host` and `port` parameters. This sequence guarantees
 		that all event listeners will work properly.
+
 		@param host A fully qualified DNS domain name or an IP address. IPv4
-					addresses are specified in dot-decimal notation, such as
-					_192.0.2.0_. In Flash Player 9.0.115.0 and AIR 1.0 and
-					later, you can specify IPv6 addresses using
-					hexadecimal-colon notation, such as
-					_2001:db8:ccc3:ffff:0:444d:555e:666f_. You can also
-					specify `null` to connect to the host server on which the
-					SWF file resides. If the SWF file issuing this call is
-					running in a web browser, `host` must be in the domain
-					from which the SWF file originated.
-		@param port The TCP port number on the target host used to establish a
-					connection. In Flash Player 9.0.124.0 and later, the
-					target host must serve a socket policy file specifying
-					that socket connections are permitted from the host
-					serving the SWF file to the specified port. In earlier
-					versions of Flash Player, a socket policy file is required
-					only if you want to connect to a port number below 1024,
-					or if you want to connect to a host other than the one
-					serving the SWF file.
-		@throws SecurityError This error occurs in SWF content for the
-							  following reasons:
-							  * Local-with-filesystem files cannot communicate
-							  with the Internet. You can work around this
-							  problem by reclassifying this SWF file as
-							  local-with-networking or trusted. This
-							  limitation is not set for AIR application
-							  content in the application security sandbox.
-							  * You cannot specify a socket port higher than
-							  65535.
+		            addresses are in dot-decimal notation, such as _192.0.2.0_;
+		            IPv6 addresses in hexadecimal-colon notation, such as
+		            _2001:db8:ccc3:ffff:0:444d:555e:666f_.
+		@param port The TCP port number on the target host. A connection is
+		            attempted only when this is between 1 and 65535; leave it
+		            at 0 for the disconnected socket recommended above.
+		@throws SecurityError The port is outside 0-65535.
 		@event connect       Dispatched when a network connection has been
-							 established.
+		                     established.
 		@event ioError       Dispatched when an input/output error occurs that
-							 causes the connection to fail.
-		@event securityError Dispatched if a call to `Socket.connect()`
-							 attempts to connect either to a server that
-							 doesn't serve a socket policy file, or to a
-							 server whose policy file doesn't grant the
-							 calling host access to the specified port. For
-							 more information on policy files, see "Website
-							 controls (policy files)" in the _ActionScript 3.0
-							 Developer's Guide_ and the Flash Player Developer
-							 Center Topic: <a
-							 href="http://www.adobe.com/go/devnet_security_en"
-							 scope="external">Security</a>.
+		                     causes the connection to fail, including a host
+		                     that cannot be resolved.
 	**/
 	public function new(host:String = null, port:Int = 0) {
 		super();
@@ -415,7 +386,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__closed = false;
 		__isConnecting = false;
 
-		if (port > 0 && port < 65535) {
+		// 65535 inclusive, which is what connect() accepts. This read
+		// `port < 65535`, so the highest valid TCP port was the one port
+		// number for which the constructor quietly declined to connect.
+		if (port > 0 && port <= 65535) {
 			connect(host, port);
 		}
 	}
@@ -448,46 +422,21 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	/**
 		Connects the socket to the specified host and port.
-		If the connection fails immediately, either an event is dispatched or
-		an exception is thrown: an error event is dispatched if a host was
-		specified, and an exception is thrown if no host was specified.
-		Otherwise, the status of the connection is reported by an event. If
-		the socket is already connected, the existing connection is closed
-		first.
-		@param host The name or IP address of the host to connect to. If no
-					host is specified, the host that is contacted is the host
-					where the calling file resides. If you do not specify a
-					host, use an event listener to determine whether the
-					connection was successful.
+
+		The outcome is reported by an event, not by this call returning. If the
+		socket is already connected, the existing connection is closed first.
+
+		A host that cannot be resolved is reported as an `ioError` event rather
+		than thrown, so a listener is the only way to see it.
+
+		@param host The name or IP address of the host to connect to.
 		@param port The port number to connect to.
-		@throws IOError       No host was specified and the connection failed.
-		@throws SecurityError This error occurs in SWF content for the
-							  following reasons:
-							  * Local untrusted SWF files may not communicate
-							  with the Internet. You can work around this
-							  limitation by reclassifying the file as
-							  local-with-networking or as trusted.
-							  * You cannot specify a socket port higher than
-							  65535.
-							  * In the HTML page that contains the SWF
-							  content, the `allowNetworking` parameter of the
-							  `object` and `embed` tags is set to `"none"`.
+		@throws SecurityError The port is outside 0-65535.
 		@event connect       Dispatched when a network connection has been
-							 established.
-		@event ioError       Dispatched if a host is specified and an
-							 input/output error occurs that causes the
-							 connection to fail.
-		@event securityError Dispatched if a call to `Socket.connect()`
-							 attempts to connect either to a server that
-							 doesn't serve a socket policy file, or to a
-							 server whose policy file doesn't grant the
-							 calling host access to the specified port. For
-							 more information on policy files, see "Website
-							 controls (policy files)" in the _ActionScript 3.0
-							 Developer's Guide_ and the Flash Player Developer
-							 Center Topic: <a
-							 href="http://www.adobe.com/go/devnet_security_en"
-							 scope="external">Security</a>.
+		                     established.
+		@event ioError       Dispatched when an input/output error occurs that
+		                     causes the connection to fail, including a host
+		                     that cannot be resolved.
 	**/
 	public function connect(host:String, port:Int):Void {
 		if (__socket != null) {
