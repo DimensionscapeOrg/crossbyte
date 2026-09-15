@@ -455,11 +455,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Converts the byte array to a string. If the data in the array begins with
-		a Unicode byte order mark, the application will honor that mark when
-		converting to a string. If `System.useCodePage` is set to
-		`true`, the application will treat the data in the array as
-		being in the current system code page when converting.
+		Decodes the whole byte array as UTF-8, from index 0 and regardless of
+		`position`.
+
+		A leading byte order mark is data like any other and survives into the
+		string as U+FEFF; strip it yourself if the source may carry one. There is
+		no code page fallback.
+
 		@return The string representation of the byte array.
 	**/
 	public inline function toString():String {

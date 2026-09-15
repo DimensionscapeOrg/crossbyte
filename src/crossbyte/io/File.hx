@@ -331,7 +331,12 @@ final class File extends EventDispatcher {
 		The full path in the host operating system representation. On Mac OS and Linux, the forward
 		slash (/) character is used as the path separator. However, in Windows, you can set the nativePath
 		property by using the forward slash character or the backslash (\) character as the path separator,
-		and AIR automatically replaces forward slashes with the appropriate backslash character.
+		and the forward slashes are replaced with the appropriate backslash character for you.
+
+		On Windows a path containing `%NAME%` has the first such reference expanded from the
+		process environment, so `"%APPDATA%/myapp"` resolves. A name that is not set is left
+		as written rather than expanding to nothing, and only the first reference in a path is
+		expanded.
 
 		Before writing code to set the nativePath property directly, consider whether doing so may result
 		in platform-specific code. For example, a native path such as "C:\\Documents and Settings\\bob\\Desktop"
@@ -345,6 +350,8 @@ final class File extends EventDispatcher {
 			*File.userDirectory
 
 		You can use the resolvePath() method to get a path relative to these directories.
+
+		@throws ArgumentError The path has no directory component.
 
 		@throws ArgumentError The syntax of the path is invalid.
 		@throws SecurityError The caller is not in the application security sandbox.
