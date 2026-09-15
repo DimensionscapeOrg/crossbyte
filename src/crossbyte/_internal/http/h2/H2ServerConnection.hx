@@ -44,6 +44,9 @@ class H2ServerConnection {
 	/** Seconds the reset budget is measured over. */
 	public static inline var DEFAULT_RESET_WINDOW:Float = 30.0;
 
+	/** Replies the peer may oblige, per window, before this gives up. */
+	public static inline var DEFAULT_MAX_CONTROL_REPLIES:Int = 100;
+
 	/** Compressed bytes one header block may span, across every CONTINUATION. */
 	public static inline var DEFAULT_MAX_HEADER_BLOCK:Int = 256 * 1024;
 
@@ -76,6 +79,25 @@ class H2ServerConnection {
 	 */
 	public var maxHeaderBlockSize:Int = DEFAULT_MAX_HEADER_BLOCK;
 
+	/**
+	 * PING and SETTINGS frames the peer may oblige a reply to within
+	 * `resetWindowSeconds`, after which the connection is closed with
+	 * ENHANCE_YOUR_CALM. Negative disables the check.
+	 *
+	 * Both are answered the moment they arrive -- 6.5.3 requires a SETTINGS
+	 * ACK and 6.7 a PING ACK -- so a peer sending them faster than this side
+	 * drains its socket grows the outgoing buffer with nothing to stop it.
+	 * Neither frame opens a stream, so none of the limits above can see it:
+	 * MAX_CONCURRENT_STREAMS counts streams, the reset budget counts
+	 * abandoned ones, and a flood of these opens none. This is the settings
+	 * and ping flood pair, CVE-2019-9515 and CVE-2019-9512.
+	 *
+	 * The budget shares `resetWindowSeconds` rather than adding a second
+	 * window to tune; both measure the same thing, a peer asking for more
+	 * work than a conversation needs.
+	 */
+	public var maxControlReplies:Int = DEFAULT_MAX_CONTROL_REPLIES;
+
 	/** Called once per complete request. */
 	public var onRequest:H2ServerRequest->Void = _ -> {};
 
@@ -106,6 +128,8 @@ class H2ServerConnection {
 	private var __openStreams:Int = 0;
 	private var __resetCount:Int = 0;
 	private var __resetWindowStart:Float = -1;
+	private var __controlReplyCount:Int = 0;
+	private var __controlReplyWindowStart:Float = -1;
 
 	// A header block spans HEADERS plus any CONTINUATION frames, and §6.10
 	// forbids any other frame in between, on any stream.
@@ -706,6 +730,32 @@ class H2ServerConnection {
 		}
 	}
 
+	/**
+	 * Counts a control frame this side must answer, and gives up when a
+	 * peer asks for more answers than a conversation has reason to.
+	 */
+	private function __noteControlReply():Void {
+		if (maxControlReplies < 0) {
+			return;
+		}
+
+		var now:Float = haxe.Timer.stamp();
+		// >= rather than >, for the reason given on the reset window above.
+		if (__controlReplyWindowStart < 0 || (now - __controlReplyWindowStart) >= resetWindowSeconds) {
+			__controlReplyWindowStart = now;
+			__controlReplyCount = 0;
+		}
+
+		__controlReplyCount++;
+
+		if (__controlReplyCount > maxControlReplies) {
+			// ENHANCE_YOUR_CALM for the same reason the reset budget uses it:
+			// every frame was well formed, there was simply too much of it.
+			throw new H2ConnectionError(H2ErrorCode.ENHANCE_YOUR_CALM,
+				'Peer obliged $__controlReplyCount control-frame replies within ${resetWindowSeconds}s');
+		}
+	}
+
 	private function __onSettings(frame:H2Frame):Void {
 		if (frame.has(H2Flags.ACK)) {
 			if (frame.payload.length != 0) {
@@ -730,6 +780,7 @@ class H2ServerConnection {
 		}
 
 		__encoder.setCapacity(remoteSettings.headerTableSize);
+		__noteControlReply();
 		__writeFrame(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0));
 
 		if (delta > 0) {
@@ -747,6 +798,7 @@ class H2ServerConnection {
 		if (frame.has(H2Flags.ACK)) {
 			return;
 		}
+		__noteControlReply();
 		__writeFrame(H2FrameType.PING, H2Flags.ACK, 0, frame.payload);
 	}
 
