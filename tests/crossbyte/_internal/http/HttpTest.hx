@@ -475,6 +475,67 @@ not chunk framed");
 		Assert.equals("not chunk framed", completed.toString());
 	}
 
+	public function testAGzipBombIsAbandonedRatherThanDecoded():Void {
+		// A megabyte of zeros is about a kilobyte on the wire, so
+		// Content-Length and the chunked ceiling both see a small response.
+		// Neither of them describes what it becomes.
+		var previous:Int = Http.MAX_DECOMPRESSED_BODY_SIZE;
+		Http.MAX_DECOMPRESSED_BODY_SIZE = 64 * 1024;
+
+		try {
+			var encoded = new ByteArray();
+			encoded.length = 1024 * 1024;
+			encoded.compress(CompressionAlgorithm.GZIP);
+
+			var fixture = serveOnceWithBody("HTTP/1.1 200 OK
+Content-Encoding: gzip
+Content-Length: " + encoded.length + "
+
+", encoded);
+			var http = new Http('http://127.0.0.1:${fixture.port}/bomb');
+			var completed:Bytes = null;
+			var failure:String = null;
+
+			http.onComplete = data -> completed = data;
+			http.onError = (message, ?data) -> failure = message;
+
+			http.load();
+			fixture.waitDone();
+
+			Assert.isNull(completed);
+			var error:String = Require.notNull(failure, "a gzip bomb decoded to the end");
+			Assert.isTrue(error.indexOf("Failed to decode response body") == 0, error);
+		} catch (e:Dynamic) {
+			Assert.fail("bomb test failed: " + Std.string(e));
+		}
+
+		Http.MAX_DECOMPRESSED_BODY_SIZE = previous;
+	}
+
+	public function testStackedContentCodingsAreRefused():Void {
+		// Codings multiply, so three of them is three ratios on top of each
+		// other. Refused before anything is decoded, which is why the body
+		// below does not have to be genuinely triple-encoded.
+		var fixture = serveOnce("HTTP/1.1 200 OK
+Content-Encoding: gzip, gzip, gzip
+Content-Length: 4
+
+xxxx");
+		var http = new Http('http://127.0.0.1:${fixture.port}/stacked');
+		var completed:Bytes = null;
+		var failure:String = null;
+
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed);
+		var error:String = Require.notNull(failure, "three stacked codings were accepted");
+		Assert.isTrue(error.indexOf("content codings") > 0, error);
+	}
+
 	public function testLoadDecodesGzipContentEncoding():Void {
 		var encoded = new ByteArray();
 		encoded.writeUTFBytes("hello from gzip");

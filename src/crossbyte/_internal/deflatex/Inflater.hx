@@ -51,13 +51,31 @@ class Inflater {
 	 * Applies the inflate decompression on the supplied stream.
 	 * @return Bytes with the uncompressed data
 	 */
+	/**
+		Bytes this will produce before giving up, or `0` for no limit.
+
+		Deflate has no bound on how far input expands -- a megabyte of zeros
+		comes back as about a gigabyte -- so anything inflating a stream it
+		did not author wants a ceiling. The check sits inside the read loop
+		rather than on the result, so the memory is never taken in the first
+		place.
+	**/
+	public var maxOutputSize:Int = 0;
+
 	public function decompress(stream:Bytes):Bytes {
 		var inflater = new haxe.zip.InflateImpl(new BytesInput(stream), false, false);
 		var output = new BytesBuffer();
 		var buffer = Bytes.alloc(8192);
+		var produced:Int = 0;
 
 		while (true) {
 			var read = inflater.readBytes(buffer, 0, buffer.length);
+
+			produced += read;
+			if (maxOutputSize > 0 && produced > maxOutputSize) {
+				throw new Exception("Inflated stream exceeded " + maxOutputSize + " bytes");
+			}
+
 			output.addBytes(buffer, 0, read);
 			if (read < buffer.length) {
 				break;
@@ -284,7 +302,9 @@ class Inflater {
 	 * Applies inflate decompression on the supplied bytes.
 	 * @return Decompressed output
 	 */
-	public static function apply(stream:Bytes):Bytes {
-		return new Inflater().decompress(stream);
+	public static function apply(stream:Bytes, maxOutputSize:Int = 0):Bytes {
+		var inflater = new Inflater();
+		inflater.maxOutputSize = maxOutputSize;
+		return inflater.decompress(stream);
 	}
 }
