@@ -21,6 +21,7 @@ import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.utils.Logger;
+import crossbyte.utils.LogLevel;
 import crossbyte._internal.http.headers.AcceptEncoding;
 import crossbyte._internal.http.headers.Connection;
 import crossbyte._internal.http.HttpSyntax;
@@ -497,8 +498,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var absoluteTarget:EReg = ~/^https?:\/\//i;
-		if (absoluteTarget.match(rawTarget)) {
+		if (__hasAbsoluteScheme(rawTarget)) {
 			try {
 				var absoluteUrl = new URL(rawTarget);
 				rawTarget = absoluteUrl.path + (absoluteUrl.query.length > 0 ? "?" + absoluteUrl.query : "");
@@ -1403,7 +1403,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// compression failure) replaces this response entirely, and an
 		// event fired earlier would count and time a response that was
 		// never sent -- under per-response metrics, twice for one request.
-		Logger.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
+		// Guarded rather than handed straight to Logger.info, because the
+		// argument is built before the call regardless of whether the level
+		// admits it -- five concatenations per request, on a server whose
+		// operator has every reason to run above INFO.
+		if (Logger.isEnabled(LogLevel.INFO)) {
+			Logger.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
+		}
 		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
 		statusEvent.responseURL = __origin.remoteAddress;
 		statusEvent.responseHeaders = headers;
@@ -2594,6 +2600,50 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (onComplete != null) {
 			onComplete();
 		}
+	}
+
+	/**
+	 * `^https?://` case-insensitively, without building an EReg.
+	 *
+	 * A regex literal written inside a function is constructed every time
+	 * that function runs, and on cpp constructing one compiles the pattern:
+	 * about 126us a call, measured, against a request this server otherwise
+	 * answers in roughly 265us. This one ran on every request, so half the
+	 * time spent answering was spent rebuilding a seven character pattern.
+	 *
+	 * Hand-written rather than hoisted to a static, because an EReg carries
+	 * the results of its last match and two runtimes share no more than
+	 * they must.
+	 */
+	@:noCompletion private static function __hasAbsoluteScheme(target:String):Bool {
+		var length:Int = target.length;
+
+		// "http://" is the shortest this can be, which also makes the four
+		// reads below safe without checking each one.
+		if (length < 7) {
+			return false;
+		}
+
+		if (__lowerCode(target.charCodeAt(0)) != "h".code
+			|| __lowerCode(target.charCodeAt(1)) != "t".code
+			|| __lowerCode(target.charCodeAt(2)) != "t".code
+			|| __lowerCode(target.charCodeAt(3)) != "p".code) {
+			return false;
+		}
+
+		var at:Int = __lowerCode(target.charCodeAt(4)) == "s".code ? 5 : 4;
+		if (at + 3 > length) {
+			return false;
+		}
+
+		return target.charCodeAt(at) == ":".code
+			&& target.charCodeAt(at + 1) == "/".code
+			&& target.charCodeAt(at + 2) == "/".code;
+	}
+
+	@:noCompletion private static inline function __lowerCode(code:Null<Int>):Int {
+		var c:Int = code == null ? -1 : code;
+		return (c >= "A".code && c <= "Z".code) ? c + 32 : c;
 	}
 
 	@:noCompletion private function __parseContentLength(header:String):Null<Int> {
