@@ -57,20 +57,26 @@ static public function BrotliInitMemInput(buffer:Array<UInt>, length:Int):Brotli
 
 static public function BrotliMemOutputFunction(data, buf:Vector<UInt>, buf_off:Int, count:Int):Int {
   var output:BrotliMemOutput = data;
-  //var limit:Int = output.length - output.pos;
-  //if (count > limit) {
-  //  count = limit;
-  //}
+  // Every decoded byte arrives here, so this is where a ceiling costs one
+  // comparison and stops the expansion rather than measuring it afterwards.
+  // Written as a difference because pos is already inside the buffer and
+  // the sum would not be.
+  if (output.limit > 0 && count > output.limit - output.pos) {
+    // An exception rather than a string: a caller that throws the coding
+    // token itself to mean "cannot decode this" would otherwise read a
+    // size failure as an unrecognised coding.
+    throw new haxe.Exception("Brotli stream exceeded " + output.limit + " bytes");
+  }
   DefaultFunctions.memcpyArrayVector(output.buffer, 0 + output.pos, buf, buf_off, count);
   output.pos += count;
   return count;
 }
 
-static public function BrotliInitMemOutput(buffer:Array<UInt>):BrotliOutput {//, length:Int
+static public function BrotliInitMemOutput(buffer:Array<UInt>, limit:UInt = 0):BrotliOutput {
   var output:BrotliOutput=new BrotliOutput();
   var mem_output:BrotliMemOutput=new BrotliMemOutput();
   mem_output.buffer = buffer;
-  //mem_output.length = length;
+  mem_output.limit = limit;
   mem_output.pos = 0;
   output.cb_ = BrotliMemOutputFunction;//&
   output.data_ = mem_output;

@@ -1201,13 +1201,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			position = 0; */
 
 		var bytes:Bytes = switch (algorithm) {
-			// Deflate and gzip take the ceiling into the read loop, so a stream
-			// that keeps expanding is abandoned partway and the memory is never
-			// taken. Brotli and LZ4 decode all at once here, so theirs can only
-			// be checked afterwards -- it stops the result being handed on and
-			// stops a second coding being applied to it, but the allocation has
-			// already happened by then.
-			case CompressionAlgorithm.BROTLI: __withinLimit(Brotli.decompress(this), maxOutputSize);
+			// Deflate, gzip and brotli take the ceiling down into the decode
+			// itself, so a stream that keeps expanding is abandoned partway and
+			// the memory is never taken. LZ4 decodes all at once here, so its
+			// result can only be measured afterwards: that stops it being handed
+			// on and stops a second coding being applied to it, but by then the
+			// allocation has happened.
+			case CompressionAlgorithm.BROTLI: Brotli.decompress(this, maxOutputSize);
 			case CompressionAlgorithm.DEFLATE: Inflater.apply(this, maxOutputSize);
 			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this, maxOutputSize);
 			case CompressionAlgorithm.LZ4: __withinLimit(Lz4.decompress(this), maxOutputSize);
