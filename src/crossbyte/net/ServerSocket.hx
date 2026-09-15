@@ -56,7 +56,7 @@ import crossbyte._internal.socket.AlpnSocket;
 	serious network failure occurs). Any data sent over the connection is broken into transmittable
 	packets and reassembled on the other end. All packets are guaranteed to arrive (within reason) —
 	any lost packets are retransmitted. In general, the TCP protocol manages the available network
-	bandwidth better than the UDP protocol. Most AIR applications that require socket communications
+	bandwidth better than the UDP protocol. Most applications that require socket communications
 	should use the ServerSocket and Socket classes rather than the DatagramSocket class.
 	The ServerSocket class can only be used in targets that support TCP.
 	@event close    Dispatched when the operating system closes this socket.
@@ -141,8 +141,9 @@ class ServerSocket extends EventDispatcher {
 			`connect` events are dispatched only after each client's handshake
 			completes. Handshakes progress across ticks and never block the
 			runtime loop.
-		@throws  SecurityError This error occurs ff the calling content is running outside the AIR
-				application security sandbox.
+		@throws  Error On the eval target, when `secure` is true: eval's `sys.ssl.Socket`
+				cannot install a certificate, so a TLS server there is refused at construction
+				rather than several calls later.
 	**/
 	public function new(secure:Bool = false) {
 		super();
