@@ -400,6 +400,81 @@ hi");
 		Assert.equals(-1, progress[progress.length - 1].total);
 	}
 
+	public function testChunkSizeWithTrailingGarbageIsRejected():Void {
+		// Std.parseInt stops at the first character it cannot use, so this
+		// size line used to read as 5 and the body came back as "hello" --
+		// this client agreeing with nobody about where the chunk ended.
+		var fixture = serveOnce("HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+5 junk
+hello
+0
+
+");
+		var http = new Http('http://127.0.0.1:${fixture.port}/garbage');
+		var completed:Bytes = null;
+		var failure:String = null;
+
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed);
+		Require.notNull(failure, "a malformed chunk size was accepted");
+		Assert.isTrue(failure.indexOf("chunk size") >= 0, failure);
+	}
+
+	public function testChunkSizeTooLargeForAnIntIsRejected():Void {
+		// Eight hex digits is more than Int holds, and Std.parseInt says so
+		// four different ways: -1 on eval and cpp, a thrown
+		// NumberFormatException on jvm, and 4294967295 on node -- neither
+		// null nor negative, so node walked straight past the guard.
+		var fixture = serveOnce("HTTP/1.1 200 OK
+Transfer-Encoding: chunked
+
+FFFFFFFF
+");
+		var http = new Http('http://127.0.0.1:${fixture.port}/huge');
+		var completed:Bytes = null;
+		var failure:String = null;
+
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed);
+		Require.notNull(failure, "an unrepresentable chunk size was accepted");
+	}
+
+	public function testChunkedThatIsNotTheFinalCodingIsNotChunkDecoded():Void {
+		// RFC 9112 6.1: chunked frames the body only when it is the last
+		// coding applied. With something after it the body is not chunk
+		// framed at all, and the length comes from the connection closing.
+		// Reading it as chunks took the body's first line for a chunk size.
+		var fixture = serveOnce("HTTP/1.1 200 OK
+Transfer-Encoding: chunked, gzip
+
+not chunk framed");
+		var http = new Http('http://127.0.0.1:${fixture.port}/notfinal');
+		var completed:Bytes = null;
+		var failure:String = null;
+
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(failure);
+		Require.notNull(completed);
+		Assert.equals("not chunk framed", completed.toString());
+	}
+
 	public function testLoadDecodesGzipContentEncoding():Void {
 		var encoded = new ByteArray();
 		encoded.writeUTFBytes("hello from gzip");
