@@ -42,7 +42,7 @@ import format.amf3.Writer as AMF3Writer;
 	the data type) of bytes, but an instance of the ByteArray class can be
 	manipulated with the standard `[]`(array access) operators. It
 	also can be read and written to as an in-memory file, using methods similar
-	to those in the URLStream and Socket classes.
+	to those in the Socket class.
 	ByteArray is a Haxe abstract over a hidden `ByteArrayData` type, so it has
 	no runtime identity of its own. To test for one at runtime, compare against
 	`ByteArrayData`:
