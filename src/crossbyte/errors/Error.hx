@@ -3,13 +3,13 @@ package crossbyte.errors;
 import haxe.CallStack;
 
 /**
-	The Error class contains information about an error that occurred in a script. In
-	developing ActionScript 3.0 applications, when you run your compiled code in the
-	debugger version of a Flash runtime, a dialog box displays exceptions of type Error,
-	or of a subclass, to help you troubleshoot the code. You create an Error object by
-	using the Error constructor function. Typically, you throw a new Error object from
-	within a `try` code block that is caught by a `catch` code block.
-	You can also create a subclass of the Error class and throw instances of that subclass.
+	The base error type, carrying a message and a numeric `errorID`.
+
+	It extends `haxe.Exception`, so an Error can be thrown and caught like any
+	other exception, and carries its own call stack -- see `getCallStack`.
+	Subclass it to name a kind of failure; the subclasses in this package
+	(`ArgumentError`, `RangeError`, `IOError`, and the rest) are what CrossByte
+	itself throws.
 **/
 #if !debug
 @:fileXml('tags="haxe,release"')
