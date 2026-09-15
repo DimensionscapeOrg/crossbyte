@@ -143,6 +143,15 @@ jobs:
           haxelib install dox --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
 
+      # Before the XML is built, because these examples are what goes into it.
+      # A reader who copies one out of the published docs expects it to
+      # compile, and for a long time the ones in File.hx could not: they were
+      # ActionScript, and underneath the syntax were a method that does not
+      # exist, an instance method called statically, and an unescaped Windows
+      # path. Nothing but a compiler was ever going to notice.
+      - name: Typecheck documentation examples
+        run: node ci/doc-examples.js
+
       - name: Build API XML
         run: |
           rm -rf export/docs-api export/docs-site
