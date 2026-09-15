@@ -51,9 +51,9 @@ import format.amf3.Tools as AMF3Tools;
 	A FileStream object is used to read and write files. Files can be opened synchronously
 	by calling the open() method or asynchronously by calling the openAsync() method.
 
-	The advantage of opening files asynchronously is that other code can execute while Adobe
-	AIR runs read and write processes in the background. When opened asynchronously, progress
-	events are dispatched as operations proceed.
+	The advantage of opening files asynchronously is that other code can execute while the
+	read and write run on a worker thread. When opened asynchronously, progress events are
+	dispatched as operations proceed.
 
 	A File object that is opened synchronously behaves much like a ByteArray object; a file
 	opened asynchronously behaves much like a Socket or URLStream object. When a File object
@@ -94,9 +94,10 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		Specifies whether the HXSF, JSON, AMF3 or AMF0 format is used when writing or reading binary
 		data by using the readObject() or writeObject() method.
 
-		The value is a constant from the ObjectEncoding class. By default, on non-AIR platforms, the
-		HXSF format is used. For AIR the default format is AMF3. If you would like to use AMF and AMF3
-		on non-AIR platforms, you must also include the format dependency in your project from haxelib.
+		The value is a constant from the ObjectEncoding class. `HXSF` is the default and `JSON`
+		is always available. `AMF0` and `AMF3` are read and written only when the optional
+		`format` haxelib is on the build -- `-lib format`. Asking for one this build cannot do
+		throws, rather than reading `null` or writing nothing.
 
 	**/
 	public var objectEncoding:ObjectEncoding;
@@ -307,7 +308,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		If the FileStream object is already open, calling the method closes the file before opening
 		and no further events (including close) are delivered for the previously opened file.
 
-		If the fileMode parameter is set to FileMode.READ or FileMode.UPDATE, AIR reads data into
+		If the fileMode parameter is set to FileMode.READ or FileMode.UPDATE, data is read into
 		the input buffer as soon as the file is opened, and progress and open events are dispatched
 		as the data is read to the input buffer.
 
@@ -734,11 +735,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				return Json.parse(data);
 
 			default:
-				return null;
+				throw new Error(ByteArrayData.__unsupportedEncoding(objectEncoding));
 		}
-
-		__positionDirty = true;
-		return {};
 	}
 
 	/**
@@ -1155,7 +1153,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 	/**
 	 * Writes an object to the file stream, byte stream, or byte array, in AMF, HXSF, or JSON serialized
-	 * format. The format library from haxelib is required to enable AMF on non-AIR targets.
+	 * format. The optional `format` haxelib -- `-lib format` -- is required for AMF.
 	 *
 	 * @param		object The object to be serialized.
 	 * @event 		ioError  You cannot write to the file (for example, because the file is missing).
@@ -1503,7 +1501,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				writeUTF(value);
 
 			default:
-				return;
+				throw new Error(ByteArrayData.__unsupportedEncoding(objectEncoding));
 		}
 	}
 
