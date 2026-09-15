@@ -16,8 +16,8 @@ class PureBrotli {
 		return __arrayToBytes(encoded);
 	}
 
-	public static function decompress(bytes:Bytes):Bytes {
-		var decoded = __instance().decompressArray(__bytesToArray(bytes));
+	public static function decompress(bytes:Bytes, maxOutputSize:UInt = 0):Bytes {
+		var decoded = __instance().decompressArray(__bytesToArray(bytes), maxOutputSize);
 		return __arrayToBytes(decoded);
 	}
 
