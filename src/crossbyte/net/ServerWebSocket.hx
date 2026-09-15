@@ -206,8 +206,8 @@ class ServerWebSocket extends ServerSocket {
 
 		@param secure When `true`, the server terminates TLS (`wss://`) and
 			requires a certificate via `cert` before listening.
-		@throws SecurityError This error occurs if the calling content is
-			running outside the AIR application security sandbox.
+		@throws Error On the eval target, when `secure` is true. Inherited from
+			`ServerSocket`, which cannot install a certificate there.
 	**/
 	public function new(secure:Bool = false) {
 		// Passed up rather than kept here. This used to set a private
