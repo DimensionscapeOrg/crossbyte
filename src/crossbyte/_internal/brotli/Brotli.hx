@@ -37,13 +37,27 @@ class Brotli {
 		return PureBrotli.compress(bytes, quality);
 	}
 
-	public static function decompress(bytes:Bytes):Bytes {
+	/**
+		@param maxOutputSize Bytes to produce before giving up, or `0` for no
+		       limit. Brotli ratios have no ceiling, so anything decoding a
+		       stream it did not author wants to name one.
+
+		The pure decoder stops partway, inside the function every decoded byte
+		passes through. The native one cannot: it returns a finished buffer, so
+		its result is measured after the fact and the allocation has already
+		happened. That path is opt-in and off by default.
+	**/
+	public static function decompress(bytes:Bytes, maxOutputSize:UInt = 0):Bytes {
 		#if crossbyte_brotli_native
 		if (NativeBrotli.isAvailable()) {
-			return NativeBrotli.decompress(bytes);
+			var native:Bytes = NativeBrotli.decompress(bytes);
+			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
+				throw new haxe.Exception("Brotli stream exceeded " + maxOutputSize + " bytes");
+			}
+			return native;
 		}
 		#end
 
-		return PureBrotli.decompress(bytes);
+		return PureBrotli.decompress(bytes, maxOutputSize);
 	}
 }
