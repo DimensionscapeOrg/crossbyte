@@ -784,7 +784,22 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private function __beginHandshake():Void {
 		__clearHandshakeTimers();
 		__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
-		__connectionAttemptHandle = CBTimer.setInterval(CONNECTION_ATTEMPT_INTERVAL, CONNECTION_ATTEMPT_INTERVAL, __sendHandshakeAttempt);
+
+		// Only a session that dialled repeats itself. An accepted one is
+		// answering a CONNECT it never asked for, from an address UDP let
+		// the sender simply claim -- so retransmitting turned one spoofed
+		// datagram into a handful aimed at whoever owns that address, this
+		// socket paying the postage. Answering once costs the same as the
+		// packet that arrived.
+		//
+		// Nothing is lost by waiting: the dialling side retransmits its own
+		// CONNECT on this interval until it gives up, and an unconnected
+		// session answers every one of them with a fresh HANDSHAKE. A lost
+		// answer is recovered by the next attempt either way.
+		if (!__incoming) {
+			__connectionAttemptHandle = CBTimer.setInterval(CONNECTION_ATTEMPT_INTERVAL, CONNECTION_ATTEMPT_INTERVAL, __sendHandshakeAttempt);
+		}
+
 		__sendHandshakeAttempt();
 	}
 
