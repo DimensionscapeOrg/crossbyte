@@ -35,6 +35,28 @@ class Http {
 	public static var MAX_CHUNKED_BODY_SIZE:Int = 64 * 1024 * 1024;
 
 	/**
+	 * Maximum number of bytes a decoded response body may reach before the
+	 * download is abandoned. Defaults to 64 MB; set to `<= 0` to disable.
+	 *
+	 * MAX_CHUNKED_BODY_SIZE bounds what arrives on the wire, which is not the
+	 * same number: compression ratios have no ceiling, and a megabyte of
+	 * zeros returns as roughly a gigabyte. A server choosing what to send is
+	 * choosing how much memory this client spends, unless something says
+	 * otherwise.
+	 */
+	public static var MAX_DECOMPRESSED_BODY_SIZE:Int = 64 * 1024 * 1024;
+
+	/**
+	 * Content codings one response may stack. Defaults to 2.
+	 *
+	 * They multiply: each pass expands what the one before it produced, so
+	 * `gzip, gzip, gzip` is three ratios on top of each other. Real responses
+	 * carry one, and two leaves room for a proxy that added its own over what
+	 * the origin sent.
+	 */
+	public static var MAX_CONTENT_CODINGS:Int = 2;
+
+	/**
 	 * Returns `true` when adding `incoming` bytes to an already-accumulated
 	 * `accumulated` total would exceed `limit`. A `limit <= 0` disables the cap.
 	 */
@@ -472,7 +494,16 @@ class Http {
 				data = __decodeResponseBody(data);
 			} catch (error:Dynamic) {
 				__close();
-				onError('Unsupported content encoding: ${error}', data);
+				// Two different things reach here. A coding this build cannot
+				// decode is thrown as the token itself, a String; a body that
+				// decoded past its ceiling, or stacked more codings than are
+				// allowed, arrives as an exception. Reporting the second as an
+				// unsupported coding sent the caller looking in the wrong place.
+				if (Std.isOfType(error, String)) {
+					onError('Unsupported content encoding: ${error}', data);
+				} else {
+					onError('Failed to decode response body: ' + Std.string(error), data);
+				}
 				return;
 			}
 		}
@@ -532,9 +563,13 @@ class Http {
 			return data;
 		}
 
+		if (MAX_CONTENT_CODINGS > 0 && encodings.length > MAX_CONTENT_CODINGS) {
+			throw new haxe.Exception("Response stacked " + encodings.length + " content codings, more than the " + MAX_CONTENT_CODINGS + " allowed");
+		}
+
 		var payload:ByteArray = data;
 		for (i in 0...encodings.length) {
-			payload.uncompress(encodings[encodings.length - 1 - i]);
+			payload.uncompress(encodings[encodings.length - 1 - i], MAX_DECOMPRESSED_BODY_SIZE);
 		}
 
 		return payload;
