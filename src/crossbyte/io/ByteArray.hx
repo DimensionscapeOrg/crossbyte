@@ -43,10 +43,17 @@ import format.amf3.Writer as AMF3Writer;
 	manipulated with the standard `[]`(array access) operators. It
 	also can be read and written to as an in-memory file, using methods similar
 	to those in the URLStream and Socket classes.
-	On the Flash and AIR targets, the ByteArray type is a real class, but on
-	other platforms, ByteArray is a Haxe abstract over a hidden `ByteArrayData`
-	type. To check if an object is a ByteArray at runtime, import the ByteArray
-	type, then compare with ByteArrayData, such as `Std.is (ba, ByteArrayData)`.
+	ByteArray is a Haxe abstract over a hidden `ByteArrayData` type, so it has
+	no runtime identity of its own. To test for one at runtime, compare against
+	`ByteArrayData`:
+	```hx
+	import crossbyte.io.ByteArray;
+	import crossbyte.io.ByteArray.ByteArrayData;
+
+	if (Std.isOfType(value, ByteArrayData)) {
+		var bytes:ByteArray = value;
+	}
+	```
 	Compression support is limited to the algorithms available in
 	`CompressionAlgorithm`: `br`, `deflate`, `gzip`, and `lz4`.
 	Possible uses of the ByteArray class include the following:
@@ -62,15 +69,15 @@ import format.amf3.Writer as AMF3Writer;
 @:transitive
 abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	/**
-		Denotes the default endianness for the ByteArray class to use for a
-		new ByteArray instance. When you create a new ByteArray instance, the
-		endian value on that instance starts with the value of
-		`defaultEndian`. The `defaultEndian`
-		property is initialized to the default system endianness. This will
-		most likely be `Endian.LITTLE_ENDIAN` on the majority platforms
-		except for the Flash runtime.
-		On Flash and AIR targets, this property cannot be changed and will
-		always be set to `Endian.BIG_ENDIAN`.
+		The endianness a new ByteArray starts with. Every instance takes its
+		`endian` from this at construction; changing it afterwards affects only
+		ByteArrays made from then on, not ones that already exist.
+
+		It is `Endian.LITTLE_ENDIAN` on every target, chosen rather than
+		inherited -- it does not follow the host's byte order, so a ByteArray
+		written on one machine reads the same on another. Set it to
+		`Endian.BIG_ENDIAN` if you mostly work in network byte order and would
+		rather not say so on each instance.
 	**/
 	public static var defaultEndian(get, set):Endian;
 
@@ -114,22 +121,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	public var length(get, set):UInt;
 
 	/**
-	 * Used to determine whether the ActionScript 3.0, ActionScript 2.0, or
-	 * ActionScript 1.0 format should be used when writing to, or reading from, a
-	 * ByteArray instance. The value is a constant from the ObjectEncoding class.
-	 * On the Flash and AIR targets, support for Action Message Format (AMF) object
-	 * serialization is included in the Flash runtime. For other targets, AMF
-	 * serialization is supported if your project using built using the optional
-	 * "format" library, such as `<haxelib name="format" />` in a project.xml file.
-	 *
-	 * Additional OpenFL targets support reading and writing of objects using
-	 * Haxe Serialization Format (HXSF) and JavaScript Object Notation (JSON). These
-	 * targets use HXSF by default.
-	 *
-	 * Since these additional object serialization formats are not internal to the
-	 * Flash runtime, they are not supported by the `readObject` or `writeObject`
-	 * functions on the Flash or AIR targets, but through `haxe.Serializer`,
-	 * `haxe.Unserializer` or `haxe.JSON` if needed.
+		Which serialization format `readObject` and `writeObject` use. The value
+		is a constant from `ObjectEncoding`.
+
+		`HXSF` (Haxe Serialization Format, via `haxe.Serializer`) is the default,
+		and `JSON` is always available. `AMF0` and `AMF3` are read and written
+		only when the optional `format` haxelib is on the build -- `-lib format`.
+		Asking for one this build cannot do throws, rather than reading `null`
+		or writing nothing.
 	**/
 	public var objectEncoding(get, set):ObjectEncoding;
 
@@ -160,51 +159,29 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Compresses the byte array. The entire byte array is compressed. For
-		content running in Adobe AIR, you can specify a compression algorithm by
-		passing a value(defined in the CompressionAlgorithm class) as the
-		`algorithm` parameter. Flash Player supports only the default
-		algorithm, zlib.
-		After the call, the `length` property of the ByteArray is
-		set to the new length. The `position` property is set to the
-		end of the byte array.
-		The zlib compressed data format is described at
-		[http://www.ietf.org/rfc/rfc1950.txt](http://www.ietf.org/rfc/rfc1950.txt).
-		The deflate compression algorithm is described at
-		[http://www.ietf.org/rfc/rfc1951.txt](http://www.ietf.org/rfc/rfc1951.txt).
-		The deflate compression algorithm is used in several compression
-		formats, such as zlib, gzip, some zip implementations, and others. When
-		data is compressed using one of those compression formats, in addition to
-		storing the compressed version of the original data, the compression
-		format data(for example, the .zip file) includes metadata information.
-		Some examples of the types of metadata included in various file formats
-		are file name, file modification date/time, original file size, optional
-		comments, checksum data, and more.
-		For example, when a ByteArray is compressed using the zlib algorithm,
-		the resulting ByteArray is structured in a specific format. Certain bytes
-		contain metadata about the compressed data, while other bytes contain the
-		actual compressed version of the original ByteArray data. As defined by
-		the zlib compressed data format specification, those bytes(that is, the
-		portion containing the compressed version of the original data) are
-		compressed using the deflate algorithm. Consequently those bytes are
-		identical to the result of calling `compress(<ph
-		outputclass="javascript">air.CompressionAlgorithm.DEFLATE)` on the
-		original ByteArray. However, the result from `compress(<ph
-		outputclass="javascript">air.CompressionAlgorithm.ZLIB)` includes
-		the extra metadata, while the
-		`compress(CompressionAlgorithm.DEFLATE)` result includes only
-		the compressed version of the original ByteArray data and nothing
-		else.
-		In order to use the deflate format to compress a ByteArray instance's
-		data in a specific format such as gzip or zip, you cannot simply call
-		`compress(CompressionAlgorithm.DEFLATE)`. You must create a
-		ByteArray structured according to the compression format's specification,
-		including the appropriate metadata as well as the compressed data obtained
-		using the deflate format. Likewise, in order to decode data compressed in
-		a format such as gzip or zip, you can't simply call
-		`uncompress(CompressionAlgorithm.DEFLATE)` on that data. First,
-		you must separate the metadata from the compressed data, and you can then
-		use the deflate format to decompress the compressed data.
+		Compresses the byte array in place. The entire byte array is compressed.
+
+		After the call, `length` is the new length and `position` is at the end
+		of the byte array.
+
+		@param algorithm Which of `CompressionAlgorithm` to use. The default is
+			   `LZ4`, which favours speed over ratio; `DEFLATE` and `GZIP` trade
+			   the other way, and `BROTLI` further still.
+
+		`DEFLATE` writes a raw deflate stream
+		([RFC 1951](https://www.ietf.org/rfc/rfc1951.txt)) and nothing else --
+		no header, no checksum, no length. `GZIP` writes the same compressed
+		bytes inside a gzip container ([RFC 1952](https://www.ietf.org/rfc/rfc1952.txt)),
+		which adds metadata around them: a magic number, the original size, a
+		CRC, and optionally a filename and modification time.
+
+		That distinction is the one that catches people out. A .gz or .zip file
+		is not a deflate stream, so `uncompress(DEFLATE)` will not read one --
+		the container has to be parsed off first. In the other direction,
+		`compress(DEFLATE)` does not produce a file any gzip or zip tool will
+		open, because none of the metadata those formats require is there.
+		Where you want a file, use `GZIP`; where you want the bytes, use
+		`DEFLATE`.
 	**/
 	public inline function compress(algorithm:CompressionAlgorithm = LZ4):Void {
 		this.compress(algorithm);
@@ -368,25 +345,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Reads a multibyte string of specified length from the byte stream using
-		the specified character set.
-		@param length  The number of bytes from the byte stream to read.
-		@param charSet The string denoting the character set to use to interpret
-					   the bytes. Possible character set strings include
-					   `"shift-jis"`, `"cn-gb"`,
-					   `"iso-8859-1"`, and others. For a complete list,
-					   see <a href="../../charset-codes.html">Supported Character
-					   Sets</a>.
-					   **Note:** If the value for the `charSet`
-					   parameter is not recognized by the current system, the
-					   application uses the system's default code page as the
-					   character set. For example, a value for the
-					   `charSet` parameter, as in
-					   `myTest.readMultiByte(22, "iso-8859-01")` that
-					   uses `01` instead of `1` might work
-					   on your development system, but not on another system. On
-					   the other system, the application will use the system's
-					   default code page.
+		Reads `length` bytes and decodes them as UTF-8.
+
+		@param length  The number of bytes to read.
+		@param charSet Accepted for source compatibility and **ignored**. No
+		               character set conversion happens: the bytes are decoded
+		               as UTF-8, exactly as `readUTFBytes` would. Passing
+		               `"shift-jis"` does not decode Shift-JIS. Transcode the
+		               bytes yourself if you need another encoding.
 		@return UTF-8 encoded string.
 		@throws EOFError There is not sufficient data available to read.
 	**/
@@ -395,7 +361,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Reads an object from the byte array, encoded in AMF serialized format.
+		Reads an object from the byte array, in whichever format
+		`objectEncoding` names. That is `HXSF` unless you changed it, not AMF.
+
 		@return The deserialized object.
 		@throws EOFError There is not sufficient data available to read.
 	**/
@@ -499,24 +467,16 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Decompresses the byte array. For content running in Adobe AIR, you can
-		specify a compression algorithm by passing a value(defined in the
-		CompressionAlgorithm class) as the `algorithm` parameter. The
-		byte array must have been compressed using the same algorithm. Flash
-		Player supports only the default algorithm, zlib.
-		After the call, the `length` property of the ByteArray is
-		set to the new length. The `position` property is set to 0.
-		The zlib compressed data format is described at
-		[http://www.ietf.org/rfc/rfc1950.txt](http://www.ietf.org/rfc/rfc1950.txt).
-		The deflate compression algorithm is described at
-		[http://www.ietf.org/rfc/rfc1951.txt](http://www.ietf.org/rfc/rfc1951.txt).
-		In order to decode data compressed in a format that uses the deflate
-		compression algorithm, such as data in gzip or zip format, it will not
-		work to call `uncompress(CompressionAlgorithm.DEFLATE)` on a
-		ByteArray containing the compression formation data. First, you must
-		separate the metadata that is included as part of the compressed data
-		format from the actual compressed data. For more information, see the
-		`compress()` method description.
+		Decompresses the byte array in place.
+
+		After the call, `length` is the new length and `position` is 0.
+
+		@param algorithm Which of `CompressionAlgorithm` the data was compressed
+			   with. It must be the same one; these formats are not
+			   self-describing enough to guess between.
+
+		A gzip or zip file is not a raw deflate stream, so `uncompress(DEFLATE)`
+		does not read one -- see `compress()` for why.
 		@throws IOError The data is not valid compressed data; it was not
 						compressed with the same compression algorithm used to
 						compress.
@@ -607,22 +567,22 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Writes a multibyte string to the byte stream using the specified character
-		set.
+		Writes a string to the byte stream as UTF-8.
+
 		@param value   The string value to be written.
-		@param charSet The string denoting the character set to use. Possible
-					   character set strings include `"shift-jis"`,
-					   `"cn-gb"`, `"iso-8859-1"`, and
-					   others. For a complete list, see <a
-					   href="../../charset-codes.html">Supported Character
-					   Sets</a>.
+		@param charSet Accepted for source compatibility and **ignored**. The
+		               string is encoded as UTF-8, exactly as `writeUTFBytes`
+		               would. Transcode the bytes yourself if you need another
+		               encoding.
 	**/
 	public inline function writeMultiByte(value:String, charSet:String):Void {
 		this.writeMultiByte(value, charSet);
 	}
 
 	/**
-		Writes an object into the byte array in AMF serialized format.
+		Writes an object into the byte array, in whichever format
+		`objectEncoding` names. That is `HXSF` unless you changed it, not AMF.
+
 		@param object The object to serialize.
 	**/
 	public inline function writeObject(object:Dynamic):Void {
@@ -1000,8 +960,24 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				return Json.parse(data);
 
 			default:
-				return null;
+				throw new Exception(__unsupportedEncoding(objectEncoding));
 		}
+	}
+
+	// Reached when objectEncoding names a format this build cannot do -- AMF
+	// without the optional haxelib, or a value that is not an ObjectEncoding at
+	// all, which Int can be. Both used to be silent: readObject answered null
+	// and writeObject wrote nothing, so an AMF round trip on a build without
+	// -lib format lost the object and said so nowhere.
+	private static function __unsupportedEncoding(encoding:ObjectEncoding):String {
+		#if !format
+		if (encoding == AMF0 || encoding == AMF3) {
+			return "ObjectEncoding.AMF" + (encoding == AMF0 ? "0" : "3")
+				+ " needs the optional \"format\" haxelib. Build with -lib format, or use HXSF or JSON.";
+		}
+		#end
+
+		return "Unsupported object encoding: " + encoding;
 	}
 
 	#if format
@@ -1323,7 +1299,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 				writeUTF(value);
 
 			default:
-				return;
+				throw new Exception(__unsupportedEncoding(objectEncoding));
 		}
 	}
 
