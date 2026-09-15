@@ -589,6 +589,96 @@ class H2ServerTest extends utest.Test {
 		return out;
 	}
 
+	public function testAPingFloodIsRefused():Void {
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+
+		var server = new H2ServerConnection(out.write, settings);
+		server.maxControlReplies = 3;
+
+		var failure:H2ConnectionError = null;
+		server.onConnectionError = e -> failure = e;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		// Every PING obliges an ACK the moment it lands, and none of them
+		// opens a stream -- so neither MAX_CONCURRENT_STREAMS nor the reset
+		// budget sees any of this.
+		for (i in 0...8) {
+			server.receive(frame(H2FrameType.PING, 0, 0, Bytes.ofHex("0000000000000000")));
+		}
+
+		Assert.notNull(failure);
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
+	}
+
+	public function testASettingsFloodIsRefused():Void {
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+
+		var server = new H2ServerConnection(out.write, settings);
+		server.maxControlReplies = 3;
+
+		var failure:H2ConnectionError = null;
+		server.onConnectionError = e -> failure = e;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		// A SETTINGS frame must be acknowledged even when it changes nothing,
+		// so an empty one is the cheapest way to make this side write.
+		for (i in 0...8) {
+			server.receive(frame(H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0)));
+		}
+
+		Assert.notNull(failure);
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
+	}
+
+	public function testAnAcknowledgementDoesNotSpendTheBudget():Void {
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+
+		var server = new H2ServerConnection(out.write, settings);
+		server.maxControlReplies = 1;
+
+		var failure:H2ConnectionError = null;
+		server.onConnectionError = e -> failure = e;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		// An ACK answers something this side sent. It obliges nothing back, so
+		// counting it would close connections over a peer replying normally.
+		for (i in 0...8) {
+			server.receive(frame(H2FrameType.PING, H2Flags.ACK, 0, Bytes.ofHex("0000000000000000")));
+			server.receive(frame(H2FrameType.SETTINGS, H2Flags.ACK, 0, Bytes.alloc(0)));
+		}
+
+		Assert.isNull(failure);
+		Assert.isFalse(server.closed);
+	}
+
+	public function testOrdinaryControlTrafficIsNotHeldAgainstThePeer():Void {
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+
+		var server = new H2ServerConnection(out.write, settings);
+		var failure:H2ConnectionError = null;
+		server.onConnectionError = e -> failure = e;
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		// One SETTINGS at the start and a few keepalive pings is what an
+		// ordinary client does, and the default budget has to leave room for
+		// it by a wide margin.
+		server.receive(frame(H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0)));
+		for (i in 0...12) {
+			server.receive(frame(H2FrameType.PING, 0, 0, Bytes.ofHex("0000000000000000")));
+		}
+
+		Assert.isNull(failure);
+		Assert.isFalse(server.closed);
+	}
+
 	private static function frame(type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Bytes {
 		var out = new BytesBuffer();
 		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
