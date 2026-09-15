@@ -63,34 +63,38 @@ class Error #if (haxe_ver >= "4.1.0") extends haxe.Exception #elseif (openfl_dyn
 	// @:noCompletion @:dox(hide) public static function getErrorMessage (index:Int):String;
 
 	/**
-		Returns the call stack for an error at the time of the error's construction as a
-		string. As shown in the following example, the first line of the return value is
-		the string representation of the exception object, followed by the stack trace
-		elements:
+		Returns this error's own call stack, captured where the error was
+		constructed, as a string. Each frame is on its own line:
+
 		```
-		TypeError: Error #1009: Cannot access a property or method of a null object reference
-			at com.xyz::OrderEntry/retrieveData()[/src/com/xyz/OrderEntry.as:995]
-			at com.xyz::OrderEntry/init()[/src/com/xyz/OrderEntry.as:200]
-			at com.xyz::OrderEntry()[/src/com/xyz/OrderEntry.as:148]
+		Called from OrderEntry.retrieveData (src/com/xyz/OrderEntry.hx line 995)
+		Called from OrderEntry.init (src/com/xyz/OrderEntry.hx line 200)
+		Called from OrderEntry.new (src/com/xyz/OrderEntry.hx line 148)
 		```
-		The preceding listing shows the value of this method when called in a debugger
-		version of Flash Player or code running in the AIR Debug Launcher (ADL). When code
-		runs in a release version of Flash Player or AIR, the stack trace is provided
-		without the file path and line number information, as in the following example:
-		```
-		TypeError: Error #1009: Cannot access a property or method of a null object reference
-			at com.xyz::OrderEntry/retrieveData()
-			at com.xyz::OrderEntry/init()
-			at com.xyz::OrderEntry()
-		```
-		For Flash Player 11.4 and earlier and AIR 3.4 and earlier, stack traces are only
-		available when code is running in the debugger version of Flash Player or the AIR
-		Debug Launcher (ADL). In non-debugger versions of those runtimes, calling this
-		method returns `null`.
+
+		The stack belongs to this object, so it reads the same whether or not the
+		error was ever thrown, and is unaffected by any other exception caught in
+		between. It never returns `null`; an error constructed where no stack
+		information is available returns an empty string.
+
+		How much stack a build carries is a property of the build, not of this
+		method. A release cpp build records none at all and returns an empty string:
+		frames need `-D HXCPP_STACK_TRACE`, and file and line information needs
+		`-D HXCPP_STACK_LINE` on top of it. On js, file and line information comes
+		from source maps. Interp, jvm and node carry frames by default.
+
 		@returns	A string representation of the call stack.
 	**/
 	public function getCallStack():String {
+		#if (haxe_ver >= "4.1.0")
+		// This error's stack, not the interpreter's most recently caught one.
+		// CallStack.exceptionStack() is global state: it answered "" for an error
+		// that was never thrown, and answered with an unrelated exception's stack
+		// once anything else had been caught, on whichever Error you asked.
+		return this.stack.toString();
+		#else
 		return CallStack.toString(CallStack.exceptionStack());
+		#end
 	}
 
 	#if !(java || jvm)
