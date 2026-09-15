@@ -70,7 +70,33 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	public var socketMode:ReliableDatagramSocketMode = DATAGRAM;
 
 	@:noCompletion private var __closed:Bool = false;
+	/** Half-open inbound sessions allowed at once. */
+	public static inline var DEFAULT_MAX_PENDING_CONNECTIONS:Int = 256;
+
+	/**
+		Inbound sessions that may be waiting to finish a handshake at once,
+		after which a CONNECT from an address with no session is dropped.
+		Negative disables the check.
+
+		A CONNECT costs the sender one datagram and costs this side a session
+		holding two timers for `timeout` milliseconds -- and UDP lets a sender
+		write whatever it likes in the source field, so at that point nothing
+		about the peer has been established. Without a ceiling one peer can
+		spend a packet each on as many of these as it cares to, from addresses
+		that never sent anything.
+
+		Dropped rather than refused, because a refusal is itself a datagram to
+		an address that may never have asked for one.
+	**/
+	public var maxPendingConnections:Int = DEFAULT_MAX_PENDING_CONNECTIONS;
+
 	@:noCompletion private var __connections:StringMap<ReliableDatagramSocket>;
+
+	// Keys of accepted sessions that have not finished handshaking. Counted
+	// alongside rather than measured, because measuring means walking the
+	// map on every CONNECT, which is the packet a flood sends most of.
+	@:noCompletion private var __pending:StringMap<Bool>;
+	@:noCompletion private var __pendingCount:Int = 0;
 
 	// One outstanding reflexive-address query, if any. Held here rather than in
 	// a client of its own because the question is about this socket's port, and
@@ -99,6 +125,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		super();
 
 		__connections = new StringMap();
+		__pending = new StringMap();
 		__socket = new DatagramSocket();
 	}
 
@@ -139,6 +166,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			connections.push(connection);
 		}
 		__connections = new StringMap();
+		__pending = new StringMap();
+		__pendingCount = 0;
 
 		for (connection in connections) {
 			try {
@@ -565,15 +594,35 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return;
 		}
 
+		if (maxPendingConnections >= 0 && __pendingCount >= maxPendingConnections) {
+			return;
+		}
+
 		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode);
 		__connections.set(key, connection);
+		__pending.set(key, true);
+		__pendingCount++;
 	}
 
 	@:noCompletion private function __onSocketClosed(socket:ReliableDatagramSocket):Void {
-		__connections.remove(__endpointKey(socket.remoteAddress, socket.remotePort));
+		var key:String = __endpointKey(socket.remoteAddress, socket.remotePort);
+		__connections.remove(key);
+		__releasePending(key);
+	}
+
+	// Removal answers whether it was still pending, so this stays exact
+	// however a session leaves: handshake done, timed out, or closed under it.
+	@:noCompletion private function __releasePending(key:String):Void {
+		if (__pending.remove(key)) {
+			__pendingCount--;
+		}
 	}
 
 	@:noCompletion private function __onSocketConnected(socket:ReliableDatagramSocket):Void {
+		// The peer answered, so the address is its own and the slot is free
+		// again. Done before the outgoing check below, which returns early.
+		__releasePending(__endpointKey(socket.remoteAddress, socket.remotePort));
+
 		// Only sessions a peer opened to us. A session `connect()` dialled is
 		// registered here too, because that is how its replies get routed, but
 		// it was initiated rather than accepted -- and whoever dialled it

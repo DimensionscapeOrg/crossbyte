@@ -10,7 +10,11 @@ import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
 import crossbyte.test.Require;
+import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
+import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 
+@:access(crossbyte.net.ReliableDatagramServerSocket)
+@:access(crossbyte.net.ReliableDatagramSocket)
 class ReliableDatagramSocketTest extends utest.Test {
 	public function testAServerLearnsWhereItIsReachable():Void {
 		if (!requireDatagramSupport()) return;
@@ -571,6 +575,80 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		closeQuietly(client);
 		closeDatagramQuietly(unused);
+	}
+
+	public function testConnectsFromNewAddressesAreBoundedWhileUnanswered():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.maxPendingConnections = 3;
+			server.listen();
+
+			// Fed to the handler directly, because the whole point is the source
+			// address and one socket only ever sends from one. UDP lets a sender
+			// write whatever it likes there, which is what makes a ceiling
+			// necessary in the first place. Ports on loopback, so the handshakes
+			// these provoke go nowhere off this machine.
+			for (i in 0...12) {
+				__injectConnect(server, 40000 + i);
+			}
+
+			Assert.equals(3, server.__pendingCount, "the ceiling did not hold");
+			Assert.equals(3, __countConnections(server));
+		} catch (e:Dynamic) {
+			Assert.fail("flood test failed: " + Std.string(e));
+		}
+
+		server.close();
+	}
+
+	public function testAnAcceptedSessionAnswersOnceRatherThanRepeating():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			__injectConnect(server, 41000);
+
+			var accepted = server.__connections.get("127.0.0.1:41000");
+			Require.notNull(accepted);
+			Assert.isFalse(accepted.connected);
+
+			// The address is still only a claim, so the answer is sent once and
+			// not repeated. A dialling session arms this handle; an accepted one
+			// must not, or one spoofed datagram becomes a run of them aimed at
+			// whoever the address really belongs to.
+			Assert.equals(-1, accepted.__connectionAttemptHandle, "an accepted session armed a retransmit timer");
+
+			// The reaper still runs, so a session nobody answers for is not kept.
+			Assert.notEquals(-1, accepted.__connectionTimeoutHandle);
+		} catch (e:Dynamic) {
+			Assert.fail("accepted-session test failed: " + Std.string(e));
+		}
+
+		server.close();
+	}
+
+	private static function __injectConnect(server:ReliableDatagramServerSocket, srcPort:Int):Void {
+		var encoded:ByteArray = ReliableDatagramProtocol.encode(ReliableDatagramFrameType.CONNECT, 1);
+		var packet:ByteArray = new ByteArray();
+		packet.writeBytes(encoded, 0, encoded.length);
+		packet.position = 0;
+
+		server.__onData(new DatagramSocketDataEvent(DatagramSocketDataEvent.DATA, "127.0.0.1", srcPort, "127.0.0.1", server.localPort, packet));
+	}
+
+	private static function __countConnections(server:ReliableDatagramServerSocket):Int {
+		var count:Int = 0;
+		for (_ in server.__connections) {
+			count++;
+		}
+		return count;
 	}
 
 	private static function requireDatagramSupport():Bool {
