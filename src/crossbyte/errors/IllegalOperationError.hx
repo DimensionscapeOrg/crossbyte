@@ -1,26 +1,20 @@
 package crossbyte.errors;
 
-import crossbyte.events.Event;
-
 /**
 	The IllegalOperationError exception is thrown when a method is not
 	implemented or the implementation doesn't cover the current usage.
 
-	Examples of illegal operation error exceptions include:
+	It marks a call that is legal in general but not here -- wrong state,
+	wrong thread, or a target that cannot do it. What CrossByte throws it for:
 
-	* A base class, such as DisplayObjectContainer, provides more
-	functionality than a Stage can support(such as masks)
-	* Certain accessibility methods are called when the player is compiled
-	without accessibility support
-	* The mms.cfg setting prohibits a FileReference action
-	* ActionScript tries to run a `FileReference.browse()` call
-	when a browse dialog box is already open
-	* ActionScript tries to use an unsupported protocol for a FileReference
-	object(such as FTP)
-	* Authoring-only features are invoked from a run-time
-	player
-	* An attempt is made to set the name of a Timeline-placed
-	object
+	* A runtime reached from a thread it is not attached to, or
+	  `CrossByte.make()` called before a primordial instance exists
+	* The POLL main loop selected on a JavaScript target, which has no
+	  pollable socket set
+	* `acquire()` on a closed `ConnectionPool`, or one whose connections are
+	  all in use past the timeout
+	* A file attribute or path expansion asked for in a browser, which has
+	  neither a shell nor a process environment
 **/
 class IllegalOperationError extends Error {
 	/**
