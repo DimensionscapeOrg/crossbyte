@@ -145,6 +145,24 @@ Current extension repos:
 
 The core remains usable without these extensions. When installed, they can be enabled selectively for native-backed behavior where it matters.
 
+## Build defines
+
+All optional, all off unless you pass them.
+
+| Define | Effect |
+| --- | --- |
+| `crossbyte_brotli_native` | Route Brotli through the native backend from the `crossbyte-brotli` haxelib instead of the bundled Haxe implementation. |
+| `crossbyte_lz4_native` | Route LZ4 through the native backend from the `crossbyte-lz4` haxelib instead of the bundled Haxe implementation. |
+| `crossbyte_no_http2` | Do not auto-register the bundled HTTP/2 backend. A backend registered explicitly through `HTTPBackendRegistry` still wins either way; this only stops the bundled one from being picked up on its own. |
+| `http_debug` | Log each response line the HTTP client reads, through `Logger`, so it honours the configured level and sink. |
+| `crossbyte_debug` | Keep `crossbyte.io.File` out of `@:noDebug`, so its frames appear in stack traces. |
+
+For example:
+
+```
+haxe -lib crossbyte -lib crossbyte-lz4 -D crossbyte_lz4_native -main Main --cpp bin
+```
+
 ## Samples
 
 The repository includes small runnable samples for:
