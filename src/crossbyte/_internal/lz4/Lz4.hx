@@ -150,10 +150,27 @@ class Lz4 {
 		return output;
 	}
 
-	public static inline function decompress(b:Bytes):Bytes {
+	/**
+		@param maxOutputSize Bytes to produce before giving up, or `0` for no
+			   limit. LZ4 ratios have no ceiling either -- the format's own
+			   match encoding will happily replay four bytes of window a
+			   million times -- so anything decoding a stream it did not author
+			   wants to name one.
+
+		The limit is checked before each write rather than after the decode, so
+		a stream that keeps expanding is abandoned partway and the memory is
+		never taken. The native decoder cannot do that: it returns a finished
+		buffer, so its result is measured after the fact and the allocation has
+		already happened. That path is opt-in and off by default.
+	**/
+	public static inline function decompress(b:Bytes, maxOutputSize:Int = 0):Bytes {
 		#if crossbyte_lz4_native
 		if (NativeLz4.isAvailable()) {
-			return NativeLz4.decompress(b);
+			var native:Bytes = NativeLz4.decompress(b);
+			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
+				throw "Decoded stream exceeded " + maxOutputSize + " bytes";
+			}
+			return native;
 		}
 		#end
 
@@ -184,6 +201,12 @@ class Lz4 {
 				throw "Could not perform decompression";
 			}
 			if (clen > 0) {
+				// `clen > max - oPos` rather than `oPos + clen > max`: the sum
+				// of two attacker-influenced Ints can wrap, and a wrapped sum
+				// passes the test it was meant to fail.
+				if (maxOutputSize > 0 && clen > maxOutputSize - oPos) {
+					throw "Decoded stream exceeded " + maxOutputSize + " bytes";
+				}
 				oBuf.position = oPos;
 				oBuf.writeBytes(b, iPos, clen);
 				iPos = literalEnd;
@@ -216,6 +239,12 @@ class Lz4 {
 						break;
 					}
 				}
+			}
+
+			// The amplifying half: a short match length replays window bytes,
+			// so this is where a bomb does its work.
+			if (maxOutputSize > 0 && clen > maxOutputSize - oPos) {
+				throw "Decoded stream exceeded " + maxOutputSize + " bytes";
 			}
 
 			var mPos = oPos - mOffset;

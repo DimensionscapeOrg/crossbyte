@@ -284,4 +284,50 @@ class CompressionRoundTripTest extends utest.Test {
 		var tree:HuffmanTree = new HuffmanTree(freqVector([1, 2, 3, 4, 5, 6, 7, 8]), 15);
 		assertValidTable(tree, [0, 1, 2, 3, 4, 5, 6, 7]);
 	}
+
+	// Zeros pack into a stream small enough to arrive in a single frame, and
+	// LZ4's match encoding is what expands it again: a short length replaying
+	// window bytes. That is the shape of the bomb, and it does not need to be
+	// large to have it -- 32 KB from 139 bytes is already 235x. Kept small on
+	// purpose: decoding one is markedly slower on eval than on a compiled
+	// target, so a megabyte here would have cost the interpreter minutes.
+	private static inline var BOMB_SIZE:Int = 32 * 1024;
+
+	private function lz4Bomb():Bytes {
+		return Lz4.compress(Bytes.alloc(BOMB_SIZE));
+	}
+
+	public function testLz4RefusesAStreamThatOutgrowsItsLimit():Void {
+		var packed:Bytes = lz4Bomb();
+		Assert.isTrue(packed.length < BOMB_SIZE / 100,
+			"expected a small stream to decode large, got " + packed.length + " bytes");
+
+		Assert.raises(() -> Lz4.decompress(packed, 4096));
+	}
+
+	public function testLz4AcceptsAStreamInsideItsLimit():Void {
+		var packed:Bytes = lz4Bomb();
+
+		// Exactly the decoded size is inside the limit, not over it.
+		var restored:Bytes = Lz4.decompress(packed, BOMB_SIZE);
+		Assert.equals(BOMB_SIZE, restored.length);
+
+		// And zero still means no limit, which every existing caller relies on.
+		Assert.equals(BOMB_SIZE, Lz4.decompress(packed).length);
+	}
+
+	public function testUncompressCarriesTheLimitIntoTheLz4Decoder():Void {
+		// The limit used to be applied to the finished buffer, so the memory
+		// was taken before anything objected. This asserts the public path
+		// refuses; that it refuses *during* the decode is the point of passing
+		// maxOutputSize down rather than measuring afterwards.
+		var bomb:ByteArray = ByteArray.fromBytes(lz4Bomb());
+		bomb.position = 0;
+		Assert.raises(() -> bomb.uncompress(CompressionAlgorithm.LZ4, 4096));
+
+		var ok:ByteArray = ByteArray.fromBytes(lz4Bomb());
+		ok.uncompress(CompressionAlgorithm.LZ4, BOMB_SIZE);
+		Assert.equals(BOMB_SIZE, ok.length);
+		Assert.equals(0, ok.position);
+	}
 }
