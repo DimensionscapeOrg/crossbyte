@@ -55,6 +55,7 @@ class TestSuites {
 		// HPACK is pure byte manipulation -- no socket, no thread -- so unlike
 		// the client below it means the same thing on every target, browser
 		// included. Also in PortableSuite, which is how js reaches it.
+		runner.addCase(new crossbyte._internal.http.CookieJarTest());
 		runner.addCase(new crossbyte._internal.http.h2.hpack.HpackTest());
 		runner.addCase(new crossbyte._internal.http.h2.H2Test());
 		runner.addCase(new crossbyte._internal.http.h2.H2ServerTest());

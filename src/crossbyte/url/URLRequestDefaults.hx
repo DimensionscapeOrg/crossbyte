@@ -23,9 +23,8 @@ class URLRequestDefaults {
 	public static var idleTimeout:Int = 0;
 
 	/**
-		The default `manageCookies` for new URLRequest objects.
-
-		**Nothing reads it.** See `URLRequest.manageCookies`.
+		The default `manageCookies` for new URLRequest objects. Setting the
+		property on a request overrides this.
 
 		The default value is `true`.
 	**/

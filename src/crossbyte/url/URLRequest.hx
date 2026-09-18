@@ -38,13 +38,23 @@ class URLRequest {
 	public var idleTimeout:Int;
 
 	/**
-		Whether the HTTP stack should manage cookies for this request.
+		Whether to carry cookies across this request's redirects.
 
-		**Nothing reads this yet.** The field is carried on the request and
-		initialised from `URLRequestDefaults.manageCookies`, but no cookie jar
-		is attached to a request and no `Set-Cookie` is remembered, whatever it
-		is set to. Send and read cookies yourself through `requestHeaders` and
-		the response headers.
+		With `followRedirects` on, which it is by default, a sign-in that
+		answers `302` with a session cookie was losing it: the cookie was read
+		off the wire and dropped with the rest of the response headers when the
+		next hop reset them. When this is `true` a `Set-Cookie` is kept and sent
+		back on the following hops.
+
+		For the length of one request and no longer. This is not a browser's
+		cookie jar: a cookie goes back only to the host that set it, `Secure`
+		cookies are withheld from a plaintext hop, and nothing survives the
+		request finishing. There is no `Domain` attribute, no path matching and
+		no persistence -- if you need a session that outlives one call, hold the
+		cookie yourself and set it through `requestHeaders`, which also takes
+		precedence over this when you do.
+
+		The default comes from `URLRequestDefaults.manageCookies`.
 	**/
 	public var manageCookies:Bool;
 
