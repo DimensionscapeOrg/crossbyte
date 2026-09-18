@@ -19,6 +19,19 @@ class HTTPServerConfig {
 	public var blacklist:Array<String>;
 	public var customHeaders:Array<URLRequestHeader>;
 	public var middleware:Array<Middleware>;
+	/**
+		Refuses a request with `429` once its client has spent its budget.
+
+		Keyed on the remote address and consulted for **every** request, not
+		every connection. Leaving it out of the constructor does not leave the
+		server unlimited: one is fitted, with `RateLimiter`'s own defaults of ten
+		requests a minute per client.
+
+		That budget is smaller than one page. A document and eleven assets is
+		twelve requests from one address, and measured against a server built
+		this way, ten are served and two come back `429`. Size it to the traffic
+		a single visitor actually makes, or pass a limiter of your own.
+	**/
 	public var rateLimiter:RateLimiter;
 	public var corsEnabled:Bool;
 	public var corsAllowedOrigins:Array<String>;
