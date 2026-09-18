@@ -79,6 +79,9 @@ class PortableSuite {
 		// neither backend grades its own homework.
 		runner.addCase(new crossbyte.io.StoreTest());
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
+		// Nothing here owns a socket -- every parser is handed bytes -- so it
+		// runs wherever the code it fuzzes can be compiled, which is everywhere.
+		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());
