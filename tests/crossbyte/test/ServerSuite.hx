@@ -3,8 +3,9 @@ package crossbyte.test;
 import utest.Runner;
 
 /**
-	The HTTP cases that need a server -- a listening socket, a document root, or
-	the rewrite engine -- and so run on every target that can be one.
+	The cases that need a server -- a listening socket, a document root, or the
+	rewrite engine -- and so run on every target that can be one. Mostly HTTP,
+	and not only.
 
 	That set now includes Node, and did not before. `TestSuites.addHttp` gated
 	its server cases behind `#if cpp`, which was written when the HTTP server
@@ -28,6 +29,12 @@ class ServerSuite {
 	public static function add(runner:Runner):Void {
 		// The socket round trips, on every target that can listen.
 		#if (cpp || neko || hl || nodejs || java || jvm)
+		// Not HTTP, but the same selection criterion: it needs a listening
+		// socket. It is here rather than beside the other ServerWebSocket cases
+		// because those pump synchronously, which on Node blocks the event loop
+		// the accept callback arrives on -- and Node is exactly the target this
+		// one was written to reach.
+		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeReapTest());
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPStreamingTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
