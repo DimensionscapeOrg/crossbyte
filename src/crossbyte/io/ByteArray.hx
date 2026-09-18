@@ -1119,13 +1119,6 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return result;
 	}
 
-	@:noCompletion private static function __withinLimit(bytes:Bytes, maxOutputSize:Int):Bytes {
-		if (maxOutputSize > 0 && bytes != null && bytes.length > maxOutputSize) {
-			throw new Exception("Decoded stream exceeded " + maxOutputSize + " bytes");
-		}
-		return bytes;
-	}
-
 	/**
 		@param maxOutputSize Bytes the decoded result may reach before this
 		       gives up, or `0` for no limit. Compression ratios have no
@@ -1179,16 +1172,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			position = 0; */
 
 		var bytes:Bytes = switch (algorithm) {
-			// Deflate, gzip and brotli take the ceiling down into the decode
-			// itself, so a stream that keeps expanding is abandoned partway and
-			// the memory is never taken. LZ4 decodes all at once here, so its
-			// result can only be measured afterwards: that stops it being handed
-			// on and stops a second coding being applied to it, but by then the
-			// allocation has happened.
+			// Every one of these takes the ceiling down into the decode itself,
+			// so a stream that keeps expanding is abandoned partway and the
+			// memory is never taken. Only a native backend, which returns a
+			// finished buffer, has to be measured after the fact -- and each of
+			// those is opt-in and off by default.
 			case CompressionAlgorithm.BROTLI: Brotli.decompress(this, maxOutputSize);
 			case CompressionAlgorithm.DEFLATE: Inflater.apply(this, maxOutputSize);
 			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this, maxOutputSize);
-			case CompressionAlgorithm.LZ4: __withinLimit(Lz4.decompress(this), maxOutputSize);
+			case CompressionAlgorithm.LZ4: Lz4.decompress(this, maxOutputSize);
 			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 
