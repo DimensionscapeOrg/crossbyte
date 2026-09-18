@@ -34,6 +34,10 @@ class ServerSuite {
 		// because those pump synchronously, which on Node blocks the event loop
 		// the accept callback arrives on -- and Node is exactly the target this
 		// one was written to reach.
+		// Malformed traffic at a live server, which is the only way to reach
+		// request parser as a peer reaches it: across reads, into a buffer
+		// that persists, behind a handler that owns a socket.
+		runner.addCase(new crossbyte.fuzz.HTTPWireFuzzTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeReapTest());
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPStreamingTest());
