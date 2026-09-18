@@ -99,10 +99,12 @@ class Http {
 	private var __userAgent:String;
 	private var __responseHeaders:StringMap<String>;
 	private var __followRedirects:Bool;
+	private var __cookies:Null<CookieJar>;
 	private var __redirect:Bool = false;
 
 	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData:Dynamic = null, contentType:Null<String> = null,
-			data:Dynamic = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true) {
+			data:Dynamic = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true,
+			manageCookies:Bool = true) {
 		__url = new URL(url);
 		__headers = headers;
 		__requestData = requestData;
@@ -112,6 +114,9 @@ class Http {
 		__data = data;
 		__userAgent = userAgent;
 		__followRedirects = followRedirects;
+		// Null rather than an empty jar when the caller said no, so the send
+		// and store sites below read as "if we are keeping cookies".
+		__cookies = manageCookies ? new CookieJar() : null;
 
 		if (validateHttpVersion(version) || HTTPBackendRegistry.isRegistered(version)) {
 			__version = version;
@@ -667,10 +672,32 @@ class Http {
 			}
 		}
 
+		// Taken here, while `__url` is still the host that served the response.
+		// A redirect reassigns it a few lines later, and these headers are
+		// thrown away with it.
+		if (__cookies != null) {
+			__cookies.store(__responseHeaders.get("set-cookie"), __url.host);
+		}
+
 		// Only reached once the blank line closed a final (non-1xx) block;
 		// every failure above returns instead, and an informational block is
 		// discarded and re-read before control gets here.
 		onHeaders(__responseHeaders);
+	}
+
+	/** Whether the caller supplied a header starting with `prefix` (lowercase, with its colon). **/
+	private function __hasHeader(prefix:String):Bool {
+		if (__headers == null) {
+			return false;
+		}
+
+		for (header in __headers) {
+			if (StringTools.startsWith(header.toLowerCase(), prefix)) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private function __handleRequest():Void {
@@ -694,15 +721,17 @@ class Http {
 				__socket.output.writeString('Connection: ${Connection.CLOSE}${CRLF}');
 			}
 
-			var sentAcceptEncoding:Bool = false;
-			if (__headers != null) {
-				for (h in __headers) {
-					if (StringTools.startsWith(h.toLowerCase(), "accept-encoding:")) {
-						sentAcceptEncoding = true;
-						break;
-					}
+			// Whatever an earlier hop in this same request was handed. Skipped
+			// when the caller writes its own Cookie header, on the same rule as
+			// Content-Type and Accept-Encoding below: what the caller said wins.
+			if (__cookies != null && !__hasHeader("cookie:")) {
+				var jar:Null<String> = __cookies.headerFor(__url.host, __url.ssl == true);
+				if (jar != null) {
+					__socket.output.writeString('Cookie: ${jar}${CRLF}');
 				}
 			}
+
+			var sentAcceptEncoding:Bool = __hasHeader("accept-encoding:");
 			if (!sentAcceptEncoding) {
 				__socket.output.writeString('Accept-Encoding: ' + crossbyte._internal.http.headers.AcceptEncoding.IDENTITY + CRLF);
 			}
