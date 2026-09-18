@@ -10,6 +10,23 @@ import crossbyte.errors.ArgumentError;
 
 /** Configuration object for `HTTPServer` routing, limits, headers, and PHP integration. */
 class HTTPServerConfig {
+	/**
+		Requests a minute a single client may make before being refused.
+
+		Roomy on purpose: this is per remote address and counted per request,
+		so one visitor opening one page spends a dozen of it at once.
+	**/
+	public static inline var DEFAULT_REQUESTS_PER_MINUTE:Int = 240;
+
+	/**
+		Bytes a single connection may have waiting to go out before it is cut.
+
+		Eight megabytes: far above what serving a file costs, since anything
+		over 256 KB streams in bounded bursts, and far below what a few stalled
+		peers cost a process that never reclaims any of it.
+	**/
+	public static inline var DEFAULT_MAX_OUTPUT_BUFFER:Int = 8 * 1024 * 1024;
+
 	public var address:String;
 	public var port:UInt;
 	public var rootDirectory:File;
@@ -27,10 +44,14 @@ class HTTPServerConfig {
 		server unlimited: one is fitted, with `RateLimiter`'s own defaults of ten
 		requests a minute per client.
 
-		That budget is smaller than one page. A document and eleven assets is
-		twelve requests from one address, and measured against a server built
-		this way, ten are served and two come back `429`. Size it to the traffic
-		a single visitor actually makes, or pass a limiter of your own.
+		The fitted budget is `DEFAULT_REQUESTS_PER_MINUTE`, which is a visitor's
+		page load with room to spare rather than `RateLimiter`'s own default of
+		ten -- ten is smaller than one page, and a document with eleven assets
+		used to come back as ten served and two refused.
+
+		Pass a limiter of your own to say something different. A server behind a
+		proxy wants one sized to the proxy rather than to a visitor, since every
+		request then arrives from one address.
 	**/
 	public var rateLimiter:RateLimiter;
 	public var corsEnabled:Bool;
@@ -226,11 +247,20 @@ class HTTPServerConfig {
 		connection, which matters most on a server holding many at once.
 
 		Applied to every socket this server accepts, since an application
-		cannot reach those sockets before they are used. Defaults to `0`,
-		preserving existing behavior; size it to the largest response the
-		server legitimately sends, with headroom.
+		cannot reach those sockets before they are used.
+
+		`DEFAULT_MAX_OUTPUT_BUFFER` by default, which no ordinary response comes
+		near. A file over 256 KB streams, and streaming peaks at the watermark
+		plus one slice -- 320 KB -- while a file under that is buffered whole and
+		so is smaller again. What is left above the default is a peer that
+		stopped reading, and a response an application built in one call that is
+		larger than any file this server would have buffered.
+
+		`0` restores the old behaviour of no limit at all, which bounds nothing:
+		a client that stops reading mid-response then holds its whole response in
+		memory for as long as it likes, and many of them hold many.
 	**/
-	public var maxOutputBufferSize:Int = 0;
+	public var maxOutputBufferSize:Int = DEFAULT_MAX_OUTPUT_BUFFER;
 
 	/**
 		What to do when an accepted connection exceeds
@@ -295,7 +325,8 @@ class HTTPServerConfig {
 		this.blacklist = blacklist == null ? [] : blacklist;
 		this.customHeaders = customHeaders == null ? [] : customHeaders;
 		this.middleware = middleware == null ? [] : middleware;
-		this.rateLimiter = rateLimiter == null ? new RateLimiter() : rateLimiter;
+		// 240 a minute rather than RateLimiter's own ten. See `rateLimiter`.
+		this.rateLimiter = rateLimiter == null ? new RateLimiter(DEFAULT_REQUESTS_PER_MINUTE, 60.0) : rateLimiter;
 		this.corsEnabled = corsEnabled;
 		this.corsAllowedOrigins = corsAllowedOrigins == null ? ["*"] : corsAllowedOrigins;
 		this.corsAllowedMethods = corsAllowedMethods == null ? ["GET", "POST", "OPTIONS"] : corsAllowedMethods;
