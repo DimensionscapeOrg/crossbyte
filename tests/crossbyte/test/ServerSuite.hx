@@ -39,6 +39,7 @@ class ServerSuite {
 		// that persists, behind a handler that owns a socket.
 		runner.addCase(new crossbyte.fuzz.HTTPWireFuzzTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeReapTest());
+		runner.addCase(new crossbyte.http.HTTPServerDefaultsTest());
 		runner.addCase(new crossbyte.http.HTTPRequestHandlerTest());
 		runner.addCase(new crossbyte.http.HTTPStreamingTest());
 		runner.addCase(new crossbyte.http.HTTPServerDrainTest());
