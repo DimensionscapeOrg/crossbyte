@@ -152,7 +152,7 @@ class URLLoader extends EventDispatcher {
 			}
 
 			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, request.httpVersion, request.idleTimeout,
-				request.userAgent, request.followRedirects);
+				request.userAgent, request.followRedirects, request.manageCookies);
 
 			// The token was created on the calling thread and travels with the
 			// message, so close() can reach a request that has already started.
