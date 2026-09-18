@@ -229,15 +229,44 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
-		Sessions waiting to finish arriving, and the clock on them.
+		The tick this target needs, attached and detached in one place.
 
-		Target neutral on purpose. Only *recording* an accept belongs to the
-		native path, because that is where this class does its own accepting;
-		Node's server hands connections to a callback instead and does not yet
-		record them, so a stalled upgrade there is still unbounded. That gap is
-		named rather than hidden -- the machinery to close it is here, and what
-		it needs is one push in the Node connection handler.
+		Native drives its own accepting from `this_onTick`, and reaps there as a
+		side effect of already being called. Node is handed connections by a
+		callback and has no accept loop, so it has nothing that runs on a clock
+		-- and it needs one exactly as much, because a peer that completes the
+		TCP connection and then says nothing is holding a descriptor either way.
 	**/
+	@:noCompletion private function __attachTick():Void {
+		if (__cbInstance == null) {
+			return;
+		}
+
+		#if nodejs
+		__cbInstance.addEventListener(TickEvent.TICK, __reapOnTick);
+		#else
+		__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+		#end
+	}
+
+	@:noCompletion private function __detachTick():Void {
+		if (__cbInstance == null) {
+			return;
+		}
+
+		#if nodejs
+		__cbInstance.removeEventListener(TickEvent.TICK, __reapOnTick);
+		#else
+		__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+		#end
+	}
+
+	#if nodejs
+	@:noCompletion private function __reapOnTick(_:TickEvent):Void {
+		__reapStalledUpgrades();
+	}
+	#end
+
 	@:noCompletion private function __clearPendingUpgrade(session:WebSocket):Void {
 		for (pending in __pendingUpgrades) {
 			if (pending.session == session) {
@@ -257,7 +286,20 @@ class ServerWebSocket extends ServerSocket {
 
 		for (pending in __pendingUpgrades) {
 			// Gone on its own, by close or by error. Nothing owed here.
-			if (pending.session == null || !pending.session.connected) {
+			//
+			// This read `!pending.session.connected`, which is never true of a
+			// session waiting to upgrade: a WebSocket reports `connected` once
+			// the handshake completes, deliberately, and these are exactly the
+			// sessions whose handshake has not completed. So every entry took
+			// this branch on the first tick after it was recorded and was
+			// dropped from tracking without being closed. The deadline below was
+			// unreachable, and `handshakeTimeout` shut nothing on any target.
+			//
+			// A successful upgrade is not what this has to catch either: the
+			// session removes itself through `__clearPendingUpgrade` when it
+			// dispatches CONNECT. What is left for here is a session that went
+			// away on its own, which is what `registryClosed` says.
+			if (pending.session == null || pending.session.registryClosed) {
 				continue;
 			}
 
@@ -400,11 +442,7 @@ class ServerWebSocket extends ServerSocket {
 			return;
 		}
 
-		#if !nodejs
-		if (__cbInstance != null) {
-			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
-		}
-		#end
+		__detachTick();
 
 		try {
 			__webServerSocket.close();
@@ -511,12 +549,8 @@ class ServerWebSocket extends ServerSocket {
 			listening = false;
 			bound = false;
 			__closed = true;
-			if (__cbInstance != null) {
-				#if !nodejs
-				__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
-				#end
-				__cbInstance = null;
-			}
+			__detachTick();
+			__cbInstance = null;
 			return;
 		}
 
@@ -528,12 +562,8 @@ class ServerWebSocket extends ServerSocket {
 		listening = false;
 		bound = false;
 		__closed = true;
-		if (__cbInstance != null) {
-			#if !nodejs
-			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
-			#end
-			__cbInstance = null;
-		}
+		__detachTick();
+		__cbInstance = null;
 	}
 
 	/**
@@ -585,11 +615,15 @@ class ServerWebSocket extends ServerSocket {
 		});
 
 		listening = true;
+		// Not gated on __hasListener the way the native branch is: that gate is
+		// about the accept loop, and this tick is only the upgrade reaper.
+		// Reaping an empty list costs one length check.
+		__attachTick();
 		#else
 		__webServerSocket.listen(backlog);
 		listening = true;
 		if (__hasListener) {
-			__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+			__attachTick();
 		}
 		#end
 	}
@@ -706,7 +740,15 @@ class ServerWebSocket extends ServerSocket {
 			}
 
 			connection.setNoDelay(true);
-			__fromSockettoWebsocket(connection);
+			var accepted = __fromSockettoWebsocket(connection);
+
+			// The push the comment on __pendingUpgrades used to say was missing.
+			// Without it a peer could connect, send no upgrade request, and hold
+			// the descriptor for as long as it liked -- the native path has been
+			// closing those for a while, and Node was the one serving the web.
+			if (accepted != null && handshakeTimeout > 0) {
+				__pendingUpgrades.push({session: accepted, deadline: Sys.time() + handshakeTimeout});
+			}
 		};
 
 		if (secure) {
