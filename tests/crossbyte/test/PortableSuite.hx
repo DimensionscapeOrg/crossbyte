@@ -79,6 +79,9 @@ class PortableSuite {
 		// neither backend grades its own homework.
 		runner.addCase(new crossbyte.io.StoreTest());
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
+		// Pure rules, no socket: the host, Secure and deletion checks that
+		// decide whether a session cookie reaches someone else's server.
+		runner.addCase(new crossbyte._internal.http.CookieJarTest());
 		runner.addCase(new crossbyte._internal.http.h2.hpack.HpackTest());
 		runner.addCase(new crossbyte._internal.http.h2.H2Test());
 		runner.addCase(new crossbyte._internal.http.h2.H2ServerTest());

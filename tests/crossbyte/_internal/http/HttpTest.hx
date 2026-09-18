@@ -753,6 +753,102 @@ xxxx");
 		return fixture;
 	}
 
+	public function testASessionCookieSurvivesARedirect():Void {
+		// The case this exists for. `followRedirects` is on by default, so a
+		// sign-in that answers 302 with a session cookie used to lose it: the
+		// cookie was read off the wire and dropped with the rest of the
+		// response headers when the next hop reset them, and the page you
+		// landed on saw an anonymous request.
+		var fixture = serveTwice("HTTP/1.1 302 Found
+Location: /landing
+Set-Cookie: session=abc123; Path=/; HttpOnly
+Content-Length: 0
+
+",
+			"HTTP/1.1 200 OK
+Content-Length: 2
+
+ok");
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/signin');
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
+		Assert.isTrue(fixture.requests[0].toLowerCase().indexOf("cookie:") < 0, "a cookie was sent before anything set one");
+		Assert.isTrue(fixture.requests[1].indexOf("Cookie: session=abc123") >= 0,
+			"the session cookie did not survive the redirect:
+" + fixture.requests[1]);
+	}
+
+	public function testManageCookiesOffSendsNothingBack():Void {
+		var fixture = serveTwice("HTTP/1.1 302 Found
+Location: /landing
+Set-Cookie: session=abc123
+Content-Length: 0
+
+",
+			"HTTP/1.1 200 OK
+Content-Length: 2
+
+ok");
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/signin', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 10000, "CrossByte", true,
+			false);
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
+		Assert.isTrue(fixture.requests[1].toLowerCase().indexOf("cookie:") < 0,
+			"a cookie went out with manageCookies off:
+" + fixture.requests[1]);
+	}
+
+	private static function serveTwice(first:String, second:String):TwoShotHttpServer {
+		var fixture = new TwoShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(2);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				for (i in 0...2) {
+					peer = server.accept();
+					peer.setTimeout(2.0);
+					// Http closes between hops, so each request arrives on its
+					// own connection and the second accept is what catches the
+					// redirected one.
+					fixture.requests.push(readRequest(peer));
+					peer.output.writeString(i == 0 ? first : second);
+					peer.output.flush();
+					closeQuietly(peer);
+					peer = null;
+				}
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		if (fixture.error != null) {
+			Assert.fail("HTTP fixture server failed to start: " + fixture.error);
+		}
+
+		return fixture;
+	}
+
 	private static function serveOnceWithBody(response:String, body:Bytes):OneShotHttpServer {
 		var fixture = new OneShotHttpServer();
 		Thread.create(() -> {
@@ -817,6 +913,25 @@ xxxx");
 				socket.close();
 			}
 		} catch (_:Dynamic) {}
+	}
+}
+
+private class TwoShotHttpServer {
+	public var port:Int = 0;
+	public var requests:Array<String> = [];
+	public var error:Dynamic = null;
+	public var ready:Lock = new Lock();
+	public var done:Lock = new Lock();
+
+	public function new() {}
+
+	public function waitDone():Void {
+		if (!done.wait(4.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture requests");
+		}
+		if (error != null) {
+			Assert.fail("HTTP fixture request failed: " + error);
+		}
 	}
 }
 
