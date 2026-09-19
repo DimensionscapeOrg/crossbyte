@@ -200,6 +200,10 @@ class TestSuites {
 		// client rather than CrossByte's own, which is the only way a fault
 		// specific to a foreign peer shows up.
 		runner.addCase(new crossbyte.net.WebSocketConformanceTest());
+		// Beside it on purpose: the conformance cases cover the violations
+		// someone named, and this covers the ones nobody did. Same hand-written
+		// client, same gate -- both drive the server through a real socket.
+		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
