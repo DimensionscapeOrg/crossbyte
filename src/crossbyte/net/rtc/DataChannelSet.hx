@@ -41,6 +41,9 @@ class DataChannelSet {
 	/** Called when the peer opens a channel rather than answering one. **/
 	public dynamic function onChannel(channel:DataChannel):Void {}
 
+	/** The largest stream number SCTP can carry: the field is sixteen bits. **/
+	public static inline var MAX_STREAM_ID:Int = 65535;
+
 	@:noCompletion private var __channels:IntMap<DataChannel> = new IntMap();
 	@:noCompletion private var __nextId:Int;
 
@@ -81,11 +84,11 @@ class DataChannelSet {
 		one that is waiting.
 	**/
 	public function create(label:String, ordered:Bool = true, protocol:String = ""):DataChannel {
-		var id:Int = __nextId;
-		__nextId += 2;
+		var id:Int = __freeStreamId();
 
 		var channel = @:privateAccess new DataChannel(transfer, id, label, ordered, protocol);
 		__channels.set(id, channel);
+		@:privateAccess channel.__onClosed = __release;
 
 		var open = DcepMessage.open(label, ordered, protocol);
 
@@ -138,6 +141,7 @@ class DataChannelSet {
 
 		var channel = @:privateAccess new DataChannel(transfer, streamId, message.label, !message.unordered, message.protocol);
 		__channels.set(streamId, channel);
+		@:privateAccess channel.__onClosed = __release;
 
 		transfer.send(streamId, DcepMessage.acknowledge().encode(), PPID_CONTROL, true, haxe.Timer.stamp());
 
@@ -146,5 +150,49 @@ class DataChannelSet {
 		// never end.
 		@:privateAccess channel.__acknowledge();
 		onChannel(channel);
+	}
+
+	/**
+		The next stream number for a channel this side opens.
+
+		**Deliberately never reuses a closed channel's number.** There is no
+		close handshake here -- no RE-CONFIG, no stream reset; `close()` is local
+		state and the peer is never told -- so a reused number is one the far
+		side still believes is taken, and its own collision guard would refuse
+		the OPEN in silence. Freeing the map entry is about not retaining a dead
+		channel, and about letting the *peer* reopen on a number of its parity;
+		it is not licence to hand this side's numbers out twice.
+
+		What changed is the end of the range. The counter used to run past 65535
+		and keep going, while `SctpDataChunk` writes the number into a sixteen-
+		bit field -- so after 32768 channels it wrapped on the wire and collided
+		with a live stream, silently, while this map went on keying by the
+		untruncated value. Running out now says so.
+	**/
+	@:noCompletion private function __freeStreamId():Int {
+		while (__nextId <= MAX_STREAM_ID && __channels.exists(__nextId)) {
+			__nextId += 2;
+		}
+
+		if (__nextId > MAX_STREAM_ID) {
+			throw new crossbyte.errors.Error("Every stream number of this side's parity has been used.");
+		}
+
+		var id:Int = __nextId;
+		__nextId += 2;
+		return id;
+	}
+
+	/**
+		Puts a closed channel's stream number back into circulation.
+
+		Guarded on identity because a handler on `onClose` may already have
+		opened a replacement on that number, and dropping that one would lose a
+		live channel.
+	**/
+	@:noCompletion private function __release(channel:DataChannel):Void {
+		if (__channels.get(channel.id) == channel) {
+			__channels.remove(channel.id);
+		}
 	}
 }

@@ -77,6 +77,67 @@ class DataChannelTest extends utest.Test {
 		Assert.equals(1, theirs.id % 2, "the server should take odd stream numbers");
 	}
 
+	/**
+		A peer may open a channel on a stream whose last channel closed.
+
+		Nothing removed a closed channel from the set, so the collision guard in
+		__onControl went on seeing the stream as taken and refused the peer's
+		OPEN -- silently, because a DCEP OPEN that is ignored looks exactly like
+		one that was lost.
+
+		Asserted as the peer's channel arriving, not as the map shrinking: a set
+		that merely forgot the channel would satisfy the latter just as well.
+	**/
+	public function testAPeerMayReopenAStreamWhoseChannelClosed():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:Array<DataChannel> = [];
+		pair.clientChannels.onChannel = channel -> accepted.push(channel);
+
+		var theirs = pair.serverChannels.create("first");
+		Assert.isTrue(pair.run(() -> accepted.length == 1), "the first channel never arrived");
+
+		var stream:Int = theirs.id;
+		theirs.close();
+		accepted[0].close();
+
+		// The peer is entitled to that number again. Wound back by hand because
+		// create() deliberately never reuses one on its own -- there is no close
+		// handshake, so only the peer knows it has finished with the stream.
+		@:privateAccess pair.serverChannels.__nextId = stream;
+
+		var again = pair.serverChannels.create("second");
+		Assert.equals(stream, again.id, "the test did not reopen the same stream");
+
+		Assert.isTrue(pair.run(() -> accepted.length == 2),
+			"the OPEN was refused on a stream whose channel had closed");
+		Assert.equals("second", accepted[1].label);
+	}
+
+	/**
+		Running out of stream numbers is reported, not wrapped.
+
+		The counter ran past 65535 and kept going, while SctpDataChunk writes the
+		number into a sixteen-bit field -- so after 32768 channels it wrapped on
+		the wire and collided with a live stream while this side went on keying
+		by the untruncated value. Two channels, one stream, no complaint.
+	**/
+	public function testRunningOutOfStreamNumbersIsReportedNotWrapped():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+
+		// One number of this side's parity left.
+		@:privateAccess pair.clientChannels.__nextId = DataChannelSet.MAX_STREAM_ID - 1;
+
+		var last = pair.clientChannels.create("last");
+		Assert.equals(DataChannelSet.MAX_STREAM_ID - 1, last.id);
+
+		Assert.raises(() -> pair.clientChannels.create("one too many"), null,
+			"creating past the sixteen-bit stream range wrapped instead of failing");
+	}
+
 	public function testTextCrossesAsText():Void {
 		if (unsupported()) return;
 
