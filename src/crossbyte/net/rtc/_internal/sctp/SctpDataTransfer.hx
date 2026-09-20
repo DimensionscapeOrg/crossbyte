@@ -53,6 +53,16 @@ class SctpDataTransfer {
 	/** Attempts before the association is considered broken. **/
 	public static inline var MAX_ATTEMPTS:Int = 10;
 
+	/**
+		The most one reassembling message may hold before it is abandoned.
+
+		`__partial` is trimmed only when a message completes, so a peer that
+		sends fragments flagged B and never one flagged E grows it for as long as
+		it cares to. Counted in bytes rather than fragments because the sender
+		chooses the fragment size; `MAX_PAYLOAD` bounds only what this end emits.
+	**/
+	public static inline var MAX_REASSEMBLY:Int = 1024 * 1024;
+
 	/** The association this runs over. **/
 	public var association(default, null):SctpAssociation;
 
@@ -231,6 +241,21 @@ class SctpDataTransfer {
 		var fragments:Array<SctpDataChunk> = __partial.exists(key) ? __partial.get(key) : [];
 
 		fragments.push(data);
+
+		// Bounded here rather than as each fragment arrives: a fragment is only
+		// oversized in the context of the message it is joining. Dropping what
+		// has accumulated is the part that matters -- onFailure is raised for
+		// symmetry with the send side, though nothing in src/ assigns it yet.
+		var pending:Int = 0;
+		for (fragment in fragments) {
+			pending += fragment.payload.length;
+		}
+
+		if (pending > MAX_REASSEMBLY) {
+			__partial.remove(key);
+			onFailure("A message on stream " + key + " reached " + pending + " bytes without completing.");
+			return;
+		}
 		fragments.sort(function(a:SctpDataChunk, b:SctpDataChunk):Int {
 			return SctpDataChunk.isEarlier(a.tsn, b.tsn) ? -1 : (a.tsn == b.tsn ? 0 : 1);
 		});
