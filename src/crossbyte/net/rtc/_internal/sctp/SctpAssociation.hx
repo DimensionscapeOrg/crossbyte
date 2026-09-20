@@ -218,6 +218,10 @@ class SctpAssociation {
 	public function close():Void {
 		__closed = true;
 		state = CLOSED;
+
+		// Nothing settled `established` on a close. Every other path that does
+		// runs from the handshake, and closing is what stops it.
+		@:privateAccess established.__fail("The association was closed before it was established.", null);
 	}
 
 	/** Builds a packet addressed to the peer, with the right tag already on it. **/
@@ -360,12 +364,14 @@ class SctpAssociation {
 			return;
 		}
 
-		var wasOpen = state == ESTABLISHED;
-		close();
-
-		if (!wasOpen) {
+		// Before close(), for the same reason as DtlsTransport: close() settles
+		// this future too, Future.__fail is idempotent, and the specific reason
+		// should be the one that survives.
+		if (state != ESTABLISHED) {
 			@:privateAccess established.__fail(reason, null);
 		}
+
+		close();
 	}
 
 	@:noCompletion private function __tagMatches(packet:SctpPacket):Bool {
