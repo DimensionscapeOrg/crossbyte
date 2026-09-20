@@ -301,6 +301,45 @@ class SctpDataTransferTest extends utest.Test {
 	}
 
 	/**
+		A stream cannot hold without bound for a sequence that never comes.
+
+		An ordered message arriving early is held until its turn rather than
+		dropped, which is right -- the one before it is usually still in flight.
+		But nothing bounded the queue, so a peer that sends sequence 1 and never
+		sequence 0 leaves everything behind it held for the life of the
+		association. These are whole reassembled messages, not fragments, so it
+		is the more expensive of the two hold queues in this class.
+	**/
+	public function testAStreamWaitingOnASequenceThatNeverComesIsBounded():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var server = pair.serverData;
+
+		var size:Int = 65536;
+		var payload = new ByteArray();
+		payload.length = size;
+
+		// The stream expects sequence 0, so every one of these is early.
+		var allowed:Int = Std.int(SctpDataTransfer.MAX_HELD / size);
+		for (i in 0...2 * allowed) {
+			@:privateAccess server.__deliverOrHold(0, i + 1, SctpDataChunk.PPID_BINARY, payload, false);
+		}
+
+		// Counted rather than summed because PendingMessage is module-private;
+		// every payload here is the same size, so the two are the same figure.
+		var messages:Int = 0;
+		var queues = @:privateAccess server.__held;
+		for (key in queues.keys()) {
+			messages += queues.get(key).length;
+		}
+
+		Assert.isTrue(messages <= allowed,
+			"the stream held " + (messages * size) + " bytes waiting for a sequence that never arrived, against a bound of "
+			+ SctpDataTransfer.MAX_HELD);
+	}
+
+	/**
 		Sequence numbers wrap, and comparison has to survive it.
 
 		A subtraction works for hours and then reorders every message the moment
