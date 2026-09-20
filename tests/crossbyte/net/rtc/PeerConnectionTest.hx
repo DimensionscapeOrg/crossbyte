@@ -338,4 +338,45 @@ class PeerConnectionTest extends utest.Test {
 		Assert.isFalse(resolved, "a connection that never came up reported itself ready");
 		Assert.notNull(failure, "closing before the connection was ready left `ready` pending forever");
 	}
+
+	/**
+		One unusable candidate does not abort the whole connection.
+
+		The candidates come from the peer. Building each one validates its port
+		and component, and the loop in connect() did not guard that -- so a
+		description carrying a single bad candidate threw part-way through:
+		some candidates added, the rest dropped, and agent.start never reached.
+		The connection could then never come up, and the throw surfaced in the
+		application that merely relayed the description.
+	**/
+	public function testOneUnusableCandidateDoesNotAbortTheConnection():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+
+			var description = bob.description();
+			var usable:Int = description.candidates.length;
+			Assert.isTrue(usable > 0, "bob offered no candidates, so this proves nothing");
+
+			// A port nothing can be dialled on, ahead of the good ones so that
+			// aborting on it would take every one of them with it.
+			description.candidates.insert(0, {address: "127.0.0.1", port: 70000, type: "host", priority: 1});
+
+			alice.connect(description);
+
+			var accepted:Int = @:privateAccess alice.agent.__remotes.length;
+			Assert.equals(usable, accepted,
+				"one unusable candidate cost " + (usable - accepted) + " good ones");
+		} catch (e:Dynamic) {
+			Assert.fail("connect() threw on a description carrying one unusable candidate: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
 }

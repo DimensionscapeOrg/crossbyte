@@ -115,6 +115,32 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		An agent bounds how many remote candidates it will hold.
+
+		Every remote candidate pairs with every local one, and __rebuild scans
+		the whole checklist for each pair -- so the cost grows faster than the
+		list, and the list is the peer's to choose. Nothing bounded it, and the
+		candidates arrive in the description a peer sends.
+	**/
+	public function testAnAgentBoundsHowManyRemoteCandidatesItWillHold():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		// Distinct and well formed, so nothing else would refuse them, and far
+		// more than any real peer offers.
+		for (i in 0...(IceAgent.MAX_REMOTE_CANDIDATES * 3)) {
+			alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT + i));
+		}
+
+		var held:Int = @:privateAccess alice.__remotes.length;
+
+		Assert.isTrue(held <= IceAgent.MAX_REMOTE_CANDIDATES,
+			"the agent held " + held + " remote candidates, so a peer chooses how much work this does");
+	}
+
+	/**
 		The controlling peer decides, and the other does not.
 
 		Two peers both nominating is two peers potentially nominating different
