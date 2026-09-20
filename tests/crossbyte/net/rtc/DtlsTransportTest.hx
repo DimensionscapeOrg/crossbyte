@@ -73,6 +73,28 @@ class DtlsTransportTest extends utest.Test {
 	}
 
 	/**
+		Closing before it completes tells whoever was waiting.
+
+		Every path that settled this future ran from the handshake, and closing
+		is what stops the handshake -- so a caller that closed mid-negotiation
+		was left holding a future that could not settle either way. The same gap
+		existed in every class in this stack that hands one out.
+	**/
+	public function testClosingBeforeTheHandshakeCompletesTellsWhoeverWaited():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var secured:Bool = false;
+		var failure:String = null;
+		pair.client.established.then(_ -> secured = true, error -> failure = error);
+
+		pair.client.close();
+
+		Assert.isFalse(secured, "a closed session reported a completed handshake");
+		Assert.notNull(failure, "closing left `established` pending forever");
+	}
+
+	/**
 		The case the fingerprint exists for.
 
 		An attacker who can answer gets a perfectly good DTLS handshake -- the
