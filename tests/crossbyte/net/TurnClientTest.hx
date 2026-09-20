@@ -231,6 +231,41 @@ class TurnClientTest extends utest.Test {
 	}
 
 	/**
+		A permission is renewed before the relay forgets it.
+
+		The allocation was refreshed on the tick, and so was every channel. A
+		permission was asked for once and never again -- and refreshing an
+		allocation does not renew its permissions (RFC 5766 section 8). Five
+		minutes into a relayed call the relay starts dropping that peer and says
+		nothing, which is the worst shape this can fail in: the connection is up,
+		the allocation is healthy, and the media simply stops.
+	**/
+	public function testAPermissionIsRenewedBeforeItLapses():Void {
+		if (unsupported()) return;
+
+		var relay = new Relay();
+		var client = relay.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(0);
+		relay.run(client, () -> client.active);
+
+		var asked = 1.0;
+		client.permit("198.51.100.4", asked);
+		relay.run(client, () -> relay.permissionRequests > 0, asked);
+		Assert.equals(1, relay.permissionRequests, "the permission was never asked for at all");
+
+		// Past the renewal mark and still well inside the five minutes, so the
+		// relay would still honour it -- and inside the allocation refresh at
+		// 300, so nothing else is competing for the one request in flight.
+		var later = asked + TurnClient.PERMISSION_REFRESH + 1;
+		client.poll(later);
+		relay.run(client, () -> relay.permissionRequests > 1, later);
+
+		Assert.isTrue(relay.permissionRequests > 1,
+			"the permission was never renewed, so the relay stops passing this peer at five minutes");
+	}
+
+	/**
 		Anything that is not TURN belongs to whoever else shares the socket.
 
 		A relay client and an ICE agent commonly sit on one socket, and binding
