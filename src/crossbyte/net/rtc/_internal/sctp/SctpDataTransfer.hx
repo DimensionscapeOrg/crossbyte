@@ -210,6 +210,13 @@ class SctpDataTransfer {
 	@:noCompletion private function __advanceCumulative():Void {
 		while (__received.exists((__cumulativeTsn + 1) | 0)) {
 			__cumulativeTsn = (__cumulativeTsn + 1) | 0;
+			// Nothing reads an entry once the cumulative has passed it: the SACK
+			// gap blocks start at __cumulativeTsn + 1, and __onData refuses a
+			// chunk at or below the cumulative on the isEarlier test, whether or
+			// not the map still holds it. Left in, this retained every chunk that
+			// ever arrived -- payload included -- for the life of the
+			// association, on ordinary traffic and not merely a hostile peer.
+			__received.remove(__cumulativeTsn);
 		}
 	}
 
