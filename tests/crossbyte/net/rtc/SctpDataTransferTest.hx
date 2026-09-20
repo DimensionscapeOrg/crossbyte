@@ -215,6 +215,47 @@ class SctpDataTransferTest extends utest.Test {
 	}
 
 	/**
+		The receiver does not keep what it has already accepted.
+
+		`__received` is there to spot duplicates and to describe the holes in a
+		SACK. Both only ever look at TSNs *above* the cumulative -- the gap walk
+		starts at `__cumulativeTsn + 1`, and a chunk at or below it is refused on
+		the isEarlier test whether or not the map still holds it. So an entry the
+		cumulative has passed can never be read again, and nothing removed it:
+		an association retained every chunk it had ever received, payload and
+		all, for as long as it stayed open. An ordinarily busy data channel was
+		enough; no misbehaving peer required.
+
+		Counting the map is the effect here and not a proxy for it -- the map is
+		the memory that was being retained.
+	**/
+	public function testAcceptedChunksAreNotRetainedForever():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var delivered:Int = 0;
+		pair.serverData.onMessage = (_, _, _) -> delivered++;
+
+		var sent:Int = 40;
+		for (i in 0...sent) {
+			pair.clientData.send(0, text("message " + i), SctpDataChunk.PPID_STRING, true, pair.now);
+			pair.run(() -> delivered > i);
+		}
+
+		// Without this the count below means nothing: a receiver that dropped
+		// every message would also be holding no chunks.
+		Assert.equals(sent, delivered, "not every message arrived");
+
+		var retained:Int = 0;
+		for (_ in @:privateAccess pair.serverData.__received.keys()) {
+			retained++;
+		}
+
+		Assert.equals(0, retained,
+			"the receiver kept " + retained + " of " + sent + " chunks it had already delivered");
+	}
+
+	/**
 		Sequence numbers wrap, and comparison has to survive it.
 
 		A subtraction works for hours and then reorders every message the moment
