@@ -270,6 +270,12 @@ class DtlsTransport {
 			NativeDtlsSession.close(__handle);
 			__handle = -1;
 		}
+
+		// A caller waiting on `established` when the session is closed under it
+		// would otherwise wait forever: every other path that settles this one
+		// runs from the handshake, which closing is what stops. Future.__fail
+		// is idempotent, so a session that did complete keeps its result.
+		@:privateAccess established.__fail("The session was closed before the handshake completed.", null);
 		#end
 	}
 
@@ -383,11 +389,16 @@ class DtlsTransport {
 			return;
 		}
 
-		close();
-
+		// Before close(), which settles `established` too but only knows that
+		// the session is closing. Future.__fail is idempotent, so whichever
+		// runs first wins -- and this one knows what actually went wrong. Put
+		// the other way round, a refused certificate reported "closed before
+		// the handshake completed" and the reason was lost.
 		if (!connected) {
 			@:privateAccess established.__fail(reason, null);
 		}
+
+		close();
 	}
 	#end
 }

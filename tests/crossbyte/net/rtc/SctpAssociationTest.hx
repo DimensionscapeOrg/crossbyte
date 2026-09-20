@@ -50,6 +50,28 @@ class SctpAssociationTest extends utest.Test {
 	}
 
 	/**
+		Closing before it completes tells whoever was waiting.
+
+		Every path that settled this future ran from the handshake, and closing
+		is what stops the handshake -- so a caller that closed mid-negotiation
+		was left holding a future that could not settle either way. The same gap
+		existed in every class in this stack that hands one out.
+	**/
+	public function testClosingBeforeTheAssociationOpensTellsWhoeverWaited():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var opened:Bool = false;
+		var failure:String = null;
+		pair.client.established.then(_ -> opened = true, error -> failure = error);
+
+		pair.client.close();
+
+		Assert.isFalse(opened, "a closed association reported itself established");
+		Assert.notNull(failure, "closing left `established` pending forever");
+	}
+
+	/**
 		The exchange takes exactly four messages and no more.
 
 		INIT, INIT ACK, COOKIE ECHO, COOKIE ACK. A fifth would mean something is

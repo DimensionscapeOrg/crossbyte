@@ -266,6 +266,31 @@ class TurnClientTest extends utest.Test {
 	}
 
 	/**
+		Closing before it completes tells whoever was waiting.
+
+		Every path that settled this future ran from the handshake, and closing
+		is what stops the handshake -- so a caller that closed mid-negotiation
+		was left holding a future that could not settle either way. The same gap
+		existed in every class in this stack that hands one out.
+	**/
+	public function testClosingBeforeTheRelayAnswersTellsWhoeverWaited():Void {
+		if (unsupported()) return;
+
+		var relay = new Relay();
+		var client = relay.client();
+
+		var got:Bool = false;
+		var failure:String = null;
+		client.allocated.then(_ -> got = true, error -> failure = error);
+
+		client.allocate(0);
+		client.close();
+
+		Assert.isFalse(got, "a closed client reported an allocation");
+		Assert.notNull(failure, "closing before the relay answered left `allocated` pending forever");
+	}
+
+	/**
 		Anything that is not TURN belongs to whoever else shares the socket.
 
 		A relay client and an ICE agent commonly sit on one socket, and binding
