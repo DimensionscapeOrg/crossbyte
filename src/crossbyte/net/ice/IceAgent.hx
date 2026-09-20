@@ -74,6 +74,17 @@ class IceAgent {
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
 	/**
+		The most remote candidates one agent will hold.
+
+		Every remote candidate pairs with every local one, and `__rebuild`
+		scans the whole checklist for each pair it considers, so the work grows
+		faster than the list does -- and the list is the peer's to choose. A
+		real peer offers a handful; RFC 8445 section 6.1.2.5 bounds the
+		checklist for the same reason.
+	**/
+	public static inline var MAX_REMOTE_CANDIDATES:Int = 64;
+
+	/**
 		The refusal one peer sends when both claim the same role, RFC 8445
 		section 7.3.1.1.
 	**/
@@ -210,10 +221,19 @@ class IceAgent {
 			throw new ArgumentError("A candidate is required.");
 		}
 
-		if (!__known(__remotes, candidate)) {
-			__remotes.push(candidate);
-			__rebuild();
+		if (__known(__remotes, candidate)) {
+			return;
 		}
+
+		// Dropped rather than refused: these arrive from the peer's
+		// description, and one over-generous peer is not a reason to throw
+		// into the application that relayed it.
+		if (__remotes.length >= MAX_REMOTE_CANDIDATES) {
+			return;
+		}
+
+		__remotes.push(candidate);
+		__rebuild();
 	}
 
 	/**

@@ -355,7 +355,19 @@ class PeerConnection {
 		__resolveDtlsRole(remote.setup);
 
 		for (candidate in remote.candidates) {
-			agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+			// Skipped rather than thrown on, which is what SessionDescription
+			// already does for a line it cannot use: "skipped rather than
+			// accepted into a check that could only fail". Constructing one of
+			// these validates the port and the component, so a description
+			// carrying a single unusable candidate used to abort this loop
+			// part-way -- some candidates added, the rest not, and the
+			// agent.start below never reached, leaving a connection that could
+			// never come up and said nothing about why. The candidates are the
+			// peer's to choose, so one bad one is not the application's fault
+			// to catch.
+			try {
+				agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+			} catch (_:Dynamic) {}
 		}
 
 		agent.start(new IceCredentials(remote.usernameFragment, remote.password), haxe.Timer.stamp());
