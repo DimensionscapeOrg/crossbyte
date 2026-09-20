@@ -84,6 +84,37 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		Closing an agent tells whoever was waiting on a path.
+
+		`connected` had exactly one failure path, __settleIfFinished, which
+		decides by looking at the checks -- and close() empties them, so after a
+		close it could never conclude anything. An agent closed mid-negotiation
+		therefore left its caller holding a future that could not settle either
+		way, and PeerConnection is one such caller: it wires agent.connected to
+		its own failure path in the constructor.
+	**/
+	public function testClosingAnAgentTellsWhoeverWaitedForAPath():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		var bob = new IceAgent(false, credentials("bob"));
+
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+
+		var resolved:Bool = false;
+		var failure:String = null;
+		alice.connected.then(_ -> resolved = true, error -> failure = error);
+
+		// Mid-negotiation: checks outstanding, nothing concluded either way.
+		alice.start(bob.localCredentials, 0);
+		alice.close();
+
+		Assert.isFalse(resolved, "a closed agent reported that it had found a path");
+		Assert.notNull(failure, "closing an agent left `connected` pending forever");
+	}
+
+	/**
 		The controlling peer decides, and the other does not.
 
 		Two peers both nominating is two peers potentially nominating different

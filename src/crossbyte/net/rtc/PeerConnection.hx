@@ -413,6 +413,8 @@ class PeerConnection {
 			return;
 		}
 
+		var wasConnected = connected;
+
 		__closed = true;
 		connected = false;
 
@@ -420,6 +422,16 @@ class PeerConnection {
 		// and leaving it forever pending is worse than saying what happened.
 		__settleReflexive(null, "The connection closed before the STUN server replied.");
 		__settleRelayed(null, "The connection closed before the relay answered.");
+
+		// And `ready`, which this did not settle. Those two above only exist
+		// when the caller asked for them, so the omission was invisible unless
+		// someone awaited the connection itself and then closed it -- after
+		// which neither handler could ever run. __fail settles it first with a
+		// reason that says what went wrong; Future.__fail is idempotent, so by
+		// the time it reaches here there is nothing left to do.
+		if (!wasConnected) {
+			@:privateAccess ready.__fail("The connection was closed before it was ready.", null);
+		}
 
 		if (__turn != null) {
 			__turn.close();
@@ -983,12 +995,14 @@ class PeerConnection {
 			return;
 		}
 
-		var wasConnected = connected;
-		close();
-
-		if (!wasConnected) {
+		// Before close(), which settles `ready` too but only knows that the
+		// connection was closed. Whichever runs first wins, and this one knows
+		// what actually went wrong.
+		if (!connected) {
 			@:privateAccess ready.__fail(reason, null);
 		}
+
+		close();
 	}
 }
 #end
