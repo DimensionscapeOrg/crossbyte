@@ -110,6 +110,12 @@ class TurnClient {
 	/** Rebound at eight, so a lost bind has another go before it lapses. **/
 	private static inline var CHANNEL_REFRESH:Float = 480;
 
+	/** How long a relay keeps a permission for. RFC 5766 section 8. **/
+	public static inline var PERMISSION_LIFETIME:Float = 300;
+
+	/** Renewed well inside that, the way a channel is. **/
+	public static inline var PERMISSION_REFRESH:Float = 240;
+
 	/**
 		Whether a relay can be used from here.
 
@@ -156,7 +162,7 @@ class TurnClient {
 	@:noCompletion private var __refreshAt:Float = 0;
 	@:noCompletion private var __lifetime:Int = DEFAULT_LIFETIME;
 	@:noCompletion private var __closed:Bool = false;
-	@:noCompletion private var __permitted:Array<String> = [];
+	@:noCompletion private var __permitted:Array<TurnPermission> = [];
 
 	/** Peers with a channel bound, or one asked for. **/
 	/**
@@ -230,17 +236,23 @@ class TurnClient {
 
 		A relay drops anything from an address it has not been told to expect,
 		which is what stops an allocation being an open forwarder for whoever
-		finds it. Permissions expire after five minutes and are renewed with the
-		allocation.
+		finds it. A permission lasts five minutes, and refreshing the allocation
+		does not renew it (RFC 5766 section 8) -- `poll` asks again well inside
+		that, the way it does for a channel.
 	**/
 	public function permit(peerAddress:String, now:Float):Void {
 		if (__closed || !active || peerAddress == null) {
 			return;
 		}
 
-		if (__permitted.indexOf(peerAddress) < 0) {
-			__permitted.push(peerAddress);
+		var permission = __permissionFor(peerAddress);
+
+		if (permission == null) {
+			permission = new TurnPermission(peerAddress);
+			__permitted.push(permission);
 		}
+
+		permission.askedAt = now;
 
 		__request(StunMessage.CREATE_PERMISSION_REQUEST, [StunMessage.xorPeerAddress(peerAddress, 0)], now);
 	}
@@ -320,6 +332,16 @@ class TurnClient {
 	}
 
 	/** The channel bound to a peer, if one was ever asked for. **/
+	@:noCompletion private function __permissionFor(address:String):Null<TurnPermission> {
+		for (permission in __permitted) {
+			if (permission.address == address) {
+				return permission;
+			}
+		}
+
+		return null;
+	}
+
 	@:noCompletion private function __channelFor(address:String, port:Int):Null<TurnChannel> {
 		for (channel in __channels) {
 			if (channel.address == address && channel.port == port) {
@@ -382,6 +404,18 @@ class TurnClient {
 			for (channel in __channels) {
 				if (channel.bound && now - channel.askedAt >= CHANNEL_REFRESH) {
 					bindChannel(channel.address, channel.port, now);
+				}
+			}
+		}
+
+		// And every permission well inside its five minutes. Nothing did this:
+		// the allocation was refreshed and the channels were, but a permission
+		// simply lapsed, after which the relay drops that peer's traffic
+		// without saying so.
+		if (active) {
+			for (permission in __permitted.copy()) {
+				if (now - permission.askedAt >= PERMISSION_REFRESH) {
+					permit(permission.address, now);
 				}
 			}
 		}
@@ -677,6 +711,16 @@ class TurnClient {
 	granted, because that is what the retry and the refresh are both measured
 	against -- and a bind that was never answered should not look fresh.
 **/
+private class TurnPermission {
+	public var address(default, null):String;
+
+	public var askedAt:Float = 0;
+
+	public function new(address:String) {
+		this.address = address;
+	}
+}
+
 private class TurnChannel {
 	public var number(default, null):Int;
 	public var address(default, null):String;
