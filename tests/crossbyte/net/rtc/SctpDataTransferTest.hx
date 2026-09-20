@@ -256,6 +256,51 @@ class SctpDataTransferTest extends utest.Test {
 	}
 
 	/**
+		An unfinished message cannot grow without bound.
+
+		`__partial` holds the fragments of a message still being reassembled and
+		is trimmed only when one completes. A peer that sends a fragment flagged
+		B and then middle fragments forever, never one flagged E, therefore hands
+		the receiver bytes it will hold for the life of the association. Every
+		fragment is perfectly legal on its own, which is why this needs a bound
+		rather than a validity check.
+
+		Fed straight into the receiver rather than over the wire harness, because
+		the sender will not produce a message that never ends.
+	**/
+	public function testAnUnfinishedMessageCannotGrowWithoutBound():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var server = pair.serverData;
+		var first:Int = @:privateAccess server.__cumulativeTsn;
+
+		var size:Int = 65536;
+		var payload = new ByteArray();
+		payload.length = size;
+
+		// Twice the bound, in fragments that each look ordinary.
+		var count:Int = 2 * Std.int(SctpDataTransfer.MAX_REASSEMBLY / size);
+		for (i in 0...count) {
+			var flags:Int = i == 0 ? SctpDataChunk.FLAG_BEGINNING : 0;
+			var fragment = new SctpDataChunk((first + 1 + i) | 0, 0, 0, SctpDataChunk.PPID_BINARY, payload, flags);
+			@:privateAccess server.__onData(fragment.toChunk());
+		}
+
+		var held:Int = 0;
+		var partial = @:privateAccess server.__partial;
+		for (key in partial.keys()) {
+			for (fragment in partial.get(key)) {
+				held += fragment.payload.length;
+			}
+		}
+
+		Assert.isTrue(held <= SctpDataTransfer.MAX_REASSEMBLY,
+			"the receiver held " + held + " bytes of a message that never ended, against a bound of "
+			+ SctpDataTransfer.MAX_REASSEMBLY);
+	}
+
+	/**
 		Sequence numbers wrap, and comparison has to survive it.
 
 		A subtraction works for hours and then reorders every message the moment
