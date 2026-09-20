@@ -63,6 +63,16 @@ class SctpDataTransfer {
 	**/
 	public static inline var MAX_REASSEMBLY:Int = 1024 * 1024;
 
+	/**
+		The most one stream may hold waiting for its turn before the queue goes.
+
+		A message that arrives early is held rather than dropped, which is right:
+		the one it waits for is usually still in flight. But a peer that sends
+		sequence 1 and never sequence 0 leaves everything behind it queued for the
+		life of the association, and these are whole reassembled messages.
+	**/
+	public static inline var MAX_HELD:Int = 1024 * 1024;
+
 	/** The association this runs over. **/
 	public var association(default, null):SctpAssociation;
 
@@ -327,6 +337,20 @@ class SctpDataTransfer {
 			// early, and the one it is waiting for is still on its way.
 			var queue:Array<PendingMessage> = __held.exists(streamId) ? __held.get(streamId) : [];
 			queue.push(new PendingMessage(sequence, protocolId, payload));
+
+			var waiting:Int = 0;
+			for (message in queue) {
+				waiting += message.payload.length;
+			}
+
+			if (waiting > MAX_HELD) {
+				// The sequence being waited on is not coming, so everything
+				// queued behind it is unreachable and only costs memory.
+				__held.remove(streamId);
+				onFailure("Stream " + streamId + " held " + waiting + " bytes waiting for sequence " + expected + ".");
+				return;
+			}
+
 			__held.set(streamId, queue);
 			return;
 		}
