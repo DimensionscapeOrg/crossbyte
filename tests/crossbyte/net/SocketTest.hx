@@ -254,9 +254,20 @@ class SocketTest extends utest.Test {
 		client.addEventListener(Event.CLOSE, _ -> events.push("close"));
 		client.addEventListener(IOErrorEvent.IO_ERROR, _ -> events.push("ioerror"));
 
+		// A port nothing listens on, obtained rather than assumed. This was
+		// port 1, which is only closed by convention -- on a machine where
+		// something has bound it the connect succeeds, and the test then
+		// reports a bug in the very code it guards ("CONNECT was dispatched
+		// for a connection that was refused"), which is how it was found.
+		// Binding zero and closing yields a port that was free a moment ago.
+		var vacant = new ServerSocket();
+		vacant.bind(0, "127.0.0.1");
+		vacant.listen(1);
+		var refusedPort:Int = vacant.localPort;
+		closeServerQuietly(vacant);
+
 		try {
-			// Port 1 on loopback: nothing listens there.
-			client.connect("127.0.0.1", 1);
+			client.connect("127.0.0.1", refusedPort);
 			pumpUntil(() -> events.length > 0, 8.0);
 
 			Assert.isTrue(events.indexOf("ioerror") >= 0,
