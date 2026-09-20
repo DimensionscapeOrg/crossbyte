@@ -314,4 +314,28 @@ class PeerConnectionTest extends utest.Test {
 			Sys.sleep(0.001);
 		}
 	}
+
+	/**
+		Closing before the connection comes up tells whoever was waiting.
+
+		close() settled the reflexive and relayed futures with a reason, and said
+		why in a comment -- leaving one forever pending is worse than saying what
+		happened -- and then left `ready` pending. Those two only exist when the
+		caller asked for them, so the gap was invisible unless someone awaited the
+		connection itself and then closed it, after which neither handler could
+		ever run.
+	**/
+	public function testClosingBeforeReadyTellsWhoeverWasWaiting():Void {
+		if (unsupported()) return;
+
+		var connection = new PeerConnection(true);
+		var resolved:Bool = false;
+		var failure:String = null;
+
+		connection.ready.then(_ -> resolved = true, error -> failure = error);
+		connection.close();
+
+		Assert.isFalse(resolved, "a connection that never came up reported itself ready");
+		Assert.notNull(failure, "closing before the connection was ready left `ready` pending forever");
+	}
 }

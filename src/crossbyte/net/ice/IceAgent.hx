@@ -330,6 +330,14 @@ class IceAgent {
 
 		state = CLOSED;
 		__checks = [];
+
+		// A caller waiting on `connected` when the agent is closed under it
+		// would otherwise wait forever. Nothing else settles this: the only
+		// other failure path is __settleIfFinished, which decides by looking
+		// at the checks -- and the line above just emptied them, so after a
+		// close it can never conclude anything. Future.__fail is idempotent,
+		// so an agent that already found a path keeps its result.
+		@:privateAccess connected.__fail("The agent was closed before a path was found.", null);
 	}
 
 	/** Every pair that has answered, best first. **/
