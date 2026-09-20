@@ -76,6 +76,12 @@ class DataChannel {
 	@:noCompletion private var __transfer:SctpDataTransfer;
 	@:noCompletion private var __closed:Bool = false;
 
+	/**
+		Told to the set that owns this channel when it closes, so the stream
+		number it holds goes back into circulation. Assigned by DataChannelSet.
+	**/
+	@:noCompletion private var __onClosed:DataChannel->Void;
+
 	@:allow(crossbyte.net.rtc)
 	private function new(transfer:SctpDataTransfer, id:Int, label:String, ordered:Bool, protocol:String) {
 		this.__transfer = transfer;
@@ -148,6 +154,13 @@ class DataChannel {
 
 		__closed = true;
 		open = false;
+
+		// Before onClose, so a handler that opens a replacement on this stream
+		// finds the number free rather than still taken.
+		if (__onClosed != null) {
+			__onClosed(this);
+		}
+
 		onClose();
 	}
 
