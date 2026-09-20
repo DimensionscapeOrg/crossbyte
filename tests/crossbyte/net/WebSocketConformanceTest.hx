@@ -490,6 +490,45 @@ class WebSocketConformanceTest extends utest.Test {
 		Assert.equals(1009, closeCodes[0]);
 	}
 
+	/**
+	 * The same limit, applied to a frame whose payload never arrives.
+	 *
+	 * The case above sends all 65537 bytes, so it passes whether the size is
+	 * checked when the header is read or only once the payload has been
+	 * buffered. That distinction is the entire cost. The header below is
+	 * fourteen bytes and promises two gigabytes, and until the check moved
+	 * above the wait for the payload the session simply sat there: the parse
+	 * loop breaks without consuming, so nothing is compacted out of the input
+	 * buffer and every byte the peer sent afterwards was retained. Ten bytes
+	 * of header, and an unauthenticated peer could then charge the server for
+	 * as much memory as it cared to send.
+	 *
+	 * So the assertion is that the close arrives at all. A limit enforced only
+	 * after the allocation it exists to prevent is not a limit.
+	 */
+	public function testAFrameHeaderPromisingMoreThanTheLimitIsRefusedBeforeItsPayloadArrives():Void {
+		var peer = connect();
+
+		// Masked text, a 64-bit length of 0x7FFFFFFF, the mask, and then
+		// nothing. Deliberately not 0xFFFFFFFF, which the parser rejects as a
+		// negative length before ever reaching the size check under test.
+		var header:haxe.io.BytesBuffer = new haxe.io.BytesBuffer();
+		header.addByte(0x81);
+		header.addByte(0xFF);
+		for (b in [0x00, 0x00, 0x00, 0x00, 0x7F, 0xFF, 0xFF, 0xFF]) {
+			header.addByte(b);
+		}
+		for (_ in 0...4) {
+			header.addByte(0xA5);
+		}
+
+		peer.sendRaw(header.getBytes());
+
+		Assert.isTrue(pumpUntil(() -> closeCodes.length > 0),
+			"the server waited for a payload it had already decided to refuse");
+		Assert.equals(1009, closeCodes[0]);
+	}
+
 	private function __receivedLength():Int {
 		var total:Int = 0;
 		for (chunk in received) {

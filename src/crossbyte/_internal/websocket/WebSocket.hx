@@ -671,12 +671,13 @@ class WebSocket {
 					payloadLength = low;
 				}
 
-				var maskBytes:Int = isMasked ? 4 : 0;
-				if (__input.bytesAvailable < maskBytes + payloadLength) {
-					__input.position = frameStart;
-					break;
-				}
-
+				// A frame is refused on its header alone, before the wait below for a
+				// payload that may never arrive. These three checks used to sit after
+				// that wait, and so ten bytes claiming a two-gigabyte length put the
+				// session into a wait for a frame MAX_PAYLOAD would have refused the
+				// moment it completed. The loop breaks without consuming, so nothing
+				// is compacted out of __input and every byte the peer sent afterwards
+				// accumulated -- unauthenticated, and ten bytes to ask for.
 				var isControl:Bool = opCode >= WebSocketOpcode.CLOSE;
 				if (isControl && (!isFinal || payloadLength > 125)) {
 					__close(1002);
@@ -695,6 +696,12 @@ class WebSocket {
 					&& opCode != WebSocketOpcode.PONG) {
 					__close(1002);
 					return;
+				}
+
+				var maskBytes:Int = isMasked ? 4 : 0;
+				if (__input.bytesAvailable < maskBytes + payloadLength) {
+					__input.position = frameStart;
+					break;
 				}
 
 				var maskingKey:ByteArray = new ByteArray(4);
