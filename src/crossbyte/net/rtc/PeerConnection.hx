@@ -633,7 +633,6 @@ class PeerConnection {
 		permission that lapses does not fail loudly -- the relay simply drops what
 		it is asked to forward, and the connection goes quiet for no stated reason.
 	**/
-	private static inline var PERMISSION_REFRESH:Float = 240;
 
 	/**
 		Wraps one datagram for the relay to forward, permitting the peer first.
@@ -649,11 +648,13 @@ class PeerConnection {
 
 		var now = __clock();
 
-		// Asked about by absence rather than by age against a zero: the clock
-		// here counts from when the program started, so early on "never
-		// granted" and "granted moments ago" are the same small number and a
-		// permission would be skipped for the first four minutes of a process.
-		if (!__permitted.exists(address) || now - __permitted.get(address) >= PERMISSION_REFRESH) {
+		// Once per address. Renewing it used to happen here too, on the same
+		// four minutes, which only renewed a permission while traffic was
+		// flowing -- an idle-but-receiving connection lapsed and the relay
+		// began dropping the peer inbound. TurnClient renews on its own tick
+		// now, so keeping a second copy of that policy here would just send
+		// the relay a redundant request every cycle.
+		if (!__permitted.exists(address)) {
 			__permitted.set(address, now);
 			__turn.permit(address, now);
 		}
