@@ -97,6 +97,52 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A peer that stops answering takes the connection down with it.
+
+		The agent runs the consent timer (RFC 7675) and IceAgentTest covers it
+		there. This is the other half: the agent giving up has to reach the
+		layer that actually transmits, or the timer is a mechanism whose result
+		nobody reads. `ready` resolved when the path came up, so a path that
+		stops being one cannot be reported through it.
+	**/
+	public function testLosingConsentTakesTheConnectionDown():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+			Assert.isTrue(alice.connected, "the two never connected, so there is no consent to lose");
+
+			if (!alice.connected) {
+				return;
+			}
+
+			// Gone without saying so, which is the case consent exists for.
+			bob.close();
+
+			// The same clock the runtime tick uses, moved past the thirty
+			// seconds the RFC allows. Waiting it out in real time would put
+			// half a minute into the suite for one assertion.
+			alice.poll(haxe.Timer.stamp() + crossbyte.net.ice.IceAgent.CONSENT_TIMEOUT + 10.0);
+
+			Assert.isFalse(alice.connected,
+				"the peer stopped answering and this connection went on reporting itself up");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+	}
+
+	/**
 		The security capstone: a peer presenting a certificate that is not the
 		one it signalled is refused, after a handshake that succeeded.
 
