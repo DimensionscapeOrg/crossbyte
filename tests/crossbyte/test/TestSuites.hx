@@ -151,6 +151,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.rtc.SctpPacketTest());
 		runner.addCase(new crossbyte.net.rtc.SctpAssociationTest());
 		runner.addCase(new crossbyte.net.rtc.SctpDataTransferTest());
+		// Beside it for the reason the WebSocket wire fuzzer sits beside the
+		// conformance cases: those cover the shapes someone named, this covers
+		// what the receiver is still holding once the traffic stops.
+		runner.addCase(new crossbyte.fuzz.SctpWireFuzzTest());
 		runner.addCase(new crossbyte.net.rtc.DataChannelTest());
 		runner.addCase(new crossbyte.net.rtc.SessionDescriptionTest());
 		runner.addCase(new crossbyte.net.ice.IceCandidateTest());
