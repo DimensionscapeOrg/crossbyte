@@ -275,7 +275,7 @@ class DtlsTransport {
 		// would otherwise wait forever: every other path that settles this one
 		// runs from the handshake, which closing is what stops. Future.__fail
 		// is idempotent, so a session that did complete keeps its result.
-		@:privateAccess established.__fail("The session was closed before the handshake completed.", null);
+		@:privateAccess established.__cancel("The session was closed before the handshake completed.");
 		#end
 	}
 

@@ -168,7 +168,7 @@ class DataChannel {
 		// never acknowledged waited forever. This class's own doc tells you to
 		// wait on exactly that before sending.
 		if (!wasOpen) {
-			@:privateAccess opened.__fail("The channel was closed before the peer acknowledged it.", null);
+			@:privateAccess opened.__cancel("The channel was closed before the peer acknowledged it.");
 		}
 
 		onClose();
