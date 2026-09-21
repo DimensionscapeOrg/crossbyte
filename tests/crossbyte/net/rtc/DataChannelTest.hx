@@ -52,6 +52,30 @@ class DataChannelTest extends utest.Test {
 	}
 
 	/**
+		Closing before the peer acknowledges tells whoever was waiting.
+
+		`opened` resolves only from __acknowledge, which a closed channel can
+		never reach. The class doc tells a caller to wait on it before sending,
+		and a channel closed in between left them waiting forever.
+	**/
+	public function testClosingBeforeTheAcknowledgementTellsWhoeverWaited():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var chat = pair.clientChannels.create("chat");
+
+		var acknowledged:Bool = false;
+		var failure:String = null;
+		chat.opened.then(_ -> acknowledged = true, error -> failure = error);
+
+		// Closed before the peer's acknowledgement has been delivered.
+		chat.close();
+
+		Assert.isFalse(acknowledged, "a closed channel reported itself opened");
+		Assert.notNull(failure, "closing before the acknowledgement left `opened` pending forever");
+	}
+
+	/**
 		The parity rule, which is the whole of the collision avoidance.
 
 		The peer that was the DTLS client takes even stream numbers and the
@@ -99,6 +123,14 @@ class DataChannelTest extends utest.Test {
 		Assert.isTrue(pair.run(() -> accepted.length == 1), "the first channel never arrived");
 
 		var stream:Int = theirs.id;
+
+		// Observed because this case closes both ends before the
+		// acknowledgement has finished crossing, and an unobserved failure is
+		// reported on the next tick. This test is about stream numbers, not
+		// about `opened`; saying so keeps the suite's warning count meaningful.
+		theirs.opened.then(_ -> {}, _ -> {});
+		accepted[0].opened.then(_ -> {}, _ -> {});
+
 		theirs.close();
 		accepted[0].close();
 

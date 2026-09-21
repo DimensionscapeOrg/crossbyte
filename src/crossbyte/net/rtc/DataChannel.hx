@@ -152,6 +152,8 @@ class DataChannel {
 			return;
 		}
 
+		var wasOpen:Bool = open;
+
 		__closed = true;
 		open = false;
 
@@ -159,6 +161,14 @@ class DataChannel {
 		// finds the number free rather than still taken.
 		if (__onClosed != null) {
 			__onClosed(this);
+		}
+
+		// `opened` resolves only from __acknowledge, which a closed channel can
+		// never reach -- so a caller that waited on it for a channel the peer
+		// never acknowledged waited forever. This class's own doc tells you to
+		// wait on exactly that before sending.
+		if (!wasOpen) {
+			@:privateAccess opened.__fail("The channel was closed before the peer acknowledged it.", null);
 		}
 
 		onClose();
