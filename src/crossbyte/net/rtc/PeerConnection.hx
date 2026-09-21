@@ -354,6 +354,13 @@ class PeerConnection {
 		__remote = remote;
 		__resolveDtlsRole(remote.setup);
 
+		// Built before the agent is touched. IceCredentials validates the
+		// fragment and the password, and a description that fails that used to
+		// throw below -- after every candidate had been added and before
+		// agent.start was reached -- leaving the agent configured for a
+		// connection that could never be started.
+		var credentials = new IceCredentials(remote.usernameFragment, remote.password);
+
 		for (candidate in remote.candidates) {
 			// Skipped rather than thrown on, which is what SessionDescription
 			// already does for a line it cannot use: "skipped rather than
@@ -370,7 +377,7 @@ class PeerConnection {
 			} catch (_:Dynamic) {}
 		}
 
-		agent.start(new IceCredentials(remote.usernameFragment, remote.password), haxe.Timer.stamp());
+		agent.start(credentials, haxe.Timer.stamp());
 	}
 
 	/**
