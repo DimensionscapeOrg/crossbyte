@@ -141,6 +141,75 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		A path stays a path only while the peer keeps agreeing to it.
+
+		RFC 7675. ICE proves a path once, and nothing about that proof stays
+		true afterwards: a peer can vanish, and the address it was reached at
+		can be handed to somebody who never agreed to hear from this agent. So
+		the selected pair is re-confirmed on a timer.
+
+		This case is the half that must not fire. A peer answering throughout
+		is kept, and it would not be if the checks were never sent -- nothing
+		else refreshes the timer, so silence on this side expires the path just
+		as surely as silence on the other.
+	**/
+	public function testAPeerThatKeepsAnsweringKeepsThePath():Void {
+		if (unsupported()) return;
+
+		var wire = __connected();
+
+		// Twice the timeout, with both ends answering the whole way.
+		wire.advance(1.0, IceAgent.CONSENT_TIMEOUT * 2);
+
+		Assert.isTrue(__alice.state == CONNECTED, "a path the peer kept answering for was dropped anyway");
+		Assert.isTrue(__bob.state == CONNECTED, "the answering side dropped the path it was answering on");
+	}
+
+	/**
+		And the half that must: a peer that goes quiet loses the path.
+
+		Without this the agent reports CONNECTED forever and whoever is above it
+		goes on transmitting at an address that may now belong to someone else.
+		That is the whole reason RFC 7675 exists.
+	**/
+	public function testAPeerThatStopsAnsweringLosesThePath():Void {
+		if (unsupported()) return;
+
+		var wire = __connected();
+		Assert.isTrue(__alice.state == CONNECTED, "the two never connected, so there is no path to lose");
+
+		// The peer goes away without saying so, which is the case that cannot
+		// be detected any other way.
+		wire.delivering = false;
+		wire.advance(1.0, IceAgent.CONSENT_TIMEOUT + 5.0);
+
+		Assert.isTrue(__alice.state == FAILED,
+			"the peer stopped answering and the agent went on treating the path as usable");
+	}
+
+	private var __alice:IceAgent;
+	private var __bob:IceAgent;
+
+	/** Two agents with one pair between them, nominated and connected. **/
+	private function __connected():Wire {
+		__alice = new IceAgent(true, credentials("alice"));
+		__bob = new IceAgent(false, credentials("bob"));
+
+		var wire = new Wire(__alice, ALICE_ADDRESS, __bob, BOB_ADDRESS);
+
+		__alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		__bob.addLocalCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		__alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		__bob.addRemoteCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		__alice.start(__bob.localCredentials, 0);
+		__bob.start(__alice.localCredentials, 0);
+
+		wire.run(() -> __alice.state == CONNECTED && __bob.state == CONNECTED);
+		return wire;
+	}
+
+	/**
 		The controlling peer decides, and the other does not.
 
 		Two peers both nominating is two peers potentially nominating different
@@ -581,6 +650,44 @@ private class Wire {
 		@return Whether `done` came true, so a caller can assert either way
 		rather than only on success.
 	**/
+	/** Whether anything still reaches the far side, as a live peer would. **/
+	public var delivering:Bool = true;
+
+	/**
+		Runs the clock forward at a coarser step than `run` uses.
+
+		`run` steps a hundredth of a second six hundred times, which is six
+		seconds of simulated time: right for a handshake, useless for anything
+		on the consent timer, which is measured in tens of seconds.
+	**/
+	public function advance(from:Float, seconds:Float, step:Float = 0.25):Float {
+		var now = from;
+		var until = from + seconds;
+
+		while (now < until) {
+			for (endpoint in endpoints) {
+				endpoint.agent.poll(now);
+			}
+
+			var inFlight = queue;
+			queue = [];
+
+			if (delivering) {
+				for (packet in inFlight) {
+					for (endpoint in endpoints) {
+						if (endpoint.agent != packet.from.agent) {
+							endpoint.agent.receive(packet.payload, packet.from.sourceAddress, packet.from.sourcePort, now);
+						}
+					}
+				}
+			}
+
+			now += step;
+		}
+
+		return now;
+	}
+
 	public function run(done:Void->Bool):Bool {
 		var now = 0.0;
 

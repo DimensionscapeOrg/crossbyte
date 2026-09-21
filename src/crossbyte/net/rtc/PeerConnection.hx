@@ -13,6 +13,7 @@ import crossbyte.net.DatagramSocket;
 import crossbyte.net.ice.IceAgent;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.ice.IceCandidatePair;
+import crossbyte.net.ice.IceAgentState;
 import crossbyte.net.ice.IceCredentials;
 import crossbyte.net.TurnClient;
 import crossbyte.net._internal.stun.StunMessage;
@@ -413,6 +414,15 @@ class PeerConnection {
 		}
 
 		agent.poll(now);
+
+		// Consent is the agent's to lose and this connection's to act on. The
+		// `ready` future resolved when the path came up, so a path that stops
+		// being one has no other way to be reported -- and RFC 7675 asks the
+		// sender to stop, which is something only the layer that sends can do.
+		if (connected && agent.state == IceAgentState.FAILED) {
+			__fail("The peer stopped answering consent checks, so the path to it is no longer usable.");
+			return;
+		}
 
 		if (__dtls != null) {
 			__dtls.poll(now);
