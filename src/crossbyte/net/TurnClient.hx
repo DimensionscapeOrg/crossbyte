@@ -497,7 +497,7 @@ class TurnClient {
 		// Same as the others in this stack: nothing settled `allocated` on a
 		// close, so a caller that closed a client mid-allocation waited on a
 		// future that could never complete either way.
-		@:privateAccess allocated.__fail("The client was closed before the relay answered.", null);
+		@:privateAccess allocated.__cancel("The client was closed before the relay answered.");
 	}
 
 	// ------------------------------------------------------------------
