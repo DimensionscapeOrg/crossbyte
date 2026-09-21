@@ -74,6 +74,24 @@ class IceAgent {
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
 	/**
+		How often consent to keep sending is re-asked for. RFC 7675 section 5.1.
+
+		Randomised around this rather than sent on the dot, because a fixed
+		interval means every agent on a network asks at the same moment.
+	**/
+	public static inline var CONSENT_INTERVAL:Float = 5.0;
+
+	/**
+		How long a selected pair may go unanswered before it stops being a path.
+
+		RFC 7675 exists because a NAT mapping outlives nothing in particular: a
+		peer can vanish, or its address can be handed to somebody else, and a
+		sender with no way to notice keeps transmitting at a stranger. Thirty
+		seconds is the figure the RFC gives.
+	**/
+	public static inline var CONSENT_TIMEOUT:Float = 30.0;
+
+	/**
 		The most remote candidates one agent will hold.
 
 		Every remote candidate pairs with every local one, and `__rebuild`
@@ -163,6 +181,15 @@ class IceAgent {
 	@:noCompletion private var __arrivedVia:IceCandidate = null;
 	@:noCompletion private var __remotes:Array<IceCandidate> = [];
 	@:noCompletion private var __checks:Array<IceCheck> = [];
+
+	/** The consent check waiting for an answer, if one is. **/
+	@:noCompletion private var __consentTransaction:ByteArray = null;
+
+	/** When the next consent check is due. **/
+	@:noCompletion private var __consentDueAt:Float = 0;
+
+	/** When the peer last proved it is still there. **/
+	@:noCompletion private var __consentedAt:Float = 0;
 	@:noCompletion private var __valid:Array<IceCandidatePair> = [];
 	@:noCompletion private var __nextCheckAt:Float = 0;
 	@:noCompletion private var __nominating:Bool = false;
@@ -267,6 +294,11 @@ class IceAgent {
 		the caller also uses for `receive`.
 	**/
 	public function poll(now:Float):Void {
+		if (state == CONNECTED) {
+			__pollConsent(now);
+			return;
+		}
+
 		if (state != CHECKING) {
 			return;
 		}
@@ -330,7 +362,11 @@ class IceAgent {
 			case StunMessage.BINDING_REQUEST:
 				__answer(message, fromAddress, fromPort, now);
 			case StunMessage.BINDING_SUCCESS:
-				__accept(message, fromAddress, fromPort, now);
+				// Consent first: its transaction is not in __checks, so
+				// __accept would look straight past it.
+				if (!__acceptConsent(message, now)) {
+					__accept(message, fromAddress, fromPort, now);
+				}
 			case StunMessage.BINDING_ERROR:
 				__refused(message, now);
 			default:
@@ -478,7 +514,7 @@ class IceAgent {
 		}
 
 		if (request.hasUseCandidate() && !controlling && check.state == SUCCEEDED) {
-			__select(pair);
+			__select(pair, now);
 		} else if (request.hasUseCandidate() && !controlling) {
 			// Nominated before this side finished confirming it. Remembered, so
 			// selecting happens the moment the check answers.
@@ -518,7 +554,7 @@ class IceAgent {
 		__addValid(check.pair);
 
 		if (check.nominate || check.nominatedByPeer) {
-			__select(check.pair);
+			__select(check.pair, now);
 		}
 
 		__settleIfFinished();
@@ -825,13 +861,105 @@ class IceAgent {
 		});
 	}
 
-	@:noCompletion private function __select(pair:IceCandidatePair):Void {
+	/**
+		Keeps asking whether the peer is still willing to be sent to.
+
+		RFC 7675. ICE proves a path once, and nothing about that proof stays
+		true: the peer can vanish, and its address can be reassigned to
+		somebody else who never agreed to hear from this one. So a selected
+		pair is re-confirmed on a timer, and a pair that stops answering stops
+		being a path.
+	**/
+	@:noCompletion private function __pollConsent(now:Float):Void {
+		if (selectedPair == null || remoteCredentials == null) {
+			return;
+		}
+
+		if (now - __consentedAt >= CONSENT_TIMEOUT) {
+			// FAILED rather than a callback, because a hook nothing is obliged
+			// to read is a way of not reporting this. `selectedPair` is left
+			// alone: it is what the path *was*, which is worth having when
+			// working out why a session stopped.
+			state = FAILED;
+			__consentTransaction = null;
+			return;
+		}
+
+		if (now < __consentDueAt) {
+			return;
+		}
+
+		__sendConsent(now);
+	}
+
+	/**
+		One consent check on the selected pair.
+
+		An ordinary connectivity check in every respect but one: never
+		USE-CANDIDATE. This asks whether the peer is still there, and
+		nominating a pair that is already selected is a second nomination for
+		the far side to reconcile.
+	**/
+	@:noCompletion private function __sendConsent(now:Float):Void {
+		__consentTransaction = __freshTransaction();
+
+		var message = new StunMessage(StunMessage.BINDING_REQUEST, __consentTransaction, [
+			StunMessage.username(IceCredentials.username(remoteCredentials, localCredentials)),
+			StunMessage.priority(IceCandidate.computePriority(PEER_REFLEXIVE, IceCandidate.DEFAULT_LOCAL_PREFERENCE,
+				selectedPair.local.component)),
+			StunMessage.iceRole(controlling, tiebreaker)
+		]);
+
+		__sendVia(selectedPair.local, message.encodeSigned(remoteCredentials.password), selectedPair.remote.address,
+			selectedPair.remote.port);
+
+		// Spread across 0.8 to 1.2 of the interval, which the RFC asks for so
+		// that a network full of agents does not ask in one burst. It also
+		// keeps the rate under the one-every-four-seconds ceiling it sets.
+		__consentDueAt = now + CONSENT_INTERVAL * (0.8 + 0.4 * Math.random());
+	}
+
+	/**
+		Whether this response answers the consent check in flight.
+
+		@return `true` when it did, so the caller stops looking.
+	**/
+	@:noCompletion private function __acceptConsent(response:StunMessage, now:Float):Bool {
+		if (__consentTransaction == null || remoteCredentials == null) {
+			return false;
+		}
+
+		if (!new StunMessage(StunMessage.BINDING_REQUEST, __consentTransaction).matches(response)) {
+			return false;
+		}
+
+		// Signed with the peer's password, like every other answer here.
+		// Without this an off-path sender could hold the path open by
+		// guessing, which is the opposite of what consent is for.
+		if (!response.verifyIntegrity(remoteCredentials.password)) {
+			return false;
+		}
+
+		__consentTransaction = null;
+		__consentedAt = now;
+		return true;
+	}
+
+	@:noCompletion private function __select(pair:IceCandidatePair, now:Float):Void {
 		if (state == CONNECTED || state == CLOSED) {
 			return;
 		}
 
 		selectedPair = pair;
 		state = CONNECTED;
+
+		// Consent starts fresh here rather than at zero: the check that
+		// nominated this pair was answered, which is the same question a
+		// consent check asks. Starting at zero would expire the path instantly
+		// on any clock already past CONSENT_TIMEOUT.
+		__consentedAt = now;
+		__consentDueAt = now + CONSENT_INTERVAL;
+
 		@:privateAccess connected.__resolve(pair);
 	}
 
