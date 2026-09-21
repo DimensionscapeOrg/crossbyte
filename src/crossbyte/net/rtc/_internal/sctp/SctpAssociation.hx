@@ -221,7 +221,7 @@ class SctpAssociation {
 
 		// Nothing settled `established` on a close. Every other path that does
 		// runs from the handshake, and closing is what stops it.
-		@:privateAccess established.__fail("The association was closed before it was established.", null);
+		@:privateAccess established.__cancel("The association was closed before it was established.");
 	}
 
 	/** Builds a packet addressed to the peer, with the right tag already on it. **/

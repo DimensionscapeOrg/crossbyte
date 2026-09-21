@@ -366,6 +366,21 @@ class Future<T> implements IEventDispatcher {
 		__fail(message, null);
 	}
 
+	/**
+		Fails without the unheard-failure report.
+
+		A deliberate close is not an unhandled error. Whoever registered a
+		handler still has to be told -- that is the whole point of settling on
+		close -- but whoever did not register one was not waiting for anything,
+		and warning them says only that they closed something. Left as an
+		ordinary failure it made every teardown noisy: twenty-six extra lines in
+		one native suite run, measured, and invisible on jvm because the classes
+		that close futures are skipped there.
+	**/
+	@:allow(crossbyte) @:noCompletion private function __cancel(message:String):Void {
+		__failureObserved = true;
+		__fail(message, null);
+	}
 	@:noCompletion private function __fail(message:String, ?cause:Dynamic):Void {
 		__acquire();
 
