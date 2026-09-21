@@ -148,6 +148,31 @@ class IceCandidateTest extends utest.Test {
 	}
 
 	/**
+		A priority the peer chose, checked like the port beside it.
+
+		A remote candidate carries whatever priority the peer wrote, run through
+		Std.parseInt -- which turns anything past 2^31 - 1 into a negative on a
+		target with 32-bit signed Ints, and into a number far larger on one where
+		an Int is a double. Both ends are refused so the answer does not depend
+		on the target.
+
+		Skewed pair ordering is all an out-of-range priority buys, and a peer can
+		order its own candidates however it likes anyway -- so this is a
+		conformance check rather than a hole being closed. It is here because the
+		constructor already vets the port and the component, and this was the
+		one field it took on trust.
+	**/
+	public function testAPriorityOutsideTheAllowedRangeIsRefused():Void {
+		Assert.raises(() -> new IceCandidate(HOST, "10.0.0.2", 50000, 1, 0), ArgumentError);
+		Assert.raises(() -> new IceCandidate(HOST, "10.0.0.2", 50000, 1, -1), ArgumentError);
+
+		// And the two ends that are allowed.
+		Assert.equals(1, new IceCandidate(HOST, "10.0.0.2", 50000, 1, 1).priority);
+		Assert.equals(IceCandidate.MAX_PRIORITY,
+			new IceCandidate(HOST, "10.0.0.2", 50000, 1, IceCandidate.MAX_PRIORITY).priority);
+	}
+
+	/**
 		Two families cannot reach each other, and pairing them would say so a
 		round trip later.
 	**/

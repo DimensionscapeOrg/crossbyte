@@ -71,6 +71,9 @@ class IceCandidate {
 		is still in the priority formula, and a peer that does split a stream
 		needs the field to mean what the RFC says it means.
 	**/
+	/** The largest priority RFC 8445 allows: 2^31 - 1. **/
+	public static inline var MAX_PRIORITY:Int = 2147483647;
+
 	public static inline var COMPONENT_RTP:Int = 1;
 
 	/** The second component of a media stream, where one exists. **/
@@ -132,6 +135,16 @@ class IceCandidate {
 
 		if (component < 1 || component > 256) {
 			throw new ArgumentError("A component id must be between 1 and 256, not " + component + ".");
+		}
+
+		// RFC 8445 section 5.1.2: 1 to 2^31 - 1. Checked because a remote
+		// candidate's priority is whatever the peer wrote in its description,
+		// parsed by Std.parseInt -- which on a target with 32-bit signed Ints
+		// turns anything larger into a negative, and on one where Int is a
+		// double does not. Both ends are tested so the answer does not depend
+		// on the target.
+		if (priority != null && (priority < 1 || priority > MAX_PRIORITY)) {
+			throw new ArgumentError("A candidate priority must be between 1 and " + MAX_PRIORITY + ", not " + priority + ".");
 		}
 
 		this.type = type;

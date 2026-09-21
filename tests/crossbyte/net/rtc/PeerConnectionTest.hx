@@ -254,6 +254,50 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A description it cannot use is refused before the agent is touched.
+
+		connect() added every candidate and then built the IceCredentials, which
+		validates the fragment and the password. A description that failed that
+		therefore threw halfway: the candidates were in, agent.start was never
+		reached, and the connection was left configured for something that could
+		never be started. Failing first costs nothing and leaves the object as it
+		was, so a caller can try a corrected description on it.
+	**/
+	public function testADescriptionItCannotUseLeavesTheAgentAlone():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+
+			var description = bob.description();
+			Assert.isTrue(description.candidates.length > 0, "bob offered no candidates, so this proves nothing");
+
+			// Shorter than MIN_PASSWORD_LENGTH, so IceCredentials refuses it.
+			description.password = "tooshort";
+
+			var refused:Bool = false;
+			try {
+				alice.connect(description);
+			} catch (_:ArgumentError) {
+				refused = true;
+			}
+
+			Assert.isTrue(refused, "a description with an unusable password was accepted");
+			Assert.equals(0, @:privateAccess alice.agent.__remotes.length,
+				"the peer's candidates were added before connect() found it could not use the description");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		The description carries everything the peer needs and nothing secret.
 
 		The ICE password crosses signalling by design -- it authenticates checks
