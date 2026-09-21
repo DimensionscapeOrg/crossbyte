@@ -459,7 +459,7 @@ class PeerConnection {
 		// reason that says what went wrong; Future.__fail is idempotent, so by
 		// the time it reaches here there is nothing left to do.
 		if (!wasConnected) {
-			@:privateAccess ready.__fail("The connection was closed before it was ready.", null);
+			@:privateAccess ready.__cancel("The connection was closed before it was ready.");
 		}
 
 		if (__turn != null) {
