@@ -97,8 +97,29 @@ class HTTPWireFuzzTest extends utest.Test {
 					Assert.isTrue(raw.indexOf("fuzz fixture") > 0, "the body was not served after malformed traffic: " + raw);
 
 					try client.close() catch (_:Dynamic) {}
-					try server.close() catch (_:Dynamic) {}
-					async.done();
+
+					// Retention, which nothing above in this case can see:
+					// every assertion so far is satisfied by a server that
+					// kept a handler for each of those 120 peers. It still
+					// answers, it still serves the body, and it grows by one
+					// connection per malformed visitor until it dies.
+					//
+					// The drain and metrics cases do catch a break in
+					// cleanupSocket itself -- measured, they go red alongside
+					// this one when it is disabled. What they cannot reach is
+					// retention that only adversarial traffic produces, which
+					// is the shape the SCTP and WebSocket growth bugs had:
+					// those passed the entire suite green.
+					HTTPTestSupport.pumpMoreAsync(30, function():Void {
+						var retained:Int = @:privateAccess server.__connections;
+
+						Assert.isTrue(retained <= 1,
+							"the server still held " + retained + " connections after all " + (ROUNDS + 1)
+							+ " peers had closed, so it retains one per visitor");
+
+						try server.close() catch (_:Dynamic) {}
+						async.done();
+					});
 				});
 			});
 		}

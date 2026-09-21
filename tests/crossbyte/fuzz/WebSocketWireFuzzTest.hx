@@ -118,6 +118,26 @@ class WebSocketWireFuzzTest extends utest.Test {
 		Assert.isTrue(heard, "the server stopped hearing clients after malformed frames; saw: " + __receivedText());
 
 		try healthy.close() catch (_:Dynamic) {}
+
+		// Retention. `__clients` grows per accepted session and
+		// `__pendingUpgrades` per handshake still in flight, and neither is
+		// visible to anything above: a server holding all sixty of those dead
+		// sessions would have passed every assertion in this case.
+		//
+		// `__pendingUpgrades` especially. Its reaper closed nothing on any
+		// target until this month, and the test that covered it asserted the
+		// list emptied -- which it did, immediately, for the wrong reason.
+		// Counting what is left after adversarial traffic is the check that
+		// shape cannot satisfy by forgetting.
+		__pumpUntil(() -> (@:privateAccess __server.__clients.length) <= 1, 2.0);
+
+		var sessions:Int = @:privateAccess __server.__clients.length;
+		var upgrades:Int = @:privateAccess __server.__pendingUpgrades.length;
+
+		Assert.isTrue(sessions <= 1,
+			"the server still held " + sessions + " sessions after " + ROUNDS + " peers had closed");
+		Assert.isTrue(upgrades <= 1,
+			"the server still held " + upgrades + " pending upgrades after " + ROUNDS + " peers had closed");
 	}
 
 	// --- the traffic ------------------------------------------------------
