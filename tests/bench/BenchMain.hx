@@ -188,6 +188,65 @@ class BenchMain {
 		Bench.run("assembly pass-through (per server datagram)", function():Void {
 			assembly.accept(record);
 		}, record.length);
+
+		// And the path that does the work: a ClientHello the size Chrome
+		// sends, arriving in pieces. Worth its own figure because what a
+		// fragment costs depends on how many are already held, so this is
+		// where a change that reintroduced a per-fragment pass over the whole
+		// of them would show up rather than in the line above.
+		var message = Bytes.alloc(1413);
+
+		for (i in 0...message.length) {
+			message.set(i, (i * 31 + 7) & 0xFF);
+		}
+
+		var pieces:Array<Bytes> = [];
+		var offset:Int = 0;
+
+		while (offset < message.length) {
+			var carried:Int = offset + 400 <= message.length ? 400 : message.length - offset;
+			pieces.push(clientHelloFragment(message, offset, carried));
+			offset += carried;
+		}
+
+		var fragmented = new ClientHelloAssembly();
+		var carriedBytes:Int = 0;
+
+		for (piece in pieces) {
+			carriedBytes += piece.length;
+		}
+
+		Bench.run("assembly of a fragmented ClientHello (per handshake)", function():Void {
+			for (piece in pieces) {
+				fragmented.accept(piece);
+			}
+		}, carriedBytes);
+	}
+
+	/** One DTLS record carrying one fragment of a ClientHello. **/
+	static function clientHelloFragment(message:Bytes, offset:Int, length:Int):Bytes {
+		var record = Bytes.alloc(ClientHelloAssembly.RECORD_HEADER + ClientHelloAssembly.HANDSHAKE_HEADER + length);
+
+		record.set(0, 22);
+		record.set(1, 0xFE);
+		record.set(2, 0xFD);
+		record.set(11, ((ClientHelloAssembly.HANDSHAKE_HEADER + length) >> 8) & 0xFF);
+		record.set(12, (ClientHelloAssembly.HANDSHAKE_HEADER + length) & 0xFF);
+
+		var body = ClientHelloAssembly.RECORD_HEADER;
+		record.set(body, 1);
+		writeUint24(record, body + 1, message.length);
+		writeUint24(record, body + 6, offset);
+		writeUint24(record, body + 9, length);
+		record.blit(body + ClientHelloAssembly.HANDSHAKE_HEADER, message, offset, length);
+
+		return record;
+	}
+
+	static function writeUint24(bytes:Bytes, at:Int, value:Int):Void {
+		bytes.set(at, (value >> 16) & 0xFF);
+		bytes.set(at + 1, (value >> 8) & 0xFF);
+		bytes.set(at + 2, value & 0xFF);
 	}
 
 	static function eventsAndFutures():Void {
