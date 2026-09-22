@@ -2,7 +2,7 @@ package crossbyte.fuzz;
 
 import crossbyte.http.HTTPServer;
 import crossbyte.http.HTTPServerConfig;
-import crossbyte.http.RateLimiter;
+import crossbyte.net.RateLimiter;
 import crossbyte.http.HTTPTestSupport;
 import crossbyte.io.ByteArray;
 import crossbyte.io.File;

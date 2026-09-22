@@ -3,7 +3,7 @@ package stress;
 import crossbyte.core.CrossByte;
 import crossbyte.http.HTTPServer;
 import crossbyte.http.HTTPServerConfig;
-import crossbyte.http.RateLimiter;
+import crossbyte.net.RateLimiter;
 import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import sys.thread.Mutex;
