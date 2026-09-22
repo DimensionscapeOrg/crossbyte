@@ -170,6 +170,42 @@ class DataChannelTest extends utest.Test {
 			"creating past the sixteen-bit stream range wrapped instead of failing");
 	}
 
+	/**
+		What is waiting on the peer's window is visible before it bites.
+
+		A message handed over is not necessarily a message sent: it waits for
+		room the peer has said it has. The queue that makes is bounded and
+		`send` throws at the bound, so an application producing faster than
+		the far end reads needs to be able to see how far behind it is
+		without having to catch something first.
+	**/
+	public function testBufferedAmountShowsWhatIsWaitingOnThePeer():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:DataChannel = null;
+		pair.serverChannels.onChannel = channel -> accepted = channel;
+
+		var chat = pair.clientChannels.create("chat");
+		pair.run(() -> chat.open && accepted != null);
+
+		if (accepted == null) {
+			Assert.fail("the channel never opened");
+			return;
+		}
+
+		Assert.equals(0, chat.bufferedAmount, "nothing was sent yet and something is already queued");
+
+		var got:String = null;
+		accepted.onMessage = text -> got = text;
+
+		chat.send("a message the peer has room for");
+		pair.run(() -> got != null);
+
+		// A peer that is keeping up leaves nothing behind.
+		Assert.equals(0, chat.bufferedAmount, "the peer took the message and it is still counted as waiting");
+	}
+
 	public function testTextCrossesAsText():Void {
 		if (unsupported()) return;
 
