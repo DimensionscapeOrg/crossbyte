@@ -14,6 +14,31 @@ import crossbyte.test.Require;
 
 @:access(crossbyte.net.Socket)
 class SocketTest extends utest.Test {
+	/**
+		A connection can carry the application's state itself.
+
+		Without a slot on the connection, anything holding per-connection
+		state keeps a `Map` beside it and has to remember to remove the entry
+		when the connection closes. Forgetting is silent -- the connection is
+		gone, the traffic stops, and the entry stays until the process does --
+		and that is the shape of half the retention bugs in this repository.
+	**/
+	public function testAConnectionCarriesTheApplicationsOwnState():Void {
+		var one = new Socket();
+		var two = new Socket();
+
+		Assert.isNull(one.userData, "a fresh connection came with something attached");
+
+		var session = {player: "ana"};
+		one.userData = session;
+
+		Assert.equals(session, one.userData);
+		Assert.isNull(two.userData, "the slot is shared between connections rather than held per connection");
+
+		closeQuietly(one);
+		closeQuietly(two);
+	}
+
 	public function testInvalidSocketReadWriteGuards():Void {
 		var socket = new Socket();
 
