@@ -266,6 +266,149 @@ class ClientHelloAssemblyTest extends utest.Test {
 		Assert.equals(0, alert.compare(passed));
 	}
 
+	/**
+		Two pieces that abut, and neither overlaps the other.
+
+		Distinct from the overlapping case above, and the one that a merge
+		working on ranges gets wrong most easily: a fragment ending exactly
+		where a held one begins shares no byte with it, so a comparison that
+		asks only whether they intersect leaves two runs where there is one
+		stretch of bytes. Nothing downstream notices until the message is
+		complete and the count of runs is still two, at which point it is
+		never delivered.
+
+		The gap here is closed from both sides at once, so the merge has to
+		join the new piece to a run below it and a run above it in one go.
+	**/
+	public function testPiecesThatMeetWithoutOverlappingBecomeOneRun():Void {
+		var message = counting(600);
+		var assembly = new ClientHelloAssembly();
+
+		Assert.isNull(assembly.accept(fragment(message, 0, 200, 0)));
+		Assert.isNull(assembly.accept(fragment(message, 400, 200, 0)));
+		Assert.equals(2, assembly.runs);
+
+		// Exactly the hole: touching both neighbours and overlapping neither.
+		var whole = assembly.accept(fragment(message, 200, 200, 0));
+
+		Assert.notNull(whole);
+
+		if (whole == null) {
+			return;
+		}
+
+		Assert.equals(0, message.compare(whole.sub(RECORD_HEADER + HANDSHAKE_HEADER, 600)));
+	}
+
+	/**
+		A peer that splits where nothing merges cannot make the work grow.
+
+		The run list is what every arriving fragment is matched against, and a
+		peer picks where it splits. Fragments carrying every other byte never
+		meet, so an unbounded list grows by one per fragment and the cost of
+		the next one grows with it -- quadratic in a number the peer chooses,
+		for twenty-six bytes of wire each. Measured before this was bounded:
+		four thousand of them, about a hundred kilobytes, took seven seconds
+		on eval. None of it is authenticated. The DTLS demux routes on the
+		first byte of a datagram, so reaching here needs no certificate, no
+		ICE exchange and no particular source address.
+	**/
+	public function testAPeerCannotGrowTheRunListWithoutBound():Void {
+		var assembly = new ClientHelloAssembly();
+		var noise = differentBytes(1413);
+		var completed:Int = 0;
+
+		for (i in 0...400) {
+			if (assembly.accept(fragment(noise, i * 2, 1, 0)) != null) {
+				completed++;
+			}
+		}
+
+		// Exactly the cap, not merely under it: the first sixty-four single
+		// bytes each open a run and every one after that touches none of
+		// them, so a list that stopped short would mean the flood was not
+		// doing what this claims and the bound was never reached.
+		Assert.equals(ClientHelloAssembly.MAX_RUNS, assembly.runs);
+		Assert.equals(0, completed);
+	}
+
+	/**
+		And a peer that did it is not locked out by it.
+
+		A refused fragment is held against, not filed, which would be a dead
+		end if the only way out were a fresh message sequence: the peer would
+		retransmit the same flight forever against a full list. It is not,
+		because a retransmission covers whole stretches at a time and every
+		run it spans collapses into one.
+
+		The noise here is written at the offsets the real message occupies, so
+		a retransmission that did not overwrite what was filed would assemble
+		a ClientHello carrying an attacker's bytes -- which the comparison at
+		the end is what catches.
+	**/
+	public function testAFloodedAssemblyStillAssemblesTheRealMessage():Void {
+		var assembly = new ClientHelloAssembly();
+		var noise = differentBytes(1413);
+
+		for (i in 0...400) {
+			assembly.accept(fragment(noise, i * 2, 1, 0));
+		}
+
+		var message = counting(1413);
+
+		Assert.isNull(assembly.accept(fragment(message, 0, 1175, 0)));
+
+		var whole = assembly.accept(fragment(message, 1175, 238, 0));
+
+		Assert.notNull(whole);
+
+		if (whole == null) {
+			return;
+		}
+
+		Assert.equals(0, message.compare(whole.sub(RECORD_HEADER + HANDSHAKE_HEADER, 1413)));
+	}
+
+	/**
+		The cap does not reach an honest peer, at the worst size one could use.
+
+		Sixty-four pieces of a full-size message is a path MTU of 256 bytes --
+		a fifth of the smallest IPv6 will carry, so below anything that sends.
+		Delivered odd-then-even, which is the ordering that holds the most
+		runs open at once: every piece of the first half lands with a gap on
+		each side.
+	**/
+	public function testAnHonestlyFragmentedMessageIsNotRefused():Void {
+		var assembly = new ClientHelloAssembly();
+		var message = counting(ClientHelloAssembly.MAX_MESSAGE);
+		var piece:Int = Std.int(ClientHelloAssembly.MAX_MESSAGE / 64);
+		var whole:Bytes = null;
+
+		for (pass in 0...2) {
+			var i:Int = pass == 0 ? 1 : 0;
+
+			while (i < 64) {
+				var at:Int = i * piece;
+				var length:Int = i == 63 ? ClientHelloAssembly.MAX_MESSAGE - at : piece;
+				var out = assembly.accept(fragment(message, at, length, 0));
+
+				if (out != null) {
+					whole = out;
+				}
+
+				i += 2;
+			}
+		}
+
+		Assert.notNull(whole);
+
+		if (whole == null) {
+			return;
+		}
+
+		Assert.equals(0, message.compare(whole.sub(RECORD_HEADER + HANDSHAKE_HEADER, ClientHelloAssembly.MAX_MESSAGE)));
+	}
+
 	// ------------------------------------------------------------------
 
 	/** One DTLS record carrying one fragment of a ClientHello. **/
