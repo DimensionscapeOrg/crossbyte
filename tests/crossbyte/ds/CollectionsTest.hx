@@ -498,6 +498,84 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, map.length, "the map kept " + map.length + " entries after " + reuses + " balanced pairs");
 	}
 
+	/** An entry stops being there once its time has passed. **/
+	public function testAnExpiringEntryIsGoneWhenItsTimeHasPassed():Void {
+		var now:Float = 1000;
+		var map = new ExpiringMap<String, Int>(10, 0, function():Float return now);
+
+		map.set("a", 1);
+		Assert.equals(1, map.get("a"));
+
+		now = 1009.9;
+		Assert.equals(1, map.get("a"), "it went early");
+
+		now = 1010;
+		Assert.isNull(map.get("a"), "it was still there once its time had passed");
+		Assert.equals(0, map.length, "it read as gone but was still counted");
+	}
+
+	/** Touching one starts its life over; reading one does not. **/
+	public function testTouchingExtendsAnEntryAndReadingDoesNot():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(10, 0, function():Float return now);
+		map.set("a", 1);
+
+		now = 9;
+		map.get("a");
+		now = 11;
+		Assert.isNull(map.get("a"), "reading an entry extended it");
+
+		now = 20;
+		map.set("b", 2);
+		now = 29;
+		Assert.isTrue(map.touch("b"));
+		now = 38;
+		Assert.equals(2, map.get("b"), "touching an entry did not extend it");
+	}
+
+	/**
+		Sweeping costs what expired, not what is held.
+
+		A sweep that walked everything would be a pass over the whole map on
+		every tick, which is the cost this is meant to avoid.
+	**/
+	public function testSweepingDropsOnlyWhatExpired():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(10, 0, function():Float return now);
+		var expired:Array<String> = [];
+		map.onExpire = (key, _) -> expired.push(key);
+
+		for (i in 0...5) {
+			now = i;
+			map.set("k" + i, i);
+		}
+
+		now = 12;
+		Assert.equals(3, map.sweep(), "k0, k1 and k2 were due and did not go");
+		Assert.equals(2, map.length);
+		Assert.equals("k0,k1,k2", expired.join(","));
+	}
+
+	/**
+		Time is not a bound on its own.
+
+		Whoever fills the map can fill it faster than it drains, so it is
+		bounded by count as well and drops whatever is closest to expiring.
+	**/
+	public function testAnExpiringMapIsBoundedByCountAsWellAsTime():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(3600, 4, function():Float return now);
+
+		for (i in 0...40) {
+			now = i;
+			map.set("k" + i, i);
+		}
+
+		Assert.equals(4, map.length, "the map held " + map.length + " against a bound of 4");
+		Assert.isNull(map.get("k0"), "the oldest entry survived the bound");
+		Assert.equals(39, map.get("k39"), "the newest entry was the one dropped");
+	}
+
 	public function testPackedSlotMapKeepsDenseIterationAndHonorsMaxCapacity():Void {
 		var map = new PackedSlotMap<String>(2, 3, 2);
 		var first = map.insert("alpha");
