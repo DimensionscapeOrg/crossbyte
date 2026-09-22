@@ -290,7 +290,7 @@ class SctpDataTransferTest extends utest.Test {
 		var held:Int = 0;
 		var partial = @:privateAccess server.__partial;
 		for (key in partial.keys()) {
-			for (fragment in partial.get(key)) {
+			for (fragment in partial.get(key).fragments) {
 				held += fragment.payload.length;
 			}
 		}
@@ -298,6 +298,195 @@ class SctpDataTransferTest extends utest.Test {
 		Assert.isTrue(held <= SctpDataTransfer.MAX_REASSEMBLY,
 			"the receiver held " + held + " bytes of a message that never ended, against a bound of "
 			+ SctpDataTransfer.MAX_REASSEMBLY);
+	}
+
+	/**
+		Nor can it be split into pieces without bound.
+
+		Bytes are not the only thing a peer chooses. A megabyte of budget is a
+		megabyte of one-byte fragments, and each one costs a walk over what is
+		already held to find out whether the run it joined is unbroken -- so
+		the cost of the next fragment grows with the count, and the count is
+		the sender's to pick. Measured before this was bounded, with a version
+		that also re-sorted on arrival: four thousand fragments, sixty-eight
+		kilobytes on the wire, took sixteen seconds.
+
+		A fragment here carries one byte, so the byte bound is nowhere near
+		and the count is the only thing that can stop it.
+	**/
+	public function testAMessageCannotBeSplitWithoutBound():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var server = pair.serverData;
+		var refused:String = null;
+		server.onFailure = reason -> refused = reason;
+
+		var first:Int = @:privateAccess server.__cumulativeTsn;
+		var payload = new ByteArray();
+		payload.writeByte(0);
+
+		for (i in 0...(SctpDataTransfer.MAX_FRAGMENTS + 2)) {
+			var flags:Int = i == 0 ? SctpDataChunk.FLAG_BEGINNING : 0;
+			var fragment = new SctpDataChunk((first + 1 + i) | 0, 0, 0, SctpDataChunk.PPID_BINARY, payload, flags);
+			@:privateAccess server.__onData(fragment.toChunk());
+		}
+
+		var held:Int = 0;
+		var partial = @:privateAccess server.__partial;
+
+		for (key in partial.keys()) {
+			held += partial.get(key).fragments.length;
+		}
+
+		Assert.isTrue(held <= SctpDataTransfer.MAX_FRAGMENTS,
+			"the receiver held " + held + " fragments of a message that never ended, against a bound of "
+			+ SctpDataTransfer.MAX_FRAGMENTS);
+
+		// Which bound stopped it, not merely that something did: the check
+		// above reads zero once the partial message is dropped, so it would
+		// hold just as well for fragments that never arrived at all. These
+		// carry one byte each, so `MAX_REASSEMBLY` is nowhere near and a
+		// reason naming bytes would mean this stopped measuring the count.
+		Assert.notNull(refused, "the message was dropped without saying why");
+		Assert.isTrue(refused != null && refused.indexOf("fragments") >= 0,
+			"the message was dropped, but not for the number of pieces it was in: " + refused);
+	}
+
+	/**
+		A message completed by a fragment landing in the middle of it.
+
+		Completion is looked for around the fragment that just arrived rather
+		than from the front of everything held, which is what keeps an arrival
+		from costing a walk over the whole stream. The gap closed last here is
+		an interior one, so finding the message means walking both ways from
+		it -- back to the piece flagged B and forward to the one flagged E,
+		neither of them adjacent to what arrived.
+	**/
+	public function testAMessageCompletedFromTheMiddleIsDelivered():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var server = pair.serverData;
+		var got:ByteArray = null;
+		server.onMessage = (_, payload, _) -> got = payload;
+
+		var first:Int = @:privateAccess server.__cumulativeTsn;
+		var flags = [
+			SctpDataChunk.FLAG_BEGINNING,
+			0,
+			0,
+			0,
+			SctpDataChunk.FLAG_ENDING
+		];
+
+		// Every piece but the middle one, outwards from the ends, so the last
+		// to arrive has held fragments on both sides and touches neither end.
+		for (i in [0, 4, 1, 3, 2]) {
+			var payload = new ByteArray();
+			payload.writeByte(0x40 + i);
+			payload.position = 0;
+
+			var fragment = new SctpDataChunk((first + 1 + i) | 0, 0, 0, SctpDataChunk.PPID_BINARY, payload, flags[i]);
+			@:privateAccess server.__onData(fragment.toChunk());
+
+			if (i != 2) {
+				Assert.isNull(got, "a message went up while piece 2 of 5 was still missing");
+			}
+		}
+
+		Assert.notNull(got, "the fragment that closed the last gap did not complete the message");
+
+		if (got == null) {
+			return;
+		}
+
+		Assert.equals(5, got.length);
+
+		got.position = 0;
+		var order = "";
+
+		for (_ in 0...5) {
+			order += String.fromCharCode(got.readUnsignedByte());
+		}
+
+		// Byte 0x40 + i for piece i: the payload reads as its own TSN order.
+		Assert.equals("@ABCD", order, "the pieces were joined in the wrong order");
+	}
+
+	/**
+		Five pieces, and every order they could possibly arrive in.
+
+		Completion is looked for around the fragment that just arrived, which
+		is only sound if nothing whole is ever left behind: a run that became
+		complete and was not noticed would stay held, and the piece that would
+		have found it has already been and gone. Reasoning says that cannot
+		happen. A hundred and twenty orderings say so too, and they would
+		still say so if the reasoning were wrong.
+	**/
+	public function testEveryArrivalOrderAssemblesTheSameMessage():Void {
+		if (unsupported()) return;
+
+		var flags = [
+			SctpDataChunk.FLAG_BEGINNING,
+			0,
+			0,
+			0,
+			SctpDataChunk.FLAG_ENDING
+		];
+
+		var wrong:String = null;
+
+		for (k in 0...120) {
+			// k in the factorial number system is one of the 120 orderings.
+			var pool = [0, 1, 2, 3, 4];
+			var order:Array<Int> = [];
+			var rest:Int = k;
+			var divisor:Int = 24;
+
+			while (pool.length > 0) {
+				order.push(pool.splice(Std.int(rest / divisor), 1)[0]);
+				rest = rest % divisor;
+				divisor = pool.length > 0 ? Std.int(divisor / pool.length) : 1;
+			}
+
+			var transfer = new SctpDataTransfer(new SctpAssociation());
+			var first:Int = @:privateAccess transfer.__cumulativeTsn;
+			var delivered:Int = 0;
+			var got:ByteArray = null;
+
+			transfer.onMessage = function(_, payload, _):Void {
+				delivered++;
+				got = payload;
+			};
+
+			for (i in order) {
+				var payload = new ByteArray();
+				payload.writeByte(0x40 + i);
+				payload.position = 0;
+
+				@:privateAccess transfer.__reassemble(new SctpDataChunk((first + 1 + i) | 0, 0, 0,
+					SctpDataChunk.PPID_BINARY, payload, flags[i]));
+			}
+
+			var text:String = null;
+
+			if (got != null) {
+				got.position = 0;
+				text = "";
+
+				for (_ in 0...got.length) {
+					text += String.fromCharCode(got.readUnsignedByte());
+				}
+			}
+
+			if (delivered != 1 || text != "@ABCD") {
+				wrong = "arriving as " + order.join(",") + " the message went up " + delivered + " times as " + text;
+				break;
+			}
+		}
+
+		Assert.isNull(wrong, wrong);
 	}
 
 	/**
