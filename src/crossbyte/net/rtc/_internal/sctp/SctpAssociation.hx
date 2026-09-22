@@ -40,12 +40,24 @@ class SctpAssociation {
 	public static inline var DEFAULT_PORT:Int = 5000;
 
 	/**
-		How much unacknowledged data this end is willing to hold, in bytes.
+		How much undelivered data this end is willing to hold, in bytes.
 
-		Advertised in the INIT so the peer knows when to stop sending. A modest
-		figure: a data channel is messages, not bulk transfer.
+		Advertised in the INIT and, now that `SctpDataTransfer` subtracts what
+		it is holding, in every SACK as well. It was 256 KB and meant nothing:
+		the figure went out unchanged however much had piled up, so the peer
+		was told the whole window was free right up to the point where nothing
+		was.
+
+		It has to clear `MAX_REASSEMBLY` plus `MAX_HELD`, and that is what set
+		it. Those are the most one stream may have part-assembled and the most
+		it may have waiting its turn, so a peer sending a message of the
+		largest size this accepts would otherwise watch the window reach zero
+		partway through and stop -- holding a message that can never complete,
+		by obeying a limit this end published. `SctpDataTransferTest` asserts
+		the relationship rather than leaving it to whoever edits one of the
+		three next.
 	**/
-	public static inline var RECEIVE_WINDOW:Int = 262144;
+	public static inline var RECEIVE_WINDOW:Int = 2 * 1024 * 1024;
 
 	/**
 		Streams offered in each direction.

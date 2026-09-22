@@ -109,10 +109,29 @@ class SctpDataTransfer {
 	@:noCompletion private var __unacknowledged:Array<Outstanding> = [];
 
 	@:noCompletion private var __cumulativeTsn:Int;
-	@:noCompletion private var __received:IntMap<SctpDataChunk> = new IntMap();
+	/**
+		Which numbers have arrived above the cumulative acknowledgement.
+
+		A set, and only ever asked whether it contains one -- `__onData` uses
+		it to spot a duplicate and `__buildSack` to describe the holes. It
+		used to hold the chunk itself, which meant a chunk arriving above a
+		gap kept its whole payload alive for a value nothing ever read.
+	**/
+	@:noCompletion private var __received:IntMap<Bool> = new IntMap();
+
+	/**
+		Everything held for the application, across every stream.
+
+		What `RECEIVE_WINDOW` is subtracted from to fill in a SACK, so it has
+		to follow every change to `__partial` and `__held` exactly. Too low
+		and the peer is invited to send more than this end will keep; too
+		high and the window closes on a peer that has done nothing wrong.
+		`SctpDataTransferTest` walks the real structures and compares.
+	**/
+	@:noCompletion private var __buffered:Int = 0;
 	@:noCompletion private var __partial:IntMap<Reassembly> = new IntMap();
 	@:noCompletion private var __expectedSequence:IntMap<Int> = new IntMap();
-	@:noCompletion private var __held:IntMap<Array<PendingMessage>> = new IntMap();
+	@:noCompletion private var __held:IntMap<Held> = new IntMap();
 	@:noCompletion private var __sackNeeded:Bool = false;
 
 	public function new(association:SctpAssociation) {
@@ -243,9 +262,87 @@ class SctpDataTransfer {
 			return;
 		}
 
-		__received.set(data.tsn, data);
+		__received.set(data.tsn, true);
 		__advanceCumulative();
 		__reassemble(data);
+
+		if (__buffered > SctpAssociation.RECEIVE_WINDOW) {
+			__reclaim();
+		}
+	}
+
+	/**
+		Gives back what this end is holding when it has taken on too much.
+
+		The window is published and, for a peer that reads it, that is the
+		end of the matter: the SACK says what is left and a sender that
+		respects the figure never brings us here. This is for one that does
+		not, and the choice is which way to fail.
+
+		Refusing the chunk is the obvious answer and the wrong one. Nothing
+		in this stack reads the peer's window either -- `peerReceiveWindow` is
+		recorded on the INIT and never looked at again -- so two CrossByte
+		ends would sit retransmitting into a refusal with neither one
+		yielding. Worse, what is held is by definition incomplete, so the very
+		chunks that would finish a message and free its bytes are among those
+		turned away, and a peer holding several part-assembled messages at
+		once would have no way back even if it were reading the window.
+
+		Giving some back cannot deadlock, because it always makes room. It is
+		also what `MAX_REASSEMBLY` and `MAX_HELD` already do a stream at a
+		time -- an unfinished message is dropped and said so -- and this is
+		that rule with the association's total in place of one stream's.
+
+		Down to half rather than just under, so that a peer sitting on the
+		limit pays for one pass and not one per chunk.
+
+		What this costs, stated plainly: an application with more than
+		`RECEIVE_WINDOW` of part-assembled messages in flight at once now
+		loses one of them and hears about it on `onFailure`, where before it
+		would have been held and completed. Reaching that takes several
+		very large messages on different streams at the same time, which is
+		not what a data channel is usually carrying. It cannot happen to a
+		peer that reads the window, and the way to make it impossible
+		between two CrossByte ends is for the sending side to read it too --
+		`peerReceiveWindow` is recorded on the INIT and nothing consults it,
+		so this end still sends whatever it is handed.
+	**/
+	@:noCompletion private function __reclaim():Void {
+		var target:Int = Std.int(SctpAssociation.RECEIVE_WINDOW / 2);
+		var dropped:Int = 0;
+		var freed:Int = 0;
+
+		// Taken first and walked after. Removing from a map while iterating
+		// its own keys is not something every target defines, and this one
+		// removes as it goes by construction.
+		var reassembling:Array<Int> = [for (key in __partial.keys()) key];
+
+		for (key in reassembling) {
+			if (__buffered <= target) {
+				break;
+			}
+
+			freed += __partial.get(key).bytes;
+			dropped++;
+			__forget(key);
+		}
+
+		var queued:Array<Int> = [for (streamId in __held.keys()) streamId];
+
+		for (streamId in queued) {
+			if (__buffered <= target) {
+				break;
+			}
+
+			freed += __held.get(streamId).bytes;
+			dropped++;
+			__release(streamId);
+		}
+
+		if (dropped > 0) {
+			onFailure("The peer sent more than the " + SctpAssociation.RECEIVE_WINDOW + " bytes this end offered to hold, so "
+				+ freed + " bytes of unfinished messages on " + dropped + " streams were given up.");
+		}
 	}
 
 	/** Walks the cumulative acknowledgement forward over everything contiguous. **/
@@ -286,6 +383,7 @@ class SctpDataTransfer {
 
 		fragments.insert(at, data);
 		holding.bytes += data.payload.length;
+		__buffered += data.payload.length;
 
 		if (data.ending) {
 			holding.endings++;
@@ -298,13 +396,13 @@ class SctpDataTransfer {
 		// has accumulated is the part that matters -- onFailure is raised for
 		// symmetry with the send side, though nothing in src/ assigns it yet.
 		if (holding.bytes > MAX_REASSEMBLY) {
-			__partial.remove(key);
+			__forget(key);
 			onFailure("A message on stream " + key + " reached " + holding.bytes + " bytes without completing.");
 			return;
 		}
 
 		if (fragments.length > MAX_FRAGMENTS) {
-			__partial.remove(key);
+			__forget(key);
 			onFailure("A message on stream " + key + " reached " + fragments.length + " fragments without completing.");
 			return;
 		}
@@ -357,6 +455,8 @@ class SctpDataTransfer {
 
 		var head = fragments[start];
 
+		var before:Int = holding.bytes;
+
 		holding.fragments = fragments.slice(end + 1);
 		holding.bytes = 0;
 		holding.endings = 0;
@@ -369,7 +469,20 @@ class SctpDataTransfer {
 			}
 		}
 
+		// What the message took with it. Released before the handover, so a
+		// listener that sends from inside it sees the window this end has
+		// rather than the one it had a moment ago.
+		__buffered -= before - holding.bytes;
+
 		__deliverOrHold(head.streamId, head.streamSequence, head.protocolId, whole, head.unordered);
+	}
+
+	/** Drops what a stream was reassembling, and stops counting it. **/
+	@:noCompletion private function __forget(key:Int):Void {
+		if (__partial.exists(key)) {
+			__buffered -= __partial.get(key).bytes;
+			__partial.remove(key);
+		}
 	}
 
 	/**
@@ -391,23 +504,21 @@ class SctpDataTransfer {
 		if (sequence != expected) {
 			// Out of turn. Held rather than dropped: it is not late, it is
 			// early, and the one it is waiting for is still on its way.
-			var queue:Array<PendingMessage> = __held.exists(streamId) ? __held.get(streamId) : [];
-			queue.push(new PendingMessage(sequence, protocolId, payload));
+			var waiting:Held = __held.exists(streamId) ? __held.get(streamId) : new Held();
 
-			var waiting:Int = 0;
-			for (message in queue) {
-				waiting += message.payload.length;
-			}
+			waiting.queue.push(new PendingMessage(sequence, protocolId, payload));
+			waiting.bytes += payload.length;
+			__buffered += payload.length;
+			__held.set(streamId, waiting);
 
-			if (waiting > MAX_HELD) {
+			if (waiting.bytes > MAX_HELD) {
 				// The sequence being waited on is not coming, so everything
 				// queued behind it is unreachable and only costs memory.
-				__held.remove(streamId);
-				onFailure("Stream " + streamId + " held " + waiting + " bytes waiting for sequence " + expected + ".");
-				return;
+				var dropped:Int = waiting.bytes;
+				__release(streamId);
+				onFailure("Stream " + streamId + " held " + dropped + " bytes waiting for sequence " + expected + ".");
 			}
 
-			__held.set(streamId, queue);
 			return;
 		}
 
@@ -419,9 +530,9 @@ class SctpDataTransfer {
 	}
 
 	@:noCompletion private function __drainHeld(streamId:Int):Void {
-		var queue:Array<PendingMessage> = __held.exists(streamId) ? __held.get(streamId) : null;
+		var waiting:Held = __held.exists(streamId) ? __held.get(streamId) : null;
 
-		if (queue == null) {
+		if (waiting == null) {
 			return;
 		}
 
@@ -431,18 +542,31 @@ class SctpDataTransfer {
 			moved = false;
 			var expected:Int = __expectedSequence.get(streamId);
 
-			for (pending in queue) {
+			for (pending in waiting.queue) {
 				if (pending.sequence == expected) {
-					onMessage(streamId, pending.payload, pending.protocolId);
-					queue.remove(pending);
+					// Accounted for before it goes up, so a listener that
+					// sends from inside the call is working from the window
+					// this end has rather than the one it had a moment ago.
+					waiting.queue.remove(pending);
+					waiting.bytes -= pending.payload.length;
+					__buffered -= pending.payload.length;
 					__expectedSequence.set(streamId, (expected + 1) & 0xFFFF);
+					onMessage(streamId, pending.payload, pending.protocolId);
 					moved = true;
 					break;
 				}
 			}
 		}
 
-		__held.set(streamId, queue);
+		__held.set(streamId, waiting);
+	}
+
+	/** Drops what a stream was holding for its turn, and stops counting it. **/
+	@:noCompletion private function __release(streamId:Int):Void {
+		if (__held.exists(streamId)) {
+			__buffered -= __held.get(streamId).bytes;
+			__held.remove(streamId);
+		}
 	}
 
 	/**
@@ -475,8 +599,10 @@ class SctpDataTransfer {
 
 		var value = new ByteArray();
 		value.endian = Endian.BIG_ENDIAN;
+		var free:Int = SctpAssociation.RECEIVE_WINDOW - __buffered;
+
 		value.writeInt(__cumulativeTsn);
-		value.writeInt(SctpAssociation.RECEIVE_WINDOW);
+		value.writeInt(free > 0 ? free : 0);
 		value.writeShort(blocks.length);
 		value.writeShort(0);
 
@@ -570,6 +696,21 @@ private class Outstanding {
 }
 
 /** A complete message waiting for its turn on a stream. **/
+/**
+	What one stream is holding until the sequence before it arrives.
+
+	The total travels with the queue for the same reason it does in
+	`Reassembly`: it was re-summed over the whole queue on every message that
+	arrived out of turn, and how many that is belongs to the peer.
+**/
+private class Held {
+	public var queue:Array<PendingMessage> = [];
+
+	public var bytes:Int = 0;
+
+	public function new() {}
+}
+
 private class PendingMessage {
 	public var sequence:Int;
 	public var protocolId:Int;
