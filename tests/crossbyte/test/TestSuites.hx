@@ -137,6 +137,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.StunClientTest());
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
 		runner.addCase(new crossbyte.cluster.RendezvousTest());
+		runner.addCase(new crossbyte.cluster.MembershipTest());
 		runner.addCase(new crossbyte.net.FrameCodecTest());
 		runner.addCase(new crossbyte.net.EndpointTest());
 		runner.addCase(new crossbyte.net.NetConnectionTest());
@@ -200,6 +201,7 @@ class TestSuites {
 		// because DatagramSocket already canonicalised and the socket beside
 		// it did not.
 		#if (cpp || java || jvm)
+		runner.addCase(new crossbyte.cluster.NodeChannelTest());
 		runner.addCase(new crossbyte.net.SocketTest());
 		runner.addCase(new crossbyte.net.ServerSocketDrainTest());
 		runner.addCase(new crossbyte.net.ServerWebSocketDrainTest());
