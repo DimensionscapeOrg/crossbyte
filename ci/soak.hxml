@@ -1,0 +1,18 @@
+# A server-shaped workload, run long, to find out whether the native
+# collector's intermittent fault reaches production code. See
+# tests/soak/SoakMain.hx for what it is answering and why it deliberately
+# generates no haxe.PosInfos.
+#
+# Build, then run the exe with an optional duration and client count:
+#
+#   haxe ci/soak.hxml
+#   ./export/soak/SoakMain.exe 3600 32
+#
+# The exit status is the result. CI does not run this: it is a long
+# experiment, not a gate.
+-cp src
+-cp tests/soak
+-D windows
+-D HXCPP_M64
+-main SoakMain
+--cpp export/soak
