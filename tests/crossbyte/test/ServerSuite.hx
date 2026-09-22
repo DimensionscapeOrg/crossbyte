@@ -1,5 +1,6 @@
 package crossbyte.test;
 
+import crossbyte.net.RateLimiter;
 import utest.Runner;
 
 /**
@@ -67,7 +68,7 @@ class ServerSuite {
 		// No socket, but a filesystem and the rewrite engine, so a page has
 		// none of it.
 		runner.addCase(new crossbyte.http.HTTPSupportTest());
-		runner.addCase(new crossbyte.http.RateLimiterTest());
+		runner.addCase(new crossbyte.net.RateLimiterTest());
 		runner.addCase(new crossbyte.http.HTTPHardeningTest());
 		runner.addCase(new crossbyte.http.RouterTest());
 		runner.addCase(new crossbyte._internal.php.PHPTimeoutTest());

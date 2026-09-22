@@ -1,4 +1,4 @@
-package crossbyte.http;
+package crossbyte.net;
 
 import utest.Assert;
 

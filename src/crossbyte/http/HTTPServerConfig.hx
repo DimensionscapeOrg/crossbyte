@@ -1,5 +1,6 @@
 package crossbyte.http;
 
+import crossbyte.net.RateLimiter;
 // Not built for the browser: it configures the HTTP server, which cannot run in a page.
 #if !(js && !nodejs)
 
