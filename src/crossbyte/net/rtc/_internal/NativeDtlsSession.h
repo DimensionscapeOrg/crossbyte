@@ -19,7 +19,16 @@
 //
 // Return values: negative is failure, and `crossbyte_dtls_error` says what.
 
+// Guarded because this header is pulled into generated code by
+// `@:include`, which has already had hxcpp.h through the precompiled
+// header. Including it again makes gcc resolve <hxcpp.h> a second time,
+// and the first thing on the include path is hxcpp's own __pch directory,
+// which holds hxcpp.h.gch rather than hxcpp.h -- so the build stops at
+// "fatal error: .../__pch/haxe/hxcpp.h: No such file or directory". MSVC
+// resolves it differently, which is why this only ever broke on Linux.
+#ifndef HXCPP_H
 #include <hxcpp.h>
+#endif
 #include <stdint.h>
 
 // Handshake progress, from `crossbyte_dtls_step`.
