@@ -50,6 +50,20 @@ class SctpDataTransfer {
 	/** How long an unacknowledged fragment waits before being sent again. **/
 	public static inline var RETRANSMIT_AFTER:Float = 0.5;
 
+	/**
+		The most this end will queue for a peer that cannot take it yet.
+
+		Flow control means a message handed over is not necessarily a message
+		sent: it waits for room in the window the peer advertised. That queue
+		is the application's own doing rather than a peer's, so the bound here
+		is generous and is a backstop, not a working limit -- `bufferedAmount`
+		is the figure to watch, and an application that watches it never
+		arrives here. Past it `send` throws, because the alternative is either
+		discarding something the caller was told nothing about or growing
+		until the process dies.
+	**/
+	public static inline var MAX_BUFFERED:Int = 8 * 1024 * 1024;
+
 	/** Attempts before the association is considered broken. **/
 	public static inline var MAX_ATTEMPTS:Int = 10;
 
@@ -108,6 +122,46 @@ class SctpDataTransfer {
 	@:noCompletion private var __outboundSequence:IntMap<Int> = new IntMap();
 	@:noCompletion private var __unacknowledged:Array<Outstanding> = [];
 
+	/**
+		How much room the peer last said it had.
+
+		Seeded from the INIT and moved by every SACK. It was read off the INIT
+		into `SctpAssociation.peerReceiveWindow` and never looked at, and the
+		a_rwnd field of an arriving SACK was read past without being kept, so
+		this end sent whatever it was handed at whatever rate it was handed it.
+	**/
+	@:noCompletion private var __peerWindow:Int;
+
+	/** Bytes sent and not yet acknowledged, which is what fills that room. **/
+	@:noCompletion private var __inFlight:Int = 0;
+
+	/** Built, given a number, and waiting for the window to open. **/
+	@:noCompletion private var __pending:Array<SctpDataChunk> = [];
+
+	/**
+		Where `__pending` has been drained to.
+
+		A cursor rather than shifting the front off, which is a pass over
+		everything still queued for each chunk that leaves -- and the queue
+		runs to `MAX_BUFFERED` over `MAX_PAYLOAD` entries. Compacted once the
+		consumed part is the larger half, so it amortises to nothing.
+	**/
+	@:noCompletion private var __pendingAt:Int = 0;
+
+	@:noCompletion private var __pendingBytes:Int = 0;
+
+	/** When the last probe went out into a window with no room in it. **/
+	@:noCompletion private var __probedAt:Float = Math.NEGATIVE_INFINITY;
+
+	/**
+		The most recent time this end was told.
+
+		A SACK arrives through `association.onChunk`, which is not given one,
+		and the window it opens should be used before the next `poll` rather
+		than after it.
+	**/
+	@:noCompletion private var __lastSeen:Float = 0;
+
 	@:noCompletion private var __cumulativeTsn:Int;
 	/**
 		Which numbers have arrived above the cumulative acknowledgement.
@@ -141,6 +195,7 @@ class SctpDataTransfer {
 
 		this.association = association;
 		this.__nextTsn = association.localTsn;
+		this.__peerWindow = association.peerReceiveWindow;
 
 		// One before the peer's first, so the first fragment it sends advances
 		// the cumulative acknowledgement by exactly one.
@@ -168,6 +223,14 @@ class SctpDataTransfer {
 		if (association.state != SctpAssociationState.ESTABLISHED) {
 			throw new ArgumentError("The association is not open, so there is nothing to send over.");
 		}
+
+		if (__pendingBytes + (payload == null ? 0 : payload.length) > MAX_BUFFERED) {
+			throw new ArgumentError("The peer is not taking data fast enough to queue another "
+				+ (payload == null ? 0 : payload.length) + " bytes behind the " + __pendingBytes
+				+ " already waiting; watch bufferedAmount.");
+		}
+
+		__lastSeen = now;
 
 		var sequence:Int = 0;
 
@@ -205,18 +268,84 @@ class SctpDataTransfer {
 			var data = new SctpDataChunk(__nextTsn, streamId, sequence, protocolId, fragment, flags);
 			__nextTsn = (__nextTsn + 1) | 0;
 
-			__unacknowledged.push(new Outstanding(data, now));
-			association.onSend(association.packetFor([data.toChunk()]));
+			// Numbered here and sent when there is room for it. The numbers
+			// are handed out in the order the caller asked for and the queue
+			// drains in that order, so waiting for the window does not
+			// reorder anything.
+			__pending.push(data);
+			__pendingBytes += size;
 
 			offset += size;
 			first = false;
 		} while (offset < total);
+
+		__flush(now);
+	}
+
+	/**
+		How much has been handed over and not yet put on the wire.
+
+		Zero when the peer is keeping up, which is the ordinary case. It grows
+		when the window the peer advertised has no room left, and an
+		application sending faster than the far end reads should watch it
+		rather than discover `MAX_BUFFERED` the hard way.
+	**/
+	public var bufferedAmount(get, never):Int;
+
+	@:noCompletion private function get_bufferedAmount():Int {
+		return __pendingBytes;
+	}
+
+	/**
+		Sends what the peer has room for, and nothing it has not.
+
+		The rule is RFC 4960's: what is outstanding may not exceed the
+		receiver's advertised window. The exception is the same one, and it is
+		not optional -- a window with no room in it is reported by a SACK, a
+		SACK only comes back for something sent, so a sender that waited for
+		room while sending nothing would wait for a message that only its own
+		sending could provoke. One chunk goes regardless, no more often than a
+		retransmission would, and the acknowledgement of it carries the window
+		that was reopened.
+	**/
+	@:noCompletion private function __flush(now:Float):Void {
+		while (__pendingAt < __pending.length) {
+			var next = __pending[__pendingAt];
+			var size:Int = next.payload.length;
+
+			if (__inFlight + size > __peerWindow) {
+				if (__inFlight > 0 || now < __probedAt + RETRANSMIT_AFTER) {
+					// Stopping short, so the part already drained is dropped
+					// off the front rather than left to accumulate across
+					// however many times the window closes.
+					if (__pendingAt > 64 && __pendingAt * 2 >= __pending.length) {
+						__pending = __pending.slice(__pendingAt);
+						__pendingAt = 0;
+					}
+
+					return;
+				}
+
+				__probedAt = now;
+			}
+
+			__pendingAt++;
+			__pendingBytes -= size;
+			__inFlight += size;
+			__unacknowledged.push(new Outstanding(next, now));
+			association.onSend(association.packetFor([next.toChunk()]));
+		}
+
+		__pending = [];
+		__pendingAt = 0;
 	}
 
 	/**
 		Resends what has not been acknowledged, and sends any owed SACK.
 	**/
 	public function poll(now:Float):Void {
+		__lastSeen = now;
+
 		if (__sackNeeded) {
 			__sackNeeded = false;
 			association.onSend(association.packetFor([__buildSack()]));
@@ -229,6 +358,7 @@ class SctpDataTransfer {
 
 			if (outstanding.attempts >= MAX_ATTEMPTS) {
 				onFailure("A fragment went unacknowledged after " + MAX_ATTEMPTS + " attempts.");
+				__inFlight -= outstanding.data.payload.length;
 				__unacknowledged.remove(outstanding);
 				return;
 			}
@@ -237,6 +367,10 @@ class SctpDataTransfer {
 			outstanding.sentAt = now;
 			association.onSend(association.packetFor([outstanding.data.toChunk()]));
 		}
+
+		// A window that reopened while nothing was being sent is only heard
+		// about here, and anything waiting on it has been waiting since.
+		__flush(now);
 	}
 
 	/** How many fragments are still waiting to be acknowledged. **/
@@ -624,7 +758,11 @@ class SctpDataTransfer {
 		chunk.value.position = 0;
 
 		var cumulative:Int = chunk.value.readInt();
-		chunk.value.readInt();
+
+		// What the peer has room for. Read and discarded until now, which is
+		// what let this end send at whatever rate it was handed data.
+		__peerWindow = chunk.value.readInt();
+
 		var gaps:Int = chunk.value.readUnsignedShort();
 		chunk.value.readUnsignedShort();
 
@@ -656,8 +794,15 @@ class SctpDataTransfer {
 		}
 
 		for (outstanding in acknowledged) {
-			__unacknowledged.remove(outstanding);
+			if (__unacknowledged.remove(outstanding)) {
+				__inFlight -= outstanding.data.payload.length;
+			}
 		}
+
+		// The room this just freed is the room the next chunk was waiting
+		// for, and waiting for the next poll to notice would idle the link
+		// for a tick on every acknowledgement.
+		__flush(__lastSeen);
 	}
 }
 

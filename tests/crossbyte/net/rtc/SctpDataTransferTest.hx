@@ -1,11 +1,13 @@
 package crossbyte.net.rtc;
 
 import crossbyte.io.ByteArray;
+import crossbyte.io.Endian;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
 import crossbyte.net.rtc._internal.sctp.SctpAssociationState;
 import crossbyte.net.rtc._internal.sctp.SctpDataChunk;
 import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 import crossbyte.net.rtc._internal.sctp.SctpPacket;
+import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 import utest.Assert;
 
 /**
@@ -17,6 +19,18 @@ import utest.Assert;
 	implementation that never retransmits and one that does look identical.
 **/
 class SctpDataTransferTest extends utest.Test {
+	/** A SACK saying what has arrived and how much room is left. **/
+	private function sack(cumulative:Int, window:Int):SctpChunk {
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeInt(cumulative);
+		value.writeInt(window);
+		value.writeShort(0);
+		value.writeShort(0);
+		value.position = 0;
+		return new SctpChunk(SctpPacket.CHUNK_SACK, 0, value);
+	}
+
 	/** The window a SACK built right now would offer the peer. **/
 	private function advertised(transfer:SctpDataTransfer):Int {
 		var sack = @:privateAccess transfer.__buildSack();
@@ -640,6 +654,117 @@ class SctpDataTransferTest extends utest.Test {
 		// And the figure the window is derived from is the truth, not a
 		// count that drifted away from what is really there.
 		Assert.equals(walked(transfer), @:privateAccess transfer.__buffered);
+	}
+
+	/**
+		The sender stops at the window the peer said it had.
+
+		`peerReceiveWindow` was read off the INIT and never consulted, and the
+		a_rwnd field of an arriving SACK was read past and dropped, so this end
+		put everything it was handed straight on the wire at whatever rate it
+		was handed it. The receiver's bound then had to absorb the difference.
+	**/
+	public function testTheSenderStopsAtTheWindowThePeerAdvertised():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var transfer = pair.clientData;
+		var chunks:Int = 0;
+		pair.client.onSend = _ -> chunks++;
+
+		// Room for four fragments, and no more.
+		var room:Int = 4 * SctpDataTransfer.MAX_PAYLOAD;
+		@:privateAccess transfer.__onSack(sack(@:privateAccess transfer.__nextTsn - 1, room));
+		chunks = 0;
+
+		var message:Int = 64 * SctpDataTransfer.MAX_PAYLOAD;
+		transfer.send(0, filled(message), SctpDataChunk.PPID_BINARY, true, 1.0);
+
+		Assert.equals(4, chunks, "the sender put " + chunks + " fragments on a wire with room for four");
+		Assert.equals(message - room, transfer.bufferedAmount);
+
+		// What the window is compared against has to be what is really out
+		// there, and it is carried rather than summed, so it can drift.
+		var outstanding:Int = 0;
+
+		for (sent in (@:privateAccess transfer.__unacknowledged)) {
+			outstanding += sent.data.payload.length;
+		}
+
+		Assert.equals(outstanding, @:privateAccess transfer.__inFlight);
+	}
+
+	/**
+		A window with no room in it still gets one fragment, and recovers.
+
+		This is the part that cannot be left out. A closed window reopens, and
+		the only way this end hears about it is a SACK, and a SACK only comes
+		back for something sent -- so a sender that waited for room while
+		sending nothing would be waiting for a message that its own silence
+		prevents. RFC 4960 allows the one probe for exactly that reason.
+
+		The second half is the one worth watching: the acknowledgement of the
+		probe carries the reopened window, and everything queued behind it
+		goes at once.
+	**/
+	public function testAClosedWindowGetsAProbeAndThenRecovers():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var transfer = pair.clientData;
+		var chunks:Int = 0;
+		pair.client.onSend = _ -> chunks++;
+
+		var first:Int = @:privateAccess transfer.__nextTsn;
+		@:privateAccess transfer.__onSack(sack((first - 1) | 0, 0));
+		chunks = 0;
+
+		var pieces:Int = 8;
+		transfer.send(0, filled(pieces * SctpDataTransfer.MAX_PAYLOAD), SctpDataChunk.PPID_BINARY, true, 1.0);
+
+		Assert.equals(1, chunks, "a closed window sent " + chunks + " fragments; one is the probe and more is ignoring it");
+		Assert.equals((pieces - 1) * SctpDataTransfer.MAX_PAYLOAD, transfer.bufferedAmount);
+
+		// The peer takes the probe and says it has room again.
+		@:privateAccess transfer.__onSack(sack(first, 1024 * 1024));
+
+		Assert.equals(pieces, chunks, "the queue did not move when the window reopened");
+		Assert.equals(0, transfer.bufferedAmount, "something stayed queued against a window with room for it");
+	}
+
+	/**
+		Waiting for the window is not an excuse to keep everything.
+
+		Flow control means a message handed over is not a message sent, and
+		what is not sent is held. That queue is the application's own doing,
+		so it is told rather than quietly grown: `bufferedAmount` says how far
+		behind it is, and past `MAX_BUFFERED` handing over more throws instead
+		of taking the process down with it.
+	**/
+	public function testTheSendQueueDoesNotGrowWithoutBound():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var transfer = pair.clientData;
+		pair.client.onSend = _ -> {};
+
+		@:privateAccess transfer.__onSack(sack(@:privateAccess transfer.__nextTsn - 1, 0));
+
+		var refused:Bool = false;
+		var each:Int = 512 * 1024;
+
+		try {
+			// Twice the bound, in messages that each look ordinary.
+			for (_ in 0...(2 * Std.int(SctpDataTransfer.MAX_BUFFERED / each))) {
+				transfer.send(0, filled(each), SctpDataChunk.PPID_BINARY, true, 1.0);
+			}
+		} catch (e:Dynamic) {
+			refused = true;
+		}
+
+		Assert.isTrue(refused, "the queue grew past " + SctpDataTransfer.MAX_BUFFERED + " without a word");
+		Assert.isTrue(transfer.bufferedAmount <= SctpDataTransfer.MAX_BUFFERED,
+			"the queue reached " + transfer.bufferedAmount + " against a bound of " + SctpDataTransfer.MAX_BUFFERED);
 	}
 
 	/**
