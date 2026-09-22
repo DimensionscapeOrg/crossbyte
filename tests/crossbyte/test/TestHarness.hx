@@ -27,8 +27,7 @@ import utest.ui.Report;
 	## Cornering an intermittent native crash
 
 	Three flags, none of which do anything unless asked for, and the order to
-	reach for them in. They took the long-standing GC fault from one run in
-	six of the whole suite to every run of six fixtures in 30ms.
+	reach for them in.
 
 	- `-D test_trace` names the fixture that was running. It names where the
 	  collector ran, which is not the same as where the damage was done --
@@ -40,14 +39,22 @@ import utest.ui.Report;
 	- `-D gc_bisect` makes the suite selectable at runtime, so narrowing it
 	  costs a run rather than a rebuild. `CB_ONLY` is a comma separated list
 	  of substrings matched against case class names, `CB_METHOD` a regex
-	  over method names. Pair it with hxcpp's own
-	  `-D HXCPP_GC_DEBUG_ALWAYS_MOVE`, which compacts on every collection and
-	  turns an intermittent fault deterministic -- without that, a subset
-	  that does not crash tells you nothing.
+	  over method names. A fault that is probabilistic stays probabilistic,
+	  so a subset needs enough runs to mean something -- roughly twenty at
+	  the rate this one goes at.
 
 	hxcpp has more of these: `HXCPP_GC_VERIFY`, `HXCPP_GC_CHECK_POINTER`,
 	`HXCPP_GC_SUMMARY`. Read `src/hx/gc/Immix.cpp` before building an
 	instrument by hand.
+
+	One of them is a trap, and it caught me. `HXCPP_GC_DEBUG_ALWAYS_MOVE`
+	looks like the answer -- it makes a fault deterministic -- but
+	`HXCPP_GC_MOVING` is commented out in `Immix.cpp`, so the shipping
+	collector never moves anything and that flag switches on a code path the
+	real build does not have. It reproduced a crash in six fixtures every
+	time, and that crash is 0 in 30 without it: a different fault, in a
+	configuration nobody ships. Check what a debug flag turns on, and confirm
+	any reproduction against the plain build before believing it.
 **/
 @:access(crossbyte.core.CrossByte)
 class TestHarness {
