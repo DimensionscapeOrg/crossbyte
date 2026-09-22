@@ -23,14 +23,48 @@ import utest.ui.Report;
 	whole output, and the failing names with it. Building with `-D test_trace`
 	prints each fixture as it starts, which is what attributes a hang or a crash
 	to a method when the report never gets printed at all.
+
+	## Cornering an intermittent native crash
+
+	Three flags, none of which do anything unless asked for, and the order to
+	reach for them in. They took the long-standing GC fault from one run in
+	six of the whole suite to every run of six fixtures in 30ms.
+
+	- `-D test_trace` names the fixture that was running. It names where the
+	  collector ran, which is not the same as where the damage was done --
+	  check any accusation it makes by reproducing that fixture alone.
+	- `-D gc_probe` forces a major collection after every fixture. If the
+	  crash stops happening, nothing is writing bad memory and the fault is
+	  in what accumulates between collections. That is what happened here:
+	  0 crashes in 20 runs against a 15-25% baseline.
+	- `-D gc_bisect` makes the suite selectable at runtime, so narrowing it
+	  costs a run rather than a rebuild. `CB_ONLY` is a comma separated list
+	  of substrings matched against case class names, `CB_METHOD` a regex
+	  over method names. Pair it with hxcpp's own
+	  `-D HXCPP_GC_DEBUG_ALWAYS_MOVE`, which compacts on every collection and
+	  turns an intermittent fault deterministic -- without that, a subset
+	  that does not crash tells you nothing.
+
+	hxcpp has more of these: `HXCPP_GC_VERIFY`, `HXCPP_GC_CHECK_POINTER`,
+	`HXCPP_GC_SUMMARY`. Read `src/hx/gc/Immix.cpp` before building an
+	instrument by hand.
 **/
 @:access(crossbyte.core.CrossByte)
 class TestHarness {
 	public static function run(configure:Runner->Void):Void {
 		new crossbyte.core.CrossByte(true, DEFAULT, true);
 
+		#if gc_bisect
+		var runner = new BisectRunner();
+		runner.only = Sys.getEnv("CB_ONLY");
+		#else
 		var runner = new Runner();
+		#end
 		configure(runner);
+		#if gc_bisect
+		Sys.println("[BISECT] only=" + (runner.only == null ? "<everything>" : runner.only) + " kept=" + runner.kept);
+		Sys.stdout().flush();
+		#end
 		#if test_trace
 		// Build with `-D test_trace` to print each test as it starts. utest runs
 		// fixtures in an order unrelated to registration, so when a native run
@@ -41,7 +75,69 @@ class TestHarness {
 			Sys.stdout().flush();
 		});
 		#end
+		#if (gc_probe && cpp)
+		// DIAGNOSTIC, not for keeps. Build with `-D gc_probe` to force a major
+		// collection after every fixture. The suite's intermittent SIGSEGV is
+		// the collector walking a heap something has already damaged, and the
+		// damage persists, so the fixture named by the last line before the
+		// fault is the last one that could have done it.
+		runner.onTestComplete.add(handler -> {
+			var fixture = handler.fixture;
+			Sys.println("[GC] after " + Type.getClassName(Type.getClass(fixture.target)) + "." + fixture.method);
+			Sys.stdout().flush();
+			cpp.vm.Gc.run(true);
+		});
+		#end
 		Report.create(runner);
 		runner.run();
 	}
 }
+
+#if gc_bisect
+/**
+	DIAGNOSTIC, not for keeps. A runner that takes only the cases named.
+
+	`CB_ONLY` is a comma separated list of substrings matched against each
+	case's class name; anything else is dropped before it is registered. The
+	point is to narrow the suite without rebuilding it -- the native GC fault
+	is deterministic under `-D HXCPP_GC_DEBUG_ALWAYS_MOVE`, so one run per
+	subset settles it, and a rebuild per subset would be the whole cost.
+**/
+private class BisectRunner extends Runner {
+	public var only:String = null;
+
+	public var kept:Int = 0;
+
+	override public function addCase(test:Dynamic, setup = "setup", teardown = "teardown", prefix = "test", ?pattern:EReg,
+			setupAsync = "setupAsync", teardownAsync = "teardownAsync") {
+		if (only != null && only != "") {
+			var name = Type.getClassName(Type.getClass(test));
+			var wanted = false;
+
+			for (part in only.split(",")) {
+				if (part != "" && name.indexOf(part) >= 0) {
+					wanted = true;
+					break;
+				}
+			}
+
+			if (!wanted) {
+				return;
+			}
+		}
+
+		kept++;
+
+		// utest already filters methods by regex; `CB_METHOD` just supplies
+		// one, so a single fixture can be run without another build.
+		var byMethod = Sys.getEnv("CB_METHOD");
+
+		if (byMethod != null && byMethod != "") {
+			super.addCase(test, setup, teardown, prefix, new EReg(byMethod, ""), setupAsync, teardownAsync);
+			return;
+		}
+
+		super.addCase(test, setup, teardown, prefix, pattern, setupAsync, teardownAsync);
+	}
+}
+#end
