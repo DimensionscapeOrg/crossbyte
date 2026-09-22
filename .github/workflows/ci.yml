@@ -201,6 +201,11 @@ jobs:
         run: |
           haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          # Every native extern includes its Build.xml through
+          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
+          # repository by name. Without it the first cpp build in the job
+          # stops at 'Could not find haxelib crossbyte'.
+          haxelib dev crossbyte "$GITHUB_WORKSPACE"
 
       - name: Bootstrap hxcpp tools
         run: |
@@ -252,6 +257,11 @@ jobs:
         run: |
           haxelib install utest --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          # Every native extern includes its Build.xml through
+          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
+          # repository by name. Without it the first cpp build in the job
+          # stops at 'Could not find haxelib crossbyte'.
+          haxelib dev crossbyte "$GITHUB_WORKSPACE"
 
       - name: Bootstrap hxcpp tools
         run: |
@@ -314,6 +324,11 @@ jobs:
         run: |
           haxelib install utest --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          # Every native extern includes its Build.xml through
+          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
+          # repository by name. Without it the first cpp build in the job
+          # stops at 'Could not find haxelib crossbyte'.
+          haxelib dev crossbyte "$GITHUB_WORKSPACE"
 
       - name: Bootstrap hxcpp tools
         run: |
@@ -369,6 +384,11 @@ jobs:
           haxelib install utest --quiet
           haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          # Every native extern includes its Build.xml through
+          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
+          # repository by name. Without it the first cpp build in the job
+          # stops at 'Could not find haxelib crossbyte'.
+          haxelib dev crossbyte $env:GITHUB_WORKSPACE
 
       - name: Bootstrap hxcpp tools
         run: |
