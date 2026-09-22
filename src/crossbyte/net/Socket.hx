@@ -57,6 +57,27 @@ import sys.net.Socket as SysSocket;
 #end
 class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket {
 	/**
+		A slot for whatever the application wants this connection to carry.
+
+		Untouched by the framework, and it goes when the connection does.
+		Without one, an application holding per-connection state -- a session,
+		a player, a room membership -- keeps a `Map` beside the connection and
+		has to remember to remove the entry on close. Forgetting is not
+		noisy: the connection is gone, the traffic stops, and the entry stays
+		until the process does.
+
+		Typed as `Any` rather than `Dynamic` so reading it back needs an
+		explicit cast, and a wrong one is a compile error rather than a field
+		access on whatever happened to be there.
+
+		```haxe
+		connection.userData = new Session(player);
+		var session:Session = cast connection.userData;
+		```
+	**/
+	public var userData:Any = null;
+
+	/**
 		The number of bytes of data available for reading in the input buffer.
 		Your code must access `bytesAvailable` to ensure that sufficient data
 		is available before trying to read it with one of the `read` methods.
