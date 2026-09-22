@@ -104,7 +104,10 @@ jobs:
           java-version: "8"
 
       - name: Install test dependencies
-        run: haxelib install utest --quiet
+        run: |
+          haxelib install utest --quiet
+          # --jvm needs hxjava, and nothing else in this job pulls it in.
+          haxelib install hxjava --quiet
 
       - name: Build jvm suites
         run: |
@@ -238,7 +241,15 @@ jobs:
         include:
           - os: ubuntu-latest
             label: Linux
-          - os: macos-latest
+          # Intel, not macos-latest, which is Apple Silicon now. Haxe
+          # 4.3.7 publishes no macOS arm64 build -- the release carries
+          # haxe-4.3.7-osx.tar.gz (x64) and haxe-4.3.7-linux-arm64.tar.gz
+          # and nothing else -- so setup-haxe refuses an arm64 runner with
+          # "arm64 not supported" and the job dies before it installs
+          # anything. macos-13 was the usual answer and is retired; this is
+          # its replacement, and it is a standard runner rather than one of
+          # the paid -large ones.
+          - os: macos-15-intel
             label: macOS
     defaults:
       run:
@@ -608,6 +619,10 @@ jobs:
           haxelib install utest --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
           haxelib dev ${{ matrix.haxelib_name }} "$GITHUB_WORKSPACE/${{ matrix.path }}"
+          # The extension builds against CrossByte's native externs, which
+          # include their Build.xml through ${haxelib:crossbyte}, so this
+          # checkout has to be resolvable by name as well as by -cp.
+          haxelib dev crossbyte "$GITHUB_WORKSPACE/crossbyte"
 
       - name: Bootstrap hxcpp tools
         run: |
