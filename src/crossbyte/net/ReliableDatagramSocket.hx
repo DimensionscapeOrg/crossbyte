@@ -19,6 +19,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.io.IDataInput;
 import crossbyte.io.IDataOutput;
+import crossbyte.net._internal.reliable.OutstandingFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
@@ -120,10 +121,67 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	public var timeout(get, set):Int;
 
+	/**
+		How many bytes may wait for the window before `outputOverflowPolicy`
+		decides what happens. Zero, the default, means no limit.
+
+		What is waiting is visible as `bufferedAmount`; an application that
+		watches that never reaches this.
+	**/
+	public var maxOutputBufferSize:Int = 0;
+
+	/** What to do when the queue exceeds `maxOutputBufferSize`. **/
+	public var outputOverflowPolicy:OutputOverflowPolicy = CLOSE;
+
+	/**
+		Bytes written and not yet put on the wire.
+
+		Zero while the path keeps up. It grows when the congestion window has
+		no room left, which is how a sender learns the peer or the path
+		between cannot take data as fast as it is being produced.
+	**/
+	public var bufferedAmount(get, never):Int;
+
+	@:noCompletion private function get_bufferedAmount():Int {
+		return __queuedBytes;
+	}
+
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;
 	@:noCompletion private static inline var DELIVERY_WINDOW:Int = 500;
 	@:noCompletion private static inline var KEEP_ALIVE_INTERVAL:Float = 75.0;
-	@:noCompletion private static inline var RETRANSMIT_INTERVAL:Float = 3.0;
+
+	/**
+		How often the socket looks for frames whose time is up.
+
+		One timer for the session rather than one per frame. The old shape
+		armed a repeating `CBTimer` for every packet put on the wire, so a
+		sender with the window full held hundreds of live timers, and a server
+		held that many times its connection count. This is the granularity of
+		the retransmission clock, not the wait itself -- what a frame waits is
+		its own deadline, from `__rto`.
+	**/
+	@:noCompletion private static inline var RETRANSMIT_TICK:Float = 0.05;
+
+	/** The floor on a retransmission timeout, as RFC 6298 puts it. **/
+	@:noCompletion private static inline var MIN_RTO:Float = 0.2;
+
+	/** And the ceiling, so a dead path is given up on rather than waited for. **/
+	@:noCompletion private static inline var MAX_RTO:Float = 10.0;
+
+	/** What the timeout is before a single round trip has been measured. **/
+	@:noCompletion private static inline var INITIAL_RTO:Float = 1.0;
+
+	/**
+		Frames in flight before a round trip has been measured.
+
+		RFC 6928's initial window. Small enough not to be a burst, large
+		enough that a short message is not paced out one packet per round
+		trip.
+	**/
+	@:noCompletion private static inline var INITIAL_WINDOW:Int = 10;
+
+	/** The congestion window never shrinks below this. **/
+	@:noCompletion private static inline var MIN_WINDOW:Int = 2;
 
 	@:noCompletion private var __alive:Bool = false;
 	@:noCompletion private var __closed:Bool = false;
@@ -138,8 +196,38 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __input:ByteArray;
 	@:noCompletion private var __keepAliveHandle:Int = -1;
 	@:noCompletion private var __mode:ReliableDatagramSocketMode = DATAGRAM;
-	@:noCompletion private var __outFrameCache:IntMap<ByteArray>;
-	@:noCompletion private var __outFrameTimerCache:IntMap<Int>;
+	@:noCompletion private var __outFrameCache:IntMap<OutstandingFrame>;
+	@:noCompletion private var __retransmitHandle:Int = -1;
+
+	/**
+		How many frames may be in flight at once.
+
+		The send window was a constant 500 that took no notice of whether any
+		of it was arriving. A reliable transport that retransmits on a fixed
+		schedule into a path that is already dropping packets makes the drops
+		worse, and with a window that never yields it keeps doing so -- which
+		is how one slow client costs a server the bandwidth of many. This
+		opens on acknowledgement and halves on loss, which is the behaviour
+		every other reliable transport on the wire already agrees to.
+	**/
+	@:noCompletion private var __congestionWindow:Float = INITIAL_WINDOW;
+
+	/** Where the window stops doubling and starts creeping. **/
+	@:noCompletion private var __slowStartThreshold:Float = DELIVERY_WINDOW;
+
+	/** Smoothed round trip time, and its variation. Null until one is measured. **/
+	@:noCompletion private var __smoothedRtt:Float = -1;
+
+	@:noCompletion private var __rttVariation:Float = 0;
+
+	/** What a frame waits before it is sent again. **/
+	@:noCompletion private var __rto:Float = INITIAL_RTO;
+
+	/** Bytes sitting in `__outgoingQueue` waiting for the window to open. **/
+	@:noCompletion private var __queuedBytes:Int = 0;
+
+	/** How far `__outgoingQueue` has been drained; see `__drainQueue`. **/
+	@:noCompletion private var __queueAt:Int = 0;
 	@:noCompletion private var __outSequence:Seq32 = 0;
 	@:noCompletion private var __outgoingQueue:Array<ByteArray>;
 	@:noCompletion private var __output:ByteArray;
@@ -166,7 +254,6 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__inFrameCache = new IntMap();
 		__inFrameCacheSize = 0;
 		__outFrameCache = new IntMap();
-		__outFrameTimerCache = new IntMap();
 		__outgoingQueue = [];
 		objectEncoding = ObjectEncoding.DEFAULT;
 		__input = __createBuffer();
@@ -708,25 +795,105 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		var released:Array<Int> = [];
-		for (sequence in __outFrameCache.keys()) {
-			var pending:Seq32 = sequence;
-			if (pending < ackValue) {
-				released.push(sequence);
-			}
-		}
+		// Walked from the old acknowledgement point to the new one rather
+		// than by asking every outstanding frame whether it is covered: the
+		// acknowledgement is cumulative, so the frames it releases are the
+		// run between the two, and that is the number of frames released
+		// rather than the number still in flight.
+		var now:Float = __clock();
+		var sequence:Seq32 = __windowBase;
 
-		for (sequence in released) {
-			__outFrameCache.remove(sequence);
-			var timerHandle:Null<Int> = __outFrameTimerCache.get(sequence);
-			if (timerHandle != null) {
-				CBTimer.clear(timerHandle);
-				__outFrameTimerCache.remove(sequence);
+		while (sequence < ackValue) {
+			var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
+
+			if (frame != null) {
+				// Karn's algorithm: a frame that was sent more than once
+				// cannot say which copy this acknowledges, so it is not a
+				// round trip measurement.
+				if (frame.attempts == 1) {
+					__sampleRoundTrip(now - frame.sentAt);
+				}
+
+				__outFrameCache.remove(sequence);
+				__openWindow();
 			}
+
+			sequence++;
 		}
 
 		__windowBase = ackValue;
 		__drainQueue();
+	}
+
+	/**
+		Folds one round trip measurement into the retransmission timeout.
+
+		RFC 6298 section 2, and the reason a fixed three seconds was wrong in
+		both directions: on a local path it made a lost frame wait three
+		seconds for no reason, and on a path slower than that it declared loss
+		that had not happened and sent the frame again, which is how a
+		congested link is made worse.
+	**/
+	@:noCompletion private function __sampleRoundTrip(sample:Float):Void {
+		if (sample <= 0) {
+			return;
+		}
+
+		if (__smoothedRtt < 0) {
+			__smoothedRtt = sample;
+			__rttVariation = sample / 2;
+		} else {
+			var difference:Float = __smoothedRtt - sample;
+
+			if (difference < 0) {
+				difference = -difference;
+			}
+
+			__rttVariation = 0.75 * __rttVariation + 0.25 * difference;
+			__smoothedRtt = 0.875 * __smoothedRtt + 0.125 * sample;
+		}
+
+		__setRto(__smoothedRtt + 4 * __rttVariation);
+	}
+
+	@:noCompletion private function __setRto(value:Float):Void {
+		__rto = value < MIN_RTO ? MIN_RTO : (value > MAX_RTO ? MAX_RTO : value);
+	}
+
+	/**
+		Opens the window by one acknowledged frame.
+
+		Doubling per round trip while below the threshold, and one frame per
+		round trip above it, which is the additive-increase half of what
+		everything else on the wire does.
+	**/
+	@:noCompletion private function __openWindow():Void {
+		if (__congestionWindow < __slowStartThreshold) {
+			__congestionWindow += 1;
+		} else {
+			__congestionWindow += 1 / __congestionWindow;
+		}
+
+		if (__congestionWindow > DELIVERY_WINDOW) {
+			__congestionWindow = DELIVERY_WINDOW;
+		}
+	}
+
+	/**
+		Halves the window, because something was not delivered.
+
+		Multiplicative decrease, and the timeout doubles with it: a path that
+		just failed to deliver is not one to try again on the same schedule.
+	**/
+	@:noCompletion private function __closeWindow():Void {
+		__slowStartThreshold = __congestionWindow / 2;
+
+		if (__slowStartThreshold < MIN_WINDOW) {
+			__slowStartThreshold = MIN_WINDOW;
+		}
+
+		__congestionWindow = __slowStartThreshold;
+		__setRto(__rto * 2);
 	}
 
 	@:noCompletion private function __acceptPacket(sequence:Seq32, payload:ByteArray):Void {
@@ -877,15 +1044,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__keepAliveHandle = -1;
 		}
 
-		for (sequence in __outFrameTimerCache.keys()) {
-			CBTimer.clear(__outFrameTimerCache.get(sequence));
-		}
+		__stopRetransmitClock();
 
-		__outFrameTimerCache = new IntMap();
 		__outFrameCache = new IntMap();
 		__inFrameCache = new IntMap();
 		__inFrameCacheSize = 0;
 		__outgoingQueue.resize(0);
+		__queueAt = 0;
+		__queuedBytes = 0;
+		__congestionWindow = INITIAL_WINDOW;
+		__slowStartThreshold = DELIVERY_WINDOW;
+		__smoothedRtt = -1;
+		__rttVariation = 0;
+		__rto = INITIAL_RTO;
 		__input = __createBuffer();
 		__output = __createBuffer();
 
@@ -917,8 +1088,23 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __drainQueue():Void {
-		while (__outgoingQueue.length > 0 && !__windowExceeded()) {
-			__sendPacket(__outgoingQueue.shift());
+		// A cursor rather than taking the front off, which moves everything
+		// still queued for each packet that leaves.
+		while (__queueAt < __outgoingQueue.length && !__windowExceeded()) {
+			var payload:ByteArray = __outgoingQueue[__queueAt];
+			__outgoingQueue[__queueAt] = null;
+			__queueAt++;
+			__queuedBytes -= payload.length;
+			__sendPacket(payload);
+		}
+
+		if (__queueAt >= __outgoingQueue.length) {
+			__outgoingQueue.resize(0);
+			__queueAt = 0;
+			__queuedBytes = 0;
+		} else if (__queueAt > 64 && __queueAt * 2 >= __outgoingQueue.length) {
+			__outgoingQueue = __outgoingQueue.slice(__queueAt);
+			__queueAt = 0;
 		}
 	}
 
@@ -1002,10 +1188,45 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private function __queuePacket(payload:ByteArray):Void {
 		if (__windowExceeded()) {
 			__outgoingQueue.push(payload);
+			__queuedBytes += payload.length;
+			__enforceOutputLimit();
 			return;
 		}
 
 		__sendPacket(payload);
+	}
+
+	/**
+		Applies `maxOutputBufferSize` to what is waiting for the window.
+
+		Flow control means a write is not necessarily a send: it waits for
+		room, and what waits is held. Before the window was allowed to close
+		this queue could not grow, because the window never closed; now that
+		it does, an application producing faster than the path will carry has
+		to be told rather than have the queue grow until the process dies.
+		Same bound and same two policies as `Socket`, for the same reason.
+	**/
+	@:noCompletion private function __enforceOutputLimit():Void {
+		var limit:Int = maxOutputBufferSize;
+
+		if (limit <= 0 || __queuedBytes <= limit) {
+			return;
+		}
+
+		var message:String = 'Reliable datagram output queue reached ${__queuedBytes} bytes, exceeding the $limit byte limit; '
+			+ 'the path to the peer is not carrying data as fast as it is being written.';
+
+		switch (outputOverflowPolicy) {
+			case CLOSE:
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+				}
+
+				close();
+
+			case THROW:
+				throw new IOError(message);
+		}
 	}
 
 	@:noCompletion private inline function __requireDatagramMode():Void {
@@ -1051,13 +1272,6 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
-	@:noCompletion private function __retransmitPacket(sequence:Seq32):Void {
-		var payload:ByteArray = __outFrameCache.get(sequence);
-		if (payload != null) {
-			__sendRaw(ReliableDatagramProtocol.encode(PACKET, sequence, payload, true, __currentAck()));
-		}
-	}
-
 	@:noCompletion private function __sendControl(type:ReliableDatagramFrameType, ?sequence:Seq32):Void {
 		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
 			return;
@@ -1079,12 +1293,87 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	@:noCompletion private function __sendPacket(payload:ByteArray):Void {
 		var sequence:Seq32 = __outSequence;
-		__outFrameCache.set(sequence, payload);
+		var now:Float = __clock();
+
+		__outFrameCache.set(sequence, new OutstandingFrame(payload, now, now + __rto));
 		__sendRaw(ReliableDatagramProtocol.encode(PACKET, sequence, payload, false, __currentAck()));
-		__outFrameTimerCache.set(sequence, CBTimer.setInterval(RETRANSMIT_INTERVAL, RETRANSMIT_INTERVAL, function() {
-			__retransmitPacket(sequence);
-		}));
 		__outSequence++;
+		__armRetransmitClock();
+	}
+
+	/** The one timer the session retransmits from, started on demand. **/
+	@:noCompletion private function __armRetransmitClock():Void {
+		if (__retransmitHandle != -1 || __closed) {
+			return;
+		}
+
+		__retransmitHandle = CBTimer.setInterval(RETRANSMIT_TICK, RETRANSMIT_TICK, function() {
+			__checkRetransmits();
+		});
+	}
+
+	@:noCompletion private function __stopRetransmitClock():Void {
+		if (__retransmitHandle != -1) {
+			CBTimer.clear(__retransmitHandle);
+			__retransmitHandle = -1;
+		}
+	}
+
+	/**
+		Sends again whatever has waited longer than the timeout allows.
+
+		The oldest frame decides. Acknowledgement is cumulative, so nothing
+		behind a missing frame can be released until it arrives, and sending
+		the rest again would be spending bandwidth on what the receiver is
+		already holding. One frame per timeout, the window halved, the
+		timeout doubled -- and the frames behind it go out as the window
+		reopens.
+	**/
+	@:noCompletion private function __checkRetransmits():Void {
+		if (__closed || !__connected) {
+			return;
+		}
+
+		if (!__outFrameCache.keys().hasNext()) {
+			__stopRetransmitClock();
+			return;
+		}
+
+		var now:Float = __clock();
+		var overdue:Null<OutstandingFrame> = __overdueFrame(now);
+
+		if (overdue == null) {
+			return;
+		}
+
+		overdue.attempts++;
+		overdue.sentAt = now;
+		// Backed off first, so the deadline set below is the new one: RFC
+		// 6298 section 5.5 doubles the timeout and then restarts the clock.
+		__closeWindow();
+		overdue.deadline = now + __rto;
+		__sendRaw(ReliableDatagramProtocol.encode(PACKET, __windowBase, overdue.payload, true, __currentAck()));
+	}
+
+	/**
+		The frame whose time is up, or null while none is.
+
+		Only ever the oldest. Acknowledgement is cumulative, so nothing behind
+		a missing frame can be released until it arrives, and sending the rest
+		again would spend bandwidth on what the receiver is already holding.
+	**/
+	@:noCompletion private function __overdueFrame(now:Float):Null<OutstandingFrame> {
+		var oldest:Null<OutstandingFrame> = __outFrameCache.get(__windowBase);
+
+		if (oldest == null || now < oldest.deadline) {
+			return null;
+		}
+
+		return oldest;
+	}
+
+	@:noCompletion private inline function __clock():Float {
+		return haxe.Timer.stamp();
 	}
 
 	@:noCompletion private inline function __sendAck():Void {
@@ -1115,7 +1404,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __windowExceeded():Bool {
-		return (__outSequence - __windowBase) > DELIVERY_WINDOW;
+		return (__outSequence - __windowBase) >= Std.int(__congestionWindow);
 	}
 
 	@:noCompletion private function __onTransportData(e:DatagramSocketDataEvent):Void {
