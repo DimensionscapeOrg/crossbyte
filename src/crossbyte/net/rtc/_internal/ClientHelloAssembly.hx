@@ -67,6 +67,26 @@ class ClientHelloAssembly {
 	**/
 	public static inline var MAX_MESSAGE:Int = 16384 - HANDSHAKE_HEADER;
 
+	/**
+		How many disjoint runs of a message may be held at once.
+
+		A peer chooses where it splits, and nothing obliges it to split
+		usefully: fragments carrying every other byte never merge, so the run
+		list grows by one per fragment and every later fragment is matched
+		against the whole of it. Twenty-six bytes on the wire buys a run, and
+		a hundred kilobytes of them buys several seconds -- before a
+		certificate has been seen, from any address that can reach the port.
+
+		Real fragmentation is at the path MTU, and pieces that tile a message
+		leave at most one gap between every two of them however they reorder,
+		so sixty-four runs admits a peer splitting at a hundred and twenty
+		eight bytes. IPv6 will not go below 1280, where the largest message
+		this accepts is fourteen pieces. Past the cap the fragment is refused
+		rather than filed, and an honest peer's retransmission closes gaps and
+		shortens the list rather than lengthening it.
+	**/
+	public static inline var MAX_RUNS:Int = 64;
+
 	/** The message being assembled, or null when nothing is in progress. **/
 	@:noCompletion private var __body:Bytes;
 
@@ -93,10 +113,23 @@ class ClientHelloAssembly {
 	**/
 	public var pending(get, never):Int;
 
+	/**
+		How many disjoint runs are held for a message still being assembled.
+
+		Worth being able to see for the same reason as `pending`: what a peer
+		can make this hold is the question, and the count of runs is the part
+		that a fragment size nobody would choose is able to grow.
+	**/
+	public var runs(get, never):Int;
+
 	public function new() {}
 
 	@:noCompletion private function get_pending():Int {
 		return __body == null ? 0 : __length;
+	}
+
+	@:noCompletion private function get_runs():Int {
+		return __covered.length;
 	}
 
 	/**
@@ -250,8 +283,13 @@ class ClientHelloAssembly {
 			__covered = [];
 		}
 
+		// Recorded before it is copied: a fragment there is no room to account
+		// for is one whose bytes must not be left looking like they arrived.
+		if (!__cover(offset, offset + carried)) {
+			return null;
+		}
+
 		__body.blit(offset, datagram, body + HANDSHAKE_HEADER, carried);
-		__cover(offset, offset + carried);
 
 		if (__covered.length != 1 || __covered[0].start != 0 || __covered[0].end != declared) {
 			return null;
@@ -278,28 +316,57 @@ class ClientHelloAssembly {
 		return record;
 	}
 
-	/** Adds a range, merging it with anything it meets or overlaps. **/
-	@:noCompletion private function __cover(start:Int, end:Int):Void {
+	/**
+		Adds a range, merging it with anything it meets or overlaps.
+
+		@return Whether it was recorded. False when it touches nothing already
+		held and there is no room for another run -- see `MAX_RUNS`.
+	**/
+	@:noCompletion private function __cover(start:Int, end:Int):Bool {
 		if (end <= start) {
-			return;
+			return true;
 		}
 
-		var merged:Array<{start:Int, end:Int}> = [];
+		// The list is kept sorted and disjoint, so everything this range
+		// touches is one unbroken stretch of it: from the first run reaching
+		// `start` to the last beginning at or before the far end -- which
+		// moves out as runs are absorbed, so the second loop re-reads it.
+		var first:Int = 0;
+
+		while (first < __covered.length && __covered[first].end < start) {
+			first++;
+		}
+
+		var last:Int = first;
 		var low:Int = start;
 		var high:Int = end;
 
-		for (range in __covered) {
-			if (range.end < low || range.start > high) {
-				merged.push(range);
-			} else {
-				low = range.start < low ? range.start : low;
-				high = range.end > high ? range.end : high;
+		while (last < __covered.length && __covered[last].start <= high) {
+			var range = __covered[last];
+
+			if (range.start < low) {
+				low = range.start;
 			}
+
+			if (range.end > high) {
+				high = range.end;
+			}
+
+			last++;
 		}
 
-		merged.push({start: low, end: high});
-		merged.sort(function(a, b):Int return a.start - b.start);
-		__covered = merged;
+		if (last == first) {
+			// Touches nothing, so the list grows -- the only case that can
+			// run away, and the only one worth refusing.
+			if (__covered.length >= MAX_RUNS) {
+				return false;
+			}
+		} else {
+			__covered.splice(first, last - first);
+		}
+
+		__covered.insert(first, {start: low, end: high});
+		return true;
 	}
 
 	@:noCompletion private static inline function __uint24(bytes:Bytes, at:Int):Int {
