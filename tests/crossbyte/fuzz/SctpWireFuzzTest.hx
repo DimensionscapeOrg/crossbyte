@@ -161,7 +161,7 @@ class SctpWireFuzzTest extends utest.Test {
 		var reassembling:Int = 0;
 		var partial = @:privateAccess pair.serverData.__partial;
 		for (key in partial.keys()) {
-			for (fragment in partial.get(key)) {
+			for (fragment in partial.get(key).fragments) {
 				reassembling += fragment.payload.length;
 			}
 		}

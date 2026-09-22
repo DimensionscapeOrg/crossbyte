@@ -64,6 +64,28 @@ class SctpDataTransfer {
 	public static inline var MAX_REASSEMBLY:Int = 1024 * 1024;
 
 	/**
+		How many pieces one message may be split into before it is abandoned.
+
+		Bytes alone do not bound this. The sender picks the fragment size, so
+		a megabyte of budget is a megabyte of one-byte fragments, and what a
+		fragment costs on arrival grows with how many are already held --
+		confirming a run is unbroken means walking it. Measured against a
+		version that also re-sorted on each arrival: four thousand fragments,
+		sixty-eight kilobytes on the wire, took sixteen seconds, and the byte
+		bound above allows two hundred and fifty times that many.
+
+		Two thousand and forty eight splits the largest message this accepts
+		at 512 bytes, which is below any path that carries DTLS. A real one
+		gives around 1200, so the largest message a peer could honestly send
+		arrives in fewer than nine hundred pieces.
+
+		It is also pinned from below by what this end emits: `send` splits at
+		`MAX_PAYLOAD`, so a peer running the same code sends `MAX_REASSEMBLY`
+		as exactly 1024 fragments. Halving this would refuse them.
+	**/
+	public static inline var MAX_FRAGMENTS:Int = 2048;
+
+	/**
 		The most one stream may hold waiting for its turn before the queue goes.
 
 		A message that arrives early is held rather than dropped, which is right:
@@ -88,7 +110,7 @@ class SctpDataTransfer {
 
 	@:noCompletion private var __cumulativeTsn:Int;
 	@:noCompletion private var __received:IntMap<SctpDataChunk> = new IntMap();
-	@:noCompletion private var __partial:IntMap<Array<SctpDataChunk>> = new IntMap();
+	@:noCompletion private var __partial:IntMap<Reassembly> = new IntMap();
 	@:noCompletion private var __expectedSequence:IntMap<Int> = new IntMap();
 	@:noCompletion private var __held:IntMap<Array<PendingMessage>> = new IntMap();
 	@:noCompletion private var __sackNeeded:Bool = false;
@@ -248,55 +270,77 @@ class SctpDataTransfer {
 		}
 
 		var key:Int = data.streamId;
-		var fragments:Array<SctpDataChunk> = __partial.exists(key) ? __partial.get(key) : [];
+		var holding:Reassembly = __partial.exists(key) ? __partial.get(key) : new Reassembly();
+		var fragments:Array<SctpDataChunk> = holding.fragments;
 
-		fragments.push(data);
+		// Put in TSN order rather than appended and the whole array re-sorted,
+		// which cost a comparison against everything already held on every
+		// arrival -- quadratic in a count the peer chooses. Fragments normally
+		// arrive in order, which this walks straight past; `__onData` has
+		// already refused a TSN seen before, so nothing lands on an equal one.
+		var at:Int = fragments.length;
+
+		while (at > 0 && SctpDataChunk.isEarlier(data.tsn, fragments[at - 1].tsn)) {
+			at--;
+		}
+
+		fragments.insert(at, data);
+		holding.bytes += data.payload.length;
+
+		if (data.ending) {
+			holding.endings++;
+		}
+
+		__partial.set(key, holding);
 
 		// Bounded here rather than as each fragment arrives: a fragment is only
 		// oversized in the context of the message it is joining. Dropping what
 		// has accumulated is the part that matters -- onFailure is raised for
 		// symmetry with the send side, though nothing in src/ assigns it yet.
-		var pending:Int = 0;
-		for (fragment in fragments) {
-			pending += fragment.payload.length;
-		}
-
-		if (pending > MAX_REASSEMBLY) {
+		if (holding.bytes > MAX_REASSEMBLY) {
 			__partial.remove(key);
-			onFailure("A message on stream " + key + " reached " + pending + " bytes without completing.");
-			return;
-		}
-		fragments.sort(function(a:SctpDataChunk, b:SctpDataChunk):Int {
-			return SctpDataChunk.isEarlier(a.tsn, b.tsn) ? -1 : (a.tsn == b.tsn ? 0 : 1);
-		});
-
-		__partial.set(key, fragments);
-
-		// Only when both ends are present and the run between them is
-		// unbroken. A gap means a fragment is still in flight, and delivering
-		// what is here would be delivering part of a message.
-		var start:Int = -1;
-		var end:Int = -1;
-
-		for (i in 0...fragments.length) {
-			if (fragments[i].beginning) {
-				start = i;
-			}
-
-			if (fragments[i].ending && start >= 0) {
-				end = i;
-				break;
-			}
-		}
-
-		if (start < 0 || end < 0) {
+			onFailure("A message on stream " + key + " reached " + holding.bytes + " bytes without completing.");
 			return;
 		}
 
-		for (i in start...end) {
-			if (((fragments[i].tsn + 1) | 0) != fragments[i + 1].tsn) {
+		if (fragments.length > MAX_FRAGMENTS) {
+			__partial.remove(key);
+			onFailure("A message on stream " + key + " reached " + fragments.length + " fragments without completing.");
+			return;
+		}
+
+		// Nothing held ends a message, so nothing held can complete one. This
+		// is the shape `MAX_REASSEMBLY` exists for -- fragments flagged B and
+		// never one flagged E -- and it used to have every arrival walk the
+		// whole of what the peer had already sent.
+		if (holding.endings == 0) {
+			return;
+		}
+
+		// Only the run through the fragment that just arrived can have become
+		// complete: anything else was already whole before it, and would have
+		// gone up then. So the ends are found from there rather than from the
+		// front of everything held, and either walk stops the moment the TSNs
+		// stop being consecutive -- a gap means a fragment is still in flight,
+		// and delivering what is here would be delivering part of a message.
+		var start:Int = at;
+
+		while (!fragments[start].beginning) {
+			if (start == 0 || ((fragments[start - 1].tsn + 1) | 0) != fragments[start].tsn) {
 				return;
 			}
+
+			start--;
+		}
+
+		var end:Int = at;
+
+		while (!fragments[end].ending) {
+			if (end + 1 == fragments.length || ((fragments[end].tsn + 1) | 0) != fragments[end + 1].tsn) {
+				return;
+			}
+
+			end++;
 		}
 
 		var whole = new ByteArray();
@@ -312,7 +356,19 @@ class SctpDataTransfer {
 		whole.position = 0;
 
 		var head = fragments[start];
-		__partial.set(key, fragments.slice(end + 1));
+
+		holding.fragments = fragments.slice(end + 1);
+		holding.bytes = 0;
+		holding.endings = 0;
+
+		for (fragment in holding.fragments) {
+			holding.bytes += fragment.payload.length;
+
+			if (fragment.ending) {
+				holding.endings++;
+			}
+		}
+
 		__deliverOrHold(head.streamId, head.streamSequence, head.protocolId, whole, head.unordered);
 	}
 
@@ -477,6 +533,28 @@ class SctpDataTransfer {
 			__unacknowledged.remove(outstanding);
 		}
 	}
+}
+
+/**
+	What one stream has of a message that is not finished.
+
+	The counts travel with the fragments because deriving them is what made
+	reassembly quadratic: both the byte total and whether anything here ends a
+	message were recomputed over the whole array on every arrival, and the
+	peer chooses how long that array is. `SctpWireFuzzTest` measures the real
+	fragments against `MAX_REASSEMBLY` rather than reading `bytes`, so a total
+	that drifted below the truth would show there.
+**/
+private class Reassembly {
+	/** In TSN order, kept so by insertion. **/
+	public var fragments:Array<SctpDataChunk> = [];
+
+	public var bytes:Int = 0;
+
+	/** How many of them are flagged E. **/
+	public var endings:Int = 0;
+
+	public function new() {}
 }
 
 /** A fragment that has gone out and not been acknowledged. **/
