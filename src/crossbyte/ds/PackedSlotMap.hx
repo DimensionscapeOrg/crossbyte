@@ -176,7 +176,7 @@ final class PackedSlotMap<T> {
 		__denseToSlot.pop();
 
 		__slotToDense[slot] = -1;
-		__gen[slot] = (__gen[slot] + 1) | 0;
+		__gen[slot] = (__gen[slot] + 1) & SlotHandle.GEN_MASK;
 		__free.push(slot);
 		return true;
 	}
@@ -226,7 +226,7 @@ final class PackedSlotMap<T> {
 	public function clear():Void {
 		for (slot in 0...__slotToDense.length) {
 			if (__slotToDense[slot] >= 0) {
-				__gen[slot] = (__gen[slot] + 1) | 0;
+				__gen[slot] = (__gen[slot] + 1) & SlotHandle.GEN_MASK;
 			}
 
 			__slotToDense[slot] = -1;

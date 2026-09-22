@@ -119,7 +119,12 @@ final class SlotMap<T> {
 		}
 
 		__values[i] = null;
-		__gen[i] = (__gen[i] + 1) | 0;
+		// Wrapped inside the handle's generation field. Counting past it left
+		// the slot holding a number no handle could ever carry, so every
+		// later remove of that slot failed and the entry was never freed --
+		// a map that leaks one slot per 256 reuses, which on anything with
+		// entity churn is a leak that never stops.
+		__gen[i] = (__gen[i] + 1) & SlotHandle.GEN_MASK;
 		__free.push(i);
 		length--;
 		return true;

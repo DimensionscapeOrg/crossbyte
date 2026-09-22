@@ -456,6 +456,48 @@ class CollectionsTest extends utest.Test {
 		Assert.isNull(map.get(reused));
 	}
 
+	/**
+		A slot survives being reused more times than its generation can count.
+
+		The generation field is `GEN_BITS` wide and the counter was not kept
+		inside it, so on the 256th reuse of a slot the handle carried a
+		truncated generation while the slot held the untruncated one. They
+		never compared equal again: `remove` returned false for ever, the
+		entry was never freed, and the map grew a permanent leak of one slot
+		per 256 reuses. Anything with entity churn passes 256 in seconds --
+		the soak harness reached it in twenty and kept climbing.
+	**/
+	public function testASlotSurvivesMoreReusesThanItsGenerationCanCount():Void {
+		var map = new SlotMap<String>(4);
+		var reuses:Int = 4 * (1 << SlotHandle.GEN_BITS);
+		var refused:Int = 0;
+
+		for (_ in 0...reuses) {
+			if (!map.remove(map.insert("e"))) {
+				refused++;
+			}
+		}
+
+		Assert.equals(0, refused, "remove() refused a live handle " + refused + " times in " + reuses + " reuses");
+		Assert.equals(0, map.length, "the map kept " + map.length + " entries after " + reuses + " balanced pairs");
+	}
+
+	/** And the same for the packed variant, which counted the same way. **/
+	public function testAPackedSlotSurvivesMoreReusesThanItsGenerationCanCount():Void {
+		var map = new PackedSlotMap<String>(4);
+		var reuses:Int = 4 * (1 << SlotHandle.GEN_BITS);
+		var refused:Int = 0;
+
+		for (_ in 0...reuses) {
+			if (!map.remove(map.insert("e"))) {
+				refused++;
+			}
+		}
+
+		Assert.equals(0, refused, "remove() refused a live handle " + refused + " times in " + reuses + " reuses");
+		Assert.equals(0, map.length, "the map kept " + map.length + " entries after " + reuses + " balanced pairs");
+	}
+
 	public function testPackedSlotMapKeepsDenseIterationAndHonorsMaxCapacity():Void {
 		var map = new PackedSlotMap<String>(2, 3, 2);
 		var first = map.insert("alpha");

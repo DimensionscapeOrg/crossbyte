@@ -23,6 +23,17 @@ abstract SlotHandle(Int) from Int to Int {
 	public static inline var GEN_BITS:Int = 32 - INDEX_BITS;
 
 	/**
+		Bitmask for the generation portion.
+
+		A generation counts reuses of one slot and there are only `GEN_BITS`
+		of it, so it has to be kept inside that on the way in. A counter
+		allowed past the mask makes a handle whose generation reads as the
+		truncated value while the slot still holds the untruncated one, and
+		the two never compare equal again -- so the slot can never be freed.
+	**/
+	public static inline var GEN_MASK:Int = (1 << GEN_BITS) - 1;
+
+	/**
 	 * Creates a new SlotHandle
 	 *
 	 */
@@ -56,6 +67,6 @@ abstract SlotHandle(Int) from Int to Int {
 	 * @return A SlotHandle encoding both values.
 	 */
 	public static inline function make(index:Int, gen:Int):SlotHandle {
-		return new SlotHandle((gen << INDEX_BITS) | (index & INDEX_MASK));
+		return new SlotHandle(((gen & GEN_MASK) << INDEX_BITS) | (index & INDEX_MASK));
 	}
 }
