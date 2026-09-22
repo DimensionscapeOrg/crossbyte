@@ -1,5 +1,6 @@
 package crossbyte.http;
 
+import crossbyte.net.RateLimiter;
 import crossbyte._internal.http.RewriteEngine;
 import crossbyte.http.config.RewriteConditionType;
 import crossbyte.http.config.RewriteFlag;
