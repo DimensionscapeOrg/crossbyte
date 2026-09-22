@@ -135,6 +135,7 @@ class TestSuites {
 		// node blocks the very loop the socket is delivered on -- so the query
 		// never completes and every case times out.
 		runner.addCase(new crossbyte.net.StunClientTest());
+		runner.addCase(new crossbyte.net.FrameCodecTest());
 		runner.addCase(new crossbyte.net.EndpointTest());
 		runner.addCase(new crossbyte.net.NetConnectionTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
