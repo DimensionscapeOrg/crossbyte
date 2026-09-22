@@ -64,6 +64,25 @@ class DataChannel {
 	/** Resolves once the peer has acknowledged the channel. **/
 	public var opened(default, null):Future<DataChannel>;
 
+	/**
+		How many bytes have been handed over and not yet put on the wire.
+
+		Zero while the peer keeps up, which is the ordinary case. A message
+		given to `send` waits when the peer has said it has no room for it,
+		and this is how far behind that has fallen. An application producing
+		faster than the far end reads should watch it and pause, because the
+		queue is bounded and `send` throws rather than grow past
+		`SctpDataTransfer.MAX_BUFFERED`.
+
+		Shared by every channel on the connection: one association carries
+		them all, and its window is what they are all waiting on.
+	**/
+	public var bufferedAmount(get, never):Int;
+
+	@:noCompletion private function get_bufferedAmount():Int {
+		return __transfer == null ? 0 : __transfer.bufferedAmount;
+	}
+
 	/** Called with each text message. **/
 	public dynamic function onMessage(text:String):Void {}
 
