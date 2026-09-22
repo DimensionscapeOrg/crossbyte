@@ -17,6 +17,39 @@ import utest.Assert;
 	implementation that never retransmits and one that does look identical.
 **/
 class SctpDataTransferTest extends utest.Test {
+	/** The window a SACK built right now would offer the peer. **/
+	private function advertised(transfer:SctpDataTransfer):Int {
+		var sack = @:privateAccess transfer.__buildSack();
+		sack.value.position = 4;
+		return sack.value.readInt();
+	}
+
+	/** Everything the receiver is holding, walked rather than trusted. **/
+	private function walked(transfer:SctpDataTransfer):Int {
+		var total:Int = 0;
+
+		for (key in (@:privateAccess transfer.__partial).keys()) {
+			for (fragment in (@:privateAccess transfer.__partial).get(key).fragments) {
+				total += fragment.payload.length;
+			}
+		}
+
+		for (streamId in (@:privateAccess transfer.__held).keys()) {
+			for (message in (@:privateAccess transfer.__held).get(streamId).queue) {
+				total += message.payload.length;
+			}
+		}
+
+		return total;
+	}
+
+	private function filled(size:Int):ByteArray {
+		var payload = new ByteArray();
+		payload.length = size;
+		payload.position = 0;
+		return payload;
+	}
+
 	private function unsupported():Bool {
 		if (!SctpAssociation.isSupported) {
 			Assert.isFalse(SctpAssociation.isSupported);
@@ -490,6 +523,126 @@ class SctpDataTransferTest extends utest.Test {
 	}
 
 	/**
+		The window offered in a SACK is the window that is actually left.
+
+		It used to be the constant `RECEIVE_WINDOW`, written into every SACK
+		however much had piled up behind it, so the peer was told the whole
+		window was free right up to the point where none of it was. Flow
+		control that reports a fixed number is not flow control.
+	**/
+	public function testTheWindowOfferedIsWhatIsActuallyLeft():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var tsn:Int = (@:privateAccess transfer.__cumulativeTsn) + 1;
+
+		Assert.equals(SctpAssociation.RECEIVE_WINDOW, advertised(transfer),
+			"a receiver holding nothing should offer the whole window");
+
+		// Begun and not ended, so it stays held rather than going up.
+		var size:Int = 4096;
+
+		@:privateAccess transfer.__onData(new SctpDataChunk(tsn, 1, 0, SctpDataChunk.PPID_BINARY, filled(size),
+			SctpDataChunk.FLAG_BEGINNING).toChunk());
+
+		Assert.equals(SctpAssociation.RECEIVE_WINDOW - size, advertised(transfer),
+			"the window should have shrunk by what is being held");
+
+		// Ending it hands the message up, which gives the bytes back.
+		@:privateAccess transfer.__onData(new SctpDataChunk((tsn + 1) | 0, 1, 0, SctpDataChunk.PPID_BINARY, filled(size),
+			SctpDataChunk.FLAG_ENDING).toChunk());
+
+		Assert.equals(SctpAssociation.RECEIVE_WINDOW, advertised(transfer),
+			"the window should be whole again once the message went up");
+	}
+
+	/**
+		The largest message this end accepts fits the window it offers.
+
+		Three constants have to agree or a peer is trapped by obeying us: it
+		reads the window, sends a message of the largest size we accept,
+		watches the figure reach zero partway through, and stops -- holding
+		something that can now never complete. A stream may also have a full
+		queue waiting its turn, so both have to fit at once.
+	**/
+	public function testTheLargestMessageFitsTheWindowOffered():Void {
+		if (unsupported()) return;
+
+		Assert.isTrue(SctpDataTransfer.MAX_REASSEMBLY + SctpDataTransfer.MAX_HELD <= SctpAssociation.RECEIVE_WINDOW,
+			"a message of " + SctpDataTransfer.MAX_REASSEMBLY + " bytes and a queue of " + SctpDataTransfer.MAX_HELD
+			+ " do not both fit in the " + SctpAssociation.RECEIVE_WINDOW + " this end offers");
+
+		// And in practice, not only in arithmetic.
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var tsn:Int = (@:privateAccess transfer.__cumulativeTsn) + 1;
+		var got:Int = -1;
+		transfer.onMessage = (_, payload, _) -> got = payload.length;
+
+		var piece:Int = SctpDataTransfer.MAX_PAYLOAD;
+		var pieces:Int = Std.int(SctpDataTransfer.MAX_REASSEMBLY / piece);
+
+		for (i in 0...pieces) {
+			var flags:Int = i == 0 ? SctpDataChunk.FLAG_BEGINNING : (i == pieces - 1 ? SctpDataChunk.FLAG_ENDING : 0);
+			@:privateAccess transfer.__onData(new SctpDataChunk(tsn, 1, 0, SctpDataChunk.PPID_BINARY, filled(piece),
+				flags).toChunk());
+			tsn = (tsn + 1) | 0;
+		}
+
+		Assert.equals(SctpDataTransfer.MAX_REASSEMBLY, got,
+			"a message of exactly the size this end accepts did not arrive whole");
+		Assert.equals(0, @:privateAccess transfer.__buffered, "the receiver is still holding the message it delivered");
+	}
+
+	/**
+		What a peer can make this end hold, added up over every stream.
+
+		The per-stream bounds are per stream, and we offer all 65535 of them
+		because browsers ask for the range. So they bounded nothing in
+		aggregate: a megabyte of reassembly and a megabyte held, on each of
+		65536 streams, is a ceiling of 128 GB reached by a peer doing nothing
+		but sending. The association now gives some back rather than taking
+		more than it offered to hold, which is what the per-stream bounds
+		already do one stream at a time.
+
+		Refusing the chunk instead would have been the deadlock: what is held
+		is unfinished, so the chunks turned away include the ones that would
+		finish a message and free it.
+	**/
+	public function testWhatIsHeldIsBoundedAcrossEveryStream():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var tsn:Int = (@:privateAccess transfer.__cumulativeTsn) + 1;
+		var size:Int = 4096;
+		var sent:Int = 0;
+		var peak:Int = 0;
+
+		// Well past the window: begun and never ended, a different stream
+		// each time so no per-stream bound is ever the thing that stops it.
+		for (i in 0...(4 * Std.int(SctpAssociation.RECEIVE_WINDOW / size))) {
+			@:privateAccess transfer.__onData(new SctpDataChunk(tsn, i & 0xFFFF, 0, SctpDataChunk.PPID_BINARY,
+				filled(size), SctpDataChunk.FLAG_BEGINNING).toChunk());
+			tsn = (tsn + 1) | 0;
+			sent += size;
+
+			var now:Int = @:privateAccess transfer.__buffered;
+
+			if (now > peak) {
+				peak = now;
+			}
+		}
+
+		Assert.isTrue(sent >= 4 * SctpAssociation.RECEIVE_WINDOW, "the peer did not send enough to test the bound");
+		Assert.isTrue(peak <= SctpAssociation.RECEIVE_WINDOW,
+			"the receiver held " + peak + " bytes at once, against the " + SctpAssociation.RECEIVE_WINDOW
+			+ " it offered, out of " + sent + " sent");
+
+		// And the figure the window is derived from is the truth, not a
+		// count that drifted away from what is really there.
+		Assert.equals(walked(transfer), @:privateAccess transfer.__buffered);
+	}
+
+	/**
 		A stream cannot hold without bound for a sequence that never comes.
 
 		An ordered message arriving early is held until its turn rather than
@@ -515,16 +668,14 @@ class SctpDataTransferTest extends utest.Test {
 			@:privateAccess server.__deliverOrHold(0, i + 1, SctpDataChunk.PPID_BINARY, payload, false);
 		}
 
-		// Counted rather than summed because PendingMessage is module-private;
-		// every payload here is the same size, so the two are the same figure.
-		var messages:Int = 0;
+		var bytes:Int = 0;
 		var queues = @:privateAccess server.__held;
 		for (key in queues.keys()) {
-			messages += queues.get(key).length;
+			bytes += queues.get(key).bytes;
 		}
 
-		Assert.isTrue(messages <= allowed,
-			"the stream held " + (messages * size) + " bytes waiting for a sequence that never arrived, against a bound of "
+		Assert.isTrue(bytes <= SctpDataTransfer.MAX_HELD,
+			"the stream held " + bytes + " bytes waiting for a sequence that never arrived, against a bound of "
 			+ SctpDataTransfer.MAX_HELD);
 	}
 
