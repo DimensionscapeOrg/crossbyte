@@ -1,5 +1,6 @@
 package crossbyte.http;
 
+import crossbyte.net.RateLimiter;
 import crossbyte._internal.http.HttpSyntax;
 import utest.Assert;
 
