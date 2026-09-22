@@ -640,7 +640,15 @@ class SctpDataTransfer {
 			// early, and the one it is waiting for is still on its way.
 			var waiting:Held = __held.exists(streamId) ? __held.get(streamId) : new Held();
 
-			waiting.queue.push(new PendingMessage(sequence, protocolId, payload));
+			// A sequence already waiting is one the peer has sent twice under
+			// different numbers, which `__onData` cannot tell apart from two
+			// messages. The first is the one that was held.
+			if (waiting.bySequence.exists(sequence)) {
+				return;
+			}
+
+			waiting.bySequence.set(sequence, new PendingMessage(sequence, protocolId, payload));
+			waiting.count++;
 			waiting.bytes += payload.length;
 			__buffered += payload.length;
 			__held.set(streamId, waiting);
@@ -670,26 +678,28 @@ class SctpDataTransfer {
 			return;
 		}
 
-		var moved:Bool = true;
+		// Asked for by number rather than searched for. Held messages used to
+		// be a list scanned from the front for whichever one came next, and
+		// then taken out of the middle of it, so releasing a stream that had
+		// been waiting cost a pass over everything queued for each message
+		// released -- quadratic in a count the peer chooses by withholding
+		// one sequence and sending the rest.
+		var expected:Int = __expectedSequence.get(streamId);
 
-		while (moved) {
-			moved = false;
-			var expected:Int = __expectedSequence.get(streamId);
+		while (waiting.bySequence.exists(expected)) {
+			var pending = waiting.bySequence.get(expected);
 
-			for (pending in waiting.queue) {
-				if (pending.sequence == expected) {
-					// Accounted for before it goes up, so a listener that
-					// sends from inside the call is working from the window
-					// this end has rather than the one it had a moment ago.
-					waiting.queue.remove(pending);
-					waiting.bytes -= pending.payload.length;
-					__buffered -= pending.payload.length;
-					__expectedSequence.set(streamId, (expected + 1) & 0xFFFF);
-					onMessage(streamId, pending.payload, pending.protocolId);
-					moved = true;
-					break;
-				}
-			}
+			// Accounted for before it goes up, so a listener that sends from
+			// inside the call is working from the window this end has rather
+			// than the one it had a moment ago.
+			waiting.bySequence.remove(expected);
+			waiting.count--;
+			waiting.bytes -= pending.payload.length;
+			__buffered -= pending.payload.length;
+
+			expected = (expected + 1) & 0xFFFF;
+			__expectedSequence.set(streamId, expected);
+			onMessage(streamId, pending.payload, pending.protocolId);
 		}
 
 		__held.set(streamId, waiting);
@@ -849,7 +859,17 @@ private class Outstanding {
 	arrived out of turn, and how many that is belongs to the peer.
 **/
 private class Held {
-	public var queue:Array<PendingMessage> = [];
+	/**
+		By stream sequence, which is what decides when one may go up.
+
+		A map rather than a list because the question asked of it is always
+		"is the next one here", never "what is in here" -- and because the
+		sequence is sixteen bits on the wire, so keying by it caps how many
+		can be waiting at 65536 without a bound having to say so.
+	**/
+	public var bySequence:IntMap<PendingMessage> = new IntMap();
+
+	public var count:Int = 0;
 
 	public var bytes:Int = 0;
 

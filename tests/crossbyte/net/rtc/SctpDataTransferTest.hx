@@ -49,12 +49,20 @@ class SctpDataTransferTest extends utest.Test {
 		}
 
 		for (streamId in (@:privateAccess transfer.__held).keys()) {
-			for (message in (@:privateAccess transfer.__held).get(streamId).queue) {
+			for (message in (@:privateAccess transfer.__held).get(streamId).bySequence) {
 				total += message.payload.length;
 			}
 		}
 
 		return total;
+	}
+
+	/** A payload that says which sequence it belongs to. **/
+	private function numbered(sequence:Int):ByteArray {
+		var payload = new ByteArray();
+		payload.writeShort(sequence);
+		payload.position = 0;
+		return payload;
 	}
 
 	private function filled(size:Int):ByteArray {
@@ -765,6 +773,66 @@ class SctpDataTransferTest extends utest.Test {
 		Assert.isTrue(refused, "the queue grew past " + SctpDataTransfer.MAX_BUFFERED + " without a word");
 		Assert.isTrue(transfer.bufferedAmount <= SctpDataTransfer.MAX_BUFFERED,
 			"the queue reached " + transfer.bufferedAmount + " against a bound of " + SctpDataTransfer.MAX_BUFFERED);
+	}
+
+	/**
+		Releasing a stream that waited does not cost what it waited for.
+
+		Messages that arrive early are held until the one before them does,
+		and a peer chooses how many that is by withholding one sequence and
+		sending the rest. They used to be a list searched from the front for
+		whichever came next and then taken out of the middle, so releasing
+		the stream cost a pass over everything queued for each message
+		released. Measured before this changed: 4000 held took 30ms on eval
+		to release, doubling per message as the count grew, and `MAX_HELD` at
+		one byte a message allows a million of them.
+
+		Asked for by sequence now, which is also what stops the count from
+		running away -- the field is sixteen bits, so a map keyed by it holds
+		65536 at the outside whatever the peer does.
+	**/
+	public function testEverythingHeldGoesUpInOrderWhenTheBlockerArrives():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var order:Array<Int> = [];
+		transfer.onMessage = function(_, payload, _):Void {
+			payload.position = 0;
+			order.push(payload.readUnsignedShort());
+		};
+
+		var count:Int = 200;
+
+		// Every sequence but the first, and not in sequence order either.
+		for (i in 0...count) {
+			var sequence:Int = count - i;
+			@:privateAccess transfer.__deliverOrHold(1, sequence, SctpDataChunk.PPID_BINARY, numbered(sequence), false);
+		}
+
+		Assert.equals(0, order.length, "something went up while sequence 0 was still missing");
+		Assert.equals(count, @:privateAccess transfer.__held.get(1).count);
+
+		// A sequence already waiting is the peer sending one twice, and the
+		// second must not be counted as another message held.
+		@:privateAccess transfer.__deliverOrHold(1, 5, SctpDataChunk.PPID_BINARY, numbered(5), false);
+		Assert.equals(count, @:privateAccess transfer.__held.get(1).count, "a repeated sequence was held a second time");
+
+		// The one they were all waiting for.
+		@:privateAccess transfer.__deliverOrHold(1, 0, SctpDataChunk.PPID_BINARY, numbered(0), false);
+
+		Assert.equals(count + 1, order.length, "the stream did not empty when the blocker arrived");
+
+		var ordered:Bool = true;
+
+		for (i in 0...order.length) {
+			if (order[i] != i) {
+				ordered = false;
+				break;
+			}
+		}
+
+		Assert.isTrue(ordered, "they went up as " + order.slice(0, 12).join(",") + "... rather than in sequence");
+		Assert.equals(0, @:privateAccess transfer.__buffered, "the stream emptied and is still counted as holding");
 	}
 
 	/**

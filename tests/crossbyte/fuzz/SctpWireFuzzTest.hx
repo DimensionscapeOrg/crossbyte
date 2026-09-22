@@ -169,7 +169,7 @@ class SctpWireFuzzTest extends utest.Test {
 		var waiting:Int = 0;
 		var held = @:privateAccess pair.serverData.__held;
 		for (key in held.keys()) {
-			waiting += held.get(key).queue.length;
+			waiting += held.get(key).count;
 		}
 
 		var remembered:Int = 0;
