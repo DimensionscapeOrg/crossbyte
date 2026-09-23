@@ -260,7 +260,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Haxe
-        uses: krdlab/setup-haxe@v1
+        # v2, here and not yet elsewhere: v1 installs Neko where the macOS
+        # haxelib binary cannot find it, and the job stopped at
+        # "dyld: Library not loaded: @rpath/libneko.2.dylib". setup-haxe fixed
+        # that in v2.0.0 (#47). The other jobs pass on v1 and are left alone.
+        uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
 
