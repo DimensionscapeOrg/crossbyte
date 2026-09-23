@@ -163,8 +163,14 @@ class PHPExchange {
 	/**
 	 * Splits the CGI header block from the body.
 	 *
-	 * Unchanged from the blocking implementation, including its use of the
-	 * whole payload as text to find the separator.
+	 * The split is unchanged from the blocking implementation, including its
+	 * use of the whole payload as text to find the separator.
+	 *
+	 * A repeated field is joined rather than overwritten, by the rule
+	 * `HTTPRequestContext.onHeaders` documents: `", "` between values, except
+	 * `set-cookie`, which is joined with `"\n"` because a cookie carries commas
+	 * of its own. PHP sends one `Set-Cookie` line per cookie, and storing each
+	 * under its name kept only the last.
 	 */
 	private function __toResponse():PHPResponse {
 		var raw:Bytes = stdout;
@@ -187,7 +193,13 @@ class PHPExchange {
 
 			var name:String = line.substr(0, colon).toLowerCase();
 			var value:String = StringTools.trim(line.substr(colon + 1));
-			headers.set(name, value);
+
+			if (headers.exists(name)) {
+				var joiner:String = name == "set-cookie" ? "\n" : ", ";
+				headers.set(name, headers.get(name) + joiner + value);
+			} else {
+				headers.set(name, value);
+			}
 
 			if (name == "status") {
 				var parts:Array<String> = value.split(" ");
