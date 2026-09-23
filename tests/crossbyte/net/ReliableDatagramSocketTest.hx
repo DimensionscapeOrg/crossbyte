@@ -605,6 +605,56 @@ class ReliableDatagramSocketTest extends utest.Test {
 		server.close();
 	}
 
+	public function testAnAdmitHookDropsAConnectBeforeASessionExists():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var asked:Array<String> = [];
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.admit = (address, port) -> {
+				asked.push('$address:$port');
+				return port != 40101;
+			};
+			server.listen();
+
+			for (port in [40100, 40101, 40102]) {
+				__injectConnect(server, port);
+			}
+
+			Assert.same(["127.0.0.1:40100", "127.0.0.1:40101", "127.0.0.1:40102"], asked);
+			Assert.equals(2, __countConnections(server));
+			Assert.equals(2, server.__pendingCount);
+			Assert.isNull(server.__connections.get("127.0.0.1:40101"));
+		} catch (e:Dynamic) {
+			Assert.fail("admission test failed: " + Std.string(e));
+		}
+
+		server.close();
+	}
+
+	public function testAnAdmitHookThatThrowsDropsTheConnect():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.admit = (_, _) -> throw "the hook's own bug";
+			server.listen();
+
+			__injectConnect(server, 40200);
+
+			Assert.equals(0, __countConnections(server));
+			Assert.equals(0, server.__pendingCount);
+		} catch (e:Dynamic) {
+			Assert.fail("admission test failed: " + Std.string(e));
+		}
+
+		server.close();
+	}
+
 	public function testAnAcceptedSessionAnswersOnceRatherThanRepeating():Void {
 		if (!requireDatagramSupport()) return;
 
