@@ -2290,8 +2290,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 				out.push(new URLRequestHeader("Location", phpRes.headers.get("location")));
 			}
 			if (phpRes.headers.exists("set-cookie")) {
-				for (cookie in phpRes.headers.get("set-cookie").split("
-")) {
+				// An escape, not a typed newline, whose meaning would follow
+				// the checkout's line endings. Trimmed below, so CRLF is fine.
+				for (cookie in phpRes.headers.get("set-cookie").split("\n")) {
 					var c:String = StringTools.trim(cookie);
 					if (c != "") {
 						out.push(new URLRequestHeader("Set-Cookie", c));
