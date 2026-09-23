@@ -20,7 +20,8 @@
 		bodies: blake3_avx2.c includes <immintrin.h> and uses the intrinsics
 		unconditionally. So they are compiled only where the instruction set
 		can exist, and each carries the flag its own translation unit needs
-		rather than the whole project being built for one architecture.
+		rather than the whole project being built for one architecture -- in a
+		group of its own, which is the only place hxcpp will honour it.
 
 		AVX-512 stays off deliberately. It is the one backend whose benefit is
 		not reliably a benefit: many Intel parts drop their clock while
@@ -54,25 +55,42 @@
 		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3.c"/>
 		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_portable.c"/>
 		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_dispatch.c"/>
+	</files>
 
-		<!--
-			SSE2 is baseline on x86-64 and MSVC has no switch for SSE4.1, so
-			only the GNU-style toolchains need to be told. AVX2 is above every
-			baseline and must be asked for on both.
-		-->
-		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_sse2.c" unless="CROSSBYTE_BLAKE3_NO_SIMD">
-			<compilerflag value="-msse2" unless="windows"/>
-		</file>
-		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_sse41.c" unless="CROSSBYTE_BLAKE3_NO_SIMD">
-			<compilerflag value="-msse4.1" unless="windows"/>
-		</file>
-		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_avx2.c" unless="CROSSBYTE_BLAKE3_NO_SIMD">
-			<compilerflag value="-mavx2" unless="windows"/>
-			<compilerflag value="/arch:AVX2" if="windows"/>
-		</file>
+	<!--
+		One group per backend, because hxcpp takes compiler flags per group and
+		not per file: a <compilerflag> nested inside a <file> is dropped without
+		a word, since the parser only reads <depend> there. These flags used to
+		sit on the files, so none of them ever reached a compiler. MSVC did not
+		notice -- it accepts any intrinsic whatever /arch says -- but GCC
+		refuses to inline _mm_shuffle_epi8 into a translation unit built
+		without -msse4.1, and every Linux build stopped at blake3_sse41.c.
+
+		isMsvc rather than windows, so a MinGW build gets the GNU spelling.
+		SSE2 is baseline on x86-64 and MSVC has no switch for SSE4.1, so only
+		the GNU-style toolchains need to be told. AVX2 is above every baseline
+		and must be asked for on both.
+	-->
+	<files id="crossbyte-blake3-sse2" unless="CROSSBYTE_BLAKE3_NO_SIMD">
+		<compilerflag value="-msse2" unless="isMsvc"/>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_sse2.c"/>
+	</files>
+
+	<files id="crossbyte-blake3-sse41" unless="CROSSBYTE_BLAKE3_NO_SIMD">
+		<compilerflag value="-msse4.1" unless="isMsvc"/>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_sse41.c"/>
+	</files>
+
+	<files id="crossbyte-blake3-avx2" unless="CROSSBYTE_BLAKE3_NO_SIMD">
+		<compilerflag value="-mavx2" unless="isMsvc"/>
+		<compilerflag value="/arch:AVX2" if="isMsvc"/>
+		<file name="${CROSSBYTE_BLAKE3_DIR}/blake3_avx2.c"/>
 	</files>
 
 	<target id="haxe">
 		<files id="crossbyte-blake3-common"/>
+		<files id="crossbyte-blake3-sse2" unless="CROSSBYTE_BLAKE3_NO_SIMD"/>
+		<files id="crossbyte-blake3-sse41" unless="CROSSBYTE_BLAKE3_NO_SIMD"/>
+		<files id="crossbyte-blake3-avx2" unless="CROSSBYTE_BLAKE3_NO_SIMD"/>
 	</target>
 </xml>
