@@ -42,6 +42,7 @@ class TestSuites {
 	public static function addDataStructures(runner:Runner):Void {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		runner.addCase(new crossbyte.ds.BitSetTest());
 		runner.addCase(new crossbyte.ds.BloomFilterTest());
 		runner.addCase(new crossbyte.ds.OrderedMapTest());
 		runner.addCase(new crossbyte.ds.BitmapDataTest());
