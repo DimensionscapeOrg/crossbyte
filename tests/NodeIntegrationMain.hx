@@ -1153,11 +1153,7 @@ class NodeIntegrationMain extends Application {
 				phpAnswered = true;
 				phpPeer.readUTFBytes(phpPeer.bytesAvailable);
 
-				var payload = "Status: 201 Created
-Content-Type: text/plain
-X-From: fastcgi
-
-hello from php";
+				var payload = "Status: 201 Created\r\nContent-Type: text/plain\r\nX-From: fastcgi\r\n\r\nhello from php";
 				var body = ByteArray.fromBytes(haxe.io.Bytes.ofString(payload));
 				var stdout = fcgiRecord(6, body);
 
