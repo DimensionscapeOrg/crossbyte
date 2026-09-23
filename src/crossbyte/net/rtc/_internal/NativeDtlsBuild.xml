@@ -1,9 +1,16 @@
 <xml>
+	<!-- Both NativeDtls and NativeDtlsSession include this file, and without
+	     the pragma the target below runs once for each: the group is handed to
+	     the linker twice. MSVC shrugs that off as LNK4042, which is why Windows
+	     never showed it; GNU ld stops at "multiple definition of
+	     crossbyte_dtls_error", and so did every Linux build. -->
+	<pragma once="true"/>
+
 	<!-- Pulls in hxcpp's own mbedTLS build. That is what puts the mbedtls_*
 	     symbols in the link, and it sets MBEDTLS_DIR to whichever mbedtls hxcpp
 	     actually ships -- pinning a version here is what broke the crypto build
-	     once already. The file is `pragma once`, so including it from more than
-	     one bridge is safe. -->
+	     once already. That file carries the same pragma, so including it from
+	     more than one bridge is safe. -->
 	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
 
 	<files id="crossbyte-dtls-native">
