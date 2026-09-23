@@ -148,13 +148,23 @@ final class SecureRandom {
 		if (length == 0)
 			return out;
 
+		// Chosen at runtime by `__isWindows`, but compiled everywhere -- and
+		// bcrypt.h is only included under HX_WINDOWS, so on Linux the call
+		// named symbols that did not exist and the build stopped at
+		// "BCRYPT_USE_SYSTEM_PREFERRED_RNG was not declared". A runtime check
+		// picks which code runs; only the preprocessor decides what has to
+		// compile. Unreachable off Windows, so the other half is never used.
 		var ok:Bool = untyped __cpp__('
+#ifdef HX_WINDOWS
         (::BCryptGenRandom(
             (void*)0,
             (PUCHAR)&{0}->b[0],
             (unsigned long){1},
             BCRYPT_USE_SYSTEM_PREFERRED_RNG
         ) == 0)
+#else
+        false
+#endif
     ', out, length);
 
 		if (!ok)
