@@ -44,30 +44,36 @@ jobs:
           haxe-version: ${{ env.HAXE_VERSION }}
 
       - name: Install test dependencies
-        run: |
-          haxelib install utest --quiet
-          haxelib install aedifex --quiet
+        run: haxelib install utest --quiet
 
+      # haxe itself, not `haxelib run aedifex task interp-tests`. haxelib's
+      # aedifex is 0.0.2, which has no `task` command: it printed its banner
+      # and exited 0, so this step and the one below were green in a few
+      # seconds for as long as they had been written that way, and the
+      # interpreter suite never ran here. Each task in Aedifex.hx is one
+      # hxml, so this is the same command without the tool in between.
       - name: Run interpreter test suite
-        run: haxelib run aedifex task interp-tests .
+        run: haxe ci/interp-tests.hxml
 
+      # Every sample's check.hxml begins with --cwd ../.., so it runs from
+      # its own directory, which is what --cwd reproduces here.
       - name: Validate sample builds
         run: |
           set -euo pipefail
-          for task in \
-            sample-localconnection-check \
-            sample-rpc-greeter-check \
-            sample-rudp-check \
-            sample-sharedchannel-check \
-            sample-sharedobject-check \
-            sample-simple-application-check \
-            sample-socket-chat-check \
-            sample-udp-check \
-            sample-web-server-check \
-            sample-websocket-echo-check \
-            sample-worker-check; do
-            echo "::group::${task}"
-            haxelib run aedifex task "$task" .
+          for sample in \
+            localconnection \
+            rpc-greeter \
+            rudp \
+            sharedchannel \
+            sharedobject \
+            simple-application \
+            socket-chat \
+            udp \
+            web-server \
+            websocket-echo \
+            worker; do
+            echo "::group::samples/${sample}"
+            haxe --cwd "samples/${sample}" check.hxml
             echo "::endgroup::"
           done
 
@@ -202,7 +208,6 @@ jobs:
 
       - name: Install Haxe dependencies
         run: |
-          haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
           # Every native extern includes its Build.xml through
           # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
@@ -217,11 +222,14 @@ jobs:
           (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
           (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
 
+      # haxe directly, for the reason on the interpreter step above: through
+      # haxelib's aedifex 0.0.2 each of these printed a banner and passed,
+      # and none of the three audits had ever run here.
       - name: Type-check C++ API surface
-        run: haxelib run aedifex task cpp-api-audit .
+        run: haxe ci/cpp-api-audit.hxml
 
       - name: Type-check timer burst support
-        run: haxelib run aedifex task cpp-timer-burst-audit .
+        run: haxe ci/cpp-timer-burst-audit.hxml
 
       # precision_tick swaps the frame wait for one that spins the tail
       # rather than sleeping it. No test hxml defines it, so the branch
@@ -229,7 +237,7 @@ jobs:
       # without a single job noticing -- which is exactly what nearly
       # happened when the wait was rewritten to anchor its deadline.
       - name: Type-check precision tick frame wait
-        run: haxelib run aedifex task cpp-precision-tick-audit .
+        run: haxe ci/cpp-precision-tick-audit.hxml
 
   posix-crypto:
     name: Core | Crypto, System (${{ matrix.label }})
