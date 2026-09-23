@@ -141,6 +141,37 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		A candidate that is a name rather than an address is not dialled.
+
+		Browsers publish their host candidates as random .local mDNS names by
+		default, and a name reaching the socket went through `sys.net.Host`,
+		which resolves synchronously on the event loop on every send -- a
+		second's block and a throw for a .local name nothing answers, per
+		check. Against a real browser that made connecting take 15.8 seconds
+		with CrossByte controlling, the whole loop frozen meanwhile.
+
+		The addresses are real and the names are not, so the names are what
+		must be missing afterwards: an agent that kept them would pair them
+		and check them, which is the stall.
+	**/
+	public function testANameIsNotDialledAsIfItWereAnAddress():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		alice.addRemoteCandidate(IceCandidate.host("8f21c9eb-1565-459c-8b08-2666fbf74b81.local", PORT));
+		alice.addRemoteCandidate(IceCandidate.host("peer.example.com", PORT + 1));
+		alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT + 2));
+		alice.addRemoteCandidate(IceCandidate.host("fe80::1", PORT + 3));
+
+		var held:Array<String> = [for (remote in @:privateAccess alice.__remotes) remote.address];
+
+		Assert.equals(BOB_ADDRESS + ",fe80::1", held.join(","),
+			"the agent kept " + held.join(",") + "; a name kept is a name looked up on the event loop");
+	}
+
+	/**
 		A path stays a path only while the peer keeps agreeing to it.
 
 		RFC 7675. ICE proves a path once, and nothing about that proof stays
