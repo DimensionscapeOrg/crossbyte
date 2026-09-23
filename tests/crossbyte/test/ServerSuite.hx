@@ -50,6 +50,9 @@ class ServerSuite {
 		// What a listener takes and what it refuses, on every target that can
 		// listen -- Node included, whose TLS server asks on a different event.
 		runner.addCase(new crossbyte.net.ServerSocketAdmissionTest());
+		// The same for the WebSocket server, which accepts through a loop of
+		// its own and so has to be proved separately.
+		runner.addCase(new crossbyte.net.ServerWebSocketAdmissionTest());
 		#end
 
 		// PHP end to end runs on native and jvm, where the bridge drains a
