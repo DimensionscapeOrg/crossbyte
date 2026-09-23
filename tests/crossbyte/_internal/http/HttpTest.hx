@@ -246,20 +246,13 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testLoadReportsResponseHeadersAndJoinsRepeatedFields():Void {
-		var fixture = serveOnce("HTTP/1.1 200 OK
-"
-			+ "Content-Length: 2
-"
-			+ "X-Multi: a
-"
-			+ "X-Multi: b
-"
-			+ "Set-Cookie: one=1
-"
-			+ "Set-Cookie: two=2
-"
-			+ "
-hi");
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\n"
+			+ "Content-Length: 2\r\n"
+			+ "X-Multi: a\r\n"
+			+ "X-Multi: b\r\n"
+			+ "Set-Cookie: one=1\r\n"
+			+ "Set-Cookie: two=2\r\n"
+			+ "\r\nhi");
 		var reported:Array<Map<String, String>> = [];
 
 		var http = new Http('http://127.0.0.1:${fixture.port}/headers');
@@ -286,13 +279,7 @@ hi");
 	}
 
 	public function testLoadReportsOnlyTheFinalHeaderBlockAfterAnInformationalResponse():Void {
-		var fixture = serveOnce("HTTP/1.1 100 Continue
-
-" + "HTTP/1.1 200 OK
-Content-Length: 2
-X-Final: yes
-
-hi");
+		var fixture = serveOnce("HTTP/1.1 100 Continue\r\n\r\n" + "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Final: yes\r\n\r\nhi");
 		var reported:Array<Map<String, String>> = [];
 		var completed:Bytes = null;
 
@@ -404,14 +391,7 @@ hi");
 		// Std.parseInt stops at the first character it cannot use, so this
 		// size line used to read as 5 and the body came back as "hello" --
 		// this client agreeing with nobody about where the chunk ended.
-		var fixture = serveOnce("HTTP/1.1 200 OK
-Transfer-Encoding: chunked
-
-5 junk
-hello
-0
-
-");
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5 junk\r\nhello\r\n0\r\n\r\n");
 		var http = new Http('http://127.0.0.1:${fixture.port}/garbage');
 		var completed:Bytes = null;
 		var failure:String = null;
@@ -432,11 +412,7 @@ hello
 		// four different ways: -1 on eval and cpp, a thrown
 		// NumberFormatException on jvm, and 4294967295 on node -- neither
 		// null nor negative, so node walked straight past the guard.
-		var fixture = serveOnce("HTTP/1.1 200 OK
-Transfer-Encoding: chunked
-
-FFFFFFFF
-");
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n");
 		var http = new Http('http://127.0.0.1:${fixture.port}/huge');
 		var completed:Bytes = null;
 		var failure:String = null;
@@ -456,10 +432,7 @@ FFFFFFFF
 		// coding applied. With something after it the body is not chunk
 		// framed at all, and the length comes from the connection closing.
 		// Reading it as chunks took the body's first line for a chunk size.
-		var fixture = serveOnce("HTTP/1.1 200 OK
-Transfer-Encoding: chunked, gzip
-
-not chunk framed");
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked, gzip\r\n\r\nnot chunk framed");
 		var http = new Http('http://127.0.0.1:${fixture.port}/notfinal');
 		var completed:Bytes = null;
 		var failure:String = null;
@@ -487,11 +460,7 @@ not chunk framed");
 			encoded.length = 1024 * 1024;
 			encoded.compress(CompressionAlgorithm.GZIP);
 
-			var fixture = serveOnceWithBody("HTTP/1.1 200 OK
-Content-Encoding: gzip
-Content-Length: " + encoded.length + "
-
-", encoded);
+			var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
 			var http = new Http('http://127.0.0.1:${fixture.port}/bomb');
 			var completed:Bytes = null;
 			var failure:String = null;
@@ -525,11 +494,7 @@ Content-Length: " + encoded.length + "
 			encoded.length = 128 * 1024;
 			encoded.compress(CompressionAlgorithm.BROTLI);
 
-			var fixture = serveOnceWithBody("HTTP/1.1 200 OK
-Content-Encoding: br
-Content-Length: " + encoded.length + "
-
-", encoded);
+			var fixture = serveOnceWithBody("HTTP/1.1 200 OK\r\nContent-Encoding: br\r\nContent-Length: " + encoded.length + "\r\n\r\n", encoded);
 			var http = new Http('http://127.0.0.1:${fixture.port}/brbomb');
 			var completed:Bytes = null;
 			var failure:String = null;
@@ -554,11 +519,7 @@ Content-Length: " + encoded.length + "
 		// Codings multiply, so three of them is three ratios on top of each
 		// other. Refused before anything is decoded, which is why the body
 		// below does not have to be genuinely triple-encoded.
-		var fixture = serveOnce("HTTP/1.1 200 OK
-Content-Encoding: gzip, gzip, gzip
-Content-Length: 4
-
-xxxx");
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Encoding: gzip, gzip, gzip\r\nContent-Length: 4\r\n\r\nxxxx");
 		var http = new Http('http://127.0.0.1:${fixture.port}/stacked');
 		var completed:Bytes = null;
 		var failure:String = null;
@@ -759,16 +720,8 @@ xxxx");
 		// cookie was read off the wire and dropped with the rest of the
 		// response headers when the next hop reset them, and the page you
 		// landed on saw an anonymous request.
-		var fixture = serveTwice("HTTP/1.1 302 Found
-Location: /landing
-Set-Cookie: session=abc123; Path=/; HttpOnly
-Content-Length: 0
-
-",
-			"HTTP/1.1 200 OK
-Content-Length: 2
-
-ok");
+		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /landing\r\nSet-Cookie: session=abc123; Path=/; HttpOnly\r\nContent-Length: 0\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 
 		var http = new Http('http://127.0.0.1:${fixture.port}/signin');
 		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
@@ -778,21 +731,12 @@ ok");
 		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
 		Assert.isTrue(fixture.requests[0].toLowerCase().indexOf("cookie:") < 0, "a cookie was sent before anything set one");
 		Assert.isTrue(fixture.requests[1].indexOf("Cookie: session=abc123") >= 0,
-			"the session cookie did not survive the redirect:
-" + fixture.requests[1]);
+			"the session cookie did not survive the redirect:\n" + fixture.requests[1]);
 	}
 
 	public function testManageCookiesOffSendsNothingBack():Void {
-		var fixture = serveTwice("HTTP/1.1 302 Found
-Location: /landing
-Set-Cookie: session=abc123
-Content-Length: 0
-
-",
-			"HTTP/1.1 200 OK
-Content-Length: 2
-
-ok");
+		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /landing\r\nSet-Cookie: session=abc123\r\nContent-Length: 0\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
 
 		var http = new Http('http://127.0.0.1:${fixture.port}/signin', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 10000, "CrossByte", true,
 			false);
@@ -802,8 +746,7 @@ ok");
 
 		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
 		Assert.isTrue(fixture.requests[1].toLowerCase().indexOf("cookie:") < 0,
-			"a cookie went out with manageCookies off:
-" + fixture.requests[1]);
+			"a cookie went out with manageCookies off:\n" + fixture.requests[1]);
 	}
 
 	private static function serveTwice(first:String, second:String):TwoShotHttpServer {

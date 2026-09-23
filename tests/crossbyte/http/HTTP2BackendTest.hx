@@ -553,10 +553,7 @@ private class H2cServer {
 			__skipFrame(peer);
 			__skipFrame(peer);
 
-			peer.output.writeString("HTTP/1.1 400 Bad Request
-Content-Length: 0
-
-");
+			peer.output.writeString("HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
 			peer.output.flush();
 			return;
 		}
