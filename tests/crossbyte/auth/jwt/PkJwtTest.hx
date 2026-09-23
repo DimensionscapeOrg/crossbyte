@@ -14,7 +14,7 @@ import crossbyte.test.Require;
  * toolchain is present.
  */
 class PkJwtTest extends utest.Test {
-	#if (cpp && windows)
+	#if cpp
 	public function testRsaSignVerifyAndTamper():Void {
 		var keys = PkKeyFixture.rsa();
 		if (keys == null) {
