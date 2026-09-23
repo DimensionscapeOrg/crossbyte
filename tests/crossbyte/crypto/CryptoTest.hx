@@ -72,7 +72,10 @@ class CryptoTest extends utest.Test {
 
 		var message = Bytes.ofString("hello");
 
-		#if (cpp && windows)
+		// Every cpp target, not only Windows: libsodium is compiled from the
+		// vendored sources wherever hxcpp builds, and the POSIX crypto suite
+		// runs this on Linux and macOS to hold that to account.
+		#if cpp
 		Assert.isTrue(Ed25519.isAvailable());
 		Assert.equals("libsodium is available.", Ed25519.availabilityMessage());
 
@@ -86,12 +89,6 @@ class CryptoTest extends utest.Test {
 
 		var tampered = Bytes.ofString("hullo");
 		Assert.isFalse(Ed25519.verifyDetached(signature, tampered, keyPair.publicKey));
-		#elseif cpp
-		Assert.isFalse(Ed25519.isAvailable());
-		Assert.notEquals(-1, Ed25519.availabilityMessage().indexOf("wired"));
-		Assert.isTrue(throwsDynamic(() -> Ed25519.keypair()));
-		Assert.isTrue(throwsDynamic(() -> Ed25519.signDetached(message, Bytes.alloc(Ed25519.SECRET_KEY_BYTES))));
-		Assert.isFalse(Ed25519.verifyDetached(Bytes.alloc(Ed25519.SIGNATURE_BYTES), message, Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES)));
 		#else
 		Assert.isFalse(Ed25519.isAvailable());
 		Assert.equals("Ed25519 is only available on supported native cpp targets.", Ed25519.availabilityMessage());

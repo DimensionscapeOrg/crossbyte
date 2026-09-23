@@ -150,7 +150,7 @@ class JWKSetTest extends utest.Test {
 
 	// --- round trip against a real key, needs openssl ---
 
-	#if (cpp && windows)
+	#if cpp
 	/**
 	 * A real RSA public key, reduced to `n` and `e` the way a provider
 	 * publishes it, rebuilt through `JWKSet`, and then required to verify
