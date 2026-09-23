@@ -351,7 +351,8 @@ final class File extends EventDispatcher {
 
 		You can use the resolvePath() method to get a path relative to these directories.
 
-		@throws ArgumentError The path has no directory component.
+		@throws ArgumentError The path is a bare name, such as `"file.txt"`: relative,
+		with no directory component.
 
 		@throws ArgumentError The syntax of the path is invalid.
 		@throws SecurityError The caller is not in the application security sandbox.
@@ -1721,7 +1722,14 @@ final class File extends EventDispatcher {
 		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/) {
 			path = Path.addTrailingSlash(path);
 		}
-		if (Path.directory(path).length == 0) {
+		// Refuses a bare name, which says nothing about where the file is. An
+		// absolute path always says, whatever Path.directory makes of it: the
+		// directory of "/root" is "", because its only separator is the root,
+		// so every path one level under "/" -- a HOME of /root, a working
+		// directory of /app, "/" itself -- was refused as though it were a
+		// bare "root". A relative path with a directory in it is accepted as
+		// it always was; callers build those, and resolvePath keeps them so.
+		if (Path.directory(path).length == 0 && !Path.isAbsolute(path)) {
 			throw new ArgumentError("One of the parameters is invalid.");
 		}
 
@@ -1757,6 +1765,17 @@ final class File extends EventDispatcher {
 		var path:String = Path.removeTrailingSlashes(__path);
 
 		var lastIndex:Int = path.lastIndexOf(separator);
+
+		// Nothing left above it: "/" strips to "" and "C:\" to "C:". A root's
+		// parent is documented as null, and the return below was written to
+		// give it, but the adjustment after this ran first and turned -1 into
+		// 0 -- so a root asked for new File("") instead, which throws.
+		if (lastIndex == -1) {
+			return null;
+		}
+
+		// A lone separator is kept, so "/tmp" climbs to "/" and "C:\tmp" to
+		// "C:\" rather than to "" and "C:".
 		if (lastIndex == path.indexOf(separator)) {
 			lastIndex += 1;
 		}
@@ -1764,7 +1783,7 @@ final class File extends EventDispatcher {
 		// trip through the length cancels exactly and always did. That
 		// expression is what the "can we optimize this?" note here was
 		// pointing at, so it is answered rather than left asked.
-		return lastIndex != -1 ? new File(__path.substring(0, lastIndex)) : null;
+		return new File(__path.substring(0, lastIndex));
 	}
 
 	/**

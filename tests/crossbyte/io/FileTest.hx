@@ -1,9 +1,11 @@
 package crossbyte.io;
 
 import crossbyte.core.CrossByte;
+import crossbyte.errors.ArgumentError;
 import crossbyte.events.Event;
 import crossbyte.events.FileListEvent;
 import crossbyte.events.IOErrorEvent;
+import crossbyte.sys.System;
 import haxe.io.Bytes;
 import sys.io.File as HaxeFile;
 import utest.Assert;
@@ -44,6 +46,69 @@ class FileTest extends utest.Test {
 		try {
 			root.deleteDirectory(true);
 		} catch (_:Dynamic) {}
+	}
+
+	public function testTheRootAndAPathDirectlyUnderIt():Void {
+		// Path.directory("/root") is "": the only separator is the root, so
+		// Haxe counts no directory at all. The check meant to refuse a bare
+		// name took that for one and refused every absolute path a level
+		// under "/" -- a HOME of /root, which is where HTTPServerConfig's
+		// default document root comes from, a working directory of /app, and
+		// "/" itself. CI never saw it: the runner's HOME is /home/runner.
+		if (System.isWindows) {
+			// A drive never had the constructor's problem -- the directory of
+			// "C:\tmp" is "C:" -- but its root had parent's: the parent of
+			// "C:\" was new File(""), which throws.
+			Assert.equals("C:\\", Require.notNull(new File("C:\\tmp").parent).nativePath);
+			Assert.isNull(new File("C:\\").parent);
+			return;
+		}
+
+		var root = new File("/");
+		Assert.equals("/", root.nativePath);
+		Assert.equals("", root.name);
+		Assert.isNull(root.parent);
+
+		var tmp = new File("/tmp");
+		Assert.equals("/tmp", tmp.nativePath);
+		Assert.equals("tmp", tmp.name);
+		Assert.equals("/", Require.notNull(tmp.parent).nativePath);
+
+		Assert.equals("/tmp", root.resolvePath("tmp").nativePath);
+	}
+
+	public function testRootDirectoriesAreDirectoriesWithNoParent():Void {
+		// On POSIX this is new File("/"), so it threw before it could return
+		// anything. On Windows every drive root was built and then threw from
+		// parent, which the documentation says is null for a root.
+		var roots = File.getRootDirectories();
+
+		Assert.isTrue(roots.length > 0);
+
+		for (root in roots) {
+			Assert.isTrue(root.isDirectory, root.nativePath);
+			Assert.isNull(root.parent, root.nativePath);
+		}
+	}
+
+	public function testABareNameIsStillRefused():Void {
+		// What the check is for: nothing in it says where the file is.
+		Assert.raises(() -> new File("foo.txt"), ArgumentError);
+		// Nor an empty one. It is what Path.removeTrailingSlashes makes of
+		// "/", and it is not the root.
+		Assert.raises(() -> new File(""), ArgumentError);
+	}
+
+	public function testARelativePathWithADirectoryIsStillAccepted():Void {
+		// Deliberately left alone. Refusing everything that is not absolute
+		// would be the tidier rule, but callers build relative paths:
+		// SQLiteConnection.open hands its string straight to new File, a
+		// document root of "./public" is the natural way to write one, and
+		// resolvePath keeps a relative File relative.
+		var file = new File("foo/bar.txt");
+
+		Assert.equals("bar.txt", file.name);
+		Assert.equals("foo" + File.separator + "bar.txt", file.nativePath);
 	}
 
 	public function testSaveUpdatesExistsAndSize():Void {
