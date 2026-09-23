@@ -9,6 +9,8 @@
 
 	<target id="haxe">
 		<files id="crossbyte-db-postgres-native"/>
-		<lib name="dl" if="linux"/>
+		<!-- A flag, not a name: hxcpp hands <lib name> to the linker verbatim,
+		     so "dl" was an input file ld went looking for ("cannot find dl"). -->
+		<lib name="-ldl" if="linux"/>
 	</target>
 </xml>
