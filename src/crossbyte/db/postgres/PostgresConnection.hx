@@ -133,11 +133,12 @@ class PostgresConnection extends EventDispatcher {
 	}
 
 	public function ping():Bool {
+		// No handle check of its own: request() already refuses without the
+		// handle this target uses, and that refusal lands in the catch. This
+		// used to test __connection, which only the php target sets, so on cpp
+		// every connection answered false without the server being asked --
+		// and a pool validating with ping() would discard each one it made.
 		try {
-			if (__connection == null) {
-				return false;
-			}
-
 			request("SELECT 1;");
 			return true;
 		} catch (_:Dynamic) {
