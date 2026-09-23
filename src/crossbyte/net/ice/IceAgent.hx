@@ -1,6 +1,7 @@
 package crossbyte.net.ice;
 
 import crossbyte.Future;
+import crossbyte._internal.net.IPv6;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
@@ -246,6 +247,35 @@ class IceAgent {
 	public function addRemoteCandidate(candidate:IceCandidate):Void {
 		if (candidate == null) {
 			throw new ArgumentError("A candidate is required.");
+		}
+
+		// A name rather than an address is dropped, not dialled.
+		//
+		// Every major browser publishes its host candidates as random .local
+		// mDNS names by default, so the page cannot learn the user's private
+		// address. Nothing here speaks mDNS; a name reached `DatagramSocket`
+		// and went through `sys.net.Host`, which resolves synchronously on
+		// the event loop on every send. For a .local name nothing answers,
+		// that is a second's block and then a throw -- per connectivity
+		// check, and checks retransmit. Measured against a real browser: the
+		// case where CrossByte is ICE-controlling took 15.8 seconds to
+		// connect against 0.9 with real addresses, the whole loop frozen for
+		// every other connection meanwhile.
+		//
+		// And where the operating system does resolve mDNS, the outcome
+		// changes with it: a GitHub Windows runner resolved the browser's
+		// names and took a host pair, this machine did not and took a
+		// peer-reflexive one, from the same code.
+		//
+		// Dropping them loses nothing. The browser's checks reach this
+		// peer's real addresses, and `__pairFrom` learns the browser's from
+		// the source of the first one as a peer-reflexive candidate -- which
+		// is what the mDNS draft expects of an agent that does not resolve
+		// the names itself. Any other hostname is the same hazard, and worse
+		// when a peer supplies one on purpose: blocking DNS on this loop,
+		// chosen by someone no certificate has authenticated yet.
+		if (!IPv6.isNumericAddress(candidate.address)) {
+			return;
 		}
 
 		if (__known(__remotes, candidate)) {
