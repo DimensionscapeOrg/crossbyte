@@ -77,6 +77,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.ds.BitSetTest());
 		// Sequence numbers wrapping past 2^31 - 1, likewise.
 		runner.addCase(new crossbyte.ds.SequenceRingTest());
+		runner.addCase(new crossbyte.ds.InterestSetTest());
+		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --
 		// but portable in the sense that matters: the same assertions run
 		// against IndexedDB here and a directory of files everywhere else, so
