@@ -1,14 +1,14 @@
 import utest.Runner;
 
 /**
- * Crypto suite built against a system libsodium
- * (`ci/posix-crypto-tests.hxml`).
+ * Crypto and auth suites for Linux and macOS (`ci/posix-crypto-tests.hxml`).
  *
- * The Windows build links a vendored static libsodium, so the native smoke
- * suite already covers it there. This target exists to prove the same
- * surface works on Linux and macOS, where libsodium comes from the system
- * package manager — a path that cannot be exercised on a Windows
- * development machine.
+ * libsodium, BLAKE3 and the mbedTLS-backed public-key code are compiled from
+ * source with hxcpp on every platform, and the native smoke suite covers them
+ * on Windows. This target proves the same surface builds and behaves on the
+ * other two, under GCC and Clang, which a Windows development machine cannot
+ * show: the first run here found SIMD flags MSVC had never needed and a
+ * duplicate object only GNU ld objects to.
  */
 @:access(crossbyte.core.CrossByte)
 class PosixCryptoMain {
