@@ -692,8 +692,10 @@ class Socket {
 	public function listen(connections:Int):Void {
 		if (serverChannel == null)
 			throw "You must bind the Socket to an address!";
-		// Backlog is provided to ServerSocketChannel.bind in bind(); java.nio
-		// has no separate listen() call, so this is a no-op beyond validation.
+		// java.nio has no listen() of its own: the queue length is given to
+		// bind(), which has already run by the time this is called, with the
+		// longest queue the system allows. A shorter one asked for here cannot
+		// be applied after the fact.
 	}
 
 	public function shutdown(read:Bool, write:Bool):Void {
@@ -714,7 +716,13 @@ class Socket {
 				serverChannel.configureBlocking(__blocking);
 			}
 			var addr = new InetSocketAddress(host.wrapped, port);
-			serverChannel.bind(cast addr);
+			// The queue length has to be named here, because java.nio takes it
+			// at bind() and a server binds before it says how long a queue it
+			// wants. Left out, NIO asks for 50, and a burst of 51 connections
+			// found the queue full and was refused by the kernel. The largest
+			// value is the system's maximum -- what listen(0) means -- since the
+			// system clamps it to its own limit.
+			serverChannel.bind(cast addr, 0x7FFFFFFF);
 		} catch (e:Dynamic)
 			throw e;
 	}
