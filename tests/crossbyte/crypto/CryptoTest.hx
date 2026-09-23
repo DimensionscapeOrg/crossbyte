@@ -33,6 +33,36 @@ class CryptoTest extends utest.Test {
 		#end
 	}
 
+	#if cpp
+	/**
+	 * The vectors above never reach the SSE and AVX2 code: BLAKE3 only hands
+	 * work to its vector backends once an input holds two whole 1 KiB chunks,
+	 * and "abc" is three bytes. When the flags those files need were being
+	 * dropped, only GCC refusing to compile them gave it away; a backend that
+	 * compiled and hashed wrongly would have passed everything.
+	 *
+	 * These are upstream's test_vectors.json entries for the same lengths, with
+	 * its input pattern, byte i = i % 251: 2049 is just past where the vector
+	 * path starts, 4097 fills an SSE4.1 batch of four, 8193 an AVX2 batch of
+	 * eight, and 102400 builds a tree a hundred chunks wide whose parent nodes
+	 * are hashed in parallel too.
+	 */
+	public function testBlake3MatchesThePublishedVectorsOnTheSimdPath():Void {
+		for (vector in [
+			{length: 2049, hash: "5f4d72f40d7a5f82b15ca2b2e44b1de3c2ef86c426c95c1af0b6879522563030"},
+			{length: 4097, hash: "9b4052b38f1c5fc8b1f9ff7ac7b27cd242487b3d890d15c96a1c25b8aa0fb995"},
+			{length: 8193, hash: "bab6c09cb8ce8cf459261398d2e7aef35700bf488116ceb94a36d0f5f1b7bc3b"},
+			{length: 102400, hash: "bc3e3d41a1146b069abffad3c0d44860cf664390afce4d9661f7902e7943e085"}
+		]) {
+			var input:Bytes = Bytes.alloc(vector.length);
+			for (i in 0...vector.length) {
+				input.set(i, i % 251);
+			}
+			Assert.equals(vector.hash, Blake3.hashHex(input), 'BLAKE3 of ${vector.length} bytes');
+		}
+	}
+	#end
+
 	public function testEd25519AvailabilityAndValidationPaths():Void {
 		Assert.isFalse(Ed25519.verifyDetached(null, Bytes.ofString("hello"), Bytes.alloc(Ed25519.PUBLIC_KEY_BYTES)));
 		Assert.isFalse(Ed25519.verifyDetached(Bytes.alloc(Ed25519.SIGNATURE_BYTES), Bytes.ofString("hello"), Bytes.alloc(1)));
