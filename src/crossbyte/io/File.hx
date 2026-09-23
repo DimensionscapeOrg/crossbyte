@@ -1827,10 +1827,18 @@ final class File extends EventDispatcher {
 			return 0;
 		}
 
-		var whitespace:EReg = ~/\s+/;
+		// `g`, or `split` stops at the first match: "/dev/sdd  1055762868 ..."
+		// came back as two parts, the row never reached the four a data row
+		// needs, and every disk on every non-Windows target read as full.
+		// Windows parses fsutil above and never reaches this, which is why
+		// the suite was green where it was run and zero everywhere else.
+		var whitespace:EReg = ~/\s+/g;
 
-		for (line in output.split("
-")) {
+		// An escape rather than a newline typed into the literal, which meant
+		// whatever line ending the file was checked out with -- a carriage
+		// return and a newline in a Windows working tree. Each line is
+		// trimmed below, so this handles either.
+		for (line in output.split("\n")) {
 			var text:String = StringTools.trim(line);
 
 			if (text == "") {
