@@ -90,6 +90,22 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	**/
 	public var maxPendingConnections:Int = DEFAULT_MAX_PENDING_CONNECTIONS;
 
+	/**
+		Decides, from the sender's address alone, whether a CONNECT from an
+		address with no session opens one. Called before anything is allocated
+		for it; return `false` and the datagram is dropped, as it is when
+		`maxPendingConnections` is reached. The default admits everything.
+
+		The address is only a claim at this point -- UDP lets a sender write
+		whatever it likes in the source field -- so use this to drop traffic,
+		not to accuse anyone: a block list or a `RateLimiter` keyed by address
+		protects this side, but an address refused here may belong to someone
+		who never sent a thing. A hook that throws refuses the CONNECT.
+	**/
+	public dynamic function admit(address:String, port:Int):Bool {
+		return true;
+	}
+
 	@:noCompletion private var __connections:StringMap<ReliableDatagramSocket>;
 
 	// Keys of accepted sessions that have not finished handshaking. Counted
@@ -595,6 +611,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 
 		if (maxPendingConnections >= 0 && __pendingCount >= maxPendingConnections) {
+			return;
+		}
+
+		var admitted:Bool = false;
+		try {
+			admitted = admit(e.srcAddress, e.srcPort);
+		} catch (_:Dynamic) {}
+		if (!admitted) {
 			return;
 		}
 
