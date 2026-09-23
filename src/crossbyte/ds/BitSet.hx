@@ -7,6 +7,23 @@ package crossbyte.ds;
 /**
  * A dynamic `BitSet` implementation that allows efficient storage and manipulation of boolean values using bits.
  * Automatically grows as needed when setting bits beyond the current capacity.
+ *
+ * The set bits can be visited in order without testing every index:
+ * `for (i in bits)` for convenience, or `nextSetBit` for a loop that
+ * allocates nothing, which is the one to use every tick.
+ *
+ * ```haxe
+ * var i:Int = bits.nextSetBit(0);
+ * while (i >= 0) {
+ * 	visit(i);
+ * 	i = bits.nextSetBit(i + 1);
+ * }
+ * ```
+ *
+ * `and`, `or`, `xor` and `andNot` combine two sets a word at a time. With
+ * entity slots as bit indices, what came into view since the last tick is
+ * `now.clone()` with `andNot(before)` applied, and what left it is the same
+ * the other way round.
  */
 class BitSet {
 	private var __bits:Array<Int>;
@@ -204,5 +221,201 @@ class BitSet {
 			count += bitCount(word);
 		}
 		return count;
+	}
+
+	/**
+	 * Finds the first set bit at or after `from`.
+	 *
+	 * @param from The index to start looking at.
+	 * @return The index of that bit, or `-1` if no bit from there on is set.
+	 */
+	public function nextSetBit(from:Int):Int {
+		__checkBounds(from);
+		if (from >= __size) {
+			return -1;
+		}
+
+		var words:Int = __wordCountForSize(__size);
+		var wordIndex:Int = from >> 5;
+		// The bits below `from` in its own word are masked away first.
+		var word:Int = __bits[wordIndex] & (-1 << (from & 31));
+
+		while (true) {
+			if (word != 0) {
+				var index:Int = (wordIndex << 5) + __trailingZeros(word);
+				return index < __size ? index : -1;
+			}
+			wordIndex++;
+			if (wordIndex >= words) {
+				return -1;
+			}
+			word = __bits[wordIndex];
+		}
+	}
+
+	/**
+	 * Finds the first clear bit at or after `from`. Every bit past `length`
+	 * reads as clear, so this always finds one: with every bit from `from`
+	 * set, the answer is `length`.
+	 *
+	 * @param from The index to start looking at.
+	 * @return The index of that bit.
+	 */
+	public function nextClearBit(from:Int):Int {
+		__checkBounds(from);
+		if (from >= __size) {
+			return from;
+		}
+
+		var words:Int = __wordCountForSize(__size);
+		var wordIndex:Int = from >> 5;
+		var word:Int = ~__bits[wordIndex] & (-1 << (from & 31));
+
+		while (true) {
+			if (word != 0) {
+				// Bits past the end are held clear, so the first of them is
+				// found here when everything before it is set.
+				return (wordIndex << 5) + __trailingZeros(word);
+			}
+			wordIndex++;
+			if (wordIndex >= words) {
+				return __size;
+			}
+			word = ~__bits[wordIndex];
+		}
+	}
+
+	/**
+	 * Iterates the indices of the set bits, lowest first, so that
+	 * `for (i in bits)` visits exactly those.
+	 *
+	 * The iteration reads the set as it goes rather than a copy of it.
+	 */
+	public inline function iterator():BitSetIterator {
+		return new BitSetIterator(this);
+	}
+
+	/**
+	 * Whether no bit is set.
+	 */
+	public function isEmpty():Bool {
+		for (i in 0...__wordCountForSize(__size)) {
+			if (__bits[i] != 0) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * A separate set with the same length and the same bits.
+	 */
+	public function clone():BitSet {
+		var copy:BitSet = new BitSet(__size);
+		for (i in 0...__wordCountForSize(__size)) {
+			copy.__bits[i] = __bits[i];
+		}
+		return copy;
+	}
+
+	/**
+	 * Keeps only the bits that are also set in `other`. The length does not
+	 * change; bits past the end of `other` are cleared.
+	 */
+	public function and(other:BitSet):Void {
+		var words:Int = __wordCountForSize(__size);
+		var otherWords:Int = __wordCountForSize(other.__size);
+		for (i in 0...words) {
+			__bits[i] = i < otherWords ? __bits[i] & other.__bits[i] : 0;
+		}
+	}
+
+	/**
+	 * Sets every bit that is set in `other`, growing to its length if it is
+	 * the longer.
+	 */
+	public function or(other:BitSet):Void {
+		if (other.__size > __size) {
+			length = other.__size;
+		}
+		for (i in 0...__wordCountForSize(other.__size)) {
+			__bits[i] |= other.__bits[i];
+		}
+	}
+
+	/**
+	 * Flips every bit that is set in `other`, growing to its length if it is
+	 * the longer. What is left set is what differs between the two.
+	 */
+	public function xor(other:BitSet):Void {
+		if (other.__size > __size) {
+			length = other.__size;
+		}
+		for (i in 0...__wordCountForSize(other.__size)) {
+			__bits[i] ^= other.__bits[i];
+		}
+	}
+
+	/**
+	 * Clears every bit that is set in `other`. The length does not change.
+	 */
+	public function andNot(other:BitSet):Void {
+		var words:Int = __wordCountForSize(__size);
+		var otherWords:Int = __wordCountForSize(other.__size);
+		for (i in 0...(words < otherWords ? words : otherWords)) {
+			__bits[i] &= ~other.__bits[i];
+		}
+	}
+
+	// Index of the lowest set bit of a non-zero word, found by halving:
+	// shifts and masks only, which every target agrees on. The usual de
+	// Bruijn multiply needs a 32-bit product, and a JavaScript double
+	// rounds that one away.
+	private static inline function __trailingZeros(word:Int):Int {
+		var n:Int = 0;
+		if ((word & 0xFFFF) == 0) {
+			n += 16;
+			word = word >>> 16;
+		}
+		if ((word & 0xFF) == 0) {
+			n += 8;
+			word = word >>> 8;
+		}
+		if ((word & 0xF) == 0) {
+			n += 4;
+			word = word >>> 4;
+		}
+		if ((word & 0x3) == 0) {
+			n += 2;
+			word = word >>> 2;
+		}
+		if ((word & 0x1) == 0) {
+			n += 1;
+		}
+		return n;
+	}
+}
+
+/**
+ * Walks the set bits of a `BitSet`, lowest first. Made by
+ * `BitSet.iterator()`; a `for` loop over the set is the usual way to use one.
+ */
+class BitSetIterator {
+	private var __set:BitSet;
+	private var __next:Int;
+
+	public inline function new(set:BitSet) {
+		__set = set;
+		__next = set.nextSetBit(0);
+	}
+
+	public inline function hasNext():Bool {
+		return __next >= 0;
+	}
+
+	public inline function next():Int {
+		var current:Int = __next;
+		__next = __set.nextSetBit(current + 1);
+		return current;
 	}
 }
