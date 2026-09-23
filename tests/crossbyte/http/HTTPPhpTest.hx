@@ -29,7 +29,7 @@ import utest.Assert;
  * before anything can be observed inside it.
  */
 class HTTPPhpTest extends utest.Test {
-	#if (cpp || neko || hl)
+	#if (cpp || neko || hl || java || jvm)
 	public function testAPipelinedRequestWaitsForThePhpResponse():Void {
 		var backend = new FakeFastCGI();
 		var world = new PhpWorld(backend);
@@ -97,10 +97,65 @@ class HTTPPhpTest extends utest.Test {
 
 		world.close();
 	}
+
+	public function testEveryCookieAScriptSetsReachesTheClient():Void {
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend);
+
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+		// PHP sends one Set-Cookie line per cookie, and the bridge stored its
+		// headers by name, so each line overwrote the one before and only the
+		// last cookie reached the browser. The comma in the Expires date is
+		// deliberate: joining cookies with ", " would put one in the middle of
+		// a value, and nothing downstream could split them apart again.
+		backend.answer(200, "text/plain", "from php", [
+			"Set-Cookie: session=abc; Path=/; HttpOnly",
+			"Set-Cookie: theme=dark; Expires=Wed, 21 Oct 2037 07:28:00 GMT"
+		]);
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 3.0);
+
+		var response = HTTPTestSupport.parseResponse(world.raw);
+		Assert.equals(200, response.status, "not the PHP response: " + world.raw);
+		Assert.equals("from php", response.body);
+
+		var cookies:Array<String> = setCookies(world.raw);
+		Assert.equals(2, cookies.length, "expected two Set-Cookie headers, got " + cookies);
+		Assert.equals("session=abc; Path=/; HttpOnly", cookies[0]);
+		Assert.equals("theme=dark; Expires=Wed, 21 Oct 2037 07:28:00 GMT", cookies[1]);
+
+		world.close();
+	}
+
+	/**
+	 * Every Set-Cookie value in the first response, in order.
+	 *
+	 * Read off the raw header block rather than through
+	 * `HTTPTestSupport.parseResponse`, whose map keeps one value per name --
+	 * the same collapse this is checking for.
+	 */
+	private function setCookies(raw:String):Array<String> {
+		var cookies:Array<String> = [];
+		var headerEnd:Int = raw.indexOf("\r\n\r\n");
+
+		if (headerEnd < 0) {
+			return cookies;
+		}
+
+		for (line in raw.substr(0, headerEnd).split("\r\n")) {
+			var colon:Int = line.indexOf(":");
+
+			if (colon > 0 && StringTools.trim(line.substr(0, colon)).toLowerCase() == "set-cookie") {
+				cookies.push(StringTools.trim(line.substr(colon + 1)));
+			}
+		}
+
+		return cookies;
+	}
 	#end
 }
 
-#if (cpp || neko || hl)
+#if (cpp || neko || hl || java || jvm)
 /**
  * A backend that speaks FastCGI and answers on command.
  */
@@ -134,12 +189,18 @@ private class FakeFastCGI {
 		HTTPTestSupport.pumpUntil(() -> listener.localPort != 0, 2.0);
 	}
 
-	public function answer(status:Int, contentType:String, body:String):Void {
+	public function answer(status:Int, contentType:String, body:String, ?headers:Array<String>):Void {
 		if (peer == null) {
 			return;
 		}
 
-		var cgi = "Status: " + status + "\r\nContent-Type: " + contentType + "\r\n\r\n" + body;
+		var cgi = "Status: " + status + "\r\nContent-Type: " + contentType + "\r\n";
+		if (headers != null) {
+			for (header in headers) {
+				cgi += header + "\r\n";
+			}
+		}
+		cgi += "\r\n" + body;
 		var out = new ByteArray();
 		__record(out, 6, ByteArray.fromBytes(haxe.io.Bytes.ofString(cgi)));
 

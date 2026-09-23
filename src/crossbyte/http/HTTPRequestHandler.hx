@@ -2290,8 +2290,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 				out.push(new URLRequestHeader("Location", phpRes.headers.get("location")));
 			}
 			if (phpRes.headers.exists("set-cookie")) {
-				for (cookie in phpRes.headers.get("set-cookie").split("
-")) {
+				// An escape, not a line break between the quotes. A literal one
+				// takes the file's line ending, so a CRLF checkout split on
+				// "\r\n", never separated the cookies PHPExchange joins with
+				// "\n", and sent them glued into one header.
+				for (cookie in phpRes.headers.get("set-cookie").split("\n")) {
 					var c:String = StringTools.trim(cookie);
 					if (c != "") {
 						out.push(new URLRequestHeader("Set-Cookie", c));
