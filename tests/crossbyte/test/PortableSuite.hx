@@ -73,6 +73,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		// Word arithmetic on the sign bit, which is where js differs.
+		runner.addCase(new crossbyte.ds.BitSetTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --
 		// but portable in the sense that matters: the same assertions run
 		// against IndexedDB here and a directory of files everywhere else, so
