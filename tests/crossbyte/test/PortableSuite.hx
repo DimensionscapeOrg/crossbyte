@@ -75,6 +75,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		// Word arithmetic on the sign bit, which is where js differs.
 		runner.addCase(new crossbyte.ds.BitSetTest());
+		// Sequence numbers wrapping past 2^31 - 1, likewise.
+		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --
 		// but portable in the sense that matters: the same assertions run
 		// against IndexedDB here and a directory of files everywhere else, so
@@ -106,6 +108,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.io.ByteArrayInputTest());
 		runner.addCase(new crossbyte.io.ByteArrayIOTest());
 		runner.addCase(new crossbyte.io.ByteArrayOutputTest());
+		// Built on the ByteArray varint and writeBytes, and decodes what a
+		// browser client may have to receive.
+		runner.addCase(new crossbyte.io.ByteDeltaTest());
 		runner.addCase(new crossbyte.utils.UtilsTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());

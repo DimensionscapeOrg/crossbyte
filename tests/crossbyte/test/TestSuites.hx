@@ -43,6 +43,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
 		runner.addCase(new crossbyte.ds.BitSetTest());
+		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		runner.addCase(new crossbyte.ds.BloomFilterTest());
 		runner.addCase(new crossbyte.ds.OrderedMapTest());
 		runner.addCase(new crossbyte.ds.BitmapDataTest());
@@ -91,6 +92,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.io.FileTest());
 		runner.addCase(new crossbyte.io.FileStreamTest());
 		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
+		runner.addCase(new crossbyte.io.ByteDeltaTest());
 	}
 
 	public static function addURL(runner:Runner):Void {
