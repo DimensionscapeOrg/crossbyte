@@ -380,7 +380,11 @@ jobs:
   native-smoke:
     name: Core | Native Smoke
     runs-on: windows-latest
-    timeout-minutes: 25
+    # The first run to get all the way through (35813704548) took 21 minutes,
+    # the samples aside, against a limit of 25 -- and the browser and TURN
+    # interop steps move with the network. 35 leaves room for a slow runner
+    # without letting a hang run on.
+    timeout-minutes: 35
     defaults:
       run:
         shell: pwsh
@@ -397,7 +401,6 @@ jobs:
       - name: Install Haxe dependencies
         run: |
           haxelib install utest --quiet
-          haxelib install aedifex --quiet
           haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
           # Every native extern includes its Build.xml through
           # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
@@ -518,27 +521,86 @@ jobs:
         working-directory: export/ci-stress-tests
         run: .\StressMain.exe
 
+  # The samples were the tail of Native Smoke and never actually built there.
+  # haxelib's aedifex is 0.0.2, which has no `task` command, so each of the
+  # thirteen printed its banner and exited 0; the loop looked at no exit code,
+  # and the first sample run failed on an executable that did not exist.
+  # Thirteen cold native builds would not have fitted in that job either, so
+  # they are a job of their own and build alongside it.
+  native-samples:
+    name: Core | Native Samples
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install Haxe dependencies
+        run: |
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          # The samples reach the same native externs as the suites, and
+          # those include their Build.xml through ${haxelib:crossbyte}.
+          haxelib dev crossbyte $env:GITHUB_WORKSPACE
+
+      - name: Bootstrap hxcpp tools
+        run: |
+          $hxcppDir = (haxelib path hxcpp | Select-Object -First 1).Trim()
+          Push-Location (Join-Path $hxcppDir "tools/run")
+          haxe compile.hxml
+          Pop-Location
+          Push-Location (Join-Path $hxcppDir "tools/hxcpp")
+          haxe compile.hxml
+          Pop-Location
+
+      # haxe itself rather than `haxelib run aedifex task`: each sample task in
+      # Aedifex.hx runs one hxml from the sample's own directory, which --cwd
+      # reproduces -- every one of them begins with --cwd ../..
+      #
+      # One compiler cache for all thirteen. hxcpp keys a cached object by its
+      # source and flags, and the samples share the runtime and much of
+      # CrossByte, so only the first build pays in full: locally 38s cold,
+      # then 5 to 12s each.
+      #
+      # A native command's exit code does not stop a pwsh script, and the
+      # step reports only the last one's -- which is how thirteen builds that
+      # built nothing came out green. Each is checked.
       - name: Build native samples
         run: |
-          $tasks = @(
-            "sample-localconnection-cpp",
-            "sample-rpc-greeter-cpp",
-            "sample-rudp-cpp",
-            "sample-sharedchannel-cpp",
-            "sample-sharedobject-cpp",
-            "sample-simple-application-cpp",
-            "sample-socket-chat-client-cpp",
-            "sample-socket-chat-server-cpp",
-            "sample-udp-cpp",
-            "sample-web-server-cpp",
-            "sample-windows-service-cpp",
-            "sample-websocket-echo-cpp",
-            "sample-worker-cpp"
+          $env:HXCPP_COMPILE_CACHE = Join-Path $env:RUNNER_TEMP "hxcpp-cache"
+          $samples = @(
+            @("localconnection", "cpp.hxml"),
+            @("rpc-greeter", "cpp.hxml"),
+            @("rudp", "cpp.hxml"),
+            @("sharedchannel", "cpp.hxml"),
+            @("sharedobject", "cpp.hxml"),
+            @("simple-application", "cpp.hxml"),
+            @("socket-chat", "client-cpp.hxml"),
+            @("socket-chat", "server-cpp.hxml"),
+            @("udp", "cpp.hxml"),
+            @("web-server", "cpp.hxml"),
+            @("windows-service", "cpp.hxml"),
+            @("websocket-echo", "cpp.hxml"),
+            @("worker", "cpp.hxml")
           )
-          foreach ($task in $tasks) {
-            Write-Host "::group::$task"
-            haxelib run aedifex task $task .
+          foreach ($sample in $samples) {
+            $dir = $sample[0]
+            $hxml = $sample[1]
+            Write-Host "::group::samples/$dir/$hxml"
+            haxe --cwd "samples/$dir" $hxml
+            $code = $LASTEXITCODE
             Write-Host "::endgroup::"
+            if ($code -ne 0) {
+              throw "samples/$dir/$hxml did not build (exit $code)"
+            }
           }
 
       # Building a sample proves it typechecks and nothing more. This one
