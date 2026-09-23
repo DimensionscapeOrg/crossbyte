@@ -502,7 +502,12 @@ private class Fcgi {
 	}
 }
 
+// The include is metadata on the class, so it lands in the generated .cpp
+// whatever the body's own guard says; left unguarded, a Linux or macOS build
+// fails looking for a header only Windows has.
+#if (cpp && windows)
 @:cppInclude("Windows.h")
+#end
 private class WindowsKillOnExit {
 	public static function attach():Void {
 		#if (cpp && windows)
