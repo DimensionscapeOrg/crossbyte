@@ -30,7 +30,17 @@ import sys.net.Host;
 #end
 
 /**
- * ...
+ * A server that accepts WebSocket sessions.
+ *
+ * Admission works as it does on `ServerSocket`, whose settings this
+ * inherits: `admit` is asked about each connection as soon as it is
+ * accepted, before any TLS or upgrade work; `maxAcceptsPerTick` bounds how
+ * many are taken from the listen queue in one tick; and
+ * `maxPendingHandshakes` bounds the sessions still upgrading -- TLS and the
+ * HTTP upgrade together -- after which new connections wait in the kernel's
+ * queue. On Node, which accepts as connections arrive and has no queue to
+ * leave them in, a connection that would pass that bound is refused.
+ *
  * @author Christopher Speciale
  */
 class ServerWebSocket extends ServerSocket {
@@ -660,13 +670,48 @@ class ServerWebSocket extends ServerSocket {
 		// used afterwards: that shape mis-compiles (VerifyError) on the jvm target.
 		__reapStalledUpgrades();
 
-		var socket:FlexSocket = __acceptPending();
-		if (socket != null) {
+		// As many as maxAcceptsPerTick, not one: this loop used to take one
+		// connection a tick and never asked `admit`, which the class inherits
+		// from ServerSocket -- so a hook set here compiled, and did nothing.
+		var limit:Int = maxAcceptsPerTick < 1 ? 1 : maxAcceptsPerTick;
+		for (_ in 0...limit) {
+			// Full: the rest wait in the kernel's queue until upgrades finish.
+			if (maxPendingHandshakes >= 0 && __pendingUpgrades.length >= maxPendingHandshakes) {
+				return;
+			}
+
+			var socket:FlexSocket = __acceptPending();
+			if (socket == null) {
+				return;
+			}
+
+			if (!__askAdmit(socket)) {
+				try {
+					socket.close();
+				} catch (_:Dynamic) {}
+				continue;
+			}
+
 			var accepted = __fromSockettoWebsocket(socket);
 
 			if (accepted != null && handshakeTimeout > 0) {
 				__pendingUpgrades.push({session: accepted, deadline: Sys.time() + handshakeTimeout});
 			}
+		}
+	}
+
+	/**
+		`admit`'s verdict on a connection just accepted, before any TLS or
+		upgrade work is done for it. A hook that throws is a refusal. Answers
+		from inside the try rather than through a local, for the jvm reason
+		noted on `this_onTick`.
+	**/
+	@:noCompletion private function __askAdmit(socket:FlexSocket):Bool {
+		try {
+			var peer = socket.peer();
+			return admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
+		} catch (_:Dynamic) {
+			return false;
 		}
 	}
 
@@ -739,6 +784,20 @@ class ServerWebSocket extends ServerSocket {
 				return;
 			}
 
+			// A TLS server asks on its raw `connection` event instead, below,
+			// before a handshake is spent on the peer.
+			if (!secure && !__nodeAdmits(connection)) {
+				connection.destroy();
+				return;
+			}
+
+			// Node has no listen queue to leave this in, so past the bound on
+			// sessions still upgrading it is refused rather than deferred.
+			if (maxPendingHandshakes >= 0 && __pendingUpgrades.length >= maxPendingHandshakes) {
+				connection.destroy();
+				return;
+			}
+
 			connection.setNoDelay(true);
 			var accepted = __fromSockettoWebsocket(connection);
 
@@ -771,6 +830,14 @@ class ServerWebSocket extends ServerSocket {
 			// tls.Server extends net.Server, so listen, close and address are
 			// the same calls below this point.
 			__webServerSocket = Tls.createServer(options, accept);
+
+			// The raw TCP connection, before TLS starts on it: the point where
+			// a refusal still costs nothing.
+			__webServerSocket.on("connection", function(raw:NodeSocket):Void {
+				if (!__nodeAdmits(raw)) {
+					raw.destroy();
+				}
+			});
 		} else {
 			__webServerSocket = Net.createServer(accept);
 		}
