@@ -69,6 +69,7 @@ class ServerSuite {
 		// none of it.
 		runner.addCase(new crossbyte.http.HTTPSupportTest());
 		runner.addCase(new crossbyte.net.RateLimiterTest());
+		runner.addCase(new crossbyte.net.ConcurrencyLimiterTest());
 		runner.addCase(new crossbyte.http.HTTPHardeningTest());
 		runner.addCase(new crossbyte.http.RouterTest());
 		runner.addCase(new crossbyte._internal.php.PHPTimeoutTest());
