@@ -52,13 +52,16 @@ class ServerSuite {
 		runner.addCase(new crossbyte.net.ServerSocketAdmissionTest());
 		#end
 
-		// PHP stays native-only, and not for a reason the bridge shares: the
-		// test drives a FastCGI backend over `crossbyte.net.ServerSocket` and
-		// holds the accepted peer, which is fine on Node -- what it also does
-		// is construct `PHPMode.Launch` paths through `sys.io.Process` in the
+		// PHP end to end runs on native and jvm, where the bridge drains a
+		// non-blocking socket from the tick. Not eval: a socket there cannot be
+		// made non-blocking, so that drain would stall the runtime. Not Node
+		// either, and not for a reason the bridge shares: the test drives a
+		// FastCGI backend over `crossbyte.net.ServerSocket` and holds the
+		// accepted peer, which is fine on Node -- what it also does is
+		// construct `PHPMode.Launch` paths through `sys.io.Process` in the
 		// cases around it. The Node PHP path has its own coverage in the
 		// integration program, against the same kind of fake backend.
-		#if cpp
+		#if (cpp || java || jvm)
 		runner.addCase(new crossbyte.http.HTTPPhpTest());
 		#end
 
@@ -76,5 +79,6 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPHardeningTest());
 		runner.addCase(new crossbyte.http.RouterTest());
 		runner.addCase(new crossbyte._internal.php.PHPTimeoutTest());
+		runner.addCase(new crossbyte._internal.php.PHPExchangeTest());
 	}
 }
