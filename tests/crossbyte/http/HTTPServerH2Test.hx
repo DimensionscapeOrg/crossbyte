@@ -162,10 +162,7 @@ class HTTPServerH2Test extends utest.Test {
 		var done = false;
 
 		client.addEventListener(Event.CONNECT, _ -> {
-			client.writeUTFBytes("GET /index.html HTTP/1.1
-Host: localhost
-
-");
+			client.writeUTFBytes("GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n");
 			client.flush();
 		});
 		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {

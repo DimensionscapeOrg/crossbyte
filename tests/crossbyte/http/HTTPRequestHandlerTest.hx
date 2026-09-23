@@ -1121,10 +1121,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
 				next(503);
 			}
-		], "GET /index.html HTTP/1.1
-Host: localhost
-
-", function(unavailable):Void {
+		], "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n", function(unavailable):Void {
 			Assert.equals(503, unavailable.status);
 			Assert.isTrue(unavailable.raw.indexOf("503 Service Unavailable") >= 0);
 			Assert.isTrue(unavailable.raw.indexOf("503 OK") < 0);
@@ -1134,10 +1131,7 @@ Host: localhost
 				function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
 					next(418);
 				}
-			], "GET /index.html HTTP/1.1
-Host: localhost
-
-", function(teapot):Void {
+			], "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n", function(teapot):Void {
 				Assert.equals(418, teapot.status);
 				Assert.isTrue(teapot.raw.indexOf("418 Client Error") >= 0);
 				Assert.isTrue(teapot.raw.indexOf("418 OK") < 0);
@@ -1615,12 +1609,7 @@ Host: localhost
 		// neither null nor negative, so node accepted it and went on to wait
 		// for a four gigabyte chunk. A malformed size is a client error on
 		// every target, not a 500 and not a promise of more body.
-		__sendRequest(async, [], "POST /index.html HTTP/1.1
-Host: localhost
-Transfer-Encoding: chunked
-
-FFFFFFFF
-", function(response):Void {
+		__sendRequest(async, [], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n", function(response):Void {
 			Assert.equals(400, response.status);
 			async.done();
 		});
@@ -1635,15 +1624,7 @@ FFFFFFFF
 				bodyText = handler.requestText;
 				next();
 			}
-		], "POST /index.html HTTP/1.1
-Host: localhost
-Transfer-Encoding: chunked
-
-0000004
-Wiki
-0
-
-", function(response):Void {
+		], "POST /index.html HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n0000004\r\nWiki\r\n0\r\n\r\n", function(response):Void {
 			Assert.equals("Wiki", bodyText);
 			async.done();
 		});
@@ -1655,12 +1636,7 @@ Wiki
 		// continuation as a header of its own desyncs us from any intermediary
 		// that folds -- and the continuation here carries a framing header,
 		// which is exactly request smuggling.
-		__sendRequest(async, [], "GET /index.html HTTP/1.1
-Host: localhost
-X-Note: first
-	Transfer-Encoding: chunked
-
-", function(response):Void {
+		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nX-Note: first\r\n\tTransfer-Encoding: chunked\r\n\r\n", function(response):Void {
 			Assert.equals(400, response.status);
 			async.done();
 		});
@@ -1670,11 +1646,7 @@ X-Note: first
 		// A line with no colon is not a header. It used to be skipped, which
 		// left this server and anything in front of it disagreeing about what
 		// the message contained.
-		__sendRequest(async, [], "GET /index.html HTTP/1.1
-Host: localhost
-garbage
-
-", function(response):Void {
+		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\ngarbage\r\n\r\n", function(response):Void {
 			Assert.equals(400, response.status);
 			async.done();
 		});
@@ -1685,11 +1657,7 @@ garbage
 		// whitespace between a field name and its colon. Trimming it away
 		// instead means a proxy that rejects and an origin that accepts read
 		// the same bytes differently.
-		__sendRequest(async, [], "GET /index.html HTTP/1.1
-Host: localhost
-Content-Length : 0
-
-", function(response):Void {
+		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Length : 0\r\n\r\n", function(response):Void {
 			Assert.equals(400, response.status);
 			async.done();
 		});
