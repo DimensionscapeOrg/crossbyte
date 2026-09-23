@@ -45,17 +45,22 @@ import crossbyte.url.URLRequest;
 	Exits non-zero if anything fails, so CI notices.
 **/
 class NodeIntegrationMain extends Application {
-	private static inline var HTTP_PORT:Int = 50561;
-	private static inline var ECHO_PORT:Int = 50562;
-	private static inline var WEB_PORT:Int = 50563;
-	private static inline var WS_PORT:Int = 50564;
-	// Assigned by the OS, not chosen here. This was a fixed 50565, which
-	// Windows reserves in blocks for Hyper-V and WSL -- and those blocks move
-	// between boots, so the same unchanged test passed one day and failed the
-	// next with "still 0 after 201 tries". Confirmed rather than guessed:
-	// `netsh int ipv4 show excludedportrange protocol=udp` listed 50474-50573.
-	// Every other stage in this file already binds 0 and reads back; this one
-	// now does too.
+	// Every server in this file binds port 0 and reads back the port the OS
+	// assigned. They used to be fixed, 50561 to 50565, and Windows reserves
+	// ports in blocks for Hyper-V, WinNAT and WSL -- blocks that move between
+	// boots, so the same unchanged test passed one day and failed the next.
+	// Confirmed rather than guessed, both times: `netsh int ipv4 show
+	// excludedportrange protocol=udp` listed 50474-50573 when the datagram
+	// stage stopped with "still 0 after 201 tries", and `protocol=tcp` listed
+	// 50501-50600 when the run died at its first server with `listen EACCES`
+	// -- green on CI only because that runner's blocks fell somewhere else.
+	//
+	// A server written against Node reads its port from address() in the
+	// listen callback. A CrossByte one reads localPort, which on Node stays 0
+	// until listen() has claimed a port, so those stages wait for it first.
+	private var httpPort:Int = 0;
+	private var echoPort:Int = 0;
+	private var wsPort:Int = 0;
 	private var udpPort:Int = 0;
 	private static inline var TIMEOUT_MS:Int = 30000;
 	private static inline var ROUND_TRIP:String = "round-trip";
@@ -196,7 +201,8 @@ class NodeIntegrationMain extends Application {
 			});
 		});
 
-		httpServer.listen(HTTP_PORT, "127.0.0.1", function():Void {
+		httpServer.listen(0, "127.0.0.1", function():Void {
+			httpPort = httpServer.address().port;
 			getRequest();
 		});
 	}
@@ -226,7 +232,7 @@ class NodeIntegrationMain extends Application {
 			postRequest();
 		});
 
-		loader.load(new URLRequest("http://127.0.0.1:" + HTTP_PORT + "/hello"));
+		loader.load(new URLRequest("http://127.0.0.1:" + httpPort + "/hello"));
 	}
 
 	private function postRequest():Void {
@@ -243,7 +249,7 @@ class NodeIntegrationMain extends Application {
 			startEchoServer();
 		});
 
-		var request = new URLRequest("http://127.0.0.1:" + HTTP_PORT + "/echo");
+		var request = new URLRequest("http://127.0.0.1:" + httpPort + "/echo");
 		request.method = "POST";
 		request.data = "payload-42";
 		loader.load(request);
@@ -258,7 +264,8 @@ class NodeIntegrationMain extends Application {
 			});
 		});
 
-		echoServer.listen(ECHO_PORT, "127.0.0.1", function():Void {
+		echoServer.listen(0, "127.0.0.1", function():Void {
+			echoPort = echoServer.address().port;
 			connectSocket();
 		});
 	}
@@ -287,14 +294,14 @@ class NodeIntegrationMain extends Application {
 			check("Socket connected", connected, "no connect event");
 			check("Socket round-tripped its bytes", received == ROUND_TRIP, "got " + received);
 			check("Socket knows its remote end", socket.remoteAddress == "127.0.0.1", "got " + socket.remoteAddress);
-			check("Socket knows its remote port", socket.remotePort == ECHO_PORT, "got " + socket.remotePort);
+			check("Socket knows its remote port", socket.remotePort == echoPort, "got " + socket.remotePort);
 			check("Socket knows its local port", socket.localPort > 0, "got " + socket.localPort);
 			socket.close();
 			echoServer.close();
 			startListener();
 		});
 
-		socket.connect("127.0.0.1", ECHO_PORT);
+		socket.connect("127.0.0.1", echoPort);
 	}
 
 	// ---- 4. crossbyte.net.ServerSocket over js.node.net.Server -----------
@@ -408,7 +415,7 @@ class NodeIntegrationMain extends Application {
 
 		var config = new HTTPServerConfig();
 		config.address = "127.0.0.1";
-		config.port = WEB_PORT;
+		config.port = 0;
 		config.rootDirectory = new File(webRoot);
 		config.directoryIndex = ["index.html"];
 
@@ -435,7 +442,27 @@ class NodeIntegrationMain extends Application {
 
 		check("HTTPServer is listening", webServer.listening, "not listening");
 
-		requestIndex();
+		// HTTPServer is a ServerSocket, so port 0 resolves the same way it does
+		// in stage 4: not until Node has claimed one.
+		waitForWebPort(0);
+	}
+
+	private function waitForWebPort(attempts:Int):Void {
+		if (webServer.localPort > 0) {
+			check("HTTPServer resolved port 0 to a real port", webServer.localPort > 0, "got " + webServer.localPort);
+			requestIndex();
+			return;
+		}
+
+		if (attempts > 200) {
+			check("HTTPServer resolved port 0 to a real port", false, "still 0 after " + attempts + " tries");
+			stopWebServer();
+			return;
+		}
+
+		haxe.Timer.delay(function():Void {
+			waitForWebPort(attempts + 1);
+		}, 5);
 	}
 
 	private function requestIndex():Void {
@@ -459,7 +486,7 @@ class NodeIntegrationMain extends Application {
 			requestFile();
 		});
 
-		loader.load(new URLRequest("http://127.0.0.1:" + WEB_PORT + "/"));
+		loader.load(new URLRequest("http://127.0.0.1:" + webServer.localPort + "/"));
 	}
 
 	private function requestFile():Void {
@@ -476,7 +503,7 @@ class NodeIntegrationMain extends Application {
 			stopWebServer();
 		});
 
-		loader.load(new URLRequest("http://127.0.0.1:" + WEB_PORT + "/data.json"));
+		loader.load(new URLRequest("http://127.0.0.1:" + webServer.localPort + "/data.json"));
 	}
 
 	private function stopWebServer():Void {
@@ -548,7 +575,8 @@ class NodeIntegrationMain extends Application {
 			});
 		});
 
-		wsServer.listen(WS_PORT, "127.0.0.1", function():Void {
+		wsServer.listen(0, "127.0.0.1", function():Void {
+			wsPort = wsServer.address().port;
 			connectWebSocket();
 		});
 	}
@@ -653,7 +681,7 @@ class NodeIntegrationMain extends Application {
 			}
 		});
 
-		ws.connect("127.0.0.1", WS_PORT);
+		ws.connect("127.0.0.1", wsPort);
 	}
 
 	private static function longMessage():String {
