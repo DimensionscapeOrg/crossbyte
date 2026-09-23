@@ -74,6 +74,8 @@ class Aedifex {
 		.task("sample-sharedobject-cpp", "haxe", ["cpp.hxml"], "samples/sharedobject", "Build the shared object sample.")
 		.task("sample-simple-application-check", "haxe", ["check.hxml"], "samples/simple-application", "Type-check the simple application sample.")
 		.task("sample-simple-application-cpp", "haxe", ["cpp.hxml"], "samples/simple-application", "Build the simple application sample.")
+		.task("sample-arena-check", "haxe", ["check.hxml"], "samples/arena", "Type-check the arena sample.")
+		.task("sample-arena-cpp", "haxe", ["cpp.hxml"], "samples/arena", "Build the arena sample.")
 		.task("sample-udp-check", "haxe", ["check.hxml"], "samples/udp", "Type-check the UDP sample.")
 		.task("sample-udp-cpp", "haxe", ["cpp.hxml"], "samples/udp", "Build the UDP sample.")
 		.task("sample-rudp-check", "haxe", ["check.hxml"], "samples/rudp", "Type-check the reliable datagram sample.")
