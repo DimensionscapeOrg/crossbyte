@@ -29,6 +29,10 @@ class TickEvent extends Event {
 	 * accumulate this as it arrives and not bound it at all, or it runs slow
 	 * through a stall instead of catching up after one.
 	 *
+	 * For a simulation, `crossbyte.core.FixedStep` does all of this: steps of
+	 * one fixed size however the ticks arrive, a bounded catch-up after a
+	 * stall, and the time it gives up counted rather than silently lost.
+	 *
 	 * Do not assume it equals `1 / tps`. The runtime holds that rate closely
 	 * and corrects for a frame that overruns, but a loaded process still
 	 * reports what actually elapsed, and stepping by the nominal interval
