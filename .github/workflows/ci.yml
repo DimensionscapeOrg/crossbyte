@@ -61,6 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           for sample in \
+            arena \
             localconnection \
             rpc-greeter \
             rudp \
@@ -573,7 +574,7 @@ jobs:
       # Aedifex.hx runs one hxml from the sample's own directory, which --cwd
       # reproduces -- every one of them begins with --cwd ../..
       #
-      # One compiler cache for all thirteen. hxcpp keys a cached object by its
+      # One compiler cache for all fourteen. hxcpp keys a cached object by its
       # source and flags, and the samples share the runtime and much of
       # CrossByte, so only the first build pays in full: locally 38s cold,
       # then 5 to 12s each.
@@ -585,6 +586,7 @@ jobs:
         run: |
           $env:HXCPP_COMPILE_CACHE = Join-Path $env:RUNNER_TEMP "hxcpp-cache"
           $samples = @(
+            @("arena", "cpp.hxml"),
             @("localconnection", "cpp.hxml"),
             @("rpc-greeter", "cpp.hxml"),
             @("rudp", "cpp.hxml"),
@@ -636,6 +638,15 @@ jobs:
       - name: Run worker sample
         working-directory: export/worker
         run: .\WorkerSample.exe
+
+      # The game-server primitives together: an authoritative server and
+      # sixteen bots, every snapshot a bot decodes checked against what the
+      # server built. Exits non-zero on any difference, so a primitive that
+      # composes badly with the others fails here even when its own tests
+      # pass.
+      - name: Run arena sample
+        working-directory: export/arena
+        run: .\ArenaSample.exe
 
   extensions:
     name: Extensions | ${{ matrix.label }}

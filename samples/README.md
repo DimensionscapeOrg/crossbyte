@@ -176,6 +176,28 @@ haxe check.hxml
 haxe cpp.hxml
 ```
 
+## Arena
+
+`arena` is an authoritative game server and sixteen bots in one process,
+built from the game-server primitives -- `FixedStep`, `QuadTree`,
+`InterestSet`, `BitSet`, `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`
+and `ServerSocket.admit` -- that checks itself: a snapshot that decodes to
+anything but what the server built fails the run.
+
+From the repository root:
+
+```sh
+aedifex task sample-arena-check <project-root>
+aedifex task sample-arena-cpp <project-root>
+```
+
+Raw HXML entrypoints:
+
+```sh
+haxe check.hxml
+haxe cpp.hxml
+```
+
 ## Web Server
 
 `web-server` starts a localhost `HTTPServer`, serves a tiny doc root, and can
