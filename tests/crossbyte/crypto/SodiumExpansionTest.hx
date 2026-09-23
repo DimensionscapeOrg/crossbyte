@@ -61,7 +61,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testAeadKnownAnswerVector():Void {
-		#if (cpp && windows)
+		#if cpp
 		Assert.isTrue(Aead.isAvailable());
 
 		var key = Bytes.ofHex(XCHACHA_KEY_HEX);
@@ -84,7 +84,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testAeadRejectsTamperingAndMisuse():Void {
-		#if (cpp && windows)
+		#if cpp
 		var key = Aead.generateKey();
 		var nonce = Aead.generateNonce();
 		var plaintext = Bytes.ofString("attack at dawn");
@@ -129,7 +129,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testX25519Rfc7748Vectors():Void {
-		#if (cpp && windows)
+		#if cpp
 		Assert.isTrue(X25519.isAvailable());
 
 		var aliceSecret = Bytes.ofHex(X25519_ALICE_SK_HEX);
@@ -158,7 +158,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testKeyExchangeSessionKeysAgree():Void {
-		#if (cpp && windows)
+		#if cpp
 		Assert.isTrue(KeyExchange.isAvailable());
 
 		var client = KeyExchange.keypair();
@@ -191,7 +191,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testGenericHashKnownAnswersAndKeying():Void {
-		#if (cpp && windows)
+		#if cpp
 		Assert.isTrue(GenericHash.isAvailable());
 
 		Assert.equals(BLAKE2B_512_ABC_HEX, GenericHash.hash(Bytes.ofString("abc"), null, 64).toHex());
@@ -218,7 +218,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testHkdfRfc5869Vector():Void {
-		#if (cpp && windows)
+		#if cpp
 		Assert.isTrue(HKDF.isAvailable());
 
 		var ikm = Bytes.ofHex(HKDF_IKM_HEX);
@@ -247,7 +247,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testArgon2idHashVerifyAndDerive():Void {
-		#if (cpp && windows)
+		#if cpp
 		Assert.isTrue(Argon2id.isAvailable());
 
 		var hash = Argon2id.hash("correct horse battery staple", Argon2id.OPSLIMIT_MIN, Argon2id.MEMLIMIT_MIN);
@@ -281,7 +281,7 @@ class SodiumExpansionTest extends utest.Test {
 	}
 
 	public function testConstantTimeEqualsAndSecureWipe():Void {
-		#if (cpp && windows)
+		#if cpp
 		Assert.isTrue(ConstantTime.isAvailable());
 
 		var a = Bytes.ofHex("00112233445566778899aabbccddeeff");
