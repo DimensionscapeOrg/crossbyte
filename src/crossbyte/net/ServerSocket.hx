@@ -114,6 +114,54 @@ class ServerSocket extends EventDispatcher {
 	**/
 	public var handshakeTimeout:Float = 10.0;
 
+	/**
+		Most connections taken from the listen queue in one tick.
+
+		The operating system holds connections that have finished their TCP
+		handshake in the listen queue until they are accepted -- 200 of them on
+		a client edition of Windows, 128 to 4096 on Linux -- and refuses any
+		that arrive while it is full. Taking one a tick, as this server used to,
+		spent 190 ticks clearing 190 waiting connections, and a login burst
+		larger than the queue was refused by the kernel before the server saw
+		it. The cap keeps a single tick from being spent entirely on arrivals.
+
+		Node accepts as connections arrive, so it has no use for this.
+	**/
+	public var maxAcceptsPerTick:Int = 64;
+
+	/**
+		TLS handshakes allowed in flight at once. At the limit the server stops
+		taking connections from the listen queue until some finish, which leaves
+		the rest waiting in the kernel rather than costing a handshake each.
+		Negative disables the check.
+
+		A connection that never sends its half of the handshake costs a socket
+		for `handshakeTimeout` seconds, and draining the queue quickly is what
+		would otherwise let a flood of them pile up.
+
+		Always inert on Node, which completes its own handshakes.
+	**/
+	public var maxPendingHandshakes:Int = 256;
+
+	/**
+		Decides, from the peer's address alone, whether a connection is taken
+		at all. Called as soon as it is accepted -- before any TLS handshake,
+		before a `Socket` is built for it, before a `connect` event -- so a
+		refusal costs almost nothing. Return `false` and the connection is
+		closed on the spot. The default admits everything.
+
+		The address is canonical, as `Socket.remoteAddress` reports it, so a
+		list written against it on one target matches on every other.
+
+		What to decide with is the application's: a block list, a
+		`RateLimiter` keyed by address, a count of connections per address,
+		`ConcurrencyLimiter.available` while the server is saturated. A hook
+		that throws refuses the connection.
+	**/
+	public dynamic function admit(address:String, port:Int):Bool {
+		return true;
+	}
+
 	@:noCompletion private var __serverSocket:#if nodejs NodeServer #else Socket #end;
 	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __cbInstance:CrossByte;
@@ -420,6 +468,13 @@ class ServerSocket extends EventDispatcher {
 				return;
 			}
 
+			// A TLS server asks on its raw `connection` event instead, below,
+			// before a handshake is spent; by the time this runs, one has been.
+			if (!secure && !__nodeAdmits(connection)) {
+				connection.destroy();
+				return;
+			}
+
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 		};
@@ -462,6 +517,14 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			__serverSocket = Tls.createServer(options, accept);
+
+			// The raw TCP connection, before TLS starts on it: the point where
+			// a refusal still costs nothing.
+			__serverSocket.on("connection", function(raw:NodeSocket):Void {
+				if (!__nodeAdmits(raw)) {
+					raw.destroy();
+				}
+			});
 		} else {
 			__serverSocket = Net.createServer(accept);
 		}
@@ -476,6 +539,18 @@ class ServerSocket extends EventDispatcher {
 			close();
 			dispatchEvent(new Event(Event.CLOSE));
 		});
+	}
+
+	/**
+		Asks `admit` about a connection Node has just accepted. A hook that
+		throws, or a socket already gone, is a refusal.
+	**/
+	@:noCompletion private function __nodeAdmits(connection:NodeSocket):Bool {
+		try {
+			return admit(crossbyte._internal.net.IPv6.compress(connection.remoteAddress), connection.remotePort);
+		} catch (_:Dynamic) {
+			return false;
+		}
 	}
 	#end
 
@@ -620,32 +695,58 @@ class ServerSocket extends EventDispatcher {
 	}
 
 	@:noCompletion private function this_onTick(e:TickEvent):Void {
-		var sysSocket = null;
-
 		__pumpHandshakes();
 
+		var started:Int = __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
+		var limit:Int = maxAcceptsPerTick < 1 ? 1 : maxAcceptsPerTick;
+		for (_ in 0...limit) {
+			if (!__acceptOne()) {
+				break;
+			}
+		}
+
+		// Once for the lot rather than once per arrival: a pump steps every
+		// handshake in flight, and there may be hundreds.
+		if (__pendingHandshakes != null && __pendingHandshakes.length > started) {
+			__pumpHandshakes();
+		}
+	}
+
+	/**
+		Takes one connection from the listen queue, if one is waiting and there
+		is room for it. Answers whether it is worth looking for another.
+	**/
+	@:noCompletion private function __acceptOne():Bool {
 		try {
 			if (__serverSocket == null || !listening) {
-				return;
+				return false;
+			}
+			// Full: the rest wait in the kernel's queue, costing nothing here.
+			if (secure && maxPendingHandshakes >= 0 && __pendingHandshakes.length >= maxPendingHandshakes) {
+				return false;
 			}
 			var ready = Socket.select([__serverSocket], [], [], 0);
 			if (ready.read.length == 0 || ready.read[0] != __serverSocket) {
-				return;
+				return false;
 			}
 
-			sysSocket = __serverSocket.accept();
+			var sysSocket:Socket = __serverSocket.accept();
+
+			if (!__admits(sysSocket)) {
+				return true;
+			}
 
 			if (secure) {
 				// Defer the connect event: the peer is not authenticated (and
 				// no application bytes are readable) until TLS completes.
 				sysSocket.setBlocking(false);
 				__pendingHandshakes.push({socket: sysSocket, deadline: Sys.time() + handshakeTimeout});
-				__pumpHandshakes();
-				return;
+				return true;
 			}
 
 			var socket:CBSocket = __fromSocket(sysSocket);
 			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+			return true;
 		} catch (e:Error) {
 			if (!__isBlockedError(e)) {
 				close();
@@ -654,11 +755,28 @@ class ServerSocket extends EventDispatcher {
 		} catch (e:Dynamic) {
 			// Do nothing.
 		}
+		return false;
+	}
 
-		/* if (sysSocket != null) {
-			var socket:CBSocket = __fromSocket(sysSocket);
-			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
-		}*/
+	/**
+		Asks `admit` about a connection just accepted, and closes it if the
+		answer is no -- or if asking threw.
+	**/
+	@:noCompletion private function __admits(sysSocket:Socket):Bool {
+		var admitted:Bool = false;
+		try {
+			var peer = sysSocket.peer();
+			admitted = admit(crossbyte._internal.net.IPv6.compress(peer.host.toString()), peer.port);
+		} catch (_:Dynamic) {
+			admitted = false;
+		}
+
+		if (!admitted) {
+			try {
+				sysSocket.close();
+			} catch (_:Dynamic) {}
+		}
+		return admitted;
 	}
 
 	#end
