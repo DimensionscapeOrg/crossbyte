@@ -33,7 +33,11 @@ const dgram = require('dgram');
 const { spawn } = require('child_process');
 const readline = require('readline');
 
-const PORT = 50574;
+// Whatever the operating system hands out. A fixed number in the dynamic
+// range is one Windows may have reserved: Hyper-V and WinNAT exclude blocks of
+// it at boot, and on a machine where 50501-50600 is one of them, a fixed 50574
+// failed with "listen EACCES" before the browser was ever launched.
+let PORT = 0;
 const ROOT = __dirname;
 const PEER = path.join(__dirname, '..', '..', 'export', 'interop', 'BrowserInteropPeer.exe');
 const TIMEOUT_MS = 60000;
@@ -345,7 +349,8 @@ async function crossbyteOffers(page, mdns) {
 }
 
 (async () => {
-  await new Promise(resolve => server.listen(PORT, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  PORT = server.address().port;
 
   let failed = null;
 
