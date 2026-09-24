@@ -62,6 +62,7 @@ jobs:
           set -euo pipefail
           for sample in \
             arena \
+            http2 \
             localconnection \
             rpc-greeter \
             rudp \
@@ -72,6 +73,7 @@ jobs:
             udp \
             web-server \
             websocket-echo \
+            windows-service \
             worker; do
             echo "::group::samples/${sample}"
             haxe --cwd "samples/${sample}" check.hxml
@@ -574,7 +576,7 @@ jobs:
       # Aedifex.hx runs one hxml from the sample's own directory, which --cwd
       # reproduces -- every one of them begins with --cwd ../..
       #
-      # One compiler cache for all fourteen. hxcpp keys a cached object by its
+      # One compiler cache for all fifteen. hxcpp keys a cached object by its
       # source and flags, and the samples share the runtime and much of
       # CrossByte, so only the first build pays in full: locally 38s cold,
       # then 5 to 12s each.
@@ -587,6 +589,7 @@ jobs:
           $env:HXCPP_COMPILE_CACHE = Join-Path $env:RUNNER_TEMP "hxcpp-cache"
           $samples = @(
             @("arena", "cpp.hxml"),
+            @("http2", "cpp.hxml"),
             @("localconnection", "cpp.hxml"),
             @("rpc-greeter", "cpp.hxml"),
             @("rudp", "cpp.hxml"),
