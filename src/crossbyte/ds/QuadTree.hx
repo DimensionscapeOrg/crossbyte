@@ -7,7 +7,15 @@ import crossbyte.math.Rectangle;
  * @author Christopher Speciale
  */
 /**
- * A simple QuadTree implementation in Haxe.
+ * Points in a rectangle, divided where they are: a quad holds up to
+ * `capacity` of them and splits into four when it is given more.
+ *
+ * Because it divides where the points are, it copes with uneven crowds -- a
+ * thousand on one spot and a scattering elsewhere -- and suits points that
+ * hold still, or queries of many sizes. It has no way to move a point:
+ * things that move are put back by `clear` and inserting everything again,
+ * which costs a descent per point per rebuild. For many things moving every
+ * tick, queried at one radius, `SpatialGrid` moves each for a comparison.
  *
  * @param T The type of elements stored in the QuadTree.
  */
@@ -57,15 +65,26 @@ class QuadTree<T> {
 		if (!boundary.contains(node.x, node.y))
 			return false;
 
-		if (nodes.length < capacity || depth >= MAX_DEPTH) {
-			nodes.push(node);
-			return true;
+		// Down by arithmetic. Once this quad holds the point, which child takes
+		// it is which side of each midline it falls on -- the midlines being
+		// the edges the children were built with. No child is asked whether
+		// it contains the point, so none can refuse it. Asking them in turn
+		// cost up to four containment tests a level, and it dropped points:
+		// a child's far edge is `(x + w/2) + w/2`, which can round an ulp
+		// short of its parent's `x + w`, and a point in that sliver was in the
+		// parent and in neither child, so insert returned false.
+		var quad:QuadTree<T> = this;
+		while (quad.nodes.length >= quad.capacity && quad.depth < MAX_DEPTH) {
+			if (!quad.divided)
+				quad.subdivide();
+
+			var east:Bool = node.x >= quad.northeast.boundary.x;
+			var south:Bool = node.y >= quad.southwest.boundary.y;
+			quad = south ? (east ? quad.southeast : quad.southwest) : (east ? quad.northeast : quad.northwest);
 		}
 
-		if (!divided)
-			subdivide();
-
-		return northeast.insert(node) || northwest.insert(node) || southeast.insert(node) || southwest.insert(node);
+		quad.nodes.push(node);
+		return true;
 	}
 
 	private function subdivide():Void {
