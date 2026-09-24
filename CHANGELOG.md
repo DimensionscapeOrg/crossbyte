@@ -5,6 +5,116 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `samples/arena`: an authoritative game server and sixteen bots in one
+  process, built from `FixedStep`, `QuadTree.queryCircle`, `InterestSet`,
+  `BitSet`, `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`,
+  `ServerSocket.admit` and `FrameCodec`. Every snapshot carries a checksum of
+  what the server built and each bot compares what it decoded, so the run
+  exits non-zero when the pieces compose badly even if each passes its own
+  tests. CI builds and runs it.
+- Admission control on listeners. `ServerSocket.admit(address, port)` is
+  asked about each connection as soon as it is accepted -- before any TLS
+  handshake, before a `Socket` is built -- and `false`, or a throw, closes it
+  on the spot; a TLS server on Node asks on the raw `connection` event, so a
+  refused peer is spared the handshake there too. The accept loop takes up to
+  `maxAcceptsPerTick` connections a tick (64) where it took one, which left a
+  burst of 190 waiting 3.2 seconds at 60 Hz, and `maxPendingHandshakes` (256)
+  bounds handshakes in flight by leaving the rest queued in the kernel.
+  `ReliableDatagramServerSocket.admit` is asked before a CONNECT from a new
+  address allocates a session. `ServerWebSocket` honours all three: it
+  accepts through a loop of its own, where they had compiled and done
+  nothing.
+- `crossbyte.ds.InterestSet`: what came into an observer's view and what left
+  it since the last round -- the spawn and despawn lists a server sends each
+  client. Ids from any visibility test are gathered and committed, and
+  `commit` reports departures and then arrivals, at a cost that follows the
+  size of the views rather than the largest id. `forget(id)` covers a slot
+  reused between rounds, which a set of numbers cannot see. `QuadTree` gains
+  `queryCircle`, and stops subdividing 32 levels down: a crowd on one spot
+  used to split until the quads were too small for floating point to tell
+  apart, and inserts began to fail.
+- `crossbyte.ds.SequenceRing` and `crossbyte.io.ByteDelta`, the two halves of
+  delta replication. The ring files values by a wrapping sequence number and
+  reads anything older than its window as absent. The codec encodes bytes as
+  a difference from a baseline -- an unchanged 1000-byte snapshot costs five
+  bytes -- and decodes its input as hostile, refusing a declared length above
+  `maxLength` before building anything.
+- `BitSet.nextSetBit`, `nextClearBit`, iteration with `for (i in bits)`,
+  `isEmpty`, `clone`, and `and`, `or`, `xor` and `andNot` in place. Finding
+  the set bits meant calling `get()` on every index; a loop on `nextSetBit`
+  finds them a word at a time and allocates nothing.
+- `crossbyte.core.FixedStep`: steps of one fixed size however the ticks
+  arrive. `advance(delta)` takes each tick's elapsed time and `step()` hands
+  back steps of exactly `interval`, each numbered by `tick`. Time beyond
+  `maxSteps` is dropped and counted in `dropped` rather than owed, since
+  owing it is how a server that falls behind falls further behind, and
+  `alpha` is how far into the next step the present is. A quotient a hair
+  short of a whole number counts as that number, so a 144 Hz runtime under a
+  60 Hz simulation stays on schedule.
+- `crossbyte.net.ConcurrencyLimiter`: how many at once, beside
+  `RateLimiter`'s how often. Capacity in flight is capped and the rest are
+  refused, or held in a bounded first-come queue for a bounded time.
+  `tryAcquire` never waits or jumps the queue, `acquire` grants, queues or
+  refuses, and `sweep()` from the tick expires waiters -- there is no timer
+  inside. The `ConcurrencyPermit` it returns releases correctly in every
+  state, so a connection can release on close without asking what became of
+  its claim, and `limit` may change at any time.
+- `crossbyte.cluster`: low-level pieces for running as more than one node,
+  none of which refers to another.
+  - `SnowflakeId`: 64-bit ids -- 41 bits of milliseconds, 10 of node, 12 of
+    sequence -- unique across nodes without a round trip, ordered by time,
+    and never repeated when the clock steps back or a burst exhausts a
+    millisecond.
+  - `Rendezvous`: highest-random-weight hashing, so every node computes the
+    same owner for a key with nobody to ask, and removing a node moves only
+    its keys. The owners of fixed keys are pinned in the tests, because two
+    targets disagreeing about an owner is the failure this cannot have.
+  - `Membership`: who is alive, from heartbeats however they arrive, with
+    `onJoin` and `onLeave`, and `maxNodes` bounding the names accepted from
+    outside.
+  - `NodeChannel`: a framed link to one peer that redials with backoff from
+    a quarter second to thirty seconds, bounds what waits for an absent peer
+    with `maxQueuedBytes`, and never resends a message behind the caller's
+    back.
+- `crossbyte.net.FrameCodec`: message boundaries for transports that do not
+  keep them, such as TCP and binary WebSocket. A four-byte length prefix, a
+  read cursor with amortised compaction, and a declared length checked
+  against `maxFrameSize` as soon as the header is readable rather than after
+  the bytes arrive.
+- `crossbyte.ds.ExpiringMap`: entries that stop being there, bounded twice --
+  `ttl` for how long and `maxSize` for how many, since time is no bound when
+  whoever fills the map fills it faster than it drains. A sweep costs what
+  expired rather than what is held, and an expired entry reads as gone
+  however seldom the caller sweeps.
+- `userData` on `Socket` (and so `WebSocket`), `ReliableDatagramSocket`,
+  `DataChannel` and `NetConnectionBase`: somewhere to keep the application's
+  state for a connection that goes when the connection goes, instead of a
+  side map whose entries outlive their connections whenever a removal is
+  forgotten. Typed `Any`, so reading it back takes an explicit cast.
+- ICE consent freshness, RFC 7675. A selected pair used to stay selected
+  forever; the agent now re-checks it every four to six seconds, verifies the
+  answers against the peer's password, and gives the path up thirty seconds
+  after the last valid one. `PeerConnection` closes when that happens.
+- Fuzzing, in `tests/crossbyte/fuzz`. Nine parsers that read bytes off a wire
+  are fuzzed as pure functions -- STUN, SCTP, DCEP, HPACK and its Huffman
+  strings, deflate, LZ4, and Postgres results and bytea -- and the HTTP
+  server, the WebSocket frame decoder and an established SCTP association
+  over real connections. Those three assert what is still held once the peers
+  have gone as well as that the server survives, because every
+  unbounded-growth fault fixed in this release had passed a green suite. The
+  generator is seeded, so a red run reproduces.
+- A server-shaped soak, `ci/soak.hxml`, to ask whether the native GC fault
+  seen in the test suite reaches a process that stays up. Within twenty
+  seconds of its first run it found the `SlotMap` leak below; since then it
+  has run two hours clean. `TestHarness` gains `-D gc_probe` and
+  `-D gc_bisect` for cornering that fault.
+- CI runs what it says it runs. Several steps went through a tool release
+  that printed its banner and exited 0, so the native samples never built and
+  the interpreter suite, the sample type-checks and the three hxcpp audits
+  never ran. They do now, with every build's exit code checked, and five of
+  the samples are also run. The system and native crypto suites run on Linux
+  and macOS, and the examples in `File`'s documentation are type-checked
+  before the API docs build.
 - The jvm target runs the whole suite. It ran everything except `RPCTest`,
   `CollectionsTest` and `CompressionRoundTripTest`, excluded for a Haxe 4.3.7
   `--jvm` bytecode bug that raises a `VerifyError` at class-load and takes the
@@ -202,6 +312,66 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The samples drive their runtime through `HostApplication.advance()`. Four
+  of them -- arena, websocket-echo and both halves of socket-chat -- reached
+  `CrossByte`'s private constructor and `pump()` through `@:access`, which is
+  what anyone copying a sample would have copied.
+- `RateLimiter` lives in `crossbyte.net`. Nothing in it was about HTTP, and
+  what a game server meters -- admissions, a datagram path, an RPC caller --
+  is not HTTP either. `crossbyte.http.RateLimiter` remains as a deprecated
+  typedef, so existing imports keep compiling.
+- `ReliableDatagramSocket` sends at the rate the path carries. It
+  retransmitted on a flat three seconds with 500 frames always allowed in
+  flight, which on a path already dropping packets makes the drops worse. The
+  retransmission timeout is now measured as RFC 6298 describes -- smoothed
+  round trip plus four times its variation, between 200 ms and 10 s, doubled
+  on loss -- and the window starts at ten frames, grows by slow start and
+  then congestion avoidance, and halves on loss, never below two. The
+  repeating timer each frame armed is gone, which with a full window was
+  hundreds of live timers per connection, and what waits for the window is
+  bounded by the new `maxOutputBufferSize` and `outputOverflowPolicy`, with
+  `bufferedAmount` reporting the backlog.
+- SCTP flow control, in both directions. A receiver advertised its whole
+  window in every SACK however much it held, and nothing capped the total
+  across 65536 streams: 16.6 MB across 16384 streams was kept in full. It now
+  advertises what is free and holds no more than the 2 MB it offers, giving
+  up unfinished messages past that. A sender ignored the window it was told;
+  it now queues when there is no room, probes a closed window so it learns
+  when it reopens, and reports the backlog as `DataChannel.bufferedAmount`.
+  `DataChannel.send` throws once 8 MB is waiting, rather than growing until
+  the process dies.
+- `HTTPServerConfig` ships defaults a server can run on. The rate limiter
+  allowed ten requests a minute per address -- fewer than one page with its
+  assets -- and now allows 240. `maxOutputBufferSize` was unbounded, so a
+  client that stopped reading held its whole response in memory; it is now
+  8 MB, above anything an ordinary response buffers. Both are named
+  constants, `DEFAULT_REQUESTS_PER_MINUTE` and `DEFAULT_MAX_OUTPUT_BUFFER`,
+  with the reasoning beside them.
+- ICE drops a remote candidate whose address is a name rather than a literal.
+  Browsers publish host candidates as random `.local` mDNS names, which
+  nothing here resolves, and each send to one blocked the event loop on a
+  lookup: 15.8 seconds to connect to a real browser, every other connection
+  frozen meanwhile, against 1.3 with the names dropped. Nothing is lost,
+  since the browser's own checks arrive and its address is learned from them.
+- `ByteArray.readObject`, `writeObject` and their `FileStream` counterparts
+  throw for an encoding this build cannot handle -- AMF without the optional
+  `format` haxelib -- instead of reading `null` and writing nothing. The
+  message names `-lib format`.
+- `ByteArray.endian` and `objectEncoding` are declared as ordinary
+  properties. They were forwarded from the underlying type, with documented
+  declarations behind a `doc_gen` flag nothing defined, so neither appeared in
+  the generated API documentation.
+- The documentation describes CrossByte rather than the Flash and AIR runtime
+  it was adapted from: security sandboxes, policy files, `Std.is`, types this
+  library does not have, and defaults it does not use. Its replacement was
+  checked against the code -- `readMultiByte` and `writeMultiByte` ignore
+  their character set, `URLRequest.method` takes any verb, and the default
+  compression is LZ4. Every example in `File` compiles, and CI keeps it that
+  way. The README lists the build defines, including the ones that enable the
+  native Brotli and LZ4 backends.
+- The HTTP request path no longer compiles a regular expression per request,
+  and skips building the access-log line when the level would discard it --
+  about 1.8% of a request, measured inside the real workload.
 - `ByteArray` writes no longer call out to `__resize` when the buffer already has room. Growth, gap zeroing and the length bookkeeping are all unnecessary for a write landing inside existing capacity at or before the current end -- which is every append an encoder makes -- so that case is now an inline capacity check. `writeByte`, which is inline and where the call was proportionally largest, went from 494 to 766 MB/s on the machine that measured it; `writeInt` gained about a tenth. The gap between reads and writes that prompted this turns out to be mostly inherent: `Bytes.setInt32` costs roughly 1.6 times `Bytes.getInt32` at the platform level, and the constant `ByteArray` overhead above that is an interface method call which cannot be inlined away.
 - The three places that ask a STUN server what address it sees -- `StunClient`, `ReliableDatagramServerSocket.discoverPublicAddress` and `PeerConnection.gatherReflexive` -- now share one implementation of the parts that were never different: the transaction a reply is matched against, the doubling retransmission schedule, the deadline, and the handful of ways a reply can be unhelpful. Their transports genuinely differ and still do. The duplication had already cost something: the retransmission fix earlier in this release had to be applied by hand twice and the second was nearly missed. The extracted logic needs no socket and no clock, so it is now directly tested on every target rather than only through three socket-bound paths.
 - `ByteArray`'s integer accessors read and write a word at a time. `readInt`, `readUnsignedInt`, `readShort`, `readUnsignedShort`, `writeInt` and `writeShort` each made one bounds-checked byte access per byte and shifted them together; they now use `getInt32`/`getUInt16` (little-endian by definition on every target) with a swap for big-endian streams, which is most network traffic and all of STUN and SCTP. `readInt` went from 526 to 889 MB/s on the machine that measured it, and little-endian now costs the same as big-endian -- the swap was never the expense, the per-byte bounds checks were.
@@ -244,6 +414,129 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File` refused an absolute path whose only separator is the root --
+  `/root`, `/tmp`, `/` itself -- on Linux and macOS, and `parent` of a root
+  threw. As root in a container `HOME` is `/root`, so the default document
+  root, `Store` and `getRootDirectories()` all failed there.
+- `PostgresConnection.ping()` reported every native connection dead without
+  asking the server, having checked a handle only the php target sets. A pool
+  validating with it would have discarded every connection it opened.
+- A PHP response lost all but its last cookie: repeated CGI headers
+  overwrote one another. They are joined as the rest of the HTTP stack joins
+  them, and `Set-Cookie` is split on an escaped newline, where a line break
+  typed into the source became `"\r\n"` in a CRLF checkout and glued two
+  cookies into one header.
+- `File.spaceAvailable` reported every disk full on Linux and macOS. The `df`
+  output was split with a pattern missing its global flag, so no row had the
+  fields a data row needs.
+- Native builds on Linux and macOS, which MSVC had been hiding: a second
+  `hxcpp.h` include that GCC resolved into the precompiled-header directory,
+  Windows-only calls in `SecureRandom` and `PHPBridge` compiled everywhere,
+  `libdl` handed to the linker as a file name, the DTLS bridge linked twice,
+  and BLAKE3's SSE4.1 and AVX2 files built without their flags, which hxcpp
+  drops from inside a `<file>` element. MSVC now builds the AVX2 backend with
+  `/arch:AVX2` too, and BLAKE3 has test vectors long enough to reach both.
+- A listening socket on the jvm target had a backlog of 50 whatever it asked
+  for, so a burst of 51 connections was refused before the server heard of
+  it. It now asks for the system's maximum.
+- `SlotMap` and `PackedSlotMap` leaked a slot on its 256th reuse. The
+  generation outgrew the eight bits a `SlotHandle` carries, handle and slot
+  never compared equal again, and the entry could not be removed.
+- SCTP receivers are bounded against a peer that sends and never finishes.
+  An association kept every chunk it received for as long as it was open,
+  leaking at the rate it was used; the fragments of a message never ended,
+  and ordered messages waiting on a sequence that never came, were held
+  without limit and are now capped at a megabyte per stream; and reassembly
+  re-sorted everything held on every arrival, so 4000 fragments took sixteen
+  seconds on eval. Fragments are now inserted in order, and a stream's held
+  messages are looked up by sequence rather than searched.
+- The DTLS `ClientHello` assembler did work in proportion to every fragment
+  so far on each arrival, and a peer chooses the fragments: 4000 pieces of an
+  unauthenticated handshake record took seven seconds on eval. It merges in
+  order now, with a cap on disjoint runs, and the same 4000 take 15 ms.
+- The WebRTC stack settles its futures when their owner closes.
+  `PeerConnection.ready`, `IceAgent.connected`, `DtlsTransport.established`,
+  `TurnClient.allocated`, the SCTP association's `established` and
+  `DataChannel.opened` settled only through the handshake, so closing before
+  it finished left a caller waiting forever. A deliberate close does not
+  raise the "failed and nothing was listening" warning.
+- `PeerConnection` survives the description a peer sends it. One unusable
+  candidate threw part-way through `connect` and left the agent unstarted,
+  bad credentials threw after the candidates were added, a candidate's
+  priority was taken on trust, and pairing cost grew with the cube of the
+  peer's candidate count, which is now capped at 64.
+- TURN permissions lapsed after five minutes. Refreshing an allocation does
+  not renew them and nothing else did, so the relay silently began dropping
+  the peer while the connection looked healthy. `TurnClient` renews them on
+  its tick.
+- A closed `DataChannel` kept its stream number for the life of the
+  association, so the peer could not reopen that stream, and after 32768
+  channels the number wrapped on the wire into a live one. Closed channels
+  are released, and running out of numbers throws.
+- A WebSocket frame header claiming a two-gigabyte payload was waited on, and
+  everything sent after it retained, though the size limit would refuse the
+  frame once it arrived -- ten unauthenticated bytes to ask. A frame is now
+  refused on its header.
+- `ServerWebSocket.handshakeTimeout` closed nothing on any target. The reaper
+  took every stalled upgrade for a finished one and stopped tracking it with
+  its socket still open, and on Node upgrades were never tracked at all, so a
+  peer could connect, send nothing and keep its descriptor.
+- WebSocket close codes are validated by RFC 6455's ranges, so a peer closing
+  with 1016, 2000 or 5000 gets a protocol error rather than having the code
+  reported as its reason.
+- HTTP/1.1 header lines that are not headers are refused with 400: an
+  obs-fold continuation, whitespace before the colon, a line with no colon.
+  Trimming each line first let a folded `Transfer-Encoding` take effect here
+  and nowhere upstream, which is request smuggling.
+- A chunk size is bounded before it is parsed, on the server and the client.
+  `Std.parseInt` answers four different ways for a value past 32 bits, and on
+  Node the answer was 4294967295, which the server accepted and then waited
+  on forever. The client also requires the size line to be hex, treats a body
+  as chunked only when chunked is the final coding, and says why a body
+  failed instead of "Download failed".
+- Decompression is bounded while it decodes. A server chose how much memory
+  the HTTP client spent -- a kilobyte of gzip is a megabyte of zeros, and
+  stacked codings multiply -- which now stops at 64 MB and two codings.
+  `ByteArray.uncompress` takes a `maxOutputSize`, honoured inside the
+  deflate, gzip, Brotli and LZ4 decoders so the memory is never taken; the
+  default, 0, is no limit. The opt-in native Brotli and LZ4 backends are
+  still measured after they return.
+- The HTTP/2 server bounds the frames it is obliged to answer. SETTINGS and
+  PING are acknowledged on arrival and nothing counted them, so a peer
+  sending faster than the server drained grew its output without limit
+  (CVE-2019-9515, CVE-2019-9512). Past 100 in the Rapid Reset window the
+  connection gets GOAWAY with ENHANCE_YOUR_CALM.
+- A reliable datagram server believed any CONNECT. One spoofed datagram set a
+  handshake retransmitting about seven times at the address it named, and
+  half-open sessions were unbounded. Only the dialling side retransmits now,
+  and `ReliableDatagramServerSocket.maxPendingConnections` (256) caps
+  half-open sessions, dropping the excess rather than answering it.
+- Bounds checks that overflowed. `position + length > size` wraps negative
+  for a large length and passes; eight checks were written that way, in
+  `ByteArray`, `ByteArrayOutput`, `DatagramSocket.send`,
+  `ReliableDatagramSocket.send`, the Node process pipe, the native socket
+  address code and the Postgres parameter block, and `ByteArrayInput`'s own
+  let a varint length of 2^31 - 1 read past the buffer. The varint decoders
+  also keep their bounds in `-D final` builds, which had compiled out exactly
+  those three guards, and stop at five bytes: a sixth was shifted by 35,
+  which most targets mask to 3.
+- `ByteArrayOutput.writeIntAt` wrote past the end of a chunk when the integer
+  straddled two -- an out-of-bounds heap write from a public method.
+- `ByteArrayOutput.reserve` reallocated on every call, its early return
+  having compared the size against itself doubled, so an RPC message of N
+  values allocated about 2N times.
+- A `Socket` constructed with port 65535 did nothing, though `connect` to the
+  same port worked.
+- `Error.getCallStack()` returned the stack of whichever exception was last
+  caught anywhere, rather than the error's own.
+- A `Future` resolved on one thread while another attached a handler could
+  lose the handler, or free the array it was in while the resolution walked
+  it. State changes under a lock now, on targets with threads.
+- `System.processorCount` returned 0 on macOS. Process affinity is not
+  implemented there, macOS having no process-level affinity, and reports an
+  empty mask.
+- A reliable socket counted its reorder cache by walking it, with an iterator
+  allocation, for every datagram that arrived out of order.
 - A WebSocket server on the jvm target stopped the runtime. `setBlocking` there
   did nothing when it was called before `bind()` -- there is no channel to
   configure until then -- and `bind()` opened one hardcoded to blocking, so the
