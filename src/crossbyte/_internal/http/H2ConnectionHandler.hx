@@ -40,6 +40,12 @@ class H2ConnectionHandler {
 	// Advanced on every read. An HTTP/2 connection is idle between requests
 	// by design, so silence alone means nothing -- what matters is silence
 	// for longer than the configuration allows.
+	//
+	// Kept in Sys.time(), because that is the clock checkDeadline is handed.
+	// It was haxe.Timer.stamp(), which is Sys.time() on hl, neko and jvm and a
+	// counter from an arbitrary start on cpp and Node -- where every
+	// connection therefore read as idle since 1970 and was closed at the first
+	// sweep, a request in flight or not.
 	private var __lastActivity:Float;
 
 	/**
@@ -58,7 +64,7 @@ class H2ConnectionHandler {
 		__connection.onRequest = __serve;
 		__connection.onConnectionError = __onConnectionError;
 
-		__lastActivity = haxe.Timer.stamp();
+		__lastActivity = Sys.time();
 
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.addEventListener(Event.CLOSE, __onClosed);
@@ -91,7 +97,7 @@ class H2ConnectionHandler {
 			return;
 		}
 
-		__lastActivity = haxe.Timer.stamp();
+		__lastActivity = Sys.time();
 		__connection.receive(inbound, 0, inbound.length);
 	}
 
@@ -106,6 +112,9 @@ class H2ConnectionHandler {
 	 * Without this an HTTP/2 connection was never reaped at all: the sweep
 	 * only walked HTTP/1.1 handlers, so a peer could open connections and go
 	 * silent, and each one lived until the process did.
+	 *
+	 * @param now `Sys.time()`, as the server's sweep reads it once for every
+	 *        handler it visits, HTTP/1.1 and HTTP/2 alike.
 	 */
 	public function checkDeadline(now:Float):Void {
 		var idle:Float = now - __lastActivity;
