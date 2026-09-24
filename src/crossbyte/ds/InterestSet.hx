@@ -7,10 +7,11 @@ import crossbyte.errors.IllegalOperationError;
  * What came into view and what left it, round to round.
  *
  * Each round -- a tick, for one observer -- add every id in view, however
- * that is decided: a `QuadTree` query, a grid, a line of sight. `commit`
- * then reports what was not in view last round and what no longer is, and
- * the round just gathered becomes the view. It is how a server learns what
- * to spawn and despawn on each client without comparing whole worlds.
+ * that is decided: a `SpatialGrid` or `QuadTree` query, a line of sight.
+ * `commit` then reports what was not in view last round and what no longer
+ * is, and the round just gathered becomes the view. It is how a server
+ * learns what to spawn and despawn on each client without comparing whole
+ * worlds.
  *
  * ```haxe
  * // For each observer, every tick.
