@@ -19,12 +19,11 @@ All notable changes to CrossByte will be documented in this file.
   against 45 at 250,000, where the tree takes most of a 50 ms step. A
   `QuadTree` remains the choice for uneven crowds and things that hold still.
 - `samples/arena`: an authoritative game server and sixteen bots in one
-  process, built from `FixedStep`, `QuadTree.queryCircle`, `InterestSet`,
-  `BitSet`, `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`,
-  `ServerSocket.admit` and `FrameCodec`. Every snapshot carries a checksum of
-  what the server built and each bot compares what it decoded, so the run
-  exits non-zero when the pieces compose badly even if each passes its own
-  tests. CI builds and runs it.
+  process, built from `FixedStep`, `SpatialGrid`, `InterestSet`, `BitSet`,
+  `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`, `ServerSocket.admit` and
+  `FrameCodec`. Every snapshot carries a checksum of what the server built and
+  each bot compares what it decoded, so the run exits non-zero when the pieces
+  compose badly even if each passes its own tests. CI builds and runs it.
 - Admission control on listeners. `ServerSocket.admit(address, port)` is
   asked about each connection as soon as it is accepted -- before any TLS
   handshake, before a `Socket` is built -- and `false`, or a throw, closes it
