@@ -81,6 +81,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		// Float cell arithmetic and Vector storage, which differ by target.
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
+		runner.addCase(new crossbyte.ds.SpatialGrid3DTest());
 		// Not portable in the sense of needing nothing -- it needs a backend --
 		// but portable in the sense that matters: the same assertions run
 		// against IndexedDB here and a directory of files everywhere else, so
