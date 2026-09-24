@@ -5,6 +5,18 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.ds.SpatialGrid3D`: `SpatialGrid` with a third axis, for things
+  spread as far up and down as across -- space, flight, floors a view apart.
+  `set(id, x, y, z)` moves an id for a comparison unless it crosses a cell, and
+  `querySphere` and `queryBox` visit only the cells they overlap. A world that
+  is mostly flat relative to its view radius is still cheaper in
+  `SpatialGrid` on the ground plane: a 3D cell costs an array entry whether or
+  not anything is in it, and a sphere touches up to 27 cells where a circle
+  touches 9. Run through the arena on a flat world it keeps 100,000 entities
+  current in 1.07 ms against the 2D grid's 0.91, reporting the same entities
+  entering and leaving every view. There is no octree, for the reason there
+  is a grid beside `QuadTree`: a tree divides where things are, so moving
+  them means building it again.
 - `crossbyte.ds.SpatialGrid`: ids at positions, filed into square cells, for
   things that move. Each cell's ids are a list threaded through arrays indexed
   by id, so `set` costs a comparison when an id stays in its cell -- at any
