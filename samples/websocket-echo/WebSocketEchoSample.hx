@@ -1,4 +1,4 @@
-import crossbyte.core.CrossByte;
+import crossbyte.core.HostApplication;
 import crossbyte.events.Event;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
@@ -7,15 +7,22 @@ import crossbyte.net.ServerWebSocket;
 import crossbyte.net.WebSocket;
 import haxe.Timer;
 
-@:access(crossbyte.core.CrossByte)
-class WebSocketEchoSample {
+class WebSocketEchoSample extends HostApplication {
 	private static inline var HOST:String = "127.0.0.1";
 	private static inline var PORT:Int = 18080;
 	private static inline var MESSAGE:String = "hello websocket";
 	private static inline var TIMEOUT_SECONDS:Float = 5.0;
 
 	public static function main():Void {
-		var runtime = new CrossByte(true, DEFAULT, true);
+		var app = new WebSocketEchoSample();
+		app.run();
+	}
+
+	public function new() {
+		super();
+	}
+
+	private function run():Void {
 		var server = new ServerWebSocket();
 		var accepted:Array<WebSocket> = [];
 		var done = false;
@@ -49,7 +56,7 @@ class WebSocketEchoSample {
 
 		var deadline = Timer.stamp() + TIMEOUT_SECONDS;
 		while (!done && Timer.stamp() < deadline) {
-			runtime.pump(1 / 60, 0);
+			advance(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
 
@@ -60,7 +67,7 @@ class WebSocketEchoSample {
 		try {
 			server.close();
 		} catch (_:Dynamic) {}
-		runtime.exit();
+		shutdown();
 
 		// Reported as an explicit exit status rather than a thrown error so
 		// this doubles as a CI check: an uncaught throw leaves hxcpp exiting

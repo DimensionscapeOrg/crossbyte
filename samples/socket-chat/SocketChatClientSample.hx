@@ -1,4 +1,4 @@
-import crossbyte.core.CrossByte;
+import crossbyte.core.HostApplication;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
@@ -6,15 +6,21 @@ import crossbyte.net.Socket;
 import sys.thread.Deque;
 import sys.thread.Thread;
 
-@:access(crossbyte.core.CrossByte)
-class SocketChatClientSample {
+class SocketChatClientSample extends HostApplication {
 	public static function main():Void {
-		var args = Sys.args();
+		var app = new SocketChatClientSample();
+		app.run(Sys.args());
+	}
+
+	public function new() {
+		super();
+	}
+
+	private function run(args:Array<String>):Void {
 		var host = args.length > 0 ? args[0] : SocketChatCommon.DEFAULT_HOST;
 		var port = SocketChatCommon.parsePort(args, 1, SocketChatCommon.DEFAULT_PORT);
 		var requestedName = args.length > 2 ? args[2] : "guest";
 
-		var runtime = new CrossByte(true, DEFAULT, true);
 		var socket = new Socket();
 		var inbox = new ChatInbox();
 		var consoleQueue:Deque<String> = new Deque();
@@ -49,7 +55,7 @@ class SocketChatClientSample {
 		try {
 			while (running) {
 				drainConsole(consoleQueue, socket, connected, value -> running = value);
-				runtime.pump(SocketChatCommon.PUMP_INTERVAL, 0);
+				advance(SocketChatCommon.PUMP_INTERVAL, 0);
 				Sys.sleep(0.001);
 			}
 		} catch (error:Dynamic) {
@@ -58,7 +64,7 @@ class SocketChatClientSample {
 					socket.close();
 				}
 			} catch (_:Dynamic) {}
-			runtime.exit();
+			shutdown();
 			throw error;
 		}
 
@@ -67,7 +73,7 @@ class SocketChatClientSample {
 				socket.close();
 			}
 		} catch (_:Dynamic) {}
-		runtime.exit();
+		shutdown();
 	}
 
 	private static function drainConsole(queue:Deque<String>, socket:Socket, connected:Bool, setRunning:Bool->Void):Void {

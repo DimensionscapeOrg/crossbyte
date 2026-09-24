@@ -1,5 +1,5 @@
-import crossbyte.core.CrossByte;
 import crossbyte.core.FixedStep;
+import crossbyte.core.HostApplication;
 import crossbyte.ds.BitSet;
 import crossbyte.ds.InterestSet;
 import crossbyte.ds.QuadTree;
@@ -41,9 +41,12 @@ import haxe.Timer;
 	Every snapshot carries a checksum of what the server built, and each bot
 	checks what it decoded against it. A mismatch, a baseline a bot does not
 	have, a bot that never gets in, or a bot that never sees itself: exit 1.
+
+	The loop is the sample's own, which is the shape a game server with a
+	loop of its own takes: a `HostApplication`, advanced by hand. Nothing here
+	reaches past the public API.
 **/
-@:access(crossbyte.core.CrossByte)
-class ArenaSample {
+class ArenaSample extends HostApplication {
 	// The world.
 	public static inline var WORLD:Float = 2000;
 	static inline var NPCS:Int = 300;
@@ -80,10 +83,17 @@ class ArenaSample {
 	static var stats:Stats = new Stats();
 
 	public static function main():Void {
-		var runtime = new CrossByte(true, DEFAULT, true);
+		var app = new ArenaSample();
+		Sys.exit(app.run() ? 0 : 1);
+	}
 
+	public function new() {
+		super();
+	}
+
+	function run():Bool {
 		var server = startServer();
-		runtime.addEventListener(TickEvent.TICK, (event:TickEvent) -> {
+		crossByte.addEventListener(TickEvent.TICK, (event:TickEvent) -> {
 			sim.advance(event.delta);
 			while (sim.step()) {
 				step();
@@ -97,7 +107,7 @@ class ArenaSample {
 		var deadline:Float = last + SECONDS;
 		while (Timer.stamp() < deadline) {
 			var now:Float = Timer.stamp();
-			runtime.pump(now - last, 0.002);
+			advance(now - last, 0.002);
 			last = now;
 
 			// Once everyone is in, one connection more from the same address
@@ -110,8 +120,8 @@ class ArenaSample {
 		}
 
 		var ok:Bool = report(bots);
-		runtime.exit();
-		Sys.exit(ok ? 0 : 1);
+		shutdown();
+		return ok;
 	}
 
 	// --- The server -------------------------------------------------------
