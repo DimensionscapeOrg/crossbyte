@@ -1,6 +1,7 @@
 package crossbyte.http;
 
 import crossbyte._internal.http.h2.H2Connection;
+import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2Flags;
 import crossbyte._internal.http.h2.H2Frame;
 import crossbyte._internal.http.h2.H2FrameType;
@@ -189,6 +190,124 @@ class HTTPServerH2Test extends utest.Test {
 				Assert.isTrue(response.indexOf("Hello over h2") >= 0);
 				async.done();
 			});
+		});
+	}
+
+	// --------------------------------------------------- connection lifetime
+	//
+	// The sweep that closes quiet HTTP/2 connections measured the quiet as
+	// Sys.time() minus a haxe.Timer.stamp(). Those are one clock on hl, neko
+	// and jvm and two different ones on cpp and Node, where every connection
+	// read as idle since 1970 and was closed at the first sweep -- a quarter
+	// second in, with a request in flight or without. Every exchange above is
+	// over before that sweep runs, so none of them could see it; each case here
+	// outlasts it. Each also sets the allowance it is not about so that judging
+	// by that one instead fails too: short where the connection must survive,
+	// long where it must be closed.
+
+	// Long enough to span several sweeps, which run every quarter second, and
+	// well short of the allowance the surviving cases are judged by.
+	private static inline var PAUSE:Float = 1.0;
+
+	// The server stamps activity with Sys.time(), which Windows advances in
+	// steps of up to about 16 ms, so a close can read a little early.
+	private static inline var SLACK:Float = 0.1;
+
+	public function testAnHttp2ConnectionIsNotReapedBetweenRequests(async:Async):Void {
+		var session = new H2Session(config -> {
+			config.keepAliveTimeout = 10;
+			config.requestTimeout = 0.5;
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.pause(PAUSE, () -> {
+					// Sent only on a connection that is still there, so a reaped
+					// one fails on what happened to it rather than on a write.
+					if (!session.ended) {
+						session.request(3, "GET", "/index.html", true);
+					}
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.isFalse(session.ended, 'the server ended the connection after ${session.silence()}s of silence, under a 10s keepAliveTimeout');
+						Assert.equals(200, session.status(3));
+						Assert.equals("Hello over h2", session.body(3));
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	public function testAnHttp2RequestIsNotReapedWhileItsBodyIsArriving(async:Async):Void {
+		// A slow upload: the headers now, the body after the pause, so a stream
+		// is open throughout and requestTimeout is the allowance that applies.
+		var session = new H2Session(config -> {
+			config.requestTimeout = 10;
+			config.keepAliveTimeout = 0.5;
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "received " + handler.requestText)];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false);
+			session.pause(PAUSE, () -> {
+				if (!session.ended) {
+					session.data(1, "the rest");
+				}
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					Assert.isFalse(session.ended, 'the server ended the connection after ${session.silence()}s of silence, under a 10s requestTimeout');
+					Assert.equals(200, session.status(1));
+					Assert.equals("received the rest", session.body(1));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAnIdleHttp2ConnectionIsReapedAfterKeepAliveTimeout(async:Async):Void {
+		// The other half: whatever fixes the clock must leave the sweep able to
+		// close a connection that really has gone quiet, and no sooner.
+		var session = new H2Session(config -> {
+			config.keepAliveTimeout = 1;
+			config.requestTimeout = 10;
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				// Silent from here. Waiting on the socket going, which is the
+				// effect; the GOAWAY ahead of it is the courtesy.
+				session.until(() -> session.dropped, () -> {
+					session.close();
+					Assert.equals(200, session.status(1));
+					Assert.isTrue(session.dropped, "an idle HTTP/2 connection was never closed");
+					Assert.isTrue(session.goAwayCode == H2ErrorCode.NO_ERROR, 'expected a GOAWAY with NO_ERROR before the close, got ${session.goAwayCode}');
+					Assert.isTrue(session.silence() >= 1 - SLACK, 'closed after ${session.silence()}s of silence, inside its 1s keepAliveTimeout');
+					async.done();
+				}, 5.0);
+			});
+		});
+	}
+
+	public function testAStalledHttp2RequestIsReapedAfterRequestTimeout(async:Async):Void {
+		// Headers promising a body that never comes. The stream stays open, so
+		// this is requestTimeout's to close, as it is for an HTTP/1.1 request
+		// that stops arriving.
+		var session = new H2Session(config -> {
+			config.requestTimeout = 1;
+			config.keepAliveTimeout = 10;
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false);
+			session.until(() -> session.dropped, () -> {
+				session.close();
+				Assert.isTrue(session.dropped, "a stalled HTTP/2 request was never closed");
+				Assert.isTrue(session.silence() >= 1 - SLACK, 'closed after ${session.silence()}s of silence, inside its 1s requestTimeout');
+				async.done();
+			}, 5.0);
 		});
 	}
 
@@ -394,6 +513,273 @@ class HTTPServerH2Test extends utest.Test {
 	}
 
 	private static function writeFrame(out:BytesBuffer, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+	}
+}
+
+/**
+ * One HTTP/2 connection to a real `HTTPServer`, kept open across steps.
+ *
+ * `exchange` answers one request and tears everything down, which suits what a
+ * response contains and says nothing about how long a connection lives. This
+ * holds the connection, sends each frame when told to, and records what comes
+ * back -- including the server ending the connection, and how long after this
+ * side last spoke.
+ *
+ * Every write is made between pumps, never from the socket's data dispatch, for
+ * the reason `exchange` gives.
+ */
+private class H2Session {
+	/** `haxe.Timer.stamp()` when this side last wrote a frame. */
+	public var lastSentAt(default, null):Float = -1;
+
+	/** When a GOAWAY arrived, or -1. */
+	public var goAwayAt(default, null):Float = -1;
+
+	/** The error code that GOAWAY carried, or -1. */
+	public var goAwayCode(default, null):Int = -1;
+
+	/**
+	 * When the far end closed the socket, or -1. Never set by `close()`: the
+	 * socket dispatches `Event.CLOSE` for a local close too, and counting that
+	 * would report every session as reaped.
+	 */
+	public var droppedAt(default, null):Float = -1;
+
+	/** Whether the server closed the socket. */
+	public var dropped(get, never):Bool;
+
+	/** Whether the server has ended the connection, by GOAWAY or by closing. */
+	public var ended(get, never):Bool;
+
+	private final __root:File;
+	private final __server:HTTPServer;
+	private final __client:Socket;
+
+	// One of each for the life of the connection. HPACK is connection state: a
+	// block skipped, or encoded against a fresh table, leaves the two ends
+	// disagreeing about every block after it.
+	private final __encoder:HpackEncoder = new HpackEncoder(4096);
+	private final __decoder:HpackDecoder = new HpackDecoder(4096);
+
+	private var __inbound:BytesBuffer = new BytesBuffer();
+	private var __parsedUpTo:Int = 0;
+	private var __settingsArrived:Bool = false;
+	private var __closing:Bool = false;
+	private final __status:Map<Int, Int> = new Map();
+	private final __bodies:Map<Int, Bytes> = new Map();
+	private final __finished:Map<Int, Bool> = new Map();
+
+	public function new(configure:HTTPServerConfig->Void) {
+		__root = File.createTempDirectory();
+		var fixture = new ByteArray();
+		fixture.writeUTFBytes("Hello over h2");
+		__root.resolvePath("index.html").save(fixture);
+
+		var config = new HTTPServerConfig("127.0.0.1", 0, __root, null, ["index.html"]);
+		config.http2Enabled = true;
+		configure(config);
+
+		__server = new HTTPServer(config);
+		__client = new Socket();
+
+		__client.addEventListener(Event.CONNECT, _ -> {
+			var out = new BytesBuffer();
+			out.addString(H2Connection.PREFACE);
+			__writeFrame(out, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+			__send(out);
+		});
+		__client.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
+		__client.addEventListener(Event.CLOSE, _ -> {
+			if (!__closing && droppedAt < 0) {
+				droppedAt = haxe.Timer.stamp();
+			}
+		});
+	}
+
+	/** Connects, and continues once the server's SETTINGS shows it is speaking HTTP/2. */
+	public function start(then:Void->Void):Void {
+		HTTPTestSupport.connectThen(__client, __server, function():Void {
+			until(() -> __settingsArrived || ended, function():Void {
+				if (!__settingsArrived) {
+					Assert.fail("the server never sent its SETTINGS, so this is not an HTTP/2 connection");
+				}
+				then();
+			});
+		});
+	}
+
+	/** Opens `streamId` with a request, left open for a body unless `endStream`. */
+	public function request(streamId:Int, method:String, path:String, endStream:Bool):Void {
+		var block:Bytes = __encoder.encode([
+			new HpackHeader(":method", method),
+			new HpackHeader(":scheme", "http"),
+			new HpackHeader(":authority", "127.0.0.1"),
+			new HpackHeader(":path", path)
+		]);
+
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | (endStream ? H2Flags.END_STREAM : 0), streamId, block);
+		__send(out);
+	}
+
+	/** Sends the rest of a request's body and ends its stream. */
+	public function data(streamId:Int, text:String):Void {
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.DATA, H2Flags.END_STREAM, streamId, Bytes.ofString(text));
+		__send(out);
+	}
+
+	/** Pumps until `done` holds or `timeout` seconds pass, then continues. */
+	public function until(done:Void->Bool, then:Void->Void, timeout:Float = 5.0):Void {
+		HTTPTestSupport.pumpUntilAsync(done, timeout, _ -> then());
+	}
+
+	/**
+	 * Pumps for `seconds` without sending anything. Cut short if the server
+	 * ends the connection, since then there is nothing left to wait for.
+	 */
+	public function pause(seconds:Float, then:Void->Void):Void {
+		var resumeAt:Float = haxe.Timer.stamp() + seconds;
+		until(() -> ended || haxe.Timer.stamp() >= resumeAt, then, seconds + 5.0);
+	}
+
+	/** Whether `streamId` has been answered in full, or refused. */
+	public function finished(streamId:Int):Bool {
+		return __finished.exists(streamId);
+	}
+
+	public function status(streamId:Int):Int {
+		return __status.exists(streamId) ? __status.get(streamId) : -1;
+	}
+
+	public function body(streamId:Int):String {
+		return __bodies.exists(streamId) ? __bodies.get(streamId).toString() : "";
+	}
+
+	/**
+	 * Seconds from this side's last frame to the server ending the connection,
+	 * to the millisecond, or -1 if it has not.
+	 */
+	public function silence():Float {
+		var endedAt:Float = goAwayAt >= 0 && (droppedAt < 0 || goAwayAt < droppedAt) ? goAwayAt : droppedAt;
+		return endedAt < 0 ? -1 : Math.round((endedAt - lastSentAt) * 1000) / 1000;
+	}
+
+	/** Closes both ends and removes the document root. */
+	public function close():Void {
+		__closing = true;
+		try {
+			__client.close();
+		} catch (_:Dynamic) {}
+		try {
+			__server.close();
+		} catch (_:Dynamic) {}
+		try {
+			__root.deleteDirectory(true);
+		} catch (_:Dynamic) {}
+	}
+
+	private function get_dropped():Bool {
+		return droppedAt >= 0;
+	}
+
+	private function get_ended():Bool {
+		return goAwayAt >= 0 || droppedAt >= 0;
+	}
+
+	private function __send(out:BytesBuffer):Void {
+		var bytes:Bytes = out.getBytes();
+		var wrapper = new ByteArray();
+		wrapper.writeBytes(bytes, 0, bytes.length);
+
+		// A write refused because the server has already hung up is the
+		// connection ending, noticed by the side that had not heard yet.
+		try {
+			__client.writeBytes(wrapper, 0, wrapper.length);
+			__client.flush();
+		} catch (_:Dynamic) {
+			if (droppedAt < 0) {
+				droppedAt = haxe.Timer.stamp();
+			}
+		}
+		lastSentAt = haxe.Timer.stamp();
+	}
+
+	private function __onData(_:ProgressEvent):Void {
+		if (__client.bytesAvailable == 0) {
+			return;
+		}
+
+		var chunk = new ByteArray();
+		__client.readBytes(chunk, 0, __client.bytesAvailable);
+		for (i in 0...chunk.length) {
+			__inbound.addByte(chunk[i]);
+		}
+
+		// Kept whole and read on from a running offset, as `exchange` does.
+		var all:Bytes = __inbound.getBytes();
+		__inbound = new BytesBuffer();
+		__inbound.addBytes(all, 0, all.length);
+
+		while (__parsedUpTo + H2Frame.HEADER_SIZE <= all.length) {
+			var length:Int = H2Frame.lengthOf(all, __parsedUpTo);
+			if (__parsedUpTo + H2Frame.HEADER_SIZE + length > all.length) {
+				break;
+			}
+
+			var frame:H2Frame = H2Frame.read(all, __parsedUpTo);
+			__parsedUpTo += H2Frame.HEADER_SIZE + length;
+			__onFrame(frame);
+		}
+	}
+
+	private function __onFrame(frame:H2Frame):Void {
+		if (frame.type == H2FrameType.SETTINGS) {
+			if (!frame.has(H2Flags.ACK)) {
+				__settingsArrived = true;
+			}
+		} else if (frame.type == H2FrameType.HEADERS) {
+			// Every block is decoded, whichever stream it belongs to; see the
+			// decoder above.
+			for (field in __decoder.decode(frame.payload)) {
+				if (field.name == ":status") {
+					__status.set(frame.streamId, Std.parseInt(field.value));
+				}
+			}
+		} else if (frame.type == H2FrameType.DATA) {
+			__append(frame.streamId, frame.payload);
+		} else if (frame.type == H2FrameType.RST_STREAM) {
+			// Refused rather than answered, which is also the end of it.
+			__finished.set(frame.streamId, true);
+		} else if (frame.type == H2FrameType.GOAWAY && goAwayAt < 0) {
+			goAwayAt = haxe.Timer.stamp();
+			var payload:Bytes = frame.payload;
+			goAwayCode = (payload.get(4) << 24) | (payload.get(5) << 16) | (payload.get(6) << 8) | payload.get(7);
+		}
+
+		if ((frame.type == H2FrameType.HEADERS || frame.type == H2FrameType.DATA) && frame.has(H2Flags.END_STREAM)) {
+			__finished.set(frame.streamId, true);
+		}
+	}
+
+	private function __append(streamId:Int, payload:Bytes):Void {
+		var before:Null<Bytes> = __bodies.get(streamId);
+		if (before == null) {
+			__bodies.set(streamId, payload);
+			return;
+		}
+
+		var joined:Bytes = Bytes.alloc(before.length + payload.length);
+		joined.blit(0, before, 0, before.length);
+		joined.blit(before.length, payload, 0, payload.length);
+		__bodies.set(streamId, joined);
+	}
+
+	private static function __writeFrame(out:BytesBuffer, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
 		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
 		if (payload.length > 0) {
 			out.addBytes(payload, 0, payload.length);
