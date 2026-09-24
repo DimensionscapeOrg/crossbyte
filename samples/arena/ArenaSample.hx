@@ -2,9 +2,8 @@ import crossbyte.core.FixedStep;
 import crossbyte.core.HostApplication;
 import crossbyte.ds.BitSet;
 import crossbyte.ds.InterestSet;
-import crossbyte.ds.QuadTree;
-import crossbyte.ds.QuadTree.QuadTreeNode;
 import crossbyte.ds.SequenceRing;
+import crossbyte.ds.SpatialGrid;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
@@ -12,7 +11,6 @@ import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteDelta;
-import crossbyte.math.Rectangle;
 import crossbyte.net.ConcurrencyLimiter;
 import crossbyte.net.ConcurrencyPermit;
 import crossbyte.net.FrameCodec;
@@ -26,7 +24,9 @@ import haxe.Timer;
 	alone.
 
 	- `FixedStep` runs the simulation at 20 Hz, whatever rate the loop runs at.
-	- A `QuadTree`, rebuilt every step, answers who is near whom.
+	- A `SpatialGrid` files every entity by position, so moving one costs a
+	  comparison unless it crosses into another cell, and each view is a
+	  circle query.
 	- An `InterestSet` per client says what came into its view and what left.
 	- Each client's view is a table of slots, handed out as things enter
 	  (`BitSet.nextClearBit`) and freed as they leave, so a snapshot keeps its
@@ -75,8 +75,8 @@ class ArenaSample extends HostApplication {
 
 	static var sim:FixedStep;
 	static var entities:Array<Entity> = [];
-	static var tree:QuadTree<Entity>;
-	static var found:Array<QuadTreeNode<Entity>> = [];
+	static var grid:SpatialGrid;
+	static var found:Array<Int> = [];
 	static var sessions:Array<Session> = [];
 	static var logins:ConcurrencyLimiter;
 	static var openFrom:Map<String, Int> = new Map();
@@ -128,7 +128,8 @@ class ArenaSample extends HostApplication {
 
 	static function startServer():ServerSocket {
 		sim = new FixedStep(1 / 20);
-		tree = new QuadTree<Entity>(new Rectangle(0, 0, WORLD, WORLD), 8);
+		// Cells the size of a view, so each view's circle touches at most nine.
+		grid = new SpatialGrid(0, 0, WORLD, WORLD, VIEW_RADIUS);
 		logins = new ConcurrencyLimiter(LOGINS_AT_ONCE, LOGIN_QUEUE, LOGIN_WAIT);
 
 		for (_ in 0...NPCS) {
@@ -246,11 +247,8 @@ class ArenaSample extends HostApplication {
 			respawnOne();
 		}
 
-		tree.clear();
 		for (entity in entities) {
-			entity.node.x = entity.x;
-			entity.node.y = entity.y;
-			tree.insert(entity.node);
+			grid.set(entity.id, entity.x, entity.y);
 		}
 
 		for (session in sessions) {
@@ -300,10 +298,12 @@ class ArenaSample extends HostApplication {
 		var avatar = session.avatar;
 
 		found.resize(0);
-		tree.queryCircle(avatar.x, avatar.y, VIEW_RADIUS, found);
+		grid.queryCircle(avatar.x, avatar.y, VIEW_RADIUS, found);
 		// Nearest first, and no more than the view has slots for.
 		if (found.length > VIEW_SLOTS) {
-			found.sort((a, b) -> {
+			found.sort((idA, idB) -> {
+				var a = entities[idA];
+				var b = entities[idB];
 				var da:Float = (a.x - avatar.x) * (a.x - avatar.x) + (a.y - avatar.y) * (a.y - avatar.y);
 				var db:Float = (b.x - avatar.x) * (b.x - avatar.x) + (b.y - avatar.y) * (b.y - avatar.y);
 				return da < db ? -1 : (da > db ? 1 : 0);
@@ -312,8 +312,8 @@ class ArenaSample extends HostApplication {
 			stats.crowded++;
 		}
 
-		for (node in found) {
-			session.interest.add(node.value.id);
+		for (id in found) {
+			session.interest.add(id);
 		}
 		// Left before entered, so a slot a departure frees can go straight to
 		// an arrival.
@@ -474,13 +474,11 @@ class Entity {
 	public var y:Float;
 	public var vx:Float = 0;
 	public var vy:Float = 0;
-	public var node:QuadTreeNode<Entity>;
 
 	public function new(id:Int, x:Float, y:Float) {
 		this.id = id;
 		this.x = x;
 		this.y = y;
-		this.node = new QuadTreeNode<Entity>(x, y, this);
 	}
 }
 

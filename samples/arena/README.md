@@ -9,7 +9,9 @@ server built, and the run exits 1 on any difference.
 It demonstrates:
 
 - `FixedStep` running the simulation at 20 Hz whatever rate the loop runs at
-- a `QuadTree`, rebuilt every step, with `queryCircle` for each client's view
+- a `SpatialGrid` holding every entity's position, where a move costs a
+  comparison unless the entity crosses into another cell, and
+  `queryCircle` for each client's view
 - an `InterestSet` per client reporting what entered and left its view,
   including an entity respawned under an id that was already in view
   (`forget`, and a generation in the snapshot)
@@ -33,7 +35,7 @@ A run prints what happened, for example:
 arena: 8s, 16 bots, 300 npcs, 159 steps at 20 Hz
   logins: 16 of 16, 4 at a time; 0 refused; 1 turned away at admission
   interest: 820 entered, 457 left, 7 respawned under an old id, 0 views trimmed to 64
-  snapshots: 2344 sent (16 whole), 277042 bytes where whole ones would be 1200128 (23.1%)
+  snapshots: 2344 sent (16 whole), 277060 bytes where whole ones would be 1200128 (23.1%)
   bots: 2344 decoded (fewest 139), 0 checksum mismatches, 0 missing baselines, 16 of 16 saw themselves
 OK: every snapshot every bot decoded matched what the server built.
 ```
