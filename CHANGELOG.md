@@ -5,6 +5,19 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.ds.SpatialGrid`: ids at positions, filed into square cells, for
+  things that move. Each cell's ids are a list threaded through arrays indexed
+  by id, so `set` costs a comparison when an id stays in its cell -- at any
+  ordinary speed, nearly every step -- and a relink when it crosses into
+  another, and moving allocates nothing once the arrays have grown. A query
+  visits only the cells its circle or rectangle overlaps, and what it finds
+  are ids, which go straight into an `InterestSet`. Bounds decide speed, not
+  correctness: a position outside them is filed at the edge and still found.
+  Measured in the arena sample against rebuilding a `QuadTree` every step, at
+  20 Hz with each view holding the same crowd: 0.09 ms against 0.98 to keep
+  10,000 moving entities indexed, 0.89 against 14.5 at 100,000, and 2.2
+  against 45 at 250,000, where the tree takes most of a 50 ms step. A
+  `QuadTree` remains the choice for uneven crowds and things that hold still.
 - `samples/arena`: an authoritative game server and sixteen bots in one
   process, built from `FixedStep`, `QuadTree.queryCircle`, `InterestSet`,
   `BitSet`, `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`,
