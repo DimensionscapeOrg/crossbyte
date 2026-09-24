@@ -49,6 +49,25 @@ class QuadTreeTest extends utest.Test {
 		Assert.same([], mismatches);
 	}
 
+	public function testAPointInTheRootIsNeverRefusedByTheChildren():Void {
+		// Bounds where a child's far edge, (x + w/2) + w/2, rounds an ulp short
+		// of the root's x + w. The point is the last value below the root's
+		// edge: inside the root, past the east child's edge, and so -- when
+		// the children were each asked -- inside neither. One set of random
+		// bounds in twenty has such a sliver at its first split alone.
+		var x:Float = -860.2891528507621;
+		var width:Float = 453.56597600631187;
+		var sliver:Float = -406.7231768444503;
+		var tree = new QuadTree<Int>(new Rectangle(x, 0, width, 100), 1);
+
+		Assert.isTrue(sliver < x + width, "the point is inside the root");
+		Assert.isTrue(sliver >= (x + width / 2) + width / 2, "and past the east child's rounded edge");
+
+		Assert.isTrue(tree.insert(new QuadTreeNode<Int>(x + 1, 1, 1)), "the first point fills the root");
+		Assert.isTrue(tree.insert(new QuadTreeNode<Int>(sliver, 1, 2)), "the sliver point was refused");
+		Assert.same("1,2", sortedValues(tree.query(new Rectangle(x, 0, width, 100))));
+	}
+
 	public function testAPointExactlyOnTheRadiusIsInside():Void {
 		var tree = new QuadTree<Int>(new Rectangle(0, 0, 100, 100), 4);
 		tree.insert(new QuadTreeNode<Int>(30, 40, 1)); // 50 from the origin

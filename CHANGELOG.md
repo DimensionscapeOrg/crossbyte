@@ -427,6 +427,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `QuadTree.insert` could refuse a point inside its bounds. A child's far edge
+  is `(x + w/2) + w/2`, which can round an ulp short of the parent's `x + w`,
+  and a point in that sliver was in the parent and in neither child, so the
+  children, asked in turn, all refused it -- one set of random bounds in
+  twenty has such a sliver at its first split alone. The child is now chosen
+  by which side of each midline the point falls on, which cannot refuse, and
+  which also spares up to four containment tests a level: rebuilding a tree
+  of 100,000 points is about a quarter faster.
 - `File` refused an absolute path whose only separator is the root --
   `/root`, `/tmp`, `/` itself -- on Linux and macOS, and `parent` of a root
   threw. As root in a container `HOME` is `/root`, so the default document
