@@ -179,7 +179,7 @@ haxe cpp.hxml
 ## Arena
 
 `arena` is an authoritative game server and sixteen bots in one process,
-built from the game-server primitives -- `FixedStep`, `QuadTree`,
+built from the game-server primitives -- `FixedStep`, `SpatialGrid`,
 `InterestSet`, `BitSet`, `SequenceRing`, `ByteDelta`, `ConcurrencyLimiter`
 and `ServerSocket.admit` -- that checks itself: a snapshot that decodes to
 anything but what the server built fails the run.
