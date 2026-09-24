@@ -35,7 +35,8 @@ import haxe.ds.Vector;
  * `QuadTree` divides where things are, so it suits uneven crowds and things
  * that hold still, but moving what it holds means building it again, a
  * cost that grows with everything in it, where a grid's grows only with what
- * crossed a cell.
+ * crossed a cell. For things spread as far up and down as across,
+ * `SpatialGrid3D`.
  *
  * **Cell size.** About the radius most queries use: a circle then touches at
  * most nine cells. Much smaller and a query walks many empty cells; much
