@@ -87,8 +87,10 @@ class IceOverDatagramTest extends utest.Test {
 			aliceAgent.addRemoteCandidate(IceCandidate.host("127.0.0.1", bob.localPort));
 			bobAgent.addRemoteCandidate(IceCandidate.host("127.0.0.1", alice.localPort));
 
-			aliceAgent.start(bobAgent.localCredentials, Sys.time());
-			bobAgent.start(aliceAgent.localCredentials, Sys.time());
+			// The server drives an attached agent from haxe.Timer.stamp(), so the
+			// agent's start has to be on the same clock.
+			aliceAgent.start(bobAgent.localCredentials, haxe.Timer.stamp());
+			bobAgent.start(aliceAgent.localCredentials, haxe.Timer.stamp());
 
 			pumpUntil(() -> aliceAgent.state == IceAgentState.CONNECTED && bobAgent.state == IceAgentState.CONNECTED, 8.0);
 

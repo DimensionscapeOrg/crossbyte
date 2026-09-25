@@ -485,8 +485,27 @@ All notable changes to CrossByte will be documented in this file.
   of `keepAliveTimeout`, and a connection with a request in flight was cut off
   instead of being given `requestTimeout`. No test noticed, because every
   HTTP/2 exchange in the suite finished before the first sweep ran; four cases
-  now outlast it. Activity is stamped with `Sys.time()`, the clock the sweep
-  and the HTTP/1.1 deadlines already use.
+  now outlast it. The sweep and the activity it measures are both on
+  `haxe.Timer.stamp()` now, with everything else that waits; see below.
+- `haxe.Timer.stamp()` is monotonic on every native target and on the jvm,
+  and everything in CrossByte that waits or measures reads it. On Linux and
+  macOS natively it was hxcpp's stamp, which is `gettimeofday` less its first
+  reading, and on the jvm `Sys.time()`: both move when the time of day is set.
+  Stepped back, every deadline measured against them waits out the step;
+  stepped forward, they all fall due at once. And some thirty deadlines and durations bypassed it for
+  `Sys.time()` on every target -- connect and handshake timeouts, the HTTP
+  request, keep-alive and stall deadlines, WebSocket pings, drains, pool
+  waits, STUN queries, service attach, `Histogram.time` -- so where the two
+  clocks differ, times from each could meet: `ReliableDatagramServerSocket`
+  drove an attached ICE agent from `Sys.time()` while `IceAgent`'s own example
+  starts one from `stamp()`, the same mix that closed HTTP/2 connections
+  above. `stamp()` is now QueryPerformanceCounter on Windows natively, as it
+  was, `CLOCK_MONOTONIC` on other native platforms, `System.nanoTime` on the
+  jvm, and `performance.now()` on JavaScript, as it was; hl, neko and eval
+  have only the time of day. Tests pin native POSIX to `CLOCK_MONOTONIC`
+  and the jvm away from the time of day, and read the framework's source for
+  `Sys.time()`, which is left in one place, the `Date` header, marked as the
+  time of day on purpose.
 - A reliable datagram message larger than one frame arrived as several.
   `DATAGRAM` mode promises the peer one `DATA` event per `send`, and `send`'s
   own documentation said larger payloads were "reassembled on the remote

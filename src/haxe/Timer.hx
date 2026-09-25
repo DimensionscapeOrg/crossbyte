@@ -68,6 +68,27 @@ import sys.thread.Mutex;
 /**
 	A `haxe.Timer` implementation backed by CrossByte's tick-driven runtime.
 **/
+#if cpp
+@:cppFileCode("
+#ifndef HX_WINDOWS
+#include <time.h>
+#endif
+
+// Seconds on a monotonic clock. Windows keeps hxcpp's own stamp, which is
+// QueryPerformanceCounter and already monotonic; everywhere else hxcpp's is
+// gettimeofday less its first reading, which moves whenever the time of day
+// is set, so CLOCK_MONOTONIC is asked for directly.
+static double crossbyte_monotonic_seconds() {
+#ifdef HX_WINDOWS
+	return __time_stamp();
+#else
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
+#endif
+}
+")
+#end
 class Timer {
 	private static var timerCount:Int = 0;
 	private static var timers:IntMap<Timer> = new IntMap<Timer>();
@@ -183,11 +204,42 @@ class Timer {
 		return result;
 	}
 
-	public static inline function stamp():Float {
+	/**
+		Seconds on a monotonic clock, from an arbitrary origin: for how long
+		something took and for when something is due, never for the time of
+		day, which is `Sys.time()` or `Date.now()`.
+
+		Monotonic wherever the platform offers one -- QueryPerformanceCounter
+		on Windows native, CLOCK_MONOTONIC on Linux, macOS and other native
+		POSIX, `System.nanoTime` on the jvm, `performance.now()` on both
+		JavaScript targets. A clock that is the time of day moves when the time
+		of day is set: stepped backwards, every deadline measured against it
+		waits out the step; stepped forwards, they all fall due at once. hl,
+		neko and eval have no monotonic source here and use `Sys.time()`.
+
+		Everything in CrossByte that waits or measures reads this and nothing
+		else, which is what keeps any two times it compares on one clock. An
+		application comparing its own times against CrossByte's should do the
+		same.
+
+		Not inline on cpp, where the clock is a function in this class's own
+		compiled file rather than code copied into every caller's.
+	**/
+	public static #if !cpp inline #end function stamp():Float {
 		#if js
 		return __jsStamp() / 1000;
 		#elseif cpp
-		return untyped __global__.__time_stamp();
+		return untyped __cpp__("crossbyte_monotonic_seconds()");
+		#elseif ((java || jvm) && !macro)
+		// nanoTime is a long, and Haxe 4 has no Int64 to Float: the halves
+		// are joined as doubles, exact to the nanosecond for about 104 days
+		// of uptime and to the microsecond for long after that.
+		var nanos = java.lang.System.nanoTime();
+		var low:Float = haxe.Int64.getLow(nanos);
+		if (low < 0) {
+			low += 4294967296.0;
+		}
+		return (haxe.Int64.getHigh(nanos) * 4294967296.0 + low) / 1000000000.0;
 		#elseif python
 		return Sys.cpuTime();
 		#elseif sys
