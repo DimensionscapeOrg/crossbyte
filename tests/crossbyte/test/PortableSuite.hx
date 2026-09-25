@@ -116,6 +116,8 @@ class PortableSuite {
 		// Built on the ByteArray varint and writeBytes, and decodes what a
 		// browser client may have to receive.
 		runner.addCase(new crossbyte.io.ByteDeltaTest());
+		// Shifts and 32-bit words, which is exactly where JavaScript differs.
+		runner.addCase(new crossbyte.io.BitPackingTest());
 		runner.addCase(new crossbyte.utils.UtilsTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
