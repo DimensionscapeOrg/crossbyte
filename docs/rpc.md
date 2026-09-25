@@ -13,8 +13,9 @@ There are two lanes on one connection:
 - **The runtime lane.** Calls named by a number and carrying an array of
   values, for when the set of calls is not known until run time.
 
-RPC runs on every target CrossByte builds for except JavaScript. A session is
-bound to a `NetConnection`, and a browser has none of its transports.
+RPC runs on every target CrossByte builds for, JavaScript included: the
+portable test suite runs it on Node and in a browser. What carries it is the
+`NetConnection` a session is given, so it goes wherever one does.
 
 Every example on this page is typechecked by `node ci/doc-examples.js`, which
 CI runs, in the order it appears: a later example uses what an earlier one
@@ -416,13 +417,13 @@ session.heartbeatInterval = 10000;
 session.heartbeatTimeout = 30000;
 session.start();
 
-// A call still waiting when the connection goes is not failed by the close
-// alone. Stopping the session fails every one of them.
-connection.onClose = reason -> session.stop();
+// The connection's callbacks stay the application's: set them before or
+// after the session, it hears of the close either way.
+connection.onClose = reason -> trace('connection closed: $reason');
 ```
 
-A call waiting on an answer fails when the session is stopped, when the
-heartbeat gives up on the peer, and when the connection is ended over a frame
-that cannot be read. The connection closing on its own does not yet fail it,
-which is why the example stops the session in `onClose`: without that, a call
-made just before the peer went away waits for good.
+A call waiting on an answer fails as soon as none can come: when the
+connection closes or a transport error stops its reads, when the session is
+stopped, when the heartbeat gives up on the peer, and when the connection is
+ended over a frame that cannot be read. Its `RPCResponse` fails with a message
+saying which, so nothing waits for good on a peer that has gone.

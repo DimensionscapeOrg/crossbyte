@@ -1,6 +1,7 @@
 package crossbyte.rpc;
 
-// Not built for the browser: it dispatches on an RPCSession, which is not built there.
+// Built for every target, JavaScript included: the portable suite runs RPC on
+// Node and in a browser.
 
 import crossbyte.net.NetConnection;
 import crossbyte.rpc.RPCCommands;
