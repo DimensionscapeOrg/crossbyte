@@ -261,14 +261,13 @@ class RPCCommandMacro {
 
 	/**
 		A response as a commands class extending this one reads it: a function
-		expression, never typed, returning the response's type. That class reads
-		it in its own module, which need not import what this one's does; every
-		response type here is already written in full, taken from a resolved
-		type, whether a stub's `RPCResponse<T>` or a contract's return.
+		expression, never typed, returning the response's type written out in
+		full. That class reads it in its own module, which need not import, nor
+		see the typedefs of, this one's.
 	**/
 	private static function responseSignature(method:ResponseMethod):Expr {
 		return {
-			expr: EFunction(FNamed(method.name, false), {args: [], ret: method.responseType, expr: null}),
+			expr: EFunction(FNamed(method.name, false), {args: [], ret: RPCContractMacroTools.fullType(method.responseType, method.pos), expr: null}),
 			pos: method.pos
 		};
 	}

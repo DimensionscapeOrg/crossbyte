@@ -163,15 +163,33 @@ class RPCContractTest extends utest.Test {
 		Assert.equals(8, commands.twice(4).result);
 	}
 
-	public function testAChildReadsItsParentsTypesWhateverItsParentImported():Void {
-		// The parents name `Bytes`, imported by their module and not by this one.
+	public function testAChildReadsItsParentsTypesWhateverItsParentNamesThemBy():Void {
+		// The parents name Bytes by an import alias and Int by a private
+		// typedef, neither of which this module can name. Recorded as written,
+		// the child could not read them; written with toComplexType(), as the
+		// parent's types were read before, it could not either.
 		var link = LinkedConnection.pair();
 		var commands = new BlobChildCommands();
 		var clientSession = new RPCSession<BlobChildCommands>(link.client, commands);
 		var serverSession = new RPCSession(link.server, null, new BlobChildHandler());
 
 		Assert.equals("blob", commands.echoBlob(haxe.io.Bytes.ofString("blob")).result.toString());
+		Assert.equals(8, commands.countOrNone(7).result);
+		// Null<Count> is still optional on the wire once written out.
+		Assert.equals(-1, commands.countOrNone(null).result);
 		Assert.equals(14, commands.doubled(7).result);
+	}
+
+	public function testAContractIsReadWhateverItsModuleNamesItsTypesBy():Void {
+		// MeasuredContract names its types by an alias and a private typedef of
+		// its own module; the handler and commands class are in this one.
+		var link = LinkedConnection.pair();
+		var commands = new MeasuredCommands();
+		var clientSession = new RPCSession<MeasuredCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new MeasuredHandler());
+
+		Assert.equals(4, commands.measure(haxe.io.Bytes.ofString("four"), null).result);
+		Assert.equals(9, commands.measure(haxe.io.Bytes.ofString("four"), 5).result);
 	}
 
 	public function testContractCommandsExtendAlongWithTheirContracts():Void {
@@ -390,6 +408,19 @@ private class BlobChildCommands extends BlobParentCommands {
 	}
 
 	@:rpc public function doubled(value:Int):RPCResponse<Int> {}
+}
+
+@:rpcContract(MeasuredContract)
+private class MeasuredCommands extends RPCCommands {
+	public function new() {}
+}
+
+private class MeasuredHandler extends RPCHandler implements MeasuredContract {
+	public function new() {}
+
+	public function measure(data:haxe.io.Bytes, extra:Null<Int>):Int {
+		return data.length + (extra == null ? 0 : extra);
+	}
 }
 
 private class WideFamilyCommands extends RPCCommands {
