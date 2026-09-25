@@ -5,6 +5,27 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Pluggable congestion control for reliable datagram sessions.
+  `CongestionControl` decides how many frames a session may have in the
+  network at once, and is both the default -- Reno, as before -- and the
+  class to extend: `onAcknowledged`, `onLoss` and `onTimeout` are its events,
+  and `window`, read before every frame is sent, is its answer. Setting
+  `ReliableDatagramSocket.congestionControl` gives a session its own. A
+  server's `congestionControlFor(address, port)` hook gives one to each
+  session it accepts or dials, and a hook that throws refuses the CONNECT,
+  as `admit` does.
+- `LossTolerantCongestionControl`, for paths that lose frames to radio
+  rather than to congestion. On a loss it sets the window to what the path
+  has been delivering times the fastest round trip: what the path holds
+  with nothing queued. A loss with no queue behind it then costs little,
+  and a queue is still drained, though never below half the window. At a
+  20 ms round trip, 1000-byte messages ran at 7.0 MB/s under 1% loss where
+  the default runs at 0.63; at 5% loss, 2.1 against 0.28; at 10%, 1.0
+  against 0.19 (medians of six runs). With a small receive buffer
+  overflowing, it lost no more frames than the default. It measures by two
+  new readings on the socket: `minRoundTripTime`, the fastest round trip,
+  and `framesDelivered`, the frames the peer is known to hold, each counted
+  once, as soon as it is known.
 - `DatagramSocket.receiveBufferSize` and `sendBufferSize`: the operating
   system's buffers for a socket, read and asked for. Past the receive
   buffer, arriving datagrams are dropped, and the systems' defaults are
