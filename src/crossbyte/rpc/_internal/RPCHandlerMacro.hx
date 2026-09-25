@@ -12,8 +12,13 @@ using haxe.macro.Tools;
 class RPCHandlerMacro {
 	static inline final DIRECT_SWITCH_MAX_METHODS:Int = 8;
 
-	// On a generated dispatch(): the name of every method it dispatches, for
-	// a handler that extends this one to dispatch as well.
+	// On a generated dispatch(): the signature of every method it dispatches,
+	// for a handler that extends this one to dispatch as well. Read from here,
+	// untyped, and never from the parent's fields: following a parent method's
+	// type during the child's build types that method there and then -- body
+	// and all, when it declares no return type -- before the classes it uses
+	// have finished building, and the error that comes of it names a field
+	// that is really there.
 	static inline final DISPATCHED_META:String = ":rpcDispatched";
 
 	// Each reads from `inp`, in a frame that ends at `end`.
@@ -66,6 +71,8 @@ class RPCHandlerMacro {
 		var methods = new Array<MethodInfo>();
 		// The handler classes between this one and RPCHandler, nearest first.
 		final ancestors = handlerAncestors();
+		// What the nearest one's generated dispatch answers, as it recorded it.
+		final dispatchedByAncestors = inheritedMethods(ancestors);
 		final contractMethods = RPCContractMacroTools.getImplementedContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 		final dispatchField = findField(fields, "dispatch");
@@ -113,7 +120,13 @@ class RPCHandlerMacro {
 					if (inherited == null) {
 						Context.error("RPC handler is missing implementation for contract method '" + method.name + "'. Built-in system methods such as ping() stay on RPCHandler and should not appear in the shared contract.", method.pos);
 					}
-					requireInheritedSignature(inherited, method.name, method.args, method.ret);
+					// Checked against what the ancestor recorded when it answers
+					// it too. When it does not, the call made to it below is
+					// typed as any call is, after the build.
+					final recorded = findMethod(dispatchedByAncestors, method.name);
+					if (recorded != null) {
+						requireSameSignature(recorded, method.name, method.args, method.ret);
+					}
 					methods.push({
 						idx: -1,
 						name: method.name,
@@ -169,6 +182,13 @@ class RPCHandlerMacro {
 							if (fn.args.length > 8) {
 								Context.error("RPC limited to 8 params", f.pos);
 							}
+							// Its answer is encoded as its return type, which is not
+							// known until the method is typed -- after this build.
+							// Left undeclared it was taken for Void, and the answer
+							// was never sent.
+							if (fn.ret == null && returnsValue(fn.expr)) {
+								Context.error("RPC method '" + f.name + "' returns a value, so it must declare its return type.", f.pos);
+							}
 							methods.push({
 								idx: -1,
 								name: f.name,
@@ -185,14 +205,10 @@ class RPCHandlerMacro {
 		}
 
 		// What the handlers this one extends answered, it answers too: the
-		// nearest one's dispatch names every method it took over from its own.
-		for (name in inheritedMethodNames(ancestors)) {
-			if (hasMethod(methods, name)) {
-				continue;
-			}
-			final inherited = ancestorField(ancestors, name);
-			if (inherited != null) {
-				methods.push(methodFromClassField(inherited));
+		// nearest one's dispatch records every method it took over from its own.
+		for (inherited in dispatchedByAncestors) {
+			if (!hasMethod(methods, inherited.name)) {
+				methods.push(inherited);
 			}
 		}
 
@@ -493,7 +509,7 @@ class RPCHandlerMacro {
 		final meta:Metadata = [
 			{
 				name: DISPATCHED_META,
-				params: [for (method in methods) macro $v{method.name}],
+				params: [for (method in methods) signatureOf(method)],
 				pos: Context.currentPos()
 			}
 		];
@@ -627,64 +643,120 @@ class RPCHandlerMacro {
 		return null;
 	}
 
-	/** What the nearest ancestor's generated dispatch() answers. **/
-	static function inheritedMethodNames(ancestors:Array<ClassType>):Array<String> {
+	/** What the nearest ancestor's generated dispatch() answers, as it recorded it. **/
+	static function inheritedMethods(ancestors:Array<ClassType>):Array<MethodInfo> {
+		final methods = new Array<MethodInfo>();
 		final dispatch = ancestorField(ancestors, "dispatch");
 		if (dispatch == null || !dispatch.meta.has(DISPATCHED_META)) {
-			return [];
+			return methods;
 		}
-		final names = new Array<String>();
 		for (entry in dispatch.meta.extract(DISPATCHED_META)) {
 			for (param in entry.params) {
 				switch (param.expr) {
-					case EConst(CString(name)):
-						names.push(name);
+					case EFunction(FNamed(name, _), fn):
+						methods.push({
+							idx: -1,
+							name: name,
+							pos: param.pos,
+							args: [
+								for (arg in fn.args)
+									({
+										name: arg.name,
+										opt: arg.opt,
+										type: arg.type,
+										value: null,
+										meta: []
+									} : FunctionArg)
+							],
+							ret: fn.ret != null ? fn.ret : macro :Void,
+							op: RPCOps.opOf(name)
+						});
 					default:
 				}
 			}
 		}
-		return names;
+		return methods;
 	}
 
-	static function methodFromClassField(field:ClassField):MethodInfo {
-		return switch (Context.follow(field.type)) {
-			case TFun(args, ret):
-				var retType = ret.toComplexType();
-				{
-					idx: -1,
-					name: field.name,
-					pos: field.pos,
-					args: [
-						for (arg in args)
-							({
-								name: arg.name,
-								opt: arg.opt,
-								type: arg.t.toComplexType(),
-								value: null,
-								meta: []
-							} : FunctionArg)
-					],
-					ret: retType != null ? retType : macro :Void,
-					op: RPCOps.opOf(field.name)
-				};
-			case _:
-				Context.error("RPC method '" + field.name + "' must be a function.", field.pos);
-				null;
+	/**
+		A dispatched method's signature, as a handler extending this one reads
+		it: a function expression, never typed, whose types are written out in
+		full -- they are read in the child's module, which need not import what
+		this one's does.
+	**/
+	static function signatureOf(method:MethodInfo):Expr {
+		return {
+			expr: EFunction(FNamed(method.name, false), {
+				args: [
+					for (arg in method.args)
+						({
+							name: arg.name,
+							opt: arg.opt,
+							type: fullType(arg.type, method.pos),
+							value: null,
+							meta: []
+						} : FunctionArg)
+				],
+				ret: fullType(method.ret, method.pos),
+				expr: null
+			}),
+			pos: method.pos
 		};
 	}
 
-	static function requireInheritedSignature(field:ClassField, name:String, args:Array<FunctionArg>, ret:ComplexType):Void {
-		final inherited = methodFromClassField(field);
-		var same = inherited.args.length == args.length && sameType(inherited.ret, ret, field.pos);
+	/** `ct` with every path in full. Resolving a type path types no method. **/
+	static function fullType(ct:ComplexType, pos:Position):ComplexType {
+		if (ct == null) {
+			return null;
+		}
+		try {
+			final full = Context.resolveType(ct, pos).toComplexType();
+			return full != null ? full : ct;
+		} catch (_:Dynamic) {
+			// Left for the check that reports an unsupported type to report.
+			return ct;
+		}
+	}
+
+	static function requireSameSignature(inherited:MethodInfo, name:String, args:Array<FunctionArg>, ret:ComplexType):Void {
+		var same = inherited.args.length == args.length && sameType(inherited.ret, ret, inherited.pos);
 		for (i in 0...args.length) {
 			if (!same) {
 				break;
 			}
-			same = sameType(unwrapNull(inherited.args[i].type), unwrapNull(args[i].type), field.pos);
+			same = sameType(unwrapNull(inherited.args[i].type), unwrapNull(args[i].type), inherited.pos);
 		}
 		if (!same) {
-			Context.error("RPC handler method '" + name + "', inherited, does not match the shared contract's signature.", field.pos);
+			Context.error("RPC handler method '" + name + "', inherited, does not match the shared contract's signature.", inherited.pos);
 		}
+	}
+
+	/** Whether `body` returns a value; a function nested in it returns its own. **/
+	static function returnsValue(body:Null<Expr>):Bool {
+		var found = false;
+		function walk(e:Expr):Void {
+			if (found || e == null) {
+				return;
+			}
+			switch (e.expr) {
+				case EReturn(value) if (value != null):
+					found = true;
+				case EFunction(_, _):
+				default:
+					e.iter(walk);
+			}
+		}
+		walk(body);
+		return found;
+	}
+
+	static function findMethod(methods:Array<MethodInfo>, name:String):Null<MethodInfo> {
+		for (method in methods) {
+			if (method.name == name) {
+				return method;
+			}
+		}
+		return null;
 	}
 
 	static function hasMethod(methods:Array<MethodInfo>, name:String):Bool {

@@ -58,9 +58,9 @@ class RPCCommandMacro {
 	private static final TYPE_WRITERS:Map<String, (Expr, Expr) -> Expr> = initWriters();
 	private static final TYPE_READERS:Map<String, (Expr, Expr) -> Expr> = initReaders();
 
-	// On a generated __rpc_handle_response(): the name of every method this
-	// class sends, and of every one whose response it reads, for a commands
-	// class that extends this one.
+	// On a generated __rpc_handle_response(), for a commands class that
+	// extends this one: the name of every method this class sends, and the
+	// name and type of every response it reads.
 	static inline final COMMANDS_META:String = ":rpcCommands";
 	static inline final RESPONDS_META:String = ":rpcResponds";
 
@@ -172,19 +172,9 @@ class RPCCommandMacro {
 		final allSent = sentNames.concat([for (name in inheritedSent) if (sentNames.indexOf(name) < 0) name]);
 		RPCContractMacroTools.requireDistinctOps([for (name in allSent) {name: name, pos: Context.currentPos()}], true);
 
-		for (name in inheritedNames(ancestors, RESPONDS_META)) {
-			if (Lambda.exists(responseMethods, method -> method.name == name)) {
-				continue;
-			}
-			final inherited = ancestorField(ancestors, name);
-			final responseType = inherited != null ? inheritedResponseType(inherited) : null;
-			if (responseType != null) {
-				responseMethods.push({
-					name: name,
-					op: RPCOps.opOf(name),
-					responseType: responseType,
-					pos: inherited.pos
-				});
+		for (inherited in inheritedResponses(ancestors)) {
+			if (!Lambda.exists(responseMethods, method -> method.name == inherited.name)) {
+				responseMethods.push(inherited);
 			}
 		}
 
@@ -240,18 +230,46 @@ class RPCCommandMacro {
 		return names;
 	}
 
-	/** `T`, for an inherited stub that returns `RPCResponse<T>`. **/
-	private static function inheritedResponseType(field:ClassField):Null<ComplexType> {
-		return switch (Context.follow(field.type)) {
-			case TFun(_, ret):
-				switch (Context.follow(ret)) {
-					case TInst(typeRef, [payload]) if (typeRef.get().name == "RPCResponse"):
-						payload.toComplexType();
-					case _:
-						null;
+	/**
+		The responses the nearest ancestor's reader reads, as it recorded them.
+		Read from there, untyped, never from the ancestor's stubs: following a
+		stub's type during this class's build types it there and then, before
+		the classes it names have finished building.
+	**/
+	private static function inheritedResponses(ancestors:Array<ClassType>):Array<ResponseMethod> {
+		final reader = ancestorField(ancestors, "__rpc_handle_response");
+		final responses = new Array<ResponseMethod>();
+		if (reader == null) {
+			return responses;
+		}
+		for (entry in reader.meta.extract(RESPONDS_META)) {
+			for (param in entry.params) {
+				switch (param.expr) {
+					case EFunction(FNamed(name, _), fn) if (fn.ret != null):
+						responses.push({
+							name: name,
+							op: RPCOps.opOf(name),
+							responseType: fn.ret,
+							pos: param.pos
+						});
+					default:
 				}
-			case _:
-				null;
+			}
+		}
+		return responses;
+	}
+
+	/**
+		A response as a commands class extending this one reads it: a function
+		expression, never typed, returning the response's type. That class reads
+		it in its own module, which need not import what this one's does; every
+		response type here is already written in full, taken from a resolved
+		type, whether a stub's `RPCResponse<T>` or a contract's return.
+	**/
+	private static function responseSignature(method:ResponseMethod):Expr {
+		return {
+			expr: EFunction(FNamed(method.name, false), {args: [], ret: method.responseType, expr: null}),
+			pos: method.pos
 		};
 	}
 
@@ -399,7 +417,7 @@ class RPCCommandMacro {
 			access: overridesInherited ? [APublic, AOverride] : [APublic],
 			meta: [
 				{name: COMMANDS_META, params: [for (name in sent) macro $v{name}], pos: Context.currentPos()},
-				{name: RESPONDS_META, params: [for (method in methods) macro $v{method.name}], pos: Context.currentPos()}
+				{name: RESPONDS_META, params: [for (method in methods) responseSignature(method)], pos: Context.currentPos()}
 			],
 			kind: FFun({
 				args: [
