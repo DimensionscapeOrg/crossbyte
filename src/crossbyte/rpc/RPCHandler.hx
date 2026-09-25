@@ -35,12 +35,16 @@ import crossbyte.io.ByteArrayOutput;
 @:autoBuild(crossbyte.rpc._internal.RPCHandlerMacro.build())
 @:access(crossbyte.net.Socket)
 @:access(crossbyte.rpc.RPCSession)
+@:access(crossbyte.rpc.RPCCommands)
 abstract class RPCHandler {
 	public static inline final MAX_FRAME_LEN:Int = 8 * 1024 * 1024;
 
 	@:noCompletion private var this_connection:NetConnection;
 	@:noCompletion private var this_commands:RPCCommands;
 	@:noCompletion private var this_session:RPCSession<Dynamic, Dynamic>;
+	// Where the frame being dispatched ends; the generated decoders read no
+	// further.
+	@:noCompletion private var this_frameEnd:Int = RPCWire.NO_FRAME_END;
 
 	@:noCompletion private inline function this_socket_onData(input:ByteArrayInput):Void {
 		while (input.bytesAvailable >= 9) {
@@ -57,6 +61,10 @@ abstract class RPCHandler {
 			}
 
 			final frameEnd:Int = input.position + payloadLen;
+			this_frameEnd = frameEnd;
+			if (this_commands != null) {
+				this_commands.__frameEnd = frameEnd;
+			}
 			final flags:Int = input.readByte();
 			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
 				throw "Runtime RPC frame delivered to compile-time handler lane";
