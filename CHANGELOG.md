@@ -5,6 +5,14 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- An RPC guide, `docs/rpc.md`: contracts, commands and handlers; one-way
+  calls and requests; what can be sent; how a failing handler is answered
+  and what ends a connection; the call hooks; surfaces built from parts;
+  the runtime lane; heartbeats and pending calls. Its examples are
+  typechecked in CI, in order, by `ci/doc-examples.js`, which now reads
+  markdown guides as well as doc comments, takes declarations as well as
+  statements, and lets a statement example name the receiver it assumes
+  in a leading `// Given name:Type.` line.
 - `RPCSession.beforeRuntimeCall(op, requestId, payloadSize)` and
   `afterRuntimeCall(op, requestId, error)`: what `beforeCall` and
   `afterCall` are to a compiled handler, for handlers added with
