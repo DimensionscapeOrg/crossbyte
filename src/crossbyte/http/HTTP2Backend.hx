@@ -43,9 +43,11 @@ import haxe.io.Bytes;
  * opening one each. That is the point of HTTP/2, and it also means the second
  * request to a host skips the handshakes and starts with a warm HPACK table.
  *
- * Still missing: cancellation. `HTTPBackend.load()` returns `Void`, so an
- * abandoned request has no handle through which to reset its stream, and the
- * slot stays held until the response arrives or the timeout fires.
+ * Cancelling through the request's `cancelToken` resets its stream and
+ * leaves the connection to the other requests on it. A request cancelled
+ * before the end of its response reports `"Request cancelled"` and never
+ * completes, however much of the response then arrives; one whose response
+ * had already ended when the cancel came completes as usual.
  */
 class HTTP2Backend implements HTTPBackend {
 	/**
@@ -172,10 +174,15 @@ class HTTP2Backend implements HTTPBackend {
 	}
 
 	private function __report(context:HTTPRequestContext, stream:H2Stream, connection:H2Connection):Void {
-		if (context.cancelToken != null && context.cancelToken.cancelled && stream.status < 0) {
+		if (context.cancelToken != null && context.cancelToken.cancelled && !stream.endOfStream) {
 			// Reported as cancellation rather than as the reset it produced:
 			// the caller asked for this, and "stream reset" would read as the
 			// peer having done something.
+			//
+			// Keyed on the end of the stream, not on its status. A cancel that
+			// lands after the response headers but before the last of the body
+			// still abandons the request, and testing the status reported it
+			// complete with whatever part of the body had arrived.
 			context.onError("Request cancelled");
 			return;
 		}
