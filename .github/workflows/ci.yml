@@ -160,7 +160,9 @@ jobs:
       # compile, and for a long time the ones in File.hx could not: they were
       # ActionScript, and underneath the syntax were a method that does not
       # exist, an instance method called statically, and an unescaped Windows
-      # path. Nothing but a compiler was ever going to notice.
+      # path. Nothing but a compiler was ever going to notice. The guides in
+      # docs/ are checked here too: their examples are whole programs, read
+      # in order.
       - name: Typecheck documentation examples
         run: node ci/doc-examples.js
 
