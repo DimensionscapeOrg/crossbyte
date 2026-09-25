@@ -21,9 +21,16 @@ class OutstandingFrame {
 	/** One on the first send; Karn's algorithm reads it before sampling. **/
 	public var attempts:Int = 1;
 
-	public function new(payload:ByteArray, sentAt:Float, deadline:Float) {
+	/**
+		Whether more of the same message follows this frame. Kept with the
+		frame because a retransmission has to say it again.
+	**/
+	public var more:Bool;
+
+	public function new(payload:ByteArray, sentAt:Float, deadline:Float, more:Bool = false) {
 		this.payload = payload;
 		this.sentAt = sentAt;
 		this.deadline = deadline;
+		this.more = more;
 	}
 }

@@ -5,6 +5,27 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.net.DeliveryMode`, and a fourth argument to
+  `ReliableDatagramSocket.send` that takes one: `RELIABLE`, the default and
+  what `send` always did; `UNRELIABLE`, sent once and never resent; and
+  `sequenced(channel)`, unreliable, with anything older than the newest
+  message delivered on its channel dropped rather than delivered late. A
+  session carried only reliable ordered messages, so state sent over it waited
+  behind whichever packet was lost, and the way round that -- a raw
+  `DatagramSocket` -- left the handshake, admission, congestion control and
+  keepalive behind. Unreliable and sequenced messages ride the same session,
+  must fit one frame (1200 bytes; larger is refused, not split), and are not
+  paced by the reliable congestion window, which has no acknowledgements for
+  them to open or close it. Channels 0 to 255 are independent, so a newer
+  snapshot never makes an older input look stale. The channel and a 24-bit
+  wrapping counter travel in the frame's existing sequence field, so nothing
+  is added to the frame, and a peer on an older build drops the new frame
+  types as unknown rather than misreading them.
+- `ReliableDatagramSocket.maxMessageSize`, eight megabytes unless set, zero
+  for no limit: the largest reliable message a peer may send. A message
+  larger than a frame is held until its last fragment arrives, so what a peer
+  can make this side hold is whatever it says a message is; past the limit the
+  session closes with an `ioError` saying why.
 - `crossbyte.ds.SpatialGrid3D`: `SpatialGrid` with a third axis, for things
   spread as far up and down as across -- space, flight, floors a view apart.
   `set(id, x, y, z)` moves an id for a comparison unless it crosses a cell, and
@@ -438,6 +459,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable datagram message larger than one frame arrived as several.
+  `DATAGRAM` mode promises the peer one `DATA` event per `send`, and `send`'s
+  own documentation said larger payloads were "reassembled on the remote
+  side", but nothing marked where a message ended: a 3000-byte send arrived as
+  1200, 1200 and 600. Every fragment but the last now carries a flag saying
+  more follows, and the receiver joins them once, in order, however they
+  arrived. An older peer ignores the flag and delivers fragments as before.
+- Closing a reliable datagram session from inside its own `DATA` handler
+  reported an `ioError` -- "Operation attempted on invalid socket" -- for the
+  close the caller had just made. The acknowledgement for the message being
+  handled went out after the handler returned, on the transport the close had
+  shut. Nothing is acknowledged once the session is closed.
 - `QuadTree.insert` could refuse a point inside its bounds. A child's far edge
   is `(x + w/2) + w/2`, which can round an ulp short of the parent's `x + w`,
   and a point in that sliver was in the parent and in neither child, so the
