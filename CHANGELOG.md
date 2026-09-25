@@ -665,6 +665,16 @@ All notable changes to CrossByte will be documented in this file.
   reports "Request cancelled" rather than completing with the part that
   had arrived. Resetting a stream that has already ended no longer sends
   RST_STREAM on a closed stream.
+- An HTTP/2 response cut short after its headers is an error, not a
+  response. When the server reset the stream, or the connection closed,
+  between the headers and the end of the body, the request completed
+  through `onComplete` with whatever part of the body had arrived: the
+  errors for those cases were given only when the status had not arrived
+  either. A stream that never saw END_STREAM now never completes. A reset
+  reports "Stream reset by peer: CODE" as before, a connection lost before
+  the headers "Connection closed before the response headers arrived" as
+  before, and one lost after them "Connection closed before the response
+  body completed".
 - A listening `LocalConnection` could stop delivering for good: no
   `onReady`, and nothing a client sent. Its reader thread attached the tick
   listener that carries dispatches to the runtime's thread, and

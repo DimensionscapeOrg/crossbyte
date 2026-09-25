@@ -565,6 +565,49 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isTrue(error.indexOf("REFUSED_STREAM") >= 0);
 	}
 
+	public function testAResetAfterTheHeadersIsAnErrorNotATruncatedResponse():Void {
+		var server = new H2TruncatedResponseServer(H2ErrorCodeShim.INTERNAL_ERROR);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var error:String = null;
+		var completed:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/cut', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onError = (message, ?data) -> error = message;
+		http.onComplete = data -> completed = data.toString();
+
+		http.load();
+
+		// The status, the headers and part of the body had all arrived, and
+		// the reset used to be reported only when the status had not: this
+		// completed with the part.
+		Assert.isNull(completed, "a reset response completed with " + completed);
+		Assert.equals("Stream reset by peer: INTERNAL_ERROR", error);
+	}
+
+	public function testAConnectionLostMidBodyIsAnErrorNotATruncatedResponse():Void {
+		var server = new H2TruncatedResponseServer();
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var error:String = null;
+		var completed:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/cut', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onError = (message, ?data) -> error = message;
+		http.onComplete = data -> completed = data.toString();
+
+		http.load();
+
+		Assert.isNull(completed, "a response cut short completed with " + completed);
+		// Its own message rather than the one for no headers at all: a
+		// caller deciding whether to retry wants to know the server had
+		// started answering.
+		Assert.equals("Connection closed before the response body completed", error);
+		Assert.isTrue(server.closedCleanly(), "the fixture's close was not a clean FIN");
+	}
+
 	public function testServerThatIsNotSpeakingH2FailsRatherThanHanging():Void {
 		// Prior-knowledge h2c has no negotiation: RFC 9113 §3.1 removed the
 		// upgrade handshake, so an HTTP/1.1 server just sees garbage. The
@@ -587,7 +630,137 @@ class HTTP2BackendTest extends utest.Test {
 
 /** Error codes the test names without importing the whole enum surface. */
 private class H2ErrorCodeShim {
+	public static inline var INTERNAL_ERROR:Int = 0x2;
 	public static inline var REFUSED_STREAM:Int = 0x7;
+}
+
+/**
+ * Starts a response and does not finish it: the headers and part of the
+ * body, then either a RST_STREAM with `resetCode` or, with none, a close.
+ *
+ * The close has to be a FIN. Closing with the client's frames still unread
+ * makes it a RST, which can discard the response before the client reads it
+ * and turn the case into "no headers" -- so the fixture follows the partial
+ * body with a PING and closes only once the acknowledgement is read. By
+ * then it has drained everything the client sends unprompted, and the
+ * client has processed the headers and body ahead of the PING.
+ */
+private class H2TruncatedResponseServer {
+	public var port:Int = 0;
+
+	private var __resetCode:Int;
+	private var __ready:Lock = new Lock();
+	private var __closedCleanly:Bool = false;
+	private var __lock:Mutex = new Mutex();
+
+	public function new(resetCode:Int = -1) {
+		__resetCode = resetCode;
+	}
+
+	public function start():Void {
+		Thread.create(() -> {
+			var listener = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				listener.bind(new Host("127.0.0.1"), 0);
+				listener.listen(1);
+				port = listener.host().port;
+				__ready.release();
+
+				peer = listener.accept();
+				peer.setTimeout(10.0);
+				__serve(peer);
+			} catch (_:Dynamic) {
+				__ready.release();
+			}
+
+			try if (peer != null) peer.close() catch (_:Dynamic) {}
+			try listener.close() catch (_:Dynamic) {}
+		});
+
+		if (!__ready.wait(5.0)) {
+			Assert.fail("Timed out starting the truncated-response fixture");
+		}
+	}
+
+	/** Whether the fixture drained the client before hanging up on it. */
+	public function closedCleanly():Bool {
+		__lock.acquire();
+		var clean:Bool = __closedCleanly;
+		__lock.release();
+		return clean;
+	}
+
+	private function __serve(peer:SysSocket):Void {
+		var preface = Bytes.alloc(H2Connection.PREFACE.length);
+		peer.input.readFullBytes(preface, 0, preface.length);
+
+		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+
+		var streamId:Int = -1;
+		while (streamId < 0) {
+			var frame = __readFrame(peer);
+			if (frame.type == (H2FrameType.HEADERS : Int)) {
+				streamId = frame.id;
+			}
+		}
+
+		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, streamId, encoder.encode([new HpackHeader(":status", "200")]));
+		__writeFrame(peer, H2FrameType.DATA, 0, streamId, Bytes.ofString("the first half"));
+
+		if (__resetCode >= 0) {
+			var payload = Bytes.alloc(4);
+			payload.set(3, __resetCode);
+			__writeFrame(peer, H2FrameType.RST_STREAM, 0, streamId, payload);
+
+			// Held open until the client hangs up: the connection outlives a
+			// reset stream, and closing it here would be a second failure.
+			while (true) {
+				__readFrame(peer);
+			}
+		}
+
+		__writeFrame(peer, H2FrameType.PING, 0, 0, Bytes.ofHex("0102030405060708"));
+		while (true) {
+			var frame = __readFrame(peer);
+			if (frame.type == (H2FrameType.PING : Int) && (frame.flags & H2Flags.ACK) != 0) {
+				break;
+			}
+		}
+
+		__lock.acquire();
+		__closedCleanly = true;
+		__lock.release();
+		peer.close();
+	}
+
+	private function __readFrame(peer:SysSocket):{type:Int, flags:Int, id:Int} {
+		var header = Bytes.alloc(H2Frame.HEADER_SIZE);
+		peer.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
+
+		var length = H2Frame.lengthOf(header);
+		if (length > 0) {
+			peer.input.readFullBytes(Bytes.alloc(length), 0, length);
+		}
+
+		return {
+			type: header.get(3),
+			flags: header.get(4),
+			id: ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8)
+		};
+	}
+
+	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+		var bytes = out.getBytes();
+		peer.output.writeBytes(bytes, 0, bytes.length);
+		peer.output.flush();
+	}
 }
 
 /**
