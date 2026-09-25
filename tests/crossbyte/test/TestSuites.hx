@@ -233,6 +233,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCoalescingTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLossRecoveryTest());
+		runner.addCase(new crossbyte.net.CongestionControlTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {
