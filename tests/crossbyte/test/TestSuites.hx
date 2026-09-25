@@ -225,6 +225,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
 		runner.addCase(new crossbyte.net.RUDPHardeningTest());
+		// Real sockets whose frames go through memory, so reordering, loss and
+		// duplication happen when a case says rather than when a network does.
+		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {
