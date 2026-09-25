@@ -4,6 +4,7 @@ package crossbyte.rpc;
 
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.NetConnection;
+import crossbyte.rpc._internal.RPCWire;
 import haxe.ds.IntMap;
 
 /**
@@ -41,6 +42,9 @@ abstract class RPCCommands {
 	@:noCompletion private var __pendingResponseId:Int = 0;
 	@:noCompletion private var __pendingResponse:RPCResponse<Dynamic> = null;
 	@:noCompletion private var __pendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
+	// Where the frame whose response is being read ends; the generated
+	// readers read no further.
+	@:noCompletion private var __frameEnd:Int = RPCWire.NO_FRAME_END;
 
 	/**
 		Built-in heartbeat/system ping. This stays on the commands surface and should not

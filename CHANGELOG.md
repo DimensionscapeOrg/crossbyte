@@ -609,6 +609,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC frame that names a count or a length larger than itself is refused
+  before anything is allocated for it. The runtime lane made an array of
+  whatever argument count a frame named, and both lanes made a `Bytes` of
+  whatever length, before reading a byte of either. So a frame of twenty
+  bytes could ask the receiving side for two gigabytes, in any build. Each
+  is now checked against what is left of its frame first, and a frame that
+  names more than it holds ends the connection.
+- An RPC frame too short for what it carries no longer takes the rest from
+  the frame after it. Each frame was read and then skipped to its end, but
+  nothing stopped its arguments, or a response's value, from running past
+  that end into the next frame's bytes. The handler ran on them, or the
+  caller was answered with them. Reading is now held to the frame on every
+  lane, compiled and runtime, calls and responses. A frame that runs past
+  its end ends the connection before anything acts on it.
 - An RPC handler method that throws no longer ends the connection. The
   exception reached the session as if the peer had sent an unreadable
   frame, so the connection closed, every call still waiting on it failed
