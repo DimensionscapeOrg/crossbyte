@@ -407,6 +407,23 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A reliable datagram session gathers what it sends and sends it when the
+  runtime's loop finishes its pass -- after the tick's handlers, after each
+  round of socket polling, at the end of `HostApplication.advance`, and on
+  Node when the platform's turn ends -- several frames to a datagram where
+  the peer takes them. Every frame was its own datagram and its own system
+  call, and every packet that arrived was answered with an ACK of its own.
+  Now a pass owes one cumulative ACK at most, and none when a frame going out
+  already carries it. A bundle is never larger than the largest single frame,
+  so nothing is sent that a path carrying frames cannot carry; one frame
+  still goes out as itself, byte for byte; and the capability is a flag on
+  CONNECT and HANDSHAKE that an older peer ignores, so it is sent one frame a
+  datagram as before. `flush()` sends what is gathered at once -- in either
+  mode, where before it only turned stream bytes into frames and threw in
+  `DATAGRAM` mode -- and `close()` sends it before the FIN. Natively over
+  loopback, 100-byte reliable messages went from 45,000 to 258,000 a second,
+  1000-byte ones from 4,700 to 7,700, and 100-byte unreliable sends from
+  85,000 to 283,000.
 - The samples drive their runtime through `HostApplication.advance()`. Four
   of them -- arena, websocket-echo and both halves of socket-chat -- reached
   `CrossByte`'s private constructor and `pump()` through `@:access`, which is

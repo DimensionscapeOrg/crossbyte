@@ -95,6 +95,7 @@ class NodeIntegrationMain extends Application {
 	private var rdServer:ReliableDatagramServerSocket;
 	private var rdClient:ReliableDatagramSocket;
 	private var rdAccepted:ReliableDatagramSocket;
+	private var rdBurst:Array<String> = [];
 	private var wsListener:ServerWebSocket;
 	private var wsClient:WebSocket;
 	private var wsAccepted:WebSocket;
@@ -821,8 +822,23 @@ class NodeIntegrationMain extends Application {
 			rdAccepted.addEventListener(DatagramSocketDataEvent.DATA, function(dataEvent:DatagramSocketDataEvent):Void {
 				dataEvent.data.position = 0;
 				var text = dataEvent.data.readUTFBytes(dataEvent.data.length);
-				check("a reliable message arrived intact", text == "reliable-over-node", "got " + text);
-				stopReliableDatagrams();
+				if (rdBurst.length == 0 && text == "reliable-over-node") {
+					check("a reliable message arrived intact", true, "");
+					rdBurst.push(text);
+					sendReliableBurst();
+					return;
+				}
+				rdBurst.push(text);
+				if (rdBurst.length == RELIABLE_BURST + 1) {
+					var inOrder = true;
+					for (i in 0...RELIABLE_BURST) {
+						if (rdBurst[i + 1] != "burst " + i) {
+							inOrder = false;
+						}
+					}
+					check("a burst of reliable messages arrived whole and in order", inOrder, rdBurst.slice(1, 6).join(", ") + "...");
+					stopReliableDatagrams();
+				}
 			});
 		});
 
@@ -830,6 +846,34 @@ class NodeIntegrationMain extends Application {
 		rdServer.listen();
 
 		waitForReliableBind(0);
+	}
+
+	// Sent in one go, so on Node, where datagrams arrive between the runtime's
+	// passes, the session's frames and the peer's acknowledgements are sent
+	// when the platform's turn ends rather than a frame later -- and bundled.
+	private static inline var RELIABLE_BURST:Int = 100;
+
+	private function sendReliableBurst():Void {
+		for (i in 0...RELIABLE_BURST) {
+			var payload = new crossbyte.io.ByteArray();
+			payload.writeUTFBytes("burst " + i);
+			rdClient.send(payload);
+		}
+		waitForReliableBurst(0);
+	}
+
+	private function waitForReliableBurst(attempts:Int):Void {
+		if (rdBurst.length > RELIABLE_BURST) {
+			return;
+		}
+		if (attempts > 400) {
+			check("a burst of reliable messages arrived whole and in order", false, rdBurst.length - 1 + " of " + RELIABLE_BURST + " arrived");
+			stopReliableDatagrams();
+			return;
+		}
+		haxe.Timer.delay(function():Void {
+			waitForReliableBurst(attempts + 1);
+		}, 5);
 	}
 
 	private function waitForReliableBind(attempts:Int):Void {

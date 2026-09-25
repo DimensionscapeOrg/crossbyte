@@ -7,6 +7,7 @@ import crossbyte.utils.ThreadPriority;
 #if (cpp && windows)
 import crossbyte.core._internal.NativeWindowsRuntime;
 #end
+import crossbyte.core._internal.PassFlush;
 import crossbyte.errors.IllegalOperationError;
 #if !js
 import sys.net.Socket;
@@ -254,6 +255,16 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __pooledTickEvent:TickEvent;
 	@:noCompletion private var __pooledTickEventInUse:Bool = false;
 
+	// What asked to send its held output when this pass ends, in the order
+	// it asked, and how far the current flush has got through it.
+	@:noCompletion private var __passFlushes:Array<PassFlush> = [];
+	@:noCompletion private var __passFlushAt:Int = 0;
+	@:noCompletion private var __flushingPass:Bool = false;
+	#if js
+	@:noCompletion private var __passFlushScheduled:Bool = false;
+	@:noCompletion private var __passFlushTurn:Void->Void = null;
+	#end
+
 	#if cpp
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
 	// The thread this runtime is bound to (its loop thread, or the host pump
@@ -416,6 +427,7 @@ final class CrossByte extends EventDispatcher {
 		__dt = delta;
 		__timer.advanceTime(delta);
 		__dispatchTick(delta);
+		__flushHeld();
 		if (!__getRunning()) {
 			__cpuTime = Timer.stamp() - frameStart;
 			return;
@@ -423,8 +435,74 @@ final class CrossByte extends EventDispatcher {
 
 		#if !js
 		__socketRegistry.update(socketTimeout);
+		__flushHeld();
 		#end
 		__cpuTime = Timer.stamp() - frameStart;
+	}
+
+	/**
+		Asks for `item` to be flushed when this pass of the loop ends: after the
+		tick's handlers have run, and again after each round of socket polling,
+		so what a handler sends in answer to what just arrived goes out before
+		the loop waits. The host loop ends its pass the same way, so the end of
+		`HostApplication.advance` is one too.
+
+		On JavaScript, datagrams are delivered by the platform's own loop
+		between passes, so a turn of that loop is a pass as well: the first
+		request in one arranges for the flush once the turn's callbacks have run.
+	**/
+	@:noCompletion public function __queuePassFlush(item:PassFlush):Void {
+		__passFlushes.push(item);
+		#if js
+		if (!__passFlushScheduled) {
+			__passFlushScheduled = true;
+			if (__passFlushTurn == null) {
+				__passFlushTurn = __flushPassFromTurn;
+			}
+			#if nodejs
+			js.Node.setImmediate(__passFlushTurn);
+			#else
+			js.Browser.window.setTimeout(__passFlushTurn, 0);
+			#end
+		}
+		#end
+	}
+
+	#if js
+	@:noCompletion private function __flushPassFromTurn():Void {
+		__passFlushScheduled = false;
+		__flushHeld();
+	}
+	#end
+
+	@:noCompletion private function __flushHeld():Void {
+		if (__flushingPass || __passFlushAt >= __passFlushes.length) {
+			return;
+		}
+
+		// Walked by index rather than copied, because a flush can make another
+		// holder ask -- an error handler that sends on a different session --
+		// and that one belongs to this pass too. If a handler throws, the rest
+		// stay where they are, and the next pass carries on from there.
+		__flushingPass = true;
+		try {
+			while (__passFlushAt < __passFlushes.length) {
+				var item:PassFlush = __passFlushes[__passFlushAt];
+				__passFlushes[__passFlushAt] = null;
+				__passFlushAt++;
+				item.__flushPass();
+			}
+		} catch (error:Dynamic) {
+			__flushingPass = false;
+			#if cpp
+			cpp.Lib.rethrow(error);
+			#else
+			throw error;
+			#end
+		}
+		__passFlushes.resize(0);
+		__passFlushAt = 0;
+		__flushingPass = false;
 	}
 
 	@:noCompletion private inline function get_uptime():Float {
@@ -720,6 +798,9 @@ final class CrossByte extends EventDispatcher {
 		if (hasEventListener(Event.EXIT)) {
 			dispatchEvent(new Event(Event.EXIT));
 		}
+		// Whatever the last pass, or an exit handler, left held goes out while
+		// the sockets are still there to send it.
+		__flushHeld();
 		#if !js
 		if (__socketRegistry != null) {
 			__socketRegistry.clear();
@@ -784,16 +865,19 @@ final class CrossByte extends EventDispatcher {
 		__dt = delta;
 		__timer.advanceTime(delta);
 		__dispatchTick(delta);
+		__flushHeld();
 		__cpuTime = Timer.stamp() - frameStart;
 		#else
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
 		__dispatchTick(__dt);
+		__flushHeld();
 		if (!__getRunning()) {
 			return;
 		}
 		#if !js
 		__socketRegistry.update();
+		__flushHeld();
 		#end
 
 		__cpuTime = __dt = Timer.stamp() - frameStart;
@@ -812,6 +896,7 @@ final class CrossByte extends EventDispatcher {
 		var frameStart:Float = Timer.stamp();
 		__timer.advanceTime(__dt);
 		__dispatchTick(__dt);
+		__flushHeld();
 		if (!__getRunning()) {
 			return;
 		}
@@ -849,6 +934,7 @@ final class CrossByte extends EventDispatcher {
 			#if !js
 			__socketRegistry.update(remaining);
 			#end
+			__flushHeld();
 			remaining = __frameDeadline - Timer.stamp();
 		}
 

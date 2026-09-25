@@ -616,6 +616,17 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var key:String = __endpointKey(e.srcAddress, e.srcPort);
 		var connection:ReliableDatagramSocket = __connections.get(key);
+
+		// Several frames at once, and only ever from a session already here:
+		// a peer bundles once it has heard this side, so a bundle from an
+		// address with no session has nothing in it to open one with.
+		if (ReliableDatagramProtocol.isBundle(e.data)) {
+			if (connection != null) {
+				connection.__acceptBundle(e.data);
+			}
+			return;
+		}
+
 		var frame = ReliableDatagramProtocol.decode(e.data);
 		if (frame == null) {
 			return;
@@ -651,6 +662,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		payload.position = 0;
 		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode, payload);
+		connection.__peerTakesBundles = frame.bundles;
 		__connections.set(key, connection);
 		__pending.set(key, true);
 		__pendingCount++;
