@@ -575,6 +575,9 @@ final class CrossByte extends EventDispatcher {
 				__primordial = this;
 			}
 			#end
+			if (__isPrimordial) {
+				__adoptEarlyTimers();
+			}
 			return;
 		}
 
@@ -593,9 +596,18 @@ final class CrossByte extends EventDispatcher {
 			#else
 			__primordial = this;
 			#end
+			__adoptEarlyTimers();
 		} else {
 			EntryPoint.addThread(__runEventLoop);
 		}
+	}
+
+	// Timers made before any runtime existed -- by a library's static
+	// initializer, which runs before main -- start on this one's ticks.
+	@:noCompletion private function __adoptEarlyTimers():Void {
+		#if !lime_cffi
+		@:privateAccess haxe.Timer.__primordialReady(this);
+		#end
 	}
 
 	@:noCompletion private function get_cpuLoad():Float {
