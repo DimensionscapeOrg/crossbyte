@@ -409,8 +409,14 @@ class RPCHandlerMacro {
 		var callTarget:Expr = {expr: EConst(CIdent(m.name)), pos: m.pos};
 		var callExpr:Expr = {expr: ECall(callTarget, paramExprs), pos: m.pos};
 		var callStmts:Array<Expr> = [];
+		final op:Expr = macro $v{m.op};
+		final name:Expr = macro $v{m.name};
 
-		if (isVoid(m.ret)) {
+		final later:Null<ComplexType> = futurePayload(m.ret, m.pos);
+		if (later != null) {
+			stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
+			stmts.push(laterCall(m, later, callExpr, callsAfter));
+		} else if (isVoid(m.ret)) {
 			callStmts.push(callExpr);
 		} else {
 			var key = typeKey(m.ret, m.pos);
@@ -429,32 +435,32 @@ class RPCHandlerMacro {
 			});
 		}
 
-		// Read whole and within the frame, or the frame is not sound: what an
-		// argument read past its end came from the frame after it.
-		stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
+		if (later == null) {
+			// Read whole and within the frame, or the frame is not sound: what an
+			// argument read past its end came from the frame after it.
+			stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
 
-		// The arguments are read above, outside this: a frame that does not
-		// decode is the peer's fault, and ends the connection. What the method
-		// throws once they have -- or its answer failing to encode -- is this
-		// side's, and becomes an error answer instead; see `__rpc_fail`.
-		final op:Expr = macro $v{m.op};
-		final name:Expr = macro $v{m.name};
-		var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
-		if (callsAfter) {
-			stmts.push(macro var __failure:Dynamic = null);
-			stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
-				__failure = __error;
-				this.__rpc_fail($op, $name, requestId, __error);
-			});
-			stmts.push(macro try {
-				this.afterCall($name, requestId, __failure);
-			} catch (__error:Dynamic) {
-				this.__rpc_report($op, $name, __error);
-			});
-		} else {
-			stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
-				this.__rpc_fail($op, $name, requestId, __error);
-			});
+			// The arguments are read above, outside this: a frame that does not
+			// decode is the peer's fault, and ends the connection. What the method
+			// throws once they have -- or its answer failing to encode -- is this
+			// side's, and becomes an error answer instead; see `__rpc_fail`.
+			var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
+			if (callsAfter) {
+				stmts.push(macro var __failure:Dynamic = null);
+				stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
+					__failure = __error;
+					this.__rpc_fail($op, $name, requestId, __error);
+				});
+				stmts.push(macro try {
+					this.afterCall($name, requestId, __failure);
+				} catch (__error:Dynamic) {
+					this.__rpc_report($op, $name, __error);
+				});
+			} else {
+				stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
+					this.__rpc_fail($op, $name, requestId, __error);
+				});
+			}
 		}
 
 		var body:Expr = {expr: EBlock(stmts), pos: m.pos};
@@ -497,6 +503,100 @@ class RPCHandlerMacro {
 			}),
 			pos: m.pos
 		};
+	}
+
+	/**
+		The call to a method that answers with a `Future<T>`: sent at once if
+		the future is complete when the method returns, as a plain call's
+		answer is -- nothing registered, nothing allocated -- and otherwise
+		settled by `__rpc_later` once it completes. What the method throws is
+		answered as any throw is. Refused first, as `beforeCall` refuses, when
+		the session already has `maxCallsWaiting` calls waiting.
+
+		`__answered` rather than a second look at the future: one that
+		completes on another thread between the two would be answered by
+		neither. And the look is `__stateNow`, under the future's lock: read
+		plainly, a future completing on another thread can show `succeeded`
+		before its `result`, and the answer sent would be the stale one.
+	**/
+	static function laterCall(m:MethodInfo, payload:ComplexType, callExpr:Expr, callsAfter:Bool):Expr {
+		final key = typeKey(payload, m.pos);
+		if (!TYPE_WRITERS.exists(key)) {
+			Context.error("Unsupported RPC response return type " + key + " for '" + m.name + "'", m.pos);
+		}
+		final op:Expr = macro $v{m.op};
+		final name:Expr = macro $v{m.name};
+		final futureType:ComplexType = TPath({pack: ["crossbyte"], name: "Future", params: [TPType(payload)]});
+		final sendNow = sendResponseExpr(m.op, macro requestId, macro __result, payload, m.pos);
+		final sendLater = sendResponseExpr(m.op, macro requestId, macro __value, payload, m.pos);
+		final noFuture:Expr = macro $v{"RPC handler method '" + m.name + "' answered with no future"};
+		final after:Expr = callsAfter ? macro try {
+			this.afterCall($name, requestId, __failure);
+		} catch (__error:Dynamic) {
+			this.__rpc_report($op, $name, __error);
+		} : macro {};
+
+		return macro if (this.__rpc_mayWait($op, requestId)) {
+			var __future:$futureType = null;
+			var __failure:Dynamic = null;
+			var __answered:Bool = false;
+			try {
+				__future = $callExpr;
+				if (__future == null) {
+					throw $noFuture;
+				}
+				if (__future.__stateNow() == 1) {
+					__answered = true;
+					if (requestId != 0) {
+						var __result:$payload = __future.result;
+						$sendNow;
+					}
+				}
+			} catch (__error:Dynamic) {
+				__failure = __error;
+				__answered = true;
+				this.__rpc_fail($op, $name, requestId, __error);
+			}
+			if (__answered) {
+				$after;
+			} else {
+				this.__rpc_later($op, $name, requestId, __future, function(__value:$payload):Void {
+					$sendLater;
+				}, $v{callsAfter});
+			}
+		};
+	}
+
+	/**
+		`T` when `ct` is `crossbyte.Future<T>`, or a future of its own such as
+		`RPCResponse<T>`: a method returning one answers later, with a `T`.
+		Resolving the type path types no method.
+	**/
+	static function futurePayload(ct:Null<ComplexType>, pos:Position):Null<ComplexType> {
+		if (ct == null) {
+			return null;
+		}
+		final resolved:Null<Type> = try Context.resolveType(ct, pos) catch (_:Dynamic) null;
+		if (resolved == null) {
+			return null;
+		}
+		return switch (Context.follow(resolved)) {
+			case TInst(ref, [payload]) if (isFuture(ref.get())):
+				RPCContractMacroTools.fullComplexType(payload);
+			case _:
+				null;
+		}
+	}
+
+	static function isFuture(type:ClassType):Bool {
+		var current:Null<ClassType> = type;
+		while (current != null) {
+			if (current.name == "Future" && current.pack.join(".") == "crossbyte") {
+				return true;
+			}
+			current = current.superClass != null ? current.superClass.t.get() : null;
+		}
+		return false;
 	}
 
 	static function makeDispatcher(methods:Array<MethodInfo>, usePerfectHash:Bool, tag:String, overridesInherited:Bool):Field {
@@ -876,13 +976,21 @@ class RPCHandlerMacro {
 				} else {
 					pathKey(typeDef.pack, typeDef.name);
 				}
-			case TInst(typeRef, _):
-				pathKey(typeRef.get().pack, typeRef.get().name);
-			case TType(typeRef, _):
-				pathKey(typeRef.get().pack, typeRef.get().name);
+			case TInst(typeRef, params):
+				pathKey(typeRef.get().pack, typeRef.get().name) + paramsKey(params);
+			case TType(typeRef, params):
+				pathKey(typeRef.get().pack, typeRef.get().name) + paramsKey(params);
 			case _:
 				Std.string(type);
 		}
+	}
+
+	/** A type's parameters, compared too: `Future<Int>` is not `Future<String>`. **/
+	static function paramsKey(params:Array<Type>):String {
+		if (params.length == 0) {
+			return "";
+		}
+		return "<" + [for (param in params) normalizedResolvedTypeKey(Context.follow(param))].join(",") + ">";
 	}
 
 	private static function injectPing(fields:Array<Field>):Void {

@@ -260,6 +260,15 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __passFlushes:Array<PassFlush> = [];
 	@:noCompletion private var __passFlushAt:Int = 0;
 	@:noCompletion private var __flushingPass:Bool = false;
+
+	// What another thread handed this runtime to run on its own; see __post.
+	// The flag is read each tick without the lock: a stale false costs one
+	// tick, and a runtime nobody posts to pays a field read.
+	@:noCompletion private var __posted:Null<Array<Void->Void>> = null;
+	@:noCompletion private var __hasPosted:Bool = false;
+	#if (cpp || neko || hl || java || jvm || eval)
+	@:noCompletion private final __postLock:sys.thread.Mutex = new sys.thread.Mutex();
+	#end
 	#if js
 	@:noCompletion private var __passFlushScheduled:Bool = false;
 	@:noCompletion private var __passFlushTurn:Void->Void = null;
@@ -438,6 +447,59 @@ final class CrossByte extends EventDispatcher {
 		__flushHeld();
 		#end
 		__cpuTime = Timer.stamp() - frameStart;
+	}
+
+	/**
+		Runs `callback` on this runtime's thread, at the start of its next tick.
+		Safe from any thread: the one way to hand a runtime something from
+		another.
+
+		What a runtime owns -- its sockets, its event listeners -- is not
+		thread-safe, so code finishing on another thread has to come back to
+		the owner's before touching them. Each component used to do that with
+		a tick listener of its own, attached on the owner's thread for exactly
+		that reason; this is one queue for all of them, costing a runtime
+		nobody posts to a field read a tick.
+
+		The loop does not wake early for it: a callback posted mid-frame waits
+		for the next tick, as a `Worker` or `Task` result does. What throws is
+		logged and does not stop the rest.
+	**/
+	@:noCompletion public function __post(callback:Void->Void):Void {
+		#if (cpp || neko || hl || java || jvm || eval)
+		__postLock.acquire();
+		#end
+		if (__posted == null) {
+			__posted = [];
+		}
+		__posted.push(callback);
+		__hasPosted = true;
+		#if (cpp || neko || hl || java || jvm || eval)
+		__postLock.release();
+		#end
+	}
+
+	@:noCompletion private function __runPosted():Void {
+		#if (cpp || neko || hl || java || jvm || eval)
+		__postLock.acquire();
+		#end
+		final batch = __posted;
+		__posted = null;
+		__hasPosted = false;
+		#if (cpp || neko || hl || java || jvm || eval)
+		__postLock.release();
+		#end
+
+		if (batch == null) {
+			return;
+		}
+		for (callback in batch) {
+			try {
+				callback();
+			} catch (error:Dynamic) {
+				crossbyte.utils.Logger.error("A callback posted to the runtime threw: " + Std.string(error));
+			}
+		}
 	}
 
 	/**
@@ -750,6 +812,10 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __dispatchTick(delta:Float):Void {
+		if (__hasPosted) {
+			__runPosted();
+		}
+
 		if (!hasEventListener(TickEvent.TICK)) {
 			return;
 		}

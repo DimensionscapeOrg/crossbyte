@@ -8,6 +8,7 @@ import crossbyte._internal.system.timer.TimerHandle;
 import crossbyte.net.Reason;
 import crossbyte.utils.Logger;
 import crossbyte.core.CrossByte;
+import crossbyte.Future;
 import crossbyte.utils.Bucket;
 import crossbyte.utils.Hash;
 import crossbyte.sys.System;
@@ -43,6 +44,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public static inline final DEFAULT_HEARTBEAT_TIMEOUT:Int = 90000;
 	/** Default jitter bucket used to spread heartbeat start phases, in milliseconds. */
 	public static inline final DEFAULT_HEARTBEAT_JITTER:Int = 5000;
+	/** Default for `maxCallsWaiting`. */
+	public static inline final DEFAULT_MAX_CALLS_WAITING:Int = 256;
 	@:noCompletion private static final HEARTBEAT_SALT:Int = __getSalt();
 
 	/** Process-local session identifier. */
@@ -78,6 +81,30 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __runtimePendingResponseId:Int = 0;
 	@:noCompletion private var __runtimePendingResponse:RPCResponse<Dynamic> = null;
 	@:noCompletion private var __runtimePendingResponses:Null<IntMap<RPCResponse<Dynamic>>> = null;
+
+	/**
+	 * The most inbound calls, on both lanes together, that may wait on an
+	 * answer at once: calls whose handler answered with a `Future` not yet
+	 * complete. Each holds whatever it is waiting on, so without a limit a
+	 * peer could make this side hold as much as it liked. A call past it is
+	 * refused before its method runs -- a request answered
+	 * `RPCError.BUSY_MESSAGE`, a one-way call dropped -- as `beforeCall`
+	 * refuses one, and like a refusal it is not reported. On the runtime lane,
+	 * where which handlers answer later is not known before they run, every
+	 * call is refused while the limit is reached. `0` removes it.
+	 */
+	public var maxCallsWaiting:Int = DEFAULT_MAX_CALLS_WAITING;
+
+	/** How many inbound calls are waiting on an answer now; see `maxCallsWaiting`. */
+	public var callsWaiting(get, never):Int;
+
+	@:noCompletion private var __callsWaiting:Int = 0;
+	// Set once the connection has ended: an answer completing after that has
+	// nobody to go to.
+	@:noCompletion private var __ended:Bool = false;
+	#if (cpp || neko || hl || java || jvm || eval)
+	@:noCompletion private static final __threadTokens:sys.thread.Tls<{}> = new sys.thread.Tls();
+	#end
 
 	#if neko
 	@:noCompletion private static var __sidCounter:Int = 0;
@@ -211,6 +238,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	/** The connection can carry no answer now, so nothing waiting on one gets it. **/
 	@:noCompletion private function __connectionEnded(reason:Reason):Void {
+		__ended = true;
 		__active = false;
 		__stopHeartbeat();
 		__failAllPending("RPC connection closed: " + Std.string(reason));
@@ -529,11 +557,22 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			}
 			return;
 		}
+		if (__atCallLimit()) {
+			if (requestId != 0) {
+				__sendRuntimeError(op, requestId, RPCError.BUSY_MESSAGE);
+			}
+			return;
+		}
 
 		var failure:Dynamic = null;
+		var later:Null<Future<Dynamic>> = null;
 		try {
 			final result = handler(args);
-			if (requestId != 0) {
+			// A type check a call: the one thing answering later costs a
+			// handler that does not.
+			if (Std.isOfType(result, Future)) {
+				later = cast result;
+			} else if (requestId != 0) {
 				__sendRuntimeResponse(op, requestId, result);
 			}
 		} catch (error:Dynamic) {
@@ -541,15 +580,51 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			// path, a query, a stack -- and a one-way call rethrew, which
 			// closed the connection. The same rules as the compiled lane now.
 			failure = error;
-			final answer:Null<String> = __answerFor(error);
-			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
-			}
-			if (answer == null || requestId == 0) {
-				__reportHandlerError(op, null, error);
-			}
+			__answerRuntimeFailure(op, requestId, error);
 		}
 
+		if (later != null) {
+			__settleOnThisThread(later, settled -> __settleRuntimeCall(op, requestId, settled));
+			return;
+		}
+		__afterRuntimeCall(op, requestId, failure);
+	}
+
+	/** A runtime call whose handler answered with a future, now complete. **/
+	@:noCompletion private function __settleRuntimeCall(op:Int, requestId:Int, settled:Future<Dynamic>):Void {
+		var failure:Dynamic = null;
+		if (settled.succeeded) {
+			if (requestId != 0 && !__ended) {
+				try {
+					__sendRuntimeResponse(op, requestId, settled.result);
+				} catch (error:Dynamic) {
+					failure = error;
+					__answerRuntimeFailure(op, requestId, error);
+				}
+			}
+		} else {
+			failure = __failureOf(settled);
+			__answerRuntimeFailure(op, requestId, failure);
+		}
+		__afterRuntimeCall(op, requestId, failure);
+	}
+
+	/**
+	 * A runtime call failed with `error`: a request is answered with an
+	 * `RPCError`'s message, or `RPCError.INTERNAL_MESSAGE`, and whatever the
+	 * caller is not told is reported.
+	 */
+	@:noCompletion private function __answerRuntimeFailure(op:Int, requestId:Int, error:Dynamic):Void {
+		final answer:Null<String> = __answerFor(error);
+		if (requestId != 0 && !__ended) {
+			__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
+		}
+		if (answer == null || requestId == 0) {
+			__reportHandlerError(op, null, error);
+		}
+	}
+
+	@:noCompletion private inline function __afterRuntimeCall(op:Int, requestId:Int, failure:Dynamic):Void {
 		if (afterRuntimeCall != null) {
 			try {
 				afterRuntimeCall(op, requestId, failure);
@@ -557,6 +632,79 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				__reportHandlerError(op, null, error);
 			}
 		}
+	}
+
+	/** Whether `maxCallsWaiting` calls are waiting already. **/
+	@:noCompletion private inline function __atCallLimit():Bool {
+		return maxCallsWaiting > 0 && __callsWaiting >= maxCallsWaiting;
+	}
+
+	@:noCompletion private inline function get_callsWaiting():Int {
+		return __callsWaiting;
+	}
+
+	/**
+	 * Has `settle` run for `future` on this session's thread once it
+	 * completes: at once if it has, or when it completes on this thread, and
+	 * posted to this thread's runtime when it completes on another -- a
+	 * connection is not thread-safe, and neither is anything this does in
+	 * answer. Until then the call counts against `maxCallsWaiting`.
+	 *
+	 * Called on this session's thread, from the dispatch of the call. A
+	 * thread with no runtime has nothing to hand the answer to, so there it
+	 * is settled on whichever thread completes the future.
+	 */
+	@:noCompletion private function __settleOnThisThread<T>(future:Future<T>, settle:Future<T>->Void):Void {
+		// Under the future's lock, so what settle reads of one another thread
+		// has just completed is that thread's, whole.
+		if (future.__stateNow() != 0) {
+			// Heard, so not reported as a failure nobody listened for -- which a
+			// future that failed before anyone could attach otherwise is.
+			future.__failureObserved = true;
+			settle(future);
+			return;
+		}
+		__callsWaiting++;
+		final finish = function():Void {
+			__callsWaiting--;
+			settle(future);
+		};
+		#if (cpp || neko || hl || java || jvm || eval)
+		// Which thread this is, told apart by a token of its own rather than
+		// by runtime: off cpp, CrossByte.current() is the primordial runtime
+		// on every thread, and would take a worker for this one.
+		final home:{} = __threadToken();
+		var runtime:Null<CrossByte> = null;
+		try {
+			runtime = CrossByte.current();
+		} catch (_:Dynamic) {}
+		final arrived = function():Void {
+			if (runtime != null && __threadToken() != home) {
+				runtime.__post(finish);
+			} else {
+				finish();
+			}
+		};
+		future.then(_ -> arrived(), _ -> arrived());
+		#else
+		future.then(_ -> finish(), _ -> finish());
+		#end
+	}
+
+	#if (cpp || neko || hl || java || jvm || eval)
+	@:noCompletion private static function __threadToken():{} {
+		var token:Null<{}> = __threadTokens.value;
+		if (token == null) {
+			token = {};
+			__threadTokens.value = token;
+		}
+		return token;
+	}
+	#end
+
+	/** What a failed future failed with: its cause, or else its message. **/
+	@:noCompletion private static inline function __failureOf<T>(future:Future<T>):Dynamic {
+		return future.cause != null ? future.cause : future.error;
 	}
 
 	/**
@@ -658,7 +806,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (response == null) {
 			return;
 		}
-		response.__reject(message);
+		// The other side's handler meant its caller to see this, so it fails
+		// with an RPCError: a handler here answering with this response passes
+		// the message on, as it would one it threw.
+		response.__fail(message, new RPCError(message));
 	}
 
 	@:noCompletion private function __takeRuntimeResponse(requestId:Int):RPCResponse<Dynamic> {

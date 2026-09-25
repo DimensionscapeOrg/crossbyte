@@ -92,7 +92,17 @@ abstract class RPCCommands {
 		(cast response : RPCResponse<T>).__resolve(value);
 	}
 
+	/**
+		Fails a waiting call with the error the other side answered it with.
+		Its handler meant this caller to see it, so the failure's cause is an
+		`RPCError`: a handler here answering with this response -- forwarding
+		it -- passes the message on, as it would one it threw.
+	**/
 	@:noCompletion private function __rejectResponse(requestId:Int, message:String):Void {
+		__failResponse(requestId, message, new RPCError(message));
+	}
+
+	@:noCompletion private function __failResponse(requestId:Int, message:String, cause:Null<Dynamic>):Void {
 		var response:RPCResponse<Dynamic> = null;
 		if (__pendingResponse != null && requestId == __pendingResponseId) {
 			response = __pendingResponse;
@@ -107,11 +117,12 @@ abstract class RPCCommands {
 		if (response == null) {
 			return;
 		}
-		response.__reject(message);
+		response.__fail(message, cause);
 	}
 
+	/** A response this side cannot read: its own failure, not the other side's answer. **/
 	@:noCompletion private function __rejectUnknownResponse(requestId:Int, op:Int):Void {
-		__rejectResponse(requestId, 'Unsupported RPC response op: $op');
+		__failResponse(requestId, 'Unsupported RPC response op: $op', null);
 	}
 
 	@:noCompletion private function __nextRequestId():Int {
