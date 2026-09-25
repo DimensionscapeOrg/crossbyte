@@ -96,14 +96,31 @@ class HTTP2Backend implements HTTPBackend {
 		var session:H2ClientSession = null;
 
 		try {
-			session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context));
-
 			var authority:String = (port == (secure ? 443 : 80)) ? url.host : '${url.host}:$port';
 			var body:Null<Bytes> = __body(context);
 			var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
 
-			var stream:H2Stream = session.execute(context.method, scheme, authority, __target(url), __headers(context, body), body, timeout,
-				context.cancelToken);
+			// Sent once more, on whatever session the pool hands over next,
+			// when the first refuses the stream before anything goes out: it
+			// was retired as idle a moment after being handed over, or its
+			// peer has said GOAWAY. REFUSED_STREAM promises the request was
+			// not processed (RFC 9113, 8.7), so sending it again is safe.
+			var stream:H2Stream = null;
+			var refused:Int = 0;
+			while (stream == null) {
+				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context));
+				try {
+					stream = session.execute(context.method, scheme, authority, __target(url), __headers(context, body), body, timeout,
+						context.cancelToken);
+				} catch (e:H2ConnectionError) {
+					if (e.code != H2ErrorCode.REFUSED_STREAM || refused > 0) {
+						throw e;
+					}
+					refused++;
+					H2ConnectionPool.discard(session);
+					session = null;
+				}
+			}
 			__report(context, stream, session.connection);
 
 			// A session that died mid-request must not be handed to the next
