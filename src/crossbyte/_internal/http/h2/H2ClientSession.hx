@@ -195,21 +195,30 @@ class H2ClientSession {
 		__activeStreams++;
 		__idleSince = -1;
 
-		var alreadyDone:Bool = target.isClosed();
-		__lock.release();
-
-		if (alreadyDone) {
-			__release(target.id);
-			return target;
-		}
-
-		// Registered only now that the stream id exists. A token cancelled in
-		// the meantime runs this immediately, which is why `onCancel` fires
-		// late registrations rather than dropping them.
+		// Registered only now that the stream id exists, and before the lock
+		// is dropped, for the waiter's reason: until then the reader cannot
+		// process a frame for this stream, so a cancel from here on resets it
+		// before any of its response can land. Registered after the lock, a
+		// cancel in the gap found no handler to run, and the response could
+		// complete the stream before the late registration reset it. A token
+		// cancelled in the meantime runs this immediately, re-entering the
+		// lock -- which is why `onCancel` fires late registrations rather than
+		// dropping them.
 		var streamId:Int = target.id;
 		var onCancelled:Void->Void = () -> cancel(streamId);
 		if (cancelToken != null) {
 			cancelToken.onCancel(onCancelled);
+		}
+
+		var alreadyDone:Bool = target.isClosed();
+		__lock.release();
+
+		if (alreadyDone) {
+			if (cancelToken != null) {
+				cancelToken.removeHandler(onCancelled);
+			}
+			__release(target.id);
+			return target;
 		}
 
 		if (!waiter.wait(timeoutSeconds)) {
@@ -222,6 +231,9 @@ class H2ClientSession {
 			} catch (_:Dynamic) {}
 			__lock.release();
 
+			if (cancelToken != null) {
+				cancelToken.removeHandler(onCancelled);
+			}
 			__release(target.id);
 			throw new H2ConnectionError(H2ErrorCode.CANCEL, 'Request to $origin timed out after ${timeoutSeconds}s');
 		}
@@ -244,6 +256,11 @@ class H2ClientSession {
 	 * down would cancel every other request on it too. Safe from any thread,
 	 * and safe on a stream that has already finished -- the reset is simply
 	 * not sent.
+	 *
+	 * Decided under the lock the reader takes to process a frame. Once this
+	 * has run, the stream is closed and whatever the peer sends for it is
+	 * discarded, so a response arriving after a cancel cannot complete the
+	 * request it was for.
 	 */
 	public function cancel(streamId:Int):Void {
 		__lock.acquire();

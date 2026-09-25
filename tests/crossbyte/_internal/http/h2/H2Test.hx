@@ -261,6 +261,56 @@ class H2Test extends utest.Test {
 		Assert.isNull(connection.goAwayCode);
 	}
 
+	public function testAResponseArrivingAfterOurResetIsDiscarded():Void {
+		var server = new ServerScript();
+		server.settings();
+		// The peer answers stream 1 as though it never saw our reset -- it
+		// may well have sent this before the reset reached it. The custom
+		// field goes into the dynamic table, and stream 3's response refers
+		// back to it.
+		server.response(1, [new HpackHeader(":status", "200"), new HpackHeader("x-trace", "abc")], "too late", true);
+		server.response(3, [new HpackHeader(":status", "200"), new HpackHeader("x-trace", "abc")], "ok", true);
+
+		var connection = server.connect();
+		var cancelled = connection.request("GET", "http", "example.com", "/cancelled", []);
+		var kept = connection.request("GET", "http", "example.com", "/kept", []);
+		connection.resetStream(cancelled.id, H2ErrorCode.CANCEL);
+		connection.pumpUntilClosed(kept);
+
+		// Nothing of the late response lands on the stream that was reset.
+		// It is still in the connection's map, and filling it in was how a
+		// cancelled request came to report itself complete.
+		Assert.equals(-1, cancelled.status);
+		Assert.equals(0, cancelled.headers.length);
+		Assert.equals(0, cancelled.bodyLength);
+		Assert.isFalse(cancelled.endOfStream);
+
+		// The discarded block was still decoded (5.1): without it, the next
+		// block's reference into the dynamic table points at nothing.
+		Assert.equals(200, kept.status);
+		Require.notNull(kept.headers[0]);
+		Assert.equals("abc", kept.headers[0].value);
+		Assert.equals("ok", kept.takeBody().toString());
+	}
+
+	public function testResettingAFinishedStreamSendsNothing():Void {
+		var server = new ServerScript();
+		server.settings();
+		server.response(1, [new HpackHeader(":status", "200")], "done", true);
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(stream);
+		connection.resetStream(stream.id, H2ErrorCode.CANCEL);
+
+		// The stream is over on both sides; a reset now is a frame on a
+		// closed stream, which 5.1 forbids sending.
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			Assert.notEquals(H2FrameType.RST_STREAM, frame.type);
+		}
+		Assert.equals("done", stream.takeBody().toString());
+	}
+
 	public function testGoAwayRefusesStreamsAboveTheLastProcessedId():Void {
 		var server = new ServerScript();
 		server.settings();
