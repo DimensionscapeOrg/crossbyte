@@ -659,6 +659,14 @@ All notable changes to CrossByte will be documented in this file.
   lock having checked the session is still its own, and what it hands on
   is refused once `close()` has ended it. Each reader also frames into its
   own buffer, which `close()` used to clear under a reader writing to it.
+- An RPC contract, or a parent handler or commands class, in another
+  module than the class that uses it could not name its types through an
+  import alias or a private `typedef`. Its types reached the other class by
+  name -- `toComplexType()` keeps a typedef's -- which only their own module
+  can resolve, and the build failed with "Type not found" or "Unsupported
+  RPC arg type" at the other module's position. They are now written out
+  in full, typedefs followed and `Null<T>` kept, so an optional argument
+  stays optional on the wire.
 - A listening `LocalConnection` could stop delivering for good: no
   `onReady`, and nothing a client sent. Its reader thread attached the tick
   listener that carries dispatches to the runtime's thread, and

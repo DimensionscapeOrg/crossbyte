@@ -681,8 +681,8 @@ class RPCHandlerMacro {
 	/**
 		A dispatched method's signature, as a handler extending this one reads
 		it: a function expression, never typed, whose types are written out in
-		full -- they are read in the child's module, which need not import what
-		this one's does.
+		full -- they are read in the child's module, which need not import, nor
+		see the typedefs of, this one's. Resolving a type path types no method.
 	**/
 	static function signatureOf(method:MethodInfo):Expr {
 		return {
@@ -692,30 +692,16 @@ class RPCHandlerMacro {
 						({
 							name: arg.name,
 							opt: arg.opt,
-							type: fullType(arg.type, method.pos),
+							type: RPCContractMacroTools.fullType(arg.type, method.pos),
 							value: null,
 							meta: []
 						} : FunctionArg)
 				],
-				ret: fullType(method.ret, method.pos),
+				ret: RPCContractMacroTools.fullType(method.ret, method.pos),
 				expr: null
 			}),
 			pos: method.pos
 		};
-	}
-
-	/** `ct` with every path in full. Resolving a type path types no method. **/
-	static function fullType(ct:ComplexType, pos:Position):ComplexType {
-		if (ct == null) {
-			return null;
-		}
-		try {
-			final full = Context.resolveType(ct, pos).toComplexType();
-			return full != null ? full : ct;
-		} catch (_:Dynamic) {
-			// Left for the check that reports an unsupported type to report.
-			return ct;
-		}
 	}
 
 	static function requireSameSignature(inherited:MethodInfo, name:String, args:Array<FunctionArg>, ret:ComplexType):Void {
