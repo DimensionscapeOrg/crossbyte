@@ -1,7 +1,10 @@
 import crossbyte.core.CrossByte;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.io.BitReader;
+import crossbyte.io.BitWriter;
 import crossbyte.io.ByteArray;
+import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net.rtc._internal.ClientHelloAssembly;
 import crossbyte.net.rtc._internal.sctp.Crc32c;
@@ -36,6 +39,8 @@ class BenchMain {
 		Bench.header();
 
 		byteArray();
+		bitPacking();
+		reliableFrames();
 		checksumsAndHashes();
 		stun();
 		sctp();
@@ -104,6 +109,112 @@ class BenchMain {
 				out.writeInt(i);
 			}
 		}, 1024);
+	}
+
+	/**
+		A snapshot of 64 view slots, the shape the arena sample sends every
+		step: a 10-bit slot, a 4-bit generation, x and y to 12 bits each and a
+		flag -- 39 bits a record packed, against the same values written
+		byte-aligned at 8 bytes a record, which is what the arena does.
+	**/
+	static function bitPacking():Void {
+		Bench.section("Bits");
+
+		var records = 64;
+		var slots = [for (i in 0...records) (i * 37) & 0x3FF];
+		var generations = [for (i in 0...records) i & 0xF];
+		var xs = [for (i in 0...records) (i * 613) & 0xFFF];
+		var ys = [for (i in 0...records) (i * 911) & 0xFFF];
+		var moving = [for (i in 0...records) (i & 1) == 1];
+		var worldXs = [for (i in 0...records) xs[i] * (2000 / 4095)];
+		var worldYs = [for (i in 0...records) ys[i] * (2000 / 4095)];
+
+		var writer = new BitWriter();
+		Bench.run("pack 64 records x 39 bits", function():Void {
+			writer.reset();
+			for (i in 0...records) {
+				writer.writeBits(slots[i], 10);
+				writer.writeBits(generations[i], 4);
+				writer.writeBits(xs[i], 12);
+				writer.writeBits(ys[i], 12);
+				writer.writeBool(moving[i]);
+			}
+			writer.finish();
+		});
+
+		Bench.run("pack 64, positions quantized from floats", function():Void {
+			writer.reset();
+			for (i in 0...records) {
+				writer.writeBits(slots[i], 10);
+				writer.writeBits(generations[i], 4);
+				writer.writeQuantized(worldXs[i], 0, 2000, 12);
+				writer.writeQuantized(worldYs[i], 0, 2000, 12);
+				writer.writeBool(moving[i]);
+			}
+			writer.finish();
+		});
+
+		var aligned = new ByteArray();
+		Bench.run("byte-aligned 64 records x 8 bytes", function():Void {
+			aligned.position = 0;
+			for (i in 0...records) {
+				aligned.writeShort(slots[i]);
+				aligned.writeByte(generations[i]);
+				aligned.writeShort(xs[i]);
+				aligned.writeShort(ys[i]);
+				aligned.writeByte(moving[i] ? 1 : 0);
+			}
+		});
+
+		var packed = writer.toByteArray();
+		var reader = new BitReader();
+		var sink = 0;
+		Bench.run("unpack 64 records x 39 bits", function():Void {
+			reader.reset(packed);
+			for (_ in 0...records) {
+				sink += reader.readBits(10);
+				sink += reader.readBits(4);
+				sink += reader.readBits(12);
+				sink += reader.readBits(12);
+				sink += reader.readBool() ? 1 : 0;
+			}
+		});
+
+		Bench.run("byte-aligned read 64 records", function():Void {
+			aligned.position = 0;
+			for (_ in 0...records) {
+				sink += aligned.readShort();
+				sink += aligned.readByte();
+				sink += aligned.readShort();
+				sink += aligned.readShort();
+				sink += aligned.readByte();
+			}
+		});
+
+		// The sink is printed so no target can decide the reads do nothing.
+		Sys.println("  (" + packed.length + " bytes packed against " + aligned.length + " byte-aligned; sink " + (sink & 0xFF) + ")");
+	}
+
+	/** One reliable datagram frame, per packet sent and per packet heard. **/
+	static function reliableFrames():Void {
+		Bench.section("RUDP");
+
+		var payload = filled(100);
+		var scratch = new ByteArray();
+		scratch.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
+
+		Bench.run("encode a 100B frame into the scratch", function():Void {
+			ReliableDatagramProtocol.encodeInto(scratch, PACKET, 12345, payload, 0, 100, false, 678, false);
+		});
+
+		Bench.run("encode a 100B frame of its own", function():Void {
+			ReliableDatagramProtocol.encode(PACKET, 12345, payload, false, 678);
+		});
+
+		var frame = ReliableDatagramProtocol.encode(PACKET, 12345, payload, false, 678);
+		Bench.run("decode a 100B frame", function():Void {
+			ReliableDatagramProtocol.decode(frame);
+		});
 	}
 
 	static function checksumsAndHashes():Void {

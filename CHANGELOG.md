@@ -5,6 +5,22 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.io.BitWriter` and `BitReader`: values in as few bits as they
+  need. Widths of 1 to 32 bits, signed values, integers in a known range (in
+  the bits the range needs, none for a range of one), floats quantized to
+  evenly spaced steps over a range (back within half a step, the ends exact),
+  and raw 32-bit floats. Bits fill 32-bit words from the lowest up, stored
+  little-endian and trimmed to whole bytes, so the bytes are the same on every
+  target. The writer gathers a word before storing it and keeps its buffer
+  across `reset`, so packing allocates nothing once it has grown; the reader
+  treats its input as a peer's, refusing a read past the end with `EOFError`
+  and a range value past its maximum with `RangeError`, and reading the last
+  partial word a byte at a time rather than past it. A value too wide for its
+  field is refused rather than truncated into a different, plausible one. On
+  the snapshot the arena sends -- 64 records of a 10-bit slot, a 4-bit
+  generation, 12-bit x and y and a flag -- packing takes 1.05 microseconds
+  natively against 1.14 for the same values byte-aligned, and 312 bytes
+  against 512.
 - `crossbyte.net.DeliveryMode`, and a fourth argument to
   `ReliableDatagramSocket.send` that takes one: `RELIABLE`, the default and
   what `send` always did; `UNRELIABLE`, sent once and never resent; and
