@@ -51,6 +51,8 @@ private enum LocalConnectionDispatch {
 	Close(reason:Reason);
 	Error(reason:Reason);
 	Data(payload:ByteArray);
+	// The reader thread of that session has ended; queued after all it sent.
+	Ended(session:Int);
 }
 
 /**
@@ -120,7 +122,14 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private var __handleLock:Mutex;
 	#end
 	@:noCompletion private var __dispatchListener:TickEvent->Void;
+	// Touched only on the runtime's thread: the listener is attached by
+	// listen()/connect() and removed by close(), never by the reader thread.
 	@:noCompletion private var __dispatchAttached:Bool = false;
+	// Raised under __dispatchLock by whichever thread queues a dispatch.
+	@:noCompletion private var __dispatchPending:Bool = false;
+	// Advanced by close(), which listen() and connect() begin with, so a
+	// reader thread can say which session it belonged to.
+	@:noCompletion private var __session:Int = 0;
 	@:noCompletion private var __pendingPayloads:Array<ByteArray> = [];
 	@:noCompletion private var __dispatchFailed:Bool = false;
 
@@ -152,8 +161,10 @@ class LocalConnection implements INetConnection {
 		__mode = SERVER;
 		__connectionName = connectionName;
 		__running = true;
+		__attachDispatchListener();
 
 		#if cpp
+		var session = __session;
 		var handleQueue:Deque<LocalConnectionHandle> = new Deque();
 		Thread.create(() -> {
 			var handle:LocalConnectionHandle = null;
@@ -166,13 +177,14 @@ class LocalConnection implements INetConnection {
 			}
 
 			if (handle != null) {
-				__runLoop();
+				__runLoop(session);
 			}
 		});
 
 		if (handleQueue.pop(true) == null) {
 			__running = false;
 			__mode = NONE;
+			__detachDispatchListener();
 			throw new ArgumentError("Connection name is already in use or invalid");
 		}
 		#end
@@ -203,12 +215,14 @@ class LocalConnection implements INetConnection {
 		__activePipe = handle;
 		__connected = true;
 		__running = true;
+		__attachDispatchListener();
 		__dispatchLifecycle(Ready);
 
+		var session = __session;
 		#if (cpp || neko || hl)
-		Thread.create(__runLoop);
+		Thread.create(() -> __runLoop(session));
 		#else
-		__runLoop();
+		__runLoop(session);
 		#end
 	}
 
@@ -275,6 +289,7 @@ class LocalConnection implements INetConnection {
 
 	public function close():Void {
 		var wasConnected = __connected;
+		__session++;
 		__running = false;
 		__dispatchFailed = false;
 		__mode = NONE;
@@ -309,7 +324,7 @@ class LocalConnection implements INetConnection {
 		}
 	}
 
-	@:noCompletion private function __runLoop():Void {
+	@:noCompletion private function __runLoop(session:Int):Void {
 		var chunk:Bytes = Bytes.alloc(BUFFER_SIZE);
 
 		while (__running) {
@@ -379,6 +394,14 @@ class LocalConnection implements INetConnection {
 		}
 		#if (cpp || neko || hl)
 		__handleLock.release();
+
+		// A connection that ended by itself -- its peer went away -- is let go
+		// of by the runtime once what it queued has been delivered. The
+		// listener was removed after each drain before, so a dead connection
+		// was never held; held until close(), one would be for good.
+		if (__runtime != null) {
+			__queueDispatch(Ended(session));
+		}
 		#end
 	}
 
@@ -481,8 +504,7 @@ class LocalConnection implements INetConnection {
 		var message = Data(payload);
 		#if (cpp || neko || hl)
 		if (!__canDispatchInline()) {
-			__dispatchQueue.add(message);
-			__ensureDispatchListener();
+			__queueDispatch(message);
 			return;
 		}
 		#end
@@ -493,8 +515,7 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private function __dispatchLifecycle(message:LocalConnectionDispatch):Void {
 		#if (cpp || neko || hl)
 		if (!__canDispatchInline()) {
-			__dispatchQueue.add(message);
-			__ensureDispatchListener();
+			__queueDispatch(message);
 			return;
 		}
 		#end
@@ -518,6 +539,11 @@ class LocalConnection implements INetConnection {
 					}
 					payload.position = 0;
 					__onData(payload);
+				case Ended(session):
+					// One from a session close() has already ended is stale.
+					if (session == __session) {
+						__detachDispatchListener();
+					}
 			}
 		} catch (error:Dynamic) {
 			__handleCallbackFailure(error);
@@ -610,21 +636,23 @@ class LocalConnection implements INetConnection {
 		}
 	}
 
-	@:noCompletion private function __ensureDispatchListener():Void {
-		if (__runtime == null) {
-			return;
-		}
-
+	/**
+	 * Hands a dispatch from the reader thread to the runtime's thread.
+	 *
+	 * The reader thread used to attach the tick listener itself, on demand.
+	 * `EventDispatcher` is not thread-safe -- adding a listener reads the list,
+	 * copies it and stores the copy -- so an attach racing any listener change
+	 * on the runtime's own thread could be lost while `__dispatchAttached` said
+	 * it was made, and from then on nothing queued was ever delivered: a
+	 * listening side that never saw `onReady` nor its first message. The
+	 * listener is now attached by listen()/connect() on the runtime's thread,
+	 * and this thread only queues and raises a flag.
+	 */
+	@:noCompletion private function __queueDispatch(message:LocalConnectionDispatch):Void {
+		__dispatchQueue.add(message);
 		__dispatchLock.acquire();
-		var shouldAttach = !__dispatchAttached;
-		if (shouldAttach) {
-			__dispatchAttached = true;
-		}
+		__dispatchPending = true;
 		__dispatchLock.release();
-
-		if (shouldAttach) {
-			__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
-		}
 	}
 	#else
 	@:noCompletion private inline function __canDispatchInline():Bool {
@@ -632,49 +660,58 @@ class LocalConnection implements INetConnection {
 	}
 	#end
 
-	@:noCompletion private function __flushDispatchQueue(_event:TickEvent):Void {
-		#if (cpp || neko || hl)
-		var drained = false;
-		var processed = 0;
-		while (true) {
-			if (processed >= DISPATCH_BUDGET_PER_TICK) {
-				break;
-			}
-			var message = __dispatchQueue.pop(false);
-			if (message == null) {
-				drained = true;
-				break;
-			}
-			__applyDispatch(message);
-			processed++;
-		}
-		if (!drained) {
+	@:noCompletion private function __attachDispatchListener():Void {
+		if (__runtime == null || __dispatchAttached) {
 			return;
 		}
-		#end
+		__dispatchAttached = true;
+		__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
+	}
 
-		__detachDispatchListener();
+	@:noCompletion private function __flushDispatchQueue(_event:TickEvent):Void {
+		#if (cpp || neko || hl)
+		// Read without the lock: a stale `false` costs one tick, and an idle
+		// connection costs a field read a tick rather than a mutex.
+		if (!__dispatchPending) {
+			return;
+		}
+		// Lowered before draining, so a dispatch queued while this runs raises
+		// it again and is picked up next tick at the latest.
+		__dispatchLock.acquire();
+		__dispatchPending = false;
+		__dispatchLock.release();
+
+		for (_ in 0...DISPATCH_BUDGET_PER_TICK) {
+			var message = __dispatchQueue.pop(false);
+			if (message == null) {
+				return;
+			}
+			__applyDispatch(message);
+		}
+
+		// Out of budget with more possibly queued: look again next tick.
+		__dispatchLock.acquire();
+		__dispatchPending = true;
+		__dispatchLock.release();
+		#end
 	}
 
 	@:noCompletion private function __detachDispatchListener():Void {
-		var runtime = __runtime;
-		if (runtime == null) {
-			return;
-		}
-
 		#if (cpp || neko || hl)
+		// What is still queued belongs to the connection being torn down; left
+		// here, a later listen()/connect() on this object would deliver it.
+		while (__dispatchQueue.pop(false) != null) {}
 		__dispatchLock.acquire();
-		var shouldDetach = __dispatchAttached;
-		__dispatchAttached = false;
+		__dispatchPending = false;
 		__dispatchLock.release();
-		#else
-		var shouldDetach = __dispatchAttached;
-		__dispatchAttached = false;
 		#end
 
-		if (shouldDetach) {
-			runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
+		var runtime = __runtime;
+		if (runtime == null || !__dispatchAttached) {
+			return;
 		}
+		__dispatchAttached = false;
+		runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
 	}
 
 	@:noCompletion private inline function __captureRuntime():Void {

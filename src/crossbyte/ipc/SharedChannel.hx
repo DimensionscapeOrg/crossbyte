@@ -57,7 +57,10 @@ class SharedChannel extends EventDispatcher {
 	@:noCompletion private var __dispatchLock:Mutex;
 	#end
 	@:noCompletion private var __dispatchListener:TickEvent->Void;
+	// Touched only on the runtime's thread; see LocalConnection.__queueDispatch.
 	@:noCompletion private var __dispatchAttached:Bool = false;
+	// Raised under __dispatchLock by whichever thread queues a message.
+	@:noCompletion private var __dispatchPending:Bool = false;
 	@:noCompletion private var __lastSentTime:Float = 0;
 	@:noCompletion private var __running:Bool = false;
 
@@ -119,6 +122,10 @@ class SharedChannel extends EventDispatcher {
 		};
 		__listener.readEnabled = true;
 		__listener.listen(connectionName);
+		// After listen(), which throws for a name in use: a channel that never
+		// listened is not left attached. Anything queued first waits, flagged,
+		// for the first tick.
+		__attachDispatchListener();
 	}
 
 	/**
@@ -258,7 +265,9 @@ class SharedChannel extends EventDispatcher {
 		#if (cpp || neko || hl)
 		if (!__canDispatchInline()) {
 			__dispatchQueue.add(received);
-			__ensureDispatchListener();
+			__dispatchLock.acquire();
+			__dispatchPending = true;
+			__dispatchLock.release();
 			return;
 		}
 		#end
@@ -278,27 +287,29 @@ class SharedChannel extends EventDispatcher {
 			return false;
 		}
 	}
+	#end
 
-	@:noCompletion private function __ensureDispatchListener():Void {
-		if (__runtime == null) {
+	// Attached by connect() on the runtime's thread and removed by close(),
+	// never from another thread: EventDispatcher is not thread-safe. See
+	// LocalConnection.__queueDispatch.
+	@:noCompletion private function __attachDispatchListener():Void {
+		if (__runtime == null || __dispatchAttached) {
 			return;
 		}
-
-		__dispatchLock.acquire();
-		var shouldAttach = !__dispatchAttached;
-		if (shouldAttach) {
-			__dispatchAttached = true;
-		}
-		__dispatchLock.release();
-
-		if (shouldAttach) {
-			__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
-		}
+		__dispatchAttached = true;
+		__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
 	}
-	#end
 
 	@:noCompletion private function __flushDispatchQueue(_event:TickEvent):Void {
 		#if (cpp || neko || hl)
+		// Read without the lock: a stale `false` costs one tick.
+		if (!__dispatchPending) {
+			return;
+		}
+		__dispatchLock.acquire();
+		__dispatchPending = false;
+		__dispatchLock.release();
+
 		while (true) {
 			var received = __dispatchQueue.pop(false);
 			if (received == null) {
@@ -308,29 +319,22 @@ class SharedChannel extends EventDispatcher {
 			__onData(received);
 		}
 		#end
-
-		__detachDispatchListener();
 	}
 
 	@:noCompletion private function __detachDispatchListener():Void {
-		var runtime = __runtime;
-		if (runtime == null) {
-			return;
-		}
-
 		#if (cpp || neko || hl)
+		while (__dispatchQueue.pop(false) != null) {}
 		__dispatchLock.acquire();
-		var shouldDetach = __dispatchAttached;
-		__dispatchAttached = false;
+		__dispatchPending = false;
 		__dispatchLock.release();
-		#else
-		var shouldDetach = __dispatchAttached;
-		__dispatchAttached = false;
 		#end
 
-		if (shouldDetach) {
-			runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
+		var runtime = __runtime;
+		if (runtime == null || !__dispatchAttached) {
+			return;
 		}
+		__dispatchAttached = false;
+		runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
 	}
 
 	@:noCompletion private inline function __captureRuntime():Void {

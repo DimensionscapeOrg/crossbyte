@@ -109,6 +109,11 @@ class SharedChannelTest extends utest.Test {
 		var channel = new SharedChannel();
 		var receiver = new SharedChannelReceiver();
 		channel.client = receiver;
+		// Connected, as a channel is whenever anything can reach it: connect()
+		// is what attaches, on the owning runtime's thread, the listener a
+		// foreign thread's delivery waits for. A foreign thread attaching it
+		// raced the runtime's own listener changes, and lost.
+		channel.connect('__crossbyte_foreign_${Std.random(1000000)}');
 
 		Thread.create(() -> channel.__dispatchReceivedData(frame("receive", ["hello", 42])));
 		Sys.sleep(0.01);
@@ -171,8 +176,8 @@ class SharedChannelTest extends utest.Test {
 
 	private static function pumpRuntimeUntil(runtime:CrossByte, done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
 		#if (cpp || neko || hl)
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}

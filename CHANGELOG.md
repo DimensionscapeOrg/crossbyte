@@ -647,6 +647,22 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A listening `LocalConnection` could stop delivering for good: no
+  `onReady`, and nothing a client sent. Its reader thread attached the tick
+  listener that carries dispatches to the runtime's thread, and
+  `EventDispatcher` is not thread-safe -- adding a listener reads the list,
+  copies it and stores the copy -- so an attach that met a listener change
+  on the runtime's thread (timers and sockets make them all the time) was
+  lost while the connection took it as made. Seen as a 2-in-60 flake in the
+  native suite; with the runtime's listeners changing as fast as they can,
+  38 of 40 connections lost their dispatches. The listener is now attached
+  by `listen()` and `connect()` on the runtime's thread, and removed there
+  by `close()` or once a connection whose peer went away has delivered its
+  last dispatch, so the runtime still never holds a dead one; the reader
+  thread only queues. A flush that drained the queue also detached the
+  listener, so a dispatch queued in between could wait for the next one;
+  that went too. `SharedChannel` had the same arrangement and has the same
+  fix.
 - `Seq32` arithmetic wraps at 32 bits on JavaScript, as on every other
   target. There `+` and `++` ran on past 2^31 - 1, so a sequence counted up
   past it stopped equalling the same sequence read off the wire, which is
