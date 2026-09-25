@@ -188,8 +188,7 @@ The stubs' bodies are left empty: the build writes them. On the commands side
 a request returns `RPCResponse<T>` explicitly; on the handler side it returns
 `T`. A handler's `@:rpc` method has to declare its return type, since its
 answer is encoded as that type; one that returns a value without declaring it
-fails the build rather than quietly answering nothing. It takes at most eight
-arguments.
+fails the build rather than quietly answering nothing.
 
 Two names are the protocol's own and cannot be RPC methods: `ping`, which
 every session answers and uses for heartbeats, and `dispatch`. Neither can
