@@ -675,6 +675,15 @@ All notable changes to CrossByte will be documented in this file.
   the headers "Connection closed before the response headers arrived" as
   before, and one lost after them "Connection closed before the response
   body completed".
+- A pooled HTTP/2 client connection no longer keeps every stream it has
+  carried. `H2Connection` never took a stream out of its map, so a
+  connection in use grew by one stream and its response headers per
+  request for as long as it stayed open, and every SETTINGS from the
+  server walked all of them. A stream is now forgotten as it closes. A frame
+  arriving for it later is discarded as one for an unknown stream, with
+  its header block still decoded and its DATA still counted against the
+  connection's window. A GOAWAY that refuses several streams closes them
+  after walking the map, not during.
 - A listening `LocalConnection` could stop delivering for good: no
   `onReady`, and nothing a client sent. Its reader thread attached the tick
   listener that carries dispatches to the runtime's thread, and
