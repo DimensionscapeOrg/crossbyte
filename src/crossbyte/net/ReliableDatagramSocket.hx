@@ -5,6 +5,7 @@ package crossbyte.net;
 
 import crossbyte.Seq32;
 import crossbyte.Timer as CBTimer;
+import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
@@ -35,6 +36,8 @@ import crossbyte._internal.net.IPv6;
 #end
 
 @:access(crossbyte.net.ReliableDatagramServerSocket)
+@:access(crossbyte.net.DatagramSocket)
+@:access(crossbyte.core.CrossByte)
 /**
 	The `ReliableDatagramSocket` class provides a session-oriented reliable transport
 	on top of UDP.
@@ -45,13 +48,19 @@ import crossbyte._internal.net.IPv6;
 	reliable ordered transport through the `IDataInput` and `IDataOutput` APIs and
 	receive `ProgressEvent.SOCKET_DATA` notifications instead.
 	Socket mode must be selected before connecting or before a server accepts the session.
+
+	What a session sends -- messages, acknowledgements, retransmissions -- is
+	gathered and sent together when the runtime's loop finishes its pass,
+	several frames to a datagram where the peer takes them, so a burst of
+	small messages costs a few system calls rather than one each. `flush()`
+	sends what is gathered at once, and `close()` sends it before the FIN.
 	@event connect Dispatched when the reliable handshake completes.
 	@event close Dispatched when the reliable session closes.
 	@event ioError Dispatched when a handshake or transport error occurs.
 	@event data Dispatched in `DATAGRAM` mode when a complete reliable payload is delivered.
 	@event socketData Dispatched in `STREAM` mode when additional ordered bytes are available.
 **/
-class ReliableDatagramSocket extends EventDispatcher implements IDataInput implements IDataOutput {
+class ReliableDatagramSocket extends EventDispatcher implements IDataInput implements IDataOutput implements crossbyte.core._internal.PassFlush {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -283,6 +292,25 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// What every CONNECT this side sends carries: a copy, taken when connect
 	// was called, or null for nothing.
 	@:noCompletion private var __connectOut:ByteArray = null;
+
+	// The bundle being gathered, in `__scratch`: two bytes kept at the front
+	// for the bundle's magic, then each frame after two bytes of its length,
+	// written in place. `__pendingLength` is where the next entry goes.
+	@:noCompletion private var __pendingLength:Int = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
+	@:noCompletion private var __pendingCount:Int = 0;
+
+	// Asked to be flushed at the end of this pass, and not yet flushed.
+	@:noCompletion private var __flushQueued:Bool = false;
+
+	// Whether the peer's CONNECT or HANDSHAKE said it takes bundles.
+	@:noCompletion private var __peerTakesBundles:Bool = false;
+
+	// A packet has arrived since the last acknowledgement went out, and the
+	// newest acknowledgement a frame in the bundle already carries. One
+	// cumulative ACK a pass says everything the separate ones did.
+	@:noCompletion private var __ackOwed:Bool = false;
+	@:noCompletion private var __bundleHasAck:Bool = false;
+	@:noCompletion private var __bundleAck:Int = 0;
 	@:noCompletion private var __connectionTimeoutHandle:Int = -1;
 	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
 	// Out-of-order frames, kept whole: a fragment's `more` flag is as much a
@@ -374,7 +402,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__outFrameCache = new IntMap();
 		__outgoingQueue = [];
 		__scratch = new ByteArray();
-		__scratch.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
+		// A single frame of the largest size, with room before it for the
+		// bundle's magic and its length, which it is sent without.
+		__scratch.length = ReliableDatagramProtocol.MAX_FRAME_SIZE + ReliableDatagramProtocol.BUNDLE_HEADER_SIZE
+			+ ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE;
 		objectEncoding = ObjectEncoding.DEFAULT;
 		__input = __createBuffer();
 		__output = __createBuffer();
@@ -405,7 +436,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/**
 		Closes the reliable session.
-		If a remote endpoint is known, a close control frame is sent before local cleanup occurs.
+		If a remote endpoint is known, whatever is waiting to be sent goes
+		first, then a close control frame, and then local cleanup occurs.
 	**/
 	public function close():Void {
 		if (__closed) {
@@ -414,6 +446,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		if (__remoteAddress != "" && __remotePort > 0) {
 			__sendControl(FIN);
+			__sendBundle();
 		}
 
 		__dispose(true);
@@ -514,22 +547,30 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Flushes the current stream-mode output buffer by segmenting it into reliable
-		payload frames and queuing them for ordered delivery.
-		Has no effect when the stream output buffer is empty.
-		@throws IllegalOperationError If the socket is not in `STREAM` mode.
-		@throws IOError If the reliable session is not connected.
+		Sends what this session has waiting now, rather than when the runtime's
+		loop finishes its pass.
+
+		In `STREAM` mode it first turns what has been written into reliable
+		frames, which is the only way written bytes are sent. In either mode
+		it then sends every frame gathered so far: messages, acknowledgements,
+		retransmissions. Reliable frames the congestion window has not let out
+		yet still wait for it; `bufferedAmount` counts those.
+
+		Nothing needs it for correctness -- everything goes at the end of the
+		pass anyway. It is for what should not wait for the rest of the pass,
+		such as an input sent from deep inside a long tick handler.
+
+		@throws IOError If there are written stream bytes to send and the
+		        reliable session is not connected.
 	**/
 	public function flush():Void {
-		__requireStreamMode();
-		__requireOpenConnection();
-
-		if (__output.length == 0) {
-			return;
+		if (__mode == STREAM && __output.length > 0) {
+			__requireOpenConnection();
+			__queueBytes(__output, 0, __output.length);
+			__output = __createBuffer();
 		}
 
-		__queueBytes(__output, 0, __output.length);
-		__output = __createBuffer();
+		__sendBundle();
 	}
 
 	/**
@@ -691,6 +732,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		exactly these bytes. A `RELIABLE` message of any size is split into
 		frames and put back together before it is delivered; an unreliable or
 		sequenced one must fit one frame.
+
+		It goes out when the runtime's loop finishes its pass, in a datagram
+		with whatever else this session sends in the same pass, or at
+		`flush()`. The bytes are copied now, so the caller may reuse them.
 
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which the payload begins.
@@ -943,6 +988,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				// HANDSHAKE is the same frame an accepted session replies with,
 				// so the client-and-server case is unchanged: it took this
 				// branch before and takes it now.
+				if (frame.bundles) {
+					__peerTakesBundles = true;
+				}
 				if (!__connected) {
 					__sendControl(HANDSHAKE, __outSequence);
 				}
@@ -953,6 +1001,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 					connectPayload = frame.payload;
 				}
 			case HANDSHAKE:
+				if (frame.bundles) {
+					__peerTakesBundles = true;
+				}
 				__onHandshake(frame.sequence);
 			case PACKET:
 				__acceptPacket(frame.sequence, frame.payload, frame.more);
@@ -1339,6 +1390,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__rto = INITIAL_RTO;
 		__input = __createBuffer();
 		__output = __createBuffer();
+		// Anything still gathered is for a session that no longer exists.
+		// close() sent it before coming here; a failure or a timeout has
+		// nobody left to send it to.
+		__pendingLength = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
+		__pendingCount = 0;
+		__ackOwed = false;
+		__bundleHasAck = false;
 
 		var wasConnected:Bool = __connected;
 		__connected = false;
@@ -1703,19 +1761,133 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return haxe.Timer.stamp();
 	}
 
+	// Owed rather than sent: the acknowledgement is cumulative, so however
+	// many packets arrive in a pass, one ACK when it ends says all of it --
+	// and none, when a frame going out in the same bundle already carries it.
 	@:noCompletion private inline function __sendAck():Void {
-		__sendFrame(ACK, __inSequence, null, 0, 0, false, null, false);
+		__ackOwed = true;
+		if (!__flushQueued) {
+			__queueFlush();
+		}
 	}
 
-	/** Writes a frame into the scratch buffer and sends it from there. **/
+	/**
+		Adds a frame to the bundle being gathered for the peer, sending the
+		bundle first if the frame would take it past `BUNDLE_LIMIT`. The frame
+		is written in place, so nothing is copied or allocated for it.
+	**/
 	@:noCompletion private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
 			ack:Null<Seq32>, more:Bool):Void {
-		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, more);
+		var size:Int = ReliableDatagramProtocol.frameSize(payload == null ? 0 : length, ack != null);
+		if (__pendingCount > 0
+			&& __pendingLength + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + size > ReliableDatagramProtocol.BUNDLE_LIMIT) {
+			__sendBundle();
+		}
+
+		var entry:Int = __pendingLength;
+		var at:Int = entry + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE;
+		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, more, at);
+		var bytes:haxe.io.Bytes = __scratch;
+		bytes.set(entry, written >> 8);
+		bytes.set(entry + 1, written & 0xFF);
+		__pendingLength = at + written;
+		__pendingCount++;
+
+		if (ack != null) {
+			__bundleHasAck = true;
+			__bundleAck = ack;
+		}
+
+		if (!__flushQueued) {
+			__queueFlush();
+		}
+	}
+
+	/**
+		Asks the runtime to flush this session when its loop finishes the
+		pass. With no runtime to ask -- none on this thread, or one that has
+		stopped -- there is no pass to wait for, and the bundle goes now.
+	**/
+	@:noCompletion private function __queueFlush():Void {
+		var runtime:CrossByte = __transport != null ? __transport.__cbInstance : null;
+		if (runtime == null) {
+			// Throws natively on a thread no runtime is attached to.
+			try {
+				runtime = CrossByte.current();
+			} catch (_:Dynamic) {}
+		}
+		if (runtime == null || runtime.__didExit) {
+			__sendBundle();
+			return;
+		}
+		__flushQueued = true;
+		runtime.__queuePassFlush(this);
+	}
+
+	/** The runtime's call at the end of a pass. **/
+	@:noCompletion public function __flushPass():Void {
+		__flushQueued = false;
+		__sendBundle();
+	}
+
+	/**
+		Sends the bundle: one frame as it is, several as one datagram to a
+		peer that takes bundles, and one datagram each to a peer that does not.
+		That check is made here, once per datagram, and a single frame never
+		pays for the bundle's magic or its length.
+	**/
+	@:noCompletion private function __sendBundle():Void {
+		if (__ackOwed) {
+			__ackOwed = false;
+			if (!__closed && !(__bundleHasAck && __bundleAck == (__inSequence : Int))) {
+				__sendFrame(ACK, __inSequence, null, 0, 0, false, null, false);
+			}
+		}
+
+		var count:Int = __pendingCount;
+		if (count == 0 || __transport == null) {
+			return;
+		}
+
+		// Taken down before sending, so whatever a failed send's handlers do
+		// to this session starts from an empty bundle.
+		var length:Int = __pendingLength;
+		__pendingLength = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
+		__pendingCount = 0;
+		__bundleHasAck = false;
+
+		var first:Int = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE;
+		if (count == 1) {
+			__sendDatagram(first, length - first);
+			return;
+		}
+
+		var bytes:haxe.io.Bytes = __scratch;
+		if (__peerTakesBundles) {
+			bytes.set(0, ReliableDatagramProtocol.BUNDLE_MAGIC >> 8);
+			bytes.set(1, ReliableDatagramProtocol.BUNDLE_MAGIC & 0xFF);
+			__sendDatagram(0, length);
+			return;
+		}
+
+		var at:Int = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
+		while (at < length) {
+			var size:Int = (bytes.get(at) << 8) | bytes.get(at + 1);
+			if (!__sendDatagram(at + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE, size)) {
+				return;
+			}
+			at += ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + size;
+		}
+	}
+
+	@:noCompletion private function __sendDatagram(offset:Int, length:Int):Bool {
 		try {
-			__transport.send(__scratch, 0, written, __remoteAddress, __remotePort);
+			__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
+			return true;
 		} catch (e:Dynamic) {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, Std.string(e)));
 			__dispose(true);
+			return false;
 		}
 	}
 
@@ -1737,12 +1909,49 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __onTransportData(e:DatagramSocketDataEvent):Void {
+		if (ReliableDatagramProtocol.isBundle(e.data)) {
+			// Only from the peer as already known: it sends bundles once it
+			// has heard from this side, so there is no port left to learn.
+			if (__matchesRemoteEndpoint(e, null)) {
+				__acceptBundle(e.data);
+			}
+			return;
+		}
+
 		var frame = ReliableDatagramProtocol.decode(e.data);
 		if (frame == null || !__matchesRemoteEndpoint(e, frame)) {
 			return;
 		}
 
 		__acceptFrame(frame);
+	}
+
+	/**
+		Takes each frame of a bundle in turn, as if each had come alone. An
+		entry whose length runs past the end ends it; the frames before it
+		stand.
+
+		A bundle larger than `BUNDLE_LIMIT` is dropped whole. No sender makes
+		one, and it is the bound on how many frames one datagram can make this
+		session decode: a datagram of up to 64 KB could otherwise hold
+		thousands of empty frames, each a decode and an allocation.
+	**/
+	@:noCompletion private function __acceptBundle(data:ByteArray):Void {
+		if (data.length > ReliableDatagramProtocol.BUNDLE_LIMIT) {
+			return;
+		}
+		var at:Int = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
+		while (!__closed) {
+			var length:Int = ReliableDatagramProtocol.bundleEntryLength(data, at);
+			if (length < 0) {
+				return;
+			}
+			var frame = ReliableDatagramProtocol.decodeRange(data, at + ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE, length);
+			at += ReliableDatagramProtocol.BUNDLE_ENTRY_SIZE + length;
+			if (frame != null) {
+				__acceptFrame(frame);
+			}
+		}
 	}
 
 	@:noCompletion private function __matchesRemoteEndpoint(e:DatagramSocketDataEvent, frame:ReliableDatagramFrame):Bool {
@@ -1754,7 +1963,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return true;
 		}
 
-		if (!__incoming && !__connected && frame.type == HANDSHAKE) {
+		if (frame != null && !__incoming && !__connected && frame.type == HANDSHAKE) {
 			__remoteResponsePort = e.srcPort;
 			return true;
 		}

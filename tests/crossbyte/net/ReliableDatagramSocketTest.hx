@@ -721,8 +721,16 @@ class ReliableDatagramSocketTest extends utest.Test {
 			@:privateAccess client.__transport.close();
 			client.send(bytesOf("frame"));
 
+			// Gathered rather than sent, so it fails where the runtime's pass
+			// ends -- which is the loop itself, and exactly where a throw must
+			// not escape to.
+			Assert.equals(0, errors.length, "the frame was sent from inside send()");
+			pumpUntil(() -> errors.length > 0, 1.0);
+
 			Assert.equals(1, errors.length, "a frame that could not be sent was not reported");
-			Assert.isTrue(errors[0].length > 0, "the ioError carried no reason for the failure");
+			if (errors.length > 0) {
+				Assert.isTrue(errors[0].length > 0, "the ioError carried no reason for the failure");
+			}
 			Assert.equals(1, closes, "a send that failed left the connection open");
 			Assert.isFalse(client.connected, "the connection still reported itself up after its transport had gone");
 		} catch (e:Dynamic) {

@@ -433,8 +433,13 @@ private class RecordingSocket extends ReliableDatagramSocket {
 		super();
 	}
 
-	/** Every frame recorded since the last call, decoded. **/
+	/**
+		Every frame recorded since the last call, decoded -- including the
+		acknowledgement owed for what has arrived, which a real session sends
+		when the runtime's pass ends.
+	**/
 	public function take():Array<ReliableDatagramFrame> {
+		__sendBundle();
 		var frames = [for (bytes in __recorded) ReliableDatagramProtocol.decode(bytes)];
 		__recorded = [];
 		return frames;
