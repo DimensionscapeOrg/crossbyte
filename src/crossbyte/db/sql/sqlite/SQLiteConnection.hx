@@ -139,15 +139,18 @@ class SQLiteConnection extends EventDispatcher {
 	@:noCompletion private var __connection:Connection;
 	@:noCompletion private var __sqlWorker:Worker;
 
+	// Set by the close job, on the worker thread, from inside the work loop --
+	// so the next pass of that loop exits without anyone needing to wake it.
+	// Not gated with the queue below: the close job and the work loop read and
+	// write it on every target, php included.
+	@:noCompletion private var __sqlClosing:Bool = false;
+
 	// Gated the same way the imports above are, not on cpp alone. The queue is
 	// written by whichever thread calls the connection and read by the worker,
 	// so it needs a structure built for that -- and neko, hl, java and jvm all
 	// have real threads and both of these types. They were getting a plain
 	// Array instead, pushed and popped with no lock at all.
 	#if !php
-	// Set by the close job, on the worker thread, from inside the work loop --
-	// so the next pass of that loop exits without anyone needing to wake it.
-	@:noCompletion private var __sqlClosing:Bool = false;
 	@:noCompletion private var __sqlQueue:Deque<Function>;
 	@:noCompletion private var __sqlMutex:Mutex;
 	#end
