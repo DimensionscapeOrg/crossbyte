@@ -210,7 +210,7 @@ class WebSocket {
 		__maskedPayload = new ByteArray();
 		__maskedPayload.endian = BIG_ENDIAN;
 
-		__timestamp = Sys.time();
+		__timestamp = haxe.Timer.stamp();
 
 		#if nodejs
 		// Node's own socket, so there is no connect poll and no handshake
@@ -354,7 +354,7 @@ class WebSocket {
 
 			if (sockets.write[0] == __socket) {
 				__onConnect();
-			} else if (Sys.time() - __timestamp > __timeout / 1000) {
+			} else if (haxe.Timer.stamp() - __timestamp > __timeout / 1000) {
 				__close(1006);
 				__onError("Failed to connect to server");
 			}
@@ -1167,7 +1167,7 @@ class WebSocket {
 	#if !nodejs
 	private function __initSSLHandshake():Void {
 		__timeout = 3000;
-		__timestamp = Sys.time();
+		__timestamp = haxe.Timer.stamp();
 
 		__runtime.removeEventListener(Event.TICK, __tickConnectListener);
 		__runtime.addEventListener(Event.TICK, __tickSSLHandshakeListener);
@@ -1201,7 +1201,7 @@ class WebSocket {
 
 		// A terminal failure closes immediately instead of idling until the
 		// deadline; a merely stalled peer closes once the deadline passes.
-		if (failed || Sys.time() - __timestamp > __timeout / 1000) {
+		if (failed || haxe.Timer.stamp() - __timestamp > __timeout / 1000) {
 			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
 			__close(1015);
 		}

@@ -107,14 +107,14 @@ class Histogram {
 	 * failing path still contributes to the latency picture.
 	 */
 	public function time<T>(body:Void->T):T {
-		var started:Float = #if (js && !nodejs) (Date.now().getTime() / 1000) #else Sys.time() #end;
+		var started:Float = haxe.Timer.stamp();
 
 		try {
 			var result:T = body();
-			observe(#if (js && !nodejs) (Date.now().getTime() / 1000) #else Sys.time() #end - started);
+			observe(haxe.Timer.stamp() - started);
 			return result;
 		} catch (e:Dynamic) {
-			observe(#if (js && !nodejs) (Date.now().getTime() / 1000) #else Sys.time() #end - started);
+			observe(haxe.Timer.stamp() - started);
 			#if cpp
 			cpp.Lib.rethrow(e);
 			#else

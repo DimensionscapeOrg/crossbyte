@@ -158,8 +158,8 @@ final class ProcessLifecycle {
 		// Polled here rather than waited on in native code: a Haxe thread
 		// parked inside a Win32 wait is a thread hxcpp's collector cannot see
 		// stop, which would block collection for every other thread.
-		var deadline:Float = Sys.time() + connectTimeoutMs / 1000;
-		while (NativeServiceControl.attachState() == NativeServiceControl.PENDING && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + connectTimeoutMs / 1000;
+		while (NativeServiceControl.attachState() == NativeServiceControl.PENDING && haxe.Timer.stamp() < deadline) {
 			Sys.sleep(0.002);
 		}
 
