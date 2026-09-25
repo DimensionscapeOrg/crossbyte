@@ -5,6 +5,33 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- RPC contracts can extend other contracts, so a reusable one -- presence,
+  chat -- can be built into an application's. A contract's stubs, and its
+  handler's dispatch, now cover every method of every interface it extends,
+  however far up. A parent reached twice gives its methods once, and a
+  generic parent takes the type its extension passes. A name declared twice
+  with different signatures is a compile error, since on the wire the two
+  would be one method.
+- RPC handler classes can extend other handler classes. A subclass answers
+  its parent's methods as well as its own, an override is what answers, and
+  a contract method can be implemented by an ancestor, so a reusable
+  contract can come with a reusable handler. The macro made `ping` and
+  `dispatch` again in every handler class, which Haxe refused in a subclass
+  without `override`.
+- `RPCHandler.beforeCall(method, requestId, payloadSize)` and
+  `afterCall(method, requestId, error)`: one place to authorize, rate limit
+  or count every call, and to see how each went, where it had to go in
+  every method. `beforeCall` runs before a call's arguments are read, and
+  refuses it by returning an `RPCError`: a request is answered with its
+  message, and a one-way call is dropped. `afterCall` runs once the answer
+  has gone. Hooks in a shared base class apply to every handler built on it.
+  The calls are generated only into a handler that overrides them, or whose
+  ancestor does. Natively, dispatching a one-way call costs 18 ns in a
+  handler without them, as before. With both overridden it costs 22 ns,
+  against about 190 ns for the whole call from stub to handler.
+- The performance suite measures RPC: dispatching a one-way call, a call
+  from stub to handler, and a request answered, over connections joined in
+  memory, with and without hooks.
 - `crossbyte.rpc.RPCError`, for a failure an RPC handler means its caller to
   see. Thrown from a handler method, its message is the caller's answer:
   the `RPCResponse` fails with it, word for word, and the connection stays
@@ -609,6 +636,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC contract that extends another now carries the parent's methods.
+  Only its own were read, so its stubs covered part of it, and its handler
+  -- which Haxe made implement the rest -- dispatched none of the rest. A
+  call to one of those arrived as an unknown op and closed the connection.
+- Two RPC methods whose names hash to the same op no longer build into one
+  surface. An op is the FNV-1a hash of a method's name -- `glbvs` and
+  `yacxa` share one -- and on one connection the two would have been one
+  method, with nothing to say so. The build now fails and names both.
 - An RPC frame that names a count or a length larger than itself is refused
   before anything is allocated for it. The runtime lane made an array of
   whatever argument count a frame named, and both lanes made a `Bytes` of

@@ -239,6 +239,8 @@ class TestSuites {
 	public static function addRPC(runner:Runner):Void {
 		runner.addCase(new crossbyte.rpc.RPCTest());
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
+		runner.addCase(new crossbyte.rpc.RPCContractTest());
+		runner.addCase(new crossbyte.rpc.RPCCallHookTest());
 	}
 
 	public static function addResources(runner:Runner):Void {

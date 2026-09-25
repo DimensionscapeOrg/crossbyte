@@ -23,6 +23,10 @@ import haxe.ds.IntMap;
 	That means a contract method should be declared as `function getName(id:Int):String`
 	rather than `function getName(id:Int):RPCResponse<String>`.
 
+	A contract can extend other contracts, and its stubs then cover their methods
+	too: an application's contract can be built from reusable ones. Two methods whose
+	names hash to the same op fail the build, since on the wire they would be one.
+
 	Example:
 
 	```haxe
