@@ -4,6 +4,7 @@ import crossbyte._internal.http.Http;
 import crossbyte._internal.http.HttpVersion;
 import crossbyte._internal.http.h2.H2Connection;
 import crossbyte._internal.http.h2.H2ConnectionPool;
+import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2Flags;
 import crossbyte._internal.http.h2.H2Frame;
 import crossbyte._internal.http.h2.H2FrameType;
@@ -608,6 +609,67 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isTrue(server.closedCleanly(), "the fixture's close was not a clean FIN");
 	}
 
+	public function testAnAnswerBeforeTheUploadEndsCompletesTheRequest():Void {
+		// RFC 9113 8.1: the server answers in full once it has seen part of
+		// the body, then asks for no more with RST_STREAM(NO_ERROR). It never
+		// grants more window, so the upload is waiting on one when it does.
+		var server = new H2EarlyResponseServer(false);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var started:Float = haxe.Timer.stamp();
+		var outcome:String = __upload(server.port);
+		var took:Float = haxe.Timer.stamp() - started;
+
+		// This waited on the stream's window, which never reopens once the
+		// stream is over, until the connection had been quiet for thirty
+		// seconds -- then failed it with a FLOW_CONTROL_ERROR, and every other
+		// request on it.
+		Assert.equals("COMPLETED early answer", outcome);
+		Assert.isTrue(took < 10, 'the answered upload took ${took}s to return');
+
+		// The connection is still good, and it is the same one.
+		Assert.equals("/second", get(server.port, "/second"));
+		Assert.equals(1, server.connections());
+
+		// Our half was released before the next request went out: the
+		// server's response ended only its own.
+		Assert.equals("1:CANCEL", server.resetsBeforeSecond());
+		server.stop();
+	}
+
+	public function testAResetDuringTheUploadIsReportedPromptly():Void {
+		var server = new H2EarlyResponseServer(true);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var started:Float = haxe.Timer.stamp();
+		var outcome:String = __upload(server.port);
+		var took:Float = haxe.Timer.stamp() - started;
+
+		Assert.equals("Stream reset by peer: CANCEL", outcome);
+		Assert.isTrue(took < 10, 'the reset upload took ${took}s to return');
+
+		Assert.equals("/second", get(server.port, "/second"));
+		Assert.equals(1, server.connections());
+		// And no RST_STREAM sent back in reply to the server's own.
+		Assert.equals("", server.resetsBeforeSecond());
+		server.stop();
+	}
+
+	/** POSTs more than the default 65535-byte window can carry. */
+	private function __upload(port:Int):String {
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:$port/upload', "POST", null, null, "application/octet-stream", Bytes.alloc(100000),
+			HttpVersion.HTTP_2, 20000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		return outcome;
+	}
+
 	public function testServerThatIsNotSpeakingH2FailsRatherThanHanging():Void {
 		// Prior-knowledge h2c has no negotiation: RFC 9113 §3.1 removed the
 		// upgrade handshake, so an HTTP/1.1 server just sees garbage. The
@@ -632,6 +694,172 @@ class HTTP2BackendTest extends utest.Test {
 private class H2ErrorCodeShim {
 	public static inline var INTERNAL_ERROR:Int = 0x2;
 	public static inline var REFUSED_STREAM:Int = 0x7;
+}
+
+/**
+ * Answers an upload before it has all of it.
+ *
+ * Reads `/upload` and grants no window, so the client can send only the
+ * default 65535 bytes. Once those have arrived the client is waiting on a
+ * WINDOW_UPDATE that never comes, and the fixture then either answers in
+ * full and resets with NO_ERROR (RFC 9113 8.1) or, with `resetOnly`, just
+ * resets with CANCEL. Any other path is answered at once with its own path
+ * as the body.
+ *
+ * Accepts in a loop, so a client that gives up on the connection and dials
+ * another is counted rather than left in the backlog. Records each
+ * RST_STREAM the client sends, as `id:CODE`.
+ */
+private class H2EarlyResponseServer {
+	public var port:Int = 0;
+
+	private var __resetOnly:Bool;
+	private var __ready:Lock = new Lock();
+	private var __lock:Mutex = new Mutex();
+	private var __listener:SysSocket = null;
+	private var __connections:Int = 0;
+	private var __resets:Array<String> = [];
+	private var __resetsBeforeSecond:String = null;
+
+	public function new(resetOnly:Bool) {
+		__resetOnly = resetOnly;
+	}
+
+	public function start():Void {
+		Thread.create(() -> {
+			var listener = new SysSocket();
+			try {
+				listener.bind(new Host("127.0.0.1"), 0);
+				listener.listen(4);
+				__listener = listener;
+				port = listener.host().port;
+				__ready.release();
+
+				while (true) {
+					var peer:SysSocket = listener.accept();
+					__lock.acquire();
+					__connections++;
+					__lock.release();
+					Thread.create(() -> {
+						try {
+							peer.setTimeout(10.0);
+							__serve(peer);
+						} catch (_:Dynamic) {}
+						try peer.close() catch (_:Dynamic) {}
+					});
+				}
+			} catch (_:Dynamic) {
+				__ready.release();
+			}
+			try listener.close() catch (_:Dynamic) {}
+		});
+
+		if (!__ready.wait(5.0)) {
+			Assert.fail("Timed out starting the early-response fixture");
+		}
+	}
+
+	/** Stops accepting. Connections end when the client closes them. */
+	public function stop():Void {
+		try if (__listener != null) __listener.close() catch (_:Dynamic) {}
+	}
+
+	public function connections():Int {
+		__lock.acquire();
+		var count:Int = __connections;
+		__lock.release();
+		return count;
+	}
+
+	/** The resets the client had sent when the second request arrived. */
+	public function resetsBeforeSecond():String {
+		__lock.acquire();
+		var seen:String = __resetsBeforeSecond;
+		__lock.release();
+		return seen;
+	}
+
+	private function __serve(peer:SysSocket):Void {
+		var preface = Bytes.alloc(H2Connection.PREFACE.length);
+		peer.input.readFullBytes(preface, 0, preface.length);
+
+		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+
+		var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		var uploadId:Int = -1;
+		var uploaded:Int = 0;
+		var answered:Bool = false;
+
+		while (true) {
+			var header = Bytes.alloc(H2Frame.HEADER_SIZE);
+			peer.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
+
+			var length = H2Frame.lengthOf(header);
+			var payload = Bytes.alloc(length);
+			if (length > 0) {
+				peer.input.readFullBytes(payload, 0, length);
+			}
+
+			var type:Int = header.get(3);
+			var id:Int = ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8);
+
+			if (type == (H2FrameType.RST_STREAM : Int)) {
+				var code:H2ErrorCode = payload.get(3);
+				__lock.acquire();
+				__resets.push('$id:${code.toString()}');
+				__lock.release();
+			}
+
+			if (type == (H2FrameType.HEADERS : Int)) {
+				var path = "/";
+				for (field in decoder.decode(payload)) {
+					if (field.name == ":path") {
+						path = field.value;
+					}
+				}
+
+				if (path == "/upload") {
+					uploadId = id;
+				} else {
+					__lock.acquire();
+					__resetsBeforeSecond = __resets.join(",");
+					__lock.release();
+					__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, encoder.encode([new HpackHeader(":status", "200")]));
+					__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString(path));
+				}
+			}
+
+			if (type == (H2FrameType.DATA : Int) && id == uploadId) {
+				uploaded += length;
+				// All the window there is: the client cannot send another byte
+				// of the body, so it is waiting now.
+				if (uploaded >= H2Settings.DEFAULT_INITIAL_WINDOW_SIZE && !answered) {
+					answered = true;
+					var reset = Bytes.alloc(4);
+					if (__resetOnly) {
+						reset.set(3, (H2ErrorCode.CANCEL : Int));
+					} else {
+						__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, encoder.encode([new HpackHeader(":status", "200")]));
+						__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString("early answer"));
+						reset.set(3, (H2ErrorCode.NO_ERROR : Int));
+					}
+					__writeFrame(peer, H2FrameType.RST_STREAM, 0, id, reset);
+				}
+			}
+		}
+	}
+
+	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+		var bytes = out.getBytes();
+		peer.output.writeBytes(bytes, 0, bytes.length);
+		peer.output.flush();
+	}
 }
 
 /**

@@ -162,7 +162,12 @@ class H2Connection {
 
 		if (hasBody) {
 			__writeData(target, body);
-			target.state = H2StreamState.HALF_CLOSED_LOCAL;
+			// Unless the peer ended the stream while the body was going out.
+			// Reopening it hid that from the caller, who then waited out its
+			// whole timeout for a stream that was already over.
+			if (!target.isClosed()) {
+				target.state = H2StreamState.HALF_CLOSED_LOCAL;
+			}
 		}
 
 		return target;
@@ -284,7 +289,10 @@ class H2Connection {
 			return;
 		}
 		__closeStream(target);
+		__writeReset(id, code);
+	}
 
+	private function __writeReset(id:Int, code:H2ErrorCode):Void {
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, cast code);
 		__writeFrame(H2FrameType.RST_STREAM, 0, id, payload);
@@ -674,6 +682,34 @@ class H2Connection {
 		while (offset < body.length) {
 			while (target.sendWindow <= 0 || __connectionSendWindow <= 0) {
 				var proceed:Bool = onWindowBlocked != null ? onWindowBlocked() : pump();
+
+				// The peer may end the stream while the body waits here: with
+				// a response sent before it read the whole request (RFC 9113,
+				// 8.1), or with a reset. Frames are processed only while this
+				// waits, so this is the one place to notice. The rest of the
+				// body has nowhere to go, and a closed stream's window never
+				// reopens -- a WINDOW_UPDATE for it is discarded -- so waiting
+				// on went on until the connection was quiet long enough to be
+				// given up on, and every other request on it went too.
+				//
+				// Tested before `proceed`, so a stream that ended keeps its
+				// outcome even when the connection fails straight after.
+				if (target.isClosed()) {
+					if (target.endOfStream) {
+						// Ended with a response rather than a reset. The peer's
+						// half is over but ours is not, and it would hold the
+						// stream open, counted against its concurrency limit,
+						// for an END_STREAM that is not coming. A write that
+						// fails here must not cost the response already
+						// received; the connection's own reader reports the
+						// connection.
+						try {
+							__writeReset(target.id, H2ErrorCode.CANCEL);
+						} catch (_:Dynamic) {}
+					}
+					return;
+				}
+
 				if (!proceed) {
 					throw new H2ConnectionError(H2ErrorCode.FLOW_CONTROL_ERROR, "Connection closed while waiting for a flow-control window");
 				}
