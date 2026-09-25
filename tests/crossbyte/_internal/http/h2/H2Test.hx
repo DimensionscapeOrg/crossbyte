@@ -388,6 +388,74 @@ class H2Test extends utest.Test {
 		Assert.isTrue(connectionCredit > H2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1, 'connection window credited $connectionCredit bytes');
 	}
 
+	public function testAResponseBeforeTheWholeBodyEndsTheUpload():Void {
+		var server = new ServerScript();
+		server.settings();
+		// RFC 9113 8.1: a server may answer before it has read the whole
+		// request, and then say it wants no more with RST_STREAM(NO_ERROR).
+		// No WINDOW_UPDATE ever comes, so the upload stops at the initial
+		// 65535 bytes and waits -- which is when these arrive.
+		server.response(1, [new HpackHeader(":status", "413")], "too big", true);
+		server.rstStream(1, H2ErrorCode.NO_ERROR);
+
+		var connection = server.connect();
+		var stream = connection.request("POST", "http", "example.com", "/upload", [], Bytes.alloc(100000));
+
+		// Returned rather than thrown: this used to wait on for the stream's
+		// window, which never reopens, and fail the whole connection with a
+		// FLOW_CONTROL_ERROR once there was nothing left to read.
+		Assert.isTrue(stream.isClosed());
+		Assert.isTrue(stream.endOfStream);
+		Assert.equals(413, stream.status);
+		Assert.equals("too big", stream.takeBody().toString());
+
+		var sent:Int = 0;
+		var resets:Array<H2Frame> = [];
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type == H2FrameType.DATA && frame.streamId == 1) {
+				sent += frame.payload.length;
+				// The body was abandoned, not finished.
+				Assert.isFalse(frame.has(H2Flags.END_STREAM));
+			}
+			if (frame.type == H2FrameType.RST_STREAM) {
+				resets.push(frame);
+			}
+		}
+		Assert.equals(65535, sent);
+
+		// Our half is released too. The response ended the peer's half only,
+		// and a peer that sent no reset of its own would hold the stream open
+		// for an END_STREAM that is never sent.
+		Assert.equals(1, resets.length);
+		Require.notNull(resets[0]);
+		Assert.equals(1, resets[0].streamId);
+		Assert.equals(H2ErrorCode.CANCEL, (resets[0].payload.get(3) : H2ErrorCode));
+	}
+
+	public function testAResetDuringTheUploadEndsItQuietly():Void {
+		var server = new ServerScript();
+		server.settings();
+		server.rstStream(1, H2ErrorCode.CANCEL);
+
+		var connection = server.connect();
+		var stream = connection.request("POST", "http", "example.com", "/upload", [], Bytes.alloc(100000));
+
+		Assert.isTrue(stream.isClosed());
+		Assert.isFalse(stream.endOfStream);
+		Assert.equals(H2ErrorCode.CANCEL, stream.resetCode);
+
+		// Nothing more for a stream the peer reset: no further DATA, and no
+		// RST_STREAM in reply to its own (5.4.2).
+		var sent:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			Assert.notEquals(H2FrameType.RST_STREAM, frame.type);
+			if (frame.type == H2FrameType.DATA) {
+				sent += frame.payload.length;
+			}
+		}
+		Assert.equals(65535, sent);
+	}
+
 	public function testGoAwayRefusesEveryStreamAboveTheLastProcessedId():Void {
 		var server = new ServerScript();
 		server.settings();

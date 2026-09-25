@@ -684,6 +684,19 @@ All notable changes to CrossByte will be documented in this file.
   its header block still decoded and its DATA still counted against the
   connection's window. A GOAWAY that refuses several streams closes them
   after walking the map, not during.
+- An HTTP/2 upload the server ends early no longer stalls and takes the
+  connection with it. RFC 9113 8.1 lets a server answer, or reset the
+  stream, before it has read the whole request body. A body larger than
+  the send window was then left waiting for a WINDOW_UPDATE that a closed
+  stream never gets. After thirty quiet seconds it failed the connection
+  with a FLOW_CONTROL_ERROR, and every other request on it with it, and
+  reported that instead of the server's answer. Had it got past that, the
+  stream was marked open again, and the caller would have waited out its
+  timeout. The upload now stops as soon as the stream ends. The request
+  returns the response when the server finished one -- sending
+  RST_STREAM(CANCEL) so the server's half is released too -- and "Stream
+  reset by peer: CODE" when it reset instead. The connection stays in the
+  pool for other requests.
 - A listening `LocalConnection` could stop delivering for good: no
   `onReady`, and nothing a client sent. Its reader thread attached the tick
   listener that carries dispatches to the runtime's thread, and
