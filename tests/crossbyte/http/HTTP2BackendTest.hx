@@ -376,6 +376,124 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals(0, H2ConnectionPool.sessionCount(origin));
 	}
 
+	// ------------------------------------------------- sweeping under load
+
+	/**
+	 * A sweep beside a stream of requests never closes the connection under
+	 * one of them.
+	 *
+	 * It did, about once in two thousand of the concurrent case above, which
+	 * failed as
+	 *
+	 *     line: 343, expected "/slow" but it is "ERR Connection closed before the response headers arrived"
+	 *     line: 344, expected "/quick" but it is "ERR HTTP/2 request failed: java.net.ConnectException: Connection refused: connect"
+	 *
+	 * The pool judged a session idle from two fields read without the
+	 * session's lock: how many streams were in flight, and when the last one
+	 * ended. A request starting on the session writes both, bumping the count
+	 * and zeroing the time. A sweep that read the count before the bump and
+	 * the time after it saw nothing in flight and a session idle since the
+	 * clock began -- 459,622 seconds, when it was caught -- and closed the
+	 * connection a request had just opened a stream on. The first request
+	 * lost its connection; the second, finding none, dialled a server that
+	 * had stopped listening.
+	 *
+	 * The window is a few instructions wide, so this widens it the other
+	 * way: one thread sweeps continuously while another sends a thousand
+	 * requests, each of which opens and closes a stream. Nothing here is idle
+	 * for anything like the allowance, so nothing may be reaped.
+	 *
+	 * The allowance is a second rather than the default ninety, because the
+	 * torn read made a session "idle since the clock's origin", and natively
+	 * that origin is the process's first reading: a short run has not yet
+	 * left ninety seconds behind, and would not see the bug at all. So the
+	 * allowance is one second and the case runs at least that long after the
+	 * origin. On the jvm the origin is boot, and nothing waits.
+	 */
+	public function testASweepNeverClosesAConnectionUnderARequest():Void {
+		var requests = 1000;
+		var server = new H2MuxServer(requests);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+		var previous = H2ConnectionPool.idleTimeoutSeconds;
+		H2ConnectionPool.idleTimeoutSeconds = 1;
+		if (haxe.Timer.stamp() < 1.5) {
+			Sys.sleep(1.5 - haxe.Timer.stamp());
+		}
+
+		var control = new Mutex();
+		var stopping = false;
+		var reaped = 0;
+		var swept = new Lock();
+		Thread.create(() -> {
+			var total = 0;
+			while (true) {
+				control.acquire();
+				var stop = stopping;
+				control.release();
+				if (stop) {
+					break;
+				}
+				total += H2ConnectionPool.reapIdle();
+			}
+			control.acquire();
+			reaped = total;
+			control.release();
+			swept.release();
+		});
+
+		var failure:String = null;
+		var sent = 0;
+		while (sent < requests && failure == null) {
+			var path = "/r" + sent;
+			var body = try get(server.port, path) catch (e:Dynamic) "ERR " + Std.string(e);
+			if (body != path) {
+				failure = 'request $sent of $requests: $body';
+			}
+			sent++;
+		}
+
+		control.acquire();
+		stopping = true;
+		control.release();
+		Assert.isTrue(swept.wait(5), "the sweeping thread did not stop");
+		H2ConnectionPool.idleTimeoutSeconds = previous;
+
+		control.acquire();
+		var closed = reaped;
+		control.release();
+		Assert.isNull(failure, failure);
+		Assert.equals(0, closed, 'the sweep closed $closed connection(s) that were in use');
+	}
+
+	/**
+	 * A request the pooled connection refuses before sending goes out once
+	 * more on another.
+	 *
+	 * The session a request is handed can refuse its stream with nothing
+	 * sent: the pool retires it as idle between handing it over and the
+	 * stream opening, or its peer has said GOAWAY. REFUSED_STREAM promises
+	 * the request was not processed, so the backend sends it again rather
+	 * than failing a request nobody ever saw. GOAWAY is the one of those a
+	 * test can arrange: nothing about a session says its peer has gone away
+	 * until a stream is asked of it.
+	 */
+	public function testARequestRefusedBeforeItIsSentGoesOutOnceMore():Void {
+		var server = new H2GoAwayServer();
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		Assert.equals("/first", get(server.port, "/first"));
+		var second = try get(server.port, "/second") catch (e:Dynamic) "ERR " + Std.string(e);
+		Assert.equals("/second", second);
+
+		server.waitServed();
+		Assert.equals(2, server.connections, "the second request did not open a connection of its own");
+		Assert.same(["/first", "/second"], server.paths);
+	}
+
 	/** One request through the registered backend, returning the body. */
 	private function get(port:Int, path:String):String {
 		var body:String = null;
@@ -910,6 +1028,136 @@ private class H2MuxServer {
 		var block = encoder.encode([new HpackHeader(":status", "200")]);
 		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, streamId, block);
 		__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, streamId, Bytes.ofString(path));
+	}
+
+	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+		var bytes = out.getBytes();
+		peer.output.writeBytes(bytes, 0, bytes.length);
+		peer.output.flush();
+	}
+}
+
+/**
+ * Two connections, one after the other. The first request is answered after
+ * a GOAWAY that lets it finish, so the connection it came on takes no more;
+ * the second has to arrive on a connection of its own.
+ */
+private class H2GoAwayServer {
+	public var port:Int = 0;
+	public var connections:Int = 0;
+	public var paths:Array<String> = [];
+
+	private var __ready:Lock = new Lock();
+	private var __served:Lock = new Lock();
+	private var __done:Mutex = new Mutex();
+
+	public function new() {}
+
+	public function start():Void {
+		Thread.create(() -> {
+			var listener = new SysSocket();
+			var first:SysSocket = null;
+			var second:SysSocket = null;
+			try {
+				listener.bind(new Host("127.0.0.1"), 0);
+				listener.listen(4);
+				port = listener.host().port;
+				__ready.release();
+
+				first = listener.accept();
+				first.setTimeout(10.0);
+				__done.acquire();
+				connections++;
+				__done.release();
+				var path = __serveOne(first, true);
+				__done.acquire();
+				paths.push(path);
+				__done.release();
+
+				second = listener.accept();
+				second.setTimeout(10.0);
+				__done.acquire();
+				connections++;
+				__done.release();
+				path = __serveOne(second, false);
+				__done.acquire();
+				paths.push(path);
+				__done.release();
+			} catch (e:Dynamic) {
+				__ready.release();
+			}
+			__served.release();
+
+			// Held open until the client hangs up, as a pooled client keeps a
+			// connection by design.
+			try {
+				if (second != null) {
+					while (true) {
+						second.input.readByte();
+					}
+				}
+			} catch (_:Dynamic) {}
+			try if (first != null) first.close() catch (_:Dynamic) {}
+			try if (second != null) second.close() catch (_:Dynamic) {}
+			try listener.close() catch (_:Dynamic) {}
+		});
+
+		if (!__ready.wait(5.0)) {
+			Assert.fail("Timed out starting the GOAWAY fixture");
+		}
+	}
+
+	public function waitServed():Void {
+		__served.wait(10.0);
+	}
+
+	private function __serveOne(peer:SysSocket, goAwayFirst:Bool):String {
+		var preface = Bytes.alloc(H2Connection.PREFACE.length);
+		peer.input.readFullBytes(preface, 0, preface.length);
+		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+
+		var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		while (true) {
+			var header = Bytes.alloc(H2Frame.HEADER_SIZE);
+			peer.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
+			var length = H2Frame.lengthOf(header);
+			var payload = Bytes.alloc(length);
+			if (length > 0) {
+				peer.input.readFullBytes(payload, 0, length);
+			}
+			if (header.get(3) != (H2FrameType.HEADERS : Int)) {
+				continue;
+			}
+
+			var id = ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8);
+			var path = "/";
+			for (field in decoder.decode(payload)) {
+				if (field.name == ":path") {
+					path = field.value;
+				}
+			}
+
+			if (goAwayFirst) {
+				// Before the answer, so the client has read it by the time the
+				// request it lets finish comes back.
+				var goAway = Bytes.alloc(8);
+				goAway.set(0, (id >>> 24) & 0x7f);
+				goAway.set(1, (id >>> 16) & 0xff);
+				goAway.set(2, (id >>> 8) & 0xff);
+				goAway.set(3, id & 0xff);
+				__writeFrame(peer, H2FrameType.GOAWAY, 0, 0, goAway);
+			}
+
+			var block = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE).encode([new HpackHeader(":status", "200")]);
+			__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, block);
+			__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString(path));
+			return path;
+		}
 	}
 
 	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {

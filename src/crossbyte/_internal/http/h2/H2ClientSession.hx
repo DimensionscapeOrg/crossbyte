@@ -57,8 +57,14 @@ class H2ClientSession {
 	private final __progress:Lock = new Lock();
 
 	private var __activeStreams:Int = 0;
-	private var __lastUsed:Float = 0;
+	// When the last stream in flight ended, or -1 while one is in flight. One
+	// field rather than a count and a time, so a reader without the lock sees
+	// one or the other and never half of each.
+	private var __idleSince:Float = 0;
 	private var __stopped:Bool = false;
+	// Taken out of service by the pool as idle. Refuses new streams from then
+	// on, which is what lets the pool close it without racing a request.
+	private var __retired:Bool = false;
 	private var __failure:String = null;
 
 	public function new(origin:String, socket:FlexSocket, connection:H2Connection) {
@@ -69,7 +75,7 @@ class H2ClientSession {
 		connection.onStreamClosed = __onStreamClosed;
 		connection.onWindowBlocked = __onWindowBlocked;
 
-		__lastUsed = haxe.Timer.stamp();
+		__idleSince = haxe.Timer.stamp();
 
 		connection.start();
 		Thread.create(__read);
@@ -94,10 +100,43 @@ class H2ClientSession {
 	 * request would be closed under it.
 	 */
 	public function idleSeconds():Float {
-		if (__activeStreams > 0) {
-			return -1;
+		var since:Float = __idleSince;
+		return since < 0 ? -1 : haxe.Timer.stamp() - since;
+	}
+
+	/**
+	 * Takes this session out of service if it has had nothing in flight for
+	 * at least `timeoutSeconds`, and says whether it did. The caller then
+	 * closes it.
+	 *
+	 * Decided under the session's lock, which is the lock a request holds
+	 * while it opens its stream. So a request starting at the same moment
+	 * either opens its stream first, and the session is left alone, or finds
+	 * the session retired and is refused before anything is sent.
+	 *
+	 * The pool asked `idleSeconds` instead, from outside the lock, and a
+	 * request starting in between could be read half before and half after:
+	 * nothing in flight, and idle since the clock began. That closed
+	 * connections with a stream just opened on them.
+	 *
+	 * The lock is only tried. One that is held means the session is being
+	 * used right now, and the pool must not wait on it: a request writing to
+	 * a peer that has stopped reading holds it for as long as the peer likes,
+	 * and the pool's own lock would be held all that while too.
+	 */
+	public function retireIfIdle(timeoutSeconds:Float):Bool {
+		if (!__lock.tryAcquire()) {
+			return false;
 		}
-		return haxe.Timer.stamp() - __lastUsed;
+
+		if (dead || __stopped || __retired || __activeStreams > 0 || haxe.Timer.stamp() - __idleSince < timeoutSeconds) {
+			__lock.release();
+			return false;
+		}
+
+		__retired = true;
+		__lock.release();
+		return true;
 	}
 
 	/**
@@ -108,7 +147,7 @@ class H2ClientSession {
 	 * caller is better served by waiting or by a second connection.
 	 */
 	public function hasCapacity():Bool {
-		if (dead || __stopped) {
+		if (dead || __stopped || __retired) {
 			return false;
 		}
 
@@ -134,7 +173,9 @@ class H2ClientSession {
 		}
 
 		__lock.acquire();
-		if (dead || __stopped) {
+		if (dead || __stopped || __retired) {
+			// Refused before anything is sent, which is what REFUSED_STREAM
+			// promises a caller (RFC 9113, 8.7): the request can go again.
 			__lock.release();
 			throw new H2ConnectionError(H2ErrorCode.REFUSED_STREAM, __failure != null ? __failure : "Connection is no longer usable");
 		}
@@ -152,7 +193,7 @@ class H2ClientSession {
 		// on a window, so the state is re-checked below.
 		__waiters.set(target.id, waiter);
 		__activeStreams++;
-		__lastUsed = 0;
+		__idleSince = -1;
 
 		var alreadyDone:Bool = target.isClosed();
 		__lock.release();
@@ -355,7 +396,7 @@ class H2ClientSession {
 			// Stamped as the last stream leaves, so the idle clock measures
 			// time with nothing in flight rather than time since the
 			// connection opened.
-			__lastUsed = haxe.Timer.stamp();
+			__idleSince = haxe.Timer.stamp();
 		}
 		__lock.release();
 	}
