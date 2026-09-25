@@ -11,6 +11,7 @@ import crossbyte.io.ByteArray;
 import utest.Assert;
 import crossbyte.test.Require;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
+import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 
 @:access(crossbyte.net.ReliableDatagramServerSocket)
@@ -767,7 +768,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		try {
 			server.bind(0, "127.0.0.1");
-			server.admit = (address, port) -> {
+			server.admit = (address, port, _) -> {
 				asked.push('$address:$port');
 				return port != 40101;
 			};
@@ -795,7 +796,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		try {
 			server.bind(0, "127.0.0.1");
-			server.admit = (_, _) -> throw "the hook's own bug";
+			server.admit = (_, _, _) -> throw "the hook's own bug";
 			server.listen();
 
 			__injectConnect(server, 40200);
@@ -807,6 +808,256 @@ class ReliableDatagramSocketTest extends utest.Test {
 		}
 
 		server.close();
+	}
+
+	public function testAdmitSeesWhatTheClientSentWithItsConnect():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var asked:Array<String> = [];
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.admit = (_, _, payload) -> {
+				// Read to the end, which the admitted session must not inherit.
+				var token = payload.readUTFBytes(payload.bytesAvailable);
+				asked.push(token);
+				return token == "ticket-7";
+			};
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> accepted = event.socket);
+			server.listen();
+
+			client.connect("127.0.0.1", server.localPort, bytesOf("ticket-7"));
+			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 3.0);
+
+			Assert.same(["ticket-7"], asked);
+			Assert.isTrue(client.connected, "the admitted client never connected");
+			var kept = Require.notNull(Require.notNull(accepted, "the server never reported the session").connectPayload);
+			Assert.equals(0, kept.position, "the session's payload starts where the hook left off");
+			Assert.equals("ticket-7", textOf(kept));
+
+			// A client of a server is never sent a CONNECT, so has none.
+			Assert.isNull(client.connectPayload);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeServerQuietly(server);
+	}
+
+	public function testAdmitCanRefuseOnThePayload():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.admit = (_, _, payload) -> payload.readUTFBytes(payload.bytesAvailable) == "good";
+			server.listen();
+
+			__injectConnect(server, 40300, bytesOf("good"));
+			__injectConnect(server, 40301, bytesOf("bad"));
+			__injectConnect(server, 40302);
+
+			Assert.equals(1, __countConnections(server));
+			Assert.equals(1, server.__pendingCount);
+			Assert.notNull(server.__connections.get("127.0.0.1:40300"));
+		} catch (e:Dynamic) {
+			Assert.fail("admission test failed: " + Std.string(e));
+		}
+
+		server.close();
+	}
+
+	public function testAConnectCarryingNothingShowsAdmitAnEmptyPayload():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var seen:Array<Int> = [];
+
+		try {
+			server.bind(0, "127.0.0.1");
+			// Empty rather than null: a peer on an older build sends nothing,
+			// and a hook written for tokens should not have to test for null
+			// to refuse it.
+			server.admit = (_, _, payload) -> {
+				seen.push(payload == null ? -1 : payload.length);
+				return true;
+			};
+			server.listen();
+
+			__injectConnect(server, 40400);
+
+			Assert.same([0], seen);
+			var accepted = Require.notNull(server.__connections.get("127.0.0.1:40400"));
+			Assert.equals(0, Require.notNull(accepted.connectPayload).length);
+		} catch (e:Dynamic) {
+			Assert.fail("admission test failed: " + Std.string(e));
+		}
+
+		server.close();
+	}
+
+	public function testAConnectCarryingMoreThanAFrameIsNeverAdmitted():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var asked:Int = 0;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.admit = (_, _, _) -> {
+				asked++;
+				return true;
+			};
+			server.listen();
+
+			// No connect() can send the first, and each pending session keeps
+			// what its CONNECT carried, so it is dropped before the hook is
+			// asked. The second is the most one can carry.
+			__injectConnect(server, 40500, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE + 1));
+			__injectConnect(server, 40501, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE));
+
+			Assert.equals(1, asked);
+			Assert.equals(1, __countConnections(server));
+			Assert.isNull(server.__connections.get("127.0.0.1:40500"));
+			Assert.notNull(server.__connections.get("127.0.0.1:40501"));
+		} catch (e:Dynamic) {
+			Assert.fail("admission test failed: " + Std.string(e));
+		}
+
+		server.close();
+	}
+
+	public function testAConnectPayloadLargerThanAFrameIsRefusedBeforeAnythingStarts():Void {
+		if (!requireDatagramSupport()) return;
+
+		var client = new ReliableDatagramSocket();
+		var server = new ReliableDatagramServerSocket();
+		var tooBig = zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE + 1);
+
+		try {
+			Assert.raises(() -> client.connect("127.0.0.1", 9, tooBig), crossbyte.errors.RangeError);
+			Assert.isFalse(client.bound, "the refused connect bound a port");
+			Assert.equals(0, client.remotePort, "the refused connect took a peer");
+			Assert.equals(-1, client.__connectionAttemptHandle, "the refused connect began a handshake");
+
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			Assert.raises(() -> server.connect("127.0.0.1", 9, 0, tooBig), crossbyte.errors.RangeError);
+			Assert.equals(0, __countConnections(server), "the refused dial was registered");
+
+			// A frame's worth exactly is not too big.
+			Assert.notNull(server.connect("127.0.0.1", 9, 0, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE)));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeServerQuietly(server);
+	}
+
+	public function testEveryConnectAttemptCarriesThePayload():Void {
+		if (!requireDatagramSupport()) return;
+
+		// A plain datagram socket where the server would be, so what arrives
+		// is read as sent, with nothing answering it.
+		var listener = new DatagramSocket();
+		var client = new ReliableDatagramSocket();
+		var frames:Array<ReliableDatagramFrame> = [];
+
+		try {
+			listener.bind(0, "127.0.0.1");
+			listener.addEventListener(DatagramSocketDataEvent.DATA, e -> frames.push(ReliableDatagramProtocol.decode(e.data)));
+			listener.receive();
+
+			var passed = bytesOf("again");
+			client.connect("127.0.0.1", listener.localPort, passed);
+			pumpUntil(() -> frames.length >= 1, 3.0);
+
+			// Rewritten between attempts. connect copied it, so the repeat
+			// still says what the caller passed.
+			passed.position = 0;
+			passed.writeUTFBytes("other");
+
+			// A lost CONNECT is recovered by the next attempt, which is only a
+			// recovery if the next attempt says the same thing.
+			client.__sendHandshakeAttempt();
+			pumpUntil(() -> frames.length >= 2, 3.0);
+
+			Assert.equals(2, frames.length);
+			for (frame in frames) {
+				if (frame == null) {
+					Assert.fail("a CONNECT did not decode");
+					continue;
+				}
+				Assert.equals(ReliableDatagramFrameType.CONNECT, frame.type);
+				Assert.equals("again", textOf(frame.payload));
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		try listener.close() catch (_:Dynamic) {}
+	}
+
+	public function testPeersThatBothDialSeeEachOthersPayload():Void {
+		if (!requireDatagramSupport()) return;
+
+		// Two peers opening a path through NAT both dial, so neither side's
+		// admit is asked -- each CONNECT arrives at a session already dialled.
+		// The payload is still what the other side said, and it is kept.
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			alice.listen();
+			bob.bind(0, "127.0.0.1");
+			bob.listen();
+
+			var toBob = alice.connect("127.0.0.1", bob.localPort, 0, bytesOf("from alice"));
+			var toAlice = bob.connect("127.0.0.1", alice.localPort, 0, bytesOf("from bob"));
+
+			pumpUntil(() -> toBob.connected && toAlice.connected, 5.0);
+
+			Assert.isTrue(toBob.connected && toAlice.connected, "the dialled sessions never completed");
+			Assert.equals("from bob", textOf(toBob.connectPayload));
+			Assert.equals("from alice", textOf(toAlice.connectPayload));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeServerQuietly(alice);
+		closeServerQuietly(bob);
+	}
+
+	public function testADialledSessionKeepsNoConnectLargerThanAFrame():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+
+			// A dialled session takes the CONNECT of a peer that dialled too,
+			// and holds it no larger than the server would.
+			var dialled = server.connect("127.0.0.1", 40600);
+			__injectConnect(server, 40600, zeros(ReliableDatagramProtocol.MAX_PAYLOAD_SIZE + 1));
+			Assert.isNull(dialled.connectPayload, "an oversized CONNECT payload was kept");
+
+			__injectConnect(server, 40600, bytesOf("fits"));
+			Assert.equals("fits", textOf(dialled.connectPayload));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeServerQuietly(server);
 	}
 
 	public function testAnAcceptedSessionAnswersOnceRatherThanRepeating():Void {
@@ -838,8 +1089,8 @@ class ReliableDatagramSocketTest extends utest.Test {
 		server.close();
 	}
 
-	private static function __injectConnect(server:ReliableDatagramServerSocket, srcPort:Int):Void {
-		var encoded:ByteArray = ReliableDatagramProtocol.encode(ReliableDatagramFrameType.CONNECT, 1);
+	private static function __injectConnect(server:ReliableDatagramServerSocket, srcPort:Int, ?payload:ByteArray):Void {
+		var encoded:ByteArray = ReliableDatagramProtocol.encode(ReliableDatagramFrameType.CONNECT, 1, payload);
 		var packet:ByteArray = new ByteArray();
 		packet.writeBytes(encoded, 0, encoded.length);
 		packet.position = 0;
@@ -861,6 +1112,24 @@ class ReliableDatagramSocketTest extends utest.Test {
 			return false;
 		}
 		return true;
+	}
+
+	// The whole of `bytes` as text, leaving its position where it was.
+	private static function textOf(bytes:ByteArray):String {
+		if (bytes == null) {
+			return null;
+		}
+		var at:Int = bytes.position;
+		bytes.position = 0;
+		var text:String = bytes.readUTFBytes(bytes.length);
+		bytes.position = at;
+		return text;
+	}
+
+	private static function zeros(length:Int):ByteArray {
+		var bytes = new ByteArray();
+		bytes.length = length;
+		return bytes;
 	}
 
 	private static function bytesOf(value:String):ByteArray {
