@@ -1,8 +1,8 @@
 package crossbyte.rpc;
 
+import crossbyte.rpc.RPCParentFixtures;
 import crossbyte.rpc._internal.RPCOps;
 import crossbyte.utils.Hash;
-import haxe.io.Bytes;
 import utest.Assert;
 
 /**
@@ -58,7 +58,7 @@ class RPCContractTest extends utest.Test {
 	// ----------------------------------------------------------------- ops
 
 	public function testAnOpIsTheHashOfTheMethodsNameAlone():Void {
-		Assert.equals(Hash.fnv1a32(Bytes.ofString("label")), RPCOps.opOf("label"));
+		Assert.equals(Hash.fnv1a32(haxe.io.Bytes.ofString("label")), RPCOps.opOf("label"));
 	}
 
 	public function testTwoNamesThatHashAlikeAreFound():Void {
@@ -144,6 +144,34 @@ class RPCContractTest extends utest.Test {
 		Assert.equals("child-5", commands.fromChild(5).result);
 		commands.ping();
 		Assert.isFalse(ended);
+	}
+
+	public function testAParentsUntypedMethodIsNotTypedDuringItsChildsBuild():Void {
+		// NotingParentHandler.note declares no return type and reads a field of
+		// the class that extends it. The child's build followed the parent's
+		// method types, which typed `note` there and then, before the child had
+		// its fields: "Class<NotingChildHandler> has no field noted". This class
+		// did not compile. The parent's build now records what it dispatches.
+		NotingChildHandler.noted = 0;
+		var link = LinkedConnection.pair();
+		var commands = new NotingCommands();
+		var clientSession = new RPCSession<NotingCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new NotingChildHandler());
+
+		commands.note(5);
+		Assert.equals(5, NotingChildHandler.noted);
+		Assert.equals(8, commands.twice(4).result);
+	}
+
+	public function testAChildReadsItsParentsTypesWhateverItsParentImported():Void {
+		// The parents name `Bytes`, imported by their module and not by this one.
+		var link = LinkedConnection.pair();
+		var commands = new BlobChildCommands();
+		var clientSession = new RPCSession<BlobChildCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new BlobChildHandler());
+
+		Assert.equals("blob", commands.echoBlob(haxe.io.Bytes.ofString("blob")).result.toString());
+		Assert.equals(14, commands.doubled(7).result);
 	}
 
 	public function testContractCommandsExtendAlongWithTheirContracts():Void {
@@ -315,6 +343,53 @@ private class ChildHandler extends ParentHandler {
 	override public function said(id:Int):String {
 		return 'child says $id';
 	}
+}
+
+private class NotingParentHandler extends RPCHandler {
+	public function new() {}
+
+	// No return type, and a body that reads the class that extends this one.
+	@:rpc public function note(value:Int) {
+		NotingChildHandler.noted += value;
+	}
+}
+
+private class NotingChildHandler extends NotingParentHandler {
+	public static var noted:Int = 0;
+
+	public function new() {
+		super();
+	}
+
+	@:rpc public function twice(value:Int):Int {
+		return value * 2;
+	}
+}
+
+private class NotingCommands extends RPCCommands {
+	public function new() {}
+
+	@:rpc public function note(value:Int):Void {}
+
+	@:rpc public function twice(value:Int):RPCResponse<Int> {}
+}
+
+private class BlobChildHandler extends BlobParentHandler {
+	public function new() {
+		super();
+	}
+
+	@:rpc public function doubled(value:Int):Int {
+		return value * 2;
+	}
+}
+
+private class BlobChildCommands extends BlobParentCommands {
+	public function new() {
+		super();
+	}
+
+	@:rpc public function doubled(value:Int):RPCResponse<Int> {}
 }
 
 private class WideFamilyCommands extends RPCCommands {
