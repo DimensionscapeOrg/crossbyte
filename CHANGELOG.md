@@ -647,6 +647,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `LocalConnection` listened or connected again could run two reader
+  threads. `listen()` and `connect()` begin with `close()`, and the reader
+  thread of the session that ended sleeps between polls: it woke to find
+  the connection running again and carried on beside the new session's
+  reader, reading its pipe, splitting its bytes, tearing it down when the
+  read that lost found nothing, and closing its pipes on the way out.
+  Reusing one server and one client for twenty sessions, a later session
+  never connected in 3 runs of 3. A reader thread now acts only for its
+  own session: what it does to the connection it does under the handle
+  lock having checked the session is still its own, and what it hands on
+  is refused once `close()` has ended it. Each reader also frames into its
+  own buffer, which `close()` used to clear under a reader writing to it.
 - A listening `LocalConnection` could stop delivering for good: no
   `onReady`, and nothing a client sent. Its reader thread attached the tick
   listener that carries dispatches to the runtime's thread, and
