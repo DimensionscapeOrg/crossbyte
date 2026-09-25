@@ -248,6 +248,36 @@ class ReliableDatagramCoalescingTest extends utest.Test {
 		receiver.close();
 	}
 
+	public function testAMapOfHeldFramesGoesEvenBesideAFrameCarryingTheAcknowledgement():Void {
+		var sender = WireSocket.make(true);
+		var receiver = WireSocket.make(true);
+		if (sender == null || receiver == null) return;
+		receiver.__inSequence = sender.__outSequence;
+
+		sender.send(text("lost"));
+		sender.send(text("held"));
+		sender.send(text("held too"));
+		sender.flush();
+		var sent = sender.frames();
+		receiver.__acceptFrame(sent[1]);
+		receiver.__acceptFrame(sent[2]);
+		receiver.send(text("answer"));
+		receiver.flush();
+
+		// The answer carries the cumulative value, which is stuck at the gap;
+		// only a standalone acknowledgement has room to say what is held past
+		// it, and without that the sender finds its loss by timing out.
+		var frames = receiver.frames();
+		Assert.equals(2, frames.length);
+		Assert.equals(ReliableDatagramFrameType.PACKET, frames[0].type);
+		Assert.equals(ReliableDatagramFrameType.ACK, frames[1].type);
+		Assert.equals(sent[0].sequence, frames[1].sequence);
+		Assert.equals(1, frames[1].payload.length);
+		Assert.equals(0x03, (frames[1].payload : Bytes).get(0), "the map did not name both held frames");
+		sender.close();
+		receiver.close();
+	}
+
 	public function testADuplicateIsStillAcknowledged():Void {
 		// The peer resends when an acknowledgement is lost, and only a fresh
 		// one stops it -- so a packet already delivered is acknowledged again.

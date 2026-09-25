@@ -416,6 +416,25 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Reliable datagram sessions find loss from what arrives rather than
+  waiting it out. A receiver holding frames past a gap says which, in a map
+  on its acknowledgement -- bit `i` for frame `ack + 1 + i`, up to 512
+  frames, cut after its last set byte -- which older peers ignore. A sender
+  takes a frame as lost once one sent after it has arrived and it has had
+  that one's round trip to arrive in, as RFC 8985's RACK does, and sends it
+  again at once. That counts time rather than frames held past the gap, so
+  it works in the small windows a lossy path leaves, and it catches a
+  resend that is lost again. One burst of loss halves the window once, and
+  frames the peer holds no longer count against it. When nothing comes back
+  for two round trips, the last frame goes again as a probe before the
+  timeout is waited out. A peer that sends no map is recovered after three
+  duplicate acknowledgements. Natively over loopback, 1000-byte messages
+  under 1% loss went from 0.35 MB/s to 58, under 5% from 0.01 to 47.7, and
+  under 10% from nothing -- its handshake's last message was lost, below --
+  to 14.3, with 65 MB/s unchanged at no loss. At a 20 ms round trip, 1% loss
+  went from 0.25 MB/s to 0.63, 5% from 0.01 to 0.28, and 10% from nothing
+  to 0.19. What limits it there is the window, halved for each burst of loss
+  as TCP's is, not recovery: none of those losses waited for a timeout.
 - Reliable datagram sessions and servers ask for a megabyte of socket
   buffer in each direction, `ReliableDatagramSocket.WINDOW_BUFFER_SIZE`, and
   expose it as `receiveBufferSize` and `sendBufferSize`. A session sends its
@@ -556,6 +575,40 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Two reliable datagram peers that dialled each other, as a hole-punched
+  pair does, answered every HANDSHAKE with one of their own, for as long as
+  they stayed connected. Each answer drew the next, so two peers with
+  nothing to say passed some forty thousand datagrams a second between them
+  over loopback. A HANDSHAKE now carries an acknowledgement once its sender
+  has the other side's sequence. One that does is answered with an ACK,
+  which draws nothing back.
+- A reliable datagram session connects when the last message of its
+  handshake is lost. The client's HANDSHAKE, answering the server's, is
+  that last message, and a server sends its own again only when asked. So
+  one lost datagram left the client connected and sending and the server
+  not, dropping everything it was sent until its session timed out: at 10%
+  loss, one connection in ten. Now:
+  - A session not yet connected answers any frame that only a connected
+    peer sends with its HANDSHAKE, once a pass.
+  - A client asked again, with nothing yet acknowledged, sends everything
+    unacknowledged again at once.
+  - A client that has sent nothing repeats its HANDSHAKE on the connection
+    attempt interval until the server shows it arrived. A server shows
+    that with an ACK.
+- A repeated HANDSHAKE no longer moves where a connected reliable datagram
+  session expects its next frame. The sequence of every HANDSHAKE was
+  taken, and a peer that had sent frames since named where it had got to,
+  so frames still on their way were skipped: never delivered, and all
+  acknowledged. Every HANDSHAKE now names the sequence its sender's frames
+  began at, and only the first is taken.
+- A reliable datagram session no longer measures the wait for a gap to
+  fill as a round trip. Every frame a cumulative acknowledgement released
+  was timed, including those that had arrived long before and sat behind
+  the missing one. Under 10% loss on loopback, the smoothed round trip rose
+  from 0.1 ms to half a second, and the retransmission timeout with it. A
+  frame the peer says it holds is timed when it says so, and each
+  acknowledgement gives one measurement, from the last frame sent of those
+  it shows delivered.
 - `HTTPServer` logs the port it bound when it starts -- the one the system
   chose, for a configured 0, where it logged `:0` -- and no longer logs every
   HTTP/1.1 response a second time as the raw text of its `HTTPStatusEvent`,
