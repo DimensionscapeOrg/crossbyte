@@ -830,7 +830,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 	@:noCompletion private function __nextRuntimeRequestId():Int {
 		do {
-			__runtimeRequestIdSeed++;
+			// `| 0` so the increment wraps on JavaScript too; see
+			// RPCCommands.__nextRequestId.
+			__runtimeRequestIdSeed = (__runtimeRequestIdSeed + 1) | 0;
 			if (__runtimeRequestIdSeed <= 0) {
 				__runtimeRequestIdSeed = 1;
 			}
