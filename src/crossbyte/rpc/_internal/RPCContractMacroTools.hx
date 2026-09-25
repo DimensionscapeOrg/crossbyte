@@ -172,7 +172,7 @@ class RPCContractMacroTools {
 					declaredIn.set(field.name, owner);
 					signatures.set(field.name, signature);
 
-					var retType = ret.toComplexType();
+					var retType = fullComplexType(ret);
 					if (retType == null) {
 						retType = macro :Void;
 					}
@@ -182,7 +182,7 @@ class RPCContractMacroTools {
 						args: args.map(arg -> {
 							name: arg.name,
 							opt: arg.opt,
-							type: arg.t.toComplexType(),
+							type: fullComplexType(arg.t),
 							value: null,
 							meta: []
 						}),
@@ -206,6 +206,40 @@ class RPCContractMacroTools {
 		their names hashing alike -- or one would share the built-in `ping`'s,
 		which every handler answers whether it declares it or not.
 	**/
+	/**
+		`t` written so that any module can resolve it: typedefs and import
+		aliases followed to what they name, since their own names may be
+		private to, or only an alias in, the module that used them; `Null<T>`
+		kept, since it marks an optional argument on the wire, and a full
+		follow drops it. `toComplexType()` alone keeps a typedef's name, so a
+		handler or commands class in another module than its contract or its
+		parent could not read a type declared through one.
+	**/
+	public static function fullComplexType(t:Type):ComplexType {
+		return switch (t) {
+			case TAbstract(ref, [inner]) if (ref.get().name == "Null" && ref.get().pack.length == 0):
+				TPath({pack: [], name: "Null", params: [TPType(fullComplexType(inner))]});
+			case TType(_, _):
+				fullComplexType(Context.follow(t, true));
+			case _:
+				t.toComplexType();
+		}
+	}
+
+	/** `ct`, resolved where it was written, as `fullComplexType` writes it; as it was if it does not resolve. **/
+	public static function fullType(ct:ComplexType, pos:Position):ComplexType {
+		if (ct == null) {
+			return null;
+		}
+		try {
+			final full = fullComplexType(Context.resolveType(ct, pos));
+			return full != null ? full : ct;
+		} catch (_:Dynamic) {
+			// Left for the check that reports an unsupported type to report.
+			return ct;
+		}
+	}
+
 	public static function requireDistinctOps(methods:Array<{name:String, pos:Position}>, includePing:Bool):Void {
 		final names = [for (method in methods) method.name];
 		if (includePing) {
