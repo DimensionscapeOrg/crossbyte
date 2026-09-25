@@ -55,7 +55,8 @@ CrossByte currently includes:
   - `StunClient` and per-connection reflexive gathering, so a peer behind NAT can learn the address the world sees
   - `TurnClient` and relayed candidates for the peers no direct path reaches, verified in CI against an independent TURN server
   - hole punching on the reliable datagram sockets, for the same problem without the browser
-- RPC sessions, commands, handlers, and typed responses
+- RPC sessions, commands, handlers, and typed responses -- see the
+  [RPC guide](docs/rpc.md)
 - IPC primitives such as `LocalConnection`, `SharedChannel`, and `SharedObject`
 - file APIs, `ByteArray`, `ByteArrayInput`, and `ByteArrayOutput`
 - compression:
