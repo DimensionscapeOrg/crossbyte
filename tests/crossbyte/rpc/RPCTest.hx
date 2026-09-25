@@ -7,6 +7,7 @@ import crossbyte.net.INetConnection;
 import crossbyte.net.Protocol;
 import crossbyte.net.Reason;
 import crossbyte.net.Transport;
+import crossbyte.rpc._internal.RPCWire;
 import crossbyte.utils.Hash;
 import haxe.io.Bytes;
 import utest.Assert;
@@ -469,6 +470,270 @@ class RPCTest extends utest.Test {
 		Assert.isTrue(ended.value, "a frame that could not be read left the connection up");
 	}
 
+	// ---------------------------------------------------- frames and bounds
+
+	public function testArgumentsAreNotTakenFromTheFrameAfterTheirs():Void {
+		// A session with only a handler reads frames on the handler's lane;
+		// one with runtime handlers too reads them on its own. Both.
+		for (lane in ["handler", "session"]) {
+			var link = LinkedConnection.pair();
+			var handler = new FailingHandler();
+			var serverSession = new RPCSession(link.server, null, handler);
+			if (lane == "session") {
+				serverSession.register(999, args -> null);
+			}
+			var ended = endingOf(link.server);
+
+			// A request for `lookup` one Int short, and a sound one after it,
+			// in one read. The Int was read from the next frame's length, and
+			// the handler ran on it.
+			var short = frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_REQUEST);
+				out.writeInt(opOf("lookup"));
+				out.writeVarUInt(1);
+			});
+			var sound = frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_REQUEST);
+				out.writeInt(opOf("lookup"));
+				out.writeVarUInt(2);
+				out.writeInt(9);
+			});
+			link.client.send(joined([short, sound]));
+
+			Assert.same([], handler.looked, 'on the $lane lane, a handler ran on arguments from the frame after its own');
+			Assert.isTrue(ended.value, 'on the $lane lane, a frame that ran past its end left the connection up');
+		}
+	}
+
+	public function testAResponseIsNotTakenFromTheFrameAfterIts():Void {
+		// A session with only commands, one with a handler as well, and one
+		// with runtime handlers too each read responses on a lane of their own.
+		for (lane in ["commands", "handler", "session"]) {
+			var link = LinkedConnection.pair();
+			var commands = new TestCommands();
+			var clientSession = new RPCSession<TestCommands>(link.client, commands, lane == "commands" ? null : new TestHandler());
+			if (lane == "session") {
+				clientSession.register(999, args -> null);
+			}
+			var ended = endingOf(link.client);
+			var pending = commands.getName(1);
+
+			// An answer with no String in it, read from what followed: the
+			// length of the next frame begins with a zero, which read as an
+			// empty name.
+			var short = frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_RESPONSE);
+				out.writeInt(opOf("getName"));
+				out.writeVarUInt(pending.requestId);
+			});
+			link.server.send(joined([short, soundFrame()]));
+
+			Assert.isTrue(pending.completed, 'on the $lane lane, the call was never settled');
+			Assert.isFalse(pending.succeeded, 'on the $lane lane, a call was answered from the frame after its answer');
+			Assert.isTrue(ended.value, 'on the $lane lane, a frame that ran past its end left the connection up');
+		}
+	}
+
+	public function testAnErrorAnswerIsNotTakenFromTheFrameAfterIts():Void {
+		// For a method the commands know, and for one they do not, which is
+		// read on a path of its own.
+		for (method in ["getName", "noSuchMethod"]) {
+			var link = LinkedConnection.pair();
+			var commands = new TestCommands();
+			var clientSession = new RPCSession<TestCommands>(link.client, commands);
+			var ended = endingOf(link.client);
+			var pending = commands.getName(1);
+
+			// An error with no message: it was failed with the empty one read
+			// from the next frame, and the connection went on as if sound.
+			var short = frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
+				out.writeInt(opOf(method));
+				out.writeVarUInt(pending.requestId);
+			});
+			link.server.send(joined([short, soundFrame()]));
+
+			Assert.isTrue(ended.value, 'an error answer for $method that ran past its frame left the connection up');
+			Assert.notEquals("", pending.error);
+		}
+	}
+
+	public function testARuntimeAnswerIsNotTakenFromTheFrameAfterIts():Void {
+		for (failed in [false, true]) {
+			var link = LinkedConnection.pair();
+			var clientSession = new RPCSession(link.client);
+			var ended = endingOf(link.client);
+			var pending:RPCResponse<Dynamic> = clientSession.request(600, []);
+
+			// An Int answer whose tag is in the frame and whose Int is not, or
+			// an error with no message: read from the next frame, as a number
+			// or an empty message.
+			var short = frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | (failed ? RPCWire.FLAG_ERROR : 0));
+				out.writeInt(600);
+				out.writeVarUInt(pending.requestId);
+				if (!failed) {
+					out.writeByte(crossbyte.rpc._internal.RPCRuntimeCodec.TAG_INT);
+				}
+			});
+			link.server.send(joined([short, soundFrame()]));
+
+			var what = failed ? "an error" : "a value";
+			Assert.isTrue(ended.value, 'a runtime answer missing $what left the connection up');
+			Assert.isFalse(pending.succeeded, 'a runtime call was answered from the frame after its answer');
+			Assert.notEquals("", pending.error);
+		}
+	}
+
+	public function testARuntimeCallDoesNotTakeItsArgumentsFromTheNextFrame():Void {
+		for (request in [true, false]) {
+			var link = LinkedConnection.pair();
+			var serverSession = new RPCSession(link.server);
+			var ended = endingOf(link.server);
+			var calls = 0;
+			serverSession.register(500, args -> {
+				calls++;
+				return null;
+			});
+			serverSession.register(501, args -> null);
+
+			// One Int argument, its tag in the frame and the Int itself not:
+			// it was read from the length of the next frame.
+			var short = frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_RUNTIME | (request ? RPCWire.FLAG_REQUEST : 0));
+				out.writeInt(500);
+				if (request) {
+					out.writeVarUInt(1);
+				}
+				out.writeVarUInt(1);
+				out.writeByte(crossbyte.rpc._internal.RPCRuntimeCodec.TAG_INT);
+			});
+			var next = frameOf(out -> {
+				out.writeByte(RPCWire.FLAG_RUNTIME);
+				out.writeInt(501);
+				out.writeVarUInt(0);
+			});
+			link.client.send(joined([short, next]));
+
+			var kind = request ? "request" : "one-way call";
+			Assert.equals(0, calls, 'a runtime $kind ran on arguments from the frame after its own');
+			Assert.isTrue(ended.value);
+		}
+	}
+
+	public function testAnAnswerLongerThanItsFrameIsRefusedBeforeAnythingIsMade():Void {
+		var link = LinkedConnection.pair();
+		var commands = new FailingCommands();
+		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
+		var ended = endingOf(link.client);
+		var pending = commands.blob(1);
+
+		link.server.send(frameOf(out -> {
+			out.writeByte(RPCWire.FLAG_RESPONSE);
+			out.writeInt(opOf("blob"));
+			out.writeVarUInt(pending.requestId);
+			out.writeVarUInt(0x7FFFFFFF);
+		}));
+
+		Assert.isFalse(pending.succeeded);
+		Assert.isTrue(ended.value);
+		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+	}
+
+	public function testALengthLargerThanItsFrameIsRefusedBeforeAnythingIsMade():Void {
+		var link = LinkedConnection.pair();
+		var handler = new TestHandler();
+		var serverSession = new RPCSession(link.server, null, handler);
+		var ended = endingOf(link.server);
+
+		// `sendData` with a Bytes argument claiming two gigabytes, in a frame
+		// of a couple of dozen bytes. It was allocated before a byte of it
+		// was read.
+		link.client.send(frameOf(out -> {
+			out.writeByte(0);
+			out.writeInt(opOf("sendData"));
+			out.writeInt(7);
+			out.writeByte(1);
+			out.writeDouble(1.25);
+			out.writeVarUTF("a");
+			out.writeVarUInt(0x7FFFFFFF);
+		}));
+
+		Assert.equals(0, handler.calls);
+		Assert.isTrue(ended.value);
+		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+	}
+
+	public function testARuntimeCountLargerThanItsFrameIsRefusedBeforeAnythingIsMade():Void {
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var ended = endingOf(link.server);
+		serverSession.register(502, args -> null);
+
+		// Two billion arguments, in a frame of ten bytes: an array that size
+		// was made before any of them was read.
+		link.client.send(frameOf(out -> {
+			out.writeByte(RPCWire.FLAG_RUNTIME);
+			out.writeInt(502);
+			out.writeVarUInt(0x7FFFFFFF);
+		}));
+
+		Assert.isTrue(ended.value);
+		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+	}
+
+	public function testARuntimeBytesLongerThanItsFrameIsRefusedBeforeAnythingIsMade():Void {
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server);
+		var ended = endingOf(link.server);
+		serverSession.register(503, args -> null);
+
+		link.client.send(frameOf(out -> {
+			out.writeByte(RPCWire.FLAG_RUNTIME);
+			out.writeInt(503);
+			out.writeVarUInt(1);
+			out.writeByte(crossbyte.rpc._internal.RPCRuntimeCodec.TAG_BYTES);
+			out.writeVarUInt(0x7FFFFFFF);
+		}));
+
+		Assert.isTrue(ended.value);
+		Assert.isTrue(ended.reason.indexOf("names more than it holds") >= 0, "refused for another reason: " + ended.reason);
+	}
+
+	/** One frame: its length, then what `write` puts in it. **/
+	private static function frameOf(write:ByteArrayOutput->Void):ByteArray {
+		var payload = new ByteArrayOutput(64);
+		write(payload);
+		var frame = new ByteArray();
+		frame.writeInt(payload.bytesWritten);
+		frame.writeBytes(payload, 0, payload.bytesWritten);
+		return frame;
+	}
+
+	/** A well-formed frame to follow a short one: a response nobody asked for. **/
+	private static function soundFrame():ByteArray {
+		return frameOf(out -> {
+			out.writeByte(RPCWire.FLAG_RESPONSE);
+			out.writeInt(opOf("getName"));
+			out.writeVarUInt(999);
+			out.writeVarUTF("x");
+		});
+	}
+
+	/** Frames end to end, as one read delivers them. **/
+	private static function joined(frames:Array<ByteArray>):ByteArray {
+		var all = new ByteArray();
+		for (frame in frames) {
+			all.writeBytes(frame, 0, frame.length);
+		}
+		all.position = 0;
+		return all;
+	}
+
+	private static inline function opOf(method:String):Int {
+		return Hash.fnv1a32(Bytes.ofString(method));
+	}
+
 	/** What the session reports, as `method: error`, or `op N: error` for a runtime handler. **/
 	private static function reportsOf(session:RPCSession<Dynamic, Dynamic>):Array<String> {
 		var reported:Array<String> = [];
@@ -476,11 +741,14 @@ class RPCTest extends utest.Test {
 		return reported;
 	}
 
-	/** Whether the connection has been closed or has failed. **/
-	private static function endingOf(connection:LinkedConnection):{value:Bool} {
-		var ended = {value: false};
+	/** Whether the connection has been closed or has failed, and why it failed. **/
+	private static function endingOf(connection:LinkedConnection):{value:Bool, reason:String} {
+		var ended = {value: false, reason: ""};
 		connection.onClose = _ -> ended.value = true;
-		connection.onError = _ -> ended.value = true;
+		connection.onError = reason -> {
+			ended.value = true;
+			ended.reason = Std.string(reason);
+		};
 		return ended;
 	}
 }
@@ -499,14 +767,18 @@ private class FailingCommands extends RPCCommands {
 	@:rpc public function lookup(id:Int):RPCResponse<String> {}
 
 	@:rpc public function notify(id:Int):Void {}
+
+	@:rpc public function blob(size:Int):RPCResponse<Bytes> {}
 }
 
 private class FailingHandler extends RPCHandler {
 	public var notified:Array<Int> = [];
+	public var looked:Array<Int> = [];
 
 	public function new() {}
 
 	@:rpc public function lookup(id:Int):String {
+		looked.push(id);
 		if (id < 0) {
 			throw new RPCError('no player $id');
 		}
@@ -514,6 +786,10 @@ private class FailingHandler extends RPCHandler {
 			throw "database at /var/lib/players refused";
 		}
 		return 'player-$id';
+	}
+
+	@:rpc public function blob(size:Int):Bytes {
+		return Bytes.alloc(size);
 	}
 
 	@:rpc public function notify(id:Int):Void {

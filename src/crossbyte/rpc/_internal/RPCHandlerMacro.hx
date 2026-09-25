@@ -12,14 +12,16 @@ using haxe.macro.Tools;
 class RPCHandlerMacro {
 	static inline final DIRECT_SWITCH_MAX_METHODS:Int = 8;
 
-	static function initReaders():Map<String, Expr->Expr> {
-		var m = new Map<String, Expr->Expr>();
-		m.set("Int", inp -> macro $inp.readInt());
-		m.set("Bool", inp -> macro($inp.readByte() != 0));
-		m.set("Float", inp -> macro $inp.readDouble());
-		m.set("String", inp -> macro $inp.readVarUTF());
-		m.set("haxe.io.Bytes", inp -> macro {
-			var __len = $inp.readVarUInt();
+	// Each reads from `inp`, in a frame that ends at `end`.
+	static function initReaders():Map<String, (Expr, Expr) -> Expr> {
+		var m = new Map<String, (Expr, Expr) -> Expr>();
+		m.set("Int", (inp, end) -> macro $inp.readInt());
+		m.set("Bool", (inp, end) -> macro($inp.readByte() != 0));
+		m.set("Float", (inp, end) -> macro $inp.readDouble());
+		m.set("String", (inp, end) -> macro $inp.readVarUTF());
+		m.set("haxe.io.Bytes", (inp, end) -> macro {
+			var __len:Int = $inp.readVarUInt();
+			crossbyte.rpc._internal.RPCWire.requireRoom($inp, $end, __len);
 			var __bytes = haxe.io.Bytes.alloc(__len);
 			$inp.readBytes(__bytes, 0, __len);
 			__bytes;
@@ -356,6 +358,10 @@ class RPCHandlerMacro {
 			});
 		}
 
+		// Read whole and within the frame, or the frame is not sound: what an
+		// argument read past its end came from the frame after it.
+		stmts.push(macro crossbyte.rpc._internal.RPCWire.requireWithin(input, this.this_frameEnd));
+
 		// The arguments are read above, outside this: a frame that does not
 		// decode is the peer's fault, and ends the connection. What the method
 		// throws once they have -- or its answer failing to encode -- is this
@@ -494,7 +500,7 @@ class RPCHandlerMacro {
 			Context.error("Unsupported RPC arg type " + key + " for '" + a.name + "'", pos);
 		}
 
-		var read = reader(macro input);
+		var read = reader(macro input, macro this.this_frameEnd);
 		return isOpt ? macro(input.readByte() != 0 ? $read : null) : read;
 	}
 

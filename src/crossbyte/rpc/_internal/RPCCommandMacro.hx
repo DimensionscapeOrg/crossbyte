@@ -38,14 +38,16 @@ class RPCCommandMacro {
 		return m;
 	}
 
-	private static function initReaders():Map<String, Expr->Expr> {
-		var m = new Map<String, Expr->Expr>();
-		m.set("Int", inp -> macro $inp.readInt());
-		m.set("Bool", inp -> macro($inp.readByte() != 0));
-		m.set("Float", inp -> macro $inp.readDouble());
-		m.set("String", inp -> macro $inp.readVarUTF());
-		m.set("haxe.io.Bytes", inp -> macro {
-			var __len = $inp.readVarUInt();
+	// Each reads from `inp`, in a frame that ends at `end`.
+	private static function initReaders():Map<String, (Expr, Expr) -> Expr> {
+		var m = new Map<String, (Expr, Expr) -> Expr>();
+		m.set("Int", (inp, end) -> macro $inp.readInt());
+		m.set("Bool", (inp, end) -> macro($inp.readByte() != 0));
+		m.set("Float", (inp, end) -> macro $inp.readDouble());
+		m.set("String", (inp, end) -> macro $inp.readVarUTF());
+		m.set("haxe.io.Bytes", (inp, end) -> macro {
+			var __len:Int = $inp.readVarUInt();
+			crossbyte.rpc._internal.RPCWire.requireRoom($inp, $end, __len);
 			var __bytes = haxe.io.Bytes.alloc(__len);
 			$inp.readBytes(__bytes, 0, __len);
 			__bytes;
@@ -54,7 +56,7 @@ class RPCCommandMacro {
 	}
 
 	private static final TYPE_WRITERS:Map<String, (Expr, Expr) -> Expr> = initWriters();
-	private static final TYPE_READERS:Map<String, Expr->Expr> = initReaders();
+	private static final TYPE_READERS:Map<String, (Expr, Expr) -> Expr> = initReaders();
 
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
@@ -245,7 +247,7 @@ class RPCCommandMacro {
 			Context.error("Unsupported RPC response type: " + key, errPos);
 		}
 
-		var read = fn(macro input);
+		var read = fn(macro input, macro this.__frameEnd);
 		return isOpt ? macro(input.readByte() != 0 ? $read : null) : read;
 	}
 
@@ -256,10 +258,15 @@ class RPCCommandMacro {
 			cases.push({
 				values: [macro $v{method.op}],
 				expr: macro {
+					// Read whole and within the frame before the caller is
+					// answered with it.
 					if (failed) {
-						this.__rejectResponse(requestId, input.readVarUTF());
+						var message = input.readVarUTF();
+						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+						this.__rejectResponse(requestId, message);
 					} else {
 						var value = $read;
+						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
 						this.__resolveResponse(requestId, value);
 					}
 					return;
@@ -269,7 +276,9 @@ class RPCCommandMacro {
 
 		var defaultExpr:Expr = macro {
 			if (failed) {
-				this.__rejectResponse(requestId, input.readVarUTF());
+				var message = input.readVarUTF();
+				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
+				this.__rejectResponse(requestId, message);
 			} else {
 				this.__rejectUnknownResponse(requestId, op);
 			}
