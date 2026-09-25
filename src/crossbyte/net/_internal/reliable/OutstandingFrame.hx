@@ -27,6 +27,13 @@ class OutstandingFrame {
 	**/
 	public var more:Bool;
 
+	/**
+		Whether the peer has said it holds this frame, past a gap it is still
+		waiting to fill. Such a frame is not sent again, and no longer counts
+		against the congestion window.
+	**/
+	public var sacked:Bool = false;
+
 	public function new(payload:ByteArray, sentAt:Float, deadline:Float, more:Bool = false) {
 		this.payload = payload;
 		this.sentAt = sentAt;
