@@ -12,6 +12,10 @@ using haxe.macro.Tools;
 class RPCHandlerMacro {
 	static inline final DIRECT_SWITCH_MAX_METHODS:Int = 8;
 
+	// On a generated dispatch(): the name of every method it dispatches, for
+	// a handler that extends this one to dispatch as well.
+	static inline final DISPATCHED_META:String = ":rpcDispatched";
+
 	// Each reads from `inp`, in a frame that ends at `end`.
 	static function initReaders():Map<String, (Expr, Expr) -> Expr> {
 		var m = new Map<String, (Expr, Expr) -> Expr>();
@@ -60,11 +64,17 @@ class RPCHandlerMacro {
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
 		var methods = new Array<MethodInfo>();
+		// The handler classes between this one and RPCHandler, nearest first.
+		final ancestors = handlerAncestors();
 		final contractMethods = RPCContractMacroTools.getImplementedContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 		final dispatchField = findField(fields, "dispatch");
-		final pingField = findField(fields, "ping");
 		final usesManualDispatch = dispatchField != null;
+		// Every handler answers `ping`; one is made for the first class in a
+		// line of them that has none. Made again in a subclass, it was a
+		// field redefined without `override`, and no handler could extend
+		// another.
+		final needsPing = findField(fields, "ping") == null && ancestorField(ancestors, "ping") == null;
 
 		if (usesManualDispatch) {
 			if (contractMethods != null) {
@@ -74,13 +84,15 @@ class RPCHandlerMacro {
 				Context.error("Do not mix field-level @:rpc methods with a hand-written dispatch() implementation in the same RPC handler.",
 					manualRpcFields[0].pos);
 			}
-			if (pingField == null) {
+			if (needsPing) {
 				injectPing(fields);
 			}
 			return fields;
 		}
 
-		injectPing(fields);
+		if (needsPing) {
+			injectPing(fields);
+		}
 
 		if (contractMethods != null) {
 			RPCContractMacroTools.requireExtends(":rpcContract", "crossbyte.rpc.RPCHandler");
@@ -95,7 +107,22 @@ class RPCHandlerMacro {
 
 				final implementation = findField(fields, method.name);
 				if (implementation == null) {
-					Context.error("RPC handler is missing implementation for contract method '" + method.name + "'. Built-in system methods such as ping() stay on RPCHandler and should not appear in the shared contract.", method.pos);
+					// Implemented by a handler this one extends, as a reusable
+					// contract's reusable handler does.
+					final inherited = ancestorField(ancestors, method.name);
+					if (inherited == null) {
+						Context.error("RPC handler is missing implementation for contract method '" + method.name + "'. Built-in system methods such as ping() stay on RPCHandler and should not appear in the shared contract.", method.pos);
+					}
+					requireInheritedSignature(inherited, method.name, method.args, method.ret);
+					methods.push({
+						idx: -1,
+						name: method.name,
+						pos: inherited.pos,
+						args: method.args,
+						ret: method.ret,
+						op: method.op
+					});
+					continue;
 				}
 
 				switch (implementation.kind) {
@@ -134,22 +161,6 @@ class RPCHandlerMacro {
 						Context.error("RPC handler contract method '" + method.name + "' must be implemented as a function.", implementation.pos);
 				}
 			}
-
-			final pingField = findField(fields, "ping");
-			if (pingField != null) {
-				switch (pingField.kind) {
-					case FFun(fn):
-						methods.push({
-							idx: -1,
-							name: "ping",
-							pos: pingField.pos,
-							args: fn.args,
-							ret: fn.ret != null ? fn.ret : macro :Void,
-							op: crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString("ping"))
-						});
-					default:
-				}
-			}
 		} else {
 			for (f in fields) {
 				if (f.name != "new" && ((f.meta != null && f.meta.filter(m -> m.name == ":rpc").length > 0) || f.name == "ping")) {
@@ -158,14 +169,13 @@ class RPCHandlerMacro {
 							if (fn.args.length > 8) {
 								Context.error("RPC limited to 8 params", f.pos);
 							}
-							var op = crossbyte.utils.Hash.fnv1a32(haxe.io.Bytes.ofString(f.name));
 							methods.push({
 								idx: -1,
 								name: f.name,
 								pos: f.pos,
 								args: fn.args,
 								ret: fn.ret != null ? fn.ret : macro :Void,
-								op: op
+								op: RPCOps.opOf(f.name)
 							});
 						default:
 							Context.error("Field " + f.name + " is @:rpc but not a function", f.pos);
@@ -174,9 +184,53 @@ class RPCHandlerMacro {
 			}
 		}
 
+		// What the handlers this one extends answered, it answers too: the
+		// nearest one's dispatch names every method it took over from its own.
+		for (name in inheritedMethodNames(ancestors)) {
+			if (hasMethod(methods, name)) {
+				continue;
+			}
+			final inherited = ancestorField(ancestors, name);
+			if (inherited != null) {
+				methods.push(methodFromClassField(inherited));
+			}
+		}
+
+		// A contract does not declare `ping`, so this class's own is added
+		// here. An ancestor's came in above: every generated dispatch answers
+		// `ping`, and names it with the rest.
+		if (!hasMethod(methods, "ping")) {
+			final own = findField(fields, "ping");
+			if (own != null) {
+				switch (own.kind) {
+					case FFun(fn):
+						methods.push({
+							idx: -1,
+							name: "ping",
+							pos: own.pos,
+							args: fn.args,
+							ret: fn.ret != null ? fn.ret : macro :Void,
+							op: RPCOps.opOf("ping")
+						});
+					default:
+				}
+			}
+		}
+
 		var n = methods.length;
 		if (n == 0) {
 			return fields;
+		}
+		RPCContractMacroTools.requireDistinctOps([for (method in methods) {name: method.name, pos: method.pos}], true);
+
+		final tag = classTag();
+		// Hooks cost a handler nothing unless it, or a handler it extends,
+		// overrides them: only then are the calls generated at all.
+		final callsBefore = findField(fields, "beforeCall") != null || ancestorField(ancestors, "beforeCall") != null;
+		final callsAfter = findField(fields, "afterCall") != null || ancestorField(ancestors, "afterCall") != null;
+		final inheritedDispatch = ancestorField(ancestors, "dispatch");
+		if (inheritedDispatch != null && !inheritedDispatch.meta.has(DISPATCHED_META)) {
+			Context.error("This RPC handler extends one whose dispatch() is written by hand, which this one's generated dispatch would replace. Write this one's dispatch() too.", Context.currentPos());
 		}
 
 		var newFields:Array<Field> = [];
@@ -292,10 +346,10 @@ class RPCHandlerMacro {
 		}
 
 		for (i in 0...n) {
-			newFields.push(makeDecoder(methods[i]));
+			newFields.push(makeDecoder(methods[i], tag, callsBefore, callsAfter));
 		}
 
-		newFields.push(makeDispatcher(methods, usePerfectHash));
+		newFields.push(makeDispatcher(methods, usePerfectHash, tag, inheritedDispatch != null));
 
 		return fields.concat(newFields);
 	}
@@ -310,7 +364,11 @@ class RPCHandlerMacro {
 		};
 	}
 
-	static function makeDecoder(m:MethodInfo):Field {
+	static inline function decoderName(tag:String, method:String):String {
+		return "__rpc_decode_call_" + tag + "_" + method;
+	}
+
+	static function makeDecoder(m:MethodInfo, tag:String, callsBefore:Bool, callsAfter:Bool):Field {
 		var stmts:Array<Expr> = [];
 		var paramExprs:Array<Expr> = [];
 
@@ -366,18 +424,55 @@ class RPCHandlerMacro {
 		// decode is the peer's fault, and ends the connection. What the method
 		// throws once they have -- or its answer failing to encode -- is this
 		// side's, and becomes an error answer instead; see `__rpc_fail`.
+		final op:Expr = macro $v{m.op};
+		final name:Expr = macro $v{m.name};
 		var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
-		stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
-			this.__rpc_fail($v{m.op}, $v{m.name}, requestId, __error);
-		});
+		if (callsAfter) {
+			stmts.push(macro var __failure:Dynamic = null);
+			stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
+				__failure = __error;
+				this.__rpc_fail($op, $name, requestId, __error);
+			});
+			stmts.push(macro try {
+				this.afterCall($name, requestId, __failure);
+			} catch (__error:Dynamic) {
+				this.__rpc_report($op, $name, __error);
+			});
+		} else {
+			stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
+				this.__rpc_fail($op, $name, requestId, __error);
+			});
+		}
 
-		var body:Expr = {
-			expr: EBlock(stmts),
-			pos: m.pos
-		};
+		var body:Expr = {expr: EBlock(stmts), pos: m.pos};
+
+		// Asked before a byte of the arguments is read, so a call refused
+		// for its size costs nothing to refuse. Refused, the frame is simply
+		// passed over; the loop reading it moves to the next either way. No
+		// early return: these are inlined into dispatch.
+		if (callsBefore) {
+			final run:Expr = body;
+			body = macro {
+				var __refusal:Null<crossbyte.rpc.RPCError> = null;
+				var __runs:Bool = true;
+				try {
+					__refusal = this.beforeCall($name, requestId, this.this_frameEnd - input.position);
+				} catch (__error:Dynamic) {
+					__runs = false;
+					this.__rpc_fail($op, $name, requestId, __error);
+				}
+				if (__runs && __refusal != null) {
+					__runs = false;
+					this.__rpc_refuse($op, requestId, __refusal);
+				}
+				if (__runs) {
+					$run;
+				}
+			};
+		}
 
 		return {
-			name: "__rpc_decode_call_" + m.name,
+			name: decoderName(tag, m.name),
 			access: [APrivate, AInline],
 			kind: FFun({
 				ret: macro :Void,
@@ -391,11 +486,22 @@ class RPCHandlerMacro {
 		};
 	}
 
-	static function makeDispatcher(methods:Array<MethodInfo>, usePerfectHash:Bool):Field {
+	static function makeDispatcher(methods:Array<MethodInfo>, usePerfectHash:Bool, tag:String, overridesInherited:Bool):Field {
+		// Never inline: it is reached through RPCHandler's abstract dispatch()
+		// in any case, and a subclass must be able to override it.
+		final access:Array<Access> = overridesInherited ? [APublic, AOverride] : [APublic];
+		final meta:Metadata = [
+			{
+				name: DISPATCHED_META,
+				params: [for (method in methods) macro $v{method.name}],
+				pos: Context.currentPos()
+			}
+		];
+
 		if (!usePerfectHash) {
 			final cases = new Array<Case>();
 			for (method in methods) {
-				final fname = "__rpc_decode_call_" + method.name;
+				final fname = decoderName(tag, method.name);
 				cases.push({
 					values: [macro $v{method.op}],
 					expr: macro {
@@ -406,7 +512,8 @@ class RPCHandlerMacro {
 
 			return {
 				name: "dispatch",
-				access: [APublic],
+				access: access,
+				meta: meta,
 				kind: FFun({
 					ret: macro :Void,
 					args: [
@@ -425,7 +532,7 @@ class RPCHandlerMacro {
 
 		var cases = new Array<Case>();
 		for (i in 0...methods.length) {
-			var fname = "__rpc_decode_call_" + methods[i].name;
+			var fname = decoderName(tag, methods[i].name);
 			cases.push({
 				values: [macro $v{i}],
 				expr: macro {
@@ -476,7 +583,8 @@ class RPCHandlerMacro {
 
 		return {
 			name: "dispatch",
-			access: [APublic, AInline],
+			access: access,
+			meta: meta,
 			kind: FFun({
 				ret: macro :Void,
 				args: [
@@ -488,6 +596,110 @@ class RPCHandlerMacro {
 			}),
 			pos: Context.currentPos()
 		};
+	}
+
+	// ---------------------------------------------------------- hierarchies
+
+	/** The handler classes this one extends, nearest first, up to RPCHandler. **/
+	static function handlerAncestors():Array<ClassType> {
+		final ancestors = new Array<ClassType>();
+		var parent = Context.getLocalClass().get().superClass;
+		while (parent != null) {
+			final type = parent.t.get();
+			if (type.pack.join(".") == "crossbyte.rpc" && type.name == "RPCHandler") {
+				break;
+			}
+			ancestors.push(type);
+			parent = type.superClass;
+		}
+		return ancestors;
+	}
+
+	/** `name` as the nearest of `ancestors` to declare it has it, or `null`. **/
+	static function ancestorField(ancestors:Array<ClassType>, name:String):Null<ClassField> {
+		for (type in ancestors) {
+			for (field in type.fields.get()) {
+				if (field.name == name) {
+					return field;
+				}
+			}
+		}
+		return null;
+	}
+
+	/** What the nearest ancestor's generated dispatch() answers. **/
+	static function inheritedMethodNames(ancestors:Array<ClassType>):Array<String> {
+		final dispatch = ancestorField(ancestors, "dispatch");
+		if (dispatch == null || !dispatch.meta.has(DISPATCHED_META)) {
+			return [];
+		}
+		final names = new Array<String>();
+		for (entry in dispatch.meta.extract(DISPATCHED_META)) {
+			for (param in entry.params) {
+				switch (param.expr) {
+					case EConst(CString(name)):
+						names.push(name);
+					default:
+				}
+			}
+		}
+		return names;
+	}
+
+	static function methodFromClassField(field:ClassField):MethodInfo {
+		return switch (Context.follow(field.type)) {
+			case TFun(args, ret):
+				var retType = ret.toComplexType();
+				{
+					idx: -1,
+					name: field.name,
+					pos: field.pos,
+					args: [
+						for (arg in args)
+							({
+								name: arg.name,
+								opt: arg.opt,
+								type: arg.t.toComplexType(),
+								value: null,
+								meta: []
+							} : FunctionArg)
+					],
+					ret: retType != null ? retType : macro :Void,
+					op: RPCOps.opOf(field.name)
+				};
+			case _:
+				Context.error("RPC method '" + field.name + "' must be a function.", field.pos);
+				null;
+		};
+	}
+
+	static function requireInheritedSignature(field:ClassField, name:String, args:Array<FunctionArg>, ret:ComplexType):Void {
+		final inherited = methodFromClassField(field);
+		var same = inherited.args.length == args.length && sameType(inherited.ret, ret, field.pos);
+		for (i in 0...args.length) {
+			if (!same) {
+				break;
+			}
+			same = sameType(unwrapNull(inherited.args[i].type), unwrapNull(args[i].type), field.pos);
+		}
+		if (!same) {
+			Context.error("RPC handler method '" + name + "', inherited, does not match the shared contract's signature.", field.pos);
+		}
+	}
+
+	static function hasMethod(methods:Array<MethodInfo>, name:String):Bool {
+		for (method in methods) {
+			if (method.name == name) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** This class's path as part of an identifier, so each class's decoders are its own. **/
+	static function classTag():String {
+		final type = Context.getLocalClass().get();
+		return type.pack.concat([type.name]).join("_");
 	}
 
 	static function readerForArg(a:FunctionArg, pos:Position):Expr {

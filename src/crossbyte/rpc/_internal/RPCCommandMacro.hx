@@ -115,6 +115,8 @@ class RPCCommandMacro {
 			return fields.concat(newFields);
 		}
 
+		RPCContractMacroTools.requireDistinctOps([for (field in manualRpcFields) {name: field.name, pos: field.pos}], true);
+
 		for (field in fields) {
 			if (field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0) {
 				switch (field.kind) {

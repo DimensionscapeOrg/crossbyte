@@ -46,6 +46,7 @@ class BenchMain {
 		sctp();
 		dtlsFraming();
 		eventsAndFutures();
+		BenchRpc.run();
 
 		Sys.println("");
 		Sys.println("done. Numbers compare shapes of code on this machine today;");

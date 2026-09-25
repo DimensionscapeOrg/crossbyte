@@ -31,6 +31,16 @@ import crossbyte.io.ByteArrayOutput;
 	after it could be trusted to line up. A handler that writes its own
 	`dispatch` decodes and calls in one place, so whatever that throws still
 	ends the connection.
+
+	Override `beforeCall` to decide on each call before it runs -- to
+	authorize it, rate limit it, or refuse one too large -- and `afterCall` to
+	see how it went, in one place rather than in every method. A handler that
+	overrides neither pays nothing for them.
+
+	A handler can extend another. The subclass answers its parent's methods
+	as well as its own, a contract method can be implemented by an ancestor,
+	and hooks overridden in a shared base class apply to every handler built
+	on it.
 **/
 @:autoBuild(crossbyte.rpc._internal.RPCHandlerMacro.build())
 @:access(crossbyte.net.Socket)
@@ -99,6 +109,41 @@ abstract class RPCHandler {
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
 
 	/**
+		Called before each inbound call, before its arguments are read, with
+		the method's name, the request's id -- 0 for a one-way call -- and
+		the bytes its arguments take. Return `null` to let the call run, or an
+		`RPCError` to refuse it: a request is answered with the error's
+		message, and a one-way call is dropped. A refusal is not reported to
+		`RPCSession.onHandlerError`, since this made it.
+
+		The calls are generated only into a handler that overrides this, or
+		whose ancestor does; one that does not pays nothing for it. One that
+		does calls it on every inbound call, so keep it cheap. Refusing by
+		returning, not throwing, keeps a flood of refusals from costing an
+		exception each.
+
+		What it throws counts as the call failing: the caller is answered with
+		`RPCError.INTERNAL_MESSAGE`, and the error goes to
+		`RPCSession.onHandlerError`.
+	**/
+	public function beforeCall(method:String, requestId:Int, payloadSize:Int):Null<RPCError> {
+		return null;
+	}
+
+	/**
+		Called after each call `beforeCall` let through, once its method has
+		run and its answer, if it has one, has been sent. `error` is `null`
+		when the method returned, and what it threw when it did not. It is
+		not given the result: handing over an `Int` or a `Float` as `Dynamic`
+		would allocate on every call.
+
+		Generated only into a handler that overrides it, or whose ancestor
+		does. What it throws goes to `RPCSession.onHandlerError` and changes
+		nothing else.
+	**/
+	public function afterCall(method:String, requestId:Int, error:Dynamic):Void {}
+
+	/**
 		What a handler method throwing becomes, once its arguments have been
 		read: an error answer to a request, and a report on this side of
 		whatever the caller is not told.
@@ -114,6 +159,20 @@ abstract class RPCHandler {
 			__rpc_send_error(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
 		}
 		if ((answer == null || requestId == 0) && this_session != null) {
+			this_session.__reportHandlerError(op, method, error);
+		}
+	}
+
+	/** Answers a request `beforeCall` refused; a refused one-way call has nobody to tell. **/
+	@:noCompletion private function __rpc_refuse(op:Int, requestId:Int, refusal:RPCError):Void {
+		if (requestId != 0) {
+			__rpc_send_error(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE);
+		}
+	}
+
+	/** `afterCall` threw: the call is over, so all there is to do is say so. **/
+	@:noCompletion private function __rpc_report(op:Int, method:String, error:Dynamic):Void {
+		if (this_session != null) {
 			this_session.__reportHandlerError(op, method, error);
 		}
 	}

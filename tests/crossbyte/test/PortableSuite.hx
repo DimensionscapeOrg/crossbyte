@@ -125,5 +125,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		runner.addCase(new crossbyte.rpc.RPCTest());
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
+		runner.addCase(new crossbyte.rpc.RPCContractTest());
+		runner.addCase(new crossbyte.rpc.RPCCallHookTest());
 	}
 }
