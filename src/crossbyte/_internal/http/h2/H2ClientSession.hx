@@ -51,10 +51,11 @@ class H2ClientSession {
 	private final __lock:Mutex = new Mutex();
 	private final __waiters:Map<Int, Lock> = new Map();
 
-	// Released on every processed frame. A writer blocked on a flow-control
-	// window re-tests its condition each time rather than being told which
-	// frame it was waiting for, because it may be waiting on either window.
-	private final __progress:Lock = new Lock();
+	// Request bodies being written, by stream. Each has its own wake-up, so a
+	// cancel can wake the one it is for, and a processed frame wakes every
+	// body waiting on a window rather than whichever one a single shared
+	// release happened to reach.
+	private final __uploads:Map<Int, H2Upload> = new Map();
 
 	private var __activeStreams:Int = 0;
 	// When the last stream in flight ended, or -1 while one is in flight. One
@@ -165,6 +166,7 @@ class H2ClientSession {
 			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken):H2Stream {
 		var target:H2Stream;
 		var waiter:Lock = new Lock();
+		var hasBody:Bool = body != null && body.length > 0;
 
 		if (cancelToken != null && cancelToken.cancelled) {
 			// Already abandoned. Opening a stream just to reset it would still
@@ -181,16 +183,16 @@ class H2ClientSession {
 		}
 
 		try {
-			target = connection.request(method, scheme, authority, path, headers, body);
+			target = connection.openStream(method, scheme, authority, path, headers, hasBody);
 		} catch (e:Dynamic) {
 			__lock.release();
 			throw e;
 		}
 
 		// Registered before the lock is dropped so the reader cannot close the
-		// stream in the gap -- it needs this same lock to process a frame.
-		// The one hole is a body write, which releases the lock while it waits
-		// on a window, so the state is re-checked below.
+		// stream in the gap -- it needs this same lock to process a frame --
+		// and before the body, whose write drops the lock while it waits on a
+		// window.
 		__waiters.set(target.id, waiter);
 		__activeStreams++;
 		__idleSince = -1;
@@ -200,7 +202,9 @@ class H2ClientSession {
 		// process a frame for this stream, so a cancel from here on resets it
 		// before any of its response can land. Registered after the lock, a
 		// cancel in the gap found no handler to run, and the response could
-		// complete the stream before the late registration reset it. A token
+		// complete the stream before the late registration reset it. Before
+		// the body too: registered after it, a cancel during an upload
+		// waiting on a window did nothing until the upload was over. A token
 		// cancelled in the meantime runs this immediately, re-entering the
 		// lock -- which is why `onCancel` fires late registrations rather than
 		// dropping them.
@@ -210,14 +214,35 @@ class H2ClientSession {
 			cancelToken.onCancel(onCancelled);
 		}
 
+		var upload:Null<H2Upload> = null;
+		if (hasBody) {
+			// The timeout applies to the body too, as the longest a window may
+			// stay shut: sending the body with no deadline at all let a peer
+			// that stopped granting window hold the request forever on a
+			// connection busy enough never to look stalled.
+			upload = new H2Upload(timeoutSeconds);
+			__uploads.set(streamId, upload);
+			try {
+				connection.sendBody(target, body);
+			} catch (e:Dynamic) {
+				__uploads.remove(streamId);
+				__lock.release();
+				__finish(streamId, cancelToken, onCancelled);
+				throw e;
+			}
+			__uploads.remove(streamId);
+		}
+
 		var alreadyDone:Bool = target.isClosed();
 		__lock.release();
 
+		if (upload != null && upload.timedOut) {
+			__finish(streamId, cancelToken, onCancelled);
+			throw __timedOut(streamId, timeoutSeconds);
+		}
+
 		if (alreadyDone) {
-			if (cancelToken != null) {
-				cancelToken.removeHandler(onCancelled);
-			}
-			__release(target.id);
+			__finish(streamId, cancelToken, onCancelled);
 			return target;
 		}
 
@@ -231,22 +256,32 @@ class H2ClientSession {
 			} catch (_:Dynamic) {}
 			__lock.release();
 
-			if (cancelToken != null) {
-				cancelToken.removeHandler(onCancelled);
-			}
-			__release(target.id);
-			throw new H2ConnectionError(H2ErrorCode.CANCEL, 'Request to $origin timed out after ${timeoutSeconds}s');
+			__finish(streamId, cancelToken, onCancelled);
+			throw __timedOut(streamId, timeoutSeconds);
 		}
 
+		__finish(streamId, cancelToken, onCancelled);
+		return target;
+	}
+
+	/**
+	 * A stream error, not a connection error: the stream has been reset and
+	 * the connection carries on. As a connection error it took the whole
+	 * pooled connection down, and every other request on it, for one request
+	 * that took too long.
+	 */
+	private function __timedOut(streamId:Int, timeoutSeconds:Float):H2StreamError {
+		return new H2StreamError(streamId, H2ErrorCode.CANCEL, 'Request to $origin timed out after ${timeoutSeconds}s');
+	}
+
+	private function __finish(streamId:Int, cancelToken:Null<HTTPCancelToken>, onCancelled:Void->Void):Void {
 		if (cancelToken != null) {
 			// The request is over; the token must not keep a handler pointing
 			// at a stream id that will be reused by nobody but is still dead
 			// weight on a long-lived token.
 			cancelToken.removeHandler(onCancelled);
 		}
-
-		__release(target.id);
-		return target;
+		__release(streamId);
 	}
 
 	/**
@@ -273,6 +308,7 @@ class H2ClientSession {
 		}
 
 		var waiter:Null<Lock> = __waiters.get(streamId);
+		var upload:Null<H2Upload> = __uploads.get(streamId);
 		__lock.release();
 
 		// Released outside the lock, and unconditionally: a stream already
@@ -280,6 +316,11 @@ class H2ClientSession {
 		// failed still has a caller who must not wait out its timeout.
 		if (waiter != null) {
 			waiter.release();
+		}
+		// A body still going out may be waiting on a window, which nothing
+		// else would open: it finds its stream closed when this wakes it.
+		if (upload != null) {
+			upload.wake.release();
 		}
 	}
 
@@ -333,10 +374,14 @@ class H2ClientSession {
 			} catch (e:Dynamic) {
 				failure = Std.string(e);
 			}
+			// Any frame may have opened a window, or ended a stream whose body
+			// is still waiting on one.
+			for (upload in __uploads) {
+				if (upload.blocked) {
+					upload.wake.release();
+				}
+			}
 			__lock.release();
-
-			// Any frame may have opened a window.
-			__progress.release();
 
 			if (failure != null) {
 				__fail(failure);
@@ -357,22 +402,46 @@ class H2ClientSession {
 	}
 
 	/**
-	 * Waits for the reader to make progress while a window is closed.
+	 * Waits for the reader to make progress while a window is closed, for no
+	 * longer than what is left of the request's timeout.
 	 *
 	 * The lock is dropped across the wait and retaken after. Holding it would
 	 * deadlock outright: the WINDOW_UPDATE that would release this thread can
 	 * only be processed by the reader, and the reader needs this lock.
+	 *
+	 * The timeout is the longest the window may stay shut, so an upload that
+	 * is slow but moving is not cut off. Once it has passed, only this stream
+	 * is reset; the body's write sees it closed and stops. This used to wait
+	 * for any frame at all, thirty seconds at a time: on a busy connection a
+	 * body the peer had stopped taking waited forever, and on a quiet one the
+	 * thirty seconds failed the connection and every request on it.
 	 */
-	private function __onWindowBlocked():Bool {
+	private function __onWindowBlocked(target:H2Stream, stalledSeconds:Float):Bool {
 		if (dead || __stopped) {
 			return false;
 		}
 
-		__lock.release();
-		var progressed:Bool = __progress.wait(30);
-		__lock.acquire();
+		var upload:Null<H2Upload> = __uploads.get(target.id);
+		if (upload == null) {
+			return false;
+		}
 
-		return progressed && !dead && !__stopped;
+		var remaining:Float = upload.timeout - stalledSeconds;
+		if (remaining <= 0) {
+			upload.timedOut = true;
+			try {
+				connection.resetStream(target.id, H2ErrorCode.CANCEL);
+			} catch (_:Dynamic) {}
+			return true;
+		}
+
+		upload.blocked = true;
+		__lock.release();
+		upload.wake.wait(remaining);
+		__lock.acquire();
+		upload.blocked = false;
+
+		return !dead && !__stopped;
 	}
 
 	private function __fail(reason:String):Void {
@@ -396,12 +465,14 @@ class H2ClientSession {
 		for (waiter in __waiters) {
 			waiting.push(waiter);
 		}
+		for (upload in __uploads) {
+			waiting.push(upload.wake);
+		}
 		__lock.release();
 
 		for (waiter in waiting) {
 			waiter.release();
 		}
-		__progress.release();
 	}
 
 	private function __release(streamId:Int):Void {
@@ -416,6 +487,25 @@ class H2ClientSession {
 			__idleSince = haxe.Timer.stamp();
 		}
 		__lock.release();
+	}
+}
+
+/** A request body being written, and what it needs to wait on a window. */
+private class H2Upload {
+	/** Released for every frame processed while `blocked`, and by a cancel. */
+	public final wake:Lock = new Lock();
+
+	/** The longest the window may stay shut, in seconds. */
+	public final timeout:Float;
+
+	/** Set, under the session's lock, while the write waits on `wake`. */
+	public var blocked:Bool = false;
+
+	/** Set when the window stayed shut for the whole timeout. */
+	public var timedOut:Bool = false;
+
+	public function new(timeout:Float) {
+		this.timeout = timeout;
 	}
 }
 #end

@@ -11,6 +11,7 @@ import crossbyte._internal.http.h2.H2ConnectionError;
 import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2Settings;
 import crossbyte._internal.http.h2.H2Stream;
+import crossbyte._internal.http.h2.H2StreamError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte._internal.socket.FlexSocket;
 import crossbyte.url.URL;
@@ -131,6 +132,14 @@ class HTTP2Backend implements HTTPBackend {
 			if (session.dead) {
 				H2ConnectionPool.discard(session);
 			}
+		} catch (e:H2StreamError) {
+			// One stream failed -- a timeout -- and has been reset. The
+			// connection is left pooled for the requests still on it and the
+			// next: discarding it here failed all of them along with this one.
+			if (session != null && session.dead) {
+				H2ConnectionPool.discard(session);
+			}
+			context.onError(e.message);
 		} catch (e:H2ConnectionError) {
 			if (session != null) {
 				H2ConnectionPool.discard(session);

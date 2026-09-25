@@ -54,14 +54,20 @@ class H2Connection {
 
 	/**
 	 * Called when a request body cannot proceed because a flow-control window
-	 * is closed. Returns `false` to abandon the write.
+	 * is closed, with the stream it is for and how many seconds this stall
+	 * has lasted. Returns `false` to abandon the write. Called again after
+	 * every return while the window stays closed, and the stall's clock only
+	 * starts over once a byte of the body has gone out.
 	 *
 	 * The default reads a frame here, which is right when the caller owns the
 	 * connection outright. It is wrong the moment a reader thread owns the
 	 * reads instead -- two readers on one socket lose frames -- so an owner
 	 * that has one replaces this with a wait.
+	 *
+	 * Resetting the stream from here, or from anywhere while this waits, ends
+	 * the write: the body stops as soon as its stream is closed.
 	 */
-	public var onWindowBlocked:Void->Bool = null;
+	public var onWindowBlocked:(target:H2Stream, stalledSeconds:Float) -> Bool = null;
 
 	private final __input:Input;
 	private final __output:Output;
@@ -132,6 +138,23 @@ class H2Connection {
 	 * is entitled to reject a block that puts a regular field before one.
 	 */
 	public function request(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, ?body:Bytes):H2Stream {
+		var hasBody:Bool = body != null && body.length > 0;
+		var target:H2Stream = openStream(method, scheme, authority, path, headers, hasBody);
+		if (hasBody) {
+			sendBody(target, body);
+		}
+		return target;
+	}
+
+	/**
+	 * The first half of `request`: opens a stream and sends its header
+	 * block, ending the request there unless `hasBody`.
+	 *
+	 * Separate so an owner can take note of the stream -- register whoever
+	 * waits on it, and whatever would cancel it -- before `sendBody`, which
+	 * may wait on a window for as long as the peer likes.
+	 */
+	public function openStream(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, hasBody:Bool):H2Stream {
 		start();
 
 		if (goAwayCode != null) {
@@ -155,22 +178,32 @@ class H2Connection {
 			block.push(header);
 		}
 
-		var hasBody:Bool = body != null && body.length > 0;
 		__writeHeaderBlock(id, __encoder.encode(block), !hasBody);
 
 		target.state = hasBody ? H2StreamState.OPEN : H2StreamState.HALF_CLOSED_LOCAL;
+		return target;
+	}
 
-		if (hasBody) {
-			__writeData(target, body);
-			// Unless the peer ended the stream while the body was going out.
-			// Reopening it hid that from the caller, who then waited out its
-			// whole timeout for a stream that was already over.
-			if (!target.isClosed()) {
-				target.state = H2StreamState.HALF_CLOSED_LOCAL;
-			}
+	/**
+	 * The second half of `request`: sends the body of a stream `openStream`
+	 * left open, and with it the end of the request.
+	 *
+	 * Stops early, the rest unsent, once the stream closes -- answered or
+	 * reset by the peer, or reset here, by a cancel or a timeout -- and sends
+	 * nothing at all for a stream closed before it began.
+	 */
+	public function sendBody(target:H2Stream, body:Bytes):Void {
+		if (target.isClosed()) {
+			return;
 		}
 
-		return target;
+		__writeData(target, body);
+		// Unless the stream ended while the body was going out. Reopening it
+		// hid that from the caller, who then waited out its whole timeout for
+		// a stream that was already over.
+		if (!target.isClosed()) {
+			target.state = H2StreamState.HALF_CLOSED_LOCAL;
+		}
 	}
 
 	/**
@@ -680,13 +713,21 @@ class H2Connection {
 		var offset:Int = 0;
 
 		while (offset < body.length) {
+			// When this stall began. Frames that leave the window shut do not
+			// restart it; sending part of the body does.
+			var stalledSince:Float = -1;
 			while (target.sendWindow <= 0 || __connectionSendWindow <= 0) {
-				var proceed:Bool = onWindowBlocked != null ? onWindowBlocked() : pump();
+				if (stalledSince < 0) {
+					stalledSince = haxe.Timer.stamp();
+				}
+				var proceed:Bool = onWindowBlocked != null ? onWindowBlocked(target, haxe.Timer.stamp() - stalledSince) : pump();
 
 				// The peer may end the stream while the body waits here: with
 				// a response sent before it read the whole request (RFC 9113,
-				// 8.1), or with a reset. Frames are processed only while this
-				// waits, so this is the one place to notice. The rest of the
+				// 8.1), or with a reset -- and so may a cancel or a timeout,
+				// which reset it here. Frames are processed, and a cancel can
+				// take the lock, only while this waits, so this is the one
+				// place to notice. The rest of the
 				// body has nowhere to go, and a closed stream's window never
 				// reopens -- a WINDOW_UPDATE for it is discarded -- so waiting
 				// on went on until the connection was quiet long enough to be

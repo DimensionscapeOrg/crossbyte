@@ -613,7 +613,7 @@ class HTTP2BackendTest extends utest.Test {
 		// RFC 9113 8.1: the server answers in full once it has seen part of
 		// the body, then asks for no more with RST_STREAM(NO_ERROR). It never
 		// grants more window, so the upload is waiting on one when it does.
-		var server = new H2EarlyResponseServer(false);
+		var server = new H2EarlyResponseServer(H2EarlyResponseServer.ANSWER);
 		server.start();
 
 		HTTPBackendRegistry.register(new HTTP2Backend());
@@ -640,7 +640,7 @@ class HTTP2BackendTest extends utest.Test {
 	}
 
 	public function testAResetDuringTheUploadIsReportedPromptly():Void {
-		var server = new H2EarlyResponseServer(true);
+		var server = new H2EarlyResponseServer(H2EarlyResponseServer.RESET);
 		server.start();
 
 		HTTPBackendRegistry.register(new HTTP2Backend());
@@ -659,11 +659,96 @@ class HTTP2BackendTest extends utest.Test {
 		server.stop();
 	}
 
+	public function testAnUploadTheServerStopsTakingTimesOut():Void {
+		// The server takes the 65535 bytes it granted and no more, answers
+		// nothing, and keeps the connection busy with PINGs meanwhile.
+		var server = new H2EarlyResponseServer(H2EarlyResponseServer.SILENT, true);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var started:Float = haxe.Timer.stamp();
+		var outcome:String = __upload(server.port, 1500);
+		var took:Float = haxe.Timer.stamp() - started;
+
+		// The timeout started only once the body was out. While it waited on
+		// the window any frame counted as progress, so this waited as long as
+		// the PINGs went on, and thirty seconds after -- then failed the
+		// connection, and every request on it.
+		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 1.5s', outcome);
+		Assert.isTrue(took < 5, 'the stalled upload took ${took}s to time out');
+
+		// Only the upload's own stream was reset, and the connection is kept.
+		Assert.equals("/second", get(server.port, "/second"));
+		Assert.equals(1, server.connections());
+		Assert.equals("1:CANCEL", server.resetsBeforeSecond());
+		server.stop();
+	}
+
+	public function testCancellingAnUploadWaitingOnAWindowStopsIt():Void {
+		var server = new H2EarlyResponseServer(H2EarlyResponseServer.SILENT);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var done = new Lock();
+		var http = new Http('http://127.0.0.1:${server.port}/upload', "POST", null, null, "application/octet-stream", Bytes.alloc(100000),
+			HttpVersion.HTTP_2, 20000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+
+		Thread.create(() -> {
+			http.load();
+			done.release();
+		});
+
+		// Obtained rather than assumed: the whole window has gone out, so the
+		// body is waiting on one the server will not grant.
+		Assert.isTrue(server.waitWindowUsed(10), "the upload never used its window");
+		var cancelledAt:Float = haxe.Timer.stamp();
+		http.cancelToken.cancel();
+
+		// The cancel handler was registered only once the body was out, so
+		// this cancel did nothing, and the upload waited on.
+		Assert.isTrue(done.wait(10), "the cancelled upload never returned");
+		var took:Float = haxe.Timer.stamp() - cancelledAt;
+		Assert.equals("Request cancelled", outcome);
+		Assert.isTrue(took < 5, 'the cancelled upload took ${took}s to return');
+
+		Assert.equals("/second", get(server.port, "/second"));
+		Assert.equals(1, server.connections());
+		Assert.equals("1:CANCEL", server.resetsBeforeSecond());
+		server.stop();
+	}
+
+	public function testAResponseThatNeverComesTimesOutOnlyItsStream():Void {
+		var server = new H2EarlyResponseServer(H2EarlyResponseServer.SILENT);
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/hang', "GET", null, null, null, null, HttpVersion.HTTP_2, 1500);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+
+		// A timeout belongs to its stream, which is reset. Reported as a
+		// connection error, it closed the connection, and every other request
+		// on it failed along with this one.
+		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 1.5s', outcome);
+		Assert.equals("/second", get(server.port, "/second"));
+		Assert.equals(1, server.connections());
+		Assert.equals("1:CANCEL", server.resetsBeforeSecond());
+		server.stop();
+	}
+
 	/** POSTs more than the default 65535-byte window can carry. */
-	private function __upload(port:Int):String {
+	private function __upload(port:Int, timeout:Int = 20000):String {
 		var outcome:String = null;
 		var http = new Http('http://127.0.0.1:$port/upload', "POST", null, null, "application/octet-stream", Bytes.alloc(100000),
-			HttpVersion.HTTP_2, 20000);
+			HttpVersion.HTTP_2, timeout);
 		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
 		http.onError = (message, ?data) -> outcome = message;
 		http.load();
@@ -697,32 +782,45 @@ private class H2ErrorCodeShim {
 }
 
 /**
- * Answers an upload before it has all of it.
+ * Holds up an upload: reads `/upload` and grants no window, so the client can
+ * send only the default 65535 bytes. Once those have arrived the client is
+ * waiting on a WINDOW_UPDATE that never comes, and the fixture then:
  *
- * Reads `/upload` and grants no window, so the client can send only the
- * default 65535 bytes. Once those have arrived the client is waiting on a
- * WINDOW_UPDATE that never comes, and the fixture then either answers in
- * full and resets with NO_ERROR (RFC 9113 8.1) or, with `resetOnly`, just
- * resets with CANCEL. Any other path is answered at once with its own path
- * as the body.
+ * - `ANSWER`: answers in full and resets with NO_ERROR (RFC 9113 8.1);
+ * - `RESET`: resets with CANCEL;
+ * - `SILENT`: does nothing, and with `ping` sends a PING every 50 ms for six
+ *   seconds, so the connection is busy while the upload is stuck.
+ *
+ * `/hang` is never answered. Any other path is answered at once with its own
+ * path as the body.
  *
  * Accepts in a loop, so a client that gives up on the connection and dials
  * another is counted rather than left in the backlog. Records each
  * RST_STREAM the client sends, as `id:CODE`.
  */
 private class H2EarlyResponseServer {
+	public static inline var ANSWER:Int = 0;
+	public static inline var RESET:Int = 1;
+	public static inline var SILENT:Int = 2;
+
 	public var port:Int = 0;
 
-	private var __resetOnly:Bool;
+	private var __mode:Int;
+	private var __ping:Bool;
 	private var __ready:Lock = new Lock();
+	private var __windowUsed:Lock = new Lock();
 	private var __lock:Mutex = new Mutex();
+	// Frames go out from the connection's thread and, with `ping`, from the
+	// pinger's; a frame written half by each is garbage to the client.
+	private var __writeLock:Mutex = new Mutex();
 	private var __listener:SysSocket = null;
 	private var __connections:Int = 0;
 	private var __resets:Array<String> = [];
 	private var __resetsBeforeSecond:String = null;
 
-	public function new(resetOnly:Bool) {
-		__resetOnly = resetOnly;
+	public function new(mode:Int, ping:Bool = false) {
+		__mode = mode;
+		__ping = ping;
 	}
 
 	public function start():Void {
@@ -762,6 +860,11 @@ private class H2EarlyResponseServer {
 	/** Stops accepting. Connections end when the client closes them. */
 	public function stop():Void {
 		try if (__listener != null) __listener.close() catch (_:Dynamic) {}
+	}
+
+	/** Waits until the upload has used all the window it was given. */
+	public function waitWindowUsed(seconds:Float):Bool {
+		return __windowUsed.wait(seconds);
 	}
 
 	public function connections():Int {
@@ -821,7 +924,7 @@ private class H2EarlyResponseServer {
 
 				if (path == "/upload") {
 					uploadId = id;
-				} else {
+				} else if (path != "/hang") {
 					__lock.acquire();
 					__resetsBeforeSecond = __resets.join(",");
 					__lock.release();
@@ -836,15 +939,30 @@ private class H2EarlyResponseServer {
 				// of the body, so it is waiting now.
 				if (uploaded >= H2Settings.DEFAULT_INITIAL_WINDOW_SIZE && !answered) {
 					answered = true;
-					var reset = Bytes.alloc(4);
-					if (__resetOnly) {
-						reset.set(3, (H2ErrorCode.CANCEL : Int));
-					} else {
-						__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, encoder.encode([new HpackHeader(":status", "200")]));
-						__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString("early answer"));
-						reset.set(3, (H2ErrorCode.NO_ERROR : Int));
+					__windowUsed.release();
+
+					if (__mode == ANSWER || __mode == RESET) {
+						var reset = Bytes.alloc(4);
+						if (__mode == RESET) {
+							reset.set(3, (H2ErrorCode.CANCEL : Int));
+						} else {
+							__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, encoder.encode([new HpackHeader(":status", "200")]));
+							__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString("early answer"));
+							reset.set(3, (H2ErrorCode.NO_ERROR : Int));
+						}
+						__writeFrame(peer, H2FrameType.RST_STREAM, 0, id, reset);
+					} else if (__ping) {
+						Thread.create(() -> {
+							for (_ in 0...120) {
+								Sys.sleep(0.05);
+								try {
+									__writeFrame(peer, H2FrameType.PING, 0, 0, Bytes.ofHex("0102030405060708"));
+								} catch (_:Dynamic) {
+									return;
+								}
+							}
+						});
 					}
-					__writeFrame(peer, H2FrameType.RST_STREAM, 0, id, reset);
 				}
 			}
 		}
@@ -857,8 +975,15 @@ private class H2EarlyResponseServer {
 			out.addBytes(payload, 0, payload.length);
 		}
 		var bytes = out.getBytes();
-		peer.output.writeBytes(bytes, 0, bytes.length);
-		peer.output.flush();
+		__writeLock.acquire();
+		try {
+			peer.output.writeBytes(bytes, 0, bytes.length);
+			peer.output.flush();
+		} catch (e:Dynamic) {
+			__writeLock.release();
+			throw e;
+		}
+		__writeLock.release();
 	}
 }
 

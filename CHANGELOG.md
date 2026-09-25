@@ -697,6 +697,25 @@ All notable changes to CrossByte will be documented in this file.
   RST_STREAM(CANCEL) so the server's half is released too -- and "Stream
   reset by peer: CODE" when it reset instead. The connection stays in the
   pool for other requests.
+- An HTTP/2 request can be timed out and cancelled while its body is
+  still going out. Its timeout started only once the whole body had been
+  sent, and its cancel handler was registered only then. A body waiting on
+  a flow-control window counted any frame on the connection as progress.
+  So an upload the server had stopped taking waited as long as the
+  connection was busy -- 36 s for a 1.5 s timeout in the test -- and on a
+  quiet connection gave up after thirty seconds by failing the connection
+  and every request on it. A cancel did nothing until then. The timeout now
+  also bounds how long a body's window may stay shut, so an upload that is
+  slow but moving is not cut off. The cancel handler is registered before
+  the body is sent. Either one resets only that stream, and a cancel wakes
+  its body at once. Each body waiting on a window is now woken by every
+  frame, where one shared wake-up used to reach only one of them. A
+  timeout, during the body or while waiting for the response, is now an
+  error in that stream only: it reports "Request to ORIGIN timed out after
+  Ns" without the "HTTP/2 connection error: " prefix, and leaves the
+  connection pooled. It used to close the connection, failing every other
+  request on it; a peer that has gone silent is now found when the
+  connection itself fails, not by the first timeout.
 - A listening `LocalConnection` could stop delivering for good: no
   `onReady`, and nothing a client sent. Its reader thread attached the tick
   listener that carries dispatches to the runtime's thread, and
