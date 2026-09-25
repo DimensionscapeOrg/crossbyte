@@ -1,5 +1,9 @@
 package crossbyte.net;
 
+// Not built for the browser, as `ReliableDatagramSocket` is not: it has no
+// session to decide for there.
+#if !(js && !nodejs)
+
 import haxe.ds.Vector;
 
 /**
@@ -178,3 +182,4 @@ class LossTolerantCongestionControl extends CongestionControl {
 		return deliveryRate * fastest;
 	}
 }
+#end

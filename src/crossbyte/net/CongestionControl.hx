@@ -1,5 +1,9 @@
 package crossbyte.net;
 
+// Not built for the browser, as `ReliableDatagramSocket` is not: it has no
+// session to decide for there.
+#if !(js && !nodejs)
+
 /**
 	Decides how many frames a `ReliableDatagramSocket` may have in the network
 	at once: sent, not acknowledged, and not reported held past a gap.
@@ -128,3 +132,4 @@ class CongestionControl {
 		window = slowStartThreshold;
 	}
 }
+#end
