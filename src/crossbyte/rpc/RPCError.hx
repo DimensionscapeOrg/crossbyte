@@ -24,6 +24,13 @@ class RPCError extends Error {
 	public static inline final INTERNAL_MESSAGE:String = "Internal error";
 
 	/**
+		What a caller is told when its call is refused because too many calls
+		on its connection are still waiting on an answer; see
+		`RPCSession.maxCallsWaiting`.
+	**/
+	public static inline final BUSY_MESSAGE:String = "Too many calls are waiting on this connection";
+
+	/**
 		@param message What the caller is told.
 		@param id A number for the error, kept on this side; only the message
 		crosses the wire.

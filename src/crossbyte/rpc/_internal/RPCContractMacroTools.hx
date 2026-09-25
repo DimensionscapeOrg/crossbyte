@@ -277,8 +277,12 @@ class RPCContractMacroTools {
 			case TAbstract(typeRef, _) if (typeRef.get().name == "Void"):
 				null;
 			case TInst(typeRef, params) if (typeRef.get().name == "RPCResponse" && typeRef.get().pack.join(".") == "crossbyte.rpc"):
-				Context.error("Shared RPC contracts should use plain payload return types. Use T or Void in the contract, not RPCResponse<T>.", pos);
+				Context.error("Shared RPC contracts should use plain payload return types. Use T, Future<T> or Void in the contract, not RPCResponse<T>.", pos);
 				null;
+			case TInst(typeRef, [payload]) if (typeRef.get().name == "Future" && typeRef.get().pack.join(".") == "crossbyte"):
+				// Answered later by the handler, and a `T` all the same on the
+				// wire and to the caller, whose stub returns RPCResponse<T>.
+				fullComplexType(payload);
 			case _:
 				ret;
 		}
