@@ -150,6 +150,18 @@ class RPCRobustnessTest extends utest.Test {
 		Assert.equals(22, id);
 	}
 
+	public function testRuntimeNextRequestIdWrapsPastZeroOnOverflow():Void {
+		var session = new RPCSession(new StubConnection());
+		// On JavaScript an Int is a double, so this increment wraps only if
+		// the generator truncates it to 32 bits.
+		session.__runtimeRequestIdSeed = 0x7FFFFFFF;
+		session.__runtimePendingResponseId = 0;
+
+		var id = session.__nextRuntimeRequestId();
+
+		Assert.equals(1, id);
+	}
+
 	// ---- pending-response cleanup (RPCSession) ----
 
 	public function testSessionFailAllRejectsRuntimePending():Void {
