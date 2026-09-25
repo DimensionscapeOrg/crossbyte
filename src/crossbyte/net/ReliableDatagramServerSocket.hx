@@ -91,18 +91,33 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	public var maxPendingConnections:Int = DEFAULT_MAX_PENDING_CONNECTIONS;
 
 	/**
-		Decides, from the sender's address alone, whether a CONNECT from an
-		address with no session opens one. Called before anything is allocated
-		for it; return `false` and the datagram is dropped, as it is when
-		`maxPendingConnections` is reached. The default admits everything.
+		Decides whether a CONNECT from an address with no session opens one,
+		from the address and what the sender's `connect` passed with it. Called
+		before anything is allocated for it; return `false` and the datagram is
+		dropped, as it is when `maxPendingConnections` is reached. The default
+		admits everything.
 
-		The address is only a claim at this point -- UDP lets a sender write
-		whatever it likes in the source field -- so use this to drop traffic,
-		not to accuse anyone: a block list or a `RateLimiter` keyed by address
-		protects this side, but an address refused here may belong to someone
-		who never sent a thing. A hook that throws refuses the CONNECT.
+		The payload is empty when the sender passed nothing, as a peer on an
+		older build always does. It is read from its start, and whatever this
+		reads, the admitted session's `connectPayload` begins at the start
+		again. A CONNECT carrying more than one frame's worth is dropped
+		without asking, since no `connect` can send one.
+
+		Neither is proof of anything yet. The address is only a claim -- UDP
+		lets a sender write whatever it likes in the source field -- so use it
+		to drop traffic, not to accuse anyone: a block list or a `RateLimiter`
+		keyed by address protects this side, but an address refused here may
+		belong to someone who never sent a thing. And the payload crossed the
+		network in the clear, so anyone who saw it can send it again: a token
+		this checks should be one only this side could have issued, and short
+		lived, or bound to the address it was issued to. This runs for every
+		CONNECT from a new address, which is the packet a flood is made of, so
+		keep it cheap -- or put a `RateLimiter` in front of anything that is
+		not, such as checking a signature.
+
+		A hook that throws refuses the CONNECT.
 	**/
-	public dynamic function admit(address:String, port:Int):Bool {
+	public dynamic function admit(address:String, port:Int, payload:ByteArray):Bool {
 		return true;
 	}
 
@@ -243,11 +258,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		handshake and never hear the answer.
 
 		@param timeoutMs Session timeout in milliseconds, or `0` for the default.
+		@param payload Sent with every CONNECT, as `ReliableDatagramSocket.connect`
+		       sends it: copied now, and at most one frame.
 		@throws IOError if this server is closed, unbound, or not listening.
 		@throws ArgumentError if the address cannot be resolved, or a session to
 		this endpoint already exists.
+		@throws RangeError if `payload` is larger than one frame.
 	**/
-	public function connect(address:String, port:Int, timeoutMs:Int = 0):ReliableDatagramSocket {
+	public function connect(address:String, port:Int, timeoutMs:Int = 0, ?payload:ByteArray):ReliableDatagramSocket {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
@@ -259,6 +277,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		if (!listening) {
 			throw new IOError("Cannot dial from a server socket that is not listening: replies are routed by the listen pump, so nothing would deliver them.");
 		}
+
+		var outgoing:ByteArray = ReliableDatagramSocket.__connectPayloadOf(payload);
 
 		var resolved:String;
 
@@ -288,7 +308,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			throw new ArgumentError("A reliable datagram session to " + key + " already exists on this server.");
 		}
 
-		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs);
+		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs, outgoing);
 		__connections.set(key, socket);
 		return socket;
 	}
@@ -614,15 +634,23 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return;
 		}
 
+		// No connect() sends more than a frame, and each pending session
+		// keeps what its CONNECT carried, so a larger one is not held.
+		var payload:ByteArray = frame.payload;
+		if (payload.length > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
+			return;
+		}
+
 		var admitted:Bool = false;
 		try {
-			admitted = admit(e.srcAddress, e.srcPort);
+			admitted = admit(e.srcAddress, e.srcPort, payload);
 		} catch (_:Dynamic) {}
 		if (!admitted) {
 			return;
 		}
 
-		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode);
+		payload.position = 0;
+		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode, payload);
 		__connections.set(key, connection);
 		__pending.set(key, true);
 		__pendingCount++;

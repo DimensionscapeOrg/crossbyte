@@ -5,6 +5,8 @@
 
 It demonstrates:
 
+- admitting a session on the ticket its CONNECT carries, before the server
+  allocates anything for it
 - accepting a reliable UDP session
 - completing the handshake
 - delivering a datagram reliably

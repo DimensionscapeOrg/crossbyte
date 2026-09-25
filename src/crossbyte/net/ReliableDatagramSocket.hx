@@ -183,6 +183,20 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/** `maxMessageSize` unless changed: eight megabytes, as `FrameCodec` takes. **/
 	public static inline var DEFAULT_MAX_MESSAGE_SIZE:Int = 8 * 1024 * 1024;
 
+	/**
+		What the peer sent with its CONNECT, or `null` if no CONNECT has come
+		from it.
+
+		Every session a server accepts has one -- empty when the peer's
+		`connect` passed nothing -- and it is the payload
+		`ReliableDatagramServerSocket.admit` was shown, from its start, so the
+		handler that takes the session can tell who it is by the same token
+		the hook let it in on. A dialled session has one only when its peer
+		dialled too, as two peers opening a path through NAT both do; a client
+		of an ordinary server never receives a CONNECT, and reads `null`.
+	**/
+	public var connectPayload(default, null):ByteArray = null;
+
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;
 	@:noCompletion private static inline var DELIVERY_WINDOW:Int = 500;
 	@:noCompletion private static inline var KEEP_ALIVE_INTERVAL:Float = 75.0;
@@ -224,6 +238,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __connected:Bool = false;
 	@:noCompletion private var __connectionAttemptHandle:Int = -1;
+	// What every CONNECT this side sends carries: a copy, taken when connect
+	// was called, or null for nothing.
+	@:noCompletion private var __connectOut:ByteArray = null;
 	@:noCompletion private var __connectionTimeoutHandle:Int = -1;
 	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
 	// Out-of-order frames, kept whole: a fragment's `more` flag is as much a
@@ -364,14 +381,26 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		Initiates a reliable UDP session to the specified remote endpoint.
 		The socket automatically binds its transport to an ephemeral local port if
 		you have not called `bind()` already.
+
+		`payload` rides in every CONNECT the handshake sends, for the server's
+		`admit` to decide on before it allocates anything -- a join token, a
+		protocol version, a ticket. It must fit one frame. It is sent in the
+		clear and repeated until the server answers, and nothing proves the
+		sender's address until the handshake completes, so what it can carry
+		is something the server can check, not something that must stay secret.
+
 		@param host The remote host to connect to.
 		@param port The remote UDP port to connect to.
+		@param payload Sent with the CONNECT: all of it, from 0 to its length,
+		       copied now, so changing it afterwards changes nothing sent.
 		@throws IOError If the socket is closed or otherwise invalid.
 		@throws IllegalOperationError If this socket was accepted by a server.
 		@throws ArgumentError If `host` is invalid or empty.
-		@throws RangeError If `port` is outside the valid UDP port range.
+		@throws RangeError If `port` is outside the valid UDP port range, or
+		        `payload` is larger than one frame,
+		        `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE` bytes.
 	**/
-	public function connect(host:String, port:Int):Void {
+	public function connect(host:String, port:Int, ?payload:ByteArray):Void {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
@@ -387,6 +416,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (port <= 0 || port > 65535) {
 			throw new RangeError("Invalid socket port number specified.");
 		}
+
+		var outgoing:ByteArray = __connectPayloadOf(payload);
 
 		if (!bound) {
 			__transport.bind();
@@ -417,9 +448,27 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__remotePort = port;
 		__remoteResponsePort = 0;
 		__incoming = false;
+		__connectOut = outgoing;
 		__resetSequences();
 		__transport.receive();
 		__beginHandshake();
+	}
+
+	/**
+		A copy of a CONNECT payload, or null for none; refused rather than
+		split when it is larger than the one frame a CONNECT is.
+	**/
+	@:noCompletion private static function __connectPayloadOf(payload:ByteArray):ByteArray {
+		if (payload == null || payload.length == 0) {
+			return null;
+		}
+		if (payload.length > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
+			throw new RangeError('A CONNECT payload must fit one frame, ${ReliableDatagramProtocol.MAX_PAYLOAD_SIZE} bytes, and this one is ${payload.length}.');
+		}
+		var copy = new ByteArray();
+		copy.length = payload.length;
+		(copy : haxe.io.Bytes).blit(0, payload, 0, payload.length);
+		return copy;
 	}
 
 	/**
@@ -754,7 +803,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		remoteAddress:String,
 		remotePort:Int,
 		server:ReliableDatagramServerSocket,
-		mode:ReliableDatagramSocketMode
+		mode:ReliableDatagramSocketMode,
+		payload:ByteArray
 	):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
 		var temporaryTransport = socket.__transport;
@@ -764,6 +814,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 		socket.__ownsTransport = false;
 		socket.__incoming = true;
+		socket.connectPayload = payload;
 		socket.__mode = mode;
 		socket.__server = server;
 		socket.__transport = transport;
@@ -795,7 +846,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 * the dialled one already holds.
 	 */
 	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:String, remotePort:Int,
-			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int):ReliableDatagramSocket {
+			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
 		var temporaryTransport = socket.__transport;
 		socket.__teardownTransportListener();
@@ -812,6 +863,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		socket.__ownsTransport = false;
 		socket.__incoming = false;
+		socket.__connectOut = payload;
 		socket.__mode = mode;
 		socket.__server = server;
 		socket.__transport = transport;
@@ -851,6 +903,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				// branch before and takes it now.
 				if (!__connected) {
 					__sendControl(HANDSHAKE, __outSequence);
+				}
+				// The first one a dialled peer sends, kept as the server keeps
+				// an accepted session's. Held only at a size the protocol can
+				// send, as the server holds it.
+				if (connectPayload == null && frame.payload.length <= ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
+					connectPayload = frame.payload;
 				}
 			case HANDSHAKE:
 				__onHandshake(frame.sequence);
@@ -1505,7 +1563,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __sendHandshakeAttempt():Void {
-		__sendControl(__incoming ? HANDSHAKE : CONNECT, __incoming ? __outSequence : 0);
+		if (__incoming) {
+			__sendControl(HANDSHAKE, __outSequence);
+			return;
+		}
+		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
+			return;
+		}
+		__sendFrame(CONNECT, 0, __connectOut, 0, __connectOut == null ? 0 : __connectOut.length, false, null, false);
 	}
 
 	@:noCompletion private function __sendPacket(frame:OutstandingFrame):Void {

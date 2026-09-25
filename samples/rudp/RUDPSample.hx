@@ -8,6 +8,11 @@ import crossbyte.net.ReliableDatagramServerSocket;
 import crossbyte.net.ReliableDatagramSocket;
 
 class RUDPSample extends HostApplication {
+	// What the client presents to be let in. A real one would be issued by
+	// something the server trusts, signed and short lived, since it crosses
+	// the network in the clear.
+	private static inline var TICKET:String = "ticket-42";
+
 	public static function main():Void {
 		#if !(sys && !eval)
 		Sys.println("ReliableDatagramSocket is only supported on native sys targets.");
@@ -22,6 +27,7 @@ class RUDPSample extends HostApplication {
 	private var client:ReliableDatagramSocket;
 	private var accepted:ReliableDatagramSocket;
 	private var serverReceived:String = null;
+	private var admittedOn:String = null;
 	private var clientReceived:String = null;
 	private var failed:String = null;
 	private var clientSent:Bool = false;
@@ -34,8 +40,11 @@ class RUDPSample extends HostApplication {
 		server = new ReliableDatagramServerSocket();
 		client = new ReliableDatagramSocket();
 
+		// Asked before the server allocates anything for the session.
+		server.admit = (_, _, payload) -> payload.toString() == TICKET;
 		server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> {
 			accepted = event.socket;
+			admittedOn = accepted.connectPayload.toString();
 			accepted.addEventListener(IOErrorEvent.IO_ERROR, ioEvent -> failed = ioEvent.text);
 			accepted.addEventListener(DatagramSocketDataEvent.DATA, dataEvent -> {
 				serverReceived = dataEvent.data.toString();
@@ -54,7 +63,7 @@ class RUDPSample extends HostApplication {
 
 		server.bind(0, "127.0.0.1");
 		server.listen();
-		client.connect("127.0.0.1", server.localPort);
+		client.connect("127.0.0.1", server.localPort, bytesOf(TICKET));
 
 		var deadline = Sys.time() + 3.0;
 		while (clientReceived == null && failed == null && Sys.time() < deadline) {
@@ -75,6 +84,7 @@ class RUDPSample extends HostApplication {
 		}
 
 		Sys.println("RUDP sample completed.");
+		Sys.println('admitted on -> "$admittedOn"');
 		Sys.println('server received -> "$serverReceived"');
 		Sys.println('client received -> "$clientReceived"');
 	}

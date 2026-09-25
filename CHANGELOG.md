@@ -5,6 +5,22 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- A payload on the CONNECT that opens a reliable datagram session, for the
+  server to decide on before it allocates anything. `connect` on
+  `ReliableDatagramSocket` and on `ReliableDatagramServerSocket` takes one of
+  up to a frame, 1200 bytes, copied when called and carried by every CONNECT
+  the handshake repeats; `admit(address, port, payload)` is shown it, empty
+  when the peer sent nothing; and the session a server accepts keeps it as
+  `connectPayload`, so the handler that takes the session knows who it is by
+  the token it was let in on. Admission could weigh only an address, which
+  UDP lets a sender write for itself, so a join ticket or a protocol version
+  could be checked only once a session and its handshake had been paid for.
+  The payload crosses in the clear and anyone who sees it can send it again,
+  so what it carries should be something the server can verify and expire,
+  not a secret. A CONNECT carrying more than a frame is dropped before
+  `admit` is asked, since each pending session holds what its CONNECT
+  carried. Peers that both dial, as through NAT, each keep the other's. A
+  peer on an older build sends none, and ignores one.
 - `crossbyte.io.BitWriter` and `BitReader`: values in as few bits as they
   need. Widths of 1 to 32 bits, signed values, integers in a known range (in
   the bits the range needs, none for a range of one), floats quantized to
@@ -82,7 +98,7 @@ All notable changes to CrossByte will be documented in this file.
   burst of 190 waiting 3.2 seconds at 60 Hz, and `maxPendingHandshakes` (256)
   bounds handshakes in flight by leaving the rest queued in the kernel.
   `ReliableDatagramServerSocket.admit` is asked before a CONNECT from a new
-  address allocates a session. `ServerWebSocket` honours all three: it
+  address allocates a session, and is shown what the CONNECT carried. `ServerWebSocket` honours all three: it
   accepts through a loop of its own, where they had compiled and done
   nothing.
 - `crossbyte.ds.InterestSet`: what came into an observer's view and what left
