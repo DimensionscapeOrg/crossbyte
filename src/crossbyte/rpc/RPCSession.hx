@@ -166,11 +166,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__handler != null && handler != __handler) {
 			__handler.this_connection = null;
 			__handler.this_commands = null;
+			__handler.this_session = null;
 		}
 		__handler = handler;
 		if (handler != null) {
 			handler.this_connection = this.connection;
 			handler.this_commands = __commands;
+			handler.this_session = cast this;
 		}
 		__syncOnDataBinding();
 
@@ -194,6 +196,26 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__connection = connection;
 		this.commands = commands;
 		this.handler = handler;
+	}
+
+	/**
+	 * Told of whatever a handler threw that its caller will not hear about:
+	 * anything but an `RPCError` from a request, whose caller is told only
+	 * `RPCError.INTERNAL_MESSAGE`, and anything at all from a one-way call,
+	 * which nobody is waiting on. For either lane: `method` is the compiled
+	 * handler's method name, or `null` for a runtime handler, which has only
+	 * its `op`.
+	 *
+	 * The connection has stayed up. A handler failing is not the peer sending
+	 * something unreadable, and it used to be treated as if it were: the
+	 * connection closed and every call still waiting on it failed.
+	 *
+	 * Logs by default. Replace it to count failures, raise an alert or keep
+	 * the stack. Whatever it throws is ignored, so a report failing cannot
+	 * close the connection either.
+	 */
+	public dynamic function onHandlerError(op:Int, method:Null<String>, error:Dynamic):Void {
+		Logger.error('RPC handler ' + (method != null ? method : 'for op $op') + ' threw: ' + Std.string(error));
 	}
 
 	/**
@@ -448,12 +470,28 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				__sendRuntimeResponse(op, requestId, result);
 			}
 		} catch (error:Dynamic) {
+			// The caller was sent `Std.string(error)`, whatever it held -- a
+			// path, a query, a stack -- and a one-way call rethrew, which
+			// closed the connection. The same rules as the compiled lane now.
+			final answer:Null<String> = __answerFor(error);
 			if (requestId != 0) {
-				__sendRuntimeError(op, requestId, Std.string(error));
-			} else {
-				throw error;
+				__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
+			}
+			if (answer == null || requestId == 0) {
+				__reportHandlerError(op, null, error);
 			}
 		}
+	}
+
+	/** An `RPCError`'s message, which its caller is meant to see, or `null`. **/
+	@:noCompletion private static function __answerFor(error:Dynamic):Null<String> {
+		return Std.isOfType(error, RPCError) ? (cast error : RPCError).message : null;
+	}
+
+	@:noCompletion private function __reportHandlerError(op:Int, method:Null<String>, error:Dynamic):Void {
+		try {
+			onHandlerError(op, method, error);
+		} catch (_:Dynamic) {}
 	}
 
 	@:noCompletion private function __sendRuntimeFrame(op:Int, requestId:Int, expectsResponse:Bool, args:Array<Dynamic>):Void {

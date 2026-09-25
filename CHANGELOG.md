@@ -5,6 +5,14 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.rpc.RPCError`, for a failure an RPC handler means its caller to
+  see. Thrown from a handler method, its message is the caller's answer:
+  the `RPCResponse` fails with it, word for word, and the connection stays
+  up. `RPCSession.onHandlerError(op, method, error)` is told of anything a
+  handler throws that its caller is not told: anything but an `RPCError`,
+  and anything at all from a one-way call. `method` is the compiled
+  handler's method name, or `null` for a runtime handler. It logs by
+  default, and whatever it throws is ignored.
 - Pluggable congestion control for reliable datagram sessions.
   `CongestionControl` decides how many frames a session may have in the
   network at once, and is both the default -- Reno, as before -- and the
@@ -437,6 +445,11 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A runtime RPC handler that throws answers its caller with
+  `RPCError.INTERNAL_MESSAGE`, "Internal error", unless it threw an
+  `RPCError`. It sent `Std.string(error)`, which put whatever the error held
+  -- a path, a query, a stack -- in the hands of whoever made the call. The
+  error itself goes to `RPCSession.onHandlerError`.
 - Reliable datagram sessions find loss from what arrives rather than
   waiting it out. A receiver holding frames past a gap says which, in a map
   on its acknowledgement -- bit `i` for frame `ack + 1 + i`, up to 512
@@ -596,6 +609,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC handler method that throws no longer ends the connection. The
+  exception reached the session as if the peer had sent an unreadable
+  frame, so the connection closed, every call still waiting on it failed
+  with it, and the caller was never told what had happened. The frame had
+  been read whole, so the session now answers the call with an error and
+  goes on to the next frame. A one-way call, compiled or runtime, is
+  reported to `RPCSession.onHandlerError` in the same way; a runtime one
+  rethrew, and ended the connection too. A frame that cannot be read -- too
+  long, for no known method, or with arguments that do not decode -- still
+  ends it.
 - Two reliable datagram peers that dialled each other, as a hole-punched
   pair does, answered every HANDSHAKE with one of their own, for as long as
   they stayed connected. Each answer drew the next, so two peers with

@@ -293,6 +293,196 @@ class RPCTest extends utest.Test {
 		Assert.isTrue(response.completed);
 		Assert.equals("seen:runtime", response.result);
 	}
+
+	// ----------------------------------------------------- handlers failing
+
+	public function testAHandlerThatThrowsAnswersWithAnErrorAndTheConnectionStays():Void {
+		var link = LinkedConnection.pair();
+		var commands = new FailingCommands();
+		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new FailingHandler());
+		var reported = reportsOf(serverSession);
+		var ended = endingOf(link.server);
+
+		// The session took a handler throwing for the peer sending something
+		// unreadable: the connection closed, and the caller was told nothing
+		// but that it had.
+		var failed = commands.lookup(0);
+		Assert.isTrue(failed.completed, "the caller was never answered");
+		Assert.isFalse(failed.succeeded);
+		Assert.equals(RPCError.INTERNAL_MESSAGE, failed.error, "the caller was told what the handler failed on");
+		Assert.isFalse(ended.value, "a handler throwing ended the connection");
+		Assert.same(["lookup: database at /var/lib/players refused"], reported);
+
+		Assert.equals("player-5", commands.lookup(5).result, "the connection did not answer again");
+	}
+
+	public function testAnRPCErrorIsTheCallersAnswerWordForWord():Void {
+		var link = LinkedConnection.pair();
+		var commands = new FailingCommands();
+		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new FailingHandler());
+		var reported = reportsOf(serverSession);
+
+		var refused = commands.lookup(-3);
+		Assert.isFalse(refused.succeeded);
+		Assert.equals("no player -3", refused.error);
+		// The caller was told; there is nothing to report.
+		Assert.same([], reported);
+	}
+
+	public function testAOneWayCallThatThrowsIsReportedAndTheConnectionStays():Void {
+		var link = LinkedConnection.pair();
+		var commands = new FailingCommands();
+		var handler = new FailingHandler();
+		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
+		var reported = reportsOf(serverSession);
+		var ended = endingOf(link.server);
+
+		// Nobody is waiting on a one-way call, so an RPCError is reported too:
+		// nothing else would ever hear of it.
+		commands.notify(0);
+		commands.notify(-1);
+		commands.notify(7);
+
+		Assert.isFalse(ended.value, "a one-way call throwing ended the connection");
+		Assert.equals(2, reported.length);
+		Assert.equals("notify: queue full", reported[0]);
+		Assert.isTrue(reported[1].indexOf("refused -1") >= 0, "a refused one-way call was not reported: " + reported[1]);
+		Assert.same([7], handler.notified);
+	}
+
+	public function testFramesAfterAFailingCallInTheSameReadAreStillTaken():Void {
+		var link = LinkedConnection.pair();
+		var commands = new FailingCommands();
+		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new FailingHandler());
+		reportsOf(serverSession);
+
+		// Two calls arriving in one read, the first failing.
+		link.server.bufferInbound = true;
+		var failed = commands.lookup(0);
+		var after = commands.lookup(9);
+		link.server.bufferInbound = false;
+		link.server.deliverBufferedAsOneRead();
+
+		Assert.equals(RPCError.INTERNAL_MESSAGE, failed.error);
+		Assert.equals("player-9", after.result, "the frame after a failing call was dropped");
+	}
+
+	public function testCallsWaitingOnThisSideSurviveAHandlerThatThrows():Void {
+		// Each side both calls and answers. The server has a call out to the
+		// client when a call from the client fails on the server: ending the
+		// connection failed the server's own call too.
+		var link = LinkedConnection.pair();
+		var clientCommands = new FailingCommands();
+		var serverCommands = new TestCommands();
+		var clientSession = new RPCSession<FailingCommands>(link.client, clientCommands, new TestHandler());
+		var serverSession = new RPCSession<TestCommands>(link.server, serverCommands, new FailingHandler());
+		reportsOf(serverSession);
+
+		link.client.bufferInbound = true;
+		var outstanding = serverCommands.getName(1);
+		clientCommands.lookup(0);
+		Assert.isFalse(outstanding.completed, "the server's own call was failed");
+
+		link.client.bufferInbound = false;
+		link.client.flushBufferedReads();
+		Assert.equals("player-1", outstanding.result);
+	}
+
+	public function testARuntimeHandlerThatThrowsTellsTheCallerNothingOfIt():Void {
+		var link = LinkedConnection.pair();
+		var clientSession = new RPCSession(link.client);
+		var serverSession = new RPCSession(link.server);
+		var reported = reportsOf(serverSession);
+		var ended = endingOf(link.server);
+
+		// It sent the caller `Std.string(error)`, whatever that held.
+		serverSession.register(404, args -> throw "stack at /home/app/secret.hx:12");
+		var failed:RPCResponse<String> = clientSession.request(404, [1]);
+		Assert.equals(RPCError.INTERNAL_MESSAGE, failed.error);
+		Assert.same(["op 404: stack at /home/app/secret.hx:12"], reported);
+
+		serverSession.register(405, args -> throw new RPCError("quota exceeded"));
+		var refused:RPCResponse<String> = clientSession.request(405, []);
+		Assert.equals("quota exceeded", refused.error);
+		Assert.equals(1, reported.length, "an answer the caller was given was reported");
+		Assert.isFalse(ended.value);
+	}
+
+	public function testARuntimeOneWayCallThatThrowsIsReportedNotFatal():Void {
+		var link = LinkedConnection.pair();
+		var clientSession = new RPCSession(link.client);
+		var serverSession = new RPCSession(link.server);
+		var reported = reportsOf(serverSession);
+		var ended = endingOf(link.server);
+
+		// It rethrew, and the connection closed.
+		serverSession.register(406, args -> throw "boom");
+		serverSession.register(202, args -> "player-" + args[0]);
+		clientSession.call(406, []);
+
+		Assert.isFalse(ended.value, "a one-way runtime call throwing ended the connection");
+		Assert.same(["op 406: boom"], reported);
+		var after:RPCResponse<String> = clientSession.request(202, [3]);
+		Assert.equals("player-3", after.result);
+	}
+
+	public function testAReportThatThrowsLeavesTheConnectionUp():Void {
+		var link = LinkedConnection.pair();
+		var commands = new FailingCommands();
+		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new FailingHandler());
+		var ended = endingOf(link.server);
+		serverSession.onHandlerError = (op, method, error) -> throw "the report failed";
+
+		commands.notify(0);
+		var failed = commands.lookup(0);
+
+		Assert.isFalse(ended.value, "a report throwing ended the connection");
+		Assert.equals(RPCError.INTERNAL_MESSAGE, failed.error);
+		Assert.equals("player-2", commands.lookup(2).result);
+	}
+
+	public function testAFrameWhoseArgumentsDoNotDecodeStillEndsTheConnection():Void {
+		var link = LinkedConnection.pair();
+		var serverSession = new RPCSession(link.server, null, new FailingHandler());
+		var ended = endingOf(link.server);
+
+		// A request for `lookup` with a byte where its Int should be: the
+		// frame is not sound, so nothing after it can be trusted to line up.
+		var payload = new ByteArrayOutput(8);
+		payload.writeByte(crossbyte.rpc._internal.RPCWire.FLAG_REQUEST);
+		payload.writeInt(Hash.fnv1a32(Bytes.ofString("lookup")));
+		payload.writeVarUInt(1);
+		payload.writeByte(0);
+		payload.flush();
+		// `bytesWritten`, not `length`: that is the buffer's capacity, and a
+		// frame claiming it waits for a byte that never comes.
+		var frame = new ByteArrayOutput(payload.bytesWritten + 4);
+		frame.writeInt(payload.bytesWritten);
+		frame.writeBytes(payload, 0, payload.bytesWritten);
+		link.client.send(frame);
+
+		Assert.isTrue(ended.value, "a frame that could not be read left the connection up");
+	}
+
+	/** What the session reports, as `method: error`, or `op N: error` for a runtime handler. **/
+	private static function reportsOf(session:RPCSession<Dynamic, Dynamic>):Array<String> {
+		var reported:Array<String> = [];
+		session.onHandlerError = (op, method, error) -> reported.push((method != null ? method : 'op $op') + ": " + Std.string(error));
+		return reported;
+	}
+
+	/** Whether the connection has been closed or has failed. **/
+	private static function endingOf(connection:LinkedConnection):{value:Bool} {
+		var ended = {value: false};
+		connection.onClose = _ -> ended.value = true;
+		connection.onError = _ -> ended.value = true;
+		return ended;
+	}
 }
 
 private class TestCommands extends RPCCommands {
@@ -301,6 +491,40 @@ private class TestCommands extends RPCCommands {
 	@:rpc public function sendData(id:Int, enabled:Bool, ratio:Float, name:String, bytes:Bytes, ?tag:String):Void {}
 
 	@:rpc public function getName(id:Int):RPCResponse<String> {}
+}
+
+private class FailingCommands extends RPCCommands {
+	public function new() {}
+
+	@:rpc public function lookup(id:Int):RPCResponse<String> {}
+
+	@:rpc public function notify(id:Int):Void {}
+}
+
+private class FailingHandler extends RPCHandler {
+	public var notified:Array<Int> = [];
+
+	public function new() {}
+
+	@:rpc public function lookup(id:Int):String {
+		if (id < 0) {
+			throw new RPCError('no player $id');
+		}
+		if (id == 0) {
+			throw "database at /var/lib/players refused";
+		}
+		return 'player-$id';
+	}
+
+	@:rpc public function notify(id:Int):Void {
+		if (id < 0) {
+			throw new RPCError('refused $id');
+		}
+		if (id == 0) {
+			throw "queue full";
+		}
+		notified.push(id);
+	}
 }
 
 private class WideCommands extends RPCCommands {
@@ -497,6 +721,17 @@ private class LinkedConnection implements INetConnection {
 			return;
 		}
 		__onData(copy);
+	}
+
+	/** Hands everything buffered to the session in one read, as a socket would. **/
+	public function deliverBufferedAsOneRead():Void {
+		var joined = new ByteArray();
+		for (input in __pendingInputs) {
+			joined.writeBytes(input, 0, input.length);
+		}
+		__pendingInputs = [];
+		joined.position = 0;
+		__onData(joined);
 	}
 
 	public function flushBufferedReads():Void {
