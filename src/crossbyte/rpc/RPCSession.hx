@@ -2,7 +2,8 @@ package crossbyte.rpc;
 
 import crossbyte._internal.system.timer.TimerHandle;
 
-// Not built for any JavaScript target (Node included, which has no threads): a session is bound to a NetConnection, which spans transports a page does not have.
+// Built for every target, JavaScript included: the portable suite runs RPC on
+// Node and in a browser, where a NetConnection's Socket is a WebSocket.
 
 import crossbyte.net.Reason;
 import crossbyte.utils.Logger;
@@ -13,6 +14,7 @@ import crossbyte.sys.System;
 import crossbyte.rpc.RPCHandler;
 import crossbyte.rpc.RPCCommands;
 import crossbyte.net.NetConnection;
+import crossbyte.net.NetConnectionBase;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.io.ByteArrayOutput;
@@ -200,6 +202,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__connection = connection;
 		this.commands = commands;
 		this.handler = handler;
+		// Told as the connection ends, whenever and whether the application
+		// sets onClose. A call still waiting on an answer used to wait for good
+		// once the connection went: only stop(), a heartbeat timeout or an
+		// unreadable frame failed it.
+		(connection : NetConnectionBase).__observeClose(__connectionEnded);
+	}
+
+	/** The connection can carry no answer now, so nothing waiting on one gets it. **/
+	@:noCompletion private function __connectionEnded(reason:Reason):Void {
+		__active = false;
+		__stopHeartbeat();
+		__failAllPending("RPC connection closed: " + Std.string(reason));
 	}
 
 	/**
