@@ -91,6 +91,38 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	public var maxPendingConnections:Int = DEFAULT_MAX_PENDING_CONNECTIONS;
 
 	/**
+		The operating system's receive buffer, in bytes, for the one socket
+		every session of this server reads from; see
+		`DatagramSocket.receiveBufferSize`. At least
+		`ReliableDatagramSocket.WINDOW_BUFFER_SIZE` where the system grants it,
+		which is one window: a server whose peers send at once may want room
+		for several.
+	**/
+	public var receiveBufferSize(get, set):Int;
+
+	/**
+		The operating system's send buffer, in bytes, for this server's socket;
+		see `DatagramSocket.sendBufferSize`.
+	**/
+	public var sendBufferSize(get, set):Int;
+
+	@:noCompletion private inline function get_receiveBufferSize():Int {
+		return __socket != null ? __socket.receiveBufferSize : 0;
+	}
+
+	@:noCompletion private function set_receiveBufferSize(value:Int):Int {
+		return __socket.receiveBufferSize = value;
+	}
+
+	@:noCompletion private inline function get_sendBufferSize():Int {
+		return __socket != null ? __socket.sendBufferSize : 0;
+	}
+
+	@:noCompletion private function set_sendBufferSize(value:Int):Int {
+		return __socket.sendBufferSize = value;
+	}
+
+	/**
 		Decides whether a CONNECT from an address with no session opens one,
 		from the address and what the sender's `connect` passed with it. Called
 		before anything is allocated for it; return `false` and the datagram is
@@ -158,6 +190,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__connections = new StringMap();
 		__pending = new StringMap();
 		__socket = new DatagramSocket();
+		ReliableDatagramSocket.__reserveWindow(__socket);
 	}
 
 	/**
