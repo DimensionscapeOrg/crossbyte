@@ -1,5 +1,7 @@
 package crossbyte.rpc;
 
+import crossbyte._internal.system.timer.TimerHandle;
+
 // Not built for any JavaScript target (Node included, which has no threads): a session is bound to a NetConnection, which spans transports a page does not have.
 
 import crossbyte.net.Reason;
@@ -59,7 +61,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __connection:NetConnection;
 	@:noCompletion private var __handler:RPCHandler;
 	@:noCompletion private var __commands:C;
-	@:noCompletion private var __heartbeatTimerHandle:Int = 0;
+	// TimerHandle.INVALID when no heartbeat is scheduled. Not 0: that is a real
+	// handle, the first timer a scheduler hands out.
+	@:noCompletion private var __heartbeatTimerHandle:Int = TimerHandle.INVALID;
 	@:noCompletion private var __heartbeatInterval:Int = DEFAULT_HEARTBEAT_INTERVAL;
 	@:noCompletion private var __heartbeatTimeout:Int = DEFAULT_HEARTBEAT_TIMEOUT;
 	@:noCompletion private var __heartbeatPhase:Int;
@@ -734,12 +738,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __stopHeartbeat():Void {
-		// Guard against clearing an unstarted/already-cleared handle (0 is the
-		// timer system's no-op sentinel). This keeps stop() safe and idempotent
-		// even when no heartbeat was ever scheduled.
-		if (__heartbeatTimerHandle != 0) {
+		// Guard against clearing an unstarted/already-cleared handle, which keeps
+		// stop() safe and idempotent even when no heartbeat was ever scheduled.
+		// The sentinel is TimerHandle.INVALID, not 0: slot 0 of generation 0 is
+		// handle 0, so a session whose heartbeat was the scheduler's first timer
+		// could never be stopped, and went on pinging a closed connection.
+		if (__heartbeatTimerHandle != TimerHandle.INVALID) {
 			Timer.clear(__heartbeatTimerHandle);
-			__heartbeatTimerHandle = 0;
+			__heartbeatTimerHandle = TimerHandle.INVALID;
 		}
 		__hasHeartbeat = false;
 	}
