@@ -145,6 +145,37 @@ class DatagramSocketTest extends utest.Test {
 		try sender.close() catch (_:Dynamic) {}
 	}
 
+	public function testBufferSizesCanBeReadAndAskedFor():Void {
+		if (!requireDatagramSupport()) return;
+
+		var socket = new DatagramSocket();
+		try {
+			socket.bind(0, "127.0.0.1");
+
+			// Whatever the system's defaults are, they are something.
+			Assert.isTrue(socket.receiveBufferSize > 0, "no receive buffer size was read");
+			Assert.isTrue(socket.sendBufferSize > 0, "no send buffer size was read");
+
+			// A size every system grants: above what some start with, below
+			// any cap. Linux reports twice what it keeps; the rest report what
+			// was asked, or round it up.
+			var asked = 96 * 1024;
+			socket.receiveBufferSize = asked;
+			socket.sendBufferSize = asked;
+			Assert.isTrue(socket.receiveBufferSize >= asked, 'asked for a receive buffer of $asked, read back ${socket.receiveBufferSize}');
+			Assert.isTrue(socket.sendBufferSize >= asked, 'asked for a send buffer of $asked, read back ${socket.sendBufferSize}');
+
+			Assert.isTrue(throwsRangeError(() -> socket.receiveBufferSize = 0));
+			Assert.isTrue(throwsRangeError(() -> socket.sendBufferSize = -1));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		socket.close();
+		Assert.equals(0, socket.receiveBufferSize, "a closed socket read a buffer size");
+		Assert.raises(() -> socket.receiveBufferSize = 4096, IOError);
+	}
+
 	public function testBindEphemeralPortSetsLocalEndpoint():Void {
 		if (!requireDatagramSupport()) return;
 

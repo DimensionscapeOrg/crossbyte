@@ -449,6 +449,56 @@ class ReliableDatagramSocketTest extends utest.Test {
 		closeServerQuietly(server);
 	}
 
+	public function testSessionsAskForAWindowOfSocketBuffer():Void {
+		if (!requireDatagramSupport()) return;
+
+		// What this system grants a socket that asks for a window's worth:
+		// all of it on Windows and macOS, what net.core.rmem_max allows on
+		// Linux. A session must end up with at least that much.
+		var plain = new DatagramSocket();
+		plain.receiveBufferSize = ReliableDatagramSocket.WINDOW_BUFFER_SIZE;
+		plain.sendBufferSize = ReliableDatagramSocket.WINDOW_BUFFER_SIZE;
+		var receiveGranted = plain.receiveBufferSize;
+		var sendGranted = plain.sendBufferSize;
+		plain.close();
+
+		var client = new ReliableDatagramSocket();
+		var server = new ReliableDatagramServerSocket();
+		try {
+			Assert.isTrue(client.receiveBufferSize >= receiveGranted, 'a session read back ${client.receiveBufferSize} where $receiveGranted is granted');
+			Assert.isTrue(client.sendBufferSize >= sendGranted, 'a session read back ${client.sendBufferSize} where $sendGranted is granted');
+			Assert.isTrue(server.receiveBufferSize >= receiveGranted, 'a server read back ${server.receiveBufferSize} where $receiveGranted is granted');
+			Assert.isTrue(server.sendBufferSize >= sendGranted, 'a server read back ${server.sendBufferSize} where $sendGranted is granted');
+
+			// Asked for, not imposed: a smaller size can still be chosen, and
+			// reads back as asked, or doubled where Linux counts its own
+			// bookkeeping.
+			var smaller = 96 * 1024;
+			client.receiveBufferSize = smaller;
+			var read = client.receiveBufferSize;
+			Assert.isTrue(read >= smaller && read <= smaller * 2, 'asked for $smaller, read back $read');
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		closeQuietly(client);
+		closeServerQuietly(server);
+	}
+
+	public function testReservingAWindowNeverLowersABuffer():Void {
+		if (!requireDatagramSupport()) return;
+
+		var socket = new DatagramSocket();
+		try {
+			socket.receiveBufferSize = ReliableDatagramSocket.WINDOW_BUFFER_SIZE * 2;
+			var before = socket.receiveBufferSize;
+			ReliableDatagramSocket.__reserveWindow(socket);
+			Assert.isTrue(socket.receiveBufferSize >= before, 'reserving a window took ${before} down to ${socket.receiveBufferSize}');
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		socket.close();
+	}
+
 	public function testARealSessionMeasuresItsRoundTrip():Void {
 		if (!requireDatagramSupport()) return;
 
