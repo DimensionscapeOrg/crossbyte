@@ -97,6 +97,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.io.FileStreamTest());
 		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
 		runner.addCase(new crossbyte.io.ByteDeltaTest());
+		runner.addCase(new crossbyte.io.BitPackingTest());
 	}
 
 	public static function addURL(runner:Runner):Void {
