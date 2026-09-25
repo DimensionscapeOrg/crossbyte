@@ -209,8 +209,9 @@ class HTTPServerH2Test extends utest.Test {
 	// well short of the allowance the surviving cases are judged by.
 	private static inline var PAUSE:Float = 1.0;
 
-	// The server stamps activity with Sys.time(), which Windows advances in
-	// steps of up to about 16 ms, so a close can read a little early.
+	// The server's clock is Sys.time() on eval, hl and neko, which Windows
+	// advances in steps of up to about 16 ms, so a close can read a little
+	// early.
 	private static inline var SLACK:Float = 0.1;
 
 	public function testAnHttp2ConnectionIsNotReapedBetweenRequests(async:Async):Void {

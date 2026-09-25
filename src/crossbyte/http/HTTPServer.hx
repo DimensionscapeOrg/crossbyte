@@ -169,7 +169,7 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		var deadline:Float = Sys.time() + timeoutSeconds;
+		var deadline:Float = haxe.Timer.stamp() + timeoutSeconds;
 		var runtime = __cbInstance;
 		if (runtime == null) {
 			// No runtime to poll on; complete synchronously rather than
@@ -180,7 +180,7 @@ class HTTPServer extends ServerSocket {
 
 		var onTick:TickEvent->Void = null;
 		onTick = function(_:TickEvent):Void {
-			if (__connections > 0 && Sys.time() < deadline) {
+			if (__connections > 0 && haxe.Timer.stamp() < deadline) {
 				return;
 			}
 
@@ -399,7 +399,7 @@ class HTTPServer extends ServerSocket {
 			http2.push(handler);
 		}
 
-		var now:Float = Sys.time();
+		var now:Float = haxe.Timer.stamp();
 		for (handler in handlers) {
 			handler.__checkReceiveDeadline(now);
 		}
@@ -434,7 +434,7 @@ class HTTPServer extends ServerSocket {
 		// and idle gap before it — and count once per connection instead
 		// of once per response.
 		if (__requestSeconds != null) {
-			__requestSeconds.observe(Sys.time() - handler.__requestStartedAt);
+			__requestSeconds.observe(haxe.Timer.stamp() - handler.__requestStartedAt);
 		}
 	}
 

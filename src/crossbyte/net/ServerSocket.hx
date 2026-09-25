@@ -664,7 +664,7 @@ class ServerSocket extends EventDispatcher {
 		// carrying. Read by `registryHasBufferedInput`, which has to know
 		// whether asking the TLS layer about buffered bytes is even meaningful.
 		cbSocket.secure = secure;
-		cbSocket.__timestamp = Sys.time();
+		cbSocket.__timestamp = haxe.Timer.stamp();
 
 		// Canonical for the same reason `Socket.localAddress` is: a peer
 		// address that reads differently per target is one a whitelist written
@@ -740,7 +740,7 @@ class ServerSocket extends EventDispatcher {
 				// Defer the connect event: the peer is not authenticated (and
 				// no application bytes are readable) until TLS completes.
 				sysSocket.setBlocking(false);
-				__pendingHandshakes.push({socket: sysSocket, deadline: Sys.time() + handshakeTimeout});
+				__pendingHandshakes.push({socket: sysSocket, deadline: haxe.Timer.stamp() + handshakeTimeout});
 				return true;
 			}
 
@@ -881,7 +881,7 @@ class ServerSocket extends EventDispatcher {
 			return;
 		}
 
-		var now:Float = Sys.time();
+		var now:Float = haxe.Timer.stamp();
 		var stillPending:Array<PendingHandshake> = [];
 		var completed:Array<Socket> = [];
 

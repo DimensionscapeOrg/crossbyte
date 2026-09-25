@@ -291,7 +291,7 @@ class ServerWebSocket extends ServerSocket {
 			return;
 		}
 
-		var now:Float = Sys.time();
+		var now:Float = haxe.Timer.stamp();
 		var still:Array<PendingUpgrade> = [];
 
 		for (pending in __pendingUpgrades) {
@@ -515,12 +515,12 @@ class ServerWebSocket extends ServerSocket {
 			return;
 		}
 
-		var deadline:Float = Sys.time() + timeoutSeconds;
+		var deadline:Float = haxe.Timer.stamp() + timeoutSeconds;
 		var runtime = __cbInstance;
 		var onTick:TickEvent->Void = null;
 
 		onTick = function(_:TickEvent):Void {
-			if (__clients.length > 0 && Sys.time() < deadline) {
+			if (__clients.length > 0 && haxe.Timer.stamp() < deadline) {
 				return;
 			}
 
@@ -648,7 +648,7 @@ class ServerWebSocket extends ServerSocket {
 		/*var cbSocket = new WebSocket(); 
 			cbSocket.__socket = socket;
 			cbSocket.__connected = true;
-			cbSocket.__timestamp = Sys.time();
+			cbSocket.__timestamp = haxe.Timer.stamp();
 
 			cbSocket.__host = socket.peer().host.host;
 			cbSocket.__port = socket.peer().port;
@@ -695,7 +695,7 @@ class ServerWebSocket extends ServerSocket {
 			var accepted = __fromSockettoWebsocket(socket);
 
 			if (accepted != null && handshakeTimeout > 0) {
-				__pendingUpgrades.push({session: accepted, deadline: Sys.time() + handshakeTimeout});
+				__pendingUpgrades.push({session: accepted, deadline: haxe.Timer.stamp() + handshakeTimeout});
 			}
 		}
 	}
@@ -806,7 +806,7 @@ class ServerWebSocket extends ServerSocket {
 			// the descriptor for as long as it liked -- the native path has been
 			// closing those for a while, and Node was the one serving the web.
 			if (accepted != null && handshakeTimeout > 0) {
-				__pendingUpgrades.push({session: accepted, deadline: Sys.time() + handshakeTimeout});
+				__pendingUpgrades.push({session: accepted, deadline: haxe.Timer.stamp() + handshakeTimeout});
 			}
 		};
 

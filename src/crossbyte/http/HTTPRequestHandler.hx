@@ -199,8 +199,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 			__setup();
 		}
 		__php = php;
-		__requestStartedAt = Sys.time();
-		__receiveDeadline = config.requestTimeout > 0 ? Sys.time() + config.requestTimeout : 0;
+		__requestStartedAt = haxe.Timer.stamp();
+		__receiveDeadline = config.requestTimeout > 0 ? haxe.Timer.stamp() + config.requestTimeout : 0;
 	}
 
 	/** Returns the named cookie value, or `null` when the cookie is absent. */
@@ -319,8 +319,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 				// request's start, and swap the deadline back to meaning
 				// "how long may this request take to arrive".
 				__idle = false;
-				__requestStartedAt = Sys.time();
-				__receiveDeadline = __config.requestTimeout > 0 ? Sys.time() + __config.requestTimeout : 0;
+				__requestStartedAt = haxe.Timer.stamp();
+				__receiveDeadline = __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0;
 				// This edge is a request-slot boundary just like a driver
 				// iteration, and must clear the previous slot's flag
 				// itself: a flood tripping the size check below never
@@ -1111,7 +1111,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__streamSlice = new ByteArray();
 		__streamPeakBuffered = 0;
 		__streamLastBuffered = 0;
-		__streamStallDeadline = Sys.time() + STREAM_STALL_SECONDS;
+		__streamStallDeadline = haxe.Timer.stamp() + STREAM_STALL_SECONDS;
 
 		// The peer can vanish mid-transfer; without these the pump would
 		// keep reading a file for a connection that no longer exists.
@@ -1170,7 +1170,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (entryBuffered < __streamLastBuffered) {
 			// The peer consumed something since the last visit: real
 			// progress, even if this burst turns out to write nothing.
-			__streamStallDeadline = Sys.time() + STREAM_STALL_SECONDS;
+			__streamStallDeadline = haxe.Timer.stamp() + STREAM_STALL_SECONDS;
 		}
 
 		var budget:Int = STREAM_BURST;
@@ -1233,7 +1233,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				// the socket, so flushing per slice would only repeat the
 				// same syscall against the same buffer.
 				__origin.flush();
-				__streamStallDeadline = Sys.time() + STREAM_STALL_SECONDS;
+				__streamStallDeadline = haxe.Timer.stamp() + STREAM_STALL_SECONDS;
 			}
 		} catch (error:Dynamic) {
 			// Mid-body there is no in-band way to signal failure: the status
@@ -1648,7 +1648,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// request stamp and the re-parse both happen here. Under an
 			// active driver loop this schedules one more iteration after
 			// the current dispatch stack unwinds.
-			__requestStartedAt = Sys.time();
+			__requestStartedAt = haxe.Timer.stamp();
 			__processBuffer();
 		}
 	}
@@ -1695,12 +1695,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// A pipelined request already sits in the buffer: straight
 			// back to receiving, request clock armed immediately.
 			__idle = false;
-			__receiveDeadline = __config.requestTimeout > 0 ? Sys.time() + __config.requestTimeout : 0;
+			__receiveDeadline = __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0;
 		} else {
 			// Between requests. The same deadline field now bounds idle
 			// time; zero when idle reaping is disabled.
 			__idle = true;
-			__receiveDeadline = (__config.keepAlive && __config.keepAliveTimeout > 0) ? Sys.time() + __config.keepAliveTimeout : 0;
+			__receiveDeadline = (__config.keepAlive && __config.keepAliveTimeout > 0) ? haxe.Timer.stamp() + __config.keepAliveTimeout : 0;
 		}
 	}
 
@@ -2148,7 +2148,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static var __httpDateSecond:Float = -1;
 
 	@:noCompletion private static function __formatHttpDate():String {
-		var second:Float = Math.ffloor(Sys.time());
+		var second:Float = Math.ffloor(Sys.time()); // time of day: the header states it
 
 		if (second == __httpDateSecond) {
 			return __httpDateCached;

@@ -484,7 +484,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			return;
 		}
 
-		__timestamp = Sys.time();
+		__timestamp = haxe.Timer.stamp();
 		#end
 
 		__host = host;
@@ -1470,7 +1470,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// leaves as an ioError rather than a CLOSE. A connection that
 				// failed is a different fact from one that hung up.
 				doClose = true;
-			} else if (Sys.time() - __timestamp > timeout / 1000) {
+			} else if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
 				doClose = true;
 			}
 		}

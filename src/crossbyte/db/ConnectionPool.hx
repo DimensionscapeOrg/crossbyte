@@ -235,7 +235,7 @@ class ConnectionPool<T> {
 	 */
 	public function acquire(?timeoutSeconds:Float):T {
 		var timeout:Float = (timeoutSeconds == null) ? acquireTimeout : timeoutSeconds;
-		var started:Float = Sys.time();
+		var started:Float = haxe.Timer.stamp();
 		var deadline:Float = started + timeout;
 
 		while (true) {
@@ -245,16 +245,16 @@ class ConnectionPool<T> {
 					// Observed on every acquire, not just the contended ones:
 					// a histogram whose zero bucket stops filling is how a
 					// pool that has started queueing announces itself.
-					__waitSeconds.observe(Sys.time() - started);
+					__waitSeconds.observe(haxe.Timer.stamp() - started);
 					__acquiredTotal.inc();
 				}
 				return candidate;
 			}
 
-			if (Sys.time() >= deadline) {
+			if (haxe.Timer.stamp() >= deadline) {
 				if (__metrics != null) {
 					__timeoutsTotal.inc();
-					__waitSeconds.observe(Sys.time() - started);
+					__waitSeconds.observe(haxe.Timer.stamp() - started);
 				}
 				throw new IllegalOperationError('ConnectionPool.acquire timed out after ${timeout}s with all $maxSize connection(s) in use.');
 			}

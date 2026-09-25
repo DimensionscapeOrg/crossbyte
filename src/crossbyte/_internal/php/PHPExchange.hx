@@ -42,7 +42,7 @@ class PHPExchange {
 
 	public function new(timeoutSeconds:Float) {
 		this.timeoutSeconds = timeoutSeconds;
-		this.deadline = timeoutSeconds > 0 ? Sys.time() + timeoutSeconds : 0;
+		this.deadline = timeoutSeconds > 0 ? haxe.Timer.stamp() + timeoutSeconds : 0;
 	}
 
 	/**
@@ -68,7 +68,7 @@ class PHPExchange {
 
 	/** Whether the clock has run out on this exchange. */
 	public function expired():Bool {
-		return deadline > 0 && Sys.time() >= deadline;
+		return deadline > 0 && haxe.Timer.stamp() >= deadline;
 	}
 
 	public function succeed():Void {
