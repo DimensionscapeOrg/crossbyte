@@ -5,6 +5,15 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `DatagramSocket.receiveBufferSize` and `sendBufferSize`: the operating
+  system's buffers for a socket, read and asked for. Past the receive
+  buffer, arriving datagrams are dropped, and the systems' defaults are
+  small -- 64 KB on Windows -- so a socket many peers send to, or one
+  receiving a window of datagrams at once, wants more. What is granted is
+  the system's call (Linux caps it at `net.core.rmem_max`, and reports twice
+  what it keeps), so read it back. Natively and on the jvm, and on Node once
+  the socket is bound; eval, HashLink and Neko cannot size a socket's
+  buffers and read 0.
 - `crossbyte.net.PeerClock`: where a peer's clock stands against this one,
   from exchanges the application makes in messages of its own -- this side
   notes when it asked, the peer answers with its clock, this side notes when
@@ -407,6 +416,17 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Reliable datagram sessions and servers ask for a megabyte of socket
+  buffer in each direction, `ReliableDatagramSocket.WINDOW_BUFFER_SIZE`, and
+  expose it as `receiveBufferSize` and `sendBufferSize`. A session sends its
+  window in one pass, so it lands on the receiving socket at once, and on
+  the system default -- 64 KB on Windows -- most of a large window was
+  dropped, each loss then waiting out a retransmission timeout. Natively
+  over loopback, 1000-byte messages went from 7,700 a second to 71,000,
+  1200-byte ones from 4.2 MB/s to 81, 16 KB messages from 4.6 MB/s to 74,
+  and 64 KB messages from 4.3 MB/s to 97. Only ever raised, and only asked
+  for: where a system grants less, a session survives the losses it
+  causes, only more slowly.
 - The `http2` sample ends on its own and says whether it worked: it checks
   both bodies against what it served and exits 1 on anything else, so CI now
   runs it rather than only building it. Its status line never printed -- it

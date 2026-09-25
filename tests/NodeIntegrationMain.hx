@@ -708,6 +708,9 @@ class NodeIntegrationMain extends Application {
 
 		receiver = new DatagramSocket();
 		receiver.addEventListener(DatagramSocketDataEvent.DATA, onDatagram);
+		// Asked before binding, which Node cannot act on yet: it is kept, and
+		// applied once the socket is bound.
+		receiver.receiveBufferSize = 96 * 1024;
 		receiver.bind(0, "127.0.0.1");
 		receiver.receive();
 
@@ -722,6 +725,8 @@ class NodeIntegrationMain extends Application {
 		if (receiver.localPort != 0) {
 			udpPort = receiver.localPort;
 			check("the bound port is readable back", udpPort != 0, "got " + udpPort);
+			check("a buffer size asked for before binding was applied once bound", receiver.receiveBufferSize >= 96 * 1024,
+				"read back " + receiver.receiveBufferSize);
 			sendDatagrams();
 			return;
 		}
@@ -897,6 +902,12 @@ class NodeIntegrationMain extends Application {
 	private function waitForReliableHandshake(attempts:Int):Void {
 		if (rdClient.connected && rdAccepted != null && rdAccepted.connected) {
 			check("the reliable handshake completed", true, "");
+			// A window's worth of socket buffer, which Windows grants in full;
+			// elsewhere the system may cap it, and it is only required to read.
+			var windowGranted = Sys.systemName() == "Windows"
+				? rdClient.receiveBufferSize >= ReliableDatagramSocket.WINDOW_BUFFER_SIZE
+				: rdClient.receiveBufferSize > 0;
+			check("a reliable session asked for a window of socket buffer", windowGranted, "read back " + rdClient.receiveBufferSize);
 			var payload = new crossbyte.io.ByteArray();
 			payload.writeUTFBytes("reliable-over-node");
 			rdClient.send(payload);
