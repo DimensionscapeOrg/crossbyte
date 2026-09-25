@@ -21,6 +21,7 @@ import utest.Assert;
 @:access(crossbyte.rpc.RPCCommands)
 @:access(crossbyte.rpc.RPCSession)
 @:access(crossbyte.rpc.RPCResponse)
+@:access(crossbyte.core.CrossByte)
 class RPCRobustnessTest extends utest.Test {
 	// ---- request-id generation (RPCCommands) ----
 
@@ -197,6 +198,24 @@ class RPCRobustnessTest extends utest.Test {
 		Assert.isFalse(response.succeeded);
 		Assert.notNull(response.error);
 		Assert.isNull(session.__runtimePendingResponse);
+	}
+
+	// ---- heartbeat teardown ----
+
+	public function testAHeartbeatThatWasTheFirstTimerStillStops():Void {
+		// A fresh runtime hands out timer handle 0 first. The session took 0 to
+		// mean "no heartbeat", so stop() left that one running, and it went on
+		// pinging a connection that had closed.
+		var runtime = new crossbyte.core.CrossByte(false, DEFAULT, true);
+		var session = new RPCSession(LinkedConnection.pair().client, new RobustCommands());
+		session.start();
+		Assert.equals(0, session.__heartbeatTimerHandle);
+
+		session.stop();
+
+		Assert.isFalse(session.__hasHeartbeat);
+		Assert.isFalse(crossbyte.Timer.clear(0));
+		runtime.exit();
 	}
 }
 
