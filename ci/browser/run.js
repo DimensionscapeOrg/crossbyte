@@ -14,7 +14,11 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 50573;
+// Whatever port the system has free, read back once listening. It was fixed
+// at 50573, which lies in a range Windows can reserve (see `netsh interface
+// ipv4 show excludedportrange protocol=tcp`); where it had, listening failed
+// with EACCES and the suite could not run at all.
+let port = 0;
 const ROOT = __dirname;
 const BUNDLE = path.join(__dirname, '..', '..', 'export', 'browser-tests', 'tests.js');
 const TIMEOUT_MS = 120000;
@@ -62,7 +66,8 @@ const server = http.createServer((request, response) => {
 });
 
 (async () => {
-  await new Promise(resolve => server.listen(PORT, '127.0.0.1', resolve));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  port = server.address().port;
 
   const browser = await puppeteer.launch({
     // Both flags are for CI rather than for us: a Linux container often runs
@@ -99,7 +104,7 @@ const server = http.createServer((request, response) => {
   let result = null;
 
   try {
-    await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'domcontentloaded' });
+    await page.goto('http://127.0.0.1:' + port + '/index.html', { waitUntil: 'domcontentloaded' });
     await Promise.race([
       page.waitForFunction('window.__crossbyte && window.__crossbyte.done', { timeout: TIMEOUT_MS }),
       firstPageError
