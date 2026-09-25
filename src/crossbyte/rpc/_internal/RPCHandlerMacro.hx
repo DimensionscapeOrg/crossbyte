@@ -335,25 +335,35 @@ class RPCHandlerMacro {
 
 		var callTarget:Expr = {expr: EConst(CIdent(m.name)), pos: m.pos};
 		var callExpr:Expr = {expr: ECall(callTarget, paramExprs), pos: m.pos};
+		var callStmts:Array<Expr> = [];
 
 		if (isVoid(m.ret)) {
-			stmts.push(callExpr);
+			callStmts.push(callExpr);
 		} else {
 			var key = typeKey(m.ret, m.pos);
 			if (!TYPE_WRITERS.exists(key)) {
 				Context.error("Unsupported RPC response return type " + key + " for '" + m.name + "'", m.pos);
 			}
-			stmts.push({
+			callStmts.push({
 				expr: EVars([{name: "__result", type: m.ret, expr: callExpr}]),
 				pos: m.pos
 			});
 			var sendResponse = sendResponseExpr(m.op, macro requestId, macro __result, m.ret, m.pos);
-			stmts.push(macro {
+			callStmts.push(macro {
 				if (requestId != 0) {
 					$e{sendResponse};
 				}
 			});
 		}
+
+		// The arguments are read above, outside this: a frame that does not
+		// decode is the peer's fault, and ends the connection. What the method
+		// throws once they have -- or its answer failing to encode -- is this
+		// side's, and becomes an error answer instead; see `__rpc_fail`.
+		var guarded:Expr = {expr: EBlock(callStmts), pos: m.pos};
+		stmts.push(macro try $e{guarded} catch (__error:Dynamic) {
+			this.__rpc_fail($v{m.op}, $v{m.name}, requestId, __error);
+		});
 
 		var body:Expr = {
 			expr: EBlock(stmts),
