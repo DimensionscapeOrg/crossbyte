@@ -8,6 +8,7 @@ import crossbyte.errors.IOError;
 import crossbyte.ipc.LocalConnection;
 #end
 import crossbyte.net.Endpoint.parseURL;
+import crossbyte.net._internal.CloseObservable;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.Event;
@@ -361,6 +362,10 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 	public var onReady(get, set):Void->Void;
 
 	@:noCompletion private var __connection:INetConnection;
+	// Set once this has wrapped the inner connection's onClose to tell an
+	// observer; the application's callback is then kept here.
+	@:noCompletion private var __forwardingClose:Bool = false;
+	@:noCompletion private var __applicationOnClose:Reason->Void = null;
 
 	private function new(connection:INetConnection) {
 		__connection = connection;
@@ -406,11 +411,42 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 	}
 
 	@:noCompletion private inline function get_onClose():Reason->Void {
-		return __connection.onClose;
+		return __forwardingClose ? __applicationOnClose : __connection.onClose;
 	}
 
 	@:noCompletion private inline function set_onClose(value:Reason->Void):Reason->Void {
+		if (__forwardingClose) {
+			return __applicationOnClose = value;
+		}
 		return __connection.onClose = value;
+	}
+
+	/**
+		Handed on to the wrapped connection when it can be told itself -- a
+		`LocalConnection` can. Any other has only its `onClose` to go by, so
+		this wraps that, keeping the application's callback here: set through
+		this `NetConnection` afterwards, it stays wrapped. Set on the wrapped
+		connection directly, it replaces the wrapper, as it would any callback.
+	**/
+	override public function __observeClose(observer:Null<Reason->Void>):Void {
+		if (Std.isOfType(__connection, CloseObservable)) {
+			(cast __connection : CloseObservable).__observeClose(observer);
+			return;
+		}
+		super.__observeClose(observer);
+		if (!__forwardingClose) {
+			__applicationOnClose = __connection.onClose;
+			__connection.onClose = __forwardClose;
+			__forwardingClose = true;
+		}
+	}
+
+	@:noCompletion private function __forwardClose(reason:Reason):Void {
+		__notifyClose(reason);
+		final onClose = __applicationOnClose;
+		if (onClose != null) {
+			onClose(reason);
+		}
 	}
 
 	@:noCompletion private inline function get_onError():Reason->Void {
@@ -570,6 +606,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 	public inline function close():Void {
 		readEnabled = false;
 		__disposeLifecycle();
+		__notifyClose(Reason.Closed);
 		__onClose(Reason.Closed);
 		try {
 			__socket.close();
@@ -599,6 +636,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	private inline function socket_onClose(_e:Event):Void {
 		readEnabled = false;
+		__notifyClose(Reason.Closed);
 		__onClose(Reason.Closed);
 	}
 
@@ -609,12 +647,16 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
 		readEnabled = false;
-		__onError(Reason.Error(e.text));
+		final reason = Reason.Error(e.text);
+		__notifyClose(reason);
+		__onError(reason);
 	}
 
 	@:noCompletion private inline function socket_onSecError(e:SecurityError):Void {
 		readEnabled = false;
-		__onError(Reason.Error(e.message));
+		final reason = Reason.Error(e.message);
+		__notifyClose(reason);
+		__onError(reason);
 	}
 
 	@:noCompletion private inline function __prepareLifecycle():Void {
@@ -781,6 +823,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 	public function close():Void {
 		readEnabled = false;
 		__disposeLifecycle();
+		__notifyClose(Reason.Closed);
 		__onClose(Reason.Closed);
 		__socket.close();
 	}
@@ -804,6 +847,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	@:noCompletion private inline function socket_onClose(_e:Event):Void {
 		readEnabled = false;
+		__notifyClose(Reason.Closed);
 		__onClose(Reason.Closed);
 	}
 
@@ -814,7 +858,9 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
 		readEnabled = false;
-		__onError(Reason.Error(e.text));
+		final reason = Reason.Error(e.text);
+		__notifyClose(reason);
+		__onError(reason);
 	}
 
 	@:noCompletion private inline function __prepareLifecycle():Void {
@@ -973,6 +1019,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 	public function close():Void {
 		readEnabled = false;
 		__disposeLifecycle();
+		__notifyClose(Reason.Closed);
 		__onClose(Reason.Closed);
 		__socket.close();
 	}
@@ -986,6 +1033,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 
 	@:noCompletion private inline function socket_onClose(_e:Event):Void {
 		readEnabled = false;
+		__notifyClose(Reason.Closed);
 		__onClose(Reason.Closed);
 	}
 
@@ -996,7 +1044,9 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 
 	@:noCompletion private inline function socket_onIoError(e:IOErrorEvent):Void {
 		readEnabled = false;
-		__onError(Reason.Error(e.text));
+		final reason = Reason.Error(e.text);
+		__notifyClose(reason);
+		__onError(reason);
 	}
 
 	@:noCompletion private inline function __prepareLifecycle():Void {

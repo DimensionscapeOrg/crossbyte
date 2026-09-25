@@ -655,6 +655,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC call waiting on an answer fails when its connection closes, or a
+  transport error stops its reads. It waited for good: only `stop()`, a
+  heartbeat timeout or an unreadable frame failed it, since the session
+  could not use `onClose` to hear of the end -- that is the application's
+  one callback, and set after the session it would have replaced the
+  session's. The transports now tell the session themselves, before the
+  application's callbacks and whenever those were set: TCP, WebSocket and
+  reliable UDP connections, and `LocalConnection`. A `NetConnection`
+  wrapping some other `INetConnection` wraps its `onClose`, keeping the
+  application's callback when that is set through the `NetConnection`. A
+  close costs one check; nothing on the way data goes changed.
 - A `LocalConnection` listened or connected again could run two reader
   threads. `listen()` and `connect()` begin with `close()`, and the reader
   thread of the session that ended sleeps between polls: it woke to find

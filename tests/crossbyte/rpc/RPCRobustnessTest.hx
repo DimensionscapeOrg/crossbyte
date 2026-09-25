@@ -200,6 +200,51 @@ class RPCRobustnessTest extends utest.Test {
 		Assert.isNull(session.__runtimePendingResponse);
 	}
 
+	// ---- the connection ending ----
+
+	public function testACallWaitingWhenItsConnectionClosesFails():Void {
+		// Only stop(), a heartbeat timeout or an unreadable frame failed a
+		// call waiting on an answer. When the connection closed on its own, it
+		// waited for good.
+		var link = LinkedConnection.pair();
+		var commands = new RobustCommands();
+		var session = new RPCSession<RobustCommands>(link.client, commands);
+		// Nobody is on the other end to answer either of these.
+		var compiled = commands.getName(1);
+		var runtime:RPCResponse<Dynamic> = session.request(77, [1]);
+
+		link.client.close();
+
+		Assert.isTrue(compiled.completed);
+		Assert.isFalse(compiled.succeeded);
+		Assert.stringContains("RPC connection closed", compiled.error);
+		Assert.isTrue(runtime.completed);
+		Assert.isFalse(runtime.succeeded);
+		Assert.stringContains("RPC connection closed", runtime.error);
+	}
+
+	public function testTheApplicationsOnCloseRunsBesideTheSessions():Void {
+		// The session is told without taking the application's callback,
+		// whether that was set before the session or after it.
+		var before = LinkedConnection.pair();
+		var closedBefore = false;
+		before.client.onClose = _ -> closedBefore = true;
+		var first = new RPCSession<RobustCommands>(before.client, new RobustCommands());
+		var firstWaiting = first.commands.getName(1);
+		before.client.close();
+		Assert.isTrue(closedBefore, "onClose set before the session did not run");
+		Assert.isTrue(firstWaiting.completed);
+
+		var after = LinkedConnection.pair();
+		var second = new RPCSession<RobustCommands>(after.client, new RobustCommands());
+		var closedAfter = false;
+		second.connection.onClose = _ -> closedAfter = true;
+		var secondWaiting = second.commands.getName(1);
+		after.client.close();
+		Assert.isTrue(closedAfter, "onClose set after the session did not run");
+		Assert.isTrue(secondWaiting.completed);
+	}
+
 	// ---- heartbeat teardown ----
 
 	public function testAHeartbeatThatWasTheFirstTimerStillStops():Void {

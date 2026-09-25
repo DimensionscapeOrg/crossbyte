@@ -11,6 +11,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.INetConnection;
 import crossbyte.net.Protocol;
+import crossbyte.net._internal.CloseObservable;
 import crossbyte.net.Reason;
 import crossbyte.net.Transport;
 import haxe.io.Bytes;
@@ -70,7 +71,7 @@ private enum LocalConnectionDispatch {
 #if cpp
 @:access(crossbyte.ipc._internal.NativeLocalConnection)
 #end
-class LocalConnection implements INetConnection {
+class LocalConnection implements INetConnection implements CloseObservable {
 	public static inline var isSupported:Bool = #if cpp true #else false #end;
 
 	/** Maximum payload size accepted by the framing layer, in bytes. */
@@ -132,6 +133,8 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private var __session:Int = 0;
 	@:noCompletion private var __pendingPayloads:Array<ByteArray> = [];
 	@:noCompletion private var __dispatchFailed:Bool = false;
+	// Told as the connection ends, before onClose; see CloseObservable.
+	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
 
 	public function new() {
 		__captureRuntime();
@@ -327,9 +330,22 @@ class LocalConnection implements INetConnection {
 		#end
 
 		if (wasConnected) {
+			__notifyClose(Reason.Closed);
 			try {
 				__onClose(Reason.Closed);
 			} catch (_:Dynamic) {}
+		}
+	}
+
+	@:noCompletion public function __observeClose(observer:Null<Reason->Void>):Void {
+		__closeObserver = observer;
+	}
+
+	/** Before `onClose`, wherever that is called; see CloseObservable. **/
+	@:noCompletion private inline function __notifyClose(reason:Reason):Void {
+		final observer = __closeObserver;
+		if (observer != null) {
+			observer(reason);
 		}
 	}
 
@@ -599,6 +615,7 @@ class LocalConnection implements INetConnection {
 				case Ready:
 					__onReady();
 				case Close(reason):
+					__notifyClose(reason);
 					__onClose(reason);
 				case Error(reason):
 					__onError(reason);
