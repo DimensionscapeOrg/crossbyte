@@ -526,6 +526,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Native debug builds that include `hxcpp-debug-server` -- every cpp debug
+  build Aedifex makes while the VS Code hxcpp debugger is installed -- no
+  longer die before `main` when no debugger is attached. Not finding one,
+  the debug server waits for a late attach by polling on a `haxe.Timer`,
+  which it makes in a static initializer; CrossByte's `haxe.Timer` threw
+  there, "haxe.Timer requires a primordial CrossByte runtime", since no
+  runtime exists before `main`. A timer made before any runtime now waits
+  for one and starts on the primordial runtime's ticks when that is set up,
+  as the standard library's timer fires once its event loop runs -- so a
+  debugger attaching late is noticed too. Stopping a timer after its
+  runtime has exited threw the same error, and no longer does.
 - The HTTP/2 client no longer closes a pooled connection under a request
   that has just started on it. The pool judged a session idle from two
   fields it read without the session's lock -- streams in flight, and when

@@ -56,7 +56,6 @@ class Timer {
 }
 #else
 import crossbyte.core.CrossByte;
-import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.TickEvent;
 import haxe.ds.IntMap;
 import haxe.Log;
@@ -67,6 +66,16 @@ import sys.thread.Mutex;
 
 /**
 	A `haxe.Timer` implementation backed by CrossByte's tick-driven runtime.
+
+	A timer made before any runtime exists waits for one: it joins the
+	primordial runtime when that is set up, and counts from then. That is the
+	standard library's contract -- a timer fires once the event loop runs --
+	and libraries rely on it from their static initializers, which run before
+	`main`. hxcpp's VS Code debugger is one: its server, compiled into every
+	debug build that includes `hxcpp-debug-server`, polls for a late attach
+	with a timer it makes during static initialization when no debugger is
+	listening. This used to throw there, so every such build died before
+	`main` unless the debugger was already attached.
 **/
 #if cpp
 @:cppFileCode("
@@ -93,6 +102,9 @@ class Timer {
 	private static var timerCount:Int = 0;
 	private static var timers:IntMap<Timer> = new IntMap<Timer>();
 	private static var __currentId:Int = 0;
+	// The runtime the tick listener is on, or null while it is on none:
+	// before any runtime exists, and whenever no timer is running.
+	private static var __listening:CrossByte = null;
 	#if cpp
 	private static final __mutex:Mutex = new Mutex();
 	#end
@@ -115,18 +127,38 @@ class Timer {
 			id = ++__currentId;
 			timerCount++;
 			timers.set(id, this);
-			if (timerCount == 1) {
-				__getGlobalRuntime().addEventListener(TickEvent.TICK, onTick);
+			if (__listening == null) {
+				// None yet, before any runtime: `__primordialReady` attaches
+				// the listener when the first one is set up.
+				@:privateAccess __listen(CrossByte.__primordial);
 			}
 		});
 	}
 
-	private static inline function __getGlobalRuntime():CrossByte {
-		@:privateAccess var runtime:CrossByte = CrossByte.__primordial;
-		if (runtime == null) {
-			throw new IllegalOperationError("haxe.Timer requires a primordial CrossByte runtime. Create an Application, HostApplication, ServerApplication, or primordial CrossByte before using global timers.");
+	// Moves the tick listener onto `runtime`, if there is one. Called with
+	// the lock held.
+	private static function __listen(runtime:CrossByte):Void {
+		if (runtime == null || runtime == __listening) {
+			return;
 		}
-		return runtime;
+		if (__listening != null) {
+			__listening.removeEventListener(TickEvent.TICK, onTick);
+		}
+		runtime.addEventListener(TickEvent.TICK, onTick);
+		__listening = runtime;
+	}
+
+	/**
+		Called as a primordial runtime is set up, so the timers made before it
+		-- while the program's statics were initialized, before `main` -- start
+		counting on its ticks.
+	**/
+	@:noCompletion private static function __primordialReady(runtime:CrossByte):Void {
+		__withLock(() -> {
+			if (timerCount > 0) {
+				__listen(runtime);
+			}
+		});
 	}
 
 	private static function onTick(event:TickEvent):Void {
@@ -163,8 +195,11 @@ class Timer {
 		stopped = true;
 		__withLock(() -> {
 			timers.remove(id);
-			if (--timerCount == 0) {
-				__getGlobalRuntime().removeEventListener(TickEvent.TICK, onTick);
+			// The runtime listened to, not the primordial now: the two differ
+			// once that runtime has exited, and stopping a timer then threw.
+			if (--timerCount == 0 && __listening != null) {
+				__listening.removeEventListener(TickEvent.TICK, onTick);
+				__listening = null;
 			}
 		});
 	}
