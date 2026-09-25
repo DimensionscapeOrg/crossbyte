@@ -405,6 +405,71 @@ class ReliableDatagramSocketTest extends utest.Test {
 		closeServerQuietly(server);
 	}
 
+	public function testAServerGivesEachSessionThePolicyItsHookReturns():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var peer = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var asked:Array<Int> = [];
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.congestionControlFor = (address, port) -> {
+				asked.push(port);
+				return new LossTolerantCongestionControl();
+			};
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> accepted = e.socket);
+			server.listen();
+			peer.bind(0, "127.0.0.1");
+			peer.listen();
+
+			// One session accepted, one dialled: both are the server's to make.
+			client.connect("127.0.0.1", server.localPort);
+			var dialled = server.connect("127.0.0.1", peer.localPort);
+			pumpUntil(() -> accepted != null && dialled.connected, 5.0);
+
+			Require.notNull(accepted, "the server never accepted the client");
+			Assert.isTrue(Std.isOfType(accepted.congestionControl, LossTolerantCongestionControl), "an accepted session did not get the hook's policy");
+			Assert.isTrue(Std.isOfType(dialled.congestionControl, LossTolerantCongestionControl), "a dialled session did not get the hook's policy");
+			Assert.equals(2, asked.length, "the hook was not asked once a session");
+			Assert.isTrue(asked.indexOf(peer.localPort) >= 0, "the hook was not told who a dialled session is to");
+
+			// Nothing made the client but its own constructor: the default.
+			Assert.equals(CongestionControl, Type.getClass(client.congestionControl));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeServerQuietly(server);
+		closeServerQuietly(peer);
+	}
+
+	public function testAPolicyHookThatThrowsRefusesTheConnect():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.congestionControlFor = (address, port) -> throw "no policy for this peer";
+			server.listen();
+			client.connect("127.0.0.1", server.localPort);
+
+			pumpUntil(() -> false, 0.3);
+			Assert.equals(0, __countConnections(server), "a session was opened for a peer the hook refused");
+			Assert.isFalse(client.connected);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeServerQuietly(server);
+	}
+
 	public function testAServerDialsOutFromItsOwnPort():Void {
 		if (!requireDatagramSupport()) return;
 
