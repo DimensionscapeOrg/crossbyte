@@ -24,6 +24,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.core.ConfigTest());
 		runner.addCase(new crossbyte.core.SocketCapacityTest());
 		runner.addCase(new crossbyte.core.FixedStepTest());
+		runner.addCase(new crossbyte.core.PassFlushTest());
 	}
 
 	public static function addFoundation(runner:Runner):Void {
@@ -230,6 +231,7 @@ class TestSuites {
 		// Real sockets whose frames go through memory, so reordering, loss and
 		// duplication happen when a case says rather than when a network does.
 		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
+		runner.addCase(new crossbyte.net.ReliableDatagramCoalescingTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {
