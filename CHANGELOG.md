@@ -683,6 +683,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On JavaScript, the runtime lane's RPC request ids overflowed as the
+  compiled lane's did before the `RPCCommands.__nextRequestId` fix below:
+  an `Int` there is a double, so after 2^31 - 1 runtime calls on one
+  session the next id was `2147483648` rather than 1. That is wider than
+  the 32 bits a varuint on the wire may hold, and the peer threw "varuint
+  overflow" reading the frame instead of answering the call.
 - An RPC call waiting on an answer fails when its connection closes, or a
   transport error stops its reads. It waited for good: only `stop()`, a
   heartbeat timeout or an unreadable frame failed it, since the session
