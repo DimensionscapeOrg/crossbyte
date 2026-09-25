@@ -1,6 +1,7 @@
 package crossbyte.ipc;
 
 import crossbyte.core.CrossByte;
+import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.net.NetConnection;
 import crossbyte.net.Protocol;
@@ -69,6 +70,98 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	public function testReadyAndDataArriveWhileTheRuntimesListenersChange():Void {
+		// The reader thread attached the tick listener that carries its
+		// dispatches to this thread, and EventDispatcher is not thread-safe:
+		// an attach that met a listener change made here was lost, and the
+		// listening side then never saw onReady nor anything sent to it. Here
+		// the listeners change as fast as this thread can change them, the way
+		// timers and sockets change them all the time.
+		#if (cpp && (windows || linux || mac || macos))
+		var runtime = CrossByte.current();
+		var kept:TickEvent->Void = _ -> {};
+		var churn:TickEvent->Void = _ -> {};
+		runtime.addEventListener(TickEvent.TICK, kept);
+		var lost:Array<String> = [];
+
+		for (round in 0...40) {
+			var server = new LocalConnection();
+			var client = new LocalConnection();
+			var ready = false;
+			var received:String = null;
+			try {
+				var name = uniqueName("churn");
+				server.onReady = () -> ready = true;
+				server.onData = input -> received = input.readUTFBytes(input.length);
+				server.readEnabled = true;
+				server.listen(name);
+				client.connect(name);
+				client.send(bytesOf('round $round'));
+
+				var deadline = haxe.Timer.stamp() + 2.0;
+				while ((!ready || received == null) && haxe.Timer.stamp() < deadline) {
+					for (_ in 0...200) {
+						runtime.addEventListener(TickEvent.TICK, churn);
+						runtime.removeEventListener(TickEvent.TICK, churn);
+					}
+					runtime.pump(1 / 60, 0);
+				}
+				if (!ready || received != 'round $round') {
+					lost.push('round $round: ready=$ready received=$received');
+				}
+			} catch (e:Dynamic) {
+				lost.push('round $round threw $e');
+			}
+			closeQuietly(client);
+			closeQuietly(server);
+		}
+
+		runtime.removeEventListener(TickEvent.TICK, kept);
+		Assert.equals(0, lost.length, lost.join("; "));
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAConnectionWhosePeerWentAwayIsLetGoOfByTheRuntime():Void {
+		// Its tick listener stays on for as long as it can deliver. It came off
+		// after every drain before, so the runtime never held a dead connection;
+		// held until close(), one never closed would be held for good.
+		#if (cpp && (windows || linux || mac || macos))
+		var runtime = CrossByte.current();
+		var before = tickListeners(runtime);
+		var name = uniqueName("peergone");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var readyCount = 0;
+		var closed = false;
+
+		try {
+			server.onReady = () -> readyCount++;
+			client.onReady = () -> readyCount++;
+			client.onClose = _ -> closed = true;
+			server.listen(name);
+			client.connect(name);
+			pumpUntil(() -> readyCount == 2, 2.0);
+			Assert.equals(2, readyCount);
+
+			server.close();
+			pumpUntil(() -> closed && tickListeners(runtime) == before, 2.0);
+
+			Assert.isTrue(closed, "the client was not told its peer went away");
+			Assert.equals(before, tickListeners(runtime), "the runtime still holds a connection whose peer went away");
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testPendingReadsFlushWhenReadEnabledBecomesTrue():Void {
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("buffered");
@@ -131,12 +224,18 @@ class LocalConnectionTest extends utest.Test {
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		#if (cpp && (windows || linux || mac || macos))
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeout;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
 		#end
+	}
+
+	private static function tickListeners(runtime:CrossByte):Int {
+		var map = @:privateAccess runtime.__eventMap;
+		var listeners:Array<Dynamic> = map == null ? null : cast map.get(TickEvent.TICK);
+		return listeners == null ? 0 : listeners.length;
 	}
 
 	private static function closeQuietly(connection:LocalConnection):Void {
