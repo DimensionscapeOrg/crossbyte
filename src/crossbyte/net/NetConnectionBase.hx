@@ -1,9 +1,10 @@
 package crossbyte.net;
 
 import crossbyte.io.ByteArray;
+import crossbyte.net._internal.CloseObservable;
 
 /** Shared base storage for concrete `NetConnection` transport adapters. */
-abstract class NetConnectionBase {
+abstract class NetConnectionBase implements CloseObservable {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -31,6 +32,22 @@ abstract class NetConnectionBase {
 	public var inTimestamp:Float = 0.0;
 	/** Timestamp of the most recent outbound payload, in uptime seconds. */
 	public var outTimestamp:Float = 0.0;
+
+	// Told as the connection ends, before the application's callbacks; see
+	// CloseObservable.
+	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
+
+	@:noCompletion public function __observeClose(observer:Null<Reason->Void>):Void {
+		__closeObserver = observer;
+	}
+
+	/** Called by each transport wherever it ends: before `onClose`, and before an `onError` that stopped its reads. **/
+	@:noCompletion private inline function __notifyClose(reason:Reason):Void {
+		final observer = __closeObserver;
+		if (observer != null) {
+			observer(reason);
+		}
+	}
 
 	/** Exposes the concrete transport wrapper. */
 	public abstract function expose():Transport;

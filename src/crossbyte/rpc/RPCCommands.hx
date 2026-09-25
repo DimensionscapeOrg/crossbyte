@@ -1,6 +1,7 @@
 package crossbyte.rpc;
 
-// Not built for the browser: the command surface is bound to RPCSession.
+// Built for every target, JavaScript included: the portable suite runs RPC on
+// Node and in a browser.
 
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.NetConnection;
