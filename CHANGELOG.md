@@ -475,6 +475,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- HTTP/2 connections on cpp and Node are no longer closed a quarter second
+  after they open. The server's idle sweep measured a connection's silence as
+  `Sys.time()` minus a last-activity time from `haxe.Timer.stamp()`, which is
+  the same clock on hl, neko and jvm and a counter from an arbitrary start on
+  cpp and Node. There every connection read as idle since 1970 -- the http2
+  sample logged `HTTP/2 connection idle for 1790210331s` -- and was closed at
+  the first sweep: keep-alive between requests lasted a quarter second instead
+  of `keepAliveTimeout`, and a connection with a request in flight was cut off
+  instead of being given `requestTimeout`. No test noticed, because every
+  HTTP/2 exchange in the suite finished before the first sweep ran; four cases
+  now outlast it. Activity is stamped with `Sys.time()`, the clock the sweep
+  and the HTTP/1.1 deadlines already use.
 - A reliable datagram message larger than one frame arrived as several.
   `DATAGRAM` mode promises the peer one `DATA` event per `send`, and `send`'s
   own documentation said larger payloads were "reassembled on the remote
