@@ -88,7 +88,8 @@ class HTTPServer extends ServerSocket {
 		try {
 			bind(__config.port, __config.address);
 			listen(__config.backlog);
-			Logger.info('HTTP Server started on ${__config.address}:${__config.port}');
+			// The port bound, which for a configured 0 is the one the system chose.
+			Logger.info('HTTP Server started on ${__config.address}:${localPort}');
 		} catch (e:Dynamic) {
 			Logger.error('HTTP Server failed to start on ${__config.address}:${__config.port}: ' + e);
 			throw e;
@@ -425,7 +426,6 @@ class HTTPServer extends ServerSocket {
 	}
 
 	private function this_onResponse(e:HTTPStatusEvent, handler:HTTPRequestHandler):Void {
-		Logger.info(e.toString());
 		__recordResponse(e);
 
 		// Observed per response, at response time. The old cleanup-time

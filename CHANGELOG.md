@@ -407,6 +407,16 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The `http2` sample ends on its own and says whether it worked: it checks
+  both bodies against what it served and exits 1 on anything else, so CI now
+  runs it rather than only building it. Its status line never printed -- it
+  listened for `HTTP_RESPONSE_STATUS`, which is the server's event, where a
+  loader reports `HTTP_STATUS` -- and it listens on a port the system picks.
+  `Http2Sample serve` keeps it serving for a browser, as before.
+- The `rpc-greeter` sample's loopback connection stamps its traffic with
+  CrossByte uptime, which is what `INetConnection` documents and what
+  `RPCSession` measures heartbeats and timeouts against, instead of the time
+  of day.
 - A reliable datagram session gathers what it sends and sends it when the
   runtime's loop finishes its pass -- after the tick's handlers, after each
   round of socket polling, at the end of `HostApplication.advance`, and on
@@ -526,6 +536,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPServer` logs the port it bound when it starts -- the one the system
+  chose, for a configured 0, where it logged `:0` -- and no longer logs every
+  HTTP/1.1 response a second time as the raw text of its `HTTPStatusEvent`,
+  after the request handler has already logged it readably.
 - Native debug builds that include `hxcpp-debug-server` -- every cpp debug
   build Aedifex makes while the VS Code hxcpp debugger is installed -- no
   longer die before `main` when no debugger is attached. Not finding one,

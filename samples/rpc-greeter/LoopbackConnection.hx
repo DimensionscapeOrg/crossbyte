@@ -1,3 +1,4 @@
+import crossbyte.core.CrossByte;
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.INetConnection;
@@ -61,7 +62,7 @@ class LoopbackConnection implements INetConnection {
 			return;
 		}
 
-		outTimestamp = Sys.time();
+		outTimestamp = uptime();
 		var copy = new ByteArray();
 		copy.writeBytes(data, 0, data.length);
 		copy.position = 0;
@@ -78,8 +79,23 @@ class LoopbackConnection implements INetConnection {
 		__onClose(Reason.Closed);
 	}
 
+	// INetConnection's timestamps are CrossByte uptime, which is the clock
+	// RPCSession measures its heartbeat and timeout against. Sys.time() is
+	// the time of day, and a session comparing the two would think every
+	// message was sent fifty-six years from now. This sample runs with no
+	// runtime, so there is no uptime and they stay 0, which a session reads
+	// as nothing having happened yet.
+	private static function uptime():Float {
+		try {
+			var runtime = CrossByte.current();
+			return runtime != null ? runtime.uptime : 0.0;
+		} catch (_:Dynamic) {
+			return 0.0;
+		}
+	}
+
 	private function __receive(input:ByteArray):Void {
-		inTimestamp = Sys.time();
+		inTimestamp = uptime();
 		if (bufferInbound) {
 			__pendingInputs.push(input);
 			return;

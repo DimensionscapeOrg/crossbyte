@@ -7,14 +7,19 @@ The point of the sample is how little there is to it:
 - The listener sets `HTTPServerConfig.http2Enabled` and then serves **both**
   versions. Each connection is served as whichever one it turns out to be
   speaking — over TLS that is settled by ALPN, and over cleartext by the
-  connection preface, which an HTTP/1.1 client never sends. Point a browser at
-  the running sample and it will be served HTTP/1.1 on the same port.
+  connection preface, which an HTTP/1.1 client never sends. Run it with
+  `serve` and point a browser at it, and it will be served HTTP/1.1 on the
+  same port.
 - The client sets `URLRequest.httpVersion` and nothing else. The bundled
   backend registers itself the first time a request asks for HTTP/2.
 
 Two requests go out at once. They share a single connection and travel as
 concurrent streams, which is the difference from HTTP/1.1 keep-alive: the
 second request never waits for the first one's framing.
+
+Without arguments it checks both bodies against what it served and exits: 0
+when both arrived, 1 otherwise, which is how CI runs it. With `serve` it keeps
+serving, on a port the system picks and prints, until the process is stopped.
 
 Useful commands from `samples/http2`:
 
@@ -38,7 +43,8 @@ haxe check.hxml
 haxe cpp.hxml
 ```
 
-Then run `export/http2/Http2Sample`.
+Then run `export/http2/Http2Sample`, or `export/http2/Http2Sample serve` to keep
+it running.
 
 ## Cancelling
 
