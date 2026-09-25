@@ -491,6 +491,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A handler's `@:rpc` method is no longer held to eight arguments. Nothing
+  else was: a commands stub or a contract with more built, and a handler
+  written without a contract could not answer it. Nothing in the encoding
+  needs a limit.
 - A runtime RPC handler that throws answers its caller with
   `RPCError.INTERNAL_MESSAGE`, "Internal error", unless it threw an
   `RPCError`. It sent `Std.string(error)`, which put whatever the error held
