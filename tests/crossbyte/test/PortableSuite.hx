@@ -33,6 +33,7 @@ class PortableSuite {
 		// through RTCPeerConnection.
 		runner.addCase(new crossbyte.net.TurnClientTest());
 		runner.addCase(new crossbyte.net.StunQueryTest());
+		runner.addCase(new crossbyte.net.PeerClockTest());
 		// The class exists everywhere and generates only on native, so the
 		// cases here assert on both sides of that: a target without mbedTLS
 		// has to say so rather than fail somewhere further along.

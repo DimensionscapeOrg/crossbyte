@@ -449,6 +449,45 @@ class ReliableDatagramSocketTest extends utest.Test {
 		closeServerQuietly(server);
 	}
 
+	public function testARealSessionMeasuresItsRoundTrip():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var echoed:Bool = false;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> {
+				accepted = event.socket;
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, dataEvent -> accepted.send(dataEvent.data));
+			});
+			server.listen();
+			client.addEventListener(DatagramSocketDataEvent.DATA, _ -> echoed = true);
+
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 2.0);
+			Assert.equals(-1.0, client.roundTripTime, "a round trip before anything was acknowledged");
+
+			client.send(bytesOf("there and back"));
+			pumpUntil(() -> echoed && client.roundTripTime >= 0, 2.0);
+
+			// Loopback, so well under a second however loaded the machine, and
+			// the timeout drawn from it no lower than its floor.
+			Assert.isTrue(echoed, "the echo never came back");
+			Assert.isTrue(client.roundTripTime >= 0 && client.roundTripTime < 1, "the round trip read " + client.roundTripTime);
+			Assert.isTrue(client.roundTripVariation >= 0);
+			Assert.isTrue(client.retransmitTimeout >= 0.2 && client.retransmitTimeout <= 1, "the timeout read " + client.retransmitTimeout);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeQuietly(accepted);
+		closeServerQuietly(server);
+	}
+
 	public function testAMessageLargerThanOneFrameArrivesWhole():Void {
 		if (!requireDatagramSupport()) return;
 

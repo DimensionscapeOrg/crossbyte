@@ -5,6 +5,24 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.net.PeerClock`: where a peer's clock stands against this one,
+  from exchanges the application makes in messages of its own -- this side
+  notes when it asked, the peer answers with its clock, this side notes when
+  the answer came. One exchange puts the peer's reading within the round
+  trip, so the offset is taken at the middle and is out by at most half the
+  round trip, which `error` reports; of the last `window` exchanges, 16 by
+  default, the one with the shortest round trip is used, since queueing is
+  what lengthens a round trip and it is rarely even on both legs. `now()`,
+  `toPeer` and `toLocal` read times across, `jitter` follows how much one
+  round trip differs from the next as RFC 3550 smooths it, and an exchange
+  that cannot have happened -- an answer before its question, a time that is
+  not finite -- is refused. It owns no socket and no timer, so it runs on
+  every target, the browser included.
+- `ReliableDatagramSocket.roundTripTime`, `roundTripVariation` and
+  `retransmitTimeout`: what the session measures to time its own
+  retransmissions -- RFC 6298's smoothed round trip, its variation, and the
+  timeout drawn from them -- read-only, in seconds. The round trip is -1
+  until the first reliable frame sent only once is acknowledged.
 - A payload on the CONNECT that opens a reliable datagram session, for the
   server to decide on before it allocates anything. `connect` on
   `ReliableDatagramSocket` and on `ReliableDatagramServerSocket` takes one of
