@@ -346,6 +346,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			}
 
 			final frameEnd:Int = input.position + payloadLen;
+			if (__commands != null) {
+				__commands.__frameEnd = frameEnd;
+			}
 			final flags:Int = input.readByte();
 			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
 				throw "Runtime RPC frame delivered to compile-time commands lane";
@@ -384,11 +387,17 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			}
 
 			final frameEnd:Int = input.position + payloadLen;
+			if (__handler != null) {
+				__handler.this_frameEnd = frameEnd;
+			}
+			if (__commands != null) {
+				__commands.__frameEnd = frameEnd;
+			}
 			final flags:Int = input.readByte();
 			final op:Int = input.readInt();
 
 			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
-				__dispatchRuntimeFrame(flags, op, input);
+				__dispatchRuntimeFrame(flags, op, input, frameEnd);
 			} else if (__handler != null) {
 				__dispatchCompiledFrame(flags, op, input);
 			} else if (__commands != null) {
@@ -433,23 +442,38 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private function __dispatchRuntimeFrame(flags:Int, op:Int, input:ByteArrayInput):Void {
+	/**
+		One runtime frame, ending at `frameEnd`. Everything it carries is read,
+		and checked to lie within it, before a handler runs or a caller is
+		answered.
+	**/
+	@:noCompletion private function __dispatchRuntimeFrame(flags:Int, op:Int, input:ByteArrayInput, frameEnd:Int):Void {
 		final runtimeFlags:Int = flags & ~RPCWire.FLAG_RUNTIME;
 		if (runtimeFlags == 0) {
-			__invokeRuntime(op, RPCRuntimeCodec.readArgs(input), 0);
+			final args = RPCRuntimeCodec.readArgs(input, frameEnd);
+			RPCWire.requireWithin(input, frameEnd);
+			__invokeRuntime(op, args, 0);
 			return;
 		}
 		if (runtimeFlags == RPCWire.FLAG_REQUEST) {
 			final requestId:Int = input.readVarUInt();
-			__invokeRuntime(op, RPCRuntimeCodec.readArgs(input), requestId);
+			final args = RPCRuntimeCodec.readArgs(input, frameEnd);
+			RPCWire.requireWithin(input, frameEnd);
+			__invokeRuntime(op, args, requestId);
 			return;
 		}
 		if (runtimeFlags == RPCWire.FLAG_RESPONSE) {
-			__resolveRuntimeResponse(op, input.readVarUInt(), RPCRuntimeCodec.readValue(input));
+			final requestId:Int = input.readVarUInt();
+			final value:Dynamic = RPCRuntimeCodec.readValue(input, frameEnd);
+			RPCWire.requireWithin(input, frameEnd);
+			__resolveRuntimeResponse(op, requestId, value);
 			return;
 		}
 		if (runtimeFlags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-			__rejectRuntimeResponse(input.readVarUInt(), input.readVarUTF());
+			final requestId:Int = input.readVarUInt();
+			final message:String = input.readVarUTF();
+			RPCWire.requireWithin(input, frameEnd);
+			__rejectRuntimeResponse(requestId, message);
 			return;
 		}
 		throw "Invalid runtime RPC flags";

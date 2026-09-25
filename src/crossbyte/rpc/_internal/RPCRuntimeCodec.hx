@@ -28,12 +28,14 @@ class RPCRuntimeCodec {
 		}
 	}
 
-	public static function readArgs(input:ByteArrayInput):Array<Dynamic> {
+	/** Reads a call's arguments, none of them past `end`. **/
+	public static function readArgs(input:ByteArrayInput, end:Int):Array<Dynamic> {
 		final count:Int = input.readVarUInt();
+		RPCWire.requireRoom(input, end, count);
 		final values:Array<Dynamic> = [];
 		values.resize(count);
 		for (i in 0...count) {
-			values[i] = readValue(input);
+			values[i] = readValue(input, end);
 		}
 		return values;
 	}
@@ -73,7 +75,8 @@ class RPCRuntimeCodec {
 		}
 	}
 
-	public static function readValue(input:ByteArrayInput):Dynamic {
+	/** Reads one value, not past `end`. **/
+	public static function readValue(input:ByteArrayInput, end:Int):Dynamic {
 		return switch (input.readByte()) {
 			case TAG_NULL: null;
 			case TAG_FALSE: false;
@@ -83,6 +86,7 @@ class RPCRuntimeCodec {
 			case TAG_STRING: input.readVarUTF();
 			case TAG_BYTES:
 				final length:Int = input.readVarUInt();
+				RPCWire.requireRoom(input, end, length);
 				final bytes = Bytes.alloc(length);
 				input.readBytes(bytes, 0, length);
 				bytes;
