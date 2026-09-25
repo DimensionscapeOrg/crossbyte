@@ -89,7 +89,7 @@ class StunClient {
 			return future;
 		}
 
-		var query = new StunQuery(Sys.time(), timeoutMs);
+		var query = new StunQuery(haxe.Timer.stamp(), timeoutMs);
 		var socket = new DatagramSocket();
 		var runtime:CrossByte = CrossByte.current();
 		var settled:Bool = false;
@@ -147,7 +147,7 @@ class StunClient {
 				return;
 			}
 
-			var now:Float = Sys.time();
+			var now:Float = haxe.Timer.stamp();
 
 			if (query.expired(now)) {
 				finish(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs

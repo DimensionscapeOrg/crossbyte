@@ -345,7 +345,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return future;
 		}
 
-		var query = new StunQuery(Sys.time(), timeoutMs);
+		var query = new StunQuery(haxe.Timer.stamp(), timeoutMs);
 		__stunQuery = query;
 		__stunFuture = future;
 
@@ -361,7 +361,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				return;
 			}
 
-			var now:Float = Sys.time();
+			var now:Float = haxe.Timer.stamp();
 
 			if (query.expired(now)) {
 				// UDP reports nothing when it is dropped, so a silent network
@@ -494,7 +494,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		};
 
 		__iceTick = function(_:TickEvent):Void {
-			agent.poll(Sys.time());
+			agent.poll(haxe.Timer.stamp());
 		};
 
 		CrossByte.current().addEventListener(TickEvent.TICK, __iceTick);
@@ -590,7 +590,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		// peer, or an answer to one of its own. It reports whether it did, so
 		// everything else falls through to the session below rather than being
 		// swallowed by a component that had no use for it.
-		if (__ice != null && __ice.receive(e.data, e.srcAddress, e.srcPort, Sys.time())) {
+		if (__ice != null && __ice.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp())) {
 			return;
 		}
 

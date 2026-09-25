@@ -176,7 +176,7 @@ class SharedChannel extends EventDispatcher {
 		}
 
 		dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", status ? "status" : "error"));
-		__lastSentTime = Sys.time();
+		__lastSentTime = haxe.Timer.stamp();
 
 		if (__outboundTimeout == null) {
 			__startTimeoutCheck();
@@ -193,7 +193,7 @@ class SharedChannel extends EventDispatcher {
 
 	@:noCompletion private function __checkTimeout():Void {
 		if (__outbound != null) {
-			var elapsed = Sys.time() - __lastSentTime;
+			var elapsed = haxe.Timer.stamp() - __lastSentTime;
 			if (elapsed >= TIME_OUT / 1000) {
 				__outbound.close();
 				__outbound = null;
