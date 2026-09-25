@@ -266,15 +266,27 @@ class H2Connection {
 		__writeFrame(H2FrameType.GOAWAY, 0, 0, payload);
 	}
 
+	/**
+	 * Abandons one stream: closes it here, then tells the peer.
+	 *
+	 * Closed first, so that whatever the peer already has in flight for it is
+	 * discarded when it arrives (RFC 9113, 5.1) -- including when the
+	 * RST_STREAM itself cannot be written. A stream that has already closed is
+	 * left alone: it is over on both sides, and one closed by the peer's own
+	 * RST_STREAM must not be answered with another (5.4.2).
+	 */
 	public function resetStream(id:Int, code:H2ErrorCode):Void {
+		var target:Null<H2Stream> = __streams.get(id);
+		if (target != null) {
+			if (target.isClosed()) {
+				return;
+			}
+			__closeStream(target);
+		}
+
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, cast code);
 		__writeFrame(H2FrameType.RST_STREAM, 0, id, payload);
-
-		var target:Null<H2Stream> = __streams.get(id);
-		if (target != null) {
-			__closeStream(target);
-		}
 	}
 
 	/**
@@ -399,9 +411,16 @@ class H2Connection {
 		}
 
 		var target:Null<H2Stream> = __streams.get(streamId);
-		if (target == null) {
+		if (target == null || target.isClosed()) {
 			// A response for a stream we already finished with. Discarding is
 			// correct; the peer may simply not have seen our RST_STREAM yet.
+			//
+			// Closed streams stay in the map, so the lookup alone did not
+			// discard anything. A response arriving after a cancel filled in
+			// the status of the stream it had reset, and the caller -- woken
+			// by the reset, but not yet reading -- reported the request as
+			// complete. The block is still decoded above: 5.1 requires the
+			// HPACK state to advance even for a frame that is then dropped.
 			return;
 		}
 
@@ -435,7 +454,7 @@ class H2Connection {
 		var content:Bytes = frame.has(H2Flags.PADDED) ? H2Frame.stripPadding(frame.payload, frame.streamId) : frame.payload;
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
-		if (target != null) {
+		if (target != null && !target.isClosed()) {
 			target.recvWindow -= counted;
 			target.unacknowledged += counted;
 			target.appendBody(content);
@@ -456,8 +475,10 @@ class H2Connection {
 			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'RST_STREAM payload is ${frame.payload.length} bytes, not 4');
 		}
 
+		// Not on a stream already closed: after our own reset, the peer's
+		// crossing RST_STREAM would otherwise rewrite why this one ended.
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
-		if (target != null) {
+		if (target != null && !target.isClosed()) {
 			target.resetCode = __readUInt32(frame.payload, 0);
 			__closeStream(target);
 		}

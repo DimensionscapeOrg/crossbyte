@@ -270,6 +270,40 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isFalse(server.sawReset(survivorId), "the surviving stream was reset too");
 	}
 
+	public function testCancellingAfterTheHeadersArriveStillCancels():Void {
+		var server = new H2HeadersFirstServer();
+		server.start();
+
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var done = new Lock();
+
+		var http = new Http('http://127.0.0.1:${server.port}/partial', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onError = (message, ?data) -> outcome = message;
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+
+		Thread.create(() -> {
+			http.load();
+			done.release();
+		});
+
+		// Obtained rather than assumed: the fixture follows the response
+		// headers with a PING, and the client processes frames in order, so
+		// its acknowledgement means the status is already on the stream.
+		Assert.isTrue(server.waitHeadersProcessed(10), "the client never processed the response headers");
+		http.cancelToken.cancel();
+		// Only now does the rest of the response go out.
+		server.releaseBody();
+
+		Assert.isTrue(done.wait(10), "cancelled request never returned");
+		// A status alone is not a response. This completed with an empty
+		// body -- or, when the body won the race to the caller, a full one --
+		// for a request cancelled before its body was even sent.
+		Assert.equals("Request cancelled", outcome);
+		Assert.isTrue(server.waitSawReset(10), "server never saw RST_STREAM for the cancelled stream");
+	}
+
 	public function testCancellingBeforeTheRequestStartsNeverOpensAStream():Void {
 		var server = new H2MuxServer(1);
 		server.start();
@@ -1028,6 +1062,127 @@ private class H2MuxServer {
 		var block = encoder.encode([new HpackHeader(":status", "200")]);
 		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, streamId, block);
 		__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, streamId, Bytes.ofString(path));
+	}
+
+	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+		var bytes = out.getBytes();
+		peer.output.writeBytes(bytes, 0, bytes.length);
+		peer.output.flush();
+	}
+}
+
+/**
+ * Answers one request in two halves: the headers, then -- only once the test
+ * says so -- the body. Between them it waits until the client has processed
+ * the headers, which it learns from the acknowledgement of a PING sent right
+ * behind them.
+ */
+private class H2HeadersFirstServer {
+	public var port:Int = 0;
+
+	private var __ready:Lock = new Lock();
+	private var __headersProcessed:Lock = new Lock();
+	private var __gate:Lock = new Lock();
+	private var __reset:Lock = new Lock();
+
+	public function new() {}
+
+	public function start():Void {
+		Thread.create(() -> {
+			var listener = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				listener.bind(new Host("127.0.0.1"), 0);
+				listener.listen(1);
+				port = listener.host().port;
+				__ready.release();
+
+				peer = listener.accept();
+				peer.setTimeout(10.0);
+				__serve(peer);
+			} catch (_:Dynamic) {
+				__ready.release();
+			}
+
+			try if (peer != null) peer.close() catch (_:Dynamic) {}
+			try listener.close() catch (_:Dynamic) {}
+		});
+
+		if (!__ready.wait(5.0)) {
+			Assert.fail("Timed out starting the headers-first fixture");
+		}
+	}
+
+	public function waitHeadersProcessed(seconds:Float):Bool {
+		return __headersProcessed.wait(seconds);
+	}
+
+	public function releaseBody():Void {
+		__gate.release();
+	}
+
+	public function waitSawReset(seconds:Float):Bool {
+		return __reset.wait(seconds);
+	}
+
+	private function __serve(peer:SysSocket):Void {
+		var preface = Bytes.alloc(H2Connection.PREFACE.length);
+		peer.input.readFullBytes(preface, 0, preface.length);
+
+		__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+
+		var streamId:Int = -1;
+		while (streamId < 0) {
+			var frame = __readFrame(peer);
+			if (frame.type == (H2FrameType.HEADERS : Int)) {
+				streamId = frame.id;
+			}
+		}
+
+		var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, streamId, encoder.encode([new HpackHeader(":status", "200")]));
+		__writeFrame(peer, H2FrameType.PING, 0, 0, Bytes.ofHex("0102030405060708"));
+
+		while (true) {
+			var frame = __readFrame(peer);
+			if (frame.type == (H2FrameType.PING : Int) && (frame.flags & H2Flags.ACK) != 0) {
+				break;
+			}
+		}
+		__headersProcessed.release();
+
+		__gate.wait(10.0);
+		__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, streamId, Bytes.ofString("sent after the cancel"));
+
+		// Read until the client hangs up, so the reset is seen whenever it
+		// lands relative to the body.
+		while (true) {
+			var frame = __readFrame(peer);
+			if (frame.type == (H2FrameType.RST_STREAM : Int) && frame.id == streamId) {
+				__reset.release();
+			}
+		}
+	}
+
+	private function __readFrame(peer:SysSocket):{type:Int, flags:Int, id:Int} {
+		var header = Bytes.alloc(H2Frame.HEADER_SIZE);
+		peer.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
+
+		var length = H2Frame.lengthOf(header);
+		if (length > 0) {
+			peer.input.readFullBytes(Bytes.alloc(length), 0, length);
+		}
+
+		return {
+			type: header.get(3),
+			flags: header.get(4),
+			id: ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8)
+		};
 	}
 
 	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {

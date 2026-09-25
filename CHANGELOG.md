@@ -647,6 +647,24 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 request cancelled before its response arrived no longer
+  completes. `cancel()` reset the stream and woke the request, but the
+  stream stayed in the connection's map, so a response arriving after the
+  cancel was still written into it -- status, headers and body -- and a
+  request that read its stream after that reported the response through
+  `onComplete`, with a full body or an empty one depending on how much had
+  landed. The suite saw it once, on jvm. Looped, the case failed about once
+  in a thousand runs there under load, and 12 times in 3000 on cpp, where
+  the suite had never caught it. Frames for a stream already closed on this
+  side are now discarded, as RFC 9113 5.1 requires, with HPACK and
+  flow-control state still advanced. The cancel handler is now registered
+  before the request lets go of the session's lock. Registered after it, a
+  cancel landing just as the request went out had nothing to run, and was
+  applied only once the response had completed the stream. A request
+  cancelled after its response headers but before the end of its body
+  reports "Request cancelled" rather than completing with the part that
+  had arrived. Resetting a stream that has already ended no longer sends
+  RST_STREAM on a closed stream.
 - A listening `LocalConnection` could stop delivering for good: no
   `onReady`, and nothing a client sent. Its reader thread attached the tick
   listener that carries dispatches to the runtime's thread, and
