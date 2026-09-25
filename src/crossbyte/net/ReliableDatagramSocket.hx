@@ -197,6 +197,48 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	public var connectPayload(default, null):ByteArray = null;
 
+	/**
+		The round trip to the peer in seconds, smoothed, as the session
+		measures it to time its own retransmissions: RFC 6298's SRTT. Taken
+		from the acknowledgement of each reliable frame sent only once -- one
+		sent again cannot say which copy was answered -- so it is -1 until the
+		first reliable message has been acknowledged, and it follows only as
+		often as reliable messages are sent. It includes however long the peer
+		takes to acknowledge, which is usually the rest of its tick.
+
+		For a round trip between two applications, rather than between two
+		transports, measure one with messages of their own; `PeerClock` does
+		that and also finds where the peer's clock stands.
+	**/
+	public var roundTripTime(get, never):Float;
+
+	/**
+		How much the round trip varies, in seconds: RFC 6298's RTTVAR, the
+		smoothed difference between one measurement and the average. Zero
+		until the first.
+	**/
+	public var roundTripVariation(get, never):Float;
+
+	/**
+		How long a reliable frame is waited for before it is sent again, in
+		seconds: `roundTripTime` plus four times `roundTripVariation`, held
+		between 0.2 and 10. One second until a round trip is measured, and
+		doubled whenever a frame has to be sent again.
+	**/
+	public var retransmitTimeout(get, never):Float;
+
+	@:noCompletion private inline function get_roundTripTime():Float {
+		return __smoothedRtt;
+	}
+
+	@:noCompletion private inline function get_roundTripVariation():Float {
+		return __rttVariation;
+	}
+
+	@:noCompletion private inline function get_retransmitTimeout():Float {
+		return __rto;
+	}
+
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;
 	@:noCompletion private static inline var DELIVERY_WINDOW:Int = 500;
 	@:noCompletion private static inline var KEEP_ALIVE_INTERVAL:Float = 75.0;
@@ -289,7 +331,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/** Where the window stops doubling and starts creeping. **/
 	@:noCompletion private var __slowStartThreshold:Float = DELIVERY_WINDOW;
 
-	/** Smoothed round trip time, and its variation. Null until one is measured. **/
+	/** Smoothed round trip time, and its variation. -1 until one is measured. **/
 	@:noCompletion private var __smoothedRtt:Float = -1;
 
 	@:noCompletion private var __rttVariation:Float = 0;
