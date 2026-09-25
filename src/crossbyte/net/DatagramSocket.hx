@@ -32,6 +32,65 @@ import sys.net.Host;
 import sys.net.UdpSocket;
 #end
 
+#if cpp
+@:cppFileCode("
+#ifdef HX_WINDOWS
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
+
+namespace {
+// hxcpp's socket handle as its Socket.cpp declares it: an hx::Object holding
+// the descriptor. Mirrored rather than reached, since hxcpp keeps it private
+// to that file, and checked by class id before it is trusted -- as NativeAlpn
+// does for the TLS handles.
+struct CrossByteSocketHandle : public hx::Object {
+	HX_IS_INSTANCE_OF enum { _hx_ClassId = hx::clsIdSocket };
+#ifdef HX_WINDOWS
+	SOCKET socket;
+#else
+	int socket;
+#endif
+};
+
+bool crossbyte_socket_of(::Dynamic handle, CrossByteSocketHandle **out) {
+	if (handle.mPtr == 0 || !handle.mPtr->_hx_isInstanceOf(hx::clsIdSocket)) {
+		return false;
+	}
+	*out = reinterpret_cast<CrossByteSocketHandle *>(handle.mPtr);
+	return true;
+}
+}
+
+// One of a socket's buffer sizes, or -1 where it cannot be read.
+static int crossbyte_udp_buffer(::Dynamic handle, bool receive) {
+	CrossByteSocketHandle *s;
+	if (!crossbyte_socket_of(handle, &s)) {
+		return -1;
+	}
+	int size = 0;
+#ifdef HX_WINDOWS
+	int length = sizeof(size);
+#else
+	socklen_t length = sizeof(size);
+#endif
+	if (getsockopt(s->socket, SOL_SOCKET, receive ? SO_RCVBUF : SO_SNDBUF, (char *)&size, &length) != 0) {
+		return -1;
+	}
+	return size;
+}
+
+// Asks for one of a socket's buffer sizes; false if the system refused.
+static bool crossbyte_udp_set_buffer(::Dynamic handle, bool receive, int size) {
+	CrossByteSocketHandle *s;
+	if (!crossbyte_socket_of(handle, &s)) {
+		return false;
+	}
+	return setsockopt(s->socket, SOL_SOCKET, receive ? SO_RCVBUF : SO_SNDBUF, (const char *)&size, sizeof(size)) == 0;
+}
+")
+#end
 @:access(crossbyte.core.CrossByte)
 /**
 	The `DatagramSocket` class provides connectionless User Datagram Protocol (UDP)
@@ -116,6 +175,40 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	**/
 	public var timeout(get, set):Int;
 
+	/**
+		How many bytes of arriving datagrams the operating system holds for
+		this socket until they are read. Past it, what arrives is dropped.
+
+		The system's default is small -- 64 KB on Windows, a little over 200 KB
+		on Linux -- and a burst larger than it that arrives while the program
+		is busy elsewhere is mostly lost. A socket that many peers send to, or
+		a peer that sends a window of datagrams at once, wants more.
+
+		What is granted may not be what was asked. Linux caps it at
+		`net.core.rmem_max` unless that is raised, and reports twice what it
+		keeps, counting its own bookkeeping; every system rounds. Read it back
+		to know. On Node it is applied once the socket is bound, and reads as
+		what was asked until then. It reads 0 on targets with no way to size
+		a socket's buffers -- eval, HashLink and Neko -- and setting it there
+		changes nothing.
+
+		@throws RangeError If set below 1.
+		@throws IOError If set once the socket is closed, or if the system
+		        refuses it.
+	**/
+	public var receiveBufferSize(get, set):Int;
+
+	/**
+		How many bytes of datagrams being sent the operating system holds for
+		this socket before they leave. As `receiveBufferSize`, for the other
+		direction.
+
+		@throws RangeError If set below 1.
+		@throws IOError If set once the socket is closed, or if the system
+		        refuses it.
+	**/
+	public var sendBufferSize(get, set):Int;
+
 	@:noCompletion private static inline var DEFAULT_BUFFER_SIZE:Int = 65535;
 	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 64;
 
@@ -128,6 +221,12 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	@:noCompletion private var __bound:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
+	#if nodejs
+	// Buffer sizes asked for, applied when the socket is bound: Node cannot
+	// size a socket before then, and replaces an unbound one freely.
+	@:noCompletion private var __receiveBufferRequest:Int = 0;
+	@:noCompletion private var __sendBufferRequest:Int = 0;
+	#end
 	@:noCompletion private var __closed:Bool = false;
 
 	// Reads that failed with nothing succeeding in between. A stray ICMP error
@@ -682,8 +781,26 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 				__localAddress = IPv6.compress(local.address);
 				__localPort = local.port;
 				__bound = true;
+				__applyNodeBuffers();
 			}
 		} catch (_:Dynamic) {}
+	}
+
+	@:noCompletion private function __applyNodeBuffers():Void {
+		if (__socket == null || !__bound) {
+			return;
+		}
+		var socket:Dynamic = __socket;
+		try {
+			if (__receiveBufferRequest > 0) {
+				socket.setRecvBufferSize(__receiveBufferRequest);
+			}
+			if (__sendBufferRequest > 0) {
+				socket.setSendBufferSize(__sendBufferRequest);
+			}
+		} catch (e:Dynamic) {
+			__dispatchIoError("Could not size the socket's buffers: " + Std.string(e));
+		}
 	}
 	#else
 	@:noCompletion private function __initSocket():Void {
@@ -769,6 +886,85 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	@:noCompletion private inline function set_endian(value:Endian):Endian {
 		return __endian = value;
+	}
+
+	@:noCompletion private inline function get_receiveBufferSize():Int {
+		return __bufferSize(true);
+	}
+
+	@:noCompletion private function set_receiveBufferSize(value:Int):Int {
+		__setBufferSize(true, value);
+		return value;
+	}
+
+	@:noCompletion private inline function get_sendBufferSize():Int {
+		return __bufferSize(false);
+	}
+
+	@:noCompletion private function set_sendBufferSize(value:Int):Int {
+		__setBufferSize(false, value);
+		return value;
+	}
+
+	@:noCompletion private function __bufferSize(receive:Bool):Int {
+		if (__socket == null) {
+			return 0;
+		}
+		#if cpp
+		var size:Int = untyped __cpp__("crossbyte_udp_buffer({0}, {1})", @:privateAccess __socket.__s, receive);
+		return size < 0 ? 0 : size;
+		#elseif ((java || jvm) && !macro)
+		try {
+			var channel:java.nio.channels.NetworkChannel = cast @:privateAccess __socket.channel;
+			var size:java.lang.Integer = cast channel.getOption(cast(receive ? java.net.StandardSocketOptions.SO_RCVBUF : java.net.StandardSocketOptions.SO_SNDBUF));
+			return size.intValue();
+		} catch (_:Dynamic) {
+			return 0;
+		}
+		#elseif nodejs
+		if (!__bound) {
+			return receive ? __receiveBufferRequest : __sendBufferRequest;
+		}
+		var socket:Dynamic = __socket;
+		try {
+			return receive ? socket.getRecvBufferSize() : socket.getSendBufferSize();
+		} catch (_:Dynamic) {
+			return 0;
+		}
+		#else
+		return 0;
+		#end
+	}
+
+	@:noCompletion private function __setBufferSize(receive:Bool, value:Int):Void {
+		if (value < 1) {
+			throw new RangeError('A socket buffer holds at least one byte, not $value.');
+		}
+		if (__socket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+		var which:String = receive ? "receive" : "send";
+		#if cpp
+		var granted:Bool = untyped __cpp__("crossbyte_udp_set_buffer({0}, {1}, {2})", @:privateAccess __socket.__s, receive, value);
+		if (!granted) {
+			throw new IOError('The system refused a $which buffer of $value bytes.');
+		}
+		#elseif ((java || jvm) && !macro)
+		try {
+			var channel:java.nio.channels.NetworkChannel = cast @:privateAccess __socket.channel;
+			channel.setOption(cast(receive ? java.net.StandardSocketOptions.SO_RCVBUF : java.net.StandardSocketOptions.SO_SNDBUF),
+				cast java.lang.Integer.valueOf(value));
+		} catch (e:Dynamic) {
+			throw new IOError('The system refused a $which buffer of $value bytes: ' + Std.string(e));
+		}
+		#elseif nodejs
+		if (receive) {
+			__receiveBufferRequest = value;
+		} else {
+			__sendBufferRequest = value;
+		}
+		__applyNodeBuffers();
+		#end
 	}
 
 	@:noCompletion private function set_timeout(value:Int):Int {
