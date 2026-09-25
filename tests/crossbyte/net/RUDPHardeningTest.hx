@@ -13,6 +13,7 @@ import utest.Assert;
 	socket I/O, so they run under the eval/interp target.
 **/
 @:access(crossbyte.net.ReliableDatagramSocket)
+@:access(crossbyte.net.CongestionControl)
 class RUDPHardeningTest extends utest.Test {
 	public function testInOrderSequenceIsNeverBuffered():Void {
 		var socket = makeSocket();
@@ -184,26 +185,23 @@ class RUDPHardeningTest extends utest.Test {
 	**/
 	public function testTheWindowOpensOnDeliveryAndHalvesOnLoss():Void {
 		var socket = makeSender();
-		var start:Float = socket.__congestionWindow;
+		var control = socket.congestionControl;
+		var start:Float = control.window;
 
-		socket.__openWindow();
-		Assert.isTrue(socket.__congestionWindow > start, "an acknowledged frame did not open the window");
+		control.onAcknowledged(socket, 1, 0);
+		Assert.isTrue(control.window > start, "an acknowledged frame did not open the window");
 
-		var open:Float = socket.__congestionWindow;
-		var timeout:Float = socket.__rto;
-		socket.__closeWindow();
+		var open:Float = control.window;
+		control.onTimeout(socket, 0);
 
-		Assert.isTrue(socket.__congestionWindow <= open / 2 + 0.001,
-			"loss left the window at " + socket.__congestionWindow + " against " + open);
-		Assert.isTrue(socket.__rto > timeout, "loss did not back the timeout off: still " + socket.__rto);
+		Assert.isTrue(control.window <= open / 2 + 0.001, "loss left the window at " + control.window + " against " + open);
 
 		// And it never collapses to nothing, or the session cannot recover.
 		for (_ in 0...40) {
-			socket.__closeWindow();
+			control.onTimeout(socket, 0);
 		}
 
-		Assert.isTrue(socket.__congestionWindow >= ReliableDatagramSocket.MIN_WINDOW,
-			"repeated loss closed the window to " + socket.__congestionWindow);
+		Assert.isTrue(control.window >= CongestionControl.MIN_WINDOW, "repeated loss closed the window to " + control.window);
 	}
 
 	/**
@@ -215,7 +213,7 @@ class RUDPHardeningTest extends utest.Test {
 	**/
 	public function testWhatIsInFlightIsBoundedByTheWindow():Void {
 		var socket = makeSender();
-		socket.__congestionWindow = 4;
+		socket.__congestion.window = 4;
 		socket.__windowBase = 100;
 		socket.__outSequence = 103;
 
@@ -236,7 +234,7 @@ class RUDPHardeningTest extends utest.Test {
 	public function testTheSendQueueIsBounded():Void {
 		var socket = makeSender();
 		// Nothing may go out, so everything written waits.
-		socket.__congestionWindow = 0;
+		socket.__congestion.window = 0;
 		socket.maxOutputBufferSize = 4096;
 		socket.outputOverflowPolicy = THROW;
 
@@ -328,8 +326,7 @@ class RUDPHardeningTest extends utest.Test {
 		socket.__queuedBytes = 0;
 		socket.__outSequence = 0;
 		socket.__windowBase = 0;
-		socket.__congestionWindow = ReliableDatagramSocket.INITIAL_WINDOW;
-		socket.__slowStartThreshold = ReliableDatagramSocket.DELIVERY_WINDOW;
+		socket.__congestion = new CongestionControl();
 		socket.__smoothedRtt = -1;
 		socket.__rttVariation = 0;
 		socket.__rto = ReliableDatagramSocket.INITIAL_RTO;

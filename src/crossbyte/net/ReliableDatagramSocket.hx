@@ -243,8 +243,62 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	public var retransmitTimeout(get, never):Float;
 
+	/**
+		The fastest round trip measured, in seconds: the path with nothing
+		queued on it, as near as the session has seen. -1 until the first
+		measurement.
+	**/
+	public var minRoundTripTime(get, never):Float;
+
+	/**
+		How many reliable frames the peer is known to have received, counted
+		once each, as soon as it is known: when acknowledged, or when reported
+		held past a gap that has not yet filled. A frame of a message counts,
+		not a message, and frames sent again count once. From zero when the
+		socket is made, and again after it closes.
+
+		Unlike what the cumulative acknowledgement has passed, this does not
+		stall while a lost frame is sent again and then jump when it arrives,
+		so the difference between two readings is what the peer received in
+		between: the rate a `CongestionControl` measures a path by.
+	**/
+	public var framesDelivered(get, never):Float;
+
+	/**
+		What decides how many frames this session may have in the network at
+		once. `CongestionControl`, which is TCP's Reno, unless another is set;
+		`LossTolerantCongestionControl` suits a path that loses frames to radio
+		rather than to congestion. A session a server accepts or dials takes
+		the server's `ReliableDatagramServerSocket.congestionControlFor`.
+
+		Set it before connecting, or at any point after: the new policy
+		starts from its own window. One instance serves one session.
+
+		@throws ArgumentError if set to `null`.
+	**/
+	public var congestionControl(get, set):CongestionControl;
+
 	@:noCompletion private inline function get_roundTripTime():Float {
 		return __smoothedRtt;
+	}
+
+	@:noCompletion private inline function get_minRoundTripTime():Float {
+		return __minRtt;
+	}
+
+	@:noCompletion private inline function get_framesDelivered():Float {
+		return __framesDelivered;
+	}
+
+	@:noCompletion private inline function get_congestionControl():CongestionControl {
+		return __congestion;
+	}
+
+	@:noCompletion private function set_congestionControl(value:CongestionControl):CongestionControl {
+		if (value == null) {
+			throw new ArgumentError("A reliable datagram session needs a congestion control.");
+		}
+		return __congestion = value;
 	}
 
 	@:noCompletion private inline function get_roundTripVariation():Float {
@@ -351,18 +405,6 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/** What the timeout is before a single round trip has been measured. **/
 	@:noCompletion private static inline var INITIAL_RTO:Float = 1.0;
 
-	/**
-		Frames in flight before a round trip has been measured.
-
-		RFC 6928's initial window. Small enough not to be a burst, large
-		enough that a short message is not paced out one packet per round
-		trip.
-	**/
-	@:noCompletion private static inline var INITIAL_WINDOW:Int = 10;
-
-	/** The congestion window never shrinks below this. **/
-	@:noCompletion private static inline var MIN_WINDOW:Int = 2;
-
 	@:noCompletion private var __alive:Bool = false;
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __connected:Bool = false;
@@ -435,20 +477,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __retransmitHandle:Int = -1;
 
 	/**
-		How many frames may be in flight at once.
+		What decides how many frames may be in flight at once; see
+		`congestionControl`.
 
 		The send window was a constant 500 that took no notice of whether any
 		of it was arriving. A reliable transport that retransmits on a fixed
 		schedule into a path that is already dropping packets makes the drops
 		worse, and with a window that never yields it keeps doing so -- which
-		is how one slow client costs a server the bandwidth of many. This
-		opens on acknowledgement and halves on loss, which is the behaviour
-		every other reliable transport on the wire already agrees to.
+		is how one slow client costs a server the bandwidth of many.
 	**/
-	@:noCompletion private var __congestionWindow:Float = INITIAL_WINDOW;
+	@:noCompletion private var __congestion:CongestionControl = new CongestionControl();
 
-	/** Where the window stops doubling and starts creeping. **/
-	@:noCompletion private var __slowStartThreshold:Float = DELIVERY_WINDOW;
+	// See `framesDelivered`. A Float, so a long session does not wrap it.
+	@:noCompletion private var __framesDelivered:Float = 0;
 
 	/** Smoothed round trip time, and its variation. -1 until one is measured. **/
 	@:noCompletion private var __smoothedRtt:Float = -1;
@@ -1045,9 +1086,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		remotePort:Int,
 		server:ReliableDatagramServerSocket,
 		mode:ReliableDatagramSocketMode,
-		payload:ByteArray
+		payload:ByteArray,
+		congestion:CongestionControl
 	):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
+		if (congestion != null) {
+			socket.__congestion = congestion;
+		}
 		var temporaryTransport = socket.__transport;
 		socket.__teardownTransportListener();
 		if (temporaryTransport != null) {
@@ -1087,8 +1132,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 * the dialled one already holds.
 	 */
 	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:String, remotePort:Int,
-			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray):ReliableDatagramSocket {
+			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray,
+			congestion:CongestionControl):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
+		if (congestion != null) {
+			socket.__congestion = congestion;
+		}
 		var temporaryTransport = socket.__transport;
 		socket.__teardownTransportListener();
 
@@ -1311,6 +1360,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		var newest:Float = -1;
+		var released:Int = 0;
 		var sequence:Seq32 = __windowBase;
 
 		while (sequence < ackValue) {
@@ -1333,7 +1383,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 					}
 				}
 				__outFrameCache.remove(sequence);
-				__openWindow();
+				released++;
 			}
 
 			sequence++;
@@ -1348,6 +1398,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// those it covers: the others waited behind it for the same answer.
 		if (newest >= 0) {
 			__sampleRoundTrip(now - newest);
+		}
+
+		// After the round trip it measured, so the policy reads it, and before
+		// any loss this acknowledgement shows.
+		if (released > 0) {
+			__congestion.onAcknowledged(this, released, now);
 		}
 		return true;
 	}
@@ -1442,6 +1498,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		the one sent last, and how long it took. RFC 8985 calls it RACK.
 	**/
 	@:noCompletion private function __noteDelivered(sequence:Seq32, frame:OutstandingFrame, now:Float):Void {
+		__framesDelivered++;
 		__lastDeliveryAt = now;
 		__probed = false;
 
@@ -1522,15 +1579,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Sends a lost frame again. The first loss of a burst halves the window,
-		and the rest of the burst, up to where recovery ends, does not halve
-		it again. The timeout is left as it is: nothing timed out.
+		Sends a lost frame again. The first loss of a burst is the policy's to
+		answer, and the rest of the burst, up to where recovery ends, is not
+		answered again. The timeout is left as it is: nothing timed out.
 	**/
 	@:noCompletion private function __resendLost(sequence:Seq32, frame:OutstandingFrame, now:Float):Void {
 		if (!__inRecovery) {
 			__inRecovery = true;
 			__recoveryPoint = __outSequence;
-			__halveWindow();
+			__congestion.onLoss(this, now);
 		}
 
 		frame.attempts++;
@@ -1644,46 +1701,6 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	@:noCompletion private function __setRto(value:Float):Void {
 		__rto = value < MIN_RTO ? MIN_RTO : (value > MAX_RTO ? MAX_RTO : value);
-	}
-
-	/**
-		Opens the window by one acknowledged frame.
-
-		Doubling per round trip while below the threshold, and one frame per
-		round trip above it, which is the additive-increase half of what
-		everything else on the wire does.
-	**/
-	@:noCompletion private function __openWindow():Void {
-		if (__congestionWindow < __slowStartThreshold) {
-			__congestionWindow += 1;
-		} else {
-			__congestionWindow += 1 / __congestionWindow;
-		}
-
-		if (__congestionWindow > DELIVERY_WINDOW) {
-			__congestionWindow = DELIVERY_WINDOW;
-		}
-	}
-
-	/**
-		Halves the window, because something was not delivered.
-
-		Multiplicative decrease, and the timeout doubles with it: a path that
-		just failed to deliver is not one to try again on the same schedule.
-	**/
-	@:noCompletion private function __closeWindow():Void {
-		__halveWindow();
-		__setRto(__rto * 2);
-	}
-
-	@:noCompletion private function __halveWindow():Void {
-		__slowStartThreshold = __congestionWindow / 2;
-
-		if (__slowStartThreshold < MIN_WINDOW) {
-			__slowStartThreshold = MIN_WINDOW;
-		}
-
-		__congestionWindow = __slowStartThreshold;
 	}
 
 	@:noCompletion private function __acceptPacket(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
@@ -1851,8 +1868,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__outgoingQueue.resize(0);
 		__queueAt = 0;
 		__queuedBytes = 0;
-		__congestionWindow = INITIAL_WINDOW;
-		__slowStartThreshold = DELIVERY_WINDOW;
+		__congestion.reset();
+		__framesDelivered = 0;
 		__smoothedRtt = -1;
 		__rttVariation = 0;
 		__rto = INITIAL_RTO;
@@ -2285,7 +2302,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__lastTransmitAt = now;
 		// Backed off first, so the deadline set below is the new one: RFC
 		// 6298 section 5.5 doubles the timeout and then restarts the clock.
-		__closeWindow();
+		// A path that just failed to deliver is not one to try again on the
+		// same schedule, and what it may carry is the policy's to say.
+		__congestion.onTimeout(this, now);
+		__setRto(__rto * 2);
 		overdue.deadline = now + __rto;
 		__sendFrame(PACKET, __windowBase, overdue.payload, 0, overdue.payload.length, true, __currentAck(), overdue.more);
 	}
@@ -2520,7 +2540,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	**/
 	@:noCompletion private function __windowExceeded():Bool {
 		var outstanding:Int = __outSequence - __windowBase;
-		return outstanding - __sackedCount >= Std.int(__congestionWindow) || outstanding >= DELIVERY_WINDOW;
+		return outstanding - __sackedCount >= Std.int(__congestion.window) || outstanding >= DELIVERY_WINDOW;
 	}
 
 	@:noCompletion private function __onTransportData(e:DatagramSocketDataEvent):Void {

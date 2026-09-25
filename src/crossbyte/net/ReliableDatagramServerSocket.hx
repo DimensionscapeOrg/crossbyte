@@ -153,6 +153,26 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return true;
 	}
 
+	/**
+		The congestion policy for a session this server accepts or dials,
+		given the peer's address and port: a new `CongestionControl` each,
+		which is TCP's Reno, unless this is replaced. A server that knows some
+		of its peers are on lossy links -- a mobile network, say -- can give
+		those a `LossTolerantCongestionControl` and everyone else the default.
+		`null` means the default.
+
+		Called once a session, before its handshake. Return a new instance
+		each time: a policy keeps the state of the one session it serves. For
+		an accepted session a hook that throws refuses the CONNECT, as `admit`
+		does; for a dialled one the throw reaches the caller of `connect`.
+		A session's policy can also be changed later, through
+		`ReliableDatagramSocket.congestionControl` -- once the peer has said
+		in its `connectPayload` what kind of link it is on, for instance.
+	**/
+	public dynamic function congestionControlFor(address:String, port:Int):CongestionControl {
+		return new CongestionControl();
+	}
+
 	@:noCompletion private var __connections:StringMap<ReliableDatagramSocket>;
 
 	// Keys of accepted sessions that have not finished handshaking. Counted
@@ -341,7 +361,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			throw new ArgumentError("A reliable datagram session to " + key + " already exists on this server.");
 		}
 
-		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs, outgoing);
+		var socket = ReliableDatagramSocket.__createDialed(__socket, resolved, port, this, socketMode, timeoutMs, outgoing,
+			congestionControlFor(resolved, port));
 		__connections.set(key, socket);
 		return socket;
 	}
@@ -693,8 +714,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return;
 		}
 
+		var congestion:CongestionControl = null;
+		try {
+			congestion = congestionControlFor(e.srcAddress, e.srcPort);
+		} catch (_:Dynamic) {
+			return;
+		}
+
 		payload.position = 0;
-		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode, payload);
+		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode, payload, congestion);
 		connection.__peerTakesBundles = frame.bundles;
 		__connections.set(key, connection);
 		__pending.set(key, true);

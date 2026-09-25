@@ -88,7 +88,7 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		Assert.equals(1, sender.__fastResends);
 		Assert.equals(0, sender.__timeoutResends, "a loss the map showed waited for a timeout");
 		Assert.isTrue(sender.__inRecovery);
-		Assert.equals(5.0, sender.__congestionWindow, "the window was not halved for the loss");
+		Assert.equals(5.0, sender.congestionControl.window, "the window was not halved for the loss");
 		sender.close();
 	}
 
@@ -195,7 +195,7 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.__acceptFrame(ack(1000, [1, 2, 3, 4, 5, 6]));
 
 		Assert.same(["PACKET 1000 resend", "PACKET 1001 resend"], described(sender.take()));
-		Assert.equals(5.0, sender.__congestionWindow);
+		Assert.equals(5.0, sender.congestionControl.window);
 		sender.close();
 	}
 
@@ -230,7 +230,7 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.__acceptFrame(ack(1000, []));
 
 		Assert.same(["PACKET 1000 resend"], described(sender.take()));
-		Assert.equals(5.0, sender.__congestionWindow);
+		Assert.equals(5.0, sender.congestionControl.window);
 		sender.close();
 	}
 
@@ -288,6 +288,92 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.close();
 	}
 
+	// ---------------------------------------------------------- the policy
+
+	public function testTheSessionTellsItsPolicyWhatHappened():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+		var policy = new RecordingPolicy();
+		sender.congestionControl = policy;
+
+		sendMessages(sender, 5);
+		sender.take();
+		sender.__acceptFrame(ack(1005, []));
+
+		// A burst with one frame lost: one loss, however many frames the
+		// burst holds, and the lost frame counts when the gap fills.
+		sendMessages(sender, 5);
+		sender.take();
+		sender.__acceptFrame(ack(1005, [0, 1, 2, 3]));
+		sender.take();
+		sender.__acceptFrame(ack(1010, []));
+
+		// A frame nothing ever answers.
+		sendMessages(sender, 1);
+		sender.take();
+		var timeout = sender.__rto;
+		sender.__outFrameCache.get(1010).deadline = 0;
+		sender.__checkRetransmits();
+
+		Assert.same(["acknowledged 5", "loss", "acknowledged 5", "timeout"], policy.events);
+		Assert.equals(timeout * 2, sender.__rto, "the session did not back its own timeout off");
+		sender.close();
+	}
+
+	public function testFramesDeliveredCountsEachFrameOnceWhenFirstKnown():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+
+		sendMessages(sender, 5);
+		sender.take();
+
+		// Four held past a gap count as they are reported, not when the gap
+		// fills; the fifth counts when it arrives, and the four not again.
+		sender.__acceptFrame(ack(1000, [0, 1, 2, 3]));
+		Assert.equals(4.0, sender.framesDelivered);
+		sender.__acceptFrame(ack(1005, []));
+		Assert.equals(5.0, sender.framesDelivered);
+
+		sender.close();
+		Assert.equals(0.0, sender.framesDelivered, "a closed session kept its count");
+	}
+
+	public function testThePolicysWindowIsWhatLimitsSending():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+		sender.congestionControl = new FixedWindow(3);
+
+		sendMessages(sender, 10);
+		Assert.same(["PACKET 1000", "PACKET 1001", "PACKET 1002"], described(sender.take()));
+		sender.close();
+	}
+
+	public function testASessionCannotBeLeftWithoutAPolicy():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+
+		Assert.raises(() -> sender.congestionControl = null, crossbyte.errors.ArgumentError);
+		Assert.notNull(sender.congestionControl);
+		sender.close();
+	}
+
+	public function testClosingStartsThePolicyOver():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+		var policy = new LossTolerantCongestionControl();
+		sender.congestionControl = policy;
+
+		sendMessages(sender, 5);
+		sender.take();
+		sender.__acceptFrame(ack(1000, [0, 1, 2, 3]));
+		Assert.equals(5.0, policy.window);
+
+		// Connected again, the socket is a new session, and so is its policy.
+		sender.close();
+		Assert.equals(10.0, policy.window);
+		Assert.equals(500.0, policy.slowStartThreshold);
+	}
+
 	// ----------------------------------------------------------- handshake
 
 	public function testARepeatedHandshakeLeavesWhereFramesAreExpected():Void {
@@ -324,7 +410,7 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		// got to, and they all go again now rather than at the timeout.
 		session.__acceptFrame(new ReliableDatagramFrame(HANDSHAKE, 1000, new ByteArray(), false));
 		Assert.same(["HANDSHAKE 1000", "PACKET 1000 resend", "PACKET 1001 resend", "PACKET 1002 resend"], described(session.take()));
-		Assert.equals(10.0, session.__congestionWindow, "a lost handshake was taken for congestion");
+		Assert.equals(10.0, session.congestionControl.window, "a lost handshake was taken for congestion");
 		session.close();
 	}
 
@@ -459,4 +545,42 @@ private class RecordingSocket extends ReliableDatagramSocket {
 			case _: "?";
 		}
 	}
+}
+
+/** A policy that keeps the default's decisions and writes down each event. **/
+private class RecordingPolicy extends CongestionControl {
+	public var events:Array<String> = [];
+
+	public function new() {
+		super();
+	}
+
+	override public function onAcknowledged(session:ReliableDatagramSocket, frames:Int, now:Float):Void {
+		events.push("acknowledged " + frames);
+		super.onAcknowledged(session, frames, now);
+	}
+
+	override public function onLoss(session:ReliableDatagramSocket, now:Float):Void {
+		events.push("loss");
+		super.onLoss(session, now);
+	}
+
+	override public function onTimeout(session:ReliableDatagramSocket, now:Float):Void {
+		events.push("timeout");
+		super.onTimeout(session, now);
+	}
+}
+
+/** A policy that never moves its window. **/
+private class FixedWindow extends CongestionControl {
+	public function new(frames:Int) {
+		super();
+		window = frames;
+	}
+
+	override public function onAcknowledged(session:ReliableDatagramSocket, frames:Int, now:Float):Void {}
+
+	override public function onLoss(session:ReliableDatagramSocket, now:Float):Void {}
+
+	override public function onTimeout(session:ReliableDatagramSocket, now:Float):Void {}
 }
