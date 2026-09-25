@@ -1354,6 +1354,26 @@ class HTTPRequestHandlerTest extends utest.Test {
 		} catch (_:Dynamic) {}
 	}
 
+	/**
+		Runs a case's own check of what came back, reporting what it throws.
+
+		A case that asserts the status and then decodes the body decodes
+		whatever arrived: a response cut short throws -- `Eof` from the
+		inflater -- and on Node, where this runs from a timer callback, the
+		throw reached the uncaught handler and ended the whole run, with no
+		report of this case nor of any after it.
+	**/
+	private static function __runCase(async:Async, check:Void->Void):Void {
+		try {
+			check();
+		} catch (error:Dynamic) {
+			Assert.fail("the case threw on the response it got: " + Std.string(error));
+			if (!async.resolved) {
+				async.done();
+			}
+		}
+	}
+
 	private function __sendRequest(async:Async, middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, done:HTTPTestResponse->Void,
 			?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void, ?sharedRoot:File):Void {
 		// A caller can hand in a root so two requests hit the same file. A
@@ -1442,7 +1462,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			}
 
 			Assert.notNull(response);
-			done(response);
+			__runCase(async, () -> done(response));
 		}
 
 		try {
@@ -1530,7 +1550,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 				return;
 			}
 
-			done({responses: responses, closeSeen: serverClosedFirst, raw: rawResponse});
+			__runCase(async, () -> done({responses: responses, closeSeen: serverClosedFirst, raw: rawResponse}));
 		}
 
 		var cursor = 0;
