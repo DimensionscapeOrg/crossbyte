@@ -59,6 +59,19 @@ class BenchRpc {
 			commands.name(7);
 		});
 
+		// The same request to a method that answers with a Future: one complete
+		// already -- a cached answer, the same future each time, so what is
+		// timed is the dispatch and not the handler's allocation -- and one
+		// completed after the method has returned, on this thread.
+		Bench.run("request answered with a complete future", function():Void {
+			commands.ready(7);
+		});
+
+		Bench.run("request answered later, same thread", function():Void {
+			commands.later(7);
+			handler.pending.complete("player");
+		});
+
 		if (handler.moves == 0 || hooked.moves == 0 || client == null || server == null || hookedServer == null) {
 			Sys.println("  (the handler was never called)");
 		}
@@ -85,6 +98,10 @@ private class BenchCommands extends RPCCommands {
 	@:rpc public function move(id:Int, x:Float, y:Float):Void {}
 
 	@:rpc public function name(id:Int):RPCResponse<String> {}
+
+	@:rpc public function ready(id:Int):RPCResponse<String> {}
+
+	@:rpc public function later(id:Int):RPCResponse<String> {}
 }
 
 private class BenchHandler extends RPCHandler {
@@ -100,6 +117,19 @@ private class BenchHandler extends RPCHandler {
 
 	@:rpc public function name(id:Int):String {
 		return "player";
+	}
+
+	static final readyAnswer:crossbyte.Future<String> = crossbyte.Future.resolved("player");
+
+	public var pending:crossbyte.Completer<String>;
+
+	@:rpc public function ready(id:Int):crossbyte.Future<String> {
+		return readyAnswer;
+	}
+
+	@:rpc public function later(id:Int):crossbyte.Future<String> {
+		pending = new crossbyte.Completer<String>();
+		return pending.future;
 	}
 }
 

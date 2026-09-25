@@ -3,6 +3,7 @@ package crossbyte.rpc;
 // Built for every target, JavaScript included: the portable suite runs RPC on
 // Node and in a browser.
 
+import crossbyte.Future;
 import crossbyte.net.NetConnection;
 import crossbyte.rpc.RPCCommands;
 import crossbyte.rpc._internal.RPCWire;
@@ -32,6 +33,12 @@ import crossbyte.io.ByteArrayOutput;
 	after it could be trusted to line up. A handler that writes its own
 	`dispatch` decodes and calls in one place, so whatever that throws still
 	ends the connection.
+
+	A method can answer later: declared to return `Future<T>` instead of `T`,
+	its caller is answered once the future completes -- at once if it has, on
+	the session's thread in any case -- and a failure is answered as a throw
+	is. The caller's side and the wire are the same as for `T`. A session
+	limits how many calls may wait at once; see `RPCSession.maxCallsWaiting`.
 
 	Override `beforeCall` to decide on each call before it runs -- to
 	authorize it, rate limit it, or refuse one too large -- and `afterCall` to
@@ -164,6 +171,77 @@ abstract class RPCHandler {
 		}
 	}
 
+	/**
+		Whether a call to a method that answers with a future may run. Not
+		when its session already has `maxCallsWaiting` calls waiting: then a
+		request is answered `RPCError.BUSY_MESSAGE` and a one-way call dropped,
+		before the method runs, as a `beforeCall` refusal is.
+	**/
+	@:noCompletion private function __rpc_mayWait(op:Int, requestId:Int):Bool {
+		final session = this_session;
+		if (session == null || !session.__atCallLimit()) {
+			return true;
+		}
+		if (requestId != 0) {
+			__rpc_send_error(op, requestId, RPCError.BUSY_MESSAGE);
+		}
+		return false;
+	}
+
+	/**
+		Settles a call whose method answered with `future` -- not complete yet,
+		or failed -- once it completes, on the session's thread: `answer` sends
+		its value, a failure is answered as a throw is, and `afterCall` is told
+		then, not when the method returned. A connection that has gone by then,
+		or a handler moved to another session, gets nothing.
+	**/
+	@:noCompletion private function __rpc_later<T>(op:Int, method:String, requestId:Int, future:Future<T>, answer:T->Void, hooked:Bool):Void {
+		final connection = this_connection;
+		final settle = function(settled:Future<T>):Void {
+			var failure:Dynamic = null;
+			// Answered only where the call came from. Moved to another session,
+			// this handler would send the old request's id to a new peer, which
+			// could have a call of its own waiting under it.
+			final answerable:Bool = requestId != 0 && this_connection == connection && !__rpc_gone();
+			if (settled.succeeded) {
+				if (answerable) {
+					try {
+						answer(settled.result);
+					} catch (error:Dynamic) {
+						failure = error;
+						__rpc_fail(op, method, requestId, error);
+					}
+				}
+			} else {
+				failure = RPCSession.__failureOf(settled);
+				if (requestId == 0 || answerable) {
+					__rpc_fail(op, method, requestId, failure);
+				} else if (RPCSession.__answerFor(failure) == null) {
+					// Nobody to answer, but the handler failing is still news.
+					__rpc_report(op, method, failure);
+				}
+			}
+			if (hooked) {
+				try {
+					afterCall(method, requestId, failure);
+				} catch (error:Dynamic) {
+					__rpc_report(op, method, error);
+				}
+			}
+		};
+		final session = this_session;
+		if (session != null) {
+			session.__settleOnThisThread(future, settle);
+		} else {
+			future.then(_ -> settle(future), _ -> settle(future));
+		}
+	}
+
+	/** Whether there is no longer a connection to answer on. **/
+	@:noCompletion private inline function __rpc_gone():Bool {
+		return this_connection == null || (this_session != null && this_session.__ended);
+	}
+
 	/** Answers a request `beforeCall` refused; a refused one-way call has nobody to tell. **/
 	@:noCompletion private function __rpc_refuse(op:Int, requestId:Int, refusal:RPCError):Void {
 		if (requestId != 0) {
@@ -179,6 +257,10 @@ abstract class RPCHandler {
 	}
 
 	@:noCompletion private function __rpc_send_error(op:Int, requestId:Int, message:String):Void {
+		// An answer completing after its connection went has nobody to go to.
+		if (__rpc_gone()) {
+			return;
+		}
 		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
 		framed.writeInt(0);
 		framed.writeByte(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);

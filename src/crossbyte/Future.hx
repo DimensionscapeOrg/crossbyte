@@ -27,7 +27,9 @@ import sys.thread.Mutex;
  * Resolution is deliberately not public. A `Future` handed to a caller is
  * something they read; the code that created it keeps the ability to complete
  * it through `@:allow`. A future anyone can resolve is a future nobody can
- * trust.
+ * trust. Code outside CrossByte that makes a promise of its own does the same
+ * with a `Completer`: it hands out the completer's `future` and keeps the
+ * completer.
  *
  * ## `then` adds a handler; it does not replace one
  *
@@ -74,6 +76,16 @@ class Future<T> implements IEventDispatcher {
 	 */
 	public var cause(default, null):Null<Dynamic>;
 
+	// Where this stands -- 0 pending, 1 succeeded, 2 failed -- stored as the
+	// last thing completing does, with a barrier, and read with one: a reader
+	// that sees it complete sees everything written before it. A field and not
+	// an AtomicInt, which on cpp is an array: two allocations on every future,
+	// and so on every RPC request. See __stateNow.
+	#if cpp
+	@:noCompletion private var __published:Int = 0;
+	#elseif (java || jvm)
+	@:volatile @:noCompletion private var __published:Int = 0;
+	#end
 	@:noCompletion private var __onResult:Array<T->Void> = [];
 	@:noCompletion private var __onError:Array<String->Void> = [];
 	@:noCompletion private var __dispatcher:Null<EventDispatcher>;
@@ -294,6 +306,43 @@ class Future<T> implements IEventDispatcher {
 		return joined;
 	}
 
+	/**
+		Where this stands: `0` still pending, `1` succeeded, `2` failed. Once
+		it has said `1` or `2`, `result`, `error` and `cause` are safe to read
+		on the asking thread, whichever thread completed this.
+
+		For code that looks before deciding whether to wait, as an RPC
+		handler's generated dispatch does, on every call. Reading `completed`
+		or `succeeded` plainly can see one set before `result` is, while
+		another thread is completing this. The state is published with a
+		barrier after everything else and read with one, which costs an atomic
+		load; taking the lock instead cost an RPC call about 250ns on cpp,
+		where acquiring a Mutex enters and leaves a GC-free zone.
+	**/
+	@:noCompletion public function __stateNow():Int {
+		#if cpp
+		return untyped __cpp__("_hx_atomic_load(&{0})", __published);
+		#elseif (java || jvm)
+		return __published;
+		#elseif (neko || hl)
+		__acquire();
+		final state:Int = !completed ? 0 : (succeeded ? 1 : 2);
+		__release();
+		return state;
+		#else
+		// One thread, or no lock to take: a plain read is all there is.
+		return !completed ? 0 : (succeeded ? 1 : 2);
+		#end
+	}
+
+	@:noCompletion private inline function __publish(state:Int):Void {
+		#if cpp
+		untyped __cpp__("_hx_atomic_store(&{0}, {1})", __published, state);
+		#elseif (java || jvm)
+		__published = state;
+		#end
+	}
+
 	/** A future that has already succeeded. */
 	public static function resolved<T>(value:T):Future<T> {
 		var future = new Future<T>();
@@ -336,17 +385,19 @@ class Future<T> implements IEventDispatcher {
 		return __dispatcher != null && __dispatcher.dispatchEvent(event);
 	}
 
-	@:noCompletion private function __resolve(value:T):Void {
+	/** Completes with `value`; `false`, changing nothing, if this had already completed. **/
+	@:noCompletion private function __resolve(value:T):Bool {
 		__acquire();
 
 		if (completed) {
 			__release();
-			return;
+			return false;
 		}
 
 		completed = true;
 		succeeded = true;
 		result = value;
+		__publish(1);
 
 		var handlers = __onResult;
 		__onResult = [];
@@ -360,6 +411,7 @@ class Future<T> implements IEventDispatcher {
 		if (hasEventListener(RESULT)) {
 			dispatchEvent(new Event(RESULT));
 		}
+		return true;
 	}
 
 	@:noCompletion private inline function __reject(message:String):Void {
@@ -381,18 +433,20 @@ class Future<T> implements IEventDispatcher {
 		__failureObserved = true;
 		__fail(message, null);
 	}
-	@:noCompletion private function __fail(message:String, ?cause:Dynamic):Void {
+	/** Fails with `message` and `cause`; `false`, changing nothing, if this had already completed. **/
+	@:noCompletion private function __fail(message:String, ?cause:Dynamic):Bool {
 		__acquire();
 
 		if (completed) {
 			__release();
-			return;
+			return false;
 		}
 
 		completed = true;
 		succeeded = false;
 		error = message;
 		this.cause = cause;
+		__publish(2);
 
 		var handlers = __onError;
 		__onResult = [];
@@ -411,6 +465,7 @@ class Future<T> implements IEventDispatcher {
 		if (!observed) {
 			__reportIfUnhandled();
 		}
+		return true;
 	}
 
 	/**

@@ -5,6 +5,30 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- RPC handlers can answer later. A method declared to return `Future<T>`
+  instead of `T` -- in a contract too, where its commands stub still
+  returns `RPCResponse<T>` -- is answered once the future completes, and a
+  runtime handler returning a `Future` likewise. A handler whose answer
+  depends on something slow, such as a hub asking an instance host for a
+  match, had nothing to send by the time it returned. The wire, the caller
+  and handlers that answer at once are unchanged; a method answering at once
+  generates the same code as before. A future complete already when the
+  method returns is answered then with nothing registered; one completed on
+  another thread is answered on the session's thread at its runtime's next
+  tick, since a connection is not thread-safe. A failure is answered as a
+  throw is -- an `RPCError`'s message, or `RPCError.INTERNAL_MESSAGE` with
+  `onHandlerError` told -- and `afterCall` runs when the future completes. A
+  response that fails because the other side answered with an error now has
+  an `RPCError` as its `cause`, so forwarding one passes the refusal on.
+  `RPCSession.maxCallsWaiting` (256) bounds how many calls may wait at once;
+  past it a call is refused with `RPCError.BUSY_MESSAGE` before its method
+  runs. An answer completing after its connection ended is dropped.
+- `crossbyte.Completer<T>`, the side of a `Future` that completes it:
+  `complete(value)`, `fail(error)`, and `future` to hand out. A `Future` could
+  only be completed by CrossByte itself, so code of an application's own
+  could not promise an answer it would have later. `fail` takes what a
+  function would throw, keeping it as the future's `cause`. Named after
+  Dart's `Completer`, which completes a `Future` the same way.
 - An RPC guide, `docs/rpc.md`: contracts, commands and handlers; one-way
   calls and requests; what can be sent; how a failing handler is answered
   and what ends a connection; the call hooks; surfaces built from parts;

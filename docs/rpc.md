@@ -288,6 +288,92 @@ or whose ancestor does. A handler that overrides neither pays nothing for
 them, and one that does pays a call each. What a hook throws counts as the
 call failing, and is reported to `onHandlerError`.
 
+## Answering later
+
+A handler method can return `Future<T>` instead of `T`, and its caller is
+answered once the future completes. It is for an answer that depends on
+something slow: another service, a query, a queue that has not filled. A hub
+that asks an instance host for a match answers its client with what the host
+says:
+
+```haxe
+import crossbyte.Future;
+
+class InstanceCommands extends RPCCommands {
+	public function new() {}
+
+	@:rpc public function allocate(region:String):RPCResponse<Int> {}
+}
+
+class HubHandler extends RPCHandler {
+	final instances:InstanceCommands;
+
+	public function new(instances:InstanceCommands) {
+		this.instances = instances;
+	}
+
+	@:rpc public function joinMatch(region:String):Future<Int> {
+		return instances.allocate(region);
+	}
+}
+```
+
+Nothing changes for the caller: its stub returns `RPCResponse<Int>` as it
+would for a method returning `Int`, and on the wire the answer is an `Int`. In
+a contract, a method answered later returns `Future<T>`, and its commands class
+still gets a stub returning `RPCResponse<T>`.
+
+For a future of its own, a handler makes a `Completer`, returns its `future`,
+and completes it when it can -- here, when four players are queued:
+
+```haxe
+import crossbyte.Completer;
+
+class MatchQueueHandler extends RPCHandler {
+	var queued:Array<Completer<Int>> = [];
+	var nextMatch:Int = 1;
+
+	public function new() {}
+
+	@:rpc public function queue(player:String):Future<Int> {
+		final place = new Completer<Int>();
+		queued.push(place);
+		if (queued.length == 4) {
+			final match = nextMatch++;
+			for (waiting in queued) {
+				waiting.complete(match);
+			}
+			queued = [];
+		}
+		return place.future;
+	}
+}
+```
+
+A future that fails is answered as a throw is. `completer.fail(new
+RPCError("No room."))` answers the caller `"No room."`; failing with anything
+else answers `RPCError.INTERNAL_MESSAGE` and tells `onHandlerError`. A call to
+another side that it refused with an `RPCError` fails with one, so the hub
+above passes an instance host's refusal on to its client word for word.
+`afterCall` runs when the future completes, with its failure, not when the
+method returned.
+
+A future complete already when the method returns -- a cached answer -- is
+answered at once, costing no more than a plain answer. One completed later on
+the session's own thread, as by an answer on another of its connections, is
+answered then. One completed on another thread is handed to the session's
+runtime and answered at its next tick, from its own thread, since a connection
+is not thread-safe.
+
+Each call waiting holds what it waits on, so a session limits how many may
+wait at once: `maxCallsWaiting`, 256 unless set. A call past it is refused
+before its method runs, with `RPCError.BUSY_MESSAGE`, as `beforeCall` refuses
+one. If the connection ends while a call waits, its answer is dropped.
+
+The runtime lane does the same for a registered handler that returns a
+`Future`. Which of those answer later is not known until they run, so while
+the limit is reached every runtime call is refused.
+
 ## Building surfaces from parts
 
 A contract can extend other contracts; its commands class gets stubs for all

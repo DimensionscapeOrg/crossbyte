@@ -99,7 +99,9 @@ class RPCCommandMacro {
 				}
 
 				final metaName = "meta_" + method.name;
-				final wrapperReturnType = commandReturnType(method.ret);
+				// From the answer's type, which a contract method returning
+				// Future<T> -- answered later by its handler -- has as T.
+				final wrapperReturnType = commandReturnType(method.responseType != null ? method.responseType : macro :Void);
 				final wrapper = createWrapperFunction({
 					name: method.name,
 					doc: "Generated RPC wrapper for contract method " + method.name,
