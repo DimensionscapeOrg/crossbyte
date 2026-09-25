@@ -311,6 +311,105 @@ class H2Test extends utest.Test {
 		Assert.equals("done", stream.takeBody().toString());
 	}
 
+	@:access(crossbyte._internal.http.h2.H2Connection)
+	public function testAFinishedStreamIsForgotten():Void {
+		var server = new ServerScript();
+		server.settings();
+		var count:Int = 100;
+		for (i in 0...count) {
+			server.response(1 + 2 * i, [new HpackHeader(":status", "200"), new HpackHeader("x-request", Std.string(i))], "body " + i, true);
+		}
+
+		var connection = server.connect();
+		for (i in 0...count) {
+			var stream = connection.request("GET", "http", "example.com", "/" + i, []);
+			connection.pumpUntilClosed(stream);
+
+			Assert.equals("body " + i, stream.takeBody().toString());
+			Assert.isNull(connection.stream(stream.id));
+		}
+
+		// A pooled connection lives as long as it is used, and it kept every
+		// stream it had ever opened: a hundred here, and one more -- with its
+		// header list -- for every request after.
+		var held:Int = 0;
+		for (_ in connection.__streams) {
+			held++;
+		}
+		Assert.equals(0, held);
+	}
+
+	public function testALateResponseForAForgottenStreamIsStillAccountedFor():Void {
+		var server = new ServerScript();
+		server.settings();
+		// Stream 1 is reset before any of this arrives. Its response still
+		// adds a field to the HPACK table, and still spends more than half
+		// the connection's receive window.
+		var chunk:String = StringTools.rpad("", "x", 8192);
+		server.rawHeaders(1, [new HpackHeader(":status", "200"), new HpackHeader("x-late", "yes")], true);
+		for (_ in 0...5) {
+			server.data(1, chunk, false);
+		}
+		server.data(1, "end", true);
+		server.response(3, [new HpackHeader(":status", "200"), new HpackHeader("x-late", "yes")], "ok", true);
+
+		var connection = server.connect();
+		var forgotten = connection.request("GET", "http", "example.com", "/forgotten", []);
+		var kept = connection.request("GET", "http", "example.com", "/kept", []);
+		connection.resetStream(forgotten.id, H2ErrorCode.CANCEL);
+		Assert.isNull(connection.stream(forgotten.id));
+
+		connection.pumpUntilClosed(kept);
+
+		Assert.equals(-1, forgotten.status);
+		Assert.equals(0, forgotten.bodyLength);
+
+		// The header block was decoded though its stream was gone: stream 3's
+		// reference into the dynamic table finds the field it added.
+		Require.notNull(kept.headers[0]);
+		Assert.equals("x-late", kept.headers[0].name);
+		Assert.equals("yes", kept.headers[0].value);
+		Assert.equals("ok", kept.takeBody().toString());
+
+		// And the DATA was counted against the connection window. Dropped
+		// uncounted, the window the peer believes in drains and is never
+		// topped up, and every stream on the connection stalls.
+		var connectionCredit:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type == H2FrameType.WINDOW_UPDATE) {
+				// Nothing is owed to a stream that is gone.
+				Assert.equals(0, frame.streamId);
+				connectionCredit += ((frame.payload.get(0) & 0x7f) << 24) | (frame.payload.get(1) << 16) | (frame.payload.get(2) << 8)
+					| frame.payload.get(3);
+			}
+		}
+		// Credit is returned once half the window is spent, and only the
+		// discarded body could have spent it: stream 3 carried two bytes.
+		Assert.isTrue(connectionCredit > H2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1, 'connection window credited $connectionCredit bytes');
+	}
+
+	public function testGoAwayRefusesEveryStreamAboveTheLastProcessedId():Void {
+		var server = new ServerScript();
+		server.settings();
+		server.goAway(1, H2ErrorCode.NO_ERROR);
+
+		var connection = server.connect();
+		var streams = [for (i in 0...5) connection.request("GET", "http", "example.com", "/" + i, [])];
+		connection.pumpUntilClosed(streams[streams.length - 1]);
+
+		// Refusing a stream closes it, and closing takes it out of the map the
+		// refusal walks -- so all four must go, not whichever the walk reached
+		// before its map changed under it.
+		Assert.isNull(streams[0].resetCode);
+		Assert.isFalse(streams[0].isClosed());
+		for (i in 1...streams.length) {
+			Assert.isTrue(streams[i].isClosed(), 'stream ${streams[i].id} was not refused');
+			Assert.equals(H2ErrorCode.REFUSED_STREAM, streams[i].resetCode);
+			Assert.isNull(connection.stream(streams[i].id));
+		}
+		Assert.equals(streams[0], connection.stream(streams[0].id));
+	}
+
 	public function testGoAwayRefusesStreamsAboveTheLastProcessedId():Void {
 		var server = new ServerScript();
 		server.settings();

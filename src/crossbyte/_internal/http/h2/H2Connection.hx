@@ -120,6 +120,7 @@ class H2Connection {
 		__write(out.getBytes());
 	}
 
+	/** A stream still open, or `null`: a stream is forgotten as it closes. */
 	public function stream(id:Int):Null<H2Stream> {
 		return __streams.get(id);
 	}
@@ -271,18 +272,18 @@ class H2Connection {
 	 *
 	 * Closed first, so that whatever the peer already has in flight for it is
 	 * discarded when it arrives (RFC 9113, 5.1) -- including when the
-	 * RST_STREAM itself cannot be written. A stream that has already closed is
-	 * left alone: it is over on both sides, and one closed by the peer's own
-	 * RST_STREAM must not be answered with another (5.4.2).
+	 * RST_STREAM itself cannot be written. A stream no longer open is left
+	 * alone. One that has closed is over on both sides, and one closed by the
+	 * peer's own RST_STREAM must not be answered with another (5.4.2); closed
+	 * streams are forgotten, so either way it is not found here. Nor is an id
+	 * never opened, and a RST_STREAM on an idle stream is itself an error (5.1).
 	 */
 	public function resetStream(id:Int, code:H2ErrorCode):Void {
 		var target:Null<H2Stream> = __streams.get(id);
-		if (target != null) {
-			if (target.isClosed()) {
-				return;
-			}
-			__closeStream(target);
+		if (target == null || target.isClosed()) {
+			return;
 		}
+		__closeStream(target);
 
 		var payload:Bytes = Bytes.alloc(4);
 		__writeUInt32(payload, 0, cast code);
@@ -302,6 +303,14 @@ class H2Connection {
 		}
 
 		target.close();
+		// Forgotten as it closes. A pooled connection carries requests for as
+		// long as it is used, and keeping every stream it had opened grew it
+		// by one stream and its header list per request, and made every
+		// SETTINGS walk all of them. Nothing needs a closed stream by id:
+		// whoever waits on it holds the stream itself, and a frame arriving
+		// for it later is discarded as one for an unknown id, which is what
+		// 5.1 asks for a closed stream.
+		__streams.remove(target.id);
 		onStreamClosed(target);
 	}
 
@@ -411,16 +420,14 @@ class H2Connection {
 		}
 
 		var target:Null<H2Stream> = __streams.get(streamId);
-		if (target == null || target.isClosed()) {
-			// A response for a stream we already finished with. Discarding is
-			// correct; the peer may simply not have seen our RST_STREAM yet.
-			//
-			// Closed streams stay in the map, so the lookup alone did not
-			// discard anything. A response arriving after a cancel filled in
-			// the status of the stream it had reset, and the caller -- woken
-			// by the reset, but not yet reading -- reported the request as
-			// complete. The block is still decoded above: 5.1 requires the
-			// HPACK state to advance even for a frame that is then dropped.
+		if (target == null) {
+			// A response for a stream we already finished with -- closed
+			// streams are forgotten as they close. Discarding is correct; the
+			// peer may simply not have seen our RST_STREAM yet. Filling it in
+			// instead let a response arriving after a cancel complete the
+			// request it was for. The block is still decoded above: 5.1
+			// requires the HPACK state to advance even for a frame that is
+			// then dropped.
 			return;
 		}
 
@@ -454,7 +461,7 @@ class H2Connection {
 		var content:Bytes = frame.has(H2Flags.PADDED) ? H2Frame.stripPadding(frame.payload, frame.streamId) : frame.payload;
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
-		if (target != null && !target.isClosed()) {
+		if (target != null) {
 			target.recvWindow -= counted;
 			target.unacknowledged += counted;
 			target.appendBody(content);
@@ -475,10 +482,11 @@ class H2Connection {
 			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'RST_STREAM payload is ${frame.payload.length} bytes, not 4');
 		}
 
-		// Not on a stream already closed: after our own reset, the peer's
-		// crossing RST_STREAM would otherwise rewrite why this one ended.
+		// Not on a stream already closed, which is no longer in the map:
+		// after our own reset, the peer's crossing RST_STREAM would otherwise
+		// rewrite why this one ended.
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
-		if (target != null && !target.isClosed()) {
+		if (target != null) {
 			target.resetCode = __readUInt32(frame.payload, 0);
 			__closeStream(target);
 		}
@@ -534,11 +542,17 @@ class H2Connection {
 		// Streams above the peer's last-processed id were never handled, so
 		// they are safe to retry elsewhere; §6.8 exists to make that
 		// distinction possible.
+		var refused:Array<H2Stream> = [];
 		for (target in __streams) {
-			if (target.id > goAwayLastStreamId && !target.isClosed()) {
-				target.resetCode = H2ErrorCode.REFUSED_STREAM;
-				__closeStream(target);
+			if (target.id > goAwayLastStreamId) {
+				refused.push(target);
 			}
+		}
+		// Closed once the walk is over: closing a stream takes it out of the
+		// map being walked.
+		for (target in refused) {
+			target.resetCode = H2ErrorCode.REFUSED_STREAM;
+			__closeStream(target);
 		}
 	}
 
