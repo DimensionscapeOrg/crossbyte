@@ -448,6 +448,160 @@ class ReliableDatagramSocketTest extends utest.Test {
 		closeServerQuietly(server);
 	}
 
+	public function testAMessageLargerThanOneFrameArrivesWhole():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var arrived:Array<Int> = [];
+		var messages:Array<ByteArray> = [];
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> {
+				accepted = event.socket;
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, dataEvent -> {
+					arrived.push(dataEvent.data.length);
+					messages.push(dataEvent.data);
+				});
+			});
+			server.listen();
+
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 2.0);
+
+			// Three frames' worth, then a small one: the boundaries a datagram
+			// socket promises are the ones the sender drew, so this is two
+			// messages, not four.
+			var large = new ByteArray();
+			for (i in 0...3000) {
+				large.writeByte(i & 0xFF);
+			}
+			client.send(large);
+			client.send(bytesOf("after"));
+			pumpUntil(() -> arrived.length >= 2, 2.0);
+			pumpUntil(() -> false, 0.2);
+
+			Assert.same([3000, 5], arrived, "each send arrives as one message, not " + arrived.join(" + "));
+			if (arrived.length == 2 && arrived[0] == 3000) {
+				var whole:ByteArray = messages[0];
+				whole.position = 0;
+				var wrong:Int = -1;
+				for (i in 0...3000) {
+					if (whole.readUnsignedByte() != (i & 0xFF)) {
+						wrong = i;
+						break;
+					}
+				}
+				Assert.equals(-1, wrong, "the first byte out of place");
+				messages[1].position = 0;
+				Assert.equals("after", messages[1].readUTFBytes(messages[1].length));
+			}
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(accepted);
+			closeServerQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(accepted);
+		closeServerQuietly(server);
+	}
+
+	public function testClosingFromTheDataHandlerReportsNoError():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var errors:Array<String> = [];
+		var heard = 0;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> accepted = event.socket);
+			server.listen();
+
+			// The client owns its transport, so closing the session closes the
+			// socket the acknowledgement for this very message would leave by.
+			client.addEventListener(DatagramSocketDataEvent.DATA, _ -> {
+				heard++;
+				client.close();
+			});
+			client.addEventListener(IOErrorEvent.IO_ERROR, (e:IOErrorEvent) -> errors.push(e.text));
+
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 2.0);
+			Require.notNull(accepted);
+
+			accepted.send(bytesOf("goodbye"));
+			pumpUntil(() -> heard > 0, 2.0);
+			pumpUntil(() -> false, 0.1);
+
+			Assert.equals(1, heard);
+			Assert.same([], errors, "a close the caller made itself was reported as a failure");
+			Assert.isFalse(client.connected);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(accepted);
+			closeServerQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(accepted);
+		closeServerQuietly(server);
+	}
+
+	public function testUnreliableAndSequencedMessagesCrossARealSession():Void {
+		if (!requireDatagramSupport()) return;
+
+		var server = new ReliableDatagramServerSocket();
+		var client = new ReliableDatagramSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var arrived:Array<String> = [];
+		var back:Array<String> = [];
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, event -> {
+				accepted = event.socket;
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, dataEvent -> {
+					arrived.push(dataEvent.data.toString());
+				});
+			});
+			server.listen();
+			client.addEventListener(DatagramSocketDataEvent.DATA, dataEvent -> back.push(dataEvent.data.toString()));
+
+			client.connect("127.0.0.1", server.localPort);
+			pumpUntil(() -> client.connected && accepted != null && accepted.connected, 2.0);
+
+			// Through the server's routing to an accepted session, and back
+			// the other way to a dialled one.
+			client.send(bytesOf("unreliable"), 0, 0, DeliveryMode.UNRELIABLE);
+			client.send(bytesOf("sequenced"), 0, 0, DeliveryMode.sequenced(4));
+			client.send(bytesOf("reliable"));
+			pumpUntil(() -> arrived.length >= 3, 2.0);
+			Require.notNull(accepted);
+			accepted.send(bytesOf("state"), 0, 0, DeliveryMode.sequenced(0));
+			pumpUntil(() -> back.length >= 1, 2.0);
+
+			arrived.sort(Reflect.compare);
+			Assert.same(["reliable", "sequenced", "unreliable"], arrived);
+			Assert.same(["state"], back);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(accepted);
+			closeServerQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(accepted);
+		closeServerQuietly(server);
+	}
+
 	public function testStreamModeHandshakeAndDeliveryOverLocalhost():Void {
 		if (!requireDatagramSupport()) return;
 
@@ -525,7 +679,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			// The transport underneath is closed, so the next frame cannot
 			// leave. This is what a socket dying under a live connection does.
 			@:privateAccess client.__transport.close();
-			@:privateAccess client.__sendRaw(bytesOf("frame"));
+			client.send(bytesOf("frame"));
 
 			Assert.equals(1, errors.length, "a frame that could not be sent was not reported");
 			Assert.isTrue(errors[0].length > 0, "the ioError carried no reason for the failure");
