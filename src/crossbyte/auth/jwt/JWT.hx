@@ -63,8 +63,12 @@ class JWT {
 	 *
 	 * Returns `null` when the token is malformed, expired, signed by the wrong
 	 * algorithm, or fails issuer/audience validation.
+	 *
+	 * @param now The time to judge `exp`, `iat` and `nbf` against, in seconds
+	 *        since the epoch. Defaults to the wall clock; pass one for a
+	 *        service that keeps its own clock, or for fixed-time tests.
 	 */
-	public function verifyToken(token:String):JWTPayload {
+	public function verifyToken(token:String, ?now:Float):JWTPayload {
 		if (token == null || token.length == 0 || token.length > 4096) {
 			return null;
 		}
@@ -107,7 +111,7 @@ class JWT {
 			return null;
 		}
 
-		var nowSec:Int = Std.int(Date.now().getTime() / 1000);
+		var nowSec:Float = now != null ? now : Date.now().getTime() / 1000;
 		if (payload.expiresAt == null || nowSec > payload.expiresAt + leeway) {
 			return null;
 		}

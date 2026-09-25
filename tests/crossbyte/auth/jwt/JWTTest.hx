@@ -85,6 +85,24 @@ class JWTTest extends utest.Test {
 		Assert.isNull(jwt.verifyToken(StringTools.lpad("", "a", 4097)));
 	}
 
+	public function testAnExplicitNowDecidesExpiryIssueAndNotBefore():Void {
+		var jwt = JWT.make(HS256([{secret: "test-secret"}]), null, null, 0);
+		var token = jwt.generateToken({
+			sub: "subject",
+			iat: 1000,
+			nbf: 1010,
+			exp: 1100
+		});
+
+		// A fixed clock, nowhere near the wall clock, decides every bound.
+		Assert.isNull(jwt.verifyToken(token, 999.5), "before iat");
+		Assert.isNull(jwt.verifyToken(token, 1005), "before nbf");
+		Require.notNull(jwt.verifyToken(token, 1010));
+		Require.notNull(jwt.verifyToken(token, 1100));
+		Assert.isNull(jwt.verifyToken(token, 1100.5), "after exp");
+		Assert.isNull(jwt.verifyToken(token), "the wall clock is long past exp");
+	}
+
 	public function testNullTimestampPayloadIsRejected():Void {
 		var jwt = JWT.make(HS256([{secret: "test-secret"}]));
 		var token = jwt.generateToken({
