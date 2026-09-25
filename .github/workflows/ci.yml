@@ -624,7 +624,7 @@ jobs:
         working-directory: export/websocket-echo
         run: .\WebSocketEchoSample.exe
 
-      # The other three samples that end on their own. Building a sample
+      # The other samples that end on their own. Building a sample
       # proves it typechecks; running one is the only thing that exercises
       # the Application and ServerApplication bootstrap a user actually
       # starts from, which no unit test touches. The web server one serves a
@@ -633,6 +633,13 @@ jobs:
       - name: Run web server sample
         working-directory: export/web-server
         run: .\SimpleWebServerSample.exe
+
+      # Both pages over HTTP/2 from a server that also speaks HTTP/1.1, each
+      # body checked against what was served. The client never falls back to
+      # HTTP/1.1, so a pass is two HTTP/2 streams; anything else exits 1.
+      - name: Run HTTP/2 sample
+        working-directory: export/http2
+        run: .\Http2Sample.exe
 
       - name: Run simple application sample
         working-directory: export/simple-application
