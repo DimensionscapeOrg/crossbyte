@@ -127,5 +127,7 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
 		runner.addCase(new crossbyte.rpc.RPCContractTest());
 		runner.addCase(new crossbyte.rpc.RPCCallHookTest());
+		// Where a Haxe Int does not wrap at 32 bits by itself.
+		runner.addCase(new crossbyte.foundation.Seq32Test());
 	}
 }

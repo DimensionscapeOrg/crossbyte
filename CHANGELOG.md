@@ -636,6 +636,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Seq32` arithmetic wraps at 32 bits on JavaScript, as on every other
+  target. There `+` and `++` ran on past 2^31 - 1, so a sequence counted up
+  past it stopped equalling the same sequence read off the wire, which is
+  wrapped. Comparisons still held, which is how it went unseen. A reliable
+  datagram session on Node that reached the crossing stopped delivering:
+  with its sequence started forty below 2^31, forty messages of a hundred
+  arrived. Sessions start at a random point in the 32-bit range, so some
+  start close to it. `SnowflakeId` and `SequenceRing` count in `Seq32` too.
+  The arithmetic now goes through `haxe.Int32`, which wraps where the
+  target does not and costs nothing where it does.
 - An RPC contract that extends another now carries the parent's methods.
   Only its own were read, so its stubs covered part of it, and its handler
   -- which Haxe made implement the rest -- dispatched none of the rest. A
