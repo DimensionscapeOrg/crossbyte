@@ -29,6 +29,7 @@ class TestSuites {
 
 	public static function addFoundation(runner:Runner):Void {
 		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
+		runner.addCase(new crossbyte.foundation.Seq32Test());
 	}
 
 	public static function addErrors(runner:Runner):Void {

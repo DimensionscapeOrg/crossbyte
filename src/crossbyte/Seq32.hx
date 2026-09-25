@@ -16,20 +16,26 @@ package crossbyte;
  */
 @:transitive
 abstract Seq32(Int) from Int to Int {
+	// Arithmetic goes through haxe.Int32, which wraps it at 32 bits where
+	// the target does not: JavaScript, PHP, Python and Lua. Elsewhere it is
+	// plain Int arithmetic, as it always was. On JavaScript it was left to
+	// run past 2^31 - 1, so a sequence counted up past it no longer equalled
+	// the same sequence read off the wire, and a reliable session that got
+	// there stopped delivering.
 	public static inline var MAX_INT_32:Int = 0x7FFFFFFF; //  2147483647
 	public static inline var ABS_MIN_INT_32:UInt = 0x80000000; //  2147483648
 	public static inline var MAX_UINT_32:UInt = 0xFFFFFFFF; //  4294967295
 
 	@:op(A + B) private static inline function add(a:Seq32, b:Seq32):Seq32 {
-		return (a : Int) + (b : Int);
+		return (((a : Int) : haxe.Int32) + ((b : Int) : haxe.Int32) : Int);
 	}
 
 	@:op(A - B) private static inline function sub(a:Seq32, b:Seq32):Seq32 {
-		return (a : Int) - (b : Int);
+		return (((a : Int) : haxe.Int32) - ((b : Int) : haxe.Int32) : Int);
 	}
 
 	@:op(A * B) private static inline function mul(a:Seq32, b:Seq32):Seq32 {
-		return (a : Int) * (b : Int);
+		return (((a : Int) : haxe.Int32) * ((b : Int) : haxe.Int32) : Int);
 	}
 
 	@:op(A / B) private static inline function div(a:Seq32, b:Seq32):Float {
@@ -125,21 +131,23 @@ abstract Seq32(Int) from Int to Int {
 	}
 
 	@:op(++A) private inline function prefixIncrement():Seq32 {
-		return ++this;
+		return this = (((this : haxe.Int32) + 1) : Int);
 	}
 
 	@:op(A++) private inline function postfixIncrement():Seq32 {
-		return this
-		++;
+		final before:Int = this;
+		this = (((this : haxe.Int32) + 1) : Int);
+		return before;
 	}
 
 	@:op(--A) private inline function prefixDecrement():Seq32 {
-		return --this;
+		return this = (((this : haxe.Int32) - 1) : Int);
 	}
 
 	@:op(A--) private inline function postfixDecrement():Seq32 {
-		return this
-		--;
+		final before:Int = this;
+		this = (((this : haxe.Int32) - 1) : Int);
+		return before;
 	}
 
 	private inline function toString(?radix:Int):String {
