@@ -673,6 +673,19 @@ All notable changes to CrossByte will be documented in this file.
   start close to it. `SnowflakeId` and `SequenceRing` count in `Seq32` too.
   The arithmetic now goes through `haxe.Int32`, which wraps where the
   target does not and costs nothing where it does.
+- An RPC handler that extends another no longer fails to build with an
+  error about a field that is there. To dispatch what the parent answered,
+  the child's build followed the parent's method types -- which types a
+  method there and then, body and all when it declares no return type,
+  before the classes it uses have finished building. A parent method
+  `note(value:Int)` whose body read a static of its child failed the
+  child with "Class<NotingChildHandler> has no field noted". The parent's
+  build now records the signatures it dispatches, types written in full,
+  on its `dispatch()`, and the child reads them untyped; a commands class
+  reads its parent's response types the same way. A handler `@:rpc`
+  method that returns a value without declaring its return type is now an
+  error: its answer is encoded as that type, and left undeclared it was
+  taken for `Void` and never sent.
 - An RPC contract that extends another now carries the parent's methods.
   Only its own were read, so its stubs covered part of it, and its handler
   -- which Haxe made implement the rest -- dispatched none of the rest. A
