@@ -26,6 +26,7 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 import haxe.Serializer;
 import haxe.Unserializer;
 import haxe.ds.IntMap;
+import haxe.ds.Vector;
 #if !(js && !nodejs)
 #if !nodejs
 import sys.net.Host;
@@ -167,6 +168,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __queuedBytes;
 	}
 
+	/**
+		The largest reliable message the peer may send this socket, in bytes.
+		Zero means no limit.
+
+		A reliable message larger than one frame travels as several, and is
+		held here until its last one arrives -- so what a peer can make this
+		side hold is whatever it declares a message to be. Past this the
+		session is closed, with an `ioError` saying why, rather than the
+		fragments being kept for a message with no end.
+	**/
+	public var maxMessageSize:Int = DEFAULT_MAX_MESSAGE_SIZE;
+
+	/** `maxMessageSize` unless changed: eight megabytes, as `FrameCodec` takes. **/
+	public static inline var DEFAULT_MAX_MESSAGE_SIZE:Int = 8 * 1024 * 1024;
+
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;
 	@:noCompletion private static inline var DELIVERY_WINDOW:Int = 500;
 	@:noCompletion private static inline var KEEP_ALIVE_INTERVAL:Float = 75.0;
@@ -210,7 +226,27 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __connectionAttemptHandle:Int = -1;
 	@:noCompletion private var __connectionTimeoutHandle:Int = -1;
 	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
-	@:noCompletion private var __inFrameCache:IntMap<ByteArray>;
+	// Out-of-order frames, kept whole: a fragment's `more` flag is as much a
+	// part of it as its bytes.
+	@:noCompletion private var __inFrameCache:IntMap<ReliableDatagramFrame>;
+
+	// The fragments of a reliable message still arriving, and their total.
+	// Joined once when the last arrives, rather than appended to a buffer
+	// that grows -- and copies -- as it goes.
+	@:noCompletion private var __fragments:Array<ByteArray> = [];
+	@:noCompletion private var __fragmentBytes:Int = 0;
+
+	// The newest counter delivered on each sequenced channel, -1 for none,
+	// and the next to send. Made on first use: most sessions never sequence
+	// anything, and 256 entries each is not worth carrying for them.
+	@:noCompletion private var __sequencedIn:Vector<Int>;
+	@:noCompletion private var __sequencedOut:Vector<Int>;
+
+	// Every frame this socket sends is written here and sent from here. A
+	// send has finished with its bytes before it returns, so one buffer
+	// serves every frame, where encoding each into one of its own was an
+	// allocation per packet and per acknowledgement.
+	@:noCompletion private var __scratch:ByteArray;
 	@:noCompletion private var __inFrameCacheSize:Int = 0;
 	@:noCompletion private var __inSequence:Seq32 = 0;
 	@:noCompletion private var __incoming:Bool = false;
@@ -250,7 +286,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/** How far `__outgoingQueue` has been drained; see `__drainQueue`. **/
 	@:noCompletion private var __queueAt:Int = 0;
 	@:noCompletion private var __outSequence:Seq32 = 0;
-	@:noCompletion private var __outgoingQueue:Array<ByteArray>;
+	// Frames made and not yet sent. They are the frames the retransmission
+	// cache will hold, made once, carrying the `more` flag with them.
+	@:noCompletion private var __outgoingQueue:Array<OutstandingFrame>;
 	@:noCompletion private var __output:ByteArray;
 	@:noCompletion private var __ownsTransport:Bool = true;
 	@:noCompletion private var __remoteAddress:String = "";
@@ -276,6 +314,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__inFrameCacheSize = 0;
 		__outFrameCache = new IntMap();
 		__outgoingQueue = [];
+		__scratch = new ByteArray();
+		__scratch.length = ReliableDatagramProtocol.MAX_FRAME_SIZE;
 		objectEncoding = ObjectEncoding.DEFAULT;
 		__input = __createBuffer();
 		__output = __createBuffer();
@@ -553,20 +593,32 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Sends a reliable payload while in `DATAGRAM` mode.
-		Larger payloads are segmented internally and reassembled on the remote side as
-		ordered reliable messages.
+		Sends one message while in `DATAGRAM` mode, delivered as `delivery`
+		says; see `DeliveryMode`.
+
+		The peer receives it as one `DatagramSocketDataEvent.DATA` holding
+		exactly these bytes. A `RELIABLE` message of any size is split into
+		frames and put back together before it is delivered; an unreliable or
+		sequenced one must fit one frame.
+
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which the payload begins.
 		@param length The number of bytes to send. Use `0` to send all remaining bytes from `offset`.
+		@param delivery `RELIABLE` unless given.
 		@throws IllegalOperationError If the socket is not in `DATAGRAM` mode.
 		@throws IOError If the reliable session is not connected.
-		@throws RangeError If `offset` or `length` are out of bounds.
+		@throws RangeError If `offset` or `length` are out of bounds, or an
+		        unreliable or sequenced message is larger than
+		        `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE`.
 	**/
-	public function send(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+	public function send(bytes:ByteArray, offset:Int = 0, length:Int = 0, delivery:DeliveryMode = RELIABLE):Void {
 		__requireDatagramMode();
 		__requireOpenConnection();
-		__queueBytes(bytes, offset, length);
+		if (delivery == RELIABLE) {
+			__queueBytes(bytes, offset, length);
+		} else {
+			__sendUnreliable(bytes, offset, length, delivery);
+		}
 	}
 
 	/**
@@ -803,12 +855,110 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			case HANDSHAKE:
 				__onHandshake(frame.sequence);
 			case PACKET:
-				__acceptPacket(frame.sequence, frame.payload);
+				__acceptPacket(frame.sequence, frame.payload, frame.more);
 			case ACK:
 				__acceptAck(frame.sequence);
 			case FIN:
 				__dispose(true);
+			case UNRELIABLE:
+				__acceptUnreliable(frame.payload);
+			case SEQUENCED:
+				__acceptSequenced(frame.sequence, frame.payload);
 		}
+	}
+
+	/**
+		An unreliable message, delivered as it arrives. Only on an established
+		datagram session: before the handshake there is no session for it to
+		belong to, and a stream has no message boundaries to give it.
+	**/
+	@:noCompletion private function __acceptUnreliable(payload:ByteArray):Void {
+		if (!__connected || __mode != DATAGRAM) {
+			return;
+		}
+		__dispatchPayload(payload);
+	}
+
+	/**
+		A sequenced message, delivered only if it is newer than the last one
+		delivered on its channel. An older one arriving late is dropped, and so
+		is a duplicate, which is the same counter arriving twice.
+	**/
+	@:noCompletion private function __acceptSequenced(field:Seq32, payload:ByteArray):Void {
+		if (!__connected || __mode != DATAGRAM) {
+			return;
+		}
+
+		if (__sequencedIn == null) {
+			__sequencedIn = __filled(DeliveryMode.CHANNELS, -1);
+		}
+
+		var channel:Int = ReliableDatagramProtocol.channelOf(field);
+		var counter:Int = ReliableDatagramProtocol.counterOf(field);
+		var newest:Int = __sequencedIn[channel];
+		if (newest != -1 && !ReliableDatagramProtocol.counterIsNewer(counter, newest)) {
+			return;
+		}
+
+		__sequencedIn[channel] = counter;
+		__dispatchPayload(payload);
+	}
+
+	/**
+		One in-order reliable frame. In a stream it is bytes; in datagram mode
+		it is a message, or part of one when `more` says another follows.
+
+		A message of one frame -- nearly every message -- is delivered as it
+		came, with no copy. Fragments are held until the last and joined once.
+	**/
+	@:noCompletion private function __deliverReliable(payload:ByteArray, more:Bool):Void {
+		if (__mode == STREAM) {
+			__dispatchPayload(payload);
+			return;
+		}
+
+		var limit:Int = maxMessageSize;
+		if (limit > 0 && payload.length > limit - __fragmentBytes) {
+			var message:String = 'A reliable message from the peer passed the $limit byte maxMessageSize before it ended; '
+				+ 'the session was closed rather than hold more of it.';
+			__fragments.resize(0);
+			__fragmentBytes = 0;
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+			}
+			close();
+			return;
+		}
+
+		if (__fragments.length == 0 && !more) {
+			__dispatchPayload(payload);
+			return;
+		}
+
+		__fragments.push(payload);
+		__fragmentBytes += payload.length;
+		if (more) {
+			return;
+		}
+
+		var whole:ByteArray = new ByteArray();
+		whole.length = __fragmentBytes;
+		var at:Int = 0;
+		for (fragment in __fragments) {
+			(whole : haxe.io.Bytes).blit(at, fragment, 0, fragment.length);
+			at += fragment.length;
+		}
+		__fragments.resize(0);
+		__fragmentBytes = 0;
+		__dispatchPayload(whole);
+	}
+
+	@:noCompletion private static function __filled(size:Int, value:Int):Vector<Int> {
+		var vector = new Vector<Int>(size);
+		for (i in 0...size) {
+			vector[i] = value;
+		}
+		return vector;
 	}
 
 	@:noCompletion private function __acceptAck(ackValue:Seq32):Void {
@@ -917,16 +1067,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__setRto(__rto * 2);
 	}
 
-	@:noCompletion private function __acceptPacket(sequence:Seq32, payload:ByteArray):Void {
+	@:noCompletion private function __acceptPacket(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
 		if (sequence == __inSequence) {
-			__dispatchPayload(payload);
 			__inSequence++;
+			__deliverReliable(payload, more);
 			__drainBufferedPackets();
 		} else if (__shouldBufferPacket(sequence)) {
-			__cacheFrame(sequence, payload);
+			__cacheFrame(sequence, payload, more);
 		}
 
-		__sendAck();
+		// A handler may have closed the session, or a message too large may
+		// have; there is then nobody to acknowledge to, and the send would
+		// fail and report an error about a socket the caller closed itself.
+		if (!__closed) {
+			__sendAck();
+		}
 	}
 
 	@:noCompletion private function __shouldBufferPacket(sequence:Seq32):Bool {
@@ -957,12 +1112,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// the map exactly. The count used to be recovered by walking `keys()`, which
 	// cost an O(n) iteration plus an iterator allocation for every buffered
 	// datagram.
-	@:noCompletion private function __cacheFrame(sequence:Seq32, payload:ByteArray):Void {
+	@:noCompletion private function __cacheFrame(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
 		if (!__inFrameCache.exists(sequence)) {
 			__inFrameCacheSize++;
 		}
 
-		__inFrameCache.set(sequence, payload);
+		__inFrameCache.set(sequence, new ReliableDatagramFrame(PACKET, sequence, payload, false, null, more));
 	}
 
 	@:noCompletion private inline function __inFrameCacheCount():Int {
@@ -1070,6 +1225,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__outFrameCache = new IntMap();
 		__inFrameCache = new IntMap();
 		__inFrameCacheSize = 0;
+		__fragments.resize(0);
+		__fragmentBytes = 0;
+		__sequencedIn = null;
+		__sequencedOut = null;
 		__outgoingQueue.resize(0);
 		__queueAt = 0;
 		__queuedBytes = 0;
@@ -1099,12 +1258,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __drainBufferedPackets():Void {
-		while (__inFrameCache.exists(__inSequence)) {
-			var payload:ByteArray = __inFrameCache.get(__inSequence);
+		while (!__closed && __inFrameCache.exists(__inSequence)) {
+			var frame:ReliableDatagramFrame = __inFrameCache.get(__inSequence);
 			__inFrameCache.remove(__inSequence);
 			__inFrameCacheSize--;
-			__dispatchPayload(payload);
 			__inSequence++;
+			__deliverReliable(frame.payload, frame.more);
 		}
 	}
 
@@ -1112,11 +1271,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// A cursor rather than taking the front off, which moves everything
 		// still queued for each packet that leaves.
 		while (__queueAt < __outgoingQueue.length && !__windowExceeded()) {
-			var payload:ByteArray = __outgoingQueue[__queueAt];
+			var frame:OutstandingFrame = __outgoingQueue[__queueAt];
 			__outgoingQueue[__queueAt] = null;
 			__queueAt++;
-			__queuedBytes -= payload.length;
-			__sendPacket(payload);
+			__queuedBytes -= frame.payload.length;
+			__sendPacket(frame);
 		}
 
 		if (__queueAt >= __outgoingQueue.length) {
@@ -1196,25 +1355,62 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			throw new RangeError("The supplied index is out of bounds.");
 		}
 
+		// Every frame but the last says more follows, which is how the receiver
+		// knows where the message ends and hands it over in one piece.
 		var cursor:Int = offset;
 		var remaining:Int = length;
 		while (remaining > 0) {
 			var chunkLength:Int = remaining > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE ? ReliableDatagramProtocol.MAX_PAYLOAD_SIZE : remaining;
-			__queuePacket(__copyRange(bytes, cursor, chunkLength));
-			cursor += chunkLength;
 			remaining -= chunkLength;
+			__queuePacket(__copyRange(bytes, cursor, chunkLength), remaining > 0);
+			cursor += chunkLength;
 		}
 	}
 
-	@:noCompletion private function __queuePacket(payload:ByteArray):Void {
+	@:noCompletion private function __queuePacket(payload:ByteArray, more:Bool = false):Void {
+		var frame = new OutstandingFrame(payload, 0, 0, more);
 		if (__windowExceeded()) {
-			__outgoingQueue.push(payload);
+			__outgoingQueue.push(frame);
 			__queuedBytes += payload.length;
 			__enforceOutputLimit();
 			return;
 		}
 
-		__sendPacket(payload);
+		__sendPacket(frame);
+	}
+
+	/**
+		An unreliable or sequenced message: one frame, straight onto the wire
+		from the caller's own bytes -- nothing is kept, so nothing is copied.
+	**/
+	@:noCompletion private function __sendUnreliable(bytes:ByteArray, offset:Int, length:Int, delivery:DeliveryMode):Void {
+		var totalLength:Int = bytes.length;
+		if (offset < 0 || offset > totalLength) {
+			throw new RangeError("The supplied index is out of bounds.");
+		}
+		if (length == 0) {
+			length = totalLength - offset;
+		}
+		if (length < 0 || length > totalLength - offset) {
+			throw new RangeError("The supplied index is out of bounds.");
+		}
+		if (length > ReliableDatagramProtocol.MAX_PAYLOAD_SIZE) {
+			throw new RangeError('An unreliable message must fit one frame, ${ReliableDatagramProtocol.MAX_PAYLOAD_SIZE} bytes, and this one is $length; '
+				+ 'split it, or send it RELIABLE.');
+		}
+
+		if (!delivery.isSequenced) {
+			__sendFrame(UNRELIABLE, 0, bytes, offset, length, false, null, false);
+			return;
+		}
+
+		if (__sequencedOut == null) {
+			__sequencedOut = __filled(DeliveryMode.CHANNELS, 0);
+		}
+		var channel:Int = delivery.channel;
+		var counter:Int = __sequencedOut[channel];
+		__sequencedOut[channel] = (counter + 1) & ReliableDatagramProtocol.SEQUENCED_COUNTER_MASK;
+		__sendFrame(SEQUENCED, ReliableDatagramProtocol.sequencedField(channel, counter), bytes, offset, length, false, null, false);
 	}
 
 	/**
@@ -1305,19 +1501,22 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			default:
 				__currentAck();
 		}
-		__sendRaw(ReliableDatagramProtocol.encode(type, controlSequence, null, false, ack));
+		__sendFrame(type, controlSequence, null, 0, 0, false, ack, false);
 	}
 
 	@:noCompletion private function __sendHandshakeAttempt():Void {
 		__sendControl(__incoming ? HANDSHAKE : CONNECT, __incoming ? __outSequence : 0);
 	}
 
-	@:noCompletion private function __sendPacket(payload:ByteArray):Void {
+	@:noCompletion private function __sendPacket(frame:OutstandingFrame):Void {
 		var sequence:Seq32 = __outSequence;
 		var now:Float = __clock();
 
-		__outFrameCache.set(sequence, new OutstandingFrame(payload, now, now + __rto));
-		__sendRaw(ReliableDatagramProtocol.encode(PACKET, sequence, payload, false, __currentAck()));
+		frame.sentAt = now;
+		frame.deadline = now + __rto;
+		frame.attempts = 1;
+		__outFrameCache.set(sequence, frame);
+		__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, false, __currentAck(), frame.more);
 		__outSequence++;
 		__armRetransmitClock();
 	}
@@ -1373,7 +1572,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		// 6298 section 5.5 doubles the timeout and then restarts the clock.
 		__closeWindow();
 		overdue.deadline = now + __rto;
-		__sendRaw(ReliableDatagramProtocol.encode(PACKET, __windowBase, overdue.payload, true, __currentAck()));
+		__sendFrame(PACKET, __windowBase, overdue.payload, 0, overdue.payload.length, true, __currentAck(), overdue.more);
 	}
 
 	/**
@@ -1398,21 +1597,23 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private inline function __sendAck():Void {
-		__sendRaw(ReliableDatagramProtocol.encode(ACK, __inSequence));
+		__sendFrame(ACK, __inSequence, null, 0, 0, false, null, false);
 	}
 
-	@:noCompletion private inline function __currentAck():Null<Seq32> {
-		return __connected ? __inSequence : null;
-	}
-
-	@:noCompletion private inline function __sendRaw(frame:ByteArray):Void {
-		frame.position = 0;
+	/** Writes a frame into the scratch buffer and sends it from there. **/
+	@:noCompletion private function __sendFrame(type:ReliableDatagramFrameType, sequence:Seq32, payload:ByteArray, offset:Int, length:Int, resend:Bool,
+			ack:Null<Seq32>, more:Bool):Void {
+		var written:Int = ReliableDatagramProtocol.encodeInto(__scratch, type, sequence, payload, offset, length, resend, ack, more);
 		try {
-			__transport.send(frame, 0, frame.length, __remoteAddress, __remotePort);
+			__transport.send(__scratch, 0, written, __remoteAddress, __remotePort);
 		} catch (e:Dynamic) {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, Std.string(e)));
 			__dispose(true);
 		}
+	}
+
+	@:noCompletion private inline function __currentAck():Null<Seq32> {
+		return __connected ? __inSequence : null;
 	}
 
 	@:noCompletion private function __teardownTransportListener():Void {
