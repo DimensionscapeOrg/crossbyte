@@ -187,17 +187,26 @@ class HTTP2Backend implements HTTPBackend {
 			return;
 		}
 
-		if (stream.resetCode != null && stream.status < 0) {
-			var code:H2ErrorCode = stream.resetCode;
-			context.onError('Stream reset by peer: ${code.toString()}');
-			return;
-		}
+		// Everything below this block is a stream that reached its end. One
+		// that did not is an error however much of it arrived: these branches
+		// tested for a missing status, so a reset or a hang-up after the
+		// headers reported the response complete with a truncated body.
+		if (!stream.endOfStream) {
+			if (stream.resetCode != null) {
+				var code:H2ErrorCode = stream.resetCode;
+				context.onError('Stream reset by peer: ${code.toString()}');
+				return;
+			}
 
-		if (stream.status < 0 && !stream.endOfStream) {
-			// The peer hung up before the response headers arrived. Distinct
-			// from a malformed message, and the distinction is what tells a
-			// caller whether retrying is worth anything.
-			context.onError("Connection closed before the response headers arrived");
+			if (stream.status < 0) {
+				// The peer hung up before the response headers arrived.
+				// Distinct from a malformed message, and the distinction is
+				// what tells a caller whether retrying is worth anything.
+				context.onError("Connection closed before the response headers arrived");
+				return;
+			}
+
+			context.onError("Connection closed before the response body completed");
 			return;
 		}
 
