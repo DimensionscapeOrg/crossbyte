@@ -249,6 +249,21 @@ class RPCTest extends utest.Test {
 		Assert.equals("m10:10", handler.seen[9]);
 	}
 
+	public function testAMethodTakesAsManyArgumentsAsItDeclares():Void {
+		// A handler's @:rpc method was held to eight arguments, which nothing
+		// else was: a commands stub or a contract with more built, and a
+		// handler written without a contract could never answer it. Nothing in
+		// the encoding needs a limit. Ten here, the last optional, so their
+		// order and the optional's flag are both checked past the old line.
+		var link = LinkedConnection.pair();
+		var commands = new ManyArgumentCommands();
+		var clientSession = new RPCSession<ManyArgumentCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new ManyArgumentHandler());
+
+		Assert.equals("sum:36:9", commands.describe(1, 2, 3, 4, 5, 6, 7, 8, "sum", 9).result);
+		Assert.equals("sum:36:none", commands.describe(1, 2, 3, 4, 5, 6, 7, 8, "sum").result);
+	}
+
 	public function testRuntimeMessagesDoNotHitCompileTimeHandlerWhenOpcodeCollides():Void {
 		var link = LinkedConnection.pair();
 		var compileHandler = new TestHandler();
@@ -795,6 +810,20 @@ private class FailingHandler extends RPCHandler {
 			throw "queue full";
 		}
 		notified.push(id);
+	}
+}
+
+private class ManyArgumentCommands extends RPCCommands {
+	public function new() {}
+
+	@:rpc public function describe(a:Int, b:Int, c:Int, d:Int, e:Int, f:Int, g:Int, h:Int, label:String, ?extra:Int):RPCResponse<String> {}
+}
+
+private class ManyArgumentHandler extends RPCHandler {
+	public function new() {}
+
+	@:rpc public function describe(a:Int, b:Int, c:Int, d:Int, e:Int, f:Int, g:Int, h:Int, label:String, ?extra:Int):String {
+		return label + ":" + (a + b + c + d + e + f + g + h) + ":" + (extra == null ? "none" : Std.string(extra));
 	}
 }
 

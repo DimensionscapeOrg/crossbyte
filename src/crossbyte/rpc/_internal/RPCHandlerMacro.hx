@@ -179,9 +179,6 @@ class RPCHandlerMacro {
 				if (f.name != "new" && ((f.meta != null && f.meta.filter(m -> m.name == ":rpc").length > 0) || f.name == "ping")) {
 					switch f.kind {
 						case FFun(fn):
-							if (fn.args.length > 8) {
-								Context.error("RPC limited to 8 params", f.pos);
-							}
 							// Its answer is encoded as its return type, which is not
 							// known until the method is typed -- after this build.
 							// Left undeclared it was taken for Void, and the answer
