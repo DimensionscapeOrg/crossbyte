@@ -107,7 +107,6 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private var __connected:Bool = false;
 	@:noCompletion private var __readEnabled:Bool = false;
 	@:noCompletion private var __running:Bool = false;
-	@:noCompletion private var __receiveBuffer:ByteArray;
 	@:noCompletion private var __onData:ByteArrayInput->Void = __noopData;
 	@:noCompletion private var __onClose:Reason->Void = __noopClose;
 	@:noCompletion private var __onError:Reason->Void = __noopError;
@@ -118,7 +117,8 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private var __pendingLock:Mutex;
 	// Serializes native handle access (__activePipe/__listeningPipe) so a write
 	// in send() cannot race the reader thread closing the same handle in
-	// close()/__disconnectActive().
+	// close()/__disconnectActive(); and, with __dispatchLock, what ends a
+	// session, so a reader thread acts for its own session only.
 	@:noCompletion private var __handleLock:Mutex;
 	#end
 	@:noCompletion private var __dispatchListener:TickEvent->Void;
@@ -135,7 +135,6 @@ class LocalConnection implements INetConnection {
 
 	public function new() {
 		__captureRuntime();
-		__receiveBuffer = new ByteArray();
 		#if (cpp || neko || hl)
 		__dispatchQueue = new Deque();
 		__dispatchLock = new Mutex();
@@ -289,12 +288,22 @@ class LocalConnection implements INetConnection {
 
 	public function close():Void {
 		var wasConnected = __connected;
+		// The session ends under both locks its reader thread checks it under:
+		// whatever that thread does for it afterwards is refused, and what it
+		// did before is torn down or discarded below.
+		#if (cpp || neko || hl)
+		__handleLock.acquire();
+		__dispatchLock.acquire();
+		#end
 		__session++;
 		__running = false;
+		#if (cpp || neko || hl)
+		__dispatchLock.release();
+		__handleLock.release();
+		#end
 		__dispatchFailed = false;
 		__mode = NONE;
 		__connectionName = null;
-		__receiveBuffer.clear();
 		__clearPendingPayloads();
 		__detachDispatchListener();
 
@@ -324,73 +333,105 @@ class LocalConnection implements INetConnection {
 		}
 	}
 
+	/**
+	 * The reader thread of one session, `session`.
+	 *
+	 * It acts only for that session. close() ends a session and listen() or
+	 * connect() start the next at once, while this thread sleeps between
+	 * polls: it used to wake to find `__running` true again and carry on
+	 * beside the next session's reader -- reading its pipe, splitting its
+	 * bytes, tearing it down when the read that lost the race found nothing,
+	 * and making it a listener of its own. So what this thread does to the
+	 * connection it does under `__handleLock` having checked the session is
+	 * still its own, and what it hands on carries the session and is refused
+	 * once it has ended.
+	 */
 	@:noCompletion private function __runLoop(session:Int):Void {
 		var chunk:Bytes = Bytes.alloc(BUFFER_SIZE);
+		// This session's framing, and this thread's alone: no reader shares
+		// one with another, and close() never clears one being written to.
+		var framing = new ByteArray();
 
-		while (__running) {
-			if (__mode == SERVER && __activePipe == null && __listeningPipe != null && __accept(__listeningPipe)) {
-				// Publish the accepted handle + connected state under __handleLock
-				// so a concurrent send() observes a consistent (handle, connected)
-				// pair.
-				#if (cpp || neko || hl)
-				__handleLock.acquire();
-				#end
-				__activePipe = __listeningPipe;
-				__listeningPipe = null;
-				__connected = true;
+		while (__running && __session == session) {
+			#if (cpp || neko || hl)
+			__handleLock.acquire();
+			#end
+			if (__session != session) {
 				#if (cpp || neko || hl)
 				__handleLock.release();
 				#end
-				__dispatchLifecycle(Ready);
+				break;
 			}
 
+			// Published with the connected state under __handleLock, so send()
+			// sees a consistent (handle, connected) pair.
+			var accepted = false;
+			if (__mode == SERVER && __activePipe == null && __listeningPipe != null && __accept(__listeningPipe)) {
+				__activePipe = __listeningPipe;
+				__listeningPipe = null;
+				__connected = true;
+				accepted = true;
+			}
+
+			// Polled and read under the lock too: both are immediate, and a
+			// handle closed and reused by the OS cannot be read as this one.
+			var received:Bytes = null;
+			var failure:Reason = null;
 			var pipe = __activePipe;
 			if (pipe != null) {
 				var available = __getBytesAvailable(pipe);
 				if (available < 0 || (available == 0 && !__isOpen(pipe))) {
-					__disconnectActive(Reason.Closed);
+					failure = Reason.Closed;
+				} else if (available > MAX_FRAME_SIZE + 4) {
+					failure = Reason.Error("Local transport received an oversized frame.");
 				} else if (available > 0) {
-					if (available > MAX_FRAME_SIZE + 4) {
-						__disconnectActive(Reason.Error("Local transport received an oversized frame."));
-					} else {
-						var bytesRemaining = available;
-						var aggregate = new BytesBuffer();
-						var readOk = true;
-
-						while (bytesRemaining > 0) {
-							var length = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
-							if (__read(pipe, chunk.getData(), length) != 0) {
-								readOk = false;
-								break;
-							}
-							aggregate.addBytes(chunk, 0, length);
-							bytesRemaining -= length;
+					var bytesRemaining = available;
+					var aggregate = new BytesBuffer();
+					while (bytesRemaining > 0) {
+						var length = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
+						if (__read(pipe, chunk.getData(), length) != 0) {
+							failure = Reason.Error("Local transport read failed.");
+							break;
 						}
-
-						if (readOk) {
-							__appendReceivedBytes(aggregate.getBytes());
-						} else {
-							__disconnectActive(Reason.Error("Local transport read failed."));
-						}
+						aggregate.addBytes(chunk, 0, length);
+						bytesRemaining -= length;
+					}
+					if (failure == null) {
+						received = aggregate.getBytes();
 					}
 				}
+			}
+			#if (cpp || neko || hl)
+			__handleLock.release();
+			#end
+
+			if (accepted) {
+				__dispatchFromReader(Ready, session);
+			}
+			if (received != null && !__appendReceivedBytes(framing, received, session)) {
+				failure = Reason.Error("Local transport received an invalid frame.");
+			}
+			if (failure != null) {
+				framing.clear();
+				__disconnectActive(failure, session);
 			}
 
 			Sys.sleep(0.001);
 		}
 
-		// Final teardown under __handleLock so a concurrent send() cannot write to
-		// a handle being closed as the reader loop exits.
+		// Its own session's handles, if close() has not already had them.
 		#if (cpp || neko || hl)
 		__handleLock.acquire();
 		#end
-		if (__activePipe != null) {
-			__close(__activePipe);
-			__activePipe = null;
-		}
-		if (__listeningPipe != null) {
-			__close(__listeningPipe);
-			__listeningPipe = null;
+		if (__session == session) {
+			if (__activePipe != null) {
+				__close(__activePipe);
+				__activePipe = null;
+			}
+			if (__listeningPipe != null) {
+				__close(__listeningPipe);
+				__listeningPipe = null;
+			}
 		}
 		#if (cpp || neko || hl)
 		__handleLock.release();
@@ -400,111 +441,125 @@ class LocalConnection implements INetConnection {
 		// listener was removed after each drain before, so a dead connection
 		// was never held; held until close(), one would be for good.
 		if (__runtime != null) {
-			__queueDispatch(Ended(session));
+			__queueDispatch(Ended(session), session);
 		}
 		#end
 	}
 
-	@:noCompletion private function __appendReceivedBytes(received:Bytes):Void {
+	/** Frames `received` into `framing` and hands on each whole one; false for an invalid frame. **/
+	@:noCompletion private function __appendReceivedBytes(framing:ByteArray, received:Bytes, session:Int):Bool {
 		if (received == null || received.length == 0) {
-			return;
+			return true;
 		}
 
-		__receiveBuffer.position = __receiveBuffer.length;
-		__receiveBuffer.writeBytes(received, 0, received.length);
-		__receiveBuffer.position = 0;
+		framing.position = framing.length;
+		framing.writeBytes(received, 0, received.length);
+		framing.position = 0;
 
-		while (__receiveBuffer.bytesAvailable >= 4) {
-			var frameStart = __receiveBuffer.position;
-			var payloadLength = __receiveBuffer.readInt();
+		while (framing.bytesAvailable >= 4) {
+			var frameStart = framing.position;
+			var payloadLength = framing.readInt();
 			if (payloadLength < 0 || payloadLength > MAX_FRAME_SIZE) {
-				__disconnectActive(Reason.Error("Local transport received an invalid frame."));
-				return;
+				return false;
 			}
 
-			if (__receiveBuffer.bytesAvailable < payloadLength) {
-				__receiveBuffer.position = frameStart;
+			if (framing.bytesAvailable < payloadLength) {
+				framing.position = frameStart;
 				break;
 			}
 
 			var payload = new ByteArray();
 			if (payloadLength > 0) {
-				__receiveBuffer.readBytes(payload, 0, payloadLength);
+				framing.readBytes(payload, 0, payloadLength);
 			}
 			payload.position = 0;
 			inTimestamp = __timestamp();
-			__dispatchPayload(payload);
+			if (!__readEnabled) {
+				__pushPendingPayload(payload, session);
+			} else {
+				__dispatchFromReader(Data(payload), session);
+			}
 		}
 
-		__compactReceiveBuffer();
+		__compactReceiveBuffer(framing);
+		return true;
 	}
 
-	@:noCompletion private function __compactReceiveBuffer():Void {
-		var remaining = __receiveBuffer.bytesAvailable;
+	@:noCompletion private function __compactReceiveBuffer(framing:ByteArray):Void {
+		var remaining = framing.bytesAvailable;
 		if (remaining <= 0) {
-			__receiveBuffer.clear();
-			__receiveBuffer.position = 0;
+			framing.clear();
+			framing.position = 0;
 			return;
 		}
 
 		var unread = new ByteArray();
-		__receiveBuffer.readBytes(unread, 0, remaining);
+		framing.readBytes(unread, 0, remaining);
 		unread.position = 0;
-		__receiveBuffer.clear();
-		__receiveBuffer.writeBytes(unread, 0, unread.length);
-		__receiveBuffer.position = 0;
+		framing.clear();
+		framing.writeBytes(unread, 0, unread.length);
+		framing.position = 0;
 	}
 
-	@:noCompletion private function __disconnectActive(reason:Reason):Void {
-		// Tear down the active handle and clear connected state under __handleLock
-		// so a concurrent send() cannot write to the handle being closed here.
+	@:noCompletion private function __disconnectActive(reason:Reason, session:Int):Void {
+		// Under __handleLock, so a concurrent send() cannot write to the handle
+		// being closed, and only for the reader's own session: a stale one
+		// closed the next session's pipe and made it a listener of its own.
 		#if (cpp || neko || hl)
 		__handleLock.acquire();
 		#end
+		if (__session != session) {
+			#if (cpp || neko || hl)
+			__handleLock.release();
+			#end
+			return;
+		}
 		var wasConnected = __connected;
 		__connected = false;
 		if (__activePipe != null) {
 			__close(__activePipe);
 			__activePipe = null;
 		}
-		#if (cpp || neko || hl)
-		__handleLock.release();
-		#end
-
-		__receiveBuffer.clear();
-
-		switch (reason) {
-			case Error(_):
-				__dispatchLifecycle(Error(reason));
-			default:
-		}
-
-		if (wasConnected) {
-			__dispatchLifecycle(Close(Reason.Closed));
-		}
-
+		var relistenFailed = false;
 		if (__mode == SERVER && __running) {
 			try {
 				__listeningPipe = __createInboundPipe(__connectionName);
 			} catch (_:Dynamic) {
 				__running = false;
-				__dispatchLifecycle(Error(Reason.Error("Failed to recreate the local listener.")));
+				relistenFailed = true;
 			}
 		} else {
 			__running = false;
+		}
+		#if (cpp || neko || hl)
+		__handleLock.release();
+		#end
+
+		switch (reason) {
+			case Error(_):
+				__dispatchFromReader(Error(reason), session);
+			default:
+		}
+
+		if (wasConnected) {
+			__dispatchFromReader(Close(Reason.Closed), session);
+		}
+
+		if (relistenFailed) {
+			__dispatchFromReader(Error(Reason.Error("Failed to recreate the local listener.")), session);
 		}
 	}
 
 	@:noCompletion private function __dispatchPayload(payload:ByteArray):Void {
 		if (!__readEnabled) {
-			__pushPendingPayload(payload);
+			__pushPendingPayload(payload, __session);
 			return;
 		}
 
 		var message = Data(payload);
 		#if (cpp || neko || hl)
 		if (!__canDispatchInline()) {
-			__queueDispatch(message);
+			__queueDispatch(message, __session);
 			return;
 		}
 		#end
@@ -515,12 +570,27 @@ class LocalConnection implements INetConnection {
 	@:noCompletion private function __dispatchLifecycle(message:LocalConnectionDispatch):Void {
 		#if (cpp || neko || hl)
 		if (!__canDispatchInline()) {
-			__queueDispatch(message);
+			__queueDispatch(message, __session);
 			return;
 		}
 		#end
 
 		__applyDispatch(message);
+	}
+
+	/** From a reader thread, for its session: refused once close() has ended it. **/
+	@:noCompletion private function __dispatchFromReader(message:LocalConnectionDispatch, session:Int):Void {
+		#if (cpp || neko || hl)
+		if (!__canDispatchInline()) {
+			__queueDispatch(message, session);
+			return;
+		}
+		#end
+
+		// No runtime to hand it to: this thread runs the callbacks itself.
+		if (__session == session) {
+			__applyDispatch(message);
+		}
 	}
 
 	@:noCompletion private function __applyDispatch(message:LocalConnectionDispatch):Void {
@@ -534,7 +604,7 @@ class LocalConnection implements INetConnection {
 					__onError(reason);
 				case Data(payload):
 					if (!__readEnabled) {
-						__pushPendingPayload(payload);
+						__pushPendingPayload(payload, __session);
 						return;
 					}
 					payload.position = 0;
@@ -558,7 +628,6 @@ class LocalConnection implements INetConnection {
 		__dispatchFailed = true;
 		__running = false;
 		__mode = NONE;
-		__receiveBuffer.clear();
 		__clearPendingPayloads();
 		__detachDispatchListener();
 
@@ -603,13 +672,18 @@ class LocalConnection implements INetConnection {
 		}
 	}
 
-	@:noCompletion private function __pushPendingPayload(payload:ByteArray):Void {
+	/** Held until reading is enabled, if `session` has not ended; close() clears what is held. **/
+	@:noCompletion private function __pushPendingPayload(payload:ByteArray, session:Int):Void {
 		#if (cpp || neko || hl)
 		__pendingLock.acquire();
-		__pendingPayloads.push(payload);
+		if (__session == session) {
+			__pendingPayloads.push(payload);
+		}
 		__pendingLock.release();
 		#else
-		__pendingPayloads.push(payload);
+		if (__session == session) {
+			__pendingPayloads.push(payload);
+		}
 		#end
 	}
 
@@ -647,11 +721,17 @@ class LocalConnection implements INetConnection {
 	 * listening side that never saw `onReady` nor its first message. The
 	 * listener is now attached by listen()/connect() on the runtime's thread,
 	 * and this thread only queues and raises a flag.
+	 *
+	 * Queued only while `session` is current, checked under the lock close()
+	 * ends it under: a dispatch refused here is one close() would otherwise
+	 * have had to discard after the fact, and one queued in time it discards.
 	 */
-	@:noCompletion private function __queueDispatch(message:LocalConnectionDispatch):Void {
-		__dispatchQueue.add(message);
+	@:noCompletion private function __queueDispatch(message:LocalConnectionDispatch, session:Int):Void {
 		__dispatchLock.acquire();
-		__dispatchPending = true;
+		if (__session == session) {
+			__dispatchQueue.add(message);
+			__dispatchPending = true;
+		}
 		__dispatchLock.release();
 	}
 	#else

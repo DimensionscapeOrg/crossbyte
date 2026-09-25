@@ -162,6 +162,54 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	public function testAConnectionListenedOrConnectedAgainKeepsOneReader():Void {
+		// listen() and connect() begin with close(), and the reader thread of
+		// the session that ends sleeps between polls: it woke to find the
+		// connection running again and carried on beside the new session's
+		// reader. Two threads read one pipe -- splitting its bytes, and tearing
+		// the connection down when the read that lost found nothing -- and the
+		// old one's teardown closed the new session's pipes.
+		#if (cpp && (windows || linux || mac || macos))
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var received:Array<String> = [];
+		var expected:Array<String> = [];
+		var problems:Array<String> = [];
+		server.readEnabled = true;
+		server.onData = input -> received.push(input.readUTFBytes(input.length));
+		server.onError = reason -> problems.push('server error: $reason');
+		client.onError = reason -> problems.push('client error: $reason');
+
+		try {
+			for (round in 0...20) {
+				var name = uniqueName("again");
+				server.listen(name);
+				client.connect(name);
+				pumpUntil(() -> server.connected, 2.0);
+				if (!server.connected) {
+					problems.push('round $round: never connected');
+					break;
+				}
+				for (i in 0...10) {
+					var message = 'round $round message $i';
+					expected.push(message);
+					client.send(bytesOf(message));
+				}
+				pumpUntil(() -> received.length >= expected.length, 2.0);
+			}
+		} catch (e:Dynamic) {
+			problems.push('threw $e');
+		}
+
+		closeQuietly(client);
+		closeQuietly(server);
+		Assert.equals(0, problems.length, problems.join("; "));
+		Assert.same(expected, received);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testPendingReadsFlushWhenReadEnabledBecomesTrue():Void {
 		#if (cpp && (windows || linux || mac || macos))
 		var name = uniqueName("buffered");
