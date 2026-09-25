@@ -310,6 +310,75 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		pair.close();
 	}
 
+	// ----------------------------------------------------------- round trip
+
+	public function testTheRoundTripIsUnknownUntilMeasured():Void {
+		var socket = RecordingSocket.make();
+		if (socket == null) return;
+
+		Assert.equals(-1.0, socket.roundTripTime);
+		Assert.equals(0.0, socket.roundTripVariation);
+		Assert.equals(1.0, socket.retransmitTimeout);
+		socket.close();
+	}
+
+	public function testTheRoundTripIsSmoothedAsRfc6298Says():Void {
+		var socket = RecordingSocket.make();
+		if (socket == null) return;
+
+		// The first measurement is taken whole, with half of it as variation.
+		socket.__sampleRoundTrip(0.1);
+		Assert.floatEquals(0.1, socket.roundTripTime);
+		Assert.floatEquals(0.05, socket.roundTripVariation);
+		Assert.floatEquals(0.3, socket.retransmitTimeout);
+
+		// Each after that moves them an eighth and a quarter of the way.
+		socket.__sampleRoundTrip(0.2);
+		Assert.floatEquals(0.1125, socket.roundTripTime);
+		Assert.floatEquals(0.0625, socket.roundTripVariation);
+		Assert.floatEquals(0.3625, socket.retransmitTimeout);
+		socket.close();
+
+		// And the timeout is held between its floor and its ceiling.
+		var fast = RecordingSocket.make();
+		fast.__sampleRoundTrip(0.001);
+		Assert.floatEquals(0.001, fast.roundTripTime);
+		Assert.floatEquals(0.2, fast.retransmitTimeout);
+		fast.close();
+
+		var slow = RecordingSocket.make();
+		slow.__sampleRoundTrip(20);
+		Assert.floatEquals(10, slow.retransmitTimeout);
+		slow.close();
+	}
+
+	public function testAnAcknowledgementMeasuresOnlyAFrameSentOnce():Void {
+		var pair = Pair.make();
+		if (pair == null) return;
+
+		pair.sender.send(text("measured"));
+		pair.carry(pair.sender.take());
+		for (ack in pair.receiver.take()) {
+			pair.sender.__acceptFrame(ack);
+		}
+		var measured = pair.sender.roundTripTime;
+		Assert.isTrue(measured >= 0 && measured < 1, "an acknowledged frame measured " + measured);
+
+		// Karn's algorithm: a frame sent twice cannot say which copy its
+		// acknowledgement answers, so it measures nothing.
+		pair.sender.send(text("resent"));
+		pair.sender.__outFrameCache.get(pair.sender.__windowBase).attempts = 2;
+		pair.carry(pair.sender.take());
+		var acks = pair.receiver.take();
+		Assert.isTrue(acks.length > 0, "the receiver acknowledged nothing");
+		for (ack in acks) {
+			pair.sender.__acceptFrame(ack);
+		}
+		Assert.isFalse(pair.sender.__outFrameCache.keys().hasNext(), "the resent frame was not acknowledged");
+		Assert.equals(measured, pair.sender.roundTripTime, "a frame sent twice was measured");
+		pair.close();
+	}
+
 	// ------------------------------------------------------------- helpers
 
 	private static function filled(length:Int):ByteArray {

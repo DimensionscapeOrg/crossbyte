@@ -148,6 +148,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.cluster.RendezvousTest());
 		runner.addCase(new crossbyte.cluster.MembershipTest());
 		runner.addCase(new crossbyte.net.FrameCodecTest());
+		runner.addCase(new crossbyte.net.PeerClockTest());
 		runner.addCase(new crossbyte.net.EndpointTest());
 		runner.addCase(new crossbyte.net.NetConnectionTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
