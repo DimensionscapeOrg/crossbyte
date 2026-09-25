@@ -818,7 +818,10 @@ class NodeIntegrationMain extends Application {
 		// Node as a gate change and no new lines, and a gate change that
 		// compiles is not a gate change that works.
 		rdServer = new ReliableDatagramServerSocket();
-		rdClient = new ReliableDatagramSocket();
+		// Its sequence starts forty below 2^31, so the burst below crosses
+		// it. JavaScript counted on past it where the wire wraps, and the
+		// receiver stopped delivering at the crossing.
+		rdClient = new CrossingSocket();
 
 		rdServer.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(event:ReliableDatagramSocketConnectEvent):Void {
 			rdAccepted = event.socket;
@@ -841,7 +844,7 @@ class NodeIntegrationMain extends Application {
 							inOrder = false;
 						}
 					}
-					check("a burst of reliable messages arrived whole and in order", inOrder, rdBurst.slice(1, 6).join(", ") + "...");
+					check("a burst of reliable messages arrived whole and in order, across 2^31", inOrder, rdBurst.slice(1, 6).join(", ") + "...");
 					stopReliableDatagrams();
 				}
 			});
@@ -872,7 +875,7 @@ class NodeIntegrationMain extends Application {
 			return;
 		}
 		if (attempts > 400) {
-			check("a burst of reliable messages arrived whole and in order", false, rdBurst.length - 1 + " of " + RELIABLE_BURST + " arrived");
+			check("a burst of reliable messages arrived whole and in order, across 2^31", false, rdBurst.length - 1 + " of " + RELIABLE_BURST + " arrived");
 			stopReliableDatagrams();
 			return;
 		}
@@ -1402,5 +1405,17 @@ class NodeIntegrationMain extends Application {
 
 	public static function main():Void {
 		new NodeIntegrationMain();
+	}
+}
+
+/** A reliable session whose first sequence is forty below 2^31. **/
+@:access(crossbyte.net.ReliableDatagramSocket)
+private class CrossingSocket extends ReliableDatagramSocket {
+	public function new() {
+		super();
+	}
+
+	override private function __randomSequenceSeed():crossbyte.Seq32 {
+		return 0x7FFFFFFF - 40;
 	}
 }
