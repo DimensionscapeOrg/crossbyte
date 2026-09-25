@@ -232,6 +232,7 @@ class TestSuites {
 		// duplication happen when a case says rather than when a network does.
 		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCoalescingTest());
+		runner.addCase(new crossbyte.net.ReliableDatagramLossRecoveryTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {

@@ -304,6 +304,107 @@ class ReliableDatagramSocketTest extends utest.Test {
 		try bob.close() catch (_:Dynamic) {}
 	}
 
+	public function testTwoPeersThatDialEachOtherFallQuietOnceConnected():Void {
+		if (!requireDatagramSupport()) return;
+
+		// Both dial, so both answer. Every HANDSHAKE was answered with one, so
+		// each answer drew the next: two connected peers with nothing to say
+		// passed some forty thousand datagrams a second between them over
+		// loopback, for as long as they stayed connected.
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+		var datagrams = 0;
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			alice.listen();
+			bob.bind(0, "127.0.0.1");
+			bob.listen();
+			alice.__socket.addEventListener(DatagramSocketDataEvent.DATA, _ -> datagrams++);
+			bob.__socket.addEventListener(DatagramSocketDataEvent.DATA, _ -> datagrams++);
+
+			var toBob = alice.connect("127.0.0.1", bob.localPort);
+			var toAlice = bob.connect("127.0.0.1", alice.localPort);
+			pumpUntil(() -> toBob.connected && toAlice.connected, 5.0);
+			Assert.isTrue(toBob.connected && toAlice.connected, "the peers never connected");
+
+			// Whatever answers were already on their way arrive; then nothing.
+			pumpUntil(() -> false, 0.2);
+			var settled = datagrams;
+			pumpUntil(() -> false, 0.5);
+			Assert.equals(settled, datagrams, 'peers with nothing to say passed ${datagrams - settled} datagrams in half a second');
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeServerQuietly(alice);
+		closeServerQuietly(bob);
+	}
+
+	public function testASessionWhoseAnswerToTheHandshakeWasLostStillConnects():Void {
+		if (!requireDatagramSupport()) return;
+
+		// The client's HANDSHAKE, answering the server's, is the last of the
+		// three, and a server sends its own only when asked. Lost, it left
+		// the client connected and sending and the server not, dropping all
+		// of it, until the server's session timed out.
+		var server = new ReliableDatagramServerSocket();
+		var client = new AnswerLosingSocket();
+		var accepted:ReliableDatagramSocket = null;
+		var received:String = null;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> {
+				accepted = e.socket;
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, d -> received = textOf(d.data));
+			});
+			server.listen();
+			client.addEventListener(Event.CONNECT, _ -> client.send(bytesOf("first words")));
+			client.connect("127.0.0.1", server.localPort);
+
+			pumpUntil(() -> received != null, 5.0);
+			Assert.equals(1, client.lost, "nothing was lost, so nothing was tested");
+			Assert.notNull(accepted, "the server never connected");
+			Assert.equals("first words", received);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeServerQuietly(server);
+	}
+
+	public function testASilentClientWhoseAnswerToTheHandshakeWasLostStillConnects():Void {
+		if (!requireDatagramSupport()) return;
+
+		// A client that waits for the server to speak first sends nothing
+		// that would make the server ask again, so the client sends its
+		// HANDSHAKE again itself, on the connection attempt interval, until
+		// the server shows it arrived.
+		var server = new ReliableDatagramServerSocket();
+		var client = new AnswerLosingSocket();
+		var accepted:ReliableDatagramSocket = null;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, e -> accepted = e.socket);
+			server.listen();
+			client.connect("127.0.0.1", server.localPort);
+
+			pumpUntil(() -> accepted != null, ReliableDatagramSocket.CONNECTION_ATTEMPT_INTERVAL + 2.0);
+			Assert.equals(1, client.lost, "nothing was lost, so nothing was tested");
+			Assert.notNull(accepted, "the server never connected");
+			pumpUntil(() -> client.__peerConfirmed, 1.0);
+			Assert.isTrue(client.__peerConfirmed, "the client never heard that its HANDSHAKE arrived");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		closeQuietly(client);
+		closeServerQuietly(server);
+	}
+
 	public function testAServerDialsOutFromItsOwnPort():Void {
 		if (!requireDatagramSupport()) return;
 
@@ -1278,5 +1379,23 @@ class ReliableDatagramSocketTest extends utest.Test {
 		} catch (_:Dynamic) {
 			return false;
 		}
+	}
+}
+
+/** A client that loses the first datagram it sends once connected. **/
+@:access(crossbyte.net.ReliableDatagramSocket)
+private class AnswerLosingSocket extends ReliableDatagramSocket {
+	public var lost:Int = 0;
+
+	public function new() {
+		super();
+	}
+
+	override private function __sendDatagram(offset:Int, length:Int):Bool {
+		if (__connected && lost == 0) {
+			lost++;
+			return true;
+		}
+		return super.__sendDatagram(offset, length);
 	}
 }

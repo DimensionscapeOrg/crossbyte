@@ -65,6 +65,14 @@ final class ReliableDatagramFrame {
 	has never heard of; and one that meets a flag it does not know ignores
 	it, which is what lets a CONNECT say the sender takes bundles.
 
+	An ACK's payload, when it has one, is a selective acknowledgement: a map
+	of the frames the receiver holds past the cumulative acknowledgement,
+	bit `i` of it -- lowest bit of the first byte first -- standing for frame
+	`ack + 1 + i`. It names up to `SACK_BITS` frames and is cut after its
+	last set byte. An ACK without one, from an older peer or one holding
+	nothing past a gap, says only what the cumulative value says; an older
+	peer given one ignores it.
+
 	A bundle is several frames in one datagram: `BUNDLE_MAGIC`, then each
 	frame preceded by its length in two bytes. A session sends one only to a
 	peer whose CONNECT or HANDSHAKE said it takes them, since an older peer
@@ -78,6 +86,15 @@ final class ReliableDatagramProtocol {
 
 	/** The largest frame there is: header, acknowledgement and a full payload. **/
 	public static inline var MAX_FRAME_SIZE:Int = HEADER_SIZE + ACK_FIELD_SIZE + MAX_PAYLOAD_SIZE;
+
+	/**
+		The most frames past the cumulative acknowledgement a selective
+		acknowledgement can name: the whole of the largest window, 500 frames,
+		rounded up to whole bytes.
+	**/
+	public static inline var SACK_BITS:Int = 512;
+
+	public static inline var SACK_BYTES:Int = SACK_BITS >> 3;
 
 	/** The first two bytes of a datagram that carries several frames. **/
 	public static inline var BUNDLE_MAGIC:Int = 0xCBDB;

@@ -54,6 +54,13 @@ import crossbyte._internal.net.IPv6;
 	several frames to a datagram where the peer takes them, so a burst of
 	small messages costs a few system calls rather than one each. `flush()`
 	sends what is gathered at once, and `close()` sends it before the FIN.
+
+	A frame lost on the way is found from what arrives after it. The
+	receiver's acknowledgement names the frames it holds past a gap, and a
+	frame sent before one that arrived is sent again once it has had that
+	one's round trip, and a little more, to arrive in. When nothing comes back
+	at all, the last frame goes again as a probe, and only then does a frame
+	wait out its retransmission timeout.
 	@event connect Dispatched when the reliable handshake completes.
 	@event close Dispatched when the reliable session closes.
 	@event ioError Dispatched when a handshake or transport error occurs.
@@ -360,6 +367,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __connected:Bool = false;
 	@:noCompletion private var __connectionAttemptHandle:Int = -1;
+
+	// The sequence this side's first frame carries, which every HANDSHAKE it
+	// sends names. Not `__outSequence`: that moves once frames go out, and a
+	// HANDSHAKE sent again later must still say where they began.
+	@:noCompletion private var __firstSequence:Seq32 = 0;
+
+	// Whether the peer has shown it took this side's HANDSHAKE, by sending
+	// anything a connected session sends.
+	@:noCompletion private var __peerConfirmed:Bool = false;
+
+	// Set on a session not yet connected that heard a frame only a connected
+	// peer sends: it owes that peer its HANDSHAKE again, once a pass.
+	@:noCompletion private var __handshakeOwed:Bool = false;
 	// What every CONNECT this side sends carries: a copy, taken when connect
 	// was called, or null for nothing.
 	@:noCompletion private var __connectOut:ByteArray = null;
@@ -437,6 +457,68 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	/** What a frame waits before it is sent again. **/
 	@:noCompletion private var __rto:Float = INITIAL_RTO;
+
+	/**
+		How many duplicate acknowledgements from a peer that sends no
+		selective ones mark the frame it is waiting for as lost; and how many
+		frames held past a gap, on a path that has never reordered one, let
+		loss be judged with no allowance for stragglers. RFC 6675's count and
+		RFC 8985's use of it.
+	**/
+	@:noCompletion private static inline var DUP_THRESHOLD:Int = 3;
+
+	// Loss recovery: whether this session is in it, and the sequence that
+	// ends it -- the next to be sent when it began -- so that every loss from
+	// one burst halves the window once, not once each.
+	@:noCompletion private var __inRecovery:Bool = false;
+	@:noCompletion private var __recoveryPoint:Seq32 = 0;
+
+	// Acknowledgements in a row that moved nothing, from a peer that sends no
+	// selective ones.
+	@:noCompletion private var __dupAcks:Int = 0;
+
+	// Frames sent again because the peer's acknowledgements showed them lost,
+	// as tail probes, and because their timeout ran out; the last is the
+	// slow way.
+	@:noCompletion private var __fastResends:Int = 0;
+	@:noCompletion private var __probes:Int = 0;
+	@:noCompletion private var __timeoutResends:Int = 0;
+
+	// Of the frames known delivered, the one sent last: when, which, and the
+	// round trip it took. `__rackSentAt` is -1 until one is.
+	@:noCompletion private var __rackSentAt:Float = -1;
+	@:noCompletion private var __rackSequence:Seq32 = 0;
+	@:noCompletion private var __rackRtt:Float = 0;
+
+	// The fastest round trip measured, -1 until one is.
+	@:noCompletion private var __minRtt:Float = -1;
+
+	// The highest sequence known delivered, and whether a frame has ever
+	// arrived below it without having been sent again.
+	@:noCompletion private var __highestDelivered:Seq32 = 0;
+	@:noCompletion private var __reorderingSeen:Bool = false;
+
+	// Whether the peer sends selective acknowledgements.
+	@:noCompletion private var __peerSacks:Bool = false;
+
+	// When a frame last went out, and when the peer last showed it had one
+	// it had not before; whether the tail has been probed since.
+	@:noCompletion private var __lastTransmitAt:Float = 0;
+	@:noCompletion private var __lastDeliveryAt:Float = 0;
+	@:noCompletion private var __probed:Bool = false;
+
+	/**
+		The least a tail probe waits, however short the round trip: enough
+		that a peer whose loop is busy for a moment is not probed for it.
+	**/
+	@:noCompletion private static inline var MIN_PROBE_TIMEOUT:Float = 0.01;
+
+	// Where a selective acknowledgement is written before it is sent.
+	@:noCompletion private var __sackScratch:ByteArray;
+
+	// Outstanding frames the peer has said it holds. They have left the
+	// network, so they no longer count against the congestion window.
+	@:noCompletion private var __sackedCount:Int = 0;
 
 	/** Bytes sitting in `__outgoingQueue` waiting for the window to open. **/
 	@:noCompletion private var __queuedBytes:Int = 0;
@@ -1045,6 +1127,23 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		switch (frame.type) {
+			case CONNECT, HANDSHAKE, FIN:
+			default:
+				if (!__connected) {
+					// Only a connected peer sends this, so the peer took this
+					// side's HANDSHAKE and the one it sent back was lost. This
+					// side cannot place the frame without that one, and the
+					// peer will not send it again unasked -- nothing would,
+					// and the session would sit there until it timed out.
+					// Asked once a pass, however many frames arrive: one
+					// datagram answered with one, as a CONNECT is.
+					__oweHandshake();
+					return;
+				}
+				__peerConfirmed = true;
+		}
+
+		switch (frame.type) {
 			case CONNECT:
 				// Answered whichever side dialled, which is what makes hole
 				// punching possible. The guard here was `__incoming`, on the
@@ -1064,7 +1163,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 					__peerTakesBundles = true;
 				}
 				if (!__connected) {
-					__sendControl(HANDSHAKE, __outSequence);
+					__sendControl(HANDSHAKE, __firstSequence);
 				}
 				// The first one a dialled peer sends, kept as the server keeps
 				// an accepted session's. Held only at a size the protocol can
@@ -1076,11 +1175,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				if (frame.bundles) {
 					__peerTakesBundles = true;
 				}
-				__onHandshake(frame.sequence);
+				__onHandshake(frame.sequence, frame.ack != null);
 			case PACKET:
 				__acceptPacket(frame.sequence, frame.payload, frame.more);
 			case ACK:
-				__acceptAck(frame.sequence);
+				__acceptAckFrame(frame.sequence, frame.payload);
 			case FIN:
 				__dispose(true);
 			case UNRELIABLE:
@@ -1184,30 +1283,55 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return vector;
 	}
 
+	/** A cumulative acknowledgement carried on another frame. **/
 	@:noCompletion private function __acceptAck(ackValue:Seq32):Void {
+		// Checked before the clock is read: every frame carries one, and
+		// almost all of them say nothing new.
 		if (ackValue <= __windowBase || __outSequence < ackValue) {
 			return;
 		}
-
-		// Walked from the old acknowledgement point to the new one rather
-		// than by asking every outstanding frame whether it is covered: the
-		// acknowledgement is cumulative, so the frames it releases are the
-		// run between the two, and that is the number of frames released
-		// rather than the number still in flight.
 		var now:Float = __clock();
+		__release(ackValue, now);
+		__detectLosses(now);
+		__drainQueue();
+	}
+
+	/**
+		Releases every frame below `ackValue`, and says whether that was any.
+
+		Walked from the old acknowledgement point to the new one rather than
+		by asking every outstanding frame whether it is covered: the
+		acknowledgement is cumulative, so the frames it releases are the run
+		between the two, and that is the number of frames released rather
+		than the number still in flight.
+	**/
+	@:noCompletion private function __release(ackValue:Seq32, now:Float):Bool {
+		if (ackValue <= __windowBase || __outSequence < ackValue) {
+			return false;
+		}
+
+		var newest:Float = -1;
 		var sequence:Seq32 = __windowBase;
 
 		while (sequence < ackValue) {
 			var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
 
 			if (frame != null) {
-				// Karn's algorithm: a frame that was sent more than once
-				// cannot say which copy this acknowledges, so it is not a
-				// round trip measurement.
-				if (frame.attempts == 1) {
-					__sampleRoundTrip(now - frame.sentAt);
+				if (frame.sacked) {
+					// Delivered when the peer first said it held it, and
+					// measured then: timed now, it would count the wait for
+					// the gap below it as a round trip. It did, and a session
+					// losing one frame in ten took its round trip on loopback
+					// to half a second.
+					__sackedCount--;
+				} else {
+					__noteDelivered(sequence, frame, now);
+					// Karn's algorithm: a frame that was sent more than once
+					// cannot say which copy this acknowledges.
+					if (frame.attempts == 1 && frame.sentAt > newest) {
+						newest = frame.sentAt;
+					}
 				}
-
 				__outFrameCache.remove(sequence);
 				__openWindow();
 			}
@@ -1216,7 +1340,271 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		__windowBase = ackValue;
-		__drainQueue();
+		if (__inRecovery && !(ackValue < __recoveryPoint)) {
+			__inRecovery = false;
+		}
+
+		// One measurement an acknowledgement, from the last frame sent of
+		// those it covers: the others waited behind it for the same answer.
+		if (newest >= 0) {
+			__sampleRoundTrip(now - newest);
+		}
+		return true;
+	}
+
+	/**
+		A standalone acknowledgement: the cumulative value, then whatever its
+		selective map says the peer holds, then whatever that shows was lost,
+		sent again now rather than when its timeout runs out. That wait was
+		the whole cost of a loss -- at least 200 ms, and one frame per check
+		-- and over a window of losses it was the ceiling on everything else.
+
+		From a peer that sends no selective acknowledgements, the third in a
+		row that moves nothing marks the frame it is waiting for as lost.
+	**/
+	@:noCompletion private function __acceptAckFrame(ackValue:Seq32, sack:ByteArray):Void {
+		var now:Float = __clock();
+		var progressed:Bool = __release(ackValue, now);
+
+		if (sack != null && sack.length > 0) {
+			__peerSacks = true;
+			__dupAcks = 0;
+			__acceptSack(ackValue, sack, now);
+			__detectLosses(now);
+			// What the peer now holds has left the window: new frames can go
+			// out behind it, which keeps acknowledgements coming, and with
+			// them word of anything else lost.
+			__drainQueue();
+			return;
+		}
+
+		if (progressed) {
+			__dupAcks = 0;
+			__detectLosses(now);
+			__drainQueue();
+			return;
+		}
+
+		// A peer that has sent a selective acknowledgement sends one whenever
+		// it holds a frame past a gap, so a plain one from it is a duplicate
+		// arriving, not a gap: counting those would send frames still on
+		// their way.
+		if (__peerSacks) {
+			return;
+		}
+
+		var oldest:Null<OutstandingFrame> = __outFrameCache.get(__windowBase);
+		if (oldest != null && ackValue == __windowBase) {
+			__dupAcks++;
+			if (__dupAcks == DUP_THRESHOLD) {
+				__resendLost(__windowBase, oldest, now);
+			}
+		}
+	}
+
+	/** Marks what the peer's selective acknowledgement says it holds. **/
+	@:noCompletion private function __acceptSack(ackValue:Seq32, sack:ByteArray, now:Float):Void {
+		var bytes:haxe.io.Bytes = sack;
+		var length:Int = sack.length < ReliableDatagramProtocol.SACK_BYTES ? sack.length : ReliableDatagramProtocol.SACK_BYTES;
+		var base:Seq32 = ackValue + 1;
+		var newest:Float = -1;
+
+		for (index in 0...length) {
+			var bits:Int = bytes.get(index);
+			if (bits == 0) {
+				continue;
+			}
+			for (bit in 0...8) {
+				if ((bits & (1 << bit)) == 0) {
+					continue;
+				}
+				var sequence:Seq32 = base + ((index << 3) + bit);
+				var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
+				if (frame == null || frame.sacked) {
+					continue;
+				}
+				frame.sacked = true;
+				__sackedCount++;
+				__noteDelivered(sequence, frame, now);
+				if (frame.attempts == 1 && frame.sentAt > newest) {
+					newest = frame.sentAt;
+				}
+			}
+		}
+
+		if (newest >= 0) {
+			__sampleRoundTrip(now - newest);
+		}
+	}
+
+	/**
+		Keeps the record loss is judged by: of every frame known delivered,
+		the one sent last, and how long it took. RFC 8985 calls it RACK.
+	**/
+	@:noCompletion private function __noteDelivered(sequence:Seq32, frame:OutstandingFrame, now:Float):Void {
+		__lastDeliveryAt = now;
+		__probed = false;
+
+		// A frame sent once and delivered below the highest delivered one
+		// was overtaken on the way, which a lost frame and this one can look
+		// alike: from here on, loss waits a little for stragglers.
+		if (__rackSentAt < 0 || __highestDelivered < sequence) {
+			__highestDelivered = sequence;
+		} else if (frame.attempts == 1) {
+			__reorderingSeen = true;
+		}
+
+		var roundTrip:Float = now - frame.sentAt;
+		// Sent again, and back faster than anything has ever come back: the
+		// first copy arrived, not the one the send time is of.
+		if (frame.attempts > 1 && __minRtt >= 0 && roundTrip < __minRtt) {
+			return;
+		}
+		if (__rackSentAt < 0 || frame.sentAt > __rackSentAt || (frame.sentAt == __rackSentAt && __rackSequence < sequence)) {
+			__rackSentAt = frame.sentAt;
+			__rackSequence = sequence;
+			__rackRtt = roundTrip;
+		}
+	}
+
+	/**
+		Sends again each frame that was sent before one the peer has, and has
+		had the round trip that one took, and a little more, to arrive in.
+
+		By send time rather than by counting the frames held past it, as RFC
+		6675 does. A count needs three frames past the gap: in a window of
+		fewer, which is what a lossy path leaves, no loss is found that way,
+		and each waits out a timeout instead. And a frame sent again and lost
+		again has frames held past it from the first time, so the count says
+		nothing about the second; time does.
+	**/
+	@:noCompletion private function __detectLosses(now:Float):Void {
+		if (__rackSentAt < 0 || __closed) {
+			return;
+		}
+
+		var allowance:Float = __rackRtt + __reorderWindow();
+		var sequence:Seq32 = __windowBase;
+		while (sequence < __outSequence) {
+			var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
+			if (frame != null && !frame.sacked) {
+				if (frame.sentAt > __rackSentAt || (frame.sentAt == __rackSentAt && !(sequence < __rackSequence))) {
+					// Sent after it. First sends go out in order and a frame
+					// sent again goes out later still, so every frame past a
+					// first send is later too, and nothing further is lost.
+					if (frame.attempts == 1) {
+						return;
+					}
+				} else if (now - frame.sentAt >= allowance) {
+					__resendLost(sequence, frame, now);
+					if (__closed) {
+						return;
+					}
+				}
+			}
+			sequence++;
+		}
+	}
+
+	/**
+		How much longer than the round trip a frame is given, past one sent
+		after it that arrived, before it counts as lost: a quarter of the
+		fastest round trip, for stragglers. Nothing while this path has never
+		reordered a frame and three are held past a gap, or loss is already
+		being recovered from, as RFC 8985 has it.
+	**/
+	@:noCompletion private function __reorderWindow():Float {
+		if (!__reorderingSeen && (__inRecovery || __sackedCount >= DUP_THRESHOLD)) {
+			return 0;
+		}
+		var window:Float = __minRtt > 0 ? __minRtt / 4 : 0;
+		return __smoothedRtt > 0 && window > __smoothedRtt ? __smoothedRtt : window;
+	}
+
+	/**
+		Sends a lost frame again. The first loss of a burst halves the window,
+		and the rest of the burst, up to where recovery ends, does not halve
+		it again. The timeout is left as it is: nothing timed out.
+	**/
+	@:noCompletion private function __resendLost(sequence:Seq32, frame:OutstandingFrame, now:Float):Void {
+		if (!__inRecovery) {
+			__inRecovery = true;
+			__recoveryPoint = __outSequence;
+			__halveWindow();
+		}
+
+		frame.attempts++;
+		frame.sentAt = now;
+		frame.deadline = now + __rto;
+		__lastTransmitAt = now;
+		__fastResends++;
+		__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, true, __currentAck(), frame.more);
+	}
+
+	/** Sends every frame not yet acknowledged again, in order. **/
+	@:noCompletion private function __resendUnacknowledged():Void {
+		var now:Float = __clock();
+		var sequence:Seq32 = __windowBase;
+		while (sequence < __outSequence) {
+			var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
+			if (frame != null) {
+				frame.attempts++;
+				frame.sentAt = now;
+				frame.deadline = now + __rto;
+				__lastTransmitAt = now;
+				__fastResends++;
+				__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, true, __currentAck(), frame.more);
+				if (__closed) {
+					return;
+				}
+			}
+			sequence++;
+		}
+	}
+
+	/**
+		Sends the last frame not yet delivered again, once, when nothing has
+		come back for two round trips: RFC 8985's tail loss probe.
+
+		Loss is found by what arrives after it, and at the end of a burst, or
+		with a window full of frames sent again and lost again, nothing does.
+		What was left then was the timeout, at least 200 ms, doubling, and
+		the window halved with it. The probe's acknowledgement says what the
+		peer holds, and the frames before it that it lacks are then found
+		lost the ordinary way. One per silence: if that is lost too, the
+		timeout is what is left.
+	**/
+	@:noCompletion private function __probeTail(now:Float):Void {
+		if (__probed || __smoothedRtt < 0) {
+			return;
+		}
+
+		var wait:Float = 2 * __smoothedRtt;
+		if (wait < MIN_PROBE_TIMEOUT) {
+			wait = MIN_PROBE_TIMEOUT;
+		}
+		var quietSince:Float = __lastDeliveryAt > __lastTransmitAt ? __lastDeliveryAt : __lastTransmitAt;
+		if (now - quietSince < wait) {
+			return;
+		}
+
+		var sequence:Seq32 = __outSequence - 1;
+		while (!(sequence < __windowBase)) {
+			var frame:Null<OutstandingFrame> = __outFrameCache.get(sequence);
+			if (frame != null && !frame.sacked) {
+				__probed = true;
+				__probes++;
+				frame.attempts++;
+				frame.sentAt = now;
+				__lastTransmitAt = now;
+				__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, true, __currentAck(), frame.more);
+				return;
+			}
+			if (sequence == __windowBase) {
+				return;
+			}
+			sequence--;
+		}
 	}
 
 	/**
@@ -1231,6 +1619,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private function __sampleRoundTrip(sample:Float):Void {
 		if (sample <= 0) {
 			return;
+		}
+
+		if (__minRtt < 0 || sample < __minRtt) {
+			__minRtt = sample;
 		}
 
 		if (__smoothedRtt < 0) {
@@ -1280,6 +1672,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		just failed to deliver is not one to try again on the same schedule.
 	**/
 	@:noCompletion private function __closeWindow():Void {
+		__halveWindow();
+		__setRto(__rto * 2);
+	}
+
+	@:noCompletion private function __halveWindow():Void {
 		__slowStartThreshold = __congestionWindow / 2;
 
 		if (__slowStartThreshold < MIN_WINDOW) {
@@ -1287,7 +1684,6 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		__congestionWindow = __slowStartThreshold;
-		__setRto(__rto * 2);
 	}
 
 	@:noCompletion private function __acceptPacket(sequence:Seq32, payload:ByteArray, more:Bool = false):Void {
@@ -1460,6 +1856,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__smoothedRtt = -1;
 		__rttVariation = 0;
 		__rto = INITIAL_RTO;
+		__inRecovery = false;
+		__dupAcks = 0;
+		__sackedCount = 0;
+		__rackSentAt = -1;
+		__rackRtt = 0;
+		__minRtt = -1;
+		__reorderingSeen = false;
+		__peerSacks = false;
+		__probed = false;
 		__input = __createBuffer();
 		__output = __createBuffer();
 		// Anything still gathered is for a session that no longer exists.
@@ -1468,6 +1873,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__pendingLength = ReliableDatagramProtocol.BUNDLE_HEADER_SIZE;
 		__pendingCount = 0;
 		__ackOwed = false;
+		__handshakeOwed = false;
+		__peerConfirmed = false;
 		__bundleHasAck = false;
 
 		var wasConnected:Bool = __connected;
@@ -1527,20 +1934,61 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__dispose(true);
 	}
 
-	@:noCompletion private function __onHandshake(sequence:Seq32):Void {
-		__inSequence = sequence;
+	/**
+		A HANDSHAKE names the sequence its sender's frames start from, and
+		carries an acknowledgement once its sender has taken this side's. The
+		first one connects this session. Every one is answered: with this
+		side's own HANDSHAKE when the sender has not taken it, and otherwise
+		with an ACK, which is how a peer that sent the last HANDSHAKE learns
+		it arrived.
 
-		if (!__incoming) {
-			__sendControl(HANDSHAKE, __outSequence);
+		Only the first is taken. A repeat names the same sequence, from a peer
+		whose answer went missing, and the sequence was once taken from a
+		repeat too: a peer that had sent frames since named where they had got
+		to, and this side then skipped any still on their way, delivering
+		nothing for them and acknowledging them all.
+
+		Two peers that dialled each other used to answer every HANDSHAKE with
+		one, each answer drawing the next, for as long as they were connected.
+		An answer now carries an acknowledgement, and one that does is answered
+		with an ACK, which draws nothing.
+	**/
+	@:noCompletion private function __onHandshake(sequence:Seq32, peerHasOurs:Bool):Void {
+		var first:Bool = !__connected;
+		if (first) {
+			__inSequence = sequence;
+			__connected = true;
+			__alive = true;
 		}
 
-		if (__connected) {
+		if (peerHasOurs) {
+			__peerConfirmed = true;
+			__sendAck();
+		} else {
+			__sendControl(HANDSHAKE, __firstSequence);
+			// Asked again after connecting, by a peer that has acknowledged
+			// nothing: it never took the one this side sent back, and a
+			// session not yet connected drops every frame it is sent. So
+			// all of them go again now, rather than a timeout from now -- the
+			// first of which, with no round trip measured yet, is a second.
+			if (!first && __windowBase == __firstSequence) {
+				__resendUnacknowledged();
+			}
+		}
+
+		if (!first) {
 			return;
 		}
 
-		__connected = true;
-		__alive = true;
-		__clearHandshakeTimers();
+		// A session that dialled keeps its attempt interval, which sends its
+		// HANDSHAKE again until the peer shows it arrived; see
+		// `__sendHandshakeAttempt`. The timeout is done with either way.
+		if (__peerConfirmed || __incoming) {
+			__clearHandshakeTimers();
+		} else if (__connectionTimeoutHandle != -1) {
+			CBTimer.clear(__connectionTimeoutHandle);
+			__connectionTimeoutHandle = -1;
+		}
 		__keepAliveHandle = CBTimer.setInterval(KEEP_ALIVE_INTERVAL, KEEP_ALIVE_INTERVAL, __onKeepAlive);
 		dispatchEvent(new Event(Event.CONNECT));
 
@@ -1698,6 +2146,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		var seed:Seq32 = __randomSequenceSeed();
 		__outSequence = seed;
 		__windowBase = seed;
+		__firstSequence = seed;
 		__inSequence = 0;
 	}
 
@@ -1735,8 +2184,23 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __sendHandshakeAttempt():Void {
+		if (__connected) {
+			// Connected by the peer's HANDSHAKE, with nothing yet to show the
+			// one sent back arrived. If it was lost, the peer is not connected
+			// and never will be: nothing else sends it. Sent again only while
+			// this side has sent nothing else. Once it has, those frames draw
+			// the peer's HANDSHAKE again if the peer is still waiting. An
+			// older peer, taking every HANDSHAKE's sequence, would take a
+			// repeat as a new place to start from.
+			if (__peerConfirmed || __outSequence != __firstSequence) {
+				__clearHandshakeTimers();
+				return;
+			}
+			__sendControl(HANDSHAKE, __firstSequence);
+			return;
+		}
 		if (__incoming) {
-			__sendControl(HANDSHAKE, __outSequence);
+			__sendControl(HANDSHAKE, __firstSequence);
 			return;
 		}
 		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
@@ -1752,6 +2216,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		frame.sentAt = now;
 		frame.deadline = now + __rto;
 		frame.attempts = 1;
+		__lastTransmitAt = now;
 		__outFrameCache.set(sequence, frame);
 		__sendFrame(PACKET, sequence, frame.payload, 0, frame.payload.length, false, __currentAck(), frame.more);
 		__outSequence++;
@@ -1777,14 +2242,17 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Sends again whatever has waited longer than the timeout allows.
+		What the clock finds lost, each tick: a frame whose allowance ran out
+		with no acknowledgement arriving to notice, then, failing that, the
+		oldest frame past its timeout, then a probe of the tail once nothing
+		has come back for two round trips.
 
-		The oldest frame decides. Acknowledgement is cumulative, so nothing
-		behind a missing frame can be released until it arrives, and sending
-		the rest again would be spending bandwidth on what the receiver is
-		already holding. One frame per timeout, the window halved, the
-		timeout doubled -- and the frames behind it go out as the window
-		reopens.
+		The timeout is the last resort, and the oldest frame decides it.
+		Acknowledgement is cumulative, so nothing behind a missing frame can
+		be released until it arrives, and sending the rest again would be
+		spending bandwidth on what the receiver is already holding. One frame
+		per timeout, the window halved, the timeout doubled -- and the frames
+		behind it go out as the window reopens.
 	**/
 	@:noCompletion private function __checkRetransmits():Void {
 		if (__closed || !__connected) {
@@ -1797,14 +2265,24 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		var now:Float = __clock();
-		var overdue:Null<OutstandingFrame> = __overdueFrame(now);
-
-		if (overdue == null) {
+		// A frame sent before one that arrived becomes lost with time alone,
+		// once its allowance runs out with no acknowledgement to notice.
+		__detectLosses(now);
+		if (__closed) {
 			return;
 		}
 
+		var overdue:Null<OutstandingFrame> = __overdueFrame(now);
+
+		if (overdue == null) {
+			__probeTail(now);
+			return;
+		}
+
+		__timeoutResends++;
 		overdue.attempts++;
 		overdue.sentAt = now;
+		__lastTransmitAt = now;
 		// Backed off first, so the deadline set below is the new one: RFC
 		// 6298 section 5.5 doubles the timeout and then restarts the clock.
 		__closeWindow();
@@ -1838,6 +2316,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// and none, when a frame going out in the same bundle already carries it.
 	@:noCompletion private inline function __sendAck():Void {
 		__ackOwed = true;
+		if (!__flushQueued) {
+			__queueFlush();
+		}
+	}
+
+	@:noCompletion private inline function __oweHandshake():Void {
+		__handshakeOwed = true;
 		if (!__flushQueued) {
 			__queueFlush();
 		}
@@ -1909,10 +2394,26 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		pays for the bundle's magic or its length.
 	**/
 	@:noCompletion private function __sendBundle():Void {
+		if (__handshakeOwed) {
+			__handshakeOwed = false;
+			if (!__closed && !__connected) {
+				__sendControl(HANDSHAKE, __firstSequence);
+			}
+		}
+
 		if (__ackOwed) {
 			__ackOwed = false;
-			if (!__closed && !(__bundleHasAck && __bundleAck == (__inSequence : Int))) {
-				__sendFrame(ACK, __inSequence, null, 0, 0, false, null, false);
+			if (!__closed) {
+				if (__inFrameCacheSize > 0) {
+					// Frames are held past a gap, so the acknowledgement says
+					// which, and goes on its own even when a frame going out
+					// carries the cumulative value: that one has no room for
+					// the map.
+					var length:Int = __writeSack();
+					__sendFrame(ACK, __inSequence, __sackScratch, 0, length, false, null, false);
+				} else if (!(__bundleHasAck && __bundleAck == (__inSequence : Int))) {
+					__sendFrame(ACK, __inSequence, null, 0, 0, false, null, false);
+				}
 			}
 		}
 
@@ -1952,6 +2453,35 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
+	/**
+		Writes the map of frames held past the gap into `__sackScratch`, and
+		says how many bytes of it matter.
+	**/
+	@:noCompletion private function __writeSack():Int {
+		if (__sackScratch == null) {
+			__sackScratch = new ByteArray();
+			__sackScratch.length = ReliableDatagramProtocol.SACK_BYTES;
+		}
+		var bytes:haxe.io.Bytes = __sackScratch;
+		bytes.fill(0, ReliableDatagramProtocol.SACK_BYTES, 0);
+
+		var base:Int = (__inSequence : Int) + 1;
+		var used:Int = 0;
+		for (sequence in __inFrameCache.keys()) {
+			// Wrapped to 32 bits, which JavaScript's arithmetic is not.
+			var offset:Int = (sequence - base) | 0;
+			if (offset < 0 || offset >= ReliableDatagramProtocol.SACK_BITS) {
+				continue;
+			}
+			var index:Int = offset >> 3;
+			bytes.set(index, bytes.get(index) | (1 << (offset & 7)));
+			if (index + 1 > used) {
+				used = index + 1;
+			}
+		}
+		return used;
+	}
+
 	@:noCompletion private function __sendDatagram(offset:Int, length:Int):Bool {
 		try {
 			__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
@@ -1976,8 +2506,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__transportListenerReady = false;
 	}
 
+	/**
+		Whether another frame may go out: what is still in the network -- sent,
+		not acknowledged, and not reported held past a gap -- is held to the
+		congestion window, as RFC 6675 counts it, and everything from the
+		first frame not acknowledged to the newest is held to what the peer
+		will buffer, `DELIVERY_WINDOW`.
+
+		Counting held frames as in the network, as this did, stopped the
+		sender at a gap: the window filled with frames already delivered,
+		nothing new went out, so no acknowledgement came back to say what
+		else was lost, and every lost resend waited for its timeout.
+	**/
 	@:noCompletion private function __windowExceeded():Bool {
-		return (__outSequence - __windowBase) >= Std.int(__congestionWindow);
+		var outstanding:Int = __outSequence - __windowBase;
+		return outstanding - __sackedCount >= Std.int(__congestionWindow) || outstanding >= DELIVERY_WINDOW;
 	}
 
 	@:noCompletion private function __onTransportData(e:DatagramSocketDataEvent):Void {
