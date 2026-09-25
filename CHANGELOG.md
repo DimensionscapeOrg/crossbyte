@@ -526,6 +526,22 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 client no longer closes a pooled connection under a request
+  that has just started on it. The pool judged a session idle from two
+  fields it read without the session's lock -- streams in flight, and when
+  the last one ended -- and a request starting on the session writes both,
+  bumping the first and zeroing the second. Read between the two, a session
+  had nothing in flight and had been idle since the clock began, so it was
+  closed as past its allowance. Two concurrent first requests to one origin
+  failed about once in two thousand: one with "Connection closed before the
+  response headers arrived", the other, finding no connection, dialling a
+  server that had stopped listening. The decision is now made by the session
+  under its own lock, only tried so the pool never waits behind a request,
+  and a session retired that way refuses new streams before anything is
+  sent. A request refused like that -- or by a connection whose peer has
+  said GOAWAY, which the pool had no way to see -- goes out once more on
+  another connection, which REFUSED_STREAM guarantees is safe; it failed
+  before.
 - HTTP/2 connections on cpp and Node are no longer closed a quarter second
   after they open. The server's idle sweep measured a connection's silence as
   `Sys.time()` minus a last-activity time from `haxe.Timer.stamp()`, which is

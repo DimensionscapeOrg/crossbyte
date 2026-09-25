@@ -156,20 +156,18 @@ class H2ConnectionPool {
 	}
 
 	/**
-	 * Whether a session has been idle long enough to close.
+	 * Whether a session has been idle long enough to close, taking it out of
+	 * service if so. See `H2ClientSession.retireIfIdle`, which decides it
+	 * under the session's own lock so that a request starting at the same
+	 * moment is never closed under.
 	 *
-	 * `>=` rather than `>`, so a timeout of N means "idle for at least N" and
-	 * a timeout of zero reaps anything not carrying a request. With `>` that
-	 * read depended on whether the clock ticked between the request finishing
-	 * and the sweep -- true natively, false on the jvm.
+	 * "At least" the timeout, so a timeout of N means idle for N or more and
+	 * a timeout of zero reaps anything not carrying a request. Strictly more
+	 * made that depend on whether the clock ticked between the request
+	 * finishing and the sweep -- true natively, false on the jvm.
 	 */
 	private static function __isExpired(session:H2ClientSession):Bool {
-		if (idleTimeoutSeconds < 0) {
-			return false;
-		}
-
-		var idle:Float = session.idleSeconds();
-		return idle >= 0 && idle >= idleTimeoutSeconds;
+		return idleTimeoutSeconds >= 0 && session.retireIfIdle(idleTimeoutSeconds);
 	}
 
 	private static function __closeAll(sessions:Array<H2ClientSession>):Void {
