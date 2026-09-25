@@ -141,6 +141,100 @@ class RPCCallHookTest extends utest.Test {
 		Assert.equals("lookup is not allowed", commands.lookup(2).error);
 	}
 
+	// ------------------------------------------------------- runtime lane
+
+	public function testRuntimeHooksSeeEachRuntimeCall():Void {
+		var link = LinkedConnection.pair();
+		var clientSession = new RPCSession(link.client);
+		var serverSession = new RPCSession(link.server);
+		var before:Array<String> = [];
+		var after:Array<String> = [];
+		serverSession.register(202, args -> "player-" + args[0]);
+		serverSession.register(203, args -> null);
+		serverSession.beforeRuntimeCall = (op, requestId, payloadSize) -> {
+			before.push('$op $requestId $payloadSize');
+			return null;
+		};
+		serverSession.afterRuntimeCall = (op, requestId, error) -> after.push('$op ' + (error == null ? "ok" : Std.string(error)));
+
+		// One Int: its count, its tag and four bytes, six in all.
+		var answer:RPCResponse<String> = clientSession.request(202, [42]);
+		clientSession.call(203, []);
+
+		Assert.equals("player-42", answer.result);
+		Assert.same(['202 ${answer.requestId} 6', "203 0 1"], before);
+		Assert.same(["202 ok", "203 ok"], after);
+	}
+
+	public function testARefusedRuntimeCallIsAnsweredOrDropped():Void {
+		var link = LinkedConnection.pair();
+		var clientSession = new RPCSession(link.client);
+		var serverSession = new RPCSession(link.server);
+		var reported = reportsOf(serverSession);
+		var ran = 0;
+		serverSession.register(204, args -> {
+			ran++;
+			return "ran";
+		});
+		serverSession.beforeRuntimeCall = (op, requestId, payloadSize) -> new RPCError("not now");
+
+		var refused:RPCResponse<String> = clientSession.request(204, []);
+		clientSession.call(204, []);
+
+		Assert.equals("not now", refused.error);
+		Assert.equals(0, ran, "a refused runtime call ran");
+		Assert.same([], reported);
+
+		serverSession.beforeRuntimeCall = null;
+		var allowed:RPCResponse<String> = clientSession.request(204, []);
+		Assert.equals("ran", allowed.result);
+	}
+
+	public function testAfterRuntimeCallSeesAFailureOnceItIsAnswered():Void {
+		var link = LinkedConnection.pair();
+		var clientSession = new RPCSession(link.client);
+		var serverSession = new RPCSession(link.server);
+		reportsOf(serverSession);
+		var pending:RPCResponse<String> = null;
+		var answeredFirst:Array<Bool> = [];
+		serverSession.register(205, args -> throw "no such thing");
+		serverSession.afterRuntimeCall = (op, requestId, error) -> {
+			answeredFirst.push(@:privateAccess clientSession.__runtimePendingResponse == null);
+			Assert.equals("no such thing", Std.string(error));
+		};
+
+		pending = clientSession.request(205, []);
+
+		Assert.same([true], answeredFirst, "afterRuntimeCall ran before the answer was sent");
+		Assert.equals(RPCError.INTERNAL_MESSAGE, pending.error);
+	}
+
+	public function testARuntimeHookThatThrowsCountsAsTheCallFailing():Void {
+		var link = LinkedConnection.pair();
+		var clientSession = new RPCSession(link.client);
+		var serverSession = new RPCSession(link.server);
+		var reported = reportsOf(serverSession);
+		var ended = endingOf(link.server);
+		var ran = 0;
+		serverSession.register(206, args -> {
+			ran++;
+			return "ran";
+		});
+
+		serverSession.beforeRuntimeCall = (op, requestId, payloadSize) -> throw "before broke";
+		var failed:RPCResponse<String> = clientSession.request(206, []);
+		Assert.equals(RPCError.INTERNAL_MESSAGE, failed.error);
+		Assert.equals(0, ran);
+
+		serverSession.beforeRuntimeCall = null;
+		serverSession.afterRuntimeCall = (op, requestId, error) -> throw "after broke";
+		var answered:RPCResponse<String> = clientSession.request(206, []);
+		Assert.equals("ran", answered.result);
+
+		Assert.same(["null: before broke", "null: after broke"], reported);
+		Assert.isFalse(ended.value);
+	}
+
 	static function reportsOf(session:RPCSession<Dynamic, Dynamic>):Array<String> {
 		var reported:Array<String> = [];
 		session.onHandlerError = (op, method, error) -> reported.push(method + ": " + Std.string(error));

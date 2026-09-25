@@ -5,6 +5,17 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `RPCSession.beforeRuntimeCall(op, requestId, payloadSize)` and
+  `afterRuntimeCall(op, requestId, error)`: what `beforeCall` and
+  `afterCall` are to a compiled handler, for handlers added with
+  `register`. Those have no class to override hooks in, so the hooks are
+  set on the session. Left `null`, as they start, they cost a runtime call
+  one check each.
+- RPC commands classes can extend other commands classes, as handlers can.
+  A subclass sends its parent's methods as well as its own and reads the
+  responses to both. A commands class for a contract can extend the one for
+  the contract it extends. The macro made `ping` and the response reader
+  again in every commands class, which Haxe refused in a subclass.
 - RPC contracts can extend other contracts, so a reusable one -- presence,
   chat -- can be built into an application's. A contract's stubs, and its
   handler's dispatch, now cover every method of every interface it extends,

@@ -128,6 +128,36 @@ class RPCContractTest extends utest.Test {
 		commands.greet("alan");
 		Assert.same(["alan"], handler.greeted);
 	}
+
+	public function testACommandsClassSendsAndReadsForTheOneItExtends():Void {
+		// A commands class extends another: the stubs are inherited, and the
+		// subclass reads the responses to its parent's calls as well as its own.
+		var link = LinkedConnection.pair();
+		var commands = new ExtendedCommands();
+		var clientSession = new RPCSession<ExtendedCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new ChildHandler());
+		var ended = false;
+		link.server.onClose = _ -> ended = true;
+		link.server.onError = _ -> ended = true;
+
+		Assert.equals("parent-4", commands.fromParent(4).result);
+		Assert.equals("child-5", commands.fromChild(5).result);
+		commands.ping();
+		Assert.isFalse(ended);
+	}
+
+	public function testContractCommandsExtendAlongWithTheirContracts():Void {
+		var link = LinkedConnection.pair();
+		var commands = new GreeterOnLabelledCommands();
+		var handler = new GreeterHandler();
+		var clientSession = new RPCSession<GreeterOnLabelledCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, handler);
+
+		// `label` comes from LabelledCommands, `greet` from this class.
+		Assert.equals("label-6", commands.label(6).result);
+		commands.greet("ada");
+		Assert.same(["ada"], handler.greeted);
+	}
 }
 
 // ----------------------------------------------------------------- contracts
@@ -233,6 +263,32 @@ private class ParentChildCommands extends RPCCommands {
 	@:rpc public function fromChild(id:Int):RPCResponse<String> {}
 
 	@:rpc public function said(id:Int):RPCResponse<String> {}
+}
+
+private class BaseCommands extends RPCCommands {
+	public function new() {}
+
+	@:rpc public function fromParent(id:Int):RPCResponse<String> {}
+}
+
+private class ExtendedCommands extends BaseCommands {
+	public function new() {
+		super();
+	}
+
+	@:rpc public function fromChild(id:Int):RPCResponse<String> {}
+}
+
+@:rpcContract(Labelled)
+private class LabelledCommands extends RPCCommands {
+	public function new() {}
+}
+
+@:rpcContract(Greeter)
+private class GreeterOnLabelledCommands extends LabelledCommands {
+	public function new() {
+		super();
+	}
 }
 
 private class ParentHandler extends RPCHandler {

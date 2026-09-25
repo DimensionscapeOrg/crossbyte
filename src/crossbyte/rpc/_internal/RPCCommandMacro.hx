@@ -58,10 +58,19 @@ class RPCCommandMacro {
 	private static final TYPE_WRITERS:Map<String, (Expr, Expr) -> Expr> = initWriters();
 	private static final TYPE_READERS:Map<String, (Expr, Expr) -> Expr> = initReaders();
 
+	// On a generated __rpc_handle_response(): the name of every method this
+	// class sends, and of every one whose response it reads, for a commands
+	// class that extends this one.
+	static inline final COMMANDS_META:String = ":rpcCommands";
+	static inline final RESPONDS_META:String = ":rpcResponds";
+
 	public static function build():Array<Field> {
 		var fields = Context.getBuildFields();
 		var newFields:Array<Field> = [];
 		var responseMethods:Array<ResponseMethod> = [];
+		// The commands classes between this one and RPCCommands, nearest first.
+		final ancestors = commandsAncestors();
+		final sentNames = new Array<String>();
 		final contractMethods = RPCContractMacroTools.getContractMethods(":rpcContract");
 		final manualRpcFields = fields.filter(field -> field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0);
 
@@ -79,6 +88,12 @@ class RPCCommandMacro {
 				if (RPCContractMacroTools.isReservedSystemMethod(method.name)) {
 					Context.error(RPCContractMacroTools.reservedSystemMethodMessage(method.name), method.pos);
 				}
+				// A commands class this one extends already sends it, from
+				// the contract this one's extends; its response is read below.
+				if (ancestorField(ancestors, method.name) != null) {
+					continue;
+				}
+				sentNames.push(method.name);
 				if (hasFieldNamed(fields, method.name) || hasFieldNamed(fields, "meta_" + method.name)) {
 					Context.error("RPC commands class already declares '" + method.name + "'; remove the manual declaration when using @:rpcContract(...).", method.pos);
 				}
@@ -110,17 +125,15 @@ class RPCCommandMacro {
 				}
 			}
 
-			injectPing(newFields, Context.currentPos());
-			injectResponseHandler(newFields, responseMethods);
-			return fields.concat(newFields);
+			return finish(fields, newFields, responseMethods, sentNames, ancestors);
 		}
 
-		RPCContractMacroTools.requireDistinctOps([for (field in manualRpcFields) {name: field.name, pos: field.pos}], true);
 
 		for (field in fields) {
 			if (field.name != "new" && field.meta != null && field.meta.filter(m -> m.name == ":rpc").length > 0) {
 				switch (field.kind) {
 					case FFun(method):
+						sentNames.push(field.name);
 						var metaName = "meta_" + field.name;
 						var retType = method.ret != null ? method.ret : macro :Void;
 						var responseType = responsePayloadType(retType, field.pos);
@@ -143,10 +156,103 @@ class RPCCommandMacro {
 			}
 		}
 
-		injectPing(newFields, Context.currentPos());
-		injectResponseHandler(newFields, responseMethods);
+		return finish(fields, newFields, responseMethods, sentNames, ancestors);
+	}
 
+	/**
+		What every commands class ends with: `ping`, unless a class it extends
+		made one, and the reader of responses -- for this class's methods and
+		for every one it inherits, which it overrides. Each class made both
+		again, which Haxe refused in a subclass, so no commands class could
+		extend another.
+	**/
+	private static function finish(fields:Array<Field>, newFields:Array<Field>, responseMethods:Array<ResponseMethod>, sentNames:Array<String>,
+			ancestors:Array<ClassType>):Array<Field> {
+		final inheritedSent = inheritedNames(ancestors, COMMANDS_META);
+		final allSent = sentNames.concat([for (name in inheritedSent) if (sentNames.indexOf(name) < 0) name]);
+		RPCContractMacroTools.requireDistinctOps([for (name in allSent) {name: name, pos: Context.currentPos()}], true);
+
+		for (name in inheritedNames(ancestors, RESPONDS_META)) {
+			if (Lambda.exists(responseMethods, method -> method.name == name)) {
+				continue;
+			}
+			final inherited = ancestorField(ancestors, name);
+			final responseType = inherited != null ? inheritedResponseType(inherited) : null;
+			if (responseType != null) {
+				responseMethods.push({
+					name: name,
+					op: RPCOps.opOf(name),
+					responseType: responseType,
+					pos: inherited.pos
+				});
+			}
+		}
+
+		if (ancestorField(ancestors, "ping") == null) {
+			injectPing(newFields, Context.currentPos());
+		}
+		injectResponseHandler(newFields, responseMethods, allSent, ancestorField(ancestors, "__rpc_handle_response") != null);
 		return fields.concat(newFields);
+	}
+
+	/** The commands classes this one extends, nearest first, up to RPCCommands. **/
+	private static function commandsAncestors():Array<ClassType> {
+		final ancestors = new Array<ClassType>();
+		var parent = Context.getLocalClass().get().superClass;
+		while (parent != null) {
+			final type = parent.t.get();
+			if (type.pack.join(".") == "crossbyte.rpc" && type.name == "RPCCommands") {
+				break;
+			}
+			ancestors.push(type);
+			parent = type.superClass;
+		}
+		return ancestors;
+	}
+
+	private static function ancestorField(ancestors:Array<ClassType>, name:String):Null<ClassField> {
+		for (type in ancestors) {
+			for (field in type.fields.get()) {
+				if (field.name == name) {
+					return field;
+				}
+			}
+		}
+		return null;
+	}
+
+	/** The names the nearest ancestor's response reader recorded under `meta`. **/
+	private static function inheritedNames(ancestors:Array<ClassType>, meta:String):Array<String> {
+		final reader = ancestorField(ancestors, "__rpc_handle_response");
+		final names = new Array<String>();
+		if (reader == null) {
+			return names;
+		}
+		for (entry in reader.meta.extract(meta)) {
+			for (param in entry.params) {
+				switch (param.expr) {
+					case EConst(CString(name)):
+						names.push(name);
+					default:
+				}
+			}
+		}
+		return names;
+	}
+
+	/** `T`, for an inherited stub that returns `RPCResponse<T>`. **/
+	private static function inheritedResponseType(field:ClassField):Null<ComplexType> {
+		return switch (Context.follow(field.type)) {
+			case TFun(_, ret):
+				switch (Context.follow(ret)) {
+					case TInst(typeRef, [payload]) if (typeRef.get().name == "RPCResponse"):
+						payload.toComplexType();
+					case _:
+						null;
+				}
+			case _:
+				null;
+		};
 	}
 
 	private static function createMetaFunction(metaName:String, commandName:String, args:Array<FunctionArg>, errPos:Position, opCode:Int):Field {
@@ -253,7 +359,7 @@ class RPCCommandMacro {
 		return isOpt ? macro(input.readByte() != 0 ? $read : null) : read;
 	}
 
-	private static function injectResponseHandler(newFields:Array<Field>, methods:Array<ResponseMethod>):Void {
+	private static function injectResponseHandler(newFields:Array<Field>, methods:Array<ResponseMethod>, sent:Array<String>, overridesInherited:Bool):Void {
 		var cases:Array<Case> = [];
 		for (method in methods) {
 			var read = readerForType(method.responseType, method.pos);
@@ -286,9 +392,15 @@ class RPCCommandMacro {
 			}
 		};
 
+		// Never inline: it is reached through RPCCommands' abstract method in
+		// any case, and a subclass must be able to override it.
 		newFields.push({
 			name: "__rpc_handle_response",
-			access: [APublic, AInline],
+			access: overridesInherited ? [APublic, AOverride] : [APublic],
+			meta: [
+				{name: COMMANDS_META, params: [for (name in sent) macro $v{name}], pos: Context.currentPos()},
+				{name: RESPONDS_META, params: [for (method in methods) macro $v{method.name}], pos: Context.currentPos()}
+			],
 			kind: FFun({
 				args: [
 					{name: "op", type: macro :Int},

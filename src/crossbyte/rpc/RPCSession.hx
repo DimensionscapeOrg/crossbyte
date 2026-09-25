@@ -214,6 +214,31 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * the stack. Whatever it throws is ignored, so a report failing cannot
 	 * close the connection either.
 	 */
+	/**
+	 * Asked before each inbound call on the runtime lane -- to a handler
+	 * added with `register`, or to an op with none -- before its arguments are
+	 * read: the op, the request's id (0 for a one-way call) and the bytes its
+	 * arguments take. Return `null` to let it run, or an `RPCError` to refuse
+	 * it: a request is answered with the error's message, and a one-way call
+	 * is dropped. A refusal is not reported.
+	 *
+	 * What `RPCHandler.beforeCall` is for a compiled handler, which overrides
+	 * it; a runtime handler has no class to override it in, so it is set
+	 * here. Left `null`, as it starts, it costs a runtime call one check.
+	 * What it throws counts as the call failing: the caller is answered with
+	 * `RPCError.INTERNAL_MESSAGE` and `onHandlerError` is told.
+	 */
+	public var beforeRuntimeCall:Null<(op:Int, requestId:Int, payloadSize:Int) -> Null<RPCError>> = null;
+
+	/**
+	 * Told after each runtime call `beforeRuntimeCall` let through and a
+	 * registered handler ran, once its answer, if it has one, has been sent:
+	 * `error` is `null` when the handler returned, and what it threw when it
+	 * did not. What `RPCHandler.afterCall` is for a compiled handler. What it
+	 * throws goes to `onHandlerError` and changes nothing else.
+	 */
+	public var afterRuntimeCall:Null<(op:Int, requestId:Int, error:Dynamic) -> Void> = null;
+
 	public dynamic function onHandlerError(op:Int, method:Null<String>, error:Dynamic):Void {
 		Logger.error('RPC handler ' + (method != null ? method : 'for op $op') + ' threw: ' + Std.string(error));
 	}
@@ -449,14 +474,13 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	**/
 	@:noCompletion private function __dispatchRuntimeFrame(flags:Int, op:Int, input:ByteArrayInput, frameEnd:Int):Void {
 		final runtimeFlags:Int = flags & ~RPCWire.FLAG_RUNTIME;
-		if (runtimeFlags == 0) {
-			final args = RPCRuntimeCodec.readArgs(input, frameEnd);
-			RPCWire.requireWithin(input, frameEnd);
-			__invokeRuntime(op, args, 0);
-			return;
-		}
-		if (runtimeFlags == RPCWire.FLAG_REQUEST) {
-			final requestId:Int = input.readVarUInt();
+		if (runtimeFlags == 0 || runtimeFlags == RPCWire.FLAG_REQUEST) {
+			final requestId:Int = runtimeFlags == 0 ? 0 : input.readVarUInt();
+			// Asked before the arguments are read, so a call refused for its
+			// size costs nothing to refuse. Refused, the frame is passed over.
+			if (beforeRuntimeCall != null && !__admitRuntimeCall(op, requestId, frameEnd - input.position)) {
+				return;
+			}
 			final args = RPCRuntimeCodec.readArgs(input, frameEnd);
 			RPCWire.requireWithin(input, frameEnd);
 			__invokeRuntime(op, args, requestId);
@@ -488,6 +512,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return;
 		}
 
+		var failure:Dynamic = null;
 		try {
 			final result = handler(args);
 			if (requestId != 0) {
@@ -497,6 +522,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			// The caller was sent `Std.string(error)`, whatever it held -- a
 			// path, a query, a stack -- and a one-way call rethrew, which
 			// closed the connection. The same rules as the compiled lane now.
+			failure = error;
 			final answer:Null<String> = __answerFor(error);
 			if (requestId != 0) {
 				__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
@@ -505,6 +531,38 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				__reportHandlerError(op, null, error);
 			}
 		}
+
+		if (afterRuntimeCall != null) {
+			try {
+				afterRuntimeCall(op, requestId, failure);
+			} catch (error:Dynamic) {
+				__reportHandlerError(op, null, error);
+			}
+		}
+	}
+
+	/**
+	 * Whether `beforeRuntimeCall` lets a call run. A refused request is
+	 * answered with the refusal, and a hook that throws fails the call.
+	 */
+	@:noCompletion private function __admitRuntimeCall(op:Int, requestId:Int, payloadSize:Int):Bool {
+		var refusal:Null<RPCError> = null;
+		try {
+			refusal = beforeRuntimeCall(op, requestId, payloadSize);
+		} catch (error:Dynamic) {
+			if (requestId != 0) {
+				__sendRuntimeError(op, requestId, RPCError.INTERNAL_MESSAGE);
+			}
+			__reportHandlerError(op, null, error);
+			return false;
+		}
+		if (refusal == null) {
+			return true;
+		}
+		if (requestId != 0) {
+			__sendRuntimeError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE);
+		}
+		return false;
 	}
 
 	/** An `RPCError`'s message, which its caller is meant to see, or `null`. **/
