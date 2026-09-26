@@ -12,6 +12,7 @@ import crossbyte.net._internal.CloseObservable;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.Event;
+import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
@@ -1130,10 +1131,26 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		}
 	}
 
-	@:noCompletion private inline function socket_onClose(_e:Event):Void {
+	@:noCompletion private inline function socket_onClose(e:Event):Void {
 		readEnabled = false;
-		__notifyClose(Reason.Closed);
-		__onClose(Reason.Closed);
+		final reason = __closeReason(e);
+		__notifyClose(reason);
+		__onClose(reason);
+	}
+
+	/**
+		How the peer closed: `Reason.Code` with the close frame's code and
+		reason, or `Reason.Closed` when the session ended with no code known.
+		It was `Reason.Closed` whatever the peer said -- a server going away
+		and a server refusing a protocol violation were one close to the
+		application, and to an RPC call that failed because of it.
+	**/
+	@:noCompletion private static function __closeReason(e:Event):Reason {
+		final closed:WebSocketCloseEvent = Std.downcast(e, WebSocketCloseEvent);
+		if (closed == null || closed.code == 0) {
+			return Reason.Closed;
+		}
+		return Reason.Code(closed.code, closed.reason);
 	}
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {

@@ -760,6 +760,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `NetConnection` over a WebSocket tells `onClose` how its peer closed:
+  `Reason.Code` with the close frame's code and reason. It said
+  `Reason.Closed` whatever the peer sent, so a server going away (1001)
+  and one refusing a client by policy (1008) were one close to the
+  application, and to an RPC call that failed because of it -- whose
+  `cause` is now that `Reason` too. `Reason.Closed` is what a close with
+  no code known reports.
 - A `LocalConnection` whose peer stops reading no longer stops its own
   side. `send` wrote on the runtime's thread until everything had gone --
   five seconds a send on Windows, for good on Linux and macOS -- holding
