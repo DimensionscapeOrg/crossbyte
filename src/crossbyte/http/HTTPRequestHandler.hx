@@ -25,6 +25,7 @@ import crossbyte.utils.Logger;
 import crossbyte.utils.LogLevel;
 import crossbyte._internal.http.headers.AcceptEncoding;
 import crossbyte._internal.http.headers.Connection;
+import crossbyte._internal.http.DirectoryListings;
 import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte._internal.php.PHPRequest;
@@ -171,7 +172,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __streamPeakBuffered(default, null):Int = 0;
 	/** Uppercased request method, for example `GET` or `POST`. */
 	public var method(get, null):String;
-	/** Normalized request path without the query string. */
+	/**
+	 * The request path without the query string, percent-decoded once and
+	 * settled: repeated `/` collapsed, `.` and `..` steps applied, and a
+	 * backslash read as `/`. `//private/a`, `/./private/a` and
+	 * `/x/../private/a` all read `/private/a`.
+	 *
+	 * It is the path static files are served under, so a middleware guard
+	 * that checks it checks what would be served. A request whose `..` steps
+	 * climb above the root is answered `400` before middleware sees it.
+	 */
 	public var requestPath(get, null):String;
 	/** Raw query string without the leading `?`. */
 	public var queryString(get, null):String;
@@ -524,24 +534,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (h >= 0)
 			pathOnly = pathOnly.substr(0, h);
 
-		try {
-			pathOnly = __percentDecodePath(pathOnly);
-			__requestPath = pathOnly;
-		} catch (_:Dynamic) {
+		// Settled here, once, before any middleware runs, and nothing touches
+		// the filesystem until the chain has let the request through.
+		var settled:Null<String> = __settlePath(pathOnly);
+		if (settled == null) {
 			__sendErrorResponse(400, "Bad Request");
 			return;
 		}
-
-		// No root, no static files: nothing to contain and nothing to look up.
+		__requestPath = settled;
 		__filePath = null;
-		if (__config.rootDirectory != null) {
-			var resolvedFile:File = __resolveSafePath(__config.rootDirectory, pathOnly);
-			if (resolvedFile == null) {
-				__sendErrorResponse(403, "Forbidden");
-				return;
-			}
-			__filePath = resolvedFile.nativePath;
-		}
+
 		while (true) {
 			var headerLine:Null<String> = __readLine(__incomingBuffer);
 			if (headerLine == null) {
@@ -620,8 +622,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/**
-	 * Runs rewrite, middleware and dispatch for a request whose method, path,
-	 * query, headers and body are already populated.
+	 * Runs middleware, then the server's own handling, for a request whose
+	 * method, path, query, headers and body are already populated.
 	 *
 	 * Extracted from the HTTP/1.1 parser so the HTTP/2 path can reach it too.
 	 * Everything from here down is protocol-agnostic; everything above it is
@@ -638,15 +640,33 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// cut short) must close, or the leftover bytes would be parsed
 		// as the next request, for the 429, the same request forever.
 		__requestConsumed = true;
-		var decision:Decision = __config.rootDirectory == null ? null : RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+
+		// Files and rewrites are resolved only once the chain lets the request
+		// through. They were resolved first, so a request a route answered
+		// paid for three filesystem lookups, on the runtime's own thread, and
+		// threw the answer away.
 		if (__config.middleware != null && __config.middleware.length > 0) {
-			__runMiddleware(0, function() {
-				__continueRequestDispatch(decision);
-			});
+			__runMiddleware(0, __serveUnrouted);
 			return;
 		}
 
-		__continueRequestDispatch(decision);
+		__serveUnrouted();
+	}
+
+	/**
+	 * The request path as middleware and the static resolver both read it,
+	 * percent-decoded, then settled by `HttpSyntax.normalizePath`, or null
+	 * when it is malformed or climbs above the root.
+	 */
+	@:noCompletion private static function __settlePath(raw:String):Null<String> {
+		var decoded:String;
+		try {
+			decoded = __percentDecodePath(raw);
+		} catch (_:Dynamic) {
+			return null;
+		}
+
+		return HttpSyntax.normalizePath(decoded);
 	}
 
 	/**
@@ -666,29 +686,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// the HTTP/1.1 keep-alive rules, neither of which applies here.
 		__httpVersion = "HTTP/2";
 
-		var pathOnly:String;
-		try {
-			pathOnly = __percentDecodePath(requestPath);
-		} catch (_:Dynamic) {
+		// The same settling the HTTP/1.1 parser applies, and for the same
+		// reasons: it is what keeps a request target inside the document
+		// root, and what makes the path a guard sees the path served. Without
+		// it the traversal check would live on one protocol's path only.
+		var settled:Null<String> = __settlePath(requestPath);
+		if (settled == null) {
 			__sendErrorResponse(400, "Bad Request");
 			return;
 		}
-		__requestPath = pathOnly;
-
-		// The same containment the HTTP/1.1 parser applies, and for the same
-		// reason: this is what stops a request target escaping the document
-		// root. Reaching dispatch without it would leave the traversal check
-		// on one protocol's path only, and the dispatch fallback below
-		// serves __filePath directly, so an unresolved one is served as-is.
+		__requestPath = settled;
 		__filePath = null;
-		if (__config.rootDirectory != null) {
-			var resolvedFile:File = __resolveSafePath(__config.rootDirectory, pathOnly);
-			if (resolvedFile == null) {
-				__sendErrorResponse(403, "Forbidden");
-				return;
-			}
-			__filePath = resolvedFile.nativePath;
-		}
 
 		__dispatchParsedRequest();
 	}
@@ -735,66 +743,77 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__sendErrorResponse(status, statusText);
 	}
 
-	@:noCompletion private function __continueRequestDispatch(decision:Decision):Void {
-		// Static files, from here down, and a path the configuration does not
-		// serve files for is answered as one that is not there. Asked of the
-		// path a file would be served under, so a rewrite onto a dotfile is
-		// refused as well as a request naming one.
-		if (__method != "OPTIONS" && !__servesStaticPath(decision != null ? decision.finalPath : __requestPath)) {
-			if (__method == "GET" || __method == "HEAD" || __method == "POST") {
-				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
-			} else {
-				__sendMethodNotAllowed();
-			}
-			return;
-		}
-
-		if (decision != null) {
-			var targetAbs:File = __config.rootDirectory.resolvePath("." + decision.finalPath);
-
-			switch (__method) {
-				case "GET" | "HEAD":
-					if (decision.toPHP) {
-						__queryString = decision.query;
-						__servePhp(targetAbs.nativePath, (__method == "HEAD"), null, decision.finalPath);
-					} else if (decision.isStatic) {
-						__serveFile(targetAbs.nativePath, (__method == "HEAD"));
-					} else {
-						__sendMethodNotAllowed();
-					}
-					return;
-
-				case "POST":
-					if (decision.toPHP) {
-						__queryString = decision.query;
-						__servePhp(targetAbs.nativePath, false, __requestBody, decision.finalPath);
-						return;
-					} else {
-						__handlePost(__filePath);
-						return;
-					}
-
-			default:
-		}
-	}
-
+	/**
+	 * What the server does with a request no middleware answered: a CORS
+	 * preflight, or a file, directory index, rewrite or PHP script under
+	 * `rootDirectory`.
+	 *
+	 * The only place a request reaches the filesystem, and it runs only once
+	 * every middleware has passed the request on.
+	 */
+	@:noCompletion private function __serveUnrouted():Void {
 		switch (__method) {
-			case "GET":
-				__serveFile(__filePath);
-			case "HEAD":
-				__serveFile(__filePath, true);
+			case "GET" | "HEAD" | "POST":
 			case "OPTIONS":
 				if (__config.corsEnabled) {
 					__handleOptionsRequest();
 				} else {
 					__sendMethodNotAllowed();
 				}
-			case "POST":
-				__handlePost(__filePath);
-
-			default:
+				return;
+			case _:
 				__sendMethodNotAllowed();
+				return;
 		}
+
+		if (__config.rootDirectory == null) {
+			__sendNotFound();
+			return;
+		}
+
+		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+
+		// A path the configuration keeps back is answered as one that is not
+		// there. Asked of the path a file would be served under, so a rewrite
+		// onto a dotfile is refused as well as a request naming one. Spelling
+		// is checked for a file the resolver found, not for a PHP rewrite's
+		// script, which the configuration names rather than the request.
+		var served:Null<String> = decision != null ? HttpSyntax.normalizePath(decision.finalPath) : __requestPath;
+		if (served == null || !__servesStaticPath(served, decision != null && decision.isStatic)) {
+			__sendNotFound();
+			return;
+		}
+
+		__filePath = __nativePathFor(__requestPath);
+		var target:Null<String> = decision != null ? __nativePathFor(served) : __filePath;
+		if (__filePath == null || target == null) {
+			__sendNotFound();
+			return;
+		}
+
+		if (decision != null) {
+			if (decision.toPHP) {
+				__queryString = decision.query;
+				__servePhp(target, __method == "HEAD", __method == "POST" ? __requestBody : null, served);
+			} else if (__method == "POST") {
+				__handlePost(__filePath);
+			} else if (decision.isStatic) {
+				__serveFile(target, __method == "HEAD");
+			} else {
+				__sendMethodNotAllowed();
+			}
+			return;
+		}
+
+		if (__method == "POST") {
+			__handlePost(__filePath);
+		} else {
+			__serveFile(__filePath, __method == "HEAD");
+		}
+	}
+
+	@:noCompletion private inline function __sendNotFound():Void {
+		__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
 	}
 
 	/**
@@ -2078,21 +2097,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return -1;
 	}
 
-	@:noCompletion private function __resolveSafePath(root:File, targetPath:String):File {
-		if (targetPath == null || targetPath == "") {
-			targetPath = "/";
+	/**
+	 * The filesystem path of a settled web path under the document root, or
+	 * null when it would not be inside it.
+	 *
+	 * String work only. Resolving through `File` stats what it names on
+	 * construction, and every lookup after this repeats that anyway.
+	 * `HttpSyntax.normalizePath` already keeps a settled path inside the
+	 * root; the containment check is a second lock on the same door.
+	 */
+	@:noCompletion private function __nativePathFor(webPath:String):Null<String> {
+		var root:String = __config.rootDirectory.nativePath;
+		var separator:String = __pathSeparator();
+		var relative:String = webPath.length > 1 ? webPath.substr(1) : "";
+		if (separator != "/" && relative.indexOf("/") >= 0) {
+			relative = relative.split("/").join(separator);
 		}
 
-		if (targetPath.charAt(0) != "/") {
-			targetPath = "/" + targetPath;
-		}
-
-		var resolved:File = root.resolvePath("." + targetPath);
-
-		if (!__isWithinRoot(root.nativePath, resolved.nativePath)) {
-			return null;
-		}
-		return resolved;
+		var full:String = (StringTools.endsWith(root, "/") || StringTools.endsWith(root, "\\")) ? root + relative : root + separator + relative;
+		return __isWithinRoot(root, full) ? full : null;
 	}
 
 	@:noCompletion private static function __isWithinRoot(rootPath:String, fullPath:String):Bool {
@@ -2272,16 +2295,77 @@ final class HTTPRequestHandler extends EventDispatcher {
 			+ ":" + StringTools.lpad(Std.string(d.getSeconds()), "0", 2) + " GMT";
 	}
 	/**
-	 * Whether a static file may be served under the web path `path`: there
-	 * is a document root to serve it from, and the path names nothing the
-	 * configuration keeps back (see `HTTPServerConfig.serveDotFiles`).
+	 * Whether a static file may be served under the settled web path `path`:
+	 * there is a document root to serve it from, the path names nothing the
+	 * configuration keeps back (see `HTTPServerConfig.serveDotFiles`), and,
+	 * for a path the resolver `found`, it is spelled the way the
+	 * filesystem spells it.
 	 */
-	@:noCompletion private function __servesStaticPath(path:String):Bool {
+	@:noCompletion private function __servesStaticPath(path:String, found:Bool):Bool {
 		if (__config.rootDirectory == null) {
 			return false;
 		}
 
-		return __config.serveDotFiles || !__hasHiddenSegment(path);
+		if (!__config.serveDotFiles && __hasHiddenSegment(path)) {
+			return false;
+		}
+
+		return !found || !__caselessFilesystem() || __isSpelledAsOnDisk(path);
+	}
+
+	/**
+	 * Whether each segment of `webPath` is spelled exactly as the directory
+	 * holding it lists it.
+	 *
+	 * Windows and macOS answer to many spellings of one name: any letter
+	 * case, and on Windows a trailing dot or space, an 8.3 short name, or
+	 * `name::$DATA`. A middleware guard compares the path as a string, so a
+	 * guard on `/private/` let `/PRIVATE/report.txt` through and the file
+	 * under `private/` was served. Serving a file only under its own spelling
+	 * makes those systems answer as Linux does, and a guard's comparison mean
+	 * what it says, for dotfiles too, which Windows also names by a short
+	 * name that has no dot.
+	 *
+	 * One directory listing per segment, paid only for a path the resolver
+	 * found, only on those two systems, and held for a second by
+	 * `DirectoryListings` so a busy directory is not listed per request.
+	 */
+	@:noCompletion private function __isSpelledAsOnDisk(webPath:String):Bool {
+		var listings:DirectoryListings = DirectoryListings.current();
+		var directory:String = __config.rootDirectory.nativePath;
+		var length:Int = webPath.length;
+		var start:Int = 1;
+
+		while (start < length) {
+			var end:Int = webPath.indexOf("/", start);
+			if (end < 0) {
+				end = length;
+			}
+
+			if (end > start) {
+				var name:String = webPath.substring(start, end);
+				if (!listings.lists(directory, name)) {
+					return false;
+				}
+				directory = Path.join([directory, name]);
+			}
+
+			start = end + 1;
+		}
+
+		return true;
+	}
+
+	@:noCompletion private static var __caseless:Int = -1;
+
+	/** Whether this machine's filesystems answer to more than one spelling of a name: Windows and macOS. */
+	@:noCompletion private static function __caselessFilesystem():Bool {
+		if (__caseless < 0) {
+			// Asked at runtime, for the reason __normalizeContainmentPath gives.
+			__caseless = (crossbyte.sys.System.isWindows || Sys.systemName() == "Mac") ? 1 : 0;
+		}
+
+		return __caseless == 1;
 	}
 
 	/**
