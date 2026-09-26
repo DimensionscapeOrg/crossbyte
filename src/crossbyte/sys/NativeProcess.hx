@@ -229,8 +229,8 @@ class NativeProcess extends EventDispatcher {
 				}
 
 				if (Std.isOfType(value, String)) {
-					var parsed = Std.parseInt(cast value);
-					return parsed != null ? parsed : -1;
+					// -1 for anything that is not a plain number, as below.
+					return crossbyte.utils.IntParse.decimal(StringTools.trim(cast value));
 				}
 
 				if (value != null && Reflect.isFunction(value)) {

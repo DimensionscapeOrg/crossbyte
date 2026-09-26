@@ -175,6 +175,19 @@ class UtilsTest extends utest.Test {
 		Assert.isTrue(short > new Version(1, 1, 9));
 	}
 
+	public function testAVersionSegmentTooBigForAnIntReadsTheSameOnEveryTarget():Void {
+		// Std.parseInt gave 0 on Linux native, 2147483647 on Windows native,
+		// threw on the jvm and gave a wider-than-Int number on JavaScript.
+		var huge:Version = "1.4294967296.0";
+		Assert.equals(1, huge.major);
+		Assert.equals(999, huge.minor);
+		Assert.isTrue(huge > new Version(1, 998, 0));
+
+		// A suffix after the digits still reads as the digits.
+		var suffixed:Version = "1.2.3-beta";
+		Assert.equals(3, suffixed.patch);
+	}
+
 	public function testVersionHashIsStableAfterPerfChange():Void {
 		// Verify the direct-component hash matches the legacy padded-concat values
 		// and preserves ordering/equality across operators.
