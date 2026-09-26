@@ -63,6 +63,19 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 *
 	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`.
 	 *
+	 * A `wss://` connection verifies the server's certificate against the
+	 * system's trust store. To trust a private CA, or a development server's
+	 * self-signed certificate, make the socket yourself so its settings are in
+	 * place before it connects:
+	 *
+	 * ```haxe
+	 * var socket = new WebSocket();
+	 * socket.secure = true;
+	 * socket.certAuthority = Certificate.fromFile("dev-ca.pem");
+	 * socket.connect("rpc.internal/rpc", 8443);
+	 * var connection = NetConnection.fromWebSocket(socket);
+	 * ```
+	 *
 	 * @param connectTimeout For `local://`, whose connect waits for a listener
 	 * on the calling thread: how long, in milliseconds, 0 for a single try.
 	 * `LocalConnection.timeout` when left out. The other transports connect
