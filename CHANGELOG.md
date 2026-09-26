@@ -691,6 +691,27 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- WebRTC data channels now have congestion control, and no longer flood a
+  path. One `send` put everything the peer's window allowed on the wire at
+  once -- a megabyte was 1,024 packets in one call -- and each fragment was
+  resent on its own fixed half-second timer, so a slow path got every
+  fragment several times before its acknowledgement could arrive, and a
+  congested one had most of each burst dropped and resent into the same
+  queue: through a bottleneck taking 64 packets at a time a megabyte never
+  arrived. SCTP now keeps a congestion window (RFC 4960 section 7): ten
+  packets to start, doubling each round trip while everything arrives,
+  halved when three SACKs report a fragment missing -- which is then sent
+  again at once rather than after a timeout -- and down to one packet when
+  a timeout runs out. The timeout is measured from round trips (RFC 6298),
+  between 0.4 and 10 seconds, and doubles on each expiry. No more than four
+  packets leave at any one opportunity (Max.Burst), small messages waiting
+  together share a packet, and a SACK is sent for every second packet of
+  data, or at once on a gap or a duplicate, rather than once a tick. The
+  association ends after ten timeouts in a row with nothing acknowledged.
+  A SACK is now read in one pass: 4,000 gap blocks over 8,192 outstanding
+  fragments cost 60 ms. Measured natively, a 100-byte message round trip
+  went from 2.25 to 1.86 us, a 1 KB one from 4.05 to 2.99 us, and an idle
+  transfer's poll from 18 to 4 ns.
 - A data channel fragment the peer never acknowledges ends the SCTP
   association instead of wedging it. After its tenth attempt the fragment
   was dropped with nothing sent to say so, which left an ordered stream a
