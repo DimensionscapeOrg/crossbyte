@@ -1,5 +1,6 @@
 package crossbyte.net.rtc;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
@@ -51,6 +52,22 @@ class SctpDataTransferTest extends utest.Test {
 		for (streamId in (@:privateAccess transfer.__held).keys()) {
 			for (message in (@:privateAccess transfer.__held).get(streamId).bySequence) {
 				total += message.payload.length;
+			}
+		}
+
+		return total;
+	}
+
+	/** What is really in the network: sent, and neither acknowledged nor found lost. **/
+	private function inFlight(transfer:SctpDataTransfer):Int {
+		var total:Int = 0;
+		var all = @:privateAccess transfer.__unacknowledged;
+
+		for (i in (@:privateAccess transfer.__outstandingAt)...all.length) {
+			var sent = all[i];
+
+			if (!sent.acked && !sent.lost && !sent.abandoned) {
+				total += sent.data.payload.length;
 			}
 		}
 
@@ -254,6 +271,951 @@ class SctpDataTransferTest extends utest.Test {
 		Assert.isTrue(arrived.length >= 1, "nothing arrived at all");
 		Assert.equals(1, arrived[0], "the message on the other stream waited for a stream it has nothing to do with");
 	}
+
+	/**
+		Data the peer never acknowledges ends the association, and says so.
+
+		After the last retransmission the fragment was dropped and the rest
+		carried on. On an ordered stream that is a hole nothing will ever fill:
+		everything behind it stalled for good, later fragments were resent up
+		to eleven times, and the association went on reporting itself open
+		while its peer was, by RFC 4960's own definition, unreachable.
+	**/
+	public function testDataThePeerNeverAcknowledgesEndsTheAssociation():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var reasons:Array<String> = [];
+		pair.client.onClose = reason -> reasons.push(reason);
+
+		pair.cutToServer = true;
+		pair.clientData.send(0, filled(4 * SctpDataTransfer.MAX_PAYLOAD), SctpDataChunk.PPID_BINARY, true, pair.now);
+
+		// Long enough for any retransmission schedule to run out, stepped
+		// rather than run so the clock is the one being measured.
+		var t0 = pair.now;
+
+		while (reasons.length == 0 && pair.now - t0 < 600) {
+			pair.clientData.poll(pair.now);
+			pair.serverData.poll(pair.now);
+			pair.step();
+		}
+
+		Assert.equals(1, reasons.length, "unacknowledged data ended the association " + reasons.length + " times rather than once");
+		Assert.equals(SctpAssociationState.CLOSED, pair.client.state, "the association went on after its peer stopped acknowledging");
+
+		if (reasons.length > 0) {
+			Assert.isTrue(reasons[0].indexOf("acknowledg") >= 0, "the reason does not say what happened: " + reasons[0]);
+		}
+
+		// And nothing is sent into an association that has ended.
+		var sent:Int = 0;
+		pair.client.onSend = _ -> sent++;
+		pair.clientData.poll(pair.now + 60);
+		Assert.equals(0, sent, "an ended association kept retransmitting");
+	}
+
+	/**
+		A peer cannot make the receiver track numbers without bound.
+
+		Any TSN up to 2^31 past the cumulative acknowledgement was taken, so a
+		peer that never sent the next number and sent the ones after it grew
+		the receiver's record of what had arrived for as long as it cared to:
+		400,000 entries and 24 MB in the audit, on unordered one-byte messages
+		that were delivered at once and so never touched the window. Anything
+		more than `MAX_TSN_AHEAD` past it is dropped unread now.
+	**/
+	public function testAPeerCannotMakeTheReceiverTrackNumbersWithoutBound():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var delivered:Int = 0;
+		transfer.onMessage = (_, _, _) -> delivered++;
+
+		var one = filled(1);
+		var tsn:Int = ((@:privateAccess transfer.__cumulativeTsn) + 2) | 0;
+		var sent:Int = 50000;
+
+		// The next number never comes; everything after it does.
+		for (_ in 0...sent) {
+			@:privateAccess transfer.__onData(new SctpDataChunk(tsn, 1, 0, SctpDataChunk.PPID_BINARY, one,
+				SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+			tsn = (tsn + 1) | 0;
+		}
+
+		var held:Int = 0;
+
+		for (_ in (@:privateAccess transfer.__received).keys()) {
+			held++;
+		}
+
+		Assert.isTrue(delivered > 0, "nothing was delivered, so nothing was taken to be held either");
+		Assert.isTrue(held <= SctpDataTransfer.MAX_TSN_AHEAD,
+			"the receiver holds " + held + " numbers past a hole the peer never filled, against a bound of " + SctpDataTransfer.MAX_TSN_AHEAD);
+	}
+
+	/**
+		With its window shut, the receiver takes nothing past what has arrived,
+		and still takes what fills a hole.
+
+		RFC 4960 section 6.2. The window was published and nothing held a peer
+		to it: past it the receiver threw away unfinished messages to make
+		room. Now what lies beyond the highest number already received is
+		dropped, with a SACK saying the window is still shut, while a number
+		below it, the one a message is waiting on, is taken, since that is
+		what completes a message and opens the window again.
+	**/
+	public function testAShutWindowTakesNothingPastWhatHasArrived():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var delivered:Int = 0;
+		transfer.onMessage = (_, _, _) -> delivered++;
+
+		var base:Int = @:privateAccess transfer.__cumulativeTsn;
+		var piece:Int = SctpDataTransfer.MAX_PAYLOAD;
+		var tsn:Int = (base + 2) | 0;
+
+		// A hole at base + 1, and two unfinished megabytes past it: the window
+		// is exactly full.
+		for (stream in 1...3) {
+			for (i in 0...Std.int(SctpDataTransfer.MAX_REASSEMBLY / piece)) {
+				@:privateAccess transfer.__onData(new SctpDataChunk(tsn, stream, 0, SctpDataChunk.PPID_BINARY, filled(piece),
+					i == 0 ? SctpDataChunk.FLAG_BEGINNING : 0).toChunk());
+				tsn = (tsn + 1) | 0;
+			}
+		}
+
+		Assert.equals(SctpAssociation.RECEIVE_WINDOW, @:privateAccess transfer.__buffered, "the window was not filled, so this proves nothing");
+		Assert.equals(0, advertised(transfer));
+
+		var failures:Int = 0;
+		transfer.onFailure = _ -> failures++;
+
+		// Past everything that has arrived: refused.
+		@:privateAccess transfer.__onData(new SctpDataChunk(tsn, 3, 0, SctpDataChunk.PPID_BINARY, filled(1),
+			SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+
+		Assert.equals(0, delivered, "a message past a shut window was taken");
+		Assert.equals(0, failures, "a message past a shut window made room by giving up what was held");
+		Assert.equals(SctpAssociation.RECEIVE_WINDOW, @:privateAccess transfer.__buffered);
+
+		// The hole below it: taken.
+		@:privateAccess transfer.__onData(new SctpDataChunk((base + 1) | 0, 4, 0, SctpDataChunk.PPID_BINARY, filled(1),
+			SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+
+		Assert.equals(1, delivered, "the number the receiver was waiting on was refused along with the rest");
+		Assert.equals(((tsn - 1) | 0), @:privateAccess transfer.__cumulativeTsn, "filling the hole did not carry the acknowledgement past it");
+	}
+
+	/**
+		The gap blocks describe exactly what arrived past a hole, and follow it
+		as the holes fill.
+	**/
+	public function testGapBlocksDescribeWhatArrivedPastTheHole():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var base:Int = @:privateAccess transfer.__cumulativeTsn;
+
+		function arrive(offset:Int):Void {
+			@:privateAccess transfer.__onData(new SctpDataChunk((base + offset) | 0, 1, 0, SctpDataChunk.PPID_BINARY, filled(1),
+				SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+		}
+
+		function blocks():String {
+			var sack = @:privateAccess transfer.__buildSack();
+			var value = sack.value;
+			value.endian = Endian.BIG_ENDIAN;
+			value.position = 0;
+			var cumulative:Int = (value.readInt() - base) | 0;
+			value.readInt();
+			var count:Int = value.readUnsignedShort();
+			value.readUnsignedShort();
+			var out:Array<String> = [];
+
+			for (_ in 0...count) {
+				out.push(value.readUnsignedShort() + "-" + value.readUnsignedShort());
+			}
+
+			return cumulative + ":" + out.join(",");
+		}
+
+		// Offsets from the base; 1 is the hole.
+		for (offset in [3, 2, 5, 9, 7, 8]) {
+			arrive(offset);
+		}
+
+		Assert.equals("0:2-3,5-5,7-9", blocks());
+
+		arrive(4);
+		Assert.equals("0:2-5,7-9", blocks(), "a number between two runs did not join them");
+
+		arrive(1);
+		Assert.equals("5:2-4", blocks(), "filling the hole did not carry the acknowledgement over the run behind it");
+
+		arrive(6);
+		Assert.equals("9:", blocks());
+
+		// Far more islands than a SACK can carry: the lowest go.
+		for (i in 0...(SctpDataTransfer.MAX_SACK_BLOCKS * 2)) {
+			arrive(11 + 2 * i);
+		}
+
+		var sack = @:privateAccess transfer.__buildSack();
+		sack.value.position = 8;
+		Assert.equals(SctpDataTransfer.MAX_SACK_BLOCKS, sack.value.readUnsignedShort(), "a SACK reported more gap blocks than it may");
+		sack.value.position = 12;
+		Assert.equals(2, sack.value.readUnsignedShort(), "the first gap block reported is not the lowest");
+	}
+
+	/**
+		A message that may be sent once and is lost stays lost, and the rest
+		flow past it.
+
+		Partial reliability, RFC 3758: what a game's state channel is. The one
+		lost is not sent again; a FORWARD TSN moves the peer past it, so its
+		acknowledgement does not stop at the hole and nothing piles up behind
+		it. Every message was reliable, whatever the channel asked for.
+	**/
+	public function testAMessageThatMaySendOnceIsNotSentAgain():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		var dropped:Bool = false;
+		link.dropToServer = function(_):Bool {
+			if (!dropped && link.sentToServer == 2) {
+				dropped = true;
+				return true;
+			}
+
+			return false;
+		};
+
+		var transmissions:Map<Int, Int> = new Map();
+		link.watchToServer = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload);
+
+			for (chunk in packet.chunks) {
+				var data = SctpDataChunk.fromChunk(chunk);
+
+				if (data != null) {
+					transmissions.set(data.tsn, (transmissions.exists(data.tsn) ? transmissions.get(data.tsn) : 0) + 1);
+				}
+			}
+		};
+
+		var delivered:Array<Int> = [];
+		link.serverData.onMessage = function(_, payload:ByteArray, _):Void {
+			payload.position = 0;
+			delivered.push(payload.readUnsignedByte());
+		};
+
+		for (i in 0...12) {
+			link.clientData.send(0, numberedByte(i), SctpDataChunk.PPID_BINARY, false, link.now, 0);
+		}
+
+		link.runUntil(() -> link.clientData.outstandingCount() == 0 && delivered.length >= 11, 20);
+
+		Assert.isTrue(dropped, "nothing was lost, so this proves nothing");
+		Assert.equals(11, delivered.length, "delivered " + delivered.join(",") + ": the lost message was sent again or others never came");
+		Assert.equals(-1, delivered.indexOf(1), "the message that was lost arrived after all, so it was retransmitted");
+
+		var resent:Int = 0;
+
+		for (tsn in transmissions.keys()) {
+			if (transmissions.get(tsn) > 1) {
+				resent++;
+			}
+		}
+
+		Assert.equals(0, resent, "a message that may be sent once was sent again");
+		Assert.equals(0, link.clientData.outstandingCount(), "the peer never moved past the message given up on");
+		Assert.equals(@:privateAccess link.clientData.__nextTsn - 1, @:privateAccess link.serverData.__cumulativeTsn,
+			"the receiver's acknowledgement stopped at the hole");
+	}
+
+	/**
+		An ordered stream skips a message given up on, and delivers what waited
+		behind it in order.
+
+		The FORWARD TSN names the stream and the sequence abandoned on it; the
+		receiver hands up what it was holding, which had arrived whole and was
+		waiting only on that one.
+	**/
+	public function testAnOrderedStreamSkipsWhatWasGivenUp():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		var dropped:Bool = false;
+		link.dropToServer = function(_):Bool {
+			if (!dropped && link.sentToServer == 3) {
+				dropped = true;
+				return true;
+			}
+
+			return false;
+		};
+
+		var delivered:Array<Int> = [];
+		link.serverData.onMessage = function(_, payload:ByteArray, _):Void {
+			payload.position = 0;
+			delivered.push(payload.readUnsignedByte());
+		};
+
+		for (i in 0...10) {
+			link.clientData.send(4, numberedByte(i), SctpDataChunk.PPID_BINARY, true, link.now, 0);
+		}
+
+		link.runUntil(() -> link.clientData.outstandingCount() == 0 && delivered.length >= 9, 20);
+
+		Assert.isTrue(dropped, "nothing was lost, so this proves nothing");
+		Assert.equals("0,1,3,4,5,6,7,8,9", delivered.join(","), "the stream did not skip the message given up on and go on in order");
+	}
+
+	/**
+		A message past its lifetime before it was ever sent is dropped unsent.
+
+		Timed reliability: a message queued behind a closed window is worth
+		nothing once its time is up, and costs nothing to drop, since it was
+		never given a number the peer would wait on.
+	**/
+	public function testAMessagePastItsLifetimeIsDroppedUnsent():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		var delivered:Array<Int> = [];
+		link.serverData.onMessage = function(_, payload:ByteArray, _):Void {
+			payload.position = 0;
+			delivered.push(payload.readUnsignedByte());
+		};
+
+		// One message in flight and lost, and the window shut behind it, so
+		// the rest wait in the queue.
+		link.cut = true;
+		@:privateAccess link.clientData.__cwnd = 0;
+		link.clientData.send(0, numberedByte(0), SctpDataChunk.PPID_BINARY, false, link.now);
+
+		for (i in 1...6) {
+			link.clientData.send(0, numberedByte(i), SctpDataChunk.PPID_BINARY, false, link.now, -1, 0.1);
+		}
+
+		var queued:Int = link.clientData.bufferedAmount;
+		Assert.isTrue(queued > 0, "nothing was held back, so this proves nothing");
+
+		// Past the lifetime, and then the path and the window open again.
+		link.runUntil(() -> false, 0.3);
+		link.cut = false;
+		@:privateAccess link.clientData.__cwnd = SctpDataTransfer.INITIAL_WINDOW;
+		link.clientData.send(0, numberedByte(9), SctpDataChunk.PPID_BINARY, false, link.now);
+		link.runUntil(() -> link.clientData.outstandingCount() == 0 && link.clientData.bufferedAmount == 0, 10);
+
+		delivered.sort((a, b) -> a - b);
+		Assert.equals("0,9", delivered.join(","), "messages past their lifetime were sent anyway");
+		Assert.equals(0, link.clientData.bufferedAmount);
+	}
+
+	/**
+		A message cut short by its lifetime once part of it has gone is
+		skipped whole by the peer, even when all that went was acknowledged.
+
+		The rest, still queued, is dropped unsent. The peer holds what went,
+		and on an ordered stream waits for the message's sequence number. With
+		nothing of the message left outstanding there was nothing to abandon,
+		no FORWARD TSN named it, and the stream waited for good. Here the SACK
+		for what went arrives after the lifetime ran out with no poll between:
+		the same tick, which at a runtime's twelve a second is 83 ms wide.
+	**/
+	public function testAMessageCutShortAfterWhatWentWasAcknowledgedIsSkipped():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var delivered:Array<Int> = [];
+		pair.serverData.onMessage = (_, payload:ByteArray, _) -> delivered.push(payload.length);
+
+		// Shut, so only the first of the message's three fragments goes.
+		@:privateAccess pair.clientData.__cwnd = 0;
+		pair.clientData.send(4, filled(3 * SctpDataTransfer.MAX_PAYLOAD), SctpDataChunk.PPID_BINARY, true, pair.now, -1, 1.0);
+		Assert.equals(2 * SctpDataTransfer.MAX_PAYLOAD, pair.clientData.bufferedAmount, "the fragments were not held back, so this proves nothing");
+
+		// It arrives, and the SACK for it comes back after the message's time
+		// is up, so the rest is dropped as the window opens.
+		pair.step();
+		pair.serverData.poll(pair.now);
+		pair.now += 2.0;
+		pair.step();
+
+		Assert.equals(0, pair.clientData.bufferedAmount, "the rest of the message was not dropped, so this proves nothing");
+
+		// The next message on the stream has to go up.
+		pair.clientData.send(4, filled(5), SctpDataChunk.PPID_BINARY, true, pair.now);
+		pair.run(() -> delivered.length > 0 && pair.clientData.outstandingCount() == 0);
+
+		Assert.equals("5", delivered.join(","), "the stream waited for good on a message whose rest was dropped");
+		Assert.equals(0, @:privateAccess pair.serverData.__buffered, "what went of the message dropped is still held");
+		Assert.equals(walked(pair.serverData), @:privateAccess pair.serverData.__buffered);
+		Assert.equals(0, pair.clientData.outstandingCount(), "the peer never moved past the message dropped");
+	}
+
+	/**
+		The same when what went of it was acknowledged out of order, behind an
+		earlier message that was lost, after a timeout, when the one packet
+		the window allows is that earlier message going again.
+	**/
+	public function testAMessageCutShortBehindALossIsSkipped():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var delivered:Array<String> = [];
+		pair.serverData.onMessage = (streamId:Int, payload:ByteArray, _) -> delivered.push(streamId + ":" + payload.length);
+
+		// A reliable message on stream 2, which is lost, and the first of three
+		// fragments of one with a lifetime on stream 4, which arrives.
+		@:privateAccess pair.clientData.__cwnd = 0;
+		pair.clientData.send(2, filled(1), SctpDataChunk.PPID_BINARY, true, pair.now);
+		pair.clientData.send(4, filled(3 * SctpDataTransfer.MAX_PAYLOAD), SctpDataChunk.PPID_BINARY, true, pair.now, -1, 1.0);
+		@:privateAccess pair.clientData.__cwnd = 1000;
+		pair.clientData.poll(pair.now);
+		@:privateAccess pair.clientData.__cwnd = 1;
+		Assert.equals(2 * SctpDataTransfer.MAX_PAYLOAD, pair.clientData.bufferedAmount, "the fragments were not held back, so this proves nothing");
+
+		pair.dropNextToServer = 1;
+		pair.step();
+		pair.step();
+		Assert.equals(1, gapAcknowledged(pair.clientData), "the fragment that went was not acknowledged out of order, so this proves nothing");
+
+		// The timer resends the lost one; the rest of the other is past its
+		// time and dropped.
+		pair.now += 2.0;
+		pair.clientData.poll(pair.now);
+		Assert.equals(0, pair.clientData.bufferedAmount, "the rest of the message was not dropped, so this proves nothing");
+
+		pair.clientData.send(4, filled(5), SctpDataChunk.PPID_BINARY, true, pair.now);
+		pair.run(() -> delivered.length > 1 && pair.clientData.outstandingCount() == 0);
+
+		Assert.equals("2:1,4:5", delivered.join(","), "the stream waited for good on a message whose rest was dropped");
+		Assert.equals(0, @:privateAccess pair.serverData.__buffered, "what went of the message dropped is still held");
+		Assert.equals(walked(pair.serverData), @:privateAccess pair.serverData.__buffered);
+		Assert.equals(0, pair.clientData.outstandingCount(), "the peer never moved past the message dropped");
+	}
+
+	/**
+		Without the peer's word that it understands FORWARD TSN, nothing is
+		given up on.
+
+		RFC 8831: the channel is then reliable. Abandoning a message the peer
+		cannot be told about would stop its acknowledgement at the hole for
+		good.
+	**/
+	public function testWithoutThePeersSupportNothingIsGivenUp():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		@:privateAccess link.client.peerSupportsForwardTsn = false;
+
+		var dropped:Bool = false;
+		link.dropToServer = function(_):Bool {
+			if (!dropped && link.sentToServer == 1) {
+				dropped = true;
+				return true;
+			}
+
+			return false;
+		};
+
+		var delivered:Int = 0;
+		link.serverData.onMessage = (_, _, _) -> delivered++;
+
+		link.clientData.send(0, numberedByte(0), SctpDataChunk.PPID_BINARY, false, link.now, 0);
+		link.runUntil(() -> delivered == 1, 20);
+
+		Assert.isTrue(dropped);
+		Assert.equals(1, delivered, "a message to a peer that cannot be told it was abandoned was abandoned");
+	}
+
+	/**
+		The receiver follows a FORWARD TSN: past the hole, over what it held,
+		and on along the stream it names.
+	**/
+	public function testTheReceiverFollowsAForwardTsn():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var base:Int = @:privateAccess transfer.__cumulativeTsn;
+		var delivered:Array<Int> = [];
+
+		transfer.onMessage = function(_, payload:ByteArray, _):Void {
+			payload.position = 0;
+			delivered.push(payload.readUnsignedByte());
+		};
+
+		var whole = SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING;
+
+		// Sequence 0 at base + 1 never arrives; 1 and 2 do, and wait for it.
+		@:privateAccess transfer.__onData(new SctpDataChunk((base + 2) | 0, 3, 1, SctpDataChunk.PPID_BINARY, numberedByte(1), whole).toChunk());
+		@:privateAccess transfer.__onData(new SctpDataChunk((base + 3) | 0, 3, 2, SctpDataChunk.PPID_BINARY, numberedByte(2), whole).toChunk());
+
+		// And the start of a message on another stream, whose rest was abandoned
+		// with it.
+		@:privateAccess transfer.__onData(new SctpDataChunk((base + 4) | 0, 5, 0, SctpDataChunk.PPID_BINARY, filled(10),
+			SctpDataChunk.FLAG_BEGINNING).toChunk());
+
+		Assert.equals(0, delivered.length, "something went up while sequence 0 was still missing");
+
+		// The sender gave up on sequence 0 of stream 3 and on the message on
+		// stream 5, through base + 4.
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeInt((base + 4) | 0);
+		value.writeShort(3);
+		value.writeShort(0);
+		value.writeShort(5);
+		value.writeShort(0);
+		value.position = 0;
+
+		@:privateAccess transfer.__onForwardTsn(new SctpChunk(SctpPacket.CHUNK_FORWARD_TSN, 0, value));
+
+		Assert.equals("1,2", delivered.join(","), "what waited behind the abandoned message did not go up in order");
+		Assert.equals((base + 4) | 0, @:privateAccess transfer.__cumulativeTsn, "the acknowledgement did not move past what was abandoned");
+		Assert.equals(0, @:privateAccess transfer.__buffered, "the abandoned message's first fragment is still held");
+		Assert.equals(walked(transfer), @:privateAccess transfer.__buffered);
+
+		// And the next sequence on stream 3 goes straight up.
+		@:privateAccess transfer.__onData(new SctpDataChunk((base + 5) | 0, 3, 3, SctpDataChunk.PPID_BINARY, numberedByte(3), whole).toChunk());
+		Assert.equals("1,2,3", delivered.join(","));
+
+		// A FORWARD TSN that is behind changes nothing.
+		@:privateAccess transfer.__onForwardTsn(new SctpChunk(SctpPacket.CHUNK_FORWARD_TSN, 0, value));
+		Assert.equals((base + 5) | 0, @:privateAccess transfer.__cumulativeTsn);
+	}
+
+	private static function numberedByte(value:Int):ByteArray {
+		var out = new ByteArray();
+		out.writeByte(value);
+		out.position = 0;
+		return out;
+	}
+
+	/**
+		A message larger than the peer takes is refused before anything goes.
+
+		RFC 8841: a sender must not exceed the peer's max-message-size. It was
+		never consulted, so the message went out, every fragment was
+		acknowledged, and the receiver dropped it whole, the sender saw it
+		delivered and the far application never saw it at all.
+	**/
+	public function testAMessageLargerThanThePeerTakesIsRefused():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var packets:Int = 0;
+		pair.watchClient(_ -> packets++);
+		pair.clientData.peerMaxMessageSize = 1000;
+
+		Assert.raises(() -> pair.clientData.send(0, filled(1001), SctpDataChunk.PPID_BINARY, true, pair.now), ArgumentError);
+		Assert.equals(0, packets, "a message the peer would drop was put on the wire");
+		Assert.equals(0, pair.clientData.bufferedAmount, "a refused message was queued");
+
+		var got:Int = -1;
+		pair.serverData.onMessage = (_, payload, _) -> got = payload.length;
+		pair.clientData.send(0, filled(1000), SctpDataChunk.PPID_BINARY, true, pair.now);
+		pair.run(() -> got >= 0);
+
+		Assert.equals(1000, got, "a message exactly the size the peer takes was refused or lost");
+
+		// Zero is RFC 8841's any size at all.
+		pair.clientData.peerMaxMessageSize = 0;
+		pair.clientData.send(0, filled(64 * 1024), SctpDataChunk.PPID_BINARY, true, pair.now);
+	}
+
+	/**
+		A peer that shuts down gracefully still gets what this end had
+		outstanding, before the answer goes.
+
+		RFC 4960 section 9.2: the shutdown waits on the data. The SHUTDOWN was
+		ignored altogether, so the peer retransmitted it until it gave up and
+		aborted, and whatever was still in flight to it went with the
+		association.
+	**/
+	public function testAShutdownWaitsForWhatIsStillOutstanding():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		var delivered:Int = 0;
+		link.serverData.onMessage = (_, _, _) -> delivered++;
+
+		var answered:Int = 0;
+		link.watchToServer = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload);
+
+			if (packet != null && packet.chunk(SctpPacket.CHUNK_SHUTDOWN_ACK) != null) {
+				answered++;
+			}
+		};
+
+		// Sent, and lost on the way.
+		link.cut = true;
+		link.clientData.send(0, filled(100), SctpDataChunk.PPID_BINARY, true, link.now);
+		link.runUntil(() -> false, 0.1);
+
+		// The peer asks to shut down, having had nothing from this end.
+		var cumulative = new ByteArray();
+		cumulative.endian = Endian.BIG_ENDIAN;
+		cumulative.writeInt((link.client.localTsn - 1) | 0);
+		cumulative.position = 0;
+		link.client.receive(link.server.packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN, 0, cumulative)]), link.now);
+
+		Assert.equals(SctpAssociationState.SHUTDOWN_RECEIVED, link.client.state);
+		Assert.equals(0, answered, "the SHUTDOWN was answered with a message still undelivered");
+		Assert.raises(() -> link.clientData.send(0, filled(1), SctpDataChunk.PPID_BINARY, true, link.now), ArgumentError);
+
+		// The path comes back; the message is resent, delivered and
+		// acknowledged, and only then does the answer go.
+		link.cut = false;
+		link.runUntil(() -> answered > 0, 30);
+
+		Assert.equals(1, delivered, "the message outstanding when the peer asked to shut down was never delivered");
+		Assert.equals(1, answered, "the SHUTDOWN was never answered once the message was acknowledged");
+		Assert.equals(SctpAssociationState.SHUTDOWN_ACK_SENT, link.client.state);
+	}
+
+	/**
+		One send does not put the whole window on the wire at once.
+
+		A megabyte went out in one call as 1,024 packets, because the only limit
+		was the peer's window, which was two megabytes. Whatever path lay
+		between could take it or drop it. Now the congestion window bounds what
+		is in flight and no more than `MAX_BURST` packets leave together.
+	**/
+	public function testOneSendDoesNotBurstTheWholeWindow():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		var packets:Int = 0;
+		link.watchToServer = _ -> packets++;
+
+		link.clientData.send(0, filled(1024 * 1024), SctpDataChunk.PPID_BINARY, true, link.now);
+
+		Assert.isTrue(packets > 0, "nothing was sent at all");
+		Assert.isTrue(packets <= SctpDataTransfer.MAX_BURST,
+			"one send put " + packets + " packets on the wire at once, where " + SctpDataTransfer.MAX_BURST + " is the most");
+		Assert.isTrue(link.clientData.bufferedAmount > 0, "a megabyte went out in one go");
+	}
+
+	/**
+		A path that can carry only so much still delivers a large message.
+
+		The bottleneck here drains two hundred packets a second and queues
+		sixteen; what arrives while the queue is full is lost, as it is at a
+		real one. A sender that put the peer's whole window on the wire at
+		once, and resent each fragment on a fixed timer, had most of every
+		burst dropped, resent it into the same queue, and gave fragments up
+		after ten tries, a megabyte never arrived.
+	**/
+	public function testACongestedPathStillDeliversALargeMessage():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		link.rate = 200;
+		link.queueLimit = 16;
+
+		var delivered:Int = -1;
+		link.serverData.onMessage = (_, payload, _) -> delivered = payload.length;
+
+		link.clientData.send(0, filled(1024 * 1024), SctpDataChunk.PPID_BINARY, true, link.now);
+		link.runUntil(() -> delivered >= 0, 60);
+
+		Assert.equals(1024 * 1024, delivered, "a megabyte through a congested path never arrived");
+		Assert.equals(SctpAssociationState.ESTABLISHED, link.client.state, "the association gave up on a path that was only slow");
+
+		// Not delivered by brute force: most of what went out got through.
+		Assert.isTrue(link.dropped * 4 < link.sentToServer,
+			link.dropped + " of " + link.sentToServer + " packets were dropped at the bottleneck");
+	}
+
+	/**
+		A loss that later packets reveal is repaired without waiting out a timeout.
+
+		The fragments sent after the lost one arrive, and the SACKs they draw
+		each say the lost one is still missing. Three of those and it goes
+		again, a round trip or so after it was lost. It used to wait for its own
+		fixed half-second timer whatever the path was saying.
+	**/
+	public function testALossLaterPacketsRevealIsRepairedWithoutATimeout():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		link.delay = 0.02;
+
+		var dropped:Bool = false;
+		link.dropToServer = function(payload:ByteArray):Bool {
+			// The second DATA packet, once.
+			if (!dropped && link.sentToServer == 2) {
+				dropped = true;
+				return true;
+			}
+
+			return false;
+		};
+
+		var delivered:Int = 0;
+		link.serverData.onMessage = (_, _, _) -> delivered++;
+
+		var start:Float = link.now;
+
+		for (i in 0...12) {
+			link.clientData.send(0, filled(SctpDataTransfer.MAX_PAYLOAD), SctpDataChunk.PPID_BINARY, true, link.now);
+		}
+
+		link.runUntil(() -> delivered == 12, 10);
+
+		Assert.isTrue(dropped, "the harness never dropped anything, so this proves nothing");
+		Assert.equals(12, delivered, "not everything arrived");
+		Assert.isTrue(link.now - start < SctpDataTransfer.MIN_RTO,
+			"the loss took " + (link.now - start) + " s to repair, which is a timeout rather than a fast retransmit");
+	}
+
+	/**
+		A slow path is not flooded with copies once its round trip is known.
+
+		The retransmission timer was a fixed half second, so on a path with a
+		round trip of a second and a half every fragment was sent three times
+		before its acknowledgement could possibly arrive, into whatever
+		congestion made the path slow. The timer is measured now, and once it
+		has been, nothing goes twice that the peer received.
+	**/
+	public function testASlowPathIsNotFloodedWithCopies():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		link.delay = 0.75;
+
+		var transmissions:Map<Int, Int> = new Map();
+		link.watchToServer = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload);
+
+			for (chunk in packet.chunks) {
+				var data = SctpDataChunk.fromChunk(chunk);
+
+				if (data != null) {
+					transmissions.set(data.tsn, (transmissions.exists(data.tsn) ? transmissions.get(data.tsn) : 0) + 1);
+				}
+			}
+		};
+
+		var delivered:Int = 0;
+		link.serverData.onMessage = (_, _, _) -> delivered++;
+
+		// Two exchanges first, to have a round trip to measure. The first
+		// fragment outlives the one second timeout a transfer starts with and
+		// is sent twice, and Karn's rule will not time a fragment sent twice;
+		// the second is what gets measured.
+		for (i in 0...2) {
+			link.clientData.send(0, filled(100), SctpDataChunk.PPID_BINARY, true, link.now);
+			link.runUntil(() -> delivered == i + 1 && link.clientData.outstandingCount() == 0, 30);
+		}
+
+		transmissions = new Map();
+
+		for (i in 0...6) {
+			link.clientData.send(0, filled(100), SctpDataChunk.PPID_BINARY, true, link.now);
+		}
+
+		link.runUntil(() -> delivered == 8 && link.clientData.outstandingCount() == 0, 60);
+
+		Assert.equals(8, delivered, "the messages never arrived");
+
+		var copies:Int = 0;
+		var tsns:Int = 0;
+
+		for (tsn in transmissions.keys()) {
+			tsns++;
+			copies += transmissions.get(tsn);
+		}
+
+		Assert.isTrue(tsns > 0, "nothing was watched");
+		Assert.equals(tsns, copies, "over a path with a 1.5 second round trip, " + tsns + " fragments went out " + copies
+			+ " times: the timeout is shorter than the round trip");
+	}
+
+	/**
+		A timeout that runs out doubles, rather than coming round again as soon.
+
+		RFC 6298 section 5.5. The old schedule grew by half a second a time, so
+		a path that had gone was resent into at an interval that barely moved.
+	**/
+	public function testATimeoutThatRunsOutDoubles():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		link.cut = true;
+
+		var sentAt:Array<Float> = [];
+		link.watchToServer = _ -> sentAt.push(link.now);
+
+		link.clientData.send(0, filled(100), SctpDataChunk.PPID_BINARY, true, link.now);
+		link.runUntil(() -> sentAt.length >= 5, 120);
+
+		Assert.isTrue(sentAt.length >= 5, "the fragment was sent " + sentAt.length + " times in two minutes");
+
+		if (sentAt.length >= 5) {
+			var first:Float = sentAt[2] - sentAt[1];
+			var second:Float = sentAt[3] - sentAt[2];
+			var third:Float = sentAt[4] - sentAt[3];
+
+			Assert.floatEquals(first * 2, second, 0.05, "the timeout went from " + first + " to " + second + " rather than doubling");
+			Assert.floatEquals(second * 2, third, 0.05, "the timeout went from " + second + " to " + third + " rather than doubling");
+		}
+
+		// And the window it may send into after a timeout is one packet.
+		Assert.equals(SctpDataTransfer.MTU, link.clientData.congestionWindow);
+	}
+
+	/**
+		The window grows while the path delivers, and halves when it loses.
+
+		Slow start: every acknowledgement of a full window opens it further,
+		so a transfer that starts cautious reaches the path's capacity in a
+		few round trips. A loss says where that capacity was, and the window
+		goes to half of what it had grown to.
+	**/
+	public function testTheWindowGrowsWhileThePathDeliversAndHalvesOnALoss():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		link.delay = 0.01;
+
+		var delivered:Int = 0;
+		link.serverData.onMessage = (_, _, _) -> delivered++;
+
+		link.clientData.send(0, filled(256 * 1024), SctpDataChunk.PPID_BINARY, true, link.now);
+		link.runUntil(() -> delivered == 1, 30);
+
+		var grown:Int = link.clientData.congestionWindow;
+		Assert.isTrue(grown > SctpDataTransfer.INITIAL_WINDOW,
+			"the window never grew past where it started, at " + grown + " bytes, over a path that lost nothing");
+
+		// One loss in the next transfer.
+		var dropped:Bool = false;
+		var seen:Int = 0;
+		link.dropToServer = function(_):Bool {
+			seen++;
+
+			if (!dropped && seen == 6) {
+				dropped = true;
+				return true;
+			}
+
+			return false;
+		};
+
+		link.clientData.send(0, filled(64 * 1024), SctpDataChunk.PPID_BINARY, true, link.now);
+		link.runUntil(() -> delivered == 2, 30);
+
+		Assert.isTrue(dropped, "nothing was lost, so this proves nothing");
+		Assert.equals(2, delivered);
+		Assert.isTrue(link.clientData.congestionWindow < grown,
+			"a loss left the window at " + link.clientData.congestionWindow + " from " + grown);
+	}
+
+	/**
+		A SACK with thousands of gap blocks costs one pass, not one per block.
+
+		`__onSack` walked every outstanding fragment once per gap block and
+		then took each acknowledged one out of the middle of an array: 4,000
+		blocks over 8,192 outstanding fragments measured 60 ms for a single
+		SACK, and the peer chooses both numbers. One pass costs a few
+		thousand steps, which is well under a millisecond compiled; one pass
+		per block costs tens of millions. Best of three fresh pairs, so a
+		collection landing in one measurement does not decide the result.
+	**/
+	public function testASackWithManyGapBlocksIsReadInOnePass():Void {
+		if (unsupported()) return;
+
+		var outstanding:Int = 8192;
+		var blocks:Int = 4000;
+
+		// The interpreter runs everything a hundred times slower, and one pass
+		// per block would still be a thousand times past this there.
+		var allowed:Float = #if interp 1.0 #else 0.01 #end;
+		var best:Float = Math.POSITIVE_INFINITY;
+
+		for (_ in 0...3) {
+			var pair = outstandingPair(outstanding);
+			Assert.equals(outstanding, pair.clientData.outstandingCount(), "the fragments to acknowledge never went out");
+
+			var sack = gapSack(pair, blocks);
+			var start:Float = haxe.Timer.stamp();
+			pair.sackToClient(sack);
+			var elapsed:Float = haxe.Timer.stamp() - start;
+
+			if (elapsed < best) {
+				best = elapsed;
+			}
+
+			Assert.equals(blocks, gapAcknowledged(pair.clientData), "the SACK did not acknowledge the fragments its blocks named");
+		}
+
+		Assert.isTrue(best < allowed,
+			"a SACK with " + blocks + " gap blocks over " + outstanding + " fragments took " + Std.int(best * 1e6) + " us");
+	}
+
+	/** A pair with `count` one-byte messages outstanding from the client, none acknowledged. **/
+	private function outstandingPair(count:Int):Pair {
+		var pair = Pair.open();
+		pair.client.onSend = _ -> {};
+
+		// Shut, so the messages queue behind the first and go out bundled once
+		// it opens, a packet per message would put thousands of checksums in
+		// the setup of a test about something else.
+		@:privateAccess pair.clientData.__cwnd = 0;
+
+		for (_ in 0...count) {
+			pair.clientData.send(0, filled(1), SctpDataChunk.PPID_BINARY, false, pair.now);
+		}
+
+		@:privateAccess pair.clientData.__cwnd = 0x3FFFFFFF;
+		@:privateAccess pair.clientData.__peerWindow = 0x3FFFFFFF;
+
+		while (pair.clientData.bufferedAmount > 0) {
+			pair.clientData.poll(pair.now);
+		}
+
+		return pair;
+	}
+
+	/** A SACK acknowledging nothing cumulatively, and every second fragment in `blocks` islands of one. **/
+	private function gapSack(pair:Pair, blocks:Int):SctpChunk {
+		var first:Int = @:privateAccess pair.clientData.__unacknowledged[0].data.tsn;
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeInt((first - 1) | 0);
+		value.writeInt(0x3FFFFFFF);
+		value.writeShort(blocks);
+		value.writeShort(0);
+
+		for (g in 0...blocks) {
+			value.writeShort(2 * g + 2);
+			value.writeShort(2 * g + 2);
+		}
+
+		value.position = 0;
+		return new SctpChunk(SctpPacket.CHUNK_SACK, 0, value);
+	}
+
+	private function gapAcknowledged(transfer:SctpDataTransfer):Int {
+		var count:Int = 0;
+		var all = @:privateAccess transfer.__unacknowledged;
+
+		for (i in (@:privateAccess transfer.__outstandingAt)...all.length) {
+			if (all[i].acked) {
+				count++;
+			}
+		}
+
+		return count;
+	}
+
 
 	public function testEverythingIsAcknowledgedInTheEnd():Void {
 		if (unsupported()) return;
@@ -682,7 +1644,7 @@ class SctpDataTransferTest extends utest.Test {
 
 		// Room for four fragments, and no more.
 		var room:Int = 4 * SctpDataTransfer.MAX_PAYLOAD;
-		@:privateAccess transfer.__onSack(sack(@:privateAccess transfer.__nextTsn - 1, room));
+		pair.sackToClient(sack(@:privateAccess transfer.__nextTsn - 1, room));
 		chunks = 0;
 
 		var message:Int = 64 * SctpDataTransfer.MAX_PAYLOAD;
@@ -693,13 +1655,7 @@ class SctpDataTransferTest extends utest.Test {
 
 		// What the window is compared against has to be what is really out
 		// there, and it is carried rather than summed, so it can drift.
-		var outstanding:Int = 0;
-
-		for (sent in (@:privateAccess transfer.__unacknowledged)) {
-			outstanding += sent.data.payload.length;
-		}
-
-		Assert.equals(outstanding, @:privateAccess transfer.__inFlight);
+		Assert.equals(inFlight(transfer), @:privateAccess transfer.__inFlight);
 	}
 
 	/**
@@ -712,8 +1668,10 @@ class SctpDataTransferTest extends utest.Test {
 		prevents. RFC 4960 allows the one probe for exactly that reason.
 
 		The second half is the one worth watching: the acknowledgement of the
-		probe carries the reopened window, and everything queued behind it
-		goes at once.
+		probe carries the reopened window, and what was queued behind it moves
+		at once, a few packets at a time rather than the whole queue in one
+		burst, since the path it is about to cross has not been heard from
+		for as long as the window was shut.
 	**/
 	public function testAClosedWindowGetsAProbeAndThenRecovers():Void {
 		if (unsupported()) return;
@@ -721,10 +1679,11 @@ class SctpDataTransferTest extends utest.Test {
 		var pair = Pair.open();
 		var transfer = pair.clientData;
 		var chunks:Int = 0;
-		pair.client.onSend = _ -> chunks++;
+		var watching:ByteArray->Void = _ -> chunks++;
+		pair.watchClient(watching);
 
 		var first:Int = @:privateAccess transfer.__nextTsn;
-		@:privateAccess transfer.__onSack(sack((first - 1) | 0, 0));
+		pair.sackToClient(sack((first - 1) | 0, 0));
 		chunks = 0;
 
 		var pieces:Int = 8;
@@ -734,9 +1693,14 @@ class SctpDataTransferTest extends utest.Test {
 		Assert.equals((pieces - 1) * SctpDataTransfer.MAX_PAYLOAD, transfer.bufferedAmount);
 
 		// The peer takes the probe and says it has room again.
-		@:privateAccess transfer.__onSack(sack(first, 1024 * 1024));
+		pair.sackToClient(sack(first, 1024 * 1024));
 
-		Assert.equals(pieces, chunks, "the queue did not move when the window reopened");
+		Assert.isTrue(chunks > 1, "the queue did not move when the window reopened");
+		Assert.isTrue(chunks <= 1 + SctpDataTransfer.MAX_BURST,
+			"the reopened window was spent in one burst of " + (chunks - 1) + " packets");
+
+		// And everything goes, as the acknowledgements come back.
+		pair.run(() -> transfer.bufferedAmount == 0 && transfer.outstandingCount() == 0);
 		Assert.equals(0, transfer.bufferedAmount, "something stayed queued against a window with room for it");
 	}
 
@@ -921,6 +1885,9 @@ private class Pair {
 	/** Deliver the next two packets bound for the server back to front. **/
 	public var reorderNextToServer:Bool = false;
 
+	/** Drop everything bound for the server, for as long as this is set. **/
+	public var cutToServer:Bool = false;
+
 	private var toServer:Array<ByteArray> = [];
 	private var toClient:Array<ByteArray> = [];
 
@@ -952,11 +1919,37 @@ private class Pair {
 
 	private function new() {}
 
+	/** One hop, and a quarter of a second. **/
+	public function step():Void {
+		deliver();
+	}
+
+	/**
+		Hands the client a SACK as though the server had sent it, the way a
+		real one arrives: in a packet, read to the end, so whatever it makes
+		room for is sent before this returns.
+	**/
+	public function sackToClient(chunk:SctpChunk):Void {
+		client.receive(server.packetFor([chunk]), now);
+	}
+
+	/** Sees every packet the client sends, which still goes on to the server. **/
+	public function watchClient(watch:ByteArray->Void):Void {
+		client.onSend = function(payload:ByteArray):Void {
+			watch(payload);
+			toServer.push(payload);
+		};
+	}
+
 	private function deliver():Void {
 		var outbound = toServer;
 		var inbound = toClient;
 		toServer = [];
 		toClient = [];
+
+		if (cutToServer) {
+			outbound = [];
+		}
 
 		if (dropNextToServer > 0 && outbound.length > 0) {
 			var drop:Int = dropNextToServer < outbound.length ? dropNextToServer : outbound.length;
@@ -1002,5 +1995,176 @@ private class Pair {
 		}
 
 		return done();
+	}
+}
+
+/**
+	Two established associations and a path between them that behaves like
+	one: it takes time to cross, it has a bottleneck that drains at a fixed
+	rate and queues only so much, and it can be told to lose a particular
+	packet or everything.
+
+	Congestion control is a response to a path, and a wire that delivers
+	everything instantly gives it nothing to respond to. The clock advances in
+	small steps, polling both ends each step the way a runtime tick would.
+**/
+private class Link {
+	public var client:SctpAssociation;
+	public var server:SctpAssociation;
+	public var clientData:SctpDataTransfer;
+	public var serverData:SctpDataTransfer;
+	public var now:Float = 0;
+
+	/** One way, in seconds. **/
+	public var delay:Float = 0.02;
+
+	/** How finely the clock moves. **/
+	public var step:Float = 0.002;
+
+	/** Packets a second the bottleneck toward the server drains, or 0 for no bottleneck. **/
+	public var rate:Float = 0;
+
+	/** Packets the bottleneck holds waiting; one arriving while it is full is lost. **/
+	public var queueLimit:Int = 1000000;
+
+	/** Lose everything toward the server. **/
+	public var cut:Bool = false;
+
+	/** Decides whether to lose a packet toward the server, after `sentToServer` counts it. **/
+	public var dropToServer:ByteArray->Bool = null;
+
+	/** Sees every packet the client sends, lost or not. **/
+	public var watchToServer:ByteArray->Void = null;
+
+	public var sentToServer:Int = 0;
+	public var dropped:Int = 0;
+
+	private var toServer:Array<InTransit> = [];
+	private var toClient:Array<InTransit> = [];
+
+	/** When the bottleneck finishes with the last packet it accepted. **/
+	private var busyUntil:Float = 0;
+
+	public static function open():Link {
+		var link = new Link();
+		link.client = new SctpAssociation();
+		link.server = new SctpAssociation();
+
+		// The handshake crosses instantly; the path only matters for data.
+		var handshake:Array<ByteArray> = [];
+		var answers:Array<ByteArray> = [];
+		link.client.onSend = payload -> handshake.push(payload);
+		link.server.onSend = payload -> answers.push(payload);
+
+		link.server.listen();
+		link.client.associate(0);
+
+		for (_ in 0...20) {
+			var outbound = handshake;
+			var inbound = answers;
+			handshake = [];
+			answers = [];
+
+			for (payload in outbound) {
+				link.server.receive(payload, 0);
+			}
+
+			for (payload in inbound) {
+				link.client.receive(payload, 0);
+			}
+		}
+
+		link.client.onSend = payload -> link.__sendToServer(payload);
+		link.server.onSend = payload -> link.toClient.push(new InTransit(link.now + link.delay, payload));
+
+		link.clientData = new SctpDataTransfer(link.client);
+		link.serverData = new SctpDataTransfer(link.server);
+		return link;
+	}
+
+	private function new() {}
+
+	private function __sendToServer(payload:ByteArray):Void {
+		sentToServer++;
+
+		if (watchToServer != null) {
+			watchToServer(payload);
+		}
+
+		if (cut || (dropToServer != null && dropToServer(payload))) {
+			dropped++;
+			return;
+		}
+
+		var arrives:Float = now + delay;
+
+		if (rate > 0) {
+			var start:Float = busyUntil > now ? busyUntil : now;
+			var waiting:Float = (start - now) * rate;
+
+			if (waiting >= queueLimit) {
+				dropped++;
+				return;
+			}
+
+			busyUntil = start + 1 / rate;
+			arrives = busyUntil + delay;
+		}
+
+		toServer.push(new InTransit(arrives, payload));
+	}
+
+	/** Moves the clock one step: delivers what has arrived, then polls both ends. **/
+	public function tick():Void {
+		now += step;
+
+		var due = toServer;
+		toServer = [];
+
+		for (packet in due) {
+			if (packet.arrives <= now) {
+				server.receive(packet.payload, now);
+			} else {
+				toServer.push(packet);
+			}
+		}
+
+		due = toClient;
+		toClient = [];
+
+		for (packet in due) {
+			if (packet.arrives <= now) {
+				client.receive(packet.payload, now);
+			} else {
+				toClient.push(packet);
+			}
+		}
+
+		clientData.poll(now);
+		serverData.poll(now);
+	}
+
+	public function runUntil(done:Void->Bool, seconds:Float):Bool {
+		var until:Float = now + seconds;
+
+		while (now < until) {
+			if (done()) {
+				return true;
+			}
+
+			tick();
+		}
+
+		return done();
+	}
+}
+
+private class InTransit {
+	public var arrives:Float;
+	public var payload:ByteArray;
+
+	public function new(arrives:Float, payload:ByteArray) {
+		this.arrives = arrives;
+		this.payload = payload;
 	}
 }

@@ -63,6 +63,9 @@ class SctpPacket {
 	public static inline var CHUNK_COOKIE_ACK:Int = 11;
 	public static inline var CHUNK_SHUTDOWN_COMPLETE:Int = 14;
 
+	/** RFC 3758: move the cumulative acknowledgement past what the sender abandoned. **/
+	public static inline var CHUNK_FORWARD_TSN:Int = 192;
+
 	/** Sender's port. Both ends of a data channel use 5000 by convention. **/
 	public var sourcePort(default, null):Int;
 

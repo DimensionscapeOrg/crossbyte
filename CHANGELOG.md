@@ -118,6 +118,59 @@ All notable changes to CrossByte will be documented in this file.
   used to start inside `make()`, so anything done to the returned runtime
   raced its first frame, and an INIT listener added afterwards could miss
   INIT.
+- ICE restart for WebRTC connections. A browser whose network changes
+  restarts ICE, new credentials, in a new offer, and they were dropped:
+  an agent that had left NEW ignored `start`, so every check afterwards was
+  signed with credentials the peer had discarded, and consent ran out half a
+  minute later, taking the connection and its channels with it. Now
+  `connect` given a description with new credentials restarts this side,
+  and `description()` is the answer to send back; a new agent checks with
+  the new credentials while the session carries on over the old path, and
+  takes it over once it has one of its own. DTLS and SCTP carry on
+  untouched. `PeerConnection.restartIce()` starts one from this side, and
+  `iceRestarting` says one is under way. The side offering a restart
+  controls it, as a browser takes it; an answer to one states this side's
+  DTLS role, since a browser refuses `actpass` in an answer; and a
+  description with another certificate is refused as a new session.
+  Checked against Chrome, started from either side, on a socket of its own
+  and on a `PeerConnectionHost`.
+- `PeerConnectionHost`: many WebRTC peer connections on one UDP port, driven
+  by one tick. A `PeerConnection` binds a socket of its own, and with it a
+  port, that socket's buffers and a tick listener, so a server holding ten
+  thousand browser peers held ten thousand of each and had to open a port
+  range as wide as its peak. `host.createConnection(isOfferer)` makes a
+  connection that shares the host's socket instead and is otherwise used
+  the same way. The host routes a browser's checks by the ufrag they name,
+  the answers to a connection's own checks by their transaction, and DTLS
+  by the address that connection proved a path to, never by one it only
+  sent to, so a peer listing another's address as its own cannot take that
+  peer's traffic. `addLocalCandidate` gives every connection the host's
+  public address. A hosted connection gathers no reflexive or relayed
+  address of its own, that socket's mapping being every connection's. An
+  idle tick measured natively went from about 120 ns a connection to about
+  8, with 300 connections. Checked against Chrome in both directions. The
+  socket reads at most 64 datagrams each time the runtime services it,
+  which the DEFAULT main loop does once a tick, so a busy host wants the
+  POLL main loop.
+- Partially reliable WebRTC data channels, RFC 3758 with RFC 8832's channel
+  types: what a game's state channel is, since a position that arrives late
+  is worth less than the next one. `PeerConnection.createDataChannel` takes
+  `maxRetransmits` or `maxPacketLifeTime`, as a browser's does, and
+  `DataChannel` reports both. A message past its limit is given up on and a
+  FORWARD TSN moves the peer past it, rather than everything behind it on
+  the stream waiting; one whose time runs out before it is sent is dropped
+  unsent. Until now a browser's `{ordered: false, maxRetransmits: 0}`
+  channel was quietly made reliable: the association never said it
+  understood FORWARD TSN, so the browser could give up on nothing it sent
+  here, and DCEP's channel type and reliability parameter were read and
+  dropped, so what this end sent back was retransmitted like everything
+  else. Both ends now say so in INIT and INIT ACK, the terms are honoured
+  in both directions, and a peer's FORWARD TSN is followed: an ordered
+  stream skips what was given up on, and part of a message given up on is
+  dropped. A peer that does not say it understands FORWARD TSN gets
+  reliable channels, as RFC 8831 has it. Checked against Chrome both ways:
+  each gives up on a message the other lost, and the other delivers the
+  rest in order.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -1254,6 +1307,157 @@ All notable changes to CrossByte will be documented in this file.
   new `UncaughtErrorEvent.UNCAUGHT_ERROR`, to report it elsewhere or to
   decide it is fatal. Callbacks posted to the runtime were already contained
   and are now reported the same way.
+- ICE, STUN and TURN read an IPv4 address strictly. Its octets were read
+  with `Std.parseInt` and written modulo 256, so a peer's candidate of
+  `1.2.3.999` passed as numeric, was dialled through a resolver that took it
+  for a name, a blocking lookup on the event loop for every check, and
+  had a TURN relay permit 1.2.3.231; `010.1.1.1` was 10.1.1.1 here and
+  8.1.1.1 to the socket; and on the jvm an octet past 32 bits threw.
+  `IceAgent.addRemoteCandidate` now drops an IPv4 address that is not four
+  decimal octets up to 255 without leading zeros; `TurnClient.permit`,
+  `bindChannel` and `sendTo` refuse one with `ArgumentError`, keeping
+  nothing for `poll` to renew; and an ICE check from an IPv6 address is
+  answered without XOR-MAPPED-ADDRESS, which is written for IPv4 alone and
+  named 0.0.0.0, teaching the peer a local candidate that does not exist.
+- A WebRTC peer that changes network is followed. When the controlling
+  peer, a browser whose Wi-Fi went, say, nominated the pair from its new
+  address, this end answered and kept the pair it had, sending to an address
+  that no longer answered until consent failed 35 seconds later; and a
+  candidate trickled after connecting was never paired or checked. Now a
+  later nomination switches `IceAgent.selectedPair` (reported by the new
+  `onSelectedPairChanged`, with consent restarting on the new pair) and
+  `PeerConnection` sends the session there; pairs created or triggered once
+  connected are checked at the pacing interval, and not at all when there
+  are none; and a peer asking from a pair that failed earlier has that pair
+  checked afresh (RFC 8445 section 7.3.1.4).
+- An idle WebRTC peer no longer makes native calls every tick. Its DTLS
+  session was stepped on every tick, step, pending and available, three
+  native calls finding nothing, although nothing in an established session
+  runs on a timer: records are read as they arrive and written as they are
+  sent. `DtlsTransport.poll` now does nothing once the session is up, and
+  `receive` steps it. Measured natively, polling an idle established
+  transport went from 47 ns to under 1 ns.
+- WebRTC SDP and trickle ICE. An offer listing a second fingerprint under
+  another hash was refused, because each `a=fingerprint` line overwrote the
+  last and a hash this cannot check wrote nothing; the first sha-256 one is
+  now kept. An answer always said `a=mid:0`, which a browser whose offer said
+  `a=mid:data` cannot match; `PeerDescription.mid` carries the offer's into
+  the answer `PeerConnection.description()` writes. Every document claimed
+  `a=end-of-candidates`, telling the peer to stop listening for candidates
+  still being gathered; it is now written only when
+  `PeerDescription.endOfCandidates` is true, and read back. Trickle ICE was
+  the application's to build: `SessionDescription.readCandidate` and
+  `writeCandidate` are public (with or without `a=`, `raddr`/`rport`
+  included, `0.0.0.0` port 0 for a reflexive one with none given, and a
+  second component or an out-of-range priority or port skipped, parsed with
+  `IntParse`), `PeerConnection.onLocalCandidate` reports each candidate as it
+  is gained, and `PeerConnection.addRemoteCandidate` takes one the peer
+  trickled, before or after `connect`, saying whether it was usable.
+  `PeerConnection` also has a `userData` slot, as `DataChannel` does.
+- A data channel message larger than the peer takes is refused instead of
+  vanishing. The SDP promised `a=max-message-size:2097152`, the receive
+  window, while the receiver gives up on any message past 1 MB, so a
+  message in between had every fragment acknowledged and was then dropped
+  whole: the sender saw success and nothing arrived. And the peer's own
+  limit was never read, so nothing stopped this end sending past it.
+  Descriptions now advertise the 1 MB the receiver takes;
+  `SessionDescription.fromSdp` reads the peer's (RFC 8841: 64 KB when the
+  attribute is absent, 0 for any size) into the new
+  `PeerDescription.maxMessageSize`; `PeerConnection.maxMessageSize` reports
+  it; and a channel's `send` or `sendBytes` past it throws `ArgumentError`
+  before anything is sent.
+- WebRTC peers on different runtimes no longer share an unguarded DTLS
+  session table. Every native DTLS session in the process lived in one map,
+  named by one counter, and peers on two child runtimes inserted into,
+  erased from and searched it at the same time: a lookup landing mid-
+  rebalance found a live session gone (a stress test with four threads
+  failed three runs in three), and two sessions opened together could be
+  given the same handle. The table, the counter and the first seeding of
+  the shared RNG are now guarded by a mutex held for the map operation
+  alone, which costs about 9 ns per native DTLS call uncontended.
+- A WebRTC connection that cannot finish coming up now gives up. Only some
+  of its phases had an end: as the DTLS server it waited for a ClientHello
+  with no timer running, the SCTP listener waited for an INIT forever, a
+  DTLS client took 123 seconds to fail, and consent was checked only once
+  everything was up, so a browser tab closed just after ICE left a
+  socket, a tick listener and a TLS session held for the life of the
+  process, with `ready` pending. `PeerConnection.readyTimeout` (30 seconds
+  from `connect`, read at every poll) now fails `ready` with the phase that
+  did not finish; consent lost at any point after the path was found ends
+  the connection; and a DTLS handshake resends at 1, 2, 4 and 8 seconds and
+  fails at 15, with "The DTLS handshake timed out".
+- A WebRTC peer can no longer grow the SCTP receiver without bound. Any TSN
+  up to 2^31 past the cumulative acknowledgement was taken and remembered,
+  so a peer that never sent the next number and kept sending the ones after
+  it, as unordered one-byte messages, delivered at once, so the window
+  never moved, made the receiver hold 400,000 entries and 24 MB in the
+  audit. A TSN more than 16,384 past the cumulative acknowledgement is now
+  dropped unread, and with the advertised window shut nothing past the
+  highest TSN already received is taken, while one filling a hole below it
+  still is (RFC 4960 section 6.2); both are answered with an immediate SACK.
+  What has arrived past a hole is kept as runs, which are the SACK's gap
+  blocks, so building a SACK no longer probes 511 offsets every time, holes
+  or none; a SACK reports at most 128 gap blocks, the lowest first.
+- SCTP now answers a peer's HEARTBEAT and completes a peer's SHUTDOWN. Only
+  DATA and SACK reached anything: HEARTBEAT ACK was defined and never sent,
+  so a peer that probes idle paths, a browser's stack does, counted every
+  probe as a failure and could give up on a channel that only received after
+  a few minutes, and a graceful SHUTDOWN was ignored until the peer gave up
+  and aborted. A HEARTBEAT is now answered at once with its contents copied
+  back (RFC 4960 section 8.3). A SHUTDOWN stops new sends, waits for what
+  this end still has outstanding to be delivered and acknowledged, is
+  answered with SHUTDOWN ACK (resent if lost, given up after eight tries),
+  and on SHUTDOWN COMPLETE the association ends and `PeerConnection` closes
+  with "The peer shut the association down."
+- WebRTC data channels now have congestion control, and no longer flood a
+  path. One `send` put everything the peer's window allowed on the wire at
+  once, a megabyte was 1,024 packets in one call, and each fragment was
+  resent on its own fixed half-second timer, so a slow path got every
+  fragment several times before its acknowledgement could arrive, and a
+  congested one had most of each burst dropped and resent into the same
+  queue: through a bottleneck taking 64 packets at a time a megabyte never
+  arrived. SCTP now keeps a congestion window (RFC 4960 section 7): ten
+  packets to start, doubling each round trip while everything arrives,
+  halved when three SACKs report a fragment missing, which is then sent
+  again at once rather than after a timeout, and down to one packet when
+  a timeout runs out. The timeout is measured from round trips (RFC 6298),
+  between 0.4 and 10 seconds, and doubles on each expiry. No more than four
+  packets leave at any one opportunity (Max.Burst), small messages waiting
+  together share a packet, and a SACK is sent for every second packet of
+  data, or at once on a gap or a duplicate, rather than once a tick. The
+  association ends after ten timeouts in a row with nothing acknowledged.
+  A SACK is now read in one pass: 4,000 gap blocks over 8,192 outstanding
+  fragments cost 60 ms. Measured natively, a 100-byte message round trip
+  went from 2.25 to 1.86 us, a 1 KB one from 4.05 to 2.99 us, and an idle
+  transfer's poll from 18 to 4 ns.
+- A data channel fragment the peer never acknowledges ends the SCTP
+  association instead of wedging it. After its tenth attempt the fragment
+  was dropped with nothing sent to say so, which left an ordered stream a
+  hole no retransmission would fill: everything after it on that stream
+  stalled for good, later fragments were resent up to eleven times, and
+  the association went on reporting itself open. Past the limit the peer
+  is unreachable, as RFC 4960 section 8.1 has it, so the association now
+  ends with an ABORT, and `PeerConnection` closes with a reason through
+  `onClose` and `closed`.
+- A WebRTC peer that goes away is reported, and closing tells the peer.
+  `PeerConnection` had no close event: a peer's SCTP ABORT closed the
+  association below it without a word, a DTLS close_notify or fatal alert
+  was never read, and the one thing that noticed was ICE consent, thirty
+  seconds later, without an event either, so channels on a connection
+  the peer had closed went on reporting `open`, and the first sign was a
+  `send` that threw. `close()` sent nothing, so a browser's channels stayed
+  open until its own consent ran out, and it left this end's channels open
+  with `onClose` never run. `PeerConnection` now has `onClose(reason)`, a
+  `closed` future and `closeReason`, fed by an ABORT, a close_notify or
+  fatal alert, lost consent, the loss of the relay a path ran through, and
+  `close()` itself. Every channel is closed first and reports `onClose`,
+  and one still waiting for its acknowledgement settles `opened`.
+  `close()` sends the peer an ABORT and then a close_notify; a path whose
+  consent expired, or whose relay went, is closed without them. An ABORT
+  is now accepted only with this association's tag, or the peer's with the
+  T bit set, and a reason the peer gives is passed on.
+  `DtlsTransport.onClose`, `DtlsTransport.close(notifyPeer)` and
+  `TurnClient.onLost` are the pieces underneath.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the

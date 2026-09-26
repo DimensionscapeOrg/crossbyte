@@ -151,8 +151,21 @@ class IceAgent {
 
 	public var state(default, null):IceAgentState = NEW;
 
-	/** The pair traffic should use, once there is one. **/
+	/**
+		The pair traffic should use, once there is one.
+
+		It can change after `connected` resolves: the controlling peer may
+		nominate another pair, and this agent follows. `onSelectedPairChanged`
+		says when.
+	**/
 	public var selectedPair(default, null):Null<IceCandidatePair>;
+
+	/**
+		Called when the selected pair changes after the first: the controlling
+		peer nominated another, which traffic should now use. The first is
+		reported by `connected`.
+	**/
+	public dynamic function onSelectedPairChanged(pair:IceCandidatePair):Void {}
 
 	/**
 		Resolves with the nominated pair, or fails when every pair has.
@@ -194,6 +207,9 @@ class IceAgent {
 	@:noCompletion private var __valid:Array<IceCandidatePair> = [];
 	@:noCompletion private var __nextCheckAt:Float = 0;
 	@:noCompletion private var __nominating:Bool = false;
+
+	/** Whether any pair created or triggered since connecting may still need checking. **/
+	@:noCompletion private var __lateChecks:Bool = false;
 
 	/**
 		@param controlling Whether this peer nominates. The two peers must pass
@@ -243,8 +259,13 @@ class IceAgent {
 		}
 	}
 
-	/** Adds an address the other peer says it can be reached at. **/
-	public function addRemoteCandidate(candidate:IceCandidate):Void {
+	/**
+		Adds an address the other peer says it can be reached at.
+
+		@return Whether it was taken. A name rather than a numeric address, one
+		already known, and one past `MAX_REMOTE_CANDIDATES` are dropped.
+	**/
+	public function addRemoteCandidate(candidate:IceCandidate):Bool {
 		if (candidate == null) {
 			throw new ArgumentError("A candidate is required.");
 		}
@@ -275,22 +296,32 @@ class IceAgent {
 		// when a peer supplies one on purpose: blocking DNS on this loop,
 		// chosen by someone no certificate has authenticated yet.
 		if (!IPv6.isNumericAddress(candidate.address)) {
-			return;
+			return false;
+		}
+
+		// And an IPv4 address only as one the socket reads the way this does.
+		// Four runs of digits passed as numeric, so 1.2.3.999 did: hxcpp's
+		// resolver finds no literal in it and looks it up as a name, the same
+		// block on this loop as above, per check; and a relay was asked to
+		// permit whatever the octets wrapped to.
+		if (!candidate.isIPv6() && StunMessage.ipv4Octets(candidate.address) == null) {
+			return false;
 		}
 
 		if (__known(__remotes, candidate)) {
-			return;
+			return false;
 		}
 
 		// Dropped rather than refused: these arrive from the peer's
 		// description, and one over-generous peer is not a reason to throw
 		// into the application that relayed it.
 		if (__remotes.length >= MAX_REMOTE_CANDIDATES) {
-			return;
+			return false;
 		}
 
 		__remotes.push(candidate);
 		__rebuild();
+		return true;
 	}
 
 	/**
@@ -326,6 +357,16 @@ class IceAgent {
 	public function poll(now:Float):Void {
 		if (state == CONNECTED) {
 			__pollConsent(now);
+
+			// Pairs the peer has given this agent reason to check since the
+			// path was chosen: a candidate it trickled late, or an address it
+			// asked from. A connected agent used to check nothing at all, so a
+			// peer that moved was answered and never followed. Only those
+			// pairs, at the pacing interval, and nothing while there are none.
+			if (state == CONNECTED && __lateChecks && now >= __nextCheckAt) {
+				__pollLateChecks(now);
+			}
+
 			return;
 		}
 
@@ -516,11 +557,14 @@ class IceAgent {
 			return;
 		}
 
-		var response = new StunMessage(StunMessage.BINDING_SUCCESS, request.transactionId, [
-			// Where this peer sees the sender, which is how the sender learns
-			// about a mapping its own NAT made and it could not have known.
-			StunMessage.xorMappedAddress(fromAddress, fromPort)
-		]);
+		// Where this peer sees the sender, which is how the sender learns about
+		// a mapping its own NAT made and it could not have known. IPv4 alone:
+		// an IPv6 source was split on dots and read as numbers, so the answer
+		// named an IPv4 address that does not exist and the sender learned it
+		// as a reflexive view of itself. Without the attribute the check still
+		// succeeds at both ends, and nothing is learned that is not so.
+		var response = new StunMessage(StunMessage.BINDING_SUCCESS, request.transactionId,
+			StunMessage.ipv4Octets(fromAddress) != null ? [StunMessage.xorMappedAddress(fromAddress, fromPort)] : []);
 
 		__sendVia(__arrivedVia, response.encodeSigned(localCredentials.password), fromAddress, fromPort);
 
@@ -538,8 +582,21 @@ class IceAgent {
 
 		// A triggered check. The peer has proved it is there and is asking; the
 		// mapping in this direction is open now and may not be later, so this
-		// pair goes to the front rather than waiting its turn.
-		if (check.state == WAITING || check.state == FROZEN) {
+		// pair goes to the front rather than waiting its turn. A pair that
+		// failed before is tried afresh (RFC 8445 section 7.3.1.4): the peer
+		// asking from it is new evidence, a network that came back, or a
+		// NAT that has opened.
+		if (check.state == WAITING || check.state == FROZEN || check.state == FAILED) {
+			if (check.state == FAILED) {
+				check.transaction = __freshTransaction();
+				check.attempts = 0;
+			}
+
+			if (state == CONNECTED) {
+				check.late = true;
+				__lateChecks = true;
+			}
+
 			__transmit(check, now);
 		}
 
@@ -772,7 +829,11 @@ class IceAgent {
 	// ------------------------------------------------------------------
 
 	@:noCompletion private function __rebuild():Void {
-		if (state != CHECKING) {
+		// And once connected: a candidate trickled after the path was found is
+		// somewhere the peer may yet be reached, and pairing it is what lets a
+		// nomination from there be followed. It was dropped into the list and
+		// never paired.
+		if (state != CHECKING && state != CONNECTED) {
 			return;
 		}
 
@@ -792,7 +853,53 @@ class IceAgent {
 	@:noCompletion private function __add(pair:IceCandidatePair):IceCheck {
 		var check = new IceCheck(pair, __freshTransaction());
 		__checks.push(check);
+
+		if (state == CONNECTED) {
+			check.late = true;
+			__lateChecks = true;
+		}
+
 		return check;
+	}
+
+	/**
+		Checks the pairs that arrived once the path was chosen: retransmits
+		those in progress, gives up on those that have run out, and starts one
+		that is waiting, one per pacing interval, as while checking.
+	**/
+	@:noCompletion private function __pollLateChecks(now:Float):Void {
+		var active:Bool = false;
+		var started:Bool = false;
+
+		for (check in __checks) {
+			if (!check.late) {
+				continue;
+			}
+
+			switch (check.state) {
+				case IN_PROGRESS:
+					active = true;
+
+					if (now >= check.nextAttemptAt) {
+						if (check.attempts >= MAX_ATTEMPTS) {
+							check.state = FAILED;
+						} else {
+							__transmit(check, now);
+						}
+					}
+				case WAITING, FROZEN:
+					active = true;
+
+					if (!started) {
+						started = true;
+						__transmit(check, now);
+					}
+				default:
+			}
+		}
+
+		__nextCheckAt = now + PACING;
+		__lateChecks = active;
 	}
 
 	@:noCompletion private function __nextWaiting():Null<IceCheck> {
@@ -976,7 +1083,29 @@ class IceAgent {
 	}
 
 	@:noCompletion private function __select(pair:IceCandidatePair, now:Float):Void {
-		if (state == CONNECTED || state == CLOSED) {
+		if (state == CLOSED) {
+			return;
+		}
+
+		// A later nomination. The controlling peer has moved to another pair,
+		// its old address died, a better path appeared, and this agent
+		// follows it. It used to answer the new nomination and go on sending
+		// to the pair it had, until consent to that pair ran out.
+		if (state == CONNECTED) {
+			if (selectedPair != null && selectedPair.sameAs(pair)) {
+				return;
+			}
+
+			selectedPair = pair;
+
+			// The nomination was checked, which is the question consent asks;
+			// one still in flight to the old pair answers for a path no
+			// longer used.
+			__consentedAt = now;
+			__consentDueAt = now + CONSENT_INTERVAL;
+			__consentTransaction = null;
+
+			onSelectedPairChanged(pair);
 			return;
 		}
 
@@ -1056,6 +1185,13 @@ private class IceCheck {
 
 	/** Whether the other peer asked for it before this side had confirmed it. **/
 	public var nominatedByPeer:Bool = false;
+
+	/**
+		Created, or triggered, once a path was already chosen. Only these are
+		checked in the connected state; the rest of the original list is left
+		where it stood.
+	**/
+	public var late:Bool = false;
 
 	public function new(pair:IceCandidatePair, transaction:ByteArray) {
 		this.pair = pair;
