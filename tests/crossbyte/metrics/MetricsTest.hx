@@ -237,4 +237,134 @@ class MetricsTest extends utest.Test {
 	public function testSharedRegistryIsStable():Void {
 		Assert.equals(Metrics.shared, Metrics.shared);
 	}
+
+	public function testANaNObservationIsCountedInNoFiniteBucket():Void {
+		// Not below any bound, so it belongs only to +Inf, which is where the
+		// count comes from, so the two cannot disagree about it.
+		var latency = metrics.histogram("nan_seconds", [1.0]);
+		latency.observe(0.5);
+		latency.observe(Math.NaN);
+
+		Assert.equals(2.0, latency.count());
+		Assert.equals(1.0, latency.bucketCounts()[0]);
+		Assert.isTrue(Math.isNaN(latency.sum()));
+	}
+
+	#if target.threaded
+	public function testUpdatesFromSeveralThreadsAreAllCounted():Void {
+		// Workers record metrics as well as the runtime's thread. On hxcpp an
+		// update is a compare-and-swap rather than a lock, and one that lost a
+		// race and was not retried would simply vanish from these totals.
+		var requests = metrics.counter("threaded_total");
+		var depth = metrics.gauge("threaded_depth");
+		var latency = metrics.histogram("threaded_seconds", [1.0]);
+		var threads:Int = 4;
+		var each:Int = 50000;
+		var finished = new sys.thread.Lock();
+
+		for (_ in 0...threads) {
+			sys.thread.Thread.create(function():Void {
+				for (i in 0...each) {
+					requests.inc();
+					depth.inc(2);
+					depth.dec();
+					// Halves and twos, whose sums are exact in binary floating
+					// point in any order, so the expected sum is exact too.
+					latency.observe((i & 1) == 0 ? 0.5 : 2.0);
+					__letTheCollectorIn(i);
+				}
+				finished.release();
+			});
+		}
+
+		for (_ in 0...threads) {
+			Assert.isTrue(finished.wait(60.0), "a thread never finished");
+		}
+
+		var total:Float = threads * each;
+		Assert.equals(total, requests.value());
+		Assert.equals(total, depth.value());
+		Assert.equals(total, latency.count());
+		Assert.equals(total / 2, latency.bucketCounts()[0]);
+		Assert.equals(total / 2 * 0.5 + total / 2 * 2.0, latency.sum());
+	}
+
+	public function testAScrapeTakenWhileObservationsArriveAgreesWithItself():Void {
+		// The +Inf bucket and _count are one number, written twice. They were
+		// read separately, each under an acquisition of its own, so an
+		// observation landing between the two reads made a scrape contradict
+		// itself, and a collector computing a quantile from buckets that
+		// are not monotonic, or do not add up to the count, gets nonsense.
+		var latency = metrics.histogram("scraped_seconds", [0.1, 1.0]);
+		var writers:Int = 3;
+		var stop = new sys.thread.Deque<Bool>();
+		var finished = new sys.thread.Deque<Bool>();
+
+		for (_ in 0...writers) {
+			sys.thread.Thread.create(function():Void {
+				var i:Int = 0;
+				while (true) {
+					// One in each bucket and one past the last.
+					latency.observe(i % 3 == 0 ? 0.05 : (i % 3 == 1 ? 0.5 : 5.0));
+					__letTheCollectorIn(++i);
+					if ((i & 1023) == 0 && stop.pop(false) != null) {
+						break;
+					}
+				}
+				finished.add(true);
+			});
+		}
+
+		var contradictions:Array<String> = [];
+
+		for (_ in 0...300) {
+			var text:String = metrics.toPrometheus();
+			var below:Float = __sample(text, 'scraped_seconds_bucket{le="0.1"}');
+			var within:Float = __sample(text, 'scraped_seconds_bucket{le="1"}');
+			var all:Float = __sample(text, 'scraped_seconds_bucket{le="+Inf"}');
+			var count:Float = __sample(text, "scraped_seconds_count");
+
+			if (!(below <= within && within <= all && all == count) && contradictions.length < 3) {
+				contradictions.push('le=0.1 $below, le=1 $within, +Inf $all, _count $count');
+			}
+		}
+
+		for (_ in 0...writers) {
+			stop.add(true);
+		}
+		for (_ in 0...writers) {
+			finished.pop(true);
+		}
+
+		Assert.equals(0, contradictions.length, "a scrape contradicted itself: " + contradictions.join("; "));
+		// And at rest, everything agrees exactly.
+		var counts = latency.bucketCounts();
+		Assert.isTrue(counts[0] <= counts[1] && counts[1] <= latency.count());
+		Assert.equals(latency.count(), __sample(metrics.toPrometheus(), "scraped_seconds_count"));
+	}
+
+	/** The value on the exposition line that starts with `series`, or NaN. **/
+	private static function __sample(text:String, series:String):Float {
+		for (line in text.split("\n")) {
+			if (StringTools.startsWith(line, series + " ")) {
+				return Std.parseFloat(line.substr(series.length + 1));
+			}
+		}
+		return Math.NaN;
+	}
+
+	/**
+		A place for the collector to stop this thread now and then. The loops
+		above allocate nothing, and on hxcpp a thread that never allocates
+		never reaches a point where a collection another thread started can
+		stop it, so the thread scraping would wait on them for good.
+	**/
+	private static inline function __letTheCollectorIn(i:Int):Void {
+		#if cpp
+		if ((i & 1023) == 0) {
+			cpp.vm.Gc.safePoint();
+		}
+		#end
+	}
+	#end
 }
