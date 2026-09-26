@@ -1160,6 +1160,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `StunClient.discover` with a server name that does not resolve fails at
+  once instead of at its deadline. Names are looked up off the runtime's
+  thread now, so the failure arrives as the socket's `ioError` after the
+  send returns, and the query was not listening for it.
 - On Node, a socket, server, WebSocket or datagram listener that throws is
   reported as the runtime's `UncaughtErrorEvent`, with source `SOCKET`, as it
   is natively. The failure was contained there already, but only logged: an
