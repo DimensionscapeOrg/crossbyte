@@ -133,6 +133,13 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	the default route as well, or the peer ends up advertising loopback and
 	reachable only from its own machine.
 
+	## Many on one port
+
+	A connection that binds costs a socket of its own, that socket's buffers
+	and a tick listener. A server holding many peers makes them on a
+	`PeerConnectionHost` instead, and they share one socket and one tick; see
+	there for how a datagram finds its connection.
+
 	## Native only
 
 	DTLS needs mbedTLS, which hxcpp links and the other targets do not have.
@@ -215,6 +222,8 @@ class PeerConnection {
 	/** The default for `readyTimeout`, in seconds. **/
 	public static inline var DEFAULT_READY_TIMEOUT:Float = 30.0;
 
+	@:noCompletion private static inline var SHARED_SOCKET_GATHERS_NOTHING:String = "A connection sharing a host's socket gathers no address of its own: that socket's mapping is every connection's. Give the host's public address to PeerConnectionHost.addLocalCandidate.";
+
 	/**
 		How long, in seconds from `connect`, the whole stack has to come up
 		before the connection gives up and fails `ready`.
@@ -255,6 +264,10 @@ class PeerConnection {
 	public var userData:Any = null;
 
 	@:noCompletion private var __socket:DatagramSocket;
+
+	/** The host whose socket and tick this connection shares, when one made it; null when it binds its own. **/
+	@:noCompletion private var __host:PeerConnectionHost;
+
 	@:noCompletion private var __dtls:DtlsTransport;
 	@:noCompletion private var __association:SctpAssociation;
 	@:noCompletion private var __transfer:SctpDataTransfer;
@@ -336,6 +349,25 @@ class PeerConnection {
 		// when it is the relayed one, and then it matters entirely: the session's
 		// records have to travel the same way its connectivity checks did.
 		__peerRelayed = __relayedCandidate != null && pair.local.sameAs(__relayedCandidate);
+
+		// On a shared socket, records from there are this connection's now.
+		if (__host != null) {
+			@:privateAccess __host.__proved(this, __peerAddress, __peerPort);
+		}
+	}
+
+	/**
+		Shares a host's socket and tick instead of binding its own. Called by
+		`PeerConnectionHost.createConnection`, once.
+	**/
+	@:noCompletion private function __attach(host:PeerConnectionHost):Void {
+		__host = host;
+
+		agent.onSend = function(payload:ByteArray, address:String, port:Int):Void {
+			// Remembered first, so the answer to a check comes back here.
+			@:privateAccess host.__sending(this, payload);
+			__send(payload, address, port);
+		};
 	}
 
 	/**
@@ -349,6 +381,10 @@ class PeerConnection {
 		way, but nothing here discovers them yet; see the class documentation.
 	**/
 	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
+		if (__host != null) {
+			throw new ArgumentError("This connection shares its host's socket, so it has none of its own to bind.");
+		}
+
 		if (__closed || __socket != null) {
 			return;
 		}
@@ -383,6 +419,10 @@ class PeerConnection {
 	public var localPort(get, never):Int;
 
 	@:noCompletion private function get_localPort():Int {
+		if (__host != null) {
+			return __host.localPort;
+		}
+
 		return __socket != null ? __socket.localPort : 0;
 	}
 
@@ -496,7 +536,7 @@ class PeerConnection {
 			throw new ArgumentError("A peer description is required.");
 		}
 
-		if (__socket == null) {
+		if (__socket == null && __host == null) {
 			throw new ArgumentError("Bind before connecting: the checks have to leave from the socket the peer will be told about.");
 		}
 
@@ -737,6 +777,13 @@ class PeerConnection {
 			__socket = null;
 		}
 
+		// A shared socket stays open for the others; this one stops being
+		// routed to, and stops sending with it.
+		if (__host != null) {
+			@:privateAccess __host.__detach(this);
+			__host = null;
+		}
+
 		@:privateAccess closed.__resolve(reason);
 		onClose(reason);
 	}
@@ -778,6 +825,11 @@ class PeerConnection {
 	**/
 	public function gatherReflexive(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<IceCandidate> {
 		var future = new Future<IceCandidate>();
+
+		if (__host != null) {
+			@:privateAccess future.__fail(SHARED_SOCKET_GATHERS_NOTHING, null);
+			return future;
+		}
 
 		if (__closed || __socket == null) {
 			@:privateAccess future.__fail("A reflexive address can only be discovered through a bound connection; call bind first.", null);
@@ -842,6 +894,11 @@ class PeerConnection {
 	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478,
 			useChannels:Bool = false):Future<IceCandidate> {
 		var future = new Future<IceCandidate>();
+
+		if (__host != null) {
+			@:privateAccess future.__fail(SHARED_SOCKET_GATHERS_NOTHING, null);
+			return future;
+		}
 
 		if (__closed || __socket == null) {
 			@:privateAccess future.__fail("A relay can only be allocated through a bound connection; call bind first.", null);
@@ -1108,22 +1165,27 @@ class PeerConnection {
 	}
 
 	@:noCompletion private function __onDatagram(e:DatagramSocketDataEvent):Void {
-		if (__closed || e.data == null || e.data.length == 0) {
+		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
+	}
+
+	/** A datagram from this connection's own socket, or routed here by its host. **/
+	@:noCompletion private function __receiveDatagram(data:ByteArray, srcAddress:String, srcPort:Int):Void {
+		if (__closed || data == null || data.length == 0) {
 			return;
 		}
 
 		var now:Float = haxe.Timer.stamp();
 
-		e.data.position = 0;
-		var first:Int = e.data.readUnsignedByte();
-		e.data.position = 0;
+		data.position = 0;
+		var first:Int = data.readUnsignedByte();
+		data.position = 0;
 
 		if (first < 4) {
 			// The answer to this connection's own question about its address,
 			// if that is what it is. Offered here first because it shares the
 			// socket and the byte range with everything ICE sends; the
 			// transaction says which, and the agent would only refuse it.
-			if (__receiveReflexive(e.data, now)) {
+			if (__receiveReflexive(data, now)) {
 				return;
 			}
 
@@ -1132,14 +1194,14 @@ class PeerConnection {
 			// STUN byte range with every connectivity check on this socket, and
 			// where they came from cannot decide it -- the server may have been
 			// named as a hostname, and it answers from whatever that resolved to.
-			e.data.position = 0;
+			data.position = 0;
 
-			if (__turn != null && __turn.receive(e.data, e.srcAddress, e.srcPort, now)) {
+			if (__turn != null && __turn.receive(data, srcAddress, srcPort, now)) {
 				return;
 			}
 
-			e.data.position = 0;
-			agent.receive(e.data, e.srcAddress, e.srcPort, now);
+			data.position = 0;
+			agent.receive(data, srcAddress, srcPort, now);
 			return;
 		}
 
@@ -1148,14 +1210,14 @@ class PeerConnection {
 		// 8656 puts channel numbers there for exactly this reason.
 		if (first >= 0x40 && first <= 0x7F) {
 			if (__turn != null) {
-				__turn.receive(e.data, e.srcAddress, e.srcPort, now);
+				__turn.receive(data, srcAddress, srcPort, now);
 			}
 
 			return;
 		}
 
 		if (first >= 20 && first <= 63 && __dtls != null) {
-			__dtls.receive(e.data, now);
+			__dtls.receive(data, now);
 		}
 	}
 
@@ -1270,6 +1332,11 @@ class PeerConnection {
 		// Not refused once closing has begun: the ABORT and the close_notify
 		// are sent from inside __shutdown, after the flag is up. The socket
 		// is dropped as the last step, and that is what ends sending.
+		if (__host != null) {
+			@:privateAccess __host.__send(payload, address, port);
+			return;
+		}
+
 		if (__socket == null) {
 			return;
 		}

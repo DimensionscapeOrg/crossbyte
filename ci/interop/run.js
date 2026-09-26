@@ -237,7 +237,7 @@ function hasRoutableAddress() {
   return false;
 }
 
-async function browserOffers(page, mdns) {
+async function browserOffers(page, mdns, shared) {
   console.log('\n=== the browser offers, CrossByte answers ===');
   console.log('  CrossByte should end up ICE-controlled and the DTLS client');
 
@@ -247,7 +247,7 @@ async function browserOffers(page, mdns) {
     throw new Error('the browser produced no data channel offer');
   }
 
-  const peer = startPeer({ mode: 'answer', sdp: offer });
+  const peer = startPeer({ mode: 'answer', sdp: offer, host: shared });
 
   try {
     const answer = await peer.wait('answer', 15000);
@@ -337,11 +337,11 @@ async function browserOffers(page, mdns) {
   }
 }
 
-async function crossbyteOffers(page, mdns) {
+async function crossbyteOffers(page, mdns, shared) {
   console.log('\n=== CrossByte offers, the browser answers ===');
   console.log('  CrossByte should end up ICE-controlling and the DTLS server');
 
-  const peer = startPeer({ mode: 'offer' });
+  const peer = startPeer({ mode: 'offer', host: shared });
 
   try {
     const offer = await peer.wait('offer', 15000);
@@ -410,9 +410,14 @@ async function crossbyteOffers(page, mdns) {
   // check. Off is kept as well, because it is the only configuration where
   // CrossByte's own checks reach a candidate the browser published -- the
   // sending half of ICE, which the other configuration never exercises.
-  for (const mdns of [true, false]) {
+  //
+  // And once more with CrossByte's connection on a PeerConnectionHost, the
+  // shared socket a server holds its peers on. The host routes the browser's
+  // checks by the ufrag they name and the answers to its own by transaction,
+  // so the browser is the judge of both; mDNS on, as a server's visitors are.
+  for (const { mdns, shared } of [{ mdns: true, shared: false }, { mdns: false, shared: false }, { mdns: true, shared: true }]) {
     console.log('\n########  browser ' + (mdns ? 'hiding its addresses (.local mDNS names)' :
-      'publishing real addresses') + '  ########');
+      'publishing real addresses') + (shared ? ', CrossByte on a shared socket' : '') + '  ########');
 
     const browser = await puppeteer.launch({
       args: [
@@ -431,14 +436,14 @@ async function crossbyteOffers(page, mdns) {
 
       try {
         await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'domcontentloaded' });
-        await direction(page, mdns);
+        await direction(page, mdns, shared);
 
         if (pageErrors.length > 0) {
           throw new Error('the page reported errors:\n  ' + pageErrors.join('\n  '));
         }
       } catch (error) {
         failed = failed || error.message;
-        console.error('\nFAILED (' + direction.name + ', mdns ' + mdns + '): ' + error.message);
+        console.error('\nFAILED (' + direction.name + ', mdns ' + mdns + ', shared ' + shared + '): ' + error.message);
         const log = await page.evaluate('(window.__interop && window.__interop.log || []).join("\n")').catch(() => '');
         if (log) console.error('browser log:\n' + log);
         if (pageErrors.length) console.error('page errors:\n  ' + pageErrors.join('\n  '));
@@ -461,5 +466,6 @@ async function crossbyteOffers(page, mdns) {
   console.log('INTEROP PASSED');
   console.log('  a real RTCPeerConnection and CrossByte opened a data channel and');
   console.log('  exchanged messages, in both directions and both role pairings,');
-  console.log('  against a browser publishing its addresses and one hiding them.');
+  console.log('  against a browser publishing its addresses and one hiding them,');
+  console.log('  and with CrossByte on a socket of its own and on a shared one.');
 })();

@@ -107,7 +107,9 @@ class StunMessage {
 	/** SHA-1 output, and so the length of every MESSAGE-INTEGRITY value. **/
 	private static inline var INTEGRITY_LENGTH:Int = 20;
 
-	private static inline var HEADER_LENGTH:Int = 20;
+	/** Type, length, cookie and transaction id: what every message begins with. **/
+	public static inline var HEADER_LENGTH:Int = 20;
+
 	private static inline var TRANSACTION_LENGTH:Int = 12;
 	private static inline var FAMILY_IPV4:Int = 0x01;
 
