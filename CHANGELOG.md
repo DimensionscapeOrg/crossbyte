@@ -5,6 +5,11 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `LocalConnection.maxQueuedBytes`, the most a connection holds in each
+  direction -- 16 MB by default, two frames of the largest size -- and
+  `bytesPending`, what `send` has queued that the peer has not taken yet.
+  A sender with more than that to send at once paces itself on
+  `bytesPending`; see the entry under Fixed on a peer that stops reading.
 - `RPCSession.dial(uri, ?commands, ?handler)`: a client session that dials
   its server, and dials again whenever its connection ends -- at once, then
   after a wait doubling from `MIN_REDIAL` (0.25 s) to `MAX_REDIAL` (30 s)
@@ -551,6 +556,20 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `LocalConnection` delivers what arrives for up to 2 ms at a time on
+  its runtime's thread. It delivered 32 messages a tick, whatever they
+  cost -- 384 a second at the default tick rate -- and anything faster
+  waited in a queue with no bound: 2000 small messages took 63 ticks, and
+  now arrive in one. Delivery is posted to the runtime when there is
+  something to deliver, where a listener ran on every tick for every
+  connection, and a reader with nothing to do looks every 10 ms rather
+  than every millisecond, easing off from 1 ms as it stays idle. What
+  waits to be delivered is bounded by `maxQueuedBytes`: past it the
+  reader stops reading, and what the peer sends waits on its side. A
+  `SharedChannel` keeps a connection to each channel it sends to -- up to
+  16, each closed after 45 s without a send -- where it kept one, and
+  closed it and dialled again whenever a send went somewhere other than
+  the last one had.
 - An RPC round trip costs less than half what it did natively: a request
   answered 928 ns to 405 ns, one answered later 1.88 us to 537 ns, and one
   with a `then` callback 2.13 us to 568 ns (BenchRpc, best of 11). Every
@@ -741,6 +760,36 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `LocalConnection` whose peer stops reading no longer stops its own
+  side. `send` wrote on the runtime's thread until everything had gone --
+  five seconds a send on Windows, for good on Linux and macOS -- holding
+  the lock its own reader needed, so two processes filling each other's
+  channels each waited on the other; it waited where the collector could
+  not reach it, so a frame larger than the channel stalled any thread
+  that collected meanwhile, the peer's reader among them, until the write
+  gave up; and a write that gave up part way through a frame left the
+  peer reading from its middle. `send` now writes what the channel takes
+  and queues the rest, which the reader thread writes as the peer reads,
+  each frame whole. A peer that leaves more than `maxQueuedBytes` unread
+  is taken to be stuck: the connection is closed, with an error saying so
+  that is its close reason too. On Linux a send to a peer that had gone
+  raised SIGPIPE, which ends the process; it is sent with `MSG_NOSIGNAL`
+  (`SO_NOSIGPIPE` on macOS), and the connection closes instead.
+- A second `listen()` on a `LocalConnection` name in use throws, on both
+  platforms, where Windows made a second instance of the pipe beside the
+  first and POSIX removed the first listener's socket file and bound its
+  own: either way the first listener's clients went to the second. On
+  POSIX a name's socket path turned everything but letters, digits, `-`
+  and `_` into `_` and was cut to 48 characters, so `a.b` and `a_b`, or
+  two long names alike for their first 48, were one channel; such a name
+  is now kept apart by a 64-bit hash of all of it, and a name that needed
+  neither keeps its path. A listener lets each client go and takes the
+  next with the name held throughout, where it closed and made its
+  endpoint again with the name anyone's in between. On Windows a client
+  that came and went before the listener next looked -- as a
+  `SharedChannel` switching destinations did -- left the pipe closing,
+  which was taken for nobody yet, and the listener took nobody again: it
+  is taken like any other, and what it wrote is delivered.
 - A `NodeChannel` whose peer drops it comes back whatever clock it is
   polled with. `poll(now)` compared its caller's time with retries
   scheduled on `haxe.Timer.stamp()`; polled with the runtime's uptime, as

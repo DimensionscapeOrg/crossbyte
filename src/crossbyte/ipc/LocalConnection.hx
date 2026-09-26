@@ -6,7 +6,7 @@ package crossbyte.ipc;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
-import crossbyte.events.TickEvent;
+
 import crossbyte.io.ByteArray;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.net.INetConnection;
@@ -52,8 +52,6 @@ private enum LocalConnectionDispatch {
 	Close(reason:Reason);
 	Error(reason:Reason);
 	Data(payload:ByteArray);
-	// The reader thread of that session has ended; queued after all it sent.
-	Ended(session:Int);
 }
 
 /**
@@ -76,7 +74,51 @@ class LocalConnection implements INetConnection implements CloseObservable {
 
 	/** Maximum payload size accepted by the framing layer, in bytes. */
 	public static inline var MAX_FRAME_SIZE:Int = 8 * 1024 * 1024;
-	@:noCompletion private static inline var DISPATCH_BUDGET_PER_TICK:Int = 32;
+
+	/** The default `maxQueuedBytes`: two frames of the largest size. */
+	public static inline var DEFAULT_MAX_QUEUED:Int = 2 * (MAX_FRAME_SIZE + 4);
+
+	// How long one delivery on the runtime's thread may run before it lets
+	// the rest wait for the next, in seconds. It delivered 32 messages a tick,
+	// whatever they cost: 384 a second at the default rate, with anything
+	// faster piling up.
+	@:noCompletion private static inline var DRAIN_BUDGET:Float = 0.002;
+
+	// How long the reader waits between looks at an idle connection, from
+	// the first after something happened to the longest, in seconds. It
+	// looked every millisecond, busy or not: a thousand wakes a second for
+	// each connection doing nothing.
+	@:noCompletion private static inline var POLL_MIN:Float = 0.001;
+	@:noCompletion private static inline var POLL_MAX:Float = 0.010;
+
+	/**
+		The most bytes held for this connection in each direction: what
+		`send` has queued that the peer has not taken yet, and what has
+		arrived that the application has not been given.
+
+		`send` does not wait for the peer. It writes what the channel takes
+		and queues the rest, which the reader thread writes as the peer reads
+		it. It used to write on the runtime's thread until everything was
+		gone -- for up to five seconds on Windows and without limit elsewhere
+		-- holding the lock its own reader needed, so two processes that
+		filled each other's channels each waited on the other for good. A
+		peer that has left more than this unread is taken to be stuck: the
+		connection is closed, with an error saying so, and what was queued is
+		dropped. A sender with more than this to send at once paces itself on
+		`bytesPending`.
+
+		What arrives is read only while less than this waits to be delivered,
+		so a sender faster than the application pushes back on the sender
+		rather than on this process's memory. `0` removes both limits.
+	**/
+	public var maxQueuedBytes:Int = DEFAULT_MAX_QUEUED;
+
+	/**
+		The bytes `send` has queued that the peer has not taken yet, framing
+		included. A sender with a lot to send waits for this to fall before
+		sending more, rather than passing `maxQueuedBytes`.
+	**/
+	public var bytesPending(get, never):Int;
 
 	public var remoteAddress(get, never):String;
 	public var remotePort(get, never):Int;
@@ -99,6 +141,8 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	public var outTimestamp(default, null):Float = 0;
 
 	@:noCompletion private static inline var BUFFER_SIZE:Int = 4096;
+	// The most the reader takes from the channel in one pass.
+	@:noCompletion private static inline var READ_PER_PASS:Int = 1024 * 1024;
 
 	@:noCompletion private var __mode:LocalConnectionMode = NONE;
 	@:noCompletion private var __connectionName:String = null;
@@ -122,12 +166,22 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	// session, so a reader thread acts for its own session only.
 	@:noCompletion private var __handleLock:Mutex;
 	#end
-	@:noCompletion private var __dispatchListener:TickEvent->Void;
-	// Touched only on the runtime's thread: the listener is attached by
-	// listen()/connect() and removed by close(), never by the reader thread.
-	@:noCompletion private var __dispatchAttached:Bool = false;
-	// Raised under __dispatchLock by whichever thread queues a dispatch.
+	// Delivers what the reader thread queued, on the runtime's thread; posted
+	// to the runtime when the queue has something in it and no delivery is
+	// on its way. See __queueDispatch.
+	@:noCompletion private var __drain:Void->Void;
+	// Raised under __dispatchLock by whichever thread queues a dispatch, when
+	// it posts a delivery; lowered by the delivery.
 	@:noCompletion private var __dispatchPending:Bool = false;
+	// Bytes of payload queued for delivery, or held until reads are enabled,
+	// and not yet delivered. See __countInbound.
+	@:noCompletion private var __inQueued:Int = 0;
+	// What send() has queued that the peer has not taken: whole frames, the
+	// first of them written as far as __outOffset. Under __handleLock.
+	@:noCompletion private var __outFrames:Array<ByteArray> = [];
+	@:noCompletion private var __outHead:Int = 0;
+	@:noCompletion private var __outOffset:Int = 0;
+	@:noCompletion private var __outQueued:Int = 0;
 	// Advanced by close(), which listen() and connect() begin with, so a
 	// reader thread can say which session it belonged to.
 	@:noCompletion private var __session:Int = 0;
@@ -146,7 +200,7 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		__pendingLock = new Mutex();
 		__handleLock = new Mutex();
 		#end
-		__dispatchListener = __flushDispatchQueue;
+		__drain = __drainDispatchQueue;
 	}
 
 	/**
@@ -165,7 +219,6 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		__mode = SERVER;
 		__connectionName = connectionName;
 		__running = true;
-		__attachDispatchListener();
 
 		#if cpp
 		var session = __session;
@@ -188,7 +241,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		if (handleQueue.pop(true) == null) {
 			__running = false;
 			__mode = NONE;
-			__detachDispatchListener();
+			__discardQueued();
+			// Another listener has the name -- on either platform now -- or it
+			// cannot be used.
 			throw new ArgumentError("Connection name is already in use or invalid");
 		}
 		#end
@@ -219,7 +274,6 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		__activePipe = handle;
 		__connected = true;
 		__running = true;
-		__attachDispatchListener();
 		// Told at the next tick, not from inside connect(): a callback set
 		// once connect() has returned -- as `new NetConnection("local://...")`
 		// leaves one to be -- missed a Ready it had already been sent.
@@ -253,8 +307,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	public function send(data:ByteArray):Void {
 		// Preserve the original guard ordering: closed first, then payload size.
 		// The authoritative closed-check + write happens again under __handleLock
-		// below so a concurrent close() cannot tear the handle down mid-write.
-		if (!__connected || __activePipe == null || !__isOpen(__activePipe)) {
+		// below so a concurrent close() cannot tear the handle down mid-write;
+		// the handle is not probed here, outside it, for the same reason.
+		if (!__connected || __activePipe == null) {
 			__dispatchLifecycle(Error(Reason.Closed));
 			return;
 		}
@@ -268,41 +323,102 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		frame.writeInt(data.length);
 		frame.writeBytes(data, 0, data.length);
 		frame.position = 0;
-		var frameBytes:Bytes = cast frame;
 
-		// Re-validate and write the handle atomically with respect to the reader
-		// thread's close/disconnect so the handle cannot be closed (and the OS
-		// handle reused) between the check and the write. Lifecycle errors are
-		// dispatched after releasing the lock to avoid re-entering callbacks while
-		// holding it.
+		// Queued and written without waiting, under __handleLock so the reader
+		// thread's close/disconnect cannot tear the handle down (and the OS
+		// reuse it) between the check and the write. What the channel does
+		// not take now, the reader thread writes as the peer reads. Lifecycle
+		// errors are dispatched after releasing the lock to avoid re-entering
+		// callbacks while holding it.
 		#if (cpp || neko || hl)
 		__handleLock.acquire();
 		#end
 		var failure:LocalConnectionDispatch = null;
-		var wrote = false;
+		var stuck:Null<Reason> = null;
 		var pipe = __activePipe;
 		if (!__connected || pipe == null || !__isOpen(pipe)) {
 			failure = Error(Reason.Closed);
-		} else if (!__write(pipe, frameBytes.getData(), frameBytes.length)) {
-			failure = Error(Reason.Error("Local transport write failed."));
+		} else if (maxQueuedBytes > 0 && __outQueued > 0 && __outQueued + frame.length > maxQueuedBytes) {
+			// Only with something already waiting: a frame larger than the
+			// limit still goes to a peer that has kept up.
+			stuck = Reason.Error("Local transport peer is not reading: " + __outQueued + " bytes wait for it, and "
+				+ frame.length + " more would pass the " + maxQueuedBytes + "-byte limit.");
 		} else {
-			wrote = true;
+			__outFrames.push(frame);
+			__outQueued += frame.length;
+			if (!__flushOutput(pipe)) {
+				failure = Error(Reason.Error("Local transport write failed."));
+			}
 		}
 		#if (cpp || neko || hl)
 		__handleLock.release();
 		#end
+
+		if (stuck != null) {
+			__dispatchLifecycle(Error(stuck));
+			__closeWith(stuck);
+			return;
+		}
 
 		if (failure != null) {
 			__dispatchLifecycle(failure);
 			return;
 		}
 
-		if (wrote) {
-			outTimestamp = __timestamp();
+		outTimestamp = __timestamp();
+	}
+
+	/**
+		Writes as much of what is queued as the channel takes now, without
+		waiting; `false` when the connection is gone. Under __handleLock.
+
+		A frame is written whole or left queued from where it stopped: the
+		write that waited used to give up part way through a frame after five
+		seconds, and the peer's next read began in the middle of it.
+	**/
+	@:noCompletion private function __flushOutput(pipe:LocalConnectionHandle):Bool {
+		while (__outHead < __outFrames.length) {
+			final frame:ByteArray = __outFrames[__outHead];
+			final left:Int = frame.length - __outOffset;
+			final written:Int = __writeSome(pipe, (cast frame : Bytes).getData(), __outOffset, left);
+			if (written < 0) {
+				return false;
+			}
+			__outOffset += written;
+			__outQueued -= written;
+			if (written < left) {
+				break;
+			}
+			__outFrames[__outHead] = null;
+			__outHead++;
+			__outOffset = 0;
 		}
+		if (__outHead >= __outFrames.length) {
+			if (__outHead > 0) {
+				__outFrames = [];
+				__outHead = 0;
+			}
+		} else if (__outHead > 32 && __outHead * 2 >= __outFrames.length) {
+			__outFrames = __outFrames.slice(__outHead);
+			__outHead = 0;
+		}
+		return true;
+	}
+
+	/** Drops whatever is queued to send. Under __handleLock. **/
+	@:noCompletion private inline function __dropOutput():Void {
+		__outFrames = [];
+		__outHead = 0;
+		__outOffset = 0;
+		__outQueued = 0;
 	}
 
 	public function close():Void {
+		__closeWith(Reason.Closed);
+	}
+
+	/** close(), telling onClose and the close observer `reason`. **/
+	@:noCompletion private function __closeWith(reason:Reason):Void {
 		var wasConnected = __connected;
 		// The session ends under both locks its reader thread checks it under:
 		// whatever that thread does for it afterwards is refused, and what it
@@ -321,7 +437,7 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		__mode = NONE;
 		__connectionName = null;
 		__clearPendingPayloads();
-		__detachDispatchListener();
+		__discardQueued();
 
 		// Clear connected state and tear down the handles under __handleLock so a
 		// concurrent send() observes the closed connection and cannot write to a
@@ -331,6 +447,9 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		#end
 		__connected = false;
 		if (__activePipe != null) {
+			// What is still queued goes if the channel takes it now; a close
+			// does not wait for its peer.
+			__flushOutput(__activePipe);
 			__close(__activePipe);
 			__activePipe = null;
 		}
@@ -338,14 +457,15 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			__close(__listeningPipe);
 			__listeningPipe = null;
 		}
+		__dropOutput();
 		#if (cpp || neko || hl)
 		__handleLock.release();
 		#end
 
 		if (wasConnected) {
-			__notifyClose(Reason.Closed);
+			__notifyClose(reason);
 			try {
-				__onClose(Reason.Closed);
+				__onClose(reason);
 			} catch (_:Dynamic) {}
 		}
 	}
@@ -392,8 +512,15 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		// This session's framing, and this thread's alone: no reader shares
 		// one with another, and close() never clears one being written to.
 		var framing = new ByteArray();
+		var idle:Float = POLL_MIN;
 
 		while (__running && __session == session) {
+			// Whether this pass read, wrote or took a client: the next look
+			// comes soon if so, and later and later while nothing does.
+			var busy = false;
+			// Too much delivered-to-be already: the peer waits, in its own
+			// queue, rather than this process holding more of what it sends.
+			var full = __inboundFull();
 			#if (cpp || neko || hl)
 			__handleLock.acquire();
 			#end
@@ -412,6 +539,7 @@ class LocalConnection implements INetConnection implements CloseObservable {
 				__listeningPipe = null;
 				__connected = true;
 				accepted = true;
+				busy = true;
 			}
 
 			// Polled and read under the lock too: both are immediate, and a
@@ -419,14 +547,27 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			var received:Bytes = null;
 			var failure:Reason = null;
 			var pipe = __activePipe;
-			if (pipe != null) {
+			if (pipe != null && __outQueued > 0) {
+				// What send() could not write at once.
+				final before:Int = __outQueued;
+				if (!__flushOutput(pipe)) {
+					failure = Reason.Error("Local transport write failed.");
+				} else if (__outQueued < before) {
+					busy = true;
+				}
+			}
+			if (pipe != null && failure == null) {
 				var available = __getBytesAvailable(pipe);
 				if (available < 0 || (available == 0 && !__isOpen(pipe))) {
 					failure = Reason.Closed;
-				} else if (available > MAX_FRAME_SIZE + 4) {
-					failure = Reason.Error("Local transport received an oversized frame.");
-				} else if (available > 0) {
-					var bytesRemaining = available;
+				} else if (available > 0 && !full) {
+					busy = true;
+					// At most READ_PER_PASS at a time; the next pass, at once,
+					// reads on. It failed the connection as "an oversized frame"
+					// whenever more than one frame's worth had arrived, which a
+					// reader paused while the application catches up lets happen.
+					// A frame too long is caught where it is framed.
+					var bytesRemaining = available > READ_PER_PASS ? READ_PER_PASS : available;
 					var aggregate = new BytesBuffer();
 					while (bytesRemaining > 0) {
 						var length = bytesRemaining > BUFFER_SIZE ? BUFFER_SIZE : bytesRemaining;
@@ -455,9 +596,11 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			if (failure != null) {
 				framing.clear();
 				__disconnectActive(failure, session);
+				busy = true;
 			}
 
-			Sys.sleep(0.001);
+			idle = busy ? POLL_MIN : (idle * 2 > POLL_MAX ? POLL_MAX : idle * 2);
+			Sys.sleep(idle);
 		}
 
 		// Its own session's handles, if close() has not already had them.
@@ -476,15 +619,10 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		}
 		#if (cpp || neko || hl)
 		__handleLock.release();
-
-		// A connection that ended by itself -- its peer went away -- is let go
-		// of by the runtime once what it queued has been delivered. The
-		// listener was removed after each drain before, so a dead connection
-		// was never held; held until close(), one would be for good.
-		if (__runtime != null) {
-			__queueDispatch(Ended(session), session);
-		}
 		#end
+		// Nothing of the runtime's holds a connection that ended by itself:
+		// what it queued is delivered by posts, not by a listener on the
+		// runtime's tick that had to be taken off again.
 	}
 
 	/** Frames `received` into `framing` and hands on each whole one; false for an invalid frame. **/
@@ -557,19 +695,36 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		}
 		var wasConnected = __connected;
 		__connected = false;
-		if (__activePipe != null) {
-			__close(__activePipe);
-			__activePipe = null;
-		}
+		// Queued for a peer that has gone.
+		__dropOutput();
 		var relistenFailed = false;
 		if (__mode == SERVER && __running) {
-			try {
-				__listeningPipe = __createInboundPipe(__connectionName);
-			} catch (_:Dynamic) {
-				__running = false;
-				relistenFailed = true;
+			// The same listener takes the next client: the one that went is
+			// let go and the name is kept. It closed the listener and made
+			// another, and in between the name was anyone's.
+			if (__activePipe != null && __disconnect(__activePipe)) {
+				__listeningPipe = __activePipe;
+				__activePipe = null;
+			} else {
+				if (__activePipe != null) {
+					__close(__activePipe);
+					__activePipe = null;
+				}
+				try {
+					__listeningPipe = __createInboundPipe(__connectionName);
+				} catch (_:Dynamic) {
+					__listeningPipe = null;
+				}
+				if (__listeningPipe == null) {
+					__running = false;
+					relistenFailed = true;
+				}
 			}
 		} else {
+			if (__activePipe != null) {
+				__close(__activePipe);
+				__activePipe = null;
+			}
 			__running = false;
 		}
 		#if (cpp || neko || hl)
@@ -652,11 +807,6 @@ class LocalConnection implements INetConnection implements CloseObservable {
 					}
 					payload.position = 0;
 					__onData(payload);
-				case Ended(session):
-					// One from a session close() has already ended is stale.
-					if (session == __session) {
-						__detachDispatchListener();
-					}
 			}
 		} catch (error:Dynamic) {
 			__handleCallbackFailure(error);
@@ -672,7 +822,7 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		__running = false;
 		__mode = NONE;
 		__clearPendingPayloads();
-		__detachDispatchListener();
+		__discardQueued();
 
 		// Clear connected state and tear down handles under __handleLock so a
 		// concurrent send() cannot write to a handle being closed here.
@@ -702,12 +852,12 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		var pending:Array<ByteArray> = null;
 		#if (cpp || neko || hl)
 		__pendingLock.acquire();
+		#end
 		pending = __pendingPayloads;
 		__pendingPayloads = [];
+		__uncount(pending);
+		#if (cpp || neko || hl)
 		__pendingLock.release();
-		#else
-		pending = __pendingPayloads;
-		__pendingPayloads = [];
 		#end
 
 		for (payload in pending) {
@@ -719,25 +869,60 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	@:noCompletion private function __pushPendingPayload(payload:ByteArray, session:Int):Void {
 		#if (cpp || neko || hl)
 		__pendingLock.acquire();
+		#end
 		if (__session == session) {
 			__pendingPayloads.push(payload);
+			__countInbound(payload.length);
 		}
+		#if (cpp || neko || hl)
 		__pendingLock.release();
-		#else
-		if (__session == session) {
-			__pendingPayloads.push(payload);
-		}
 		#end
 	}
 
 	@:noCompletion private function __clearPendingPayloads():Void {
 		#if (cpp || neko || hl)
 		__pendingLock.acquire();
-		__pendingPayloads = [];
-		__pendingLock.release();
-		#else
-		__pendingPayloads = [];
 		#end
+		__uncount(__pendingPayloads);
+		__pendingPayloads = [];
+		#if (cpp || neko || hl)
+		__pendingLock.release();
+		#end
+	}
+
+	@:noCompletion private function __uncount(payloads:Array<ByteArray>):Void {
+		var bytes:Int = 0;
+		for (payload in payloads) {
+			bytes += payload.length;
+		}
+		if (bytes != 0) {
+			__countInbound(-bytes);
+		}
+	}
+
+	/*
+		What waits to be delivered, in payload bytes: queued for the runtime's
+		thread or held until reading is enabled. Counted as a payload is put
+		in either and taken out, under the lock of the one it is in, so it is
+		exactly what the two hold; atomic adds, since the reader thread reads
+		it to decide whether to read without either lock.
+	*/
+	@:noCompletion private inline function __countInbound(bytes:Int):Void {
+		#if cpp
+		untyped __cpp__("_hx_atomic_add(&{0}, {1})", __inQueued, bytes);
+		#else
+		__inQueued += bytes;
+		#end
+	}
+
+	/** Whether as much waits to be delivered as `maxQueuedBytes` allows. **/
+	@:noCompletion private inline function __inboundFull():Bool {
+		#if cpp
+		final queued:Int = untyped __cpp__("_hx_atomic_load(&{0})", __inQueued);
+		#else
+		final queued:Int = __inQueued;
+		#end
+		return maxQueuedBytes > 0 && queued >= maxQueuedBytes;
 	}
 
 	#if (cpp || neko || hl)
@@ -754,87 +939,119 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	}
 
 	/**
-	 * Hands a dispatch from the reader thread to the runtime's thread.
+	 * Hands a dispatch from the reader thread to the runtime's thread: queued,
+	 * and a delivery posted to the runtime (`CrossByte.__post`, its one
+	 * thread-safe way in) unless one is on its way already.
 	 *
-	 * The reader thread used to attach the tick listener itself, on demand.
-	 * `EventDispatcher` is not thread-safe -- adding a listener reads the list,
-	 * copies it and stores the copy -- so an attach racing any listener change
-	 * on the runtime's own thread could be lost while `__dispatchAttached` said
-	 * it was made, and from then on nothing queued was ever delivered: a
-	 * listening side that never saw `onReady` nor its first message. The
-	 * listener is now attached by listen()/connect() on the runtime's thread,
-	 * and this thread only queues and raises a flag.
+	 * It was delivered by a listener on the runtime's tick, which had to be
+	 * attached on the runtime's thread -- `EventDispatcher` is not
+	 * thread-safe, and a reader thread's attach racing a listener change
+	 * there could be lost for good -- and taken off again, and it ran every
+	 * tick for every connection, idle or not. A post runs only when there is
+	 * something to deliver. It is delivered at the runtime's next tick; a
+	 * runtime asleep between ticks is not woken for it until posting wakes
+	 * one, which the core's C5 fix provides.
 	 *
 	 * Queued only while `session` is current, checked under the lock close()
 	 * ends it under: a dispatch refused here is one close() would otherwise
 	 * have had to discard after the fact, and one queued in time it discards.
 	 */
 	@:noCompletion private function __queueDispatch(message:LocalConnectionDispatch, session:Int):Void {
+		var post = false;
 		__dispatchLock.acquire();
 		if (__session == session) {
+			// Counted as it goes in, under the lock __discardQueued takes it
+			// out under, so the count is what the queue holds.
+			switch (message) {
+				case Data(payload):
+					__countInbound(payload.length);
+				default:
+			}
 			__dispatchQueue.add(message);
-			__dispatchPending = true;
+			if (!__dispatchPending) {
+				__dispatchPending = true;
+				post = true;
+			}
 		}
 		__dispatchLock.release();
+		if (post) {
+			__runtime.__post(__drain);
+		}
+	}
+
+	/**
+		Delivers what is queued, on the runtime's thread, for as long as
+		`DRAIN_BUDGET` allows; what is left waits for another delivery, posted
+		for the next tick.
+	**/
+	@:noCompletion private function __drainDispatchQueue():Void {
+		// Lowered before draining, so a dispatch queued while this runs posts
+		// another delivery.
+		__dispatchLock.acquire();
+		__dispatchPending = false;
+		__dispatchLock.release();
+
+		final deadline:Float = haxe.Timer.stamp() + DRAIN_BUDGET;
+		var delivered:Int = 0;
+		while (true) {
+			var message = __dispatchQueue.pop(false);
+			if (message == null) {
+				return;
+			}
+			switch (message) {
+				case Data(payload):
+					__countInbound(-payload.length);
+				default:
+			}
+			__applyDispatch(message);
+			// The clock is read every sixteen, not every one.
+			if ((++delivered & 15) == 0 && haxe.Timer.stamp() >= deadline) {
+				break;
+			}
+		}
+
+		// Out of time with more possibly queued: the rest at the next tick.
+		var post = false;
+		__dispatchLock.acquire();
+		if (!__dispatchPending) {
+			__dispatchPending = true;
+			post = true;
+		}
+		__dispatchLock.release();
+		if (post && __runtime != null) {
+			__runtime.__post(__drain);
+		}
 	}
 	#else
 	@:noCompletion private inline function __canDispatchInline():Bool {
 		return true;
 	}
+
+	@:noCompletion private function __drainDispatchQueue():Void {}
 	#end
 
-	@:noCompletion private function __attachDispatchListener():Void {
-		if (__runtime == null || __dispatchAttached) {
-			return;
-		}
-		__dispatchAttached = true;
-		__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
-	}
-
-	@:noCompletion private function __flushDispatchQueue(_event:TickEvent):Void {
+	/**
+		Discards what is queued for delivery: it belongs to the connection
+		being torn down, and left here, a later listen()/connect() on this
+		object would deliver it.
+	**/
+	@:noCompletion private function __discardQueued():Void {
 		#if (cpp || neko || hl)
-		// Read without the lock: a stale `false` costs one tick, and an idle
-		// connection costs a field read a tick rather than a mutex.
-		if (!__dispatchPending) {
-			return;
-		}
-		// Lowered before draining, so a dispatch queued while this runs raises
-		// it again and is picked up next tick at the latest.
 		__dispatchLock.acquire();
-		__dispatchPending = false;
-		__dispatchLock.release();
-
-		for (_ in 0...DISPATCH_BUDGET_PER_TICK) {
+		while (true) {
 			var message = __dispatchQueue.pop(false);
 			if (message == null) {
-				return;
+				break;
 			}
-			__applyDispatch(message);
+			switch (message) {
+				case Data(payload):
+					__countInbound(-payload.length);
+				default:
+			}
 		}
-
-		// Out of budget with more possibly queued: look again next tick.
-		__dispatchLock.acquire();
-		__dispatchPending = true;
-		__dispatchLock.release();
-		#end
-	}
-
-	@:noCompletion private function __detachDispatchListener():Void {
-		#if (cpp || neko || hl)
-		// What is still queued belongs to the connection being torn down; left
-		// here, a later listen()/connect() on this object would deliver it.
-		while (__dispatchQueue.pop(false) != null) {}
-		__dispatchLock.acquire();
 		__dispatchPending = false;
 		__dispatchLock.release();
 		#end
-
-		var runtime = __runtime;
-		if (runtime == null || !__dispatchAttached) {
-			return;
-		}
-		__dispatchAttached = false;
-		runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
 	}
 
 	@:noCompletion private inline function __captureRuntime():Void {
@@ -878,6 +1095,11 @@ class LocalConnection implements INetConnection implements CloseObservable {
 
 	@:noCompletion private inline function get_connected():Bool {
 		return __connected;
+	}
+
+	@:noCompletion private inline function get_bytesPending():Int {
+		// Read without the lock: a count a moment old.
+		return __outQueued;
 	}
 
 	@:noCompletion private inline function get_readEnabled():Bool {
@@ -932,6 +1154,31 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	@:noCompletion private static function __write(pipe:LocalConnectionHandle, data:BytesData, size:Int):Bool {
 		#if cpp
 		return NativeLocalConnection.__write(pipe, Pointer.ofArray(data), size);
+		#else
+		return false;
+		#end
+	}
+
+	/**
+		As much of `data` from `offset`, `size` bytes, as the channel takes now,
+		without waiting: the bytes written, 0 when it is full, -1 when the
+		connection is gone.
+	**/
+	@:noCompletion private static function __writeSome(pipe:LocalConnectionHandle, data:BytesData, offset:Int, size:Int):Int {
+		#if cpp
+		if (size <= 0) {
+			return 0;
+		}
+		return NativeLocalConnection.__writeSome(pipe, Pointer.arrayElem(data, offset), size);
+		#else
+		return -1;
+		#end
+	}
+
+	/** Lets a listener's client go, keeping it listening for the next; `false` if it cannot. **/
+	@:noCompletion private static function __disconnect(pipe:LocalConnectionHandle):Bool {
+		#if cpp
+		return NativeLocalConnection.__disconnect(pipe);
 		#else
 		return false;
 		#end
