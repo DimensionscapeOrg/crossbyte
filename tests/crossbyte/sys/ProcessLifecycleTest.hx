@@ -86,9 +86,23 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.onShutdown(() -> throw "shutdown callback failure");
 		ProcessLifecycle.onShutdown(() -> order.push(3));
 
+		// Contained, and said: it was swallowed without a word.
+		var errors:Array<String> = [];
+		crossbyte.utils.Logger.recordSink = record -> {
+			if (record.level == crossbyte.utils.LogLevel.ERROR) {
+				errors.push(record.message);
+			}
+		};
 		ProcessLifecycle.requestShutdown();
-		Assert.isTrue(ProcessLifecycle.poll());
+		var dispatched = ProcessLifecycle.poll();
+		crossbyte.utils.Logger.recordSink = null;
+
+		Assert.isTrue(dispatched);
 		Assert.same([1, 3], order);
+		Assert.equals(1, errors.length, "errors logged: " + errors.join(" | "));
+		if (errors.length == 1) {
+			Assert.isTrue(errors[0].indexOf("shutdown callback failure") >= 0, errors[0]);
+		}
 	}
 
 	public function testLateRegistrationRunsImmediately():Void {
@@ -99,9 +113,12 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.onShutdown(() -> lateRan = true);
 		Assert.isTrue(lateRan);
 
-		// A late callback that throws is also contained.
+		// A late callback that throws is also contained, and logged.
+		var logged = 0;
+		crossbyte.utils.Logger.recordSink = record -> logged++;
 		ProcessLifecycle.onShutdown(() -> throw "late failure");
-		Assert.pass();
+		crossbyte.utils.Logger.recordSink = null;
+		Assert.equals(1, logged);
 	}
 
 	public function testNullCallbackIsIgnored():Void {
