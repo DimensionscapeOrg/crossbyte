@@ -44,6 +44,8 @@ import haxe.ds.IntMap;
 @:access(crossbyte.rpc.RPCSession)
 abstract class RPCCommands {
 	@:noCompletion private var __nc:NetConnection;
+	// The session these are bound to, for what it asks of every call.
+	@:noCompletion private var __session:Null<RPCSession<Dynamic, Dynamic>> = null;
 	@:noCompletion private var __requestIdSeed:Int = 0;
 	@:noCompletion private var __pendingResponseId:Int = 0;
 	@:noCompletion private var __pendingResponse:RPCResponse<Dynamic> = null;
@@ -63,6 +65,7 @@ abstract class RPCCommands {
 	@:noCompletion private function __createResponse<T>(op:Int):RPCResponse<T> {
 		final requestId:Int = __nextRequestId();
 		final response = new RPCResponse<T>(requestId, op);
+		response.__commands = this;
 		if (__pendingResponse == null) {
 			__pendingResponseId = requestId;
 			__pendingResponse = cast response;
@@ -71,6 +74,12 @@ abstract class RPCCommands {
 				__pendingResponses = new IntMap();
 			}
 			__pendingResponses.set(requestId, cast response);
+		}
+		// The session's deadline for every call, if it has one; a call
+		// without one arms nothing.
+		final session = __session;
+		if (session != null && session.callTimeout > 0) {
+			response.__arm(session.callTimeout);
 		}
 		return response;
 	}
