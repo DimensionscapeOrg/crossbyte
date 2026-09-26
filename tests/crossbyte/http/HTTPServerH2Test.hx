@@ -430,6 +430,25 @@ class HTTPServerH2Test extends utest.Test {
 	}
 	#end
 
+	public function testAThrowServingTheFirstHttp11RequestIsA500(async:Async):Void {
+		// A cleartext HTTP/2 listener reads the first bytes to tell the
+		// versions apart, and the handler it passed them to parsed them outside
+		// the catch every later read goes through: what serving that request
+		// threw went up through the socket's dispatch into the runtime's pump.
+		var root = File.createTempDirectory();
+		var config = new HTTPServerConfig("127.0.0.1", 0, root);
+		config.http2Enabled = true;
+		config.rateLimiter = new ThrowingRateLimiter();
+		var server = new HTTPServer(config);
+
+		HTTPTestSupport.exchangeEach(server, ["GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"], function(responses):Void {
+			try server.close() catch (_:Dynamic) {}
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
+			Assert.equals(500, responses[0].status);
+			async.done();
+		});
+	}
+
 	public function testHttp11IsStillServedOnAnHttp2Listener(async:Async):Void {
 		// The listener offers both. A cleartext port cannot negotiate -- RFC
 		// 9113 3.1 retired the h2c upgrade -- so this is decided by looking at
@@ -805,6 +824,13 @@ class HTTPServerH2Test extends utest.Test {
 		if (payload.length > 0) {
 			out.addBytes(payload, 0, payload.length);
 		}
+	}
+}
+
+/** A limiter that throws: something the parse path calls outside any middleware. */
+private class ThrowingRateLimiter extends crossbyte.net.RateLimiter {
+	override public function isRateLimited(key:String):Bool {
+		throw "the limiter broke";
 	}
 }
 
