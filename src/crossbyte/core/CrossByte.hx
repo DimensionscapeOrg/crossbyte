@@ -122,16 +122,11 @@ final class CrossByte extends EventDispatcher {
 	}
 	
 	#if target.threaded
-	// Guards cross-thread access to the list of runtimes (__runtimes) and the
-	// published primordial state (__primordial/__primordialThread). Acquired
-	// around mutation in __setup()/__runEventLoop()/exit()/__finalizeExit()
-	// and around the happens-before publish/read of the primordial fields.
+	// Guards cross-thread access to each runtime's children and the published
+	// primordial state (__primordial/__primordialThread). Acquired around
+	// mutation in make()/exit()/__finalizeExit() and around the
+	// happens-before publish/read of the primordial fields.
 	@:noCompletion private static var __registryLock:Mutex = new Mutex();
-
-	// Every runtime other than the primordial one that has not yet exited.
-	// A list rather than a map keyed by thread: eval hands out a new Thread
-	// value for every Thread.current() call, so keys by identity never match.
-	@:noCompletion private static var __runtimes:Array<CrossByte> = [];
 
 	// Which runtime each thread belongs to. On every threaded target: this
 	// used to be native only, and elsewhere current() answered the primordial
@@ -152,23 +147,63 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Public Static Methods ====
 	/**
-	 * Creates a non-primordial CrossByte child runtime.
+	 * Creates a non-primordial CrossByte child runtime, running its own loop
+	 * on a thread of its own.
 	 *
 	 * This is the intended entry point for additional threaded CrossByte
 	 * instances after the primordial application has already been established.
+	 *
+	 * The child belongs to the runtime that made it, the calling thread's,
+	 * or the primordial one from a thread with none, and exits with it, so
+	 * a process whose primordial runtime has exited ends rather than waiting
+	 * on children nobody is going to stop.
+	 *
+	 * ```haxe
+	 * var simulation = CrossByte.make(DEFAULT, WHEEL, child -> {
+	 *     child.tps = 60;
+	 *     child.addEventListener(Event.INIT, _ -> startSimulation());
+	 * });
+	 * ```
 	 *
 	 * @param loopType The loop strategy to use for the child runtime.
 	 * @param timers Which structure schedules its timers. Per runtime rather
 	 *        than per process, so a thread holding a timer per entity and one
 	 *        holding a handful need not agree.
+	 * @param configure Called with the child on the calling thread before the
+	 *        child's thread starts: the place to set `tps` and add `INIT`
+	 *        and `EXIT` listeners. The thread used to start inside `make()`,
+	 *        so anything done to the returned runtime raced its first frame
+	 *        and an INIT listener added afterwards could miss INIT entirely.
 	 * @return The newly created non-primordial CrossByte instance.
 	 */
-	public static function make(loopType:MainLoopType = DEFAULT, timers:TimerStrategy = HEAP):CrossByte {
+	public static function make(loopType:MainLoopType = DEFAULT, timers:TimerStrategy = HEAP, ?configure:CrossByte->Void):CrossByte {
 		if (__primordial == null) {
 			throw new IllegalOperationError("CrossByte.make() requires a primordial CrossByte instance. Create an Application, HostApplication, ServerApplication, or primordial CrossByte before creating child runtimes.");
 		}
 
 		var instance:CrossByte = new CrossByte(false, loopType, false, timers);
+
+		if (configure != null) {
+			try {
+				configure(instance);
+			} catch (error:Dynamic) {
+				// Never started, so no loop will finish it: done here.
+				instance.exit();
+				instance.__finalizeExit();
+				#if cpp
+				cpp.Lib.rethrow(error);
+				#else
+				throw error;
+				#end
+			}
+		}
+
+		if (instance.__getRunning()) {
+			EntryPoint.addThread(instance.__runEventLoop);
+		} else {
+			// Exited from inside configure: there is nothing to start.
+			instance.__finalizeExit();
+		}
 		return instance;
 	}
 
@@ -356,11 +391,18 @@ final class CrossByte extends EventDispatcher {
 	#end
 	#if target.threaded
 	// The thread this runtime is bound to (its loop thread, or the host pump
-	// thread). exit() deregisters the runtime even when called from another
-	// thread, and __didDeregister makes the deregistration idempotent.
+	// thread).
 	@:noCompletion private var __ownerThread:Thread;
-	@:noCompletion private var __didDeregister:Bool = false;
 	#end
+
+	// The runtime this one belongs to, and the ones that belong to it; see
+	// make(). Changed under __registryLock on threaded targets, since a child
+	// exits on its own thread. exit() leaves the parent's list even when
+	// called from another thread, and __didDeregister makes that idempotent.
+	@:noCompletion private var __parent:CrossByte = null;
+	@:noCompletion private var __children:Array<CrossByte> = null;
+	@:noCompletion private var __childrenReleased:Bool = false;
+	@:noCompletion private var __didDeregister:Bool = false;
 
 	@:noCompletion private var __loopType:MainLoopType;
 	@:noCompletion private var __timer:TimerScheduler;
@@ -447,10 +489,15 @@ final class CrossByte extends EventDispatcher {
 		__setRunning(false);
 		#if target.threaded
 		__registryLock.acquire();
+		#end
 		if (!__didDeregister) {
 			__didDeregister = true;
-			__runtimes.remove(this);
+			var parent:CrossByte = __parent;
+			if (parent != null && parent.__children != null) {
+				parent.__children.remove(this);
+			}
 		}
+		#if target.threaded
 		__registryLock.release();
 		#end
 		if (__usesHostLoop) {
@@ -846,7 +893,15 @@ final class CrossByte extends EventDispatcher {
 
 		__timer = new TimerScheduler(__timerStrategy);
 		__timer.onError = __timerThrew;
-		CBTimer.bindCurrentThread(__timer);
+		if (__isPrimordial || __usesHostLoop) {
+			// This thread is the runtime's own: the primordial one's, or the
+			// one that will pump it. A child made with make() runs on a thread
+			// of its own and binds its timers there, from its loop; binding
+			// them here took over the timers of whichever thread called make(),
+			// so a timer that thread armed afterwards, a heartbeat, a
+			// retransmit, ran on the child's thread instead.
+			CBTimer.bindCurrentThread(__timer);
+		}
 		tps = DEFAULT_TICKS_PER_SECOND;
 		mainLoop = switch (__loopType) {
 			case POLL: __pollBasedMainLoop;
@@ -858,6 +913,18 @@ final class CrossByte extends EventDispatcher {
 		__getSleepAccuracy();
 		#end
 
+		if (!__isPrimordial) {
+			// Found before a host-driven child claims this thread below, or it
+			// would find itself.
+			var parent:CrossByte = __currentOrNull();
+			if (parent == null) {
+				parent = __primordial;
+			}
+			if (parent != null) {
+				parent.__adopt(this);
+			}
+		}
+
 		if (__usesHostLoop) {
 			#if target.threaded
 			// Publish registry + primordial state under the lock so it is visible
@@ -867,8 +934,6 @@ final class CrossByte extends EventDispatcher {
 			if (__isPrimordial) {
 				__primordial = this;
 				__primordialThread = currentThread;
-			} else {
-				__runtimes.push(this);
 			}
 			__registryLock.release();
 			__ownerThread = currentThread;
@@ -899,13 +964,59 @@ final class CrossByte extends EventDispatcher {
 			__primordial = this;
 			#end
 			__adoptEarlyTimers();
-		} else {
-			#if target.threaded
-			__registryLock.acquire();
-			__runtimes.push(this);
-			__registryLock.release();
-			#end
-			EntryPoint.addThread(__runEventLoop);
+		}
+		// A child's thread is started by make(), once whoever made it has had
+		// the chance to configure it.
+	}
+
+	/**
+	 * Takes `child` as one of this runtime's own, to be exited when this one
+	 * exits. A runtime that has already begun exiting exits it at once
+	 * instead, so nothing it makes on the way out outlives it.
+	 */
+	@:noCompletion private function __adopt(child:CrossByte):Void {
+		#if target.threaded
+		__registryLock.acquire();
+		#end
+		var adopted:Bool = !__childrenReleased;
+		if (adopted) {
+			if (__children == null) {
+				__children = [];
+			}
+			__children.push(child);
+			child.__parent = this;
+		}
+		#if target.threaded
+		__registryLock.release();
+		#end
+
+		if (!adopted) {
+			child.exit();
+		}
+	}
+
+	/**
+	 * Exits every runtime this one made. Called as this one finishes exiting,
+	 * after its own EXIT, so an EXIT handler can still reach them. On the
+	 * primordial runtime that is every runtime in the process, transitively:
+	 * a child used to keep running, and the process with it, after the
+	 * primordial runtime had exited and nothing was left to stop it.
+	 */
+	@:noCompletion private function __exitChildren():Void {
+		#if target.threaded
+		__registryLock.acquire();
+		#end
+		var children:Array<CrossByte> = __children;
+		__children = null;
+		__childrenReleased = true;
+		#if target.threaded
+		__registryLock.release();
+		#end
+
+		if (children != null) {
+			for (child in children) {
+				child.exit();
+			}
 		}
 	}
 
@@ -1121,7 +1232,13 @@ final class CrossByte extends EventDispatcher {
 	// __didExit, so it cannot repair a claim made after that.
 	@:noCompletion private function __releaseThreadLocal():Void {
 		#if target.threaded
-		if (__threadLocalStorage.value != this) {
+		var owner:CrossByte = __threadLocalStorage.value;
+		if (owner != this) {
+			// Pumped here once but no longer the thread's runtime: its timers
+			// still go back to the one that is.
+			if (CBTimer.currentOrNull() == __timer) {
+				CBTimer.bindCurrentThread(owner != null ? owner.__timer : null);
+			}
 			return;
 		}
 
@@ -1130,12 +1247,18 @@ final class CrossByte extends EventDispatcher {
 		var primordialThread:Thread = __primordialThread;
 		__registryLock.release();
 
-		if (!__isPrimordial && primordial != null && primordialThread != null && Thread.current() == primordialThread) {
-			__threadLocalStorage.value = primordial;
-		} else {
-			__threadLocalStorage.value = null;
-		}
+		var handBack:CrossByte = (!__isPrimordial && primordial != null && primordialThread != null && Thread.current() == primordialThread) ? primordial : null;
+		__threadLocalStorage.value = handBack;
+		#else
+		var handBack:CrossByte = (!__isPrimordial && __primordial != this) ? __primordial : null;
 		#end
+
+		// The thread's timers go back with it. They were left on this runtime,
+		// which will never advance them again, so a timer armed on the thread
+		// afterwards simply never fired.
+		if (CBTimer.currentOrNull() == __timer) {
+			CBTimer.bindCurrentThread(handBack != null ? handBack.__timer : null);
+		}
 	}
 
 	@:noCompletion private function __finalizeExit():Void {
@@ -1150,6 +1273,7 @@ final class CrossByte extends EventDispatcher {
 		// Whatever the last pass, or an exit handler, left held goes out while
 		// the sockets are still there to send it.
 		__flushHeld();
+		__exitChildren();
 		#if !js
 		if (__socketRegistry != null) {
 			__socketRegistry.clear();
