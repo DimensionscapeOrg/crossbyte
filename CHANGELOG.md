@@ -5,6 +5,18 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `HTTPServerConfig.maxRequestBodySize`, the request body a server accepts,
+  on the wire and once decoded, over HTTP/1.1 and HTTP/2; one megabyte by
+  default, as before. It was fixed, and it counted the headers too. A body
+  past it is now `413`, refused on its `Content-Length` before any of it is
+  read and on a chunk's size line for a chunked one; a `Content-Length` past
+  the old fixed limit was answered `400`. A header block has its own limit,
+  64 KB, answered `431`.
+- `HTTPServerConfig.onExpectContinue(handler)`, asked with a request's
+  method, path and headers before a client sending `Expect: 100-continue` is
+  told to send its body. Returning `false` after answering -- a `401`, say --
+  keeps the body from being sent at all. The server used to tell every such
+  client to go ahead before any middleware had seen the request.
 - `HTTPServerConfig.onError(handler, error)`, called when a middleware or
   route throws or passes an error to `next()`. It can answer the request
   itself -- a JSON error body, say -- and otherwise the server answers `500`,

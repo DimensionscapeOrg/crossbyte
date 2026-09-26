@@ -70,7 +70,7 @@ class H2ConnectionHandler {
 		__connection.resetWindowSeconds = config.http2ResetWindowSeconds;
 		// The limit an HTTP/1.1 body is held to. Without it DATA piled up for
 		// as long as a client sent it.
-		__connection.maxRequestBodySize = HTTPRequestHandler.MAX_BUFFER_SIZE;
+		__connection.maxRequestBodySize = config.maxRequestBodySize;
 		__connection.onRequest = __serve;
 		__connection.onConnectionError = __onConnectionError;
 
@@ -111,6 +111,13 @@ class H2ConnectionHandler {
 		__connection.receive(inbound, 0, inbound.length);
 	}
 
+	/** Whether a drain has started here and every stream it let finish has. */
+	public var drained(get, never):Bool;
+
+	private inline function get_drained():Bool {
+		return __connection.goingAway && __connection.openStreams == 0 && __socket.connected;
+	}
+
 	/**
 	 * Closes the connection if it has gone quiet for longer than allowed.
 	 *
@@ -126,13 +133,6 @@ class H2ConnectionHandler {
 	 * @param now `haxe.Timer.stamp()`, as the server's sweep reads it once
 	 *        for every handler it visits, HTTP/1.1 and HTTP/2 alike.
 	 */
-	/** Whether a drain has started here and every stream it let finish has. */
-	public var drained(get, never):Bool;
-
-	private inline function get_drained():Bool {
-		return __connection.goingAway && __connection.openStreams == 0 && __socket.connected;
-	}
-
 	public function checkDeadline(now:Float):Void {
 		// A draining connection ends when its last stream does.
 		if (drained) {
