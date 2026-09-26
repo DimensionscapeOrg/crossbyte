@@ -712,6 +712,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP server and clients read every other number a peer sends the same
+  way on every target, through `IntParse`: a byte range, a chunk size, the
+  port in a `Host` header or a URL, a cookie's `Max-Age`, a response's status
+  and, on Node, its length. `Std.parseInt` answers four ways past an `Int`, so
+  on Linux native `Range: bytes=4294967296-` was a range from byte 0, a
+  `Max-Age=4294967296` deleted a cookie meant to last a century, and an
+  HTTP/2 `:status` of 4294967496 was a 200; on the jvm the last two threw out
+  of the whole request. A status is now exactly three digits, a range number
+  past an `Int` reaches past any file, and a `Host` of `[::1]:8080` is no
+  longer named `[`. Ranges, chunk sizes, status lines, URL ports and
+  `If-Modified-Since` dates are read by hand rather than by a regular
+  expression compiled on every call.
 - A request can no longer be smuggled inside another through a
   `Content-Length` too large for an `Int`. The server checked the field was
   all digits and then trusted `Std.parseInt`, which on Linux and macOS

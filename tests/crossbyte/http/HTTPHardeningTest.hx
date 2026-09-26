@@ -2,6 +2,7 @@ package crossbyte.http;
 
 import crossbyte.net.RateLimiter;
 import crossbyte._internal.http.HttpSyntax;
+import crossbyte.test.Require;
 import utest.Assert;
 
 /**
@@ -46,6 +47,59 @@ class HTTPHardeningTest extends utest.Test {
 		Assert.equals(-1, HTTPRequestHandler.__parseContentLength(""));
 		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("5,"));
 		Assert.equals(-1, HTTPRequestHandler.__parseContentLength(null));
+	}
+
+	/**
+		A byte range is read the same on every target. `bytes=4294967296-`
+		was a range from 0 on Linux native and threw on the jvm.
+	**/
+	public function testRangePastAnIntIsReadAsAHugeNumber():Void {
+		// A start past every file is unsatisfiable...
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=4294967296-", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=4294967296-4294967300", 100));
+		// ...an end or a suffix past it covers the whole file (RFC 9110 14.1.2).
+		__range(0, 99, HTTPRequestHandler.__parseRange("bytes=0-4294967296", 100));
+		__range(0, 99, HTTPRequestHandler.__parseRange("bytes=-4294967296", 100));
+	}
+
+	public function testRangeKeepsItsOrdinaryAnswers():Void {
+		__range(5, 99, HTTPRequestHandler.__parseRange("bytes=5-", 100));
+		__range(90, 99, HTTPRequestHandler.__parseRange("bytes=-10", 100));
+		__range(0, 0, HTTPRequestHandler.__parseRange("bytes=0-0", 100));
+		__range(10, 20, HTTPRequestHandler.__parseRange(" bytes=10-20 ", 100));
+		__range(0, 1, HTTPRequestHandler.__parseRange("BYTES=0-1", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=10-5", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=100-", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=-0", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=-", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=+5-10", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=0-1,5-6", 100));
+		Assert.isNull(HTTPRequestHandler.__parseRange("items=0-1", 100));
+		// Nothing of an empty file can be satisfied.
+		Assert.isNull(HTTPRequestHandler.__parseRange("bytes=-5", 0));
+	}
+
+	public function testHttpDateIsReadByPosition():Void {
+		var date:Date = HTTPRequestHandler.__parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
+		Require.notNull(date);
+		Assert.equals(784111777000.0, date.getTime());
+		Assert.notNull(HTTPRequestHandler.__parseHttpDate("  Sun, 06 Nov 1994 08:49:37 GMT  "));
+
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, 06 Foo 1994 08:49:37 GMT"));
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, 06 Nov 1994 08:49:37 UTC"));
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, 6 Nov 1994 08:49:37 GMT"));
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, +6 Nov 1994 08:49:37 GMT"));
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT"));
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate(""));
+	}
+
+	private static function __range(start:Int, end:Int, range:{start:Int, end:Int}, ?pos:haxe.PosInfos):Void {
+		if (range == null) {
+			Assert.fail("expected " + start + "-" + end + ", got no range", pos);
+			return;
+		}
+		Assert.equals(start, range.start, pos);
+		Assert.equals(end, range.end, pos);
 	}
 
 	public function testSanitizeHeaderValueStripsCrLf():Void {
