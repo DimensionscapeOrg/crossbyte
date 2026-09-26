@@ -1049,11 +1049,10 @@ class HttpTest extends utest.Test {
 	}
 	#end
 
-	#if !(eval || java || jvm)
+	#if !eval
 	// Not on eval, where a read that times out raises a native Unix_error no
-	// Haxe catch can see, and so ends the process. Not on the jvm, where
-	// sys.net.Socket.setTimeout stores the value and nothing reads it, so no
-	// read there times out at all, this client's or the fixture's.
+	// Haxe catch can see, and so ends the process. On the jvm since
+	// sys.net.Socket.setTimeout reaches a blocking read there.
 	public function testTheIdleTimeoutIsInMilliseconds():Void {
 		// The socket was handed the milliseconds as seconds, so this waited
 		// until the server gave up, three seconds on, rather than 300 ms.
