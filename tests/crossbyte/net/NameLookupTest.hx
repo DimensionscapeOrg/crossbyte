@@ -741,6 +741,76 @@ class NameLookupTest extends utest.Test {
 		});
 	}
 
+	/**
+		A server asked for its public address by a STUN server's name that
+		does not resolve fails the question at once. The send looked the name
+		up off the runtime's thread, and a name that did not resolve failed as
+		an `ioError` on the socket every session shares, which nothing told
+		the question of -- so it waited out its whole deadline, as
+		`StunClient` did until it listened for one.
+	**/
+	@:timeout(20000)
+	public function testAServerAskingAMissingNameForItsAddressFailsAtOnce(async:Async):Void {
+		var server = new ReliableDatagramServerSocket();
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var name:String = __missingName();
+		var started:Float = haxe.Timer.stamp();
+		// Long enough that reaching it cannot pass for failing at once.
+		var question = server.discoverPublicAddress(name, 3478, 20000);
+
+		NetPump.until(() -> question.completed, 12.0, function(_) {
+			var took:Float = haxe.Timer.stamp() - started;
+			Assert.isTrue(question.completed, 'still waiting after ${Math.round(took)} s for a name that cannot resolve');
+			Assert.isFalse(question.succeeded);
+			Assert.isTrue(question.error != null && question.error.indexOf(name) >= 0, "the failure does not name the server: " + question.error);
+			try server.close() catch (_:Dynamic) {}
+			async.done();
+		});
+	}
+
+	/**
+		A STUN server given by name rather than by address is asked, through
+		one lookup off the runtime's thread, and its answer believed.
+	**/
+	@:timeout(15000)
+	public function testAServerAsksAStunServerByName(async:Async):Void {
+		var stun = new DatagramSocket();
+		stun.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			var request = crossbyte.net._internal.stun.StunMessage.decode(e.data);
+			if (request == null || request.type != crossbyte.net._internal.stun.StunMessage.BINDING_REQUEST) {
+				return;
+			}
+			var reply = new crossbyte.net._internal.stun.StunMessage(crossbyte.net._internal.stun.StunMessage.BINDING_SUCCESS, request.transactionId,
+				[crossbyte.net._internal.stun.StunMessage.xorMappedAddress("198.51.100.23", 61000)]);
+			var payload = reply.encode();
+			stun.send(payload, 0, payload.length, e.srcAddress, e.srcPort);
+		});
+		stun.bind(0, "127.0.0.1");
+		stun.receive();
+
+		var server = new ReliableDatagramServerSocket();
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> stun.localPort != 0 && server.localPort != 0, 5.0, function(_) {
+			var lookups:Int = crossbyte._internal.net.Resolver.__started;
+			var question = server.discoverPublicAddress("localhost", stun.localPort, 5000);
+			Assert.equals(lookups + 1, crossbyte._internal.net.Resolver.__started, "the name was not looked up off the runtime's thread");
+
+			NetPump.until(() -> question.completed, 8.0, function(_) {
+				Assert.isTrue(question.succeeded, "asking a STUN server by name failed: " + question.error);
+				if (question.succeeded) {
+					Assert.equals("198.51.100.23", question.result.address);
+					Assert.equals(61000, question.result.port);
+				}
+				try server.close() catch (_:Dynamic) {}
+				stun.close();
+				async.done();
+			});
+		});
+	}
 	#end
 
 	private static function __missingName():String {
