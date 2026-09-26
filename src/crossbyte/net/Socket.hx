@@ -55,7 +55,7 @@ import sys.net.Socket as SysSocket;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket {
+class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket #if nodejs implements crossbyte.core._internal.PassFlush #end {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -156,8 +156,20 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	public var registryClosed(get, never):Bool;
 
-	@SuppressWarnings("checkstyle:FieldDocComment")
-	@:noCompletion @:dox(hide) public var secure:Bool;
+	/**
+		Whether this connection runs over TLS.
+
+		Set it before `connect()` on a `WebSocket` to dial `wss://` rather
+		than `ws://`; the server's certificate is then checked, see
+		`WebSocket.verifyCert`. In a browser a socket always uses `wss://` on
+		a page served over HTTPS, since the page may not open anything less.
+		On a socket a `ServerSocket` accepted, it says whether the listener
+		terminated TLS for it.
+
+		A plain `Socket` client on a native target does not start TLS from
+		this: it is a TCP connection, and reads the setting only to report it.
+	**/
+	public var secure:Bool;
 
 	/**
 		Indicates the number of milliseconds to wait for a connection.
@@ -242,7 +254,26 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var outputBufferLength(get, never):Int;
 
 	@:noCompletion private function get_outputBufferLength():Int {
-		return __output == null ? 0 : __output.length;
+		var buffered:Int = __output == null ? 0 : __output.length - __outputSent;
+
+		#if nodejs
+		// Node takes every write whole and queues what the kernel will not,
+		// so this side's buffer is empty after each flush and the backlog is
+		// Node's. Counting only ours read 0 for a peer that had stopped
+		// reading with megabytes queued -- and so maxOutputBufferSize, which
+		// is measured against this, could never be reached on Node.
+		if (__socket != null) {
+			buffered += __socket.writableLength;
+		}
+		#elseif (js && !nodejs)
+		// The same in a page, whose WebSocket queues what the network has not
+		// taken yet and reports it as bufferedAmount.
+		if (__socket != null) {
+			buffered += __socket.bufferedAmount;
+		}
+		#end
+
+		return buffered;
 	}
 
 	/**
@@ -260,8 +291,27 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Set it to `null` when the transfer ends. The callback runs inside
 		the registry's drain, so it must not close this socket's registry
 		registration out from under the loop; closing the socket is fine.
+
+		On Node it runs after each pass's flush, and from the tick while it is
+		set -- the one thing a Node socket is ticked for.
 	**/
-	@:noCompletion public var __onWritableDrain:Void->Void;
+	@:noCompletion public var __onWritableDrain(default, set):Void->Void;
+
+	@:noCompletion private function set___onWritableDrain(value:Void->Void):Void->Void {
+		__onWritableDrain = value;
+		#if nodejs
+		__syncNodeTick();
+		#end
+		return value;
+	}
+
+	#if nodejs
+	// The runtime this socket's writes are flushed by; whether a flush is
+	// already asked for this pass; and whether it is being ticked.
+	@:noCompletion private var __nodeRuntime:CrossByte = null;
+	@:noCompletion private var __flushQueued:Bool = false;
+	@:noCompletion private var __ticking:Bool = false;
+	#end
 
 	/**
 	 * Bytes handed to one `readBytes` call. Larger than the 4 KB this used to
@@ -280,6 +330,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 * quadratic in the number of arrivals.
 	 */
 	@:noCompletion private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
+	@:noCompletion private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 
 	/**
 	 * One read buffer per thread rather than one per socket.
@@ -355,14 +406,42 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __host:String;
 	@:noCompletion private var __input:ByteArray;
 	@:noCompletion private var __output:ByteArray;
+	// How much of the front of __output the system has already taken; see
+	// __retainPendingOutput.
+	@:noCompletion private var __outputSent:Int = 0;
 	@:noCompletion private var __port:Int;
 	@:noCompletion private var __socket:#if sys SysSocket #else Dynamic #end;
 	@:noCompletion private var __timestamp:Float;
 	@:noCompletion private var __peerShutdown:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __isConnecting:Bool;
+	// Whether the name connect() was given is still being looked up.
+	@:noCompletion private var __resolving:Bool = false;
+	// The tick listener a connect in progress is driven by; see
+	// __startConnecting.
+	@:noCompletion private var __connectingTick:TickEvent->Void = null;
 	@:noCompletion private var __isDirty = false;
 	@:noCompletion private var flushFull:Bool = false;
+	// Whether the close underway throws unsent output away rather than
+	// sending it first: set when the output limit closes a peer that is not
+	// reading, which is the case the limit exists to reclaim memory from.
+	@:noCompletion private var __discardOnClose:Bool = false;
+
+	// Whether CLOSE has been dispatched for the connection this socket holds.
+	// A connection ends once, and is announced once: several paths can see
+	// the end of the same one -- the read that met its FIN, a close() from a
+	// listener, Node's close event after its end event -- and two of them
+	// firing turned one hang-up into two, so an application counting live
+	// connections drifted by one each time.
+	@:noCompletion private var __closeAnnounced:Bool = false;
+
+	@:noCompletion private function __announceClose():Void {
+		if (__closeAnnounced) {
+			return;
+		}
+		__closeAnnounced = true;
+		__dispatchPooledSimpleEvent(Event.CLOSE);
+	}
 	// Hot socket events are reused to reduce steady-state allocation churn.
 	// These events are ephemeral during dispatch and must not be retained.
 	@:noCompletion private var __pooledConnectEvent:Event;
@@ -434,7 +513,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			var wasConnected:Bool = __connected;
 			__cleanSocket();
 			if (wasConnected) {
-				__dispatchPooledSimpleEvent(Event.CLOSE);
+				__announceClose();
 			}
 		} else {
 			throw new IOError("Operation attempted on invalid socket.");
@@ -449,6 +528,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		A host that cannot be resolved is reported as an `ioError` event rather
 		than thrown, so a listener is the only way to see it.
+
+		A name is looked up off the runtime's thread, so nothing else on the
+		runtime waits on the resolver, and `timeout` counts the lookup as part
+		of the attempt.
 
 		@param host The name or IP address of the host to connect to.
 		@param port The port number to connect to.
@@ -473,15 +556,21 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// no resolver to offer, so neither needs a Host looked up first.
 		__timestamp = Timer.stamp();
 		#else
+		// An address is taken as it is. A name is looked up off the runtime's
+		// thread -- see below -- where it used to be looked up here, holding
+		// every socket and timer on the runtime for as long as the resolver
+		// took: a second, for a name that does not exist.
 		var h:Host = null;
 
-		try {
-			h = new Host(host);
-		} catch (e:Dynamic) {
-			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+		if (!crossbyte._internal.net.Resolver.needsLookup(host)) {
+			try {
+				h = new Host(host);
+			} catch (e:Dynamic) {
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+				}
+				return;
 			}
-			return;
 		}
 
 		__timestamp = haxe.Timer.stamp();
@@ -493,9 +582,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__closed = false;
 		__isDirty = false;
 		flushFull = false;
+		__discardOnClose = false;
+		// A new connection, which has neither ended nor been announced as
+		// ending; a socket reused after a half-close otherwise never read
+		// again.
+		__closeAnnounced = false;
+		__peerShutdown = false;
 
 		__output = new ByteArray();
 		__output.endian = __endian;
+		__outputSent = 0;
 
 		__input = new ByteArray();
 		__input.endian = __endian;
@@ -524,15 +620,23 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// WebSocket path above already has: events feed __input and the tick
 		// only drains what has arrived. There is no descriptor to poll and
 		// nothing to register with the runtime.
-		var node = new NodeSocket();
+		// Half-open, so the peer's FIN is this socket's to act on; see
+		// socket_onEnd.
+		var node = new NodeSocket({allowHalfOpen: true});
 		__socket = node;
 		node.on(SocketEvent.Connect, function() {
-			socket_onOpen(null);
+			try {
+				socket_onOpen(null);
+			} catch (e:Dynamic) {
+				__contain(e, Event.CONNECT);
+			}
 		});
 		__bindNodeSocket(node);
 		node.connect({port: port, host: host});
 
-		CrossByte.current().addEventListener(TickEvent.TICK, this_onTick);
+		// Not ticked: a write asks for a flush at the end of the pass, and
+		// Node reports everything else as an event. See __syncNodeTick.
+		__nodeRuntime = CrossByte.current();
 		#else
 		__socket = new SysSocket();
 		@:privateAccess
@@ -542,6 +646,41 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw "Socket can only be initiated in a CrossByte threaded instance";
 		}
 
+		if (h == null) {
+			// The socket exists while the name is looked up, so close() works
+			// meanwhile; the answer is acted on only if this is still the
+			// connection it was asked for. The tick runs meanwhile too, for
+			// the deadline: the attempt's timeout counts the lookup.
+			var asked:SysSocket = __socket;
+			__resolving = true;
+			__startConnecting();
+			crossbyte._internal.net.Resolver.resolve(host, function(resolved:Null<Host>, failure:Null<String>):Void {
+				if (__socket != asked || !__resolving) {
+					return;
+				}
+				__resolving = false;
+				__stopConnecting();
+
+				if (resolved == null) {
+					__cleanupFailedConnect();
+					if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+						dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host: " + host + " did not resolve (" + failure + ")"));
+					}
+					return;
+				}
+
+				__beginConnect(resolved, port);
+			});
+			return;
+		}
+
+		__beginConnect(h, port);
+		#end
+	}
+
+	#if !js
+	/** Connects to an address already resolved; the rest of `connect()`. **/
+	@:noCompletion private function __beginConnect(h:Host, port:Int):Void {
 		try {
 			__socket.setBlocking(false);
 			__socket.connect(h, port);
@@ -593,8 +732,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// socket that has never been pumped.
 		__startConnecting();
 		#end
-		#end
 	}
+	#end
 
 	/**
 		Flushes any accumulated data in the socket's output buffer.
@@ -619,23 +758,89 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		if (__output.length > 0) {
+		#if !js
+		if (!__connected) {
+			// Still connecting, or still looking the name up: what was
+			// written waits, and goes from the tick that announces CONNECT.
+			// Written now it failed -- "not connected", on Windows -- and the
+			// tick's own flush reported that as an ioError on every tick
+			// until the connect finished.
+			__enforceOutputLimit();
+			return;
+		}
+		#end
+
+		if (__output.length > __outputSent) {
+			#if (js && !nodejs)
+			// A page's WebSocket sends only once open. Until then -- and it is
+			// what connect() leaves it as -- the bytes wait here: send() on a
+			// connecting WebSocket throws, and this runs from the tick.
+			if (__socket.readyState != WebSocket.OPEN) {
+				return;
+			}
+			#end
 			try {
 				#if (js && !nodejs)
-				var buffer:ArrayBuffer = (__output : haxe.io.Bytes).getData();
-				if (buffer.byteLength > __output.length)
-					buffer = buffer.slice(0, __output.length);
-				__socket.send(buffer);
+				// Sent, then cleared. The buffer was never cleared, and the tick
+				// flushes every pass, so one write went out again on every
+				// tick for as long as the connection lasted: an 11-byte write
+				// reached the server as 25 messages in two seconds. send()
+				// copies what it is given, so a view is enough.
+				var pending:Int = __output.length;
+				__socket.send(new js.lib.Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending));
+				__retainPendingOutput(pending, pending);
 		#elseif nodejs
-				// A view over the pending bytes rather than a copy of them; Node
-				// accepts a Uint8Array directly and takes its own reference.
+				// Copied, not viewed. Node holds what it is handed until the
+				// kernel takes it, and __output is cleared and refilled by the
+				// very next write -- clear() resets the length and keeps the
+				// storage -- so a view let later writes overwrite bytes still
+				// queued. A reader slower than the writer got the wrong data:
+				// ten 1 MB messages to a paused client arrived as the first
+				// five and then 5 MB of the last. __output keeps its capacity
+				// for the next write.
+				//
+				// Two ways to copy, by size, from measuring the write-and-flush
+				// loop over loopback: a small copy from Node's own pool costs
+				// half what a fresh one does, and from a kilobyte up a native
+				// slice was the quicker. Handing over __output's storage and
+				// starting a new one was slower than either.
 				var pending:Int = __output.length;
 				var view = new Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending);
-				__socket.write(view);
+				if (pending < 1024) {
+					var copy:js.node.Buffer = js.node.Buffer.allocUnsafe(pending);
+					copy.set(view);
+					__socket.write(copy);
+				} else {
+					__socket.write(view.slice());
+				}
 				__retainPendingOutput(pending, pending);
 				#else
-				var pendingLength = __output.length;
-				var bytesWritten = __socket.output.writeBytes(__output, 0, pendingLength);
+				// From where the last partial write stopped; the JavaScript
+				// branches above take everything, so there it is always 0.
+				//
+				// And written until the socket will take no more, not once. A
+				// TLS socket takes one record a write -- 16 KB -- so a single
+				// write a flush sent 16 KB a pass whatever room the kernel had,
+				// and left the rest to wait for the next.
+				var pendingLength:Int = __output.length - __outputSent;
+				var bytesWritten:Int = 0;
+				try {
+					while (bytesWritten < pendingLength) {
+						var took:Int = __socket.output.writeBytes(__output, __outputSent + bytesWritten, pendingLength - bytesWritten);
+						if (took <= 0) {
+							break;
+						}
+						bytesWritten += took;
+					}
+				} catch (e:Dynamic) {
+					// A block after some was taken is the kernel filling up:
+					// what was taken is kept and the rest waits. Anything else,
+					// or a block before anything was taken, is the flush's to
+					// handle below, as it always was.
+					if (bytesWritten == 0 || !(Std.isOfType(e, Error) && __isBlockedError(cast e))) {
+						throw e;
+					}
+				}
 				__retainPendingOutput(bytesWritten, pendingLength);
 				#end
 			} catch (e:Dynamic) {
@@ -679,11 +884,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// redirect it to a buffer of its own.
 		var limit:Int = maxOutputBufferSize;
 
-		if (limit <= 0 || __output == null || __output.length <= limit) {
+		if (limit <= 0 || __output == null) {
 			return;
 		}
 
-		var buffered:Int = __output.length;
+		// Everything not yet taken by the kernel, which on Node is mostly in
+		// Node's queue rather than in __output.
+		var buffered:Int = outputBufferLength;
+
+		if (buffered <= limit) {
+			return;
+		}
+
 		var message:String = 'Socket output buffer reached $buffered bytes, exceeding the $limit byte limit; the peer is not reading.';
 
 		switch (outputOverflowPolicy) {
@@ -691,6 +903,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
 					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 				}
+				// Dropped, not flushed: the point is to reclaim the memory a
+				// peer that is not reading is holding. Ending a Node socket
+				// instead would keep its whole queue waiting for that peer.
+				__discardOnClose = true;
 				close();
 
 			case THROW:
@@ -1176,14 +1392,29 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// Node did nothing at all: the peer was never sent a FIN and the
 			// handle went on holding the event loop open. end() flushes what
 			// Node still has queued, sends the FIN, and releases the handle
-			// once the peer answers.
-			__socket.end();
+			// once the peer answers -- unless the queue is what is being
+			// reclaimed, when it goes at once.
+			if (__discardOnClose) {
+				__socket.destroy();
+			} else {
+				__socket.end();
+			}
+			#elseif (js && !nodejs)
+			// Detached first, so the close the page reports afterwards does
+			// not arrive at a socket already cleaned up and announce it again.
+			var page:WebSocket = __socket;
+			page.onopen = null;
+			page.onmessage = null;
+			page.onclose = null;
+			page.onerror = null;
+			page.close();
 			#else
 			__socket.close();
 			#end
 		} catch (e:Dynamic) {}
 
 		__stopConnecting();
+		__resolving = false;
 
 		if (__cbInstance != null) {
 			#if !js
@@ -1199,7 +1430,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#if (js && !nodejs)
 		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 		#elseif nodejs
-		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
+		__syncNodeTick();
 		#else
 		__closed = true;
 		#end
@@ -1207,14 +1438,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private inline function __stopConnecting():Void {
 		if (__isConnecting && __cbInstance != null) {
-			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+			__cbInstance.removeEventListener(TickEvent.TICK, __connectingTick);
 			__isConnecting = false;
 		}
 	}
 
 	@:noCompletion private inline function __startConnecting():Void {
 		__isConnecting = true;
-		__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+		// One closure, kept, so the one removed is the one added. On eval two
+		// reads of `this_onTick` are two closures that do not compare equal,
+		// so removing a fresh one removed nothing and the socket went on
+		// being ticked -- a blocking read there, on a socket with nothing to
+		// say, and the runtime hung.
+		if (__connectingTick == null) {
+			__connectingTick = this_onTick;
+		}
+		__cbInstance.addEventListener(TickEvent.TICK, __connectingTick);
 	}
 
 	@:noCompletion private function __tryFlush():Void {
@@ -1248,23 +1487,55 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 	}
 
+	/**
+		Accounts for a write that took `bytesWritten` of the `pendingLength`
+		bytes waiting, from `__outputSent` on.
+
+		What the system took is stepped over rather than cut off. This used to
+		copy everything still waiting into a new buffer on every partial write,
+		so a peer reading slowly behind a large backlog cost a copy of the
+		whole backlog per write the kernel only partly took -- quadratic in
+		the backlog, where the input side had already been fixed. The buffer
+		is compacted only once what has gone is past the threshold and at
+		least as large as what remains, so moving the rest down costs no more
+		than the writes that emptied the front.
+	**/
 	@:noCompletion private function __retainPendingOutput(bytesWritten:Int, pendingLength:Int):Void {
 		if (bytesWritten >= pendingLength) {
 			__isDirty = false;
 			__output.clear();
+			__outputSent = 0;
 			return;
 		}
 
-		var offset = bytesWritten > 0 ? bytesWritten : 0;
-		var remaining = new ByteArray();
-		remaining.endian = __endian;
-		remaining.writeBytes(__output, offset, pendingLength - offset);
-		__output = remaining;
+		if (bytesWritten > 0) {
+			__outputSent += bytesWritten;
+
+			var remaining:Int = pendingLength - bytesWritten;
+			if (__outputSent >= OUTPUT_COMPACT_THRESHOLD && __outputSent >= remaining) {
+				// Allocated and swapped rather than moved within the buffer,
+				// as __compactInput does: an overlapping blit has no defined
+				// behaviour across targets.
+				var carried = new ByteArray();
+				carried.endian = __endian;
+				carried.writeBytes(__output, __outputSent, remaining);
+				__output = carried;
+				__outputSent = 0;
+			}
+		}
 		__isDirty = false;
 		__queueWrite();
 	}
 
 	@:noCompletion private inline function __queueWrite():Void {
+		#if nodejs
+		// Flushed once, at the end of the pass; see __flushPass. Only for a
+		// socket of Node's own: a WebSocket's writes wait for its flush().
+		if (!__flushQueued && __socket != null && __nodeRuntime != null) {
+			__flushQueued = true;
+			__nodeRuntime.__queuePassFlush(this);
+		}
+		#else
 		if (__cbInstance == null) {
 			return;
 		}
@@ -1275,6 +1546,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__cbInstance.queueWritable(this.__socket);
 			#end
 		}
+		#end
 	}
 
 	public inline function registryOnReadable():Void {
@@ -1298,7 +1570,38 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	// Event Handlers
 	@:noCompletion private function socket_onClose(_):Void {
-		__dispatchPooledSimpleEvent(Event.CLOSE);
+		#if (js && !nodejs)
+		// The page's WebSocket has closed, from either end. This dispatched
+		// CLOSE and left everything else as it was: still connected, still
+		// flushed from the tick, for as long as the page stayed open. It is
+		// cleaned up the way a native socket is, and CLOSE is announced only
+		// for a connection that came up -- one that never opened has had its
+		// ioError, as it would natively.
+		var wasConnected:Bool = __connected;
+		if (__socket != null) {
+			__cleanSocket();
+		}
+		if (wasConnected) {
+			__announceClose();
+		}
+		#elseif nodejs
+		// Node's handle is gone, from either end. This dispatched CLOSE and
+		// left the rest as it was: still connected, still holding the handle,
+		// and still flushed from the tick -- one tick listener left behind per
+		// connection, 200 of them after 200 HTTP clients had come and gone.
+		// Released now as a native socket is, and announced once, and only
+		// for a connection that came up: a connect that failed has had its
+		// ioError.
+		var wasConnected:Bool = __connected;
+		if (__socket != null) {
+			__releaseNode();
+		}
+		if (wasConnected) {
+			__announceClose();
+		}
+		#else
+		__announceClose();
+		#end
 	}
 
 	@:noCompletion private function socket_onError(e):Void {
@@ -1356,15 +1659,98 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function __bindNodeSocket(node:NodeSocket):Void {
 		node.setNoDelay(true);
 
+		// Each one contained. These run from Node's event loop, not from
+		// anything of CrossByte's, so a listener that threw -- a data handler
+		// meeting input it could not parse, say -- threw into Node, which
+		// ended the process: every other connection with it.
 		node.on(SocketEvent.Data, function(chunk) {
-			socket_onMessage(chunk);
+			try {
+				socket_onMessage(chunk);
+			} catch (e:Dynamic) {
+				__contain(e, ProgressEvent.SOCKET_DATA);
+			}
+		});
+		node.on(SocketEvent.End, function() {
+			try {
+				socket_onEnd();
+			} catch (e:Dynamic) {
+				__contain(e, Event.PEER_CLOSE);
+			}
 		});
 		node.on(SocketEvent.Error, function(_) {
-			socket_onError(null);
+			try {
+				socket_onError(null);
+			} catch (e:Dynamic) {
+				__contain(e, IOErrorEvent.IO_ERROR);
+			}
 		});
 		node.on(SocketEvent.Close, function(_) {
-			socket_onClose(null);
+			try {
+				socket_onClose(null);
+			} catch (e:Dynamic) {
+				__contain(e, Event.CLOSE);
+			}
 		});
+	}
+
+	/**
+		The peer's FIN: it will send nothing more. What happens next is
+		`peerShutdownPolicy`'s, as it is at the Eof a native read meets.
+
+		Node made the choice itself: a socket without `allowHalfOpen` ends its
+		own side as soon as the peer does, so `HALF_OPEN` was ignored and a
+		peer that half-closed to say "that is my request" never got its answer.
+		Every socket is made half-open now, and this decides.
+	**/
+	@:noCompletion private function socket_onEnd():Void {
+		if (__socket == null) {
+			return;
+		}
+
+		__peerShutdown = true;
+
+		if (peerShutdownPolicy == HALF_OPEN) {
+			__dispatchPooledSimpleEvent(Event.PEER_CLOSE);
+			return;
+		}
+
+		// CLOSE: the end of the connection, as natively. end() sends what is
+		// still queued, then this side's FIN.
+		var wasConnected:Bool = __connected;
+		__cleanSocket();
+		if (wasConnected) {
+			__announceClose();
+		}
+	}
+
+	/**
+		Lets go of a socket Node has already closed: the bookkeeping of
+		`__cleanSocket`, without asking Node to close it again.
+	**/
+	@:noCompletion private function __releaseNode():Void {
+		__stopConnecting();
+		__cbInstance = null;
+		__socket = null;
+		__connected = false;
+		__isDirty = false;
+		flushFull = false;
+		__syncNodeTick();
+	}
+
+	/**
+		A listener threw from inside one of Node's callbacks: logged, and this
+		connection closed, since whatever it was in the middle of cannot be
+		trusted to be finished. The rest of the process carries on.
+	**/
+	@:noCompletion private function __contain(error:Dynamic, event:String):Void {
+		// To report through runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
+		crossbyte.utils.Logger.error('A "$event" listener threw, and the connection it was handling was closed: ' + Std.string(error));
+
+		try {
+			if (__socket != null) {
+				close();
+			}
+		} catch (_:Dynamic) {}
 	}
 
 	/**
@@ -1398,11 +1784,60 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		socket.__input.endian = socket.__endian;
 
 		socket.__cbInstance = cbInstance;
+		socket.__nodeRuntime = cbInstance;
 		socket.__bindNodeSocket(node);
 
-		cbInstance.addEventListener(TickEvent.TICK, socket.this_onTick);
-
 		return socket;
+	}
+
+	/**
+		Ticked only while a writer is feeding the socket through
+		`__onWritableDrain`, which it expects to be asked again whether or not
+		anything drained. Every Node socket used to be ticked for as long as it
+		was open, to flush what had been written -- a visit a tick for each of
+		thousands of idle connections -- where a write now asks for its own
+		flush at the end of the pass.
+	**/
+	@:noCompletion private function __syncNodeTick():Void {
+		var wanted:Bool = __socket != null && __onWritableDrain != null && __nodeRuntime != null;
+		if (wanted && !__ticking) {
+			__ticking = true;
+			__nodeRuntime.addEventListener(TickEvent.TICK, this_onTick);
+		} else if (!wanted && __ticking) {
+			__ticking = false;
+			if (__nodeRuntime != null) {
+				__nodeRuntime.removeEventListener(TickEvent.TICK, this_onTick);
+			}
+		}
+	}
+
+	/**
+		The end of a pass in which something was written: flushed, and the
+		streaming writer, if there is one, offered the room -- what the
+		registry's writable queue does natively. Contained, since this runs
+		from Node's own loop.
+	**/
+	@:noCompletion public function __flushPass():Void {
+		__flushQueued = false;
+		if (__socket == null) {
+			return;
+		}
+
+		try {
+			try {
+				flush();
+			} catch (e:Dynamic) {
+				// As the registry's retry does natively: the owner is told,
+				// and the connection left for the read side to reap.
+				__dispatchPooledIOError(Std.string(e));
+				return;
+			}
+			if (__onWritableDrain != null) {
+				__onWritableDrain();
+			}
+		} catch (e:Dynamic) {
+			__contain(e, "writable");
+		}
 	}
 	#end
 
@@ -1418,9 +1853,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			flush();
 		}
 		#elseif nodejs
-		// Data arrives on Node through the data event, not by polling, so the
-		// tick has nothing to read -- it only pushes whatever writes have been
-		// queued since the last one, exactly as the browser branch does.
+		// Data arrives on Node through the data event, not by polling, and a
+		// write asks for its own flush at the end of the pass, so a Node
+		// socket is ticked only while a writer is feeding it through
+		// __onWritableDrain (see __syncNodeTick). The flush pushes what that
+		// writer wrote since the last one.
 		if (__socket != null) {
 			flush();
 
@@ -1443,6 +1880,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		#else
 		if (__socket == null) {
+			return;
+		}
+
+		if (__resolving) {
+			// The name is still being looked up, so there is no connect to
+			// ask the socket about yet -- only the attempt's deadline, which
+			// counts the lookup. A resolver that never answers is not waited
+			// on past it.
+			if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+				__cleanSocket();
+				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms");
+			}
 			return;
 		}
 
@@ -1586,7 +2035,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (doClose) {
 			__cleanSocket();
 			if (closeWasConnected) {
-				__dispatchPooledSimpleEvent(Event.CLOSE);
+				__announceClose();
 			} else {
 				__dispatchPooledIOError("Connection failed");
 			}
@@ -1768,7 +2217,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function get_bytesPending():Int {
-		return __output.length;
+		return outputBufferLength;
 	}
 
 	@:noCompletion private function get_connected():Bool {
@@ -1932,6 +2381,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__cbInstance = null;
 		__connected = false;
 		__isConnecting = false;
+		__resolving = false;
 		__isDirty = false;
 		flushFull = false;
 		__closed = true;

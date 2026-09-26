@@ -418,6 +418,103 @@ class DatagramSocketTest extends utest.Test {
 		closeQuietly(receiver);
 	}
 
+	/**
+		A burst larger than one read's worth is taken in on one pass.
+
+		At most 64 datagrams were read each time the socket was reported
+		readable, and that is once a pass, so a socket could take in no more
+		than 64 a pass whatever was arriving -- 3,840 a second at 60 passes --
+		and the rest waited in, then overflowed, the kernel's buffer.
+	**/
+	public function testABurstIsTakenInOnOnePass():Void {
+		if (!requireDatagramSupport()) return;
+
+		var receiver = new DatagramSocket();
+		var sender = new DatagramSocket();
+		var received:Int = 0;
+		var count:Int = 150;
+
+		try {
+			receiver.receiveBufferSize = 1024 * 1024;
+			receiver.bind(0, "127.0.0.1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(_) received++);
+			receiver.receive();
+
+			sender.bind(0, "127.0.0.1");
+			var payload = bytesOf("burst");
+			for (_ in 0...count) {
+				sender.send(payload, 0, 0, "127.0.0.1", receiver.localPort);
+			}
+			// Into the receiver's buffer before the pass that reads it.
+			Sys.sleep(0.1);
+
+			CrossByte.current().pump(0, 0);
+			var firstPass:Int = received;
+			pumpUntil(() -> false, 0.2);
+
+			Assert.isTrue(received > 64, 'only $received of $count datagrams arrived, too few to tell');
+			Assert.equals(received, firstPass, 'the pass that found $received datagrams waiting read $firstPass of them');
+		} catch (e:Dynamic) {
+			closeQuietly(sender);
+			closeQuietly(receiver);
+			throw e;
+		}
+
+		closeQuietly(sender);
+		closeQuietly(receiver);
+	}
+
+	/**
+		Datagrams from two peers in turn, each reported as from its own: the
+		source a datagram names is kept from one to the next, and must not be
+		kept past a change of sender.
+	**/
+	public function testInterleavedSendersAreEachNamed():Void {
+		if (!requireDatagramSupport()) return;
+
+		var receiver = new DatagramSocket();
+		var first = new DatagramSocket();
+		var second = new DatagramSocket();
+		var seen:Array<String> = [];
+
+		try {
+			receiver.bind(0, "127.0.0.1");
+			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) {
+				e.data.position = 0;
+				seen.push(e.data.readUTFBytes(e.data.length) + "@" + e.srcAddress + ":" + e.srcPort + ">" + e.dstAddress + ":" + e.dstPort);
+			});
+			receiver.receive();
+			first.bind(0, "127.0.0.1");
+			second.bind(0, "127.0.0.1");
+
+			for (i in 0...3) {
+				first.send(bytesOf("a" + i), 0, 0, "127.0.0.1", receiver.localPort);
+				second.send(bytesOf("b" + i), 0, 0, "127.0.0.1", receiver.localPort);
+			}
+			pumpUntil(() -> seen.length >= 6, 2.0);
+
+			var to:String = ">127.0.0.1:" + receiver.localPort;
+			seen.sort(Reflect.compare);
+			Assert.same([
+				"a0@127.0.0.1:" + first.localPort + to,
+				"a1@127.0.0.1:" + first.localPort + to,
+				"a2@127.0.0.1:" + first.localPort + to,
+				"b0@127.0.0.1:" + second.localPort + to,
+				"b1@127.0.0.1:" + second.localPort + to,
+				"b2@127.0.0.1:" + second.localPort + to
+			], seen);
+		} catch (e:Dynamic) {
+			closeQuietly(first);
+			closeQuietly(second);
+			closeQuietly(receiver);
+			throw e;
+		}
+
+		closeQuietly(first);
+		closeQuietly(second);
+		closeQuietly(receiver);
+	}
+
 	private static function bytesOf(value:String):ByteArray {
 		var bytes = new ByteArray();
 		bytes.writeUTFBytes(value);
@@ -449,8 +546,8 @@ class DatagramSocketTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeout;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}

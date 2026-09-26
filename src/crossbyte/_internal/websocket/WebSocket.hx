@@ -10,28 +10,39 @@ import js.node.Buffer;
 import js.node.Net;
 import js.node.Tls;
 import js.node.net.Socket as NodeSocket;
+#else
+import crossbyte._internal.net.Resolver;
+import sys.net.Host;
 #end
 import crossbyte.Function;
+import crossbyte.Timer as CBTimer;
 import crossbyte.core.CrossByte;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.events.Event;
 import crossbyte.io.ByteArray;
+import crossbyte.net.WebSocketRequest;
 import crossbyte._internal.socket.BlockedError;
-import crossbyte.utils.GlobalTimer;
+import crossbyte._internal.socket.IPollableSocket;
 import crossbyte.utils.Logger;
 import haxe.crypto.Base64;
 import haxe.crypto.Sha1;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
-import haxe.io.BytesBuffer;
 import haxe.io.Eof;
 import haxe.io.Error;
 
 /**
- * ...
+ * One WebSocket session, either end: RFC 6455 framing over a TCP socket.
+ *
+ * Driven by the runtime's socket registry once open, rather than by the
+ * tick: it is read when its socket is readable and flushed when a write is
+ * waiting, so an idle session costs nothing. Only the phases before that --
+ * a client's connect and a TLS handshake -- still ride the tick, and each is
+ * bounded by a deadline.
+ *
  * @author Christopher Speciale
  */
-class WebSocket {
+class WebSocket #if !nodejs implements IPollableSocket #end {
 	public static inline var CLOSED:Int = 3;
 	public static inline var CLOSING:Int = 2;
 	public static inline var CONNECTING:Int = 0;
@@ -46,8 +57,21 @@ class WebSocket {
 	// Retained for compatibility; clients now generate a fresh mask per frame.
 	public static var MASK_POOL_SIZE:Int = 64;
 
-	// The default ping interval. Set to 0 to disable pings.
-	public static var PING_INTERVAL:Int = 60000;
+	/**
+	 * The ping interval a session starts with, in milliseconds; 0 for none.
+	 * See `pingInterval`, which each session carries and can change.
+	 */
+	public static var PING_INTERVAL:Int = 30000;
+
+	/** The idle timeout a session starts with, in seconds; see `idleTimeout`. **/
+	public static inline var DEFAULT_IDLE_TIMEOUT:Float = 60.0;
+
+	/**
+	 * How long a closing handshake is given, in seconds: for the peer to answer
+	 * a close frame, and for what was queued before it to drain. Past it the
+	 * connection is closed regardless.
+	 */
+	public static var CLOSE_TIMEOUT:Float = 5.0;
 
 	private static inline var WS:String = "ws";
 	private static inline var WSS:String = "wss";
@@ -57,6 +81,16 @@ class WebSocket {
 	private static inline var GET:String = "GET";
 	private static inline var HTTP:String = "HTTP";
 
+	/**
+	 * Consumed bytes tolerated at the front of `__input` while a frame is
+	 * still arriving, before the unread tail is moved down. As on `Socket`:
+	 * without it the consumed prefix was kept until a read happened to end
+	 * on a frame boundary, which a steady stream of large messages may never
+	 * do.
+	 */
+	private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
+	private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
+
 	public var binaryType:BinaryType = ARRAYBUFFER;
 	public var bufferdAmount(default, null):Int = 0;
 	public var extensions(default, null):String = "";
@@ -64,14 +98,29 @@ class WebSocket {
 	public var onerror:Function = (e:WebsocketEvent) -> {};
 	public var onmessage:Function = (e:WebsocketEvent) -> {};
 	public var onopen:Function = (e:WebsocketEvent) -> {};
+
+	/**
+	 * A server session's say over its own upgrade, asked once the request has
+	 * arrived and before the `101` is sent: `false` refuses it, with the
+	 * request's `status`, and the request's `protocol` is the subprotocol
+	 * accepted. Unset, every valid upgrade is accepted with the first
+	 * subprotocol offered.
+	 */
+	public var onupgrade:WebSocketRequest->Bool = null;
+
+	/**
+	 * The subprotocol the session speaks: on a server, the one accepted; on a
+	 * client, the one the server chose from those asked for. `null` for none.
+	 */
 	public var protocol(default, null):String;
+
+	/** The upgrade request a server session was opened by; `null` on a client. **/
+	public var request(default, null):WebSocketRequest;
+
 	public var readyState(default, null):Int = CONNECTING;
 	public var url(default, null):String;
 
 	private var __socket:#if nodejs NodeSocket #else FlexSocket #end;
-	private var __buffer:Bytes;
-	// TODO: Use frame buffer for partial frames
-	// private var __frameBuffer:ByteArray;
 	private var __inputPosition:Int = 0;
 	private var __input:ByteArray;
 	private var __incomingMessageBuffer:ByteArray;
@@ -84,7 +133,8 @@ class WebSocket {
 	 *
 	 * A non-blocking socket accepts only what fits in its send buffer, so
 	 * anything beyond that must be retained and retried rather than
-	 * discarded. Drained on every tick by `__flushPendingOutput()`.
+	 * discarded. Retried when the registry drains its writable queue, which
+	 * a write that could not finish joins.
 	 */
 	private var __pendingOutput:ByteArray;
 
@@ -102,23 +152,119 @@ class WebSocket {
 	/**
 	 * Bytes still waiting for the socket to accept them.
 	 *
-	 * A value that keeps climbing across ticks means the peer is not
-	 * draining as fast as this side produces. Useful as a metrics gauge and
-	 * as a signal to stop enqueueing.
+	 * A value that keeps climbing means the peer is not draining as fast as
+	 * this side produces. Useful as a metrics gauge and as a signal to stop
+	 * enqueueing.
 	 */
 	public var outputBufferLength(get, never):Int;
 
 	private function get_outputBufferLength():Int {
-		return __pendingOutput == null ? 0 : __pendingOutput.length;
+		var buffered:Int = __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
+		#if nodejs
+		// Node takes every frame whole and queues what the kernel will not,
+		// so the backlog is Node's: counting only this side's buffer read 0
+		// for a peer that had stopped reading, and a server's drain() waited
+		// on nothing.
+		if (__socket != null) {
+			buffered += __socket.writableLength;
+		}
+		#end
+		return buffered;
 	}
+
+	// How much of the front of __pendingOutput the socket has already taken;
+	// see __flushPendingOutput.
+	private var __pendingSent:Int = 0;
+
+	private static inline var CONNECT_TIMEOUT_MS:Int = 10000;
+
+	/**
+	 * How long a client waits, in milliseconds, for its connection to open
+	 * and then again for the answer to its upgrade. Read on the ticks that
+	 * follow construction, so it can be set straight after.
+	 */
+	public var connectTimeout:Int = CONNECT_TIMEOUT_MS;
+
+	/**
+	 * How often, in seconds, a session that has heard nothing from its peer
+	 * pings it; zero for never. A peer answers a ping with a pong, so a quiet
+	 * connection whose peer is still there stays in use -- which also keeps a
+	 * proxy between the two from closing it as idle.
+	 */
+	public var pingInterval(get, set):Float;
+
+	/**
+	 * How long, in seconds, a session hears nothing -- no message, no pong, no
+	 * frame at all -- before it takes the peer for gone and closes with 1006;
+	 * zero for never. Checked every `pingInterval`, or every quarter of this
+	 * with pings off.
+	 */
+	public var idleTimeout(get, set):Float;
 
 	private var __connected:Bool = false;
 	private var __timestamp:Float;
-	private var __timeout:Int = 10000;
+	private var __timeout:Int = CONNECT_TIMEOUT_MS;
 
 	private var __origin:String;
 	private var __protocols:Array<String> = [];
 	private var __secure:Bool;
+
+	// Whether the transport is TLS, whichever side made it.
+	private var __tls:Bool = false;
+
+	// What a secure client checks the server against. Verified by default:
+	// every secure client used to be built with verification off, so any
+	// certificate for any host was accepted and whoever sat in the path could
+	// read the session.
+	private var __verifyCert:Bool = true;
+	private var __certAuthority:crossbyte.net.Certificate;
+
+	// A connect that failed before the first tick. Reported from that tick
+	// rather than where it happened, because that is inside the constructor,
+	// before the owner has attached anything to hear it.
+	private var __connectFailure:String = null;
+
+	#if !nodejs
+	// Whether the host named in the URL is still being looked up.
+	private var __resolving:Bool = false;
+	#end
+
+	// Whether onclose has been called. A session can be closed from several
+	// places in one pass -- a failed write inside the frame that answers a
+	// close, say -- and the owner is told once.
+	private var __closeReported:Bool = false;
+
+	// A close waiting for queued output to go: what it will report.
+	private var __closeWhenDrained:Bool = false;
+	private var __drainedCode:Int = 1000;
+	private var __drainedReason:String = null;
+
+	// The deadline on a closing handshake, and on a client's upgrade.
+	private var __closeDeadline:Int = 0;
+	private var __closeDeadlineArmed:Bool = false;
+	private var __upgradeDeadline:Int = 0;
+	private var __upgradeDeadlineArmed:Bool = false;
+
+	// The heartbeat: whether anything has arrived since the last beat, for
+	// how long in a row nothing has, and the timer.
+	private var __pingInterval:Float = -1;
+	private var __idleTimeout:Float = DEFAULT_IDLE_TIMEOUT;
+	private var __heard:Bool = false;
+	private var __silentFor:Float = 0;
+	private var __heartbeat:Int = 0;
+	private var __heartbeatArmed:Bool = false;
+
+	// Whether this session's socket is in the runtime's registry, and whether
+	// a retry of its pending output is queued there.
+	private var __registered:Bool = false;
+	private var __writeQueued:Bool = false;
+
+	// The ends of the connection, noted once it is open.
+	private var __remoteAddress:String = "";
+	private var __remotePort:Int = 0;
+	private var __localAddress:String = "";
+	private var __localPort:Int = 0;
+
 	private var __path:String;
 	private var __scheme:String;
 	private var __host:String;
@@ -130,26 +276,31 @@ class WebSocket {
 	private var __maskedPayload:ByteArray;
 	private var __outgoingMessageBuffer:ByteArray;
 
-	private var __heartbeatDelay:Int = 0;
+	// Kept for the parser tests, which set it directly: a pong clears it.
 	private var __hasTimeoutPotential:Bool = false;
-	private var __heartbeatID:UInt = 0;
 
 	private var __isClient:Null<Bool>;
 	private var __runtime:CrossByte;
 	private var __tickConnectListener:Event->Void;
-	private var __tickProcessListener:Event->Void;
 	private var __tickSSLHandshakeListener:Event->Void;
 
-	public function new(url:String, ?protocols:Array<String>, ?origin:String) {
+	/**
+	 * @param verifyCert For `wss://`: whether the server's certificate is
+	 *        checked against a trusted authority and the host name.
+	 * @param certAuthority For `wss://`: the authority to trust in place of
+	 *        the system's store, or `null` for the system's.
+	 */
+	public function new(url:String, ?protocols:Array<String>, ?origin:String, verifyCert:Bool = true, ?certAuthority:crossbyte.net.Certificate) {
 		#if !nodejs
 		__tickConnectListener = __onTickConnect;
 		__tickSSLHandshakeListener = __onTickSSLHandshake;
 		#end
-		__tickProcessListener = __onTickProcess;
 		__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 
 		if (__isClient == null) {
 			__isClient = true;
+			__verifyCert = verifyCert;
+			__certAuthority = certAuthority;
 			this.url = url;
 			// benchmark the two for the fastest regular expression
 			// var regex:EReg = ~/^(\w+):\/\/([^\/:]+)(?::(\d+))?([^#]*)(?:#.*)?$/;
@@ -168,8 +319,21 @@ class WebSocket {
 					throw "Uri does not include a valid Web Socket Scheme";
 				}
 
-				var port:Null<Int> = Std.parseInt(regex.matched(3));
-				__port = port == null ? (__secure ? 443 : 80) : port;
+				// Bounded as it is read. Std.parseInt answers a number too big
+				// for an Int differently on every target -- its low 32 bits on
+				// Linux native, the largest Int on Windows, an exception on the
+				// jvm, nothing at all on eval -- so a port past 65535 became
+				// some other port, or the default, depending where it ran.
+				var portText:Null<String> = regex.matched(3);
+				if (portText == null || portText.length == 0) {
+					__port = __secure ? 443 : 80;
+				} else {
+					var port:Int = crossbyte.utils.IntParse.decimal(portText, 65535);
+					if (port < 0) {
+						throw "Uri port is out of range: " + portText;
+					}
+					__port = port;
+				}
 				var path:Null<String> = regex.matched(4);
 				__path = path == "" ? "/" : "/" + path;
 			} else {
@@ -185,14 +349,11 @@ class WebSocket {
 			}
 			__origin = origin;
 			__initSocket();
-		} else {
-			__heartbeatDelay = PING_INTERVAL;
 		}
 	}
 
 	private function __initSocket(?socket:#if nodejs NodeSocket #else FlexSocket #end):Void {
 		__runtime = CrossByte.current();
-		__buffer = Bytes.alloc(4096);
 		__input = new ByteArray();
 		__input.endian = BIG_ENDIAN;
 		__output = new ByteArray();
@@ -215,10 +376,9 @@ class WebSocket {
 		#if nodejs
 		// Node's own socket, so there is no connect poll and no handshake
 		// pump: it reports both as events. wss is a `tls.connect` rather than
-		// a `net.connect`, and the TLS is Node's -- which is why a secure
-		// client works here even though a secure server cannot, a client only
-		// having to verify a certificate where a server has to present one.
+		// a `net.connect`, and the TLS is Node's.
 		if (socket == null) {
+			__tls = __secure;
 			__connectNode();
 		} else {
 			// Accepted rather than dialled: already connected, so there is no
@@ -226,21 +386,34 @@ class WebSocket {
 			// request only for a client, and this is not one -- a server waits
 			// to receive one.
 			__socket = socket;
+			__tls = Reflect.field(socket, "encrypted") == true;
 			__bindNodeTransport();
 			__openConnection(null);
 		}
 		#else
 		if (socket == null) {
 			__socket = new FlexSocket(__secure);
+			__tls = __secure;
 			if (__secure) {
-				__socket.verifyCert = false;
+				// Checked unless the owner said not to. This was a flat
+				// `verifyCert = false`, so every secure client accepted any
+				// certificate for any host. The host name set below is what the
+				// certificate is then matched against, as well as the SNI name.
+				__socket.verifyCert = __verifyCert;
+				if (__certAuthority != null) {
+					__socket.setCA(__certAuthority.__native);
+				}
 				__socket.setHostname(__host);
 			}
-			__socket.output.bigEndian = true;
+			// No byte order is set on the output: frames go out as raw bytes,
+			// and on jvm a socket has no output at all until it connects, so
+			// setting one here threw before any client -- ws:// included --
+			// had even started.
 			__connect();
 			__runtime.addEventListener(Event.TICK, __tickConnectListener);
 		} else {
 			__socket = socket;
+			__tls = __socket.isSecure;
 
 			// An accepted TLS socket has completed TCP but not TLS. Without
 			// this it would handshake implicitly on its first read, with no
@@ -248,7 +421,7 @@ class WebSocket {
 			// holds the socket indefinitely. Run the same deferred,
 			// timeout-guarded handshake the client path uses; the WebSocket
 			// upgrade follows once TLS completes.
-			if (__socket.isSecure) {
+			if (__tls) {
 				__initSSLHandshake();
 			} else {
 				__openConnection(null);
@@ -262,23 +435,39 @@ class WebSocket {
 	 * Opens the connection and wires the three things the framing layer needs
 	 * from a transport: bytes arriving, the peer going away, and a failure.
 	 *
-	 * Nothing here polls. The native path has to -- it drives a non-blocking
-	 * socket from the tick, watching `select` for a connect that has completed
-	 * and for a read that would not block. Node reports each of those as an
-	 * event, so the tick is left with only the one job it still has: pushing
-	 * whatever the framing layer has queued to send.
+	 * Nothing here polls, and nothing ticks: Node reports each of those as an
+	 * event, and a write goes straight into Node's own queue.
 	 */
 	private function __connectNode():Void {
 		var connected = function():Void {
-			__openConnection(null);
+			try {
+				__openConnection(null);
+			} catch (e:Dynamic) {
+				__contain(e);
+			}
 		};
 
 		if (__secure) {
+			// Node verifies unless told otherwise; what it lacked was a way
+			// for the owner to say either thing -- to trust a private
+			// authority, or, for a development server, not to check.
+			var options:Dynamic = {port: __port, host: __host, rejectUnauthorized: __verifyCert};
+
 			// `servername` is the SNI name, and without it a host serving
 			// several certificates on one address has no way to pick this
 			// one's -- the handshake then fails on a name mismatch that looks
-			// like a certificate error.
-			var tls = Tls.connect({port: __port, host: __host, servername: __host}, connected);
+			// like a certificate error. Only for a name, though: SNI may not
+			// carry an address (RFC 6066 3), and Node checks the certificate
+			// against `host` when there is none.
+			if (Net.isIP(__host) == 0) {
+				options.servername = __host;
+			}
+
+			if (__certAuthority != null) {
+				options.ca = [__certAuthority.__pem];
+			}
+
+			var tls = Tls.connect(options, connected);
 			__socket = cast tls;
 		} else {
 			__socket = Net.connect({port: __port, host: __host}, connected);
@@ -294,38 +483,69 @@ class WebSocket {
 	 * report any of them differently.
 	 */
 	private function __bindNodeTransport():Void {
+		// Each one contained: these run from Node's event loop, so a listener
+		// that threw -- a message handler meeting input it could not parse --
+		// threw into Node, which ended the process and every session in it.
 		__socket.on("data", function(chunk:Buffer):Void {
-			__receiveNode(chunk);
+			try {
+				__receiveNode(chunk);
+			} catch (e:Dynamic) {
+				__contain(e);
+			}
 		});
 
 		__socket.on("error", function(e:Dynamic):Void {
-			// Reported before the close that follows it, so the reason reaches
-			// the caller rather than only the fact.
-			__onError("WebSocket transport failed: " + Std.string(e));
-			__close(1006);
+			try {
+				// Reported before the close that follows it, so the reason
+				// reaches the caller rather than only the fact.
+				__onError("WebSocket transport failed: " + Std.string(e));
+				__close(1006);
+			} catch (thrown:Dynamic) {
+				__contain(thrown);
+			}
 		});
 
 		__socket.on("close", function(_):Void {
-			if (readyState != CLOSED) {
-				// 1006 rather than 1000: the peer went without a close frame,
-				// which is ordinary -- a dropped connection, a killed process
-				// -- and is exactly what 1006 is for.
-				__close(1006);
+			try {
+				if (readyState != CLOSED) {
+					// 1006 rather than 1000: the peer went without a close
+					// frame, which is ordinary -- a dropped connection, a
+					// killed process -- and is exactly what 1006 is for.
+					__close(1006);
+				}
+			} catch (e:Dynamic) {
+				__contain(e);
 			}
 		});
 	}
 
 	/**
+		A listener threw from inside one of Node's callbacks: logged, and the
+		session closed with 1011, since whatever it was in the middle of
+		cannot be trusted to be finished. The rest of the process carries on.
+	**/
+	private function __contain(error:Dynamic):Void {
+		// To report through runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, ...) once the runtime has it (C1).
+		Logger.error("A WebSocket listener threw, and the session it was handling was closed: " + Std.string(error));
+
+		try {
+			abort(1011, "internal error");
+		} catch (_:Dynamic) {}
+	}
+
+	/**
 	 * Hands one arriving chunk to the framing layer.
 	 *
-	 * The same two lines the native read loop ends with, minus the loop: there
-	 * is nothing to drain, because Node has already done the draining and is
+	 * The same lines the native read loop ends with, minus the loop: there is
+	 * nothing to drain, because Node has already done the draining and is
 	 * calling with what it drained.
 	 */
 	private function __receiveNode(chunk:Buffer):Void {
 		if (chunk == null || chunk.length == 0) {
 			return;
 		}
+
+		__heard = true;
 
 		// Sliced by its own region: a Node Buffer can be a window onto a
 		// larger pooled allocation, and taking .buffer whole would carry bytes
@@ -340,65 +560,174 @@ class WebSocket {
 	#end
 
 	#if !nodejs
+	/**
+		Starts the connect. An address is connected to at once; a name is
+		looked up off the runtime's thread first (see `Resolver`) -- it used to
+		be looked up right here, holding every socket and timer on the runtime
+		for as long as the resolver took. The tick waits for the answer as it
+		waits for the connect, under the same deadline.
+	**/
 	private function __connect():Void {
+		if (!Resolver.needsLookup(__host)) {
+			__connectTo(null);
+			return;
+		}
+
+		__resolving = true;
+		var asked:FlexSocket = __socket;
+		Resolver.resolve(__host, function(resolved:Null<Host>, failure:Null<String>):Void {
+			if (__socket != asked || !__resolving) {
+				return;
+			}
+			__resolving = false;
+
+			if (resolved == null) {
+				// Reported by the tick, as a connect that failed at once is.
+				__connectFailure = __host + " did not resolve (" + failure + ")";
+				return;
+			}
+			__connectTo(resolved);
+		});
+	}
+
+	private function __connectTo(resolved:Null<Host>):Void {
 		try {
 			__socket.setBlocking(false);
 			__socket.setFastSend(true);
-			__socket.connect(__host, __port);
-		} catch (e:Dynamic) {}
+			__socket.connectHost(resolved != null ? resolved : new Host(__host), __port);
+		} catch (e:Dynamic) {
+			// A connect in progress reports itself as a block, which is the
+			// ordinary case: the tick waits for it to finish. Anything else is
+			// a connect that has already failed, and every failure used to be
+			// swallowed here -- leaving the tick to wait out the timeout for a
+			// connection that could never come.
+			if (!BlockedError.isBlocked(e)) {
+				__connectFailure = Std.string(e);
+			}
+		}
 	}
 
 	private function __onTickConnect(e:Event):Void {
+		if (__connectFailure != null) {
+			var failure:String = __connectFailure;
+			__connectFailure = null;
+			__onError("Failed to connect to server: " + failure);
+			__close(1006);
+			return;
+		}
+
+		if (__resolving) {
+			// No connect to ask about until the name is looked up; only the
+			// deadline, which a resolver that never answers does not outlast.
+			if (haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
+				__onError("Failed to connect to server: " + __host + " was not looked up within " + connectTimeout + " ms");
+				__close(1006);
+			}
+			return;
+		}
+
 		if (!__connected) {
 			var sockets:Dynamic = FlexSocket.select(null, [__socket], null, 0);
 
 			if (sockets.write[0] == __socket) {
 				__onConnect();
-			} else if (haxe.Timer.stamp() - __timestamp > __timeout / 1000) {
-				__close(1006);
+			} else if (haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
+				// The reason first, then the close, so a listener that tears
+				// down on close has already been told why.
 				__onError("Failed to connect to server");
+				__close(1006);
 			}
 		}
 	}
 
-	#end
+	// ---- The registry's calls ---------------------------------------------
 
-	private function __onTickProcess(e:Event):Void {
-		// Retry anything the socket could not take last time before reading,
-		// so a temporarily full send buffer drains as soon as it has room.
+	public var registryClosed(get, never):Bool;
+
+	private function get_registryClosed():Bool {
+		return __socket == null || readyState == CLOSED;
+	}
+
+	/**
+	 * The socket is readable: read what is there.
+	 *
+	 * This ran from the tick for every session, every tick, whether or not
+	 * anything had arrived -- a receive that found nothing, and on hxcpp
+	 * raised an exception to say so, per idle session per tick. The registry
+	 * polls every socket at once and calls only the ones with something to
+	 * read.
+	 */
+	public function registryOnReadable():Void {
+		__readAvailable();
+	}
+
+	/** A write that could not finish is retried. **/
+	public function registryOnWritable():Void {
+		__writeQueued = false;
 		__flushPendingOutput();
+	}
 
-		// And on Node that is the whole of the tick's job. Reading is Node's:
-		// it calls __receiveNode when bytes arrive rather than waiting to be
-		// asked, so there is no drain loop, no blocked-read handling and no
-		// select probe to compile at all.
-		#if !nodejs
+	/**
+	 * Whether the TLS layer holds decrypted bytes the kernel no longer has.
+	 * Only the jvm's can -- see `Socket.registryHasBufferedInput` -- and it is
+	 * asked dynamically for the same reason.
+	 */
+	public function registryHasBufferedInput():Bool {
+		#if (java || jvm)
+		if (!__tls || __socket == null) {
+			return false;
+		}
+
+		var holder:Dynamic = __socket;
+		var buffered:Dynamic = try {
+			holder.hasBufferedInput();
+		} catch (e:Dynamic) {
+			false;
+		}
+
+		return buffered == true;
+		#else
+		return false;
+		#end
+	}
+
+	/**
+	 * Reads everything the socket has, then hands it to the framing layer.
+	 */
+	private function __readAvailable():Void {
 		var doClose:Bool = false;
 		var totalBytes:Int = 0;
-		var pending:BytesBuffer = new BytesBuffer();
+		// The shared per-thread read buffer `Socket` reads into, rather than a
+		// buffer per session: nothing is dispatched between a read and the
+		// append that follows it, so nothing can re-enter and find it changed.
+		var scratch:Bytes = @:privateAccess crossbyte.net.Socket.__scratch();
 
-		while (__connected) {
+		// Appended in place, and the cursor put back afterwards, as `Socket`
+		// does, where each read used to be copied into a buffer of its own
+		// and then again into the input.
+		__input.position = __input.length;
+
+		while (__connected && __socket != null) {
 			try {
-				var nBytes:Int = __socket.input.readBytes(__buffer, 0, __buffer.length);
+				var nBytes:Int = __socket.input.readBytes(scratch, 0, scratch.length);
 				if (nBytes <= 0) {
 					break;
 				}
 				totalBytes += nBytes;
-				pending.addBytes(__buffer, 0, nBytes);
+				__input.writeBytes(scratch, 0, nBytes);
 
 				#if eval
 				// eval's setBlocking is a no-op (see the vendored
 				// sys.net.Socket), so this drain loop cannot rely on an empty
 				// read raising Blocked: with a blocking descriptor that read
 				// would park the whole runtime thread until the peer sends
-				// more or closes — which is why an interp WebSocket could not
-				// survive its first idle tick.
+				// more or closes.
 				//
 				// A read shorter than the buffer already proves the socket is
 				// drained, so it exits without asking the kernel anything.
 				// Only a read that filled the buffer is ambiguous, and only
 				// that case pays for a zero-timeout select.
-				if (nBytes < __buffer.length) {
+				if (nBytes < scratch.length) {
 					break;
 				}
 
@@ -410,7 +739,7 @@ class WebSocket {
 				// inside the try on purpose — a select failure on a dying
 				// socket lands in the catches below and closes the session,
 				// the same as a failed read.
-				if (!__socket.isSecure && FlexSocket.select([__socket], [], [], 0).read.length == 0) {
+				if (!__tls && FlexSocket.select([__socket], [], [], 0).read.length == 0) {
 					break;
 				}
 				#end
@@ -433,30 +762,32 @@ class WebSocket {
 			}
 		}
 
-		// Keyed on what was actually read, not on how the loop ended.
-		// Delivery used to be set only from inside the catch branches, so a
-		// loop that exited through `nBytes <= 0` — which is how a peer that
-		// has closed reads on some targets — silently discarded everything
-		// it had just buffered.
+		__input.position = __inputPosition;
+
+		// Keyed on what was actually read, not on how the loop ended: a loop
+		// that ended at the peer's disconnect still delivers what came before
+		// it.
 		if (totalBytes > 0) {
-			__input.position = __input.length;
-			__appendBytes(__input, pending.getBytes());
-			__input.position = __inputPosition;
+			__heard = true;
 			__onData();
 		}
 
-		// Deliver before closing rather than instead of closing. These were
-		// alternatives, so a read that returned a complete message and then
-		// hit the peer's disconnect discarded that message — the last one
-		// sent before a disconnect is exactly the one worth keeping. The
-		// same branch also skipped the close when a genuine error arrived
-		// after data, leaving a failed session open.
+		// Deliver before closing rather than instead of closing: the last
+		// message sent before a disconnect is exactly the one worth keeping.
 		if (doClose && __socket != null) {
 			Logger.debug("WebSocket closed by remote host");
 			__close(1006);
 		}
-		#end
 	}
+
+	/** Asks the registry to retry the pending output on its next pass. **/
+	private inline function __queueWritable():Void {
+		if (!__writeQueued && __registered && __runtime != null) {
+			__writeQueued = true;
+			@:privateAccess __runtime.queueWritable(__socket);
+		}
+	}
+	#end
 
 	private function __doHandshake():Void {
 		var headers:Array<String> = [
@@ -498,6 +829,29 @@ class WebSocket {
 	 * instead of losing it.
 	 */
 	private function __queueOutput(data:ByteArray, length:Int):Void {
+		#if !nodejs
+		// Nothing queued ahead of it, so it is offered to the socket straight
+		// from where it was built, and only what the socket does not take is
+		// copied into the pending buffer -- the ordinary case, a socket with
+		// room, costs no copy at all.
+		if (data != null && length > 0 && __socket != null && __pendingSent >= __pendingOutput.length) {
+			var accepted:Int = __offer(data, 0, length);
+			if (accepted < 0) {
+				__close(1006, null);
+				return;
+			}
+			if (accepted >= length) {
+				return;
+			}
+
+			__pendingOutput.clear();
+			__pendingSent = 0;
+			__pendingOutput.writeBytes(data, accepted, length - accepted);
+			__afterPartialWrite();
+			return;
+		}
+		#end
+
 		if (data != null && length > 0) {
 			__pendingOutput.position = __pendingOutput.length;
 			__pendingOutput.writeBytes(data, 0, length);
@@ -506,89 +860,145 @@ class WebSocket {
 		__flushPendingOutput();
 	}
 
+	#if !nodejs
+	/**
+		Offers `length` bytes of `buffer` from `offset` to the socket. Answers
+		how many it took -- 0 when it had no room -- or -1 if the write failed.
+
+		Written until the socket will take no more, not once: a TLS socket
+		takes one record a write, so a single write sent 16 KB a pass whatever
+		room the kernel had.
+	**/
+	private function __offer(buffer:ByteArray, offset:Int, length:Int):Int {
+		var accepted:Int = 0;
+		try {
+			while (accepted < length) {
+				var took:Int = __socket.output.writeBytes(buffer, offset + accepted, length - accepted);
+				if (took <= 0) {
+					break;
+				}
+				accepted += took;
+			}
+			__socket.output.flush();
+		} catch (e:Dynamic) {
+			// One predicate for every spelling: the typed error, the
+			// debugger's Custom wrapper, and the bare string the TLS layer
+			// raises before anything maps it. A block keeps whatever the
+			// write had already taken.
+			if (!BlockedError.isBlocked(e)) {
+				return -1;
+			}
+		}
+		return accepted;
+	}
+	#end
+
 	/**
 	 * Pushes as much of the pending buffer as the socket will accept.
 	 *
 	 * A non-blocking socket signals "no room right now" by accepting fewer
 	 * bytes than offered or by raising a blocked error. Neither is fatal
 	 * and neither may discard data: the unsent remainder is kept and
-	 * retried on the next tick. Only a genuine I/O failure closes the
-	 * session.
+	 * retried from the registry's writable queue. Only a genuine I/O failure
+	 * closes the session.
+	 *
+	 * What the socket took is stepped over rather than cut off. Every partial
+	 * write used to copy all that was still waiting into a new buffer, so a
+	 * peer reading slowly behind a large backlog cost a copy of the whole
+	 * backlog per write -- quadratic in the backlog. The buffer is compacted
+	 * only once what has gone is past the threshold and at least as large as
+	 * what remains, so moving the rest down costs no more than the writes
+	 * that emptied the front.
 	 */
 	private function __flushPendingOutput():Void {
-		if (__socket == null || __pendingOutput.length == 0) {
+		var pending:Int = __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
+		if (__socket == null || pending <= 0) {
 			return;
-		}
-
-		// A blocked write leaves `accepted` at zero, so the buffer below is
-		// retained whole and retried on the next tick.
-		var accepted:Int = 0;
-
-		try {
-			#if nodejs
-			// Node takes everything and buffers what it cannot send yet, so
-			// there is no partial accept to carry over -- which is why the
-			// remainder handling below never runs here.
-			//
-			// Copied into a buffer of its own first. `Buffer.hxFromBytes`
-			// wraps the storage it is given rather than copying it, and
-			// `__pendingOutput` is cleared and refilled by the very next
-			// frame -- `clear()` resets the length and keeps the array -- so
-			// handing Node a window onto it would let the next frame overwrite
-			// the one still queued for sending.
-			var frame:ByteArray = new ByteArray();
-			frame.writeBytes(__pendingOutput, 0, __pendingOutput.length);
-			__socket.write(Buffer.hxFromBytes(frame));
-			accepted = __pendingOutput.length;
-			#else
-			accepted = __socket.output.writeBytes(__pendingOutput, 0, __pendingOutput.length);
-			__socket.output.flush();
-			#end
-		} catch (e:Dynamic) {
-			// One predicate for every spelling: the typed error, the
-			// debugger's Custom wrapper, and the bare string the TLS layer
-			// raises before anything maps it. Two catch blocks here used to
-			// cover different subsets of those.
-			if (!BlockedError.isBlocked(e)) {
-				__close(1006, null);
-				return;
-			}
-		}
-
-		if (accepted >= __pendingOutput.length) {
-			__pendingOutput.clear();
-			return;
-		}
-
-		if (accepted > 0) {
-			var remaining:ByteArray = new ByteArray();
-			remaining.endian = BIG_ENDIAN;
-			remaining.writeBytes(__pendingOutput, accepted, __pendingOutput.length - accepted);
-			__pendingOutput = remaining;
 		}
 
 		#if nodejs
-		// The pending buffer is always empty by this point -- Node accepted
-		// all of it -- so the limit has to be measured against Node's own
-		// queue instead. Reading __pendingOutput.length here, as the branch
-		// below does, would make maxOutputBufferSize unenforceable on Node
-		// while still appearing to be enforced.
+		// Node takes everything and buffers what it cannot send yet, so there
+		// is no partial accept to carry over.
+		//
+		// Copied into a buffer of its own first. `Buffer.hxFromBytes` wraps
+		// the storage it is given rather than copying it, and `__pendingOutput`
+		// is cleared and refilled by the very next frame -- `clear()` resets
+		// the length and keeps the array -- so handing Node a window onto it
+		// would let the next frame overwrite the one still queued for sending.
+		var frame:ByteArray = new ByteArray();
+		frame.writeBytes(__pendingOutput, __pendingSent, pending);
+		try {
+			__socket.write(Buffer.hxFromBytes(frame));
+		} catch (e:Dynamic) {
+			__close(1006, null);
+			return;
+		}
+		__pendingOutput.clear();
+		__pendingSent = 0;
+
+		// So a peer that is not reading shows in Node's own queue, and the
+		// limit is measured there. It was measured after a return this path
+		// always took, and so never.
 		if (maxOutputBufferSize > 0 && __socket != null && __socket.writableLength > maxOutputBufferSize) {
 			__close(1011, "output buffer limit exceeded");
 		}
 		#else
-		// Only a peer that is not draining can push the buffer past its
-		// limit, and it will not recover on its own.
-		if (maxOutputBufferSize > 0 && __pendingOutput.length > maxOutputBufferSize) {
-			__pendingOutput.clear();
-			__close(1011, "output buffer limit exceeded");
+		var accepted:Int = __offer(__pendingOutput, __pendingSent, pending);
+		if (accepted < 0) {
+			__close(1006, null);
+			return;
 		}
+
+		if (accepted >= pending) {
+			__pendingOutput.clear();
+			__pendingSent = 0;
+
+			// A close that was waiting for this to go.
+			if (__closeWhenDrained) {
+				__close(__drainedCode, __drainedReason);
+			}
+			return;
+		}
+
+		__pendingSent += accepted;
+		var remaining:Int = pending - accepted;
+		if (__pendingSent >= OUTPUT_COMPACT_THRESHOLD && __pendingSent >= remaining) {
+			// Allocated and swapped rather than moved within the buffer: an
+			// overlapping blit has no defined behaviour across targets.
+			var carried:ByteArray = new ByteArray();
+			carried.endian = BIG_ENDIAN;
+			carried.writeBytes(__pendingOutput, __pendingSent, remaining);
+			__pendingOutput = carried;
+			__pendingSent = 0;
+		}
+		__afterPartialWrite();
 		#end
 	}
+
+	#if !nodejs
+	/**
+	 * What is left once the socket has taken only part of what it was
+	 * offered: bounded, and retried when the socket can take more.
+	 */
+	private function __afterPartialWrite():Void {
+		// Only a peer that is not draining can push the buffer past its
+		// limit, and it will not recover on its own.
+		if (maxOutputBufferSize > 0 && __pendingOutput.length - __pendingSent > maxOutputBufferSize) {
+			__pendingOutput.clear();
+			__pendingSent = 0;
+			__close(1011, "output buffer limit exceeded");
+			return;
+		}
+
+		__queueWritable();
+	}
+	#end
 
 	private function __handleControlFrame(opcode:WebSocketOpcode, payload:ByteArray):Void {
 		switch (opcode) {
 			case PING:
+				// A ping is answered in any state but closed: a peer waiting on
+				// the close handshake may still be checking this side is there.
 				__pong(payload);
 			case PONG:
 				__hasTimeoutPotential = false;
@@ -597,34 +1007,41 @@ class WebSocket {
 				var reason:String = null;
 				if (payload.length == 1) {
 					// A close frame carrying a body must contain at least a 2-byte code.
-					__close(1002);
+					__fail(1002);
 					return;
 				}
 				if (payload.length >= 2) {
 					code = (payload[0] << 8) | payload[1];
 					if (!__isValidCloseCode(code)) {
-						__close(1002);
+						__fail(1002);
 						return;
 					}
 					if (payload.length > 2) {
 						if (!__isValidUTF8(payload, 2, payload.length - 2)) {
-							__close(1007);
+							__fail(1007);
 							return;
 						}
 						payload.position = 2;
 						reason = payload.readUTFBytes(payload.length - 2);
 					}
 				}
+
 				if (readyState == OPEN) {
+					// The peer began it. Its code goes back, as RFC 6455 5.5.1
+					// asks, and the connection closes once that has gone.
 					__sendFrame(payload, WebSocketOpcode.CLOSE, true);
+					readyState = CLOSING;
 				}
-				__close(code, reason);
+
+				// Either the peer began it or this is its answer to ours. What
+				// is reported is the peer's code and reason either way -- what
+				// it said about why -- which is what a browser reports too.
+				__finishClose(code, reason);
 		}
 	}
 
 	private function __onData():Void {
-		// trace("/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\/\\", __input.length, __input.position, __input.bytesAvailable, __inputPosition);
-		if (readyState == OPEN) {
+		if (readyState == OPEN || readyState == CLOSING) {
 			while (__input.bytesAvailable > 0) {
 				var frameStart:Int = __input.position;
 				if (__input.bytesAvailable < 2) {
@@ -641,13 +1058,13 @@ class WebSocket {
 				var payloadLength:Int = secondByte & 0x7F;
 
 				if ((firstByte & (WebSocketHeaderMask.RSV1 | WebSocketHeaderMask.RSV2 | WebSocketHeaderMask.RSV3)) != 0) {
-					__close(1002);
+					__fail(1002);
 					return;
 				}
 
 				// A server MUST reject unmasked frames from a client (RFC 6455 5.1).
 				if (__isClient == false && !isMasked) {
-					__close(1002);
+					__fail(1002);
 					return;
 				}
 
@@ -665,7 +1082,7 @@ class WebSocket {
 					var high:Int = __input.readUnsignedInt();
 					var low:Int = __input.readUnsignedInt();
 					if (high != 0 || low < 0) {
-						__close(1009);
+						__fail(1009);
 						return;
 					}
 					payloadLength = low;
@@ -675,16 +1092,14 @@ class WebSocket {
 				// payload that may never arrive. These three checks used to sit after
 				// that wait, and so ten bytes claiming a two-gigabyte length put the
 				// session into a wait for a frame MAX_PAYLOAD would have refused the
-				// moment it completed. The loop breaks without consuming, so nothing
-				// is compacted out of __input and every byte the peer sent afterwards
-				// accumulated -- unauthenticated, and ten bytes to ask for.
+				// moment it completed.
 				var isControl:Bool = opCode >= WebSocketOpcode.CLOSE;
 				if (isControl && (!isFinal || payloadLength > 125)) {
-					__close(1002);
+					__fail(1002);
 					return;
 				}
 				if (!isControl && payloadLength > MAX_PAYLOAD) {
-					__close(1009);
+					__fail(1009);
 					return;
 				}
 
@@ -694,7 +1109,7 @@ class WebSocket {
 					&& opCode != WebSocketOpcode.CLOSE
 					&& opCode != WebSocketOpcode.PING
 					&& opCode != WebSocketOpcode.PONG) {
-					__close(1002);
+					__fail(1002);
 					return;
 				}
 
@@ -722,7 +1137,7 @@ class WebSocket {
 				if (isControl) {
 					__handleControlFrame(opCode, payload);
 					__validateInputPosition();
-					if (opCode == WebSocketOpcode.CLOSE) {
+					if (opCode == WebSocketOpcode.CLOSE || readyState == CLOSED) {
 						return;
 					}
 					continue;
@@ -730,12 +1145,12 @@ class WebSocket {
 
 				if (opCode == WebSocketOpcode.CONTINUATION) {
 					if (__incomingOpcode == -1) {
-						__close(1002);
+						__fail(1002);
 						return;
 					}
 				} else {
 					if (__incomingOpcode != -1) {
-						__close(1002);
+						__fail(1002);
 						return;
 					}
 					__incomingOpcode = opCode;
@@ -749,7 +1164,7 @@ class WebSocket {
 				// Cap the cumulative reassembled message size across fragments.
 				__incomingMessageSize += payloadLength;
 				if (__incomingMessageSize > MAX_MESSAGE_SIZE) {
-					__close(1009);
+					__fail(1009);
 					return;
 				}
 
@@ -760,10 +1175,13 @@ class WebSocket {
 					// Validate completed TEXT messages as UTF-8.
 					if (__incomingOpcode == WebSocketOpcode.TEXT
 						&& !__isValidUTF8(__incomingMessageBuffer, 0, __incomingMessageBuffer.length)) {
-						__close(1007);
+						__fail(1007);
 						return;
 					}
 					__dispatchMessage();
+					if (readyState == CLOSED) {
+						return;
+					}
 				}
 
 				__validateInputPosition();
@@ -785,14 +1203,8 @@ class WebSocket {
 
 				if (lines[0].indexOf(GET) == 0) {
 					headers = __parseHeaders(lines);
-					if (__validateRequestHandshake(headers)) {
-						var response:Bytes = __generateResponseHandshake(headers);
-						__writeBytes(response);
-
-						readyState = OPEN;
-						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
-					} else {
-						__close(1002);
+					if (!__acceptUpgrade(lines[0], headers)) {
+						return;
 					}
 				} else if (lines[0].indexOf("HTTP") == 0) {
 					headers = __parseHeaders(lines);
@@ -800,18 +1212,18 @@ class WebSocket {
 						headers.set("status", "101");
 					} else {
 						__close(1002);
+						return;
 					}
 
 					if (__validateResponseHandshake(headers)) {
 						// handshake complete, is ready
+						__disarmUpgradeDeadline();
 						readyState = OPEN;
+						__startHeartbeat();
 						onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
-
-						if (__heartbeatDelay > 0) {
-							__initHeartbeat();
-						}
 					} else {
 						__close(1002);
+						return;
 					}
 				}
 
@@ -838,6 +1250,87 @@ class WebSocket {
 				__input.clear();
 				__inputPosition = 0;
 			}
+		}
+	}
+
+	/**
+	 * A server session's answer to the upgrade request it has just received:
+	 * the `101`, or a refusal. Says whether the session opened.
+	 *
+	 * The request was parsed and thrown away, so nothing about who was asking
+	 * reached anything able to act on it, and a browser offering a subprotocol
+	 * heard none back and failed the connection. Now the request is kept, the
+	 * owner's `onupgrade` decides on it, and the subprotocol accepted is
+	 * echoed.
+	 */
+	private function __acceptUpgrade(requestLine:String, headers:StringMap<String>):Bool {
+		if (!__validateRequestHandshake(headers)) {
+			// Answered rather than dropped, so a client learns why. A version
+			// this side does not speak is answered with the one it does, as
+			// RFC 6455 4.4 asks.
+			var version:Null<String> = headers.get("sec-websocket-version");
+			__refuseUpgrade(400, version != null && version != "13" ? ["Sec-WebSocket-Version: 13"] : null);
+			return false;
+		}
+
+		__noteEndpoints();
+		request = new WebSocketRequest(requestLine, headers, __remoteAddress, __remotePort);
+
+		var accepted:Bool = true;
+		if (onupgrade != null) {
+			try {
+				accepted = onupgrade(request);
+			} catch (e:Dynamic) {
+				// A hook that throws refuses, as `admit` does -- and as a
+				// server's fault, not the client's.
+				Logger.warn('WebSocket upgrade hook threw, refusing the session: $e');
+				request.status = 500;
+				accepted = false;
+			}
+		}
+
+		if (!accepted) {
+			__refuseUpgrade(request.status, null);
+			return false;
+		}
+
+		protocol = request.protocol;
+		var response:Bytes = __generateResponseHandshake(headers);
+		__writeBytes(response);
+
+		readyState = OPEN;
+		__startHeartbeat();
+		onopen(new WebsocketEvent(WebsocketEvent.OPEN, this));
+		return readyState == OPEN;
+	}
+
+	/**
+	 * Answers an upgrade with a refusal, and closes once the answer has gone.
+	 */
+	private function __refuseUpgrade(status:Int, extraHeaders:Null<Array<String>>):Void {
+		var lines:Array<String> = ['HTTP/1.1 $status ${__statusText(status)}', "Connection: close", "Content-Length: 0"];
+		if (extraHeaders != null) {
+			for (line in extraHeaders) {
+				lines.push(line);
+			}
+		}
+
+		__writeBytes(Bytes.ofString(lines.join(CRLF) + CRLFCRLF));
+		readyState = CLOSING;
+		__finishClose(1002, "upgrade refused with " + status);
+	}
+
+	private static function __statusText(status:Int):String {
+		return switch (status) {
+			case 400: "Bad Request";
+			case 401: "Unauthorized";
+			case 403: "Forbidden";
+			case 404: "Not Found";
+			case 426: "Upgrade Required";
+			case 429: "Too Many Requests";
+			case 500: "Internal Server Error";
+			case 503: "Service Unavailable";
+			default: "Refused";
 		}
 	}
 
@@ -996,36 +1489,69 @@ class WebSocket {
 		return true;
 	}
 
-	private inline function __validateInputPosition():Void {
-		if (__input.bytesAvailable > 0) {
-			__inputPosition = __input.position;
-		} else {
+	/**
+	 * Settles `__input` after a frame: emptied when everything in it has been
+	 * read, otherwise the read point is kept -- and once what has been read
+	 * past is worth moving, the unread tail is moved down, rather than the
+	 * whole buffer being kept until a read happens to end on a frame
+	 * boundary.
+	 */
+	private function __validateInputPosition():Void {
+		if (__input.bytesAvailable <= 0) {
 			__input.clear();
 			__inputPosition = 0;
+			return;
 		}
+
+		var consumed:Int = __input.position;
+		if (consumed >= INPUT_COMPACT_THRESHOLD) {
+			var remaining:Int = __input.length - consumed;
+			var carried:ByteArray = new ByteArray();
+			carried.endian = BIG_ENDIAN;
+			carried.writeBytes(__input, consumed, remaining);
+			carried.position = 0;
+			__input = carried;
+		}
+
+		__inputPosition = __input.position;
 	}
 
-	private inline function __dispatchMessage():Void {
+	private function __dispatchMessage():Void {
 		var message:ByteArray = __incomingMessageBuffer;
+		var isText:Bool = __incomingOpcode == WebSocketOpcode.TEXT;
 		message.position = 0;
 		__incomingMessageBuffer = new ByteArray();
 		__incomingMessageBuffer.endian = BIG_ENDIAN;
 		__incomingOpcode = -1;
 		__incomingMessageSize = 0;
-		onmessage(new WebsocketEvent(WebsocketEvent.MESSAGE, this, message));
+
+		// Nothing new is delivered once closing: RFC 6455 has a peer's data
+		// after its close frame, or after ours, belong to no one.
+		if (readyState != OPEN) {
+			return;
+		}
+
+		var event = new WebsocketEvent(WebsocketEvent.MESSAGE, this, message);
+		event.isText = isText;
+		onmessage(event);
 	}
 
 	private function __generateResponseHandshake(headers:StringMap<String>):Bytes {
-		var responseHeadersBytes:Bytes = Bytes.ofString([
+		var lines:Array<String> = [
 			"HTTP/1.1 101 Switching Protocols",
 			"Upgrade: websocket",
 			"Connection: Upgrade",
-			"Sec-WebSocket-Accept: " + __generateWebSocketAccept(headers.get("sec-websocket-key")),
-			"",
-			""
-		].join(CRLF));
+			"Sec-WebSocket-Accept: " + __generateWebSocketAccept(headers.get("sec-websocket-key"))
+		];
 
-		return responseHeadersBytes;
+		// The subprotocol accepted, echoed. A browser that offered one and
+		// heard none back failed the connection outright, so a page asking
+		// for a subprotocol could never open a session here.
+		if (protocol != null) {
+			lines.push("Sec-WebSocket-Protocol: " + protocol);
+		}
+
+		return Bytes.ofString(lines.join(CRLF) + CRLFCRLF);
 	}
 
 	private function __generateWebSocketAccept(key:String):String {
@@ -1048,11 +1574,18 @@ class WebSocket {
 			// Split the header into name and value
 			var index:Int = line.indexOf(":");
 			if (index != -1) {
-				var name:String = line.substring(0, index);
+				var name:String = line.substring(0, index).toLowerCase();
 				var value:String = StringTools.trim(line.substring(index + 1));
 
-				// Store the header in the map
-				headers.set(name.toLowerCase(), value);
+				// A header sent twice is both its values, folded as HTTP folds
+				// them, rather than the second one alone: a client may offer its
+				// subprotocols on two lines.
+				var earlier:Null<String> = headers.get(name);
+				if (earlier != null) {
+					value = earlier + (name == "cookie" ? "; " : ", ") + value;
+				}
+
+				headers.set(name, value);
 			}
 		}
 
@@ -1109,6 +1642,16 @@ class WebSocket {
 			return false;
 		}
 
+		// A subprotocol the server chose must be one this side asked for (RFC
+		// 6455 4.1); choosing none is allowed.
+		var chosen:Null<String> = headers.get("sec-websocket-protocol");
+		if (chosen != null && chosen != "") {
+			if (__protocols == null || __protocols.indexOf(chosen) < 0) {
+				return false;
+			}
+			protocol = chosen;
+		}
+
 		return true;
 	}
 
@@ -1120,19 +1663,30 @@ class WebSocket {
 			__openConnection(__tickConnectListener);
 		}
 	}
-
 	#end
 
+	/**
+	 * The transport is up -- TCP, and TLS where there is one -- and the
+	 * session moves from the tick to the registry: read when readable,
+	 * retried when a write is waiting, and no longer visited otherwise.
+	 */
 	private function __openConnection(tickListener:Event->Void):Void {
 		__connected = true;
 		if (__runtime == null) {
 			__runtime = CrossByte.current();
 		}
-		__runtime.addEventListener(Event.TICK, __tickProcessListener);
 
 		if (tickListener != null) {
 			__runtime.removeEventListener(Event.TICK, tickListener);
 		}
+
+		#if !nodejs
+		__socket.custom = this;
+		@:privateAccess __runtime.registerSocket(__socket);
+		__registered = true;
+		#end
+
+		__noteEndpoints();
 
 		// Only a client sends the upgrade request; a server waits to receive
 		// one. This is keyed on the role rather than on whether a listener
@@ -1140,7 +1694,86 @@ class WebSocket {
 		// a listener to retire -- and would otherwise start talking like a
 		// client.
 		if (__isClient != false) {
+			// The answer is waited for as long as the connect was, measured
+			// from here rather than from the connect: a TLS handshake has
+			// already spent some of that. Nothing bounded it before: a peer
+			// that accepted the connection and never replied -- a TLS listener
+			// spoken to in plain text is one -- held the client in CONNECTING
+			// for good.
+			__timestamp = haxe.Timer.stamp();
+			__timeout = connectTimeout;
+			__armUpgradeDeadline();
 			__doHandshake();
+		}
+	}
+
+	/** Notes both ends of the connection, once, while the socket can say. **/
+	private function __noteEndpoints():Void {
+		if (__remotePort != 0 || __socket == null) {
+			return;
+		}
+
+		try {
+			#if nodejs
+			__remoteAddress = crossbyte._internal.net.IPv6.compress(__socket.remoteAddress);
+			__remotePort = __socket.remotePort;
+			__localAddress = crossbyte._internal.net.IPv6.compress(__socket.localAddress);
+			__localPort = __socket.localPort;
+			#else
+			var peer = __socket.peer();
+			if (peer != null) {
+				__remoteAddress = crossbyte._internal.net.IPv6.compress(peer.host.toString());
+				__remotePort = peer.port;
+			}
+			var local = __socket.host();
+			if (local != null) {
+				__localAddress = crossbyte._internal.net.IPv6.compress(local.host.toString());
+				__localPort = local.port;
+			}
+			#end
+		} catch (_:Dynamic) {}
+	}
+
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+
+	private inline function get_remoteAddress():String {
+		return __remoteAddress;
+	}
+
+	private inline function get_remotePort():Int {
+		return __remotePort;
+	}
+
+	private inline function get_localAddress():String {
+		return __localAddress;
+	}
+
+	private inline function get_localPort():Int {
+		return __localPort;
+	}
+
+	private function __armUpgradeDeadline():Void {
+		__disarmUpgradeDeadline();
+		if (__timeout <= 0) {
+			return;
+		}
+		__upgradeDeadline = CBTimer.setTimeout(__timeout / 1000, function():Void {
+			__upgradeDeadlineArmed = false;
+			if (readyState == CONNECTING) {
+				__onError("The server did not answer the WebSocket upgrade");
+				__close(1006);
+			}
+		});
+		__upgradeDeadlineArmed = true;
+	}
+
+	private function __disarmUpgradeDeadline():Void {
+		if (__upgradeDeadlineArmed) {
+			__upgradeDeadlineArmed = false;
+			CBTimer.clear(__upgradeDeadline);
 		}
 	}
 
@@ -1179,7 +1812,7 @@ class WebSocket {
 		// clear and fell through to __openConnection(), treating a failed
 		// handshake as a successful one.
 		var complete:Bool = false;
-		var failed:Bool = false;
+		var failure:String = null;
 
 		try {
 			__socket.handshake();
@@ -1190,7 +1823,7 @@ class WebSocket {
 			// covers the TLS layer's string form, which a typed catch here
 			// used to miss — turning a mid-handshake pause into a failure.
 			if (!BlockedError.isBlocked(e)) {
-				failed = true;
+				failure = Std.string(e);
 			}
 		}
 
@@ -1201,12 +1834,15 @@ class WebSocket {
 
 		// A terminal failure closes immediately instead of idling until the
 		// deadline; a merely stalled peer closes once the deadline passes.
-		if (failed || haxe.Timer.stamp() - __timestamp > __timeout / 1000) {
+		// Either way the owner is told why before the close -- a certificate
+		// the client refused is the one failure here worth reading.
+		var expired:Bool = haxe.Timer.stamp() - __timestamp > __timeout / 1000;
+		if (failure != null || expired) {
 			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
+			__onError(failure != null ? "TLS handshake failed: " + failure : "TLS handshake timed out");
 			__close(1015);
 		}
 	}
-
 	#end
 
 	private function __onError(errorMessage:String):Void {
@@ -1217,70 +1853,291 @@ class WebSocket {
 		onmessage(new WebsocketEvent(WebsocketEvent.MESSAGE, this, data));
 	}
 
+	/**
+	 * Closes the session the way RFC 6455 has it closed: a close frame with
+	 * `code` and `reason`, then the peer's answer, then the connection.
+	 *
+	 * This sent a close frame with nothing in it -- so a peer saw 1005, or
+	 * 1000, whatever code was asked for -- and closed the socket straight
+	 * after queueing it, which on a native target could drop both the frame
+	 * and anything still waiting to go out before it. Now the code and reason
+	 * are in the frame, the connection stays up for the peer's answer, and
+	 * closes once that arrives and everything queued has gone, or after
+	 * `CLOSE_TIMEOUT` regardless. `onclose` reports the code and reason the
+	 * peer answered with, or 1006 when it never did.
+	 *
+	 * A session not yet open has nobody to say anything to, and closes at
+	 * once.
+	 */
 	public function close(?code:Int, ?reason:String):Void {
-		if (__socket == null)
+		if (__socket == null || readyState == CLOSED || readyState == CLOSING) {
 			return;
+		}
+
+		var closing:Int = code == null ? 1000 : code;
+
+		if (readyState != OPEN) {
+			__close(closing, reason);
+			return;
+		}
+
+		__sendCloseFrame(closing, reason);
+		readyState = CLOSING;
+		__armCloseDeadline();
+	}
+
+	/**
+	 * Closes the connection now, telling the peer with a close frame if the
+	 * socket will take it straight away: for a close that cannot wait on the
+	 * peer. `onclose` reports `code`.
+	 */
+	public function abort(code:Int = 1000, ?reason:String):Void {
+		if (__socket == null || readyState == CLOSED) {
+			return;
+		}
 
 		if (readyState == OPEN) {
-			__sendFrame(Bytes.alloc(0), WebSocketOpcode.CLOSE, true);
+			__sendCloseFrame(code, reason);
 		}
 
 		__close(code, reason);
 	}
 
-	private function __close(code:Int, ?reason:String):Void {
-		readyState = CLOSED;
+	/**
+	 * Fails the connection, as RFC 6455 7.1.7 has it done: a close frame
+	 * saying why, where the session is open, and then the connection closed
+	 * at once. For a peer breaking the protocol, which is owed no handshake.
+	 */
+	private function __fail(code:Int):Void {
+		if (readyState == OPEN) {
+			__sendCloseFrame(code, null);
+		}
+		__close(code);
+	}
 
-		if (__socket == null) {
-			onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
+	/**
+	 * The last step of a closing handshake: close once everything queued has
+	 * gone, reporting `code` and `reason` -- at once when nothing is waiting,
+	 * or when the deadline passes with something still stuck.
+	 */
+	private function __finishClose(code:Int, ?reason:String):Void {
+		if (__socket == null || __pendingOutput == null || __pendingOutput.length <= __pendingSent) {
+			__close(code, reason);
 			return;
 		}
 
-		if (__connected) {
-			#if nodejs
-			__socket.end(null);
-			#else
-			__socket.close();
-			#end
+		__closeWhenDrained = true;
+		__drainedCode = code;
+		__drainedReason = reason;
+		__armCloseDeadline();
+	}
 
-			if (__heartbeatID > 0) {
-				GlobalTimer.clearInterval(__heartbeatID);
+	private function __armCloseDeadline():Void {
+		if (__closeDeadlineArmed) {
+			return;
+		}
+		__closeDeadline = CBTimer.setTimeout(CLOSE_TIMEOUT, function():Void {
+			__closeDeadlineArmed = false;
+			if (readyState == CLOSED) {
+				return;
 			}
+			// Either the peer never answered our close -- which is a
+			// connection that ended without one, 1006 -- or it did, and what
+			// was queued could not drain in time.
+			if (__closeWhenDrained) {
+				__close(__drainedCode, __drainedReason);
+			} else {
+				__close(1006, "the peer did not answer the close");
+			}
+		});
+		__closeDeadlineArmed = true;
+	}
 
-			__connected = false;
-			__detachTickListeners();
-		} else {
-			__detachTickListeners();
+	/**
+	 * A close frame carrying `code` and, after it, as much of `reason` as
+	 * fits: a control frame holds 125 bytes, two of them the code, and a
+	 * reason cut there is cut between characters rather than through one.
+	 */
+	private function __sendCloseFrame(code:Int, ?reason:String):Void {
+		var payload:ByteArray = new ByteArray();
+		payload.endian = BIG_ENDIAN;
+		payload.writeShort(code);
+
+		if (reason != null && reason.length > 0) {
+			var text:Bytes = Bytes.ofString(reason);
+			var length:Int = text.length;
+			if (length > 123) {
+				length = 123;
+				// Back off any continuation bytes to the start of a character.
+				while (length > 0 && (text.get(length) & 0xC0) == 0x80) {
+					length--;
+				}
+			}
+			payload.writeBytes(text, 0, length);
 		}
 
+		payload.position = 0;
+		__sendFrame(payload, WebSocketOpcode.CLOSE, true);
+	}
+
+	private function __close(code:Int, ?reason:String):Void {
+		readyState = CLOSED;
+
+		if (__closeReported) {
+			return;
+		}
+
+		__closeWhenDrained = false;
+		#if !nodejs
+		__resolving = false;
+		#end
+		__disarmUpgradeDeadline();
+		__stopHeartbeat();
+		if (__closeDeadlineArmed) {
+			__closeDeadlineArmed = false;
+			CBTimer.clear(__closeDeadline);
+		}
+
+		if (__socket != null) {
+			#if !nodejs
+			// Out of the registry before the socket goes, as `Socket` does it.
+			if (__registered) {
+				__registered = false;
+				if (__runtime != null) {
+					@:privateAccess __runtime.deregisterSocket(__socket);
+				}
+			}
+			#end
+
+			// Closed whether or not the session ever opened. Only an open one
+			// used to be: a TLS handshake that failed, or a connect that timed
+			// out, detached its listeners and dropped the socket without
+			// closing it, so every refused or stalled connection kept its
+			// descriptor -- and, accepted, kept its peer waiting -- for as long
+			// as the process ran.
+			try {
+				#if nodejs
+				if (__connected) {
+					__socket.end(null);
+				} else {
+					__socket.destroy();
+				}
+				#else
+				__socket.close();
+				#end
+			} catch (_:Dynamic) {}
+		}
+
+		__connected = false;
+		__detachTickListeners();
+
+		__closeReported = true;
 		onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
 
 		__socket = null;
 	}
 
 	private inline function __detachTickListeners():Void {
-		if (__runtime == null) {
+		#if !nodejs
+		if (__runtime != null) {
+			__runtime.removeEventListener(Event.TICK, __tickConnectListener);
+			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
+		}
+		#end
+	}
+
+	// ---- Heartbeat ---------------------------------------------------------
+
+	private function get_pingInterval():Float {
+		return __pingInterval < 0 ? PING_INTERVAL / 1000 : __pingInterval;
+	}
+
+	private function set_pingInterval(value:Float):Float {
+		__pingInterval = value < 0 ? 0 : value;
+		if (readyState == OPEN) {
+			__startHeartbeat();
+		}
+		return __pingInterval;
+	}
+
+	private function get_idleTimeout():Float {
+		return __idleTimeout;
+	}
+
+	private function set_idleTimeout(value:Float):Float {
+		__idleTimeout = value < 0 ? 0 : value;
+		if (readyState == OPEN) {
+			__startHeartbeat();
+		}
+		return __idleTimeout;
+	}
+
+	private function __heartbeatPeriod():Float {
+		var interval:Float = pingInterval;
+		if (interval > 0) {
+			return interval;
+		}
+		return __idleTimeout > 0 ? __idleTimeout / 4 : 0;
+	}
+
+	/**
+	 * Starts the heartbeat, for an open session: both ends run one.
+	 *
+	 * It was dead code before -- a client started it only if a delay had been
+	 * set, which nothing set, and an accepted session had the delay and never
+	 * started it -- so a peer that vanished without a FIN was held forever,
+	 * with everything sent to it piling up.
+	 */
+	private function __startHeartbeat():Void {
+		__stopHeartbeat();
+
+		var period:Float = __heartbeatPeriod();
+		if (period <= 0 || readyState != OPEN || __runtime == null) {
 			return;
 		}
 
-		__runtime.removeEventListener(Event.TICK, __tickProcessListener);
-		__runtime.removeEventListener(Event.TICK, __tickConnectListener);
-		__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
+		__heard = false;
+		__silentFor = 0;
+		__heartbeat = CBTimer.setInterval(period, period, __onHeartbeat);
+		__heartbeatArmed = true;
 	}
 
-	private function __initHeartbeat():Void {
-		__heartbeatID = GlobalTimer.setInterval(__heartbeatInterval, __heartbeatDelay);
+	private function __stopHeartbeat():Void {
+		if (__heartbeatArmed) {
+			__heartbeatArmed = false;
+			CBTimer.clear(__heartbeat);
+		}
 	}
 
-	private function __heartbeatInterval() {
-		if (__hasTimeoutPotential) {
-			Logger.debug('WebSocket heartbeat timed out after ${__heartbeatDelay}ms, closing session');
-			__close(1006);
+	/**
+	 * Once a period: a peer heard from since the last is there; one silent
+	 * for `idleTimeout` is gone; one silent for less is pinged, and a peer
+	 * still there answers.
+	 */
+	private function __onHeartbeat():Void {
+		if (readyState != OPEN) {
+			__stopHeartbeat();
 			return;
 		}
 
-		ping();
-		__hasTimeoutPotential = true;
+		var period:Float = __heartbeatPeriod();
+		if (__heard) {
+			__silentFor = 0;
+		} else {
+			__silentFor += period;
+		}
+		__heard = false;
+
+		if (__idleTimeout > 0 && __silentFor >= __idleTimeout) {
+			Logger.debug('WebSocket peer silent for ${__silentFor}s, closing session');
+			__onError('Nothing was heard from the peer for ${Math.round(__silentFor)} s; the session was closed as idle.');
+			__close(1006, "idle timeout");
+			return;
+		}
+
+		if (pingInterval > 0 && __silentFor > 0) {
+			ping();
+		}
 	}
 
 	public function sendBytes(data:ByteArray):Void {
@@ -1389,8 +2246,27 @@ class WebSocket {
 		}
 	}
 
-	public function ping():Void {
-		__sendFrame(new ByteArray(), WebSocketOpcode.PING, true);
+	/**
+	 * Pings the peer, which answers with a pong carrying the same payload --
+	 * at most 125 bytes, and none by default. A pong counts as hearing from
+	 * the peer, as anything it sends does.
+	 */
+	public function ping(?payload:ByteArray):Void {
+		if (readyState != OPEN) {
+			return;
+		}
+		__sendFrame(__controlPayload(payload), WebSocketOpcode.PING, true);
+	}
+
+	/**
+	 * Sends a pong nobody asked for: a heartbeat in one direction, which RFC
+	 * 6455 5.5.3 allows and the peer does not answer.
+	 */
+	public function pong(?payload:ByteArray):Void {
+		if (readyState != OPEN) {
+			return;
+		}
+		__pong(__controlPayload(payload));
 	}
 
 	private function __pong(?payload:ByteArray):Void {
@@ -1398,6 +2274,16 @@ class WebSocket {
 			payload = new ByteArray();
 		}
 		__sendFrame(payload, WebSocketOpcode.PONG, true);
+	}
+
+	private static function __controlPayload(payload:Null<ByteArray>):ByteArray {
+		if (payload == null) {
+			return new ByteArray();
+		}
+		if (payload.length > 125) {
+			throw new crossbyte.errors.ArgumentError("A ping or pong carries at most 125 bytes, and this one is " + payload.length + ".");
+		}
+		return payload;
 	}
 
 	@:access(crossbyte._internal.websocket)
