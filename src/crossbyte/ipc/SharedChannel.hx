@@ -47,8 +47,14 @@ class SharedChannel extends EventDispatcher {
 	public var timeout:Int = 5000;
 
 	@:noCompletion private var __listener:LocalConnection;
-	@:noCompletion private var __outbound:LocalConnection;
-	@:noCompletion private var __outboundName:String;
+	// A connection to each destination sent to lately, by name. It was one
+	// connection, closed and dialled again whenever a send went somewhere
+	// other than where the last one did, so two destinations sent to in turn
+	// cost a connect each send. One is closed after TIME_OUT without a send,
+	// and the least recently used when a new one would pass MAX_OUTBOUND:
+	// each connection has a reader thread.
+	@:noCompletion private var __outbound:Map<String, OutboundLink> = new Map();
+	@:noCompletion private var __outboundCount:Int = 0;
 	@:noCompletion private var __serializer:Serializer;
 	@:noCompletion private var __outboundTimeout:Timer;
 	@:noCompletion private var __runtime:CrossByte;
@@ -61,10 +67,10 @@ class SharedChannel extends EventDispatcher {
 	@:noCompletion private var __dispatchAttached:Bool = false;
 	// Raised under __dispatchLock by whichever thread queues a message.
 	@:noCompletion private var __dispatchPending:Bool = false;
-	@:noCompletion private var __lastSentTime:Float = 0;
 	@:noCompletion private var __running:Bool = false;
 
 	@:noCompletion private static inline var TIME_OUT:Int = 45000;
+	@:noCompletion private static inline var MAX_OUTBOUND:Int = 16;
 	@:noCompletion private static inline var MAX_METHOD_LENGTH:Int = 256;
 	@:noCompletion private static inline var MAX_MESSAGE_SIZE:Int = 1024 * 1024;
 
@@ -89,11 +95,7 @@ class SharedChannel extends EventDispatcher {
 			__listener.close();
 			__listener = null;
 		}
-		if (__outbound != null) {
-			__outbound.close();
-			__outbound = null;
-		}
-		__outboundName = null;
+		__dropAllLinks();
 		if (__outboundTimeout != null) {
 			__outboundTimeout.stop();
 			__outboundTimeout = null;
@@ -166,24 +168,31 @@ class SharedChannel extends EventDispatcher {
 		var status = false;
 
 		try {
-			if (__outbound == null || __outboundName != connectionName || !__outbound.connected) {
-				if (__outbound != null) {
-					__outbound.close();
+			var link = __outbound.get(connectionName);
+			if (link == null || !link.connection.connected) {
+				if (link != null) {
+					__dropLink(connectionName);
 				}
-				__outbound = new LocalConnection();
-				__outbound.timeout = timeout;
-				__outbound.connect(connectionName);
-				__outboundName = connectionName;
+				if (__outboundCount >= MAX_OUTBOUND) {
+					__dropLeastRecentLink();
+				}
+				var connection = new LocalConnection();
+				connection.timeout = timeout;
+				connection.connect(connectionName);
+				link = new OutboundLink(connection);
+				__outbound.set(connectionName, link);
+				__outboundCount++;
 			}
 
-			__outbound.send(message);
-			status = true;
+			link.connection.send(message);
+			link.lastSent = haxe.Timer.stamp();
+			// A send the connection could not take closes or reports it.
+			status = link.connection.connected;
 		} catch (_:Dynamic) {
 			status = false;
 		}
 
 		dispatchEvent(new StatusEvent(StatusEvent.STATUS, "0", status ? "status" : "error"));
-		__lastSentTime = haxe.Timer.stamp();
 
 		if (__outboundTimeout == null) {
 			__startTimeoutCheck();
@@ -199,22 +208,56 @@ class SharedChannel extends EventDispatcher {
 	}
 
 	@:noCompletion private function __checkTimeout():Void {
-		if (__outbound != null) {
-			var elapsed = haxe.Timer.stamp() - __lastSentTime;
-			if (elapsed >= TIME_OUT / 1000) {
-				__outbound.close();
-				__outbound = null;
-				__outboundName = null;
+		final now = haxe.Timer.stamp();
+		for (name in [for (name in __outbound.keys()) name]) {
+			var link = __outbound.get(name);
+			if (now - link.lastSent >= TIME_OUT / 1000 || !link.connection.connected) {
+				__dropLink(name);
 			}
 		}
 
-		if (__outbound == null && __outboundTimeout != null) {
-			__outboundTimeout.stop();
-			__outboundTimeout = null;
+		if (__outboundCount == 0) {
+			if (__outboundTimeout != null) {
+				__outboundTimeout.stop();
+				__outboundTimeout = null;
+			}
 			return;
 		}
 
 		__outboundTimeout = Timer.delay(() -> __checkTimeout(), 5000);
+	}
+
+	@:noCompletion private function __dropLink(name:String):Void {
+		var link = __outbound.get(name);
+		if (link == null) {
+			return;
+		}
+		__outbound.remove(name);
+		__outboundCount--;
+		try {
+			link.connection.close();
+		} catch (_:Dynamic) {}
+	}
+
+	@:noCompletion private function __dropLeastRecentLink():Void {
+		var oldest:String = null;
+		var oldestSent = Math.POSITIVE_INFINITY;
+		for (name => link in __outbound) {
+			if (link.lastSent < oldestSent) {
+				oldest = name;
+				oldestSent = link.lastSent;
+			}
+		}
+		if (oldest != null) {
+			__dropLink(oldest);
+		}
+	}
+
+	@:noCompletion private function __dropAllLinks():Void {
+		for (name in [for (name in __outbound.keys()) name]) {
+			__dropLink(name);
+		}
+		__outboundCount = 0;
 	}
 
 	@:noCompletion private inline function __resetSerializer():Void {
@@ -366,6 +409,16 @@ class SharedChannel extends EventDispatcher {
 	/** Test hook that forwards through the low-level native helper. */
 	@:noCompletion private static inline function __close(pipe:Dynamic):Void {
 		LocalConnection.__close(pipe);
+	}
+}
+
+/** A channel's connection to one destination, and when it last sent there. **/
+private class OutboundLink {
+	public final connection:LocalConnection;
+	public var lastSent:Float = 0;
+
+	public function new(connection:LocalConnection) {
+		this.connection = connection;
 	}
 }
 #end

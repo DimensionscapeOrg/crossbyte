@@ -135,6 +135,52 @@ class SharedChannelTest extends utest.Test {
 		#end
 	}
 
+	public function testSendingToTwoChannelsInTurnKeepsAConnectionToEach():Void {
+		// One outbound connection was kept, and closed and dialled again
+		// whenever a send went somewhere other than where the last one did:
+		// sending to two channels in turn was a connect a send.
+		#if (cpp && (windows || linux || mac || macos))
+		var runtime = CrossByte.current();
+		var a = new SharedChannel();
+		var b = new SharedChannel();
+		var sender = new SharedChannel();
+		var toA = new SharedChannelReceiver();
+		var toB = new SharedChannelReceiver();
+		a.client = toA;
+		b.client = toB;
+		var suffix = '${Std.int(Sys.time() * 1000)}_${Std.random(1000000)}';
+		var clientsOfA = 0;
+		var clientsOfB = 0;
+
+		try {
+			a.connect('__crossbyte_turns_a_$suffix');
+			b.connect('__crossbyte_turns_b_$suffix');
+			a.__listener.onReady = () -> clientsOfA++;
+			b.__listener.onReady = () -> clientsOfB++;
+			for (i in 0...5) {
+				sender.send('__crossbyte_turns_a_$suffix', "receive", ("a" : Dynamic), (i : Dynamic));
+				sender.send('__crossbyte_turns_b_$suffix', "receive", ("b" : Dynamic), (i : Dynamic));
+			}
+			pumpRuntimeUntil(runtime, () -> toA.calls == 5 && toB.calls == 5, 5.0);
+		} catch (e:Dynamic) {
+			sender.close();
+			a.close();
+			b.close();
+			throw e;
+		}
+
+		sender.close();
+		a.close();
+		b.close();
+		Assert.equals(5, toA.calls);
+		Assert.equals(5, toB.calls);
+		Assert.equals(1, clientsOfA, 'the first channel was connected to $clientsOfA times');
+		Assert.equals(1, clientsOfB, 'the second channel was connected to $clientsOfB times');
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private static function frame(method:String, args:Array<Dynamic>):Bytes {
 		var methodBytes = Bytes.ofString(method);
 		var serialized = Serializer.run(args);
