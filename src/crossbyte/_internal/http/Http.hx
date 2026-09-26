@@ -20,6 +20,9 @@ import crossbyte.url.URL;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
+#if target.threaded
+import sys.thread.Mutex;
+#end
 
 /**
  * ...
@@ -82,6 +85,7 @@ class Http {
 	private static inline final HEADER_CONTENT_LENGTH = "content-length";
 	private static inline final HEADER_CONTENT_ENCODING = "content-encoding";
 	private static inline final HEADER_TRANSFER_ENCODING = "transfer-encoding";
+	private static inline final CANCELLED:String = "Request cancelled";
 
 	public var onProgress:(bytesLoaded:Int, bytesTotal:Int) -> Void = (bytesLoaded:Int, bytesTotal:Int) -> {};
 	public var onError:(message:String, ?data:Bytes) -> Void = (message:String, ?data:Bytes) -> {};
@@ -121,6 +125,24 @@ class Http {
 	private var __reusedSocket:Bool = false;
 	private var __staleRetry:Bool = false;
 	private var __responseHttp11:Bool = false;
+
+	// A cancel arrives on another thread, and the only way it reaches a
+	// blocking call is through the socket under it. This lock is how the two
+	// threads agree on which socket that is: `__adopt` publishes one only if
+	// the request is still wanted, and `__abortSocket` marks the request and
+	// takes whatever is published, both under it, so one always sees the
+	// other. `__socket` is written only by the loading thread, and only
+	// under the lock; that thread reads it freely.
+	#if target.threaded
+	private final __socketLock:Mutex = new Mutex();
+	#end
+	private var __aborted:Bool = false;
+	// Counts calls to load(), so a cancel handler knows which it was for.
+	private var __loads:Int = 0;
+
+	// Whether onComplete or onError has been called: a request has exactly
+	// one outcome, however many of its steps fail on the way out.
+	private var __settled:Bool = false;
 
 	/**
 	 * Whether HTTP/1.1 connections are kept and reused between requests to one
@@ -182,14 +204,37 @@ class Http {
 			return;
 		}
 
-		// The only way to interrupt a blocking read is to close the socket
+		__lockSocket();
+		__aborted = false;
+		var generation:Int = ++__loads;
+		__unlockSocket();
+		__settled = false;
+
+		// The only way to interrupt a blocking read is through the socket
 		// underneath it. Crude next to an HTTP/2 stream reset, but HTTP/1.1
 		// has no in-band way to abandon a response: the connection is the
-		// unit, so the connection is what goes.
-		cancelToken.onCancel(__abortSocket);
+		// unit, so the connection is what goes. Held in a local so the same
+		// closure is removed as was added, on eval and the jvm each read of
+		// a method is a new one, and tied to this load, so a cancel of an
+		// earlier one running late cannot reach it.
+		var abort:Void->Void = () -> __abortSocket(generation);
+		cancelToken.onCancel(abort);
+		try {
+			__load();
+		} catch (e:Dynamic) {
+			cancelToken.removeHandler(abort);
+			__close();
+			throw e;
+		}
+		// Over, one way or the other: a cancel from now on has nothing left to
+		// stop, and the token must not keep this request reachable.
+		cancelToken.removeHandler(abort);
+	}
 
-		if (cancelToken.cancelled) {
-			onError("Request cancelled");
+	private function __load():Void {
+		if (__isAborted()) {
+			// Cancelled before it started: the handler ran as it was added.
+			__fail(CANCELLED);
 			return;
 		}
 
@@ -212,20 +257,20 @@ class Http {
 							url = new URL(__resolveLocation(__url, location));
 						} catch (_:Dynamic) {
 							__close();
-							onError("Could not complete redirect: malformed Location " + location);
+							__fail("Could not complete redirect: malformed Location " + location);
 							return;
 						}
 
 						if (redirects.indexOf(url) > -1) {
 							__close();
-							onError("Redirect loop detected");
+							__fail("Redirect loop detected");
 							return;
 						}
 
 						var refusal:Null<String> = __redirectRefusal(__url, url, __followInsecureRedirects);
 						if (refusal != null) {
 							__close();
-							onError(refusal);
+							__fail(refusal);
 							return;
 						}
 
@@ -251,12 +296,12 @@ class Http {
 						__url = url;
 					} else {
 						__close();
-						onError("Could not complete redirect");
+						__fail("Could not complete redirect");
 						return;
 					}
 				} else {
 					__close();
-					onError("Could not complete redirect");
+					__fail("Could not complete redirect");
 					return;
 				}
 
@@ -270,7 +315,7 @@ class Http {
 			// and done with, were reported as too many.
 			if (__connected && __isRedirect(__status) && (redirects.length - 1) >= MAX_REDIRECTS) {
 				__close();
-				onError("Exceeded the number of allowed redirects");
+				__fail("Exceeded the number of allowed redirects");
 				return;
 			}
 		}
@@ -322,19 +367,151 @@ class Http {
 	}
 
 	/**
-	 * Closes the socket out from under a blocking read.
+	 * Marks the request cancelled and ends whatever blocking call its socket
+	 * has the loading thread in.
 	 *
 	 * Called from whichever thread cancelled, which is not the thread inside
-	 * `load()`. That read then fails and unwinds through the ordinary error
-	 * path, which is the point: there is nothing else to poll.
+	 * `load()`. That call then fails and unwinds through the ordinary error
+	 * path, which is the point: there is nothing else to poll. A socket not
+	 * yet published is left to `__adopt`, which finds the mark and closes it.
 	 */
-	private function __abortSocket():Void {
+	private function __abortSocket(generation:Int):Void {
+		__lockSocket();
+		if (generation != __loads) {
+			// For a load that has finished; this one is not being cancelled.
+			__unlockSocket();
+			return;
+		}
+		__aborted = true;
+		var socket:Null<FlexSocket> = __socket;
+		if (socket != null) {
+			// Under the lock, so the loading thread cannot close the socket
+			// between this taking it and interrupting it.
+			__interrupt(socket);
+		}
+		__unlockSocket();
+	}
+
+	/**
+	 * Ends a blocking read or write on `socket` from another thread, without
+	 * releasing anything that thread is using.
+	 *
+	 * Shut down, not closed. Closing from here was the old way, and it went
+	 * wrong in three ways. On Linux, native or eval, a close does not wake a
+	 * `recv` already waiting on the socket, and the peer is not told until that
+	 * read gives up: a cancelled load held its thread and its server for the
+	 * whole idle timeout. On eval the close failed the waiting read with a
+	 * native error no Haxe catch sees, which killed the thread, and the
+	 * reset it caused killed the reader on the peer's side too. And a TLS
+	 * socket's close frees its mbedTLS context while the loading thread may be
+	 * inside a read on it. A shutdown wakes the read everywhere with the end of
+	 * the stream, and tells the peer at once, and the loading thread closes
+	 * the socket itself on its way out.
+	 *
+	 * Windows differs twice. A shutdown there does not wake a `recv` already
+	 * waiting on the same socket, only the peer answering the shutdown's
+	 * FIN does, where a close does; so natively a plain socket is closed as
+	 * well, and a TLS one, for the reason above, is left to the peer. And a
+	 * `recv` begun after the reading side is shut down fails there with
+	 * WSAESHUTDOWN, which eval raises as a native error no catch sees, just
+	 * as it did the close; so on eval under Windows only the writing side is
+	 * shut down, and the read ends when the peer closes in answer.
+	 */
+	private static function __interrupt(socket:FlexSocket):Void {
 		try {
-			if (__socket != null) {
-				__socket.close();
-			}
+			socket.shutdown(__shutDownReads, true);
+		} catch (_:Dynamic) {
+			// Not connected yet, or already closed: the connect or the next
+			// read then fails on its own, and the mark is checked after it.
+		}
+		#if cpp
+		if (__onWindows && !socket.isSecure) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		}
+		#end
+	}
+
+	#if (cpp || eval)
+	private static final __onWindows:Bool = Sys.systemName() == "Windows";
+	#end
+	private static final __shutDownReads:Bool = #if eval !__onWindows #else true #end;
+
+	/**
+	 * Makes `socket` the request's, where a cancel can reach it, unless the
+	 * request has been cancelled already, in which case `socket` is closed
+	 * and this answers false.
+	 */
+	private function __adopt(socket:FlexSocket):Bool {
+		__lockSocket();
+		var aborted:Bool = __aborted;
+		if (!aborted) {
+			__socket = socket;
+		}
+		__unlockSocket();
+
+		if (aborted) {
+			__closeQuietly(socket);
+		}
+		return !aborted;
+	}
+
+	/** Takes the request's socket back out of a cancel's reach; null when it has none. */
+	private function __detach():Null<FlexSocket> {
+		__lockSocket();
+		var socket:Null<FlexSocket> = __socket;
+		__socket = null;
+		__unlockSocket();
+		return socket;
+	}
+
+	/** Whether the request has been cancelled. */
+	private function __isAborted():Bool {
+		__lockSocket();
+		var aborted:Bool = __aborted;
+		__unlockSocket();
+		return aborted;
+	}
+
+	private inline function __lockSocket():Void {
+		#if target.threaded
+		__socketLock.acquire();
+		#end
+	}
+
+	private inline function __unlockSocket():Void {
+		#if target.threaded
+		__socketLock.release();
+		#end
+	}
+
+	/**
+	 * Ends the request with `message`, unless it has already ended. A request
+	 * that was cancelled says so, whatever step then failed under it: the
+	 * read the cancel ended reports the end of the stream, and it is the
+	 * cancel, not the server, that ended it.
+	 */
+	private function __fail(message:String, ?data:Bytes):Void {
+		if (__settled) {
+			return;
+		}
+		__settled = true;
+		onError(__isAborted() ? CANCELLED : message, data);
+	}
+
+	private function __complete(data:Bytes):Void {
+		if (__settled) {
+			return;
+		}
+		__settled = true;
+		onComplete(data);
+	}
+
+	private static function __closeQuietly(socket:FlexSocket):Void {
+		try {
+			socket.close();
 		} catch (_:Dynamic) {}
-		__connected = false;
 	}
 
 	public static inline function validateHttpVersion(version:HttpVersion):Bool {
@@ -419,6 +596,9 @@ class Http {
 	private function __parseResponse():Void {
 		if (!__connected) {
 			__close();
+			// Whatever lost the connection has said so already; this is only
+			// here so that nothing can end without an outcome.
+			__fail("Connection lost");
 			return;
 		}
 
@@ -439,7 +619,7 @@ class Http {
 		var contentLength:Null<Int> = isChunked ? null : __parseContentLength(contentLengthHeader);
 		if (!isChunked && contentLengthHeader != null && contentLength == null) {
 			__close();
-			onError("Download failed: invalid Content-Length");
+			__fail("Download failed: invalid Content-Length");
 			return;
 		}
 
@@ -494,7 +674,7 @@ class Http {
 
 					if (offset != total) {
 						__close();
-						onError("Download failed: expected " + total + " bytes, got " + offset);
+						__fail("Download failed: expected " + total + " bytes, got " + offset);
 						return;
 					}
 
@@ -582,11 +762,17 @@ class Http {
 						bytesLoaded += n;
 						onProgress(bytesLoaded, bytesTotalForProgress);
 					}
+					// A cancel ends the stream the same way the server closing
+					// does, which here is how the body ends: without this, a
+					// body cut short by a cancel was delivered as complete.
+					if (__isAborted()) {
+						throw CANCELLED;
+					}
 					data = buffer.getBytes();
 
 				default:
 					__close();
-					onError("Download failed: unsupported response mode");
+					__fail("Download failed: unsupported response mode");
 					return;
 			}
 		} catch (e:Dynamic) {
@@ -596,7 +782,7 @@ class Http {
 			// terminator, an early EOF, reached the caller as the same four
 			// words. The three messages above this one all name the thing that
 			// went wrong.
-			onError("Download failed: " + Std.string(e));
+			__fail("Download failed: " + Std.string(e));
 			return;
 		}
 
@@ -611,9 +797,9 @@ class Http {
 				// allowed, arrives as an exception. Reporting the second as an
 				// unsupported coding sent the caller looking in the wrong place.
 				if (Std.isOfType(error, String)) {
-					onError('Unsupported content encoding: ${error}', data);
+					__fail('Unsupported content encoding: ${error}', data);
 				} else {
-					onError('Failed to decode response body: ' + Std.string(error), data);
+					__fail('Failed to decode response body: ' + Std.string(error), data);
 				}
 				return;
 			}
@@ -626,7 +812,7 @@ class Http {
 		if (isHttpError) {
 			var status:Int = __status;
 			__release(framed);
-			onError('HTTP error ' + status, data);
+			__fail('HTTP error ' + status, data);
 			return;
 		}
 
@@ -635,7 +821,7 @@ class Http {
 		__release(framed);
 
 		if (data != null) {
-			onComplete(data);
+			__complete(data);
 		}
 	}
 
@@ -720,10 +906,26 @@ class Http {
 		#end
 
 		if (kept != null) {
-			__socket = kept;
-			__socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			// Every socket this request uses is published through __adopt, so
+			// a cancel landing anywhere before it, here, between redirect
+			// hops, while the pool is searched, is found rather than lost.
+			// It used to be lost: the cancel found no socket to close, the
+			// request went out regardless, and its thread waited out the
+			// whole idle timeout for an answer nobody wanted.
+			if (!__adopt(kept)) {
+				__fail(CANCELLED);
+				return;
+			}
 			__connected = true;
 			__reusedSocket = true;
+			try {
+				kept.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			} catch (_:Dynamic) {
+				// Closed under this thread, which only a cancel does.
+				__close();
+				__fail("Connection lost");
+				return;
+			}
 			__handleRequest();
 			if (!__staleRetry) {
 				__handleResponse();
@@ -738,23 +940,34 @@ class Http {
 		}
 
 		try {
-			__socket = new FlexSocket(__url.ssl);
+			var socket:FlexSocket = new FlexSocket(__url.ssl);
+			if (!__adopt(socket)) {
+				__fail(CANCELLED);
+				return;
+			}
 			// Seconds, where `timeout` is milliseconds: it was passed as it came,
 			// so a 30 second idle timeout waited 30,000 seconds. The same
 			// conversion, and the same 30 second fallback, as the HTTP/2 backend.
-			__socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
-			__socket.connect(__url.host, __url.port);
+			socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			socket.connect(__url.host, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
 			__close();
-			onError("Connection Failed");
+			__fail("Connection Failed");
 			return;
 		}
 
-		if (__connected) {
-			__handleRequest();
+		// A cancel while the connection was being made found nothing it could
+		// shut down, a socket not yet connected has no stream to end, so
+		// it is looked for again now there is one. From here on, a cancel
+		// reaches the socket itself.
+		if (__isAborted()) {
+			__close();
+			__fail(CANCELLED);
+			return;
 		}
 
+		__handleRequest();
 		__handleResponse();
 	}
 
@@ -782,10 +995,20 @@ class Http {
 		var connection:Null<String> = __responseHeaders.get("connection");
 		var closing:Bool = connection != null && connection.toLowerCase().indexOf("close") >= 0;
 		if (framed && __pooling() && __responseHttp11 && !closing && __socket != null && __version == HttpVersion.HTTP_1_1) {
-			var socket:FlexSocket = __socket;
-			__socket = null;
+			// Out of a cancel's reach first: a cancel shutting down a
+			// connection already back in the pool would hand the next request
+			// to this origin a dead one.
+			var socket:Null<FlexSocket> = __detach();
 			__connected = false;
-			HttpConnectionPool.put(__originOf(__url), socket);
+			if (socket != null) {
+				if (__isAborted()) {
+					// Cancelled before it was taken back, so it may have been
+					// shut down under the response: not one to keep.
+					__closeQuietly(socket);
+				} else {
+					HttpConnectionPool.put(__originOf(__url), socket);
+				}
+			}
 			return;
 		}
 		#end
@@ -813,9 +1036,9 @@ class Http {
 				}
 				__close();
 				if (Std.isOfType(e, haxe.io.Eof)) {
-					onError(__status == 0 ? "Connection closed without a response" : "Connection closed while reading headers");
+					__fail(__status == 0 ? "Connection closed without a response" : "Connection closed while reading headers");
 				} else {
-					onError("Failed to read response");
+					__fail("Failed to read response");
 				}
 				return;
 			}
@@ -823,7 +1046,7 @@ class Http {
 
 			if (line == null) {
 				__close();
-				onError("Connection closed while reading headers");
+				__fail("Connection closed while reading headers");
 				return;
 			}
 
@@ -849,7 +1072,7 @@ class Http {
 				var code:Int = __parseStatusLine(line);
 				if (code < 0) {
 					__close();
-					onError('Malformed status line: ' + line);
+					__fail('Malformed status line: ' + line);
 					return;
 				}
 				__status = code;
@@ -1104,15 +1327,17 @@ class Http {
 				__staleRetry = true;
 				return;
 			}
-			onError("URL Request failed");
+			__fail("URL Request failed");
 		}
 	}
 
 	private function __close():Void {
-		if (__socket != null) {
-			__socket.close();
-			__connected = false;
-			__socket = null;
+		// Taken out of a cancel's reach before it is closed, so the two
+		// threads never close it at once.
+		var socket:Null<FlexSocket> = __detach();
+		__connected = false;
+		if (socket != null) {
+			__closeQuietly(socket);
 		}
 
 		// should we reset the status?

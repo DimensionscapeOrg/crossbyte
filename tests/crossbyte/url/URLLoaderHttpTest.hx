@@ -342,14 +342,21 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.equals(-1, result.progress[0].total);
 	}
 
-	#if (cpp || neko || hl)
+	#if target.threaded
 	// Only where the loader's worker is a thread: elsewhere it runs the load
 	// inside load(), so nothing can close it while it is in flight.
 	public function testClosingALoadInFlightEndsItQuietly():Void {
-		// A server that takes the request and holds it, answering nothing.
+		// A server that takes the request and holds it, answering nothing,
+		// and notes how its wait for the client ended.
 		var ready = new Lock();
 		var finished = new Lock();
-		var arrived = new sys.thread.Deque<Bool>();
+		// Strings, not Bools. On the jvm a Deque of a basic type answers
+		// `pop(false)` on an empty queue with false or 0 rather than null, so
+		// a Deque<Bool> here said the request had arrived before it was sent:
+		// the loader was closed before its load began, and the server waited
+		// in accept() for a client that never came.
+		var arrived = new sys.thread.Deque<String>();
+		var ended:String = null;
 		var port = 0;
 		Thread.create(() -> {
 			var server = new SysSocket();
@@ -360,11 +367,19 @@ class URLLoaderHttpTest extends utest.Test {
 				port = server.host().port;
 				ready.release();
 				peer = server.accept();
-				peer.setTimeout(3.0);
+				// Longer than the test waits for this thread below, so only the
+				// client going ends the wait in time.
+				peer.setTimeout(5.0);
 				readRequest(peer);
-				arrived.add(true);
-				// Until the client goes.
-				peer.input.readByte();
+				arrived.add("arrived");
+				try {
+					peer.input.readByte();
+					ended = "a byte arrived";
+				} catch (_:haxe.io.Eof) {
+					ended = "the client went";
+				} catch (e:Dynamic) {
+					ended = Std.string(e);
+				}
 			} catch (_:Dynamic) {
 				ready.release();
 			}
@@ -402,7 +417,13 @@ class URLLoaderHttpTest extends utest.Test {
 		pumpUntil(() -> haxe.Timer.stamp() >= settle);
 
 		Assert.same([], events);
-		Assert.isTrue(finished.wait(3.0));
+		// And the server hears of it now, not when its own wait runs out. The
+		// client used to close its socket from the closing thread: on eval
+		// that killed the worker with an error nothing could catch, and the
+		// reset it caused killed the server's reader too; on Linux a close
+		// does not wake the read, so the server waited out the idle timeout.
+		Assert.isTrue(finished.wait(2.0), "the server never saw the client go");
+		Assert.equals("the client went", ended);
 
 		// And the loader is free for the next load.
 		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 2"], "ok"), 1);
@@ -536,8 +557,8 @@ class URLLoaderHttpTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
