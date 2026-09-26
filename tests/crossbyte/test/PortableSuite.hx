@@ -104,6 +104,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.timer.TimerStampTest());
 		// Its tick number wraps at 32 bits, and js is where an Int would not.
 		runner.addCase(new crossbyte.core.FixedStepTest());
+		// The runtime's own frame is a chain of platform timeouts here, and a
+		// throw out of one ended the chain -- on Node, the process.
+		runner.addCase(new crossbyte.core.UncaughtErrorTest());
 		// The rest of the ByteArray cases, which this file listed one of. None
 		// of them touches sys, so nothing kept them off js except not being
 		// written down -- and js is the target where, as the note in

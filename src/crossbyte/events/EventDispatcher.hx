@@ -255,6 +255,69 @@ class EventDispatcher implements IEventDispatcher {
 		return true;
 	}
 
+	/**
+		Dispatches `event` as `dispatchEvent` does, except that a listener
+		that throws does not stop the ones after it: what it threw goes to
+		`__listenerThrew`, and the dispatch carries on.
+
+		For events whose listeners belong to unrelated components -- a
+		runtime's tick, its INIT and EXIT -- where one's bug is not the
+		others' business and must not end the loop that dispatched it.
+		Everything else still propagates, as it always has: a component
+		dispatching its own events to its own listeners may rely on hearing
+		that one failed.
+
+		A separate method rather than a flag on the ordinary one, so the
+		dispatch every other event takes is exactly what it was.
+	**/
+	@:noCompletion private function __dispatchContained(event:Event):Bool {
+		if (event == null) {
+			return false;
+		}
+
+		if (event.target == null) {
+			var tgt:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
+			event.target = tgt;
+			event.currentTarget = tgt;
+		} else {
+			event.currentTarget = (__targetDispatcher != null) ? __targetDispatcher : this;
+		}
+
+		var eventMap = __eventMap;
+		if (eventMap == null) {
+			return false;
+		}
+
+		var list:Null<Array<ListenerEntry>> = eventMap.get(event.type);
+		if (list == null) {
+			return false;
+		}
+
+		// The same snapshot `__dispatchEvent` walks: add and remove replace
+		// the array rather than change it.
+		var len:Int = list.length;
+		for (i in 0...len) {
+			var entry = list[i];
+			if (entry == null || entry.listener == null) {
+				continue;
+			}
+			try {
+				entry.listener(event);
+			} catch (error:Dynamic) {
+				__listenerThrew(error, event);
+			}
+		}
+		return len > 0;
+	}
+
+	/**
+		What `__dispatchContained` does with a listener's failure. Logged
+		here; a runtime overrides it to report the failure as its own.
+	**/
+	@:noCompletion private function __listenerThrew(error:Dynamic, event:Event):Void {
+		crossbyte.utils.Logger.error("A " + event.type + " listener threw: " + Std.string(error));
+	}
+
 	private inline function __compactListeners(type:String, list:Array<ListenerEntry>):Void {
 		if (__eventMap == null) {
 			return;

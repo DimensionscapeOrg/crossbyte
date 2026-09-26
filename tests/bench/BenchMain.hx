@@ -46,6 +46,7 @@ class BenchMain {
 		sctp();
 		dtlsFraming();
 		eventsAndFutures();
+		BenchRuntime.run();
 		BenchRpc.run();
 
 		Sys.println("");

@@ -4,6 +4,16 @@ interface ITimerScheduler {
 	public var isEmpty(get, never):Bool;	
 	public var time(get, never):Float;
 	public final startTime:Float;
+
+	/**
+		Given what a timer's callback threw, once the scheduler has settled
+		that timer as if the callback had returned: a recurring one re-armed,
+		a one-shot freed. Null rethrows it out of `advanceTime` instead, which
+		is what a scheduler driven by hand wants; a runtime sets this, so a
+		timer's failure costs that timer and not the loop.
+	**/
+	public var onError:Dynamic->Void;
+
 	public function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle;
 	public function setTimeoutVoid(delay:Float, callback:Void->Void):TimerHandle;
 	public function setInterval(delay:Float, interval:Float, callback:TimerHandle->Void):TimerHandle;
