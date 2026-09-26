@@ -21,6 +21,7 @@ import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.FileMode;
 import crossbyte.errors.IOError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.net.ObjectEncoding;
 import crossbyte.events.OutputProgressEvent;
@@ -342,6 +343,15 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		fileMode parameter is set to "append", "update", or "write" mode.
 	 */
 	public function openAsync(file:File, fileMode:FileMode):Void {
+		#if !target.threaded
+		if (fileMode != READ) {
+			// The writer is a worker that waits for writes. With no thread of
+			// its own it ran inside this call, waiting for writes this call's
+			// caller could never make, and never returned.
+			throw new IllegalOperationError("openAsync can only read on this target: writing asynchronously needs a thread for the writer, and there is none here. Use open() and write synchronously.");
+		}
+		#end
+
 		__isAsync = true;
 
 		__fileStreamMutex = new Mutex();
@@ -454,7 +464,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			var remaining:Int = fileSize - next;
 			var want:Int = remaining < __pageSize ? remaining : __pageSize;
 
-			#if (cpp || neko || hl)
+			#if target.threaded
 			if (readAhead != Math.POSITIVE_INFINITY) {
 				var unread:Int = __buffer.length - __buffer.position;
 				// Up to readAhead, in whole 4 KB pages, and nothing while the

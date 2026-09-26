@@ -76,6 +76,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
+		// Empty wherever there are threads; on Node, an async write refused.
+		runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());

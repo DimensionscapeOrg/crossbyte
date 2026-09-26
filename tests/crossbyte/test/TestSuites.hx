@@ -119,6 +119,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.io.ByteArrayOutputTest());
 		runner.addCase(new crossbyte.io.FileTest());
 		runner.addCase(new crossbyte.io.FileStreamTest());
+		runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
 		runner.addCase(new crossbyte.io.ByteDeltaTest());
 		runner.addCase(new crossbyte.io.BitPackingTest());
