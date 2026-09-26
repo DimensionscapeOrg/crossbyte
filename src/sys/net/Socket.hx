@@ -345,20 +345,20 @@ private class SocketOutput extends haxe.io.Output {
 
 private class SocketInput extends haxe.io.Input {
 	var socket:NativeSocket;
+	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
 
 	public function new(socket:NativeSocket) {
 		this.socket = socket;
 	}
 
+	/**
+		Through `readBytes`, which knows the end of the stream when it sees it.
+		`receiveChar` answers 0 there -- a byte like any other -- so a reader
+		waiting for a delimiter at the end of a connection read zeros for ever.
+	**/
 	public override function readByte() {
-		return try {
-			socket.receiveChar();
-		} catch (e:Dynamic) {
-			if (e == "Blocking")
-				throw Blocked;
-			else
-				throw new haxe.io.Eof();
-		}
+		readBytes(one, 0, 1);
+		return one.get(0);
 	}
 
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int) {
