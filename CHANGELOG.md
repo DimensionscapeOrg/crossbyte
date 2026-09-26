@@ -537,6 +537,17 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An RPC round trip costs less than half what it did natively: a request
+  answered 928 ns to 405 ns, one answered later 1.88 us to 537 ns, and one
+  with a `then` callback 2.13 us to 568 ns (BenchRpc, best of 11). Every
+  `Future` -- so every `RPCResponse`, and every `Completer` -- made a
+  `sys.thread.Mutex`, an object with a finalizer, and two handler lists,
+  and the caller took the lock twice a round trip at about 250 ns each,
+  since taking one on hxcpp enters and leaves a GC-free zone. On cpp the
+  lock is now a word of the future's own taken with an atomic
+  compare-and-swap, and the handler lists are made only for a second
+  handler of a kind. A handler's throw is contained without a closure
+  made to run it. Other targets keep their `Mutex`.
 - `RPCSession.start()` heartbeats whether or not the session has commands,
   so a server that calls it on the sessions it accepts now pings its
   clients and closes one it hears nothing from for `heartbeatTimeout`. Its

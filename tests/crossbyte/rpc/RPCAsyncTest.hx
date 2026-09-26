@@ -203,6 +203,16 @@ class RPCAsyncTest extends utest.Test {
 
 	// ---- threads ----
 
+	public function testAFutureTakenByManyThreadsAtOnceRunsEveryHandlerOnce():Void {
+		#if (cpp || jvm || hl || neko)
+		var outcome = FutureContention.run(4, 40, 50);
+		Assert.equals(outcome.expected, outcome.fired, "a handler was lost or run twice");
+		Assert.equals(0, outcome.wrong);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testAFutureCompletedOnAnotherThreadIsAnsweredOnTheSessionsThread():Void {
 		// A connection is not thread-safe. Completed on a worker, the answer is
 		// handed to the session's runtime and sent at its next tick, from its
@@ -239,6 +249,61 @@ class RPCAsyncTest extends utest.Test {
 		Assert.pass();
 		#end
 	}
+}
+
+/**
+	Several threads at one future at once, while the collector runs.
+
+	On cpp a future's lock is a word taken with an atomic compare-and-swap,
+	not a `Mutex`. A thread that finds it held waits for it, and the holder
+	may be growing a handler list as it holds it -- which can start a
+	collection, and a collection waits for every thread. A waiter that did
+	not let the collector stop it would never see the lock let go.
+**/
+private class FutureContention {
+	#if (cpp || jvm || hl || neko)
+	public static function run(threads:Int, rounds:Int, perThread:Int):{fired:Int, expected:Int, wrong:Int} {
+		var fired = 0;
+		var wrong = 0;
+		var counter = new sys.thread.Mutex();
+		for (round in 0...rounds) {
+			var future = new Future<Int>();
+			var gate = new sys.thread.Lock();
+			var done = new sys.thread.Deque<Int>();
+			for (t in 0...threads) {
+				sys.thread.Thread.create(function():Void {
+					gate.wait();
+					for (i in 0...perThread) {
+						// Garbage on the way, so collections land while the lock
+						// is held and waited on.
+						var noise = [for (j in 0...8) 'round $round thread $t handler $i part $j'];
+						future.then(function(value:Int):Void {
+							counter.acquire();
+							fired++;
+							if (value != round || noise.length != 8) {
+								wrong++;
+							}
+							counter.release();
+						});
+					}
+					done.add(1);
+				});
+			}
+			sys.thread.Thread.create(function():Void {
+				gate.wait();
+				@:privateAccess future.__resolve(round);
+				done.add(1);
+			});
+			for (_ in 0...threads + 1) {
+				gate.release();
+			}
+			for (_ in 0...threads + 1) {
+				done.pop(true);
+			}
+		}
+		return {fired: fired, expected: threads * rounds * perThread, wrong: wrong};
+	}
+	#end
 }
 
 private class LaterFixture {
