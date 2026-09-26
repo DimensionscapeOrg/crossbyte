@@ -415,7 +415,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__incomingBuffer.writeBytes(data, 0, data.length);
 		__incomingBuffer.position = resume;
 
-		__processBuffer();
+		// Behind the same catch as __onData. Without it, whatever serving the
+		// first request on a cleartext HTTP/2 listener threw went up through
+		// the socket's data dispatch into the runtime's pump, not to a 500.
+		try {
+			__processBuffer();
+		} catch (error:Dynamic) {
+			Logger.error("Error reading data: " + error);
+			__sendErrorResponse(500, "Internal Server Error");
+		}
 	}
 
 	@:noCompletion private function __processBuffer():Void {
