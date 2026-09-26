@@ -98,7 +98,9 @@ class RouterServerTest extends utest.Test {
 				Assert.equals(204, response.status);
 				Assert.equals("", response.body);
 				Assert.equals("*", response.headers.get("access-control-allow-origin"));
-				Assert.equals("POST", response.headers.get("access-control-allow-methods"));
+				// The configured methods, which include POST; a preflight no
+				// longer echoes back what it asked for.
+				Assert.equals("GET, POST, OPTIONS", response.headers.get("access-control-allow-methods"));
 				async.done();
 			}, false, config -> config.corsEnabled = true);
 	}
