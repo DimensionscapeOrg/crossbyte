@@ -210,6 +210,7 @@ class SocketTest extends utest.Test {
 	public function testAFlushStepsThroughItsBacklogWithoutCopyingIt():Void {
 		var size:Int = 1024 * 1024;
 		var socket = new Socket();
+		socket.__connected = true;
 		socket.__output = new ByteArray();
 		socket.__output.endian = socket.__endian;
 		for (i in 0...size) {
@@ -877,8 +878,10 @@ class SocketTest extends utest.Test {
 		}
 	}
 
+	/** A connected socket with `value` written and not yet sent. **/
 	private static function socketWithOutput(value:String):Socket {
 		var socket = new Socket();
+		socket.__connected = true;
 		socket.__output = new ByteArray();
 		socket.__output.endian = socket.__endian;
 		socket.__output.writeUTFBytes(value);
