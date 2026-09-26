@@ -711,6 +711,27 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A PHP request body over 65,535 bytes reaches php-fpm intact. The bridge
+  put the whole body in one FastCGI STDIN record, whose length field is 16
+  bits, so a 100,000-byte POST declared 34,464 bytes and php-fpm read the
+  rest of the body as record headers; the parameters went in one record the
+  same way. Both are now split across records the way php-fpm reads them --
+  parameters only between pairs, since it parses each PARAMS record on its
+  own -- and a single header too large for any record is refused with an
+  error rather than sent broken. On native the request was also written in
+  one burst on a non-blocking socket, so on Linux an upload larger than the
+  kernel would take at once (about 2.6 MB to a backend not yet reading)
+  failed as "Could not reach the PHP backend", a 502. The rest is now
+  written on the ticks that follow, as the backend reads it.
+- PHP responses reach the client byte for byte. The whole FastCGI output
+  was decoded as UTF-8 to find the end of the headers and the body
+  re-encoded from that string, which mangled images, PDFs, archives, gzip
+  output and Latin-1 pages; Node cut a body off at its first NUL, and eval
+  threw from inside the tick. The header block is now found on the bytes
+  and only it is decoded -- as UTF-8 where it is valid, a byte per character
+  where it is not -- and the body is passed on untouched. A `Status` header
+  that is not a three-digit code is ignored: `99999999999` became status
+  2147483647 on Windows and 1215752191 on Linux.
 - A failed PostgreSQL or MySQL transaction is no longer reported as
   committed. `commit()` caught the server's refusal and dispatched an event
   instead of throwing, so the documented `AsyncDatabase.transaction(c ->
