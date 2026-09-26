@@ -9,6 +9,17 @@ class RPCWire {
 	public static inline final FLAG_RUNTIME:Int = 0x08;
 	public static inline final MIN_PAYLOAD_LEN:Int = 5;
 
+	/**
+		The op of `ping`, `RPCOps.opOf("ping")`, written out so that the check
+		every one-way frame gets for it is against a constant.
+
+		A ping is a one-way frame with this op and no arguments. Every session
+		answers one with a pong: a response frame with this op and request id
+		0, which answers no call -- ids start at 1 -- so a session of an
+		earlier version passes over it.
+	**/
+	public static inline final PING_OP:Int = 0x165DF089;
+
 	/** Where a frame being read ends when nothing has said: nowhere. **/
 	public static inline final NO_FRAME_END:Int = 0x7FFFFFFF;
 
