@@ -382,7 +382,69 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	@:noCompletion private static inline var CONNECTION_ATTEMPT_INTERVAL:Float = 3.0;
 	@:noCompletion private static inline var DELIVERY_WINDOW:Int = 500;
-	@:noCompletion private static inline var KEEP_ALIVE_INTERVAL:Float = 75.0;
+
+	/** `keepAliveInterval` unless changed, in seconds. **/
+	public static inline var DEFAULT_KEEP_ALIVE_INTERVAL:Float = 15.0;
+
+	/** `idleTimeout` unless changed, in seconds. **/
+	public static inline var DEFAULT_IDLE_TIMEOUT:Float = 60.0;
+
+	/**
+		How long, in seconds, a connected session may go without sending
+		anything before it sends a keepalive. Zero sends none.
+
+		A keepalive is what keeps a quiet session up: without one a session
+		with nothing to say heard nothing either, and was closed as dead
+		however healthy both ends were. It also keeps a NAT's mapping for the
+		session open, which most drop after thirty seconds or so of silence,
+		hence fifteen by default. It is the session's opening HANDSHAKE sent
+		again, which a peer on every version answers with an acknowledgement
+		and takes nothing else from.
+
+		Set it before connecting or at any point after; the next interval is
+		measured from the change.
+	**/
+	public var keepAliveInterval(get, set):Float;
+
+	/**
+		How long, in seconds, a connected session hears nothing from its peer
+		before it gives the peer up, dispatching `ioError` and then `close`.
+		Zero never gives up.
+
+		Checked every `keepAliveInterval` seconds (or every quarter of this,
+		with keepalives off), so a session is closed up to one interval after
+		the timeout has passed.
+	**/
+	public var idleTimeout(get, set):Float;
+
+	@:noCompletion private var __keepAliveInterval:Float = DEFAULT_KEEP_ALIVE_INTERVAL;
+	@:noCompletion private var __idleTimeout:Float = DEFAULT_IDLE_TIMEOUT;
+
+	// Whether a datagram has gone out since the last keepalive check, and for
+	// how long in a row the peer has been silent at those checks.
+	@:noCompletion private var __sentSinceKeepAlive:Bool = false;
+	@:noCompletion private var __silentFor:Float = 0;
+
+	// This side's connection id, carried in the sequence field of every
+	// CONNECT it sends, a field no receiver read before, so that a server
+	// holding a session for this address and port can tell this attempt
+	// from an earlier one: the same peer, restarted. Never 0, which is what a
+	// CONNECT from an older build carries and means "no id".
+	@:noCompletion private var __connectionId:Int = 0;
+
+	// The peer's, from the CONNECT it sent, or 0 when it sent none. Echoed in
+	// every HANDSHAKE this side sends, so the peer can tell an answer to its
+	// own CONNECT from one to an attempt that came before it.
+	@:noCompletion private var __peerConnectionId:Int = 0;
+
+	// A server's check on a CONNECT carrying a new id for a session it holds:
+	// when it asked the old peer whether it is still there (-1 while not
+	// asking), and whether anything has come from it since.
+	@:noCompletion private var __challengedAt:Float = -1;
+	@:noCompletion private var __heardSinceChallenge:Bool = false;
+
+	// A HANDSHAKE's payload when it echoes an id: four bytes, big-endian.
+	@:noCompletion private var __echoScratch:ByteArray;
 
 	/**
 		How often the socket looks for frames whose time is up.
@@ -445,6 +507,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __bundleHasAck:Bool = false;
 	@:noCompletion private var __bundleAck:Int = 0;
 	@:noCompletion private var __connectionTimeoutHandle:Int = -1;
+	// Whether connect() is looking a name up, and a count of its attempts so
+	// only the latest one's answer is acted on.
+	@:noCompletion private var __lookingUp:Bool = false;
+	@:noCompletion private var __lookups:Int = 0;
 	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
 	// Out-of-order frames, kept whole: a fragment's `more` flag is as much a
 	// part of it as its bytes.
@@ -659,13 +725,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		sender's address until the handshake completes, so what it can carry
 		is something the server can check, not something that must stay secret.
 
-		@param host The remote host to connect to.
+		`host` may be a name everywhere but Node. It is looked up off the
+		runtime's thread, and the handshake starts when the answer comes;
+		`remoteAddress` is the address it resolved to from then. The attempt's
+		timeout counts the lookup. A name that does not resolve is reported as
+		an `ioError` event, and the socket then closes, as an attempt that
+		timed out does.
+
+		@param host The remote address, or a name, to connect to.
 		@param port The remote UDP port to connect to.
 		@param payload Sent with the CONNECT: all of it, from 0 to its length,
 		       copied now, so changing it afterwards changes nothing sent.
 		@throws IOError If the socket is closed or otherwise invalid.
 		@throws IllegalOperationError If this socket was accepted by a server.
-		@throws ArgumentError If `host` is invalid or empty.
+		@throws ArgumentError If `host` is empty, or a malformed address, or,
+		        on Node, a name.
 		@throws RangeError If `port` is outside the valid UDP port range, or
 		        `payload` is larger than one frame,
 		        `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE` bytes.
@@ -706,6 +780,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		__remoteAddress = host;
 		#else
+		// Whatever an earlier attempt was waiting on, its answer is not this
+		// one's.
+		__lookups++;
+		__lookingUp = false;
+
+		if (crossbyte._internal.net.Resolver.needsLookup(host) && crossbyte._internal.net.Resolver.runtimeHere() != null) {
+			__connectByName(host, port, outgoing);
+			return;
+		}
+
 		var resolved:Host;
 		try {
 			resolved = new Host(host);
@@ -720,8 +804,66 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__incoming = false;
 		__connectOut = outgoing;
 		__resetSequences();
+		__connectionId = __newConnectionId();
 		__transport.receive();
 		__beginHandshake();
+	}
+
+	#if !nodejs
+	/**
+		`connect()` to a name: looked up off the runtime's thread (see
+		`Resolver`), and the handshake begun when the answer comes.
+
+		It used to be looked up in the call, on the runtime's thread, so every
+		socket and timer there waited on the resolver, a second, for a name
+		that does not exist, and a client reconnecting in a loop did it again
+		exactly while the resolver was failing. The attempt's deadline runs
+		from the call and is not restarted by the answer, so a resolver that
+		never answers times the attempt out as a silent peer would; a name
+		that does not resolve is reported as `ioError`, and the session
+		closed, as a failed attempt is.
+	**/
+	@:noCompletion private function __connectByName(host:String, port:Int, outgoing:ByteArray):Void {
+		__remoteAddress = "";
+		__remotePort = port;
+		__remoteResponsePort = 0;
+		__incoming = false;
+		__connectOut = outgoing;
+		__resetSequences();
+		__connectionId = __newConnectionId();
+		__transport.receive();
+
+		__clearHandshakeTimers();
+		__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+
+		var lookup:Int = __lookups;
+		__lookingUp = true;
+		crossbyte._internal.net.Resolver.resolve(host, function(resolved:Null<Host>, failure:Null<String>):Void {
+			// Closed, or asked to connect somewhere else, meanwhile.
+			if (__closed || lookup != __lookups) {
+				return;
+			}
+
+			if (resolved == null) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Could not connect to " + host + ": the name did not resolve (" + failure + ")"));
+				__dispose(true);
+				return;
+			}
+
+			__lookingUp = false;
+			__remoteAddress = resolved.toString();
+			__beginHandshake(true);
+		});
+	}
+	#end
+
+	/** A connection id: random, 32 bits, and never 0, which means none. **/
+	@:noCompletion private function __newConnectionId():Int {
+		var id:Int = 0;
+		while (id == 0) {
+			id = __randomSequenceSeed();
+		}
+		return id;
 	}
 
 	/**
@@ -1087,7 +1229,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		server:ReliableDatagramServerSocket,
 		mode:ReliableDatagramSocketMode,
 		payload:ByteArray,
-		congestion:CongestionControl
+		congestion:CongestionControl,
+		peerConnectionId:Int = 0
 	):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
 		if (congestion != null) {
@@ -1107,6 +1250,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__remoteAddress = remoteAddress;
 		socket.__remotePort = remotePort;
 		socket.__remoteResponsePort = 0;
+		socket.__peerConnectionId = peerConnectionId;
+		socket.__keepAliveInterval = server.keepAliveInterval;
+		socket.__idleTimeout = server.idleTimeout;
 		socket.__resetSequences();
 		socket.__beginHandshake();
 		return socket;
@@ -1160,7 +1306,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__remoteAddress = remoteAddress;
 		socket.__remotePort = remotePort;
 		socket.__remoteResponsePort = 0;
+		socket.__keepAliveInterval = server.keepAliveInterval;
+		socket.__idleTimeout = server.idleTimeout;
 		socket.__resetSequences();
+		socket.__connectionId = socket.__newConnectionId();
 		socket.__beginHandshake();
 		return socket;
 	}
@@ -1170,7 +1319,28 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			return;
 		}
 
-		__alive = true;
+		// Meant for an earlier attempt from this address and port, a
+		// session that went on answering a peer since restarted, and taking
+		// it would start this one from that session's sequence.
+		if (frame.type == HANDSHAKE && __answersAnotherAttempt(frame)) {
+			return;
+		}
+
+		// A CONNECT is not a sign of life from a peer that has finished its
+		// handshake: that peer never sends one again. A restarted peer does,
+		// every few seconds, and counting those kept the session it had left
+		// behind alive for as long as it went on trying.
+		if (frame.type != CONNECT || !__peerConfirmed) {
+			__alive = true;
+		}
+
+		// Only what a connected peer sends is the old peer answering a
+		// challenge. A HANDSHAKE with no acknowledgement comes from a peer that
+		// is not connected, a restarted one, drawn out by something the old
+		// session sent it.
+		if (__challengedAt >= 0 && (frame.ack != null || (frame.type != HANDSHAKE && frame.type != CONNECT))) {
+			__heardSinceChallenge = true;
+		}
 		if (frame.ack != null) {
 			__acceptAck(frame.ack);
 		}
@@ -1211,8 +1381,14 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				if (frame.bundles) {
 					__peerTakesBundles = true;
 				}
+				// The peer's id, from the first CONNECT that brings one, so the
+				// HANDSHAKE below and every one after says which attempt it
+				// answers.
+				if (__peerConnectionId == 0) {
+					__peerConnectionId = frame.sequence;
+				}
 				if (!__connected) {
-					__sendControl(HANDSHAKE, __firstSequence);
+					__sendHandshake();
 				}
 				// The first one a dialled peer sends, kept as the server keeps
 				// an accepted session's. Held only at a size the protocol can
@@ -1760,9 +1936,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __inFrameCacheSize;
 	}
 
-	@:noCompletion private function __beginHandshake():Void {
-		__clearHandshakeTimers();
-		__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+	@:noCompletion private function __beginHandshake(deadlineArmed:Bool = false):Void {
+		// Armed already when the attempt began with a name to look up: the
+		// deadline counts the lookup, so it is not restarted after it.
+		if (!deadlineArmed) {
+			__clearHandshakeTimers();
+			__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+		}
 
 		// Only a session that dialled repeats itself. An accepted one is
 		// answering a CONNECT it never asked for, from an address UDP let
@@ -1893,9 +2073,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__handshakeOwed = false;
 		__peerConfirmed = false;
 		__bundleHasAck = false;
+		__challengedAt = -1;
+		__silentFor = 0;
 
 		var wasConnected:Bool = __connected;
 		__connected = false;
+		// An attempt still looking its peer's name up is an attempt, and ends
+		// as one does, though it has no address yet.
+		var wasLookingUp:Bool = __lookingUp;
+		__lookingUp = false;
 
 		if (__server != null) {
 			__server.__onSocketClosed(this);
@@ -1906,7 +2092,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__transport.close();
 		}
 
-		if (dispatchClose && (wasConnected || __remoteAddress != "")) {
+		if (dispatchClose && (wasConnected || __remoteAddress != "" || wasLookingUp)) {
 			dispatchEvent(new Event(Event.CLOSE));
 		}
 	}
@@ -1982,7 +2168,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__peerConfirmed = true;
 			__sendAck();
 		} else {
-			__sendControl(HANDSHAKE, __firstSequence);
+			__sendHandshake();
 			// Asked again after connecting, by a peer that has acknowledged
 			// nothing: it never took the one this side sent back, and a
 			// session not yet connected drops every frame it is sent. So
@@ -2006,7 +2192,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			CBTimer.clear(__connectionTimeoutHandle);
 			__connectionTimeoutHandle = -1;
 		}
-		__keepAliveHandle = CBTimer.setInterval(KEEP_ALIVE_INTERVAL, KEEP_ALIVE_INTERVAL, __onKeepAlive);
+		__startKeepAlive();
 		dispatchEvent(new Event(Event.CONNECT));
 
 		if (__server != null) {
@@ -2014,13 +2200,123 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 	}
 
+	/**
+		How often the keepalive check runs: every `keepAliveInterval`, or with
+		keepalives off, often enough to notice `idleTimeout` passing. Zero when
+		there is nothing to do at all.
+	**/
+	@:noCompletion private function __keepAlivePeriod():Float {
+		if (__keepAliveInterval > 0) {
+			return __keepAliveInterval;
+		}
+		return __idleTimeout > 0 ? __idleTimeout / 4 : 0;
+	}
+
+	/** (Re)starts the keepalive check, for a connected session. **/
+	@:noCompletion private function __startKeepAlive():Void {
+		if (__keepAliveHandle != -1) {
+			CBTimer.clear(__keepAliveHandle);
+			__keepAliveHandle = -1;
+		}
+
+		__silentFor = 0;
+		__sentSinceKeepAlive = false;
+
+		var period:Float = __keepAlivePeriod();
+		if (__closed || !__connected || period <= 0) {
+			return;
+		}
+		__keepAliveHandle = CBTimer.setInterval(period, period, __onKeepAlive);
+	}
+
+	/**
+		The peer's silence measured, and this side's broken.
+
+		This used to be all of it: a check every 75 seconds that closed the
+		session if nothing had arrived since the last, and nothing sent to
+		make anything arrive. A session with nothing to say was closed as dead
+		somewhere between 75 and 150 seconds in, with both ends running.
+	**/
 	@:noCompletion private function __onKeepAlive():Void {
-		if (!__alive) {
+		if (__closed || !__connected) {
+			return;
+		}
+
+		var period:Float = __keepAlivePeriod();
+		if (__alive) {
+			__silentFor = 0;
+		} else {
+			__silentFor += period;
+		}
+		__alive = false;
+
+		if (__idleTimeout > 0 && __silentFor >= __idleTimeout) {
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, 'Nothing was heard from the peer for ${Math.round(__silentFor)} s; '
+					+ 'the session was closed as idle.'));
+			}
 			__dispose(true);
 			return;
 		}
 
-		__alive = false;
+		// Only a session that has been quiet: one sending anyway is already
+		// drawing acknowledgements, which say as much.
+		if (__keepAliveInterval > 0 && !__sentSinceKeepAlive) {
+			__sendHandshake();
+		}
+		__sentSinceKeepAlive = false;
+	}
+
+	/**
+		Asks the peer whether it is still there, for a server that has been
+		sent a CONNECT with a new id from this session's address and port: a
+		keepalive, which a peer that is still running answers.
+	**/
+	@:noCompletion private function __challenge(now:Float):Void {
+		__challengedAt = now;
+		__heardSinceChallenge = false;
+		__sendHandshake();
+	}
+
+	/**
+		How long a challenged peer has to answer: two retransmission timeouts,
+		which is a round trip with room to spare, held between half a second
+		and less than the three a dialling peer waits between CONNECTs, so
+		the CONNECT after the one that asked finds the answer due.
+	**/
+	@:noCompletion private function __challengeWindow():Float {
+		var window:Float = __rto * 2;
+		return window < 0.5 ? 0.5 : (window > 2.5 ? 2.5 : window);
+	}
+
+	@:noCompletion private inline function get_keepAliveInterval():Float {
+		return __keepAliveInterval;
+	}
+
+	@:noCompletion private function set_keepAliveInterval(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new RangeError("A keepalive interval cannot be negative.");
+		}
+		__keepAliveInterval = value;
+		if (__connected) {
+			__startKeepAlive();
+		}
+		return value;
+	}
+
+	@:noCompletion private inline function get_idleTimeout():Float {
+		return __idleTimeout;
+	}
+
+	@:noCompletion private function set_idleTimeout(value:Float):Float {
+		if (!(value >= 0)) {
+			throw new RangeError("An idle timeout cannot be negative.");
+		}
+		__idleTimeout = value;
+		if (__connected) {
+			__startKeepAlive();
+		}
+		return value;
 	}
 
 	@:noCompletion private function __prepareTransportListener():Void {
@@ -2213,17 +2509,60 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 				__clearHandshakeTimers();
 				return;
 			}
-			__sendControl(HANDSHAKE, __firstSequence);
+			__sendHandshake();
 			return;
 		}
 		if (__incoming) {
-			__sendControl(HANDSHAKE, __firstSequence);
+			__sendHandshake();
 			return;
 		}
 		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
 			return;
 		}
-		__sendFrame(CONNECT, 0, __connectOut, 0, __connectOut == null ? 0 : __connectOut.length, false, null, false);
+		__sendFrame(CONNECT, __connectionId, __connectOut, 0, __connectOut == null ? 0 : __connectOut.length, false, null, false);
+	}
+
+	/**
+		This side's HANDSHAKE: where its frames start, an acknowledgement once
+		connected, and, once the peer has sent a CONNECT with an id, that
+		id, so the peer can tell it answers this attempt and not an earlier
+		one. An older peer reads none of the payload.
+	**/
+	@:noCompletion private function __sendHandshake():Void {
+		if (__remoteAddress == "" || __remotePort == 0 || __transport == null) {
+			return;
+		}
+
+		if (__peerConnectionId == 0) {
+			__sendControl(HANDSHAKE, __firstSequence);
+			return;
+		}
+
+		if (__echoScratch == null) {
+			__echoScratch = new ByteArray();
+			__echoScratch.length = 4;
+		}
+		var bytes:haxe.io.Bytes = __echoScratch;
+		bytes.set(0, __peerConnectionId >>> 24);
+		bytes.set(1, (__peerConnectionId >>> 16) & 0xFF);
+		bytes.set(2, (__peerConnectionId >>> 8) & 0xFF);
+		bytes.set(3, __peerConnectionId & 0xFF);
+		__sendFrame(HANDSHAKE, __firstSequence, __echoScratch, 0, 4, false, __currentAck(), false);
+	}
+
+	/**
+		Whether a HANDSHAKE echoes a connection id other than this side's:
+		sent by a session answering an earlier attempt from this address and
+		port. One that echoes nothing, from an older build, or one answering
+		a HANDSHAKE rather than a CONNECT, is taken as before.
+	**/
+	@:noCompletion private function __answersAnotherAttempt(frame:ReliableDatagramFrame):Bool {
+		if (__connectionId == 0 || frame.payload == null || frame.payload.length < 4) {
+			return false;
+		}
+		var bytes:haxe.io.Bytes = frame.payload;
+		var echoed:Int = (bytes.get(0) << 24) | (bytes.get(1) << 16) | (bytes.get(2) << 8) | bytes.get(3);
+		return echoed != 0 && echoed != __connectionId;
 	}
 
 	@:noCompletion private function __sendPacket(frame:OutstandingFrame):Void {
@@ -2417,7 +2756,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		if (__handshakeOwed) {
 			__handshakeOwed = false;
 			if (!__closed && !__connected) {
-				__sendControl(HANDSHAKE, __firstSequence);
+				__sendHandshake();
 			}
 		}
 
@@ -2503,6 +2842,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	@:noCompletion private function __sendDatagram(offset:Int, length:Int):Bool {
+		__sentSinceKeepAlive = true;
 		try {
 			__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
 			return true;
@@ -2554,7 +2894,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		var frame = ReliableDatagramProtocol.decode(e.data);
-		if (frame == null || !__matchesRemoteEndpoint(e, frame)) {
+		// Before the endpoint check, which learns a reply port from the first
+		// HANDSHAKE it sees: one answering an earlier attempt must not teach it.
+		if (frame == null || (frame.type == HANDSHAKE && __answersAnotherAttempt(frame)) || !__matchesRemoteEndpoint(e, frame)) {
 			return;
 		}
 

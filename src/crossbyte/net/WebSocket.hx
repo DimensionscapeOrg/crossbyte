@@ -22,6 +22,7 @@ import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.events.WebSocketCloseEvent;
+import crossbyte.events.WebSocketMessageEvent;
 import crossbyte.io.ByteArray;
 import haxe.Serializer;
 import haxe.Timer;
@@ -38,17 +39,98 @@ class WebSocket extends Socket {
 	public static function toWebSocket(socket:#if nodejs NodeSocket #else FlexSocket #end, server:ServerWebSocket):WebSocket {
 		var webSocket:WebSocket = new WebSocket();
 
+		// The server first: the session asks it about its upgrade, and the
+		// settings below are its.
+		webSocket.__server = server;
+		webSocket.__cbInstance = CrossByte.current();
 		webSocket.__webSocket = crossbyte._internal.websocket.WebSocket.fromAcceptedSocket(socket);
 		webSocket.__webSocket.maxOutputBufferSize = webSocket.__maxOutputBufferSize;
+		if (server != null) {
+			webSocket.__webSocket.pingInterval = server.pingInterval;
+			webSocket.__webSocket.idleTimeout = server.idleTimeout;
+		}
 		webSocket.__init();
-
-		webSocket.__server = server;
 
 		return webSocket;
 	}
 
 	private var __webSocket:crossbyte._internal.websocket.WebSocket;
 	private var __server:ServerWebSocket;
+
+	/**
+		The subprotocols a client asks for, most preferred first. Set before
+		`connect()`. The server chooses one of them, or none, and `protocol`
+		says which.
+	**/
+	public var protocols:Array<String> = null;
+
+	/**
+		The subprotocol this session speaks, or `null` for none: on a client,
+		the one the server chose from `protocols`; on a session a server
+		accepted, the one it accepted, see `ServerWebSocket.upgrade`.
+	**/
+	public var protocol(get, never):Null<String>;
+
+	/**
+		The upgrade request a server's session was opened by: its path and
+		query, headers, cookies, `Origin` and the subprotocols offered. `null`
+		on a client.
+	**/
+	public var request(get, never):Null<WebSocketRequest>;
+
+	/**
+		How often, in seconds, a session that has heard nothing from its peer
+		pings it; zero for never. Thirty by default, often enough that a
+		proxy between the two does not close the connection as idle, or, on
+		a server's sessions, the server's `pingInterval`. Can be changed at any
+		time.
+	**/
+	public var pingInterval(get, set):Float;
+
+	/**
+		How long, in seconds, a session hears nothing from its peer, no
+		message, no pong, before it takes the peer for gone, dispatching
+		`ioError` and then `close` with 1006. Sixty by default, or the server's
+		`idleTimeout`; zero for never.
+
+		There was none. A peer that vanished without closing, a phone gone
+		out of range, a machine switched off, was held for good, and
+		everything written to it piled up.
+	**/
+	public var idleTimeout(get, set):Float;
+
+	// What a pingInterval or idleTimeout assigned before `connect()` is kept
+	// in until there is a session to hand it to.
+	@:noCompletion private var __pingInterval:Float = -1;
+	@:noCompletion private var __idleTimeout:Float = -1;
+
+	/**
+		Whether a `wss://` connection checks the server's certificate: that it
+		chains to an authority this client trusts, and that it names the host
+		being connected to.
+
+		On by default. Turn it off only for a development server presenting a
+		self-signed certificate, and prefer `certAuthority` even then. With
+		verification off the traffic is still encrypted, but anyone able to
+		sit between the two ends can present a certificate of their own and
+		read all of it.
+
+		Read when `connect()` is called.
+	**/
+	public var verifyCert:Bool = true;
+
+	/**
+		The authority this client trusts, in place of the system's, for a
+		`wss://` connection.
+
+		Set it to a private CA's certificate, or to a server's own self-signed
+		certificate, to verify a server the system's trust store does not know
+		without turning verification off. `null`, the default, trusts the
+		system's store.
+
+		Read when `connect()` is called.
+	**/
+	public var certAuthority:Certificate = null;
 
 	/**
 		Bytes of unsent frame data allowed to accumulate for this session
@@ -111,16 +193,136 @@ class WebSocket extends Socket {
 	 * network failure and reconnect sensibly. Used by
 	 * `ServerWebSocket.drain()`, which sends 1001 ("going away").
 	 *
-	 * @param code WebSocket close code, for example 1000 (normal) or 1001
-	 *        (going away).
-	 * @param reason Optional human-readable reason.
+	 * The session stays up for the peer's answer, anything written before
+	 * this still goes out first, and closes once that arrives, or after a
+	 * few seconds regardless. The `close` event then reports the code and
+	 * reason the peer answered with, usually the ones sent, or 1006 if it
+	 * never answered.
+	 *
+	 * This used to send a close frame with nothing in it, so the peer saw
+	 * 1005 or 1000 whatever the code, and closed at once, which on a native
+	 * target could drop both the frame and whatever was queued before it.
+	 *
+	 * @param code WebSocket close code: 1000 (normal), 1001 (going away), a
+	 *        code 1002-1014 names, or one of the ranges left to libraries,
+	 *        3000-3999, and to applications, 4000-4999.
+	 * @param reason Optional human-readable reason; at most 123 bytes of it
+	 *        are sent.
+	 * @throws ArgumentError if `code` is not one that may be sent.
 	 */
 	public function closeWith(code:Int = 1000, ?reason:String):Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
+		if (!__isSendableCloseCode(code)) {
+			throw new crossbyte.errors.ArgumentError('$code is not a close code that may be sent; use 1000, 1001, 1002-1014 (but 1004-1006), or 3000-4999.');
+		}
+
 		__webSocket.close(code, reason);
+	}
+
+	/**
+		Sends `text` as one text message: a browser receives it as a string.
+
+		Everything written and flushed goes as a binary message, which a
+		browser hands its page as a `Blob` or an `ArrayBuffer`, the wrong
+		shape for the JSON most pages expect.
+
+		@throws IOError if the session is not open.
+	**/
+	public function sendText(text:String):Void {
+		__requireOpen();
+		__webSocket.sendString(text == null ? "" : text);
+	}
+
+	/**
+		Sends `length` bytes of `bytes` from `offset` as one binary message, at
+		once rather than when the socket is next flushed. A `length` of 0 sends
+		everything from `offset`.
+
+		@throws IOError if the session is not open.
+	**/
+	public function sendBinary(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		__requireOpen();
+
+		if (length == 0) {
+			length = bytes.length - offset;
+		}
+
+		var message:ByteArray = new ByteArray();
+		message.writeBytes(bytes, offset, length);
+		__webSocket.sendBytes(message);
+	}
+
+	/**
+		Pings the peer, which answers with a pong; either counts as hearing
+		from it. `data`, at most 125 bytes, travels in the ping and back. The
+		session does this itself every `pingInterval` when nothing has come in.
+	**/
+	public function ping(?data:ByteArray):Void {
+		__requireOpen();
+		__webSocket.ping(data);
+	}
+
+	/**
+		Sends a pong the peer did not ask for: a heartbeat in one direction,
+		which RFC 6455 allows and which is not answered.
+	**/
+	public function pong(?data:ByteArray):Void {
+		__requireOpen();
+		__webSocket.pong(data);
+	}
+
+	@:noCompletion private function __requireOpen():Void {
+		if (__webSocket == null || __webSocket.readyState != InternalWS.OPEN) {
+			throw new IOError("The WebSocket session is not open.");
+		}
+	}
+
+	@:noCompletion private static function __isSendableCloseCode(code:Int):Bool {
+		if (code >= 3000 && code <= 4999) {
+			return true;
+		}
+		return code >= 1000 && code <= 1014 && code != 1004 && code != 1005 && code != 1006;
+	}
+
+	@:noCompletion private function get_protocol():Null<String> {
+		return __webSocket == null ? null : __webSocket.protocol;
+	}
+
+	@:noCompletion private function get_request():Null<WebSocketRequest> {
+		return __webSocket == null ? null : __webSocket.request;
+	}
+
+	@:noCompletion private function get_pingInterval():Float {
+		if (__webSocket != null) {
+			return __webSocket.pingInterval;
+		}
+		return __pingInterval >= 0 ? __pingInterval : InternalWS.PING_INTERVAL / 1000;
+	}
+
+	@:noCompletion private function set_pingInterval(value:Float):Float {
+		__pingInterval = value < 0 ? 0 : value;
+		if (__webSocket != null) {
+			__webSocket.pingInterval = __pingInterval;
+		}
+		return __pingInterval;
+	}
+
+	@:noCompletion private function get_idleTimeout():Float {
+		if (__webSocket != null) {
+			return __webSocket.idleTimeout;
+		}
+		return __idleTimeout >= 0 ? __idleTimeout : InternalWS.DEFAULT_IDLE_TIMEOUT;
+	}
+
+	@:noCompletion private function set_idleTimeout(value:Float):Float {
+		__idleTimeout = value < 0 ? 0 : value;
+		if (__webSocket != null) {
+			__webSocket.idleTimeout = __idleTimeout;
+		}
+		return __idleTimeout;
 	}
 
 	override public function connect(host:String, port:Int):Void {
@@ -152,33 +354,53 @@ class WebSocket extends Socket {
 		var __webHost = urlReg.matched(2);
 		var __webPath = urlReg.matched(3);
 
-		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath);
+		// The host alone, for remoteAddress: what was passed may carry a path.
+		__host = __webHost;
+		__cbInstance = CrossByte.current();
+
+		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath, protocols, null,
+			verifyCert, certAuthority);
+		// `timeout` bounds the connection and the upgrade after it, as it
+		// bounds a plain socket's connect. The session used a fixed ten
+		// seconds of its own and never waited on the upgrade at all.
+		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
+		if (__pingInterval >= 0) {
+			__webSocket.pingInterval = __pingInterval;
+		}
+		if (__idleTimeout >= 0) {
+			__webSocket.idleTimeout = __idleTimeout;
+		}
 		__init();
 	}
 
+	/**
+		Sends what has been written as one binary message.
+
+		Written while the session is still connecting, it waits and goes once
+		the session opens, where it threw; see `sendText` for a text message.
+
+		@throws IOError if the session is closing or closed.
+	**/
 	override public function flush():Void {
 		if (__webSocket == null) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
 		if (__output.length > 0) {
-			// try
-			// {
+			var state:Int = __webSocket.readyState;
+
+			if (state == InternalWS.CONNECTING) {
+				// Sent from socket_onOpen.
+				return;
+			}
+
+			if (state != InternalWS.OPEN) {
+				throw new IOError("The WebSocket session is closing; nothing more can be sent.");
+			}
+
 			__webSocket.sendBytes(__output);
 			__output.clear();
-			// }
-			// catch (e:Dynamic)
-			// {
-			// switch (e)
-			// {
-			// case Error.Blocked:
-			// case Error.Custom(Error.Blocked):
-			// default:
-			// throw new IOError("Operation attempted on invalid socket.");
-			// }
-			//
-			// }
 		}
 	}
 
@@ -629,8 +851,11 @@ class WebSocket extends Socket {
 	}
 
 	@:noCompletion override private function __cleanSocket():Void {
+		// At once, as closing a socket is: a close frame if the socket takes
+		// it straight away, and the connection gone. closeWith is the one that
+		// waits for the peer.
 		try {
-			__webSocket.close();
+			__webSocket.abort(1000);
 		} catch (e:Dynamic) {}
 
 		__webSocket = null;
@@ -659,27 +884,38 @@ class WebSocket extends Socket {
 	}
 
 	@:noCompletion override private function socket_onError(e):Void {
-		dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
+		// An IOErrorEvent carrying what went wrong. This dispatched a bare
+		// Event of the ioError type, so a listener typed for IOErrorEvent got
+		// something else, and a refused certificate or a connect that failed
+		// arrived with no account of which it was.
+		var text:String = "";
+		var failed:WebsocketEvent = Std.downcast(e, WebsocketEvent);
+		if (failed != null && failed.data != null) {
+			text = Std.string(failed.data);
+		}
+
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
 	}
 
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {
-		if (__input.position == __input.length) {
-			__input.clear();
+		var message:WebsocketEvent = msg;
+		var newData:ByteArray = message.data;
+
+		// One message, whole, to whoever asked for messages, and then not
+		// into the stream as well, which nobody would be reading and which
+		// would only grow. Every message used to go into the stream, so where
+		// one ended and the next began was lost.
+		if (hasEventListener(WebSocketMessageEvent.MESSAGE)) {
+			newData.position = 0;
+			dispatchEvent(new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, newData, message.isText));
+			return;
 		}
 
-		/*if ((msg.data is String))
-			{
-				__input.position = __input.length;
-				var cachePosition = __input.position;
-				__input.writeUTFBytes(msg.data);
-				__input.position = cachePosition;
-			}
-			else
-			{ */
-		var newData:ByteArray = msg.data;
+		// What has been read goes, as on a plain socket, rather than being
+		// kept until a reader happens to take everything.
+		__compactInput();
 
 		newData.readBytes(__input, __input.length);
-		// }
 
 		if (__input.bytesAvailable > 0) {
 			dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, __input.bytesAvailable, 0));
@@ -689,6 +925,24 @@ class WebSocket extends Socket {
 	@:noCompletion override private function socket_onOpen(_):Void {
 		__connected = true;
 		__closed = false;
+
+		// Both ends, noted while the session can still say: an accepted one
+		// reported no address at all.
+		if (__webSocket != null) {
+			if (__webSocket.remoteAddress != "") {
+				__host = __webSocket.remoteAddress;
+				__port = __webSocket.remotePort;
+			}
+			__localHost = __webSocket.localAddress;
+			__localPortNumber = __webSocket.localPort;
+		}
+
+		// Whatever was written and flushed while connecting goes first, as a
+		// message of its own, ahead of anything the handlers below send.
+		if (__output != null && __output.length > 0) {
+			flush();
+		}
+
 		dispatchEvent(new Event(Event.CONNECT));
 
 		// An accepted session tells its server it is ready once the upgrade has
@@ -713,21 +967,46 @@ class WebSocket extends Socket {
 		__webSocket.onmessage = socket_onMessage;
 		__webSocket.onclose = socket_onClose;
 		__webSocket.onerror = socket_onError;
+
+		// A server's session asks its server about its upgrade, through
+		// the hook as it stands when the request arrives, not as it stood
+		// when the connection did.
+		if (__server != null) {
+			var server:ServerWebSocket = __server;
+			__webSocket.onupgrade = function(request:WebSocketRequest):Bool {
+				return server.upgrade(request);
+			};
+		}
 	}
 
-	@:noCompletion override private inline function get_localAddress():String {
-		return "";
+	@:noCompletion private var __localHost:String = "";
+	@:noCompletion private var __localPortNumber:Int = 0;
+
+	@:noCompletion override private function get_localAddress():String {
+		if (__localHost == "" && __webSocket != null) {
+			return __webSocket.localAddress;
+		}
+		return __localHost;
 	}
 
-	@:noCompletion override private inline function get_localPort():Int {
-		return 0;
+	@:noCompletion override private function get_localPort():Int {
+		if (__localPortNumber == 0 && __webSocket != null) {
+			return __webSocket.localPort;
+		}
+		return __localPortNumber;
 	}
 
-	@:noCompletion override private inline function get_remoteAddress():String {
+	@:noCompletion override private function get_remoteAddress():String {
+		if ((__host == null || __host == "") && __webSocket != null) {
+			return __webSocket.remoteAddress;
+		}
 		return __host;
 	}
 
-	@:noCompletion override private inline function get_remotePort():Int {
+	@:noCompletion override private function get_remotePort():Int {
+		if (__port == 0 && __webSocket != null) {
+			return __webSocket.remotePort;
+		}
 		return __port;
 	}
 

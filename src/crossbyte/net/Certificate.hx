@@ -40,11 +40,13 @@ final class Certificate {
 	#if nodejs
 	@:allow(crossbyte.net)
 	@:allow(crossbyte.http)
+	@:allow(crossbyte._internal.websocket)
 	@:noCompletion private var __pem:String;
 	#else
 	@:allow(crossbyte.net)
 	@:allow(crossbyte.http)
 	@:allow(crossbyte._internal.socket)
+	@:allow(crossbyte._internal.websocket)
 	@:noCompletion private var __native:NativeCertificate;
 	#end
 
