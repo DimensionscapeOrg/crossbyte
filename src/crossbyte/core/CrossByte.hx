@@ -16,6 +16,7 @@ import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.TickEvent;
 import crossbyte.events.UncaughtErrorEvent;
+import crossbyte.utils.LogLevel;
 import crossbyte.utils.Logger;
 import haxe.EntryPoint;
 import haxe.Timer;
@@ -84,6 +85,13 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Private Static Variables ====
 	@:noCompletion private static inline var DEFAULT_TICKS_PER_SECOND:UInt = 12;
+
+	/**
+	 * The `Logger` category the runtime reports contained failures under, so
+	 * their level can be set apart: `Logger.setLevel("runtime", LogLevel.OFF)` for an
+	 * application that reports them itself through `UNCAUGHT_ERROR`.
+	 */
+	@:noCompletion private static inline var LOG_CATEGORY:String = "runtime";
 
 	/**
 	 * Shortest remaining frame budget worth handing to poll.
@@ -788,7 +796,7 @@ final class CrossByte extends EventDispatcher {
 			if (stack != null) {
 				fields.set("stack", stack);
 			}
-			Logger.error(__uncaughtMessage(source) + ": " + Std.string(error), fields);
+			Logger.log(LogLevel.ERROR, __uncaughtMessage(source) + ": " + Std.string(error), fields, LOG_CATEGORY);
 		} catch (_:Dynamic) {}
 
 		if (__reportingUncaught || !hasEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR)) {
@@ -873,7 +881,7 @@ final class CrossByte extends EventDispatcher {
 		if (__reportingUncaught) {
 			// An UNCAUGHT_ERROR listener: logged, never reported again.
 			try {
-				Logger.error("An uncaughtError listener threw: " + Std.string(error));
+				Logger.log(LogLevel.ERROR, "An uncaughtError listener threw: " + Std.string(error), null, LOG_CATEGORY);
 			} catch (_:Dynamic) {}
 			return;
 		}

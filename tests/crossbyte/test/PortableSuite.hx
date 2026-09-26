@@ -126,6 +126,9 @@ class PortableSuite {
 		// Shifts and 32-bit words, which is exactly where JavaScript differs.
 		runner.addCase(new crossbyte.io.BitPackingTest());
 		runner.addCase(new crossbyte.utils.UtilsTest());
+		// The clock and the escaping both differ by target: a browser has no
+		// Sys.time, and a string is UTF-16 on js and the jvm but not on eval.
+		runner.addCase(new crossbyte.utils.LoggerTest());
 		// Std.parseInt's four answers past 32 bits include JavaScript's.
 		runner.addCase(new crossbyte.utils.IntParseTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());

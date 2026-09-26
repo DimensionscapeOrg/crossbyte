@@ -1,8 +1,8 @@
 package crossbyte.utils;
 
 /**
- * Process-wide logging with severity levels, structured fields, and a
- * replaceable sink.
+ * Process-wide logging with severity levels, structured fields, categories,
+ * and a replaceable sink.
  *
  * The original `info`/`error`/`separator` helpers keep their exact
  * behavior, so existing code needs no changes. Beyond them:
@@ -17,18 +17,34 @@ package crossbyte.utils;
  * `Logger.json = true` to emit one JSON object per record for ingestion by
  * a log collector.
  *
+ * **Categories.** Records can be logged under a dot-separated category,
+ * whose level is set apart from the global one:
+ *
+ * ```haxe
+ * static final access = Logger.category("http.access");
+ * access.info("GET / 200");
+ * Logger.setLevel("http.access", LogLevel.WARN);
+ * ```
+ *
+ * **One record, one line.** In text mode control characters in the message
+ * and the fields -- a line feed, a carriage return, the Unicode line
+ * separators -- are written as escapes, never as themselves. A request path
+ * is text a client chose, and one carrying `%0A` used to start a line of its
+ * own, indistinguishable from the server's: a client could forge an ERROR
+ * record in the access log. JSON mode escapes by construction.
+ *
  * **Logging and sensitive data.** A sink receives whatever a caller passes.
  * Services handling private content should log identifiers and outcomes
- * rather than payloads: field values are not redacted, escaped for
- * anything but the chosen output format, or size-limited.
+ * rather than payloads: field values are not redacted or size-limited.
  */
 class Logger {
 	/**
 	 * Minimum severity that will be emitted. Records below this level are
 	 * discarded before formatting, so suppressed logging costs almost
-	 * nothing.
+	 * nothing. A category given a level of its own with `setLevel` is not
+	 * governed by this.
 	 */
-	public static var level:LogLevel = LogLevel.INFO;
+	public static var level(default, set):LogLevel = LogLevel.INFO;
 
 	/**
 	 * When `true`, each record is emitted as a single-line JSON object
@@ -37,7 +53,9 @@ class Logger {
 	public static var json:Bool = false;
 
 	/**
-	 * When `true`, records carry an ISO-8601-style UTC timestamp.
+	 * When `true`, records carry an ISO-8601 UTC timestamp to the
+	 * millisecond, as `2026-09-25T09:00:00.123Z`.
+	 *
 	 * Off by default: many supervisors (systemd, Docker, Windows services)
 	 * add their own, and duplicate stamps make output harder to read.
 	 */
@@ -50,11 +68,95 @@ class Logger {
 	public static var sink:String->Void = null;
 
 	/**
+	 * Destination for whole records, when the line is not enough: the
+	 * record's level, category, fields and time come with it, so a sink can
+	 * route errors elsewhere or keep fields as fields. Takes precedence over
+	 * `sink`, and receives every record the level lets through;
+	 * `separator()` is not a record and still goes to `sink` or stdout.
+	 */
+	public static var recordSink:LogRecord->Void = null;
+
+	// Levels set per category, and a count bumped whenever any level changes,
+	// which LogCategory compares against to know its cached level is stale.
+	@:noCompletion private static var __categoryLevels:Map<String, LogLevel> = new Map();
+	@:noCompletion private static var __categoryCount:Int = 0;
+	@:allow(crossbyte.utils.LogCategory)
+	@:noCompletion private static var __levelsVersion:Int = 0;
+
+	@:noCompletion private static function set_level(value:LogLevel):LogLevel {
+		level = value;
+		__levelsVersion++;
+		return value;
+	}
+
+	/**
 	 * Returns `true` when a record at `candidate` would be emitted. Use to
 	 * skip building an expensive message.
 	 */
 	public static inline function isEnabled(candidate:LogLevel):Bool {
 		return (candidate : Int) >= (level : Int) && (level : Int) < (LogLevel.OFF : Int);
+	}
+
+	/**
+	 * Returns `true` when a record at `candidate` in `category` would be
+	 * emitted. A null category is the global one.
+	 */
+	public static function isEnabledFor(category:Null<String>, candidate:LogLevel):Bool {
+		if (category == null || __categoryCount == 0) {
+			return isEnabled(candidate);
+		}
+		var effective:LogLevel = levelOf(category);
+		return (candidate : Int) >= (effective : Int) && (effective : Int) < (LogLevel.OFF : Int);
+	}
+
+	/**
+	 * Sets the minimum level for `category` and everything under it --
+	 * `http` covers `http.access` -- unless something under it has a level
+	 * of its own. `null` clears the category's level, so it follows the one
+	 * above it again.
+	 */
+	public static function setLevel(category:String, categoryLevel:Null<LogLevel>):Void {
+		if (category == null) {
+			return;
+		}
+		if (categoryLevel == null) {
+			__categoryLevels.remove(category);
+		} else {
+			__categoryLevels.set(category, categoryLevel);
+		}
+		__categoryCount = Lambda.count(__categoryLevels);
+		__levelsVersion++;
+	}
+
+	/**
+	 * The level in effect for `category`: its own if it has one, else the
+	 * nearest enclosing category's, else `Logger.level`.
+	 */
+	public static function levelOf(category:Null<String>):LogLevel {
+		if (category == null || __categoryCount == 0) {
+			return level;
+		}
+
+		var name:String = category;
+		while (true) {
+			var own:Null<LogLevel> = __categoryLevels.get(name);
+			if (own != null) {
+				return own;
+			}
+			var dot:Int = name.lastIndexOf(".");
+			if (dot < 0) {
+				return level;
+			}
+			name = name.substr(0, dot);
+		}
+	}
+
+	/**
+	 * A logger for one category; see `LogCategory`. Keep it in a static
+	 * rather than asking each time: it caches its level.
+	 */
+	public static function category(name:String):LogCategory {
+		return new LogCategory(name);
 	}
 
 	/** Logs at `TRACE`. */
@@ -88,13 +190,15 @@ class Logger {
 	 * @param recordLevel Severity of this record.
 	 * @param message The human-readable message.
 	 * @param fields Optional structured key-value pairs.
+	 * @param category Optional category, whose level applies instead of the
+	 *        global one.
 	 */
-	public static function log(recordLevel:LogLevel, message:String, ?fields:Map<String, String>):Void {
-		if (!isEnabled(recordLevel)) {
+	public static function log(recordLevel:LogLevel, message:String, ?fields:Map<String, String>, ?category:String):Void {
+		if (!isEnabledFor(category, recordLevel)) {
 			return;
 		}
 
-		__emit(json ? __formatJson(recordLevel, message, fields) : __formatText(recordLevel, message, fields));
+		__write(recordLevel, category, message, fields);
 	}
 
 	/** Emits a horizontal rule, bypassing level filtering. */
@@ -102,23 +206,43 @@ class Logger {
 		__emit("-------------------------------------");
 	}
 
-	@:noCompletion private static function __formatText(recordLevel:LogLevel, message:String, fields:Map<String, String>):String {
+	// Formats and emits a record that has already passed its level.
+	@:allow(crossbyte.utils.LogCategory)
+	@:noCompletion private static function __write(recordLevel:LogLevel, category:Null<String>, message:String, fields:Null<Map<String, String>>):Void {
+		var records:LogRecord->Void = recordSink;
+		var time:Float = (timestamps || records != null) ? __now() : 0.0;
+		var line:String = json ? __formatJson(recordLevel, category, message, fields, time) : __formatText(recordLevel, category, message, fields, time);
+
+		if (records != null) {
+			records(new LogRecord(recordLevel, category, message == null ? "" : message, fields, time, line));
+			return;
+		}
+
+		__emit(line);
+	}
+
+	@:noCompletion private static function __formatText(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
 		var buffer = new StringBuf();
 
 		if (timestamps) {
-			buffer.add(__timestamp());
+			buffer.add(__timestamp(time));
 			buffer.add(" ");
 		}
 
 		buffer.add("[");
 		buffer.add(recordLevel.toString());
 		buffer.add("] ");
-		buffer.add(message == null ? "" : message);
+		if (category != null) {
+			buffer.add("[");
+			buffer.add(__escape(category, false));
+			buffer.add("] ");
+		}
+		buffer.add(message == null ? "" : __escape(message, false));
 
 		if (fields != null) {
 			for (key => value in fields) {
 				buffer.add(" ");
-				buffer.add(key);
+				buffer.add(__escape(key, false));
 				buffer.add("=");
 				buffer.add(__quoteIfNeeded(value));
 			}
@@ -127,18 +251,21 @@ class Logger {
 		return buffer.toString();
 	}
 
-	@:noCompletion private static function __formatJson(recordLevel:LogLevel, message:String, fields:Map<String, String>):String {
+	@:noCompletion private static function __formatJson(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
 		var record:Dynamic = {level: recordLevel.toString(), message: message == null ? "" : message};
 
 		if (timestamps) {
-			Reflect.setField(record, "time", __timestamp());
+			Reflect.setField(record, "time", __timestamp(time));
+		}
+		if (category != null) {
+			Reflect.setField(record, "category", category);
 		}
 
 		if (fields != null) {
 			for (key => value in fields) {
 				// Reserved keys keep their meaning; a colliding field is
 				// namespaced rather than silently dropped.
-				var target:String = (key == "level" || key == "message" || key == "time") ? "field_" + key : key;
+				var target:String = (key == "level" || key == "message" || key == "time" || key == "category") ? "field_" + key : key;
 				Reflect.setField(record, target, value);
 			}
 		}
@@ -147,21 +274,114 @@ class Logger {
 	}
 
 	@:noCompletion private static function __quoteIfNeeded(value:String):String {
-		if (value == null) {
+		if (value == null || value == "") {
 			return '""';
 		}
-		if (value == "") {
-			return '""';
-		}
-		if (value.indexOf(" ") < 0 && value.indexOf('"') < 0 && value.indexOf("=") < 0) {
+		if (value.indexOf(" ") < 0 && value.indexOf('"') < 0 && value.indexOf("=") < 0 && !__needsEscape(value)) {
 			return value;
 		}
-		return '"' + StringTools.replace(value, '"', '\\"') + '"';
+		return '"' + __escape(value, true) + '"';
 	}
 
-	@:noCompletion private static function __timestamp():String {
-		var now = Date.now();
-		return DateTools.format(now, "%Y-%m-%dT%H:%M:%S");
+	// Whether `text` holds a character that must never reach the output as
+	// itself: C0 and C1 controls, DEL, and the Unicode line and paragraph
+	// separators, which some viewers break lines on.
+	@:noCompletion private static function __needsEscape(text:String):Bool {
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			if (code < 0x20 || (code >= 0x7F && code <= 0x9F) || code == 0x2028 || code == 0x2029) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * `text` with every character `__needsEscape` looks for written as an
+	 * escape. In a quoted field value `"` and `\` are escaped too, so the
+	 * value reads back exactly; elsewhere a backslash is left alone, which
+	 * keeps a Windows path readable and cannot start a line.
+	 */
+	@:noCompletion private static function __escape(text:String, quoted:Bool):String {
+		if (!quoted && !__needsEscape(text)) {
+			return text;
+		}
+
+		var buffer = new StringBuf();
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			switch (code) {
+				case 0x0A:
+					buffer.add("\\n");
+				case 0x0D:
+					buffer.add("\\r");
+				case 0x09:
+					buffer.add("\\t");
+				case 0x22 if (quoted):
+					buffer.add('\\"');
+				case 0x5C if (quoted):
+					buffer.add("\\\\");
+				default:
+					if (code < 0x20 || (code >= 0x7F && code <= 0x9F)) {
+						buffer.add("\\x");
+						buffer.add(StringTools.hex(code, 2));
+					} else if (code == 0x2028 || code == 0x2029) {
+						buffer.add("\\u");
+						buffer.add(StringTools.hex(code, 4));
+					} else {
+						buffer.addChar(code);
+					}
+			}
+		}
+		return buffer.toString();
+	}
+
+	// time of day: a record's wall-clock time, in seconds since the epoch.
+	@:noCompletion private static function __now():Float {
+		#if (js && !nodejs)
+		return Date.now().getTime() / 1000;
+		#else
+		return Sys.time();
+		#end
+	}
+
+	/**
+	 * `time` as ISO-8601 in UTC with milliseconds: `2026-09-25T09:00:00.123Z`.
+	 *
+	 * Computed from the epoch seconds rather than through `Date`, which
+	 * formats in local time -- the stamps carried no zone and read as UTC,
+	 * so every record on a machine not on UTC was off by its offset -- and
+	 * whose resolution differs by target.
+	 */
+	@:noCompletion private static function __timestamp(time:Float):String {
+		// Rounded, not truncated: seconds as a double rarely hold a whole
+		// millisecond exactly, and .999 would otherwise read as .998.
+		var totalMs:Float = Math.fround(time * 1000);
+		var days:Float = Math.ffloor(totalMs / 86400000);
+		var msOfDay:Int = Std.int(totalMs - days * 86400000);
+
+		// Howard Hinnant's days-to-civil, exact for any date a clock gives.
+		var z:Float = days + 719468;
+		var era:Float = Math.ffloor(z / 146097);
+		var doe:Int = Std.int(z - era * 146097);
+		var yoe:Int = Std.int((doe - Std.int(doe / 1460) + Std.int(doe / 36524) - Std.int(doe / 146096)) / 365);
+		var doy:Int = doe - (365 * yoe + Std.int(yoe / 4) - Std.int(yoe / 100));
+		var mp:Int = Std.int((5 * doy + 2) / 153);
+		var day:Int = doy - Std.int((153 * mp + 2) / 5) + 1;
+		var month:Int = mp < 10 ? mp + 3 : mp - 9;
+		var year:Int = Std.int(yoe + era * 400) + (month <= 2 ? 1 : 0);
+
+		var hours:Int = Std.int(msOfDay / 3600000);
+		var minutes:Int = Std.int((msOfDay % 3600000) / 60000);
+		var seconds:Int = Std.int((msOfDay % 60000) / 1000);
+		var millis:Int = msOfDay % 1000;
+
+		return StringTools.lpad(Std.string(year), "0", 4) + "-" + __two(month) + "-" + __two(day) + "T" + __two(hours) + ":" + __two(minutes) + ":"
+			+ __two(seconds) + "." + StringTools.lpad(Std.string(millis), "0", 3) + "Z";
+	}
+
+	@:noCompletion private static inline function __two(value:Int):String {
+		return value < 10 ? "0" + value : Std.string(value);
 	}
 
 	@:noCompletion private static function __emit(line:String):Void {
