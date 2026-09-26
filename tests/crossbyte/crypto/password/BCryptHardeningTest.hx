@@ -13,9 +13,10 @@ import utest.Assert;
  * the empty-password guards run on every target, including eval/interp.
  */
 class BCryptHardeningTest extends utest.Test {
-	// Canonical 60-char bcrypt strings of the form $2y$NN$<22 salt><31 hash>.
-	static inline var COST_10_HASH:String = "$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
-	static inline var COST_12_HASH:String = "$2y$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW";
+	// Canonical 60-char bcrypt strings of the form $2b$NN$<22 salt><31 hash>, the
+	// revision hash() produces.
+	static inline var COST_10_HASH:String = "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy";
+	static inline var COST_12_HASH:String = "$2b$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW";
 
 	public function testNeedsRehashTracksCostFactor():Void {
 		// A cost-10 hash should be flagged for rehash against the new default cost 12.
@@ -26,6 +27,9 @@ class BCryptHardeningTest extends utest.Test {
 		Assert.isFalse(BCrypt.needsRehash(COST_12_HASH, 12));
 		// Targeting a different explicit cost still signals a rehash.
 		Assert.isTrue(BCrypt.needsRehash(COST_12_HASH, 10));
+		// Any other revision does too, at the right cost: $2y$ is what earlier
+		// versions stored, without the key's terminating NUL.
+		Assert.isTrue(BCrypt.needsRehash("$2y$" + COST_12_HASH.substr(4), 12));
 	}
 
 	public function testEmptyPasswordIsRejected():Void {
@@ -42,9 +46,9 @@ class BCryptHardeningTest extends utest.Test {
 	public function testDefaultCostIsTwelveAndRoundTrips():Void {
 		#if cpp
 		// No explicit cost: the default must now be 12. Parse the cost out of the
-		// $2y$NN$ prefix rather than trusting the constant.
+		// $2b$NN$ prefix rather than trusting the constant.
 		var defaultHash:String = BCrypt.hash("hunter2");
-		Assert.equals("$2y$12$", defaultHash.substr(0, 7));
+		Assert.equals("$2b$12$", defaultHash.substr(0, 7));
 		var cost:Null<Int> = Std.parseInt(defaultHash.substr(4, 2));
 		Assert.equals(12, cost);
 		Assert.isFalse(BCrypt.needsRehash(defaultHash));

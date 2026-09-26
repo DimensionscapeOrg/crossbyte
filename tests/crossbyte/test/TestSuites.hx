@@ -5,7 +5,10 @@ import utest.Runner;
 class TestSuites {
 	public static function addAuth(runner:Runner):Void {
 		runner.addCase(new crossbyte.auth.AuthSupportTest());
+		runner.addCase(new crossbyte.auth.OAuthExchangeTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
 		runner.addCase(new crossbyte.auth.jwt.EdDSAJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.PkJwtTest());
 		runner.addCase(new crossbyte.auth.jwt.JWKSetTest());
@@ -14,7 +17,11 @@ class TestSuites {
 	public static function addCrypto(runner:Runner):Void {
 		runner.addCase(new crossbyte.crypto.CryptoTest());
 		runner.addCase(new crossbyte.crypto.SodiumExpansionTest());
+		runner.addCase(new crossbyte.crypto.SignatureKeyTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
+		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());
+		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
+		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
 	}
 
 	public static function addCore(runner:Runner):Void {

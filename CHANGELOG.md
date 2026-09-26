@@ -5,6 +5,54 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- PKCE for OAuth (RFC 7636): `OAuth.createCodeVerifier()`,
+  `OAuth.codeChallenge(verifier)`, a `codeChallenge` argument to
+  `getAuthorizationUrl`, sent with `code_challenge_method=S256`, and a
+  `codeVerifier` argument to `getAccessToken`. There was nowhere to put
+  either, and PKCE is what keeps an intercepted authorization code from
+  being exchanged by someone else. A client with no secret no longer sends
+  an empty `client_secret`, which some providers refuse. `OAuth.timeout`
+  (30 seconds) bounds each exchange and refresh.
+- JWT payloads carry claims of an application's own. A literal can hold
+  them beside the registered claims, `{sub: id, exp: now + 3600, role:
+  "admin"}`, and `JWTPayload.claim(name)`, `hasClaim` and `setClaim`
+  read and set them. That literal failed to compile with "has extra field
+  role", so a role or a tenant went in through `Dynamic`. `sub` and `iat`
+  are optional, so a refresh token without a subject can be made too.
+- `JWT.verify`, which answers with a `JWTVerification`: the claims, or a
+  `JWTRejection` naming the first check the token failed,
+  `malformed`, `too-large`, `unsupported-algorithm`,
+  `algorithm-mismatch`, `type-not-accepted`, `unknown-key`,
+  `bad-signature`, `missing-expiry`, `expired`, `not-yet-valid`,
+  `issued-in-future`, `wrong-issuer` or `wrong-audience`. `verifyToken`
+  answered all of them with the same `null`, so an expired session and a
+  forged token looked alike in a log. With it: `JWT.maxTokenLength`, the
+  cap on what is parsed, which was a fixed 4096 characters and still
+  defaults to that; `JWT.acceptedTypes` and `JWT.requireType`, for which
+  `typ` headers pass; and `JWT.updateKeys`, which swaps a verifier's keys
+  and keeps its other settings, where rotating keys meant building a new
+  `JWT`. `JWKSet.signer(RS256)` turns a fetched key set into what
+  `updateKeys` takes, and `unknown-key` is the cue to fetch it again.
+- `crossbyte.crypto.SignatureKey`: an RSA or EC key parsed once into
+  mbedTLS and held natively, with `sign`, `verify`,
+  `joseSignatureLength` and `dispose`. For a key used more than once,
+  which `PublicKeySignature`'s PEM-taking functions parse every call. The
+  parsed key is wiped and freed when the object is collected, or at once by
+  `dispose`.
+- `BCrypt.hashAsync` and `verifyAsync`, and `Argon2id.hashAsync` and
+  `verifyAsync`, which hash on a `TaskPool` worker and answer with a
+  `Future`, completed on the calling runtime's thread at its next tick. A
+  hash at the recommended cost holds its thread for 50 to 300 ms, so a
+  runtime verifying sign-ins itself served nobody else meanwhile, and about
+  eight a second filled it. They use a pool of two workers the hashers
+  share, started on first use, or the pool passed in. `BCrypt.dummyHash`
+  and `Argon2id.dummyHash` give a hash to verify against when a sign-in
+  names a user that does not exist, so it takes as long to refuse as a
+  real user's wrong password and the timing does not say which names are
+  registered.
+- Argon2id on Node 24.7 and later, through Node's own `crypto.argon2`,
+  checked for rather than assumed. Its hashes and libsodium's verify in
+  each other, and on Node `hashAsync` runs on libuv's thread pool.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -523,6 +571,33 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`
+  and need a CrossByte runtime on the calling thread; the callbacks run on
+  that thread. On native targets and Node they return before the token
+  endpoint answers, where native used to run the callbacks before the call
+  returned. On the jvm and the interpreter `URLLoader` still runs its
+  request inline, so there they return after it, as before.
+- `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
+  `Null<Float>`, not `Null<Int>`, and `JWTPayloadData`'s `iat`, `exp` and
+  `nbf` take an `Int` or a `Float`. Code that read one into an `Int` has to
+  convert it, with `Std.int` where the value is known to fit. `generateToken`
+  throws `ArgumentError` for a time that is not a finite number, and writes a
+  whole number of seconds that fits an `Int` as an integer on every target.
+  `JWTPayload.ofData` is no longer an implicit conversion; object literals
+  convert through `JWTPayload.ofClaims`, which lets them carry other claims.
+- `Argon2id.verify` throws where no Argon2id backend exists, as `hash`
+  does, rather than returning `false`: that refused every password on the
+  jvm, the interpreter and the browser while looking like a working check.
+  Call `Argon2id.isAvailable()` first where a target may lack one.
+- `BCrypt.hash` makes `$2b$` hashes rather than `$2y$`, and
+  `BCrypt.needsRehash` reports a hash of any other revision, `$2y$`
+  included. That is how the `$2y$` hashes earlier versions stored, which
+  lack the key's terminating NUL and verify nowhere else, are found: rehash
+  on a successful sign-in when `needsRehash` says so, and they are replaced
+  as users return. Until then a wrong password against one costs two hashes
+  instead of one. `$2b$` is what OpenBSD, Node, Python and Rust produce, and
+  current PHP verifies it; a `$2y$` hash from PHP is replaced the same way,
+  harmlessly.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -691,6 +766,68 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- OAuth's token exchange no longer blocks the runtime, and a provider
+  that never answers no longer leaves it waiting forever. Native targets
+  used the blocking `haxe.Http`, so a token endpoint taking 400 ms held
+  every connection the server had for 400 ms per sign-in; on Node a
+  stalled endpoint left both callbacks unfired. The exchange and refresh
+  now go through `URLLoader`, off the runtime's thread on native and
+  asynchronously on Node, answering on the calling runtime's thread, and
+  fail after `OAuth.timeout` seconds. A rejected grant reports the
+  provider's `error` and `error_description` whatever the status it came
+  with, and a failing status is never taken for a token. `expires_in` is
+  read with `IntParse`, so one too large for an `Int` is 0 on every target
+  rather than whatever `Std.parseInt` made of it on each.
+- A JWT expiring after January 2038, or at 2147483647 (a common "never"),
+  is judged the same on every target. Times were `Int`: 2147483647 plus the
+  leeway wrapped negative on the interpreter and the jvm, so the token was
+  expired there and valid on cpp and Node, and the jvm refused every time
+  past 2038. Times are now seconds in a `Float`, and may be fractional as
+  RFC 7519 allows. A registered claim of the wrong JSON type, a numeric
+  `sub`, a string `iat`, is refused as `malformed` rather than handed
+  back through a typed property.
+- `JWT.verifyToken` accepts tokens from other issuers. It refused any
+  whose `typ` was not exactly `JWT`: AWS Cognito's and Sign in with
+  Apple's, which carry none, RFC 9068 access tokens (`at+jwt`), and a
+  lower-case `jwt`. `typ` is now compared in any case, with an
+  `application/` prefix ignored as RFC 7515 allows, against
+  `acceptedTypes`: `JWT` and `at+jwt` by default, and a token with no
+  `typ` passes unless `requireType` is set.
+- RSA and ECDSA signatures no longer leave copies of the private key in
+  freed memory, and `JWTSigner.RS256` and `ES256` parse their keys once
+  instead of for every token. Each sign and verify parsed the PEM afresh,
+  from a copy in the GC heap made per call and a native buffer freed
+  without being wiped, and rebuilt an EC key's precomputed tables every
+  time. Keys are now parsed once, into native memory that mbedTLS wipes
+  when it is freed, and every buffer that held a key is wiped before it
+  is released. Signing and verifying also run in a GC-free zone, since a
+  4096-bit RSA signature takes about 25 ms: on a worker, it held every
+  collection in the process for the rest of the signature it landed in.
+- Password hashing on a worker thread no longer stalls every collection
+  in a native process. hxcpp collects only once every thread reaches a
+  safe point, and neither libsodium's Argon2id nor BCrypt's inner loop
+  ever reached one, so moving a hash off the runtime's thread moved the
+  stall onto all of them: a collection on the main thread waited 286 ms
+  of a 317 ms Argon2id hash on a worker, and 302 ms of a 332 ms BCrypt
+  hash. libsodium's password hashes now run in a GC-free zone, with the
+  password copied to native memory first and wiped after, and BCrypt
+  reaches a safe point every two rounds. The same collections take about
+  a millisecond.
+- `SecureRandom` on Linux and macOS made its lock on first use, so two
+  threads drawing their first bytes at once could each make one and read
+  `/dev/urandom` together. It is made up front.
+- BCrypt adds the key's terminating NUL for every revision. It was added for
+  `$2a$` alone, and `$2y$`, the default, was computed without it, so no hash
+  CrossByte made verified anywhere else, no hash migrated from PHP, Laravel,
+  Node or Python verified here, PHP's own manual example among them, and
+  a password matched its repetitions: without the NUL the key is the
+  password cycled to 72 bytes, so `hash("abc")` accepted "abcabc". Hashes
+  CrossByte stored before still verify: a `$2y$` hash that fails the
+  standard check is tried once more in the old form, and only `$2y$`, the
+  one revision it ever produced. `$2x$` hashes are checked with
+  crypt_blowfish's sign-extension bug and `$2a$` with its countermeasure, as
+  PHP checks them. A cost of 31 ran no rounds at all, since `1 << 31` is
+  negative in an `Int`; it runs 2^31.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the
