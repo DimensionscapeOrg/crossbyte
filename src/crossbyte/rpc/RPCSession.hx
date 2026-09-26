@@ -1062,8 +1062,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		};
 		#if (cpp || neko || hl || java || jvm || eval)
 		// Which thread this is, told apart by a token of its own rather than
-		// by runtime: off cpp, CrossByte.current() is the primordial runtime
-		// on every thread, and would take a worker for this one.
+		// by runtime: CrossByte.current() says which runtime a thread has,
+		// and throws on a thread with none, where a future is often
+		// completed; it cannot say which thread the completion came on. The
+		// runtime is read here, on this session's thread, where it has one.
 		final home:{} = __threadToken();
 		var runtime:Null<CrossByte> = null;
 		try {
