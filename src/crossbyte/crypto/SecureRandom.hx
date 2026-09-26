@@ -133,7 +133,11 @@ final class SecureRandom {
 
 	#if cpp
 	@:noCompletion static var __urandom:sys.io.FileInput = null;
-	@:noCompletion static var __lock:Mutex = null;
+	// Made up front rather than on first use: two threads drawing their first
+	// bytes at once each made one and locked their own, and then shared the
+	// file between them unguarded. Password hashing runs on worker threads, so
+	// two first draws at once is an ordinary start-up.
+	@:noCompletion static final __lock:Mutex = new Mutex();
 
 	private static inline function __getSecureRandomBytesNative(length:Int):Bytes {
 		return __isWindows() ? __getSecureRandomBytesWindows(length) : __getSecureRandomBytesUnix(length);
@@ -179,9 +183,6 @@ final class SecureRandom {
 
 		var out:Bytes = Bytes.alloc(length);
 
-		if (__lock == null) {
-			__lock = new sys.thread.Mutex();
-		}
 		__lock.acquire();
 		try {
 			if (__urandom == null) {

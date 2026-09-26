@@ -229,6 +229,41 @@ class JWKSetTest extends utest.Test {
 		Require.notNull(verified, "a token signed with the private key did not verify against the JWKS-derived public key");
 		Assert.equals("jwks", verified.subject);
 	}
+
+	public function testAFetchedSetRotatesAVerifierInPlace():Void {
+		var keys = PkKeyFixture.rsa();
+		var modulus = keys == null ? null : PkKeyFixture.rsaModulusBase64Url();
+		if (keys == null || modulus == null) {
+			Assert.pass();
+			return;
+		}
+
+		var issuer = JWT.make(RS256(JWKSet.parse('{"keys":[{"kty":"RSA","kid":"next","n":"$modulus","e":"AQAB"}]}').pemsFor("RS256"),
+			keys.privatePem, "next"));
+		var now:Int = Std.int(Date.now().getTime() / 1000);
+		var token = issuer.generateToken({sub: "rotated", iat: now, exp: now + 300});
+
+		// A verifier still holding last period's keys has never heard of "next".
+		var verifier = JWT.make(JWKSet.parse('{"keys":[{"kty":"RSA","kid":"previous","n":"$modulus","e":"AQAB"}]}').signer(RS256));
+		Assert.equals(JWTRejection.UNKNOWN_KEY, verifier.verify(token).rejection);
+
+		// Which is the cue to fetch the set again.
+		verifier.updateKeys(JWKSet.parse('{"keys":[{"kty":"RSA","kid":"previous","n":"$modulus","e":"AQAB"},{"kty":"RSA","kid":"next","n":"$modulus","e":"AQAB"}]}')
+			.signer(RS256));
+		Assert.isTrue(verifier.verify(token).valid);
+
+		// A set with one unnamed key serves tokens that name none, as a small
+		// issuer's do, and not tokens naming a key it does not hold.
+		var keyless = JWT.make(JWKSet.parse('{"keys":[{"kty":"RSA","n":"$modulus","e":"AQAB"}]}').signer(RS256));
+		var input = JWT.base64UrlEncodeString('{"alg":"RS256","typ":"JWT"}') + "."
+			+ JWT.base64UrlEncodeString(haxe.Json.stringify({sub: "x", iat: now, exp: now + 300}));
+		var unnamed = input + "." + JWT.base64UrlEncodeBytes(crossbyte.crypto.PublicKeySignature.sign(keys.privatePem, Bytes.ofString(input)));
+		Assert.isTrue(keyless.verify(unnamed).valid);
+		Assert.equals(JWTRejection.UNKNOWN_KEY, keyless.verify(token).rejection);
+
+		Assert.raises(() -> JWKSet.parse('{"keys":[]}').signer(RS256));
+		Assert.raises(() -> JWKSet.parse('{"keys":[{"kty":"RSA","kid":"k","n":"$modulus","e":"AQAB"}]}').signer(HS256));
+	}
 	#end
 
 	// --- fixtures ---

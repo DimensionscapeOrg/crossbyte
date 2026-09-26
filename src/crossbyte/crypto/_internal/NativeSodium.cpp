@@ -7,7 +7,12 @@
 // Every function here is a thin argument-checked pass-through: no
 // cryptographic logic lives in this file.
 
+// For the GC-free zones around the password hashes; see NativeCopy below.
+#include <hxcpp.h>
+
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <string>
 #include <mutex>
 
@@ -83,6 +88,58 @@ namespace {
 	inline const unsigned char *opt(const uint8_t *data, int length) {
 		return (length > 0) ? data : nullptr;
 	}
+
+	// crypto_pwhash_STRBYTES: a PHC string and its terminator.
+	const size_t kPwhashStrBytes = 128;
+
+	// A password hash runs for 100 ms or more at the recommended limits, and a
+	// thread outside a GC-free zone that long holds up every collection in the
+	// process: hxcpp stops the world only once each thread reaches a safe
+	// point, and libsodium never reaches one. So the hash runs inside a zone.
+	//
+	// Inside it nothing may touch the GC heap, which may be collected or
+	// compacted meanwhile, and the arguments arrive as pointers into Haxe
+	// `Bytes`. They are copied here first, and results are written to native
+	// memory and copied out after the zone ends. Copies of secrets are wiped
+	// before they are freed, so the password does not linger in the heap.
+	struct NativeCopy {
+		unsigned char *data;
+		size_t length;
+
+		NativeCopy(const uint8_t *source, int sourceLength) : data(nullptr), length(0) {
+			if (sourceLength > 0) {
+				data = (unsigned char *) malloc((size_t) sourceLength);
+				if (data != nullptr) {
+					if (source != nullptr) {
+						memcpy(data, source, (size_t) sourceLength);
+					} else {
+						memset(data, 0, (size_t) sourceLength);
+					}
+					length = (size_t) sourceLength;
+				}
+			}
+		}
+
+		~NativeCopy() {
+			if (data != nullptr) {
+				sodium_memzero(data, length);
+				free(data);
+			}
+		}
+
+		// True when a copy was asked for and could not be allocated.
+		bool failed(int requested) const {
+			return requested > 0 && data == nullptr;
+		}
+
+		const unsigned char *get() const {
+			return data;
+		}
+
+	private:
+		NativeCopy(const NativeCopy &);
+		NativeCopy &operator=(const NativeCopy &);
+	};
 }
 
 extern "C" bool crossbyte_crypto_sodium_available() {
@@ -285,10 +342,26 @@ extern "C" int crossbyte_crypto_pwhash_derive(
 		return -1;
 	}
 
-	return crypto_pwhash(
-		out, (unsigned long long) outLength,
-		(const char *) opt(password, passwordLength), (unsigned long long) passwordLength,
-		salt, (unsigned long long) opslimit, (size_t) memlimit, kPwhashAlgArgon2id13);
+	// crypto_pwhash_SALTBYTES.
+	const int saltLength = 16;
+	NativeCopy secret(password, passwordLength);
+	NativeCopy nativeSalt(salt, saltLength);
+	NativeCopy derived(nullptr, outLength);
+	if (secret.failed(passwordLength) || nativeSalt.failed(saltLength) || derived.failed(outLength)) {
+		return -1;
+	}
+
+	hx::EnterGCFreeZone();
+	int rc = crypto_pwhash(
+		derived.data, (unsigned long long) outLength,
+		(const char *) secret.get(), (unsigned long long) passwordLength,
+		nativeSalt.get(), (unsigned long long) opslimit, (size_t) memlimit, kPwhashAlgArgon2id13);
+	hx::ExitGCFreeZone();
+
+	if (rc == 0) {
+		memcpy(out, derived.get(), (size_t) outLength);
+	}
+	return rc;
 }
 
 extern "C" int crossbyte_crypto_pwhash_str(
@@ -302,10 +375,23 @@ extern "C" int crossbyte_crypto_pwhash_str(
 		return -1;
 	}
 
-	return crypto_pwhash_str(
-		(char *) out128,
-		(const char *) opt(password, passwordLength), (unsigned long long) passwordLength,
+	NativeCopy secret(password, passwordLength);
+	if (secret.failed(passwordLength)) {
+		return -1;
+	}
+	char encoded[kPwhashStrBytes];
+
+	hx::EnterGCFreeZone();
+	int rc = crypto_pwhash_str(
+		encoded,
+		(const char *) secret.get(), (unsigned long long) passwordLength,
 		(unsigned long long) opslimit, (size_t) memlimit);
+	hx::ExitGCFreeZone();
+
+	if (rc == 0) {
+		memcpy(out128, encoded, kPwhashStrBytes);
+	}
+	return rc;
 }
 
 extern "C" int crossbyte_crypto_pwhash_str_verify(
@@ -317,9 +403,31 @@ extern "C" int crossbyte_crypto_pwhash_str_verify(
 		return -1;
 	}
 
-	return crypto_pwhash_str_verify(
-		(const char *) hashStr,
-		(const char *) opt(password, passwordLength), (unsigned long long) passwordLength);
+	// The caller terminates the string and keeps it under 128 bytes; one that
+	// is not terminated within that is not a hash libsodium would accept.
+	char encoded[kPwhashStrBytes];
+	size_t encodedLength = 0;
+	while (encodedLength < kPwhashStrBytes && hashStr[encodedLength] != 0) {
+		encoded[encodedLength] = (char) hashStr[encodedLength];
+		encodedLength++;
+	}
+	if (encodedLength == kPwhashStrBytes) {
+		return -1;
+	}
+	encoded[encodedLength] = 0;
+
+	NativeCopy secret(password, passwordLength);
+	if (secret.failed(passwordLength)) {
+		return -1;
+	}
+
+	hx::EnterGCFreeZone();
+	int rc = crypto_pwhash_str_verify(
+		encoded,
+		(const char *) secret.get(), (unsigned long long) passwordLength);
+	hx::ExitGCFreeZone();
+
+	return rc;
 }
 
 extern "C" int crossbyte_crypto_pwhash_str_needs_rehash(

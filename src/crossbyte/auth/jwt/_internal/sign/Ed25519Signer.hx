@@ -107,6 +107,10 @@ class Ed25519Signer implements IJWTSigner {
 		return JWT.base64UrlEncodeBytes(signature);
 	}
 
+	public function hasKey(keyId:Null<String>):Bool {
+		return keyId != null ? __publicKeys.exists(keyId) : __signKeyId != null;
+	}
+
 	public function verify(input:String, signature:String, ?keyId:String):Bool {
 		if (input == null || signature == null) {
 			return false;
