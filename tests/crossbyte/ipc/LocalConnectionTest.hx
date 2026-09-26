@@ -253,6 +253,35 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	public function testAConnectionMadeFromAUrlIsToldItIsReady():Void {
+		// `new NetConnection("local://...")` connects as it is made, and
+		// connect() dispatched Ready from inside itself: an onReady set once
+		// the constructor had returned, as the RPC guide sets one, never ran.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("url");
+		var server = new LocalConnection();
+		var connection:NetConnection = null;
+		try {
+			server.listen(name);
+			connection = new NetConnection('local://$name');
+			var ready = false;
+			connection.onReady = () -> ready = true;
+			pumpUntil(() -> ready, 2.0);
+			Assert.isTrue(ready, "onReady set after the connection was made never ran");
+		} catch (e:Dynamic) {
+			if (connection != null) {
+				connection.close();
+			}
+			closeQuietly(server);
+			throw e;
+		}
+		connection.close();
+		closeQuietly(server);
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testNetConnectionRoundTripKeepsLocalTransport():Void {
 		var local = new LocalConnection();
 		var wrapped:NetConnection = local;

@@ -93,6 +93,7 @@ class RPCHeartbeatTest extends utest.Test {
 		Assert.same(["Closed"], closes);
 		Assert.isTrue(waiting.completed, "a call outlived the connection");
 		Assert.stringContains("timed out", waiting.error);
+		Assert.isTrue(Type.enumEq(Reason.Timeout, waiting.cause), "the call's cause is not the timeout: " + waiting.cause);
 	}
 
 	public function testAHeartbeatStartedBeforeTheConnectionIsUpStartsOnceItIs():Void {

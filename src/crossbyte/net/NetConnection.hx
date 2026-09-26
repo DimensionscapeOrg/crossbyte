@@ -61,9 +61,14 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 * Connects to a transport URI and wraps the resulting connection.
 	 *
 	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`.
+	 *
+	 * @param connectTimeout For `local://`, whose connect waits for a listener
+	 * on the calling thread: how long, in milliseconds, 0 for a single try.
+	 * `LocalConnection.timeout` when left out. The other transports connect
+	 * without waiting and ignore it.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
-			readEnabled:Bool = false):Void {
+			readEnabled:Bool = false, ?connectTimeout:Int):Void {
 		var endpoint:Endpoint = parseURL(uri);
 		var protocol:Protocol = endpoint.protocol;
 		this = switch (protocol) {
@@ -111,6 +116,9 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				connection.onReady = onReady;
 				connection.onError = onError;
 				connection.readEnabled = readEnabled;
+				if (connectTimeout != null) {
+					connection.timeout = connectTimeout;
+				}
 				connection.connect(endpoint.address);
 				new NetConnectionAdapter(connection);
 			#end

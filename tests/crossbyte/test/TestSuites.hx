@@ -253,6 +253,7 @@ class TestSuites {
 		// Real sockets pumped until something happens, which Node cannot do,
 		// so not in the portable suite.
 		runner.addCase(new crossbyte.rpc.RPCConnectionEndTest());
+		runner.addCase(new crossbyte.rpc.RPCDialTest());
 	}
 
 	public static function addResources(runner:Runner):Void {
