@@ -229,6 +229,7 @@ class TestSuites {
 		// Not on eval, whose TLS handshake cannot be made non-blocking.
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
+		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// Not on eval either: its sockets block, so a write to a peer that has
 		// stopped reading waits rather than buffering.
 		runner.addCase(new crossbyte.net.SocketOutputTest());

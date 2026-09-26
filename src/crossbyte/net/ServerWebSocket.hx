@@ -81,6 +81,39 @@ class ServerWebSocket extends ServerSocket {
 	**/
 	public var maxOutputBufferSize:Int = 0;
 
+	/**
+		`WebSocket.pingInterval` for each session this server accepts, in
+		seconds; zero for none. Set before the sessions it is for arrive.
+	**/
+	public var pingInterval:Float = crossbyte._internal.websocket.WebSocket.PING_INTERVAL / 1000;
+
+	/**
+		`WebSocket.idleTimeout` for each session this server accepts, in
+		seconds; zero for never. A session whose peer has vanished without
+		closing is closed after this, and what was waiting for it freed.
+	**/
+	public var idleTimeout:Float = crossbyte._internal.websocket.WebSocket.DEFAULT_IDLE_TIMEOUT;
+
+	/**
+		Decides, once a client's upgrade request has arrived and before the
+		`101` answers it, whether the session is opened, and with which
+		subprotocol.
+
+		The request's path, query, headers, cookies and `Origin` are all
+		there, which is where a session is authenticated and a page from
+		another site refused. Return `false` to refuse, answered with the
+		request's `status` (403 unless changed); set `request.protocol` to
+		choose from the subprotocols offered. Unset, every valid upgrade is
+		accepted, with the first subprotocol the client offered: a browser that
+		offers one and hears none back fails the connection. A hook that throws
+		refuses, with 500.
+
+		The session carries the request afterwards, as `WebSocket.request`.
+	**/
+	public dynamic function upgrade(request:WebSocketRequest):Bool {
+		return true;
+	}
+
 	@:noCompletion private var __metrics:crossbyte.metrics.Metrics;
 	@:noCompletion private var __acceptedTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __closedTotal:crossbyte.metrics.Counter;
