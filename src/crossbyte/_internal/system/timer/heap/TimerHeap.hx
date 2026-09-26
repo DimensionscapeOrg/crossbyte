@@ -20,6 +20,30 @@ class TimerHeap implements ITimerScheduler {
 
 	private var __now:Float = 0.0;
 
+	// Which pass of advanceTime this is, stamped on a node as it is armed; see
+	// TimerNode.armPass. Wraps, and is only ever compared for equality.
+	private var __pass:Int = 0;
+
+	// Nodes a pass found due but that were armed during it, held back for the
+	// next pass rather than fired by this one.
+	private var __deferred:Array<TimerNode> = [];
+
+	// The node whose callback is running, and whether that callback gave it a
+	// new time itself -- a reschedule, a delay or a resume through its own
+	// handle -- which settling it afterwards has to respect.
+	private var __firing:TimerNode = null;
+	private var __rearmed:Bool = false;
+
+	private var __cutShort:Bool = false;
+
+	/**
+	 * How many fires pass between reads of the clock while a budget is
+	 * being kept. A read is tens of nanoseconds, so checking every fire
+	 * would cost more than most callbacks; every 32 keeps it under a
+	 * nanosecond a fire and overshoots a budget by 31 callbacks at most.
+	 */
+	private static inline var BUDGET_STRIDE:Int = 32;
+
 	private inline function get_size():Int {
 		return queue.size;
 	}
@@ -100,7 +124,15 @@ class TimerHeap implements ITimerScheduler {
 
 		var node:TimerNode = nodes[handle.id()];
 		node.time = time;
-		queue.update(node);
+		node.armPass = __pass;
+		if (node == __firing) {
+			// From its own callback: the new time is what it runs at next,
+			// one-shot or not, instead of being freed or advanced by an
+			// interval once the callback returns.
+			__rearmed = true;
+		} else {
+			queue.update(node);
+		}
 		return true;
 	}
 
@@ -115,7 +147,11 @@ class TimerHeap implements ITimerScheduler {
 
 		var node:TimerNode = nodes[handle.id()];
 		node.time += dt;
-		queue.update(node);
+		if (node == __firing) {
+			__rearmed = true;
+		} else {
+			queue.update(node);
+		}
 		return true;
 	}
 
@@ -153,7 +189,12 @@ class TimerHeap implements ITimerScheduler {
 				node.time = (node.interval > 0) ? (t + node.interval) : t;
 				node.pausedAt = null;
 		}
-		queue.enqueue(node);
+		node.armPass = __pass;
+		if (node == __firing) {
+			__rearmed = true;
+		} else {
+			queue.enqueue(node);
+		}
 		return true;
 	}
 
@@ -162,111 +203,185 @@ class TimerHeap implements ITimerScheduler {
 		return (t != null) ? t.time : null;
 	}
 
-	public inline function advanceTime(dt:Float, maxFires:Int = 256):Int {
+	/**
+	 * Fires every timer due by the new time, in order.
+	 *
+	 * There used to be a cap of 256 fires per call, and the runtime never
+	 * passed anything else, so a runtime with more than that due each frame
+	 * -- a few hundred sessions each keeping a 50ms retransmit clock -- fell
+	 * behind a little more every frame, without bound: a 30 second idle
+	 * timeout fired at 78. Nothing is capped by count now. A caller that
+	 * must bound the pass gives it a `budget` of wall-clock seconds instead,
+	 * which is what the runtime does, so a burst of work too big for one
+	 * frame is spread over several rather than starving the sockets; what a
+	 * budget leaves is reported by `overdue()` and `cutShort`.
+	 *
+	 * A timer armed during a pass never fires in that pass, however soon it
+	 * is due: it waits for the next one. Without that, a callback re-arming
+	 * itself for "now" -- a poll-until-ready loop -- would run for the whole
+	 * budget every frame, where before the cap stopped it after 256.
+	 *
+	 * @param maxFires Most timers to fire in this call. Unbounded by default.
+	 * @param budget Wall-clock seconds this call may spend firing timers, or
+	 *        zero or less for no limit. Checked every few fires.
+	 */
+	public function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int {
 		__now += dt;
+		__pass = (__pass + 1) | 0;
+		__cutShort = false;
+
+		if (queue.isEmpty) {
+			return 0;
+		}
+
 		var fired:Int = 0;
+		var checkAt:Int = (budget > 0 && BUDGET_STRIDE < maxFires) ? BUDGET_STRIDE : maxFires;
+		var deadline:Float = budget > 0 ? HxTimer.stamp() + budget : 0.0;
+		var top:TimerNode = queue.peek();
 
-		if (!isEmpty) {
-			var top:TimerNode = queue.peek();
+		while (top != null && top.time <= __now #if precision_tick + EPS #end) {
+			if (fired >= checkAt) {
+				if (fired >= maxFires || HxTimer.stamp() >= deadline) {
+					__cutShort = true;
+					break;
+				}
+				checkAt = (fired + BUDGET_STRIDE < maxFires) ? fired + BUDGET_STRIDE : maxFires;
+			}
 
-			while (top != null && top.time <= __now #if precision_tick + EPS #end && fired < maxFires) {
-				queue.dequeue();
-				var node:TimerNode = top;
+			queue.dequeue();
+			var node:TimerNode = top;
 
-				if (!node.enabled) {
-					freeSlot(node.id);
-				} else {
-					var gen:Int = gens[node.id];
+			if (!node.enabled) {
+				freeSlot(node.id);
+			} else if (node.armPass == __pass) {
+				__deferred.push(node);
+			} else {
+				var gen:Int = gens[node.id];
 
-					// Each callback is contained. A timer that throws is settled
-					// exactly as if it had returned -- a recurring one re-armed, a
-					// one-shot freed -- and only then is the failure passed on.
-					// Letting it propagate from inside the call left a recurring
-					// timer dequeued for good, its handle still reading as live,
-					// and took whatever was driving the scheduler down with it.
-					var failed:Bool = false;
-					var failure:Dynamic = null;
+				// Each callback is contained. A timer that throws is settled
+				// exactly as if it had returned -- a recurring one re-armed, a
+				// one-shot freed -- and only then is the failure passed on.
+				// Letting it propagate from inside the call left a recurring
+				// timer dequeued for good, its handle still reading as live,
+				// and took whatever was driving the scheduler down with it.
+				var failed:Bool = false;
+				var failure:Dynamic = null;
+				__firing = node;
+				__rearmed = false;
 
-					#if timer_burst_catchup
-					if (node.interval > 0) {
-						var steps:Int = Std.int(Math.floor((__now - node.time) / node.interval)) + 1;
-						if (steps < 1) {
-							steps = 1;
-						}
+				#if timer_burst_catchup
+				var fires:Int = 1;
+				if (node.interval > 0) {
+					var steps:Int = Std.int(Math.floor((__now - node.time) / node.interval)) + 1;
+					var room:Int = maxFires - fired;
+					fires = (steps < 1) ? 1 : ((steps <= room) ? steps : room);
+				}
 
-						var budget:Int = maxFires - fired;
-						var fires:Int = (steps <= budget) ? steps : budget;
-
-						var i:Int = 0;
-						while (i < fires && node.enabled) {
-							try {
-								node.callback(new TimerHandle(node.id, gen));
-							} catch (error:Dynamic) {
-								failed = true;
-								failure = error;
-							}
-							i++;
-							fired++;
-							// Stop if the callback cleared this timer via its handle,
-							// or threw: the rest of the burst is not owed to a
-							// callback that has just failed.
-							if (failed || gens[node.id] != gen || nodes[node.id] != node) {
-								break;
-							}
-						}
-
-						if (gens[node.id] != gen || nodes[node.id] != node) {
-							// freed by the callback; nothing to do
-						} else if (node.enabled) {
-							node.time += (failed ? i : fires) * node.interval;
-							queue.enqueue(node);
-						} else {
-							freeSlot(node.id);
-						}
-					} else {
-						try {
-							node.callback(new TimerHandle(node.id, gen));
-						} catch (error:Dynamic) {
-							failed = true;
-							failure = error;
-						}
-						fired++;
-						if (gens[node.id] == gen && nodes[node.id] == node) {
-							freeSlot(node.id);
-						}
-					}
-					#else
+				var i:Int = 0;
+				while (i < fires && node.enabled) {
 					try {
 						node.callback(new TimerHandle(node.id, gen));
 					} catch (error:Dynamic) {
 						failed = true;
 						failure = error;
 					}
+					i++;
 					fired++;
-
-					// The callback may have cleared/rescheduled this timer via its
-					// own handle. If clear() freed the slot during the callback the
-					// generation no longer matches (or the slot was reused), so we
-					// must not re-enqueue or free it again.
-					if (gens[node.id] != gen || nodes[node.id] != node) {
-						// already freed/replaced by the callback; nothing to do
-					} else if (node.enabled && node.interval > 0) {
-						node.time += node.interval;
-						queue.enqueue(node);
-					} else {
-						freeSlot(node.id);
-					}
-					#end
-
-					if (failed) {
-						__fail(failure);
+					// Stop if the callback cleared or re-armed this timer through
+					// its handle, or threw: the rest of the burst is not owed to
+					// a callback that has just failed.
+					if (failed || __rearmed || gens[node.id] != gen || nodes[node.id] != node) {
+						break;
 					}
 				}
+				__firing = null;
 
-				top = queue.peek();
+				if (gens[node.id] != gen || nodes[node.id] != node) {
+					// freed by the callback; nothing to do
+				} else if (__rearmed) {
+					queue.enqueue(node);
+				} else if (node.enabled && node.interval > 0) {
+					node.time += i * node.interval;
+					queue.enqueue(node);
+				} else if (node.enabled || node.pausedAt == null) {
+					freeSlot(node.id);
+				}
+				#else
+				try {
+					node.callback(new TimerHandle(node.id, gen));
+				} catch (error:Dynamic) {
+					failed = true;
+					failure = error;
+				}
+				fired++;
+				__firing = null;
+				__settle(node, gen);
+				#end
+
+				if (failed) {
+					__fail(failure);
+				}
 			}
+
+			top = queue.peek();
+		}
+
+		if (__deferred.length > 0) {
+			__readmit();
 		}
 		return fired;
+	}
+
+	/**
+	 * Whether the last `advanceTime` stopped with timers still due, because
+	 * its budget or its `maxFires` ran out.
+	 */
+	public var cutShort(get, never):Bool;
+
+	private inline function get_cutShort():Bool {
+		return __cutShort;
+	}
+
+	/**
+	 * How many timers are due by `time` and still waiting, counting only
+	 * those armed before the last pass began: what a budget left behind.
+	 * One armed since, due at once, is not late yet.
+	 *
+	 * Walks only the part of the heap that is due, so it costs what it
+	 * counts; intended for a metric read now and then, not for every frame.
+	 */
+	public function overdue():Int {
+		return queue.countDue(__now #if precision_tick + EPS #end, __pass);
+	}
+
+	// Puts a timer whose callback has just returned where it belongs next.
+	// The callback may have cleared, rescheduled or paused it through its own
+	// handle: if clear() freed the slot the generation no longer matches (or
+	// the slot was reused), so it must not be re-enqueued or freed again.
+	private inline function __settle(node:TimerNode, gen:Int):Void {
+		if (gens[node.id] != gen || nodes[node.id] != node) {
+			// already freed/replaced by the callback; nothing to do
+		} else if (__rearmed) {
+			// Given a new time by its own callback, which stands as given.
+			queue.enqueue(node);
+		} else if (node.enabled && node.interval > 0) {
+			node.time += node.interval;
+			queue.enqueue(node);
+		} else if (node.enabled || node.pausedAt == null) {
+			// A one-shot that has run, or a timer cleared lazily from its own
+			// callback. One that paused itself stays live, to be resumed.
+			freeSlot(node.id);
+		}
+	}
+
+	// Returns what a pass held back to the queue, for the next pass.
+	private function __readmit():Void {
+		for (node in __deferred) {
+			if (nodes[node.id] == node && node.heapIndex < 0 && node.enabled && node.pausedAt == null) {
+				queue.enqueue(node);
+			}
+		}
+		__deferred.resize(0);
 	}
 
 	// Passes a callback's failure on, once the timer it came from is settled.
@@ -276,6 +391,8 @@ class TimerHeap implements ITimerScheduler {
 			return;
 		}
 
+		// Leaving the pass early: what it held back goes back first.
+		__readmit();
 		#if cpp
 		cpp.Lib.rethrow(error);
 		#else
@@ -293,6 +410,7 @@ class TimerHeap implements ITimerScheduler {
 			gens.push(0);
 		}
 		var n:TimerNode = new TimerNode(id, absoluteTime, interval, callback);
+		n.armPass = __pass;
 		nodes[id] = n;
 		queue.enqueue(n);
 		return new TimerHandle(id, gens[id]);

@@ -215,6 +215,25 @@ final class CrossByte extends EventDispatcher {
 	public var cpuLoad(get, never):Float;
 	public var uptime(get, never):Float;
 
+	/**
+	 * Timers that are due and still waiting because a frame's timer budget
+	 * ran out before it reached them. Zero while the runtime keeps up; a
+	 * figure that stays above zero means timers are asking for more time than
+	 * a frame has. Counted when read, at a cost proportional to the count.
+	 */
+	public var timerBacklog(get, never):Int;
+
+	/**
+	 * How late the most overdue timer is, in seconds, or zero when none is.
+	 */
+	public var timerLag(get, never):Float;
+
+	/**
+	 * How many frames have run out of timer budget with timers still due,
+	 * since the runtime started.
+	 */
+	public var timerOverruns(get, never):Int;
+
 	// ==== Private Variables ====
 	@:noCompletion private var __tickInterval:Float;
 
@@ -230,6 +249,7 @@ final class CrossByte extends EventDispatcher {
 	#end
 	@:noCompletion private var __tps:UInt;
 	@:noCompletion private var __dt:Float = 0.0;
+	@:noCompletion private var __timerOverruns:Int = 0;
 
 	/**
 	 * When the current frame is due to end, as an absolute time.
@@ -454,7 +474,7 @@ final class CrossByte extends EventDispatcher {
 
 		var frameStart:Float = Timer.stamp();
 		__dt = delta;
-		__timer.advanceTime(delta);
+		__advanceTimers(delta);
 		__dispatchTick(delta);
 		__flushHeld();
 		if (!__getRunning()) {
@@ -712,6 +732,41 @@ final class CrossByte extends EventDispatcher {
 
 	@:noCompletion private inline function get_uptime():Float {
 		return __timer.time;
+	}
+
+	/**
+	 * Fires the timers due this frame, within a budget of one tick interval.
+	 *
+	 * Every due timer fires; there used to be a cap of 256 a frame, which a
+	 * runtime with more than that due -- a few hundred sessions each keeping
+	 * a 50ms retransmit clock -- could never catch up with, so every timer
+	 * ran later the longer it stayed up. The budget is what bounds a pass
+	 * now: time, not a count, and only reached by a burst that would
+	 * otherwise hold the frame past its end and keep the sockets waiting.
+	 * What it leaves fires next frame and is counted by `timerBacklog`.
+	 */
+	@:noCompletion private inline function __advanceTimers(dt:Float):Void {
+		__timer.advanceTime(dt, 0x7FFFFFFF, __tickInterval);
+		if (__timer.cutShort) {
+			__timerOverruns++;
+		}
+	}
+
+	@:noCompletion private function get_timerBacklog():Int {
+		return __timer.overdue();
+	}
+
+	@:noCompletion private function get_timerLag():Float {
+		var due:Null<Float> = __timer.nextDue();
+		if (due == null) {
+			return 0.0;
+		}
+		var behind:Float = __timer.time - due;
+		return behind > 0 ? behind : 0.0;
+	}
+
+	@:noCompletion private inline function get_timerOverruns():Int {
+		return __timerOverruns;
 	}
 
 	// ==== Private Methods ====
@@ -1119,13 +1174,13 @@ final class CrossByte extends EventDispatcher {
 		var delta:Float = frameStart - __lastFrameStamp;
 		__lastFrameStamp = frameStart;
 		__dt = delta;
-		__timer.advanceTime(delta);
+		__advanceTimers(delta);
 		__dispatchTick(delta);
 		__flushHeld();
 		__cpuTime = Timer.stamp() - frameStart;
 		#else
 		var frameStart:Float = __frameStart = Timer.stamp();
-		__timer.advanceTime(__dt);
+		__advanceTimers(__dt);
 		__dispatchTick(__dt);
 		__flushHeld();
 		if (!__getRunning()) {
@@ -1150,7 +1205,7 @@ final class CrossByte extends EventDispatcher {
 		throw new IllegalOperationError("The POLL main loop needs a pollable socket set, which no JavaScript target has -- sockets there are delivered by the runtime, not polled for. Use the DEFAULT main loop.");
 		#else
 		var frameStart:Float = __frameStart = Timer.stamp();
-		__timer.advanceTime(__dt);
+		__advanceTimers(__dt);
 		__dispatchTick(__dt);
 		__flushHeld();
 		if (!__getRunning()) {
