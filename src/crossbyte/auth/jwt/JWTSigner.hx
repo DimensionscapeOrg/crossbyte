@@ -5,7 +5,13 @@ import crossbyte.auth.Secret;
 
 /** Signer configuration used to construct a concrete `JWT` instance. */
 enum JWTSigner {
-  /** HMAC-SHA256 signer with one or more shared secrets. */
+  /**
+   * HMAC-SHA256 signer with one or more shared secrets.
+   *
+   * A single secret with no `key` is named `default`, and the tokens it signs
+   * carry `kid: "default"`; list it under that name when rotating to a second
+   * secret, or those tokens stop verifying.
+   */
   HS256(secrets:Array<Secret>, ?signKeyId:String);
   /** EdDSA signer with verification keys and an optional signing private key. */
   EdDSA(pubKeys:StringMap<Bytes>, ?privKey:Bytes, ?signKeyId:String);

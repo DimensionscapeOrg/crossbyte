@@ -167,6 +167,36 @@ class JWKSet {
 		return found == null ? null : found.toPem();
 	}
 
+	/**
+	 * The keys that verify `algorithm`, `RS256` or `ES256`, as the
+	 * verify-only `JWTSigner` that `JWT.make` and `JWT.updateKeys` take.
+	 *
+	 * Keys are named by `kid`. A set whose only usable key has none is given
+	 * it under `default`, which a token naming no key resolves to.
+	 *
+	 * ```haxe
+	 * jwt.updateKeys(JWKSet.parse(fetchedJson).signer(RS256));
+	 * ```
+	 *
+	 * @throws String When `algorithm` is neither, or no key here verifies it.
+	 */
+	public function signer(algorithm:JWTAlgorithm):JWTSigner {
+		if (algorithm != JWTAlgorithm.RS256 && algorithm != JWTAlgorithm.ES256) {
+			throw 'A JWK Set verifies RS256 or ES256, not "$algorithm"';
+		}
+
+		var pems:StringMap<String> = pemsFor(algorithm);
+		if (!pems.keys().hasNext()) {
+			var single:Null<String> = singlePem(algorithm);
+			if (single == null) {
+				throw 'The JWK Set holds no key that verifies $algorithm';
+			}
+			pems.set("default", single);
+		}
+
+		return algorithm == JWTAlgorithm.RS256 ? RS256(pems) : ES256(pems);
+	}
+
 	private function __ingest(entry:Dynamic):Void {
 		if (entry == null) {
 			ignored.push({kid: null, reason: "entry is null"});
