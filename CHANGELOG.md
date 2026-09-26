@@ -1164,6 +1164,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The PHP bridge looked its backend up and connected to it on the runtime's
+  thread, for every request, so each PHP request held every socket and timer
+  on the runtime for a name lookup and a connect: 0.29ms for an address and
+  0.47ms for `localhost` on loopback, measured, and for a name that does not
+  resolve as long as the resolver took, commonly a second. Both happen on a
+  thread of the bridge's own now, which hands the connection back through the
+  runtime's post queue: a request holds the runtime for 0.02ms, and the round
+  trip is no slower. A name is looked up once, and again only after a
+  connect to its address fails, so a backend that moves is found at its new
+  address. A request that times out while connecting says so.
 - A PHP response waited for the runtime's next tick before it was read. The
   bridge read its FastCGI connection from a tick listener, so at the default
   twelve ticks a second a response arrived up to 84ms after PHP sent it,
