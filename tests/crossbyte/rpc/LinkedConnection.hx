@@ -26,6 +26,16 @@ class LinkedConnection implements INetConnection {
 	public var inTimestamp(default, null):Float = 0;
 	public var outTimestamp(default, null):Float = 0;
 	public var bufferInbound:Bool = false;
+	/** Whether this reports itself connected; see `becomeReady`. **/
+	public var isConnected:Bool = true;
+	/** How many sends this has made. **/
+	public var sent:Int = 0;
+	/** Once closed, a send throws, as a closed socket's does. **/
+	public var strictSend:Bool = false;
+	/** Every send throws, open or not, as one to a peer that has reset does. **/
+	public var failSends:Bool = false;
+	/** `false` once closed. **/
+	public var open(default, null):Bool = true;
 
 	public var peer:LinkedConnection;
 	@:noCompletion private var __pendingInputs:Array<ByteArray> = [];
@@ -51,6 +61,10 @@ class LinkedConnection implements INetConnection {
 	}
 
 	public function send(data:ByteArray):Void {
+		if (failSends || (!open && strictSend)) {
+			throw "send failed";
+		}
+		sent++;
 		outTimestamp = Timer.getTime();
 		if (peer != null) {
 			peer.receive(data);
@@ -58,8 +72,33 @@ class LinkedConnection implements INetConnection {
 	}
 
 	public function close():Void {
+		open = false;
 		__readEnabled = false;
 		__onClose(Closed);
+	}
+
+	/** Becomes connected and says so, as a socket whose connect completes does. **/
+	public function becomeReady():Void {
+		isConnected = true;
+		__onReady();
+	}
+
+	/**
+		Its peer has gone, and the connection says so, as a listening
+		`LocalConnection` does when its client leaves: it closes, and keeps
+		its callbacks for the next.
+	**/
+	public function peerLeft():Void {
+		open = false;
+		__onClose(Closed);
+	}
+
+	/** Takes `next` as its peer, as a listening `LocalConnection` takes its next client, and says it is ready. **/
+	public function takePeer(next:LinkedConnection):Void {
+		open = true;
+		peer = next;
+		next.peer = this;
+		__onReady();
 	}
 
 	@:noCompletion private function receive(data:ByteArray):Void {
@@ -118,7 +157,7 @@ class LinkedConnection implements INetConnection {
 	}
 
 	@:noCompletion private inline function get_connected():Bool {
-		return true;
+		return isConnected;
 	}
 
 	@:noCompletion private inline function get_readEnabled():Bool {

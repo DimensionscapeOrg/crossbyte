@@ -3,7 +3,9 @@ package crossbyte.rpc;
 // Built for every target, JavaScript included: the portable suite runs RPC on
 // Node and in a browser.
 
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.io.ByteArrayOutput;
 import crossbyte.net.NetConnection;
 import crossbyte.rpc._internal.RPCWire;
 import haxe.ds.IntMap;
@@ -41,8 +43,11 @@ import haxe.ds.IntMap;
 	```
 **/
 @:autoBuild(crossbyte.rpc._internal.RPCCommandMacro.build())
+@:access(crossbyte.rpc.RPCSession)
 abstract class RPCCommands {
 	@:noCompletion private var __nc:NetConnection;
+	// The session these are bound to, for what it asks of every call.
+	@:noCompletion private var __session:Null<RPCSession<Dynamic, Dynamic>> = null;
 	@:noCompletion private var __requestIdSeed:Int = 0;
 	@:noCompletion private var __pendingResponseId:Int = 0;
 	@:noCompletion private var __pendingResponse:RPCResponse<Dynamic> = null;
@@ -59,9 +64,14 @@ abstract class RPCCommands {
 
 	@:noCompletion abstract public function __rpc_handle_response(op:Int, requestId:Int, input:ByteArrayInput, failed:Bool):Void;
 
-	@:noCompletion private function __createResponse<T>(op:Int):RPCResponse<T> {
-		final requestId:Int = __nextRequestId();
+	/**
+		The call for `op` waiting under `requestId`, which the stub took from
+		`__nextRequestId` and framed its call with first: a call whose
+		arguments cannot be framed throws before anything waits.
+	**/
+	@:noCompletion private function __createResponse<T>(op:Int, requestId:Int):RPCResponse<T> {
 		final response = new RPCResponse<T>(requestId, op);
+		response.__commands = this;
 		if (__pendingResponse == null) {
 			__pendingResponseId = requestId;
 			__pendingResponse = cast response;
@@ -71,22 +81,65 @@ abstract class RPCCommands {
 			}
 			__pendingResponses.set(requestId, cast response);
 		}
+		// The session's deadline for every call, if it has one; a call
+		// without one arms nothing.
+		final session = __session;
+		if (session != null && session.callTimeout > 0) {
+			response.__arm(session.callTimeout);
+		}
 		return response;
 	}
 
-	@:noCompletion private function __resolveResponse<T>(requestId:Int, value:T):Void {
-		var response:RPCResponse<Dynamic> = null;
-		if (__pendingResponse != null && requestId == __pendingResponseId) {
-			response = __pendingResponse;
-			__pendingResponse = null;
-			__pendingResponseId = 0;
-		} else if (__pendingResponses != null) {
-			response = __pendingResponses.get(requestId);
-			if (response != null) {
-				__pendingResponses.remove(requestId);
-			}
+	/**
+		Completes the call waiting under `requestId` with `value`, the answer
+		to a call for `op`, if that call was for `op`. A response is matched
+		by its id and checked by its op: see `RPCSession.__answeredForAnotherOp`.
+	**/
+	/**
+		What a call through commands no session has is told. They dereferenced
+		a null connection, which on hxcpp in release is a crash.
+	**/
+	@:noCompletion private static inline final UNBOUND_MESSAGE:String = "RPC commands are not bound to a session";
+
+	/**
+		Sends a one-way call's frame, as its stub built it. On a connection
+		that has ended it is dropped: nobody is told what becomes of a one-way
+		call.
+
+		@throws ArgumentError When the call is over its session's
+		`RPCSession.maxFrameLength`: it went out without complaint and ended
+		the connection on the other side.
+		@throws IllegalOperationError When these commands have no session.
+	**/
+	@:noCompletion private function __sendCall(framed:ByteArrayOutput):Void {
+		final session = __session;
+		if (session == null) {
+			throw new IllegalOperationError(UNBOUND_MESSAGE);
 		}
+		session.__sendCallFrame(framed);
+	}
+
+	/**
+		Sends a request's frame, as its stub built it, or fails `response` at
+		once when it cannot go, see `RPCSession.__sendRequestFrame`, or
+		these commands have no session.
+	**/
+	@:noCompletion private function __sendRequest<T>(response:RPCResponse<T>, framed:ByteArrayOutput):Void {
+		final session = __session;
+		if (session == null) {
+			__failResponse(response.requestId, UNBOUND_MESSAGE, new IllegalOperationError(UNBOUND_MESSAGE));
+			return;
+		}
+		session.__sendRequestFrame(response, framed);
+	}
+
+	@:noCompletion private function __resolveResponse<T>(op:Int, requestId:Int, value:T):Void {
+		final response = __takeResponse(requestId);
 		if (response == null) {
+			return;
+		}
+		if (response.op != op) {
+			RPCSession.__answeredForAnotherOp(response, op);
 			return;
 		}
 		(cast response : RPCResponse<T>).__resolve(value);
@@ -98,11 +151,28 @@ abstract class RPCCommands {
 		`RPCError`: a handler here answering with this response, forwarding
 		it, passes the message on, as it would one it threw.
 	**/
-	@:noCompletion private function __rejectResponse(requestId:Int, message:String):Void {
-		__failResponse(requestId, message, new RPCError(message));
+	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String):Void {
+		final response = __takeResponse(requestId);
+		if (response == null) {
+			return;
+		}
+		if (response.op != op) {
+			RPCSession.__answeredForAnotherOp(response, op);
+			return;
+		}
+		response.__fail(message, new RPCError(message));
 	}
 
 	@:noCompletion private function __failResponse(requestId:Int, message:String, cause:Null<Dynamic>):Void {
+		final response = __takeResponse(requestId);
+		if (response == null) {
+			return;
+		}
+		response.__fail(message, cause);
+	}
+
+	/** The call waiting under `requestId`, no longer waiting; `null` if there is none. **/
+	@:noCompletion private function __takeResponse(requestId:Int):RPCResponse<Dynamic> {
 		var response:RPCResponse<Dynamic> = null;
 		if (__pendingResponse != null && requestId == __pendingResponseId) {
 			response = __pendingResponse;
@@ -114,10 +184,7 @@ abstract class RPCCommands {
 				__pendingResponses.remove(requestId);
 			}
 		}
-		if (response == null) {
-			return;
-		}
-		response.__fail(message, cause);
+		return response;
 	}
 
 	/** A response this side cannot read: its own failure, not the other side's answer. **/
@@ -152,18 +219,18 @@ abstract class RPCCommands {
 		stopped or the connection closes, so callers are not left waiting forever for
 		a reply that can no longer arrive. Must only be called on the owning thread.
 	**/
-	@:noCompletion private function __failAllPending(message:String):Void {
+	@:noCompletion private function __failAllPending(message:String, ?cause:Dynamic):Void {
 		final pending = __pendingResponse;
 		if (pending != null) {
 			__pendingResponse = null;
 			__pendingResponseId = 0;
-			pending.__reject(message);
+			pending.__fail(message, cause);
 		}
 		final map = __pendingResponses;
 		if (map != null) {
 			__pendingResponses = null;
 			for (response in map) {
-				response.__reject(message);
+				response.__fail(message, cause);
 			}
 		}
 	}

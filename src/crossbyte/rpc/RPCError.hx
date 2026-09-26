@@ -31,6 +31,18 @@ class RPCError extends Error {
 	public static inline final BUSY_MESSAGE:String = "Too many calls are waiting on this connection";
 
 	/**
+		What a caller is told when the handler of its call has not answered
+		within the session's `RPCSession.handlerTimeout`.
+	**/
+	public static inline final TIMEOUT_MESSAGE:String = "The call timed out";
+
+	/**
+		What a caller is told when its call reaches a session with no handler
+		to answer it: one with commands only, or only runtime handlers.
+	**/
+	public static inline final NO_HANDLER_MESSAGE:String = "Nothing answers calls on this connection";
+
+	/**
 		@param message What the caller is told.
 		@param id A number for the error, kept on this side; only the message
 		crosses the wire.

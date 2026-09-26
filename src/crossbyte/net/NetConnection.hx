@@ -12,6 +12,7 @@ import crossbyte.net._internal.CloseObservable;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.Event;
+import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
@@ -61,9 +62,14 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	 * Connects to a transport URI and wraps the resulting connection.
 	 *
 	 * Supported schemes are `tcp://`, `ws://`, `wss://`, `rudp://`, and `local://`.
+	 *
+	 * @param connectTimeout For `local://`, whose connect waits for a listener
+	 * on the calling thread: how long, in milliseconds, 0 for a single try.
+	 * `LocalConnection.timeout` when left out. The other transports connect
+	 * without waiting and ignore it.
 	 */
 	public inline function new(uri:String, ?onData:ByteArrayInput->Void, ?onReady:Void->Void, ?onClose:Reason->Void, ?onError:Reason->Void,
-			readEnabled:Bool = false):Void {
+			readEnabled:Bool = false, ?connectTimeout:Int):Void {
 		var endpoint:Endpoint = parseURL(uri);
 		var protocol:Protocol = endpoint.protocol;
 		this = switch (protocol) {
@@ -111,6 +117,9 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 				connection.onReady = onReady;
 				connection.onError = onError;
 				connection.readEnabled = readEnabled;
+				if (connectTimeout != null) {
+					connection.timeout = connectTimeout;
+				}
 				connection.connect(endpoint.address);
 				new NetConnectionAdapter(connection);
 			#end
@@ -295,12 +304,16 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	}
 
 	@:from
-	/** Wraps an arbitrary `INetConnection`, adapting external implementations when needed. */
+	/**
+		Wraps an arbitrary `INetConnection`, adapting external implementations
+		when needed. The same connection wrapped again, while an `RPCSession`
+		is observing it, is the same `NetConnection`.
+	**/
 	public static inline function fromINetConnection(connection:INetConnection):NetConnection {
 		if (Std.isOfType(connection, NetConnectionBase)) {
 			return cast connection;
 		}
-		return new NetConnectionAdapter(connection);
+		return NetConnectionAdapter.of(connection);
 	}
 
 	/** Wraps an existing TCP socket and immediately binds connection callbacks. */
@@ -363,9 +376,63 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 
 	@:noCompletion private var __connection:INetConnection;
 	// Set once this has wrapped the inner connection's onClose to tell an
-	// observer; the application's callback is then kept here.
+	// observer; the application's callback is then kept here. The same for
+	// onReady.
 	@:noCompletion private var __forwardingClose:Bool = false;
 	@:noCompletion private var __applicationOnClose:Reason->Void = null;
+	@:noCompletion private var __forwardingReady:Bool = false;
+	@:noCompletion private var __applicationOnReady:Void->Void = null;
+
+	/*
+		The adapters forwarding a connection's onClose or onReady to an
+		observer, by the connection they wrap. A connection an application
+		wrote has only those callbacks to be observed through, and the one
+		adapter observing it keeps the application's own behind its forwarder.
+		Wrapped a second time, `(connection : NetConnection).onClose = ...`
+		after a session was made on it, a new adapter set the callback on the
+		connection itself, over the forwarder: the session never heard it end,
+		and the calls waiting on it waited for good. So a connection that is
+		being observed is wrapped by the adapter observing it, until it ends.
+
+		Only connections that are not CrossByte's own come here, and only while
+		observed; guarded, since runtimes on other threads wrap their own.
+	*/
+	@:noCompletion private static var __observed:Null<haxe.ds.ObjectMap<INetConnection, NetConnectionAdapter>> = null;
+	#if (cpp || neko || hl || java || jvm || eval)
+	@:noCompletion private static final __observedLock:sys.thread.Mutex = new sys.thread.Mutex();
+	#end
+
+	/** The adapter for `connection`: the one observing it, if one is, or a new one. **/
+	@:noCompletion private static function of(connection:INetConnection):NetConnectionAdapter {
+		var adapter:Null<NetConnectionAdapter> = null;
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.acquire();
+		#end
+		if (__observed != null) {
+			adapter = __observed.get(connection);
+		}
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.release();
+		#end
+		return adapter != null ? adapter : new NetConnectionAdapter(connection);
+	}
+
+	@:noCompletion private function __setObserved(observed:Bool):Void {
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.acquire();
+		#end
+		if (observed) {
+			if (__observed == null) {
+				__observed = new haxe.ds.ObjectMap();
+			}
+			__observed.set(__connection, this);
+		} else if (__observed != null && __observed.get(__connection) == this) {
+			__observed.remove(__connection);
+		}
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.release();
+		#end
+	}
 
 	private function new(connection:INetConnection) {
 		__connection = connection;
@@ -439,13 +506,41 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 			__connection.onClose = __forwardClose;
 			__forwardingClose = true;
 		}
+		__setObserved(observer != null);
 	}
 
 	@:noCompletion private function __forwardClose(reason:Reason):Void {
+		// Ended: wrapped again from here on, it may have a new adapter.
+		__setObserved(false);
 		__notifyClose(reason);
 		final onClose = __applicationOnClose;
 		if (onClose != null) {
 			onClose(reason);
+		}
+	}
+
+	/** As `__observeClose`, for the connection becoming ready. **/
+	override public function __observeReady(observer:Null<Void->Void>):Void {
+		if (Std.isOfType(__connection, CloseObservable)) {
+			(cast __connection : CloseObservable).__observeReady(observer);
+			return;
+		}
+		super.__observeReady(observer);
+		if (!__forwardingReady) {
+			__applicationOnReady = __connection.onReady;
+			__connection.onReady = __forwardReady;
+			__forwardingReady = true;
+		}
+		if (observer != null) {
+			__setObserved(true);
+		}
+	}
+
+	@:noCompletion private function __forwardReady():Void {
+		__notifyReady();
+		final onReady = __applicationOnReady;
+		if (onReady != null) {
+			onReady();
 		}
 	}
 
@@ -458,10 +553,13 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 	}
 
 	@:noCompletion private inline function get_onReady():Void->Void {
-		return __connection.onReady;
+		return __forwardingReady ? __applicationOnReady : __connection.onReady;
 	}
 
 	@:noCompletion private inline function set_onReady(value:Void->Void):Void->Void {
+		if (__forwardingReady) {
+			return __applicationOnReady = value;
+		}
 		return __connection.onReady = value;
 	}
 
@@ -642,6 +740,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
 		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__notifyReady();
 		__onReady();
 	}
 
@@ -853,6 +952,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
 		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__notifyReady();
 		__onReady();
 	}
 
@@ -1031,14 +1131,31 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 		}
 	}
 
-	@:noCompletion private inline function socket_onClose(_e:Event):Void {
+	@:noCompletion private inline function socket_onClose(e:Event):Void {
 		readEnabled = false;
-		__notifyClose(Reason.Closed);
-		__onClose(Reason.Closed);
+		final reason = __closeReason(e);
+		__notifyClose(reason);
+		__onClose(reason);
+	}
+
+	/**
+		How the peer closed: `Reason.Code` with the close frame's code and
+		reason, or `Reason.Closed` when the session ended with no code known.
+		It was `Reason.Closed` whatever the peer said, a server going away
+		and a server refusing a protocol violation were one close to the
+		application, and to an RPC call that failed because of it.
+	**/
+	@:noCompletion private static function __closeReason(e:Event):Reason {
+		final closed:WebSocketCloseEvent = Std.downcast(e, WebSocketCloseEvent);
+		if (closed == null || closed.code == 0) {
+			return Reason.Closed;
+		}
+		return Reason.Code(closed.code, closed.reason);
 	}
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
 		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__notifyReady();
 		__onReady();
 	}
 

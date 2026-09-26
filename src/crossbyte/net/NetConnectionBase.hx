@@ -33,12 +33,17 @@ abstract class NetConnectionBase implements CloseObservable {
 	/** Timestamp of the most recent outbound payload, in uptime seconds. */
 	public var outTimestamp:Float = 0.0;
 
-	// Told as the connection ends, before the application's callbacks; see
-	// CloseObservable.
+	// Told as the connection ends, and as it becomes ready, before the
+	// application's callbacks; see CloseObservable.
 	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
+	@:noCompletion private var __readyObserver:Null<Void->Void> = null;
 
 	@:noCompletion public function __observeClose(observer:Null<Reason->Void>):Void {
 		__closeObserver = observer;
+	}
+
+	@:noCompletion public function __observeReady(observer:Null<Void->Void>):Void {
+		__readyObserver = observer;
 	}
 
 	/** Called by each transport wherever it ends: before `onClose`, and before an `onError` that stopped its reads. **/
@@ -46,6 +51,14 @@ abstract class NetConnectionBase implements CloseObservable {
 		final observer = __closeObserver;
 		if (observer != null) {
 			observer(reason);
+		}
+	}
+
+	/** Called by each transport as it becomes ready, before `onReady`. **/
+	@:noCompletion private inline function __notifyReady():Void {
+		final observer = __readyObserver;
+		if (observer != null) {
+			observer();
 		}
 	}
 
