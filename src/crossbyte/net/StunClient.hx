@@ -9,6 +9,7 @@ import crossbyte.net._internal.stun.StunQuery;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.events.DatagramSocketDataEvent;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 
@@ -135,6 +136,14 @@ class StunClient {
 				case ANSWERED_WITHOUT_ADDRESS:
 					finish(null, "The STUN server replied without a mapped address, so this host's public address is still unknown.");
 			}
+		});
+
+		// A send that cannot happen -- a server name that does not resolve is
+		// reported this way, after the call, since names are looked up off the
+		// runtime's thread -- ends the question now rather than at the
+		// deadline, which could only be reached by waiting for nothing.
+		socket.addEventListener(IOErrorEvent.IO_ERROR, function(event:IOErrorEvent):Void {
+			finish(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + event.text);
 		});
 
 		ask = function():Void {

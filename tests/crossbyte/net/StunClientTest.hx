@@ -128,6 +128,29 @@ class StunClientTest extends utest.Test {
 		server.close();
 	}
 
+	/**
+		A server name that does not resolve fails the question at once. Names
+		are looked up off the runtime's thread now, so the failure arrives as
+		the socket's ioError after the send returns -- and nothing listened
+		for it, so the question sat out its whole deadline.
+	**/
+	public function testANameThatDoesNotResolveFailsAtOnce():Void {
+		if (unsupported()) return;
+
+		var answer = new Outcome();
+		// .invalid never resolves (RFC 2606). The deadline is long enough
+		// that reaching it cannot pass for failing at once.
+		var started:Float = haxe.Timer.stamp();
+		StunClient.discover("stun.nowhere.invalid", 3478, 20000).then(answer.succeed, answer.fail);
+		pumpUntil(answer.settled, 12.0);
+		var took:Float = haxe.Timer.stamp() - started;
+
+		Assert.notNull(answer.error, 'still waiting after ${Math.round(took)} s for a name that cannot resolve');
+		if (answer.error != null) {
+			Assert.isTrue(answer.error.indexOf("stun.nowhere.invalid") >= 0, "the failure should name the server: " + answer.error);
+		}
+	}
+
 	/** A refusal is reported as one, rather than waiting out the deadline. **/
 	public function testAServerThatRefusesIsReported():Void {
 		if (unsupported()) return;
