@@ -1031,6 +1031,70 @@ class HttpTest extends utest.Test {
 	}
 	#end
 
+	#if !(eval || java || jvm)
+	// Not on eval, where a read that times out raises a native Unix_error no
+	// Haxe catch can see, and so ends the process. Not on the jvm, where
+	// sys.net.Socket.setTimeout stores the value and nothing reads it, so no
+	// read there times out at all, this client's or the fixture's.
+	public function testTheIdleTimeoutIsInMilliseconds():Void {
+		// The socket was handed the milliseconds as seconds, so this waited
+		// until the server gave up, three seconds on, rather than 300 ms.
+		var fixture = holdRequest(false);
+		var http = new Http('http://127.0.0.1:${fixture.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 300);
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		fixture.waitDone();
+
+		Assert.isFalse(completed);
+		Require.notNull(failure);
+		Assert.isTrue(took < 2.0, 'a 300 ms idle timeout took ${took} s');
+	}
+	#end
+
+	/**
+	 * Takes one request and answers nothing: closes at once, or holds the
+	 * connection until the client goes, three seconds at most.
+	 */
+	private static function holdRequest(closeAtOnce:Bool):OneShotHttpServer {
+		var fixture = new OneShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				peer = server.accept();
+				peer.setTimeout(3.0);
+				fixture.request = readRequest(peer);
+				if (!closeAtOnce) {
+					try {
+						peer.input.readBytes(Bytes.alloc(1), 0, 1);
+					} catch (_:Dynamic) {}
+				}
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		return fixture;
+	}
+
 	private static function serveMany(responses:Array<String>):TwoShotHttpServer {
 		var fixture = new TwoShotHttpServer();
 		Thread.create(() -> {
