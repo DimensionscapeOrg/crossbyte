@@ -4,6 +4,7 @@ import crossbyte.net.LocalAddress;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.rtc.DataChannel;
 import crossbyte.net.rtc.PeerConnection;
+import crossbyte.net.rtc.PeerConnectionHost;
 import crossbyte.net.rtc.SessionDescription;
 import crossbyte.net.rtc._internal.sctp.SctpDataChunk;
 import crossbyte.net.rtc._internal.sctp.SctpPacket;
@@ -53,6 +54,7 @@ class BrowserInteropPeer {
 		}
 
 		var instruction:Dynamic = haxe.Json.parse(Sys.stdin().readLine());
+		shared = instruction.host == true;
 
 		if (instruction.mode == "offer") {
 			offerToBrowser();
@@ -64,6 +66,33 @@ class BrowserInteropPeer {
 
 		say({event: "done", echoed: echoed});
 		connection.close();
+
+		if (host != null) {
+			host.close();
+		}
+	}
+
+	/** Whether the connection shares a `PeerConnectionHost`'s socket rather than binding its own. **/
+	static var shared:Bool = false;
+
+	static var host:PeerConnectionHost = null;
+
+	/**
+		The connection, on a socket of its own or on a host's, which routes a
+		browser's checks by their ufrag, the answers to this end's by their
+		transaction, and DTLS by the address the path was proved to. The
+		browser is the only judge of the first two that is not this code.
+	**/
+	static function create(isOfferer:Bool):PeerConnection {
+		if (shared) {
+			host = new PeerConnectionHost();
+			host.bind(0, "0.0.0.0");
+			return host.createConnection(isOfferer);
+		}
+
+		var created = new PeerConnection(isOfferer);
+		created.bind(0, "0.0.0.0");
+		return created;
 	}
 
 	/**
@@ -72,8 +101,7 @@ class BrowserInteropPeer {
 		ICE-controlled, and the DTLS client, because the offer said `actpass`.
 	**/
 	static function answerBrowser(remote:crossbyte.net.rtc.PeerDescription):Void {
-		connection = new PeerConnection(false);
-		connection.bind(0, "0.0.0.0");
+		connection = create(false);
 
 		gatherToward([for (candidate in remote.candidates) candidate.address]);
 		watchForChannel();
@@ -94,8 +122,7 @@ class BrowserInteropPeer {
 		browser's `ondatachannel` fire.
 	**/
 	static function offerToBrowser():Void {
-		connection = new PeerConnection(true);
-		connection.bind(0, "0.0.0.0");
+		connection = create(true);
 
 		// No peer candidates to aim at yet, so the question is the general one:
 		// which interface carries the default route. That is the address a
