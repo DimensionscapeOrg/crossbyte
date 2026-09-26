@@ -46,6 +46,8 @@ class HTTPServer extends ServerSocket {
 
 	@:noCompletion private var __requestsTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __requestSeconds:crossbyte.metrics.Histogram;
+	// The status-class counters, by status / 100, each looked up once.
+	@:noCompletion private var __statusCounters:Array<Null<crossbyte.metrics.Counter>> = [for (_ in 0...10) null];
 	@:noCompletion private static inline var RECEIVE_SWEEP_INTERVAL:Float = 0.25;
 	@:noCompletion private var __sweepAccumulator:Float = 0;
 	@:noCompletion private var __sweepArmed:Bool = false;
@@ -625,8 +627,19 @@ class HTTPServer extends ServerSocket {
 		// Status class rather than exact code: "2xx" and "5xx" are what
 		// alerts are written against, and one series per code would grow
 		// cardinality for no operational gain.
-		var statusClass:String = Std.int(e.status / 100) + "xx";
-		__config.metrics.counter(__requestsTotal.name, ["status" => statusClass]).inc();
+		//
+		// Each class's counter is looked up once and kept. Looking it up per
+		// response built a label map, sorted it into a key and took the
+		// registry's lock, on top of the counter's own, for every response.
+		var index:Int = Std.int(e.status / 100);
+		var counter:Null<crossbyte.metrics.Counter> = (index >= 0 && index < 10) ? __statusCounters[index] : null;
+		if (counter == null) {
+			counter = __config.metrics.counter(__requestsTotal.name, ["status" => index + "xx"]);
+			if (index >= 0 && index < 10) {
+				__statusCounters[index] = counter;
+			}
+		}
+		counter.inc();
 	}
 }
 #end
