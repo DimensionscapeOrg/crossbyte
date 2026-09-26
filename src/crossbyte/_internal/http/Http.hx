@@ -489,7 +489,7 @@ class Http {
 				case "chunked":
 					var buffer:BytesBuffer = new BytesBuffer();
 					while (true) {
-						var sizeLine:String = __socket.input.readLine();
+						var sizeLine:String = __readLine();
 						if (sizeLine == null) {
 							throw "Unexpected EOF while reading chunk size";
 						}
@@ -516,7 +516,7 @@ class Http {
 						if (chunkSize == 0) {
 							var trailer:String = "";
 							do {
-								trailer = __socket.input.readLine();
+								trailer = __readLine();
 								if (trailer == null) {
 									throw "Unexpected EOF while reading trailers";
 								}
@@ -716,7 +716,11 @@ class Http {
 		var line:String = '';
 		while (true) {
 			try {
-				line = __socket.input.readLine();
+				line = __readLine();
+			} catch (_:haxe.io.Eof) {
+				__close();
+				onError(__status == 0 ? "Connection closed without a response" : "Connection closed while reading headers");
+				return;
 			} catch (e:Dynamic) {
 				__close();
 				onError("Failed to read response");
@@ -789,6 +793,49 @@ class Http {
 		// every failure above returns instead, and an informational block is
 		// discarded and re-read before control gets here.
 		onHeaders(__responseHeaders);
+	}
+
+	/**
+	 * One line of the response without its line ending, or `Eof` when the
+	 * stream ends before any of it.
+	 *
+	 * `Input.readLine`, except on eval, where a socket's `readByte` answers 0
+	 * at the end of the stream rather than throwing. A server closing without
+	 * an answer read there as endless NUL bytes, so the line never ended and
+	 * `load()` never returned. `readBytes` does report the end, so eval reads
+	 * through it, a byte at a time so nothing past the line is taken from the
+	 * body.
+	 */
+	private function __readLine():String {
+		#if eval
+		var input:haxe.io.Input = __socket.input;
+		var one:Bytes = Bytes.alloc(1);
+		var line:BytesBuffer = new BytesBuffer();
+		var read:Bool = false;
+		while (true) {
+			try {
+				input.readBytes(one, 0, 1);
+			} catch (e:haxe.io.Eof) {
+				if (!read) {
+					throw e;
+				}
+				break;
+			}
+			read = true;
+			var byte:Int = one.get(0);
+			if (byte == "\n".code) {
+				break;
+			}
+			line.addByte(byte);
+		}
+		var text:String = line.getBytes().toString();
+		if (text.length > 0 && StringTools.fastCodeAt(text, text.length - 1) == "\r".code) {
+			text = text.substr(0, text.length - 1);
+		}
+		return text;
+		#else
+		return __socket.input.readLine();
+		#end
 	}
 
 	/**
