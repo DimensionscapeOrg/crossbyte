@@ -523,6 +523,15 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `BCrypt.hash` makes `$2b$` hashes rather than `$2y$`, and
+  `BCrypt.needsRehash` reports a hash of any other revision, `$2y$`
+  included. That is how the `$2y$` hashes earlier versions stored, which
+  lack the key's terminating NUL and verify nowhere else, are found: rehash
+  on a successful sign-in when `needsRehash` says so, and they are replaced
+  as users return. Until then a wrong password against one costs two hashes
+  instead of one. `$2b$` is what OpenBSD, Node, Python and Rust produce, and
+  current PHP verifies it; a `$2y$` hash from PHP is replaced the same way,
+  harmlessly.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -691,6 +700,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- BCrypt adds the key's terminating NUL for every revision. It was added for
+  `$2a$` alone, and `$2y$`, the default, was computed without it, so no hash
+  CrossByte made verified anywhere else, no hash migrated from PHP, Laravel,
+  Node or Python verified here -- PHP's own manual example among them -- and
+  a password matched its repetitions: without the NUL the key is the
+  password cycled to 72 bytes, so `hash("abc")` accepted "abcabc". Hashes
+  CrossByte stored before still verify: a `$2y$` hash that fails the
+  standard check is tried once more in the old form, and only `$2y$`, the
+  one revision it ever produced. `$2x$` hashes are checked with
+  crypt_blowfish's sign-extension bug and `$2a$` with its countermeasure, as
+  PHP checks them. A cost of 31 ran no rounds at all, since `1 << 31` is
+  negative in an `Int`; it runs 2^31.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the
