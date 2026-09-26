@@ -741,6 +741,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `NodeChannel` whose peer drops it comes back whatever clock it is
+  polled with. `poll(now)` compared its caller's time with retries
+  scheduled on `haxe.Timer.stamp()`; polled with the runtime's uptime, as
+  `crossbyte.Timer.stamp()` gives it, it was always early on Linux native,
+  jvm and eval, where the two clocks are far apart, and a link that
+  dropped once never came back. It worked on Windows and Node only because
+  both clocks start near zero there. `poll` now reads the clock itself;
+  `now` is optional and not read.
 - `SnowflakeId.timestampOf` reads back when any identifier was minted. It
   converted the forty one bits of milliseconds through an `Int`, which
   holds thirty one, and threw `Overflow` for every identifier minted more
