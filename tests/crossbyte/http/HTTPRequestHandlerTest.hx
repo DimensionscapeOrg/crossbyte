@@ -137,6 +137,75 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, false, null, null, root);
 	}
 
+	public function testAThrowingRouteIsLoggedAndNotShownToTheClient(async:Async):Void {
+		// A route that threw left one INFO line, "Status: 500", and nothing
+		// saying why. The error goes to the log now, at ERROR, with the method
+		// and path; the client still sees only the status.
+		var lines:Array<String> = [];
+		var previous = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = line -> lines.push(line);
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				throw "database connection refused: host=db.internal:5432";
+			}
+		], "GET /api/boom HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			crossbyte.utils.Logger.sink = previous;
+
+			Assert.equals(500, response.status);
+			Assert.isTrue(response.raw.indexOf("db.internal") < 0, "the error's text reached the client");
+			var logged:Array<String> = lines.filter(l -> l.indexOf("database connection refused") >= 0);
+			Assert.equals(1, logged.length, "the error was not logged: " + lines.join(" || "));
+			if (logged.length > 0) {
+				Assert.isTrue(logged[0].indexOf("[ERROR]") >= 0, logged[0]);
+				Assert.isTrue(logged[0].indexOf("/api/boom") >= 0, logged[0]);
+				Assert.isTrue(logged[0].indexOf("GET") >= 0, logged[0]);
+			}
+			async.done();
+		});
+	}
+
+	public function testOnErrorCanAnswerTheRequest(async:Async):Void {
+		var seen:Dynamic = null;
+		var previous = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = _ -> {};
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				throw "upstream unavailable";
+			}
+		], "GET /api/boom HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			crossbyte.utils.Logger.sink = previous;
+
+			Assert.equals("upstream unavailable", seen);
+			Assert.equals(503, response.status);
+			Assert.equals('{"error":"try again"}', response.body);
+			Assert.equals("application/json", response.headers.get("content-type"));
+			async.done();
+		}, null, false, null, config -> config.onError = (handler, error) -> {
+			seen = error;
+			handler.respond(503, "application/json", '{"error":"try again"}');
+		});
+	}
+
+	public function testAnIntPassedToNextIsAStatusNotAFailure(async:Async):Void {
+		var lines:Array<String> = [];
+		var previous = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = line -> lines.push(line);
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				next(404);
+			}
+		], "GET /missing HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			crossbyte.utils.Logger.sink = previous;
+
+			Assert.equals(404, response.status);
+			Assert.equals(0, lines.filter(l -> l.indexOf("[ERROR]") >= 0).length, "a deliberate status was logged as an error");
+			async.done();
+		});
+	}
+
 	public function testAValidatorPast2038StillAnswers304(async:Async):Void {
 		// Seconds since 1970 leave an Int in January 2038. The comparison
 		// floored both sides with Math.floor, which returns an Int, and on

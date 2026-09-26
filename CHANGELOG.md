@@ -5,6 +5,14 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `HTTPServerConfig.onError(handler, error)`, called when a middleware or
+  route throws or passes an error to `next()`. It can answer the request
+  itself, a JSON error body, say, and otherwise the server answers `500`,
+  or the status an `Int` error names, as before. An error that is not an
+  `Int` is now logged at ERROR with the method, the path and, where the
+  target keeps one, the stack; it was not logged at all, so a route that
+  threw a database error left only an INFO line reading `Status: 500`. The
+  client is still told only the status.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
