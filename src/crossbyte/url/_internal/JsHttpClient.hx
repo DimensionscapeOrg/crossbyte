@@ -1,6 +1,7 @@
 package crossbyte.url._internal;
 
 import crossbyte.url.URLRequest;
+import crossbyte.url.URLVariables;
 import haxe.io.Bytes;
 
 /**
@@ -34,10 +35,31 @@ class JsHttpClient {
 
 		var method:String = (request.method != null && request.method != "") ? request.method : "GET";
 
+		// A URLVariables goes where a form puts it: into the query of a GET or
+		// HEAD, and otherwise into the body, form-encoded. Sent as it stood,
+		// it was a debug dump of the map it is at run time.
+		var url:String = request.url;
+		var body:Dynamic = request.data;
+		var contentType:String = request.contentType;
+		var form:Null<String> = URLVariables.encodeData(request.data);
+		if (form != null) {
+			if (method == "GET" || method == "HEAD") {
+				if (form.length > 0) {
+					url += (url.indexOf("?") >= 0 ? "&" : "?") + form;
+				}
+				body = null;
+			} else {
+				body = form;
+				if (contentType == null || contentType == "") {
+					contentType = "application/x-www-form-urlencoded";
+				}
+			}
+		}
+
 		#if (js && !nodejs)
-		__sendBrowser(request, method, onStatus, onProgress, onComplete, onError);
+		__sendBrowser(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError);
 		#elseif nodejs
-		__sendNode(request, method, onStatus, onProgress, onComplete, onError);
+		__sendNode(request, method, url, body, contentType, onStatus, onProgress, onComplete, onError);
 		#end
 	}
 
@@ -48,12 +70,12 @@ class JsHttpClient {
 	 * chunks by hand. XHR reports it directly, and `arraybuffer` gives the body
 	 * as bytes so a binary response survives.
 	 */
-	static function __sendBrowser(request:URLRequest, method:String, onStatus:Int->Void, onProgress:Int->Int->Void, onComplete:Bytes->Void,
-			onError:String->Void):Void {
+	static function __sendBrowser(request:URLRequest, method:String, url:String, body:Dynamic, contentType:String, onStatus:Int->Void,
+			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void):Void {
 		var xhr = new js.html.XMLHttpRequest();
 		var settled:Bool = false;
 
-		xhr.open(method, request.url, true);
+		xhr.open(method, url, true);
 		xhr.responseType = ARRAYBUFFER;
 
 		if (request.requestHeaders != null) {
@@ -64,8 +86,8 @@ class JsHttpClient {
 			}
 		}
 
-		if (request.contentType != null && request.contentType != "") {
-			xhr.setRequestHeader("Content-Type", request.contentType);
+		if (contentType != null && contentType != "") {
+			xhr.setRequestHeader("Content-Type", contentType);
 		}
 
 		if (request.idleTimeout > 0) {
@@ -114,23 +136,23 @@ class JsHttpClient {
 			onError("HTTP request timed out: " + request.url);
 		};
 
-		xhr.send(__body(request));
+		xhr.send(__body(body));
 	}
 
-	static function __body(request:URLRequest):Dynamic {
-		if (request.data == null) {
+	static function __body(data:Dynamic):Dynamic {
+		if (data == null) {
 			return null;
 		}
 
-		if ((request.data is String)) {
-			return request.data;
+		if ((data is String)) {
+			return data;
 		}
 
-		if ((request.data is Bytes)) {
-			return new js.lib.Uint8Array((request.data : Bytes).getData());
+		if ((data is Bytes)) {
+			return new js.lib.Uint8Array((data : Bytes).getData());
 		}
 
-		return Std.string(request.data);
+		return Std.string(data);
 	}
 	#end
 
@@ -139,8 +161,8 @@ class JsHttpClient {
 	 * Node's own http/https client. The module is chosen by scheme, since the
 	 * two are separate here rather than one client that reads the URL.
 	 */
-	static function __sendNode(request:URLRequest, method:String, onStatus:Int->Void, onProgress:Int->Int->Void, onComplete:Bytes->Void,
-			onError:String->Void):Void {
+	static function __sendNode(request:URLRequest, method:String, target:String, body:Dynamic, contentType:String, onStatus:Int->Void,
+			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void):Void {
 		var settled:Bool = false;
 
 		var fail = function(message:String):Void {
@@ -153,9 +175,9 @@ class JsHttpClient {
 		var url:js.node.url.URL;
 
 		try {
-			url = new js.node.url.URL(request.url);
+			url = new js.node.url.URL(target);
 		} catch (e:Dynamic) {
-			fail("Malformed url: " + request.url);
+			fail("Malformed url: " + target);
 			return;
 		}
 
@@ -170,12 +192,22 @@ class JsHttpClient {
 			}
 		}
 
-		if (request.contentType != null && request.contentType != "") {
-			headers.set("Content-Type", request.contentType);
+		if (contentType != null && contentType != "") {
+			headers.set("Content-Type", contentType);
 		}
 
 		if (request.userAgent != null && request.userAgent != "") {
 			headers.set("User-Agent", request.userAgent);
+		}
+
+		// Framed with its length, whatever the method. Node frames a body only
+		// for the methods it expects one on, so a body on a GET, DELETE or
+		// OPTIONS went out with no framing at all: the server read it as the
+		// next request, and the next call on that pooled socket got a 400.
+		var payload:js.node.Buffer = null;
+		if (body != null) {
+			payload = (body is Bytes) ? js.node.Buffer.from((body : Bytes).getData()) : js.node.Buffer.from(Std.string(body));
+			headers.set("Content-Length", Std.string(payload.length));
 		}
 
 		var port:Int = crossbyte.utils.IntParse.decimal(url.port, 65535);
@@ -237,16 +269,12 @@ class JsHttpClient {
 		if (request.idleTimeout > 0) {
 			clientRequest.setTimeout(request.idleTimeout, function(_) {
 				clientRequest.destroy();
-				fail("HTTP request timed out: " + request.url);
+				fail("HTTP request timed out: " + target);
 			});
 		}
 
-		if (request.data != null) {
-			if ((request.data is Bytes)) {
-				clientRequest.write(js.node.Buffer.from((request.data : Bytes).getData()));
-			} else {
-				clientRequest.write(Std.string(request.data));
-			}
+		if (payload != null) {
+			clientRequest.write(payload);
 		}
 
 		clientRequest.end();
