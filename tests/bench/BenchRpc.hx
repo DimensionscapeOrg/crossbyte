@@ -59,6 +59,15 @@ class BenchRpc {
 			commands.name(7);
 		});
 
+		// As a caller does: a callback for the answer. The callback is made
+		// once, so what is timed is registering it and running it.
+		var answered:Int = 0;
+		var onAnswer = (name:String) -> answered++;
+		Bench.run("request, response and then()", function():Void {
+			commands.later(7).then(onAnswer);
+			handler.pending.complete("player");
+		});
+
 		// The same request to a method that answers with a Future: one complete
 		// already, a cached answer, the same future each time, so what is
 		// timed is the dispatch and not the handler's allocation, and one
