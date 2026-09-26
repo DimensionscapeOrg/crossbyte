@@ -100,6 +100,9 @@ class PortableSuite {
 		// Argon2id runs on Node through its own crypto.argon2; the browser has
 		// none and has to say so.
 		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
+		// HS256 is pure Haxe, so tokens verify alike on every target.
+		runner.addCase(new crossbyte.auth.jwt.JWTTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());
