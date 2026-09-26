@@ -712,6 +712,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A peer no longer decides how much memory the server or the `URLLoader`
+  client spends on a body. The server inflated a request body with no
+  ceiling, while its limit counted the compressed bytes on the wire, so a
+  32 KB gzip body became 32 MB at the route; it now stops decoding at the
+  same limit and answers `413`, and refuses more than two stacked content
+  codings with `415`, as the client already did for responses. The client
+  allocated a whole body from its `Content-Length` before a byte arrived, so
+  one header of 2000000000 cost two gigabytes; a declared length past the
+  new `Http.MAX_BODY_SIZE` (64 MB) is now refused before anything is
+  allocated, and a body framed by the connection closing is held to the same
+  bound. Such a body cut off by a reset was reported complete with part of
+  its content; only the connection's clean end completes it now.
 - CORS no longer grants every site a signed-in user's data. With
   `corsAllowCredentials` on and `corsAllowedOrigins` left at its default of
   `["*"]`, the server echoed whatever `Origin` arrived with

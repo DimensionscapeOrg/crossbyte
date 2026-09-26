@@ -901,6 +901,112 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(fixture.request.indexOf("X-Forwarded: aInjected: yes") >= 0, fixture.request);
 	}
 
+	public function testADeclaredLengthPastTheCapIsRefusedBeforeReading():Void {
+		// The body was allocated whole from the header, before a byte arrived:
+		// one response declaring 2000000000 bytes cost two gigabytes.
+		var saved:Int = Http.MAX_BODY_SIZE;
+		Http.MAX_BODY_SIZE = 1024;
+		try {
+			var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n" + StringTools.rpad("", "x", 5000));
+			var http = new Http('http://127.0.0.1:${fixture.port}/big');
+			var completed:Bytes = null;
+			var failure:String = null;
+			http.onComplete = data -> completed = data;
+			http.onError = (message, ?data) -> failure = message;
+			http.load();
+			fixture.waitDone();
+
+			Assert.isNull(completed, "a body past the cap was delivered");
+			Require.notNull(failure);
+			Assert.isTrue(failure.indexOf("declared") >= 0, failure);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		Http.MAX_BODY_SIZE = saved;
+	}
+
+	public function testACloseDelimitedBodyPastTheCapIsRefused():Void {
+		var saved:Int = Http.MAX_BODY_SIZE;
+		Http.MAX_BODY_SIZE = 1024;
+		try {
+			var fixture = serveOnce("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + StringTools.rpad("", "x", 5000));
+			var http = new Http('http://127.0.0.1:${fixture.port}/endless');
+			var completed:Bytes = null;
+			var failure:String = null;
+			http.onComplete = data -> completed = data;
+			http.onError = (message, ?data) -> failure = message;
+			http.load();
+			fixture.waitDone();
+
+			Assert.isNull(completed, "a close-delimited body past the cap was delivered");
+			Require.notNull(failure);
+			Assert.isTrue(failure.indexOf("exceeded") >= 0, failure);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		Http.MAX_BODY_SIZE = saved;
+	}
+
+	#if !eval
+	// Not on eval, where a peer reset is a native Unix_error that no Haxe catch
+	// can see: it ends the process, before or after this fix alike.
+	public function testAResetInACloseDelimitedBodyIsAnError():Void {
+		// Only the connection closing ends such a body, so every read error
+		// used to be taken for that ending, and a reset partway through was
+		// reported complete with half a body.
+		var fixture = new OneShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				peer = server.accept();
+				peer.setTimeout(2.0);
+				// Time for the request to arrive, and none of it read: closing
+				// with it unread makes the close below a reset rather than an
+				// ending. Reading even a byte lets a buffered input take the
+				// rest, and the close becomes an ordinary one.
+				Sys.sleep(0.2);
+				peer.output.writeString("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npartial");
+				peer.output.flush();
+				Sys.sleep(0.3);
+				#if (java || jvm)
+				// The JDK closes gracefully even over unread data; a zero linger
+				// is how a Java socket is made to reset.
+				var channel:java.nio.channels.SocketChannel = cast @:privateAccess peer.channel;
+				channel.socket().setSoLinger(true, 0);
+				#end
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+			return;
+		}
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/cut');
+		var completed:Bytes = null;
+		var failure:String = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed, "a body cut off by a reset was reported complete: " + (completed == null ? "" : completed.toString()));
+		Assert.notNull(failure);
+	}
+	#end
+
 	private static function serveMany(responses:Array<String>):TwoShotHttpServer {
 		var fixture = new TwoShotHttpServer();
 		Thread.create(() -> {
