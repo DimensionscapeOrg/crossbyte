@@ -732,6 +732,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader.close()` with a request in flight no longer crashes a native
+  build with an access violation. The worker thread reported through the
+  loader's own worker field, which `close()` clears, so its next report,
+  the error from the read `close()` had just ended, was a call on null.
+  The URL tests now run in the native suite, where the loader's worker is a
+  thread; they had not run natively at all.
 - `RateLimiter` holds at most `maxKeys` keys, a new constructor argument,
   100,000 by default, and forgets idle ones without a sweep. Keys are
   whatever a client sends, account names, addresses, and every one was
