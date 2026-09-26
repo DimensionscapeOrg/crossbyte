@@ -1,6 +1,7 @@
 package crossbyte.core;
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.utils.IntParse;
 
 /**
  * Layered configuration for services: typed access over values gathered
@@ -203,11 +204,18 @@ class Config {
 			throw new ArgumentError('Config value for "$key" is not an integer: "$raw"');
 		}
 
-		var parsed:Null<Int> = Std.parseInt(raw);
-		if (parsed == null) {
-			throw new ArgumentError('Config value for "$key" is not an integer: "$raw"');
+		// Read by IntParse rather than Std.parseInt, whose answer for a value
+		// too big for an Int depends on the target: 4294967296 read as 0 on
+		// Linux native, as 2147483647 on Windows native, threw on the jvm and
+		// came back wider than an Int on JavaScript. A configured limit that
+		// silently became 0 is worse than one refused.
+		var negative:Bool = StringTools.startsWith(raw, "-");
+		var digits:String = (negative || StringTools.startsWith(raw, "+")) ? raw.substr(1) : raw;
+		var parsed:Int = (StringTools.startsWith(digits, "0x") || StringTools.startsWith(digits, "0X")) ? IntParse.hex(digits.substr(2)) : IntParse.decimal(digits);
+		if (parsed < 0) {
+			throw new ArgumentError('Config value for "$key" is not an integer an Int can hold: "$raw"');
 		}
-		return parsed;
+		return negative ? -parsed : parsed;
 	}
 
 	/**

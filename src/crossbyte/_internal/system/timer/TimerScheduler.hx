@@ -14,7 +14,7 @@ import crossbyte.core.TimerStrategy;
  * The default implementation is based on a min-heap, but future variants like
  * timer wheels can be plugged in by implementing `ITimerScheduler`.
  */
-@:forward(startTime)
+@:forward(startTime, onError)
 abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler {
 	/**
 	 * The number of active timers currently managed by the scheduler.
@@ -224,13 +224,35 @@ abstract TimerScheduler(ITimerScheduler) from ITimerScheduler to ITimerScheduler
 	}
 
 	/**
-	 * Processes and fires any timers due at or before the given time.
+	 * Advances the clock by `dt` and fires every timer due by then.
 	 *
-	 * @param time The current time delta in seconds.
-	 * @param maxFires Optional limit on how many timers to fire (default 256).
+	 * @param dt Seconds to advance by.
+	 * @param maxFires Most timers to fire in this call. Unbounded by default:
+	 *        a count cap makes every timer late, without bound, once more
+	 *        are due each call than it allows.
+	 * @param budget Wall-clock seconds the call may spend firing, or zero or
+	 *        less for no limit. What it leaves is fired by the next call, and
+	 *        counted by `overdue()` until then.
 	 * @return The number of timers fired.
 	 */
-	public inline function advanceTime(dt:Float, maxFires:Int = 256):Int {
-		return this.advanceTime(dt, maxFires);
+	public inline function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int {
+		return this.advanceTime(dt, maxFires, budget);
+	}
+
+	/**
+	 * Whether the last `advanceTime` stopped with timers still due.
+	 */
+	public var cutShort(get, never):Bool;
+
+	private inline function get_cutShort():Bool {
+		return this.cutShort;
+	}
+
+	/**
+	 * How many timers are due and still waiting because the last pass was
+	 * cut short by its budget.
+	 */
+	public inline function overdue():Int {
+		return this.overdue();
 	}
 }

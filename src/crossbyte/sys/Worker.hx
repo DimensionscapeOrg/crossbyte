@@ -3,10 +3,8 @@ package crossbyte.sys;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.ThreadEvent;
-import crossbyte.events.TickEvent;
 import crossbyte.events.EventDispatcher;
-#if (cpp || neko || hl)
-import sys.thread.Deque;
+#if target.threaded
 import sys.thread.Thread;
 import sys.thread.Mutex;
 #end
@@ -17,20 +15,29 @@ private enum WorkerMessage {
 	Progress(message:Dynamic);
 }
 
-/** Lightweight background worker that reports progress and completion on the owning runtime. */
+/**
+	Lightweight background worker that reports progress and completion on the
+	owning runtime.
+
+	What the work sends is delivered through the owning runtime's post queue,
+	which wakes the runtime for it: one post per batch, when the first message
+	of a batch arrives. A worker used to hold a tick listener for as long as it
+	ran and poll its queue every tick, so a message waited for the next tick,
+	up to a whole frame, and every idle tick paid for every running worker.
+**/
 class Worker extends EventDispatcher {
 	/**
-		How many queued messages one worker delivers per tick of its owning runtime.
+		How many queued messages one worker delivers at a time.
 
-		A worker used to deliver exactly one, so a background job reporting progress
-		drained at the runtime's tick rate, twelve a second under the default `tps`,
-		however often the host pumped, and a job that reported faster than that fell
-		further behind the longer it ran, with the backlog held in the queue.
+		A worker used to deliver exactly one per tick, so a background job
+		reporting progress drained at the runtime's tick rate, twelve a second
+		under the default `tps`, however often the host pumped, and a job that
+		reported faster than that fell further behind the longer it ran.
 
-		Draining is bounded rather than unbounded so that one talkative worker cannot
-		hold the tick and starve the socket poll that follows it. The default is far
-		above what any single producer emits between two ticks; set it to `0` or less
-		to drain until the queue is empty.
+		Delivery is bounded rather than unbounded so that one talkative worker
+		cannot hold the loop in one go: past the bound, the rest are delivered
+		in the runtime's next turn at its queue, after whatever else it has to
+		do in between. Set it to `0` or less to deliver everything at once.
 	**/
 	public static var maxMessagesPerTick:Int = 256;
 
@@ -46,30 +53,32 @@ class Worker extends EventDispatcher {
 
 	@:noCompletion private var __runMessage:Dynamic;
 	@:noCompletion private var __runtime:CrossByte;
-	#if (cpp || neko || hl)
-	@:noCompletion private var __tickListener:TickEvent->Void;
-	#end
 
-	#if (cpp || neko || hl)
-	@:noCompletion private var __messageQueue:Deque<WorkerMessage>;
+	#if target.threaded
+	// What the work has sent and the runtime has not yet delivered, in order.
+	// Replaced by each run, so a drain can tell whether it still belongs to
+	// the run that posted it.
+	@:noCompletion private var __outbox:Array<WorkerMessage>;
+	// Whether a drain is posted and has not yet emptied the outbox: the first
+	// message after that posts the next one.
+	@:noCompletion private var __drainPosted:Bool;
 	@:noCompletion private var __workerThread:Thread;
-	// Guards the cross-thread lifecycle state (__messageQueue reference plus the
-	// canceled/cancelRequested/completed/result/error flags) so the worker
+	// Guards the outbox and the cross-thread lifecycle state (the canceled,
+	// cancelRequested, completed, result and error flags) so the worker
 	// thread's send* calls cannot race cancel()/clean() on the runtime thread.
 	@:noCompletion private var __lock:Mutex;
 	#end
 
 	public function new() {
 		super();
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock = new Mutex();
-		__tickListener = __update;
 		#end
 		__resetState();
 	}
 
 	public function cancel(doClean:Bool = true):Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		cancelRequested = true;
 		canceled = true;
@@ -78,7 +87,6 @@ class Worker extends EventDispatcher {
 		}
 		__workerThread = null;
 		__lock.release();
-		__detachRuntimeListener();
 		#else
 		cancelRequested = true;
 		canceled = true;
@@ -92,9 +100,6 @@ class Worker extends EventDispatcher {
 	}
 
 	public function clean():Void {
-		#if (cpp || neko || hl)
-		__detachRuntimeListener();
-		#end
 		__cleanResources();
 		__resetState();
 	}
@@ -108,18 +113,20 @@ class Worker extends EventDispatcher {
 		state = RUNNING;
 		__runMessage = message;
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__runtime = CrossByte.current();
-		__messageQueue = new Deque();
+		__lock.acquire();
+		__outbox = [];
+		__drainPosted = false;
+		__lock.release();
 		__workerThread = Thread.create(__doWork);
-		__runtime.addEventListener(TickEvent.TICK, __tickListener);
 		#else
 		__doWork();
 		#end
 	}
 
 	public function sendComplete(message:Dynamic = null):Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		if (cancelRequested || canceled) {
 			__lock.release();
@@ -128,10 +135,7 @@ class Worker extends EventDispatcher {
 		completed = true;
 		result = message;
 		error = null;
-		if (__messageQueue != null) {
-			__messageQueue.add(Complete(message));
-		}
-		__lock.release();
+		__send(Complete(message));
 		#else
 		if (cancelRequested || canceled) {
 			return;
@@ -144,17 +148,14 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendError(message:Dynamic = null):Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		if (cancelRequested || canceled) {
 			__lock.release();
 			return;
 		}
 		error = message;
-		if (__messageQueue != null) {
-			__messageQueue.add(Error(message));
-		}
-		__lock.release();
+		__send(Error(message));
 		#else
 		if (cancelRequested || canceled) {
 			return;
@@ -165,16 +166,13 @@ class Worker extends EventDispatcher {
 	}
 
 	public function sendProgress(message:Dynamic = null):Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		if (cancelRequested || canceled) {
 			__lock.release();
 			return;
 		}
-		if (__messageQueue != null) {
-			__messageQueue.add(Progress(message));
-		}
-		__lock.release();
+		__send(Progress(message));
 		#else
 		if (cancelRequested || canceled) {
 			return;
@@ -192,10 +190,10 @@ class Worker extends EventDispatcher {
 	}
 
 	@:noCompletion private function __cleanResources():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		__workerThread = null;
-		__messageQueue = null;
+		__outbox = null;
 		__lock.release();
 		#end
 		__runtime = null;
@@ -239,71 +237,92 @@ class Worker extends EventDispatcher {
 		dispatchEvent(new ThreadEvent(ThreadEvent.ERROR, message));
 	}
 
-	#if (cpp || neko || hl)
-	@:noCompletion private inline function __detachRuntimeListener():Void {
-		if (__runtime != null) {
-			__runtime.removeEventListener(TickEvent.TICK, __tickListener);
-		}
-	}
-
-	@:noCompletion private function __update(event:TickEvent):Void {
-		// A detached tick listener can still fire once under snapshot dispatch,
-		// after cancel()/clean() has nulled the queue, guard against that.
-		var queue:Deque<WorkerMessage> = __messageQueue;
-		if (queue == null) {
+	#if target.threaded
+	// Queues `message` for the owning runtime and posts a drain when this is
+	// the first of a batch. Called with __lock held; releases it.
+	@:noCompletion private function __send(message:WorkerMessage):Void {
+		var outbox:Array<WorkerMessage> = __outbox;
+		var runtime:CrossByte = __runtime;
+		if (outbox == null || runtime == null) {
+			__lock.release();
 			return;
 		}
 
-		var limit:Int = maxMessagesPerTick;
-		var drained:Int = 0;
+		outbox.push(message);
+		var post:Bool = !__drainPosted;
+		__drainPosted = true;
+		__lock.release();
 
-		while (limit <= 0 || drained < limit) {
-			// Re-read on every pass rather than trusting the reference this tick
-			// started with. A handler dispatched below is free to cancel(), clean()
-			// or run() the worker again, which nulls this queue or swaps a new one
-			// in; draining a queue that is no longer the worker's would deliver a
-			// finished run's backlog into its successor.
+		if (post) {
+			runtime.post(() -> __drain(outbox));
+		}
+	}
+
+	// On the owning runtime's thread: delivers up to maxMessagesPerTick of
+	// what the run that owns `outbox` sent, and posts itself again for the
+	// rest.
+	@:noCompletion private function __drain(outbox:Array<WorkerMessage>):Void {
+		var limit:Int = maxMessagesPerTick;
+
+		__lock.acquire();
+		// A run since, or a clean(), has replaced the outbox this was posted
+		// for: what it held belongs to a run that is over.
+		if (__outbox != outbox || cancelRequested) {
+			__lock.release();
+			return;
+		}
+		var batch:Array<WorkerMessage>;
+		var more:Bool;
+		if (limit <= 0 || outbox.length <= limit) {
+			batch = outbox.copy();
+			outbox.resize(0);
+			// Emptied, so the next message sent posts the next drain.
+			__drainPosted = false;
+			more = false;
+		} else {
+			batch = outbox.splice(0, limit);
+			more = true;
+		}
+		__lock.release();
+
+		for (message in batch) {
+			// Checked again per message rather than trusted from above. A
+			// handler dispatched below is free to cancel(), clean() or run()
+			// the worker again, which replaces the outbox; delivering the rest
+			// of this batch would hand a finished run's messages to its
+			// successor.
+			//
 			// cancelRequested, not canceled. The two are not the same state:
 			// canceled is set by __finishCompleted and __finishFailed as well
 			// as by cancel(), so it means "no longer running" rather than "was
 			// called off", and reading it here says the drain stops because
 			// the producer finished, which is exactly when the last messages
-			// still need delivering.
-			//
-			// No test distinguishes the two, and that is stated rather than
-			// implied: cancel() detaches the listener and frees the queue, so
-			// the checks above catch that path first, and the completion paths
-			// run inside this loop and return immediately after. The change is
-			// so the code means what it says. It cost a debugging session to
-			// work that out from the old spelling, during a hunt for a lost-
-			// message bug that turned out to be in SQLiteConnection.close().
-			if (cancelRequested || __messageQueue != queue) {
+			// still need delivering. What arrives after the run has completed
+			// or failed is not delivered, as it never was.
+			if (cancelRequested || __outbox != outbox || state != RUNNING) {
 				return;
 			}
 
-			var msg = queue.pop(false);
-
-			if (msg == null) {
-				return;
+			switch (message) {
+				case Error(value):
+					if (!canceled) {
+						__finishFailed(value);
+					}
+					return;
+				case Complete(value):
+					if (!canceled) {
+						__finishCompleted(value);
+					}
+					return;
+				case Progress(value):
+					dispatchEvent(new ThreadEvent(ThreadEvent.PROGRESS, value));
 			}
+		}
 
-			drained++;
-
-			switch (msg) {
-				case Error(message):
-					__detachRuntimeListener();
-					if (!canceled) {
-						__finishFailed(message);
-					}
-					return;
-				case Complete(message):
-					__detachRuntimeListener();
-					if (!canceled) {
-						__finishCompleted(message);
-					}
-					return;
-				case Progress(message):
-					dispatchEvent(new ThreadEvent(ThreadEvent.PROGRESS, message));
+		if (more) {
+			var runtime:CrossByte = __runtime;
+			if (runtime != null) {
+				runtime.post(() -> __drain(outbox));
 			}
 		}
 	}

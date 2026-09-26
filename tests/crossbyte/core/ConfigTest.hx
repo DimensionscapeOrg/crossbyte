@@ -77,6 +77,34 @@ class ConfigTest extends utest.Test {
 		Assert.raises(() -> trailing.getFloat("ratio"), ArgumentError);
 	}
 
+	public function testAnIntegerTooBigForAnIntIsRefusedOnEveryTarget():Void {
+		// Std.parseInt read 4294967296 as 0 on Linux native, 2147483647 on
+		// Windows native, threw on the jvm and gave back a number wider than an
+		// Int on JavaScript: a connection limit could silently become 0.
+		var config = new Config([
+			"limit" => "4294967296",
+			"big" => "99999999999",
+			"hex" => "0x100000000",
+			"negative" => "-4294967296",
+			"largest" => "2147483647",
+			"smallest" => "-2147483647"
+		]);
+
+		for (key in ["limit", "big", "hex", "negative"]) {
+			Assert.raises(() -> config.getInt(key), ArgumentError, key + " was read as " + __attempt(config, key));
+		}
+		Assert.equals(2147483647, config.getInt("largest"));
+		Assert.equals(-2147483647, config.getInt("smallest"));
+	}
+
+	private static function __attempt(config:Config, key:String):String {
+		try {
+			return Std.string(config.getInt(key));
+		} catch (e:Dynamic) {
+			return "a throw";
+		}
+	}
+
 	public function testWellFormedNumericFormsAreAccepted():Void {
 		var config = new Config([
 			"negative" => "-5",

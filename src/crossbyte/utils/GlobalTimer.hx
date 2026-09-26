@@ -118,7 +118,14 @@ final class GlobalTimer {
 
 	@:noCompletion private static inline function __nextID():UInt {
 		var id:UInt = 0;
-		__withLock(() -> id = ++__lastTimerID);
+		__withLock(() -> {
+			// The counter wraps after 2^32 timers. Taking an id still in use
+			// replaced that timer in the map, where clearInterval could no
+			// longer reach it, so ids in use, and 0, are skipped.
+			do {
+				id = ++__lastTimerID;
+			} while (id == 0 || __timers.exists(id));
+		});
 		return id;
 	}
 
