@@ -92,6 +92,11 @@ class PortableSuite {
 		// Nothing here owns a socket, every parser is handed bytes, so it
 		// runs wherever the code it fuzzes can be compiled, which is everywhere.
 		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());
+		// BCrypt is pure Haxe, so the published vectors hold it to the same
+		// answers on every target; hashes made on one have to verify on another.
+		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
+		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());
+		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());

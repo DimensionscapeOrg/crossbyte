@@ -4,6 +4,7 @@ import haxe.crypto.BaseCode;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
 import crossbyte.crypto.SecureRandom;
+import crossbyte.utils.IntParse;
 #if php
 import php.NativeAssocArray;
 import crossbyte.crypto.password._internal.PHPGlobalExt;
@@ -13,18 +14,31 @@ import crossbyte.crypto.password._internal.PHPGlobalExt;
  * Provides bcrypt password hashing, verification, and rehashing utilities.
  *
  * This class implements the bcrypt password hashing algorithm for secure password storage.
- * It supports configurable cost factors and standard bcrypt output format (`$2y$...`).
+ * It supports configurable cost factors and the standard bcrypt output format; new hashes
+ * are `$2b$`, the revision OpenBSD's reference implementation and most libraries produce.
  *
  * Usage:
  * ```
  * var hash = BCrypt.hash("hunter2");
  * var isValid = BCrypt.verify("hunter2", hash);
- * if (BCrypt.needsRehash(hash, 12)) {
+ * if (isValid && BCrypt.needsRehash(hash, 12)) {
  *     hash = BCrypt.hash("hunter2", 12);
  * }
  * ```
  *
- * Compatible with other bcrypt implementations (e.g., PHP's `password_hash()` and `password_verify()`).
+ * Compatible with other bcrypt implementations: hashes from PHP's `password_hash()`
+ * (`$2y$`), OpenBSD, Node, Python and Java (`$2a$`, `$2b$`) verify here, and hashes
+ * made here verify there.
+ *
+ * ## Hashes from CrossByte before this was fixed
+ *
+ * Earlier versions left the key's terminating NUL out for `$2y$`, which was the
+ * default, so the `$2y$` hashes they stored match no other implementation and accept a
+ * password's repetitions (`abc` and `abcabc` were one password). `verify` still accepts
+ * them: it tries the standard form first and the old one second, and only for `$2y$`,
+ * the one revision CrossByte ever produced. `needsRehash` reports every `$2y$` hash,
+ * so rehashing on a successful login, as in the example above, retires them. Until a
+ * user's hash is retired, a wrong password against it costs two hashes instead of one.
  *
  * @see https://en.wikipedia.org/wiki/Bcrypt
  */
@@ -34,7 +48,11 @@ class BCrypt {
 	@:noCompletion private static inline final PSIZE:Int = 18;
 	@:noCompletion private static inline final SSIZE:Int = 1024;
 	@:noCompletion private static inline final B64_CHARS:String = "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-	@:noCompletion private static final DEFAULT_REVISION:BCryptRev = R_2Y;
+	@:noCompletion private static final DEFAULT_REVISION:BCryptRev = R_2B;
+	// "$2" + minor + "$" + two cost digits + "$" + 22 salt and 31 digest characters.
+	@:noCompletion private static inline final HASH_LENGTH:Int = 60;
+	// Bit 16 of the first key word, flipped by crypt_blowfish's $2a$ countermeasure.
+	@:noCompletion private static inline final SAFETY_BIT:Int = 0x10000;
 	@:noCompletion private static final B64_CHARS_BYTES:Bytes = Bytes.ofString(B64_CHARS);
 	@:noCompletion private static final INITIAL_CIPHER_TEXT:Array<Int> = [0x4f727068, 0x65616e42, 0x65686f6c, 0x64657253, 0x63727944, 0x6f756274];
 	@:noCompletion private static final B64:BaseCode = new BaseCode(B64_CHARS_BYTES);
@@ -133,7 +151,6 @@ class BCrypt {
 
 	@:noCompletion private var __pBox:Vector<Int>;
 	@:noCompletion private var __sBox:Vector<Int>;
-	@:noCompletion private var __wordOffset:Int;
 	@:noCompletion private var __workBlock:Vector<Int>;
 
 	@:noCompletion private function new() {
@@ -141,14 +158,17 @@ class BCrypt {
 	}
 
 	/**
-	 * Checks whether the given bcrypt hash needs to be rehashed with a new cost factor.
+	 * Checks whether the given bcrypt hash should be regenerated.
 	 *
-	 * This is useful when upgrading password policies. If the hash uses a lower cost than
-	 * desired, this returns `true` to signal that the password should be rehashed.
+	 * True when the hash cannot be parsed, uses a cost other than `cost`, or uses a
+	 * revision other than `$2b$`. That last case covers every `$2y$` hash, which is how
+	 * the hashes earlier CrossByte versions stored are found and retired: call this after
+	 * a successful `verify`, and store a fresh `hash` when it says so. A `$2y$` hash from
+	 * PHP is replaced the same way, which is harmless: the new hash verifies everywhere.
 	 *
 	 * @param hash The bcrypt hash to evaluate.
 	 * @param cost The current desired cost factor. Defaults to 12.
-	 * @return `true` if the hash should be regenerated with the new cost, `false` otherwise.
+	 * @return `true` if the hash should be regenerated, `false` otherwise.
 	 */
 	public static function needsRehash(hash:String, cost:Int = 12):Bool {
 		#if php
@@ -156,15 +176,11 @@ class BCrypt {
 		phpOptions["cost"] = cost;
 		return PHPGlobalExt.password_needs_rehash(hash, PHPGlobalExt.PASSWORD_BCRYPT, phpOptions);
 		#else
-		if (hash == null || hash.length < 7 || hash.charAt(0) != '$' || hash.charAt(1) != '2') {
+		if (__minorOf(hash) <= 0 || hash.length != HASH_LENGTH || hash.charCodeAt(6) != "$".code) {
 			return true;
 		}
 
-		var minor:String = (hash.charAt(2) == '$') ? "" : hash.charAt(2);
-		var off:Int = (minor == "") ? 3 : 4;
-		var haveCost:Null<Int> = Std.parseInt(hash.substr(off, 2));
-		var haveRev:String = (minor == "") ? BCryptRev.R_2 : ("2" + minor);
-		return (haveCost == null || haveCost != cost) || haveRev != DEFAULT_REVISION;
+		return IntParse.decimal(hash.substr(4, 2), 31) != cost || hash.substr(1, 2) != (DEFAULT_REVISION : String);
 		#end
 	}
 
@@ -172,13 +188,17 @@ class BCrypt {
 	 * Hashes a plain text password using bcrypt with the given cost factor.
 	 *
 	 * A random salt is automatically generated. The result is a standard bcrypt string
-	 * including the revision (`$2y$`), cost, salt, and hash.
+	 * including the revision (`$2b$`), cost, salt, and hash.
+	 *
+	 * Only the first 72 bytes of the password's UTF-8 encoding take part, as in every
+	 * bcrypt implementation.
 	 *
 	 * @param password The plain text password to hash. Must be non-empty.
-	 * @param cost The cost factor (work factor), typically between 4 and 31. Higher values increase computation time. Defaults to 12.
+	 * @param cost The cost factor (work factor), between 4 and 31. Each step doubles the
+	 *        time taken. Defaults to 12.
 	 * @return A bcrypt-formatted hash string.
 	 */
-	public static inline function hash(password:String, cost:Int = 12):String {
+	public static function hash(password:String, cost:Int = 12):String {
 		if (password == null || password.length == 0) {
 			throw "Password must not be empty";
 		}
@@ -188,12 +208,23 @@ class BCrypt {
 
 		return PHPGlobalExt.password_hash(password, PHPGlobalExt.PASSWORD_BCRYPT, phpOptions);
 		#else
-		return __encode(password, __generateSalt(cost));
+		var key:Bytes = Bytes.ofString(password);
+		var hashed:Null<String> = __crypt(key, __generateSalt(cost), false);
+		key.fill(0, key.length, 0);
+
+		if (hashed == null) {
+			throw "bcrypt could not use the salt it generated";
+		}
+		return hashed;
 		#end
 	}
 
 	/**
 	 * Verifies that a plain text password matches the given bcrypt hash.
+	 *
+	 * Accepts every revision in use: `$2a$`, `$2b$`, `$2y$`, and `$2x$` as crypt_blowfish
+	 * defines it. A `$2y$` hash that fails the standard check is tried once more in the
+	 * form earlier CrossByte versions stored; see the class notes.
 	 *
 	 * @param password The plain text password to verify. An empty or `null` password never matches.
 	 * @param hash The bcrypt hash to verify against. Must include the salt and cost prefix.
@@ -206,50 +237,27 @@ class BCrypt {
 		#if php
 		return PHPGlobalExt.password_verify(password, hash);
 		#else
-		if (hash == null || !isBcryptPrefix(hash)) {
+		var minor:Int = __minorOf(hash);
+		if (minor <= 0 || hash.length != HASH_LENGTH) {
 			return false;
 		}
 
-		var hashed:String;
+		var key:Bytes = Bytes.ofString(password);
+		var matched:Bool = __matches(__crypt(key, hash, false), hash);
 
-		try {
-			var bcrypt:BCrypt = new BCrypt();
-			hashed = bcrypt.__hashPassword(password, hash);
-		} catch (e:Dynamic) {
-			return false;
+		// Earlier CrossByte versions left the terminating NUL out of every $2y$
+		// key, and $2y$ was the only revision they produced. Second, so a
+		// standard hash costs one computation when the password is right.
+		if (!matched && minor == "y".code) {
+			matched = __matches(__crypt(key, hash, true), hash);
 		}
 
-		if (hashed == null) {
-			return false;
-		}
-
-		var storedLen:Int = hash.length;
-		var computedLen:Int = hashed.length;
-		var mismatchAccumulator:Int = storedLen ^ computedLen;
-		var minLen:Int = (storedLen < computedLen) ? storedLen : computedLen;
-
-		for (index in 0...minLen) {
-			mismatchAccumulator |= (hash.charCodeAt(index) ^ hashed.charCodeAt(index));
-		}
-
-		for (index in minLen...storedLen) {
-			mismatchAccumulator |= hash.charCodeAt(index);
-		}
-		for (index in minLen...computedLen) {
-			mismatchAccumulator |= hashed.charCodeAt(index);
-		}
-
-		return mismatchAccumulator == 0;
+		key.fill(0, key.length, 0);
+		return matched;
 		#end
 	}
 
-	@:noCompletion private static function __encode(password:String, salt:String):String {
-		var bcrypt:BCrypt = new BCrypt();
-		var hashed:String = bcrypt.__hashPassword(password, salt);
-		return hashed;
-	}
-
-	@:noCompletion private static inline function __generateSalt(rounds:Int = 12):String {
+	@:noCompletion private static function __generateSalt(rounds:Int = 12):String {
 		if (rounds < 4 || rounds > 31) {
 			throw "Salt rounds should be between 4 and 31";
 		}
@@ -272,99 +280,148 @@ class BCrypt {
 		return sb.toString();
 	}
 
-	@:noCompletion private inline function __hashPassword(password:String, salt:String):String {
-		if (!isBcryptPrefix(salt)) {
-			throw "Invalid salt prefix";
+	/**
+	 * The revision letter of a bcrypt setting or hash (`a`, `b`, `x` or `y`), `0` for the
+	 * original `$2$`, or `-1` when `setting` is not one.
+	 */
+	@:noCompletion private static function __minorOf(setting:String):Int {
+		if (setting == null || setting.length < 4 || setting.charCodeAt(0) != "$".code || setting.charCodeAt(1) != "2".code) {
+			return -1;
 		}
 
-		var offset:Int = 0;
-		var minor:String = null;
-
-		if (salt.length < 16) {
-			throw "Invalid salt length: expected at least 16 characters";
+		var minor:Int = setting.charCodeAt(2);
+		if (minor == "$".code) {
+			return 0;
 		}
-
-		if (salt.charAt(0) != '$' || salt.charAt(1) != '2') {
-			throw "Invalid salt versioning";
+		if ((minor == "a".code || minor == "b".code || minor == "x".code || minor == "y".code) && setting.charCodeAt(3) == "$".code) {
+			return minor;
 		}
+		return -1;
+	}
 
-		if (salt.charAt(2) == '$') {
-			offset = 3;
-		} else {
-			minor = salt.charAt(2);
-
-			if ((minor != 'y' && minor != 'x' && minor != 'a' && minor != 'b') || (salt.charAt(3) != '$')) {
-				throw "Invalid salt revision";
-			}
-			offset = 4;
-		}
-
-		if (salt.charCodeAt(offset + 2) > 36) {
-			throw "Missing Blowfish rounds";
-		}
-
-		var cost:Null<Int> = Std.parseInt(salt.substr(offset, 2));
-
-		if (cost == null) {
-			throw "Invalid cost";
-		}
-
-		var realSalt = salt.substr(offset + 3, 22);
-
-		if (realSalt.length != 22) {
-			throw "Invalid salt: expected 22-char bcrypt base64";
-		}
-
-		var isMinor = (minor != null);
-		var hashedPassword:String = "$2" + ((isMinor) ? minor : "") + "$";
-
-		hashedPassword += ((cost < 10) ? "0" : "") + cost + "$";
-
-		var saltBytes = decode_base64(realSalt);
-
-		if (saltBytes.length != 16) {
-			throw "Invalid salt: decoded length != 16";
-		}
-
-		var needsNul:Bool = (minor == 'a');
-		var passwordBytes:Bytes = Bytes.ofString(needsNul ? (password + String.fromCharCode(0)) : password);
-		var hashedBytes:Bytes = __deriveHashBytes(passwordBytes, saltBytes, cost);
-
-		if (hashedBytes == null) {
+	/**
+	 * bcrypt of `key` under `setting`, which is a whole hash or its first 29 characters.
+	 * Null when the setting is malformed.
+	 *
+	 * `key` is the password's bytes without a terminator. Every revision adds the NUL
+	 * here except the original `$2$`, and except when `legacy` asks for the form
+	 * CrossByte stored before it did, which had none for `$2y$`. Without the NUL a key is
+	 * its bytes repeated to 72, so a password and its repetitions were one password.
+	 */
+	@:noCompletion private static function __crypt(key:Bytes, setting:String, legacy:Bool):Null<String> {
+		var minor:Int = __minorOf(setting);
+		if (minor < 0) {
 			return null;
 		}
 
-		var hashed:String = encode_base64(hashedBytes);
-		var saltStr:String = encode_base64(saltBytes);
-		var result:String = hashedPassword + saltStr + hashed;
+		var offset:Int = (minor == 0) ? 3 : 4;
+		if (setting.length < offset + 25 || setting.charCodeAt(offset + 2) != "$".code) {
+			return null;
+		}
 
-		return result;
+		var cost:Int = IntParse.decimal(setting.substr(offset, 2), 31);
+		if (cost < 4) {
+			return null;
+		}
+
+		var salt:Null<Bytes> = __decodeSalt(setting.substr(offset + 3, 22));
+		if (salt == null) {
+			return null;
+		}
+
+		var terminated:Bool = minor != 0 && !legacy;
+		var material:Bytes = key;
+		if (terminated) {
+			material = Bytes.alloc(key.length + 1);
+			material.blit(0, key, 0, key.length);
+			material.set(key.length, 0);
+		}
+
+		var digest:Bytes = new BCrypt().__digest(material, salt, cost, minor);
+
+		if (terminated) {
+			material.fill(0, material.length, 0);
+		}
+
+		return "$2" + (minor == 0 ? "" : String.fromCharCode(minor)) + "$" + (cost < 10 ? "0" : "") + cost + "$" + encode_base64(salt)
+			+ encode_base64(digest);
 	}
 
-	@:noCompletion private function __deriveHashBytes(passwordBytes:Bytes, saltBytes:Bytes, numberOfRounds:Int):Bytes {
-		if (saltBytes.length != 16) {
-			throw "Salt length should be 16 bytes";
+	@:noCompletion private static function __decodeSalt(encoded:String):Null<Bytes> {
+		if (encoded.length != 22) {
+			return null;
 		}
 
-		if (numberOfRounds < 4 || numberOfRounds > 31) {
-			throw "Number of rounds should be between 4 and 31 (included)";
+		var salt:Bytes;
+		try {
+			salt = decode_base64(encoded);
+		} catch (_:Dynamic) {
+			// A character outside bcrypt's alphabet.
+			return null;
+		}
+		return salt.length == SALT_LENGTH ? salt : null;
+	}
+
+	/**
+	 * Compares a computed hash with a stored one without stopping at the first
+	 * difference, so the time taken does not say how much of it matched.
+	 */
+	@:noCompletion private static function __matches(computed:Null<String>, stored:String):Bool {
+		if (computed == null) {
+			return false;
 		}
 
-		var rounds:Int = 1 << numberOfRounds;
+		var storedLen:Int = stored.length;
+		var computedLen:Int = computed.length;
+		var mismatchAccumulator:Int = storedLen ^ computedLen;
+		var minLen:Int = (storedLen < computedLen) ? storedLen : computedLen;
+
+		for (index in 0...minLen) {
+			mismatchAccumulator |= (stored.charCodeAt(index) ^ computed.charCodeAt(index));
+		}
+
+		return mismatchAccumulator == 0;
+	}
+
+	/**
+	 * EksBlowfishSetup followed by the 64 encryptions of "OrpheanBeholderScryDoubt":
+	 * the 23 bytes a bcrypt hash encodes.
+	 */
+	@:noCompletion private function __digest(key:Bytes, salt:Bytes, cost:Int, minor:Int):Bytes {
+		var expanded:Vector<Int> = new Vector<Int>(PSIZE);
+		var flip:Int = __expandKey(key, minor, expanded);
+
+		var saltWords:Vector<Int> = new Vector<Int>(4);
+		for (i in 0...4) {
+			var at:Int = i << 2;
+			saltWords[i] = (salt.get(at) << 24) | (salt.get(at + 1) << 16) | (salt.get(at + 2) << 8) | salt.get(at + 3);
+		}
+
+		__pBox = Vector.fromArrayCopy(P_INIT);
+		__sBox = Vector.fromArrayCopy(S_INIT);
+
+		var p:Vector<Int> = __pBox;
+		for (i in 0...PSIZE) {
+			p[i] ^= expanded[i];
+		}
+		p[0] ^= flip;
+		__setupWithSalt(saltWords);
+
+		// 2^cost rounds of key then salt, counted in pairs: 1 << 31 is negative
+		// in an Int, and a loop to it ran no rounds at all, so a cost-31 hash
+		// was the cheapest one there was.
+		var pairs:Int = 1 << (cost - 1);
+		for (i in 0...pairs) {
+			__roundWith(expanded, saltWords);
+			__roundWith(expanded, saltWords);
+		}
+
+		for (i in 0...PSIZE) {
+			expanded[i] = 0;
+		}
+
 		var cipherText:Vector<Int> = Vector.fromArrayCopy(INITIAL_CIPHER_TEXT);
 		var cipherLength:Int = cipherText.length;
-
-		this.__pBox = Vector.fromArrayCopy(P_INIT);
-		this.__sBox = Vector.fromArrayCopy(S_INIT);
-		this.__wordOffset = 0;
-
-		__expandEksKeySchedule(passwordBytes, saltBytes);
-
-		for (i in 0...rounds) {
-			__expandKeyScheduleWith(passwordBytes);
-			__expandKeyScheduleWith(saltBytes);
-		}
-
 		var hCipherLength:Int = cipherLength >> 1;
 
 		for (i in 0...64) {
@@ -403,94 +460,143 @@ class BCrypt {
 		return out;
 	}
 
-	@:noCompletion private inline function __getWord(data:Bytes):Int {
-		if (data.length == 0) {
+	/**
+	 * crypt_blowfish's `BF_set_key`: the 18 words the key is cycled into, written to
+	 * `expanded`, and the bit to flip in the first word of the initial schedule.
+	 *
+	 * `$2x$` reproduces the sign-extension bug crypt_blowfish had before 1.1, so hashes it
+	 * made then still verify. `$2a$` carries the countermeasure it added alongside, which
+	 * changes a result only where the buggy and the correct expansion collide: a key with
+	 * an 0xFF byte ahead of a byte of 0x80 or more in the same word. UTF-8 never contains
+	 * 0xFF, so for a `String` password `$2a$`, `$2b$` and `$2y$` are one algorithm.
+	 */
+	@:noCompletion private static function __expandKey(key:Bytes, minor:Int, expanded:Vector<Int>):Int {
+		var length:Int = key.length;
+		var bug:Bool = minor == "x".code;
+		var ptr:Int = 0;
+		var sign:Int = 0;
+		var diff:Int = 0;
+
+		for (i in 0...PSIZE) {
+			var correct:Int = 0;
+			var buggy:Int = 0;
+
+			for (j in 0...4) {
+				var b:Int = (length == 0) ? 0 : key.get(ptr);
+				correct = (correct << 8) | b;
+				// The bug: the byte widened as a signed char, smearing its top bit
+				// over every byte already in the word.
+				buggy = (buggy << 8) | (((b & 0x80) != 0) ? (b | 0xFFFFFF00) : b);
+				if (j != 0) {
+					sign |= buggy & 0x80;
+				}
+
+				if (length != 0) {
+					ptr++;
+					if (ptr == length) {
+						ptr = 0;
+					}
+				}
+			}
+
+			diff |= correct ^ buggy;
+			expanded[i] = bug ? buggy : correct;
+		}
+
+		if (minor != "a".code) {
 			return 0;
 		}
 
-		var word:Int = 0;
-		var bLength:Int = data.length;
-		var offset:Int = __wordOffset;
-
-		for (i in 0...4) {
-			word = (word << 8) | (data.get(offset) & 0xff);
-			offset += 1;
-
-			if (offset == bLength) {
-				offset = 0;
-			}
-		}
-
-		__wordOffset = offset;
-
-		return word;
+		// Nonzero exactly when a sign extension changed something that the
+		// correct and buggy words nonetheless agree on: bit 16 of `diff + 0xFFFF`
+		// is set iff `diff` was nonzero, and `sign << 9` moves bit 7 to bit 16.
+		diff |= diff >>> 16;
+		diff &= 0xFFFF;
+		diff += 0xFFFF;
+		sign <<= 9;
+		return sign & ~diff & SAFETY_BIT;
 	}
 
-	@:noCompletion private function __expandEksKeySchedule(password:Bytes, salt:Bytes):Void {
-		__wordOffset = 0;
-
+	/**
+	 * The salt half of EksBlowfishSetup: the schedule re-encrypted end to end, with
+	 * successive salt word pairs mixed into the running block.
+	 */
+	@:noCompletion private function __setupWithSalt(saltWords:Vector<Int>):Void {
 		var lr:Vector<Int> = this.__workBlock;
 		lr[0] = 0;
 		lr[1] = 0;
 
-		for (i in 0...PSIZE) {
-			__pBox[i] ^= __getWord(password);
-		}
-
+		// Alternates between salt words (0, 1) and (2, 3), carried on from the
+		// P-array into the S-boxes.
+		var half:Int = 0;
+		var p:Vector<Int> = __pBox;
 		var i:Int = 0;
-		__wordOffset = 0;
 
 		while (i < PSIZE) {
-			lr[0] ^= __getWord(salt);
-			lr[1] ^= __getWord(salt);
+			lr[0] ^= saltWords[half];
+			lr[1] ^= saltWords[half + 1];
+			half ^= 2;
 
 			__encryptBlockInPlace(lr, 0);
 
-			__pBox[i] = lr[0];
-			__pBox[i + 1] = lr[1];
+			p[i] = lr[0];
+			p[i + 1] = lr[1];
 
 			i += 2;
 		}
 
+		var s:Vector<Int> = __sBox;
 		i = 0;
 
 		while (i < SSIZE) {
-			lr[0] ^= __getWord(salt);
-			lr[1] ^= __getWord(salt);
+			lr[0] ^= saltWords[half];
+			lr[1] ^= saltWords[half + 1];
+			half ^= 2;
 
 			__encryptBlockInPlace(lr, 0);
 
-			__sBox[i] = lr[0];
-			__sBox[i + 1] = lr[1];
+			s[i] = lr[0];
+			s[i + 1] = lr[1];
 
 			i += 2;
 		}
 	}
 
-	@:noCompletion private function __expandKeyScheduleWith(kBytes:Bytes):Void {
-		__wordOffset = 0;
+	/** One round of the expensive loop: ExpandKey with the key, then with the salt. */
+	@:noCompletion private inline function __roundWith(expanded:Vector<Int>, saltWords:Vector<Int>):Void {
+		var p:Vector<Int> = __pBox;
+		for (i in 0...PSIZE) {
+			p[i] ^= expanded[i];
+		}
+		__encryptSchedule();
 
+		for (i in 0...PSIZE) {
+			p[i] ^= saltWords[i & 3];
+		}
+		__encryptSchedule();
+	}
+
+	/** Re-encrypts the whole schedule from a zero block, as ExpandKey does with no salt. */
+	@:noCompletion private function __encryptSchedule():Void {
 		var lr:Vector<Int> = this.__workBlock;
 		lr[0] = 0;
 		lr[1] = 0;
 
-		for (i in 0...PSIZE) {
-			__pBox[i] ^= __getWord(kBytes);
-		}
-
+		var p:Vector<Int> = __pBox;
 		var i:Int = 0;
 		while (i < PSIZE) {
 			__encryptBlockInPlace(lr, 0);
-			__pBox[i] = lr[0];
-			__pBox[i + 1] = lr[1];
+			p[i] = lr[0];
+			p[i + 1] = lr[1];
 			i += 2;
 		}
 
+		var s:Vector<Int> = __sBox;
 		i = 0;
 		while (i < SSIZE) {
 			__encryptBlockInPlace(lr, 0);
-			__sBox[i] = lr[0];
-			__sBox[i + 1] = lr[1];
+			s[i] = lr[0];
+			s[i + 1] = lr[1];
 			i += 2;
 		}
 	}
@@ -540,10 +646,6 @@ class BCrypt {
 
 	@:noCompletion private static inline function decode_base64(str:String):Bytes {
 		return B64.decodeBytes(Bytes.ofString(str));
-	}
-
-	@:noCompletion private static inline function isBcryptPrefix(s:String):Bool {
-		return s.length >= 4 && s.charAt(0) == '$' && s.charAt(1) == '2' && s.charAt(3) == '$';
 	}
 }
 
