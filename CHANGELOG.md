@@ -704,6 +704,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Node, a socket written to faster than its peer reads sends what was
+  written. A flush handed Node a view over the socket's output buffer and
+  then cleared the buffer for reuse, so the next write landed on bytes Node
+  still had queued: ten 1 MB messages to a paused client arrived as the
+  first five and then 5 MB of the last, and a 12 MB file from `HTTPServer`
+  reached a slow download with 786,432 bytes wrong. Each flush now copies.
+  `outputBufferLength` and `bytesPending` count what Node has queued, which
+  is where the backlog is there, so `maxOutputBufferSize` is reached on Node,
+  it never was, and a peer closed for passing it has its queue dropped
+  rather than flushed. The HTTP server's streaming watermark, which reads
+  the same figure, now holds a download to a slow client on Node too.
 - A WebSocket session whose TLS handshake fails, or whose connect times
   out, closes its socket. Only a session that had opened was closed, so a
   server held the descriptor of every connection that failed its handshake,
