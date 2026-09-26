@@ -1196,6 +1196,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ReliableDatagramServerSocket.discoverPublicAddress`: and so a
+  reliable-UDP `NetHost`'s, with a STUN server name that does not
+  resolve fails at once instead of at its deadline. The send it asks with
+  looks names up off the runtime's thread now, so the failure came after
+  the call, as an `ioError` on the socket every session shares, and
+  nothing told the question: it waited out its whole deadline. The name
+  is now looked up before the question is asked, and one that does not
+  resolve fails it with that reason. On Node, which looks the name up
+  itself for each request, it still waits for the deadline.
 - `File.clone()` gave the clone the original's listeners, where its
   documentation says registrations are not copied. It copied every instance
   field by reflection, `EventDispatcher`'s listener map included, so once the

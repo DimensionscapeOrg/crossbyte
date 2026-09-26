@@ -513,6 +513,12 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		One at a time: a second call while one is outstanding is refused rather
 		than queued, because the two would race for the same reply.
 
+		`server` may be a name. It is looked up off the runtime's thread
+		before the question is asked, within `timeoutMs`, and a name that does
+		not resolve fails the question as soon as that is known. On Node, Node
+		looks the name up for each request itself, and one that does not
+		resolve leaves the question to its deadline.
+
 		@throws IOError if this server is closed, unbound, or not listening.
 	**/
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
@@ -552,9 +558,22 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var runtime:CrossByte = CrossByte.current();
 
+		// Where the question goes: `server`, or for a name the address it
+		// resolves to, null until then. The send used to be given the name,
+		// and looked it up off the runtime's thread, but a name that did not
+		// resolve then failed as an ioError on the socket every session
+		// shares, which told this question nothing, so it waited out its whole
+		// deadline. Looked up here, the failure is this question's.
+		var target:Null<String> = server;
+		#if !nodejs
+		if (Resolver.needsLookup(server)) {
+			target = null;
+		}
+		#end
+
 		function ask():Void {
 			var payload:ByteArray = query.request.encode();
-			__socket.send(payload, 0, payload.length, server, port);
+			__socket.send(payload, 0, payload.length, target, port);
 		}
 
 		__stunTick = function(_:TickEvent):Void {
@@ -572,7 +591,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				return;
 			}
 
-			if (query.shouldRetransmit(now)) {
+			// Nothing to ask again before the name is looked up.
+			if (target != null && query.shouldRetransmit(now)) {
 				try {
 					ask();
 				} catch (e:Dynamic) {
@@ -582,6 +602,31 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		};
 
 		runtime.addEventListener(TickEvent.TICK, __stunTick);
+
+		#if !nodejs
+		if (target == null) {
+			Resolver.resolve(server, function(host:Null<Host>, failure:Null<String>):Void {
+				// Settled meanwhile, at its deadline, or with the server,
+				// or a later question asked since.
+				if (__stunQuery != query) {
+					return;
+				}
+
+				if (host == null) {
+					__settleStun(null, "Could not ask " + server + ":" + port + " for a reflexive address: the name did not resolve (" + failure + ")");
+					return;
+				}
+
+				target = host.toString();
+				try {
+					ask();
+				} catch (e:Dynamic) {
+					__settleStun(null, "Could not ask " + server + ":" + port + " for a reflexive address: " + Std.string(e));
+				}
+			});
+			return future;
+		}
+		#end
 
 		try {
 			ask();
