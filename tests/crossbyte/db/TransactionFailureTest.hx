@@ -83,7 +83,10 @@ class TransactionFailureTest extends utest.Test {
 		var nextSees:Null<Bool> = null;
 		db.submit(c -> c.inTransaction).onComplete(v -> nextSees = v);
 
-		// The worker pool runs inline on this target, so both have settled.
+		// The pool runs its jobs on threads wherever there are threads, jvm and
+		// eval included, and hands results back through the runtime's post
+		// queue, so the runtime has to be pumped for either to settle.
+		crossbyte.http.HTTPTestSupport.pumpUntil(() -> outcome != "pending" && nextSees != null, 10.0);
 		Assert.equals("failed", outcome);
 		Assert.equals(false, nextSees, "the next borrower was handed a connection inside a transaction");
 		// A rollback followed the failed commit.
@@ -113,6 +116,8 @@ class TransactionFailureTest extends utest.Test {
 		var nextSees:Null<Bool> = null;
 		db.submit(c -> c.inTransaction).onComplete(v -> nextSees = v);
 
+		// Results come back through the runtime's post queue; see above.
+		crossbyte.http.HTTPTestSupport.pumpUntil(() -> nextSees != null, 10.0);
 		Assert.equals(false, nextSees, "the next borrower was handed the abandoned transaction");
 		Assert.isTrue(__sent.indexOf("ROLLBACK;") > __sent.indexOf("UPDATE accounts SET balance = 0 WHERE id = 7;"));
 	}
