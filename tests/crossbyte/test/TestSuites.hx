@@ -29,6 +29,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.core.RuntimeTimersTest());
 		runner.addCase(new crossbyte.core.ApplicationTest());
 		runner.addCase(new crossbyte.core.ChildRuntimeTest());
+		runner.addCase(new crossbyte.core.PostTest());
 	}
 
 	public static function addFoundation(runner:Runner):Void {

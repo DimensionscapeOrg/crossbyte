@@ -5,6 +5,11 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `CrossByte.post(callback)`: runs `callback` on the runtime's own thread,
+  safe to call from any thread, and wakes the runtime for it. It was
+  `__post`, marked internal although it is the one way to hand a runtime
+  work from another thread; `__post` still works. Returns `false` once the
+  runtime has exited, when the callback would never run.
 - `CrossByte.make(loopType, timers, configure)`: a callback run with the new
   child runtime, on the calling thread, before the child's thread starts --
   the place to set `tps` and add `INIT` and `EXIT` listeners. The thread
@@ -712,6 +717,22 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Work handed to a runtime from another thread runs as soon as the runtime
+  is free, not at its next tick. A callback posted mid-frame waited out the
+  rest of the frame -- 38ms on average and up to a whole frame at the
+  default twelve ticks a second -- and every RPC answer finished on another
+  thread, every query result and every task completion paid it, a chain of
+  them once per step. A runtime now waits out its frame on a lock that a
+  post releases (DEFAULT), or inside a poll that a post ends by writing to a
+  loopback wake socket in the poll set (POLL). Measured natively at twelve
+  ticks a second, the mean wait fell from 39.7ms to under 0.1ms (DEFAULT)
+  and from 37.3ms to 0.1ms (POLL), the worst from 82ms to 0.1ms. It wakes
+  once per batch, when the queue goes from empty to not, and an idle
+  runtime costs what it did: 0.16% of a core at sixty ticks a second,
+  against 0.31% before. `exit()` called from another thread stops the loop
+  at once rather than after it has slept out its frame, what was posted
+  before a runtime exits still runs, and a post after that is refused
+  rather than dropped without a word.
 - `CrossByte.make()` no longer takes over the calling thread's timers, and
   a child runtime exits with the runtime that made it. `make()` bound the
   new runtime's timer scheduler to the thread that called it, so once a

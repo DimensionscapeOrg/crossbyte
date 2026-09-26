@@ -21,6 +21,7 @@ import haxe.EntryPoint;
 import haxe.Timer;
 import haxe.ds.Map;
 #if target.threaded
+import sys.thread.Lock;
 import sys.thread.Mutex;
 import sys.thread.Thread;
 import sys.thread.Tls;
@@ -29,6 +30,9 @@ import sys.thread.Tls;
 import crossbyte._internal.socket.NativeSocketRegistry;
 #elseif !js
 import crossbyte._internal.socket.SocketRegistry;
+#end
+#if !js
+import crossbyte._internal.socket.poll.WakeSocket;
 #end
 import crossbyte.net.Socket as CBSocket;
 import crossbyte._internal.system.timer.TimerScheduler;
@@ -101,6 +105,14 @@ final class CrossByte extends EventDispatcher {
 	 * remainder and hoping.
 	 */
 	@:noCompletion private static inline var SLEEP_SLACK:Float = 0.002;
+
+	/**
+	 * The same margin for the lock the bulk of a frame's wait blocks on,
+	 * which is what lets `post` end the wait early. On native and the jvm the
+	 * lock is as precise as a sleep; the interpreter's overshoots its timeout
+	 * by ten to fifteen milliseconds, so there it leaves a longer tail.
+	 */
+	@:noCompletion private static inline var WAIT_SLACK:Float = #if eval 0.015 #else 0.002 #end;
 
 	/**
 	 * Longest schedule debt, in seconds, the loop will try to repay.
@@ -378,8 +390,23 @@ final class CrossByte extends EventDispatcher {
 	// tick, and a runtime nobody posts to pays a field read.
 	@:noCompletion private var __posted:Null<Array<Void->Void>> = null;
 	@:noCompletion private var __hasPosted:Bool = false;
+
+	// Set as the runtime finishes: a post after that would never run, and is
+	// refused instead.
+	@:noCompletion private var __postClosed:Bool = false;
 	#if target.threaded
 	@:noCompletion private final __postLock:Mutex = new Mutex();
+
+	// What the loop waits out the end of a frame on, so that a post can end
+	// the wait; see __sleepUntilWoken. `__sleeping` says the loop is blocked
+	// on it, and is only read or written under __postLock.
+	@:noCompletion private final __wakeLock:Lock = new Lock();
+	@:noCompletion private var __sleeping:Bool = false;
+	#end
+	#if !js
+	// The POLL loop's equivalent, for a wait spent inside poll rather than on
+	// a lock: a byte written to it ends the poll. Made when the loop starts.
+	@:noCompletion private var __wakeSocket:WakeSocket = null;
 	#end
 	#if js
 	@:noCompletion private var __passFlushScheduled:Bool = false;
@@ -502,6 +529,10 @@ final class CrossByte extends EventDispatcher {
 		#end
 		if (__usesHostLoop) {
 			__finalizeExit();
+		} else {
+			// Told from another thread, it stops now rather than once it has
+			// waited out the rest of its frame.
+			__wake();
 		}
 	}
 
@@ -578,9 +609,9 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	/**
-		Runs `callback` on this runtime's thread, at the start of its next tick.
-		Safe from any thread: the one way to hand a runtime something from
-		another.
+		Runs `callback` on this runtime's thread, as soon as the runtime is
+		free to. Safe from any thread: the one way to hand a runtime something
+		from another.
 
 		What a runtime owns -- its sockets, its event listeners -- is not
 		thread-safe, so code finishing on another thread has to come back to
@@ -589,24 +620,118 @@ final class CrossByte extends EventDispatcher {
 		that reason; this is one queue for all of them, costing a runtime
 		nobody posts to a field read a tick.
 
-		The loop does not wake early for it: a callback posted mid-frame waits
-		for the next tick, as a `Worker` or `Task` result does. What throws is
-		reported like any other callback's failure -- logged, and dispatched
-		as `UncaughtErrorEvent.UNCAUGHT_ERROR` -- and does not stop the rest.
+		A runtime waiting out the rest of its frame is woken for it, and runs
+		it then rather than at the next tick. It used to wait for the tick:
+		38ms on average at the default twelve ticks a second, up to a whole
+		frame, paid by every RPC answer, query result and task completion
+		finished on another thread -- and paid again by each of a chain of
+		them. The wake happens once per batch, when the queue goes from empty
+		to not, so a burst of posts costs one wake. A host-driven runtime runs
+		what was posted at the start of its next `pump`.
+
+		Callbacks run in the order they were posted. What throws is reported
+		like any other callback's failure -- logged, and dispatched as
+		`UncaughtErrorEvent.UNCAUGHT_ERROR` -- and does not stop the rest.
+
+		@return Whether the callback was taken. False once the runtime has
+		        exited, when it would never run: that used to be dropped
+		        without a word.
 	**/
-	@:noCompletion public function __post(callback:Void->Void):Void {
+	public function post(callback:Void->Void):Bool {
+		if (callback == null) {
+			return false;
+		}
+
 		#if target.threaded
 		__postLock.acquire();
 		#end
+		if (__postClosed) {
+			#if target.threaded
+			__postLock.release();
+			#end
+			return false;
+		}
+
+		var wasEmpty:Bool = !__hasPosted;
 		if (__posted == null) {
 			__posted = [];
 		}
 		__posted.push(callback);
 		__hasPosted = true;
 		#if target.threaded
+		// Released only while the loop is waiting on it, and marked as woken
+		// here, so a burst releases it once and a runtime nobody is waiting
+		// in -- a host-driven one -- never accumulates releases.
+		if (wasEmpty && __sleeping) {
+			__sleeping = false;
+			__wakeLock.release();
+		}
 		__postLock.release();
 		#end
+
+		#if !js
+		if (wasEmpty) {
+			// Outside the lock: a write to a socket.
+			var waker:WakeSocket = __wakeSocket;
+			if (waker != null) {
+				waker.wake();
+			}
+		}
+		#end
+		return true;
 	}
+
+	/**
+		What `post` was called before it was public. Kept, since code already
+		calls it.
+	**/
+	@:noCompletion public inline function __post(callback:Void->Void):Void {
+		post(callback);
+	}
+
+	/**
+		Ends whatever wait the loop is in, so it looks again at whether it is
+		running and what it has been handed. Safe from any thread.
+	**/
+	@:noCompletion private function __wake():Void {
+		#if target.threaded
+		__postLock.acquire();
+		if (__sleeping) {
+			__sleeping = false;
+			__wakeLock.release();
+		}
+		__postLock.release();
+		#end
+		#if !js
+		var waker:WakeSocket = __wakeSocket;
+		if (waker != null) {
+			waker.wake();
+		}
+		#end
+	}
+
+	#if target.threaded
+	/**
+		Blocks for up to `seconds`, returning early when something is posted
+		or the runtime is told to exit. The lock is released only while this
+		is waiting on it; see `post`.
+	**/
+	@:noCompletion private function __sleepUntilWoken(seconds:Float):Void {
+		__postLock.acquire();
+		if (__hasPosted || !__getRunning()) {
+			__postLock.release();
+			return;
+		}
+		__sleeping = true;
+		__postLock.release();
+
+		__wakeLock.wait(seconds);
+
+		__postLock.acquire();
+		__sleeping = false;
+		__postLock.release();
+	}
+	#end
 
 	@:noCompletion private function __runPosted():Void {
 		#if target.threaded
@@ -1062,6 +1187,14 @@ final class CrossByte extends EventDispatcher {
 		#end
 		CBTimer.bindCurrentThread(__timer);
 
+		#if !js
+		// Made here, on the loop's own thread, since the registry is not
+		// thread-safe; see WakeSocket.
+		if (__loopType.match(POLL)) {
+			__armWakeSocket();
+		}
+		#end
+
 		__dispatchInitIfNeeded();
 
 		#if js
@@ -1267,9 +1400,28 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		__didExit = true;
+
+		// What was handed over before the exit still runs -- an answer that
+		// raced it should still reach its caller -- and so does what EXIT's
+		// own listeners post. After that the queue refuses, since nothing will
+		// ever run it again.
+		if (__hasPosted) {
+			__runPosted();
+		}
 		if (hasEventListener(Event.EXIT)) {
 			__dispatchContained(new Event(Event.EXIT));
 		}
+		#if target.threaded
+		__postLock.acquire();
+		#end
+		__postClosed = true;
+		#if target.threaded
+		__postLock.release();
+		#end
+		if (__hasPosted) {
+			__runPosted();
+		}
+
 		// Whatever the last pass, or an exit handler, left held goes out while
 		// the sockets are still there to send it.
 		__flushHeld();
@@ -1278,6 +1430,10 @@ final class CrossByte extends EventDispatcher {
 		if (__socketRegistry != null) {
 			__socketRegistry.clear();
 			__socketRegistry = null;
+		}
+		if (__wakeSocket != null) {
+			__wakeSocket.close();
+			__wakeSocket = null;
 		}
 		#end
 		__releaseThreadLocal();
@@ -1407,6 +1563,11 @@ final class CrossByte extends EventDispatcher {
 			#if !js
 			__socketRegistry.update(remaining);
 			#end
+			// Handed over from another thread, which wrote to the wake socket
+			// so that the poll above returned for it.
+			if (__hasPosted) {
+				__runPosted();
+			}
 			__flushHeld();
 			remaining = __frameDeadline - Timer.stamp();
 		}
@@ -1445,7 +1606,12 @@ final class CrossByte extends EventDispatcher {
 		#if precision_tick
 		var minSleep = 0.001;
 
-		while (Timer.stamp() < __frameDeadline) {
+		while (Timer.stamp() < __frameDeadline && __getRunning()) {
+			if (__hasPosted) {
+				__runPostedNow();
+				continue;
+			}
+
 			if (Timer.stamp() + __sleepAccuracy > __frameDeadline) {
 				minSleep = 0;
 			}
@@ -1456,19 +1622,44 @@ final class CrossByte extends EventDispatcher {
 		__dt = Timer.stamp() - frameStartTime;
 		__advanceDeadline();
 		#else
-		// The bulk of the wait goes in one sleep, and only the last couple of
-		// milliseconds are stepped out. Stepping the whole remainder — which
-		// is what this did — costs a syscall per millisecond, so better than
-		// eighty per frame at the default tick rate, all of them to arrive at
-		// the same moment one sleep would have.
-		while (true) {
+		// The bulk of the wait goes in one blocking call, and only the last
+		// couple of milliseconds are stepped out. Stepping the whole remainder
+		// — which is what this once did — costs a syscall per millisecond, so
+		// better than eighty per frame at the default tick rate, all of them
+		// to arrive at the same moment one sleep would have.
+		//
+		// The bulk is a wait on a lock rather than a sleep, so that `post`
+		// can end it. What another thread hands over is run then, and the
+		// wait goes on to the deadline: the tick cadence is what it was, and
+		// the handoff no longer waits for the next tick. The tail's short
+		// steps look for work between them.
+		while (__getRunning()) {
 			var remaining:Float = __frameDeadline - Timer.stamp();
 
 			if (remaining <= 0) {
 				break;
 			}
 
+			if (__hasPosted) {
+				__runPostedNow();
+				continue;
+			}
+
+			#if target.threaded
+			// Whole milliseconds only. hxcpp's timed lock on Windows waits out
+			// any fraction of a millisecond by spinning -- measured, a 0.7ms
+			// wait burned 0.94ms of CPU -- which at sixty ticks a second cost
+			// a loop with nothing to do two percent of a core. The fraction
+			// goes to the short sleeps below instead.
+			var bulk:Float = Math.ffloor((remaining - WAIT_SLACK) * 1000) / 1000;
+			if (bulk >= 0.001) {
+				__sleepUntilWoken(bulk);
+			} else {
+				Sys.sleep(0.001);
+			}
+			#else
 			Sys.sleep(remaining > SLEEP_SLACK ? remaining - SLEEP_SLACK : 0.001);
+			#end
 		}
 
 		__dt = Timer.stamp() - frameStartTime;
@@ -1476,4 +1667,33 @@ final class CrossByte extends EventDispatcher {
 		#end
 		#end
 	}
+
+	// Runs what was posted, then sends what it asked to have sent, before
+	// the loop goes back to waiting.
+	@:noCompletion private function __runPostedNow():Void {
+		__runPosted();
+		__flushHeld();
+	}
+
+	#if !js
+	/**
+	 * Puts a wake socket in the poll set, so that `post` from another thread
+	 * ends the wait a POLL loop spends inside poll. Without one -- a process
+	 * that cannot open a loopback connection -- the loop is woken for posted
+	 * work at the end of each poll, as it was before.
+	 */
+	@:noCompletion private function __armWakeSocket():Void {
+		if (__wakeSocket != null || __socketRegistry == null) {
+			return;
+		}
+
+		var waker:WakeSocket = WakeSocket.create();
+		if (waker == null) {
+			return;
+		}
+
+		__socketRegistry.register(waker.reader);
+		__wakeSocket = waker;
+	}
+	#end
 }
