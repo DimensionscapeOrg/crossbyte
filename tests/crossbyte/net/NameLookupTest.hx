@@ -380,6 +380,192 @@ class NameLookupTest extends utest.Test {
 			});
 		});
 	}
+
+	/**
+		`DatagramSocket.connect()` to a name returns at once, and a name that
+		does not resolve is reported afterwards, as `send()` to one is. It was
+		looked up in the call, and one that did not resolve was thrown as
+		`ArgumentError` once the resolver had taken its second over it.
+
+		The socket reads as connected meanwhile, so a datagram sent with no
+		destination is taken and waits for the answer, and goes with the
+		failure, reported in the same event.
+	**/
+	@:timeout(20000)
+	public function testADatagramSocketConnectingToAMissingNameIsNotHeldByTheLookup(async:Async):Void {
+		var socket = new DatagramSocket();
+		var name:String = __missingName();
+		var failures:Array<String> = [];
+		var thrown:Dynamic = null;
+		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("hello");
+
+		var started:Float = haxe.Timer.stamp();
+		try {
+			socket.connect(name, 9);
+			socket.send(payload);
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		var spent:Float = haxe.Timer.stamp() - started;
+
+		Assert.isNull(thrown, "connect() looked the name up in the call and threw: " + thrown);
+		Assert.isTrue(spent < PROMPT, 'connect() spent $spent s on a name: it waited on the resolver');
+		Assert.isTrue(socket.connected, "a socket connecting to a name does not read as connected while it is looked up");
+
+		NetPump.until(() -> thrown != null || failures.length > 0, 15.0, function(_) {
+			Assert.equals(1, failures.length, "a name that does not resolve was not reported exactly once");
+			Assert.isTrue(failures.length > 0 && failures[0].indexOf(name) >= 0, "the failure does not name what did not resolve: " + failures[0]);
+			Assert.isFalse(socket.connected, "a socket whose peer's name did not resolve still reads as connected");
+			Assert.equals(0, socket.remotePort);
+			socket.close();
+			async.done();
+		});
+	}
+
+	/**
+		A name that resolves connects the socket to the address it resolved
+		to, through one lookup off the runtime's thread. A datagram sent
+		before the answer came reaches the peer once it has, and the socket
+		hears the peer back, which a connected socket does only from the
+		address it is connected to.
+	**/
+	@:timeout(15000)
+	public function testADatagramSocketConnectsToAName(async:Async):Void {
+		var peer = new DatagramSocket();
+		var heardByPeer:Array<String> = [];
+		peer.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heardByPeer.push(e.data.readUTFBytes(e.data.length)));
+		peer.bind(0, "127.0.0.1");
+		peer.receive();
+
+		var socket = new DatagramSocket();
+		var heard:Array<String> = [];
+		var failures:Array<String> = [];
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heard.push(e.data.readUTFBytes(e.data.length)));
+		socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
+
+		NetPump.until(() -> peer.localPort != 0, 5.0, function(_) {
+			var lookups:Int = crossbyte._internal.net.Resolver.__started;
+			socket.connect("localhost", peer.localPort);
+			Assert.equals(lookups + 1, crossbyte._internal.net.Resolver.__started, "the name was not looked up off the runtime's thread");
+
+			// Before the answer can have come, so it waits for it; and
+			// receiving from before then too, while the socket has no address
+			// of its own yet.
+			var payload = new ByteArray();
+			payload.writeUTFBytes("sent while looking up");
+			socket.send(payload);
+			socket.receive();
+
+			NetPump.until(() -> heardByPeer.length > 0 || failures.length > 0, 10.0, function(_) {
+				Assert.same([], failures);
+				Assert.same(["sent while looking up"], heardByPeer, "a datagram sent while the name was looked up did not arrive");
+				Assert.isTrue(socket.connected);
+				Assert.equals("127.0.0.1", socket.remoteAddress, "the socket does not report the address its name resolved to");
+				Assert.equals(peer.localPort, socket.remotePort);
+
+				var reply = new ByteArray();
+				reply.writeUTFBytes("reply");
+				peer.send(reply, 0, 0, "127.0.0.1", socket.localPort);
+
+				NetPump.until(() -> heard.length > 0, 5.0, function(_) {
+					Assert.same(["reply"], heard, "the connected socket did not hear its peer");
+					socket.close();
+					peer.close();
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		A socket closed while its peer's name is looked up does nothing when
+		the answer comes: what waited on it went with the socket, and there is
+		no socket left to connect.
+	**/
+	@:timeout(15000)
+	public function testADatagramSocketClosedWhileItsPeerIsLookedUpSendsNothing(async:Async):Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var uncaught:Array<String> = [];
+		var onUncaught = function(e:crossbyte.events.UncaughtErrorEvent) uncaught.push(Std.string(e.error));
+		runtime.addEventListener(crossbyte.events.UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+
+		var peer = new DatagramSocket();
+		var heardByPeer:Array<String> = [];
+		peer.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) heardByPeer.push(e.data.readUTFBytes(e.data.length)));
+		peer.bind(0, "127.0.0.1");
+		peer.receive();
+
+		NetPump.until(() -> peer.localPort != 0, 5.0, function(_) {
+			var socket = new DatagramSocket();
+			var failures:Array<String> = [];
+			socket.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
+			socket.connect("localhost", peer.localPort);
+			var payload = new ByteArray();
+			payload.writeUTFBytes("never sent");
+			socket.send(payload);
+			socket.close();
+
+			// Its answer is in once that of a lookup started after it is, give
+			// or take the order two threads finish in.
+			var probe = new DatagramSocket();
+			probe.connect("localhost", peer.localPort);
+			NetPump.until(() -> probe.remoteAddress != "", 10.0, function(_) {
+				NetPump.wait(0.3, function() {
+					runtime.removeEventListener(crossbyte.events.UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+					Assert.same([], uncaught, "the answer for a closed socket failed on the runtime");
+					Assert.same([], failures, "a socket closed while its peer was looked up reported on it");
+					Assert.same([], heardByPeer, "a socket closed while its peer was looked up sent what it had been given");
+					Assert.isFalse(socket.connected);
+					probe.close();
+					peer.close();
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		The runtime goes on while a datagram socket's peer is looked up
+		slowly: a single label, which on Windows the resolver asks LLMNR and
+		NetBIOS about too before it gives up, as in
+		`testTheRuntimeRunsWhileASlowLookupDoes`. It was looked up in the
+		call, with every socket and timer on the runtime waiting.
+	**/
+	@:timeout(40000)
+	public function testTheRuntimeRunsWhileDatagramPeersAreLookedUp(async:Async):Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var ticks:Int = 0;
+		var onTick = function(_) ticks++;
+
+		var socket = new DatagramSocket();
+		var socketFailed:Bool = false;
+		socket.addEventListener(IOErrorEvent.IO_ERROR, function(_) socketFailed = true);
+
+		runtime.addEventListener(crossbyte.events.TickEvent.TICK, onTick);
+		var thrown:Dynamic = null;
+		var started:Float = haxe.Timer.stamp();
+		try {
+			socket.connect("crossbyte-missing-" + Std.random(0x3FFFFFFF), 9);
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		var spent:Float = haxe.Timer.stamp() - started;
+
+		Assert.isNull(thrown, "a name was looked up in the call: " + thrown);
+		Assert.isTrue(spent < PROMPT, 'connect() spent $spent s on a name: the runtime waited on the resolver');
+
+		NetPump.until(() -> thrown != null || socketFailed, 35.0, function(_) {
+			runtime.removeEventListener(crossbyte.events.TickEvent.TICK, onTick);
+			Assert.isTrue(socketFailed, "a datagram socket's peer that does not resolve was never reported");
+			Assert.isTrue(ticks > 1, 'the runtime ticked $ticks times while the name was looked up');
+			socket.close();
+			async.done();
+		});
+	}
+
 	#end
 
 	private static function __missingName():String {
