@@ -166,11 +166,6 @@ class TestSuites {
 		// Where the worker pool has threads, and so a queue to bound.
 		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
 		#end
-		// Registered here rather than in addMetrics because this is the group
-		// the native smoke suite reaches, and on hxcpp, only there, the
-		// metric updates are lock-free. From addMetrics it ran on eval and the
-		// jvm and never natively.
-		runner.addCase(new crossbyte.metrics.MetricsTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {
@@ -347,8 +342,7 @@ class TestSuites {
 	}
 
 	public static function addMetrics(runner:Runner):Void {
-		// MetricsTest is registered by addDatabase, which the native smoke
-		// suite reaches; see there.
+		runner.addCase(new crossbyte.metrics.MetricsTest());
 		runner.addCase(new crossbyte.metrics.MetricsEndpointTest());
 	}
 
@@ -402,6 +396,9 @@ class TestSuites {
 		addDatabase(runner);
 		addIPC(runner);
 		addUtils(runner);
+		// The metrics group ran on eval and the jvm only, and hxcpp is the one
+		// target whose metric updates are lock-free.
+		addMetrics(runner);
 		// The whole IO group, not a hand-picked subset. Both halves of it
 		// need a native target and had been running on nothing:
 		// ByteArray's growth guarantees are guarded away from eval, whose
