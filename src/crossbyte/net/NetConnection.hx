@@ -295,12 +295,16 @@ abstract NetConnection(NetConnectionBase) from NetConnectionBase to NetConnectio
 	}
 
 	@:from
-	/** Wraps an arbitrary `INetConnection`, adapting external implementations when needed. */
+	/**
+		Wraps an arbitrary `INetConnection`, adapting external implementations
+		when needed. The same connection wrapped again, while an `RPCSession`
+		is observing it, is the same `NetConnection`.
+	**/
 	public static inline function fromINetConnection(connection:INetConnection):NetConnection {
 		if (Std.isOfType(connection, NetConnectionBase)) {
 			return cast connection;
 		}
-		return new NetConnectionAdapter(connection);
+		return NetConnectionAdapter.of(connection);
 	}
 
 	/** Wraps an existing TCP socket and immediately binds connection callbacks. */
@@ -369,6 +373,57 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 	@:noCompletion private var __applicationOnClose:Reason->Void = null;
 	@:noCompletion private var __forwardingReady:Bool = false;
 	@:noCompletion private var __applicationOnReady:Void->Void = null;
+
+	/*
+		The adapters forwarding a connection's onClose or onReady to an
+		observer, by the connection they wrap. A connection an application
+		wrote has only those callbacks to be observed through, and the one
+		adapter observing it keeps the application's own behind its forwarder.
+		Wrapped a second time, `(connection : NetConnection).onClose = ...`
+		after a session was made on it, a new adapter set the callback on the
+		connection itself, over the forwarder: the session never heard it end,
+		and the calls waiting on it waited for good. So a connection that is
+		being observed is wrapped by the adapter observing it, until it ends.
+
+		Only connections that are not CrossByte's own come here, and only while
+		observed; guarded, since runtimes on other threads wrap their own.
+	*/
+	@:noCompletion private static var __observed:Null<haxe.ds.ObjectMap<INetConnection, NetConnectionAdapter>> = null;
+	#if (cpp || neko || hl || java || jvm || eval)
+	@:noCompletion private static final __observedLock:sys.thread.Mutex = new sys.thread.Mutex();
+	#end
+
+	/** The adapter for `connection`: the one observing it, if one is, or a new one. **/
+	@:noCompletion private static function of(connection:INetConnection):NetConnectionAdapter {
+		var adapter:Null<NetConnectionAdapter> = null;
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.acquire();
+		#end
+		if (__observed != null) {
+			adapter = __observed.get(connection);
+		}
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.release();
+		#end
+		return adapter != null ? adapter : new NetConnectionAdapter(connection);
+	}
+
+	@:noCompletion private function __setObserved(observed:Bool):Void {
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.acquire();
+		#end
+		if (observed) {
+			if (__observed == null) {
+				__observed = new haxe.ds.ObjectMap();
+			}
+			__observed.set(__connection, this);
+		} else if (__observed != null && __observed.get(__connection) == this) {
+			__observed.remove(__connection);
+		}
+		#if (cpp || neko || hl || java || jvm || eval)
+		__observedLock.release();
+		#end
+	}
 
 	private function new(connection:INetConnection) {
 		__connection = connection;
@@ -442,9 +497,12 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 			__connection.onClose = __forwardClose;
 			__forwardingClose = true;
 		}
+		__setObserved(observer != null);
 	}
 
 	@:noCompletion private function __forwardClose(reason:Reason):Void {
+		// Ended: wrapped again from here on, it may have a new adapter.
+		__setObserved(false);
 		__notifyClose(reason);
 		final onClose = __applicationOnClose;
 		if (onClose != null) {
@@ -463,6 +521,9 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 			__applicationOnReady = __connection.onReady;
 			__connection.onReady = __forwardReady;
 			__forwardingReady = true;
+		}
+		if (observer != null) {
+			__setObserved(true);
 		}
 	}
 

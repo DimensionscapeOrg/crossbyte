@@ -32,6 +32,8 @@ class LinkedConnection implements INetConnection {
 	public var sent:Int = 0;
 	/** Once closed, a send throws, as a closed socket's does. **/
 	public var strictSend:Bool = false;
+	/** Every send throws, open or not, as one to a peer that has reset does. **/
+	public var failSends:Bool = false;
 	/** `false` once closed. **/
 	public var open(default, null):Bool = true;
 
@@ -59,8 +61,8 @@ class LinkedConnection implements INetConnection {
 	}
 
 	public function send(data:ByteArray):Void {
-		if (!open && strictSend) {
-			throw "send on a closed connection";
+		if (failSends || (!open && strictSend)) {
+			throw "send failed";
 		}
 		sent++;
 		outTimestamp = Timer.getTime();
