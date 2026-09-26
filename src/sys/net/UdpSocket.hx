@@ -128,7 +128,10 @@ class UdpSocket extends Socket {
 	}
 
 	public function readFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
-		var bb = ByteBuffer.allocate(len);
+		// Straight into the caller's buffer. A new buffer of `len` bytes was
+		// allocated -- and zeroed -- for every datagram, 64 KB for each of a
+		// DatagramSocket's reads, and the datagram then copied out of it.
+		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
 		var src:SocketAddress = try {
 			__dc().receive(bb);
 		} catch (e:Dynamic) {
@@ -137,12 +140,9 @@ class UdpSocket extends Socket {
 		// Non-blocking channel with no datagram available.
 		if (src == null)
 			throw Blocked;
-		bb.flip();
-		var n:Int = bb.remaining();
+		var n:Int = bb.position() - pos;
 		if (n == 0)
 			throw new haxe.io.Eof();
-		var data = buf.getData();
-		bb.get(data, pos, n);
 		__fromSocketAddress(addr, cast(src, InetSocketAddress));
 		return n;
 	}
