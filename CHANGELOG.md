@@ -726,6 +726,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.createTempFile` and `createTempDirectory` can no longer be steered
+  by another user of a shared temporary directory. The name was "ofl" and a
+  `Math.random` number below 2^24, and the file was made after checking the
+  name was free, by a write that follows symbolic links, so a user who
+  planted links at likely names had the next temporary file written
+  wherever they pointed. A name now carries 64 bits from the platform's
+  secure random source, and the file or directory is created only if
+  nothing is at the name, `O_CREAT | O_EXCL | O_NOFOLLOW`, readable by its
+  owner only, on POSIX; `CREATE_NEW` on Windows; their equivalents on the jvm
+  and Node, with a taken name passed over for another. The interpreter,
+  which has neither, still checks first.
 - An asynchronous `FileStream` read hands out only bytes it has read. The
   read buffer was allocated at the file's full size before anything was
   loaded, so `bytesAvailable` counted the whole file from the first
