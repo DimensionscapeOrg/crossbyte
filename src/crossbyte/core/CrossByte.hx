@@ -855,12 +855,29 @@ final class CrossByte extends EventDispatcher {
 		__reportingUncaught = false;
 	}
 
+	/**
+		Reports a socket listener that threw where the runtime could not catch
+		it itself -- inside a callback Node's own loop delivers -- the way the
+		native registry reports one: through `__uncaught` on the calling
+		thread's runtime, or to the log when there is none.
+	**/
+	@:noCompletion public static function __socketListenerThrew(error:Dynamic, socket:Dynamic, what:String):Void {
+		var runtime:Null<CrossByte> = __currentOrNull();
+		if (runtime != null) {
+			runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, socket);
+			return;
+		}
+		try {
+			Logger.error(what + ": " + Std.string(error));
+		} catch (_:Dynamic) {}
+	}
+
 	@:noCompletion private static function __uncaughtMessage(source:String):String {
 		return switch (source) {
 			case UncaughtErrorEvent.TIMER: "A timer callback threw; the timer was kept and the runtime carries on";
 			case UncaughtErrorEvent.TICK: "A tick listener threw; the other listeners still ran";
 			case UncaughtErrorEvent.LIFECYCLE: "A lifecycle listener threw; the other listeners still ran";
-			case UncaughtErrorEvent.SOCKET: "A socket handler threw; that socket is closed and the others carry on";
+			case UncaughtErrorEvent.SOCKET: "A socket handler threw; a connection is closed for it, a datagram socket kept, and the others carry on";
 			case UncaughtErrorEvent.POSTED: "A callback posted to the runtime threw";
 			default: "The runtime loop threw; the frame was cut short and the loop carries on";
 		}

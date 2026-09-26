@@ -4,6 +4,7 @@ import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.Event;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
+import crossbyte.events.UncaughtErrorEvent;
 import crossbyte.events.WebSocketCloseEvent;
 import crossbyte.io.ByteArray;
 import utest.Assert;
@@ -23,6 +24,13 @@ class NodeListenerFailureTest extends utest.Test {
 	#if nodejs
 	@:timeout(15000)
 	public function testAThrowingDataListenerClosesOnlyItsConnection(async:Async):Void {
+		// Reported the way the native registry reports one: as the runtime's
+		// UNCAUGHT_ERROR, from a socket.
+		var runtime = crossbyte.core.CrossByte.current();
+		var reported:Array<String> = [];
+		var onUncaught = (e:UncaughtErrorEvent) -> reported.push(e.source);
+		runtime.addEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+
 		var server = new ServerSocket();
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
 			var socket = e.socket;
@@ -47,6 +55,8 @@ class NodeListenerFailureTest extends utest.Test {
 
 				NetPump.until(() -> bad.ended, 5.0, function(_) {
 					Assert.isTrue(bad.ended, "the connection whose listener threw was left open");
+					runtime.removeEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+					Assert.same([UncaughtErrorEvent.SOCKET], reported, "the failure was not reported as the runtime's uncaught error");
 
 					// And the other one is still served.
 					healthy.send(haxe.io.Bytes.ofString("still here"));

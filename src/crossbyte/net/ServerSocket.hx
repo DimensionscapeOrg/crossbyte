@@ -514,8 +514,7 @@ class ServerSocket extends EventDispatcher {
 			try {
 				dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
 			} catch (e:Dynamic) {
-				// To report through runtime.__uncaught(e, UncaughtErrorEvent.SOCKET, socket) once the runtime has it (C1).
-				crossbyte.utils.Logger.error('A "connect" listener threw, and the connection it was handling was closed: ' + Std.string(e));
+				CrossByte.__socketListenerThrew(e, socket, 'A "connect" listener threw, and the connection it was handling was closed');
 				try {
 					socket.close();
 				} catch (_:Dynamic) {}

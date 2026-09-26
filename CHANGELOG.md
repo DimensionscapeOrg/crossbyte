@@ -1160,6 +1160,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Node, a socket, server, WebSocket or datagram listener that throws is
+  reported as the runtime's `UncaughtErrorEvent`, with source `SOCKET`, as it
+  is natively. The failure was contained there already, but only logged: an
+  application watching `UNCAUGHT_ERROR` never heard of a failure Node's own
+  loop delivered.
 - `removeEventListener(type, this.handler)` removed nothing on eval and the
   jvm. It reads the method again, and there every read of a bound method is
   a new closure that `==` never matches -- hxcpp compares two reads equal and

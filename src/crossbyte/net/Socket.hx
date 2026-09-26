@@ -1743,8 +1743,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		trusted to be finished. The rest of the process carries on.
 	**/
 	@:noCompletion private function __contain(error:Dynamic, event:String):Void {
-		// To report through runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
-		crossbyte.utils.Logger.error('A "$event" listener threw, and the connection it was handling was closed: ' + Std.string(error));
+		CrossByte.__socketListenerThrew(error, this, 'A "$event" listener threw, and the connection it was handling was closed');
 
 		try {
 			if (__socket != null) {
