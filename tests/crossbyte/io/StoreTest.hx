@@ -500,6 +500,154 @@ class StoreTest extends utest.Test {
 			}, failWith(async));
 	}
 
+	#if !(js && !nodejs)
+	public function testAKeyTheOldWriterOrphanedIsRecoveredOnOpen(async:Async):Void {
+		// The file backend used to overwrite by deleting the old value and then
+		// renaming `<key>.value.writing` into place. A process that died
+		// between the two left exactly this on disk: no value, and a complete
+		// temporary file holding the new one, which the next open deleted as
+		// debris, losing the key outright.
+		var name = freshName();
+		var reopened:Store = null;
+
+		Store.open(name)
+			.flatMap(store -> store.putString("session.token", "v1-old"))
+			.flatMap(function(store:Store):Future<Store> {
+				store.close();
+
+				var value:String = __valuePath(name, "session.token");
+				sys.FileSystem.deleteFile(value);
+				sys.io.File.saveContent(value + ".writing", "v2-new-and-complete");
+
+				return Store.open(name);
+			})
+			.flatMap(function(store:Store):Future<Null<String>> {
+				reopened = store;
+				return store.getString("session.token");
+			})
+			.flatMap(function(value:Null<String>):Future<Store> {
+				Assert.equals("v2-new-and-complete", value, "the key did not survive a crash between delete and rename");
+				Assert.same([], __temporaries(name));
+				return reopened.clear();
+			})
+			.then(function(_):Void {
+				reopened.close();
+				async.done();
+			}, failWith(async));
+	}
+
+	public function testAnInterruptedWriteLeavesThePreviousValueAndNoDebris(async:Async):Void {
+		// A write that died before its rename never completed, so the value it
+		// was replacing is still the value.
+		var name = freshName();
+		var reopened:Store = null;
+
+		Store.open(name)
+			.flatMap(store -> store.putString("counter", "41"))
+			.flatMap(function(store:Store):Future<Store> {
+				store.close();
+				sys.io.File.saveContent(__valuePath(name, "counter") + ".0000abcd00000001.writing", "4");
+				return Store.open(name);
+			})
+			.flatMap(function(store:Store):Future<Null<String>> {
+				reopened = store;
+				return store.getString("counter");
+			})
+			.flatMap(function(value:Null<String>):Future<Store> {
+				Assert.equals("41", value);
+				Assert.same([], __temporaries(name));
+				return reopened.clear();
+			})
+			.then(function(_):Void {
+				reopened.close();
+				async.done();
+			}, failWith(async));
+	}
+
+	#if cpp
+	public function testAnOverwriteNeverLeavesTheKeyAbsent():Void {
+		// Two runtimes over one store, one overwriting a key while the other
+		// reads it. Deleting and then renaming left a window in which the key
+		// did not exist, a reader there saw null, a value never written,
+		// and on Windows a reader holding the file made the delete itself fail
+		// the write.
+		var name = freshName();
+		var writer = new crossbyte.io._internal.store.FileStore(name);
+		var reader = new crossbyte.io._internal.store.FileStore(name);
+		var opened:Array<String> = [];
+
+		writer.open(error -> opened.push(error));
+		reader.open(error -> opened.push(error));
+		Assert.same([null, null], opened);
+
+		var writeErrors:Array<String> = [];
+		writer.put("contested", __bytes("one"), error -> if (error != null) writeErrors.push(error));
+
+		var done = new sys.thread.Lock();
+
+		sys.thread.Thread.create(function():Void {
+			for (i in 0...400) {
+				writer.put("contested", __bytes(i % 2 == 0 ? "two" : "one"), error -> if (error != null) writeErrors.push(error));
+			}
+
+			done.release();
+		});
+
+		var absent:Int = 0;
+		var wrong:Array<String> = [];
+		var readErrors:Array<String> = [];
+		var reads:Int = 0;
+		var finished:Bool = false;
+
+		while (!finished) {
+			finished = done.wait(0.0);
+
+			reader.get("contested", function(error:String, value:Null<ByteArray>):Void {
+				reads++;
+
+				if (error != null) {
+					readErrors.push(error);
+				} else if (value == null) {
+					absent++;
+				} else {
+					var text:String = value.toString();
+
+					if (text != "one" && text != "two") {
+						wrong.push(text);
+					}
+				}
+			});
+		}
+
+		writer.clear(_ -> {});
+		writer.close();
+		reader.close();
+
+		Assert.isTrue(reads > 0);
+		Assert.equals(0, absent, 'the key read as absent $absent times in $reads reads');
+		Assert.same([], wrong);
+		Assert.equals(0, writeErrors.length, writeErrors.length == 0 ? "" : writeErrors[0]);
+		Assert.equals(0, readErrors.length, readErrors.length == 0 ? "" : readErrors[0]);
+	}
+
+	private static function __bytes(text:String):ByteArray {
+		var data = new ByteArray();
+		data.writeUTFBytes(text);
+		return data;
+	}
+	#end
+
+	/** Where the file backend keeps `key`, restating its private layout as `removeStoreDirectory` does. **/
+	private static function __valuePath(name:String, key:String):String {
+		return haxe.io.Path.join([File.applicationStorageDirectory.nativePath, "stores", name, haxe.io.Bytes.ofString(key).toHex() + ".value"]);
+	}
+
+	private static function __temporaries(name:String):Array<String> {
+		var directory = haxe.io.Path.join([File.applicationStorageDirectory.nativePath, "stores", name]);
+		return [for (entry in sys.FileSystem.readDirectory(directory)) if (StringTools.endsWith(entry, ".writing")) entry];
+	}
+	#end
+
 	private function failWith(async:Async):String->Void {
 		return function(message:String):Void {
 			Assert.fail(message);

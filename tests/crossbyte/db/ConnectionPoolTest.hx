@@ -12,6 +12,7 @@ private class FakeConnection {
 	public var id(default, null):Int;
 	public var closed(default, null):Bool = false;
 	public var healthy:Bool = true;
+	public var inTransaction:Bool = false;
 
 	public function new(id:Int) {
 		this.id = id;
@@ -42,6 +43,20 @@ class ConnectionPoolTest extends utest.Test {
 			validate: validate,
 			maxSize: maxSize,
 			acquireTimeout: (acquireTimeout == null) ? 0.05 : acquireTimeout
+		});
+	}
+
+	private function __poolWithReset(reset:FakeConnection->Void):ConnectionPool<FakeConnection> {
+		return new ConnectionPool({
+			factory: function() {
+				var connection = new FakeConnection(nextId++);
+				created.push(connection);
+				return connection;
+			},
+			close: connection -> connection.close(),
+			reset: reset,
+			maxSize: 1,
+			acquireTimeout: 0.05
 		});
 	}
 
@@ -113,6 +128,63 @@ class ConnectionPoolTest extends utest.Test {
 		Assert.equals(1, pool.available());
 
 		pool.close();
+	}
+
+	public function testResetRunsOnEveryReleaseIncludingWhenTheBodyThrows():Void {
+		// A body that opened a transaction and then threw handed the next
+		// borrower that transaction: its writes joined it, and the locks it
+		// held stayed held. validate() cannot see it, an open transaction
+		// answers a ping like any other, so the release has to fix it.
+		var resets:Int = 0;
+		var pool = __poolWithReset(c -> {
+			resets++;
+			c.inTransaction = false;
+		});
+
+		try {
+			pool.withConnection(function(c:FakeConnection):Void {
+				c.inTransaction = true;
+				throw "a bug after BEGIN";
+			});
+		} catch (_:Dynamic) {}
+
+		Assert.equals(1, resets);
+		Assert.isFalse(pool.withConnection(c -> c.inTransaction), "the next borrower was handed an open transaction");
+		Assert.equals(2, resets);
+
+		// A plain release runs it too.
+		pool.release(pool.acquire());
+		Assert.equals(3, resets);
+		Assert.equals(1, pool.size());
+	}
+
+	public function testAResetThatThrowsRetiresTheConnection():Void {
+		var pool = __poolWithReset(c -> throw "cannot roll back");
+		var first = pool.acquire();
+
+		pool.release(first);
+
+		Assert.isTrue(first.closed);
+		Assert.equals(0, pool.size());
+		Assert.equals(0, pool.available());
+		Assert.equals(0, pool.inUse());
+
+		// Its slot is free again.
+		var second = pool.acquire();
+		Assert.notEquals(first.id, second.id);
+		pool.release(second);
+	}
+
+	public function testReleasingIntoAClosedPoolSkipsTheReset():Void {
+		var resets:Int = 0;
+		var pool = __poolWithReset(c -> resets++);
+		var connection = pool.acquire();
+
+		pool.close();
+		pool.release(connection);
+
+		Assert.equals(0, resets);
+		Assert.isTrue(connection.closed);
 	}
 
 	public function testUnhealthyConnectionsAreReplacedOnAcquire():Void {

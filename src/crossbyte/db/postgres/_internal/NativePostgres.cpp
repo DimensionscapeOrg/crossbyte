@@ -2,7 +2,11 @@
 
 #include "NativePostgres.h"
 
+#include <climits>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -15,9 +19,11 @@
 
 struct pg_conn;
 struct pg_result;
+struct pg_cancel;
 typedef unsigned int Oid;
 typedef pg_conn PGconn;
 typedef pg_result PGresult;
+typedef pg_cancel PGcancel;
 
 enum ConnStatusType {
 	CONNECTION_OK = 0,
@@ -39,8 +45,22 @@ enum ExecStatusType {
 	PGRES_PIPELINE_ABORTED = 11
 };
 
+// Threading. Nothing in this file is shared between connections except the
+// table of loaded libraries, which is written under a lock and never changes
+// once an entry is in it. Everything a call produces is returned to the caller
+// as a new Haxe object, so there is no buffer for a second thread to
+// overwrite: the bridge used to return every result through one process-wide
+// buffer, and with a worker per pooled connection a query could read another
+// query's rows, or the freed memory of a buffer another thread had grown.
+//
+// Collection. Every call that can block, connect, execute, cancel, finish,
+// runs in a GC-free zone, so a query waiting on the server does not hold up
+// a collection on any other thread. Inside a zone nothing may touch the GC
+// heap, which is why each entry point copies its Haxe inputs into native
+// memory first and builds its Haxe result only after the zone is closed.
 namespace {
 	struct LibPQApi {
+		std::string path;
 #if defined(_WIN32)
 		HMODULE module = nullptr;
 #else
@@ -58,36 +78,71 @@ namespace {
 		char* (*PQgetvalue)(const PGresult* res, int rowNum, int fieldNum) = nullptr;
 		int (*PQgetisnull)(const PGresult* res, int rowNum, int fieldNum) = nullptr;
 		char* (*PQcmdTuples)(PGresult* res) = nullptr;
+		char* (*PQcmdStatus)(PGresult* res) = nullptr;
 		Oid (*PQoidValue)(const PGresult* res) = nullptr;
 		void (*PQclear)(PGresult* res) = nullptr;
 		size_t (*PQescapeStringConn)(PGconn* conn, char* to, const char* from, size_t length, int* error) = nullptr;
-		int (*PQserverVersion)(const PGconn* conn) = nullptr;
 		PGresult* (*PQexecParams)(PGconn* conn, const char* command, int nParams, const Oid* paramTypes,
 			const char* const* paramValues, const int* paramLengths, const int* paramFormats, int resultFormat) = nullptr;
 		int (*PQgetlength)(const PGresult* res, int rowNum, int fieldNum) = nullptr;
-		bool loaded = false;
-		std::string loadedPath;
-		std::string lastError;
-		std::string scratch;
-		// Held apart from scratch because it carries NUL bytes, which is the
-		// whole reason this path exists: it cannot be returned as a C string.
-		std::vector<unsigned char> resultBlock;
+		PGcancel* (*PQgetCancel)(PGconn* conn) = nullptr;
+		int (*PQcancel)(PGcancel* cancel, char* errbuf, int errbufsize) = nullptr;
+		void (*PQfreeCancel)(PGcancel* cancel) = nullptr;
 	};
 
-	LibPQApi g_api;
+	// Keyed by the path each was loaded from, so a connection configured with
+	// its own library gets that library even after another was loaded. Never
+	// unloaded: a connection opened through one may outlive any later open.
+	std::mutex g_loadLock;
+	std::vector<LibPQApi*> g_libraries;
 
-	std::string trim(const std::string& value) {
-		size_t start = 0;
-		while (start < value.size() && (value[start] == ' ' || value[start] == '\t' || value[start] == '\r' || value[start] == '\n')) {
-			start++;
+	// One per connection, and the only state a connection has.
+	struct Handle {
+		const LibPQApi* api = nullptr;
+		PGconn* conn = nullptr;
+		// Made once at connect, so cancel() never touches the connection
+		// itself: libpq allows PQcancel on another thread for exactly that
+		// reason.
+		PGcancel* cancel = nullptr;
+		// Why the open failed; empty once it has succeeded.
+		std::string error;
+	};
+
+	struct ResultGuard {
+		const LibPQApi* api;
+		PGresult* result;
+
+		~ResultGuard() {
+			if (result != nullptr) {
+				api->PQclear(result);
+			}
+		}
+	};
+
+	std::string toNative(const ::String& value) {
+		if (value.raw_ptr() == nullptr) {
+			return std::string();
 		}
 
-		size_t end = value.size();
-		while (end > start && (value[end - 1] == ' ' || value[end - 1] == '\t' || value[end - 1] == '\r' || value[end - 1] == '\n')) {
-			end--;
+		int length = 0;
+		const char* utf8 = value.utf8_str(nullptr, true, &length);
+		return utf8 == nullptr ? std::string() : std::string(utf8, static_cast<size_t>(length));
+	}
+
+	::String toHaxe(const std::string& value) {
+		return ::String::create(value.data(), static_cast<int>(value.size()));
+	}
+
+	// libpq ends its messages with a newline, which reads as a blank line in
+	// every log that prints one.
+	std::string trimMessage(const char* message, const char* fallback) {
+		std::string out = message == nullptr || message[0] == '\0' ? std::string(fallback) : std::string(message);
+
+		while (!out.empty() && (out[out.size() - 1] == '\n' || out[out.size() - 1] == '\r' || out[out.size() - 1] == ' ')) {
+			out.erase(out.size() - 1);
 		}
 
-		return value.substr(start, end - start);
+		return out.empty() ? std::string(fallback) : out;
 	}
 
 	std::string jsonEscape(const std::string& value) {
@@ -120,81 +175,72 @@ namespace {
 		return std::string("{\"error\":\"") + jsonEscape(message) + "\"}";
 	}
 
-	std::string conninfoEscape(const std::string& value) {
-		std::string out;
-		out.reserve(value.size() + 4);
-		for (size_t i = 0; i < value.size(); ++i) {
-			char c = value[i];
-			if (c == '\\' || c == '\'') {
-				out.push_back('\\');
-			}
-			out.push_back(c);
-		}
-		return out;
-	}
-
-	void setLastError(const std::string& message) {
-		g_api.lastError = message;
-	}
-
 #if defined(_WIN32)
-	std::string moduleDir(const std::string& path) {
-		size_t slash = path.find_last_of("\\/");
-		return slash == std::string::npos ? std::string() : path.substr(0, slash);
-	}
-
-	bool tryLoadLibrary(const std::string& path) {
-		std::string actual = path;
-		if (actual.empty()) {
-			return false;
-		}
-		SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
-		HMODULE module = LoadLibraryA(actual.c_str());
-		if (module == nullptr) {
-			return false;
-		}
-		g_api.module = module;
-		g_api.loadedPath = actual;
-		return true;
-	}
-
-	void unloadLibrary() {
-		if (g_api.module != nullptr) {
-			FreeLibrary(g_api.module);
-			g_api.module = nullptr;
-		}
-	}
-
-	void* resolveSymbol(const char* name) {
-		return g_api.module == nullptr ? nullptr : reinterpret_cast<void*>(GetProcAddress(g_api.module, name));
+	void* resolveSymbol(HMODULE module, const char* name) {
+		return reinterpret_cast<void*>(GetProcAddress(module, name));
 	}
 #else
-	bool tryLoadLibrary(const std::string& path) {
-		void* module = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-		if (module == nullptr) {
-			return false;
-		}
-		g_api.module = module;
-		g_api.loadedPath = path;
-		return true;
-	}
-
-	void unloadLibrary() {
-		if (g_api.module != nullptr) {
-			dlclose(g_api.module);
-			g_api.module = nullptr;
-		}
-	}
-
-	void* resolveSymbol(const char* name) {
-		return g_api.module == nullptr ? nullptr : dlsym(g_api.module, name);
+	void* resolveSymbol(void* module, const char* name) {
+		return dlsym(module, name);
 	}
 #endif
 
 	template<typename T>
-	bool loadSymbol(T& target, const char* name) {
-		target = reinterpret_cast<T>(resolveSymbol(name));
+	bool loadSymbol(const LibPQApi& api, T& target, const char* name) {
+		target = reinterpret_cast<T>(resolveSymbol(api.module, name));
 		return target != nullptr;
+	}
+
+	LibPQApi* tryLoad(const std::string& path) {
+		LibPQApi* api = new LibPQApi();
+		api->path = path;
+
+#if defined(_WIN32)
+		SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+		api->module = LoadLibraryA(path.c_str());
+#else
+		api->module = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+#endif
+
+		if (api->module == nullptr) {
+			delete api;
+			return nullptr;
+		}
+
+		bool ok =
+			loadSymbol(*api, api->PQconnectdb, "PQconnectdb") &&
+			loadSymbol(*api, api->PQstatus, "PQstatus") &&
+			loadSymbol(*api, api->PQerrorMessage, "PQerrorMessage") &&
+			loadSymbol(*api, api->PQfinish, "PQfinish") &&
+			loadSymbol(*api, api->PQexec, "PQexec") &&
+			loadSymbol(*api, api->PQresultStatus, "PQresultStatus") &&
+			loadSymbol(*api, api->PQntuples, "PQntuples") &&
+			loadSymbol(*api, api->PQnfields, "PQnfields") &&
+			loadSymbol(*api, api->PQfname, "PQfname") &&
+			loadSymbol(*api, api->PQgetvalue, "PQgetvalue") &&
+			loadSymbol(*api, api->PQgetisnull, "PQgetisnull") &&
+			loadSymbol(*api, api->PQcmdTuples, "PQcmdTuples") &&
+			loadSymbol(*api, api->PQcmdStatus, "PQcmdStatus") &&
+			loadSymbol(*api, api->PQoidValue, "PQoidValue") &&
+			loadSymbol(*api, api->PQclear, "PQclear") &&
+			loadSymbol(*api, api->PQescapeStringConn, "PQescapeStringConn") &&
+			loadSymbol(*api, api->PQexecParams, "PQexecParams") &&
+			loadSymbol(*api, api->PQgetlength, "PQgetlength") &&
+			loadSymbol(*api, api->PQgetCancel, "PQgetCancel") &&
+			loadSymbol(*api, api->PQcancel, "PQcancel") &&
+			loadSymbol(*api, api->PQfreeCancel, "PQfreeCancel");
+
+		if (!ok) {
+#if defined(_WIN32)
+			FreeLibrary(api->module);
+#else
+			dlclose(api->module);
+#endif
+			delete api;
+			return nullptr;
+		}
+
+		return api;
 	}
 
 	std::vector<std::string> defaultCandidates() {
@@ -211,212 +257,118 @@ namespace {
 		return out;
 	}
 
-	bool ensureLibLoaded(Array<String> libraryPaths) {
-		if (g_api.loaded) {
-			return true;
-		}
-
-		std::vector<std::string> candidates;
-		if (libraryPaths.mPtr != nullptr) {
-			for (int i = 0; i < libraryPaths->length; ++i) {
-				std::string entry = trim(libraryPaths[i].utf8_str());
-				if (!entry.empty()) {
-					candidates.push_back(entry);
-				}
-			}
-		}
-
-		std::vector<std::string> defaults = defaultCandidates();
-		candidates.insert(candidates.end(), defaults.begin(), defaults.end());
+	// Called inside a GC-free zone. The lock is a native one and is held only
+	// for loading, which is why waiting on it there is safe: nobody holding it
+	// can be waiting on the collector.
+	const LibPQApi* loadLibrary(const std::vector<std::string>& candidates, std::string& error) {
+		std::lock_guard<std::mutex> guard(g_loadLock);
 
 		for (size_t i = 0; i < candidates.size(); ++i) {
-			unloadLibrary();
-			if (!tryLoadLibrary(candidates[i])) {
-				continue;
+			for (size_t j = 0; j < g_libraries.size(); ++j) {
+				if (g_libraries[j]->path == candidates[i]) {
+					return g_libraries[j];
+				}
 			}
 
-			bool ok =
-				loadSymbol(g_api.PQconnectdb, "PQconnectdb") &&
-				loadSymbol(g_api.PQstatus, "PQstatus") &&
-				loadSymbol(g_api.PQerrorMessage, "PQerrorMessage") &&
-				loadSymbol(g_api.PQfinish, "PQfinish") &&
-				loadSymbol(g_api.PQexec, "PQexec") &&
-				loadSymbol(g_api.PQresultStatus, "PQresultStatus") &&
-				loadSymbol(g_api.PQntuples, "PQntuples") &&
-				loadSymbol(g_api.PQnfields, "PQnfields") &&
-				loadSymbol(g_api.PQfname, "PQfname") &&
-				loadSymbol(g_api.PQgetvalue, "PQgetvalue") &&
-				loadSymbol(g_api.PQgetisnull, "PQgetisnull") &&
-				loadSymbol(g_api.PQcmdTuples, "PQcmdTuples") &&
-				loadSymbol(g_api.PQoidValue, "PQoidValue") &&
-				loadSymbol(g_api.PQclear, "PQclear") &&
-				loadSymbol(g_api.PQescapeStringConn, "PQescapeStringConn") &&
-				loadSymbol(g_api.PQserverVersion, "PQserverVersion") &&
-				loadSymbol(g_api.PQexecParams, "PQexecParams") &&
-				loadSymbol(g_api.PQgetlength, "PQgetlength");
+			LibPQApi* api = tryLoad(candidates[i]);
 
-			if (ok) {
-				g_api.loaded = true;
-				setLastError("");
-				return true;
+			if (api != nullptr) {
+				g_libraries.push_back(api);
+				return api;
 			}
-			unloadLibrary();
 		}
 
-		setLastError("Could not load libpq or required symbols.");
-		return false;
+		std::string tried;
+		for (size_t i = 0; i < candidates.size(); ++i) {
+			tried += (i == 0 ? "" : ", ") + candidates[i];
+		}
+		error = "Could not load libpq or its required symbols (tried " + tried + ").";
+		return nullptr;
 	}
 
-	std::string buildConninfo(const char* host, int port, const char* user, const char* password, const char* database, const char* sslMode, int connectTimeout) {
-		std::ostringstream conninfo;
-		if (host != nullptr && host[0] != '\0') {
-			conninfo << "host='" << conninfoEscape(host) << "' ";
-		}
-		if (port > 0) {
-			conninfo << "port='" << port << "' ";
-		}
-		if (user != nullptr && user[0] != '\0') {
-			conninfo << "user='" << conninfoEscape(user) << "' ";
-		}
-		if (password != nullptr && password[0] != '\0') {
-			conninfo << "password='" << conninfoEscape(password) << "' ";
-		}
-		if (database != nullptr && database[0] != '\0') {
-			conninfo << "dbname='" << conninfoEscape(database) << "' ";
-		}
-		if (sslMode != nullptr && sslMode[0] != '\0') {
-			conninfo << "sslmode='" << conninfoEscape(sslMode) << "' ";
-		}
-		if (connectTimeout > 0) {
-			conninfo << "connect_timeout='" << connectTimeout << "' ";
-		}
-		return conninfo.str();
-	}
-
-	int parseAffectedRows(PGresult* result) {
-		if (result == nullptr || g_api.PQcmdTuples == nullptr) {
-			return 0;
-		}
-		const char* raw = g_api.PQcmdTuples(result);
+	int parseAffectedRows(const LibPQApi* api, PGresult* result) {
+		const char* raw = api->PQcmdTuples(result);
 		if (raw == nullptr || raw[0] == '\0') {
 			return 0;
 		}
 		return std::atoi(raw);
 	}
-}
 
-extern "C" void* crossbyte_postgres_open(const char* host, int port, const char* user, const char* password, const char* database, const char* sslMode, int connectTimeout, Array<String> libraryPaths) {
-	if (!ensureLibLoaded(libraryPaths)) {
-		return nullptr;
+	bool succeeded(ExecStatusType status) {
+		return status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK || status == PGRES_SINGLE_TUPLE || status == PGRES_EMPTY_QUERY;
 	}
 
-	std::string conninfo = buildConninfo(host, port, user, password, database, sslMode, connectTimeout);
-	PGconn* connection = g_api.PQconnectdb(conninfo.c_str());
-	if (connection == nullptr) {
-		setLastError("PQconnectdb returned null.");
-		return nullptr;
-	}
-	if (g_api.PQstatus(connection) != CONNECTION_OK) {
-		setLastError(g_api.PQerrorMessage(connection) == nullptr ? "Connection failed." : g_api.PQerrorMessage(connection));
-		g_api.PQfinish(connection);
-		return nullptr;
-	}
+	// Runs inside the GC-free zone, and takes ownership of `result`.
+	std::string renderJson(const Handle& handle, PGresult* result) {
+		const LibPQApi* api = handle.api;
 
-	setLastError("");
-	return connection;
-}
-
-extern "C" void crossbyte_postgres_close(void* handle) {
-	if (handle != nullptr && g_api.PQfinish != nullptr) {
-		g_api.PQfinish(static_cast<PGconn*>(handle));
-	}
-}
-
-extern "C" bool crossbyte_postgres_is_open(void* handle) {
-	if (handle == nullptr || !g_api.loaded || g_api.PQstatus == nullptr) {
-		return false;
-	}
-	return g_api.PQstatus(static_cast<PGconn*>(handle)) == CONNECTION_OK;
-}
-
-extern "C" const char* crossbyte_postgres_request_json(void* handle, const char* sql) {
-	if (handle == nullptr) {
-		g_api.scratch = makeErrorJson("Postgres connection is not open.");
-		return g_api.scratch.c_str();
-	}
-	if (!g_api.loaded || g_api.PQexec == nullptr) {
-		g_api.scratch = makeErrorJson("libpq is not loaded.");
-		return g_api.scratch.c_str();
-	}
-
-	PGconn* connection = static_cast<PGconn*>(handle);
-	PGresult* result = g_api.PQexec(connection, sql == nullptr ? "" : sql);
-	if (result == nullptr) {
-		std::string message = g_api.PQerrorMessage(connection) == nullptr ? "PQexec returned null." : g_api.PQerrorMessage(connection);
-		g_api.scratch = makeErrorJson(message);
-		return g_api.scratch.c_str();
-	}
-
-	ExecStatusType status = g_api.PQresultStatus(result);
-	if (!(status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK || status == PGRES_SINGLE_TUPLE || status == PGRES_EMPTY_QUERY)) {
-		std::string message = g_api.PQerrorMessage(connection) == nullptr ? "Postgres query failed." : g_api.PQerrorMessage(connection);
-		g_api.PQclear(result);
-		g_api.scratch = makeErrorJson(message);
-		return g_api.scratch.c_str();
-	}
-
-	std::ostringstream out;
-	out << "{\"rows\":[";
-
-	int rows = g_api.PQntuples(result);
-	int fields = g_api.PQnfields(result);
-	for (int row = 0; row < rows; ++row) {
-		if (row > 0) {
-			out << ",";
+		if (result == nullptr) {
+			return makeErrorJson(trimMessage(api->PQerrorMessage(handle.conn), "PQexec returned null."));
 		}
-		out << "{";
-		for (int field = 0; field < fields; ++field) {
-			if (field > 0) {
+
+		ResultGuard guard = {api, result};
+
+		if (!succeeded(api->PQresultStatus(result))) {
+			return makeErrorJson(trimMessage(api->PQerrorMessage(handle.conn), "Postgres query failed."));
+		}
+
+		std::ostringstream out;
+		out << "{\"rows\":[";
+
+		int rows = api->PQntuples(result);
+		int fields = api->PQnfields(result);
+		for (int row = 0; row < rows; ++row) {
+			if (row > 0) {
 				out << ",";
 			}
-			const char* name = g_api.PQfname(result, field);
-			out << "\"" << jsonEscape(name == nullptr ? "" : name) << "\":";
-			if (g_api.PQgetisnull(result, row, field) == 1) {
-				out << "null";
-			} else {
-				const char* value = g_api.PQgetvalue(result, row, field);
-				out << "\"" << jsonEscape(value == nullptr ? "" : value) << "\"";
+			out << "{";
+			for (int field = 0; field < fields; ++field) {
+				if (field > 0) {
+					out << ",";
+				}
+				const char* name = api->PQfname(result, field);
+				out << "\"" << jsonEscape(name == nullptr ? "" : name) << "\":";
+				if (api->PQgetisnull(result, row, field) == 1) {
+					out << "null";
+				} else {
+					const char* value = api->PQgetvalue(result, row, field);
+					out << "\"" << jsonEscape(value == nullptr ? "" : value) << "\"";
+				}
 			}
+			out << "}";
 		}
+
+		// The command tag, because it is the only thing that tells a COMMIT
+		// that committed from one the server turned into a ROLLBACK: both
+		// arrive as success.
+		const char* command = api->PQcmdStatus(result);
+
+		out << "],\"affectedRows\":" << parseAffectedRows(api, result);
+		out << ",\"lastInsertRowID\":" << static_cast<unsigned int>(api->PQoidValue(result));
+		out << ",\"command\":\"" << jsonEscape(command == nullptr ? "" : command) << "\"";
 		out << "}";
+		return out.str();
 	}
-	out << "],\"affectedRows\":" << parseAffectedRows(result);
-	out << ",\"lastInsertRowID\":" << static_cast<unsigned int>(g_api.PQoidValue(result));
-	out << "}";
 
-	g_api.PQclear(result);
-	g_api.scratch = out.str();
-	return g_api.scratch.c_str();
-}
-
-namespace {
 	// Little-endian, a byte at a time, so neither side depends on the host byte
 	// order. Mirrored by PostgresWire on the Haxe side.
-	void putInt(std::vector<unsigned char>& out, int value) {
-		out.push_back(static_cast<unsigned char>(value & 0xFF));
-		out.push_back(static_cast<unsigned char>((value >> 8) & 0xFF));
-		out.push_back(static_cast<unsigned char>((value >> 16) & 0xFF));
-		out.push_back(static_cast<unsigned char>((value >> 24) & 0xFF));
+	inline unsigned char* putInt(unsigned char* out, int value) {
+		out[0] = static_cast<unsigned char>(value & 0xFF);
+		out[1] = static_cast<unsigned char>((value >> 8) & 0xFF);
+		out[2] = static_cast<unsigned char>((value >> 16) & 0xFF);
+		out[3] = static_cast<unsigned char>((value >> 24) & 0xFF);
+		return out + 4;
 	}
 
-	void putBytes(std::vector<unsigned char>& out, const unsigned char* data, int length) {
+	inline unsigned char* putBytes(unsigned char* out, const char* data, int length) {
 		if (length > 0 && data != nullptr) {
-			out.insert(out.end(), data, data + length);
+			std::memcpy(out, data, static_cast<size_t>(length));
 		}
+		return out + (length > 0 ? length : 0);
 	}
 
 	bool takeInt(const unsigned char* data, int length, int& cursor, int& value) {
-		if (cursor < 0 || cursor + 4 > length) {
+		if (cursor < 0 || length - cursor < 4) {
 			return false;
 		}
 
@@ -428,165 +380,351 @@ namespace {
 		return true;
 	}
 
-	void buildErrorBlock(const std::string& message) {
-		g_api.resultBlock.clear();
-		putInt(g_api.resultBlock, 1);
-		putInt(g_api.resultBlock, static_cast<int>(message.size()));
-		putBytes(g_api.resultBlock, reinterpret_cast<const unsigned char*>(message.data()), static_cast<int>(message.size()));
-	}
-}
-
-extern "C" int crossbyte_postgres_request_params(void* handle, const char* sql, const unsigned char* params, int paramsLength) {
-	if (handle == nullptr) {
-		buildErrorBlock("Postgres connection is not open.");
-		return static_cast<int>(g_api.resultBlock.size());
+	Array<unsigned char> errorBlock(const std::string& message) {
+		int size = 8 + static_cast<int>(message.size());
+		Array<unsigned char> block = Array_obj<unsigned char>::__new(size, size);
+		unsigned char* out = reinterpret_cast<unsigned char*>(block->GetBase());
+		out = putInt(out, 1);
+		out = putInt(out, static_cast<int>(message.size()));
+		putBytes(out, message.data(), static_cast<int>(message.size()));
+		return block;
 	}
 
-	if (!g_api.loaded || g_api.PQexecParams == nullptr) {
-		buildErrorBlock("libpq is not loaded.");
-		return static_cast<int>(g_api.resultBlock.size());
-	}
+	// Bound values, copied out of the caller's block into one native arena,
+	// each followed by a NUL: libpq reads a text-format value as a C string
+	// and ignores its length, and a zero-length value still needs a pointer
+	// that is not null.
+	struct Parameters {
+		std::vector<char> arena;
+		std::vector<size_t> offsets;
+		std::vector<int> lengths;
+		std::vector<int> formats;
+		std::vector<const char*> values;
+	};
 
-	int cursor = 0;
-	int count = 0;
+	bool parseParameters(const unsigned char* block, int length, Parameters& out, std::string& error) {
+		int cursor = 0;
+		int count = 0;
 
-	if (params == nullptr || !takeInt(params, paramsLength, cursor, count) || count < 0) {
-		buildErrorBlock("Malformed parameter block.");
-		return static_cast<int>(g_api.resultBlock.size());
-	}
-
-	// Copied rather than pointed at: a zero-length parameter still has to be a
-	// valid non-null pointer for libpq, and the caller buffer is not promised
-	// to outlive the call.
-	std::vector<std::vector<unsigned char> > storage(static_cast<size_t>(count));
-	std::vector<const char*> values(static_cast<size_t>(count), nullptr);
-	std::vector<int> lengths(static_cast<size_t>(count), 0);
-	std::vector<int> formats(static_cast<size_t>(count), 0);
-
-	for (int i = 0; i < count; ++i) {
-		int format = 0;
-		int length = 0;
-
-		if (!takeInt(params, paramsLength, cursor, format) || !takeInt(params, paramsLength, cursor, length)) {
-			buildErrorBlock("Truncated parameter block.");
-			return static_cast<int>(g_api.resultBlock.size());
+		if (block == nullptr || !takeInt(block, length, cursor, count) || count < 0) {
+			error = "Malformed parameter block.";
+			return false;
 		}
 
-		formats[static_cast<size_t>(i)] = format == 1 ? 1 : 0;
-
-		if (length < 0) {
-			// SQL NULL is a null pointer, which is how libpq tells it apart
-			// from a zero-length value.
-			values[static_cast<size_t>(i)] = nullptr;
-			lengths[static_cast<size_t>(i)] = 0;
-			continue;
+		// Each parameter costs at least its eight header bytes, so a count the
+		// block cannot hold is refused before anything is sized by it.
+		if (count > (length - cursor) / 8) {
+			error = "Truncated parameter block.";
+			return false;
 		}
 
-		// Difference, not sum: `cursor + length` overflows for a large length,
-		// and signed overflow is undefined, so the truncation check this is
-		// here to perform could be optimised away.
-		if (length > paramsLength - cursor) {
-			buildErrorBlock("Truncated parameter block.");
-			return static_cast<int>(g_api.resultBlock.size());
-		}
+		out.arena.reserve(static_cast<size_t>(length - cursor) + static_cast<size_t>(count));
+		out.offsets.assign(static_cast<size_t>(count), 0);
+		out.lengths.assign(static_cast<size_t>(count), 0);
+		out.formats.assign(static_cast<size_t>(count), 0);
+		out.values.assign(static_cast<size_t>(count), nullptr);
 
-		storage[static_cast<size_t>(i)].assign(params + cursor, params + cursor + length);
-		// Guarantees a non-null data() for an empty parameter.
-		storage[static_cast<size_t>(i)].push_back(0);
-		cursor += length;
+		std::vector<bool> isNull(static_cast<size_t>(count), false);
 
-		values[static_cast<size_t>(i)] = reinterpret_cast<const char*>(storage[static_cast<size_t>(i)].data());
-		lengths[static_cast<size_t>(i)] = length;
-	}
+		for (int i = 0; i < count; ++i) {
+			int format = 0;
+			int valueLength = 0;
 
-	PGconn* connection = static_cast<PGconn*>(handle);
-	// resultFormat 0, so results arrive as text and bytea as its hex rendering,
-	// which is exact. Binary results would mean decoding every column type from
-	// its network representation by OID.
-	PGresult* result = g_api.PQexecParams(connection, sql == nullptr ? "" : sql, count, nullptr,
-		count == 0 ? nullptr : values.data(), count == 0 ? nullptr : lengths.data(),
-		count == 0 ? nullptr : formats.data(), 0);
+			if (!takeInt(block, length, cursor, format) || !takeInt(block, length, cursor, valueLength)) {
+				error = "Truncated parameter block.";
+				return false;
+			}
 
-	if (result == nullptr) {
-		const char* message = g_api.PQerrorMessage(connection);
-		buildErrorBlock(message == nullptr ? "PQexecParams returned null." : message);
-		return static_cast<int>(g_api.resultBlock.size());
-	}
+			out.formats[static_cast<size_t>(i)] = format == 1 ? 1 : 0;
 
-	ExecStatusType status = g_api.PQresultStatus(result);
-
-	if (!(status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK || status == PGRES_SINGLE_TUPLE || status == PGRES_EMPTY_QUERY)) {
-		const char* message = g_api.PQerrorMessage(connection);
-		std::string copy = message == nullptr ? "Postgres query failed." : message;
-		g_api.PQclear(result);
-		buildErrorBlock(copy);
-		return static_cast<int>(g_api.resultBlock.size());
-	}
-
-	int rows = g_api.PQntuples(result);
-	int fields = g_api.PQnfields(result);
-
-	g_api.resultBlock.clear();
-	putInt(g_api.resultBlock, 0);
-	putInt(g_api.resultBlock, parseAffectedRows(result));
-	putInt(g_api.resultBlock, static_cast<int>(g_api.PQoidValue(result)));
-	putInt(g_api.resultBlock, fields);
-
-	for (int field = 0; field < fields; ++field) {
-		const char* name = g_api.PQfname(result, field);
-		int nameLength = name == nullptr ? 0 : static_cast<int>(std::strlen(name));
-		putInt(g_api.resultBlock, nameLength);
-		putBytes(g_api.resultBlock, reinterpret_cast<const unsigned char*>(name), nameLength);
-	}
-
-	putInt(g_api.resultBlock, rows);
-
-	for (int row = 0; row < rows; ++row) {
-		for (int field = 0; field < fields; ++field) {
-			if (g_api.PQgetisnull(result, row, field) == 1) {
-				putInt(g_api.resultBlock, -1);
+			if (valueLength < 0) {
+				// SQL NULL is a null pointer, which is how libpq tells it apart
+				// from a zero-length value.
+				isNull[static_cast<size_t>(i)] = true;
 				continue;
 			}
 
-			// PQgetlength rather than strlen: a value may contain NUL bytes, and
-			// measuring it as a C string is exactly how they get lost.
-			int length = g_api.PQgetlength(result, row, field);
-			const char* value = g_api.PQgetvalue(result, row, field);
-			putInt(g_api.resultBlock, length);
-			putBytes(g_api.resultBlock, reinterpret_cast<const unsigned char*>(value), length);
+			// Difference, not sum: `cursor + length` overflows for a large
+			// length, and signed overflow is undefined, so the truncation check
+			// this is here to perform could be optimised away.
+			if (valueLength > length - cursor) {
+				error = "Truncated parameter block.";
+				return false;
+			}
+
+			out.offsets[static_cast<size_t>(i)] = out.arena.size();
+			out.arena.insert(out.arena.end(), block + cursor, block + cursor + valueLength);
+			out.arena.push_back('\0');
+			out.lengths[static_cast<size_t>(i)] = valueLength;
+			cursor += valueLength;
+		}
+
+		// Pointers last: the arena is done growing.
+		for (int i = 0; i < count; ++i) {
+			if (!isNull[static_cast<size_t>(i)]) {
+				out.values[static_cast<size_t>(i)] = out.arena.data() + out.offsets[static_cast<size_t>(i)];
+			}
+		}
+
+		return true;
+	}
+
+	// Encodes a successful result straight into the Haxe array it is returned
+	// in: sized first, then written once, so the rows cross from libpq's
+	// memory into the caller's in a single copy with nothing in between.
+	Array<unsigned char> encodeResult(const LibPQApi* api, PGresult* result) {
+		int rows = api->PQntuples(result);
+		int fields = api->PQnfields(result);
+
+		long long size = 20;
+
+		for (int field = 0; field < fields; ++field) {
+			const char* name = api->PQfname(result, field);
+			size += 4 + (name == nullptr ? 0 : static_cast<long long>(std::strlen(name)));
+		}
+
+		for (int row = 0; row < rows; ++row) {
+			for (int field = 0; field < fields; ++field) {
+				size += 4;
+				if (api->PQgetisnull(result, row, field) != 1) {
+					size += api->PQgetlength(result, row, field);
+				}
+			}
+		}
+
+		if (size > INT_MAX) {
+			std::ostringstream message;
+			message << "The result is " << size << " bytes, more than one call can return; fetch it in parts.";
+			return errorBlock(message.str());
+		}
+
+		int total = static_cast<int>(size);
+		Array<unsigned char> block = Array_obj<unsigned char>::__new(total, total);
+		unsigned char* out = reinterpret_cast<unsigned char*>(block->GetBase());
+
+		out = putInt(out, 0);
+		out = putInt(out, parseAffectedRows(api, result));
+		out = putInt(out, static_cast<int>(api->PQoidValue(result)));
+		out = putInt(out, fields);
+
+		for (int field = 0; field < fields; ++field) {
+			const char* name = api->PQfname(result, field);
+			int nameLength = name == nullptr ? 0 : static_cast<int>(std::strlen(name));
+			out = putInt(out, nameLength);
+			out = putBytes(out, name, nameLength);
+		}
+
+		out = putInt(out, rows);
+
+		for (int row = 0; row < rows; ++row) {
+			for (int field = 0; field < fields; ++field) {
+				if (api->PQgetisnull(result, row, field) == 1) {
+					out = putInt(out, -1);
+					continue;
+				}
+
+				// PQgetlength rather than strlen: a value may contain NUL bytes,
+				// and measuring it as a C string is exactly how they get lost.
+				int length = api->PQgetlength(result, row, field);
+				out = putInt(out, length);
+				out = putBytes(out, api->PQgetvalue(result, row, field), length);
+			}
+		}
+
+		return block;
+	}
+}
+
+void* crossbyte_postgres_open(::String conninfo, Array< ::String > libraryPaths) {
+	std::string info = toNative(conninfo);
+	std::vector<std::string> candidates;
+
+	if (libraryPaths.mPtr != nullptr) {
+		for (int i = 0; i < libraryPaths->length; ++i) {
+			std::string entry = toNative(libraryPaths[i]);
+			size_t start = entry.find_first_not_of(" \t\r\n");
+			size_t end = entry.find_last_not_of(" \t\r\n");
+			if (start != std::string::npos) {
+				candidates.push_back(entry.substr(start, end - start + 1));
+			}
 		}
 	}
 
-	g_api.PQclear(result);
-	return static_cast<int>(g_api.resultBlock.size());
-}
+	std::vector<std::string> defaults = defaultCandidates();
+	candidates.insert(candidates.end(), defaults.begin(), defaults.end());
 
-extern "C" const unsigned char* crossbyte_postgres_result_data() {
-	return g_api.resultBlock.empty() ? reinterpret_cast<const unsigned char*>("") : g_api.resultBlock.data();
-}
+	Handle* handle = new Handle();
 
-extern "C" const char* crossbyte_postgres_escape(void* handle, const char* value) {
-	if (!g_api.loaded || g_api.PQescapeStringConn == nullptr) {
-		g_api.scratch = value == nullptr ? "" : value;
-		return g_api.scratch.c_str();
+	{
+		hx::AutoGCFreeZone zone;
+
+		handle->api = loadLibrary(candidates, handle->error);
+
+		if (handle->api != nullptr) {
+			const LibPQApi* api = handle->api;
+			PGconn* connection = api->PQconnectdb(info.c_str());
+
+			if (connection == nullptr) {
+				handle->error = "PQconnectdb returned null.";
+			} else if (api->PQstatus(connection) != CONNECTION_OK) {
+				handle->error = trimMessage(api->PQerrorMessage(connection), "Connection failed.");
+				api->PQfinish(connection);
+			} else {
+				handle->conn = connection;
+				handle->cancel = api->PQgetCancel(connection);
+			}
+		}
+
+		// The connection string carries the password; this copy at least does
+		// not outlive the call.
+		if (!info.empty()) {
+			std::memset(&info[0], 0, info.size());
+		}
 	}
 
-	const char* raw = value == nullptr ? "" : value;
-	size_t length = std::strlen(raw);
+	return handle;
+}
+
+::String crossbyte_postgres_error(void* handle) {
+	Handle* h = static_cast<Handle*>(handle);
+	return h == nullptr ? ::String("Postgres connection could not be allocated.") : toHaxe(h->error);
+}
+
+void crossbyte_postgres_close(void* handle) {
+	Handle* h = static_cast<Handle*>(handle);
+
+	if (h == nullptr) {
+		return;
+	}
+
+	{
+		// PQfinish tells the server goodbye, which is a write to a socket that
+		// may be past saving.
+		hx::AutoGCFreeZone zone;
+
+		if (h->cancel != nullptr) {
+			h->api->PQfreeCancel(h->cancel);
+		}
+
+		if (h->conn != nullptr) {
+			h->api->PQfinish(h->conn);
+		}
+	}
+
+	delete h;
+}
+
+bool crossbyte_postgres_is_open(void* handle) {
+	Handle* h = static_cast<Handle*>(handle);
+	return h != nullptr && h->conn != nullptr && h->api->PQstatus(h->conn) == CONNECTION_OK;
+}
+
+::String crossbyte_postgres_request_json(void* handle, ::String sql) {
+	Handle* h = static_cast<Handle*>(handle);
+
+	if (h == nullptr || h->conn == nullptr) {
+		return toHaxe(makeErrorJson("Postgres connection is not open."));
+	}
+
+	std::string text = toNative(sql);
+	std::string json;
+
+	{
+		hx::AutoGCFreeZone zone;
+		json = renderJson(*h, h->api->PQexec(h->conn, text.c_str()));
+	}
+
+	return toHaxe(json);
+}
+
+Array<unsigned char> crossbyte_postgres_request_params(void* handle, ::String sql, Array<unsigned char> params, int paramsLength) {
+	Handle* h = static_cast<Handle*>(handle);
+
+	if (h == nullptr || h->conn == nullptr) {
+		return errorBlock("Postgres connection is not open.");
+	}
+
+	int available = params.mPtr == nullptr ? 0 : params->length;
+
+	if (paramsLength < 0 || paramsLength > available) {
+		return errorBlock("Malformed parameter block.");
+	}
+
+	Parameters bound;
+	std::string failure;
+
+	if (!parseParameters(paramsLength == 0 ? nullptr : reinterpret_cast<const unsigned char*>(params->GetBase()), paramsLength, bound, failure)) {
+		return errorBlock(failure);
+	}
+
+	std::string text = toNative(sql);
+	const LibPQApi* api = h->api;
+	PGresult* result = nullptr;
+	int count = static_cast<int>(bound.values.size());
+
+	{
+		hx::AutoGCFreeZone zone;
+
+		// resultFormat 0, so results arrive as text and bytea as its hex
+		// rendering, which is exact. Binary results would mean decoding every
+		// column type from its network representation by OID.
+		result = api->PQexecParams(h->conn, text.c_str(), count, nullptr,
+			count == 0 ? nullptr : bound.values.data(), count == 0 ? nullptr : bound.lengths.data(),
+			count == 0 ? nullptr : bound.formats.data(), 0);
+
+		if (result == nullptr) {
+			failure = trimMessage(api->PQerrorMessage(h->conn), "PQexecParams returned null.");
+		} else if (!succeeded(api->PQresultStatus(result))) {
+			failure = trimMessage(api->PQerrorMessage(h->conn), "Postgres query failed.");
+			api->PQclear(result);
+			result = nullptr;
+		}
+	}
+
+	if (result == nullptr) {
+		return errorBlock(failure);
+	}
+
+	ResultGuard guard = {api, result};
+	return encodeResult(api, result);
+}
+
+::String crossbyte_postgres_escape(void* handle, ::String value) {
+	Handle* h = static_cast<Handle*>(handle);
+	std::string raw = toNative(value);
+
+	if (h == nullptr || h->conn == nullptr) {
+		return value;
+	}
+
 	std::string out;
-	out.resize(length * 2 + 1);
+	out.resize(raw.size() * 2 + 1);
 	int error = 0;
-	size_t written = g_api.PQescapeStringConn(static_cast<PGconn*>(handle), &out[0], raw, length, &error);
+	// On an encoding error libpq still writes an escaped string, the server
+	// then rejects it as malformed, so that is what is returned. This used to
+	// hand back the value unescaped instead, which is the one answer an escape
+	// function must never give.
+	size_t written = h->api->PQescapeStringConn(h->conn, &out[0], raw.c_str(), raw.size(), &error);
 	out.resize(written);
-	if (error != 0) {
-		g_api.scratch = value == nullptr ? "" : value;
-		return g_api.scratch.c_str();
-	}
-
-	g_api.scratch = out;
-	return g_api.scratch.c_str();
+	return toHaxe(out);
 }
 
-extern "C" const char* crossbyte_postgres_last_error() {
-	return g_api.lastError.c_str();
+bool crossbyte_postgres_cancel(void* handle) {
+	Handle* h = static_cast<Handle*>(handle);
+
+	if (h == nullptr || h->cancel == nullptr) {
+		return false;
+	}
+
+	char errbuf[256];
+	int sent = 0;
+
+	{
+		// A round trip on a connection of its own, so it blocks as long as
+		// the server takes to answer.
+		hx::AutoGCFreeZone zone;
+		sent = h->api->PQcancel(h->cancel, errbuf, static_cast<int>(sizeof(errbuf)));
+	}
+
+	return sent == 1;
 }

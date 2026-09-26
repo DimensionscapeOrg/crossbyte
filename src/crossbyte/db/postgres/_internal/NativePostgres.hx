@@ -4,12 +4,18 @@ package crossbyte.db.postgres._internal;
 #if !js
 
 import crossbyte.ipc._internal.VoidPointer;
+import haxe.io.BytesData;
 
 @:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/db/postgres/_internal/NativePostgresBuild.xml"/>')
 @:include("./NativePostgres.h")
 extern class NativePostgres {
+	/** Always returns a handle; `error()` says whether the connection opened. **/
 	@:native("crossbyte_postgres_open")
-	public static function open(host:String, port:Int, user:String, password:String, database:String, sslMode:String, connectTimeout:Int, libraryPaths:Array<String>):VoidPointer;
+	public static function open(conninfo:String, libraryPaths:Array<String>):VoidPointer;
+
+	/** Why `open` failed, or an empty string when it succeeded. **/
+	@:native("crossbyte_postgres_error")
+	public static function error(handle:VoidPointer):String;
 
 	@:native("crossbyte_postgres_close")
 	public static function close(handle:VoidPointer):Void;
@@ -21,15 +27,12 @@ extern class NativePostgres {
 	public static function requestJson(handle:VoidPointer, sql:String):String;
 
 	@:native("crossbyte_postgres_request_params")
-	public static function requestParams(handle:VoidPointer, sql:cpp.ConstCharStar, params:cpp.ConstPointer<cpp.UInt8>, paramsLength:Int):Int;
-
-	@:native("crossbyte_postgres_result_data")
-	public static function resultData():cpp.ConstPointer<cpp.UInt8>;
+	public static function requestParams(handle:VoidPointer, sql:String, params:BytesData, paramsLength:Int):BytesData;
 
 	@:native("crossbyte_postgres_escape")
 	public static function escape(handle:VoidPointer, value:String):String;
 
-	@:native("crossbyte_postgres_last_error")
-	public static function lastError():String;
+	@:native("crossbyte_postgres_cancel")
+	public static function cancel(handle:VoidPointer):Bool;
 }
 #end
