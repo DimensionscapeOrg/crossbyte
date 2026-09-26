@@ -17,6 +17,7 @@ import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
+import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 import haxe.ds.StringMap;
 #if nodejs
@@ -69,7 +70,24 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	**/
 	public var socketMode:ReliableDatagramSocketMode = DATAGRAM;
 
+	/**
+		`ReliableDatagramSocket.keepAliveInterval` for each session this
+		server accepts or dials, in seconds. Set it before the sessions it is
+		for arrive; one already here keeps its own, which can be changed on it.
+	**/
+	public var keepAliveInterval:Float = ReliableDatagramSocket.DEFAULT_KEEP_ALIVE_INTERVAL;
+
+	/**
+		`ReliableDatagramSocket.idleTimeout` for each session this server
+		accepts or dials, in seconds, as `keepAliveInterval` is.
+	**/
+	public var idleTimeout:Float = ReliableDatagramSocket.DEFAULT_IDLE_TIMEOUT;
+
 	@:noCompletion private var __closed:Bool = false;
+
+	// A FIN, written once, for peers that send as though they had a session
+	// here and have none.
+	@:noCompletion private var __resetScratch:ByteArray;
 	/** Half-open inbound sessions allowed at once. */
 	public static inline var DEFAULT_MAX_PENDING_CONNECTIONS:Int = 256;
 
@@ -228,8 +246,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	}
 
 	/**
-		Stops listening, closes every accepted reliable session, and closes the
-		underlying UDP transport.
+		Stops listening, closes every reliable session, each sending its
+		peer a FIN, after whatever it had waiting, and closes the underlying
+		UDP transport.
 	**/
 	public function close():Void {
 		if (__closed) {
@@ -253,9 +272,13 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__pending = new StringMap();
 		__pendingCount = 0;
 
+		// Closed, not just disposed: close() tells the peer, which disposing
+		// did not, so every client of a server that shut down went on
+		// sending into a closed port until its own timeout said the session
+		// was gone.
 		for (connection in connections) {
 			try {
-				connection.__dispose(true);
+				connection.close();
 			} catch (_:Dynamic) {}
 		}
 
@@ -673,10 +696,13 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		// Several frames at once, and only ever from a session already here:
 		// a peer bundles once it has heard this side, so a bundle from an
-		// address with no session has nothing in it to open one with.
+		// address with no session has nothing in it to open one with, only
+		// a peer to tell its session is gone.
 		if (ReliableDatagramProtocol.isBundle(e.data)) {
 			if (connection != null) {
 				connection.__acceptBundle(e.data);
+			} else {
+				__resetStranger(null, e.srcAddress, e.srcPort);
 			}
 			return;
 		}
@@ -687,11 +713,34 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 
 		if (connection != null) {
-			connection.__acceptFrame(frame);
+			if (frame.type != ReliableDatagramFrameType.CONNECT || !__isAnotherAttempt(connection, frame)) {
+				connection.__acceptFrame(frame);
+				return;
+			}
+
+			// A CONNECT with a new id, from the address and port of a session
+			// already here: not from the peer that session was made for, which
+			// sends its own id every time. Either that peer restarted and this
+			// session is left over, and would take every CONNECT the new one
+			// sends, answer none, and be kept alive by them, or somebody is
+			// claiming the address. The old peer is asked, and the CONNECT that
+			// finds no answer due replaces the session.
+			if (!__replaceable(connection)) {
+				return;
+			}
+
+			// Not closed: a FIN goes to the address, where the new attempt
+			// would take it as the end of its own.
+			connection.__dispose(true);
+			connection = null;
+		}
+
+		if (frame.type != ReliableDatagramFrameType.CONNECT) {
+			__resetStranger(frame, e.srcAddress, e.srcPort);
 			return;
 		}
 
-		if (!listening || frame.type != ReliableDatagramFrameType.CONNECT) {
+		if (!listening) {
 			return;
 		}
 
@@ -722,11 +771,74 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 
 		payload.position = 0;
-		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode, payload, congestion);
+		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode, payload, congestion, frame.sequence);
 		connection.__peerTakesBundles = frame.bundles;
 		__connections.set(key, connection);
 		__pending.set(key, true);
 		__pendingCount++;
+	}
+
+	/**
+		Whether a CONNECT is from another attempt than the one `connection` was
+		made for: both carry ids, and they differ. A CONNECT from an older
+		build carries none, and is taken by the session as it always was.
+	**/
+	@:noCompletion private static inline function __isAnotherAttempt(connection:ReliableDatagramSocket, frame:ReliableDatagramFrame):Bool {
+		var id:Int = frame.sequence;
+		return id != 0 && connection.__peerConnectionId != 0 && id != connection.__peerConnectionId;
+	}
+
+	/**
+		Whether a session sent a CONNECT with a new id may be replaced: asked
+		its old peer whether it is still there, gave it the time to answer,
+		and heard nothing. The first such CONNECT asks, and the one that finds
+		the answer overdue and missing replaces it, a restarted peer is let
+		back in on its next attempt, a few seconds on. A peer still there
+		answers, and keeps its session however many CONNECTs someone sends in
+		its name; asking again at most once a window, so they cannot make this
+		side send much.
+	**/
+	@:noCompletion private function __replaceable(connection:ReliableDatagramSocket):Bool {
+		var now:Float = haxe.Timer.stamp();
+
+		if (connection.__challengedAt >= 0) {
+			if (now - connection.__challengedAt < connection.__challengeWindow()) {
+				return false;
+			}
+			if (!connection.__heardSinceChallenge) {
+				return true;
+			}
+		}
+
+		connection.__challenge(now);
+		return false;
+	}
+
+	/**
+		Tells a peer sending as though it had a session here that it has none,
+		with a FIN, which ends the session on its side at once.
+
+		Without it a peer whose session this side had closed or never had,
+		the server restarted, or gave the session up, went on sending into
+		nothing until its own timeout ran out. A FIN is the size of the
+		smallest frame that can draw one, so answering gains a sender nothing
+		it could not send itself. Never sent for a FIN: two sides that each
+		thought the other a stranger would answer each other for good.
+	**/
+	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int):Void {
+		if (frame != null && frame.type == ReliableDatagramFrameType.FIN) {
+			return;
+		}
+
+		if (__resetScratch == null) {
+			__resetScratch = new ByteArray();
+			__resetScratch.length = ReliableDatagramProtocol.HEADER_SIZE;
+		}
+
+		var length:Int = ReliableDatagramProtocol.encodeInto(__resetScratch, ReliableDatagramFrameType.FIN, 0, null, 0, 0, false, null, false);
+		try {
+			__socket.send(__resetScratch, 0, length, address, port);
+		} catch (_:Dynamic) {}
 	}
 
 	@:noCompletion private function __onSocketClosed(socket:ReliableDatagramSocket):Void {
