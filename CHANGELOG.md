@@ -5,6 +5,12 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- JWT payloads carry claims of an application's own. A literal can hold
+  them beside the registered claims -- `{sub: id, exp: now + 3600, role:
+  "admin"}` -- and `JWTPayload.claim(name)`, `hasClaim` and `setClaim`
+  read and set them. That literal failed to compile with "has extra field
+  role", so a role or a tenant went in through `Dynamic`. `sub` and `iat`
+  are optional, so a refresh token without a subject can be made too.
 - `JWT.verify`, which answers with a `JWTVerification`: the claims, or a
   `JWTRejection` naming the first check the token failed --
   `malformed`, `too-large`, `unsupported-algorithm`,
@@ -557,6 +563,14 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
+  `Null<Float>`, not `Null<Int>`, and `JWTPayloadData`'s `iat`, `exp` and
+  `nbf` take an `Int` or a `Float`. Code that read one into an `Int` has to
+  convert it, with `Std.int` where the value is known to fit. `generateToken`
+  throws `ArgumentError` for a time that is not a finite number, and writes a
+  whole number of seconds that fits an `Int` as an integer on every target.
+  `JWTPayload.ofData` is no longer an implicit conversion; object literals
+  convert through `JWTPayload.ofClaims`, which lets them carry other claims.
 - `Argon2id.verify` throws where no Argon2id backend exists, as `hash`
   does, rather than returning `false`: that refused every password on the
   jvm, the interpreter and the browser while looking like a working check.
@@ -738,6 +752,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A JWT expiring after January 2038, or at 2147483647 (a common "never"),
+  is judged the same on every target. Times were `Int`: 2147483647 plus the
+  leeway wrapped negative on the interpreter and the jvm, so the token was
+  expired there and valid on cpp and Node, and the jvm refused every time
+  past 2038. Times are now seconds in a `Float`, and may be fractional as
+  RFC 7519 allows. A registered claim of the wrong JSON type -- a numeric
+  `sub`, a string `iat` -- is refused as `malformed` rather than handed
+  back through a typed property.
 - `JWT.verifyToken` accepts tokens from other issuers. It refused any
   whose `typ` was not exactly `JWT`: AWS Cognito's and Sign in with
   Apple's, which carry none, RFC 9068 access tokens (`at+jwt`), and a
