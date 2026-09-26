@@ -785,6 +785,21 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `DatagramSocket.connect()` to a name looks it up off the runtime's
+  thread, as `send()` to one already did. It was looked up in the call,
+  so every socket and timer on the runtime waited on the resolver: a
+  single-label name that does not exist held it for 2.0 s natively and
+  1.1 s on the jvm. Now `connect()` returns at once, and the socket is
+  connected to the address the name resolves to when the answer comes;
+  until then `connected` reads true, `remoteAddress` reads empty, and
+  datagrams sent with no destination wait for the answer, up to 64 of
+  them. What to change: a name that does not resolve is reported by an
+  `ioError` event after the call returns, the datagrams waiting on it
+  are dropped, and the socket is left unconnected -- `connect()` used to
+  throw `IOError` for one, and no longer does, so listen for `ioError`.
+  An address is still connected to in the call, and on Node a name is
+  still refused. `connect()` on a closed socket throws `IOError` before
+  anything else.
 - The HTTP server's access log -- one `INFO` line per response -- logs under
   the category `http.access`. `Logger.setLevel("http.access", WARN)` quiets
   it and leaves everything else at `INFO`; it used to share the one global
