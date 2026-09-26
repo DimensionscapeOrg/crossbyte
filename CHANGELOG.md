@@ -5,6 +5,22 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- ICE restart for WebRTC connections. A browser whose network changes
+  restarts ICE, new credentials, in a new offer, and they were dropped:
+  an agent that had left NEW ignored `start`, so every check afterwards was
+  signed with credentials the peer had discarded, and consent ran out half a
+  minute later, taking the connection and its channels with it. Now
+  `connect` given a description with new credentials restarts this side,
+  and `description()` is the answer to send back; a new agent checks with
+  the new credentials while the session carries on over the old path, and
+  takes it over once it has one of its own. DTLS and SCTP carry on
+  untouched. `PeerConnection.restartIce()` starts one from this side, and
+  `iceRestarting` says one is under way. The side offering a restart
+  controls it, as a browser takes it; an answer to one states this side's
+  DTLS role, since a browser refuses `actpass` in an answer; and a
+  description with another certificate is refused as a new session.
+  Checked against Chrome, started from either side, on a socket of its own
+  and on a `PeerConnectionHost`.
 - `PeerConnectionHost`: many WebRTC peer connections on one UDP port, driven
   by one tick. A `PeerConnection` binds a socket of its own, and with it a
   port, that socket's buffers and a tick listener, so a server holding ten

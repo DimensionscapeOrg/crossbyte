@@ -225,6 +225,65 @@ class PeerConnectionHostTest extends utest.Test {
 	}
 
 	/**
+		A hosted connection restarts ICE, and its checks follow the new ufrag.
+
+		The host routes checks by the ufrag they name, and a restart changes
+		it: the new one has to reach the connection while the old session is
+		still checking consent, and the old one to be let go once it is done.
+	**/
+	public function testAHostedConnectionRestartsIce():Void {
+		if (unsupported()) return;
+
+		var host = new PeerConnectionHost();
+		var peer = new PeerConnection(true);
+		var hosted:PeerConnection = null;
+		var heard:Array<String> = [];
+
+		try {
+			host.bind(0, "127.0.0.1");
+			peer.bind(0, "127.0.0.1");
+
+			hosted = host.createConnection(false);
+			hosted.onChannel = channel -> channel.onMessage = text -> heard.push(text);
+			hosted.connect(peer.description());
+			peer.connect(hosted.description());
+			pumpUntil(() -> peer.connected && hosted.connected, 15.0);
+
+			var chat = peer.connected ? peer.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open, 5.0);
+
+			if (chat == null || !chat.open) {
+				Assert.fail("the connection never came up with a channel open");
+				peer.close();
+				host.close();
+				return;
+			}
+
+			var oldFragment = hosted.credentials.usernameFragment;
+
+			peer.restartIce();
+			hosted.connect(peer.description());
+			peer.connect(hosted.description());
+			pumpUntil(() -> !peer.iceRestarting && !hosted.iceRestarting, 10.0);
+
+			Assert.isFalse(hosted.iceRestarting, "the hosted connection's restart never found a path");
+
+			var fragments = @:privateAccess host.__byFragment;
+			Assert.isTrue(fragments.get(hosted.credentials.usernameFragment) == hosted, "the new ufrag does not reach the connection");
+			Assert.isFalse(fragments.exists(oldFragment), "the old ufrag is still routed after the restart");
+
+			chat.send("after");
+			pumpUntil(() -> heard.length > 0, 5.0);
+			Assert.equals("after", heard.join(","), "the session did not survive the restart");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		peer.close();
+		host.close();
+	}
+
+	/**
 		What a shared socket refuses: a socket of the connection's own, and the
 		addresses only a socket of its own could discover.
 	**/

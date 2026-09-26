@@ -418,6 +418,156 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		An ICE restart finds the path afresh, and the session carries on.
+
+		What a browser whose network changed does: new credentials, in a new
+		offer. They were dropped, `IceAgent.start` does nothing once an agent
+		has left NEW, so every check sent afterwards was signed with
+		credentials the peer had discarded, consent ran out half a minute
+		later, and the connection died with its channels. Now a new agent
+		checks with the new credentials while the session carries on over the
+		old path, and takes it over once it has one of its own.
+	**/
+	public function testAnIceRestartKeepsTheSession():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var heard:Array<String> = [];
+
+		try {
+			bob.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onMessage = text -> heard.push(text);
+			};
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			var chat = alice.connected ? alice.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open && accepted != null, 5.0);
+
+			if (accepted == null) {
+				Assert.fail("the two never connected with a channel open");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			chat.send("before");
+			pumpUntil(() -> heard.length > 0, 5.0);
+
+			var aliceAgent = alice.agent;
+			var bobAgent = bob.agent;
+			var aliceFragment = alice.credentials.usernameFragment;
+			var bobFragment = bob.credentials.usernameFragment;
+
+			// Alice restarts: her description is the new offer, and Bob's reply
+			// the answer.
+			alice.restartIce();
+			Assert.isTrue(alice.iceRestarting);
+
+			var reoffer = alice.description();
+			Assert.equals(SessionDescription.SETUP_ACTPASS, reoffer.setup);
+			Assert.notEquals(aliceFragment, reoffer.usernameFragment, "the new offer carries the old credentials");
+
+			bob.connect(reoffer);
+			Assert.isTrue(bob.iceRestarting, "new credentials from the peer did not restart this side");
+
+			var reanswer = bob.description();
+			Assert.equals(SessionDescription.SETUP_ACTIVE, reanswer.setup, "the answer to a restart did not keep this side's DTLS role");
+			Assert.notEquals(bobFragment, reanswer.usernameFragment, "the answer carries the old credentials");
+
+			alice.connect(reanswer);
+			pumpUntil(() -> !alice.iceRestarting && !bob.iceRestarting, 10.0);
+
+			Assert.isFalse(alice.iceRestarting, "the restart never found a path");
+			Assert.isFalse(bob.iceRestarting, "the restart never found a path");
+			Assert.isTrue(alice.agent != aliceAgent && bob.agent != bobAgent, "the session is still on the agents it started with");
+			Assert.equals(crossbyte.net.ice.IceAgentState.CLOSED, aliceAgent.state, "the replaced agent is still running");
+			Assert.isTrue(alice.iceControlling && !bob.iceControlling, "the peer offering the restart does not control it");
+
+			chat.send("after");
+			pumpUntil(() -> heard.length > 1, 5.0);
+
+			Assert.equals("before,after", heard.join(","), "the session did not survive the restart");
+			Assert.isTrue(alice.connected && bob.connected && chat.open, "the restart took the connection down");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		The answering side can restart too, and then controls the restart.
+
+		Its description is then an offer, leaving the DTLS role open, and the
+		first offerer's reply an answer, which states the role it already has:
+		`actpass` in an answer is refused by a browser. The ICE roles follow
+		the restart's offer, as a browser takes them.
+	**/
+	public function testTheAnsweringSideCanRestart():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var heard:Array<String> = [];
+
+		try {
+			alice.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onMessage = text -> heard.push(text);
+			};
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			var chat = bob.connected ? bob.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open && accepted != null, 5.0);
+
+			if (accepted == null) {
+				Assert.fail("the two never connected with a channel open");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			bob.restartIce();
+			var reoffer = bob.description();
+			Assert.equals(SessionDescription.SETUP_ACTPASS, reoffer.setup);
+
+			alice.connect(reoffer);
+			var reanswer = alice.description();
+			Assert.equals(SessionDescription.SETUP_PASSIVE, reanswer.setup, "an answer to a restart left the DTLS role open, or changed it");
+
+			bob.connect(reanswer);
+			pumpUntil(() -> !alice.iceRestarting && !bob.iceRestarting, 10.0);
+
+			Assert.isFalse(alice.iceRestarting || bob.iceRestarting, "the restart never found a path");
+			Assert.isTrue(bob.iceControlling && !alice.iceControlling, "the peer offering the restart does not control it");
+
+			chat.send("after");
+			pumpUntil(() -> heard.length > 0, 5.0);
+			Assert.equals("after", heard.join(","), "the session did not survive the restart");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		An answer repeats the section id of the offer it answers.
 	**/
 	public function testAnAnswerRepeatsTheOffersSectionId():Void {

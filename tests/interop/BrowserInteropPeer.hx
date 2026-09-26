@@ -64,11 +64,76 @@ class BrowserInteropPeer {
 
 		pumpUntilDone();
 
+		if (instruction.restart == true && connection.connected) {
+			if (instruction.mode == "offer") {
+				restartTowardBrowser();
+			} else {
+				restartFromBrowser();
+			}
+		}
+
 		say({event: "done", echoed: echoed});
 		connection.close();
 
 		if (host != null) {
 			host.close();
+		}
+	}
+
+	/** Whether a message sent after an ICE restart has made the round trip. **/
+	static var echoedAfterRestart:Bool = false;
+
+	/** The channel this end opened toward the browser, in the offering direction. **/
+	static var offeredChannel:DataChannel = null;
+
+	/**
+		The browser restarted ICE, as it does when its network changes, and its
+		new offer comes on stdin. The answer goes back; then the new agent has
+		to take over and the old channel to carry a message both ways.
+	**/
+	static function restartFromBrowser():Void {
+		var line:Dynamic = haxe.Json.parse(Sys.stdin().readLine());
+		var before = connection.agent;
+
+		connection.connect(SessionDescription.fromSdp(line.restart));
+		say({event: "restart-answer", sdp: SessionDescription.toSdp(connection.description()), restarting: connection.iceRestarting});
+
+		pumpWhile(() -> connection.agent == before || connection.iceRestarting || !echoedAfterRestart);
+		say({event: "restarted", switched: connection.agent != before && !connection.iceRestarting, echoed: echoedAfterRestart, path: path()});
+	}
+
+	/**
+		This end restarts ICE and offers; the browser's answer comes on stdin.
+		Once the new agent carries the session, a message goes out on the
+		channel opened before the restart and has to come back.
+	**/
+	static function restartTowardBrowser():Void {
+		var before = connection.agent;
+
+		connection.restartIce();
+		say({event: "restart-offer", sdp: SessionDescription.toSdp(connection.description())});
+
+		var line:Dynamic = haxe.Json.parse(Sys.stdin().readLine());
+		connection.connect(SessionDescription.fromSdp(line.answer));
+
+		pumpWhile(() -> connection.agent == before || connection.iceRestarting);
+
+		if (offeredChannel != null && offeredChannel.open) {
+			offeredChannel.send("after restart");
+		}
+
+		pumpWhile(() -> !echoedAfterRestart);
+		say({event: "restarted", switched: connection.agent != before && !connection.iceRestarting, echoed: echoedAfterRestart, path: path()});
+	}
+
+	/** Pumps while `waiting` holds, for at most twenty seconds. **/
+	static function pumpWhile(waiting:Void->Bool):Void {
+		var runtime = CrossByte.current();
+		var deadline = haxe.Timer.stamp() + 20;
+
+		while (waiting() && haxe.Timer.stamp() < deadline && connection.closeReason == null) {
+			runtime.pump(1 / 60, 0);
+			Sys.sleep(0.001);
 		}
 	}
 
@@ -137,9 +202,15 @@ class BrowserInteropPeer {
 			// The terms CrossByte writes into DCEP, for the browser to read back.
 			connection.createDataChannel("state", false, "", 0);
 
+			offeredChannel = channel;
+
 			channel.onMessage = function(text:String):Void {
 				say({event: "message", text: text});
 				echoed = true;
+
+				if (text == "echo:after restart") {
+					echoedAfterRestart = true;
+				}
 			};
 
 			channel.opened.then(function(_):Void {
@@ -266,6 +337,10 @@ class BrowserInteropPeer {
 				say({event: "message", text: text});
 				opened.send("echo:" + text);
 				echoed = true;
+
+				if (text == "after restart") {
+					echoedAfterRestart = true;
+				}
 			};
 
 			// Bytes come back verbatim, empty ones included: an empty binary
