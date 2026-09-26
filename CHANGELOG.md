@@ -732,6 +732,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/1.1 client's idle timeout is in milliseconds, as
+  `URLRequest.idleTimeout` says. The socket was handed the milliseconds as
+  seconds, so the default 30 second timeout waited 30,000 seconds, and a
+  server that never answered held the request for over eight hours. On the
+  jvm no socket read times out at all yet; that is `sys.net.Socket`'s.
 - `URLLoader.close()` with a request in flight no longer crashes a native
   build with an access violation. The worker thread reported through the
   loader's own worker field, which `close()` clears, so its next report --

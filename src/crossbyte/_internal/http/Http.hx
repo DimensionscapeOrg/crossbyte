@@ -689,7 +689,10 @@ class Http {
 
 		try {
 			__socket = new FlexSocket(__url.ssl);
-			__socket.setTimeout(__timeout);
+			// Seconds, where `timeout` is milliseconds: it was passed as it came,
+			// so a 30 second idle timeout waited 30,000 seconds. The same
+			// conversion, and the same 30 second fallback, as the HTTP/2 backend.
+			__socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
 			__socket.connect(__url.host, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
