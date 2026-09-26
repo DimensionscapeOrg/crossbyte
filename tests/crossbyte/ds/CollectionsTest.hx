@@ -482,6 +482,84 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, map.length, "the map kept " + map.length + " entries after " + reuses + " balanced pairs");
 	}
 
+	/**
+		A handle kept after its entry died does not come to name whatever took
+		its slot. With an eight-bit generation it did, 256 reuses later -- and
+		the free list hands the most recently freed slot back first, so those
+		256 reuses are one entity after another in the same place.
+	**/
+	public function testAStaleHandleStaysStaleThroughManyReuses():Void {
+		var entities = new SlotMap<String>(16);
+		var packed = new PackedSlotMap<String>(16);
+		var victim = entities.insert("goblin");
+		var packedVictim = packed.insert("goblin");
+		entities.remove(victim);
+		packed.remove(packedVictim);
+
+		var aliasedAt:Int = -1;
+		var packedAliasedAt:Int = -1;
+		for (i in 0...2000) {
+			var spawned = entities.insert("projectile " + i);
+			if (aliasedAt < 0 && entities.get(victim) != null) {
+				aliasedAt = i;
+			}
+			entities.remove(spawned);
+
+			var packedSpawned = packed.insert("projectile " + i);
+			if (packedAliasedAt < 0 && packed.get(packedVictim) != null) {
+				packedAliasedAt = i;
+			}
+			packed.remove(packedSpawned);
+		}
+
+		Assert.equals(-1, aliasedAt, "a dead entity's handle resolved to a new one after " + aliasedAt + " reuses");
+		Assert.equals(-1, packedAliasedAt, "a dead entity's handle resolved to a new one after " + packedAliasedAt + " reuses");
+	}
+
+	public function testAHandleIsNeverNegative():Void {
+		// The sign bit was part of the generation, so past its halfway point
+		// every handle was negative, and at the top index a live handle was
+		// the INVALID sentinel itself.
+		var map = new SlotMap<String>(4);
+		var negative = 0;
+		for (_ in 0...(1 << SlotHandle.GEN_BITS)) {
+			var handle = map.insert("e");
+			if ((handle : Int) < 0) {
+				negative++;
+			}
+			map.remove(handle);
+		}
+		Assert.equals(0, negative);
+		Assert.isTrue((SlotHandle.make(SlotHandle.INDEX_MASK, SlotHandle.GEN_MASK) : Int) != (SlotHandle.INVALID : Int));
+	}
+
+	public function testClearKeepsTheGenerationInRange():Void {
+		// clear() counted the generation without masking it, so a slot at the
+		// top of its range held a value no handle could carry, and every entry
+		// put there afterwards could not be read back.
+		var map = new SlotMap<String>(4);
+		for (_ in 0...SlotHandle.GEN_MASK) {
+			map.remove(map.insert("churn"));
+		}
+		map.insert("live");
+		map.clear();
+
+		var lost = 0;
+		for (round in 0...3) {
+			var handles = [for (i in 0...4) map.insert("round " + round + " " + i)];
+			for (handle in handles) {
+				if (map.get(handle) == null) {
+					lost++;
+				}
+			}
+			for (handle in handles) {
+				map.remove(handle);
+			}
+		}
+		Assert.equals(0, lost, "entries inserted after clear() could not be read back");
+		Assert.equals(0, map.length);
+	}
+
 	/** And the same for the packed variant, which counted the same way. **/
 	public function testAPackedSlotSurvivesMoreReusesThanItsGenerationCanCount():Void {
 		var map = new PackedSlotMap<String>(4);

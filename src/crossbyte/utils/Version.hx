@@ -68,12 +68,28 @@ abstract Version(String) from String to String {
 		return parseSegment(this.split("."), index);
 	}
 
-	private static inline function parseSegment(parts:Array<String>, index:Int):Int {
+	/**
+		The segment's leading digits, so `3-beta` reads as 3 as it always did,
+		held to the three digits a segment has room for in `hash`. It was
+		Std.parseInt, whose answer for more digits than an Int holds differs
+		by target -- 0 on Linux native, a throw on the jvm -- so a version
+		string from elsewhere could compare differently on each; past 999 it
+		now reads as 999, the largest a segment can be.
+	**/
+	private static function parseSegment(parts:Array<String>, index:Int):Int {
 		if (index < 0 || index >= parts.length) {
 			return 0;
 		}
-		var parsed:Null<Int> = Std.parseInt(parts[index]);
-		return parsed != null ? parsed : 0;
+		var segment:String = StringTools.trim(parts[index]);
+		var end:Int = 0;
+		while (end < segment.length && StringTools.fastCodeAt(segment, end) >= "0".code && StringTools.fastCodeAt(segment, end) <= "9".code) {
+			end++;
+		}
+		if (end == 0) {
+			return 0;
+		}
+		var parsed:Int = IntParse.decimal(segment.substr(0, end), 999);
+		return parsed < 0 ? 999 : parsed;
 	}
 
 	// Overload the < operator

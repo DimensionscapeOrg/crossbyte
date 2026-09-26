@@ -17,6 +17,14 @@ class TimerNode {
 	 */
 	public var heapIndex:Int = -1;
 
+	/**
+	 * The scheduler's pass number when this node was last armed. A node armed
+	 * during a pass is never fired by that pass, however soon it is due: a
+	 * callback that re-arms itself for "now" would otherwise run again and
+	 * again inside one pass, with nothing to stop it but a time budget.
+	 */
+	public var armPass:Int = 0;
+
 	public inline function new(id:Int, time:Float, interval:Float, callback:TimerHandle->Void) {
 		this.id = id;
 		this.time = time;

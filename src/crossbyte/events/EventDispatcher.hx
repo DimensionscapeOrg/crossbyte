@@ -42,6 +42,19 @@ class EventDispatcher implements IEventDispatcher {
 	@:noCompletion private var __nextListenerOrder:Int;
 
 	/**
+		How many dispatches on this dispatcher are walking a listener list
+		right now. While one is, adding or removing a listener replaces the
+		list rather than changing it, so the walk goes on over the list it
+		started with; otherwise the list is changed where it is.
+
+		A listener that throws out of `dispatchEvent` leaves this raised, and
+		the dispatcher then copies on every change, as it always used to:
+		slower, never wrong. The containing dispatch catches, so a runtime's
+		own dispatcher is never left that way.
+	**/
+	@:noCompletion private var __walking:Int;
+
+	/**
 	 * Creates a new `EventDispatcher`, optionally bound to a target dispatcher.
 	 *
 	 * This class provides basic event listener management and event propagation.
@@ -53,6 +66,7 @@ class EventDispatcher implements IEventDispatcher {
 		__targetDispatcher = target;
 		__eventMap = null;
 		__nextListenerOrder = 0;
+		__walking = 0;
 	}
 
 	/**
@@ -98,23 +112,41 @@ class EventDispatcher implements IEventDispatcher {
 			return;
 		}
 
-		var idx = list.length;
-		for (i in 0...list.length) {
-			var current = list[i];
-			if (priority > current.priority) {
-				idx = i;
-				break;
+		var length:Int = list.length;
+		var idx:Int = length;
+		// Listeners mostly share a priority, and then each goes after the
+		// last: that is checked first, so adding one does not walk the list
+		// to find its end.
+		if (length > 0 && list[length - 1].priority < priority) {
+			for (i in 0...length) {
+				var current = list[i];
+				if (priority > current.priority) {
+					idx = i;
+					break;
+				}
 			}
 		}
 
-		// Replaced rather than inserted into. Dispatch holds whichever array
-		// was current when it began and walks it without copying, so the list
-		// it is walking must never change underneath it. Paying for a copy
-		// here — where listeners are registered, typically once — instead of
-		// there, where events are dispatched forever, is the whole trade.
-		var next:Array<ListenerEntry> = list.copy();
-		next.insert(idx, entry);
-		eventMap.set(type, next);
+		if (__walking > 0) {
+			// Replaced rather than inserted into: a dispatch walks the array
+			// that was current when it began, without copying it, so that
+			// array must not change underneath it.
+			var next:Array<ListenerEntry> = list.copy();
+			next.insert(idx, entry);
+			eventMap.set(type, next);
+			return;
+		}
+
+		// Nothing is walking it, so it is changed where it is. It used to be
+		// copied on every add and every remove, dispatching or not, which
+		// made a list of n listeners cost n^2 to build and to empty: every
+		// connection or task that attached a listener of its own paid for all
+		// the others.
+		if (idx == length) {
+			list.push(entry);
+		} else {
+			list.insert(idx, entry);
+		}
 	}
 
 	/**
@@ -147,14 +179,19 @@ class EventDispatcher implements IEventDispatcher {
 					return;
 				}
 
-				// Replaced rather than spliced, for the reason given in
-				// addEventListener: a dispatch already walking this list keeps
-				// the array it started with, so a listener removed from inside
-				// a handler still runs for the event in flight — which is the
-				// behaviour the per-dispatch copy used to provide.
-				var next:Array<ListenerEntry> = list.copy();
-				next.splice(i, 1);
-				eventMap.set(type, next);
+				if (__walking > 0) {
+					// Replaced rather than spliced, for the reason given in
+					// addEventListener: a dispatch already walking this list
+					// keeps the array it started with, so a listener removed
+					// from inside a handler still runs for the event in
+					// flight.
+					var next:Array<ListenerEntry> = list.copy();
+					next.splice(i, 1);
+					eventMap.set(type, next);
+					return;
+				}
+
+				list.splice(i, 1);
 				return;
 			}
 		}
@@ -238,13 +275,15 @@ class EventDispatcher implements IEventDispatcher {
 			return true;
 		}
 
-		// The list captured above *is* the snapshot: `addEventListener` and
-		// `removeEventListener` replace the array rather than mutate it, so
-		// nothing can change the one being walked here. Listeners added during
-		// dispatch are still not invoked until the next dispatch, and a
-		// listener removed during dispatch is still invoked for this one —
-		// the same contract a per-dispatch copy gave, without allocating an
-		// array every time an event is sent.
+		// The list captured above *is* the snapshot: while `__walking` is
+		// raised, `addEventListener` and `removeEventListener` replace the
+		// array rather than change it, so nothing can change the one being
+		// walked here. Listeners added during dispatch are still not invoked
+		// until the next dispatch, and a listener removed during dispatch is
+		// still invoked for this one -- the same contract a per-dispatch copy
+		// gave, without allocating an array every time an event is sent.
+		// One listener is not walked, so the count is left alone for it.
+		__walking++;
 		for (i in 0...len) {
 			var entry = list[i];
 			if (entry == null || entry.listener == null) {
@@ -252,7 +291,73 @@ class EventDispatcher implements IEventDispatcher {
 			}
 			entry.listener(event);
 		}
+		__walking--;
 		return true;
+	}
+
+	/**
+		Dispatches `event` as `dispatchEvent` does, except that a listener
+		that throws does not stop the ones after it: what it threw goes to
+		`__listenerThrew`, and the dispatch carries on.
+
+		For events whose listeners belong to unrelated components -- a
+		runtime's tick, its INIT and EXIT -- where one's bug is not the
+		others' business and must not end the loop that dispatched it.
+		Everything else still propagates, as it always has: a component
+		dispatching its own events to its own listeners may rely on hearing
+		that one failed.
+
+		A separate method rather than a flag on the ordinary one, so the
+		dispatch every other event takes is exactly what it was.
+	**/
+	@:noCompletion private function __dispatchContained(event:Event):Bool {
+		if (event == null) {
+			return false;
+		}
+
+		if (event.target == null) {
+			var tgt:IEventDispatcher = (__targetDispatcher != null) ? __targetDispatcher : this;
+			event.target = tgt;
+			event.currentTarget = tgt;
+		} else {
+			event.currentTarget = (__targetDispatcher != null) ? __targetDispatcher : this;
+		}
+
+		var eventMap = __eventMap;
+		if (eventMap == null) {
+			return false;
+		}
+
+		var list:Null<Array<ListenerEntry>> = eventMap.get(event.type);
+		if (list == null) {
+			return false;
+		}
+
+		// The same snapshot `__dispatchEvent` walks: while it is walked, add
+		// and remove replace the array rather than change it.
+		var len:Int = list.length;
+		__walking++;
+		for (i in 0...len) {
+			var entry = list[i];
+			if (entry == null || entry.listener == null) {
+				continue;
+			}
+			try {
+				entry.listener(event);
+			} catch (error:Dynamic) {
+				__listenerThrew(error, event);
+			}
+		}
+		__walking--;
+		return len > 0;
+	}
+
+	/**
+		What `__dispatchContained` does with a listener's failure. Logged
+		here; a runtime overrides it to report the failure as its own.
+	**/
+	@:noCompletion private function __listenerThrew(error:Dynamic, event:Event):Void {
+		crossbyte.utils.Logger.error("A " + event.type + " listener threw: " + Std.string(error));
 	}
 
 	private inline function __compactListeners(type:String, list:Array<ListenerEntry>):Void {

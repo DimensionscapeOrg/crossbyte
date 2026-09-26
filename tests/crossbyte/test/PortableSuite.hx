@@ -121,6 +121,22 @@ class PortableSuite {
 		runner.addCase(new crossbyte.timer.TimerStampTest());
 		// Its tick number wraps at 32 bits, and js is where an Int would not.
 		runner.addCase(new crossbyte.core.FixedStepTest());
+		// The runtime's own frame is a chain of platform timeouts here, and a
+		// throw out of one ended the chain -- on Node, the process.
+		runner.addCase(new crossbyte.core.UncaughtErrorTest());
+		// What post promises that needs no second thread: order, and a refusal
+		// once the runtime has exited rather than silence.
+		runner.addCase(new crossbyte.core.PostTest());
+		// ServerApplication on Node, whose POLL loop threw at its first frame.
+		runner.addCase(new crossbyte.core.ApplicationTest());
+		// SIGTERM and SIGINT on Node, which exited without the drain.
+		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
+		// Loop lag and overruns as the JavaScript loop takes its turns, and
+		// the post queue's depth.
+		runner.addCase(new crossbyte.core.RuntimeHealthTest());
+		// Listener lists changed in place outside a dispatch, and left alone
+		// while one walks them: every JavaScript component dispatches.
+		runner.addCase(new crossbyte.events.EventDispatcherTest());
 		// The rest of the ByteArray cases, which this file listed one of. None
 		// of them touches sys, so nothing kept them off js except not being
 		// written down -- and js is the target where, as the note in
@@ -137,6 +153,9 @@ class PortableSuite {
 		// Shifts and 32-bit words, which is exactly where JavaScript differs.
 		runner.addCase(new crossbyte.io.BitPackingTest());
 		runner.addCase(new crossbyte.utils.UtilsTest());
+		// The clock and the escaping both differ by target: a browser has no
+		// Sys.time, and a string is UTF-16 on js and the jvm but not on eval.
+		runner.addCase(new crossbyte.utils.LoggerTest());
 		// Std.parseInt's four answers past 32 bits include JavaScript's.
 		runner.addCase(new crossbyte.utils.IntParseTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());

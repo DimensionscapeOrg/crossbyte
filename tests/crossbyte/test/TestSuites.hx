@@ -32,6 +32,12 @@ class TestSuites {
 		runner.addCase(new crossbyte.core.SocketCapacityTest());
 		runner.addCase(new crossbyte.core.FixedStepTest());
 		runner.addCase(new crossbyte.core.PassFlushTest());
+		runner.addCase(new crossbyte.core.UncaughtErrorTest());
+		runner.addCase(new crossbyte.core.RuntimeTimersTest());
+		runner.addCase(new crossbyte.core.ApplicationTest());
+		runner.addCase(new crossbyte.core.ChildRuntimeTest());
+		runner.addCase(new crossbyte.core.PostTest());
+		runner.addCase(new crossbyte.core.RuntimeHealthTest());
 	}
 
 	public static function addFoundation(runner:Runner):Void {

@@ -33,13 +33,11 @@ class ServerApplication extends Application {
 	 * rather than sixty, which is what most networked mechanisms want when
 	 * nothing is happening.
 	 *
-	 * Raise it when tick cadence is your latency bound. The `POLL` loop
-	 * polls sockets with a zero timeout and then sleeps out the rest of the
-	 * frame — deliberately, so an idle registered socket cannot starve
-	 * timers — so under that loop a ready socket waits up to one tick
-	 * interval. A loop supplied through `MainLoopType.CUSTOM` can instead
-	 * pass a non-zero socket timeout to `pump`, letting readiness drive the
-	 * wakeup and making tick rate independent of I/O latency.
+	 * Raise it when tick cadence is your latency bound. The `POLL` loop spends
+	 * the rest of each frame inside poll, so a socket that becomes ready, or
+	 * work posted from another thread, wakes it at once; what waits for the
+	 * next tick is timers and tick listeners. On JavaScript, where nothing is
+	 * polled, `POLL` runs the `DEFAULT` loop.
 	 *
 	 * Assign before instantiating, or set `crossByte.tps` afterwards.
 	 */
@@ -65,13 +63,17 @@ class ServerApplication extends Application {
 
 		// Ensure we're in the main thread
 		#if !js
-		if (Thread.current() != Application.__mainThread) {
+		// A negated ==, not !=: see Application.initialize.
+		if (!(Thread.current() == Application.__mainThread)) {
 			throw "ServerApplication must only be instantiated in the main thread!";
 		}
 		#end
 
 		Application.__application = this;
-		__crossByte = new CrossByte(true, POLL, false);
+		// Built from what the constructor passed up, timer strategy included.
+		// This named POLL and nothing else, so `new ServerApplication(WHEEL)`
+		// ran on the heap.
+		__crossByte = __createRuntime();
 
 		// A service default rather than the runtime's general-purpose one;
 		// see defaultTicksPerSecond. Applied before INIT so a subclass can

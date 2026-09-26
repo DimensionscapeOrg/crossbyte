@@ -52,7 +52,7 @@ class CrossByteRunningFlagTest extends utest.Test {
 	}
 
 	public function testPumpingAnExitedRuntimeDoesNotClaimTheThread():Void {
-		#if cpp
+		#if target.threaded
 		var before = CrossByte.current();
 		var runtime = new CrossByte(false, DEFAULT, true);
 
@@ -75,7 +75,7 @@ class CrossByteRunningFlagTest extends utest.Test {
 	}
 
 	public function testTicksStillReachTheCurrentRuntimeAfterPumpingAnExitedOne():Void {
-		#if cpp
+		#if target.threaded
 		var stopped = new CrossByte(false, DEFAULT, true);
 		stopped.pump(1 / 60, 0);
 		stopped.exit();

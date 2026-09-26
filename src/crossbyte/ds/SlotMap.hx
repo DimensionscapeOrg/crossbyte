@@ -201,7 +201,12 @@ final class SlotMap<T> {
 	public inline function clear():Void {
 		for (i in 0...__capacity) {
 			if (__values[i] != null) {
-				__gen[i] = (__gen[i] + 1) | 0;
+				// Kept inside the handle's generation field, as remove() keeps
+				// it. Counted past it here, a slot at the top of its range held
+				// a generation no handle could carry, so every entry put in it
+				// after the clear() could never be read or removed again -- the
+				// leak remove() was fixed for, back by another door.
+				__gen[i] = (__gen[i] + 1) & SlotHandle.GEN_MASK;
 			}
 
 			__values[i] = null;

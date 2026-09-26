@@ -6,21 +6,30 @@ package crossbyte.ds;
  *
  * The bit partition is **fixed**:
  * - lower `INDEX_BITS` bits store the index
- * - upper `GEN_BITS`  bits store the generation
+ * - the next `GEN_BITS` bits store the generation
+ * - the sign bit is never set, so a handle is never negative and never
+ *   `INVALID`
  *
+ * The generation was eight bits, so a handle kept after its entry died -- a
+ * missile's target, a last attacker -- resolved to whatever took its slot 256
+ * reuses later, and with the free list handing the same slot back first, 256
+ * reuses come in seconds. It is eleven now, as `TimerHandle`'s was widened
+ * for exactly this: a stale handle has to outlive 2048 reuses of its slot to
+ * alias. The index gives up the bits, so a map holds at most 1,048,576
+ * entries.
  */
 @:forward
 abstract SlotHandle(Int) from Int to Int {
 	public static inline final INVALID:SlotHandle = new SlotHandle(-1);
 
 	/** Number of bits used for the index portion (fixed). */
-	public static inline final INDEX_BITS:Int = 24;
+	public static inline final INDEX_BITS:Int = 20;
 
 	/** Bitmask for extracting the index portion. */
 	public static inline var INDEX_MASK:Int = (1 << INDEX_BITS) - 1;
 
-	/** Number of bits used for the generation portion. */
-	public static inline var GEN_BITS:Int = 32 - INDEX_BITS;
+	/** Number of bits used for the generation portion: what is left below the sign bit. */
+	public static inline var GEN_BITS:Int = 31 - INDEX_BITS;
 
 	/**
 		Bitmask for the generation portion.
@@ -56,7 +65,7 @@ abstract SlotHandle(Int) from Int to Int {
 	 * @return The generation (upper `GEN_BITS` bits).
 	 */
 	public inline function gen():Int {
-		return this >>> INDEX_BITS;
+		return (this >>> INDEX_BITS) & GEN_MASK;
 	}
 
 	/**

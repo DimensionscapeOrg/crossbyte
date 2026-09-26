@@ -14,6 +14,40 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.__resetForTesting();
 	}
 
+	#if nodejs
+	public function testASigtermOnNodeLatchesTheRequest():Void {
+		// Node exited on SIGTERM and SIGINT, so docker stop or Ctrl+C on a
+		// Node service skipped the drain. Emitted rather than sent: a real
+		// SIGTERM on Windows ends a Node process whatever listens for it.
+		var ran = false;
+		ProcessLifecycle.onShutdown(() -> ran = true);
+
+		Assert.isTrue(ProcessLifecycle.installDefaultHandlers(), "no handlers on Node");
+		js.Node.process.emit("SIGTERM");
+		Assert.isTrue(ProcessLifecycle.shutdownRequested);
+		Assert.isTrue(ProcessLifecycle.poll());
+		Assert.isTrue(ran);
+	}
+	#end
+
+	#if (java || jvm)
+	public function testASignalOnTheJvmLatchesTheRequest():Void {
+		// The JVM's default for SIGINT and SIGTERM halts it after its
+		// shutdown hooks, so a jvm service skipped the drain.
+		if (!ProcessLifecycle.installDefaultHandlers()) {
+			Assert.fail("this JVM has no signal hook");
+			return;
+		}
+
+		crossbyte.sys._internal.JvmSignals.JvmSignal.raise(new crossbyte.sys._internal.JvmSignals.JvmSignal("INT"));
+		var deadline = haxe.Timer.stamp() + 5;
+		while (!ProcessLifecycle.shutdownRequested && haxe.Timer.stamp() < deadline) {
+			Sys.sleep(0.01);
+		}
+		Assert.isTrue(ProcessLifecycle.shutdownRequested, "the signal did not reach the handler");
+	}
+	#end
+
 	public function testShutdownStartsUnrequested():Void {
 		Assert.isFalse(ProcessLifecycle.shutdownRequested);
 		Assert.isFalse(ProcessLifecycle.poll());
@@ -52,9 +86,23 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.onShutdown(() -> throw "shutdown callback failure");
 		ProcessLifecycle.onShutdown(() -> order.push(3));
 
+		// Contained, and said: it was swallowed without a word.
+		var errors:Array<String> = [];
+		crossbyte.utils.Logger.recordSink = record -> {
+			if (record.level == crossbyte.utils.LogLevel.ERROR) {
+				errors.push(record.message);
+			}
+		};
 		ProcessLifecycle.requestShutdown();
-		Assert.isTrue(ProcessLifecycle.poll());
+		var dispatched = ProcessLifecycle.poll();
+		crossbyte.utils.Logger.recordSink = null;
+
+		Assert.isTrue(dispatched);
 		Assert.same([1, 3], order);
+		Assert.equals(1, errors.length, "errors logged: " + errors.join(" | "));
+		if (errors.length == 1) {
+			Assert.isTrue(errors[0].indexOf("shutdown callback failure") >= 0, errors[0]);
+		}
 	}
 
 	public function testLateRegistrationRunsImmediately():Void {
@@ -65,9 +113,12 @@ class ProcessLifecycleTest extends utest.Test {
 		ProcessLifecycle.onShutdown(() -> lateRan = true);
 		Assert.isTrue(lateRan);
 
-		// A late callback that throws is also contained.
+		// A late callback that throws is also contained, and logged.
+		var logged = 0;
+		crossbyte.utils.Logger.recordSink = record -> logged++;
 		ProcessLifecycle.onShutdown(() -> throw "late failure");
-		Assert.pass();
+		crossbyte.utils.Logger.recordSink = null;
+		Assert.equals(1, logged);
 	}
 
 	public function testNullCallbackIsIgnored():Void {
@@ -148,7 +199,8 @@ class ProcessLifecycleTest extends utest.Test {
 	}
 
 	public function testInstallDefaultHandlersMatchesTargetSupport():Void {
-		#if cpp
+		// Native, Node and the jvm have a signal source; the rest do not.
+		#if (cpp || nodejs || java || jvm)
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());
 		// Idempotent.
 		Assert.isTrue(ProcessLifecycle.installDefaultHandlers());

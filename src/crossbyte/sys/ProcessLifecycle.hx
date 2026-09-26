@@ -2,19 +2,26 @@ package crossbyte.sys;
 
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
+import crossbyte.utils.LogLevel;
 import crossbyte.utils.Logger;
 #if cpp
 import crossbyte.sys._internal.NativeLifecycle;
 import crossbyte.sys._internal.NativeServiceControl;
 #end
+#if (java || jvm)
+import crossbyte.sys._internal.JvmSignals.JvmSignal;
+import crossbyte.sys._internal.JvmSignals.JvmSignalHandler;
+#end
 
 /**
  * Cooperative process-shutdown coordination.
  *
- * `installDefaultHandlers()` arms the platform shutdown source — the console
- * control handler on Windows (`Ctrl+C`, console close, logoff, system
- * shutdown) and `SIGINT`/`SIGTERM` on POSIX targets. The OS-level handler only
- * records the request; nothing runs on the handler thread.
+ * `installDefaultHandlers()` arms the platform shutdown source — natively the
+ * console control handler on Windows (`Ctrl+C`, console close, logoff, system
+ * shutdown) and `SIGINT`/`SIGTERM` on POSIX; `SIGINT`/`SIGTERM` listeners on
+ * Node; the JVM's own signal hook for `INT` and `TERM` on the jvm. The handler
+ * only records the request, and asks the watching runtime to look; nothing
+ * else runs on the handler's thread.
  *
  * A process started by the Windows Service Control Manager has no console and
  * receives none of those events, so a service needs
@@ -106,19 +113,78 @@ final class ProcessLifecycle {
 	 * is current on this thread, a tick listener that dispatches shutdown
 	 * callbacks automatically.
 	 *
-	 * Idempotent. Returns `true` when native handlers are armed; targets
-	 * without native handler support return `false` but remain fully usable
-	 * through `requestShutdown()`/`poll()`.
+	 * Idempotent. Returns `true` when handlers are armed: natively, on Node
+	 * and on the jvm. Elsewhere -- the interpreter, hl, neko, a browser -- it
+	 * returns `false`, and shutdown remains fully usable through
+	 * `requestShutdown()`/`poll()`.
 	 */
 	public static function installDefaultHandlers():Bool {
 		__attachToCurrentRuntime();
 
 		#if cpp
 		return NativeLifecycle.install();
+		#elseif nodejs
+		return __installNodeHandlers();
+		#elseif (java || jvm)
+		return __installJvmHandlers();
 		#else
 		return false;
 		#end
 	}
+
+	/**
+		What a signal does, on whatever thread delivers it: latches the
+		request, as the native handlers do, and asks the watching runtime to
+		look now rather than at its next tick.
+	**/
+	@:noCompletion private static function __onSignal():Void {
+		requestShutdown();
+		var runtime:CrossByte = __watchedRuntime;
+		if (runtime != null) {
+			runtime.post(__pollFromSignal);
+		}
+	}
+
+	@:noCompletion private static function __pollFromSignal():Void {
+		poll();
+	}
+
+	#if nodejs
+	@:noCompletion private static var __nodeHandlersInstalled:Bool = false;
+
+	// Node exits on SIGTERM and SIGINT unless something listens, so `docker
+	// stop` or Ctrl+C on a Node service skipped the drain entirely. Listening
+	// is also what keeps it from exiting: shutdown is then the application's.
+	@:noCompletion private static function __installNodeHandlers():Bool {
+		if (!__nodeHandlersInstalled) {
+			__nodeHandlersInstalled = true;
+			js.Node.process.on("SIGTERM", __onSignal);
+			js.Node.process.on("SIGINT", __onSignal);
+		}
+		return true;
+	}
+	#end
+
+	#if (java || jvm)
+	@:noCompletion private static var __jvmHandlersInstalled:Bool = false;
+
+	// The JVM's default for SIGTERM and SIGINT runs its shutdown hooks and
+	// halts, so `docker stop` or Ctrl+C on a jvm service skipped the drain.
+	// Its own signal hook replaces that; a JVM without one reports false.
+	@:noCompletion private static function __installJvmHandlers():Bool {
+		if (__jvmHandlersInstalled) {
+			return true;
+		}
+
+		try {
+			var handler = new LatchOnSignal();
+			JvmSignal.handle(new JvmSignal("TERM"), handler);
+			JvmSignal.handle(new JvmSignal("INT"), handler);
+			__jvmHandlersInstalled = true;
+		} catch (_:Dynamic) {}
+		return __jvmHandlersInstalled;
+	}
+	#end
 
 	/**
 	 * Attaches to the Windows Service Control Manager, so that a `sc stop`,
@@ -204,7 +270,8 @@ final class ProcessLifecycle {
 	/**
 	 * Registers a shutdown callback. Callbacks run exactly once, in
 	 * registration order; a callback registered after dispatch runs
-	 * immediately. Exceptions thrown by a callback are swallowed so later
+	 * immediately. An exception thrown by a callback is logged with
+	 * `Logger.error` (category "runtime") and goes no further, so later
 	 * callbacks and the exit path still run.
 	 */
 	public static function onShutdown(callback:() -> Void):Void {
@@ -336,12 +403,16 @@ final class ProcessLifecycle {
 		__tickListener = null;
 	}
 
-	@:noCompletion private static inline function __invoke(callback:() -> Void):Void {
+	@:noCompletion private static function __invoke(callback:() -> Void):Void {
 		try {
 			callback();
-		} catch (_:Dynamic) {
+		} catch (error:Dynamic) {
 			// A failing shutdown callback must not block the remaining
-			// callbacks or the exit path.
+			// callbacks or the exit path. It is logged, as the runtime logs
+			// any other callback's failure: this was swallowed without a
+			// word, so a drain that never flushed left nothing behind to say
+			// why.
+			Logger.log(LogLevel.ERROR, "A shutdown callback threw: " + Std.string(error), null, "runtime");
 		}
 	}
 
@@ -362,3 +433,14 @@ final class ProcessLifecycle {
 		#end
 	}
 }
+
+#if (java || jvm)
+// Runs on the JVM's signal-dispatch thread, so it only latches and posts.
+private class LatchOnSignal implements JvmSignalHandler {
+	public function new() {}
+
+	public function handle(signal:JvmSignal):Void {
+		@:privateAccess ProcessLifecycle.__onSignal();
+	}
+}
+#end
