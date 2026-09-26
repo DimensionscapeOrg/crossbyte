@@ -117,6 +117,9 @@ class PortableSuite {
 		// Loop lag and overruns as the JavaScript loop takes its turns, and
 		// the post queue's depth.
 		runner.addCase(new crossbyte.core.RuntimeHealthTest());
+		// Listener lists changed in place outside a dispatch, and left alone
+		// while one walks them: every JavaScript component dispatches.
+		runner.addCase(new crossbyte.events.EventDispatcherTest());
 		// The rest of the ByteArray cases, which this file listed one of. None
 		// of them touches sys, so nothing kept them off js except not being
 		// written down, and js is the target where, as the note in

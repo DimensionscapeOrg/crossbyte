@@ -749,6 +749,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Adding or removing an event listener copies the listener list only while
+  a dispatch is walking it. It copied on every call, so n listeners on one
+  type, a connection or a task each attaching its own, cost n^2 to
+  attach and again to detach: a thousand added and removed took 5.6ms
+  natively, and takes 75us now (removed newest first, 20ms and 3ms, where
+  finding each one is the cost left). A listener added after the others of
+  its priority, the usual case, no longer walks the list to find its place.
+  What a dispatch sees is unchanged: a listener added during it does not
+  run for that event, and one removed during it still does.
 - `CrossByte.cpuLoad` counts a POLL loop's socket handlers, and the posted
   callbacks any loop runs while it waits out a frame. It was measured before
   the poll, so a POLL server busy with its sockets half of every frame

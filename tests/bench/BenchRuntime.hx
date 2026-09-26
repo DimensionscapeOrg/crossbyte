@@ -1,6 +1,8 @@
 import crossbyte._internal.system.timer.heap.TimerHeap;
 import crossbyte._internal.system.timer.wheel.TimerWheel;
 import crossbyte.core.CrossByte;
+import crossbyte.events.Event;
+import crossbyte.events.EventDispatcher;
 import crossbyte.events.TickEvent;
 
 /**
@@ -62,5 +64,32 @@ class BenchRuntime {
 			busy.pump(0.001, 0);
 		});
 		busy.exit();
+
+		Bench.section("Listeners");
+
+		// A thousand listeners on one type added and then removed, as a
+		// thousand connections or tasks each attaching one would. Reported
+		// per round, so divide by 2000 for one call. Removed in the order they
+		// were added, and then in reverse, since the two find their entry at
+		// opposite ends of the list.
+		var dispatcher = new EventDispatcher();
+		var listeners:Array<Event->Void> = [for (_ in 0...1000) function(_:Event):Void {}];
+		Bench.run("1000 added, removed oldest first", function():Void {
+			for (listener in listeners) {
+				dispatcher.addEventListener("churn", listener);
+			}
+			for (listener in listeners) {
+				dispatcher.removeEventListener("churn", listener);
+			}
+		});
+		Bench.run("1000 added, removed newest first", function():Void {
+			for (listener in listeners) {
+				dispatcher.addEventListener("churn", listener);
+			}
+			var i = listeners.length;
+			while (i-- > 0) {
+				dispatcher.removeEventListener("churn", listeners[i]);
+			}
+		});
 	}
 }
