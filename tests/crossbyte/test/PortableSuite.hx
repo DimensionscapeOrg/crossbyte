@@ -137,6 +137,11 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCUnhandledCallTest());
 		runner.addCase(new crossbyte.rpc.RPCUnsendableCallTest());
 		runner.addCase(new crossbyte.rpc.RPCReadyAgainTest());
+		// A WebSocket's close reaching a NetConnection, which a page does not
+		// have; on Node it does.
+		#if !(js && !nodejs)
+		runner.addCase(new crossbyte.rpc.RPCPeerCloseCodeTest());
+		#end
 		// Int64 arithmetic on an injected clock, which JavaScript does with
 		// two Ints of its own.
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
