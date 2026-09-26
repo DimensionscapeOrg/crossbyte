@@ -255,6 +255,49 @@ class SctpDataTransferTest extends utest.Test {
 		Assert.equals(1, arrived[0], "the message on the other stream waited for a stream it has nothing to do with");
 	}
 
+	/**
+		Data the peer never acknowledges ends the association, and says so.
+
+		After the last retransmission the fragment was dropped and the rest
+		carried on. On an ordered stream that is a hole nothing will ever fill:
+		everything behind it stalled for good, later fragments were resent up
+		to eleven times, and the association went on reporting itself open
+		while its peer was, by RFC 4960's own definition, unreachable.
+	**/
+	public function testDataThePeerNeverAcknowledgesEndsTheAssociation():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var reasons:Array<String> = [];
+		pair.client.onClose = reason -> reasons.push(reason);
+
+		pair.cutToServer = true;
+		pair.clientData.send(0, filled(4 * SctpDataTransfer.MAX_PAYLOAD), SctpDataChunk.PPID_BINARY, true, pair.now);
+
+		// Long enough for any retransmission schedule to run out, stepped
+		// rather than run so the clock is the one being measured.
+		var t0 = pair.now;
+
+		while (reasons.length == 0 && pair.now - t0 < 600) {
+			pair.clientData.poll(pair.now);
+			pair.serverData.poll(pair.now);
+			pair.step();
+		}
+
+		Assert.equals(1, reasons.length, "unacknowledged data ended the association " + reasons.length + " times rather than once");
+		Assert.equals(SctpAssociationState.CLOSED, pair.client.state, "the association went on after its peer stopped acknowledging");
+
+		if (reasons.length > 0) {
+			Assert.isTrue(reasons[0].indexOf("acknowledg") >= 0, "the reason does not say what happened: " + reasons[0]);
+		}
+
+		// And nothing is sent into an association that has ended.
+		var sent:Int = 0;
+		pair.client.onSend = _ -> sent++;
+		pair.clientData.poll(pair.now + 60);
+		Assert.equals(0, sent, "an ended association kept retransmitting");
+	}
+
 	public function testEverythingIsAcknowledgedInTheEnd():Void {
 		if (unsupported()) return;
 
@@ -921,6 +964,9 @@ private class Pair {
 	/** Deliver the next two packets bound for the server back to front. **/
 	public var reorderNextToServer:Bool = false;
 
+	/** Drop everything bound for the server, for as long as this is set. **/
+	public var cutToServer:Bool = false;
+
 	private var toServer:Array<ByteArray> = [];
 	private var toClient:Array<ByteArray> = [];
 
@@ -952,11 +998,20 @@ private class Pair {
 
 	private function new() {}
 
+	/** One hop, and a quarter of a second. **/
+	public function step():Void {
+		deliver();
+	}
+
 	private function deliver():Void {
 		var outbound = toServer;
 		var inbound = toClient;
 		toServer = [];
 		toClient = [];
+
+		if (cutToServer) {
+			outbound = [];
+		}
 
 		if (dropNextToServer > 0 && outbound.length > 0) {
 			var drop:Int = dropNextToServer < outbound.length ? dropNextToServer : outbound.length;
