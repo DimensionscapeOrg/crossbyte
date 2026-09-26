@@ -6,14 +6,23 @@ import sys.thread.Thread;
 /**
  * Creates timers concurrently from several threads.
  *
- * Invariant: every timer receives a distinct id.
+ * Invariant: every timer is armed, once, with a scheduler handle of its own.
  *
  * This case caught a real bug: `haxe.Timer` allocated its id from a static
  * counter *outside* the lock guarding the timer map, so two threads could
  * take the same id and the second registration evicted the first, leaving
  * a timer that silently never fired.
+ *
+ * `haxe.Timer` has no id of its own now. A timer made on a thread without a
+ * runtime is handed to the primordial one through its post queue and armed
+ * there, taking a handle from that runtime's scheduler, so the old race has
+ * no counter to happen on. What can still go wrong is the same failure by
+ * another route, a handoff lost between threads, or two timers given one
+ * handle, and either shows here as a timer that never got a handle, or a
+ * handle held twice.
  */
 @:access(haxe.Timer)
+@:access(crossbyte.core.CrossByte)
 class TimerIdStress implements StressCase {
 	private static inline final THREADS:Int = 32;
 	private static inline final PER_THREAD:Int = 400;
@@ -21,73 +30,90 @@ class TimerIdStress implements StressCase {
 	private static inline final IDLE_MS:Int = 3600000;
 
 	private var lock:Mutex;
-	private var ids:Array<Int>;
+	private var timers:Array<haxe.Timer>;
 	private var finished:Int = 0;
 
 	public function new() {
 		lock = new Mutex();
-		ids = [];
+		timers = [];
 	}
 
 	public function run():StressResult {
+		var runtime = crossbyte.core.CrossByte.__primordial;
+
 		for (t in 0...THREADS) {
 			Thread.create(function() {
-				// Ids are buffered locally and timers stopped only after the
-				// creation loop: both stop() and this harness's own lock take
-				// mutexes, and taking one between constructions would
+				// Buffered locally and handed over after the creation loop:
+				// this harness's lock taken between constructions would
 				// serialize the threads and hide the very window under test.
-				var local:Array<Int> = [];
 				var created:Array<haxe.Timer> = [];
 
 				for (i in 0...PER_THREAD) {
-					var timer = new haxe.Timer(IDLE_MS);
-					local.push(timer.id);
-					created.push(timer);
-				}
-
-				for (timer in created) {
-					timer.stop();
+					created.push(new haxe.Timer(IDLE_MS));
 				}
 
 				lock.acquire();
-				for (id in local) {
-					ids.push(id);
+				for (timer in created) {
+					timers.push(timer);
 				}
 				finished++;
 				lock.release();
 			});
 		}
 
-		var deadline:Float = Sys.time() + 60;
-		while (Sys.time() < deadline) {
+		// The runtime is host-driven here: pumping it is what runs the arms
+		// the threads posted to it.
+		var expected:Int = THREADS * PER_THREAD;
+		var deadline:Float = haxe.Timer.stamp() + 60;
+		var armed:Int = 0;
+		while (haxe.Timer.stamp() < deadline) {
+			runtime.pump(0.0, 0.0);
+
 			lock.acquire();
-			var done:Int = finished;
+			var done:Bool = finished == THREADS;
 			lock.release();
-			if (done == THREADS) {
-				break;
+
+			if (done) {
+				armed = 0;
+				for (timer in timers) {
+					if (timer.__armed) {
+						armed++;
+					}
+				}
+				if (armed == expected) {
+					break;
+				}
 			}
-			Sys.sleep(0.01);
+			Sys.sleep(0.001);
 		}
 
-		var expected:Int = THREADS * PER_THREAD;
 		var seen:Map<Int, Bool> = new Map();
 		var duplicates:Int = 0;
-		for (id in ids) {
-			if (seen.exists(id)) {
+		for (timer in timers) {
+			if (!timer.__armed) {
+				continue;
+			}
+			if (seen.exists(timer.__handle)) {
 				duplicates++;
 			}
-			seen.set(id, true);
+			seen.set(timer.__handle, true);
 		}
 
-		var passed:Bool = ids.length == expected && duplicates == 0;
+		for (timer in timers) {
+			timer.stop();
+		}
+		runtime.pump(0.0, 0.0);
+
+		var passed:Bool = timers.length == expected && armed == expected && duplicates == 0;
 
 		return {
-			name: "Timer id allocation",
+			name: "Timer arming across threads",
 			passed: passed,
 			details: [
 				'threads=$THREADS timers=$expected',
-				"created=" + ids.length,
-				'duplicate ids=$duplicates'
+				"created=" + timers.length,
+				'armed=$armed',
+				'duplicate handles=$duplicates'
 			]
 		};
 	}
