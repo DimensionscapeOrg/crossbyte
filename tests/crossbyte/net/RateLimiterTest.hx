@@ -227,6 +227,71 @@ class RateLimiterTest extends utest.Test {
 		Assert.equals(RateLimiter.DEFAULT_MAX_KEYS, limiter.activeKeyCount());
 	}
 
+	public function testSecondsUntilSaysWhenAKeyCouldSpend():Void {
+		// One token a second.
+		var limiter = new RateLimiter(10, 10.0, clock);
+		Assert.equals(0.0, limiter.secondsUntil("client"));
+
+		for (_ in 0...10) {
+			limiter.tryAcquire("client");
+		}
+		Assert.floatEquals(1.0, limiter.secondsUntil("client"));
+		Assert.floatEquals(3.0, limiter.secondsUntil("client", 3));
+
+		now = 0.5;
+		Assert.floatEquals(0.5, limiter.secondsUntil("client"));
+		Assert.floatEquals(2.5, limiter.secondsUntil("client", 3));
+		// Asking spends nothing.
+		Assert.floatEquals(0.5, limiter.secondsUntil("client"));
+
+		now = 1.0;
+		Assert.equals(0.0, limiter.secondsUntil("client"));
+
+		// More than the bucket holds can never be spent.
+		Assert.equals(Math.POSITIVE_INFINITY, limiter.secondsUntil("client", 11));
+		Assert.raises(() -> limiter.secondsUntil("client", 0));
+	}
+
+	public function testAnAddressKeysByItsIPv6Prefix():Void {
+		Assert.equals("203.0.113.7", RateLimiter.addressKey("203.0.113.7"));
+
+		var slash64:String = "2001:db8:1:2:0:0:0:0/64";
+		Assert.equals(slash64, RateLimiter.addressKey("2001:db8:1:2:3:4:5:6"));
+		Assert.equals(slash64, RateLimiter.addressKey("2001:DB8:1:2::7"));
+		Assert.equals(slash64, RateLimiter.addressKey("2001:0db8:0001:0002:ffff::"));
+		Assert.equals(slash64, RateLimiter.addressKey("[2001:db8:1:2::1]"));
+		Assert.equals("fe80:0:0:0:0:0:0:0/64", RateLimiter.addressKey("fe80::1%eth0"));
+		Assert.equals("2001:db8:1:2:0:0:0:0/64", RateLimiter.addressKey("2001:db8:1:2:3:4:1.2.3.4"));
+
+		// Mapped IPv4, as a dual-stack listener reports an IPv4 client.
+		Assert.equals("192.0.2.1", RateLimiter.addressKey("::ffff:192.0.2.1"));
+		Assert.equals("192.0.2.1", RateLimiter.addressKey("::FFFF:c000:201"));
+
+		Assert.equals("0:0:0:0:0:0:0:1/128", RateLimiter.addressKey("::1", 128));
+		Assert.equals("2001:db8:1:0:0:0:0:0/48", RateLimiter.addressKey("2001:db8:1:23ab::", 48));
+		Assert.equals("2001:db8:1:2300:0:0:0:0/56", RateLimiter.addressKey("2001:db8:1:23ab::", 56));
+		Assert.equals("0:0:0:0:0:0:0:0/0", RateLimiter.addressKey("2001:db8::", 0));
+
+		// Not addresses: returned as they came.
+		for (text in ["not an address", "1:2:3", "1::2::3", "12345::", "1:2:3:4:5:6:7:8:9", "g::1", "::1.2.3", "1:2:3:4:5:6:7:8::"]) {
+			Assert.equals(text, RateLimiter.addressKey(text));
+		}
+		Assert.equals("", RateLimiter.addressKey(null));
+	}
+
+	public function testOneSlash64IsOneClient():Void {
+		// Keyed on the whole address, a thousand attempts from one /64 against
+		// a limit of five were refused none of the time.
+		var limiter = new RateLimiter(5, 60.0, clock);
+		var refused:Int = 0;
+		for (i in 0...1000) {
+			if (limiter.isRateLimited(RateLimiter.addressKey("2001:db8:1:2:" + StringTools.hex(i) + "::1"))) {
+				refused++;
+			}
+		}
+		Assert.equals(995, refused);
+	}
+
 	public function testBackwardsClockDoesNotMintTokens():Void {
 		var limiter = new RateLimiter(2, 60.0, clock);
 		now = 10.0;

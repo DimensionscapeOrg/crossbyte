@@ -5,6 +5,16 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- A rate-limited request is answered `429` with a `Retry-After` saying how
+  many seconds until it may try again, over HTTP/1.1 and HTTP/2, and the
+  limiter can be keyed on something other than the client's address:
+  `HTTPServerConfig.rateLimitKey(handler)` names the key a request counts
+  against, the address a trusted proxy forwards, an account, or null to
+  leave it unlimited. `HTTPRequestHandler.remoteAddress` is public, where a
+  route limiting logins per client needed `@:privateAccess` to read it.
+  `RateLimiter.secondsUntil(key)` says when a key could spend again, and
+  `RateLimiter.addressKey(address, prefixBits)` turns an address into the
+  key the server uses, an IPv6 one by its prefix.
 - `HTTPServerConfig.maxRequestBodySize`, the request body a server accepts,
   on the wire and once decoded, over HTTP/1.1 and HTTP/2; one megabyte by
   default, as before. It was fixed, and it counted the headers too. A body
@@ -543,6 +553,14 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The server's rate limiter keys an IPv6 client by its /64 rather than its
+  whole address, the block one subscriber is given; keyed on the whole
+  address, a client stepping through its own /64 had a new budget for every
+  request, and a thousand attempts from one against a limit of five were
+  refused none of the time. An IPv4-mapped address counts as the IPv4
+  address it maps. An HTTP/1.1 request is now counted once its headers are
+  read rather than as soon as they have arrived, so a key can come from
+  them; one refused before that, as malformed, is not counted.
 - An `HTTPServer` with no `rootDirectory` serves no files, and listens on
   `127.0.0.1` unless told otherwise. A missing root used to mean
   `File.applicationStorageDirectory`: the account's home directory on
