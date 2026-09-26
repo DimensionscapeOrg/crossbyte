@@ -195,6 +195,54 @@ class NameLookupTest extends utest.Test {
 		});
 	}
 
+	#if (cpp || java || jvm)
+	/**
+		A thread with no runtime has nowhere to hand an answer back to, so a
+		name is looked up there in the call, as it always was. Asking whether
+		there is a runtime must not itself fail: `CrossByte.current()` throws
+		on such a thread, and the send failed with that where it used to work.
+	**/
+	@:timeout(15000)
+	public function testADatagramToANameFromAThreadWithoutARuntime(async:Async):Void {
+		var receiver = new DatagramSocket();
+		var received:Array<String> = [];
+		receiver.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent) received.push(e.data.readUTFBytes(e.data.length)));
+		receiver.bind(0, "127.0.0.1");
+		receiver.receive();
+
+		NetPump.until(() -> receiver.localPort != 0, 5.0, function(_) {
+			var port:Int = receiver.localPort;
+			var outcomes = new sys.thread.Deque<String>();
+			sys.thread.Thread.create(function():Void {
+				var outcome:String = "sent";
+				try {
+					var socket = new DatagramSocket();
+					var payload = new ByteArray();
+					payload.writeUTFBytes("from a thread");
+					socket.send(payload, 0, 0, "localhost", port);
+					socket.close();
+				} catch (e:Dynamic) {
+					outcome = "threw: " + Std.string(e);
+				}
+				outcomes.add(outcome);
+			});
+
+			var outcome:String = null;
+			NetPump.until(() -> {
+				if (outcome == null) {
+					outcome = outcomes.pop(false);
+				}
+				return outcome != null && (outcome != "sent" || received.length > 0);
+			}, 10.0, function(_) {
+				Assert.equals("sent", outcome, "a send to a name from a thread with no runtime failed");
+				Assert.same(["from a thread"], received);
+				receiver.close();
+				async.done();
+			});
+		});
+	}
+	#end
+
 	@:timeout(20000)
 	public function testADatagramToAMissingNameIsReportedNotThrown(async:Async):Void {
 		var socket = new DatagramSocket();

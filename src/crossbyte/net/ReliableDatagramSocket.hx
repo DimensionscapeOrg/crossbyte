@@ -785,7 +785,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__lookups++;
 		__lookingUp = false;
 
-		if (crossbyte._internal.net.Resolver.needsLookup(host) && CrossByte.current() != null) {
+		if (crossbyte._internal.net.Resolver.needsLookup(host) && crossbyte._internal.net.Resolver.runtimeHere() != null) {
 			__connectByName(host, port, outgoing);
 			return;
 		}
