@@ -785,6 +785,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The HTTP server's access log -- one `INFO` line per response -- logs under
+  the category `http.access`. `Logger.setLevel("http.access", WARN)` quiets
+  it and leaves everything else at `INFO`; it used to share the one global
+  level, so quieting it quieted everything.
 - `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`
   and need a CrossByte runtime on the calling thread; the callbacks run on
   that thread. On native targets and Node they return before the token
