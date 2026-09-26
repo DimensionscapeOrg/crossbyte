@@ -68,6 +68,25 @@ typedef HTTPRequestContext = {
 	var followRedirects:Bool;
 
 	/**
+	 * Whether a redirect from `https` to plain `http` may be followed. Absent
+	 * means it may not; see `URLRequest.followInsecureRedirects`.
+	 */
+	@:optional var followInsecureRedirects:Bool;
+
+	/**
+	 * Whether a cookie a redirect sets goes back on the hops after it, within
+	 * this one request. Absent means it does not; see
+	 * `URLRequest.manageCookies`.
+	 */
+	@:optional var manageCookies:Bool;
+
+	/**
+	 * Told the absolute URL of each redirect the backend follows, before it
+	 * asks for it, so the caller can say where the response came from.
+	 */
+	@:optional var onRedirect:(url:String) -> Void;
+
+	/**
 	 * Signals that the caller has abandoned this request.
 	 *
 	 * A backend should register through `onCancel` and stop whatever it can:

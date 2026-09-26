@@ -286,8 +286,9 @@ class Http {
 							__headers = __withoutCredentials(__headers);
 						}
 
-						if (__status == 301 || __status == 302 || __status == 303) {
-							__method = "GET";
+						var method:String = __methodAfterRedirect(__status, __method);
+						if (method != __method) {
+							__method = method;
 							__data = null;
 							__contentType = null;
 							__requestData = null;
@@ -323,11 +324,28 @@ class Http {
 		__parseResponse();
 	}
 
+	// The redirect policy, shared with the HTTP/2 backend so the two versions
+	// follow the same redirects the same way.
+
+	@:allow(crossbyte.http.HTTP2Backend)
 	private static inline function __isRedirect(status:Int):Bool {
 		return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 	}
 
+	/**
+	 * The method a redirect's next hop is made with. A 301, 302 or 303 turns
+	 * the request into a GET, without its body, as browsers do -- except a
+	 * HEAD, which asked for no body and gets none: it was turned into a GET,
+	 * which downloaded the body it had asked not to. A 307 or 308 keeps the
+	 * request as it was.
+	 */
+	@:allow(crossbyte.http.HTTP2Backend)
+	private static function __methodAfterRedirect(status:Int, method:String):String {
+		return (status == 301 || status == 302 || status == 303) && method != "HEAD" ? "GET" : method;
+	}
+
 	/** `scheme://host:port`, which is what two URLs share when they share an origin. */
+	@:allow(crossbyte.http.HTTP2Backend)
 	private static function __originOf(url:URL):String {
 		return url.scheme + "://" + url.host.toLowerCase() + ":" + url.port;
 	}
@@ -337,6 +355,7 @@ class Http {
 	 * may: only to `http` or `https`, and from `https` to `http` only when
 	 * the caller said so.
 	 */
+	@:allow(crossbyte.http.HTTP2Backend)
 	private static function __redirectRefusal(from:URL, to:URL, followInsecure:Bool):Null<String> {
 		if (to.scheme != "http" && to.scheme != "https") {
 			return "Refused a redirect to " + to.scheme + ": only http and https are followed";
@@ -350,6 +369,7 @@ class Http {
 	}
 
 	/** The caller's header lines, less those that carry credentials. */
+	@:allow(crossbyte.http.HTTP2Backend)
 	private static function __withoutCredentials(headers:Array<String>):Array<String> {
 		if (headers == null) {
 			return null;
@@ -584,6 +604,14 @@ class Http {
 			timeout: __timeout,
 			userAgent: __userAgent,
 			followRedirects: __followRedirects,
+			followInsecureRedirects: __followInsecureRedirects,
+			manageCookies: __cookies != null,
+			// So `url` and `redirected` say where the response came from, as
+			// they do for a response this client fetched itself.
+			onRedirect: location -> {
+				__url = new URL(location);
+				__redirect = true;
+			},
 			onProgress: onProgress,
 			onError: onError,
 			onComplete: onComplete,
@@ -1444,7 +1472,8 @@ class Http {
 		}
 	}
 
-	@:noCompletion private function __resolveLocation(base:URL, loc:String):String {
+	@:allow(crossbyte.http.HTTP2Backend)
+	@:noCompletion private static function __resolveLocation(base:URL, loc:String):String {
 		var locRegex:EReg = ~/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//;
 		if (locRegex.match(loc)) {
 			return loc;
@@ -1480,7 +1509,7 @@ class Http {
 		return scheme + "://" + host + portPart + __normalizeReferencePath(joined);
 	}
 
-	private function __normalizeReferencePath(pathWithQuery:String):String {
+	private static function __normalizeReferencePath(pathWithQuery:String):String {
 		var pathEnd:Int = pathWithQuery.length;
 		var queryIndex:Int = pathWithQuery.indexOf("?");
 		var fragmentIndex:Int = pathWithQuery.indexOf("#");

@@ -5,6 +5,10 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
+  `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
+  built-in client's rules and say where its response came from. The bundled
+  HTTP/2 backend uses them.
 - PKCE for OAuth (RFC 7636): `OAuth.createCodeVerifier()`,
   `OAuth.codeChallenge(verifier)`, a `codeChallenge` argument to
   `getAuthorizationUrl`, sent with `code_challenge_method=S256`, and a
@@ -1164,6 +1168,27 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Over HTTP/2 a redirect is followed, as it is over HTTP/1.1, on Node and in
+  the browser; a 3xx completed the load with its `Location` unread. The
+  HTTP/1.1 client's rules apply, through the same code: at most
+  `Http.MAX_REDIRECTS`, a relative `Location` resolved against the request,
+  a 301, 302 or 303 made a bodiless GET, `https` to `http` only with
+  `followInsecureRedirects`, `Authorization`, `Proxy-Authorization` and a
+  hand-set `Cookie` dropped once a hop leaves the origin, and, with
+  `manageCookies`, a cookie a hop sets sent back on the next. A hop to an
+  origin already connected rides that connection, and `HTTP_RESPONSE_STATUS`
+  names the URL the response came from. A HEAD stays a HEAD through a 301,
+  302 or 303 on both versions: over HTTP/1.1 it became a GET, and downloaded
+  the body it had asked not to be sent.
+- `idleTimeout` over HTTP/2 is an idle limit, as it is over HTTP/1.1 and on
+  Node: the longest a response may go with nothing arriving for it. It was a
+  deadline on the whole response, so a download still arriving steadily was
+  cut off when the timeout ran out, where HTTP/1.1 let it finish.
+- An HTTP/2 request cancelled before it started no longer closes the
+  connection it would have used. The session refused it before sending
+  anything, and the backend took that for a failed connection and closed
+  it, failing every other request in flight on it. It reports `Request
+  cancelled` now, as a cancel at any other point does.
 - Cancelling an HTTP/1.1 load -- `URLLoader.close()` with a load in flight,
   or its `cancelToken` -- ends it on every target, and at once. A cancel that
   landed after the load had looked at its token and before its socket
