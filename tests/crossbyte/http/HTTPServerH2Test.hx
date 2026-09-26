@@ -93,6 +93,118 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testTheRateLimiterCountsHttp2Requests(async:Async):Void {
+		// Only the HTTP/1.1 parser asked the limiter, so six requests over
+		// HTTP/2 were all answered where HTTP/1.1 refused the fourth.
+		var session = new H2Session(config -> config.rateLimiter = new crossbyte.net.RateLimiter(3, 60));
+
+		session.start(() -> {
+			var streams:Array<Int> = [1, 3, 5, 7, 9, 11];
+			for (id in streams) {
+				session.request(id, "GET", "/index.html", true);
+			}
+			session.until(() -> Lambda.foreach(streams, id -> session.finished(id)) || session.ended, () -> {
+				session.close();
+				Assert.same([200, 200, 200, 429, 429, 429], [for (id in streams) session.status(id)]);
+				async.done();
+			});
+		});
+	}
+
+	public function testAnHttp2BodyPastTheLimitIsRefused(async:Async):Void {
+		// DATA was appended with no limit while window kept being granted: a
+		// 3 MB upload reached a route HTTP/1.1 would have refused. Now it is
+		// answered 413, the stream is reset without error to stop the upload,
+		// and the connection carries on.
+		var reached:Bool = false;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.method == "POST") {
+						reached = true;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false);
+			session.upload(1, Bytes.alloc(2 * 1024 * 1024), sent -> {
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					Assert.equals(413, session.status(1), "an oversized HTTP/2 body was not refused");
+					Assert.isFalse(reached, "an oversized HTTP/2 body reached middleware");
+					Assert.isTrue(sent < 2 * 1024 * 1024, "the whole oversized body was taken");
+
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.equals(200, session.status(3), "the connection did not survive the refusal");
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
+	public function testHttp2ResponsesAreCounted(async:Async):Void {
+		var metrics = new crossbyte.metrics.Metrics();
+		var session = new H2Session(config -> config.metrics = metrics);
+
+		session.start(() -> {
+			session.request(1, "GET", "/index.html", true);
+			session.request(3, "GET", "/missing.html", true);
+			session.until(() -> (session.finished(1) && session.finished(3)) || session.ended, () -> {
+				session.close();
+				Assert.equals(1.0, metrics.counter("http_requests_total", ["status" => "2xx"]).value(), "an HTTP/2 200 was not counted");
+				Assert.equals(1.0, metrics.counter("http_requests_total", ["status" => "4xx"]).value(), "an HTTP/2 404 was not counted");
+				async.done();
+			});
+		});
+	}
+
+	public function testAnHttp2BodyIsDecodedBeforeMiddleware(async:Async):Void {
+		var body = new ByteArray();
+		body.writeUTFBytes("hello over h2");
+		body.compress(crossbyte.utils.CompressionAlgorithm.GZIP);
+		var compressed = Bytes.alloc(body.length);
+		compressed.blit(0, body, 0, body.length);
+
+		var session = new H2Session(config -> {
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "received " + handler.requestText)];
+		});
+
+		session.start(() -> {
+			session.request(1, "POST", "/upload", false, [new HpackHeader("content-encoding", "gzip")]);
+			session.dataBytes(1, compressed, true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.close();
+				Assert.equals(200, session.status(1));
+				Assert.equals("received hello over h2", session.body(1));
+				async.done();
+			});
+		});
+	}
+
+	public function testSplitCookiesJoinWithSemicolons(async:Async):Void {
+		// Browsers send each cookie as its own field over HTTP/2 (§8.2.3), and
+		// joining them with a comma made getCookie("sid") "abc123, theme=dark".
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> handler.respond(200, "text/plain", handler.getCookie("sid") + "|" + handler.getCookie("theme"))
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/me", true, [new HpackHeader("cookie", "sid=abc123"), new HpackHeader("cookie", "theme=dark")]);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.close();
+				Assert.equals("abc123|dark", session.body(1));
+				async.done();
+			});
+		});
+	}
+
 	public function testAGuardSeesTheSettledPathOverHttp2(async:Async):Void {
 		// The path settles the same way on both protocols, so a guard written
 		// once holds on both.
@@ -595,6 +707,13 @@ private class H2Session {
 	private final __status:Map<Int, Int> = new Map();
 	private final __bodies:Map<Int, Bytes> = new Map();
 	private final __finished:Map<Int, Bool> = new Map();
+	private final __headers:Map<Int, Map<String, String>> = new Map();
+	private final __resets:Map<Int, Int> = new Map();
+
+	// What the server lets this side send, for uploads that keep to flow
+	// control. Both start at the RFC 9113 default.
+	private var __connectionWindow:Int = 65535;
+	private final __streamWindows:Map<Int, Int> = new Map();
 
 	public function new(configure:HTTPServerConfig->Void) {
 		__root = File.createTempDirectory();
@@ -636,17 +755,82 @@ private class H2Session {
 	}
 
 	/** Opens `streamId` with a request, left open for a body unless `endStream`. */
-	public function request(streamId:Int, method:String, path:String, endStream:Bool):Void {
-		var block:Bytes = __encoder.encode([
+	public function request(streamId:Int, method:String, path:String, endStream:Bool, ?extra:Array<HpackHeader>):Void {
+		var fields:Array<HpackHeader> = [
 			new HpackHeader(":method", method),
 			new HpackHeader(":scheme", "http"),
 			new HpackHeader(":authority", "127.0.0.1"),
 			new HpackHeader(":path", path)
-		]);
+		];
+		if (extra != null) {
+			for (field in extra) {
+				fields.push(field);
+			}
+		}
 
+		__streamWindows.set(streamId, 65535);
 		var out = new BytesBuffer();
-		__writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | (endStream ? H2Flags.END_STREAM : 0), streamId, block);
+		__writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | (endStream ? H2Flags.END_STREAM : 0), streamId, __encoder.encode(fields));
 		__send(out);
+	}
+
+	/** Sends `body` on `streamId` in frames no larger than the default maximum. */
+	public function dataBytes(streamId:Int, body:Bytes, endStream:Bool):Void {
+		var out = new BytesBuffer();
+		var offset:Int = 0;
+		do {
+			var size:Int = body.length - offset > 16384 ? 16384 : body.length - offset;
+			var last:Bool = offset + size >= body.length;
+			__writeFrame(out, H2FrameType.DATA, (endStream && last) ? H2Flags.END_STREAM : 0, streamId, body.sub(offset, size));
+			offset += size;
+		} while (offset < body.length);
+		__send(out);
+	}
+
+	/**
+	 * Sends `body` on `streamId` only as fast as the server's windows allow,
+	 * pumping between frames, and continues once it is all sent or the
+	 * stream has been answered or reset. Continues with the bytes sent.
+	 */
+	public function upload(streamId:Int, body:Bytes, then:Int->Void, timeout:Float = 10.0):Void {
+		var sent:Int = 0;
+		function pushWhatFits():Bool {
+			while (sent < body.length && !finished(streamId) && !ended) {
+				var window:Int = __streamWindows.get(streamId);
+				var allowed:Int = window < __connectionWindow ? window : __connectionWindow;
+				if (allowed <= 0) {
+					return false;
+				}
+				var size:Int = body.length - sent;
+				if (size > 16384) {
+					size = 16384;
+				}
+				if (size > allowed) {
+					size = allowed;
+				}
+				var last:Bool = sent + size >= body.length;
+				var out = new BytesBuffer();
+				__writeFrame(out, H2FrameType.DATA, last ? H2Flags.END_STREAM : 0, streamId, body.sub(sent, size));
+				__send(out);
+				sent += size;
+				__connectionWindow -= size;
+				__streamWindows.set(streamId, window - size);
+			}
+			return true;
+		}
+
+		until(() -> pushWhatFits() && (sent >= body.length || finished(streamId) || ended), () -> then(sent), timeout);
+	}
+
+	/** The response header `name` on `streamId`, or null. */
+	public function header(streamId:Int, name:String):Null<String> {
+		var fields:Null<Map<String, String>> = __headers.get(streamId);
+		return fields == null ? null : fields.get(name);
+	}
+
+	/** The error code of an RST_STREAM the server sent for `streamId`, or -1. */
+	public function resetCode(streamId:Int):Int {
+		return __resets.exists(streamId) ? __resets.get(streamId) : -1;
 	}
 
 	/** Sends the rest of a request's body and ends its stream. */
@@ -768,15 +952,29 @@ private class H2Session {
 		} else if (frame.type == H2FrameType.HEADERS) {
 			// Every block is decoded, whichever stream it belongs to; see the
 			// decoder above.
+			var fields:Map<String, String> = new Map();
 			for (field in __decoder.decode(frame.payload)) {
 				if (field.name == ":status") {
 					__status.set(frame.streamId, Std.parseInt(field.value));
+				} else {
+					fields.set(field.name, field.value);
 				}
 			}
+			__headers.set(frame.streamId, fields);
 		} else if (frame.type == H2FrameType.DATA) {
 			__append(frame.streamId, frame.payload);
+		} else if (frame.type == H2FrameType.WINDOW_UPDATE) {
+			var payload:Bytes = frame.payload;
+			var increment:Int = ((payload.get(0) & 0x7f) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3);
+			if (frame.streamId == 0) {
+				__connectionWindow += increment;
+			} else if (__streamWindows.exists(frame.streamId)) {
+				__streamWindows.set(frame.streamId, __streamWindows.get(frame.streamId) + increment);
+			}
 		} else if (frame.type == H2FrameType.RST_STREAM) {
 			// Refused rather than answered, which is also the end of it.
+			var payload:Bytes = frame.payload;
+			__resets.set(frame.streamId, (payload.get(0) << 24) | (payload.get(1) << 16) | (payload.get(2) << 8) | payload.get(3));
 			__finished.set(frame.streamId, true);
 		} else if (frame.type == H2FrameType.GOAWAY && goAwayAt < 0) {
 			goAwayAt = haxe.Timer.stamp();
