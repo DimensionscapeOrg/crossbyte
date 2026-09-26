@@ -9,8 +9,10 @@ package crossbyte.events;
 	costs that handler rather than the process. The loop carries on, the other
 	timers and connections are served, a recurring timer stays armed, and a
 	stream socket whose handler threw is closed, since what it had half read
-	can no longer be trusted. Every one is logged with `Logger.error` whether
-	or not anything listens for this.
+	can no longer be trusted. Every one is logged at `ERROR` under the
+	`runtime` category whether or not anything listens for this; an
+	application that reports failures itself can quiet the log with
+	`Logger.setLevel("runtime", LogLevel.OFF)`.
 
 	Listen for it to report failures somewhere the log does not reach, or to
 	decide that one is fatal and call `exit()`:
