@@ -55,6 +55,11 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
 // Releases a session. A handle that is not open is ignored.
 void crossbyte_dtls_close(int handle);
 
+// Tells the peer this end is closing: queues a close_notify alert, to be
+// taken like any other outgoing datagram, and marks the session closed. Does
+// nothing to a session that is not established.
+int crossbyte_dtls_notify_close(int handle);
+
 // Hands over a datagram that arrived from the peer.
 int crossbyte_dtls_feed(int handle, const uint8_t *data, int length);
 
@@ -91,5 +96,6 @@ int crossbyte_dtls_read(int handle, uint8_t *out, int capacity);
 // beside the signalling that produced the expected value.
 ::String crossbyte_dtls_peer_certificate(int handle);
 
-// The mbedTLS code behind the last failure on this session, or 0.
+// The mbedTLS code behind the last failure on this session, or 0. A session
+// the peer closed reports MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY here.
 int crossbyte_dtls_error(int handle);

@@ -21,6 +21,9 @@ extern class NativeDtlsSession {
 	@:native("crossbyte_dtls_close")
 	static function close(handle:Int):Void;
 
+	@:native("crossbyte_dtls_notify_close")
+	static function notifyClose(handle:Int):Int;
+
 	@:native("crossbyte_dtls_feed")
 	static function feed(handle:Int, data:ConstPointer<UInt8>, length:Int):Int;
 

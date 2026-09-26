@@ -215,16 +215,18 @@ void drainPlaintext(Session *session)
          continue;
       }
 
-      if (read == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
-      {
-         session->state = CROSSBYTE_DTLS_CLOSED;
-         return;
-      }
-
       // WANT_READ is the ordinary end of the queue, not a fault.
-      if (read != MBEDTLS_ERR_SSL_WANT_READ && read != MBEDTLS_ERR_SSL_WANT_WRITE && read != 0)
-         session->error = read;
+      if (read == MBEDTLS_ERR_SSL_WANT_READ || read == MBEDTLS_ERR_SSL_WANT_WRITE || read == 0)
+         return;
 
+      // Anything else ends the session, and mbedtls says the context must not
+      // be used again: the peer's close_notify, a fatal alert, or a client
+      // starting over on the same port. The error is kept, close_notify
+      // included, because it is how the caller tells a peer that said goodbye
+      // from one that failed, and a session left ESTABLISHED here went on
+      // reporting itself open to a caller that had no other way to find out.
+      session->error = read;
+      session->state = CROSSBYTE_DTLS_CLOSED;
       return;
    }
 }
@@ -359,6 +361,25 @@ void crossbyte_dtls_close(int handle)
 
    delete session;
    g_sessions.erase(handle);
+}
+
+int crossbyte_dtls_notify_close(int handle)
+{
+   Session *session = find(handle);
+
+   if (session == 0)
+      return ERROR_NO_SESSION;
+
+   // Only a session that is up has anyone to tell. One the peer already
+   // closed, or that failed, is past the point where mbedtls may write to it.
+   if (session->state != CROSSBYTE_DTLS_ESTABLISHED)
+      return 0;
+
+   // The alert goes through sendCallback like any other record, so it waits
+   // on the outbound queue for the caller to take.
+   int ret = mbedtls_ssl_close_notify(&session->ssl);
+   session->state = CROSSBYTE_DTLS_CLOSED;
+   return ret;
 }
 
 int crossbyte_dtls_feed(int handle, const uint8_t *data, int length)

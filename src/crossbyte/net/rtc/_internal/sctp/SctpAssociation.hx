@@ -117,6 +117,26 @@ class SctpAssociation {
 	/** Chunks this handshake does not handle, passed up for the data layer. **/
 	public dynamic function onChunk(chunk:SctpChunk, packet:SctpPacket):Void {}
 
+	/**
+		Called once when an association that was established ends from the far
+		side or from a fault: the peer's ABORT, or the peer no longer answering.
+		Not called for `close()` or `abort()`, which the caller already knows
+		about.
+
+		An ABORT used to close the association without a word to anyone above
+		it. The channels on top went on reporting themselves open, and the
+		first sign anything had happened was a `send` that threw.
+	**/
+	public dynamic function onClose(reason:String):Void {}
+
+	/** The ABORT flag saying its tag is the sender's own, reflected. **/
+	@:noCompletion private static inline var FLAG_TAG_REFLECTED:Int = 0x01;
+
+	/** RFC 4960 section 3.3.10.12: the reason an upper layer gave for aborting. **/
+	@:noCompletion private static inline var CAUSE_USER_ABORT:Int = 12;
+
+	@:noCompletion private static inline var MAX_ABORT_REASON:Int = 256;
+
 	@:noCompletion private var __attempts:Int = 0;
 	@:noCompletion private var __retryAt:Float = 0;
 	@:noCompletion private var __cookie:ByteArray;
@@ -213,7 +233,13 @@ class SctpAssociation {
 				case SctpPacket.CHUNK_COOKIE_ACK:
 					__onCookieAck(packet);
 				case SctpPacket.CHUNK_ABORT:
-					__fail("The peer aborted the association.");
+					// RFC 4960 section 8.5.1: this association's own tag, or the
+					// peer's reflected back with the T bit saying so. Anything
+					// else is an ABORT for an association that is not this one.
+					if (__abortIsForUs(chunk, packet)) {
+						__end("The peer aborted the association" + __abortReason(chunk) + ".", false);
+					}
+
 					return true;
 				default:
 					// Everything else, DATA, SACK, HEARTBEAT, is for the
@@ -234,6 +260,59 @@ class SctpAssociation {
 		// Nothing settled `established` on a close. Every other path that does
 		// runs from the handshake, and closing is what stops it.
 		@:privateAccess established.__cancel("The association was closed before it was established.");
+	}
+
+	/**
+		Ends the association and tells the peer, with an ABORT.
+
+		What `close()` does, plus the one packet that saves the peer from
+		finding out on its own, which, for a peer relying on retransmission
+		limits, takes the better part of a minute. Sent only once the peer's
+		tag is known: an ABORT stamped with anything else is discarded.
+
+		@param reason Carried to the peer as an upper-layer abort reason, which
+		is what a browser logs.
+	**/
+	public function abort(?reason:String):Void {
+		if (__closed) {
+			return;
+		}
+
+		__sendAbort(reason);
+		close();
+	}
+
+	/**
+		Ends the association because it cannot go on, telling the peer when
+		`notifyPeer` and whoever is above through `onClose`.
+
+		For the layer above, which is where the faults an established
+		association dies of are noticed, data the peer stopped acknowledging.
+	**/
+	@:allow(crossbyte.net.rtc._internal.sctp)
+	@:noCompletion private function __end(reason:String, notifyPeer:Bool):Void {
+		if (__closed) {
+			return;
+		}
+
+		var wasEstablished:Bool = state == ESTABLISHED;
+
+		if (notifyPeer) {
+			__sendAbort(reason);
+		}
+
+		// Before close(), for the same reason as DtlsTransport: close() settles
+		// this future too, Future.__fail is idempotent, and the specific reason
+		// should be the one that survives.
+		if (!wasEstablished) {
+			@:privateAccess established.__fail(reason, null);
+		}
+
+		close();
+
+		if (wasEstablished) {
+			onClose(reason);
+		}
 	}
 
 	/** Builds a packet addressed to the peer, with the right tag already on it. **/
@@ -372,22 +451,79 @@ class SctpAssociation {
 	}
 
 	@:noCompletion private function __fail(reason:String):Void {
-		if (__closed) {
-			return;
-		}
-
-		// Before close(), for the same reason as DtlsTransport: close() settles
-		// this future too, Future.__fail is idempotent, and the specific reason
-		// should be the one that survives.
-		if (state != ESTABLISHED) {
-			@:privateAccess established.__fail(reason, null);
-		}
-
-		close();
+		__end(reason, false);
 	}
 
 	@:noCompletion private function __tagMatches(packet:SctpPacket):Bool {
 		return packet.verificationTag == localTag;
+	}
+
+	@:noCompletion private function __abortIsForUs(chunk:SctpChunk, packet:SctpPacket):Bool {
+		if ((chunk.flags & FLAG_TAG_REFLECTED) != 0) {
+			return remoteTag != 0 && packet.verificationTag == remoteTag;
+		}
+
+		return localTag != 0 && packet.verificationTag == localTag;
+	}
+
+	/**
+		The reason inside an ABORT, when the peer gave one, as the tail of a
+		sentence. A browser closing a connection says so, and passing that on
+		costs a few bytes and saves a guess.
+	**/
+	@:noCompletion private function __abortReason(chunk:SctpChunk):String {
+		var value = chunk.value;
+
+		if (value == null || value.length < 4) {
+			return "";
+		}
+
+		value.endian = Endian.BIG_ENDIAN;
+		value.position = 0;
+
+		var code:Int = value.readUnsignedShort();
+		var length:Int = value.readUnsignedShort();
+
+		if (code != CAUSE_USER_ABORT || length <= 4 || length > value.length) {
+			return " (cause " + code + ")";
+		}
+
+		// Printable ASCII only. It is the peer's text, and a NUL in it would
+		// hide whatever follows it in a report.
+		var text = new StringBuf();
+
+		for (_ in 0...(length - 4)) {
+			var byte:Int = value.readUnsignedByte();
+			text.addChar(byte >= 0x20 && byte < 0x7F ? byte : "?".code);
+		}
+
+		return ": " + text.toString();
+	}
+
+	@:noCompletion private function __sendAbort(reason:Null<String>):Void {
+		// Without the peer's tag there is nothing to stamp this with that it
+		// would accept.
+		if (remoteTag == 0) {
+			return;
+		}
+
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+
+		if (reason != null && reason.length > 0) {
+			var text = new ByteArray();
+			text.writeUTFBytes(reason);
+
+			// A reason is for a log line, and the packet has to fit a datagram.
+			var length:Int = text.length > MAX_ABORT_REASON ? MAX_ABORT_REASON : text.length;
+
+			value.writeShort(CAUSE_USER_ABORT);
+			value.writeShort(4 + length);
+			value.writeBytes(text, 0, length);
+			value.position = 0;
+		}
+
+		onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_ABORT, 0, value)]));
 	}
 
 	/** The twenty byte fixed part every INIT and INIT ACK begins with. **/

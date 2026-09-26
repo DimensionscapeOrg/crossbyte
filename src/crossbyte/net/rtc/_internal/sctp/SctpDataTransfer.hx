@@ -344,6 +344,12 @@ class SctpDataTransfer {
 		Resends what has not been acknowledged, and sends any owed SACK.
 	**/
 	public function poll(now:Float):Void {
+		// An association that has ended has nobody to resend to, and its
+		// onSend leads into a session that is closing too.
+		if (association.state == SctpAssociationState.CLOSED) {
+			return;
+		}
+
 		__lastSeen = now;
 
 		if (__sackNeeded) {
