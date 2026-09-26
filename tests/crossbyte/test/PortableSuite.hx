@@ -120,6 +120,8 @@ class PortableSuite {
 		// Shifts and 32-bit words, which is exactly where JavaScript differs.
 		runner.addCase(new crossbyte.io.BitPackingTest());
 		runner.addCase(new crossbyte.utils.UtilsTest());
+		// Std.parseInt's four answers past 32 bits include JavaScript's.
+		runner.addCase(new crossbyte.utils.IntParseTest());
 		runner.addCase(new crossbyte.db.DBParameterBindingTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
