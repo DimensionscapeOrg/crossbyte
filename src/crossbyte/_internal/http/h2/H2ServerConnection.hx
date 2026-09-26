@@ -128,6 +128,12 @@ class H2ServerConnection {
 	/** Streams open right now, which is what makes a connection busy rather than idle. */
 	public var openStreams(get, never):Int;
 
+	/**
+	 * Open streams whose request is still arriving. The rest have been handed
+	 * to the application and wait on its answer, however long that takes.
+	 */
+	public var receivingStreams(get, never):Int;
+
 	private final __write:Bytes->Void;
 	private final __decoder:HpackDecoder;
 	private final __encoder:HpackEncoder;
@@ -141,6 +147,8 @@ class H2ServerConnection {
 	private var __connectionSendWindow:Int;
 	private var __connectionUnacknowledged:Int = 0;
 	private var __openStreams:Int = 0;
+	// Open streams already delivered: `openStreams - receivingStreams`.
+	private var __answering:Int = 0;
 	private var __resetCount:Int = 0;
 	private var __resetWindowStart:Float = -1;
 	private var __controlReplyCount:Int = 0;
@@ -183,6 +191,18 @@ class H2ServerConnection {
 
 	private inline function get_openStreams():Int {
 		return __openStreams;
+	}
+
+	private inline function get_receivingStreams():Int {
+		return __openStreams - __answering;
+	}
+
+	/** Marks a stream's request handed over, before the handler can answer it. */
+	private inline function __markDelivered(target:H2Stream):Void {
+		if (!target.delivered) {
+			target.delivered = true;
+			__answering++;
+		}
 	}
 
 	/**
@@ -428,8 +448,12 @@ class H2ServerConnection {
 	 * and fewer requests until it serves none.
 	 */
 	private function __forget(streamId:Int):Void {
-		if (__streams.remove(streamId)) {
+		var target:Null<H2Stream> = __streams.get(streamId);
+		if (target != null && __streams.remove(streamId)) {
 			__openStreams--;
+			if (target.delivered) {
+				__answering--;
+			}
 		}
 	}
 
@@ -763,6 +787,7 @@ class H2ServerConnection {
 		}
 
 		request.tooLarge = true;
+		__markDelivered(target);
 		onRequest(request);
 
 		// The answer has ended the stream on this side; this tells the client
@@ -779,6 +804,7 @@ class H2ServerConnection {
 			return;
 		}
 
+		__markDelivered(target);
 		onRequest(request);
 	}
 

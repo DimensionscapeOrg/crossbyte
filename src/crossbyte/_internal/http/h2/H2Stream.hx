@@ -45,6 +45,12 @@ class H2Stream {
 	public var overflowed:Bool = false;
 
 	/**
+	 * True once the whole request has been handed to the application, so the
+	 * stream is waiting on its answer rather than on the peer.
+	 */
+	public var delivered:Bool = false;
+
+	/**
 	 * Response bytes accepted from the application but not yet permitted onto
 	 * the wire by flow control.
 	 *
