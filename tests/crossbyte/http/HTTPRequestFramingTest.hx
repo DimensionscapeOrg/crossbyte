@@ -1,6 +1,7 @@
 package crossbyte.http;
 
 import crossbyte.http.HTTPTestSupport.HTTPTestResponse;
+import crossbyte.test.Require;
 import utest.Assert;
 import utest.Async;
 
@@ -230,6 +231,106 @@ class HTTPRequestFramingTest extends utest.Test {
 		});
 	}
 
+	/**
+		On Node a 404 is an IO_ERROR carrying its body, and the response's
+		headers reach the loader, as on native. It completed here, and no
+		target dispatched HTTP_RESPONSE_STATUS at all.
+	**/
+	public function testTheNodeLoaderKeepsTheNativeStatusContract(async:Async):Void {
+		var router:Router = new Router();
+		router.get("/missing", ctx -> ctx.handler.respond(404, "text/plain", "not here", [new crossbyte.url.URLRequestHeader("Retry-After", "30")]));
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(router.middleware());
+		var server:HTTPServer = new HTTPServer(config);
+
+		HTTPTestSupport.pumpUntilAsync(() -> server.localPort != 0, 2.0, function(_):Void {
+			var url:String = 'http://127.0.0.1:${server.localPort}/missing';
+			__load(new crossbyte.url.URLRequest(url), function(outcome:LoaderOutcome):Void {
+				try server.close() catch (_:Dynamic) {}
+
+				Assert.equals("HTTP error 404", outcome.error, "a 404 was not an error on Node");
+				Assert.isFalse(outcome.complete);
+				Assert.equals("not here", outcome.data);
+				Require.notNull(outcome.response, "HTTP_RESPONSE_STATUS was not dispatched");
+				Assert.equals(404, outcome.response.status);
+				Assert.equals(url, outcome.response.responseURL);
+				Assert.equals("30", __responseHeader(outcome.response, "retry-after"));
+				async.done();
+			});
+		});
+	}
+
+	/**
+		Node follows redirects as the native client does, dropping credentials
+		once one leaves the origin. A 3xx used to complete the load on Node.
+	**/
+	public function testTheNodeLoaderFollowsRedirectsSafely(async:Async):Void {
+		var elsewhereRouter:Router = new Router();
+		elsewhereRouter.get("/landing", ctx -> ctx.handler.respond(200, "text/plain", "auth=" + ctx.handler.getHeader("authorization")));
+		var elsewhereConfig:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		elsewhereConfig.middleware.push(elsewhereRouter.middleware());
+		var elsewhere:HTTPServer = new HTTPServer(elsewhereConfig);
+
+		var originRouter:Router = new Router();
+		originRouter.get("/old", ctx -> ctx.handler.respond(302, "text/plain", "", [new crossbyte.url.URLRequestHeader("Location", "/new")]));
+		originRouter.get("/new", ctx -> ctx.handler.respond(200, "text/plain", "moved, auth=" + ctx.handler.getHeader("authorization")));
+		originRouter.get("/away", ctx -> ctx.handler.respond(302, "text/plain", "",
+			[new crossbyte.url.URLRequestHeader("Location", 'http://127.0.0.1:${elsewhere.localPort}/landing')]));
+		var originConfig:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		originConfig.middleware.push(originRouter.middleware());
+		var origin:HTTPServer = new HTTPServer(originConfig);
+
+		HTTPTestSupport.pumpUntilAsync(() -> origin.localPort != 0 && elsewhere.localPort != 0, 2.0, function(_):Void {
+			var local = new crossbyte.url.URLRequest('http://127.0.0.1:${origin.localPort}/old');
+			local.requestHeaders.push(new crossbyte.url.URLRequestHeader("Authorization", "Bearer secret"));
+
+			__load(local, function(followed:LoaderOutcome):Void {
+				var away = new crossbyte.url.URLRequest('http://127.0.0.1:${origin.localPort}/away');
+				away.requestHeaders.push(new crossbyte.url.URLRequestHeader("Authorization", "Bearer secret"));
+
+				__load(away, function(crossed:LoaderOutcome):Void {
+					try origin.close() catch (_:Dynamic) {}
+					try elsewhere.close() catch (_:Dynamic) {}
+
+					Assert.isTrue(followed.complete, "a redirect was not followed on Node: " + followed.error);
+					Assert.equals("moved, auth=Bearer secret", followed.data, "credentials were dropped within the origin");
+					Require.notNull(followed.response);
+					Assert.isTrue(followed.response.redirected);
+					Assert.equals('http://127.0.0.1:${origin.localPort}/new', followed.response.responseURL);
+
+					Assert.isTrue(crossed.complete, "a cross-origin redirect was not followed: " + crossed.error);
+					Assert.equals("auth=null", crossed.data, "Authorization followed a redirect to another origin");
+					async.done();
+				});
+			});
+		});
+	}
+
+	private static function __load(request:crossbyte.url.URLRequest, done:LoaderOutcome->Void):Void {
+		var loader = new crossbyte.url.URLLoader();
+		var outcome:LoaderOutcome = {complete: false, error: null, data: null, response: null};
+		loader.addEventListener(crossbyte.events.HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> outcome.response = e);
+		loader.addEventListener(crossbyte.events.Event.COMPLETE, _ -> {
+			outcome.complete = true;
+			outcome.data = Std.string(loader.data);
+		});
+		loader.addEventListener(crossbyte.events.IOErrorEvent.IO_ERROR, e -> {
+			outcome.error = e.text;
+			outcome.data = loader.data == null ? null : Std.string(loader.data);
+		});
+		loader.load(request);
+		HTTPTestSupport.pumpUntilAsync(() -> outcome.complete || outcome.error != null, 5.0, _ -> done(outcome));
+	}
+
+	private static function __responseHeader(event:crossbyte.events.HTTPStatusEvent, name:String):Null<String> {
+		for (header in event.responseHeaders) {
+			if (header.name == name) {
+				return header.value;
+			}
+		}
+		return null;
+	}
+
 	/** Sends through the Node client and hands back "status body". **/
 	private static function __send(request:crossbyte.url.URLRequest, done:String->Void):Void {
 		var status:Int = 0;
@@ -256,3 +357,12 @@ class HTTPRequestFramingTest extends utest.Test {
 		return new HTTPServer(config);
 	}
 }
+
+#if nodejs
+private typedef LoaderOutcome = {
+	var complete:Bool;
+	var error:String;
+	var data:String;
+	var response:crossbyte.events.HTTPStatusEvent;
+}
+#end

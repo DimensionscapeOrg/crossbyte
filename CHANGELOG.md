@@ -732,6 +732,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` dispatches `HTTPStatusEvent.HTTP_RESPONSE_STATUS` on every
+  target, with the final response's `responseHeaders`, the `responseURL` it
+  came from and whether it was `redirected`; it never dispatched it, so
+  `Retry-After`, `ETag` and `Location` could not be read. And the transports
+  now report one exchange the same way. A 4xx or 5xx is an `IO_ERROR`
+  carrying its body over HTTP/2, on Node and in the browser, as it was on
+  native HTTP/1.1, where it had completed; Node follows redirects, with the
+  native client's rules for credentials and `https` to `http`, where it
+  completed with the 3xx; the browser's `idleTimeout` is time without
+  progress, as elsewhere, rather than a deadline on the whole exchange; and
+  an HTTP/2 response is content-decoded within the client's limits, where a
+  gzip body arrived compressed. HTTP/2 still does not follow redirects; the
+  3xx completes, and its `Location` is now readable.
 - `URLLoader` sends a `URLVariables` as a form on every target: in the query
   of a GET or HEAD, and otherwise as an `application/x-www-form-urlencoded`
   body. At run time one is the map beneath it, so the native client read the

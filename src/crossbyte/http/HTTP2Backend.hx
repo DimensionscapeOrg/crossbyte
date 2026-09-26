@@ -242,7 +242,31 @@ class HTTP2Backend implements HTTPBackend {
 		context.onHeaders(headers);
 
 		var body:Bytes = stream.takeBody();
+
+		// Decoded as the HTTP/1.1 client decodes, within the same limits. A
+		// request sent with no Accept-Encoding accepts any coding (RFC 9110
+		// 12.5.3), and a gzip body reached the caller still compressed.
+		try {
+			body = crossbyte._internal.http.Http.decodeResponseBody(body, headers.get("content-encoding"));
+		} catch (error:Dynamic) {
+			if (Std.isOfType(error, String)) {
+				context.onError('Unsupported content encoding: ${error}', body);
+			} else {
+				context.onError('Failed to decode response body: ' + Std.string(error), body);
+			}
+			return;
+		}
+
 		context.onProgress(body.length, body.length);
+
+		// The HTTP/1.1 client's contract: a 4xx or 5xx is an error carrying
+		// its body. This completed, so a 404 was IO_ERROR over HTTP/1.1 and
+		// COMPLETE over HTTP/2.
+		if (stream.status >= 400) {
+			context.onError('HTTP error ' + stream.status, body);
+			return;
+		}
+
 		context.onComplete(body);
 	}
 
