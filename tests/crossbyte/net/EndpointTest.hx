@@ -61,6 +61,21 @@ class EndpointTest extends utest.Test {
 		Assert.equals("", endpoint.resource);
 	}
 
+	/**
+		A port too big for an `Int` is refused on every target, as any port
+		past 65535 is. It was read with `Std.parseInt`, which answers one
+		differently on each: its low 32 bits on Linux native, so
+		4294967296 was port 0; an exception of its own on the jvm, which is
+		not the parse error the caller is told to expect.
+	**/
+	public function testRejectsAPortTooBigForAnInt():Void {
+		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:4294967296")));
+		Assert.isTrue(throwsParseError(() -> parseURL("ws://example.com:4294967376/chat")));
+		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:99999999999999999999")));
+		Assert.isTrue(throwsParseError(() -> parseURL("tcp://127.0.0.1:65536")));
+		Assert.equals(65535, parseURL("tcp://127.0.0.1:65535").port);
+	}
+
 	private static function throwsParseError(fn:Void->Void):Bool {
 		try {
 			fn();
