@@ -178,6 +178,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private var __streamStallDeadline:Float = 0;
 	@:noCompletion private var __streamPending:Bool = false;
 
+	// The body begun with beginResponse and not yet ended. An object of its
+	// own because a handler serves every request on its connection: a
+	// producer still writing after its response ended must reach nothing, not
+	// the next request's.
+	@:noCompletion private var __openStream:Null<HTTPResponseStream> = null;
+	@:noCompletion private var __watchingClient:Bool = false;
+	// Set once this handler has heard its client go. On Node a socket the
+	// peer has closed can still read as connected.
+	@:noCompletion private var __clientLeft:Bool = false;
+
 	/**
 	 * Largest socket output-buffer size observed while pumping a streamed
 	 * response; zero when nothing streamed. Exists for tests: the
@@ -343,7 +353,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// transfer finishes and the connection settles, through the same
 			// surplus path a pipelined request takes after a buffered
 			// response.
-			if (__streaming) {
+			if (__streaming || __openStream != null) {
 				if (__incomingBuffer.length > __bufferLimit()) {
 					// No status can be sent to explain this: the status line
 					// left with the head and the body is mid-flight. Dropping
@@ -496,6 +506,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// they ride it together rather than arming a second timer. When
 		// keep-alive lands and responses end at a single __finishResponse
 		// funnel (keep-alive integration), this dispatch belongs there.
+		// A response the application is writing as it goes has no deadline
+		// here: how long it takes is the producer's, and a client that stops
+		// reading is caught by write() at the output cap.
+		if (__openStream != null) {
+			return;
+		}
+
 		if (__streaming) {
 			__checkStreamStall(now);
 			return;
@@ -1456,8 +1473,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
+	/**
+	 * @param open The head of a response whose body follows through `write`
+	 *        with no length yet known: see `beginResponse`.
+	 */
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
-			data:ByteArray, headOnly:Bool = false, ?contentLength:Int):Void {
+			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false):Void {
 		// A response for this request slot has already been written (a
 		// middleware that called respond() and then next() anyway); a
 		// second one would corrupt the stream. Suppressed before the log
@@ -1532,8 +1553,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var length:Null<Int> = null;
-		if (!__statusOmitsBody(statusCode)) {
+		if (!__statusOmitsBody(statusCode) && !open) {
 			length = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
+		}
+
+		// An open body is framed as it goes: chunked under HTTP/1.1, a stream
+		// held open under HTTP/2. An HTTP/1.0 client knows neither, so its
+		// body ends when the connection does.
+		var openBody:Bool = open && !headOnly;
+		var chunked:Bool = openBody && (__writer.ownsConnection || __httpVersion == "HTTP/1.1");
+		if (openBody && !chunked) {
+			__responseKeepAlive = false;
 		}
 
 		// Logged and dispatched only once the response is certain to reach
@@ -1562,7 +1592,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var bodyLength:Int = (!headOnly && responseData != null) ? responseData.length : 0;
 		var cap:Int = __writer.maxBufferedBytes;
 		var fromMemory:Bool = bodyLength > 0 && cap > 0 && __writer.bufferedBytes + bodyLength > cap;
-		if (fromMemory) {
+		if (fromMemory || openBody) {
 			__streamPending = true;
 		}
 
@@ -1571,8 +1601,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 			statusMessage: statusMessage,
 			headers: fields,
 			contentLength: length,
-			keepAlive: __responseKeepAlive
+			keepAlive: __responseKeepAlive,
+			chunked: chunked
 		});
+
+		if (openBody) {
+			// The body is the caller's to write, and endResponse settles the
+			// connection once it is done.
+			__writer.flush();
+			__finishResponse();
+			__streamPending = false;
+			return;
+		}
 
 		if (fromMemory) {
 			__writer.flush();
@@ -1641,6 +1681,201 @@ final class HTTPRequestHandler extends EventDispatcher {
 	public function respond(statusCode:Int, contentType:String, body:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
 		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
 		__dispatchResponse(statusCode, reason, headers, contentType, body, __method == "HEAD");
+	}
+
+	/**
+	 * `respond`, with a body of bytes: an image, an archive, anything that
+	 * is not text. Sent as given; `respond` could only send a String, as
+	 * UTF-8.
+	 */
+	public function respondBytes(statusCode:Int, contentType:String, body:ByteArray, ?headers:Array<URLRequestHeader>, ?statusMessage:String):Void {
+		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
+		__dispatchResponseBytes(statusCode, reason, headers, contentType, body != null ? body : new ByteArray(), __method == "HEAD");
+	}
+
+	/**
+	 * Whether the client can still be written to: false once it has gone,
+	 * or, over HTTP/2, has reset this request's stream. A route holding a
+	 * request open -- a long poll -- can read it, or listen for
+	 * `Event.CLOSE` instead.
+	 */
+	public var connected(get, never):Bool;
+
+	@:noCompletion private function get_connected():Bool {
+		return !__clientLeft && __writer.connected;
+	}
+
+	/**
+	 * Starts a response whose body is written as it is produced -- server-
+	 * sent events, a download generated on the fly -- rather than handed over
+	 * whole. The status and headers go out now, and the returned stream
+	 * carries the body: `write` it, then `end` it. Until then nothing else
+	 * can answer the request.
+	 *
+	 * No `Content-Length` is sent. Under HTTP/1.1 the body is chunked --
+	 * ended by closing the connection for an HTTP/1.0 client -- and under
+	 * HTTP/2 it is DATA on a stream held open. It is not compressed. For a
+	 * `HEAD`, or a status that carries no body, the head is the response and
+	 * the stream drops what it is given.
+	 *
+	 * Listen here for `Event.CLOSE` to hear that the client went away -- the
+	 * connection closed, or under HTTP/2 the stream was reset -- and stop
+	 * producing; the stream refuses writes from then on. A request already
+	 * answered gets a stream that refuses them from the start.
+	 */
+	public function beginResponse(statusCode:Int, contentType:String, ?headers:Array<URLRequestHeader>, ?statusMessage:String):HTTPResponseStream {
+		if (__responded || __openStream != null) {
+			// One response to a request, as respond() allows.
+			return @:privateAccess new HTTPResponseStream(null, false);
+		}
+
+		var reason:String = (statusMessage == null) ? __statusMessage(statusCode) : statusMessage;
+		// Framing is the server's: a caller's length would contradict the
+		// chunks, and its Transfer-Encoding would repeat them.
+		var fields:Array<URLRequestHeader> = [];
+		if (headers != null) {
+			for (header in headers) {
+				var name:String = header.name == null ? "" : header.name.toLowerCase();
+				if (name != "content-length" && name != "transfer-encoding") {
+					fields.push(header);
+				}
+			}
+		}
+
+		var bodiless:Bool = __method == "HEAD" || __statusOmitsBody(statusCode);
+		__dispatchResponseBytes(statusCode, reason, fields, contentType, null, bodiless, null, true);
+		if (!__responded) {
+			// Never went out: the client had already gone.
+			return @:privateAccess new HTTPResponseStream(null, false);
+		}
+		if (bodiless) {
+			// Complete already, and the connection settled with it; the
+			// stream only has to swallow what the producer sends.
+			return @:privateAccess new HTTPResponseStream(null, true);
+		}
+
+		var stream:HTTPResponseStream = @:privateAccess new HTTPResponseStream(this, false);
+		__openStream = stream;
+		__watchClient();
+		__writer.onDrain = __onOpenStreamDrain;
+		return stream;
+	}
+
+	/** `HTTPResponseStream.write`, for the stream this handler has open. */
+	@:noCompletion private function __writeOpenStream(stream:HTTPResponseStream, data:ByteArray, offset:Int, length:Int):Bool {
+		if (stream != __openStream) {
+			return false;
+		}
+		if (!__writer.connected) {
+			__clientGone();
+			return false;
+		}
+
+		var cap:Int = __writer.maxBufferedBytes;
+		if (cap > 0 && __writer.bufferedBytes + length > cap) {
+			Logger.error('A streamed response to ${__requestPath} outran its client: ' + (__writer.bufferedBytes + length)
+				+ ' bytes would be waiting, past maxOutputBufferSize ($cap). Ending it.');
+			__detachOpenStream();
+			__writer.abort();
+			return false;
+		}
+
+		__writer.writeBody(data, offset, length);
+		__writer.flush();
+
+		if (__writer.bufferedBytes >= __openStreamWatermark()) {
+			@:privateAccess stream.__blocked = true;
+			return false;
+		}
+		return true;
+	}
+
+	/** `HTTPResponseStream.end`, for the stream this handler has open. */
+	@:noCompletion private function __endOpenStream(stream:HTTPResponseStream):Void {
+		if (stream != __openStream) {
+			return;
+		}
+		__detachOpenStream();
+
+		if (__writer.connected) {
+			__writer.endResponse();
+			__writer.flush();
+		}
+		__settleConnection();
+	}
+
+	@:noCompletion private function __detachOpenStream():Void {
+		var stream:Null<HTTPResponseStream> = __openStream;
+		__openStream = null;
+		__writer.onDrain = null;
+		if (stream != null) {
+			@:privateAccess stream.__handler = null;
+		}
+	}
+
+	/**
+	 * What an open stream may have queued before `write` asks its producer to
+	 * wait: the file pump's watermark, kept under the output cap.
+	 */
+	@:noCompletion private function __openStreamWatermark():Int {
+		var cap:Int = __writer.maxBufferedBytes;
+		return (cap > 0 && cap < STREAM_WATERMARK) ? cap : STREAM_WATERMARK;
+	}
+
+	@:noCompletion private function __onOpenStreamDrain():Void {
+		var stream:Null<HTTPResponseStream> = __openStream;
+		if (stream == null || !@:privateAccess stream.__blocked || __writer.bufferedBytes >= __openStreamWatermark()) {
+			return;
+		}
+		@:privateAccess stream.__blocked = false;
+		var callback:Null<Void->Void> = stream.onDrain;
+		if (callback != null) {
+			callback();
+		}
+	}
+
+	/**
+	 * Watches the connection for Event.CLOSE only once something listens for
+	 * it here, so a handler nobody asks costs no listener on its socket.
+	 */
+	override public function addEventListener<T>(type:crossbyte.events.EventType<T>, listener:T->Void, priority:Int = 0):Void {
+		super.addEventListener(type, listener, priority);
+		if ((type : String) == Event.CLOSE) {
+			__watchClient();
+		}
+	}
+
+	@:noCompletion private function __watchClient():Void {
+		if (__watchingClient) {
+			return;
+		}
+		__watchingClient = true;
+		__origin.addEventListener(Event.CLOSE, __onClientClosed);
+		__writer.onAbandoned = __clientGone;
+	}
+
+	@:noCompletion private function __unwatchClient():Void {
+		if (!__watchingClient) {
+			return;
+		}
+		__watchingClient = false;
+		__origin.removeEventListener(Event.CLOSE, __onClientClosed);
+		__writer.onAbandoned = null;
+	}
+
+	@:noCompletion private function __onClientClosed(_:Event):Void {
+		__clientGone();
+	}
+
+	/**
+	 * The client went away before its response was done: an open stream is
+	 * cut loose, and whoever listens hears `Event.CLOSE`.
+	 */
+	@:noCompletion private function __clientGone():Void {
+		__clientLeft = true;
+		__unwatchClient();
+		__detachOpenStream();
+		dispatchEvent(new Event(Event.CLOSE));
 	}
 
 	@:noCompletion private function __dispatchResponse(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
@@ -1776,6 +2011,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * pump settles — while every buffered response reaches it immediately.
 	 */
 	@:noCompletion private function __settleConnection():Void {
+		// The response is done, so a close from here on -- this one's own,
+		// or a later request's -- is not this response's client going away.
+		__unwatchClient();
+
 		if (!__responseKeepAlive && !__writer.ownsConnection) {
 			// Surplus pipelined bytes are discarded with the close --
 			// identical to the old clear-and-close, whose clients re-send
