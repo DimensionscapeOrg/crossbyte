@@ -19,6 +19,9 @@ class WebsocketEvent {
 	public var code:Null<Int>;
 	public var reason:Null<String>;
 
+	/** On a message: whether it was sent as text rather than binary. **/
+	public var isText:Bool = false;
+
 	public function new(type:String, target:WebSocket, ?data:Dynamic, ?code:Int, ?reason:String) {
 		this.type = type;
 		this.target = target;

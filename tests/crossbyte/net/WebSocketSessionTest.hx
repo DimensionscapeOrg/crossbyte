@@ -1,0 +1,570 @@
+package crossbyte.net;
+
+import crossbyte.core.CrossByte;
+import crossbyte.events.Event;
+import crossbyte.events.IOErrorEvent;
+import crossbyte.events.ServerSocketConnectEvent;
+import crossbyte.events.TickEvent;
+import crossbyte.events.WebSocketCloseEvent;
+import crossbyte.events.WebSocketMessageEvent;
+import crossbyte.io.ByteArray;
+import haxe.io.Bytes;
+import utest.Assert;
+import utest.Async;
+
+/**
+	A WebSocket session end to end: how it is let in, how it knows its peer is
+	still there, and how it ends.
+
+	- The upgrade request was parsed and thrown away, so a server could not
+	  authenticate a session, check where a page came from, or accept a
+	  subprotocol, and a browser that offered one could not connect at all.
+	  Accepted sessions reported no address, every message was binary, and
+	  messages ran together into one stream.
+	- There was no heartbeat and no idle timeout, and every session was read
+	  on every tick whether or not anything had arrived.
+	- A close frame carried no code, and the connection closed straight after
+	  queueing it, taking it and anything before it along.
+**/
+@:access(crossbyte.core.CrossByte)
+@:access(crossbyte.events.EventDispatcher)
+@:access(crossbyte.net.WebSocket)
+class WebSocketSessionTest extends utest.Test {
+	#if (cpp || java || jvm || nodejs)
+	// ---- The upgrade ----------------------------------------------------
+
+	@:timeout(15000)
+	public function testTheServerSeesTheUpgradeRequest(async:Async):Void {
+		var seen:WebSocketRequest = null;
+
+		__serve(function(server) {
+			server.upgrade = function(request:WebSocketRequest):Bool {
+				seen = request;
+				return true;
+			};
+		}, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/rooms/42?token=abc&x=1", ["Origin: https://example.com", "Cookie: session=s3cret; theme=dark", "X-Trace: t-1"]);
+
+			NetPump.until(() -> {
+				peer.poll();
+				return sessions.length > 0;
+			}, 5.0, function(_) {
+				if (seen == null) {
+					Assert.fail("the upgrade hook was never asked");
+				} else {
+					Assert.equals("GET", seen.method);
+					Assert.equals("/rooms/42", seen.path);
+					Assert.equals("token=abc&x=1", seen.query);
+					Assert.equals("https://example.com", seen.origin);
+					Assert.equals("s3cret", seen.cookie("session"));
+					Assert.equals("dark", seen.cookie("theme"));
+					Assert.equals("t-1", seen.header("X-TRACE"));
+					Assert.equals("127.0.0.1", seen.remoteAddress);
+					Assert.isTrue(seen.remotePort > 0);
+				}
+				Assert.equals(1, sessions.length, "the accepted upgrade did not open a session");
+				if (sessions.length > 0) {
+					Assert.equals(seen, sessions[0].request, "the session does not carry the request it was opened by");
+				}
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testARefusedUpgradeIsAnsweredWithItsStatusAndNoSession(async:Async):Void {
+		__serve(function(server) {
+			server.upgrade = function(request:WebSocketRequest):Bool {
+				request.status = 401;
+				return request.header("authorization") == "Bearer good";
+			};
+		}, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/", ["Authorization: Bearer bad"]);
+
+			NetPump.until(() -> {
+				peer.poll();
+				return peer.ended;
+			}, 5.0, function(_) {
+				var head:String = peer.head();
+				Assert.notNull(head, "the refusal was never answered");
+				if (head != null) {
+					Assert.isTrue(StringTools.startsWith(head, "HTTP/1.1 401"), "refused with the wrong status: " + head);
+				}
+				Assert.isTrue(peer.ended, "the refused connection was left open");
+				Assert.equals(0, sessions.length, "a refused upgrade opened a session");
+				Assert.equals(0, server.clientCount);
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testAHookThatThrowsRefusesWithAServerError(async:Async):Void {
+		__serve(function(server) {
+			server.upgrade = function(request:WebSocketRequest):Bool {
+				throw "the hook broke";
+			};
+		}, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/");
+
+			NetPump.until(() -> {
+				peer.poll();
+				return peer.ended;
+			}, 5.0, function(_) {
+				var head:String = peer.head();
+				Assert.isTrue(head != null && StringTools.startsWith(head, "HTTP/1.1 500"), "a hook that threw was not a refusal: " + head);
+				Assert.equals(0, sessions.length);
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testTheFirstOfferedSubprotocolIsAcceptedAndEchoed(async:Async):Void {
+		// What a browser offering a subprotocol needs: to hear one back, or it
+		// fails the connection with 1006.
+		__serve(null, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/", ["Sec-WebSocket-Protocol: chat.v2, chat.v1"]);
+
+			NetPump.until(() -> {
+				peer.poll();
+				return peer.head() != null && sessions.length > 0;
+			}, 5.0, function(_) {
+				var head:String = peer.head();
+				Assert.isTrue(head != null && head.indexOf("\r\nSec-WebSocket-Protocol: chat.v2") >= 0, "the subprotocol was not echoed: " + head);
+				if (sessions.length > 0) {
+					Assert.equals("chat.v2", sessions[0].protocol);
+				}
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testAClientGetsTheSubprotocolTheServerChose(async:Async):Void {
+		var offered:Array<String> = null;
+
+		__serve(function(server) {
+			server.upgrade = function(request:WebSocketRequest):Bool {
+				offered = request.protocols;
+				request.protocol = "json.v1";
+				return true;
+			};
+		}, function(server, sessions, finish) {
+			var client = new WebSocket();
+			client.protocols = ["msgpack.v1", "json.v1"];
+			var opened:Bool = false;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				Assert.isTrue(opened, "the client never connected");
+				Assert.same(["msgpack.v1", "json.v1"], offered, "the server was not shown what the client offered");
+				Assert.equals("json.v1", client.protocol, "the client does not know which subprotocol it got");
+				if (sessions.length > 0) {
+					Assert.equals("json.v1", sessions[0].protocol);
+				}
+				try client.close() catch (_:Dynamic) {}
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testAnAcceptedSessionKnowsBothEnds(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var opened:Bool = false;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length > 0) {
+					var session = sessions[0];
+					Assert.equals("127.0.0.1", session.remoteAddress, "an accepted session does not know its peer's address");
+					Assert.equals(client.localPort, session.remotePort, "an accepted session does not know its peer's port");
+					Assert.equals(server.localPort, session.localPort);
+					Assert.equals("127.0.0.1", client.remoteAddress);
+					Assert.equals(server.localPort, client.remotePort);
+				} else {
+					Assert.fail("no session");
+				}
+				try client.close() catch (_:Dynamic) {}
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testMessagesArriveOneAtATimeAndTextAsText(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var messages:Array<WebSocketMessageEvent> = [];
+			var opened:Bool = false;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) messages.push(e));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+
+				var session = sessions[0];
+				session.sendText('{"hello":"json"}');
+				var binary = new ByteArray();
+				binary.writeByte(1);
+				binary.writeByte(2);
+				session.sendBinary(binary);
+				session.sendText("second");
+
+				NetPump.until(() -> messages.length >= 3, 5.0, function(_) {
+					Assert.equals(3, messages.length, "three messages did not arrive as three");
+					if (messages.length >= 3) {
+						Assert.isTrue(messages[0].isText);
+						Assert.equals('{"hello":"json"}', messages[0].text);
+						Assert.isFalse(messages[1].isText);
+						Assert.equals(2, messages[1].data.length);
+						Assert.equals("second", messages[2].text);
+					}
+					// Delivered as messages, and so not also into a stream
+					// nobody is reading.
+					Assert.equals(0, client.bytesAvailable);
+					try client.close() catch (_:Dynamic) {}
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	// ---- Liveness -------------------------------------------------------
+
+	@:timeout(15000)
+	public function testAQuietPeerIsPinged(async:Async):Void {
+		__serve(function(server) {
+			server.pingInterval = 0.2;
+			server.idleTimeout = 0;
+		}, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/");
+
+			NetPump.until(() -> {
+				peer.poll();
+				return peer.framesOf(WirePeer.PING).length >= 2;
+			}, 5.0, function(_) {
+				Assert.isTrue(peer.framesOf(WirePeer.PING).length >= 2, "a quiet peer was never pinged");
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testAPeerThatNeverAnswersIsClosedAfterTheIdleTimeout(async:Async):Void {
+		var code:Int = -1;
+		var reason:String = null;
+
+		__serve(function(server) {
+			server.pingInterval = 0.2;
+			server.idleTimeout = 0.6;
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
+				e.socket.addEventListener(Event.CLOSE, function(closed:Event) {
+					var close = Std.downcast(closed, WebSocketCloseEvent);
+					code = close == null ? 0 : close.code;
+				});
+				e.socket.addEventListener(IOErrorEvent.IO_ERROR, function(error:IOErrorEvent) reason = error.text);
+			});
+		}, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/");
+
+			NetPump.until(() -> {
+				peer.poll();
+				return code != -1;
+			}, 5.0, function(_) {
+				Assert.equals(1006, code, "a peer that answered nothing was never given up");
+				Assert.isTrue(reason != null && reason.indexOf("idle") >= 0, "the close did not say the peer was idle: " + reason);
+				Assert.equals(0, server.clientCount, "the dead session is still counted");
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testAPeerThatAnswersPingsStaysUp(async:Async):Void {
+		__serve(function(server) {
+			server.pingInterval = 0.2;
+			server.idleTimeout = 0.6;
+		}, function(server, sessions, finish) {
+			var client = new WebSocket();
+			client.pingInterval = 0;
+			client.idleTimeout = 0;
+			var opened:Bool = false;
+			var closed:Bool = false;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(Event.CLOSE, function(_) closed = true);
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened, 5.0, function(_) {
+				// Three idle timeouts, nothing sent either way but the pings.
+				NetPump.wait(2.0, function() {
+					Assert.isFalse(closed, "a peer answering every ping was closed as idle");
+					Assert.equals(1, server.clientCount);
+					try client.close() catch (_:Dynamic) {}
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testSessionsAreNotVisitedEveryTick(async:Async):Void {
+		var before:Int = __tickListeners();
+
+		__serve(null, function(server, sessions, finish) {
+			var clients:Array<WebSocket> = [];
+			for (_ in 0...4) {
+				var client = new WebSocket();
+				client.connect("127.0.0.1", server.localPort);
+				clients.push(client);
+			}
+
+			NetPump.until(() -> sessions.length == 4 && Lambda.count(clients, c -> c.connected) == 4, 5.0, function(_) {
+				// Every open session, either end, used to add a tick listener
+				// of its own and be read on every tick. What is left is the
+				// server's accept loop.
+				Assert.isTrue(__tickListeners() - before <= 1, 'eight open sessions add ${__tickListeners() - before} tick listeners');
+				for (client in clients) {
+					try client.close() catch (_:Dynamic) {}
+				}
+				finish();
+			});
+		}, async);
+	}
+
+	// ---- Closing --------------------------------------------------------
+
+	@:timeout(15000)
+	public function testACloseFrameCarriesItsCodeAndReason(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/");
+
+			NetPump.until(() -> {
+				peer.poll();
+				return sessions.length > 0;
+			}, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+
+				sessions[0].closeWith(4001, "bye");
+
+				NetPump.until(() -> {
+					peer.poll();
+					return peer.framesOf(WirePeer.CLOSE).length > 0;
+				}, 5.0, function(_) {
+					var closes = peer.framesOf(WirePeer.CLOSE);
+					Assert.equals(1, closes.length, "no close frame arrived");
+					if (closes.length > 0) {
+						var payload:Bytes = closes[0].payload;
+						Assert.isTrue(payload.length >= 2, "the close frame carried no code");
+						if (payload.length >= 2) {
+							Assert.equals(4001, (payload.get(0) << 8) | payload.get(1));
+							Assert.equals("bye", payload.getString(2, payload.length - 2));
+						}
+					}
+					peer.close();
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	@:timeout(15000)
+	public function testBothEndsReportTheCodeAndReasonTheirPeerSent(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var opened:Bool = false;
+			var clientClose:WebSocketCloseEvent = null;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(Event.CLOSE, function(e:Event) clientClose = Std.downcast(e, WebSocketCloseEvent));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				var serverClose:WebSocketCloseEvent = null;
+				var session = sessions[0];
+				session.addEventListener(Event.CLOSE, function(e:Event) serverClose = Std.downcast(e, WebSocketCloseEvent));
+				session.closeWith(4001, "bye");
+
+				NetPump.until(() -> clientClose != null && serverClose != null, 5.0, function(_) {
+					Assert.notNull(clientClose, "the client never heard the close");
+					if (clientClose != null) {
+						Assert.equals(4001, clientClose.code);
+						Assert.equals("bye", clientClose.reason);
+					}
+					Assert.notNull(serverClose, "the server's session never finished closing");
+					if (serverClose != null) {
+						// The client's answer, which echoes the code it was sent.
+						Assert.equals(4001, serverClose.code);
+					}
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	@:timeout(30000)
+	public function testWhatWasQueuedBeforeACloseStillArrives(async:Async):Void {
+		// More than a loopback socket's buffers hold, so most of it is still
+		// queued here when the close is asked for, which is what the close
+		// used to throw away, along with its own frame.
+		var size:Int = 8 * 1024 * 1024;
+
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var opened:Bool = false;
+			var received:Int = 0;
+			var clientClose:WebSocketCloseEvent = null;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) received += e.data.length);
+			client.addEventListener(Event.CLOSE, function(e:Event) clientClose = Std.downcast(e, WebSocketCloseEvent));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				var session = sessions[0];
+				var chunk = new ByteArray();
+				chunk.length = 64 * 1024;
+				for (_ in 0...Std.int(size / chunk.length)) {
+					session.sendBinary(chunk);
+				}
+				session.closeWith(1000, "done");
+
+				NetPump.until(() -> clientClose != null, 20.0, function(_) {
+					Assert.equals(size, received, "what was queued before the close did not all arrive");
+					Assert.notNull(clientClose, "the close never arrived after what was queued");
+					if (clientClose != null) {
+						Assert.equals(1000, clientClose.code);
+					}
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	@:timeout(20000)
+	public function testDrainingTellsClientsTheServerIsGoingAway(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var client = new WebSocket();
+			var opened:Bool = false;
+			var clientClose:WebSocketCloseEvent = null;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(Event.CLOSE, function(e:Event) clientClose = Std.downcast(e, WebSocketCloseEvent));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				var drained:Bool = false;
+				var started:Float = haxe.Timer.stamp();
+				server.drain(10.0, () -> drained = true);
+
+				NetPump.until(() -> drained && clientClose != null, 12.0, function(_) {
+					Assert.notNull(clientClose, "the client was never told");
+					if (clientClose != null) {
+						Assert.equals(1001, clientClose.code, "the client was not told the server is going away");
+					}
+					// The client answers at once, so the drain ends then rather
+					// than at its timeout.
+					Assert.isTrue(drained && haxe.Timer.stamp() - started < 5.0, "draining waited for its timeout");
+					finish();
+				});
+			});
+		}, async, false);
+	}
+
+	@:timeout(15000)
+	public function testAClosePeerNeverAnswersEndsAtTheDeadlineAs1006(async:Async):Void {
+		var deadline:Float = crossbyte._internal.websocket.WebSocket.CLOSE_TIMEOUT;
+		crossbyte._internal.websocket.WebSocket.CLOSE_TIMEOUT = 0.5;
+
+		__serve(null, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade("/");
+
+			NetPump.until(() -> {
+				peer.poll();
+				return sessions.length > 0;
+			}, 5.0, function(_) {
+				var code:Int = -1;
+				sessions[0].addEventListener(Event.CLOSE, function(e:Event) {
+					var close = Std.downcast(e, WebSocketCloseEvent);
+					code = close == null ? 0 : close.code;
+				});
+				sessions[0].closeWith(4001, "bye");
+
+				// The peer reads the close and never answers it.
+				NetPump.until(() -> {
+					peer.poll();
+					return code != -1;
+				}, 5.0, function(_) {
+					crossbyte._internal.websocket.WebSocket.CLOSE_TIMEOUT = deadline;
+					Assert.equals(1006, code, "a close the peer never answered did not end at the deadline");
+					peer.close();
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	// ---- Scaffolding ----------------------------------------------------
+
+	/**
+		A server, configured by `configure`, bound to a port, with the
+		sessions it opens collected; `body` runs once the port is known, and
+		everything is closed when it calls `finish`.
+	**/
+	private function __serve(configure:Null<ServerWebSocket->Void>, body:(ServerWebSocket, Array<WebSocket>, Void->Void)->Void, async:Async,
+			closeServer:Bool = true):Void {
+		var server = new ServerWebSocket();
+		var sessions:Array<WebSocket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) sessions.push(cast e.socket));
+		if (configure != null) {
+			configure(server);
+		}
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		function finish():Void {
+			for (session in sessions) {
+				try session.close() catch (_:Dynamic) {}
+			}
+			if (closeServer) {
+				try server.close() catch (_:Dynamic) {}
+			}
+			// Settle what closing started, so it does not surface in the next
+			// case.
+			NetPump.wait(0.1, () -> async.done());
+		}
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) body(server, sessions, finish));
+	}
+
+	private static function __tickListeners():Int {
+		var runtime:CrossByte = CrossByte.current();
+		var listeners:Array<Dynamic> = runtime.__eventMap == null ? null : runtime.__eventMap.get(TickEvent.TICK);
+		return listeners == null ? 0 : listeners.length;
+	}
+	#end
+}
