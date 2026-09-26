@@ -512,6 +512,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		cannot be trusted to be finished. The rest of the process carries on.
 	**/
 	private function __contain(error:Dynamic):Void {
+		// To report through runtime.__uncaught(error, UncaughtErrorEvent.SOCKET, ...) once the runtime has it (C1).
 		Logger.error("A WebSocket listener threw, and the session it was handling was closed: " + Std.string(error));
 
 		try {
