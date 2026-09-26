@@ -30,6 +30,9 @@ final class SocketRegistry {
 	**/
 	public var onHandlerError:(error:Dynamic, socket:IPollableSocket) -> Void = null;
 
+	/** Seconds spent blocked in select since last taken; see NativeSocketRegistry. **/
+	@:noCompletion public var __waited:Float = 0.0;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -173,7 +176,14 @@ final class SocketRegistry {
 		}
 		#end
 
-		var res = Socket.select(__selectBuffer, [], [], wait);
+		var res;
+		if (wait > 0) {
+			var waitStart:Float = haxe.Timer.stamp();
+			res = Socket.select(__selectBuffer, [], [], wait);
+			__waited += haxe.Timer.stamp() - waitStart;
+		} else {
+			res = Socket.select(__selectBuffer, [], [], wait);
+		}
 
 		for (s in res.read) {
 			var cb:IPollableSocket = cast s.custom;

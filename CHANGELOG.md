@@ -5,6 +5,13 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `CrossByte.loopLag`, `frameOverruns`, `droppedScheduleDebt` and
+  `postQueueDepth`: how far past its deadline the last frame ended, how many
+  frames have outrun their tick, how many seconds of schedule the loop has
+  given up after stalls too long to repay, and how many posted callbacks
+  are waiting to run. With `timerBacklog`, `timerLag` and `timerOverruns`
+  they say whether a runtime is keeping up; nothing did before. Each costs
+  the loop a clock read a frame at most.
 - `Logger` categories and a record sink. `Logger.category("http.access")`
   returns a logger whose level `Logger.setLevel("http.access", level)` sets
   apart from the global one, inherited along the dots (`http` covers
@@ -544,6 +551,9 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `System.memoryUsage()` returns a `Float` rather than an `Int`, since a
+  heap outgrows an `Int`. It is still 0 on the interpreter, hl, neko and in
+  a browser, which report no figure.
 - On Node and the jvm, `ProcessLifecycle.installDefaultHandlers()` takes
   over SIGINT and SIGTERM, as it already did natively, and returns `true`:
   the process no longer exits on them by itself, and the shutdown callbacks
@@ -739,6 +749,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `CrossByte.cpuLoad` counts a POLL loop's socket handlers, and the posted
+  callbacks any loop runs while it waits out a frame. It was measured before
+  the poll, so a POLL server busy with its sockets half of every frame
+  reported 0%. Time spent blocked in poll, waiting for a socket, still does
+  not count as load.
+- `System.memoryUsage()` reports the heap in use on the jvm and Node, and
+  natively takes the collector's 64-bit figure. It was the 32-bit one, which
+  wrapped negative past 2 GiB, and 0 on every other target.
 - Timer handles are never negative. The id took 20 bits and the 12-bit
   generation above it reached the sign bit, so from a slot's 2,048th reuse
   every handle for it was negative, against what `TimerHandle` said of

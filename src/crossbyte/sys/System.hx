@@ -119,14 +119,40 @@ class System {
 		return 0.0;
 	}
 
-	public static inline function memoryUsage():Int {
+	/**
+		Bytes of heap the process is using: natively the collector's figure,
+		uncollected garbage included; on the jvm the heap in use; on Node the
+		V8 heap in use. Zero where nothing reports it (the interpreter, hl,
+		neko, a browser).
+
+		A `Float`, since a heap outgrows an `Int`: this was the collector's
+		32-bit figure, which wrapped negative past 2GiB, and 0 on every target
+		but native.
+	**/
+	public static function memoryUsage():Float {
 		#if cpp
-		return Gc.memInfo(Gc.MEM_INFO_CURRENT);
+		return Gc.memInfo64(Gc.MEM_INFO_CURRENT);
+		#elseif (java || jvm)
+		var runtime = java.lang.Runtime.getRuntime();
+		return __longToFloat(runtime.totalMemory()) - __longToFloat(runtime.freeMemory());
+		#elseif nodejs
+		return js.Node.process.memoryUsage().heapUsed;
 		#else
-		// no-op for now
 		return 0;
 		#end
 	}
+
+	#if (java || jvm)
+	// Haxe 4 has no Int64 to Float; the halves are joined as doubles, as
+	// Timer.stamp does with nanoTime.
+	@:noCompletion private static function __longToFloat(value:haxe.Int64):Float {
+		var low:Float = haxe.Int64.getLow(value);
+		if (low < 0) {
+			low += 4294967296.0;
+		}
+		return haxe.Int64.getHigh(value) * 4294967296.0 + low;
+	}
+	#end
 
 	private static inline var APPLICATION_DIR:String = "Crossbyte";
 	@:noCompletion private static var __appDirPath:String;
