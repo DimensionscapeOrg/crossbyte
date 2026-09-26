@@ -104,12 +104,6 @@ class OAuthExchangeTest extends utest.Test {
 		});
 	}
 
-	// Not on the interpreter. There the exchange runs inline, so no deadline can
-	// end it, and CrossByte's HTTP client never returns once the endpoint closes
-	// without answering: it takes the end of the stream for a blank line and
-	// reads on. That is the client's fault, not the exchange's, and the jvm,
-	// which also runs it inline, fails the exchange as it should.
-	#if !eval
 	public function testAStalledEndpointFailsAtTheDeadline(async:Async):Void {
 		// Takes the request and never answers.
 		serve(-1, 0, null, endpoint -> {
@@ -124,17 +118,14 @@ class OAuthExchangeTest extends utest.Test {
 				Assert.isTrue(finished, "the exchange ended");
 				Assert.isNull(delivered);
 				Require.notNull(failure);
-				#if (cpp || nodejs)
-				// Where the exchange runs off the runtime the deadline is what
-				// ends it; inline, the client's own idle limit gets there first.
+				// The exchange runs off the runtime on every target now, so the
+				// deadline is what ends it everywhere.
 				Assert.isTrue(failure.indexOf("did not answer within 0.5 s") >= 0, failure);
-				#end
 				endpoint.close();
 				async.done();
 			});
 		});
 	}
-	#end
 
 	public function testARejectedGrantReportsTheProvidersReason(async:Async):Void {
 		serve(0, 400, '{"error":"invalid_grant","error_description":"authorization code has expired"}', endpoint -> {
