@@ -114,6 +114,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.core.ApplicationTest());
 		// SIGTERM and SIGINT on Node, which exited without the drain.
 		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
+		// Loop lag and overruns as the JavaScript loop takes its turns, and
+		// the post queue's depth.
+		runner.addCase(new crossbyte.core.RuntimeHealthTest());
 		// The rest of the ByteArray cases, which this file listed one of. None
 		// of them touches sys, so nothing kept them off js except not being
 		// written down, and js is the target where, as the note in
