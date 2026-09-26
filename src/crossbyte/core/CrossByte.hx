@@ -589,6 +589,14 @@ final class CrossByte extends EventDispatcher {
 			throw "CrossByte.pump(delta) is only available for host-driven application instances.";
 		}
 
+		#if cpp
+		// A host loop that only pumps, no sleep, nothing allocated, as a
+		// benchmark or an embedder's busy loop does, otherwise never reaches a
+		// GC safepoint, and a collection another thread starts waits on this one
+		// for ever: every worker, and the pool URLLoader runs on, stops with it.
+		cpp.vm.Gc.safePoint();
+		#end
+
 		// Read the stop flag before claiming the thread, not after. This used to
 		// publish `this` as the thread's current runtime and rebind the thread's
 		// timer scheduler on the way in, so pumping a runtime that had already

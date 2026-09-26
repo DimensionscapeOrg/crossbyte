@@ -11,6 +11,43 @@ import sys.thread.Thread;
 
 @:access(crossbyte.core.CrossByte)
 class CrossByteTest extends utest.Test {
+	#if cpp
+	// Written by the allocating thread with a plain store and read in a loop
+	// that must not itself reach a safepoint: a Lock, a Deque or a Mutex would
+	// enter a GC-free zone and let the collection through, hiding the stall.
+	static var __allocatorDone:Int = 0;
+
+	/**
+		A loop that only pumps does not stall another thread's collection.
+		With no sleep and nothing allocated, pump() reached no GC safepoint, so
+		a collection another thread started waited on this one for ever.
+	**/
+	public function testAPumpOnlyLoopDoesNotStallACollection():Void {
+		var runtime = CrossByte.current();
+		__allocatorDone = 0;
+
+		Thread.create(() -> {
+			// Enough to need collections, of which the last is forced.
+			var keep:Array<haxe.io.Bytes> = [];
+			for (i in 0...2000) {
+				keep.push(haxe.io.Bytes.alloc(64 * 1024));
+				if (keep.length > 32) {
+					keep.shift();
+				}
+			}
+			cpp.vm.Gc.run(true);
+			__allocatorDone = 1;
+		});
+
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		while (__allocatorDone == 0 && haxe.Timer.stamp() < deadline) {
+			runtime.pump(0.0, 0.0);
+		}
+
+		Assert.equals(1, __allocatorDone, "the other thread's collection was held up by a loop that only pumps");
+	}
+	#end
+
 	public function testMakeRequiresPrimordialRuntime():Void {
 		var primordial = CrossByte.__primordial;
 		CrossByte.__primordial = null;
