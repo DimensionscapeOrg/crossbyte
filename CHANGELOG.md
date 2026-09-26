@@ -741,6 +741,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SnowflakeId.timestampOf` reads back when any identifier was minted. It
+  converted the forty one bits of milliseconds through an `Int`, which
+  holds thirty one, and threw `Overflow` for every identifier minted more
+  than 24.8 days after the epoch -- after 2020-01-25 for the default one.
 - An RPC call that fails because its connection ended has the `Reason` it
   ended with as its `cause` -- `Timeout` for a heartbeat that gave up -- so
   a caller, a gateway above all, can tell a peer gone from a peer refusing,
