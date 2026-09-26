@@ -2,7 +2,12 @@ package crossbyte.net.rtc;
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
+import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.io.ByteArray;
+import crossbyte.net.DatagramSocket;
+import crossbyte.net.ice.IceAgent;
+import crossbyte.net.ice.IceCandidate;
+import crossbyte.net.ice.IceCredentials;
 import utest.Assert;
 
 /**
@@ -279,6 +284,113 @@ class PeerConnectionTest extends utest.Test {
 
 		alice.close();
 		bob.close();
+	}
+
+	/**
+		A connection that cannot finish coming up gives up, and says where.
+
+		The peer here answers connectivity checks and then nothing: its
+		description says it will open the DTLS handshake, and it never does.
+		As the DTLS server this end waited for a ClientHello with no timer
+		running, for as long as the process lived, which is exactly what a
+		browser tab closed straight after ICE leaves behind, holding a socket,
+		a tick listener and a TLS session.
+	**/
+	public function testAConnectionThatCannotFinishGivesUp():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var peer = new IceOnlyPeer();
+		var failure:String = null;
+		var closedWith:String = null;
+
+		try {
+			alice.ready.then(_ -> {}, error -> failure = error);
+			alice.onClose = reason -> closedWith = reason;
+			alice.readyTimeout = 2.0;
+
+			alice.bind(0, "127.0.0.1");
+			alice.connect(peer.description());
+			peer.start(alice.description());
+
+			pumpWith(peer, () -> failure != null, 10.0);
+
+			Assert.notNull(failure, "a connection whose peer never opened the handshake never gave up");
+			Assert.isTrue(alice.agent.state == crossbyte.net.ice.IceAgentState.CONNECTED || closedWith != null,
+				"the path was never found, so this is not the case being tested");
+
+			if (failure != null) {
+				Assert.isTrue(failure.indexOf("ready within") >= 0, "the failure does not say the connection timed out: " + failure);
+				Assert.isTrue(failure.indexOf("DTLS") >= 0, "the failure does not name the phase that did not finish: " + failure);
+				Assert.equals(failure, closedWith, "`onClose` and `ready` disagree about why");
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		peer.close();
+	}
+
+	/**
+		Consent lost before the connection is ready ends it.
+
+		Consent was checked only once everything above ICE was up, so a peer
+		that vanished during the DTLS handshake or the SCTP one was ignored,
+		and neither of those would ever finish.
+	**/
+	public function testLosingConsentBeforeReadyEndsTheConnection():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var peer = new IceOnlyPeer();
+		var failure:String = null;
+
+		try {
+			alice.ready.then(_ -> {}, error -> failure = error);
+
+			// Well past the consent timeout, so that is what has to catch it.
+			alice.readyTimeout = 1000.0;
+
+			alice.bind(0, "127.0.0.1");
+			alice.connect(peer.description());
+			peer.start(alice.description());
+
+			pumpWith(peer, () -> alice.agent.state == crossbyte.net.ice.IceAgentState.CONNECTED, 10.0);
+
+			if (alice.agent.state != crossbyte.net.ice.IceAgentState.CONNECTED) {
+				Assert.fail("the path was never found, so there is no consent to lose");
+				alice.close();
+				peer.close();
+				return;
+			}
+
+			// The peer goes, mid-handshake.
+			peer.close();
+			alice.poll(haxe.Timer.stamp() + crossbyte.net.ice.IceAgent.CONSENT_TIMEOUT + 10.0);
+
+			Assert.notNull(failure, "consent lost before the connection was ready was ignored");
+
+			if (failure != null) {
+				Assert.isTrue(failure.indexOf("consent") >= 0, "the failure does not say consent was lost: " + failure);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		peer.close();
+	}
+
+	private static function pumpWith(peer:IceOnlyPeer, done:Void->Bool, timeout:Float):Void {
+		var runtime = CrossByte.current();
+		var deadline = haxe.Timer.stamp() + timeout;
+
+		while (!done() && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			peer.poll(haxe.Timer.stamp());
+			Sys.sleep(0.001);
+		}
 	}
 
 	/**
@@ -665,5 +777,87 @@ class PeerConnectionTest extends utest.Test {
 
 		alice.close();
 		bob.close();
+	}
+}
+
+/**
+	A peer that does ICE and nothing else.
+
+	It answers connectivity checks, so the path is found, and its description
+	claims the DTLS client role, so the other end waits for a ClientHello that
+	never comes, the shape a browser tab closed straight after ICE leaves.
+**/
+private class IceOnlyPeer {
+	public var agent(default, null):IceAgent;
+
+	private var socket:DatagramSocket;
+	private var closed:Bool = false;
+
+	public function new() {
+		agent = new IceAgent(false);
+		socket = new DatagramSocket();
+		socket.bind(0, "127.0.0.1");
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			if (!closed) {
+				agent.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp());
+			}
+		});
+		socket.receive();
+
+		agent.onSend = function(payload:ByteArray, address:String, port:Int):Void {
+			if (closed) {
+				return;
+			}
+
+			try {
+				socket.send(payload, 0, payload.length, address, port);
+			} catch (_:Dynamic) {}
+		};
+
+		agent.addLocalCandidate(IceCandidate.host("127.0.0.1", socket.localPort));
+	}
+
+	public function description():PeerDescription {
+		return {
+			usernameFragment: agent.localCredentials.usernameFragment,
+			password: agent.localCredentials.password,
+			fingerprint: DtlsCertificate.generate("ice-only", 1).fingerprint,
+			candidates: [
+				{
+					address: "127.0.0.1",
+					port: socket.localPort,
+					type: "host",
+					priority: IceCandidate.host("127.0.0.1", socket.localPort).priority
+				}
+			],
+			setup: "active"
+		};
+	}
+
+	public function start(remote:PeerDescription):Void {
+		for (candidate in remote.candidates) {
+			agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+		}
+
+		agent.start(new IceCredentials(remote.usernameFragment, remote.password), haxe.Timer.stamp());
+	}
+
+	public function poll(now:Float):Void {
+		if (!closed) {
+			agent.poll(now);
+		}
+	}
+
+	public function close():Void {
+		if (closed) {
+			return;
+		}
+
+		closed = true;
+		agent.close();
+
+		try {
+			socket.close();
+		} catch (_:Dynamic) {}
 	}
 }

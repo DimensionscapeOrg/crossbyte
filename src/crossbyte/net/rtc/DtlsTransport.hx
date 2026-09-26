@@ -116,6 +116,9 @@ class DtlsTransport {
 	@:noCompletion private static inline var FATAL_ALERT:Int = -0x7780;
 	@:noCompletion private static inline var CLIENT_RECONNECT:Int = -0x6780;
 
+	/** mbedtls's MBEDTLS_ERR_SSL_TIMEOUT: a flight resent until the schedule ran out. **/
+	@:noCompletion private static inline var HANDSHAKE_TIMEOUT:Int = -0x6800;
+
 	/** The states `NativeDtlsSession.step` reports. **/
 	@:noCompletion private static inline var STATE_ESTABLISHED:Int = 1;
 
@@ -188,7 +191,10 @@ class DtlsTransport {
 		__flush();
 
 		if (state < 0) {
-			__fail("The DTLS handshake failed: mbedTLS returned " + NativeDtlsSession.error(__handle) + ".");
+			var code:Int = NativeDtlsSession.error(__handle);
+
+			__fail(code == HANDSHAKE_TIMEOUT ? "The DTLS handshake timed out: the peer did not answer."
+				: "The DTLS handshake failed: mbedTLS returned " + code + ".");
 			return;
 		}
 

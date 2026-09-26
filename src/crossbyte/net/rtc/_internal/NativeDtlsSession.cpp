@@ -37,6 +37,14 @@ const int ERROR_BAD_CERTIFICATE = -1000002;
 const int ERROR_BAD_KEY = -1000003;
 const int ERROR_TOO_SMALL = -1000004;
 
+// A flight of the handshake is resent after one second, then two, four and
+// eight, and the handshake fails when the next wait would pass eight: fifteen
+// seconds in all. mbedtls's own defaults, one and sixty, double to a minute
+// and fail after 123 seconds, a client whose peer had gone held its session
+// for two minutes, well past any deadline the caller would set.
+const uint32_t HANDSHAKE_TIMEOUT_MIN_MS = 1000;
+const uint32_t HANDSHAKE_TIMEOUT_MAX_MS = 8000;
+
 // One datagram.
 typedef std::vector<uint8_t> Packet;
 
@@ -302,6 +310,7 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
       // be constructed without an expected fingerprint to compare against.
       mbedtls_ssl_conf_authmode(&session->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
       mbedtls_ssl_conf_rng(&session->conf, mbedtls_ctr_drbg_random, &g_drbg);
+      mbedtls_ssl_conf_handshake_timeout(&session->conf, HANDSHAKE_TIMEOUT_MIN_MS, HANDSHAKE_TIMEOUT_MAX_MS);
 
       if (debugLevel() > 0)
       {
