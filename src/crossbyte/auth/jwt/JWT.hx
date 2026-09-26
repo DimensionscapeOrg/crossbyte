@@ -257,18 +257,51 @@ class JWT {
 			return true;
 		}
 
-		var normalized:String = __mediaType(typ);
 		for (candidate in accepted) {
-			if (candidate != null && __mediaType(candidate) == normalized) {
+			if (candidate != null && __sameMediaType(candidate, typ)) {
 				return true;
 			}
 		}
 		return false;
 	}
 
-	@:noCompletion private static function __mediaType(value:String):String {
-		var lower:String = value.toLowerCase();
-		return lower.startsWith("application/") ? lower.substr("application/".length) : lower;
+	/**
+	 * `a` and `b` as one media type: ASCII letters in either case, and an
+	 * `application/` prefix on either ignored. Compared in place, since this
+	 * runs for every token and lower-casing copies of both was an allocation
+	 * per candidate.
+	 */
+	@:noCompletion private static function __sameMediaType(a:String, b:String):Bool {
+		var i:Int = __afterApplication(a);
+		var j:Int = __afterApplication(b);
+		if (a.length - i != b.length - j) {
+			return false;
+		}
+		while (i < a.length) {
+			if (__lowerAscii(StringTools.fastCodeAt(a, i)) != __lowerAscii(StringTools.fastCodeAt(b, j))) {
+				return false;
+			}
+			i++;
+			j++;
+		}
+		return true;
+	}
+
+	@:noCompletion private static function __afterApplication(value:String):Int {
+		var prefix:String = "application/";
+		if (value.length <= prefix.length) {
+			return 0;
+		}
+		for (k in 0...prefix.length) {
+			if (__lowerAscii(StringTools.fastCodeAt(value, k)) != StringTools.fastCodeAt(prefix, k)) {
+				return 0;
+			}
+		}
+		return prefix.length;
+	}
+
+	@:noCompletion private static inline function __lowerAscii(code:Int):Int {
+		return (code >= "A".code && code <= "Z".code) ? code + 32 : code;
 	}
 
 	/**
@@ -279,13 +312,13 @@ class JWT {
 	 * `Int` as a `String`, which the jvm answers with a cast exception.
 	 */
 	@:noCompletion private static function __registeredClaimsWellTyped(claims:Dynamic):Bool {
-		for (field in ["sub", "name", "iss", "jti"]) {
+		for (field in __STRING_CLAIMS) {
 			var value:Dynamic = Reflect.field(claims, field);
 			if (value != null && !Std.isOfType(value, String)) {
 				return false;
 			}
 		}
-		for (field in ["iat", "nbf"]) {
+		for (field in __TIME_CLAIMS) {
 			var value:Dynamic = Reflect.field(claims, field);
 			if (value != null && JWTPayload.seconds(value) == null) {
 				return false;
@@ -293,6 +326,11 @@ class JWT {
 		}
 		return true;
 	}
+
+	// Made once: an array literal in the loop above is an allocation per token.
+	@:noCompletion private static final __STRING_CLAIMS:Array<String> = ["sub", "name", "iss", "jti"];
+	@:noCompletion private static final __TIME_CLAIMS:Array<String> = ["iat", "nbf"];
+	@:noCompletion private static final __WRITTEN_TIME_CLAIMS:Array<String> = ["iat", "exp", "nbf"];
 
 	/**
 	 * The claims as they go on the wire: times checked, and a time that is a
@@ -302,7 +340,7 @@ class JWT {
 	 */
 	@:noCompletion private static function __claimsToWrite(claims:Dynamic):Dynamic {
 		var copy:Null<Dynamic> = null;
-		for (field in ["iat", "exp", "nbf"]) {
+		for (field in __WRITTEN_TIME_CLAIMS) {
 			var value:Dynamic = Reflect.field(claims, field);
 			if (value == null || Std.isOfType(value, Int)) {
 				continue;
