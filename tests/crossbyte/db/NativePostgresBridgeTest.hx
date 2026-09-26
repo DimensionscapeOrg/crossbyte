@@ -4,6 +4,8 @@ package crossbyte.db;
 import crossbyte.db.postgres.PostgresConfig;
 import crossbyte.db.postgres.PostgresConnection;
 import crossbyte.db.postgres.PostgresParameter;
+import crossbyte.errors.SQLError;
+import crossbyte.events.SQLErrorEvent;
 import haxe.io.Path;
 import sys.thread.Lock;
 import sys.thread.Mutex;
@@ -276,6 +278,98 @@ class NativePostgresBridgeTest extends utest.Test {
 		]) {
 			Assert.isTrue(conninfo.indexOf(expected) >= 0, 'missing $expected in $conninfo');
 		}
+	}
+
+	public function testACommitTheServerTurnedIntoARollbackThrows():Void {
+		// After a statement fails inside a transaction, PostgreSQL answers the
+		// COMMIT with success and the tag ROLLBACK, discarding everything. Only
+		// the tag says so, and nothing read it: the commit reported success.
+		var connection = __open(__config("localhost"));
+		var events:Int = 0;
+		connection.addEventListener(SQLErrorEvent.ERROR, _ -> events++);
+
+		connection.begin();
+
+		try {
+			connection.request("fake:fail");
+		} catch (_:Dynamic) {}
+
+		var thrown:Dynamic = null;
+
+		try {
+			connection.commit();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Require.notNull(thrown);
+		Assert.isTrue(Std.isOfType(thrown, SQLError), Std.string(thrown));
+		Assert.isTrue(Std.string(thrown).indexOf("rolled it back") >= 0, Std.string(thrown));
+		// Still reported to listeners, as it always was.
+		Assert.equals(1, events);
+		// The transaction is over either way, and the connection usable.
+		Assert.isFalse(connection.inTransaction);
+		Assert.isTrue(connection.ping());
+		connection.close();
+	}
+
+	public function testAFailedCommitThrows():Void {
+		var connection = __open(__config("localhost"));
+
+		connection.begin();
+		connection.request("fake:fail-next-commit");
+
+		Assert.raises(() -> connection.commit(), SQLError);
+		Assert.isFalse(connection.inTransaction);
+		connection.close();
+	}
+
+	public function testATransactionTaskFailsWhenItsCommitDoes():Void {
+		// The pattern AsyncDatabase.transaction documents for this driver. It
+		// completed as success when the COMMIT had rolled everything back.
+		var config = __config("localhost");
+		var pool = new ConnectionPool<PostgresConnection>({factory: () -> __open(config), close: c -> c.close(), maxSize: 1});
+		var db = AsyncDatabase.of(pool);
+
+		var swallowed = db.transaction(c -> c.begin(), c -> c.commit(), c -> c.rollback(), function(c:PostgresConnection):String {
+			try {
+				c.request("fake:fail");
+			} catch (_:Dynamic) {}
+
+			return "transferred";
+		});
+
+		var refused = db.transaction(c -> c.begin(), c -> c.commit(), c -> c.rollback(), function(c:PostgresConnection):String {
+			c.request("fake:fail-next-commit");
+			return "transferred";
+		});
+
+		var afterwards = db.submit(c -> c.inTransaction);
+
+		Assert.raises(() -> swallowed.await());
+		Assert.raises(() -> refused.await());
+		Assert.isFalse(afterwards.await(), "the connection went back to the pool inside a transaction");
+
+		db.shutdown();
+	}
+
+	public function testTheMigratorDoesNotReportAMigrationWhoseCommitFailed():Void {
+		var connection = __open(__config("localhost"));
+		var migrator = new SchemaMigrator<PostgresConnection>({
+			execute: (c, sql) -> c.request(sql),
+			readApplied: c -> [],
+			recordApplied: (c, m) -> c.request("INSERT INTO schema_migrations VALUES (" + m.version + ")"),
+			ensureTable: c -> {},
+			begin: c -> c.begin(),
+			commit: c -> c.commit(),
+			rollback: c -> c.rollback()
+		});
+
+		migrator.add(Migration.ofSql(1, "accounts", "fake:fail-next-commit"));
+
+		Assert.raises(() -> migrator.migrate(connection));
+		Assert.isFalse(connection.inTransaction);
+		connection.close();
 	}
 
 	/**

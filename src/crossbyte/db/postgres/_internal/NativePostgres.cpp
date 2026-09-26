@@ -78,6 +78,7 @@ namespace {
 		char* (*PQgetvalue)(const PGresult* res, int rowNum, int fieldNum) = nullptr;
 		int (*PQgetisnull)(const PGresult* res, int rowNum, int fieldNum) = nullptr;
 		char* (*PQcmdTuples)(PGresult* res) = nullptr;
+		char* (*PQcmdStatus)(PGresult* res) = nullptr;
 		Oid (*PQoidValue)(const PGresult* res) = nullptr;
 		void (*PQclear)(PGresult* res) = nullptr;
 		size_t (*PQescapeStringConn)(PGconn* conn, char* to, const char* from, size_t length, int* error) = nullptr;
@@ -219,6 +220,7 @@ namespace {
 			loadSymbol(*api, api->PQgetvalue, "PQgetvalue") &&
 			loadSymbol(*api, api->PQgetisnull, "PQgetisnull") &&
 			loadSymbol(*api, api->PQcmdTuples, "PQcmdTuples") &&
+			loadSymbol(*api, api->PQcmdStatus, "PQcmdStatus") &&
 			loadSymbol(*api, api->PQoidValue, "PQoidValue") &&
 			loadSymbol(*api, api->PQclear, "PQclear") &&
 			loadSymbol(*api, api->PQescapeStringConn, "PQescapeStringConn") &&
@@ -336,8 +338,14 @@ namespace {
 			out << "}";
 		}
 
+		// The command tag, because it is the only thing that tells a COMMIT
+		// that committed from one the server turned into a ROLLBACK: both
+		// arrive as success.
+		const char* command = api->PQcmdStatus(result);
+
 		out << "],\"affectedRows\":" << parseAffectedRows(api, result);
 		out << ",\"lastInsertRowID\":" << static_cast<unsigned int>(api->PQoidValue(result));
+		out << ",\"command\":\"" << jsonEscape(command == nullptr ? "" : command) << "\"";
 		out << "}";
 		return out.str();
 	}

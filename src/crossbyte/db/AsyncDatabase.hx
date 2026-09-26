@@ -119,6 +119,13 @@ class AsyncDatabase<T> {
 	 *
 	 * A failure in `rollback` does not mask the original error, which is
 	 * the one describing what actually went wrong.
+	 *
+	 * The task fails when `commit` throws, and `rollback` runs then too:
+	 * on an engine that keeps the transaction open after a failed COMMIT,
+	 * as SQLite does when the database is busy, that is what closes it
+	 * before the connection goes back to the pool. Every driver in this
+	 * package throws from a failed commit; a callback that only reports
+	 * failure some other way is invisible here.
 	 */
 	public function transaction<R>(begin:T->Void, commit:T->Void, rollback:T->Void, body:T->R):Task<R> {
 		if (begin == null || commit == null || rollback == null || body == null) {
@@ -131,6 +138,7 @@ class AsyncDatabase<T> {
 			var result:R;
 			try {
 				result = body(connection);
+				commit(connection);
 			} catch (e:Dynamic) {
 				try {
 					rollback(connection);
@@ -143,7 +151,6 @@ class AsyncDatabase<T> {
 				return null;
 			}
 
-			commit(connection);
 			return result;
 		});
 	}

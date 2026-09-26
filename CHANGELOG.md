@@ -536,6 +536,13 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `PostgresConnection` and `MySQLConnection` `begin`, `commit`, `rollback`
+  and the savepoint methods throw an `SQLError` when the server refuses,
+  after dispatching the `SQLErrorEvent` as before. They dispatched and
+  returned, so a caller that did not listen could not tell a failed COMMIT
+  from a committed one; `SQLiteConnection` has always thrown. Code that
+  handled the event and called these without a `try` now sees the error
+  thrown as well, and should catch it where it handled the event.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -704,6 +711,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A failed PostgreSQL or MySQL transaction is no longer reported as
+  committed. `commit()` caught the server's refusal and dispatched an event
+  instead of throwing, so the documented `AsyncDatabase.transaction(c ->
+  c.begin(), c -> c.commit(), ...)` completed as success, `SchemaMigrator`
+  recorded a migration that had been rolled back, and the connection went
+  back to the pool still marked as inside a transaction. A COMMIT that
+  PostgreSQL answers with the tag ROLLBACK -- which is what it does after a
+  statement in the transaction failed, discarding all of it -- also read as
+  success, since only the tag says otherwise. Both now throw an `SQLError`
+  (see Changed), the tag is read on the native driver, and
+  `AsyncDatabase.transaction` rolls back when the commit throws, closing a
+  transaction an engine keeps open after a failed COMMIT before the
+  connection is pooled again. A savepoint the server refused is no longer
+  remembered as the innermost one.
 - Native PostgreSQL connections no longer share one result buffer. Every
   connection and thread in the process wrote the bridge's single buffer --
   results, escaped strings, and the reason an open failed -- and
