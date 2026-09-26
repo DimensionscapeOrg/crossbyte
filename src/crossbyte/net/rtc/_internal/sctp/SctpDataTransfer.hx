@@ -209,6 +209,16 @@ class SctpDataTransfer {
 	/** The association this runs over. **/
 	public var association(default, null):SctpAssociation;
 
+	/**
+		The largest message the peer said it will take, in bytes, or 0 for any
+		size: its `a=max-message-size`, RFC 8841. `send` refuses anything
+		larger, as the RFC says a sender must, the peer would take every
+		fragment, acknowledge it, and then drop the message whole, so this end
+		would see it delivered and the application at the other would never
+		see it at all.
+	**/
+	public var peerMaxMessageSize:Int = 0;
+
 	/** Called with each whole message, once it is complete and in order. **/
 	public dynamic function onMessage(streamId:Int, payload:ByteArray, protocolId:Int):Void {}
 
@@ -442,6 +452,11 @@ class SctpDataTransfer {
 			}
 
 			throw new ArgumentError("The association is not open, so there is nothing to send over.");
+		}
+
+		if (peerMaxMessageSize > 0 && payload != null && payload.length > peerMaxMessageSize) {
+			throw new ArgumentError("A message of " + payload.length + " bytes is larger than the " + peerMaxMessageSize
+				+ " the peer accepts in one message.");
 		}
 
 		if (__pendingBytes + (payload == null ? 0 : payload.length) > MAX_BUFFERED) {

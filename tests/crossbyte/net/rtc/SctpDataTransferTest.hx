@@ -470,6 +470,38 @@ class SctpDataTransferTest extends utest.Test {
 	}
 
 	/**
+		A message larger than the peer takes is refused before anything goes.
+
+		RFC 8841: a sender must not exceed the peer's max-message-size. It was
+		never consulted, so the message went out, every fragment was
+		acknowledged, and the receiver dropped it whole, the sender saw it
+		delivered and the far application never saw it at all.
+	**/
+	public function testAMessageLargerThanThePeerTakesIsRefused():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var packets:Int = 0;
+		pair.watchClient(_ -> packets++);
+		pair.clientData.peerMaxMessageSize = 1000;
+
+		Assert.raises(() -> pair.clientData.send(0, filled(1001), SctpDataChunk.PPID_BINARY, true, pair.now), ArgumentError);
+		Assert.equals(0, packets, "a message the peer would drop was put on the wire");
+		Assert.equals(0, pair.clientData.bufferedAmount, "a refused message was queued");
+
+		var got:Int = -1;
+		pair.serverData.onMessage = (_, payload, _) -> got = payload.length;
+		pair.clientData.send(0, filled(1000), SctpDataChunk.PPID_BINARY, true, pair.now);
+		pair.run(() -> got >= 0);
+
+		Assert.equals(1000, got, "a message exactly the size the peer takes was refused or lost");
+
+		// Zero is RFC 8841's any size at all.
+		pair.clientData.peerMaxMessageSize = 0;
+		pair.clientData.send(0, filled(64 * 1024), SctpDataChunk.PPID_BINARY, true, pair.now);
+	}
+
+	/**
 		A peer that shuts down gracefully still gets what this end had
 		outstanding, before the answer goes.
 

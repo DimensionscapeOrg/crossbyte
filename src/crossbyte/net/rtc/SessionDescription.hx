@@ -2,6 +2,7 @@ package crossbyte.net.rtc;
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.net.rtc.PeerDescription;
+import crossbyte.utils.IntParse;
 
 /**
 	A `PeerDescription` written as SDP, and read back from it.
@@ -56,6 +57,12 @@ class SessionDescription {
 	private static inline var UNUSED_PORT:Int = 9;
 
 	/**
+		What a document that says nothing about message size is taken to allow:
+		RFC 8841's default, 64 KB.
+	**/
+	public static inline var DEFAULT_MAX_MESSAGE_SIZE:Int = 65536;
+
+	/**
 		Renders a description as an offer or an answer.
 
 		@param setup Which DTLS role to claim, overriding what the description
@@ -92,7 +99,7 @@ class SessionDescription {
 			"a=fingerprint:sha-256 " + description.fingerprint,
 			"a=setup:" + role,
 			"a=sctp-port:" + SctpPortDefault,
-			"a=max-message-size:" + MaxMessageSize
+			"a=max-message-size:" + (description.maxMessageSize != null ? description.maxMessageSize : MaxMessageSize)
 		];
 
 		if (description.candidates != null) {
@@ -129,6 +136,7 @@ class SessionDescription {
 		var password:String = null;
 		var fingerprint:String = null;
 		var setup:String = null;
+		var maxMessageSize:Int = DEFAULT_MAX_MESSAGE_SIZE;
 		var candidates:Array<CandidateDescription> = [];
 
 		// Split on either ending: the RFC says CRLF and implementations mostly
@@ -147,6 +155,8 @@ class SessionDescription {
 				password = line.substr("a=ice-pwd:".length);
 			} else if (StringTools.startsWith(line, "a=setup:")) {
 				setup = line.substr("a=setup:".length);
+			} else if (StringTools.startsWith(line, "a=max-message-size:")) {
+				maxMessageSize = readMaxMessageSize(line.substr("a=max-message-size:".length));
 			} else if (StringTools.startsWith(line, "a=fingerprint:")) {
 				fingerprint = readFingerprint(line);
 			} else if (StringTools.startsWith(line, "a=candidate:")) {
@@ -171,8 +181,44 @@ class SessionDescription {
 			password: password,
 			fingerprint: fingerprint,
 			candidates: candidates,
-			setup: setup
+			setup: setup,
+			maxMessageSize: maxMessageSize
 		};
+	}
+
+	/**
+		`a=max-message-size`'s value: a size, or 0 for any size.
+
+		Digits too many for an Int are a peer saying its limit is larger than
+		anything this end could send, which is what 0 says too. Anything that
+		is not digits at all is ignored, leaving the RFC's default.
+	**/
+	private static function readMaxMessageSize(text:String):Int {
+		text = StringTools.trim(text);
+
+		var size:Int = IntParse.decimal(text);
+
+		if (size >= 0) {
+			return size;
+		}
+
+		return allDigits(text) ? 0 : DEFAULT_MAX_MESSAGE_SIZE;
+	}
+
+	private static function allDigits(text:String):Bool {
+		if (text.length == 0) {
+			return false;
+		}
+
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+
+			if (code < "0".code || code > "9".code) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
@@ -284,10 +330,17 @@ class SessionDescription {
 		return crossbyte.net.rtc._internal.sctp.SctpAssociation.DEFAULT_PORT;
 	}
 
-	/** What this stack will accept in one message, advertised so a peer knows. **/
+	/**
+		What this stack will accept in one message, advertised so a peer knows.
+
+		The largest message the receiver reassembles. It used to be the receive
+		window, twice that: a peer told two megabytes had anything over one
+		acknowledged fragment by fragment and then dropped whole, so its sender
+		saw success and nothing arrived.
+	**/
 	private static var MaxMessageSize(get, never):Int;
 
 	private static function get_MaxMessageSize():Int {
-		return crossbyte.net.rtc._internal.sctp.SctpAssociation.RECEIVE_WINDOW;
+		return crossbyte.net.rtc._internal.sctp.SctpDataTransfer.MAX_REASSEMBLY;
 	}
 }

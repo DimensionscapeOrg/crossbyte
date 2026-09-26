@@ -377,9 +377,27 @@ class PeerConnection {
 			// An offer leaves the choice open; an answer states what this peer
 			// has settled on, which `connect` has already worked out if the
 			// offer arrived first.
-			setup: __isOfferer ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE)
+			setup: __isOfferer ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE),
+			// What the receiver here reassembles, which is what a peer may send.
+			maxMessageSize: SctpDataTransfer.MAX_REASSEMBLY
 		};
 	}
+
+	/**
+		The largest message the peer takes, in bytes, or 0 for any size.
+
+		From its description's `maxMessageSize`, `a=max-message-size` in SDP,
+		64 KB when a document leaves it out, and `send` on a channel refuses
+		anything larger, as RFC 8841 says a sender must. Known once `connect`
+		has been given the description.
+	**/
+	public var maxMessageSize(get, never):Int;
+
+	@:noCompletion private function get_maxMessageSize():Int {
+		return __peerMaxMessageSize;
+	}
+
+	@:noCompletion private var __peerMaxMessageSize:Int = SctpDataTransfer.MAX_REASSEMBLY;
 
 	/**
 		Takes the peer's description and starts connecting.
@@ -404,6 +422,13 @@ class PeerConnection {
 
 		__remote = remote;
 		__resolveDtlsRole(remote.setup);
+
+		// Absent from a structure means a CrossByte peer, which takes what
+		// this stack takes; SDP that left it out has already been given the
+		// RFC's default by `SessionDescription.fromSdp`.
+		if (remote.maxMessageSize != null && remote.maxMessageSize >= 0) {
+			__peerMaxMessageSize = remote.maxMessageSize;
+		}
 
 		// Built before the agent is touched. IceCredentials validates the
 		// fragment and the password, and a description that fails that used to
@@ -1144,6 +1169,7 @@ class PeerConnection {
 		}
 
 		__transfer = new SctpDataTransfer(__association);
+		__transfer.peerMaxMessageSize = __peerMaxMessageSize;
 		// RFC 8832: the DTLS client takes the even streams. Two peers that
 		// disagreed about which of them that is would collide on every channel
 		// they opened at the same moment.
