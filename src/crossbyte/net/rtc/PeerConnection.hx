@@ -212,6 +212,23 @@ class PeerConnection {
 	/** Why the connection closed, once it has; null until then. **/
 	public var closeReason(default, null):Null<String> = null;
 
+	/** The default for `readyTimeout`, in seconds. **/
+	public static inline var DEFAULT_READY_TIMEOUT:Float = 30.0;
+
+	/**
+		How long, in seconds from `connect`, the whole stack has to come up
+		before the connection gives up and fails `ready`.
+
+		Every phase had its own ending except the ones that waited on the
+		peer to go first: a DTLS server waits for a ClientHello with no timer
+		running, an SCTP listener for an INIT, and a peer whose tab closed
+		just after ICE left this end holding a socket, a tick listener and a
+		TLS session for as long as the process ran. The reason `ready` fails
+		with names the phase that did not finish. Read at every poll, so it
+		can be changed after `connect`.
+	**/
+	public var readyTimeout:Float = DEFAULT_READY_TIMEOUT;
+
 	/** Called when the peer opens a channel rather than answering one. **/
 	public dynamic function onChannel(channel:DataChannel):Void {}
 
@@ -227,6 +244,11 @@ class PeerConnection {
 	@:noCompletion private var __tick:TickEvent->Void;
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __isOfferer:Bool;
+
+	/** Whether `connect` has started things, and when, for `readyTimeout`. **/
+	@:noCompletion private var __connecting:Bool = false;
+
+	@:noCompletion private var __connectStartedAt:Float = 0;
 
 	/**
 		@param isOfferer Whether this peer produces the offer. The two peers must
@@ -406,7 +428,14 @@ class PeerConnection {
 			} catch (_:Dynamic) {}
 		}
 
-		agent.start(credentials, haxe.Timer.stamp());
+		var now:Float = haxe.Timer.stamp();
+
+		if (!__connecting) {
+			__connecting = true;
+			__connectStartedAt = now;
+		}
+
+		agent.start(credentials, now);
 	}
 
 	/**
@@ -448,13 +477,26 @@ class PeerConnection {
 
 		agent.poll(now);
 
-		// Consent is the agent's to lose and this connection's to act on. The
-		// `ready` future resolved when the path came up, so a path that stops
-		// being one has no other way to be reported -- and RFC 7675 asks the
-		// sender to stop, which is something only the layer that sends can do.
-		// Stopping includes the goodbyes: nothing is sent on the way out.
-		if (connected && agent.state == IceAgentState.FAILED) {
-			__shutdown("The peer stopped answering consent checks, so the path to it is no longer usable.", false, false);
+		// Every pair failing fails the agent's own future, which has already
+		// closed this.
+		if (__closed) {
+			return;
+		}
+
+		// Consent is the agent's to lose and this connection's to act on, and
+		// from the moment the path is found rather than once everything above
+		// it is up: a peer that went away mid-handshake was ignored until the
+		// association opened, which it never would. RFC 7675 asks the sender
+		// to stop, which is something only the layer that sends can do, and
+		// stopping includes the goodbyes: nothing is sent on the way out.
+		if (agent.state == IceAgentState.FAILED) {
+			__shutdown(connected ? "The peer stopped answering consent checks, so the path to it is no longer usable." : "The peer stopped answering consent checks before the connection was ready.",
+				false, false);
+			return;
+		}
+
+		if (!connected && __connecting && now - __connectStartedAt >= readyTimeout) {
+			__fail("The connection did not become ready within " + readyTimeout + " seconds: " + __phase() + ".");
 			return;
 		}
 
@@ -1127,6 +1169,19 @@ class PeerConnection {
 			// trying every candidate. The layer that sent this has its own
 			// retransmission budget, and that is what decides the path is dead.
 		}
+	}
+
+	/** How far a connection that is not ready got, for the reason it gives up with. **/
+	@:noCompletion private function __phase():String {
+		if (__dtls == null) {
+			return "no path to the peer was found";
+		}
+
+		if (__association == null) {
+			return "the DTLS handshake did not complete";
+		}
+
+		return "the SCTP association did not open";
 	}
 
 	@:noCompletion private function __fail(reason:String):Void {

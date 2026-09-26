@@ -691,6 +691,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebRTC connection that cannot finish coming up now gives up. Only some
+  of its phases had an end: as the DTLS server it waited for a ClientHello
+  with no timer running, the SCTP listener waited for an INIT forever, a
+  DTLS client took 123 seconds to fail, and consent was checked only once
+  everything was up -- so a browser tab closed just after ICE left a
+  socket, a tick listener and a TLS session held for the life of the
+  process, with `ready` pending. `PeerConnection.readyTimeout` (30 seconds
+  from `connect`, read at every poll) now fails `ready` with the phase that
+  did not finish; consent lost at any point after the path was found ends
+  the connection; and a DTLS handshake resends at 1, 2, 4 and 8 seconds and
+  fails at 15, with "The DTLS handshake timed out".
 - A WebRTC peer can no longer grow the SCTP receiver without bound. Any TSN
   up to 2^31 past the cumulative acknowledgement was taken and remembered,
   so a peer that never sent the next number and kept sending the ones after

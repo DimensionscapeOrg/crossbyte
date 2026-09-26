@@ -186,6 +186,46 @@ class DtlsTransportTest extends utest.Test {
 	}
 
 	/**
+		A client whose ClientHello nobody answers gives up in seconds.
+
+		mbedtls's own schedule resends a flight after one second and doubles to
+		a minute, failing after 123 seconds -- two minutes of a session, and the
+		socket and listener above it, held for a peer that was never there.
+		Resent at one, two, four and eight seconds now, and given up on at
+		fifteen.
+	**/
+	public function testAHandshakeNobodyAnswersIsGivenUpInSeconds():Void {
+		if (unsupported()) return;
+
+		var client = new DtlsTransport(DtlsCertificate.generate("client", 30), DtlsCertificate.generate("server", 30).fingerprint, true);
+		var sent:Int = 0;
+		client.onSend = _ -> sent++;
+
+		var failure:String = null;
+		var failedAt:Float = -1;
+		var now:Float = 0;
+		client.established.then(_ -> {}, function(error:String):Void {
+			failure = error;
+			failedAt = now;
+		});
+
+		while (failure == null && now < 200) {
+			client.poll(now);
+			now += 0.1;
+		}
+
+		Assert.notNull(failure, "a handshake nobody answered never failed");
+		Assert.isTrue(failedAt >= 0 && failedAt <= 20, "a handshake nobody answered took " + failedAt + " s to fail");
+		Assert.isTrue(sent >= 4, "the ClientHello was sent " + sent + " times before giving up");
+
+		if (failure != null) {
+			Assert.isTrue(failure.indexOf("timed out") >= 0, "the failure does not say the handshake timed out: " + failure);
+		}
+
+		client.close();
+	}
+
+	/**
 		The case the fingerprint exists for.
 
 		An attacker who can answer gets a perfectly good DTLS handshake -- the
