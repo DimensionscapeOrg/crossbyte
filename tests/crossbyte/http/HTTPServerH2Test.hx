@@ -620,6 +620,48 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testALongPollOutlivesTheRequestTimeout(async:Async):Void {
+		// Every open stream counted as a request still arriving, so a long
+		// poll answered after requestTimeout found its connection closed with
+		// a GOAWAY, and every other stream on it gone too. A request that has
+		// arrived is the application's to answer, as over HTTP/1.1.
+		// Answered by the test rather than by a timer: the harness runs the
+		// runtime's clock faster than the wall clock the timeout is kept on.
+		var held:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.requestTimeout = 0.5;
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/poll") {
+						held = handler;
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/poll", true);
+			session.until(() -> held != null || session.ended, () -> {
+				// Three times the request timeout, with the answer still owed.
+				session.pause(1.5, () -> {
+					var endedWhileWaiting:Bool = session.ended;
+					if (held != null) {
+						held.respond(200, "text/plain", "late");
+					}
+					session.until(() -> session.finished(1) || session.ended, () -> {
+						session.close();
+						Assert.isFalse(endedWhileWaiting, "the connection was closed under a request being answered");
+						Assert.equals(200, session.status(1));
+						Assert.equals("late", session.body(1));
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	// ---------------------------------------------------------------- driver
 
 	/**

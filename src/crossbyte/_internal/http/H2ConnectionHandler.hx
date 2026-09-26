@@ -94,6 +94,11 @@ class H2ConnectionHandler {
 			return;
 		}
 
+		// A response going out is activity too: idle time counts from the
+		// last frame either way, so a connection that has just answered a
+		// long poll is not taken for one silent since the request came in.
+		__lastActivity = haxe.Timer.stamp();
+
 		var out:ByteArray = new ByteArray();
 		out.writeBytes(bytes, 0, bytes.length);
 		__socket.writeBytes(out, 0, out.length);
@@ -123,8 +128,10 @@ class H2ConnectionHandler {
 	 *
 	 * Two deadlines, because silence means different things. With no stream
 	 * open the peer is simply between requests, which HTTP/2 is designed for,
-	 * so it gets the keep-alive idle allowance. With a stream open it owes a
-	 * request body that never came, and that is the request timeout.
+	 * so it gets the keep-alive idle allowance. With a request still arriving
+	 * it owes a body that never came, and that is the request timeout. With
+	 * every open stream's request in hand the wait is the application's, and
+	 * there is no deadline.
 	 *
 	 * Without this an HTTP/2 connection was never reaped at all: the sweep
 	 * only walked HTTP/1.1 handlers, so a peer could open connections and go
@@ -140,9 +147,22 @@ class H2ConnectionHandler {
 			return;
 		}
 
-		var idle:Float = now - __lastActivity;
-		var limit:Float = __connection.openStreams > 0 ? __config.requestTimeout : __config.keepAliveTimeout;
+		// A request still arriving owes its bytes within requestTimeout. One
+		// that has arrived is the application's to answer, for as long as that
+		// takes, a long poll, a slow upstream, as an HTTP/1.1 request stops
+		// its clock once read. Open streams all counted as arriving, so a long
+		// poll answering after requestTimeout found its connection gone, and
+		// every other stream on it with it.
+		var limit:Float;
+		if (__connection.receivingStreams > 0) {
+			limit = __config.requestTimeout;
+		} else if (__connection.openStreams > 0) {
+			return;
+		} else {
+			limit = __config.keepAliveTimeout;
+		}
 
+		var idle:Float = now - __lastActivity;
 		if (limit <= 0 || idle < limit) {
 			return;
 		}
