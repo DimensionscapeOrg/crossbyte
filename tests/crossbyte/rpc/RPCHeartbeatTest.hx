@@ -27,6 +27,15 @@ import utest.Assert;
 	fast as the pump is called.
 **/
 class RPCHeartbeatTest extends utest.Test {
+	/**
+		Pumped once so its timers are the harness runtime's: a test elsewhere
+		makes a runtime of its own and exits it, and until this one pumps, a
+		timer set on this thread goes to that one and never fires.
+	**/
+	public function setup():Void {
+		CrossByte.current().pump(0, 0);
+	}
+
 	public function testTheOpOfPingIsTheOneTheWireUses():Void {
 		Assert.equals(RPCOps.opOf("ping"), RPCWire.PING_OP);
 	}

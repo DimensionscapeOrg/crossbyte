@@ -83,6 +83,24 @@ class LinkedConnection implements INetConnection {
 		__onReady();
 	}
 
+	/**
+		Its peer has gone, and the connection says so, as a listening
+		`LocalConnection` does when its client leaves: it closes, and keeps
+		its callbacks for the next.
+	**/
+	public function peerLeft():Void {
+		open = false;
+		__onClose(Closed);
+	}
+
+	/** Takes `next` as its peer, as a listening `LocalConnection` takes its next client, and says it is ready. **/
+	public function takePeer(next:LinkedConnection):Void {
+		open = true;
+		peer = next;
+		next.peer = this;
+		__onReady();
+	}
+
 	@:noCompletion private function receive(data:ByteArray):Void {
 		inTimestamp = Timer.getTime();
 		var copy = new ByteArray();
