@@ -93,6 +93,106 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testSilentCleartextConnectionsAreCountedAndTimed(async:Async):Void {
+		// While the server waits to learn a cleartext connection's protocol it
+		// counted nothing and timed nothing: with maxConnections at 2 and
+		// requestTimeout at half a second, six silent sockets were all taken
+		// and all still open two seconds later.
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		config.maxConnections = 2;
+		config.requestTimeout = 0.5;
+		var server = new HTTPServer(config);
+
+		var clients:Array<Socket> = [];
+		var closed:Array<Bool> = [];
+		var peak:Int = 0;
+
+		HTTPTestSupport.pumpUntilAsync(() -> server.localPort != 0, 2.0, function(_):Void {
+			for (i in 0...6) {
+				var client = new Socket();
+				var index = i;
+				closed.push(false);
+				client.addEventListener(Event.CLOSE, _ -> closed[index] = true);
+				client.connect("127.0.0.1", server.localPort);
+				clients.push(client);
+			}
+
+			var started:Float = haxe.Timer.stamp();
+			HTTPTestSupport.pumpUntilAsync(function():Bool {
+				if (server.activeConnections > peak) {
+					peak = server.activeConnections;
+				}
+				return haxe.Timer.stamp() - started > 2.0 || Lambda.foreach(closed, c -> c);
+			}, 4.0, function(_):Void {
+				var open:Int = Lambda.count(closed, c -> !c);
+				for (client in clients) {
+					try client.close() catch (_:Dynamic) {}
+				}
+				try server.close() catch (_:Dynamic) {}
+
+				Assert.isTrue(peak <= 2, 'the server held $peak silent connections under a limit of 2');
+				Assert.isTrue(peak > 0, "the silent connections were never counted");
+				Assert.equals(0, open, '$open silent connections outlived a 0.5s requestTimeout');
+				async.done();
+			});
+		});
+	}
+
+	public function testDrainSendsGoAwayFirstAndLetsStreamsFinish(async:Async):Void {
+		// A GOAWAY came only at the drain's deadline, so clients kept opening
+		// streams on a connection about to close. Now it comes at once: a
+		// stream opened after it is refused, the one in flight finishes, and
+		// the drain ends with it rather than at the deadline.
+		// Answered by the test rather than by a timer: the harness pumps the
+		// runtime's clock faster than the wall clock, so a timed answer can land
+		// before the drain it is meant to straddle.
+		var working:HTTPRequestHandler = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/work") {
+						working = handler;
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/work", true);
+			session.until(() -> working != null || session.ended, () -> {
+				var started:Float = haxe.Timer.stamp();
+				var drained:Bool = false;
+				session.server.drain(5.0, () -> drained = true);
+
+				session.until(() -> session.goAwayAt >= 0 || session.ended, () -> {
+					var goAwayAfter:Float = session.goAwayAt - started;
+					session.request(3, "GET", "/index.html", true);
+
+					session.until(() -> session.finished(3) || session.dropped, () -> {
+						if (working != null) {
+							working.respond(200, "text/plain", "done");
+						}
+					});
+
+					session.until(() -> drained && session.finished(1) && session.finished(3), () -> {
+						var took:Float = haxe.Timer.stamp() - started;
+						session.close();
+
+						Assert.isTrue(session.goAwayAt >= 0 && goAwayAfter < 0.25, 'no GOAWAY at the start of the drain (${goAwayAfter}s)');
+						Assert.equals(200, session.status(1), "the stream in flight did not finish");
+						Assert.equals("done", session.body(1));
+						Assert.equals(7, session.resetCode(3), "a stream opened after the GOAWAY was not refused");
+						Assert.isTrue(drained && took < 3.0, 'the drain took ${took}s, waiting on its deadline');
+						async.done();
+					}, 8.0);
+				});
+			});
+		});
+	}
+
 	public function testTheRateLimiterCountsHttp2Requests(async:Async):Void {
 		// Only the HTTP/1.1 parser asked the limiter, so six requests over
 		// HTTP/2 were all answered where HTTP/1.1 refused the fourth.
@@ -852,6 +952,13 @@ private class H2Session {
 	public function pause(seconds:Float, then:Void->Void):Void {
 		var resumeAt:Float = haxe.Timer.stamp() + seconds;
 		until(() -> ended || haxe.Timer.stamp() >= resumeAt, then, seconds + 5.0);
+	}
+
+	/** The server this session talks to. */
+	public var server(get, never):HTTPServer;
+
+	private inline function get_server():HTTPServer {
+		return __server;
 	}
 
 	/** Whether `streamId` has been answered in full, or refused. */

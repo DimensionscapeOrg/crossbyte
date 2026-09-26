@@ -126,7 +126,20 @@ class H2ConnectionHandler {
 	 * @param now `haxe.Timer.stamp()`, as the server's sweep reads it once
 	 *        for every handler it visits, HTTP/1.1 and HTTP/2 alike.
 	 */
+	/** Whether a drain has started here and every stream it let finish has. */
+	public var drained(get, never):Bool;
+
+	private inline function get_drained():Bool {
+		return __connection.goingAway && __connection.openStreams == 0 && __socket.connected;
+	}
+
 	public function checkDeadline(now:Float):Void {
+		// A draining connection ends when its last stream does.
+		if (drained) {
+			close();
+			return;
+		}
+
 		var idle:Float = now - __lastActivity;
 		var limit:Float = __connection.openStreams > 0 ? __config.requestTimeout : __config.keepAliveTimeout;
 
@@ -136,6 +149,19 @@ class H2ConnectionHandler {
 
 		Logger.info('HTTP/2 connection idle for ${Math.round(idle)}s; closing.');
 		close();
+	}
+
+	/**
+	 * Starts a graceful shutdown: a GOAWAY now, so the peer opens no more
+	 * streams here, while the ones it has run to their end. The connection
+	 * closes at once when none are open, and otherwise when the last one
+	 * finishes, which the server's sweep checks.
+	 */
+	public function beginDrain():Void {
+		__connection.goAwayGracefully();
+		if (__connection.openStreams == 0) {
+			close();
+		}
 	}
 
 	/** Ends the connection, telling the peer why before the socket goes. */

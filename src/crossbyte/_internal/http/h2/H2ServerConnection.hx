@@ -150,8 +150,15 @@ class H2ServerConnection {
 	// forbids any other frame in between, on any stream.
 	private var __continuationStreamId:Int = -1;
 	private var __continuationEndsStream:Bool = false;
+	private var __continuationRefusal:Null<H2ErrorCode> = null;
 	private var __continuationBuffer:BytesBuffer = null;
 	private var __continuationLength:Int = 0;
+
+	// Set by goAwayGracefully: streams already open run to their end, and any
+	// the peer opens after it are refused. The id is the last stream the GOAWAY
+	// promised to process, which a later final GOAWAY must not raise.
+	private var __goingAway:Bool = false;
+	private var __goAwayLastStreamId:Int = 0;
 
 	/**
 	 * @param write Sink for outbound bytes. A function rather than an
@@ -277,8 +284,12 @@ class H2ServerConnection {
 		__writeHeaderBlock(streamId, __encoder.encode(block), endStream);
 
 		if (endStream) {
-			target.close();
-			__streams.remove(streamId);
+			// Through __finishStream, which releases the stream's concurrency
+			// slot. This removed the stream from the map without it, so every
+			// response with no body, a 204, a 304, any HEAD, kept its slot
+			// for good, and a connection that had answered 128 of them refused
+			// every stream after.
+			__finishStream(target);
 		}
 	}
 
@@ -436,6 +447,38 @@ class H2ServerConnection {
 		}
 	}
 
+	/**
+	 * Tells the peer no new streams will be taken, while those already open
+	 * run to their end (§6.8). The connection stays up; the owner closes it
+	 * once `openStreams` reaches zero, or with `goAway` at a deadline.
+	 *
+	 * What a server shutting down owes its HTTP/2 clients up front. They saw a
+	 * GOAWAY only at the drain's deadline, so for the whole drain they kept
+	 * opening streams on a connection about to go, and whatever was in flight
+	 * at the deadline was cut off without warning.
+	 */
+	public function goAwayGracefully():Void {
+		if (closed || __goingAway) {
+			return;
+		}
+		__goingAway = true;
+		__goAwayLastStreamId = __highestStreamId;
+
+		var payload:Bytes = Bytes.alloc(8);
+		__writeUInt32(payload, 0, __goAwayLastStreamId);
+		__writeUInt32(payload, 4, cast H2ErrorCode.NO_ERROR);
+		try {
+			__writeFrame(H2FrameType.GOAWAY, 0, 0, payload);
+		} catch (_:Dynamic) {}
+	}
+
+	/** Whether `goAwayGracefully` has been called. */
+	public var goingAway(get, never):Bool;
+
+	private inline function get_goingAway():Bool {
+		return __goingAway;
+	}
+
 	public function goAway(code:H2ErrorCode, ?debug:String):Void {
 		if (closed) {
 			return;
@@ -444,7 +487,7 @@ class H2ServerConnection {
 
 		var message:Bytes = debug == null ? Bytes.alloc(0) : Bytes.ofString(debug);
 		var payload:Bytes = Bytes.alloc(8 + message.length);
-		__writeUInt32(payload, 0, __highestStreamId);
+		__writeUInt32(payload, 0, __goingAway ? __goAwayLastStreamId : __highestStreamId);
 		__writeUInt32(payload, 4, cast code);
 		if (message.length > 0) {
 			payload.blit(8, message, 0, message.length);
@@ -560,29 +603,43 @@ class H2ServerConnection {
 			payload = payload.sub(5, payload.length - 5);
 		}
 
+		// A refused stream is never opened, but its header block is still
+		// decoded, __completeHeaders decodes and discards a block for a
+		// stream it does not hold, before the reset goes out. HPACK is
+		// connection state: a block skipped leaves every later one decoded
+		// against the wrong table. The concurrency refusal used to throw before
+		// the block was read, which did exactly that.
+		var refusal:Null<H2ErrorCode> = null;
 		if (!__streams.exists(frame.streamId)) {
 			var limit:Int = localSettings.maxConcurrentStreams;
-			if (limit >= 0 && __openStreams >= limit) {
+			if (__goingAway) {
+				// §6.8: after GOAWAY, streams the peer opens are not processed.
+				// REFUSED_STREAM tells it this one is safe to send elsewhere.
+				refusal = H2ErrorCode.REFUSED_STREAM;
+			} else if (limit >= 0 && __openStreams >= limit) {
 				// §5.1.2 makes exceeding the advertised limit a stream error,
 				// and REFUSED_STREAM rather than PROTOCOL_ERROR because it
 				// tells the client the request was never processed and is safe
 				// to retry. Without this a peer can open streams without bound
 				// and every one of them costs a handler and a buffer.
-				throw new H2StreamError(frame.streamId, H2ErrorCode.REFUSED_STREAM,
-					'Stream ${frame.streamId} would exceed SETTINGS_MAX_CONCURRENT_STREAMS of $limit');
+				refusal = H2ErrorCode.REFUSED_STREAM;
+			} else {
+				__streams.set(frame.streamId, new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize));
+				__openStreams++;
 			}
-
-			__streams.set(frame.streamId, new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize));
-			__openStreams++;
 		}
 
 		if (frame.has(H2Flags.END_HEADERS)) {
 			__completeHeaders(frame.streamId, payload, frame.has(H2Flags.END_STREAM));
+			if (refusal != null) {
+				resetStream(frame.streamId, refusal);
+			}
 			return;
 		}
 
 		__continuationStreamId = frame.streamId;
 		__continuationEndsStream = frame.has(H2Flags.END_STREAM);
+		__continuationRefusal = refusal;
 		__continuationBuffer = new BytesBuffer();
 		__continuationLength = 0;
 		__appendHeaderFragment(payload);
@@ -617,9 +674,11 @@ class H2ServerConnection {
 
 		var streamId:Int = __continuationStreamId;
 		var endsStream:Bool = __continuationEndsStream;
+		var refusal:Null<H2ErrorCode> = __continuationRefusal;
 		var block:Bytes = __continuationBuffer.getBytes();
 
 		__continuationStreamId = -1;
+		__continuationRefusal = null;
 		__continuationBuffer = null;
 		__continuationLength = 0;
 
@@ -627,6 +686,10 @@ class H2ServerConnection {
 			__completeHeaders(streamId, block, endsStream);
 		} catch (e:H2StreamError) {
 			resetStream(e.streamId, e.code);
+		}
+
+		if (refusal != null) {
+			resetStream(streamId, refusal);
 		}
 	}
 

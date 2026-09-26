@@ -157,6 +157,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// Pushed in by the server's drain(): the in-flight response goes out
 	// with Connection: close so shutdown does not sever it mid-work.
 	@:noCompletion private var __closeAfterResponse:Bool = false;
+	// Whether this connection has sent a single byte. One that has not, a
+	// browser's preconnect, has nothing in flight, and drain() closes it at
+	// once rather than waiting out its requestTimeout.
+	@:noCompletion private var __receivedAny:Bool = false;
 	@:noCompletion private var __streamSource:FileStream;
 	@:noCompletion private var __streamRemaining:Int = 0;
 	@:noCompletion private var __streamSlice:ByteArray;
@@ -305,6 +309,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __onData(e:ProgressEvent):Void {
+		__receivedAny = true;
 		try {
 			__origin.readBytes(__incomingBuffer, __incomingBuffer.length);
 
@@ -394,6 +399,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (data == null || data.length == 0) {
 			return;
 		}
+		__receivedAny = true;
 
 		// Appended at the end without moving the read cursor, exactly as
 		// __onData does. writeBytes writes at the current position and
