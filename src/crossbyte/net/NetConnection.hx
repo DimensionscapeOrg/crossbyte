@@ -363,9 +363,12 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 
 	@:noCompletion private var __connection:INetConnection;
 	// Set once this has wrapped the inner connection's onClose to tell an
-	// observer; the application's callback is then kept here.
+	// observer; the application's callback is then kept here. The same for
+	// onReady.
 	@:noCompletion private var __forwardingClose:Bool = false;
 	@:noCompletion private var __applicationOnClose:Reason->Void = null;
+	@:noCompletion private var __forwardingReady:Bool = false;
+	@:noCompletion private var __applicationOnReady:Void->Void = null;
 
 	private function new(connection:INetConnection) {
 		__connection = connection;
@@ -449,6 +452,28 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 		}
 	}
 
+	/** As `__observeClose`, for the connection becoming ready. **/
+	override public function __observeReady(observer:Null<Void->Void>):Void {
+		if (Std.isOfType(__connection, CloseObservable)) {
+			(cast __connection : CloseObservable).__observeReady(observer);
+			return;
+		}
+		super.__observeReady(observer);
+		if (!__forwardingReady) {
+			__applicationOnReady = __connection.onReady;
+			__connection.onReady = __forwardReady;
+			__forwardingReady = true;
+		}
+	}
+
+	@:noCompletion private function __forwardReady():Void {
+		__notifyReady();
+		final onReady = __applicationOnReady;
+		if (onReady != null) {
+			onReady();
+		}
+	}
+
 	@:noCompletion private inline function get_onError():Reason->Void {
 		return __connection.onError;
 	}
@@ -458,10 +483,13 @@ private class NetConnectionAdapter extends NetConnectionBase implements INetConn
 	}
 
 	@:noCompletion private inline function get_onReady():Void->Void {
-		return __connection.onReady;
+		return __forwardingReady ? __applicationOnReady : __connection.onReady;
 	}
 
 	@:noCompletion private inline function set_onReady(value:Void->Void):Void->Void {
+		if (__forwardingReady) {
+			return __applicationOnReady = value;
+		}
 		return __connection.onReady = value;
 	}
 
@@ -642,6 +670,7 @@ private class TCPConnection extends NetConnectionBase implements INetConnection 
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
 		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__notifyReady();
 		__onReady();
 	}
 
@@ -853,6 +882,7 @@ private class RUDPConnection extends NetConnectionBase implements INetConnection
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
 		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__notifyReady();
 		__onReady();
 	}
 
@@ -1039,6 +1069,7 @@ private class WSConnection extends NetConnectionBase implements INetConnection {
 
 	@:noCompletion private inline function socket_onReady(_e:Event):Void {
 		__socket.removeEventListener(Event.CONNECT, socket_onReady);
+		__notifyReady();
 		__onReady();
 	}
 

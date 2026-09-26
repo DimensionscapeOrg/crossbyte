@@ -523,6 +523,17 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `RPCSession.start()` heartbeats whether or not the session has commands,
+  so a server that calls it on the sessions it accepts now pings its
+  clients and closes one it hears nothing from for `heartbeatTimeout`. Its
+  clients answer only if they run this version: a session of an earlier
+  one does not answer pings, so heartbeat an older peer only from a side
+  that also calls it often enough to be answered. A ping no longer passes
+  through `beforeCall` and `afterCall`, which could refuse it or count it
+  against a caller's allowance; a handler's own `ping()` is still told of
+  each. On a heartbeat timeout `onClose` is told once, with the reason the
+  transport gives for a close, `Closed`, rather than `Closed` and then
+  `Timeout`; the calls waiting fail with a message saying it timed out.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -691,6 +702,23 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The RPC heartbeat keeps healthy connections and drops dead ones. Pings
+  were one-way and nobody answered them, so a client heartbeating a server
+  that only answers calls heard nothing between calls and closed a healthy
+  connection after 90 to 135 seconds. Every session now answers a ping with
+  a pong, a response under request id 0, which answers no call, so an
+  earlier version passes over it. A peer that never sent a byte was compared
+  against a deadline that moved with the clock and was never timed out;
+  what the heartbeat has heard is now counted from when it started. It ran
+  only on a session with commands, so a server never dropped a client that
+  had vanished; it now runs on any session. `start()` before the connection
+  was up never started it, and it now starts once the connection is ready.
+  `start()` twice ran two heartbeats, one of which outlived `stop()` and,
+  once the connection closed, threw out of the tick; it now carries on as
+  it was. A timeout reported the close twice, `Closed` and then `Timeout`;
+  the calls waiting now fail saying the connection timed out, and
+  `close()` alone reports the end. It also logged five lines at INFO for
+  every session on every beat, and logs nothing now.
 - An RPC method returning `Null<T>`, in a contract, with `@:rpc`, through
   a typedef, or as `Future<Null<T>>`, answers what its caller reads. The
   caller reads a byte saying whether the answer is there before the

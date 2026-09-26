@@ -6,6 +6,7 @@ import crossbyte._internal.system.timer.TimerHandle;
 // Node and in a browser, where a NetConnection's Socket is a WebSocket.
 
 import crossbyte.net.Reason;
+import crossbyte.utils.LogLevel;
 import crossbyte.utils.Logger;
 import crossbyte.core.CrossByte;
 import crossbyte.Future;
@@ -76,6 +77,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private var __hasHeartbeat:Bool = false;
 	@:noCompletion private var __timeoutSec:Float = 0.0;
 	@:noCompletion private var __intervalSec:Float = 0.0;
+	// When the heartbeat started, on the runtime's clock: what the peer is
+	// judged to have been heard since, until something arrives.
+	@:noCompletion private var __heardSince:Float = 0.0;
 	@:noCompletion private var __runtimeHandlers:Null<IntMap<Array<Dynamic>->Dynamic>> = null;
 	@:noCompletion private var __runtimeRequestIdSeed:Int = 0;
 	@:noCompletion private var __runtimePendingResponseId:Int = 0;
@@ -166,9 +170,6 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function set_commands(commands:C):C {
-		if (__active && !__hasHeartbeat) {
-			__resumeHeartbeat();
-		}
 		var same:Bool = (commands == __commands);
 
 		#if debug
@@ -189,8 +190,6 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			}
 			if (commands != null) {
 				commands.__nc = __connection;
-			} else if (__hasHeartbeat) {
-				__stopHeartbeat();
 			}
 			__syncOnDataBinding();
 		}
@@ -201,7 +200,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/**
 		The handler is not told of this session here: it may serve others,
 		and is bound to each only while that one's calls run. See
-		`__bindHandler`.
+		`__safeHandlerOnData`.
 	**/
 	@:noCompletion private inline function set_handler(handler:RPCHandler):RPCHandler {
 		__handler = handler;
@@ -230,8 +229,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// Told as the connection ends, whenever and whether the application
 		// sets onClose. A call still waiting on an answer used to wait for good
 		// once the connection went: only stop(), a heartbeat timeout or an
-		// unreadable frame failed it.
+		// unreadable frame failed it. And told, the same way, as it becomes
+		// ready, for a heartbeat started before it was.
 		(connection : NetConnectionBase).__observeClose(__connectionEnded);
+		(connection : NetConnectionBase).__observeReady(__connectionReady);
 	}
 
 	/** The connection can carry no answer now, so nothing waiting on one gets it. **/
@@ -373,7 +374,9 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return;
 		}
 
-		if (__commands != null) {
+		// A started session reads what arrives even with nothing bound, for
+		// the answers to its pings.
+		if (__commands != null || __active) {
 			__connection.onData = __safeCommandsOnData;
 			__connection.readEnabled = true;
 			return;
@@ -453,17 +456,22 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			}
 			final op:Int = input.readInt();
 			if (flags == 0) {
-				handler.dispatch(op, input, 0);
+				if (op == RPCWire.PING_OP) {
+					__pinged();
+				} else {
+					handler.dispatch(op, input, 0);
+				}
 			} else if (flags == RPCWire.FLAG_REQUEST) {
 				handler.dispatch(op, input, input.readVarUInt());
 			} else if (flags == RPCWire.FLAG_RESPONSE) {
+				// Id 0 answers no call: a pong.
 				final requestId:Int = input.readVarUInt();
-				if (__commands != null) {
+				if (requestId != 0 && __commands != null) {
 					__commands.__rpc_handle_response(op, requestId, input, false);
 				}
 			} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
 				final requestId:Int = input.readVarUInt();
-				if (__commands != null) {
+				if (requestId != 0 && __commands != null) {
 					__commands.__rpc_handle_response(op, requestId, input, true);
 				}
 			} else {
@@ -509,14 +517,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 				throw "Runtime RPC frame delivered to compile-time commands lane";
 			}
 			final op:Int = input.readInt();
-			if (flags == RPCWire.FLAG_RESPONSE) {
-				if (__commands != null) {
-					__commands.__rpc_handle_response(op, input.readVarUInt(), input, false);
+			if (flags == RPCWire.FLAG_RESPONSE || flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+				// Id 0 answers no call: a pong.
+				final requestId:Int = input.readVarUInt();
+				if (requestId != 0 && __commands != null) {
+					__commands.__rpc_handle_response(op, requestId, input, flags != RPCWire.FLAG_RESPONSE);
 				}
-			} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-				if (__commands != null) {
-					__commands.__rpc_handle_response(op, input.readVarUInt(), input, true);
-				}
+			} else if (flags == 0 && op == RPCWire.PING_OP) {
+				__pinged();
 			}
 			input.position = frameEnd;
 		}
@@ -553,6 +561,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
 				__dispatchRuntimeFrame(flags, op, input, frameEnd);
+			} else if (flags == 0 && op == RPCWire.PING_OP) {
+				__pinged();
 			} else if (__handler != null) {
 				__dispatchCompiledFrame(flags, op, input);
 			} else if (__commands != null) {
@@ -574,13 +584,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		} else if (flags == RPCWire.FLAG_REQUEST) {
 			__handler.dispatch(op, input, input.readVarUInt());
 		} else if (flags == RPCWire.FLAG_RESPONSE) {
+			// Id 0 answers no call: a pong.
 			final requestId:Int = input.readVarUInt();
-			if (__commands != null) {
+			if (requestId != 0 && __commands != null) {
 				__commands.__rpc_handle_response(op, requestId, input, false);
 			}
 		} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
 			final requestId:Int = input.readVarUInt();
-			if (__commands != null) {
+			if (requestId != 0 && __commands != null) {
 				__commands.__rpc_handle_response(op, requestId, input, true);
 			}
 		} else {
@@ -590,10 +601,29 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __dispatchCompiledResponseFrame(flags:Int, op:Int, input:ByteArrayInput):Void {
-		if (flags == RPCWire.FLAG_RESPONSE) {
-			__commands.__rpc_handle_response(op, input.readVarUInt(), input, false);
-		} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-			__commands.__rpc_handle_response(op, input.readVarUInt(), input, true);
+		if (flags == RPCWire.FLAG_RESPONSE || flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
+			// Id 0 answers no call: a pong.
+			final requestId:Int = input.readVarUInt();
+			if (requestId != 0) {
+				__commands.__rpc_handle_response(op, requestId, input, flags != RPCWire.FLAG_RESPONSE);
+			}
+		}
+	}
+
+	/**
+		A ping arrived: answered with a pong, and the handler's `ping` told,
+		if it has one. Not a call, so neither `beforeCall` nor `afterCall`
+		sees it: a limit on calls must not refuse the heartbeat.
+	**/
+	@:noCompletion private function __pinged():Void {
+		__answerPing();
+		final handler = __handler;
+		if (handler != null) {
+			try {
+				handler.ping();
+			} catch (error:Dynamic) {
+				__reportHandlerError(RPCWire.PING_OP, "ping", error);
+			}
 		}
 	}
 
@@ -1028,28 +1058,45 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-	 * Starts session bookkeeping and enables heartbeats when a command surface is present.
+	 * Starts the session's heartbeat: a `ping` every `heartbeatInterval`
+	 * milliseconds when nothing else has been sent, and the connection
+	 * closed when nothing has arrived for `heartbeatTimeout`. Every session
+	 * answers a ping, so an idle peer is heard from all the same.
+	 *
+	 * A session with or without commands has one. Started before its
+	 * connection is up, it begins once the connection is ready. Started
+	 * again, it carries on as it was.
 	 *
 	 * @return `true` if the underlying connection was already connected at start time.
 	 */
-	public inline function start():Bool {
-		Logger.info('Session $sessionId started');
-		var status:Bool = __connection.connected;
-		this.__heartbeatPhase = __calculateHeartbeatPhase();
-		if (status && commands != null) {
+	public function start():Bool {
+		final connected:Bool = __connection.connected;
+		if (!__active) {
+			__active = true;
+			__heartbeatPhase = __calculateHeartbeatPhase();
+			// It reads its connection now, whatever it has bound, to hear
+			// the answers to its pings.
+			__syncOnDataBinding();
+		}
+		if (connected && !__ended && !__hasHeartbeat) {
 			__resumeHeartbeat();
 		}
-
-		__active = true;
-
-		return status;
+		return connected;
 	}
 
 	/** Stops heartbeat bookkeeping without closing the underlying connection. */
-	public inline function stop():Void {
+	public function stop():Void {
 		__active = false;
 		__stopHeartbeat();
+		__syncOnDataBinding();
 		__failAllPending("RPC session stopped");
+	}
+
+	/** The connection has become ready: a heartbeat asked for before it was starts now. **/
+	@:noCompletion private function __connectionReady():Void {
+		if (__active && !__ended && !__hasHeartbeat) {
+			__resumeHeartbeat();
+		}
 	}
 
 	@:noCompletion private inline function __stopHeartbeat():Void {
@@ -1065,15 +1112,22 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__hasHeartbeat = false;
 	}
 
-	@:noCompletion private inline function __resumeHeartbeat():Void {
-		Logger.info('Session $sessionId Heartbeat resumed');
+	/**
+		Schedules the heartbeat, which is not running. Its phase spreads the
+		sessions of one process across the interval, so a server's heartbeats
+		do not all fall on one tick.
+
+		What it has heard is counted from now as well as from the last
+		arrival. A connection starts having heard nothing, at 0, and a peer
+		that never sent a byte was compared against a deadline that moved
+		with the clock: it was never timed out.
+	**/
+	@:noCompletion private function __resumeHeartbeat():Void {
 		__hasHeartbeat = true;
-		var jitter:Float = this.__heartbeatPhase / 1000;
-		__intervalSec = this.__heartbeatInterval / 1000;
-		Logger.info('With Jitter: $jitter and interval: $__intervalSec');
-		Logger.separator();
+		__intervalSec = __heartbeatInterval / 1000;
 		__timeoutSec = __heartbeatTimeout / 1000;
-		this.__heartbeatTimerHandle = Timer.setInterval(jitter, __intervalSec, this.__onHeartbeat);
+		__heardSince = Timer.getTime();
+		__heartbeatTimerHandle = Timer.setInterval(__heartbeatPhase / 1000, __intervalSec, __onHeartbeat);
 	}
 
 	@:noCompletion private inline function __calculateHeartbeatPhase():Int {
@@ -1093,38 +1147,84 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return Hash.combineHash32(HEARTBEAT_SALT, hash);
 	}
 
-	@:noCompletion private inline function __onHeartbeat():Void {
-		if (__validateSession()) {
-			commands.ping();
-		}
-		Logger.info('Session $sessionId sent a Heartbeat');
-	}
+	/**
+		A beat: the connection closed if nothing has arrived for the timeout,
+		and otherwise a ping if nothing has been sent for an interval.
 
-	@:noCompletion private inline function __validateSession():Bool {
+		It logged five lines at INFO for every session on every beat.
+	**/
+	@:noCompletion private function __onHeartbeat():Void {
+		if (__ended) {
+			__stopHeartbeat();
+			return;
+		}
 		final now:Float = Timer.getTime();
 		final lastIn:Float = __connection.inTimestamp;
-
-		final base:Float = (lastIn > 0.0) ? lastIn : now;
-		final due:Float = base + __timeoutSec;
-
-		Logger.info('Validating session $sessionId');
-		Logger.info('now=$now lastIn=$lastIn timeoutSec=$__timeoutSec nextDue=$due');
-		Logger.info('Previous incoming message received at $lastIn; next due at $due');
-
-		if (now >= due) {
-			__disconnect(Reason.Timeout);
-			return false;
+		final heard:Float = lastIn > __heardSince ? lastIn : __heardSince;
+		if (now - heard >= __timeoutSec) {
+			__timedOut(now - heard);
+			return;
 		}
-		Logger.separator();
-
-		final lastOut:Float = __connection.outTimestamp;
-		return now - lastOut >= __intervalSec;
+		if (now - __connection.outTimestamp >= __intervalSec) {
+			__sendPing();
+		}
 	}
 
-	@:noCompletion private inline function __disconnect(reason:Reason):Void {
-		__failAllPending("RPC connection closed: " + Std.string(reason));
-		this.connection.close();
-		this.connection.onClose(reason);
+	/** A ping: a one-way frame for `ping`, with no arguments. **/
+	@:noCompletion private function __sendPing():Void {
+		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 4);
+		framed.writeInt(RPCWire.MIN_PAYLOAD_LEN);
+		framed.writeByte(0);
+		framed.writeInt(RPCWire.PING_OP);
+		framed.flush();
+		try {
+			__connection.send(framed);
+		} catch (_:Dynamic) {
+			// A connection that can take nothing more says so as it ends,
+			// which stops this. A beat does not throw out of the tick.
+		}
+	}
+
+	/**
+		Answers a ping with a pong: a response frame for `ping` under request
+		id 0. Pings were one-way and nobody answered them, so a client
+		heartbeating a server that only answers calls heard nothing between
+		calls and closed a healthy connection.
+	**/
+	@:noCompletion private function __answerPing():Void {
+		if (__ended) {
+			return;
+		}
+		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 5);
+		framed.writeInt(RPCWire.MIN_PAYLOAD_LEN + 1);
+		framed.writeByte(RPCWire.FLAG_RESPONSE);
+		framed.writeInt(RPCWire.PING_OP);
+		framed.writeVarUInt(0);
+		framed.flush();
+		__connection.send(framed);
+	}
+
+	/**
+		Nothing has arrived for the heartbeat's timeout: the calls waiting
+		fail, saying so, and the connection is closed, which tells the
+		application, once, with the reason its transport gives for a close.
+		The session used to report `Timeout` itself after `close()` had
+		reported `Closed`, so `onClose` ran twice.
+	**/
+	@:noCompletion private function __timedOut(silence:Float):Void {
+		__stopHeartbeat();
+		if (Logger.isEnabled(LogLevel.DEBUG)) {
+			Logger.debug('RPC session $sessionId heard nothing for $silence s; closing its connection');
+		}
+		__failAllPending("RPC connection timed out: nothing arrived for " + __heartbeatTimeout + " ms");
+		try {
+			__connection.close();
+		} catch (_:Dynamic) {}
+		// A connection whose close says nothing, some of an application's
+		// own, has ended all the same.
+		if (!__ended) {
+			__connectionEnded(Reason.Timeout);
+		}
 	}
 
 	@:noCompletion private inline function __terminateProtocol(reason:Reason):Void {

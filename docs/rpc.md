@@ -519,10 +519,19 @@ and a compiled method's hash never collide.
 
 ## Sessions, heartbeats and pending calls
 
-`start()` begins the session's bookkeeping and, when it has commands, its
-heartbeat: a `ping` every `heartbeatInterval` milliseconds (45 seconds unless
-set), and the connection closed if nothing arrives for `heartbeatTimeout`
-(90 seconds). `stop()` ends both without closing the connection.
+`start()` begins the session's heartbeat, with commands or without: a `ping`
+every `heartbeatInterval` milliseconds (45 seconds unless set) when nothing
+else has been sent, and the connection closed if nothing arrives for
+`heartbeatTimeout` (90 seconds). Every session answers a ping, so a peer with
+nothing to say is still heard from, and a server that only answers calls can
+heartbeat its clients to find the ones that have vanished. A ping is not a
+call: `beforeCall` and `afterCall` never see one. `stop()` ends the heartbeat
+without closing the connection.
+
+Started before its connection is up, the heartbeat begins once the connection
+is ready; started again, it carries on as it was. When it times out, the calls
+waiting fail saying so, and the connection is closed, which its `onClose`
+hears once.
 
 ```haxe
 // Given session:RPCSession<ChatCommands>, connection:crossbyte.net.NetConnection.
