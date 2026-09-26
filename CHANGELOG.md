@@ -5,6 +5,14 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
+  the same way on every target, within a bound, answering `-1` for anything
+  that is not a plain non-negative number that fits. `Std.parseInt` has four
+  answers past 32 bits -- truncated on Linux and macOS native, where
+  4294967296 reads as 0, clamped on Windows native, a throw on the jvm and a
+  wider-than-Int number on JavaScript -- so a check of its result is right on
+  no target. These count digits against the bound before converting, never
+  throw, and return an unboxed `Int`.
 - RPC handlers can answer later. A method declared to return `Future<T>`
   instead of `T` -- in a contract too, where its commands stub still
   returns `RPCResponse<T>` -- is answered once the future completes, and a
