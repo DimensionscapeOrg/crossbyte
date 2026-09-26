@@ -5,6 +5,16 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `ConnectionPoolOptions.reset`, run on every connection as it is released,
+  including by `withConnection` after its body threw, before anyone
+  else can take it; a reset that throws retires the connection. A body that
+  began a transaction and then failed returned its connection still inside
+  it, so the next borrower's writes joined that transaction and its locks
+  stayed held, and `validate` could not tell, since an open transaction
+  answers a ping. With PostgreSQL, `reset: c -> if (c.inTransaction)
+  c.rollback()`. The pool knows nothing of what a connection is, so this is
+  configured rather than assumed; retirements through it are counted with
+  the reason `failed_reset`.
 - `PostgresConfig.statementTimeout`, `keepAliveIdle`, `keepAliveInterval`,
   `keepAliveCount`, `tcpUserTimeout` and `connectionParameters`, and
   `PostgresConnection.cancel()`. Nothing could bound a PostgreSQL statement:
