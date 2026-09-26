@@ -390,11 +390,11 @@ class RPCCommandMacro {
 					if (failed) {
 						var message = input.readVarUTF();
 						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						this.__rejectResponse(requestId, message);
+						this.__rejectResponse(op, requestId, message);
 					} else {
 						var value = $read;
 						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						this.__resolveResponse(requestId, value);
+						this.__resolveResponse(op, requestId, value);
 					}
 					return;
 				}
@@ -405,7 +405,7 @@ class RPCCommandMacro {
 			if (failed) {
 				var message = input.readVarUTF();
 				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-				this.__rejectResponse(requestId, message);
+				this.__rejectResponse(op, requestId, message);
 			} else {
 				this.__rejectUnknownResponse(requestId, op);
 			}

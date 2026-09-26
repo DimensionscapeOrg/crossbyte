@@ -53,12 +53,15 @@ ordinary class does. The build checks its signatures against the contract's.
 
 ```haxe
 class ChatHandler extends RPCHandler implements ChatContract {
+	// One count per room, for everyone: every client's session shares this
+	// handler, so these are the server's rooms, not one client's.
 	var members = new Map<String, Int>();
 
 	public function new() {}
 
 	public function say(room:String, text:String):Void {
-		trace('[$room] $text');
+		// `session` is the session whose call this is.
+		trace('[$room] ${session.connection.remoteAddress}: $text');
 	}
 
 	public function join(room:String):Int {
@@ -70,14 +73,15 @@ class ChatHandler extends RPCHandler implements ChatContract {
 ```
 
 An `RPCSession` binds either or both to a connection. A server makes one per
-client it accepts:
+client it accepts, and gives every one of them the same handler:
 
 ```haxe
 import crossbyte.net.NetHost;
 import crossbyte.rpc.RPCSession;
 
+var chat = new ChatHandler();
 var host = new NetHost("tcp://127.0.0.1:4000", connection -> {
-	new RPCSession(connection, null, new ChatHandler());
+	new RPCSession(connection, null, chat);
 });
 host.listen();
 ```
@@ -100,6 +104,27 @@ connection.onReady = () -> {
 The session takes over the connection's `onData`; leave it to the session.
 Both ends can have both: a session with commands and a handler calls the
 other side and answers it on one connection.
+
+## One handler, many clients
+
+A handler can serve any number of sessions, and usually should: a server's
+rooms, queues and world are one set of state, and the handler that answers
+for them is one object. Each call is answered on the connection it came in
+on. While a method runs, the handler's `session` is the session whose call
+it is, so a method can tell its callers apart:
+
+- `session.data` holds whatever the application keeps per client -- a
+  player, a login -- set when the session is made;
+- `session.commands` calls that client back, if the session has commands;
+- `session.connection` is its connection.
+
+Between calls `session` is `null`. A method that answers later, with a
+`Future` (below), is answered on its caller's connection whenever that
+future completes; code that needs the caller after its method has returned
+keeps `session` in a variable of its own.
+
+A handler with state of its own per client -- nothing shared -- can still be
+made per session; it simply never sees another.
 
 ## One-way calls and requests
 
@@ -192,7 +217,8 @@ fails the build rather than quietly answering nothing.
 
 Two names are the protocol's own and cannot be RPC methods: `ping`, which
 every session answers and uses for heartbeats, and `dispatch`. Neither can
-`beforeCall` or `afterCall`, below.
+`beforeCall` or `afterCall`, below, nor `session`, the handler's view of who
+is calling.
 
 ## When a handler fails
 
@@ -324,7 +350,9 @@ a contract, a method answered later returns `Future<T>`, and its commands class
 still gets a stub returning `RPCResponse<T>`.
 
 For a future of its own, a handler makes a `Completer`, returns its `future`,
-and completes it when it can -- here, when four players are queued:
+and completes it when it can -- here, when four players are queued. One
+handler serves every player's session, so the fourth player's call completes
+all four futures, and each answer goes to the player who asked:
 
 ```haxe
 import crossbyte.Completer;

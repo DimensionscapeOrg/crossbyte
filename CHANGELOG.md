@@ -691,6 +691,27 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- One RPC handler can serve many sessions, and answers each call on the
+  connection it came in on. A handler held the session it was given last,
+  so a server that gave one handler to every client -- as the guide's
+  `ChatHandler` and `MatchQueueHandler` invite -- sent every answer to its
+  newest client. Since each client numbers its calls from 1, that client's
+  own call with the same number was completed with it: Bob, asking for a
+  `String`, was answered with Alice's `Int`, and Alice waited for good. A
+  session now binds its handler while it dispatches to it -- a field
+  write per delivery, put back after, so a call one session sets off in
+  another over an in-memory connection leaves the handler as it found it
+  -- and a method answering later, with a `Future`, is answered on the
+  session it was called from, which the handler keeps from the call. The
+  guide's four players queued on one handler were all answered by the
+  fourth's connection, three of them never. A response is now checked
+  against its call's op as well as its id: one for another op fails the
+  call, on both lanes, rather than completing it with a value of another
+  type. `RPCHandler.session` is the session whose call is running, `null`
+  between calls, so a handler can tell its callers apart -- `session.data`,
+  `session.commands`. `session` joins `ping` and `dispatch` as a name a
+  contract cannot use. The guide now gives one `ChatHandler` to every
+  client, and says how one handler serves many.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the
