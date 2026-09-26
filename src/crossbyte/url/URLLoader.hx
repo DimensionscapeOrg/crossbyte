@@ -43,11 +43,16 @@ class URLLoader extends EventDispatcher {
 
 	#if !js
 	@:noCompletion private function __createURLLoaderWorker():Void {
-		__loaderWorker = new Worker();
-		__loaderWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__loaderWorker.addEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
-		__loaderWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-		__loaderWorker.doWork = __work;
+		var worker:Worker = new Worker();
+		worker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
+		worker.addEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
+		worker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
+		// The thread reports through its own worker, never through
+		// `__loaderWorker`: close() clears that field while the thread is
+		// still running, and a report through it was a call on null -- an
+		// access violation on native. A cancelled worker drops what it is sent.
+		worker.doWork = message -> __work(worker, message);
+		__loaderWorker = worker;
 	}
 
 	@:noCompletion private function __onWorkerComplete(e:ThreadEvent):Void {
@@ -158,7 +163,12 @@ class URLLoader extends EventDispatcher {
 		__disposeWorker();
 	}
 
-	private function __work(message:Dynamic):Void {
+	private function __work(worker:Worker, message:Dynamic):Void {
+		if (message == null) {
+			// Cancelled before the thread started: the worker let go of it.
+			return;
+		}
+
 		try {
 			var request:URLRequest = message.request;
 
@@ -201,7 +211,7 @@ class URLLoader extends EventDispatcher {
 			var finalHeaders:Map<String, String> = null;
 			function reportResponse():Void {
 				if (finalHeaders != null) {
-					__loaderWorker.sendProgress({
+					worker.sendProgress({
 						type: "response",
 						value: {
 							status: finalStatus,
@@ -215,11 +225,11 @@ class URLLoader extends EventDispatcher {
 
 			function onComplete(dataBytes:Bytes):Void {
 				reportResponse();
-				__loaderWorker.sendComplete(dataBytes);
+				worker.sendComplete(dataBytes);
 			}
 			function onProgress(loaded:Int, total:Int):Void {
 				var obj = {type: "progress", value: {bytesLoaded: loaded, bytesTotal: total}};
-				__loaderWorker.sendProgress(obj);
+				worker.sendProgress(obj);
 			}
 			function onError(msg:String, ?dataBytes:Bytes):Void {
 				reportResponse();
@@ -227,12 +237,12 @@ class URLLoader extends EventDispatcher {
 					"msg":msg,
 					"dataBytes":dataBytes
 				};
-				__loaderWorker.sendError(errorMessage);
+				worker.sendError(errorMessage);
 			}
 			function onStatus(code:Int):Void {
 				finalStatus = code;
 				var obj = {type: "status", value: code};
-				__loaderWorker.sendProgress(obj);
+				worker.sendProgress(obj);
 			}
 
 			http.onComplete = onComplete;
@@ -243,7 +253,7 @@ class URLLoader extends EventDispatcher {
 
 			http.load();
 		} catch (e:Dynamic) {
-			__loaderWorker.sendError(e);
+			worker.sendError(e);
 		}
 	}
 	#end

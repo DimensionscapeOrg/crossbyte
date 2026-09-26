@@ -342,6 +342,80 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.equals(-1, result.progress[0].total);
 	}
 
+	#if (cpp || neko || hl)
+	// Only where the loader's worker is a thread: elsewhere it runs the load
+	// inside load(), so nothing can close it while it is in flight.
+	public function testClosingALoadInFlightEndsItQuietly():Void {
+		// A server that takes the request and holds it, answering nothing.
+		var ready = new Lock();
+		var finished = new Lock();
+		var arrived = new sys.thread.Deque<Bool>();
+		var port = 0;
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				port = server.host().port;
+				ready.release();
+				peer = server.accept();
+				peer.setTimeout(3.0);
+				readRequest(peer);
+				arrived.add(true);
+				// Until the client goes.
+				peer.input.readByte();
+			} catch (_:Dynamic) {
+				ready.release();
+			}
+			closeQuietly(peer);
+			closeQuietly(server);
+			finished.release();
+		});
+		if (!ready.wait(2.0) || port == 0) {
+			Assert.fail("the fixture server did not start");
+			return;
+		}
+
+		var loader = new URLLoader();
+		var events:Array<String> = [];
+		loader.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("error: " + event.text));
+		var request = new URLRequest('http://127.0.0.1:${port}/held');
+		request.idleTimeout = 2000;
+		loader.load(request);
+
+		var inFlight = false;
+		pumpUntil(() -> inFlight = inFlight || arrived.pop(false) != null);
+		if (!inFlight) {
+			Assert.fail("the request never reached the server");
+			loader.close();
+			return;
+		}
+
+		// The worker thread is blocked reading. Closing ends that read, and
+		// what the thread reports next it reported through the loader's
+		// worker field, which close() had just cleared: an access violation
+		// on native.
+		loader.close();
+		var settle = haxe.Timer.stamp() + 0.5;
+		pumpUntil(() -> haxe.Timer.stamp() >= settle);
+
+		Assert.same([], events);
+		Assert.isTrue(finished.wait(3.0));
+
+		// And the loader is free for the next load.
+		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 2"], "ok"), 1);
+		loader.addEventListener(Event.COMPLETE, _ -> events.push("data: " + loader.data));
+		var next = new URLRequest('http://127.0.0.1:${fixture.port}/next');
+		next.idleTimeout = 2000;
+		loader.load(next);
+		pumpUntil(() -> events.length >= 2);
+		fixture.waitDone();
+		Assert.same(["complete", "data: ok"], events);
+	}
+	#end
+
 	private static function loadText(url:String):URLLoaderHttpResult {
 		return load(new URLRequest(url));
 	}
