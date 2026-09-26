@@ -427,6 +427,38 @@ class HttpTest extends utest.Test {
 		Require.notNull(failure, "an unrepresentable chunk size was accepted");
 	}
 
+	public function testContentLengthPastAnIntIsNotALength():Void {
+		// The client reads the field the way the server does. Std.parseInt
+		// took 4294967296 as 0 on Linux and macOS native -- an empty body,
+		// reported as a complete download -- as 2147483647 on Windows, and
+		// threw on the jvm.
+		var http = new Http("http://127.0.0.1/");
+		Assert.isNull(http.__parseContentLength("4294967296"));
+		Assert.isNull(http.__parseContentLength("4294967301"));
+		Assert.isNull(http.__parseContentLength("2147483648"));
+		Assert.isNull(http.__parseContentLength("+5"));
+		Assert.isNull(http.__parseContentLength("5, 6"));
+		Assert.equals(5, http.__parseContentLength("5, 5"));
+		Assert.equals(2147483647, http.__parseContentLength("2147483647"));
+	}
+
+	public function testAResponseDeclaringMoreThanAnIntIsAnError():Void {
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 4294967301\r\n\r\nhello");
+		var http = new Http('http://127.0.0.1:${fixture.port}/huge');
+		var completed:Bytes = null;
+		var failure:String = null;
+
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed, "a response with an impossible length completed");
+		Require.notNull(failure, "an impossible Content-Length was accepted");
+		Assert.isTrue(failure.indexOf("Content-Length") >= 0, failure);
+	}
+
 	public function testChunkedThatIsNotTheFinalCodingIsNotChunkDecoded():Void {
 		// RFC 9112 6.1: chunked frames the body only when it is the last
 		// coding applied. With something after it the body is not chunk

@@ -1,6 +1,7 @@
 package crossbyte._internal.http.h2;
 
 import crossbyte._internal.http.h2.hpack.HpackHeader;
+import crossbyte.utils.IntParse;
 import haxe.io.Bytes;
 
 /**
@@ -107,6 +108,20 @@ class H2ServerRequest {
 					// §8.2.2 carves out exactly one permitted value.
 					if (field.value != "trailers") {
 						throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'te may only be "trailers", got "${field.value}"');
+					}
+				case "content-length":
+					// §8.1.1: a request whose content-length differs from the
+					// DATA it carried is malformed. END_STREAM frames the body
+					// here, but the field still reaches middleware and PHP,
+					// which would otherwise be told a length the body does not
+					// have. Read through IntParse, so a value no Int can hold is
+					// not mistaken for a small one, as Std.parseInt does on
+					// Linux native.
+					var declared:Int = IntParse.decimal(field.value);
+					var received:Int = body == null ? 0 : body.length;
+					if (declared != received) {
+						throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR,
+							'content-length "${field.value}" does not match the $received bytes of DATA received');
 					}
 				case _:
 			}
