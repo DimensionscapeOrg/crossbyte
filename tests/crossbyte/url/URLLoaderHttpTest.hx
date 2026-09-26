@@ -28,6 +28,73 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.isTrue(fixture.requests[0].raw.indexOf("GET /fixed HTTP/1.1") == 0);
 	}
 
+	public function testTheResponseReachesTheLoaderWithItsHeaders():Void {
+		// HTTP_RESPONSE_STATUS was never dispatched, so Retry-After, ETag and
+		// Location could not be read at all.
+		var fixture = serveRequests(_ -> response(200, "OK", [
+			"Content-Length: 2", "ETag: \"abc\"", "Retry-After: 120", "Set-Cookie: a=1; Path=/", "Set-Cookie: b=2; Expires=Wed, 09 Jun 2100 10:18:14 GMT"
+		], "ok"), 1);
+		var url = 'http://127.0.0.1:${fixture.port}/resource';
+		var result = loadText(url);
+
+		fixture.waitDone();
+
+		Assert.equals(1, result.responses.length, "HTTP_RESPONSE_STATUS was not dispatched once");
+		if (result.responses.length > 0) {
+			var event:HTTPStatusEvent = result.responses[0];
+			Assert.equals(200, event.status);
+			Assert.equals(url, event.responseURL);
+			Assert.isFalse(event.redirected);
+			Assert.equals("\"abc\"", __header(event, "etag"));
+			Assert.equals("120", __header(event, "retry-after"));
+			var cookies = event.responseHeaders.filter(h -> h.name == "set-cookie").map(h -> h.value);
+			Assert.equals(2, cookies.length, "the two Set-Cookie fields were not kept apart: " + cookies);
+		}
+		Assert.isTrue(result.complete);
+	}
+
+	public function testARedirectedResponseNamesWhereItCameFrom():Void {
+		var fixture = serveRequests(request -> request.target == "/start" ? response(302, "Found", ["Location: /final", "Content-Length: 0"], "")
+			: response(200, "OK", ["Content-Length: 4", "X-Served-By: final"], "done"), 2);
+		var result = loadText('http://127.0.0.1:${fixture.port}/start');
+
+		fixture.waitDone();
+
+		Assert.equals(1, result.responses.length, "a redirect's own response was reported as the answer");
+		if (result.responses.length > 0) {
+			Assert.equals(200, result.responses[0].status);
+			Assert.isTrue(result.responses[0].redirected);
+			Assert.equals('http://127.0.0.1:${fixture.port}/final', result.responses[0].responseURL);
+			Assert.equals("final", __header(result.responses[0], "x-served-by"));
+		}
+	}
+
+	public function testAnErrorResponseIsReportedBeforeTheError():Void {
+		var fixture = serveRequests(_ -> response(503, "Service Unavailable", ["Content-Length: 4", "Retry-After: 30"], "busy"), 1);
+		var result = loadText('http://127.0.0.1:${fixture.port}/busy');
+
+		fixture.waitDone();
+
+		Assert.equals("HTTP error 503", result.error);
+		Assert.equals("busy", result.data);
+		Assert.equals(1, result.responses.length);
+		if (result.responses.length > 0) {
+			Assert.equals("30", __header(result.responses[0], "retry-after"));
+		}
+	}
+
+	private static function __header(event:HTTPStatusEvent, name:String):Null<String> {
+		if (event.responseHeaders == null) {
+			return null;
+		}
+		for (header in event.responseHeaders) {
+			if (header.name == name) {
+				return header.value;
+			}
+		}
+		return null;
+	}
+
 	public function testLoadsChunkedTextWithUnknownTotal():Void {
 		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\n\r\n", 1);
 		var result = loadText('http://127.0.0.1:${fixture.port}/chunked');
@@ -287,10 +354,12 @@ class URLLoaderHttpTest extends utest.Test {
 			error: null,
 			data: null,
 			statuses: [],
-			progress: []
+			progress: [],
+			responses: []
 		};
 
 		loader.addEventListener(HTTPStatusEvent.HTTP_STATUS, (event:HTTPStatusEvent) -> result.statuses.push(event.status));
+		loader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, (event:HTTPStatusEvent) -> result.responses.push(event));
 		loader.addEventListener(ProgressEvent.PROGRESS, (event:ProgressEvent) -> result.progress.push({loaded: event.bytesLoaded, total: event.bytesTotal}));
 		loader.addEventListener(Event.COMPLETE, (_:Event) -> {
 			result.complete = true;
@@ -415,6 +484,7 @@ typedef URLLoaderHttpResult = {
 	var data:String;
 	var statuses:Array<Int>;
 	var progress:Array<{loaded:UInt, total:UInt}>;
+	var responses:Array<HTTPStatusEvent>;
 }
 
 typedef URLLoaderHttpFixtureRequest = {
