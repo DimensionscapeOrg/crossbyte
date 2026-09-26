@@ -4,7 +4,11 @@ import crossbyte.net.LocalAddress;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.rtc.DataChannel;
 import crossbyte.net.rtc.PeerConnection;
+import crossbyte.net.rtc.PeerConnectionHost;
 import crossbyte.net.rtc.SessionDescription;
+import crossbyte.net.rtc._internal.sctp.SctpDataChunk;
+import crossbyte.net.rtc._internal.sctp.SctpPacket;
+import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 
 /**
 	The CrossByte half of the browser interoperability test, in either
@@ -50,6 +54,7 @@ class BrowserInteropPeer {
 		}
 
 		var instruction:Dynamic = haxe.Json.parse(Sys.stdin().readLine());
+		shared = instruction.host == true;
 
 		if (instruction.mode == "offer") {
 			offerToBrowser();
@@ -59,8 +64,100 @@ class BrowserInteropPeer {
 
 		pumpUntilDone();
 
+		if (instruction.restart == true && connection.connected) {
+			if (instruction.mode == "offer") {
+				restartTowardBrowser();
+			} else {
+				restartFromBrowser();
+			}
+		}
+
 		say({event: "done", echoed: echoed});
 		connection.close();
+
+		if (host != null) {
+			host.close();
+		}
+	}
+
+	/** Whether a message sent after an ICE restart has made the round trip. **/
+	static var echoedAfterRestart:Bool = false;
+
+	/** The channel this end opened toward the browser, in the offering direction. **/
+	static var offeredChannel:DataChannel = null;
+
+	/**
+		The browser restarted ICE, as it does when its network changes, and its
+		new offer comes on stdin. The answer goes back; then the new agent has
+		to take over and the old channel to carry a message both ways.
+	**/
+	static function restartFromBrowser():Void {
+		var line:Dynamic = haxe.Json.parse(Sys.stdin().readLine());
+		var before = connection.agent;
+
+		connection.connect(SessionDescription.fromSdp(line.restart));
+		say({event: "restart-answer", sdp: SessionDescription.toSdp(connection.description()), restarting: connection.iceRestarting});
+
+		pumpWhile(() -> connection.agent == before || connection.iceRestarting || !echoedAfterRestart);
+		say({event: "restarted", switched: connection.agent != before && !connection.iceRestarting, echoed: echoedAfterRestart, path: path()});
+	}
+
+	/**
+		This end restarts ICE and offers; the browser's answer comes on stdin.
+		Once the new agent carries the session, a message goes out on the
+		channel opened before the restart and has to come back.
+	**/
+	static function restartTowardBrowser():Void {
+		var before = connection.agent;
+
+		connection.restartIce();
+		say({event: "restart-offer", sdp: SessionDescription.toSdp(connection.description())});
+
+		var line:Dynamic = haxe.Json.parse(Sys.stdin().readLine());
+		connection.connect(SessionDescription.fromSdp(line.answer));
+
+		pumpWhile(() -> connection.agent == before || connection.iceRestarting);
+
+		if (offeredChannel != null && offeredChannel.open) {
+			offeredChannel.send("after restart");
+		}
+
+		pumpWhile(() -> !echoedAfterRestart);
+		say({event: "restarted", switched: connection.agent != before && !connection.iceRestarting, echoed: echoedAfterRestart, path: path()});
+	}
+
+	/** Pumps while `waiting` holds, for at most twenty seconds. **/
+	static function pumpWhile(waiting:Void->Bool):Void {
+		var runtime = CrossByte.current();
+		var deadline = haxe.Timer.stamp() + 20;
+
+		while (waiting() && haxe.Timer.stamp() < deadline && connection.closeReason == null) {
+			runtime.pump(1 / 60, 0);
+			Sys.sleep(0.001);
+		}
+	}
+
+	/** Whether the connection shares a `PeerConnectionHost`'s socket rather than binding its own. **/
+	static var shared:Bool = false;
+
+	static var host:PeerConnectionHost = null;
+
+	/**
+		The connection, on a socket of its own or on a host's -- which routes a
+		browser's checks by their ufrag, the answers to this end's by their
+		transaction, and DTLS by the address the path was proved to. The
+		browser is the only judge of the first two that is not this code.
+	**/
+	static function create(isOfferer:Bool):PeerConnection {
+		if (shared) {
+			host = new PeerConnectionHost();
+			host.bind(0, "0.0.0.0");
+			return host.createConnection(isOfferer);
+		}
+
+		var created = new PeerConnection(isOfferer);
+		created.bind(0, "0.0.0.0");
+		return created;
 	}
 
 	/**
@@ -69,8 +166,7 @@ class BrowserInteropPeer {
 		ICE-controlled, and the DTLS client, because the offer said `actpass`.
 	**/
 	static function answerBrowser(remote:crossbyte.net.rtc.PeerDescription):Void {
-		connection = new PeerConnection(false);
-		connection.bind(0, "0.0.0.0");
+		connection = create(false);
 
 		gatherToward([for (candidate in remote.candidates) candidate.address]);
 		watchForChannel();
@@ -91,8 +187,7 @@ class BrowserInteropPeer {
 		browser's `ondatachannel` fire.
 	**/
 	static function offerToBrowser():Void {
-		connection = new PeerConnection(true);
-		connection.bind(0, "0.0.0.0");
+		connection = create(true);
 
 		// No peer candidates to aim at yet, so the question is the general one:
 		// which interface carries the default route. That is the address a
@@ -104,9 +199,18 @@ class BrowserInteropPeer {
 
 			var channel = connection.createDataChannel("interop");
 
+			// The terms CrossByte writes into DCEP, for the browser to read back.
+			connection.createDataChannel("state", false, "", 0);
+
+			offeredChannel = channel;
+
 			channel.onMessage = function(text:String):Void {
 				say({event: "message", text: text});
 				echoed = true;
+
+				if (text == "echo:after restart") {
+					echoedAfterRestart = true;
+				}
 			};
 
 			channel.opened.then(function(_):Void {
@@ -212,10 +316,31 @@ class BrowserInteropPeer {
 		connection.onChannel = function(opened:DataChannel):Void {
 			say({event: "channel", label: opened.label});
 
+			// The browser's partially reliable channels: reported as read, so
+			// the harness can hold them to what the browser asked for.
+			if (opened.label == "state" || opened.label == "ordered-state") {
+				say({
+					event: "terms",
+					label: opened.label,
+					ordered: opened.ordered,
+					maxRetransmits: opened.maxRetransmits,
+					maxPacketLifeTime: opened.maxPacketLifeTime
+				});
+			}
+
+			if (opened.label == "ordered-state") {
+				loseFirstAndCarryOn(opened);
+				return;
+			}
+
 			opened.onMessage = function(text:String):Void {
 				say({event: "message", text: text});
 				opened.send("echo:" + text);
 				echoed = true;
+
+				if (text == "after restart") {
+					echoedAfterRestart = true;
+				}
 			};
 
 			// Bytes come back verbatim, empty ones included: an empty binary
@@ -227,6 +352,85 @@ class BrowserInteropPeer {
 			};
 		};
 	}
+
+	/**
+		Sends on an ordered channel that may send each message once, losing the
+		first message on purpose -- and loses the browser's first on it too.
+
+		It is not sent again -- that is what `maxRetransmits: 0` means -- so the
+		browser holds everything after it until a FORWARD TSN says to skip it.
+		The rest arriving, in order, is the browser agreeing with how CrossByte
+		wrote that chunk; a FORWARD TSN it could not read would leave them held.
+
+		The other way round, the browser's first message on the channel is
+		dropped as it arrives, before the transfer sees it. The browser may not
+		send it again either, so it gives up on it and sends its own FORWARD
+		TSN, and what CrossByte then delivers is its reading of Chrome's. The
+		browser starts only once CrossByte's first message reaches it, so this
+		is in place whatever the two of them bundle.
+	**/
+	static function loseFirstAndCarryOn(channel:DataChannel):Void {
+		var association = @:privateAccess connection.__association;
+		var send = association.onSend;
+		var lost:Bool = false;
+
+		association.onSend = function(payload:ByteArray):Void {
+			if (!lost) {
+				var packet = SctpPacket.decode(payload, false);
+
+				for (chunk in (packet == null ? [] : packet.chunks)) {
+					var data = SctpDataChunk.fromChunk(chunk);
+
+					if (data != null && data.streamId == channel.id && data.protocolId == SctpDataChunk.PPID_STRING) {
+						lost = true;
+						say({event: "lost", tsn: data.tsn});
+						return;
+					}
+				}
+			}
+
+			send(payload);
+		};
+
+		var receive = association.onChunk;
+		var dropped:Bool = false;
+
+		association.onChunk = function(chunk:SctpChunk, packet:SctpPacket):Void {
+			if (!dropped) {
+				var data = SctpDataChunk.fromChunk(chunk);
+
+				if (data != null && data.streamId == channel.id && data.protocolId == SctpDataChunk.PPID_STRING) {
+					dropped = true;
+					data.payload.position = 0;
+					say({event: "dropped", text: data.payload.readUTFBytes(data.payload.length)});
+					return;
+				}
+			}
+
+			receive(chunk, packet);
+		};
+
+		channel.onMessage = function(text:String):Void {
+			received.push(text);
+
+			if (received.length == 5) {
+				say({event: "ordered-received", texts: received});
+			}
+		};
+
+		lossy = channel;
+		channel.send("lost");
+
+		for (i in 1...6) {
+			channel.send("kept-" + i);
+		}
+	}
+
+	/** The channel losing its first message each way, until everything on it is settled. **/
+	static var lossy:DataChannel = null;
+
+	/** What arrived on it from the browser. **/
+	static var received:Array<String> = [];
 
 	/**
 		Driven here rather than from the tick, so the process exits when the
@@ -243,10 +447,13 @@ class BrowserInteropPeer {
 			if (echoed) {
 				// One more turn so a reply is actually written before this stops
 				// pumping. A message queued and never flushed is a test that
-				// fails for the wrong reason.
+				// fails for the wrong reason. Longer while the lossy channel is
+				// still waiting on the browser to move past what it lost, or on
+				// the browser's own messages after the one lost on the way here.
 				var settle = Sys.time() + 0.5;
 
-				while (Sys.time() < settle) {
+				while (Sys.time() < settle || (lossy != null && Sys.time() < deadline && @:privateAccess connection.__transfer != null
+					&& (@:privateAccess connection.__transfer.outstandingCount() > 0 || received.length < 5))) {
 					runtime.pump(1 / 60, 0);
 					Sys.sleep(0.001);
 				}

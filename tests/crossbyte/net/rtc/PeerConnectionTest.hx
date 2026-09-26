@@ -2,7 +2,12 @@ package crossbyte.net.rtc;
 
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
+import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.io.ByteArray;
+import crossbyte.net.DatagramSocket;
+import crossbyte.net.ice.IceAgent;
+import crossbyte.net.ice.IceCandidate;
+import crossbyte.net.ice.IceCredentials;
 import utest.Assert;
 
 /**
@@ -97,6 +102,673 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A peer that closes its connection is heard at once, and so are the
+		channels on it.
+
+		`close()` sent nothing, and an ABORT or close_notify arriving from the
+		peer was swallowed below this class -- there was no event to deliver
+		it to. So a departed peer was noticed, if at all, by ICE consent thirty
+		seconds later, with channels reporting themselves open the whole time.
+		The five seconds allowed here are a sixth of that.
+	**/
+	public function testAPeerThatClosesIsReportedAtOnce():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+
+		try {
+			bob.onChannel = channel -> accepted = channel;
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected, so there is no departure to report");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open && accepted != null, 5.0);
+
+			if (!chat.open || accepted == null) {
+				Assert.fail("the channel never opened");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var reasons:Array<String> = [];
+			var settled:String = null;
+			var channelCloses:Int = 0;
+
+			alice.onClose = reason -> reasons.push(reason);
+			alice.closed.then(reason -> settled = reason);
+			chat.onClose = () -> channelCloses++;
+
+			bob.close();
+			pumpUntil(() -> reasons.length > 0, 5.0);
+
+			Assert.equals(1, reasons.length, "a peer that closed its connection was reported " + reasons.length + " times");
+			Assert.isFalse(alice.connected, "the connection still reports itself up after the peer closed it");
+			Assert.isFalse(chat.open, "a channel on a connection the peer closed still reports itself open");
+			Assert.equals(1, channelCloses, "the channel's onClose ran " + channelCloses + " times");
+
+			if (reasons.length > 0) {
+				// The ABORT is inside the session and goes first, so it is what
+				// is heard; the close_notify behind it finds the door shut.
+				Assert.isTrue(reasons[0].indexOf("aborted") >= 0, "the reason does not say the peer left: " + reasons[0]);
+				Assert.equals(reasons[0], settled, "`closed` and `onClose` disagree about why");
+				Assert.equals(reasons[0], alice.closeReason);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		A peer whose DTLS session ends is heard even with no ABORT before it.
+
+		The close_notify on its own, as a peer that tears down the session
+		without the association inside it sends it -- and a fatal alert takes
+		the same path.
+	**/
+	public function testAPeerThatEndsOnlyItsDtlsSessionIsReported():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var reasons:Array<String> = [];
+			alice.onClose = reason -> reasons.push(reason);
+
+			// Just the session, and nothing inside it.
+			@:privateAccess bob.__dtls.close();
+			pumpUntil(() -> reasons.length > 0, 5.0);
+
+			Assert.equals(1, reasons.length, "a close_notify on its own was not reported");
+			Assert.isFalse(alice.connected);
+
+			if (reasons.length > 0) {
+				Assert.isTrue(reasons[0].indexOf("DTLS") >= 0, "the reason does not name the layer that ended: " + reasons[0]);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		Closing closes the channels, settles what was waiting, and says why.
+
+		`close()` left every channel open with `onClose` never run, and a
+		channel still waiting for its acknowledgement left `opened` pending --
+		an application had to walk its own list of channels and close each by
+		hand to find out it was finished with them.
+	**/
+	public function testClosingClosesEveryChannel():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open, 5.0);
+
+			// Created and closed before the peer can have answered.
+			var late = alice.createDataChannel("late");
+			var lateSettled:Bool = false;
+			late.opened.then(_ -> lateSettled = true, _ -> lateSettled = true);
+
+			var closes:Int = 0;
+			var reasons:Array<String> = [];
+			chat.onClose = () -> closes++;
+			late.onClose = () -> closes++;
+			alice.onClose = reason -> reasons.push(reason);
+
+			alice.close();
+
+			Assert.equals(2, closes, "closing the connection ran onClose for " + closes + " of its two channels");
+			Assert.isFalse(chat.open);
+			Assert.isTrue(lateSettled, "a channel still waiting for its acknowledgement left `opened` pending");
+			Assert.equals(1, reasons.length, "closing was reported " + reasons.length + " times");
+
+			// Once, whatever happens next.
+			alice.close();
+			Assert.equals(1, reasons.length);
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		Candidates trickle both ways, with none in either description.
+
+		Trickle ICE was left to the application: nothing announced a candidate
+		as the connection gained one, the reader for a trickled line was
+		private, and the only way to hand a peer's candidate in was through
+		`agent`, documented as being for inspection. Here each peer's
+		description goes out empty, the way a trickling application sends it,
+		and every candidate crosses as a line afterwards -- so the connection
+		comes up on trickled candidates or not at all.
+	**/
+	public function testCandidatesTrickleBothWays():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var fromAlice:Array<String> = [];
+		var fromBob:Array<String> = [];
+
+		try {
+			alice.userData = "alice's session";
+
+			// Before bind, which is where the host candidate is gained.
+			alice.onLocalCandidate = candidate -> fromAlice.push(SessionDescription.writeCandidate(candidate));
+			bob.onLocalCandidate = candidate -> fromBob.push(SessionDescription.writeCandidate(candidate));
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+
+			Assert.isTrue(fromAlice.length > 0, "binding to an address gained a candidate and said nothing");
+
+			var aliceDescription = alice.description();
+			var bobDescription = bob.description();
+			aliceDescription.candidates = [];
+			bobDescription.candidates = [];
+
+			alice.connect(bobDescription);
+			bob.connect(aliceDescription);
+
+			// The lines cross afterwards, as they would over signalling.
+			for (line in fromBob) {
+				Assert.isTrue(alice.addRemoteCandidate(SessionDescription.readCandidate(line)), "a trickled candidate was refused: " + line);
+			}
+
+			for (line in fromAlice) {
+				Assert.isTrue(bob.addRemoteCandidate(SessionDescription.readCandidate(line)), "a trickled candidate was refused: " + line);
+			}
+
+			// A name is not something this stack dials, and is said to be skipped.
+			Assert.isFalse(alice.addRemoteCandidate({address: "4a7c1d93.local", port: 5000, type: "host", priority: 2130706431}));
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			Assert.isTrue(alice.connected && bob.connected, "the two never connected on trickled candidates");
+			Assert.equals("alice's session", alice.userData, "the framework touched userData");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		The session goes where the agent's selected pair goes.
+
+		When the controlling peer nominates another pair the agent follows it,
+		and the DTLS records carrying every channel have to follow too: they
+		were sent to the address the path was first found on, for as long as
+		the connection lasted. The agent's decision is made directly here --
+		`IceAgentTest` covers how it gets there -- and what is watched is where
+		the next record lands.
+	**/
+	public function testTheSessionFollowsTheSelectedPair():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var probe = new DatagramSocket();
+		var records:Int = 0;
+
+		try {
+			bob.onChannel = channel -> accepted = channel;
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			var chat = alice.connected ? alice.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open && accepted != null, 5.0);
+
+			if (accepted == null || bob.agent.selectedPair == null) {
+				Assert.fail("the two never connected with a channel open");
+				alice.close();
+				bob.close();
+				probe.close();
+				return;
+			}
+
+			// Somewhere new for Alice to be: a socket of the test's own.
+			probe.bind(0, "127.0.0.1");
+			probe.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+				e.data.position = 0;
+				var first:Int = e.data.readUnsignedByte();
+
+				if (first >= 20 && first <= 63) {
+					records++;
+				}
+			});
+			probe.receive();
+
+			var moved = new crossbyte.net.ice.IceCandidatePair(bob.agent.selectedPair.local, IceCandidate.host("127.0.0.1", probe.localPort), false);
+			@:privateAccess bob.agent.__select(moved, haxe.Timer.stamp());
+
+			accepted.send("after the move");
+			pumpUntil(() -> records > 0, 5.0);
+
+			Assert.isTrue(records > 0, "the session kept sending to the pair it was found on after the agent chose another");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		probe.close();
+	}
+
+	/**
+		An ICE restart finds the path afresh, and the session carries on.
+
+		What a browser whose network changed does: new credentials, in a new
+		offer. They were dropped -- `IceAgent.start` does nothing once an agent
+		has left NEW -- so every check sent afterwards was signed with
+		credentials the peer had discarded, consent ran out half a minute
+		later, and the connection died with its channels. Now a new agent
+		checks with the new credentials while the session carries on over the
+		old path, and takes it over once it has one of its own.
+	**/
+	public function testAnIceRestartKeepsTheSession():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var heard:Array<String> = [];
+
+		try {
+			bob.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onMessage = text -> heard.push(text);
+			};
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			var chat = alice.connected ? alice.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open && accepted != null, 5.0);
+
+			if (accepted == null) {
+				Assert.fail("the two never connected with a channel open");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			chat.send("before");
+			pumpUntil(() -> heard.length > 0, 5.0);
+
+			var aliceAgent = alice.agent;
+			var bobAgent = bob.agent;
+			var aliceFragment = alice.credentials.usernameFragment;
+			var bobFragment = bob.credentials.usernameFragment;
+
+			// Alice restarts: her description is the new offer, and Bob's reply
+			// the answer.
+			alice.restartIce();
+			Assert.isTrue(alice.iceRestarting);
+
+			var reoffer = alice.description();
+			Assert.equals(SessionDescription.SETUP_ACTPASS, reoffer.setup);
+			Assert.notEquals(aliceFragment, reoffer.usernameFragment, "the new offer carries the old credentials");
+
+			bob.connect(reoffer);
+			Assert.isTrue(bob.iceRestarting, "new credentials from the peer did not restart this side");
+
+			var reanswer = bob.description();
+			Assert.equals(SessionDescription.SETUP_ACTIVE, reanswer.setup, "the answer to a restart did not keep this side's DTLS role");
+			Assert.notEquals(bobFragment, reanswer.usernameFragment, "the answer carries the old credentials");
+
+			alice.connect(reanswer);
+			pumpUntil(() -> !alice.iceRestarting && !bob.iceRestarting, 10.0);
+
+			Assert.isFalse(alice.iceRestarting, "the restart never found a path");
+			Assert.isFalse(bob.iceRestarting, "the restart never found a path");
+			Assert.isTrue(alice.agent != aliceAgent && bob.agent != bobAgent, "the session is still on the agents it started with");
+			Assert.equals(crossbyte.net.ice.IceAgentState.CLOSED, aliceAgent.state, "the replaced agent is still running");
+			Assert.isTrue(alice.iceControlling && !bob.iceControlling, "the peer offering the restart does not control it");
+
+			chat.send("after");
+			pumpUntil(() -> heard.length > 1, 5.0);
+
+			Assert.equals("before,after", heard.join(","), "the session did not survive the restart");
+			Assert.isTrue(alice.connected && bob.connected && chat.open, "the restart took the connection down");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		The answering side can restart too, and then controls the restart.
+
+		Its description is then an offer, leaving the DTLS role open, and the
+		first offerer's reply an answer, which states the role it already has:
+		`actpass` in an answer is refused by a browser. The ICE roles follow
+		the restart's offer, as a browser takes them.
+	**/
+	public function testTheAnsweringSideCanRestart():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var heard:Array<String> = [];
+
+		try {
+			alice.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onMessage = text -> heard.push(text);
+			};
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			var chat = bob.connected ? bob.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open && accepted != null, 5.0);
+
+			if (accepted == null) {
+				Assert.fail("the two never connected with a channel open");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			bob.restartIce();
+			var reoffer = bob.description();
+			Assert.equals(SessionDescription.SETUP_ACTPASS, reoffer.setup);
+
+			alice.connect(reoffer);
+			var reanswer = alice.description();
+			Assert.equals(SessionDescription.SETUP_PASSIVE, reanswer.setup, "an answer to a restart left the DTLS role open, or changed it");
+
+			bob.connect(reanswer);
+			pumpUntil(() -> !alice.iceRestarting && !bob.iceRestarting, 10.0);
+
+			Assert.isFalse(alice.iceRestarting || bob.iceRestarting, "the restart never found a path");
+			Assert.isTrue(bob.iceControlling && !alice.iceControlling, "the peer offering the restart does not control it");
+
+			chat.send("after");
+			pumpUntil(() -> heard.length > 0, 5.0);
+			Assert.equals("after", heard.join(","), "the session did not survive the restart");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		An answer repeats the section id of the offer it answers.
+	**/
+	public function testAnAnswerRepeatsTheOffersSectionId():Void {
+		if (unsupported()) return;
+
+		var answerer = new PeerConnection(false);
+
+		try {
+			answerer.bind(0, "127.0.0.1");
+			answerer.connect({
+				usernameFragment: "OfFr",
+				password: "an-offerers-password-long-enough",
+				fingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+				candidates: [],
+				setup: "actpass",
+				mid: "data"
+			});
+
+			Assert.equals("data", answerer.description().mid, "the answer does not carry the offer's mid");
+			Assert.isTrue(SessionDescription.toSdp(answerer.description()).indexOf("a=mid:data\r\n") >= 0);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		answerer.close();
+	}
+
+	/**
+		A channel refuses a message larger than the peer said it takes.
+
+		RFC 8841's max-message-size was written into every description and
+		read out of none, so a message past the peer's limit went out and was
+		dropped at the other end after being acknowledged -- a send that
+		succeeded and a message that never arrived.
+	**/
+	public function testAChannelRefusesAMessageLargerThanThePeerTakes():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var got:Int = -1;
+
+		try {
+			bob.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onBytes = payload -> got = payload.length;
+			};
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+
+			// Bob, as a peer that takes no more than four kilobytes.
+			var small = bob.description();
+			small.maxMessageSize = 4096;
+
+			alice.connect(small);
+			bob.connect(alice.description());
+
+			Assert.equals(4096, alice.maxMessageSize, "the peer's limit was not read from its description");
+			Assert.equals(crossbyte.net.rtc._internal.sctp.SctpDataTransfer.MAX_REASSEMBLY, bob.maxMessageSize,
+				"a peer's description that states this stack's limit was not read as that");
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open && accepted != null, 5.0);
+
+			var big = new ByteArray();
+			big.length = 8192;
+			Assert.raises(() -> chat.sendBytes(big), ArgumentError);
+
+			var fits = new ByteArray();
+			fits.length = 4096;
+			chat.sendBytes(fits);
+			pumpUntil(() -> got >= 0, 5.0);
+
+			Assert.equals(4096, got, "a message exactly the peer's limit did not arrive");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		A connection that cannot finish coming up gives up, and says where.
+
+		The peer here answers connectivity checks and then nothing: its
+		description says it will open the DTLS handshake, and it never does.
+		As the DTLS server this end waited for a ClientHello with no timer
+		running, for as long as the process lived -- which is exactly what a
+		browser tab closed straight after ICE leaves behind, holding a socket,
+		a tick listener and a TLS session.
+	**/
+	public function testAConnectionThatCannotFinishGivesUp():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var peer = new IceOnlyPeer();
+		var failure:String = null;
+		var closedWith:String = null;
+
+		try {
+			alice.ready.then(_ -> {}, error -> failure = error);
+			alice.onClose = reason -> closedWith = reason;
+			alice.readyTimeout = 2.0;
+
+			alice.bind(0, "127.0.0.1");
+			alice.connect(peer.description());
+			peer.start(alice.description());
+
+			pumpWith(peer, () -> failure != null, 10.0);
+
+			Assert.notNull(failure, "a connection whose peer never opened the handshake never gave up");
+			Assert.isTrue(alice.agent.state == crossbyte.net.ice.IceAgentState.CONNECTED || closedWith != null,
+				"the path was never found, so this is not the case being tested");
+
+			if (failure != null) {
+				Assert.isTrue(failure.indexOf("ready within") >= 0, "the failure does not say the connection timed out: " + failure);
+				Assert.isTrue(failure.indexOf("DTLS") >= 0, "the failure does not name the phase that did not finish: " + failure);
+				Assert.equals(failure, closedWith, "`onClose` and `ready` disagree about why");
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		peer.close();
+	}
+
+	/**
+		Consent lost before the connection is ready ends it.
+
+		Consent was checked only once everything above ICE was up, so a peer
+		that vanished during the DTLS handshake or the SCTP one was ignored --
+		and neither of those would ever finish.
+	**/
+	public function testLosingConsentBeforeReadyEndsTheConnection():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var peer = new IceOnlyPeer();
+		var failure:String = null;
+
+		try {
+			alice.ready.then(_ -> {}, error -> failure = error);
+
+			// Well past the consent timeout, so that is what has to catch it.
+			alice.readyTimeout = 1000.0;
+
+			alice.bind(0, "127.0.0.1");
+			alice.connect(peer.description());
+			peer.start(alice.description());
+
+			pumpWith(peer, () -> alice.agent.state == crossbyte.net.ice.IceAgentState.CONNECTED, 10.0);
+
+			if (alice.agent.state != crossbyte.net.ice.IceAgentState.CONNECTED) {
+				Assert.fail("the path was never found, so there is no consent to lose");
+				alice.close();
+				peer.close();
+				return;
+			}
+
+			// The peer goes, mid-handshake.
+			peer.close();
+			alice.poll(haxe.Timer.stamp() + crossbyte.net.ice.IceAgent.CONSENT_TIMEOUT + 10.0);
+
+			Assert.notNull(failure, "consent lost before the connection was ready was ignored");
+
+			if (failure != null) {
+				Assert.isTrue(failure.indexOf("consent") >= 0, "the failure does not say consent was lost: " + failure);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		peer.close();
+	}
+
+	private static function pumpWith(peer:IceOnlyPeer, done:Void->Bool, timeout:Float):Void {
+		var runtime = CrossByte.current();
+		var deadline = haxe.Timer.stamp() + timeout;
+
+		while (!done() && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			peer.poll(haxe.Timer.stamp());
+			Sys.sleep(0.001);
+		}
+	}
+
+	/**
 		A peer that stops answering takes the connection down with it.
 
 		The agent runs the consent timer (RFC 7675) and IceAgentTest covers it
@@ -125,7 +797,12 @@ class PeerConnectionTest extends utest.Test {
 				return;
 			}
 
-			// Gone without saying so, which is the case consent exists for.
+			var reasons:Array<String> = [];
+			alice.onClose = reason -> reasons.push(reason);
+
+			// Gone without saying so, which is the case consent exists for:
+			// closed with the goodbyes kept from reaching alice.
+			@:privateAccess bob.__socket.close();
 			bob.close();
 
 			// The same clock the runtime tick uses, moved past the thirty
@@ -135,6 +812,13 @@ class PeerConnectionTest extends utest.Test {
 
 			Assert.isFalse(alice.connected,
 				"the peer stopped answering and this connection went on reporting itself up");
+
+			// And said so, rather than leaving `connected` to be polled.
+			Assert.equals(1, reasons.length, "losing consent was reported " + reasons.length + " times");
+
+			if (reasons.length > 0) {
+				Assert.isTrue(reasons[0].indexOf("consent") >= 0, "the reason does not say consent was lost: " + reasons[0]);
+			}
 		} catch (e:Dynamic) {
 			Assert.fail("unexpected: " + Std.string(e));
 		}
@@ -468,5 +1152,87 @@ class PeerConnectionTest extends utest.Test {
 
 		alice.close();
 		bob.close();
+	}
+}
+
+/**
+	A peer that does ICE and nothing else.
+
+	It answers connectivity checks, so the path is found, and its description
+	claims the DTLS client role, so the other end waits for a ClientHello that
+	never comes -- the shape a browser tab closed straight after ICE leaves.
+**/
+private class IceOnlyPeer {
+	public var agent(default, null):IceAgent;
+
+	private var socket:DatagramSocket;
+	private var closed:Bool = false;
+
+	public function new() {
+		agent = new IceAgent(false);
+		socket = new DatagramSocket();
+		socket.bind(0, "127.0.0.1");
+		socket.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+			if (!closed) {
+				agent.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp());
+			}
+		});
+		socket.receive();
+
+		agent.onSend = function(payload:ByteArray, address:String, port:Int):Void {
+			if (closed) {
+				return;
+			}
+
+			try {
+				socket.send(payload, 0, payload.length, address, port);
+			} catch (_:Dynamic) {}
+		};
+
+		agent.addLocalCandidate(IceCandidate.host("127.0.0.1", socket.localPort));
+	}
+
+	public function description():PeerDescription {
+		return {
+			usernameFragment: agent.localCredentials.usernameFragment,
+			password: agent.localCredentials.password,
+			fingerprint: DtlsCertificate.generate("ice-only", 1).fingerprint,
+			candidates: [
+				{
+					address: "127.0.0.1",
+					port: socket.localPort,
+					type: "host",
+					priority: IceCandidate.host("127.0.0.1", socket.localPort).priority
+				}
+			],
+			setup: "active"
+		};
+	}
+
+	public function start(remote:PeerDescription):Void {
+		for (candidate in remote.candidates) {
+			agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+		}
+
+		agent.start(new IceCredentials(remote.usernameFragment, remote.password), haxe.Timer.stamp());
+	}
+
+	public function poll(now:Float):Void {
+		if (!closed) {
+			agent.poll(now);
+		}
+	}
+
+	public function close():Void {
+		if (closed) {
+			return;
+		}
+
+		closed = true;
+		agent.close();
+
+		try {
+			socket.close();
+		} catch (_:Dynamic) {}
 	}
 }

@@ -4,6 +4,9 @@ import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import utest.Assert;
 import crossbyte.test.Require;
+#if cpp
+import crossbyte.net.rtc._internal.NativeDtlsSession;
+#end
 
 /**
 	Two DTLS sessions handed each other's datagrams, with no network between
@@ -33,6 +36,51 @@ class DtlsTransportTest extends utest.Test {
 		}
 
 		Assert.isTrue(DtlsTransport.isSupported);
+	}
+
+	/**
+		An established session with nothing to do costs nothing to poll.
+
+		Nothing in an established session runs on a timer: records are read as
+		they arrive and written as they are sent. It was stepped every tick
+		regardless -- three native calls per idle peer, finding nothing each
+		time. Counted rather than timed: the steps are what cost.
+	**/
+	public function testAnIdleEstablishedSessionIsNotStepped():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var heard:String = null;
+
+		pair.server.onMessage = function(payload) {
+			payload.position = 0;
+			heard = payload.readUTFBytes(payload.length);
+		};
+
+		if (!pair.run(() -> pair.client.connected && pair.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			return;
+		}
+
+		#if cpp
+		var before:Int = @:privateAccess pair.client.__steps + @:privateAccess pair.server.__steps;
+
+		for (i in 0...100) {
+			pair.client.poll(1000 + i);
+			pair.server.poll(1000 + i);
+		}
+
+		Assert.equals(before, @:privateAccess pair.client.__steps + @:privateAccess pair.server.__steps,
+			"polling an idle established session stepped it");
+		#end
+
+		// And it still carries what is sent, because arrival is what reads it.
+		pair.client.send(text("still here"));
+		pair.run(() -> heard != null);
+		Assert.equals("still here", heard);
+
+		pair.close();
 	}
 
 	/**
@@ -92,6 +140,214 @@ class DtlsTransportTest extends utest.Test {
 
 		Assert.isFalse(secured, "a closed session reported a completed handshake");
 		Assert.notNull(failure, "closing left `established` pending forever");
+	}
+
+	/**
+		A peer that closes its session is heard, and its last words are not lost.
+
+		mbedtls reported the peer's close_notify and this transport went on as
+		though nothing had happened: `connected` stayed true, `send` kept
+		encrypting into a session nobody was reading, and nothing above it
+		could tell a peer that said goodbye from one that had merely gone
+		quiet. The one sign it gave was an internal state nothing read.
+	**/
+	public function testThePeerClosingTheSessionIsReported():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var heard:Array<String> = [];
+		var reasons:Array<String> = [];
+
+		pair.server.onMessage = function(payload) {
+			payload.position = 0;
+			heard.push(payload.readUTFBytes(payload.length));
+		};
+
+		pair.server.onClose = reason -> reasons.push(reason);
+
+		if (!pair.run(() -> pair.client.connected && pair.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			return;
+		}
+
+		// A message and then the goodbye, in one flight: both are meant.
+		pair.client.send(text("last words"));
+		pair.client.close();
+
+		pair.run(() -> reasons.length > 0);
+
+		Assert.equals(1, reasons.length, "the peer's close_notify was reported " + reasons.length + " times rather than once");
+		Assert.isFalse(pair.server.connected, "a session the peer closed still reports itself connected");
+		Assert.equals("last words", heard.length > 0 ? heard[0] : null, "the message sent before the close_notify was lost");
+
+		if (reasons.length > 0) {
+			Assert.isTrue(reasons[0].indexOf("closed") >= 0, "the reason does not say the peer closed the session: " + reasons[0]);
+		}
+
+		Assert.raises(() -> pair.server.send(text("into the void")), ArgumentError);
+
+		pair.close();
+	}
+
+	/**
+		Closing without telling the peer sends nothing.
+
+		For a path already known to be dead -- consent expired -- where RFC
+		7675 asks the sender to stop transmitting, goodbyes included.
+	**/
+	public function testClosingQuietlySendsNothing():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+
+		if (!pair.run(() -> pair.client.connected && pair.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			return;
+		}
+
+		var sent:Int = 0;
+		pair.client.onSend = _ -> sent++;
+		pair.client.close(false);
+
+		Assert.equals(0, sent, "a close that was not to notify the peer sent " + sent + " datagrams");
+
+		// And the default does send one, or the case above proves nothing.
+		var other = Pair.make();
+
+		if (!other.run(() -> other.client.connected && other.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			other.close();
+			return;
+		}
+
+		var notified:Int = 0;
+		other.client.onSend = _ -> notified++;
+		other.client.close();
+
+		Assert.isTrue(notified > 0, "closing sent the peer no close_notify");
+
+		pair.close();
+		other.close();
+	}
+
+	/**
+		A client whose ClientHello nobody answers gives up in seconds.
+
+		mbedtls's own schedule resends a flight after one second and doubles to
+		a minute, failing after 123 seconds -- two minutes of a session, and the
+		socket and listener above it, held for a peer that was never there.
+		Resent at one, two, four and eight seconds now, and given up on at
+		fifteen.
+	**/
+	public function testAHandshakeNobodyAnswersIsGivenUpInSeconds():Void {
+		if (unsupported()) return;
+
+		var client = new DtlsTransport(DtlsCertificate.generate("client", 30), DtlsCertificate.generate("server", 30).fingerprint, true);
+		var sent:Int = 0;
+		client.onSend = _ -> sent++;
+
+		var failure:String = null;
+		var failedAt:Float = -1;
+		var now:Float = 0;
+		client.established.then(_ -> {}, function(error:String):Void {
+			failure = error;
+			failedAt = now;
+		});
+
+		while (failure == null && now < 200) {
+			client.poll(now);
+			now += 0.1;
+		}
+
+		Assert.notNull(failure, "a handshake nobody answered never failed");
+		Assert.isTrue(failedAt >= 0 && failedAt <= 20, "a handshake nobody answered took " + failedAt + " s to fail");
+		Assert.isTrue(sent >= 4, "the ClientHello was sent " + sent + " times before giving up");
+
+		if (failure != null) {
+			Assert.isTrue(failure.indexOf("timed out") >= 0, "the failure does not say the handshake timed out: " + failure);
+		}
+
+		client.close();
+	}
+
+	/**
+		Sessions opened, used and closed on several threads at once stay
+		separate.
+
+		Every session lives in one process-wide table, keyed by a handle from
+		one process-wide counter, and neither was guarded: peers on two child
+		runtimes inserted into, erased from and searched the same map at the
+		same moment. A lookup that lands mid-rebalance follows a stale node --
+		a live handle reads as gone, or a closed one as live -- and two opens
+		that race on the counter get the same handle, so each then drives the
+		other's session.
+	**/
+	public function testSessionsOnSeveralThreadsStaySeparate():Void {
+		#if cpp
+		if (unsupported()) return;
+
+		var certificate = DtlsCertificate.generate("threads", 1);
+		var threads:Int = 4;
+		var rounds:Int = 400;
+		var results = new sys.thread.Deque<String>();
+
+		for (t in 0...threads) {
+			sys.thread.Thread.create(function():Void {
+				var problem:String = null;
+
+				try {
+					for (round in 0...rounds) {
+						var handle:Int = NativeDtlsSession.open(((t + round) & 1) == 0, certificate.certificatePem, certificate.privateKeyPem);
+
+						if (handle <= 0) {
+							problem = "a session would not open: " + handle;
+							break;
+						}
+
+						// Looked up over and over while the other threads insert
+						// and erase around it.
+						for (_ in 0...500) {
+							if (NativeDtlsSession.error(handle) != 0) {
+								problem = "a live session's handle stopped finding it";
+								break;
+							}
+						}
+
+						NativeDtlsSession.close(handle);
+
+						if (problem == null && NativeDtlsSession.error(handle) == 0) {
+							problem = "a closed session's handle still found one";
+						}
+
+						if (problem != null) {
+							break;
+						}
+					}
+				} catch (e:Dynamic) {
+					problem = Std.string(e);
+				}
+
+				results.add(problem == null ? "" : problem);
+			});
+		}
+
+		var problems:Array<String> = [];
+
+		for (_ in 0...threads) {
+			var problem:String = results.pop(true);
+
+			if (problem != "") {
+				problems.push(problem);
+			}
+		}
+
+		Assert.equals(0, problems.length, problems.join("; "));
+		#else
+		Assert.isFalse(DtlsTransport.isSupported);
+		#end
 	}
 
 	/**

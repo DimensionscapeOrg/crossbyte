@@ -97,8 +97,38 @@ class DtlsTransport {
 	/** Called with each decrypted message. **/
 	public dynamic function onMessage(payload:ByteArray):Void {}
 
+	/**
+		Called once when an established session is ended from the far side:
+		the peer's close_notify, a fatal alert, or a record mbedTLS will not go
+		on past. Not called for `close()`, which the caller already knows about.
+
+		Without it a peer that closed its end was indistinguishable from one
+		that had gone quiet: the session stayed `connected`, `send` went on
+		encrypting into it, and the only thing that ever noticed was ICE
+		consent, thirty seconds later and with a reason that named the wrong
+		layer.
+	**/
+	public dynamic function onClose(reason:String):Void {}
+
+	/** mbedtls's code for a peer that said goodbye rather than failed. **/
+	@:noCompletion private static inline var PEER_CLOSE_NOTIFY:Int = -0x7880;
+
+	@:noCompletion private static inline var FATAL_ALERT:Int = -0x7780;
+	@:noCompletion private static inline var CLIENT_RECONNECT:Int = -0x6780;
+
+	/** mbedtls's MBEDTLS_ERR_SSL_TIMEOUT: a flight resent until the schedule ran out. **/
+	@:noCompletion private static inline var HANDSHAKE_TIMEOUT:Int = -0x6800;
+
+	/** The states `NativeDtlsSession.step` reports. **/
+	@:noCompletion private static inline var STATE_ESTABLISHED:Int = 1;
+
+	@:noCompletion private static inline var STATE_CLOSED:Int = 2;
+
 	@:noCompletion private var __handle:Int = -1;
 	@:noCompletion private var __closed:Bool = false;
+
+	/** Times the native session has been stepped, which is what an idle poll costs. For tests. **/
+	@:noCompletion private var __steps:Int = 0;
 
 	#if cpp
 	/** Only a server reads a ClientHello, so only a server needs one. **/
@@ -146,29 +176,52 @@ class DtlsTransport {
 	}
 
 	/**
-		Moves the handshake forward and delivers anything that has arrived.
+		Moves the handshake forward.
 
 		@param now Seconds, from a clock the caller uses consistently. DTLS runs
 		its own retransmission schedule off this, so a transport that is never
 		polled never retransmits a lost handshake datagram -- and over UDP one
 		will be lost.
+
+		Once the session is established this does nothing, because nothing in
+		it runs on a timer any more: a record is decrypted as `receive` hands it
+		over and encrypted as `send` does. It used to step the native session
+		every tick anyway -- three native calls per idle peer per tick, each
+		finding nothing, which at ten thousand peers and twelve ticks a second
+		is a third of a million calls a second doing nothing.
 	**/
 	public function poll(now:Float):Void {
 		#if cpp
+		if (connected) {
+			return;
+		}
+
+		__step(now);
+		#end
+	}
+
+	#if cpp
+	/** One step of the native session: timers, what was fed, and what came of it. **/
+	@:noCompletion private function __step(now:Float):Void {
 		if (__closed || __handle <= 0) {
 			return;
 		}
+
+		__steps++;
 
 		var state = NativeDtlsSession.step(__handle, now);
 
 		__flush();
 
 		if (state < 0) {
-			__fail("The DTLS handshake failed: mbedTLS returned " + NativeDtlsSession.error(__handle) + ".");
+			var code:Int = NativeDtlsSession.error(__handle);
+
+			__fail(code == HANDSHAKE_TIMEOUT ? "The DTLS handshake timed out: the peer did not answer."
+				: "The DTLS handshake failed: mbedTLS returned " + code + ".");
 			return;
 		}
 
-		if (!connected && state == 1) {
+		if (!connected && state == STATE_ESTABLISHED) {
 			if (!__verifyPeer()) {
 				return;
 			}
@@ -177,9 +230,16 @@ class DtlsTransport {
 			@:privateAccess established.__resolve(this);
 		}
 
+		// Before the session's end is reported: a peer that sends a last
+		// message and then closes meant both, and the message was decrypted
+		// before the alert was read.
 		__deliver();
-		#end
+
+		if (state == STATE_CLOSED) {
+			__endedByPeer();
+		}
 	}
+	#end
 
 	/**
 		Hands over a datagram that arrived from the peer.
@@ -221,7 +281,10 @@ class DtlsTransport {
 		}
 
 		NativeDtlsSession.feed(__handle, __constPtr(bytes), bytes.length);
-		poll(now);
+
+		// Read straight away, established or not: this is the one moment an
+		// established session has anything to do.
+		__step(now);
 		return true;
 		#else
 		return false;
@@ -257,7 +320,17 @@ class DtlsTransport {
 		#end
 	}
 
-	public function close():Void {
+	/**
+		Ends the session.
+
+		@param notifyPeer Whether to tell the peer first, with a close_notify
+		handed to `onSend` before this returns. On by default, because a peer
+		that is not told keeps its end open until something times out. Off for
+		a path that is already known to be dead -- RFC 7675 asks a sender whose
+		consent has expired to stop transmitting, and a goodbye is a
+		transmission.
+	**/
+	public function close(notifyPeer:Bool = true):Void {
 		#if cpp
 		if (__closed) {
 			return;
@@ -267,6 +340,11 @@ class DtlsTransport {
 		connected = false;
 
 		if (__handle > 0) {
+			if (notifyPeer) {
+				NativeDtlsSession.notifyClose(__handle);
+				__flush();
+			}
+
 			NativeDtlsSession.close(__handle);
 			__handle = -1;
 		}
@@ -399,6 +477,37 @@ class DtlsTransport {
 		}
 
 		close();
+	}
+
+	/**
+		The peer ended the session, or the session ended under it.
+
+		Nothing is sent back: mbedtls has marked the context finished, and a
+		close_notify in answer to one is a courtesy nobody is left to receive.
+	**/
+	@:noCompletion private function __endedByPeer():Void {
+		if (__closed) {
+			return;
+		}
+
+		var code:Int = NativeDtlsSession.error(__handle);
+		var reason:String = "The DTLS session failed: mbedTLS returned " + code + ".";
+
+		if (code == PEER_CLOSE_NOTIFY) {
+			reason = "The peer closed the DTLS session.";
+		} else if (code == FATAL_ALERT) {
+			reason = "The peer ended the DTLS session with a fatal alert.";
+		} else if (code == CLIENT_RECONNECT) {
+			reason = "The peer began a new DTLS session from the same address, which ends this one.";
+		}
+
+		if (!connected) {
+			__fail(reason);
+			return;
+		}
+
+		close(false);
+		onClose(reason);
 	}
 	#end
 }

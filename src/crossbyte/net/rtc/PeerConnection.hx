@@ -133,6 +133,13 @@ import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
 	the default route as well, or the peer ends up advertising loopback and
 	reachable only from its own machine.
 
+	## Many on one port
+
+	A connection that binds costs a socket of its own, that socket's buffers
+	and a tick listener. A server holding many peers makes them on a
+	`PeerConnectionHost` instead, and they share one socket and one tick; see
+	there for how a datagram finds its connection.
+
 	## Native only
 
 	DTLS needs mbedTLS, which hxcpp links and the other targets do not have.
@@ -185,10 +192,82 @@ class PeerConnection {
 	**/
 	public var ready(default, null):Future<PeerConnection>;
 
+	/**
+		Resolves once, when the connection has closed, with the reason.
+
+		Whichever end closed it and however: `close()` here, the peer closing
+		its own connection (an SCTP ABORT or SHUTDOWN, or a DTLS close_notify),
+		a fatal alert, the peer no longer answering consent checks, the relay
+		carrying the path going away, or a connection that never came up. By
+		the time it resolves every channel has been closed and has reported
+		`onClose`.
+	**/
+	public var closed(default, null):Future<String>;
+
+	/**
+		Called once when the connection closes, with the same reason `closed`
+		resolves with.
+
+		A peer that went away used to be reported by nothing at all. An
+		application had to poll `connected` on every connection every tick to
+		notice, and even then learned of a browser's `pc.close()` only when ICE
+		consent ran out half a minute later, because the ABORT and close_notify
+		that said so on the wire were swallowed below this class.
+	**/
+	public dynamic function onClose(reason:String):Void {}
+
+	/** Why the connection closed, once it has; null until then. **/
+	public var closeReason(default, null):Null<String> = null;
+
+	/** The default for `readyTimeout`, in seconds. **/
+	public static inline var DEFAULT_READY_TIMEOUT:Float = 30.0;
+
+	@:noCompletion private static inline var SHARED_SOCKET_GATHERS_NOTHING:String = "A connection sharing a host's socket gathers no address of its own: that socket's mapping is every connection's. Give the host's public address to PeerConnectionHost.addLocalCandidate.";
+
+	/**
+		How long, in seconds from `connect`, the whole stack has to come up
+		before the connection gives up and fails `ready`.
+
+		Every phase had its own ending except the ones that waited on the
+		peer to go first: a DTLS server waits for a ClientHello with no timer
+		running, an SCTP listener for an INIT, and a peer whose tab closed
+		just after ICE left this end holding a socket, a tick listener and a
+		TLS session for as long as the process ran. The reason `ready` fails
+		with names the phase that did not finish. Read at every poll, so it
+		can be changed after `connect`.
+	**/
+	public var readyTimeout:Float = DEFAULT_READY_TIMEOUT;
+
 	/** Called when the peer opens a channel rather than answering one. **/
 	public dynamic function onChannel(channel:DataChannel):Void {}
 
+	/**
+		Called with each candidate this connection gains: its own address when
+		`bind` names one, a reflexive or relayed one as a server grants it, and
+		any passed to `addLocalCandidate`.
+
+		For trickle ICE: send each to the peer as it arrives -- written with
+		`SessionDescription.writeCandidate` for a browser -- instead of waiting
+		to put them all in a description. A candidate already in a description
+		the peer has is harmless to send again.
+	**/
+	public dynamic function onLocalCandidate(candidate:CandidateDescription):Void {}
+
+	/**
+		A slot for whatever the application wants this connection to carry.
+
+		Untouched by the framework, and it goes when the connection does. The
+		same as `DataChannel.userData`: without one, per-peer state -- a
+		session, a player -- lives in a map beside the connection that has to be
+		cleaned up by hand when it closes.
+	**/
+	public var userData:Any = null;
+
 	@:noCompletion private var __socket:DatagramSocket;
+
+	/** The host whose socket and tick this connection shares, when one made it; null when it binds its own. **/
+	@:noCompletion private var __host:PeerConnectionHost;
+
 	@:noCompletion private var __dtls:DtlsTransport;
 	@:noCompletion private var __association:SctpAssociation;
 	@:noCompletion private var __transfer:SctpDataTransfer;
@@ -200,6 +279,27 @@ class PeerConnection {
 	@:noCompletion private var __tick:TickEvent->Void;
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __isOfferer:Bool;
+
+	/**
+		Whether the next description this side writes is an offer -- which
+		leaves the DTLS role open -- or an answer, which states it. The first
+		exchange decides it, and each ICE restart again: an answer to a
+		restart the peer offered says `active` or `passive` whoever offered
+		first, since a browser refuses an answer saying `actpass`.
+	**/
+	@:noCompletion private var __offering:Bool;
+
+	/**
+		The agent of an ICE restart under way, checking with new credentials
+		while the session carries on over the old path; it replaces `agent`
+		once it has one. Null when no restart is under way.
+	**/
+	@:noCompletion private var __restartAgent:IceAgent = null;
+
+	/** Whether `connect` has started things, and when, for `readyTimeout`. **/
+	@:noCompletion private var __connecting:Bool = false;
+
+	@:noCompletion private var __connectStartedAt:Float = 0;
 
 	/**
 		@param isOfferer Whether this peer produces the offer. The two peers must
@@ -228,18 +328,89 @@ class PeerConnection {
 		this.certificate = certificate != null ? certificate : DtlsCertificate.generate();
 		this.credentials = credentials != null ? credentials : IceCredentials.generate();
 		this.ready = new Future<PeerConnection>();
+		this.closed = new Future<String>();
 
-		agent = new IceAgent(isOfferer, this.credentials);
-		agent.connected.then(pair -> __onPathFound(pair), error -> __fail("No path to the peer was found: " + error));
+		this.__offering = isOfferer;
+
+		var first = __makeAgent(isOfferer, this.credentials);
+		agent = first;
+
+		first.connected.then(pair -> __onPathFound(pair), function(error:String):Void {
+			// Not when an ICE restart replaced it, or is under way to: the new
+			// agent decides then, and closing this one fails its future.
+			if (first == agent && __restartAgent == null) {
+				__fail("No path to the peer was found: " + error);
+			}
+		});
+	}
+
+	/**
+		An agent wired to this connection: the first, or one an ICE restart
+		makes. Each callback acts only while its agent is the one carrying the
+		session, so an agent being replaced cannot move it.
+	**/
+	@:noCompletion private function __makeAgent(controlling:Bool, credentials:IceCredentials):IceAgent {
+		var made = new IceAgent(controlling, credentials);
+
+		// Out through this connection's socket, or its host's -- which, told
+		// first, sends the answer to a check back here.
+		made.onSend = function(payload:ByteArray, address:String, port:Int):Void {
+			if (__host != null) {
+				@:privateAccess __host.__sending(this, payload);
+			}
+
+			__send(payload, address, port);
+		};
 
 		// A role conflict changes which peer nominates, and nothing else. It
 		// used to overwrite the DTLS role too, on the assumption that the two
 		// were the same bit -- they are not, and a peer that rewrote its DTLS
 		// role here would abandon a handshake already agreed in the
 		// description over an ICE detail settled afterwards.
-		agent.onRoleChanged = function(nowControlling:Bool):Void {
-			iceControlling = nowControlling;
+		made.onRoleChanged = function(nowControlling:Bool):Void {
+			if (made == agent) {
+				iceControlling = nowControlling;
+			}
 		};
+
+		// The controlling peer nominated another pair -- a browser whose
+		// network changed nominates the pair from its new address -- and the
+		// session goes where the agent now points. It used to stay on the
+		// first pair for good, sending into an address that had gone until
+		// consent to it ran out.
+		made.onSelectedPairChanged = function(pair:IceCandidatePair):Void {
+			if (__closed || __dtls == null || made != agent) {
+				return;
+			}
+
+			__route(pair);
+		};
+
+		return made;
+	}
+
+	/** Where the session's records go: the selected pair's remote end, by the route it was proved on. **/
+	@:noCompletion private function __route(pair:IceCandidatePair):Void {
+		__peerAddress = pair.remote.address;
+		__peerPort = pair.remote.port;
+
+		// Which of this peer's addresses the path was proved on. It matters only
+		// when it is the relayed one, and then it matters entirely: the session's
+		// records have to travel the same way its connectivity checks did.
+		__peerRelayed = __relayedCandidate != null && pair.local.sameAs(__relayedCandidate);
+
+		// On a shared socket, records from there are this connection's now.
+		if (__host != null) {
+			@:privateAccess __host.__proved(this, __peerAddress, __peerPort);
+		}
+	}
+
+	/**
+		Shares a host's socket and tick instead of binding its own. Called by
+		`PeerConnectionHost.createConnection`, once.
+	**/
+	@:noCompletion private function __attach(host:PeerConnectionHost):Void {
+		__host = host;
 	}
 
 	/**
@@ -253,6 +424,10 @@ class PeerConnection {
 		way, but nothing here discovers them yet; see the class documentation.
 	**/
 	public function bind(localPort:Int = 0, localAddress:String = "0.0.0.0"):Void {
+		if (__host != null) {
+			throw new ArgumentError("This connection shares its host's socket, so it has none of its own to bind.");
+		}
+
 		if (__closed || __socket != null) {
 			return;
 		}
@@ -261,10 +436,6 @@ class PeerConnection {
 		__socket.bind(localPort, localAddress);
 		__socket.addEventListener(DatagramSocketDataEvent.DATA, __onDatagram);
 		__socket.receive();
-
-		agent.onSend = function(payload:ByteArray, address:String, port:Int):Void {
-			__send(payload, address, port);
-		};
 
 		var bound:String = __socket.localAddress;
 
@@ -287,6 +458,10 @@ class PeerConnection {
 	public var localPort(get, never):Int;
 
 	@:noCompletion private function get_localPort():Int {
+		if (__host != null) {
+			return __host.localPort;
+		}
+
 		return __socket != null ? __socket.localPort : 0;
 	}
 
@@ -297,8 +472,56 @@ class PeerConnection {
 		candidates arrive here from whatever gathered them.
 	**/
 	public function addLocalCandidate(candidate:IceCandidate):Void {
-		__localCandidates.push(candidate);
 		agent.addLocalCandidate(candidate);
+
+		if (__restartAgent != null) {
+			__restartAgent.addLocalCandidate(candidate);
+		}
+
+		__gained(candidate);
+	}
+
+	/**
+		Adds a candidate the peer trickled, before or after `connect`.
+
+		What arrives from a browser's `onicecandidate` is a line; read it with
+		`SessionDescription.readCandidate` first. The agent had to be reached
+		directly for this, through a field documented as being for inspection.
+
+		@return Whether it was taken. One that cannot be used -- a name rather
+		than an address, which is what a browser hiding its addresses sends,
+		or a port that cannot be dialled -- is skipped, the way a
+		description's are, since the candidates are the peer's to choose.
+	**/
+	public function addRemoteCandidate(candidate:CandidateDescription):Bool {
+		if (__closed || candidate == null) {
+			return false;
+		}
+
+		// During an ICE restart a trickled candidate is for the new session:
+		// the peer has already moved to it.
+		var target = __restartAgent != null ? __restartAgent : agent;
+
+		try {
+			return target.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+		} catch (_:Dynamic) {
+			return false;
+		}
+	}
+
+	/** A candidate this connection now has, recorded for `description` and announced for trickling. **/
+	@:noCompletion private function __gained(candidate:IceCandidate):Void {
+		__localCandidates.push(candidate);
+		onLocalCandidate(__describe(candidate));
+	}
+
+	@:noCompletion private static function __describe(candidate:IceCandidate):CandidateDescription {
+		return {
+			address: candidate.address,
+			port: candidate.port,
+			type: (candidate.type : String),
+			priority: candidate.priority
+		};
 	}
 
 	/**
@@ -311,12 +534,7 @@ class PeerConnection {
 		var candidates:Array<CandidateDescription> = [];
 
 		for (candidate in __localCandidates) {
-			candidates.push({
-				address: candidate.address,
-				port: candidate.port,
-				type: (candidate.type : String),
-				priority: candidate.priority
-			});
+			candidates.push(__describe(candidate));
 		}
 
 		return {
@@ -327,9 +545,31 @@ class PeerConnection {
 			// An offer leaves the choice open; an answer states what this peer
 			// has settled on, which `connect` has already worked out if the
 			// offer arrived first.
-			setup: __isOfferer ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE)
+			setup: __offering ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE),
+			// What the receiver here reassembles, which is what a peer may send.
+			maxMessageSize: SctpDataTransfer.MAX_REASSEMBLY,
+			// An answer repeats the offer's section id, which a browser matches
+			// the two by; it was always "0", so an offer that said "data" got
+			// an answer it could not place.
+			mid: __remote != null ? __remote.mid : null
 		};
 	}
+
+	/**
+		The largest message the peer takes, in bytes, or 0 for any size.
+
+		From its description's `maxMessageSize` -- `a=max-message-size` in SDP,
+		64 KB when a document leaves it out -- and `send` on a channel refuses
+		anything larger, as RFC 8841 says a sender must. Known once `connect`
+		has been given the description.
+	**/
+	public var maxMessageSize(get, never):Int;
+
+	@:noCompletion private function get_maxMessageSize():Int {
+		return __peerMaxMessageSize;
+	}
+
+	@:noCompletion private var __peerMaxMessageSize:Int = SctpDataTransfer.MAX_REASSEMBLY;
 
 	/**
 		Takes the peer's description and starts connecting.
@@ -344,7 +584,7 @@ class PeerConnection {
 			throw new ArgumentError("A peer description is required.");
 		}
 
-		if (__socket == null) {
+		if (__socket == null && __host == null) {
 			throw new ArgumentError("Bind before connecting: the checks have to leave from the socket the peer will be told about.");
 		}
 
@@ -352,8 +592,20 @@ class PeerConnection {
 			throw new ArgumentError("The peer's description carries no certificate fingerprint. Without one the handshake would accept any certificate at all, so this connection is refused rather than left unauthenticated.");
 		}
 
+		if (__remote != null) {
+			__reconnect(remote);
+			return;
+		}
+
 		__remote = remote;
 		__resolveDtlsRole(remote.setup);
+
+		// Absent from a structure means a CrossByte peer, which takes what
+		// this stack takes; SDP that left it out has already been given the
+		// RFC's default by `SessionDescription.fromSdp`.
+		if (remote.maxMessageSize != null && remote.maxMessageSize >= 0) {
+			__peerMaxMessageSize = remote.maxMessageSize;
+		}
 
 		// Built before the agent is touched. IceCredentials validates the
 		// fragment and the password, and a description that fails that used to
@@ -378,7 +630,154 @@ class PeerConnection {
 			} catch (_:Dynamic) {}
 		}
 
-		agent.start(credentials, haxe.Timer.stamp());
+		var now:Float = haxe.Timer.stamp();
+
+		if (!__connecting) {
+			__connecting = true;
+			__connectStartedAt = now;
+		}
+
+		agent.start(credentials, now);
+	}
+
+	/**
+		Restarts ICE from this side: new credentials, and a new agent that
+		finds a path afresh while the session carries on over the old one.
+
+		For when the path may have gone -- this device changed network, say,
+		and its old address is no longer anywhere. Send `description()` to the
+		peer as a new offer and give its answer to `connect`; once the new agent
+		has a path the session moves to it. DTLS and SCTP carry on untouched:
+		channels stay open, and what was sent meanwhile is retransmitted over
+		the new path as over any other.
+
+		A peer can restart too: a description from it with new credentials,
+		given to `connect`, restarts this side, and `description()` is then
+		the answer to send back. A browser does that after `restartIce()`.
+
+		@throws ArgumentError Before `connect`, or once closed.
+	**/
+	public function restartIce():Void {
+		if (__closed || __remote == null) {
+			throw new ArgumentError("ICE can only be restarted on a connection that has been given the peer's description and has not closed.");
+		}
+
+		// Already under way: the description carries it.
+		if (__restartAgent != null) {
+			return;
+		}
+
+		__beginRestart(true);
+	}
+
+	/** Whether an ICE restart is under way: begun, and its new agent not yet carrying the session. **/
+	public var iceRestarting(get, never):Bool;
+
+	@:noCompletion private function get_iceRestarting():Bool {
+		return __restartAgent != null;
+	}
+
+	/**
+		New credentials and a new agent, given every candidate this connection
+		has. Not started: that waits for the peer's credentials.
+
+		@param offering Whether this side offers the restart, and so controls
+		it: RFC 8445 section 6.1.1 lets a restart decide the roles afresh, and
+		a browser does, taking control of a restart it offers. The two agents
+		settle it by tie-breaker if they disagree.
+	**/
+	@:noCompletion private function __beginRestart(offering:Bool):Void {
+		var fresh:IceCredentials = __host != null ? @:privateAccess __host.__freshCredentials(this) : IceCredentials.generate();
+		var restarting = __makeAgent(offering, fresh);
+
+		__offering = offering;
+		credentials = fresh;
+		__restartAgent = restarting;
+
+		for (candidate in __localCandidates) {
+			if (candidate == __relayedCandidate) {
+				restarting.addLocalCandidate(candidate, (payload, address, port) -> __relayTo(payload, address, port));
+			} else {
+				restarting.addLocalCandidate(candidate);
+			}
+		}
+
+		restarting.connected.then(pair -> __onRestarted(restarting, pair), function(error:String):Void {
+			if (restarting == __restartAgent) {
+				__fail("The ICE restart found no path to the peer: " + error);
+			}
+		});
+	}
+
+	/**
+		A description after the first: the peer's answer to a restart this side
+		began, a restart the peer began, or the same session again with more
+		candidates.
+	**/
+	@:noCompletion private function __reconnect(remote:PeerDescription):Void {
+		// Another certificate is another DTLS session, which a restart is not.
+		if (remote.fingerprint.toLowerCase() != __remote.fingerprint.toLowerCase()) {
+			throw new ArgumentError("The description carries another certificate, which makes it a new session rather than this one. Make a new connection for it.");
+		}
+
+		// Validated before anything changes, as on the first connect.
+		var remoteCredentials = new IceCredentials(remote.usernameFragment, remote.password);
+		var restarted:Bool = remote.usernameFragment != __remote.usernameFragment || remote.password != __remote.password;
+
+		if (restarted && __restartAgent == null) {
+			// The peer offered it; this side answers.
+			__beginRestart(false);
+		}
+
+		if (remote.mid == null) {
+			remote.mid = __remote.mid;
+		}
+
+		__remote = remote;
+
+		var target = __restartAgent != null ? __restartAgent : agent;
+
+		for (candidate in remote.candidates) {
+			try {
+				target.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+			} catch (_:Dynamic) {}
+		}
+
+		// Started once: by the peer's answer to a restart this side offered, or
+		// straight away for one the peer offered.
+		if (__restartAgent != null && __restartAgent.state == IceAgentState.NEW) {
+			__restartAgent.start(remoteCredentials, haxe.Timer.stamp());
+		}
+	}
+
+	/**
+		The restart's agent has a path: it carries the session from now on, and
+		the old one is closed.
+	**/
+	@:noCompletion private function __onRestarted(restarting:IceAgent, pair:IceCandidatePair):Void {
+		if (__closed || restarting != __restartAgent) {
+			return;
+		}
+
+		var previous = agent;
+		agent = restarting;
+		__restartAgent = null;
+		iceControlling = restarting.controlling;
+
+		if (__host != null) {
+			@:privateAccess __host.__retire(this, previous.localCredentials.usernameFragment);
+		}
+
+		// Its `connected`, if still pending, fails as it closes; that handler
+		// sees it is no longer the agent and lets it go.
+		previous.close();
+
+		// A restart before the session was up finds its first path here.
+		if (__dtls == null) {
+			__onPathFound(pair);
+		} else {
+			__route(pair);
+		}
 	}
 
 	/**
@@ -387,13 +786,21 @@ class PeerConnection {
 		Refused before then rather than queued, for the reason every layer here
 		refuses early sends: a caller cannot tell a queued message from a sent
 		one, and `ready.then` makes waiting explicit and cheap.
+
+		@param maxRetransmits How many times a message may be sent again
+		before it is given up on -- 0 sends each once -- for a channel that
+		would rather lose a message than wait for it, as a game's state
+		channel does. See `DataChannel.maxRetransmits`.
+		@param maxPacketLifeTime Milliseconds a message is tried for, the other
+		way to say the same. One or the other, not both.
 	**/
-	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = ""):DataChannel {
+	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
+			?maxPacketLifeTime:Int):DataChannel {
 		if (!connected || __channels == null) {
 			throw new ArgumentError("This connection is not ready yet. Wait on `ready` before creating channels.");
 		}
 
-		return __channels.create(label, ordered, protocol);
+		return __channels.create(label, ordered, protocol, maxRetransmits, maxPacketLifeTime);
 	}
 
 	/**
@@ -411,16 +818,47 @@ class PeerConnection {
 		// asking and a granted one keeps being refreshed whatever else is happening.
 		if (__turn != null) {
 			__turn.poll(now);
+
+			// A relay that went away may have taken the connection with it.
+			if (__closed) {
+				return;
+			}
 		}
 
 		agent.poll(now);
 
-		// Consent is the agent's to lose and this connection's to act on. The
-		// `ready` future resolved when the path came up, so a path that stops
-		// being one has no other way to be reported -- and RFC 7675 asks the
-		// sender to stop, which is something only the layer that sends can do.
-		if (connected && agent.state == IceAgentState.FAILED) {
-			__fail("The peer stopped answering consent checks, so the path to it is no longer usable.");
+		// Every pair failing fails the agent's own future, which has already
+		// closed this.
+		if (__closed) {
+			return;
+		}
+
+		if (__restartAgent != null) {
+			__restartAgent.poll(now);
+
+			if (__closed) {
+				return;
+			}
+		}
+
+		// Consent is the agent's to lose and this connection's to act on, and
+		// from the moment the path is found rather than once everything above
+		// it is up: a peer that went away mid-handshake was ignored until the
+		// association opened, which it never would. RFC 7675 asks the sender
+		// to stop, which is something only the layer that sends can do, and
+		// stopping includes the goodbyes: nothing is sent on the way out.
+		//
+		// Except while an ICE restart is under way. The old path going is often
+		// why there is one, and the new agent decides: it replaces this one if
+		// it finds a path, and fails the connection if it cannot.
+		if (agent.state == IceAgentState.FAILED && __restartAgent == null) {
+			__shutdown(connected ? "The peer stopped answering consent checks, so the path to it is no longer usable." : "The peer stopped answering consent checks before the connection was ready.",
+				false, false);
+			return;
+		}
+
+		if (!connected && __connecting && now - __connectStartedAt >= readyTimeout) {
+			__fail("The connection did not become ready within " + readyTimeout + " seconds: " + __phase() + ".");
 			return;
 		}
 
@@ -428,16 +866,47 @@ class PeerConnection {
 			__dtls.poll(now);
 		}
 
+		// Each layer below can end the connection -- a close_notify read, an
+		// association the peer stopped answering -- and the rest are then
+		// closed and have nothing to do.
+		if (__closed) {
+			return;
+		}
+
 		if (__association != null) {
 			__association.poll(now);
 		}
 
-		if (__transfer != null) {
+		if (__transfer != null && !__closed) {
 			__transfer.poll(now);
 		}
 	}
 
+	/**
+		Closes the connection, its channels, and the peer's end of it.
+
+		Every open channel is closed and reports `onClose`. The peer is told in
+		both of the ways it listens for, an SCTP ABORT inside the session and
+		then a DTLS close_notify, so a browser's channels close now rather than
+		when its own consent checks run out. Then `closed` resolves and
+		`onClose` runs.
+	**/
 	public function close():Void {
+		__shutdown("The connection was closed.", true, true);
+	}
+
+	/**
+		The one way this connection ends, whoever ends it.
+
+		@param notifyPeer Whether the peer is sent an ABORT and a close_notify
+		on the way out. Not when the path is already known to be dead: RFC 7675
+		asks a sender whose consent has expired to stop sending, and the relay
+		a path ran through cannot carry a goodbye once it has gone.
+		@param local Whether this end asked. It decides only how a `ready` still
+		waiting is settled -- a close the caller asked for is a cancellation,
+		anything else a failure with its reason.
+	**/
+	@:noCompletion private function __shutdown(reason:String, notifyPeer:Bool, local:Bool):Void {
 		if (__closed) {
 			return;
 		}
@@ -446,20 +915,49 @@ class PeerConnection {
 
 		__closed = true;
 		connected = false;
+		closeReason = reason;
+
+		// The channels first, so an application tearing down what it keeps per
+		// channel hears about each before it hears the connection has gone.
+		if (__channels != null) {
+			__channels.closeAll();
+		}
+
+		// Then the peer, while the session is still there to carry it: the
+		// ABORT inside DTLS, and the close_notify after it. Either can fail on
+		// a session the peer already ended, which is not worth an exception on
+		// the way out.
+		if (__association != null) {
+			if (notifyPeer) {
+				try {
+					__association.abort(local ? null : reason);
+				} catch (_:Dynamic) {}
+			}
+
+			__association.close();
+		}
+
+		if (__dtls != null) {
+			try {
+				__dtls.close(notifyPeer);
+			} catch (_:Dynamic) {}
+		}
 
 		// Closing before the server answered: the caller is holding a future,
 		// and leaving it forever pending is worse than saying what happened.
 		__settleReflexive(null, "The connection closed before the STUN server replied.");
 		__settleRelayed(null, "The connection closed before the relay answered.");
 
-		// And `ready`, which this did not settle. Those two above only exist
-		// when the caller asked for them, so the omission was invisible unless
-		// someone awaited the connection itself and then closed it -- after
-		// which neither handler could ever run. __fail settles it first with a
-		// reason that says what went wrong; Future.__fail is idempotent, so by
-		// the time it reaches here there is nothing left to do.
+		// And `ready`. Those two above only exist when the caller asked for
+		// them, so leaving this one out was invisible unless someone awaited
+		// the connection itself and then closed it -- after which neither
+		// handler could ever run.
 		if (!wasConnected) {
-			@:privateAccess ready.__cancel("The connection was closed before it was ready.");
+			if (local) {
+				@:privateAccess ready.__cancel("The connection was closed before it was ready.");
+			} else {
+				@:privateAccess ready.__fail(reason, null);
+			}
 		}
 
 		if (__turn != null) {
@@ -476,19 +974,31 @@ class PeerConnection {
 
 		agent.close();
 
-		if (__dtls != null) {
-			__dtls.close();
-		}
-
-		if (__association != null) {
-			__association.close();
+		// Cleared first: closing it fails its future, whose handler would
+		// otherwise find it still the restart under way.
+		if (__restartAgent != null) {
+			var restarting = __restartAgent;
+			__restartAgent = null;
+			restarting.close();
 		}
 
 		if (__socket != null) {
 			try {
 				__socket.close();
 			} catch (_:Dynamic) {}
+
+			__socket = null;
 		}
+
+		// A shared socket stays open for the others; this one stops being
+		// routed to, and stops sending with it.
+		if (__host != null) {
+			@:privateAccess __host.__detach(this);
+			__host = null;
+		}
+
+		@:privateAccess closed.__resolve(reason);
+		onClose(reason);
 	}
 
 	// ------------------------------------------------------------------
@@ -528,6 +1038,11 @@ class PeerConnection {
 	**/
 	public function gatherReflexive(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<IceCandidate> {
 		var future = new Future<IceCandidate>();
+
+		if (__host != null) {
+			@:privateAccess future.__fail(SHARED_SOCKET_GATHERS_NOTHING, null);
+			return future;
+		}
 
 		if (__closed || __socket == null) {
 			@:privateAccess future.__fail("A reflexive address can only be discovered through a bound connection; call bind first.", null);
@@ -593,6 +1108,11 @@ class PeerConnection {
 			useChannels:Bool = false):Future<IceCandidate> {
 		var future = new Future<IceCandidate>();
 
+		if (__host != null) {
+			@:privateAccess future.__fail(SHARED_SOCKET_GATHERS_NOTHING, null);
+			return future;
+		}
+
 		if (__closed || __socket == null) {
 			@:privateAccess future.__fail("A relay can only be allocated through a bound connection; call bind first.", null);
 			return future;
@@ -623,6 +1143,15 @@ class PeerConnection {
 			__onRelayed(payload, fromAddress, fromPort);
 		};
 
+		// A path through the relay ends with the relay. One that found its way
+		// round it loses a candidate it no longer needs, and nothing else. No
+		// goodbye either way: what would carry it is what just went.
+		relay.onLost = function(reason:String):Void {
+			if (__peerRelayed) {
+				__shutdown("The relay carrying this connection went away: " + reason, false, false);
+			}
+		};
+
 		relay.allocated.then(function(relayed:ReflexiveAddress):Void {
 			if (__closed) {
 				return;
@@ -639,7 +1168,11 @@ class PeerConnection {
 				__relayTo(payload, address, peerPort);
 			});
 
-			__localCandidates.push(candidate);
+			if (__restartAgent != null) {
+				__restartAgent.addLocalCandidate(candidate, (payload, address, peerPort) -> __relayTo(payload, address, peerPort));
+			}
+
+			__gained(candidate);
 			__settleRelayed(candidate, null);
 		}, function(error:String):Void {
 			__settleRelayed(null, error);
@@ -732,6 +1265,12 @@ class PeerConnection {
 
 		if (first < 4) {
 			agent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+
+			if (__restartAgent != null) {
+				payload.position = 0;
+				__restartAgent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+			}
+
 			return;
 		}
 
@@ -849,22 +1388,27 @@ class PeerConnection {
 	}
 
 	@:noCompletion private function __onDatagram(e:DatagramSocketDataEvent):Void {
-		if (__closed || e.data == null || e.data.length == 0) {
+		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
+	}
+
+	/** A datagram from this connection's own socket, or routed here by its host. **/
+	@:noCompletion private function __receiveDatagram(data:ByteArray, srcAddress:String, srcPort:Int):Void {
+		if (__closed || data == null || data.length == 0) {
 			return;
 		}
 
 		var now:Float = haxe.Timer.stamp();
 
-		e.data.position = 0;
-		var first:Int = e.data.readUnsignedByte();
-		e.data.position = 0;
+		data.position = 0;
+		var first:Int = data.readUnsignedByte();
+		data.position = 0;
 
 		if (first < 4) {
 			// The answer to this connection's own question about its address,
 			// if that is what it is. Offered here first because it shares the
 			// socket and the byte range with everything ICE sends; the
 			// transaction says which, and the agent would only refuse it.
-			if (__receiveReflexive(e.data, now)) {
+			if (__receiveReflexive(data, now)) {
 				return;
 			}
 
@@ -873,14 +1417,22 @@ class PeerConnection {
 			// STUN byte range with every connectivity check on this socket, and
 			// where they came from cannot decide it -- the server may have been
 			// named as a hostname, and it answers from whatever that resolved to.
-			e.data.position = 0;
+			data.position = 0;
 
-			if (__turn != null && __turn.receive(e.data, e.srcAddress, e.srcPort, now)) {
+			if (__turn != null && __turn.receive(data, srcAddress, srcPort, now)) {
 				return;
 			}
 
-			e.data.position = 0;
-			agent.receive(e.data, e.srcAddress, e.srcPort, now);
+			data.position = 0;
+			agent.receive(data, srcAddress, srcPort, now);
+
+			// And the restart's, which checks with other credentials: each agent
+			// takes only checks addressed to its own and answers to its own.
+			if (__restartAgent != null) {
+				data.position = 0;
+				__restartAgent.receive(data, srcAddress, srcPort, now);
+			}
+
 			return;
 		}
 
@@ -889,14 +1441,14 @@ class PeerConnection {
 		// 8656 puts channel numbers there for exactly this reason.
 		if (first >= 0x40 && first <= 0x7F) {
 			if (__turn != null) {
-				__turn.receive(e.data, e.srcAddress, e.srcPort, now);
+				__turn.receive(data, srcAddress, srcPort, now);
 			}
 
 			return;
 		}
 
 		if (first >= 20 && first <= 63 && __dtls != null) {
-			__dtls.receive(e.data, now);
+			__dtls.receive(data, now);
 		}
 	}
 
@@ -928,13 +1480,7 @@ class PeerConnection {
 			return;
 		}
 
-		__peerAddress = pair.remote.address;
-		__peerPort = pair.remote.port;
-
-		// Which of this peer's addresses the path was proved on. It matters only
-		// when it is the relayed one, and then it matters entirely: the session's
-		// records have to travel the same way its connectivity checks did.
-		__peerRelayed = __relayedCandidate != null && pair.local.sameAs(__relayedCandidate);
+		__route(pair);
 
 		// The DTLS role, not the ICE one. A peer answering a browser is
 		// ICE-controlled and the DTLS client at once, and using the ICE role
@@ -954,6 +1500,10 @@ class PeerConnection {
 		};
 
 		__dtls.established.then(_ -> __onSecured(), error -> __fail(error));
+
+		// The peer's close_notify or a fatal alert. The association inside
+		// cannot outlive the session carrying it.
+		__dtls.onClose = reason -> __fail(reason);
 
 		// A first poll straight away, so the client's ClientHello leaves now
 		// rather than on the next tick.
@@ -979,6 +1529,9 @@ class PeerConnection {
 
 		__association.established.then(_ -> __onAssociated(), error -> __fail(error));
 
+		// The peer's ABORT, or data it stopped acknowledging.
+		__association.onClose = reason -> __fail(reason);
+
 		// RFC 8831: the DTLS client opens the association. Following the ICE
 		// role here would have both peers listen, or both associate, whenever
 		// the two roles differ -- which is every connection with a browser.
@@ -995,6 +1548,7 @@ class PeerConnection {
 		}
 
 		__transfer = new SctpDataTransfer(__association);
+		__transfer.peerMaxMessageSize = __peerMaxMessageSize;
 		// RFC 8832: the DTLS client takes the even streams. Two peers that
 		// disagreed about which of them that is would collide on every channel
 		// they opened at the same moment.
@@ -1006,7 +1560,15 @@ class PeerConnection {
 	}
 
 	@:noCompletion private function __send(payload:ByteArray, address:String, port:Int):Void {
-		if (__closed || __socket == null) {
+		// Not refused once closing has begun: the ABORT and the close_notify
+		// are sent from inside __shutdown, after the flag is up. The socket
+		// is dropped as the last step, and that is what ends sending.
+		if (__host != null) {
+			@:privateAccess __host.__send(payload, address, port);
+			return;
+		}
+
+		if (__socket == null) {
 			return;
 		}
 
@@ -1019,19 +1581,24 @@ class PeerConnection {
 		}
 	}
 
+	/** How far a connection that is not ready got, for the reason it gives up with. **/
+	@:noCompletion private function __phase():String {
+		if (__dtls == null) {
+			return "no path to the peer was found";
+		}
+
+		if (__association == null) {
+			return "the DTLS handshake did not complete";
+		}
+
+		return "the SCTP association did not open";
+	}
+
 	@:noCompletion private function __fail(reason:String):Void {
-		if (__closed) {
-			return;
-		}
-
-		// Before close(), which settles `ready` too but only knows that the
-		// connection was closed. Whichever runs first wins, and this one knows
+		// With the reason rather than through close(), which only knows that
+		// the connection was closed: `ready`, `closed` and `onClose` all carry
 		// what actually went wrong.
-		if (!connected) {
-			@:privateAccess ready.__fail(reason, null);
-		}
-
-		close();
+		__shutdown(reason, true, false);
 	}
 }
 #end

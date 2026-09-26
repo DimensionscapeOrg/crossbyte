@@ -31,10 +31,20 @@ window.__interop = {
   // fumble in the same way. A real browser is the referee.
   binaryEchoed: null,
   emptyBinaryEchoed: false,
+  // Partial reliability. Messages CrossByte sent on an ordered channel with
+  // maxRetransmits 0, the first of which it deliberately loses: they arrive
+  // only if the browser acts on the FORWARD TSN CrossByte sends to skip it.
+  orderedState: [],
+  // The terms of a channel CrossByte opened, as the browser read them.
+  stateTerms: null,
   failed: null
 };
 
 let connection = null;
+
+// The channel the browser opened, kept for the message sent after an ICE
+// restart: it has to cross the session the restart left in place.
+let interopChannel = null;
 
 function makeConnection() {
   connection = new RTCPeerConnection({ iceServers: [] });
@@ -54,6 +64,14 @@ function makeConnection() {
   connection.ondatachannel = event => {
     const channel = event.channel;
     note('channel arrived: ' + channel.label);
+
+    // CrossByte's partially reliable channel: what matters is how its terms
+    // read here, which is the DCEP channel type and parameter it wrote.
+    if (channel.label === 'state') {
+      window.__interop.stateTerms = { ordered: channel.ordered, maxRetransmits: channel.maxRetransmits };
+      note('state terms: ' + JSON.stringify(window.__interop.stateTerms));
+      return;
+    }
 
     channel.onmessage = message => {
       note('message: ' + message.data);
@@ -95,6 +113,31 @@ window.__createOffer = async function () {
 
   const channel = connection.createDataChannel('interop');
   channel.binaryType = 'arraybuffer';
+  interopChannel = channel;
+
+  // Two partially reliable channels, which is what a game's state traffic
+  // uses: CrossByte reports the terms it read from each, and loses its own
+  // first message on the ordered one to see the browser skip past it.
+  connection.createDataChannel('state', { ordered: false, maxRetransmits: 0 });
+
+  const orderedState = connection.createDataChannel('ordered-state', { ordered: true, maxRetransmits: 0 });
+  let answered = false;
+  orderedState.onmessage = message => {
+    note('ordered-state: ' + message.data);
+    window.__interop.orderedState.push(message.data);
+
+    // And the same the other way: CrossByte loses the first of these as it
+    // arrives, so this browser has to give up on it and send a FORWARD TSN of
+    // its own. Only once CrossByte has spoken, by which time it is ready to.
+    if (!answered) {
+      answered = true;
+      orderedState.send('b-lost');
+
+      for (let i = 1; i <= 5; i++) {
+        orderedState.send('b-kept-' + i);
+      }
+    }
+  };
 
   channel.onopen = () => {
     note('channel open');
@@ -132,6 +175,76 @@ window.__createOffer = async function () {
 window.__acceptAnswer = async function (sdp) {
   await connection.setRemoteDescription({ type: 'answer', sdp });
   note('answer accepted');
+  return true;
+};
+
+// ICE restarts, which is what a browser does when its network changes: new
+// credentials in a new offer, the DTLS session and every channel left as they
+// are. Gathering starts again, so this waits for it rather than trusting a
+// state left over from the first round.
+function regathered() {
+  return new Promise(resolve => {
+    const done = () => {
+      if (connection.iceGatheringState === 'complete') {
+        connection.removeEventListener('icegatheringstatechange', done);
+        resolve();
+      }
+    };
+
+    connection.addEventListener('icegatheringstatechange', done);
+    setTimeout(resolve, 3000);
+  });
+}
+
+/** The browser restarts ICE and offers. */
+window.__restartIce = async function () {
+  connection.restartIce();
+  const offer = await connection.createOffer();
+  const gathering = regathered();
+  await connection.setLocalDescription(offer);
+  await gathering;
+  note('restart offer gathered');
+  return connection.localDescription.sdp;
+};
+
+window.__acceptRestartAnswer = async function (sdp) {
+  await connection.setRemoteDescription({ type: 'answer', sdp });
+  note('restart answer accepted');
+  return true;
+};
+
+/** CrossByte restarted ICE and offered; the browser answers. */
+window.__answerRestart = async function (sdp) {
+  await connection.setRemoteDescription({ type: 'offer', sdp });
+  const answer = await connection.createAnswer();
+  const gathering = regathered();
+  await connection.setLocalDescription(answer);
+  await gathering;
+  note('restart answer gathered');
+  return connection.localDescription.sdp;
+};
+
+/** The ufrag of the local candidate on the pair the browser is using, which a finished restart changes. */
+window.__selectedUfrag = async function () {
+  const stats = await connection.getStats();
+  let transport = null;
+  stats.forEach(report => {
+    if (report.type === 'transport' && report.selectedCandidatePairId) transport = report;
+  });
+
+  if (!transport) return null;
+
+  const pair = stats.get(transport.selectedCandidatePairId);
+  const local = pair ? stats.get(pair.localCandidateId) : null;
+
+  if (!local) return null;
+
+  // A Chrome whose stats do not name it says so, rather than never matching.
+  return 'usernameFragment' in local ? local.usernameFragment : 'n/a';
+};
+
+window.__sendOnInterop = function (text) {
+  interopChannel.send(text);
   return true;
 };
 

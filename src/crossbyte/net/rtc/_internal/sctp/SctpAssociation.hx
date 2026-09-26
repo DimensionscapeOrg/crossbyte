@@ -103,6 +103,13 @@ class SctpAssociation {
 	/** How much unacknowledged data the peer is willing to hold. **/
 	public var peerReceiveWindow(default, null):Int = 0;
 
+	/**
+		Whether the peer said it understands FORWARD TSN, RFC 3758: partial
+		reliability. Until both ends have, nothing may be abandoned, and a
+		channel asked to be unreliable is carried reliably instead.
+	**/
+	public var peerSupportsForwardTsn(default, null):Bool = false;
+
 	/** Streams the peer offered inbound and outbound. **/
 	public var peerOutboundStreams(default, null):Int = 0;
 
@@ -116,6 +123,60 @@ class SctpAssociation {
 
 	/** Chunks this handshake does not handle, passed up for the data layer. **/
 	public dynamic function onChunk(chunk:SctpChunk, packet:SctpPacket):Void {}
+
+	/**
+		Called once a packet whose chunks went to `onChunk` has been read to
+		the end.
+
+		For the data layer, which decides what to send back once per packet
+		rather than once per chunk: an acknowledgement for several DATA chunks
+		is one SACK, and data the acknowledgement made room for goes out in the
+		same packet as the next one owed.
+	**/
+	public dynamic function onPacketEnd():Void {}
+
+	/**
+		The time the most recent `receive` or `poll` was given.
+
+		What the layer above measures an arriving acknowledgement against. It
+		reaches that layer through `onChunk`, which is not handed a time, and a
+		round trip measured from the previous poll instead would be off by up
+		to a whole tick.
+	**/
+	public var clock(default, null):Float = 0;
+
+	/**
+		Called once when an association that was established ends from the far
+		side or from a fault: the peer's ABORT, or the peer no longer answering.
+		Not called for `close()` or `abort()`, which the caller already knows
+		about.
+
+		An ABORT used to close the association without a word to anyone above
+		it. The channels on top went on reporting themselves open, and the
+		first sign anything had happened was a `send` that threw.
+	**/
+	public dynamic function onClose(reason:String):Void {}
+
+	/**
+		Whether everything the layer above was given has been sent and
+		acknowledged.
+
+		A peer's SHUTDOWN is answered only once it has: RFC 4960 section 9.2
+		has what is outstanding delivered first, so a graceful close does not
+		lose the last messages. The data layer answers; with none attached
+		there is nothing to wait for.
+	**/
+	public dynamic function drained():Bool {
+		return true;
+	}
+
+	/** The ABORT flag saying its tag is the sender's own, reflected. **/
+	@:noCompletion private static inline var FLAG_TAG_REFLECTED:Int = 0x01;
+
+	/** RFC 4960 section 3.3.10.12: the reason an upper layer gave for aborting. **/
+	@:noCompletion private static inline var CAUSE_USER_ABORT:Int = 12;
+
+	@:noCompletion private static inline var MAX_ABORT_REASON:Int = 256;
 
 	@:noCompletion private var __attempts:Int = 0;
 	@:noCompletion private var __retryAt:Float = 0;
@@ -164,7 +225,32 @@ class SctpAssociation {
 	}
 
 	public function poll(now:Float):Void {
-		if (__closed || now < __retryAt) {
+		clock = now;
+
+		if (__closed) {
+			return;
+		}
+
+		// Data still going out when the peer asked to shut down: answered the
+		// moment the last of it is acknowledged.
+		if (state == SHUTDOWN_RECEIVED) {
+			__answerShutdownIfDrained(now);
+			return;
+		}
+
+		if (now < __retryAt) {
+			return;
+		}
+
+		if (state == SHUTDOWN_ACK_SENT) {
+			// The peer asked to go and never confirmed the answer. It is gone
+			// either way.
+			if (__attempts >= MAX_ATTEMPTS) {
+				__end("The peer shut the association down.", false);
+				return;
+			}
+
+			__sendShutdownAck(now);
 			return;
 		}
 
@@ -202,6 +288,10 @@ class SctpAssociation {
 			return false;
 		}
 
+		clock = now;
+
+		var passedUp:Bool = false;
+
 		for (chunk in packet.chunks) {
 			switch (chunk.type) {
 				case SctpPacket.CHUNK_INIT:
@@ -213,15 +303,61 @@ class SctpAssociation {
 				case SctpPacket.CHUNK_COOKIE_ACK:
 					__onCookieAck(packet);
 				case SctpPacket.CHUNK_ABORT:
-					__fail("The peer aborted the association.");
+					// RFC 4960 section 8.5.1: this association's own tag, or the
+					// peer's reflected back with the T bit saying so. Anything
+					// else is an ABORT for an association that is not this one.
+					if (__tagOrReflected(chunk, packet)) {
+						__end("The peer aborted the association" + __abortReason(chunk) + ".", false);
+					}
+
 					return true;
+				case SctpPacket.CHUNK_HEARTBEAT:
+					// RFC 4960 section 8.3: answered at once, with what it
+					// carried copied back unchanged. It never was, and a peer
+					// that hears no answer counts a failed path -- so a channel
+					// that only received, from a browser whose stack probes idle
+					// paths, was torn down after a few minutes of quiet.
+					if (__up() && __tagMatches(packet)) {
+						onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_HEARTBEAT_ACK, 0, chunk.value)]));
+					}
+				case SctpPacket.CHUNK_SHUTDOWN:
+					// RFC 4960 section 9.2: the peer has finished sending and
+					// wants to go. Its cumulative acknowledgement goes to the
+					// layer above like a SACK's, and the answer waits for what
+					// this end still has outstanding.
+					if ((state == ESTABLISHED || state == SHUTDOWN_RECEIVED) && __tagMatches(packet)) {
+						state = SHUTDOWN_RECEIVED;
+						passedUp = true;
+						onChunk(chunk, packet);
+					} else if (state == SHUTDOWN_ACK_SENT && __tagMatches(packet)) {
+						// The answer was lost, and the peer is asking again.
+						__sendShutdownAck(now);
+					}
+				case SctpPacket.CHUNK_SHUTDOWN_COMPLETE:
+					if (state == SHUTDOWN_ACK_SENT && __tagOrReflected(chunk, packet)) {
+						__end("The peer shut the association down.", false);
+						return true;
+					}
 				default:
-					// Everything else -- DATA, SACK, HEARTBEAT -- is for the
-					// layer above, which is where it goes once established.
-					if (state == ESTABLISHED && __tagMatches(packet)) {
+					// Everything else -- DATA and SACK -- is for the layer above,
+					// which is where it goes once established, and while a
+					// shutdown the peer asked for is finishing what was sent.
+					if ((state == ESTABLISHED || state == SHUTDOWN_RECEIVED) && __tagMatches(packet)) {
+						passedUp = true;
 						onChunk(chunk, packet);
 					}
 			}
+		}
+
+		// A chunk handed up may have ended the association -- a SACK can tell
+		// the layer above the peer is gone -- and then nothing is owed.
+		if (passedUp && !__closed) {
+			onPacketEnd();
+		}
+
+		// The acknowledgement that just arrived may have been of the last of it.
+		if (state == SHUTDOWN_RECEIVED) {
+			__answerShutdownIfDrained(now);
 		}
 
 		return true;
@@ -234,6 +370,59 @@ class SctpAssociation {
 		// Nothing settled `established` on a close. Every other path that does
 		// runs from the handshake, and closing is what stops it.
 		@:privateAccess established.__cancel("The association was closed before it was established.");
+	}
+
+	/**
+		Ends the association and tells the peer, with an ABORT.
+
+		What `close()` does, plus the one packet that saves the peer from
+		finding out on its own -- which, for a peer relying on retransmission
+		limits, takes the better part of a minute. Sent only once the peer's
+		tag is known: an ABORT stamped with anything else is discarded.
+
+		@param reason Carried to the peer as an upper-layer abort reason, which
+		is what a browser logs.
+	**/
+	public function abort(?reason:String):Void {
+		if (__closed) {
+			return;
+		}
+
+		__sendAbort(reason);
+		close();
+	}
+
+	/**
+		Ends the association because it cannot go on, telling the peer when
+		`notifyPeer` and whoever is above through `onClose`.
+
+		For the layer above, which is where the faults an established
+		association dies of are noticed -- data the peer stopped acknowledging.
+	**/
+	@:allow(crossbyte.net.rtc._internal.sctp)
+	@:noCompletion private function __end(reason:String, notifyPeer:Bool):Void {
+		if (__closed) {
+			return;
+		}
+
+		var wasEstablished:Bool = __up();
+
+		if (notifyPeer) {
+			__sendAbort(reason);
+		}
+
+		// Before close(), for the same reason as DtlsTransport: close() settles
+		// this future too, Future.__fail is idempotent, and the specific reason
+		// should be the one that survives.
+		if (!wasEstablished) {
+			@:privateAccess established.__fail(reason, null);
+		}
+
+		close();
+
+		if (wasEstablished) {
+			onClose(reason);
+		}
 	}
 
 	/** Builds a packet addressed to the peer, with the right tag already on it. **/
@@ -293,7 +482,10 @@ class SctpAssociation {
 		// session already proved who the peer is.
 		__issuedCookie = __random(COOKIE_LENGTH);
 
+		peerSupportsForwardTsn = __offersForwardTsn(chunk);
+
 		var value = __initBody(localTag, localTsn);
+		value.position = value.length;
 		SctpParameter.writeAll(value, [new SctpParameter(SctpParameter.STATE_COOKIE, __issuedCookie)]);
 		value.position = 0;
 
@@ -330,6 +522,7 @@ class SctpAssociation {
 		peerReceiveWindow = init.window;
 		peerOutboundStreams = init.outbound;
 		peerInboundStreams = init.inbound;
+		peerSupportsForwardTsn = __offersForwardTsn(chunk);
 		__cookie = cookie.value;
 
 		state = COOKIE_ECHOED;
@@ -372,25 +565,117 @@ class SctpAssociation {
 	}
 
 	@:noCompletion private function __fail(reason:String):Void {
-		if (__closed) {
-			return;
-		}
-
-		// Before close(), for the same reason as DtlsTransport: close() settles
-		// this future too, Future.__fail is idempotent, and the specific reason
-		// should be the one that survives.
-		if (state != ESTABLISHED) {
-			@:privateAccess established.__fail(reason, null);
-		}
-
-		close();
+		__end(reason, false);
 	}
 
 	@:noCompletion private function __tagMatches(packet:SctpPacket):Bool {
 		return packet.verificationTag == localTag;
 	}
 
-	/** The twenty byte fixed part every INIT and INIT ACK begins with. **/
+	/**
+		The rule RFC 4960 section 8.5.1 gives an ABORT and a SHUTDOWN COMPLETE:
+		this association's own tag, or the peer's reflected with the T bit set.
+	**/
+	@:noCompletion private function __tagOrReflected(chunk:SctpChunk, packet:SctpPacket):Bool {
+		if ((chunk.flags & FLAG_TAG_REFLECTED) != 0) {
+			return remoteTag != 0 && packet.verificationTag == remoteTag;
+		}
+
+		return localTag != 0 && packet.verificationTag == localTag;
+	}
+
+	/** Established, or finishing a shutdown the peer asked for. **/
+	@:noCompletion private inline function __up():Bool {
+		return state == ESTABLISHED || state == SHUTDOWN_RECEIVED || state == SHUTDOWN_ACK_SENT;
+	}
+
+	@:noCompletion private function __answerShutdownIfDrained(now:Float):Void {
+		if (!drained()) {
+			return;
+		}
+
+		state = SHUTDOWN_ACK_SENT;
+		__attempts = 0;
+		__sendShutdownAck(now);
+	}
+
+	@:noCompletion private function __sendShutdownAck(now:Float):Void {
+		__attempts++;
+		__retryAt = now + RETRY_AFTER * __attempts;
+		onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN_ACK, 0)]));
+	}
+
+	/**
+		The reason inside an ABORT, when the peer gave one, as the tail of a
+		sentence. A browser closing a connection says so, and passing that on
+		costs a few bytes and saves a guess.
+	**/
+	@:noCompletion private function __abortReason(chunk:SctpChunk):String {
+		var value = chunk.value;
+
+		if (value == null || value.length < 4) {
+			return "";
+		}
+
+		value.endian = Endian.BIG_ENDIAN;
+		value.position = 0;
+
+		var code:Int = value.readUnsignedShort();
+		var length:Int = value.readUnsignedShort();
+
+		if (code != CAUSE_USER_ABORT || length <= 4 || length > value.length) {
+			return " (cause " + code + ")";
+		}
+
+		// Printable ASCII only. It is the peer's text, and a NUL in it would
+		// hide whatever follows it in a report.
+		var text = new StringBuf();
+
+		for (_ in 0...(length - 4)) {
+			var byte:Int = value.readUnsignedByte();
+			text.addChar(byte >= 0x20 && byte < 0x7F ? byte : "?".code);
+		}
+
+		return ": " + text.toString();
+	}
+
+	@:noCompletion private function __sendAbort(reason:Null<String>):Void {
+		// Without the peer's tag there is nothing to stamp this with that it
+		// would accept.
+		if (remoteTag == 0) {
+			return;
+		}
+
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+
+		if (reason != null && reason.length > 0) {
+			var text = new ByteArray();
+			text.writeUTFBytes(reason);
+
+			// A reason is for a log line, and the packet has to fit a datagram.
+			var length:Int = text.length > MAX_ABORT_REASON ? MAX_ABORT_REASON : text.length;
+
+			value.writeShort(CAUSE_USER_ABORT);
+			value.writeShort(4 + length);
+			value.writeBytes(text, 0, length);
+			value.position = 0;
+		}
+
+		onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_ABORT, 0, value)]));
+	}
+
+	/**
+		The fixed part every INIT and INIT ACK begins with, and the extensions
+		this end supports after it.
+
+		Partial reliability, RFC 3758, said twice over: the parameter that
+		says so, and the chunk type listed as a supported extension, which is
+		how RFC 5061 has a sender name the chunks it understands. A browser
+		looks for both. Without them it may not abandon anything it sends here
+		-- a channel opened with `maxRetransmits: 0` was silently made
+		reliable -- and nothing sent from here may be abandoned either.
+	**/
 	@:noCompletion private function __initBody(tag:Int, tsn:Int):ByteArray {
 		var value = new ByteArray();
 		value.endian = Endian.BIG_ENDIAN;
@@ -399,7 +684,39 @@ class SctpAssociation {
 		value.writeShort(STREAM_COUNT);
 		value.writeShort(STREAM_COUNT);
 		value.writeInt(tsn);
+
+		var extensions = new ByteArray();
+		extensions.writeByte(SctpPacket.CHUNK_FORWARD_TSN);
+
+		SctpParameter.writeAll(value, [
+			new SctpParameter(SctpParameter.FORWARD_TSN_SUPPORTED),
+			new SctpParameter(SctpParameter.SUPPORTED_EXTENSIONS, extensions)
+		]);
+
 		return value;
+	}
+
+	/** Whether an INIT or INIT ACK says its sender understands FORWARD TSN, either way RFC 3758 and RFC 5061 allow. **/
+	@:noCompletion private function __offersForwardTsn(chunk:SctpChunk):Bool {
+		var parameters = SctpParameter.readAll(chunk.value, INIT_FIXED_LENGTH, chunk.value.length);
+
+		if (SctpParameter.find(parameters, SctpParameter.FORWARD_TSN_SUPPORTED) != null) {
+			return true;
+		}
+
+		var extensions = SctpParameter.find(parameters, SctpParameter.SUPPORTED_EXTENSIONS);
+
+		if (extensions != null) {
+			extensions.value.position = 0;
+
+			for (_ in 0...extensions.value.length) {
+				if (extensions.value.readUnsignedByte() == SctpPacket.CHUNK_FORWARD_TSN) {
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	@:noCompletion private function __readInit(chunk:SctpChunk):Null<{tag:Int, window:Int, outbound:Int, inbound:Int, tsn:Int}> {

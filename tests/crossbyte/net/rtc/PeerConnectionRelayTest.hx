@@ -195,6 +195,78 @@ class PeerConnectionRelayTest extends utest.Test {
 	}
 
 	/**
+		A relay that goes away takes the connection that ran through it, and
+		says so.
+
+		The allocation failing to refresh set a flag nothing read. `allocated`
+		had resolved long before and could not report it, so a connection
+		whose only path was the relay simply went quiet -- until consent gave
+		up on it half a minute later, blaming the peer.
+	**/
+	public function testLosingTheRelayEndsAConnectionThatRanThroughIt():Void {
+		if (unsupported()) return;
+
+		var server = new FakeTurnServer();
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			server.start();
+			alice.bind(0, "127.0.0.2");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			var failure:String = null;
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			pumpUntil(() -> relays == 2 || failure != null, 10.0);
+
+			if (relays != 2) {
+				Assert.fail("the relay never allocated: " + failure);
+				alice.close();
+				bob.close();
+				server.close();
+				return;
+			}
+
+			alice.connect(relayOnly(bob));
+			bob.connect(relayOnly(alice));
+			pumpUntil(() -> alice.connected && bob.connected, 25.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected through the relay");
+				alice.close();
+				bob.close();
+				server.close();
+				return;
+			}
+
+			var reasons:Array<String> = [];
+			alice.onClose = reason -> reasons.push(reason);
+
+			// The relay stops renewing, and the next refresh is brought forward
+			// from five minutes to now rather than waited out.
+			server.refuseRefresh = true;
+			@:privateAccess alice.__turn.__refreshAt = 0;
+
+			pumpUntil(() -> reasons.length > 0, 5.0);
+
+			Assert.equals(1, reasons.length, "losing the relay the path ran through was reported " + reasons.length + " times");
+			Assert.isFalse(alice.connected, "the connection still reports itself up with its relay gone");
+
+			if (reasons.length > 0) {
+				Assert.isTrue(reasons[0].indexOf("relay") >= 0, "the reason does not say the relay went: " + reasons[0]);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
+	/**
 		A peer is permitted before anything is sent to it.
 
 		A relay discards a Send indication for a peer no permission covers, and
@@ -601,6 +673,9 @@ private class FakeTurnServer {
 	/** Say nothing at all, as a relay that is not there would. **/
 	public var ignoreEverything:Bool = false;
 
+	/** Refuse to renew an allocation, as a relay that has dropped it would. **/
+	public var refuseRefresh:Bool = false;
+
 	private var __socket:DatagramSocket;
 	private var __allocations:Array<Allocation> = [];
 
@@ -656,6 +731,13 @@ private class FakeTurnServer {
 			case StunMessage.CREATE_PERMISSION_REQUEST:
 				__permit(message, e.srcAddress, e.srcPort);
 			case StunMessage.REFRESH_REQUEST:
+				if (refuseRefresh) {
+					__reply(new StunMessage(StunMessage.REFRESH_ERROR, message.transactionId, [
+						StunMessage.errorCode(437, "Allocation Mismatch")
+					]), e.srcAddress, e.srcPort);
+					return;
+				}
+
 				__reply(new StunMessage(StunMessage.REFRESH_SUCCESS, message.transactionId, [StunMessage.lifetime(600)]), e.srcAddress,
 					e.srcPort);
 			case StunMessage.SEND_INDICATION:

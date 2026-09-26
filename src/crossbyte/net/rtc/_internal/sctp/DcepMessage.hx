@@ -52,6 +52,12 @@ class DcepMessage {
 	/** Given up on after a time, ordered. **/
 	public static inline var PARTIAL_TIMED:Int = 0x02;
 
+	/** Given up on after a number of retransmissions, in whatever order it lands: a browser's `{ordered: false, maxRetransmits: n}`. **/
+	public static inline var PARTIAL_RETRANSMIT_UNORDERED:Int = 0x81;
+
+	/** Given up on after a time, in whatever order it lands. **/
+	public static inline var PARTIAL_TIMED_UNORDERED:Int = 0x82;
+
 	private static inline var UNORDERED_FLAG:Int = 0x80;
 	private static inline var OPEN_HEADER_LENGTH:Int = 12;
 
@@ -79,9 +85,48 @@ class DcepMessage {
 		return (channelType & UNORDERED_FLAG) != 0;
 	}
 
-	/** An OPEN for a channel that is reliable, and ordered unless told otherwise. **/
-	public static function open(label:String, ordered:Bool = true, protocol:String = ""):DcepMessage {
-		return new DcepMessage(OPEN, ordered ? RELIABLE : RELIABLE_UNORDERED, 0, 0, label, protocol);
+	/**
+		How many times a message may be sent again before it is given up on,
+		for a channel of that type; null for one that is not.
+	**/
+	public var maxRetransmits(get, never):Null<Int>;
+
+	private function get_maxRetransmits():Null<Int> {
+		return (channelType & ~UNORDERED_FLAG) == PARTIAL_RETRANSMIT ? __parameter() : null;
+	}
+
+	/** How long, in milliseconds, a message is tried for, for a channel of that type; null otherwise. **/
+	public var maxPacketLifeTime(get, never):Null<Int>;
+
+	private function get_maxPacketLifeTime():Null<Int> {
+		return (channelType & ~UNORDERED_FLAG) == PARTIAL_TIMED ? __parameter() : null;
+	}
+
+	/** The reliability parameter, which is unsigned on the wire: past an Int's range is as good as no limit. **/
+	private inline function __parameter():Int {
+		return reliability < 0 ? 0x7FFFFFFF : reliability;
+	}
+
+	/**
+		An OPEN for a channel, ordered unless told otherwise, and reliable
+		unless given one of the two limits -- RFC 8832's partially reliable
+		types, which is what a channel for game state wants: a position that
+		arrives late is worth less than the next one.
+	**/
+	public static function open(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
+			?maxPacketLifeTime:Int):DcepMessage {
+		var type:Int = RELIABLE;
+		var reliability:Int = 0;
+
+		if (maxRetransmits != null) {
+			type = PARTIAL_RETRANSMIT;
+			reliability = maxRetransmits;
+		} else if (maxPacketLifeTime != null) {
+			type = PARTIAL_TIMED;
+			reliability = maxPacketLifeTime;
+		}
+
+		return new DcepMessage(OPEN, ordered ? type : type | UNORDERED_FLAG, 0, reliability, label, protocol);
 	}
 
 	public static function acknowledge():DcepMessage {

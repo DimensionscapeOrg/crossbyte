@@ -150,6 +150,17 @@ class TurnClient {
 	/** Called with a datagram bound for the relay. **/
 	public dynamic function onSend(payload:ByteArray, address:String, port:Int):Void {}
 
+	/**
+		Called once when an allocation that was granted is gone: a refresh or a
+		permission the relay refused or never answered, or a refresh it answered
+		with a lifetime of zero. Not called for `close()`.
+
+		`allocated` resolved long before, so it cannot say this, and `active`
+		going false is a flag nothing is obliged to read. A connection whose
+		path ran through the relay otherwise went silent with no reason given.
+	**/
+	public dynamic function onLost(reason:String):Void {}
+
 	@:noCompletion private var __username:String;
 	@:noCompletion private var __password:String;
 	@:noCompletion private var __realm:String;
@@ -239,6 +250,9 @@ class TurnClient {
 		finds it. A permission lasts five minutes, and refreshing the allocation
 		does not renew it (RFC 5766 section 8) -- `poll` asks again well inside
 		that, the way it does for a channel.
+
+		@throws ArgumentError When `peerAddress` is not an IPv4 address: the
+		allocation is IPv4, and so are the peers it can reach.
 	**/
 	public function permit(peerAddress:String, now:Float):Void {
 		if (__closed || !active || peerAddress == null) {
@@ -248,6 +262,8 @@ class TurnClient {
 		var permission = __permissionFor(peerAddress);
 
 		if (permission == null) {
+			// Before it is kept, or `poll` would renew it -- and throw -- for good.
+			__requireIPv4(peerAddress);
 			permission = new TurnPermission(peerAddress);
 			__permitted.push(permission);
 		}
@@ -263,6 +279,8 @@ class TurnClient {
 		Wrapped in a Send indication, which is not acknowledged and not
 		retransmitted -- the relay forwards it or it does not, exactly as a
 		datagram sent directly would arrive or not.
+
+		@throws ArgumentError When `peerAddress` is not an IPv4 address.
 	**/
 	public function sendTo(payload:ByteArray, peerAddress:String, peerPort:Int):Void {
 		if (__closed || !active) {
@@ -298,6 +316,8 @@ class TurnClient {
 		describes it as doing both -- but the permission is still asked for
 		separately, since it has to be in place for the indications that carry
 		the traffic in the meantime.
+
+		@throws ArgumentError When `peerAddress` is not an IPv4 address.
 	**/
 	public function bindChannel(peerAddress:String, peerPort:Int, now:Float):Void {
 		if (__closed || !active || !useChannels || peerAddress == null) {
@@ -312,6 +332,10 @@ class TurnClient {
 		}
 
 		if (channel == null) {
+			// Here rather than first: this runs for every datagram relayed, and
+			// a channel already kept was checked when it was made.
+			__requireIPv4(peerAddress);
+
 			if (__nextChannel > LAST_CHANNEL) {
 				// Sixteen thousand peers on one allocation is not a case this
 				// will meet, and silently reusing a number would send one
@@ -329,6 +353,21 @@ class TurnClient {
 			StunMessage.channelNumber(channel.number),
 			StunMessage.xorPeerAddress(peerAddress, peerPort)
 		], now);
+	}
+
+	/**
+		Refuses a peer that is not an IPv4 address, which XOR-PEER-ADDRESS is
+		written as here and an IPv4 allocation's peers are.
+
+		Its octets were read with `Std.parseInt` and written modulo 256, so
+		1.2.3.999 was permitted as 1.2.3.231 and an IPv6 address as whatever
+		its first group read as, the relay then forwarding to a host nobody
+		named.
+	**/
+	@:noCompletion private static function __requireIPv4(peerAddress:String):Void {
+		if (StunMessage.ipv4Octets(peerAddress) == null) {
+			throw new ArgumentError("The allocation relays to IPv4 peers, and \"" + peerAddress + "\" is not an IPv4 address.");
+		}
 	}
 
 	/** The channel bound to a peer, if one was ever asked for. **/
@@ -672,8 +711,16 @@ class TurnClient {
 		__lifetime = message.uintOf(StunMessage.ATTR_LIFETIME, __lifetime);
 
 		if (__lifetime <= 0) {
-			// A zero lifetime is how a relay says the allocation is gone.
+			// A zero lifetime is how a relay says the allocation is gone. This
+			// client never asks for one -- close() simply stops -- so it is the
+			// relay's decision, and the caller has to hear it.
+			var wasActive:Bool = active;
 			active = false;
+
+			if (wasActive) {
+				onLost("The relay at " + serverAddress + ":" + serverPort + " ended the allocation.");
+			}
+
 			return;
 		}
 
@@ -694,6 +741,8 @@ class TurnClient {
 	}
 
 	@:noCompletion private function __fail(reason:String):Void {
+		var wasActive:Bool = active;
+
 		__pending = null;
 		active = false;
 
@@ -702,6 +751,12 @@ class TurnClient {
 		}
 
 		__closed = true;
+
+		// An allocation that was working and now is not. Before one was
+		// granted, `allocated` failing is the report.
+		if (wasActive) {
+			onLost(reason);
+		}
 	}
 
 	@:noCompletion private static function __transaction():ByteArray {

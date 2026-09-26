@@ -18,6 +18,7 @@
 
 #include <deque>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,14 @@ const int ERROR_NO_SESSION = -1000001;
 const int ERROR_BAD_CERTIFICATE = -1000002;
 const int ERROR_BAD_KEY = -1000003;
 const int ERROR_TOO_SMALL = -1000004;
+
+// A flight of the handshake is resent after one second, then two, four and
+// eight, and the handshake fails when the next wait would pass eight: fifteen
+// seconds in all. mbedtls's own defaults, one and sixty, double to a minute
+// and fail after 123 seconds -- a client whose peer had gone held its session
+// for two minutes, well past any deadline the caller would set.
+const uint32_t HANDSHAKE_TIMEOUT_MIN_MS = 1000;
+const uint32_t HANDSHAKE_TIMEOUT_MAX_MS = 8000;
 
 // One datagram.
 typedef std::vector<uint8_t> Packet;
@@ -69,6 +78,21 @@ struct Session
    Session() : state(CROSSBYTE_DTLS_HANDSHAKING), error(0), handshakeDone(false) {}
 };
 
+// Every session in the process, and the counter that names them. One table
+// for all of them, so peers on different runtimes -- different threads --
+// insert into it, erase from it and search it at the same moment, and nothing
+// guarded that: a lookup landing in the middle of a rebalance followed a stale
+// node, so a live handle read as closed, and two opens racing on the counter
+// could be handed the same number.
+//
+// g_lock guards the map, the counter and the RNG's first seeding, and is held
+// for those alone -- never across a handshake, a read or a write, which use
+// the session they found without it. A session belongs to the runtime that
+// opened it, so nothing else ever uses it at the same time. A std::mutex
+// rather than hxcpp's, which enters a GC-free zone on every acquire: nothing
+// inside allocates from the collector or can stop for it, so a thread waiting
+// here waits one map operation and never on a collection.
+std::mutex g_lock;
 std::map<int, Session *> g_sessions;
 int g_nextHandle = 1;
 
@@ -79,6 +103,7 @@ mbedtls_entropy_context g_entropy;
 mbedtls_ctr_drbg_context g_drbg;
 bool g_rngReady = false;
 
+// Called with g_lock held.
 bool ensureRng()
 {
    if (g_rngReady)
@@ -99,6 +124,7 @@ bool ensureRng()
 
 Session *find(int handle)
 {
+   std::lock_guard<std::mutex> guard(g_lock);
    std::map<int, Session *>::iterator at = g_sessions.find(handle);
    return at == g_sessions.end() ? 0 : at->second;
 }
@@ -215,16 +241,18 @@ void drainPlaintext(Session *session)
          continue;
       }
 
-      if (read == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
-      {
-         session->state = CROSSBYTE_DTLS_CLOSED;
-         return;
-      }
-
       // WANT_READ is the ordinary end of the queue, not a fault.
-      if (read != MBEDTLS_ERR_SSL_WANT_READ && read != MBEDTLS_ERR_SSL_WANT_WRITE && read != 0)
-         session->error = read;
+      if (read == MBEDTLS_ERR_SSL_WANT_READ || read == MBEDTLS_ERR_SSL_WANT_WRITE || read == 0)
+         return;
 
+      // Anything else ends the session, and mbedtls says the context must not
+      // be used again: the peer's close_notify, a fatal alert, or a client
+      // starting over on the same port. The error is kept, close_notify
+      // included, because it is how the caller tells a peer that said goodbye
+      // from one that failed -- and a session left ESTABLISHED here went on
+      // reporting itself open to a caller that had no other way to find out.
+      session->error = read;
+      session->state = CROSSBYTE_DTLS_CLOSED;
       return;
    }
 }
@@ -238,8 +266,12 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
    if (certificatePem == null() || privateKeyPem == null())
       return ERROR_BAD_CERTIFICATE;
 
-   if (!ensureRng())
-      return ERROR_BAD_CERTIFICATE;
+   {
+      std::lock_guard<std::mutex> guard(g_lock);
+
+      if (!ensureRng())
+         return ERROR_BAD_CERTIFICATE;
+   }
 
    hx::strbuf certBuf;
    hx::strbuf keyBuf;
@@ -300,6 +332,7 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
       // be constructed without an expected fingerprint to compare against.
       mbedtls_ssl_conf_authmode(&session->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
       mbedtls_ssl_conf_rng(&session->conf, mbedtls_ctr_drbg_random, &g_drbg);
+      mbedtls_ssl_conf_handshake_timeout(&session->conf, HANDSHAKE_TIMEOUT_MIN_MS, HANDSHAKE_TIMEOUT_MAX_MS);
 
       if (debugLevel() > 0)
       {
@@ -340,6 +373,7 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
       return ret;
    }
 
+   std::lock_guard<std::mutex> guard(g_lock);
    int handle = g_nextHandle++;
    g_sessions[handle] = session;
    return handle;
@@ -347,10 +381,20 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
 
 void crossbyte_dtls_close(int handle)
 {
-   Session *session = find(handle);
+   Session *session = 0;
 
-   if (session == 0)
-      return;
+   // Out of the table first, under the lock, so no lookup can find it while
+   // it is being freed.
+   {
+      std::lock_guard<std::mutex> guard(g_lock);
+      std::map<int, Session *>::iterator at = g_sessions.find(handle);
+
+      if (at == g_sessions.end())
+         return;
+
+      session = at->second;
+      g_sessions.erase(at);
+   }
 
    mbedtls_ssl_free(&session->ssl);
    mbedtls_ssl_config_free(&session->conf);
@@ -358,7 +402,25 @@ void crossbyte_dtls_close(int handle)
    mbedtls_pk_free(&session->key);
 
    delete session;
-   g_sessions.erase(handle);
+}
+
+int crossbyte_dtls_notify_close(int handle)
+{
+   Session *session = find(handle);
+
+   if (session == 0)
+      return ERROR_NO_SESSION;
+
+   // Only a session that is up has anyone to tell. One the peer already
+   // closed, or that failed, is past the point where mbedtls may write to it.
+   if (session->state != CROSSBYTE_DTLS_ESTABLISHED)
+      return 0;
+
+   // The alert goes through sendCallback like any other record, so it waits
+   // on the outbound queue for the caller to take.
+   int ret = mbedtls_ssl_close_notify(&session->ssl);
+   session->state = CROSSBYTE_DTLS_CLOSED;
+   return ret;
 }
 
 int crossbyte_dtls_feed(int handle, const uint8_t *data, int length)
