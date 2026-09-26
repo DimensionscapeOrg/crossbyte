@@ -18,6 +18,7 @@
 
 #include <deque>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,21 @@ struct Session
    Session() : state(CROSSBYTE_DTLS_HANDSHAKING), error(0), handshakeDone(false) {}
 };
 
+// Every session in the process, and the counter that names them. One table
+// for all of them, so peers on different runtimes -- different threads --
+// insert into it, erase from it and search it at the same moment, and nothing
+// guarded that: a lookup landing in the middle of a rebalance followed a stale
+// node, so a live handle read as closed, and two opens racing on the counter
+// could be handed the same number.
+//
+// g_lock guards the map, the counter and the RNG's first seeding, and is held
+// for those alone -- never across a handshake, a read or a write, which use
+// the session they found without it. A session belongs to the runtime that
+// opened it, so nothing else ever uses it at the same time. A std::mutex
+// rather than hxcpp's, which enters a GC-free zone on every acquire: nothing
+// inside allocates from the collector or can stop for it, so a thread waiting
+// here waits one map operation and never on a collection.
+std::mutex g_lock;
 std::map<int, Session *> g_sessions;
 int g_nextHandle = 1;
 
@@ -87,6 +103,7 @@ mbedtls_entropy_context g_entropy;
 mbedtls_ctr_drbg_context g_drbg;
 bool g_rngReady = false;
 
+// Called with g_lock held.
 bool ensureRng()
 {
    if (g_rngReady)
@@ -107,6 +124,7 @@ bool ensureRng()
 
 Session *find(int handle)
 {
+   std::lock_guard<std::mutex> guard(g_lock);
    std::map<int, Session *>::iterator at = g_sessions.find(handle);
    return at == g_sessions.end() ? 0 : at->second;
 }
@@ -248,8 +266,12 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
    if (certificatePem == null() || privateKeyPem == null())
       return ERROR_BAD_CERTIFICATE;
 
-   if (!ensureRng())
-      return ERROR_BAD_CERTIFICATE;
+   {
+      std::lock_guard<std::mutex> guard(g_lock);
+
+      if (!ensureRng())
+         return ERROR_BAD_CERTIFICATE;
+   }
 
    hx::strbuf certBuf;
    hx::strbuf keyBuf;
@@ -351,6 +373,7 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
       return ret;
    }
 
+   std::lock_guard<std::mutex> guard(g_lock);
    int handle = g_nextHandle++;
    g_sessions[handle] = session;
    return handle;
@@ -358,10 +381,20 @@ int crossbyte_dtls_open(bool isServer, ::String certificatePem, ::String private
 
 void crossbyte_dtls_close(int handle)
 {
-   Session *session = find(handle);
+   Session *session = 0;
 
-   if (session == 0)
-      return;
+   // Out of the table first, under the lock, so no lookup can find it while
+   // it is being freed.
+   {
+      std::lock_guard<std::mutex> guard(g_lock);
+      std::map<int, Session *>::iterator at = g_sessions.find(handle);
+
+      if (at == g_sessions.end())
+         return;
+
+      session = at->second;
+      g_sessions.erase(at);
+   }
 
    mbedtls_ssl_free(&session->ssl);
    mbedtls_ssl_config_free(&session->conf);
@@ -369,7 +402,6 @@ void crossbyte_dtls_close(int handle)
    mbedtls_pk_free(&session->key);
 
    delete session;
-   g_sessions.erase(handle);
 }
 
 int crossbyte_dtls_notify_close(int handle)
