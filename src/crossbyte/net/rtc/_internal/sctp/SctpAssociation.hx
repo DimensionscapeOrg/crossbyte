@@ -103,6 +103,13 @@ class SctpAssociation {
 	/** How much unacknowledged data the peer is willing to hold. **/
 	public var peerReceiveWindow(default, null):Int = 0;
 
+	/**
+		Whether the peer said it understands FORWARD TSN, RFC 3758: partial
+		reliability. Until both ends have, nothing may be abandoned, and a
+		channel asked to be unreliable is carried reliably instead.
+	**/
+	public var peerSupportsForwardTsn(default, null):Bool = false;
+
 	/** Streams the peer offered inbound and outbound. **/
 	public var peerOutboundStreams(default, null):Int = 0;
 
@@ -475,7 +482,10 @@ class SctpAssociation {
 		// session already proved who the peer is.
 		__issuedCookie = __random(COOKIE_LENGTH);
 
+		peerSupportsForwardTsn = __offersForwardTsn(chunk);
+
 		var value = __initBody(localTag, localTsn);
+		value.position = value.length;
 		SctpParameter.writeAll(value, [new SctpParameter(SctpParameter.STATE_COOKIE, __issuedCookie)]);
 		value.position = 0;
 
@@ -512,6 +522,7 @@ class SctpAssociation {
 		peerReceiveWindow = init.window;
 		peerOutboundStreams = init.outbound;
 		peerInboundStreams = init.inbound;
+		peerSupportsForwardTsn = __offersForwardTsn(chunk);
 		__cookie = cookie.value;
 
 		state = COOKIE_ECHOED;
@@ -654,7 +665,17 @@ class SctpAssociation {
 		onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_ABORT, 0, value)]));
 	}
 
-	/** The twenty byte fixed part every INIT and INIT ACK begins with. **/
+	/**
+		The fixed part every INIT and INIT ACK begins with, and the extensions
+		this end supports after it.
+
+		Partial reliability, RFC 3758, said twice over: the parameter that
+		says so, and the chunk type listed as a supported extension, which is
+		how RFC 5061 has a sender name the chunks it understands. A browser
+		looks for both. Without them it may not abandon anything it sends here,
+		a channel opened with `maxRetransmits: 0` was silently made
+		reliable, and nothing sent from here may be abandoned either.
+	**/
 	@:noCompletion private function __initBody(tag:Int, tsn:Int):ByteArray {
 		var value = new ByteArray();
 		value.endian = Endian.BIG_ENDIAN;
@@ -663,7 +684,39 @@ class SctpAssociation {
 		value.writeShort(STREAM_COUNT);
 		value.writeShort(STREAM_COUNT);
 		value.writeInt(tsn);
+
+		var extensions = new ByteArray();
+		extensions.writeByte(SctpPacket.CHUNK_FORWARD_TSN);
+
+		SctpParameter.writeAll(value, [
+			new SctpParameter(SctpParameter.FORWARD_TSN_SUPPORTED),
+			new SctpParameter(SctpParameter.SUPPORTED_EXTENSIONS, extensions)
+		]);
+
 		return value;
+	}
+
+	/** Whether an INIT or INIT ACK says its sender understands FORWARD TSN, either way RFC 3758 and RFC 5061 allow. **/
+	@:noCompletion private function __offersForwardTsn(chunk:SctpChunk):Bool {
+		var parameters = SctpParameter.readAll(chunk.value, INIT_FIXED_LENGTH, chunk.value.length);
+
+		if (SctpParameter.find(parameters, SctpParameter.FORWARD_TSN_SUPPORTED) != null) {
+			return true;
+		}
+
+		var extensions = SctpParameter.find(parameters, SctpParameter.SUPPORTED_EXTENSIONS);
+
+		if (extensions != null) {
+			extensions.value.position = 0;
+
+			for (_ in 0...extensions.value.length) {
+				if (extensions.value.readUnsignedByte() == SctpPacket.CHUNK_FORWARD_TSN) {
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	@:noCompletion private function __readInit(chunk:SctpChunk):Null<{tag:Int, window:Int, outbound:Int, inbound:Int, tsn:Int}> {

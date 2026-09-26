@@ -5,6 +5,9 @@ import crossbyte.net.ice.IceCandidate;
 import crossbyte.net.rtc.DataChannel;
 import crossbyte.net.rtc.PeerConnection;
 import crossbyte.net.rtc.SessionDescription;
+import crossbyte.net.rtc._internal.sctp.SctpDataChunk;
+import crossbyte.net.rtc._internal.sctp.SctpPacket;
+import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
 
 /**
 	The CrossByte half of the browser interoperability test, in either
@@ -103,6 +106,9 @@ class BrowserInteropPeer {
 			say({event: "ready", dtlsClient: connection.dtlsClient, iceControlling: connection.iceControlling, path: path()});
 
 			var channel = connection.createDataChannel("interop");
+
+			// The terms CrossByte writes into DCEP, for the browser to read back.
+			connection.createDataChannel("state", false, "", 0);
 
 			channel.onMessage = function(text:String):Void {
 				say({event: "message", text: text});
@@ -212,6 +218,23 @@ class BrowserInteropPeer {
 		connection.onChannel = function(opened:DataChannel):Void {
 			say({event: "channel", label: opened.label});
 
+			// The browser's partially reliable channels: reported as read, so
+			// the harness can hold them to what the browser asked for.
+			if (opened.label == "state" || opened.label == "ordered-state") {
+				say({
+					event: "terms",
+					label: opened.label,
+					ordered: opened.ordered,
+					maxRetransmits: opened.maxRetransmits,
+					maxPacketLifeTime: opened.maxPacketLifeTime
+				});
+			}
+
+			if (opened.label == "ordered-state") {
+				loseFirstAndCarryOn(opened);
+				return;
+			}
+
 			opened.onMessage = function(text:String):Void {
 				say({event: "message", text: text});
 				opened.send("echo:" + text);
@@ -229,6 +252,85 @@ class BrowserInteropPeer {
 	}
 
 	/**
+		Sends on an ordered channel that may send each message once, losing the
+		first message on purpose, and loses the browser's first on it too.
+
+		It is not sent again, that is what `maxRetransmits: 0` means, so the
+		browser holds everything after it until a FORWARD TSN says to skip it.
+		The rest arriving, in order, is the browser agreeing with how CrossByte
+		wrote that chunk; a FORWARD TSN it could not read would leave them held.
+
+		The other way round, the browser's first message on the channel is
+		dropped as it arrives, before the transfer sees it. The browser may not
+		send it again either, so it gives up on it and sends its own FORWARD
+		TSN, and what CrossByte then delivers is its reading of Chrome's. The
+		browser starts only once CrossByte's first message reaches it, so this
+		is in place whatever the two of them bundle.
+	**/
+	static function loseFirstAndCarryOn(channel:DataChannel):Void {
+		var association = @:privateAccess connection.__association;
+		var send = association.onSend;
+		var lost:Bool = false;
+
+		association.onSend = function(payload:ByteArray):Void {
+			if (!lost) {
+				var packet = SctpPacket.decode(payload, false);
+
+				for (chunk in (packet == null ? [] : packet.chunks)) {
+					var data = SctpDataChunk.fromChunk(chunk);
+
+					if (data != null && data.streamId == channel.id && data.protocolId == SctpDataChunk.PPID_STRING) {
+						lost = true;
+						say({event: "lost", tsn: data.tsn});
+						return;
+					}
+				}
+			}
+
+			send(payload);
+		};
+
+		var receive = association.onChunk;
+		var dropped:Bool = false;
+
+		association.onChunk = function(chunk:SctpChunk, packet:SctpPacket):Void {
+			if (!dropped) {
+				var data = SctpDataChunk.fromChunk(chunk);
+
+				if (data != null && data.streamId == channel.id && data.protocolId == SctpDataChunk.PPID_STRING) {
+					dropped = true;
+					data.payload.position = 0;
+					say({event: "dropped", text: data.payload.readUTFBytes(data.payload.length)});
+					return;
+				}
+			}
+
+			receive(chunk, packet);
+		};
+
+		channel.onMessage = function(text:String):Void {
+			received.push(text);
+
+			if (received.length == 5) {
+				say({event: "ordered-received", texts: received});
+			}
+		};
+
+		lossy = channel;
+		channel.send("lost");
+
+		for (i in 1...6) {
+			channel.send("kept-" + i);
+		}
+	}
+
+	/** The channel losing its first message each way, until everything on it is settled. **/
+	static var lossy:DataChannel = null;
+
+	/** What arrived on it from the browser. **/
+	static var received:Array<String> = [];
+
+	/**
 		Driven here rather than from the tick, so the process exits when the
 		exchange is done rather than idling until something kills it.
 	**/
@@ -243,10 +345,13 @@ class BrowserInteropPeer {
 			if (echoed) {
 				// One more turn so a reply is actually written before this stops
 				// pumping. A message queued and never flushed is a test that
-				// fails for the wrong reason.
+				// fails for the wrong reason. Longer while the lossy channel is
+				// still waiting on the browser to move past what it lost, or on
+				// the browser's own messages after the one lost on the way here.
 				var settle = Sys.time() + 0.5;
 
-				while (Sys.time() < settle) {
+				while (Sys.time() < settle || (lossy != null && Sys.time() < deadline && @:privateAccess connection.__transfer != null
+					&& (@:privateAccess connection.__transfer.outstandingCount() > 0 || received.length < 5))) {
 					runtime.pump(1 / 60, 0);
 					Sys.sleep(0.001);
 				}

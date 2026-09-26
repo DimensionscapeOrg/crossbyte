@@ -290,7 +290,48 @@ async function browserOffers(page, mdns) {
     }
 
     checkPath(ready, mdns, offer, answer.sdp);
+
+    // Partial reliability, RFC 3758 and RFC 8832's channel types. The terms
+    // the browser asked for have to arrive intact...
+    for (const expected of [{ label: 'state', ordered: false }, { label: 'ordered-state', ordered: true }]) {
+      const terms = peer.events.find(event => event.event === 'terms' && event.label === expected.label);
+
+      if (!terms || terms.ordered !== expected.ordered || terms.maxRetransmits !== 0 || terms.maxPacketLifeTime != null) {
+        throw new Error('the browser asked for ' + JSON.stringify(expected) + ' with maxRetransmits 0 and CrossByte read ' +
+          JSON.stringify(terms));
+      }
+    }
+
+    // ...and a message CrossByte gave up on has to be skipped by the browser,
+    // which holds the ordered messages after it until a FORWARD TSN says so.
+    await page.waitForFunction('window.__interop.orderedState.length >= 5', { timeout: 15000 }).catch(() => {});
+    const orderedState = await page.evaluate('window.__interop.orderedState');
+
+    if (!peer.events.find(event => event.event === 'lost')) {
+      throw new Error('the peer never lost the message it was meant to, so nothing needed skipping');
+    }
+
+    if (JSON.stringify(orderedState) !== JSON.stringify(['kept-1', 'kept-2', 'kept-3', 'kept-4', 'kept-5'])) {
+      throw new Error('after CrossByte gave up on a message the browser received ' + JSON.stringify(orderedState) +
+        ': it did not act on the FORWARD TSN, or took the lost message after all');
+    }
+
+    // The other way: CrossByte lost the browser's first message on arrival, so
+    // what it delivers after that is its reading of Chrome's FORWARD TSN.
+    const received = await peer.wait('ordered-received', 15000).catch(() => null);
+    const dropped = peer.events.find(event => event.event === 'dropped');
+
+    if (!dropped || dropped.text !== 'b-lost') {
+      throw new Error('the peer never lost the browser\'s first message, so nothing needed skipping: ' + JSON.stringify(dropped));
+    }
+
+    if (!received || JSON.stringify(received.texts) !== JSON.stringify(['b-kept-1', 'b-kept-2', 'b-kept-3', 'b-kept-4', 'b-kept-5'])) {
+      throw new Error('after the browser gave up on a message CrossByte received ' + JSON.stringify(received && received.texts) +
+        ': it did not follow the browser\'s FORWARD TSN');
+    }
+
     console.log('  passed: answered, and took the ICE-controlled / DTLS-client pair');
+    console.log('  passed: partially reliable channels read both ways, and a message given up on was skipped each way');
   } finally {
     peer.kill();
   }
@@ -342,7 +383,17 @@ async function crossbyteOffers(page, mdns) {
     }
 
     checkPath(ready, mdns, answer, offer.sdp);
+
+    // The terms CrossByte wrote into DCEP, as the browser reads them.
+    await page.waitForFunction('window.__interop.stateTerms !== null', { timeout: 10000 }).catch(() => {});
+    const stateTerms = await page.evaluate('window.__interop.stateTerms');
+
+    if (!stateTerms || stateTerms.ordered !== false || stateTerms.maxRetransmits !== 0) {
+      throw new Error('CrossByte opened an unordered channel with maxRetransmits 0 and the browser read ' + JSON.stringify(stateTerms));
+    }
+
     console.log('  passed: offered, and took the ICE-controlling / DTLS-server pair');
+    console.log('  passed: the browser read the partially reliable channel CrossByte opened');
   } finally {
     peer.kill();
   }

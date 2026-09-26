@@ -5,6 +5,25 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Partially reliable WebRTC data channels, RFC 3758 with RFC 8832's channel
+  types: what a game's state channel is, since a position that arrives late
+  is worth less than the next one. `PeerConnection.createDataChannel` takes
+  `maxRetransmits` or `maxPacketLifeTime`, as a browser's does, and
+  `DataChannel` reports both. A message past its limit is given up on and a
+  FORWARD TSN moves the peer past it, rather than everything behind it on
+  the stream waiting; one whose time runs out before it is sent is dropped
+  unsent. Until now a browser's `{ordered: false, maxRetransmits: 0}`
+  channel was quietly made reliable: the association never said it
+  understood FORWARD TSN, so the browser could give up on nothing it sent
+  here, and DCEP's channel type and reliability parameter were read and
+  dropped, so what this end sent back was retransmitted like everything
+  else. Both ends now say so in INIT and INIT ACK, the terms are honoured
+  in both directions, and a peer's FORWARD TSN is followed: an ordered
+  stream skips what was given up on, and part of a message given up on is
+  dropped. A peer that does not say it understands FORWARD TSN gets
+  reliable channels, as RFC 8831 has it. Checked against Chrome both ways:
+  each gives up on a message the other lost, and the other delivers the
+  rest in order.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
