@@ -287,6 +287,72 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A channel refuses a message larger than the peer said it takes.
+
+		RFC 8841's max-message-size was written into every description and
+		read out of none, so a message past the peer's limit went out and was
+		dropped at the other end after being acknowledged, a send that
+		succeeded and a message that never arrived.
+	**/
+	public function testAChannelRefusesAMessageLargerThanThePeerTakes():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var got:Int = -1;
+
+		try {
+			bob.onChannel = function(channel:DataChannel):Void {
+				accepted = channel;
+				channel.onBytes = payload -> got = payload.length;
+			};
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+
+			// Bob, as a peer that takes no more than four kilobytes.
+			var small = bob.description();
+			small.maxMessageSize = 4096;
+
+			alice.connect(small);
+			bob.connect(alice.description());
+
+			Assert.equals(4096, alice.maxMessageSize, "the peer's limit was not read from its description");
+			Assert.equals(crossbyte.net.rtc._internal.sctp.SctpDataTransfer.MAX_REASSEMBLY, bob.maxMessageSize,
+				"a peer's description that states this stack's limit was not read as that");
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open && accepted != null, 5.0);
+
+			var big = new ByteArray();
+			big.length = 8192;
+			Assert.raises(() -> chat.sendBytes(big), ArgumentError);
+
+			var fits = new ByteArray();
+			fits.length = 4096;
+			chat.sendBytes(fits);
+			pumpUntil(() -> got >= 0, 5.0);
+
+			Assert.equals(4096, got, "a message exactly the peer's limit did not arrive");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		A connection that cannot finish coming up gives up, and says where.
 
 		The peer here answers connectivity checks and then nothing: its

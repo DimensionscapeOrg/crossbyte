@@ -52,4 +52,15 @@ typedef PeerDescription = {
 		expects the answer to choose.
 	**/
 	@:optional var setup:String;
+
+	/**
+		The largest message the peer will take, in bytes, or 0 for any size.
+
+		SDP's `a=max-message-size`, RFC 8841, and a sender must not exceed it.
+		Read from SDP, a document that leaves it out means the RFC's default of
+		64 KB. A description passed as a structure without it is a CrossByte
+		peer, and is taken to accept what this stack does,
+		`SctpDataTransfer.MAX_REASSEMBLY`.
+	**/
+	@:optional var maxMessageSize:Int;
 }

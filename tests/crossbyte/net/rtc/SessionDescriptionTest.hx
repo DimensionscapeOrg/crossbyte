@@ -57,6 +57,66 @@ class SessionDescriptionTest extends utest.Test {
 	}
 
 	/**
+		The message size advertised is the one the receiver actually takes.
+
+		It was the receive window, two megabytes, while the receiver gives up
+		on any message past one: a peer that believed the document sent a
+		message in between, had every fragment acknowledged, and never learned
+		that it was dropped whole on arrival.
+	**/
+	public function testTheMessageSizeAdvertisedIsWhatTheReceiverTakes():Void {
+		var sdp = SessionDescription.toSdp({
+			usernameFragment: "abcd",
+			password: "abcdefghijklmnopqrstuvwx",
+			fingerprint: "AA:BB",
+			candidates: []
+		});
+
+		Assert.isTrue(sdp.indexOf("a=max-message-size:" + crossbyte.net.rtc._internal.sctp.SctpDataTransfer.MAX_REASSEMBLY + "\r\n") >= 0,
+			"the document advertises a size the receiver does not take: " + sdp.split("\r\n").filter(l -> l.indexOf("max-message") >= 0));
+
+		// And a description that says what it takes is written as it says.
+		var stated = SessionDescription.toSdp({
+			usernameFragment: "abcd",
+			password: "abcdefghijklmnopqrstuvwx",
+			fingerprint: "AA:BB",
+			candidates: [],
+			maxMessageSize: 5000
+		});
+
+		Assert.equals(5000, SessionDescription.fromSdp(stated).maxMessageSize);
+	}
+
+	/**
+		The peer's message size is read, and the RFC's default stands in for
+		one it left out.
+
+		It was not read at all, so nothing stopped this end sending a peer more
+		than it had said it would take. RFC 8841: absent means 64 KB, and 0
+		means any size.
+	**/
+	public function testThePeersMessageSizeIsRead():Void {
+		Assert.equals(262144, SessionDescription.fromSdp(CHROME_OFFER).maxMessageSize, "Chrome's max-message-size was not read");
+
+		var without = StringTools.replace(CHROME_OFFER, "a=max-message-size:262144\r\n", "");
+		Assert.equals(SessionDescription.DEFAULT_MAX_MESSAGE_SIZE, SessionDescription.fromSdp(without).maxMessageSize,
+			"a document that says nothing should mean RFC 8841's 64 KB");
+
+		function read(value:String):Null<Int> {
+			return SessionDescription.fromSdp(StringTools.replace(CHROME_OFFER, "a=max-message-size:262144", "a=max-message-size:" + value))
+				.maxMessageSize;
+		}
+
+		Assert.equals(0, read("0"), "zero means any size");
+
+		// Firefox writes 1073741823; more than an Int holds is any size too.
+		Assert.equals(1073741823, read("1073741823"));
+		Assert.equals(0, read("99999999999999999999"), "a limit past what an Int holds should mean any size");
+		Assert.equals(SessionDescription.DEFAULT_MAX_MESSAGE_SIZE, read("lots"), "a value that is not a number should be ignored");
+		Assert.equals(SessionDescription.DEFAULT_MAX_MESSAGE_SIZE, read("-5"), "a negative value should be ignored");
+	}
+
+	/**
 		A TCP candidate is left out rather than tried.
 
 		Chrome offers one and this stack has no transport for it. Accepting it
