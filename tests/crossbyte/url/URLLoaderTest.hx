@@ -1,10 +1,12 @@
 package crossbyte.url;
 
+import crossbyte.core.CrossByte;
 import crossbyte.events.Event;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
-import crossbyte.events.ThreadEvent;
+import crossbyte.http.HTTPCancelToken;
+import crossbyte.url._internal.LoaderRun;
 import haxe.io.Bytes;
 import utest.Assert;
 
@@ -28,21 +30,36 @@ class URLLoaderTest extends utest.Test {
 		Assert.same(["1", "2"], variables.all("a"));
 	}
 
-	public function testWorkerCompleteParsesDataAndClearsBusyState():Void {
-		var loader = new URLLoader();
-		var completeEvents = 0;
+	/** A load in progress as far as `loader` knows, with nothing running behind it. */
+	private static function inProgress(loader:URLLoader):LoaderRun {
+		var run = new LoaderRun(loader, CrossByte.current(), new URLRequest("http://127.0.0.1/"), new HTTPCancelToken());
+		loader.__load = run;
 		loader.__busy = true;
-		loader.addEventListener(Event.COMPLETE, _ -> completeEvents++);
+		return run;
+	}
 
-		loader.__onWorkerComplete(new ThreadEvent(ThreadEvent.COMPLETE, Bytes.ofString("done")));
+	public function testCompleteParsesDataAndClearsBusyState():Void {
+		var loader = new URLLoader();
+		var run = inProgress(loader);
+		var completeEvents = 0;
+		var busyInListener:Null<Bool> = null;
+		loader.addEventListener(Event.COMPLETE, _ -> {
+			completeEvents++;
+			busyInListener = loader.__busy;
+		});
+
+		loader.__deliver(run, Complete(Bytes.ofString("done")));
 
 		Assert.equals("done", loader.data);
 		Assert.equals(1, completeEvents);
 		Assert.isFalse(loader.__busy);
+		// Free already when the listener runs, so it can start the next load.
+		Assert.isFalse(busyInListener);
 	}
 
-	public function testWorkerProgressDispatchesLoadedAndTotalInCorrectOrder():Void {
+	public function testProgressDispatchesLoadedAndTotalInCorrectOrder():Void {
 		var loader = new URLLoader();
+		var run = inProgress(loader);
 		var loaded = 0;
 		var total = 0;
 		loader.addEventListener(ProgressEvent.PROGRESS, event -> {
@@ -50,10 +67,7 @@ class URLLoaderTest extends utest.Test {
 			total = event.bytesTotal;
 		});
 
-		loader.__onWorkerProgress(new ThreadEvent(ThreadEvent.PROGRESS, {
-			type: "progress",
-			value: {bytesLoaded: 25, bytesTotal: 100}
-		}));
+		loader.__deliver(run, Progress(25, 100));
 
 		Assert.equals(25, loaded);
 		Assert.equals(100, total);
@@ -61,49 +75,61 @@ class URLLoaderTest extends utest.Test {
 		Assert.equals(100, loader.bytesTotal);
 	}
 
-	public function testWorkerProgressDispatchesStatus():Void {
+	public function testStatusIsDispatched():Void {
 		var loader = new URLLoader();
+		var run = inProgress(loader);
 		var status = 0;
 		loader.addEventListener(HTTPStatusEvent.HTTP_STATUS, event -> {
 			status = event.status;
 		});
 
-		loader.__onWorkerProgress(new ThreadEvent(ThreadEvent.PROGRESS, {
-			type: "status",
-			value: 204
-		}));
+		loader.__deliver(run, Status(204));
 
 		Assert.equals(204, status);
 	}
 
-	public function testWorkerErrorHandlesObjectWithBody():Void {
+	public function testErrorKeepsTheBody():Void {
 		var loader = new URLLoader();
+		var run = inProgress(loader);
 		var errorText:String = null;
 		loader.dataFormat = TEXT;
 		loader.addEventListener(IOErrorEvent.IO_ERROR, event -> {
 			errorText = event.text;
 		});
 
-		loader.__onWorkerError(new ThreadEvent(ThreadEvent.ERROR, {
-			msg: "failed",
-			dataBytes: Bytes.ofString("body")
-		}));
+		loader.__deliver(run, Failure("failed", Bytes.ofString("body")));
 
 		Assert.equals("failed", errorText);
 		Assert.equals("body", loader.data);
 		Assert.isFalse(loader.__busy);
 	}
 
-	public function testWorkerErrorHandlesPlainMessage():Void {
+	public function testErrorWithoutABody():Void {
 		var loader = new URLLoader();
+		var run = inProgress(loader);
 		var errorText:String = null;
 		loader.addEventListener(IOErrorEvent.IO_ERROR, event -> {
 			errorText = event.text;
 		});
 
-		loader.__onWorkerError(new ThreadEvent(ThreadEvent.ERROR, "boom"));
+		loader.__deliver(run, Failure("boom", null));
 
 		Assert.equals("boom", errorText);
 		Assert.isFalse(loader.__busy);
+	}
+
+	public function testWhatAClosedLoadSendsIsDropped():Void {
+		var loader = new URLLoader();
+		var run = inProgress(loader);
+		var events = 0;
+		loader.addEventListener(Event.COMPLETE, _ -> events++);
+		loader.addEventListener(IOErrorEvent.IO_ERROR, _ -> events++);
+
+		loader.close();
+
+		Assert.isFalse(loader.__deliver(run, Complete(Bytes.ofString("late"))));
+		Assert.isFalse(loader.__deliver(run, Failure("late", null)));
+		Assert.equals(0, events);
+		Assert.isNull(loader.data);
 	}
 }
