@@ -1898,7 +1898,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>):ResponseEncodingDecision {
-		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range")) {
+		// A body that is already encoded, a PHP script's under
+		// zlib.output_compression, a route's own gzip, is not encoded again.
+		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
 			return {encoding: null, reject: false};
 		}
 
@@ -2575,7 +2577,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			remoteAddr: __origin.remoteAddress,
 			serverName: sName,
 			serverPort: sPort,
-			extraHeaders: __forwardSubset(__headers),
+			extraHeaders: __forwardedToPhp(__headers),
 			body: body
 		};
 
@@ -2599,24 +2601,29 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 			var ctype:String = phpRes.headers.exists("content-type") ? phpRes.headers.get("content-type") : "text/html; charset=utf-8";
 
+			// Everything the script said but the status and what the server
+			// writes itself. Only Cache-Control, Location and Set-Cookie came
+			// through, so ETag, Content-Disposition, WWW-Authenticate, Vary,
+			// CORS and a script's own fields never reached the client.
 			var out:Array<URLRequestHeader> = [];
-			if (phpRes.headers.exists("cache-control")) {
-				out.push(new URLRequestHeader("Cache-Control", phpRes.headers.get("cache-control")));
-			}
-			if (phpRes.headers.exists("location")) {
-				out.push(new URLRequestHeader("Location", phpRes.headers.get("location")));
-			}
-			if (phpRes.headers.exists("set-cookie")) {
-				// An escape, not a line break between the quotes. A literal one
-				// takes the file's line ending, so a CRLF checkout split on
-				// "\r\n", never separated the cookies PHPExchange joins with
-				// "\n", and sent them glued into one header.
-				for (cookie in phpRes.headers.get("set-cookie").split("\n")) {
-					var c:String = StringTools.trim(cookie);
-					if (c != "") {
-						out.push(new URLRequestHeader("Set-Cookie", c));
-					}
+			for (name => value in phpRes.headers) {
+				if (PHP_UNRETURNED.indexOf(name) >= 0 || (__config.corsEnabled && StringTools.startsWith(name, "access-control-"))) {
+					continue;
 				}
+				if (name == "set-cookie") {
+					// An escape, not a line break between the quotes. A literal
+					// one takes the file's line ending, so a CRLF checkout split
+					// on "\r\n", never separated the cookies PHPExchange joins
+					// with "\n", and sent them glued into one header.
+					for (cookie in value.split("\n")) {
+						var c:String = StringTools.trim(cookie);
+						if (c != "") {
+							out.push(new URLRequestHeader("Set-Cookie", c));
+						}
+					}
+					continue;
+				}
+				out.push(new URLRequestHeader(__fieldCase(name), value));
 			}
 
 			var bodyBytes:ByteArray = phpRes.body;
@@ -2651,24 +2658,82 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return __requestPath;
 	}
 
-	@:noCompletion private function __forwardSubset(h:Map<String, String>):Map<String, String> {
-		var m:Map<String, String> = new Map();
-		inline function put(k:String) {
-			if (h.exists(k)) {
-				final v = h.get(k);
-				if (v != null)
-					m.set(k, v);
+	/**
+	 * Request fields a script is not given as `HTTP_*`: those about this
+	 * connection rather than the request, the two CGI gives variables of their
+	 * own, and `Proxy`, which a script would read as `HTTP_PROXY`, where
+	 * HTTP client libraries look for a proxy to send everything through
+	 * (httpoxy).
+	 */
+	@:noCompletion private static final PHP_UNFORWARDED:Array<String> = [
+		"connection", "keep-alive", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade", "http2-settings", "content-type",
+		"content-length", "proxy"
+	];
+
+	/**
+	 * Response fields a script's are not passed back for: the CGI status, the
+	 * framing, and what the server writes on every response itself.
+	 * `access-control-*` joins them when the server's own CORS is on.
+	 */
+	@:noCompletion private static final PHP_UNRETURNED:Array<String> = [
+		"status", "content-type", "content-length", "transfer-encoding", "connection", "keep-alive", "proxy-connection", "te", "trailer",
+		"upgrade", "date", "server", "x-content-type-options"
+	];
+
+	/**
+	 * The request's fields for the bridge, which gives a script each as
+	 * `HTTP_<NAME>`. It was eight of them, host, user-agent, accept,
+	 * accept-language, accept-encoding, referer, cookie and authorization,
+	 * so a script never saw Origin, X-Requested-With, a CSRF token, a
+	 * conditional request, Range or what a proxy forwarded.
+	 *
+	 * All of them now, but those in `PHP_UNFORWARDED`, those `Connection`
+	 * names as its own, and any whose name is not letters, digits and hyphens:
+	 * `X_Forwarded_For` would reach a script as `HTTP_X_FORWARDED_FOR`, the
+	 * variable a proxy's `X-Forwarded-For` becomes.
+	 */
+	@:noCompletion private static function __forwardedToPhp(fields:Map<String, String>):Map<String, String> {
+		var hop:Array<String> = [];
+		var connection:Null<String> = fields.get("connection");
+		if (connection != null) {
+			for (token in connection.split(",")) {
+				hop.push(StringTools.trim(token).toLowerCase());
 			}
 		}
-		put("host");
-		put("user-agent");
-		put("accept");
-		put("accept-language");
-		put("accept-encoding");
-		put("referer");
-		put("cookie");
-		put("authorization");
-		return m;
+
+		var forwarded:Map<String, String> = new Map();
+		for (name => value in fields) {
+			if (value == null || !__isPlainFieldName(name) || PHP_UNFORWARDED.indexOf(name) >= 0 || hop.indexOf(name) >= 0) {
+				continue;
+			}
+			forwarded.set(name, value);
+		}
+		return forwarded;
+	}
+
+	@:noCompletion private static function __isPlainFieldName(name:String):Bool {
+		if (name.length == 0) {
+			return false;
+		}
+		for (i in 0...name.length) {
+			var c:Int = StringTools.fastCodeAt(name, i);
+			if (!((c >= "a".code && c <= "z".code) || (c >= "A".code && c <= "Z".code) || (c >= "0".code && c <= "9".code) || c == "-".code)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** `content-disposition` as `Content-Disposition`. */
+	@:noCompletion private static function __fieldCase(name:String):String {
+		var parts:Array<String> = name.split("-");
+		for (i in 0...parts.length) {
+			var part:String = parts[i];
+			if (part.length > 0) {
+				parts[i] = part.charAt(0).toUpperCase() + part.substr(1);
+			}
+		}
+		return parts.join("-");
 	}
 
 	@:noCompletion private inline function __statusMessage(code:Int):String {
