@@ -116,6 +116,18 @@ class Http {
 	private var __redirect:Bool = false;
 	private var __followInsecureRedirects:Bool;
 
+	// Whether this request went out on a kept connection, whether that one
+	// turned out to be closed, and whether the response was HTTP/1.1.
+	private var __reusedSocket:Bool = false;
+	private var __staleRetry:Bool = false;
+	private var __responseHttp11:Bool = false;
+
+	/**
+	 * Whether HTTP/1.1 connections are kept and reused between requests to one
+	 * origin. On by default; see HttpConnectionPool.
+	 */
+	@:noCompletion public static var poolConnections:Bool = true;
+
 	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData:Dynamic = null, contentType:Null<String> = null,
 			data:Dynamic = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true,
 			manageCookies:Bool = true, followInsecureRedirects:Bool = false) {
@@ -607,18 +619,24 @@ class Http {
 			}
 		}
 
+		// Read to its framed end, so the connection can serve another request;
+		// a body that ended with the connection has none left to give.
+		var framed:Bool = mode != "unknown";
+
 		if (isHttpError) {
 			var status:Int = __status;
-			__close();
+			__release(framed);
 			onError('HTTP error ' + status, data);
 			return;
 		}
 
+		// Released before the callback: what it does next, another request
+		// to the same origin, say, can then have the connection.
+		__release(framed);
+
 		if (data != null) {
 			onComplete(data);
 		}
-
-		__close();
 	}
 
 	@:noCompletion private function __decodeResponseBody(data:Bytes):Bytes {
@@ -686,6 +704,38 @@ class Http {
 	private function __tryRequest():Void {
 		__status = 0;
 		__responseHeaders = new StringMap();
+		__responseHttp11 = false;
+		__staleRetry = false;
+		__reusedSocket = false;
+
+		// A kept connection, for a request that may be sent twice: one the
+		// server closed while it sat idle is only found out by using it, and
+		// then the request goes again on a new connection. A POST is never
+		// sent on one, since whether the server acted on it cannot be known.
+		var kept:Null<FlexSocket> = null;
+		#if (sys && !eval)
+		if (__pooling() && __repeatable()) {
+			kept = HttpConnectionPool.take(__originOf(__url));
+		}
+		#end
+
+		if (kept != null) {
+			__socket = kept;
+			__socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			__connected = true;
+			__reusedSocket = true;
+			__handleRequest();
+			if (!__staleRetry) {
+				__handleResponse();
+			}
+			if (!__staleRetry) {
+				return;
+			}
+			__staleRetry = false;
+			__reusedSocket = false;
+			__status = 0;
+			__responseHeaders = new StringMap();
+		}
 
 		try {
 			__socket = new FlexSocket(__url.ssl);
@@ -708,24 +758,68 @@ class Http {
 		__handleResponse();
 	}
 
+	/** Whether connections are kept for reuse: everywhere with threads but eval. */
+	private static inline function __pooling():Bool {
+		#if (sys && !eval)
+		return poolConnections;
+		#else
+		return false;
+		#end
+	}
+
+	/** A request that may be sent again if a kept connection fails under it. */
+	private inline function __repeatable():Bool {
+		return __method == "GET" || __method == "HEAD" || __method == "OPTIONS" || __method == "PUT" || __method == "DELETE";
+	}
+
+	/**
+	 * Ends this request's use of its connection: back to the pool when the
+	 * response was read to its framed end and neither side asked to close,
+	 * closed otherwise.
+	 */
+	private function __release(framed:Bool):Void {
+		#if (sys && !eval)
+		var connection:Null<String> = __responseHeaders.get("connection");
+		var closing:Bool = connection != null && connection.toLowerCase().indexOf("close") >= 0;
+		if (framed && __pooling() && __responseHttp11 && !closing && __socket != null && __version == HttpVersion.HTTP_1_1) {
+			var socket:FlexSocket = __socket;
+			__socket = null;
+			__connected = false;
+			HttpConnectionPool.put(__originOf(__url), socket);
+			return;
+		}
+		#end
+		__close();
+	}
+
 	private function __handleResponse():Void {
 		if (!__connected) {
 			return;
 		}
 
 		var line:String = '';
+		var first:Bool = true;
 		while (true) {
 			try {
 				line = __readLine();
-			} catch (_:haxe.io.Eof) {
-				__close();
-				onError(__status == 0 ? "Connection closed without a response" : "Connection closed while reading headers");
-				return;
 			} catch (e:Dynamic) {
+				if (first && __reusedSocket) {
+					// A kept connection the server had already closed. Nothing
+					// of a response arrived, so the request goes again on a new
+					// one; see __tryRequest.
+					__close();
+					__staleRetry = true;
+					return;
+				}
 				__close();
-				onError("Failed to read response");
+				if (Std.isOfType(e, haxe.io.Eof)) {
+					onError(__status == 0 ? "Connection closed without a response" : "Connection closed while reading headers");
+				} else {
+					onError("Failed to read response");
+				}
 				return;
 			}
+			first = false;
 
 			if (line == null) {
 				__close();
@@ -759,6 +853,8 @@ class Http {
 					return;
 				}
 				__status = code;
+				// Only an HTTP/1.1 response keeps its connection by default.
+				__responseHttp11 = StringTools.startsWith(line, "HTTP/1.1");
 				onStatus(__status);
 			} else {
 				var i:Int = line.indexOf(":");
@@ -922,7 +1018,11 @@ class Http {
 			__socket.output.writeString('User-Agent: ${__userAgent}${CRLF}');
 			var hostHeader:String = (__url.port != 80 && __url.port != 443) ? '${__url.host}:${__url.port}' : __url.host;
 			__socket.output.writeString('Host: ${hostHeader}${CRLF}');
-			if (__version == HttpVersion.HTTP_1_1 || __version == HttpVersion.HTTP_1) {
+			if (__version == HttpVersion.HTTP_1_1 && __pooling()) {
+				// Kept for the next request to this origin if the response
+				// allows it: see HttpConnectionPool.
+				__socket.output.writeString('Connection: ${Connection.KEEP_ALIVE}${CRLF}');
+			} else if (__version == HttpVersion.HTTP_1_1 || __version == HttpVersion.HTTP_1) {
 				__socket.output.writeString('Connection: ${Connection.CLOSE}${CRLF}');
 			}
 
@@ -998,6 +1098,12 @@ class Http {
 			__socket.output.flush();
 		} catch (e:Dynamic) {
 			__close();
+			// A kept connection the server had closed refuses the write; the
+			// one String thrown above is the caller's data, not the socket.
+			if (__reusedSocket && !Std.isOfType(e, String)) {
+				__staleRetry = true;
+				return;
+			}
 			onError("URL Request failed");
 		}
 	}
