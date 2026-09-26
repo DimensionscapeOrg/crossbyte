@@ -691,6 +691,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebRTC peer can no longer grow the SCTP receiver without bound. Any TSN
+  up to 2^31 past the cumulative acknowledgement was taken and remembered,
+  so a peer that never sent the next number and kept sending the ones after
+  it -- as unordered one-byte messages, delivered at once, so the window
+  never moved -- made the receiver hold 400,000 entries and 24 MB in the
+  audit. A TSN more than 16,384 past the cumulative acknowledgement is now
+  dropped unread, and with the advertised window shut nothing past the
+  highest TSN already received is taken, while one filling a hole below it
+  still is (RFC 4960 section 6.2); both are answered with an immediate SACK.
+  What has arrived past a hole is kept as runs, which are the SACK's gap
+  blocks, so building a SACK no longer probes 511 offsets every time, holes
+  or none; a SACK reports at most 128 gap blocks, the lowest first.
 - SCTP now answers a peer's HEARTBEAT and completes a peer's SHUTDOWN. Only
   DATA and SACK reached anything: HEARTBEAT ACK was defined and never sent,
   so a peer that probes idle paths -- a browser's stack does -- counted every

@@ -147,6 +147,24 @@ class SctpDataTransfer {
 	private static inline var SACK_MIN_SIZE:Int = 16;
 
 	/**
+		How far past the cumulative acknowledgement a TSN is taken at all.
+
+		Anything further is dropped unread, as RFC 4960 leaves a receiver free
+		to do with what it cannot track. A peer reading this end's window never
+		comes near it: sixteen thousand fragments outstanding past one lost one
+		is sixteen megabytes of full-sized ones. And it is what bounds what a
+		peer that never sends the next number can make this end hold.
+	**/
+	public static inline var MAX_TSN_AHEAD:Int = 16384;
+
+	/**
+		Gap blocks one SACK reports, at most: the lowest ones, which are what
+		the sender needs first. The rest follow in later SACKs as the holes
+		below them fill.
+	**/
+	public static inline var MAX_SACK_BLOCKS:Int = 128;
+
+	/**
 		The most one reassembling message may hold before it is abandoned.
 
 		`__partial` is trimmed only when a message completes, so a peer that
@@ -325,17 +343,18 @@ class SctpDataTransfer {
 	@:noCompletion private var __cumulativeTsn:Int;
 
 	/**
-		Which numbers have arrived above the cumulative acknowledgement.
+		Which numbers have arrived above the cumulative acknowledgement, kept
+		as runs.
 
-		A set, and only ever asked whether it contains one -- `__onData` uses
-		it to spot a duplicate and `__buildSack` to describe the holes. It
-		used to hold the chunk itself, which meant a chunk arriving above a
-		gap kept its whole payload alive for a value nothing ever read.
+		Asked whether it holds one -- `__onData` uses it to spot a duplicate --
+		and read out whole by `__buildSack`, whose gap blocks are exactly these
+		runs. It was a map of single numbers, which the SACK builder probed at
+		each of 511 offsets for every SACK sent, holes or none; and which took
+		any number up to 2^31 ahead, so a peer that never sent the next one
+		could make it hold as many as it liked -- 400,000 entries, 24 MB, in
+		the auditor's run.
 	**/
-	@:noCompletion private var __received:IntMap<Bool> = new IntMap();
-
-	/** How many entries `__received` has, so an empty one is known without looking. **/
-	@:noCompletion private var __receivedCount:Int = 0;
+	@:noCompletion private var __received:TsnRuns = new TsnRuns();
 
 	/**
 		Everything held for the application, across every stream.
@@ -1198,22 +1217,44 @@ class SctpDataTransfer {
 		__sackNeeded = true;
 		__packetHadData = true;
 
-		if (__received.exists(data.tsn) || !SctpDataChunk.isEarlier(__cumulativeTsn, data.tsn)) {
+		var distance:Int = (data.tsn - __cumulativeTsn) | 0;
+
+		if (distance <= 0 || __received.contains(data.tsn, __cumulativeTsn)) {
 			// And owed at once (RFC 4960 section 6.2): the sender is repeating
 			// itself because it has not heard.
 			__sackNow = true;
 			return;
 		}
 
+		// Further ahead than anything this end tracks.
+		if (distance > MAX_TSN_AHEAD) {
+			__sackNow = true;
+			return;
+		}
+
+		// RFC 4960 section 6.2: with the window shut, nothing past what has
+		// already arrived is taken. What fills a hole below it still is,
+		// since that is what completes a message and opens the window again.
+		// Dropped with a SACK at once, which is how the sender learns the
+		// window is still shut.
+		if (SctpAssociation.RECEIVE_WINDOW - __buffered <= 0 && distance > __received.highest(__cumulativeTsn)) {
+			__sackNow = true;
+			return;
+		}
+
 		// Out of order, or filling a hole: either way the sender's picture of
 		// what arrived is wrong and the next SACK is what corrects it.
-		if (__receivedCount > 0 || data.tsn != ((__cumulativeTsn + 1) | 0)) {
+		if (distance != 1 || __received.runs > 0) {
 			__sackNow = true;
 		}
 
-		__received.set(data.tsn, true);
-		__receivedCount++;
-		__advanceCumulative();
+		if (distance == 1) {
+			// Next in line, and it may join the run that was waiting on it.
+			__cumulativeTsn = __received.advance(data.tsn);
+		} else {
+			__received.add(data.tsn, __cumulativeTsn);
+		}
+
 		__reassemble(data);
 
 		if (__buffered > SctpAssociation.RECEIVE_WINDOW) {
@@ -1286,21 +1327,6 @@ class SctpDataTransfer {
 		if (dropped > 0) {
 			onFailure("The peer sent more than the " + SctpAssociation.RECEIVE_WINDOW + " bytes this end offered to hold, so "
 				+ freed + " bytes of unfinished messages on " + dropped + " streams were given up.");
-		}
-	}
-
-	/** Walks the cumulative acknowledgement forward over everything contiguous. **/
-	@:noCompletion private function __advanceCumulative():Void {
-		while (__received.exists((__cumulativeTsn + 1) | 0)) {
-			__cumulativeTsn = (__cumulativeTsn + 1) | 0;
-			// Nothing reads an entry once the cumulative has passed it: the SACK
-			// gap blocks start at __cumulativeTsn + 1, and __onData refuses a
-			// chunk at or below the cumulative on the isEarlier test, whether or
-			// not the map still holds it. Left in, this retained every chunk that
-			// ever arrived -- payload included -- for the life of the
-			// association, on ordinary traffic and not merely a hostile peer.
-			__received.remove(__cumulativeTsn);
-			__receivedCount--;
 		}
 	}
 
@@ -1532,25 +1558,10 @@ class SctpDataTransfer {
 		missing rather than everything since.
 	**/
 	@:noCompletion private function __buildSack():SctpChunk {
-		var blocks:Array<{start:Int, end:Int}> = [];
-		var offset:Int = 1;
-		var maximum:Int = 512;
-
-		while (offset < maximum) {
-			var tsn:Int = (__cumulativeTsn + offset) | 0;
-
-			if (__received.exists(tsn)) {
-				var startOffset:Int = offset;
-
-				while (offset < maximum && __received.exists((__cumulativeTsn + offset) | 0)) {
-					offset++;
-				}
-
-				blocks.push({start: startOffset, end: offset - 1});
-			} else {
-				offset++;
-			}
-		}
+		// The runs are the gap blocks, so there is nothing to search: an
+		// association with no holes -- nearly every SACK ever sent -- writes
+		// sixteen bytes and is done.
+		var blocks:Int = __received.runs < MAX_SACK_BLOCKS ? __received.runs : MAX_SACK_BLOCKS;
 
 		var value = new ByteArray();
 		value.endian = Endian.BIG_ENDIAN;
@@ -1558,12 +1569,16 @@ class SctpDataTransfer {
 
 		value.writeInt(__cumulativeTsn);
 		value.writeInt(free > 0 ? free : 0);
-		value.writeShort(blocks.length);
+		value.writeShort(blocks);
 		value.writeShort(0);
 
-		for (block in blocks) {
-			value.writeShort(block.start);
-			value.writeShort(block.end);
+		for (i in 0...blocks) {
+			var at:Int = __received.head + i;
+
+			// Offsets from the cumulative acknowledgement, which MAX_TSN_AHEAD
+			// keeps within the sixteen bits the field has.
+			value.writeShort((__received.starts[at] - __cumulativeTsn) | 0);
+			value.writeShort((__received.ends[at] - __cumulativeTsn) | 0);
 		}
 
 		value.position = 0;
@@ -1591,6 +1606,135 @@ private class Reassembly {
 	public var endings:Int = 0;
 
 	public function new() {}
+}
+
+/**
+	The TSNs a receiver holds above its cumulative acknowledgement, as runs of
+	consecutive numbers in order.
+
+	Numbers wrap, so every comparison is by distance from the cumulative
+	acknowledgement, which the caller passes -- everything here is at most
+	`SctpDataTransfer.MAX_TSN_AHEAD` past it, so a distance is always a small
+	positive number. Runs come off the front as the acknowledgement passes
+	them, through a cursor compacted once the passed part is the larger half.
+**/
+private class TsnRuns {
+	public var starts:Array<Int> = [];
+	public var ends:Array<Int> = [];
+
+	/** Where the live runs start. **/
+	public var head:Int = 0;
+
+	/** How many runs are held, which is how many gap blocks describe them. **/
+	public var runs(get, never):Int;
+
+	/** How many TSNs are held. **/
+	public var size(default, null):Int = 0;
+
+	public function new() {}
+
+	private inline function get_runs():Int {
+		return ends.length - head;
+	}
+
+	/** The first run from `head` whose end is at or past `distance`, or the end of the list. **/
+	private function search(distance:Int, cumulative:Int):Int {
+		var low:Int = head;
+		var high:Int = ends.length;
+
+		while (low < high) {
+			var middle:Int = (low + high) >> 1;
+
+			if (((ends[middle] - cumulative) | 0) < distance) {
+				low = middle + 1;
+			} else {
+				high = middle;
+			}
+		}
+
+		return low;
+	}
+
+	public function contains(tsn:Int, cumulative:Int):Bool {
+		var distance:Int = (tsn - cumulative) | 0;
+		var at:Int = search(distance, cumulative);
+		return at < ends.length && ((starts[at] - cumulative) | 0) <= distance;
+	}
+
+	/** The distance past `cumulative` of the highest TSN held, or 0 with none. **/
+	public function highest(cumulative:Int):Int {
+		return ends.length > head ? ((ends[ends.length - 1] - cumulative) | 0) : 0;
+	}
+
+	/** Adds a TSN past `cumulative + 1` that is not already held. **/
+	public function add(tsn:Int, cumulative:Int):Void {
+		var at:Int = search((tsn - cumulative) | 0, cumulative);
+		var joinsBefore:Bool = at > head && ((ends[at - 1] + 1) | 0) == tsn;
+		var joinsAfter:Bool = at < ends.length && ((tsn + 1) | 0) == starts[at];
+
+		if (joinsBefore && joinsAfter) {
+			// It was the one number between two runs, which are now one.
+			ends[at - 1] = ends[at];
+			starts.splice(at, 1);
+			ends.splice(at, 1);
+		} else if (joinsBefore) {
+			ends[at - 1] = tsn;
+		} else if (joinsAfter) {
+			starts[at] = tsn;
+		} else {
+			starts.insert(at, tsn);
+			ends.insert(at, tsn);
+		}
+
+		size++;
+	}
+
+	/**
+		The cumulative acknowledgement after `cumulative` has just arrived: the
+		first run joins it when that run begins right after.
+	**/
+	public function advance(cumulative:Int):Int {
+		if (ends.length > head && starts[head] == ((cumulative + 1) | 0)) {
+			var end:Int = ends[head];
+			size -= ((end - starts[head]) | 0) + 1;
+			head++;
+
+			if (head == ends.length) {
+				starts.resize(0);
+				ends.resize(0);
+				head = 0;
+			} else if (head > 32 && head * 2 >= ends.length) {
+				starts.splice(0, head);
+				ends.splice(0, head);
+				head = 0;
+			}
+
+			return end;
+		}
+
+		return cumulative;
+	}
+
+	/** Every TSN held, in order. For inspection; nothing on the data path walks it. **/
+	public function keys():Iterator<Int> {
+		var all:Array<Int> = [];
+
+		for (at in head...ends.length) {
+			var tsn:Int = starts[at];
+
+			while (true) {
+				all.push(tsn);
+
+				if (tsn == ends[at]) {
+					break;
+				}
+
+				tsn = (tsn + 1) | 0;
+			}
+		}
+
+		return all.iterator();
+	}
 }
 
 /** A fragment handed to `send` and not yet on the wire. It has no TSN until it goes. **/
