@@ -65,6 +65,79 @@ const server = http.createServer((request, response) => {
   });
 });
 
+// A WebSocket echo endpoint on the same port, for the cases that need a page's
+// Socket to reach something (tests/crossbyte/net/BrowserSocketTest.hx). Every
+// message comes back as it was sent; `close-me` asks the server to close.
+// Written from RFC 6455 rather than taken from a package, so the suite needs
+// nothing installed but puppeteer.
+const crypto = require('crypto');
+const ECHO_PATH = '/crossbyte-echo';
+
+function echoFrame(opcode, payload) {
+  const head = payload.length < 126
+    ? Buffer.from([0x80 | opcode, payload.length])
+    : Buffer.from([0x80 | opcode, 126, payload.length >> 8, payload.length & 0xff]);
+  return Buffer.concat([head, payload]);
+}
+
+server.on('upgrade', (request, socket) => {
+  const key = request.headers['sec-websocket-key'];
+
+  if (request.url.split('?')[0] !== ECHO_PATH || !key) {
+    socket.destroy();
+    return;
+  }
+
+  const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+    + 'Sec-WebSocket-Accept: ' + accept + '\r\n\r\n');
+  socket.on('error', () => {});
+
+  const goodbye = echoFrame(0x8, Buffer.from([0x03, 0xe8]));
+  let pending = Buffer.alloc(0);
+
+  socket.on('data', (chunk) => {
+    pending = Buffer.concat([pending, chunk]);
+
+    // Client frames are masked; lengths past 64 KB are not needed here.
+    while (pending.length >= 2) {
+      const opcode = pending[0] & 0x0f;
+      let length = pending[1] & 0x7f;
+      let offset = 2;
+
+      if (length === 126) {
+        if (pending.length < 4) {
+          return;
+        }
+        length = pending.readUInt16BE(2);
+        offset = 4;
+      }
+
+      const mask = offset;
+      offset += 4;
+
+      if (pending.length < offset + length) {
+        return;
+      }
+
+      const payload = Buffer.from(pending.subarray(offset, offset + length));
+      for (let i = 0; i < length; i++) {
+        payload[i] ^= pending[mask + (i & 3)];
+      }
+      pending = pending.subarray(offset + length);
+
+      if (opcode === 0x8 || payload.toString() === 'close-me') {
+        socket.end(goodbye);
+        return;
+      }
+
+      if (opcode === 0x1 || opcode === 0x2) {
+        socket.write(echoFrame(opcode, payload));
+      }
+    }
+  });
+});
+
 (async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   port = server.address().port;

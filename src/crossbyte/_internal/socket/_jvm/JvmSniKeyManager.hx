@@ -127,9 +127,11 @@ class JvmSniKeyManager extends X509ExtendedKeyManager {
 		}
 
 		if (alias != null && StringTools.startsWith(alias, SNI_PREFIX)) {
-			var index = Std.parseInt(alias.substr(SNI_PREFIX.length));
+			// -1 for anything that is not a plain index, where Std.parseInt
+			// throws on the jvm for one too big for an Int.
+			var index:Int = crossbyte.utils.IntParse.decimal(alias.substr(SNI_PREFIX.length));
 
-			if (index != null && index >= 0 && index < __entries.length) {
+			if (index >= 0 && index < __entries.length) {
 				return __entries[index];
 			}
 		}

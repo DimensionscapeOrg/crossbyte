@@ -186,14 +186,11 @@ function parseURL(input:String, defaultProtocol:Protocol = Protocol.TCP, ?endpoi
 		throw "empty port";
 	}
 
-	for (i in 0...n) {
-		var c:Int = p.charCodeAt(i);
-		if (c < 48 || c > 57) {
-			throw 'invalid port: $p';
-		}
-	}
-	var v:Null<Int> = Std.parseInt(p);
-	if (v == null || v < 0 || v > 65535) {
+	// Bounded as it is read, rather than read and then compared: Std.parseInt
+	// answers a number too big for an Int differently on every target, and on
+	// Linux native kept its low 32 bits, so a port of 4294967296 read as 0.
+	var v:Int = crossbyte.utils.IntParse.decimal(p, 65535);
+	if (v < 0) {
 		throw 'invalid port: $p';
 	}
 

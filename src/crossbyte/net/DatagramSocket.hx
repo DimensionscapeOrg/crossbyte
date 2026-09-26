@@ -27,6 +27,7 @@ import haxe.io.Bytes;
 import haxe.io.Eof;
 import haxe.io.Error as HxIOError;
 #if !js
+import crossbyte._internal.net.Resolver;
 import sys.net.Address;
 import sys.net.Host;
 import sys.net.UdpSocket;
@@ -210,7 +211,20 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	public var sendBufferSize(get, set):Int;
 
 	@:noCompletion private static inline var DEFAULT_BUFFER_SIZE:Int = 65535;
-	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 64;
+	// Most datagrams read in one go before the other sockets get their turn.
+	// It was 64, and the registry asks once a pass, so a socket could take in
+	// no more than 64 datagrams a pass, at 60 passes a second, 3,840 a
+	// second, whatever was arriving, with the rest left to overflow the
+	// kernel's buffer. Reading one costs a microsecond or two, so this still
+	// bounds a flood's hold on the loop to a few milliseconds.
+	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 1024;
+
+	// How long a name's answer is used before it is looked up again, how soon
+	// a lookup that failed to refresh one is tried again, and how many
+	// datagrams wait on a name's first answer before more are dropped.
+	@:noCompletion private static inline var NAME_LIFETIME:Float = 60.0;
+	@:noCompletion private static inline var NAME_RETRY:Float = 5.0;
+	@:noCompletion private static inline var MAX_HELD_PER_NAME:Int = 64;
 
 	// Failed reads in a row, with nothing succeeding between them, before the
 	// socket is called broken rather than merely complained at. Generous on
@@ -242,6 +256,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __remotePort:Int = 0;
 	#if nodejs
 	@:noCompletion private var __socket:NodeDatagram;
+
+	// Sends Node has not finished, and a close waiting for them. Node sends a
+	// turn later even to a numeric address, it looks the address up first,
+	// so closing straight after a send cancelled it: the FIN a closing
+	// session sends last was the datagram that never left.
+	@:noCompletion private var __sendsInFlight:Int = 0;
+	@:noCompletion private var __closeWhenSent:NodeDatagram = null;
+	@:noCompletion private var __onSent:js.lib.Error->Int->Void = null;
+
 	// Chosen from the first address this socket is given, because Node fixes
 	// the family when the socket is made where a sys.net.UdpSocket does not.
 	@:noCompletion private var __family:String = null;
@@ -250,6 +273,28 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	#else
 	@:noCompletion private var __socket:UdpSocket;
 	@:noCompletion private var __tempAddress:Address;
+
+	// What the last datagram's source host read as, so a run of datagrams
+	// from one peer names it once; and this socket's own address as a
+	// datagram reports it, asked once rather than for every datagram. Each
+	// datagram used to cost a Host, its formatting, and a getsockname() call.
+	@:noCompletion private var __sourceHost:Int = 0;
+	@:noCompletion private var __sourceText:String = null;
+	@:noCompletion private var __localText:String = null;
+	@:noCompletion private var __localNumber:Int = 0;
+
+	// Where the last datagram went, so a run of them to one peer builds the
+	// address once rather than once each. A name's answer is good until
+	// `__sendExpires`; an address's never goes stale.
+	@:noCompletion private var __sendAddress:String = null;
+	@:noCompletion private var __sendPort:Int = 0;
+	@:noCompletion private var __sendTarget:Address = null;
+	@:noCompletion private var __sendByName:Bool = false;
+	@:noCompletion private var __sendExpires:Float = 0;
+
+	// The names this socket has sent to: what each resolved to, and the
+	// datagrams waiting on one still being looked up.
+	@:noCompletion private var __names:haxe.ds.StringMap<DatagramName> = null;
 	#end
 	@:noCompletion private var __timeout:Int = 20000;
 
@@ -299,6 +344,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#else
 			__socket.bind(new Host(localAddress), localPort);
 			__bound = true;
+			__localText = null;
 			#end
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
@@ -325,9 +371,27 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		}
 
 		stopReceiving();
+		#if nodejs
+		if (__sendsInFlight > 0) {
+			// Closed once the last send is done; see __onSent.
+			__closeWhenSent = __socket;
+		} else {
+			try {
+				__socket.close();
+			} catch (_:Dynamic) {}
+		}
+		#else
 		try {
 			__socket.close();
 		} catch (_:Dynamic) {}
+		// Datagrams still waiting on a name go with the socket they were
+		// waiting to leave by; an answer arriving later finds nothing to do.
+		__names = null;
+		__sendTarget = null;
+		__sendAddress = null;
+		__localText = null;
+		__sourceText = null;
+		#end
 		__socket = null;
 		__bound = false;
 		__connected = false;
@@ -377,6 +441,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#else
 			var remote:Host = new Host(host);
 			__socket.connect(remote, port);
+			// Connecting can narrow the local address to one interface.
+			__localText = null;
 			__connected = true;
 			__remoteAddress = IPv6.compress(remote.toString());
 			__remotePort = port;
@@ -424,10 +490,23 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		Sends a UDP payload.
 		If the socket is connected, omit `address` and `port` to send to the connected
 		remote endpoint. If the socket is unconnected, `address` and `port` are required.
+
+		`address` may be a name, and it is not looked up on the runtime's
+		thread. Natively it is looked up on a thread of its own the first
+		time, and the datagram leaves when the answer comes; up to 64
+		datagrams to a name wait for its first answer, and more are dropped,
+		as a full send buffer drops them. The answer is used for a minute and
+		then refreshed while it goes on being used, so a name in use never
+		waits again. On Node, Node looks the name up for each datagram,
+		asynchronously. Either way a name that does not resolve is reported
+		as an `ioError` event, and the datagrams sent to it are dropped. On a
+		thread with no CrossByte runtime a name is looked up in the call, as
+		it always was.
+
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which sending should begin.
 		@param length The number of bytes to send. Use `0` to send all remaining bytes from `offset`.
-		@param address The destination IP address for an unconnected socket.
+		@param address The destination address or name for an unconnected socket.
 		@param port The destination UDP port for an unconnected socket.
 		@throws ArgumentError If the destination information is invalid.
 		@throws RangeError If `offset`, `length`, or `port` are out of range.
@@ -481,15 +560,24 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			// to send.
 			var payload:ByteArray = new ByteArray();
 			payload.writeBytes(bytes, offset, length);
-			__nodeSocket(address).send(Buffer.hxFromBytes(payload), 0, length, port, address);
+			if (__onSent == null) {
+				__onSent = __sent;
+			}
+			__nodeSocket(address).send(Buffer.hxFromBytes(payload), 0, length, port, address, __onSent);
+			__sendsInFlight++;
 			__rememberLocalEndpoint();
 			#else
-			var host:Host = new Host(address);
-			var target:Address = new Address();
-			target.setHost(host);
-			target.port = port;
+			var target:Null<Address> = __targetFor(address, port);
+			if (target == null) {
+				// A name still being looked up: held until the answer comes.
+				__holdForName(address, port, bytes, offset, length);
+				return;
+			}
 			__socket.sendTo(cast bytes, offset, length, target);
-			__bound = __getLocalEndpoint() != null;
+			// Asked once, not per datagram: a bound socket stays bound.
+			if (!__bound) {
+				__bound = __getLocalEndpoint() != null;
+			}
 			#end
 		} catch (e:HxIOError) {
 			// The listener already gets the real reason; so does the caller.
@@ -504,6 +592,191 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 		}
 	}
+
+	#if nodejs
+	/**
+		Node's word that a send has finished, one way or the other. The last
+		one to finish closes a socket that was closed while they were out.
+
+		A send that failed is reported, as one natively is. Node reports it
+		here once a send is given a callback, instead of as the socket's
+		"error" event, so without this a name that did not resolve, or a
+		datagram too large to send, went unreported.
+	**/
+	@:noCompletion private function __sent(error:js.lib.Error, _:Int):Void {
+		__sendsInFlight--;
+
+		if (__sendsInFlight <= 0 && __closeWhenSent != null) {
+			var socket:NodeDatagram = __closeWhenSent;
+			__closeWhenSent = null;
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		}
+
+		if (error != null && !__closed) {
+			// Contained: this runs from Node's event loop.
+			try {
+				__dispatchSendError("A datagram could not be sent: " + Std.string(error.message));
+			} catch (thrown:Dynamic) {
+				// To report through runtime.__uncaught(thrown, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
+				crossbyte.utils.Logger.error('An "ioError" listener threw: ' + Std.string(thrown));
+			}
+		}
+	}
+	#else
+	/**
+		The address to send a datagram for `address`:`port` to, or null while
+		`address` is a name still being looked up.
+
+		A name used to be looked up here on every datagram, on the runtime's
+		thread: each send to one waited on the resolver, and one that did not
+		resolve held every socket and timer on the runtime for as long as the
+		resolver took to say so. It is now looked up once, off the thread (see
+		`Resolver`), and the answer used for `NAME_LIFETIME` seconds; after
+		that the old answer goes on being used while a new one is fetched.
+
+		The last destination is kept as well, so a run of datagrams to one
+		peer, the usual shape, builds its address once rather than a
+		`Host` and an `Address` per datagram.
+	**/
+	@:noCompletion private function __targetFor(address:String, port:Int):Null<Address> {
+		if (__sendTarget != null && port == __sendPort && address == __sendAddress
+			&& (!__sendByName || haxe.Timer.stamp() < __sendExpires)) {
+			return __sendTarget;
+		}
+
+		var host:Host;
+		var expires:Float = 0;
+		// Without a runtime on this thread there is nothing to hand an answer
+		// back to, so a name is looked up here, as it always was.
+		var byName:Bool = Resolver.needsLookup(address) && Resolver.runtimeHere() != null;
+
+		if (byName) {
+			if (__names == null) {
+				__names = new haxe.ds.StringMap();
+			}
+			var name:DatagramName = __names.get(address);
+			if (name == null) {
+				name = new DatagramName();
+				__names.set(address, name);
+			}
+
+			var now:Float = haxe.Timer.stamp();
+			if (name.host == null || now >= name.expires) {
+				__lookUp(address, name);
+			}
+			if (name.host == null) {
+				return null;
+			}
+			host = name.host;
+			expires = name.expires;
+		} else {
+			host = new Host(address);
+		}
+
+		var target:Address = new Address();
+		target.setHost(host);
+		target.port = port;
+
+		__sendAddress = address;
+		__sendPort = port;
+		__sendTarget = target;
+		__sendByName = byName;
+		__sendExpires = expires;
+		return target;
+	}
+
+	/** Looks `address` up for `name`, unless it is already being. **/
+	@:noCompletion private function __lookUp(address:String, name:DatagramName):Void {
+		if (name.pending) {
+			return;
+		}
+		name.pending = true;
+
+		var socket:UdpSocket = __socket;
+		Resolver.resolve(address, function(host:Null<Host>, failure:Null<String>):Void {
+			name.pending = false;
+			// Closed meanwhile: nothing to send, and nobody to tell.
+			if (__socket == socket) {
+				__onNameAnswer(address, name, host, failure);
+			}
+		});
+	}
+
+	/**
+		A name's answer. What waited on it is sent, or, for a name that did
+		not resolve, dropped and reported, once for all of it.
+	**/
+	@:noCompletion private function __onNameAnswer(address:String, name:DatagramName, host:Null<Host>, failure:Null<String>):Void {
+		var now:Float = haxe.Timer.stamp();
+
+		// An address built from the old answer is rebuilt from this one.
+		if (__sendAddress == address) {
+			__sendTarget = null;
+		}
+
+		if (host != null) {
+			name.host = host;
+			name.expires = now + NAME_LIFETIME;
+		} else if (name.host != null) {
+			// A refresh that failed. The answer it would have replaced is
+			// the best there is, and the name is asked about again soon.
+			name.expires = now + NAME_RETRY;
+		} else if (__names != null) {
+			// Never resolved: forgotten, so the next send asks again rather
+			// than being refused on the strength of one failure.
+			__names.remove(address);
+		}
+
+		var held:Array<HeldDatagram> = name.held;
+		name.held = null;
+		if (held == null) {
+			return;
+		}
+
+		if (name.host == null) {
+			__dispatchSendError("Could not send to " + address + ": the name did not resolve"
+				+ (failure != null ? " (" + failure + ")" : "") + ", so " + held.length
+				+ (held.length == 1 ? " datagram waiting on it was" : " datagrams waiting on it were") + " dropped.");
+			return;
+		}
+
+		var target:Address = new Address();
+		target.setHost(name.host);
+		for (datagram in held) {
+			// A listener told of a failed send may have closed the socket.
+			if (__socket == null) {
+				return;
+			}
+			target.port = datagram.port;
+			try {
+				__socket.sendTo(datagram.bytes, 0, datagram.bytes.length, target);
+			} catch (e:Dynamic) {
+				__dispatchSendError("Send to " + address + ":" + datagram.port + " failed: " + Std.string(e));
+			}
+		}
+
+		if (!__bound) {
+			__bound = __getLocalEndpoint() != null;
+		}
+	}
+
+	/** Keeps a copy of a datagram to `address` until the name's answer comes. **/
+	@:noCompletion private function __holdForName(address:String, port:Int, bytes:ByteArray, offset:Int, length:Int):Void {
+		var name:DatagramName = __names.get(address);
+		if (name.held == null) {
+			name.held = [];
+		}
+		if (name.held.length >= MAX_HELD_PER_NAME) {
+			return;
+		}
+
+		var copy:Bytes = Bytes.alloc(length);
+		copy.blit(0, bytes, offset, length);
+		name.held.push(new HeldDatagram(port, copy));
+	}
+	#end
 
 	/**
 		Stops receiving datagrams and removes the socket from the registry if it is
@@ -565,17 +838,31 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			var packetBytes:Bytes = Bytes.alloc(bytesReady);
 			packetBytes.blit(0, __readBuffer, 0, bytesReady);
 
-			var local = __getLocalEndpoint();
-			var srcHost:Host = __tempAddress.getHost();
+			if (__localText == null) {
+				var local = __getLocalEndpoint();
+				if (local != null) {
+					__localText = IPv6.compress(local.host.toString());
+					__localNumber = local.port;
+				}
+			}
+
+			// An IPv4 source is its number; an IPv6 one is named afresh.
+			var source:String = __sourceText;
+			if (source == null || __tempAddress.host != __sourceHost || @:privateAccess __tempAddress.ipv6 != null) {
+				source = IPv6.compress(__tempAddress.getHost().toString());
+				__sourceText = @:privateAccess __tempAddress.ipv6 == null ? source : null;
+				__sourceHost = __tempAddress.host;
+			}
+
 			var payload:ByteArray = ByteArray.fromBytes(packetBytes);
 			payload.endian = __endian;
 
 			dispatchEvent(new DatagramSocketDataEvent(
 				DatagramSocketDataEvent.DATA,
-				IPv6.compress(srcHost.toString()),
+				source,
 				__tempAddress.port,
-				local != null ? IPv6.compress(local.host.toString()) : "",
-				local != null ? local.port : 0,
+				__localText != null ? __localText : "",
+				__localText != null ? __localNumber : 0,
 				payload
 			));
 
@@ -709,12 +996,27 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		__family = family;
 		__socket = Dgram.createSocket({type: family});
 
+		// Contained: these run from Node's event loop, and a listener that
+		// threw there ended the process. A datagram socket is not closed for
+		// it, one socket carries every peer of a server, and one handler
+		// failing on one datagram is no reason to stop hearing the rest, so
+		// the failure is logged and the next datagram delivered as usual.
 		__socket.on("message", function(message:Buffer, remote:js.node.dgram.Socket.MessageRemoteInfo):Void {
-			__receiveNode(message, remote);
+			try {
+				__receiveNode(message, remote);
+			} catch (e:Dynamic) {
+				// To report through runtime.__uncaught(e, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
+				crossbyte.utils.Logger.error('A datagram listener threw handling a datagram from ${remote.address}:${remote.port}: ' + Std.string(e));
+			}
 		});
 
 		__socket.on("error", function(e:Dynamic):Void {
-			__dispatchIoError(Std.string(e));
+			try {
+				__dispatchIoError(Std.string(e));
+			} catch (thrown:Dynamic) {
+				// To report through runtime.__uncaught(thrown, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
+				crossbyte.utils.Logger.error('An "ioError" listener threw: ' + Std.string(thrown));
+			}
 		});
 	}
 
@@ -984,4 +1286,27 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		return value;
 	}
 }
+
+#if !nodejs
+/** A name a socket has sent to: its answer, and what waits on the first. **/
+private class DatagramName {
+	public var host:Null<Host> = null;
+	public var expires:Float = 0;
+	public var pending:Bool = false;
+	public var held:Null<Array<HeldDatagram>> = null;
+
+	public function new() {}
+}
+
+/** A datagram waiting on its destination's name, copied when it was sent. **/
+private class HeldDatagram {
+	public final port:Int;
+	public final bytes:Bytes;
+
+	public function new(port:Int, bytes:Bytes) {
+		this.port = port;
+		this.bytes = bytes;
+	}
+}
+#end
 #end

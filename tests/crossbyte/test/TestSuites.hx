@@ -220,6 +220,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.LocalAddressTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramProtocolTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
+		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
+		runner.addCase(new crossbyte.net.SocketCloseTest());
+		runner.addCase(new crossbyte.net.NameLookupTest());
+		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
 		// Deliberately unguarded: the exact-buffer read-loop hang it protects
 		// against lives on the interpreter, where sockets cannot be made
 		// non-blocking. Guarding it to cpp would run it only where the bug
@@ -253,6 +257,22 @@ class TestSuites {
 		// someone named, and this covers the ones nobody did. Same hand-written
 		// client, same gate, both drive the server through a real socket.
 		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
+		// Not on eval, whose TLS handshake cannot be made non-blocking.
+		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		runner.addCase(new crossbyte.net.WebSocketClientTest());
+		runner.addCase(new crossbyte.net.WebSocketSessionTest());
+		// Not on eval either: its sockets block, so a write to a peer that has
+		// stopped reading waits rather than buffering.
+		runner.addCase(new crossbyte.net.SocketOutputTest());
+		#end
+		// Registered for the browser, which reaches it through PortableSuite;
+		// written here too so the one list describes everything that runs.
+		#if (js && !nodejs)
+		runner.addCase(new crossbyte.net.BrowserSocketTest());
+		#end
+		// Node's event loop, which only Node has; reached through PortableSuite.
+		#if nodejs
+		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());

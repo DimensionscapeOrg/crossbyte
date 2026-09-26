@@ -204,6 +204,26 @@ All notable changes to CrossByte will be documented in this file.
   `onHandlerError` and `afterCall` are told, and the call gives up its
   place among `maxCallsWaiting`, where a future that never completed held
   one of the 256 for good.
+- `ServerSocket.acceptFailures` and `ServerSocket.handshakeFailures` count
+  the connections a server could not take from its listen queue and the
+  TLS handshakes that failed or timed out, which left no trace before.
+- A WebSocket server sees the request a session was opened by, and decides
+  on it. `ServerWebSocket.upgrade(request)` is asked before the `101` goes
+  out and can refuse the session, answered with `request.status`, 403
+  unless changed, or choose its subprotocol; `WebSocketRequest` carries
+  the path, query, headers, cookies, `Origin`, the subprotocols offered and
+  the peer's address, and the session keeps it as `WebSocket.request`. The
+  request was parsed and thrown away, so a session could not be
+  authenticated, a page from another site could not be refused, and a
+  browser that offered a subprotocol failed to connect at all: none was
+  ever echoed. `WebSocket.protocols` asks for subprotocols from a client
+  and `protocol` says which was agreed. `sendText` sends a message a
+  browser receives as a string, where everything was binary and reached a
+  page as a `Blob`; `sendBinary` sends one at once. A session with a
+  listener for the new `WebSocketMessageEvent.MESSAGE` receives each
+  message whole, with whether it was text, where messages ran together into
+  one stream. `ping()`, `pong()`, `pingInterval` and `idleTimeout` are
+  public, on the session and, for the sessions it accepts, on the server.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -827,6 +847,69 @@ All notable changes to CrossByte will be documented in this file.
   each. On a heartbeat timeout `onClose` is told once, with the reason the
   transport gives for a close, `Closed`, rather than `Closed` and then
   `Timeout`; the calls waiting fail with a message saying it timed out.
+- A host name is looked up off the runtime's thread. `Socket`, `WebSocket`
+  and `ReliableDatagramSocket` looked the name given to `connect()` up in
+  the call, and `DatagramSocket` looked one up in every `send()`, so every
+  socket and timer on the runtime waited on the resolver: a name that does
+  not exist held the loop for a second on the interpreter, two natively,
+  and a client reconnecting in a loop did it again exactly while the
+  resolver was failing. Now the name is looked up on a thread of its own
+  and the connect finished on the runtime's thread when the answer comes;
+  the attempt's timeout counts the lookup. A `DatagramSocket` looks a name
+  up once and uses the answer for a minute, refreshing it in the
+  background, and datagrams sent while the first answer is awaited wait
+  for it (up to 64 per name). What to change: a name that does not resolve
+  is reported by an `ioError` event after the call returns,
+  `ReliableDatagramSocket.connect()` and `DatagramSocket.send()` used to
+  throw `ArgumentError` for one, and no longer do, so listen for `ioError`;
+  the reliable session then closes, as a timed-out attempt does. A
+  malformed address is still thrown at once. On Node, a `DatagramSocket`
+  send that fails, a name that does not resolve, a datagram too large,
+  is reported as `ioError` and leaves the socket receiving, as natively;
+  it stopped the socket receiving.
+- A WebSocket session pings a peer it has heard nothing from for 30
+  seconds, and closes with 1006 one it has heard nothing from for 60. The
+  heartbeat was dead code on both ends and there was no idle timeout, so a
+  peer that vanished without closing was held for good with everything sent
+  to it piling up. Both are set per session or, for its sessions, on the
+  server; zero turns either off. And an accepted subprotocol is now echoed:
+  with no `upgrade` hook, the first one a client offers is accepted.
+- `WebSocket.closeWith()`: and so `ServerWebSocket.drain()`, carries out
+  the closing handshake. The close frame carries its code and reason, where
+  it carried nothing and a peer saw 1005 or 1000, so a drain's 1001 never
+  arrived; the connection stays up for the peer's answer, with everything
+  written before the close still going out first, natively it was closed
+  straight after queueing the frame, which dropped both the frame and what
+  was queued ahead of it, and closes once the answer comes, or after five
+  seconds. The `close` event reports the code and reason the peer answered
+  with, or 1006 if it never did. A peer that breaks the protocol is sent a
+  close frame saying why before the connection goes. `close()` still closes
+  at once.
+- A reliable datagram session that has nothing to say stays up, and one
+  whose peer has gone is given up after a minute. A session sent no
+  keepalive and closed itself when it had heard nothing for 75 seconds, so a
+  quiet session died somewhere between 75 and 150 seconds in with both ends
+  running, while a dead peer took as long to notice. Now a session that has
+  sent nothing for `keepAliveInterval` (15 seconds, which also holds a NAT's
+  mapping open) sends a keepalive, and one that has heard nothing for
+  `idleTimeout` (60 seconds) dispatches `ioError` and closes. Both are set
+  on `ReliableDatagramSocket`, or on `ReliableDatagramServerSocket` for the
+  sessions it accepts and dials; zero turns either off. The keepalive is
+  the session's HANDSHAKE sent again, which every version answers with an
+  acknowledgement, so an older peer keeps the session up as well.
+- A `wss://` client checks the server's certificate: that it chains to an
+  authority the client trusts, and that it names the host being connected
+  to. Every secure `WebSocket`, and so every `NetConnection` to a
+  `wss://` address, was built with verification off natively, and
+  accepted any certificate for any host, so whoever could sit in the path
+  could present one of their own and read the session. There was no way to
+  turn it on. `WebSocket.verifyCert` (on by default) and
+  `WebSocket.certAuthority` now say what to trust, on every target,
+  including Node, which verified already but could be told neither.
+  `secure` is a documented public setting. A client of a development server
+  with a self-signed certificate must now either trust it,
+  `certAuthority = Certificate.fromFile("server.pem")`: or set
+  `verifyCert = false`.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -1686,6 +1769,154 @@ All notable changes to CrossByte will be documented in this file.
   `session.commands`. `session` joins `ping` and `dispatch` as a name a
   contract cannot use. The guide now gives one `ChatHandler` to every
   client, and says how one handler serves many.
+- A port in a URL that is too big for an `Int` is refused the same way on
+  every target, as any port past 65535 is. `parseURL` and a WebSocket URL
+  read it with `Std.parseInt`, which answers such a number differently on
+  each: on Linux native its low 32 bits, so `tcp://host:4294967296` was port
+  0; on Windows the largest `Int`; on eval nothing, so a WebSocket took its
+  default port; on the jvm a `NumberFormatException` instead of the parse
+  error the caller was told to expect.
+- A `ServerSocket` that cannot take a waiting connection, the process
+  out of descriptors, says so, once for a run of failures, as an
+  `ioError`, and goes on listening. Natively the failure was swallowed,
+  so a server out of descriptors looked idle; on the jvm it closed the
+  server.
+- Removing one `connect` listener from a `ServerSocket` no longer stops it
+  accepting while others are still listening.
+- A `DatagramSocket` reads everything waiting, up to 1,024 datagrams, each
+  time it is found readable. It read 64, and it is asked once a pass, so it
+  could take in 3,840 datagrams a second at 60 passes whatever was
+  arriving. Each datagram also cost a system call for the socket's own
+  address and a formatted copy of the sender's; both are now kept. Reading
+  2,000 waiting datagrams over loopback took 2.9 us each and 32 passes; it
+  takes 1.7 us and 2. On the jvm every read also allocated, and zeroed, a
+  64 KB buffer to receive into and copy out of; it now receives straight
+  into the socket's own, and a datagram takes 1.7 us to read there rather
+  than 3.7.
+- Writing to a `Socket` before its connect has finished is no longer an
+  error natively: the bytes wait and go once it has. The flush wrote to the
+  socket anyway, which Windows refuses, so it threw, and the tick reported
+  the same refusal as an `ioError` on every tick until the connect
+  finished.
+- A backlog drains in time proportional to its size. Every write the
+  socket took only part of copied everything still waiting into a new
+  buffer, the output side of the fix the input side already had, so
+  draining a backlog cost a copy of it per write, and a TLS socket makes
+  one every 16 KB record: through a socket taking 16 KB a write and 64 KB
+  a pass, flushing a 16 MB backlog spent 2,395 ms copying, 4 MB 144 ms.
+  What has gone is now stepped over, and the buffer compacted only when
+  that is at least what remains: 1.5 ms and 0.3 ms. A flush also writes
+  until the socket takes no more, where it wrote once, so a TLS socket
+  sent one record a pass whatever room the kernel had: the 16 MB went in
+  256 passes rather than 1,024. `Socket` and WebSocket sessions both, and
+  a WebSocket frame with nothing queued ahead of it goes to the socket
+  without first being copied into the queue.
+- On Node a WebSocket session counts what Node has queued for it. Its
+  `outputBufferLength` read 0 however much was waiting, so
+  `ServerWebSocket.drain()` waited on nothing, and `maxOutputBufferSize`
+  was checked after a return that path always took: a session to a peer
+  that had stopped reading grew without bound. It now closes with 1011 at
+  the limit, as it does natively.
+- `DatagramSocket.send()` is a fifth quicker natively: 5.3 us a datagram
+  where it took 6.9, to one destination over loopback. Every send asked
+  the system for the socket's local address, to learn whether it was bound
+  yet, and built a `Host` and an `Address` for its destination; it now asks
+  until the socket is bound, and keeps the last destination's address.
+- On Node an open connection is no longer visited every tick. Each Node
+  socket was ticked for as long as it was open, to flush whatever had been
+  written: 400 idle sockets cost a pump 3.4 us, and the cost grew with
+  every connection held. A write now asks for a flush at the end of the
+  pass, sooner than the next tick, and a socket is ticked only while a
+  streaming response is feeding it: the same pump costs 0.3 us, with no
+  tick listeners.
+- A connection's end is announced once, and the same way everywhere.
+  Natively a peer that connected and hung up within a tick, a load
+  balancer's health check, was announced closed twice, a tick after the
+  first time, so an `onDisconnect` ran twice and a live-connection count
+  drifted down by one per check. On Node a peer that left left its socket
+  connected and flushed from every tick for good: 200 tick listeners after
+  200 HTTP clients had come and gone. The socket is now released when Node
+  closes it, as a native one is. And Node sockets are half-open, so a
+  peer's FIN is decided by `peerShutdownPolicy` as it is natively: under
+  `HALF_OPEN` the socket stays writable and dispatches `PEER_CLOSE`, where
+  Node ended its own side at once and a peer that half-closed to finish its
+  request never got the answer. Under `CLOSE`, as before, it is closed.
+- On Node, a socket listener that throws costs its own connection, not the
+  process. A socket's events arrive from Node's event loop rather than from
+  anything of CrossByte's, so an exception from a listener, a data handler
+  meeting a message it could not parse, went to Node, which exited: every
+  other client went with the one that sent it. Now it is logged at ERROR
+  and that connection closed: a `Socket` closed, a WebSocket session closed
+  with 1011, a connection whose `connect` listener threw on a `ServerSocket`
+  closed. A `DatagramSocket` is left open, since one socket carries every
+  peer, and the next datagram is delivered as usual.
+- WebSocket sessions are read when there is something to read, not on every
+  tick. Each open session added a tick listener of its own and made a
+  receive every tick whether or not anything had arrived, on hxcpp one
+  that raised an exception to say nothing had, so ten thousand idle
+  sessions cost over a hundred thousand system calls a second. They now sit
+  in the runtime's socket registry, read when their socket is readable and
+  retried when a write is waiting, and an idle one costs nothing. A session
+  a server accepted reports its peer's address and port, and its own, where
+  it reported none; an upgrade the server cannot accept is answered with a
+  status rather than a dropped connection; and what a session has read past
+  is let go once there is enough of it, rather than kept until a read ends
+  exactly on a frame.
+- A reliable datagram peer that crashes and comes back on the same address
+  and port gets back in. Its old session on the server took every CONNECT
+  the new one sent, answered none, and was kept alive by them, so the peer
+  was locked out for as long as it kept trying: 29 attempts over 173
+  seconds, in the case that found it. A CONNECT now carries an id for its
+  attempt, in a field older builds never read; one with a new id, from the
+  address of a session already held, has the server ask the old peer
+  whether it is still there, and the next CONNECT to find no answer replaces
+  the session, about three seconds on. A peer still there answers, so a
+  CONNECT sent in its name cannot take its session. A HANDSHAKE echoes the
+  id it answers, so a new attempt ignores one meant for its predecessor.
+  `ReliableDatagramServerSocket.close()` sends each session's peer a FIN,
+  where it sent nothing and every client went on sending into a closed port;
+  and a server answers a peer that sends as though it had a session and has
+  none, the server restarted, or gave it up, with a FIN, ending that
+  session at once rather than at the peer's own timeout. On Node, closing a
+  `DatagramSocket` waits for its sends to finish, since Node sends a turn
+  later and closing cancelled them: the FIN a closing session sends last
+  never left.
+- In a browser, a `Socket` sends each write once. It sent its buffer and
+  never cleared it, and the tick flushes every pass, so one write went out
+  again on every tick for as long as the connection lasted: an 11-byte write
+  reached the server as 25 messages in two seconds. A write made while the
+  page's WebSocket is still connecting waits for it to open, where it threw
+  out of the tick. A connection the server closes is cleaned up, it stayed
+  connected and flushed from every tick, and announces CLOSE once, or an
+  ioError alone if it never opened. `outputBufferLength` counts what the
+  page's WebSocket has queued. The browser suite now runs a page's `Socket`
+  against an echo endpoint `ci/browser/run.js` serves beside it.
+- On Node, a socket written to faster than its peer reads sends what was
+  written. A flush handed Node a view over the socket's output buffer and
+  then cleared the buffer for reuse, so the next write landed on bytes Node
+  still had queued: ten 1 MB messages to a paused client arrived as the
+  first five and then 5 MB of the last, and a 12 MB file from `HTTPServer`
+  reached a slow download with 786,432 bytes wrong. Each flush now copies.
+  `outputBufferLength` and `bytesPending` count what Node has queued, which
+  is where the backlog is there, so `maxOutputBufferSize` is reached on Node,
+  it never was, and a peer closed for passing it has its queue dropped
+  rather than flushed. The HTTP server's streaming watermark, which reads
+  the same figure, now holds a download to a slow client on Node too.
+- A WebSocket session whose TLS handshake fails, or whose connect times
+  out, closes its socket. Only a session that had opened was closed, so a
+  server held the descriptor of every connection that failed its handshake,
+  and its peer waited on it, for as long as the process ran. A client
+  now reports why a connection failed, a refused certificate included, as
+  an `IOErrorEvent` with the reason in its text, where it dispatched a bare
+  event of that type with none; a connect that fails at once is reported
+  rather than waited out; and the answer to its upgrade is waited for no
+  longer than `timeout`, where a server that accepted and never answered
+  held it in CONNECTING for good. On jvm a WebSocket client could not be
+  made at all: it set a byte order on an output the socket does not have
+  until it connects. And a jvm TLS client made non-blocking no longer
+  completes its handshake inside `connect()`, which held the runtime's
+  thread and, against a server on the same runtime, waited twenty seconds
+  for an answer its own wait was preventing.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the
