@@ -704,6 +704,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- In a browser, a `Socket` sends each write once. It sent its buffer and
+  never cleared it, and the tick flushes every pass, so one write went out
+  again on every tick for as long as the connection lasted: an 11-byte write
+  reached the server as 25 messages in two seconds. A write made while the
+  page's WebSocket is still connecting waits for it to open, where it threw
+  out of the tick. A connection the server closes is cleaned up, it stayed
+  connected and flushed from every tick, and announces CLOSE once, or an
+  ioError alone if it never opened. `outputBufferLength` counts what the
+  page's WebSocket has queued. The browser suite now runs a page's `Socket`
+  against an echo endpoint `ci/browser/run.js` serves beside it.
 - On Node, a socket written to faster than its peer reads sends what was
   written. A flush handed Node a view over the socket's output buffer and
   then cleared the buffer for reuse, so the next write landed on bytes Node
