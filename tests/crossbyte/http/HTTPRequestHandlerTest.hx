@@ -137,6 +137,19 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, false, null, null, root);
 	}
 
+	public function testAValidatorPast2038StillAnswers304(async:Async):Void {
+		// Seconds since 1970 leave an Int in January 2038. The comparison
+		// floored both sides with Math.floor, which returns an Int, and on
+		// hxcpp the wrap made a 2100 date compare as long ago -- a 200 with
+		// the whole file where a 304 was due.
+		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nIf-Modified-Since: Fri, 01 Jan 2100 00:00:00 GMT\r\n\r\n",
+			function(response):Void {
+				Assert.equals(304, response.status);
+				Assert.equals("", response.body);
+				async.done();
+			});
+	}
+
 	public function testMiddlewareHelpersAreAvailableAndCaseInsensitive(async:Async):Void {
 		var method:String = null;
 		var requestPath:String = null;
