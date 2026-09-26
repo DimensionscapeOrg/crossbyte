@@ -716,6 +716,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Future`'s `RESULT` or `ERROR` listener that throws is contained, as a
+  `then` callback that throws already was: logged, and nothing else
+  affected. It escaped into whatever completed the future. For an
+  `RPCResponse` that was the session reading its connection, which took
+  the throw for a frame it could not read, closed the connection and
+  failed every call still waiting -- and failing those ran their
+  listeners too, so one that threw escaped out of the read altogether.
 - An RPC session on a listening `LocalConnection` answers every client it
   takes, not just the first. The listener takes its next client on the
   same object, and the session stayed ended once the first had gone: for

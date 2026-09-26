@@ -382,6 +382,39 @@ class RPCTest extends utest.Test {
 		Assert.equals("player-9", after.result, "the frame after a failing call was dropped");
 	}
 
+	public function testAListenerThatThrowsLeavesTheConnectionAndTheOtherCallsAlone():Void {
+		// `then` callbacks were contained and RESULT and ERROR listeners were
+		// not: a listener's throw reached the session reading the answers,
+		// which took it for a frame it could not read, closed the connection,
+		// and failed every call still waiting -- including the next answer in
+		// the same read.
+		var link = LinkedConnection.pair();
+		var commands = new FailingCommands();
+		var clientSession = new RPCSession<FailingCommands>(link.client, commands);
+		var serverSession = new RPCSession(link.server, null, new FailingHandler());
+		reportsOf(serverSession);
+		var ended = endingOf(link.client);
+		var logged = [];
+		var sink = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = line -> logged.push(line);
+
+		link.client.bufferInbound = true;
+		var answered = commands.lookup(1);
+		answered.addEventListener(RPCResponse.RESULT, _ -> throw "a bug in a result listener");
+		var refused = commands.lookup(-1);
+		refused.addEventListener(RPCResponse.ERROR, _ -> throw "a bug in an error listener");
+		var after = commands.lookup(2);
+		link.client.bufferInbound = false;
+		link.client.deliverBufferedAsOneRead();
+		crossbyte.utils.Logger.sink = sink;
+
+		Assert.equals("player-1", answered.result);
+		Assert.equals("no player -1", refused.error);
+		Assert.equals("player-2", after.result, "the call answered after a throwing listener's was failed");
+		Assert.isFalse(ended.value, "a listener throwing ended the connection");
+		Assert.equals(2, logged.length, "the listeners' throws were not reported: " + logged.join(" | "));
+	}
+
 	public function testCallsWaitingOnThisSideSurviveAHandlerThatThrows():Void {
 		// Each side both calls and answers. The server has a call out to the
 		// client when a call from the client fails on the server: ending the
