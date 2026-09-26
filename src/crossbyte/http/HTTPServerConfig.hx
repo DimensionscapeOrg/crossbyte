@@ -109,8 +109,27 @@ class HTTPServerConfig {
 	**/
 	public var rateLimiter:RateLimiter;
 	public var corsEnabled:Bool;
+
+	/**
+		Origins a cross-origin page may read responses from, such as
+		`https://app.example.com`, or `["*"]` -- the default -- for any.
+
+		`"*"` is answered as `*`, never by echoing the request's `Origin`, and
+		cannot be combined with `corsAllowCredentials`: `validate` refuses the
+		pair, since it would let every site read what a signed-in user can.
+	**/
 	public var corsAllowedOrigins:Array<String>;
+
+	/**
+		Methods a preflight approves. The answer is this list whatever the
+		preflight asked for; a browser then refuses a method not on it.
+	**/
 	public var corsAllowedMethods:Array<String>;
+
+	/**
+		Request headers a preflight approves, such as `Authorization`. The
+		answer is this list whatever the preflight asked for.
+	**/
 	public var corsAllowedHeaders:Array<String>;
 	public var corsMaxAge:Int;
 	public var maxConnections:Int;
@@ -441,6 +460,14 @@ class HTTPServerConfig {
 				throw new ArgumentError("tryFiles repeats \"" + tryFiles[i] + "\" at index " + i
 					+ "; it is only ever tested first, so the later entry does nothing.");
 			}
+		}
+
+		// Credentials are a grant of the signed-in user's data to the origins
+		// named, and "*" names every site. The server honoured the pair by
+		// echoing whatever Origin arrived, with Allow-Credentials: true, so any
+		// page on the web could read a user's /me with their cookies.
+		if (corsEnabled && corsAllowCredentials && corsAllowedOrigins != null && corsAllowedOrigins.indexOf("*") != -1) {
+			throw new ArgumentError("corsAllowCredentials needs corsAllowedOrigins to name the origins it trusts, such as [\"https://app.example.com\"]; with \"*\" every site could read what a signed-in user can.");
 		}
 
 		// Each of these names files under the document root. Without one they
