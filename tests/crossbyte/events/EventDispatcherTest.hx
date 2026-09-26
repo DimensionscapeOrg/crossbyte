@@ -2,7 +2,28 @@ package crossbyte.events;
 
 import utest.Assert;
 
+@:access(crossbyte.events.EventDispatcher)
 class EventDispatcherTest extends utest.Test {
+	public function testAContainedDispatchRunsEveryListenerPastOneThatThrows():Void {
+		var dispatcher = new FailureRecorder();
+		var order:Array<String> = [];
+
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("first"));
+		dispatcher.addEventListener("demo", (_:Event) -> {
+			order.push("second");
+			throw "listener bug";
+		});
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("third"));
+
+		Assert.isTrue(dispatcher.__dispatchContained(new Event("demo")));
+		Assert.same(["first", "second", "third"], order);
+		Assert.same(["listener bug"], dispatcher.failures);
+
+		// The ordinary dispatch is unchanged: a component dispatching its own
+		// events still hears that a listener failed.
+		Assert.raises(() -> dispatcher.dispatchEvent(new Event("demo")));
+	}
+
 	public function testHigherPriorityRunsFirst():Void {
 		var dispatcher = new EventDispatcher();
 		var order:Array<String> = [];
@@ -87,5 +108,17 @@ private class DispatcherOwner implements IEventDispatcher {
 
 	public function dispatch(event:Event):Bool {
 		return dispatcher.dispatchEvent(event);
+	}
+}
+
+private class FailureRecorder extends EventDispatcher {
+	public var failures:Array<Dynamic> = [];
+
+	public function new() {
+		super();
+	}
+
+	override private function __listenerThrew(error:Dynamic, event:Event):Void {
+		failures.push(error);
 	}
 }

@@ -11,6 +11,7 @@ class TimerHeap implements ITimerScheduler {
 	public var isEmpty(get, never):Bool;
 	public var time(get, never):Float;
 	public final startTime:Float = HxTimer.stamp();
+	public var onError:Dynamic->Void = null;
 
 	private final queue:TimerQueue = new TimerQueue();
 	private var nodes:Array<TimerNode> = [];
@@ -177,6 +178,15 @@ class TimerHeap implements ITimerScheduler {
 				} else {
 					var gen:Int = gens[node.id];
 
+					// Each callback is contained. A timer that throws is settled
+					// exactly as if it had returned, a recurring one re-armed, a
+					// one-shot freed, and only then is the failure passed on.
+					// Letting it propagate from inside the call left a recurring
+					// timer dequeued for good, its handle still reading as live,
+					// and took whatever was driving the scheduler down with it.
+					var failed:Bool = false;
+					var failure:Dynamic = null;
+
 					#if timer_burst_catchup
 					if (node.interval > 0) {
 						var steps:Int = Std.int(Math.floor((__now - node.time) / node.interval)) + 1;
@@ -189,11 +199,18 @@ class TimerHeap implements ITimerScheduler {
 
 						var i:Int = 0;
 						while (i < fires && node.enabled) {
-							node.callback(new TimerHandle(node.id, gen));
+							try {
+								node.callback(new TimerHandle(node.id, gen));
+							} catch (error:Dynamic) {
+								failed = true;
+								failure = error;
+							}
 							i++;
 							fired++;
-							// Stop if the callback cleared this timer via its handle.
-							if (gens[node.id] != gen || nodes[node.id] != node) {
+							// Stop if the callback cleared this timer via its handle,
+							// or threw: the rest of the burst is not owed to a
+							// callback that has just failed.
+							if (failed || gens[node.id] != gen || nodes[node.id] != node) {
 								break;
 							}
 						}
@@ -201,20 +218,30 @@ class TimerHeap implements ITimerScheduler {
 						if (gens[node.id] != gen || nodes[node.id] != node) {
 							// freed by the callback; nothing to do
 						} else if (node.enabled) {
-							node.time += fires * node.interval;
+							node.time += (failed ? i : fires) * node.interval;
 							queue.enqueue(node);
 						} else {
 							freeSlot(node.id);
 						}
 					} else {
-						node.callback(new TimerHandle(node.id, gen));
+						try {
+							node.callback(new TimerHandle(node.id, gen));
+						} catch (error:Dynamic) {
+							failed = true;
+							failure = error;
+						}
 						fired++;
 						if (gens[node.id] == gen && nodes[node.id] == node) {
 							freeSlot(node.id);
 						}
 					}
 					#else
-					node.callback(new TimerHandle(node.id, gen));
+					try {
+						node.callback(new TimerHandle(node.id, gen));
+					} catch (error:Dynamic) {
+						failed = true;
+						failure = error;
+					}
 					fired++;
 
 					// The callback may have cleared/rescheduled this timer via its
@@ -230,12 +257,30 @@ class TimerHeap implements ITimerScheduler {
 						freeSlot(node.id);
 					}
 					#end
+
+					if (failed) {
+						__fail(failure);
+					}
 				}
 
 				top = queue.peek();
 			}
 		}
 		return fired;
+	}
+
+	// Passes a callback's failure on, once the timer it came from is settled.
+	@:noCompletion private function __fail(error:Dynamic):Void {
+		if (onError != null) {
+			onError(error);
+			return;
+		}
+
+		#if cpp
+		cpp.Lib.rethrow(error);
+		#else
+		throw error;
+		#end
 	}
 
 	private inline function createTimer(absoluteTime:Float, interval:Float, callback:TimerHandle->Void):TimerHandle {

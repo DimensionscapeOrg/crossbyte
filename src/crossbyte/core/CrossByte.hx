@@ -15,6 +15,8 @@ import sys.net.Socket;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.TickEvent;
+import crossbyte.events.UncaughtErrorEvent;
+import crossbyte.utils.Logger;
 import haxe.EntryPoint;
 import haxe.Timer;
 import haxe.ds.Map;
@@ -243,6 +245,17 @@ final class CrossByte extends EventDispatcher {
 	 * Zero until the first frame establishes it.
 	 */
 	@:noCompletion private var __frameDeadline:Float = 0.0;
+
+	/**
+	 * When the current frame began. A field rather than a local of the loop
+	 * body so that a frame cut short by a failure can still be waited out
+	 * from where it started.
+	 */
+	@:noCompletion private var __frameStart:Float = 0.0;
+
+	// Set while UNCAUGHT_ERROR is being dispatched, so a listener for it that
+	// throws is logged rather than reported through itself.
+	@:noCompletion private var __reportingUncaught:Bool = false;
 	@:noCompletion private var __cpuTime:Float = 0.0;
 	@:noCompletion private var __sleepAccuracy:Float = 0.0;
 
@@ -416,7 +429,14 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
-		__stepHost(delta, socketTimeout);
+		// Contained here as well as per callback, for what fails between
+		// them, a flush, a poll. A host's own frame is the last place a
+		// CrossByte handler's failure should surface.
+		try {
+			__stepHost(delta, socketTimeout);
+		} catch (error:Dynamic) {
+			__uncaught(error, UncaughtErrorEvent.LOOP);
+		}
 
 		if (!__getRunning()) {
 			__finalizeExit();
@@ -463,7 +483,8 @@ final class CrossByte extends EventDispatcher {
 
 		The loop does not wake early for it: a callback posted mid-frame waits
 		for the next tick, as a `Worker` or `Task` result does. What throws is
-		logged and does not stop the rest.
+		reported like any other callback's failure, logged, and dispatched
+		as `UncaughtErrorEvent.UNCAUGHT_ERROR`, and does not stop the rest.
 	**/
 	@:noCompletion public function __post(callback:Void->Void):Void {
 		#if (cpp || neko || hl || java || jvm || eval)
@@ -497,9 +518,134 @@ final class CrossByte extends EventDispatcher {
 			try {
 				callback();
 			} catch (error:Dynamic) {
-				crossbyte.utils.Logger.error("A callback posted to the runtime threw: " + Std.string(error));
+				__uncaught(error, UncaughtErrorEvent.POSTED);
 			}
 		}
+	}
+
+	/**
+		Reports something a callback threw that nothing caught, once the
+		runtime has contained it: logs it with `Logger.error`, then dispatches
+		`UncaughtErrorEvent.UNCAUGHT_ERROR` on this runtime.
+
+		The runtime calls this for every callback it runs itself, timers,
+		tick and lifecycle listeners, socket handlers, posted callbacks, and
+		the loop around them. Public for code that delivers callbacks of its
+		own on the runtime's behalf, such as a socket fed by the platform's
+		event loop rather than by this runtime's poll, so that a failure
+		there is reported the same way rather than ending the process.
+
+		@param source Where it was caught: one of the `UncaughtErrorEvent`
+		       source constants.
+		@param origin What the failing callback belonged to, if known.
+	**/
+	@:noCompletion public function __uncaught(error:Dynamic, source:String, ?origin:Dynamic):Void {
+		// Read before anything below can catch something else and replace it.
+		var stack:String = __caughtStack();
+
+		// Logged first and unconditionally, since a listener may be the very
+		// thing that is broken. A sink that throws is not allowed to turn one
+		// contained failure into an escaping one.
+		try {
+			var fields:Map<String, String> = ["source" => source];
+			var from:String = __describeOrigin(origin);
+			if (from != null) {
+				fields.set("origin", from);
+			}
+			if (stack != null) {
+				fields.set("stack", stack);
+			}
+			Logger.error(__uncaughtMessage(source) + ": " + Std.string(error), fields);
+		} catch (_:Dynamic) {}
+
+		if (__reportingUncaught || !hasEventListener(UncaughtErrorEvent.UNCAUGHT_ERROR)) {
+			return;
+		}
+
+		// A listener for this that throws is logged by `__listenerThrew` and
+		// not reported again, so a broken reporter cannot recurse.
+		__reportingUncaught = true;
+		__dispatchContained(new UncaughtErrorEvent(UncaughtErrorEvent.UNCAUGHT_ERROR, error, source, origin));
+		__reportingUncaught = false;
+	}
+
+	@:noCompletion private static function __uncaughtMessage(source:String):String {
+		return switch (source) {
+			case UncaughtErrorEvent.TIMER: "A timer callback threw; the timer was kept and the runtime carries on";
+			case UncaughtErrorEvent.TICK: "A tick listener threw; the other listeners still ran";
+			case UncaughtErrorEvent.LIFECYCLE: "A lifecycle listener threw; the other listeners still ran";
+			case UncaughtErrorEvent.SOCKET: "A socket handler threw; that socket is closed and the others carry on";
+			case UncaughtErrorEvent.POSTED: "A callback posted to the runtime threw";
+			default: "The runtime loop threw; the frame was cut short and the loop carries on";
+		}
+	}
+
+	@:noCompletion private static function __caughtStack():Null<String> {
+		try {
+			var stack = haxe.CallStack.exceptionStack();
+			return stack == null || stack.length == 0 ? null : haxe.CallStack.toString(stack);
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
+	@:noCompletion private static function __describeOrigin(origin:Dynamic):Null<String> {
+		if (origin == null) {
+			return null;
+		}
+
+		try {
+			if (Std.isOfType(origin, CBSocket)) {
+				var socket:CBSocket = cast origin;
+				return Type.getClassName(Type.getClass(origin)) + " " + socket.remoteAddress + ":" + socket.remotePort;
+			}
+			var type = Type.getClass(origin);
+			return type != null ? Type.getClassName(type) : Std.string(origin);
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
+	@:noCompletion private function __timerThrew(error:Dynamic):Void {
+		__uncaught(error, UncaughtErrorEvent.TIMER);
+	}
+
+	#if !js
+	/**
+		A socket's handler threw. The failure is reported, and then a stream
+		socket is closed: its handler stopped partway through what it had
+		read, and a connection whose state is whatever that left is not one
+		to keep serving. Closing it dispatches `CLOSE`, so whatever the
+		application holds for the connection is released the usual way.
+
+		A datagram socket is not closed. It is usually the one socket a whole
+		UDP service answers on, each datagram arrives whole with nothing left
+		half-read, and closing it would turn one bad datagram into an outage
+		for every peer, the opposite of containing it.
+	**/
+	@:noCompletion private function __socketThrew(error:Dynamic, socket:crossbyte._internal.socket.IPollableSocket):Void {
+		__uncaught(error, UncaughtErrorEvent.SOCKET, socket);
+
+		if (Std.isOfType(socket, CBSocket) && !socket.registryClosed) {
+			try {
+				(cast socket : CBSocket).close();
+			} catch (closeError:Dynamic) {
+				__uncaught(closeError, UncaughtErrorEvent.SOCKET, socket);
+			}
+		}
+	}
+	#end
+
+	@:noCompletion override private function __listenerThrew(error:Dynamic, event:Event):Void {
+		if (__reportingUncaught) {
+			// An UNCAUGHT_ERROR listener: logged, never reported again.
+			try {
+				Logger.error("An uncaughtError listener threw: " + Std.string(error));
+			} catch (_:Dynamic) {}
+			return;
+		}
+
+		__uncaught(error, event.type == TickEvent.TICK ? UncaughtErrorEvent.TICK : UncaughtErrorEvent.LIFECYCLE);
 	}
 
 	/**
@@ -544,23 +690,20 @@ final class CrossByte extends EventDispatcher {
 
 		// Walked by index rather than copied, because a flush can make another
 		// holder ask, an error handler that sends on a different session,
-		// and that one belongs to this pass too. If a handler throws, the rest
-		// stay where they are, and the next pass carries on from there.
+		// and that one belongs to this pass too. A holder that throws is
+		// reported and the walk goes on: this used to rethrow, leaving the
+		// rest for a next pass that the throw had just cancelled along with
+		// the loop.
 		__flushingPass = true;
-		try {
-			while (__passFlushAt < __passFlushes.length) {
-				var item:PassFlush = __passFlushes[__passFlushAt];
-				__passFlushes[__passFlushAt] = null;
-				__passFlushAt++;
+		while (__passFlushAt < __passFlushes.length) {
+			var item:PassFlush = __passFlushes[__passFlushAt];
+			__passFlushes[__passFlushAt] = null;
+			__passFlushAt++;
+			try {
 				item.__flushPass();
+			} catch (error:Dynamic) {
+				__uncaught(error, UncaughtErrorEvent.LOOP, item);
 			}
-		} catch (error:Dynamic) {
-			__flushingPass = false;
-			#if cpp
-			cpp.Lib.rethrow(error);
-			#else
-			throw error;
-			#end
 		}
 		__passFlushes.resize(0);
 		__passFlushAt = 0;
@@ -604,8 +747,12 @@ final class CrossByte extends EventDispatcher {
 		#elseif !js
 		__socketRegistry = new SocketRegistry(__initialSocketCapacity());
 		#end
+		#if !js
+		__socketRegistry.onHandlerError = __socketThrew;
+		#end
 
 		__timer = new TimerScheduler(__timerStrategy);
+		__timer.onError = __timerThrew;
 		CBTimer.bindCurrentThread(__timer);
 		tps = DEFAULT_TICKS_PER_SECOND;
 		mainLoop = switch (__loopType) {
@@ -725,9 +872,35 @@ final class CrossByte extends EventDispatcher {
 		__scheduleFrame();
 		#else
 		while (__getRunning()) {
-			mainLoop();
+			// Each callback the loop runs is contained where it runs; this is
+			// for what fails between them. Whatever it was, the loop goes on:
+			// ending it here would skip EXIT, the final flush and every other
+			// connection, for one failure.
+			try {
+				mainLoop();
+			} catch (error:Dynamic) {
+				__uncaught(error, UncaughtErrorEvent.LOOP);
+				__afterLoopFailure();
+			}
 		}
 		__finalizeExit();
+		#end
+	}
+
+	/**
+	 * Waits out what is left of a frame a failure cut short. Without it a
+	 * failure that recurs every pass, a broken poll backend, a custom loop
+	 * body with a bug, would skip the wait each time and spin a core
+	 * logging it, where this costs a line per tick.
+	 */
+	@:noCompletion private function __afterLoopFailure():Void {
+		#if !js
+		// A custom loop body never marks where its frames begin; measure from
+		// now, rather than from zero, so the next frame is not told that every
+		// second since the clock's origin has just elapsed.
+		try {
+			__wait(__frameStart != 0 ? __frameStart : Timer.stamp());
+		} catch (_:Dynamic) {}
 		#end
 	}
 
@@ -790,7 +963,14 @@ final class CrossByte extends EventDispatcher {
 
 		if (Timer.stamp() >= __frameDeadline) {
 			__advanceDeadline();
-			mainLoop();
+			// A throw here would leave the platform's own loop to report it,
+			// which on Node ends the process and in a page stops the runtime
+			// for good: the next frame is only asked for below.
+			try {
+				mainLoop();
+			} catch (error:Dynamic) {
+				__uncaught(error, UncaughtErrorEvent.LOOP);
+			}
 
 			if (!__getRunning()) {
 				__finalizeExit();
@@ -806,7 +986,7 @@ final class CrossByte extends EventDispatcher {
 		if (!__didInit) {
 			__didInit = true;
 			if (hasEventListener(Event.INIT)) {
-				dispatchEvent(new Event(Event.INIT));
+				__dispatchContained(new Event(Event.INIT));
 			}
 		}
 	}
@@ -820,8 +1000,11 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
+		// Contained per listener: the listeners on a runtime's tick belong to
+		// unrelated components, and one's failure skipped every listener after
+		// it and then ended the loop.
 		if (__pooledTickEventInUse) {
-			dispatchEvent(new TickEvent(TickEvent.TICK, delta));
+			__dispatchContained(new TickEvent(TickEvent.TICK, delta));
 			return;
 		}
 
@@ -836,12 +1019,7 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		__pooledTickEventInUse = true;
-		try {
-			dispatchEvent(__pooledTickEvent);
-		} catch (error:Dynamic) {
-			__pooledTickEventInUse = false;
-			throw error;
-		}
+		__dispatchContained(__pooledTickEvent);
 		__pooledTickEventInUse = false;
 	}
 
@@ -874,7 +1052,7 @@ final class CrossByte extends EventDispatcher {
 
 		__didExit = true;
 		if (hasEventListener(Event.EXIT)) {
-			dispatchEvent(new Event(Event.EXIT));
+			__dispatchContained(new Event(Event.EXIT));
 		}
 		// Whatever the last pass, or an exit handler, left held goes out while
 		// the sockets are still there to send it.
@@ -946,7 +1124,7 @@ final class CrossByte extends EventDispatcher {
 		__flushHeld();
 		__cpuTime = Timer.stamp() - frameStart;
 		#else
-		var frameStart:Float = Timer.stamp();
+		var frameStart:Float = __frameStart = Timer.stamp();
 		__timer.advanceTime(__dt);
 		__dispatchTick(__dt);
 		__flushHeld();
@@ -971,7 +1149,7 @@ final class CrossByte extends EventDispatcher {
 		// what a poll loop would do here.
 		throw new IllegalOperationError("The POLL main loop needs a pollable socket set, which no JavaScript target has, sockets there are delivered by the runtime, not polled for. Use the DEFAULT main loop.");
 		#else
-		var frameStart:Float = Timer.stamp();
+		var frameStart:Float = __frameStart = Timer.stamp();
 		__timer.advanceTime(__dt);
 		__dispatchTick(__dt);
 		__flushHeld();

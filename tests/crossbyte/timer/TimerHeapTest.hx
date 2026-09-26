@@ -129,6 +129,47 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.isEmpty);
 	}
 
+	public function testARecurringTimerThatThrowsStaysArmed():Void {
+		// Driven by hand, with nothing set to receive failures, a throw still
+		// leaves advanceTime, but only once the timer is settled. It used to
+		// leave from inside the call, with the timer already dequeued: its
+		// handle went on reading as live and it never fired again.
+		var heap = new TimerHeap();
+		var fired = 0;
+		var handle = heap.setInterval(1.0, 1.0, _ -> {
+			fired++;
+			throw "timer bug";
+		});
+
+		for (_ in 0...3) {
+			try {
+				heap.advanceTime(1.0);
+				Assert.fail("with no onError the failure should propagate");
+			} catch (e:Dynamic) {
+				Assert.equals("timer bug", e);
+			}
+		}
+
+		Assert.equals(3, fired);
+		Assert.isTrue(heap.isActive(handle));
+		Assert.equals(1, heap.size);
+	}
+
+	public function testATimerFailureGoesToOnErrorAndThePassCarriesOn():Void {
+		var heap = new TimerHeap();
+		var failures:Array<Dynamic> = [];
+		heap.onError = error -> failures.push(error);
+		var after = 0;
+
+		heap.setTimeout(1.0, _ -> throw "one-shot bug");
+		heap.setTimeout(1.0, _ -> after++);
+
+		Assert.equals(2, heap.advanceTime(1.0));
+		Assert.same(["one-shot bug"], failures);
+		Assert.equals(1, after, "the timer after the one that threw waited for another pass");
+		Assert.isTrue(heap.isEmpty, "the one-shot that threw was not freed");
+	}
+
 	public function testPauseResumeKeepPhaseFromZeroPreservesRemainingDelay():Void {
 		var heap = new TimerHeap();
 		var fired = 0;
