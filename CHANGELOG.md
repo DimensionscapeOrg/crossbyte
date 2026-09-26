@@ -712,6 +712,21 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- With `http2Enabled` on cleartext, a connection that has not yet sent a
+  request is counted, timed and drained. While the server waited to see
+  which protocol it spoke, it escaped all three: with `maxConnections` at 2
+  and `requestTimeout` at half a second, six silent sockets were all taken
+  and still open after `drain()`. They now count against the limit, close
+  at `requestTimeout`, and close when a drain starts. `drain()` also closes
+  at once an HTTP/1.1 connection that has never sent a byte -- a browser's
+  preconnect held a drain for its whole timeout -- and sends HTTP/2 clients a
+  GOAWAY when the drain starts rather than at its deadline: streams opened
+  after it are refused, those in flight finish, and each connection closes
+  with its last stream. An HTTP/2 response with no body -- a 204, a 304, any
+  HEAD -- no longer keeps its stream's concurrency slot, which after 128 of
+  them left a connection refusing every stream; and a stream refused for the
+  concurrency limit no longer skips its header block, which left the HPACK
+  table out of step with the client's for every block after.
 - HTTP/2 requests go through what HTTP/1.1 requests go through. Only the
   HTTP/1.1 parser asked the rate limiter, so six requests over HTTP/2 were
   all answered where HTTP/1.1 refused the fourth. DATA was appended with no

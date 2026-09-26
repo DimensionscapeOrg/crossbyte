@@ -243,6 +243,67 @@ class H2ServerTest extends utest.Test {
 		Assert.isNull(firstResetFor(requestFields([new HpackHeader("content-length", "0")])), "a true zero length was refused");
 	}
 
+	public function testABodilessResponseReleasesItsSlot():Void {
+		// A response with no body ended its stream without releasing the
+		// concurrency slot, so after as many 204s, 304s or HEADs as the limit
+		// allows, every new stream on the connection was refused.
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+		settings.maxConcurrentStreams = 2;
+		var server = new H2ServerConnection(out.write, settings);
+		var answered:Int = 0;
+		server.onRequest = request -> {
+			answered++;
+			server.respond(request.streamId, 204, []);
+		};
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		var encoder = new HpackEncoder(4096);
+		for (i in 0...10) {
+			server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1 + 2 * i, encoder.encode(requestFields([]))));
+		}
+
+		Assert.equals(10, answered, "bodiless responses used up the connection's streams");
+		Assert.equals(0, server.openStreams);
+	}
+
+	public function testARefusedStreamStillAdvancesTheHeaderTable():Void {
+		// A stream refused for the concurrency limit was reset before its
+		// header block was read, so a header it added to the HPACK table was
+		// missing from this side's, and the next block to refer to it decoded
+		// wrongly. The block is decoded now, then refused.
+		var out = new Collector();
+		var settings = new H2Settings();
+		settings.enablePush = false;
+		settings.maxConcurrentStreams = 1;
+		var server = new H2ServerConnection(out.write, settings);
+		var failure:H2ConnectionError = null;
+		var delivered:Array<H2ServerRequest> = [];
+		server.onConnectionError = e -> failure = e;
+		server.onRequest = request -> {
+			delivered.push(request);
+			server.respond(request.streamId, 200, []);
+		};
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		var encoder = new HpackEncoder(4096);
+		// Stream 1 stays open, holding the one slot.
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(requestFields([]))));
+		// Stream 3 is refused, and its block adds x-note to the table.
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 3,
+			encoder.encode(requestFields([new HpackHeader("x-note", "first")]))));
+		server.receive(frame(H2FrameType.DATA, H2Flags.END_STREAM, 1, Bytes.alloc(0)));
+		// Stream 5's block refers to x-note by its index in the table.
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 5,
+			encoder.encode(requestFields([new HpackHeader("x-note", "first")]))));
+
+		Assert.isNull(failure, "the connection failed: " + (failure == null ? "" : failure.message));
+		Assert.equals(2, delivered.length);
+		Assert.equals(5, delivered[delivered.length - 1].streamId);
+		Assert.equals("first", delivered[delivered.length - 1].header("x-note"));
+	}
+
 	public function testABodyPastTheCapIsDeliveredEarlyAndTheStreamReset():Void {
 		// DATA was appended with no limit. Past the cap the request is handed
 		// over at once, marked, so it can be refused rather than buffered, and
