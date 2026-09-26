@@ -155,10 +155,7 @@ class NodeListenerFailureTest extends utest.Test {
 	}
 
 	private static function __text(peer:WirePeer):String {
-		var bytes = peer.received.getBytes();
-		@:privateAccess peer.received = new haxe.io.BytesBuffer();
-		peer.received.addBytes(bytes, 0, bytes.length);
-		return bytes.toString();
+		return peer.text();
 	}
 	#end
 }

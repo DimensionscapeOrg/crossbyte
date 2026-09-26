@@ -184,6 +184,36 @@ class WirePeer {
 		return frames().filter(frame -> frame.opcode == opcode);
 	}
 
+	/**
+		Hangs up as soon as the connection is up, as a load balancer's health
+		check does. Natively the connect has already finished; on Node it
+		finishes on a later turn, and closing before then would abort it
+		rather than hang up on anyone.
+	**/
+	public function hangUp():Void {
+		#if nodejs
+		__socket.on("connect", function() __socket.end());
+		#else
+		close();
+		#end
+	}
+
+	/** Sends this side's FIN and goes on reading: a half-close. **/
+	public function shutdownWrite():Void {
+		try {
+			#if nodejs
+			__socket.end();
+			#else
+			__socket.shutdown(false, true);
+			#end
+		} catch (_:Dynamic) {}
+	}
+
+	/** Everything that has arrived, read as text. **/
+	public function text():String {
+		return __all().toString();
+	}
+
 	public function close():Void {
 		try {
 			#if nodejs
