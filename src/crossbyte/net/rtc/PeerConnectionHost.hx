@@ -179,9 +179,11 @@ class PeerConnectionHost {
 		}
 
 		var connection = new PeerConnection(isOfferer, certificate, credentials);
+		var routes = new HostedRoutes();
 		__connections.push(connection);
 		__byFragment.set(credentials.usernameFragment, connection);
-		__routes.set(connection, new HostedRoutes());
+		routes.fragments.push(credentials.usernameFragment);
+		__routes.set(connection, routes);
 
 		@:privateAccess connection.__attach(this);
 
@@ -337,21 +339,56 @@ class PeerConnectionHost {
 		}
 	}
 
-	/** A connection has closed: everything routed to it is forgotten. **/
-	@:noCompletion private function __detach(connection:PeerConnection):Void {
-		__connections.remove(connection);
+	/**
+		Credentials for a connection's ICE restart, with a ufrag no connection
+		here has, routed to it alongside the one it had until the restart is
+		done -- checks for the old session still arrive meanwhile.
+	**/
+	@:noCompletion private function __freshCredentials(connection:PeerConnection):IceCredentials {
+		var credentials:IceCredentials;
 
-		var fragment = connection.credentials.usernameFragment;
+		do {
+			credentials = IceCredentials.generate();
+		} while (__byFragment.exists(credentials.usernameFragment));
 
+		var routes = __routes.get(connection);
+
+		if (routes != null) {
+			__byFragment.set(credentials.usernameFragment, connection);
+			routes.fragments.push(credentials.usernameFragment);
+		}
+
+		return credentials;
+	}
+
+	/** A connection's ICE restart is done, and checks naming its old ufrag are no longer its. **/
+	@:noCompletion private function __retire(connection:PeerConnection, fragment:String):Void {
 		if (__byFragment.get(fragment) == connection) {
 			__byFragment.remove(fragment);
 		}
+
+		var routes = __routes.get(connection);
+
+		if (routes != null) {
+			routes.fragments.remove(fragment);
+		}
+	}
+
+	/** A connection has closed: everything routed to it is forgotten. **/
+	@:noCompletion private function __detach(connection:PeerConnection):Void {
+		__connections.remove(connection);
 
 		var routes = __routes.get(connection);
 		__routes.remove(connection);
 
 		if (routes == null) {
 			return;
+		}
+
+		for (fragment in routes.fragments) {
+			if (__byFragment.get(fragment) == connection) {
+				__byFragment.remove(fragment);
+			}
 		}
 
 		for (key in routes.transactions) {
@@ -449,6 +486,9 @@ class PeerConnectionHost {
 
 /** What the host routes to one connection, kept so it can all be forgotten when the connection closes. **/
 private class HostedRoutes {
+	/** Its ufrag, and during an ICE restart the new one beside it. **/
+	public var fragments:Array<String> = [];
+
 	public var transactions:Array<String> = [];
 	public var addresses:Array<String> = [];
 

@@ -237,6 +237,77 @@ function hasRoutableAddress() {
   return false;
 }
 
+/**
+ * The pair the browser is using belongs to the ICE session with this ufrag.
+ *
+ * Chrome's candidate stats name the ufrag; a version that does not is taken
+ * at its word, the rest of the round trip still standing as the proof.
+ */
+async function waitForBrowserSession(page, ufrag, what) {
+  const moved = await page.waitForFunction(expected => window.__selectedUfrag().then(u => u === expected || u === 'n/a'),
+    { timeout: 15000 }, ufrag).then(() => true, () => false);
+
+  if (!moved) {
+    throw new Error('the browser never moved to the pair ' + what + ' found');
+  }
+
+  const seen = await page.evaluate('window.__selectedUfrag()');
+  console.log('    browser pair ufrag after ' + what + ': ' + seen + (seen === 'n/a' ? ' (not in this browser\'s stats)' : ''));
+}
+
+/**
+ * ICE restart from the browser, as it does when its network changes: new
+ * credentials in a new offer, the DTLS session and every channel kept. The
+ * answer has to state CrossByte's DTLS role -- a browser refuses `actpass`
+ * in an answer -- and a message on the channel opened before the restart has
+ * to make the round trip after it.
+ */
+async function restartFromBrowser(page, peer) {
+  const reoffer = await page.evaluate('window.__restartIce()');
+  const ufrag = (/a=ice-ufrag:(\S+)/.exec(reoffer) || [])[1];
+
+  peer.send({ restart: reoffer });
+  const answer = await peer.wait('restart-answer', 15000);
+
+  if (!answer.restarting) {
+    throw new Error('new credentials in the browser\'s offer did not restart CrossByte\'s side');
+  }
+
+  if (/a=setup:actpass/.test(answer.sdp)) {
+    throw new Error('CrossByte answered the restart with a=setup:actpass, which an answer may not say');
+  }
+
+  await page.evaluate('window.__acceptRestartAnswer(' + JSON.stringify(answer.sdp) + ')');
+  await waitForBrowserSession(page, ufrag, 'its restart');
+  await page.evaluate('window.__sendOnInterop("after restart")');
+
+  const restarted = await peer.wait('restarted', 25000).catch(() => null);
+
+  if (!restarted || !restarted.switched || !restarted.echoed) {
+    throw new Error('CrossByte did not move the session to the restart\'s path and carry a message on it: ' + JSON.stringify(restarted));
+  }
+
+  await page.waitForFunction('window.__interop.echoed === "echo:after restart"', { timeout: 10000 }).catch(() => {
+    throw new Error('the message sent after the restart did not come back');
+  });
+}
+
+/** ICE restart from CrossByte, whose new offer the browser answers. */
+async function restartTowardBrowser(page, peer) {
+  const reoffer = await peer.wait('restart-offer', 20000);
+  const answer = await page.evaluate('window.__answerRestart(' + JSON.stringify(reoffer.sdp) + ')');
+  const ufrag = (/a=ice-ufrag:(\S+)/.exec(answer) || [])[1];
+
+  peer.send({ answer });
+  const restarted = await peer.wait('restarted', 25000).catch(() => null);
+
+  if (!restarted || !restarted.switched || !restarted.echoed) {
+    throw new Error('CrossByte did not move the session to the restart\'s path and carry a message on it: ' + JSON.stringify(restarted));
+  }
+
+  await waitForBrowserSession(page, ufrag, 'CrossByte\'s restart');
+}
+
 async function browserOffers(page, mdns, shared) {
   console.log('\n=== the browser offers, CrossByte answers ===');
   console.log('  CrossByte should end up ICE-controlled and the DTLS client');
@@ -247,7 +318,7 @@ async function browserOffers(page, mdns, shared) {
     throw new Error('the browser produced no data channel offer');
   }
 
-  const peer = startPeer({ mode: 'answer', sdp: offer, host: shared });
+  const peer = startPeer({ mode: 'answer', sdp: offer, host: shared, restart: true });
 
   try {
     const answer = await peer.wait('answer', 15000);
@@ -332,6 +403,9 @@ async function browserOffers(page, mdns, shared) {
 
     console.log('  passed: answered, and took the ICE-controlled / DTLS-client pair');
     console.log('  passed: partially reliable channels read both ways, and a message given up on was skipped each way');
+
+    await restartFromBrowser(page, peer);
+    console.log('  passed: the browser restarted ICE, and the session moved to the new path with its channel');
   } finally {
     peer.kill();
   }
@@ -341,7 +415,7 @@ async function crossbyteOffers(page, mdns, shared) {
   console.log('\n=== CrossByte offers, the browser answers ===');
   console.log('  CrossByte should end up ICE-controlling and the DTLS server');
 
-  const peer = startPeer({ mode: 'offer', host: shared });
+  const peer = startPeer({ mode: 'offer', host: shared, restart: true });
 
   try {
     const offer = await peer.wait('offer', 15000);
@@ -394,6 +468,9 @@ async function crossbyteOffers(page, mdns, shared) {
 
     console.log('  passed: offered, and took the ICE-controlling / DTLS-server pair');
     console.log('  passed: the browser read the partially reliable channel CrossByte opened');
+
+    await restartTowardBrowser(page, peer);
+    console.log('  passed: CrossByte restarted ICE, and the session moved to the new path with its channel');
   } finally {
     peer.kill();
   }

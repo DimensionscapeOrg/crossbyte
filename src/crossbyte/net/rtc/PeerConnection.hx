@@ -280,6 +280,22 @@ class PeerConnection {
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __isOfferer:Bool;
 
+	/**
+		Whether the next description this side writes is an offer -- which
+		leaves the DTLS role open -- or an answer, which states it. The first
+		exchange decides it, and each ICE restart again: an answer to a
+		restart the peer offered says `active` or `passive` whoever offered
+		first, since a browser refuses an answer saying `actpass`.
+	**/
+	@:noCompletion private var __offering:Bool;
+
+	/**
+		The agent of an ICE restart under way, checking with new credentials
+		while the session carries on over the old path; it replaces `agent`
+		once it has one. Null when no restart is under way.
+	**/
+	@:noCompletion private var __restartAgent:IceAgent = null;
+
 	/** Whether `connect` has started things, and when, for `readyTimeout`. **/
 	@:noCompletion private var __connecting:Bool = false;
 
@@ -314,16 +330,47 @@ class PeerConnection {
 		this.ready = new Future<PeerConnection>();
 		this.closed = new Future<String>();
 
-		agent = new IceAgent(isOfferer, this.credentials);
-		agent.connected.then(pair -> __onPathFound(pair), error -> __fail("No path to the peer was found: " + error));
+		this.__offering = isOfferer;
+
+		var first = __makeAgent(isOfferer, this.credentials);
+		agent = first;
+
+		first.connected.then(pair -> __onPathFound(pair), function(error:String):Void {
+			// Not when an ICE restart replaced it, or is under way to: the new
+			// agent decides then, and closing this one fails its future.
+			if (first == agent && __restartAgent == null) {
+				__fail("No path to the peer was found: " + error);
+			}
+		});
+	}
+
+	/**
+		An agent wired to this connection: the first, or one an ICE restart
+		makes. Each callback acts only while its agent is the one carrying the
+		session, so an agent being replaced cannot move it.
+	**/
+	@:noCompletion private function __makeAgent(controlling:Bool, credentials:IceCredentials):IceAgent {
+		var made = new IceAgent(controlling, credentials);
+
+		// Out through this connection's socket, or its host's -- which, told
+		// first, sends the answer to a check back here.
+		made.onSend = function(payload:ByteArray, address:String, port:Int):Void {
+			if (__host != null) {
+				@:privateAccess __host.__sending(this, payload);
+			}
+
+			__send(payload, address, port);
+		};
 
 		// A role conflict changes which peer nominates, and nothing else. It
 		// used to overwrite the DTLS role too, on the assumption that the two
 		// were the same bit -- they are not, and a peer that rewrote its DTLS
 		// role here would abandon a handshake already agreed in the
 		// description over an ICE detail settled afterwards.
-		agent.onRoleChanged = function(nowControlling:Bool):Void {
-			iceControlling = nowControlling;
+		made.onRoleChanged = function(nowControlling:Bool):Void {
+			if (made == agent) {
+				iceControlling = nowControlling;
+			}
 		};
 
 		// The controlling peer nominated another pair -- a browser whose
@@ -331,13 +378,15 @@ class PeerConnection {
 		// session goes where the agent now points. It used to stay on the
 		// first pair for good, sending into an address that had gone until
 		// consent to it ran out.
-		agent.onSelectedPairChanged = function(pair:IceCandidatePair):Void {
-			if (__closed || __dtls == null) {
+		made.onSelectedPairChanged = function(pair:IceCandidatePair):Void {
+			if (__closed || __dtls == null || made != agent) {
 				return;
 			}
 
 			__route(pair);
 		};
+
+		return made;
 	}
 
 	/** Where the session's records go: the selected pair's remote end, by the route it was proved on. **/
@@ -362,12 +411,6 @@ class PeerConnection {
 	**/
 	@:noCompletion private function __attach(host:PeerConnectionHost):Void {
 		__host = host;
-
-		agent.onSend = function(payload:ByteArray, address:String, port:Int):Void {
-			// Remembered first, so the answer to a check comes back here.
-			@:privateAccess host.__sending(this, payload);
-			__send(payload, address, port);
-		};
 	}
 
 	/**
@@ -393,10 +436,6 @@ class PeerConnection {
 		__socket.bind(localPort, localAddress);
 		__socket.addEventListener(DatagramSocketDataEvent.DATA, __onDatagram);
 		__socket.receive();
-
-		agent.onSend = function(payload:ByteArray, address:String, port:Int):Void {
-			__send(payload, address, port);
-		};
 
 		var bound:String = __socket.localAddress;
 
@@ -434,6 +473,11 @@ class PeerConnection {
 	**/
 	public function addLocalCandidate(candidate:IceCandidate):Void {
 		agent.addLocalCandidate(candidate);
+
+		if (__restartAgent != null) {
+			__restartAgent.addLocalCandidate(candidate);
+		}
+
 		__gained(candidate);
 	}
 
@@ -454,8 +498,12 @@ class PeerConnection {
 			return false;
 		}
 
+		// During an ICE restart a trickled candidate is for the new session:
+		// the peer has already moved to it.
+		var target = __restartAgent != null ? __restartAgent : agent;
+
 		try {
-			return agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+			return target.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
 		} catch (_:Dynamic) {
 			return false;
 		}
@@ -497,7 +545,7 @@ class PeerConnection {
 			// An offer leaves the choice open; an answer states what this peer
 			// has settled on, which `connect` has already worked out if the
 			// offer arrived first.
-			setup: __isOfferer ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE),
+			setup: __offering ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE),
 			// What the receiver here reassembles, which is what a peer may send.
 			maxMessageSize: SctpDataTransfer.MAX_REASSEMBLY,
 			// An answer repeats the offer's section id, which a browser matches
@@ -544,6 +592,11 @@ class PeerConnection {
 			throw new ArgumentError("The peer's description carries no certificate fingerprint. Without one the handshake would accept any certificate at all, so this connection is refused rather than left unauthenticated.");
 		}
 
+		if (__remote != null) {
+			__reconnect(remote);
+			return;
+		}
+
 		__remote = remote;
 		__resolveDtlsRole(remote.setup);
 
@@ -585,6 +638,146 @@ class PeerConnection {
 		}
 
 		agent.start(credentials, now);
+	}
+
+	/**
+		Restarts ICE from this side: new credentials, and a new agent that
+		finds a path afresh while the session carries on over the old one.
+
+		For when the path may have gone -- this device changed network, say,
+		and its old address is no longer anywhere. Send `description()` to the
+		peer as a new offer and give its answer to `connect`; once the new agent
+		has a path the session moves to it. DTLS and SCTP carry on untouched:
+		channels stay open, and what was sent meanwhile is retransmitted over
+		the new path as over any other.
+
+		A peer can restart too: a description from it with new credentials,
+		given to `connect`, restarts this side, and `description()` is then
+		the answer to send back. A browser does that after `restartIce()`.
+
+		@throws ArgumentError Before `connect`, or once closed.
+	**/
+	public function restartIce():Void {
+		if (__closed || __remote == null) {
+			throw new ArgumentError("ICE can only be restarted on a connection that has been given the peer's description and has not closed.");
+		}
+
+		// Already under way: the description carries it.
+		if (__restartAgent != null) {
+			return;
+		}
+
+		__beginRestart(true);
+	}
+
+	/** Whether an ICE restart is under way: begun, and its new agent not yet carrying the session. **/
+	public var iceRestarting(get, never):Bool;
+
+	@:noCompletion private function get_iceRestarting():Bool {
+		return __restartAgent != null;
+	}
+
+	/**
+		New credentials and a new agent, given every candidate this connection
+		has. Not started: that waits for the peer's credentials.
+
+		@param offering Whether this side offers the restart, and so controls
+		it: RFC 8445 section 6.1.1 lets a restart decide the roles afresh, and
+		a browser does, taking control of a restart it offers. The two agents
+		settle it by tie-breaker if they disagree.
+	**/
+	@:noCompletion private function __beginRestart(offering:Bool):Void {
+		var fresh:IceCredentials = __host != null ? @:privateAccess __host.__freshCredentials(this) : IceCredentials.generate();
+		var restarting = __makeAgent(offering, fresh);
+
+		__offering = offering;
+		credentials = fresh;
+		__restartAgent = restarting;
+
+		for (candidate in __localCandidates) {
+			if (candidate == __relayedCandidate) {
+				restarting.addLocalCandidate(candidate, (payload, address, port) -> __relayTo(payload, address, port));
+			} else {
+				restarting.addLocalCandidate(candidate);
+			}
+		}
+
+		restarting.connected.then(pair -> __onRestarted(restarting, pair), function(error:String):Void {
+			if (restarting == __restartAgent) {
+				__fail("The ICE restart found no path to the peer: " + error);
+			}
+		});
+	}
+
+	/**
+		A description after the first: the peer's answer to a restart this side
+		began, a restart the peer began, or the same session again with more
+		candidates.
+	**/
+	@:noCompletion private function __reconnect(remote:PeerDescription):Void {
+		// Another certificate is another DTLS session, which a restart is not.
+		if (remote.fingerprint.toLowerCase() != __remote.fingerprint.toLowerCase()) {
+			throw new ArgumentError("The description carries another certificate, which makes it a new session rather than this one. Make a new connection for it.");
+		}
+
+		// Validated before anything changes, as on the first connect.
+		var remoteCredentials = new IceCredentials(remote.usernameFragment, remote.password);
+		var restarted:Bool = remote.usernameFragment != __remote.usernameFragment || remote.password != __remote.password;
+
+		if (restarted && __restartAgent == null) {
+			// The peer offered it; this side answers.
+			__beginRestart(false);
+		}
+
+		if (remote.mid == null) {
+			remote.mid = __remote.mid;
+		}
+
+		__remote = remote;
+
+		var target = __restartAgent != null ? __restartAgent : agent;
+
+		for (candidate in remote.candidates) {
+			try {
+				target.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+			} catch (_:Dynamic) {}
+		}
+
+		// Started once: by the peer's answer to a restart this side offered, or
+		// straight away for one the peer offered.
+		if (__restartAgent != null && __restartAgent.state == IceAgentState.NEW) {
+			__restartAgent.start(remoteCredentials, haxe.Timer.stamp());
+		}
+	}
+
+	/**
+		The restart's agent has a path: it carries the session from now on, and
+		the old one is closed.
+	**/
+	@:noCompletion private function __onRestarted(restarting:IceAgent, pair:IceCandidatePair):Void {
+		if (__closed || restarting != __restartAgent) {
+			return;
+		}
+
+		var previous = agent;
+		agent = restarting;
+		__restartAgent = null;
+		iceControlling = restarting.controlling;
+
+		if (__host != null) {
+			@:privateAccess __host.__retire(this, previous.localCredentials.usernameFragment);
+		}
+
+		// Its `connected`, if still pending, fails as it closes; that handler
+		// sees it is no longer the agent and lets it go.
+		previous.close();
+
+		// A restart before the session was up finds its first path here.
+		if (__dtls == null) {
+			__onPathFound(pair);
+		} else {
+			__route(pair);
+		}
 	}
 
 	/**
@@ -640,13 +833,25 @@ class PeerConnection {
 			return;
 		}
 
+		if (__restartAgent != null) {
+			__restartAgent.poll(now);
+
+			if (__closed) {
+				return;
+			}
+		}
+
 		// Consent is the agent's to lose and this connection's to act on, and
 		// from the moment the path is found rather than once everything above
 		// it is up: a peer that went away mid-handshake was ignored until the
 		// association opened, which it never would. RFC 7675 asks the sender
 		// to stop, which is something only the layer that sends can do, and
 		// stopping includes the goodbyes: nothing is sent on the way out.
-		if (agent.state == IceAgentState.FAILED) {
+		//
+		// Except while an ICE restart is under way. The old path going is often
+		// why there is one, and the new agent decides: it replaces this one if
+		// it finds a path, and fails the connection if it cannot.
+		if (agent.state == IceAgentState.FAILED && __restartAgent == null) {
 			__shutdown(connected ? "The peer stopped answering consent checks, so the path to it is no longer usable." : "The peer stopped answering consent checks before the connection was ready.",
 				false, false);
 			return;
@@ -768,6 +973,14 @@ class PeerConnection {
 		}
 
 		agent.close();
+
+		// Cleared first: closing it fails its future, whose handler would
+		// otherwise find it still the restart under way.
+		if (__restartAgent != null) {
+			var restarting = __restartAgent;
+			__restartAgent = null;
+			restarting.close();
+		}
 
 		if (__socket != null) {
 			try {
@@ -955,6 +1168,10 @@ class PeerConnection {
 				__relayTo(payload, address, peerPort);
 			});
 
+			if (__restartAgent != null) {
+				__restartAgent.addLocalCandidate(candidate, (payload, address, peerPort) -> __relayTo(payload, address, peerPort));
+			}
+
 			__gained(candidate);
 			__settleRelayed(candidate, null);
 		}, function(error:String):Void {
@@ -1048,6 +1265,12 @@ class PeerConnection {
 
 		if (first < 4) {
 			agent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+
+			if (__restartAgent != null) {
+				payload.position = 0;
+				__restartAgent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+			}
+
 			return;
 		}
 
@@ -1202,6 +1425,14 @@ class PeerConnection {
 
 			data.position = 0;
 			agent.receive(data, srcAddress, srcPort, now);
+
+			// And the restart's, which checks with other credentials: each agent
+			// takes only checks addressed to its own and answers to its own.
+			if (__restartAgent != null) {
+				data.position = 0;
+				__restartAgent.receive(data, srcAddress, srcPort, now);
+			}
+
 			return;
 		}
 
