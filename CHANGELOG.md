@@ -691,6 +691,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A data channel message larger than the peer takes is refused instead of
+  vanishing. The SDP promised `a=max-message-size:2097152` -- the receive
+  window -- while the receiver gives up on any message past 1 MB, so a
+  message in between had every fragment acknowledged and was then dropped
+  whole: the sender saw success and nothing arrived. And the peer's own
+  limit was never read, so nothing stopped this end sending past it.
+  Descriptions now advertise the 1 MB the receiver takes;
+  `SessionDescription.fromSdp` reads the peer's (RFC 8841: 64 KB when the
+  attribute is absent, 0 for any size) into the new
+  `PeerDescription.maxMessageSize`; `PeerConnection.maxMessageSize` reports
+  it; and a channel's `send` or `sendBytes` past it throws `ArgumentError`
+  before anything is sent.
 - WebRTC peers on different runtimes no longer share an unguarded DTLS
   session table. Every native DTLS session in the process lived in one map,
   named by one counter, and peers on two child runtimes inserted into,
