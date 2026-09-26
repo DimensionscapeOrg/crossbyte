@@ -1164,6 +1164,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Recording a metric took a lock on hxcpp, and acquiring an hxcpp `Mutex`
+  enters and leaves a GC-free zone: about 230ns for each `Counter.inc`,
+  `Gauge` update and `Histogram.observe`, so the two an HTTP server records
+  for every response cost it close to half a microsecond. They are atomic
+  instructions now, measured at 5ns for an increment and 15ns for both of a
+  response's updates. A histogram observation adds to the one bucket it
+  falls in rather than to every bucket above it, which is cheaper on the
+  other targets too, and a histogram's count is the total of its buckets. A
+  scrape reads each histogram once, so its `+Inf` bucket and `_count` agree:
+  they were read separately, and an observation between the two reads made
+  them differ. On hxcpp a histogram's `_sum` can count an observation its
+  buckets do not show yet, or the reverse, while observations arrive.
 - `File.clone()` gave the clone the original's listeners, where its
   documentation says registrations are not copied. It copied every instance
   field by reflection, `EventDispatcher`'s listener map included, so once the

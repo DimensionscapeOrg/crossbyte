@@ -166,6 +166,11 @@ class TestSuites {
 		// Where the worker pool has threads, and so a queue to bound.
 		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
 		#end
+		// Registered here rather than in addMetrics because this is the group
+		// the native smoke suite reaches, and on hxcpp, only there, the
+		// metric updates are lock-free. From addMetrics it ran on eval and the
+		// jvm and never natively.
+		runner.addCase(new crossbyte.metrics.MetricsTest());
 	}
 
 	public static function addSystem(runner:Runner):Void {
@@ -342,7 +347,8 @@ class TestSuites {
 	}
 
 	public static function addMetrics(runner:Runner):Void {
-		runner.addCase(new crossbyte.metrics.MetricsTest());
+		// MetricsTest is registered by addDatabase, which the native smoke
+		// suite reaches; see there.
 		runner.addCase(new crossbyte.metrics.MetricsEndpointTest());
 	}
 
