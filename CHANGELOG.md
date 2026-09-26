@@ -523,6 +523,27 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- An `HTTPServer` with no `rootDirectory` serves no files, and listens on
+  `127.0.0.1` unless told otherwise. A missing root used to mean
+  `File.applicationStorageDirectory` -- the account's home directory on
+  Linux and macOS, `%APPDATA%` on Windows -- and the address defaulted to
+  `0.0.0.0`, so a server with only routes answered every other path from
+  there, to anyone who could reach the port: `GET /.ssh/id_rsa` returned the
+  key, and a session the application had saved through `Store`, which keeps
+  its files in the same directory, was one guessable path away. Now a request
+  no middleware answers is `404` without the filesystem being touched, and
+  `validate()` refuses PHP, `rewrites` and extra `tryFiles` entries without a
+  root, since each names files under it. A server that serves files must set
+  `config.rootDirectory = new File(...)` to the directory it means, and one
+  that other machines must reach -- anything deployed, or in a container --
+  must set `config.address = "0.0.0.0"`. The address guards against the
+  mistake that does not show: a public server left on loopback fails its
+  first request from outside, while a private one left public keeps working.
+  Static files whose path has a segment starting with `.` -- `.env`,
+  `.git/config`, `.htpasswd` -- are answered `404` as well, except under
+  `/.well-known/`, which RFC 8615 reserves for files meant to be published;
+  set `serveDotFiles` to serve them. Middleware and routes still see every
+  path.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding

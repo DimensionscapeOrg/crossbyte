@@ -28,9 +28,62 @@ class HTTPServerConfig {
 	**/
 	public static inline var DEFAULT_MAX_OUTPUT_BUFFER:Int = 8 * 1024 * 1024;
 
+	/**
+		The address to listen on. Defaults to `127.0.0.1`, which only this
+		machine can reach.
+
+		Set it to `0.0.0.0` (or one interface's address) to serve other
+		machines, which a deployed server, and any server in a container,
+		needs. It used to default to `0.0.0.0`. The two mistakes are not alike:
+		a server that should be public and is not fails its first request from
+		outside, loudly, and is one line from fixed, while a development server
+		or an admin endpoint that should be private and is not keeps working
+		and shows nothing wrong.
+	**/
 	public var address:String;
 	public var port:UInt;
+
+	/**
+		The directory static files are served from, or `null` to serve none.
+
+		`null` is the default. A request that no middleware answers is then
+		`404 Not Found` without the filesystem being consulted, which is what
+		a server that only has routes wants.
+
+		It used to default to `File.applicationStorageDirectory`: the account's
+		home directory on Linux and macOS, `%APPDATA%` on Windows. A server that
+		only had routes, and never set a root, answered every other path from
+		there, on every interface: `GET /.ssh/id_rsa` returned the key, and the
+		files `Store` keeps under the same directory -- sessions among them --
+		were one guessable path away. Name the directory to serve:
+
+		```haxe
+		config.rootDirectory = new File("/srv/www");
+		```
+
+		PHP, `rewrites`, and `tryFiles` entries past the first two all resolve
+		files under this directory, so `validate` refuses them without one.
+	**/
 	public var rootDirectory:File;
+
+	/**
+		Whether a static file whose path has a segment starting with `.` may be
+		served. Defaults to `false`.
+
+		Dotfiles are where secrets live: `.env`, `.git/`, `.htpasswd`,
+		`.ssh/`. A document root that is a checkout, or that a deploy copied a
+		whole project into, holds them without anyone having decided to publish
+		them. With this off, a request naming one is answered `404`, the same as
+		a file that is not there, so the answer does not confirm it exists.
+
+		`/.well-known/` is served either way. RFC 8615 reserves it for exactly
+		the files a site is meant to publish -- an ACME challenge, a
+		`security.txt` -- and refusing it would break certificate renewal.
+
+		This decides static files only. Middleware and routes see every path.
+	**/
+	public var serveDotFiles:Bool = false;
+
 	public var directoryIndex:Array<String>;
 	public var errorDocument:File;
 	public var whitelist:Array<String>;
@@ -310,7 +363,7 @@ class HTTPServerConfig {
 		return tlsCertificatePath != null && tlsCertificatePath != "" && tlsKeyPath != null && tlsKeyPath != "";
 	}
 
-	public function new(address:String = "0.0.0.0", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
+	public function new(address:String = "127.0.0.1", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
@@ -319,7 +372,8 @@ class HTTPServerConfig {
 			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 100, http2Enabled:Bool = false) {
 		this.address = address;
 		this.port = port;
-		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
+		// Null means no static files at all. See `rootDirectory`.
+		this.rootDirectory = rootDirectory;
 		this.directoryIndex = directoryIndex == null ? ["index.php", "index.html"] : directoryIndex;
 		this.errorDocument = errorDocument;
 		this.whitelist = whitelist == null ? [] : whitelist;
@@ -358,7 +412,11 @@ class HTTPServerConfig {
 		Throws if this configuration describes a resolution order the server
 		will not follow. Called by `HTTPServer` on construction.
 
-		Only `tryFiles` is checked, and only its shape. `$uri` and `$uri/` are
+		Two things are checked: the shape of `tryFiles`, and that nothing which
+		resolves files under `rootDirectory` -- PHP, `rewrites`, `tryFiles`
+		entries past the first two -- is asked for without one.
+
+		`$uri` and `$uri/` are
 		tested by the resolver before it reads this list at all — before the
 		rewrite rules, and whether or not the list mentions them — so any
 		spelling other than those two first describes something that does not
@@ -382,6 +440,21 @@ class HTTPServerConfig {
 			if (tryFiles[i] == "$uri" || tryFiles[i] == "$uri/") {
 				throw new ArgumentError("tryFiles repeats \"" + tryFiles[i] + "\" at index " + i
 					+ "; it is only ever tested first, so the later entry does nothing.");
+			}
+		}
+
+		// Each of these names files under the document root. Without one they
+		// would do nothing at all, and a configuration that silently means
+		// less than it says is refused here for the reason given above.
+		if (rootDirectory == null) {
+			if (phpEnabled) {
+				throw new ArgumentError("phpEnabled needs a rootDirectory: PHP scripts are found under it. Set rootDirectory to the directory holding them.");
+			}
+			if (rewrites != null && rewrites.length > 0) {
+				throw new ArgumentError("rewrites need a rootDirectory: every rule resolves to a file under it. Set rootDirectory, or remove the rules.");
+			}
+			if (tryFiles.length > 2) {
+				throw new ArgumentError("tryFiles entries after \"$uri/\" need a rootDirectory: each names a file under it. Set rootDirectory, or remove them.");
 			}
 		}
 	}
