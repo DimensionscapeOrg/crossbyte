@@ -178,10 +178,11 @@ class JsHttpClient {
 			headers.set("User-Agent", request.userAgent);
 		}
 
+		var port:Int = crossbyte.utils.IntParse.decimal(url.port, 65535);
 		var options:Dynamic = {
 			protocol: url.protocol,
 			hostname: url.hostname,
-			port: url.port == "" ? null : Std.parseInt(url.port),
+			port: port < 0 ? null : port,
 			path: url.pathname + url.search,
 			method: method,
 			headers: headers
@@ -194,8 +195,10 @@ class JsHttpClient {
 			var total:Int = 0;
 
 			if (lengthHeader != null) {
-				var parsed = Std.parseInt(Std.string(lengthHeader));
-				total = parsed == null ? 0 : parsed;
+				// As the native client reads it: past an Int, Std.parseInt
+				// gave Node a number no Int holds.
+				var parsed:Int = crossbyte.utils.IntParse.decimal(Std.string(lengthHeader));
+				total = parsed < 0 ? 0 : parsed;
 			}
 
 			var chunks:Array<js.node.Buffer> = [];

@@ -1,5 +1,7 @@
 package crossbyte.url;
 
+import crossbyte.utils.IntParse;
+
 /** Parsed URL wrapper with convenience accessors for common request parts. */
 @:forward
 @:transitive
@@ -160,16 +162,12 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		if (rawPort == null) {
 			return null;
 		}
-		if (rawPort.length == 0 || rawPort.length > 5 || !~/^[0-9]+$/.match(rawPort)) {
-			throw "Uri must be well-formed";
-		}
-
-		var parsed:Null<Int> = Std.parseInt(rawPort);
-		if (parsed == null || parsed < 0 || parsed > 65535) {
-			throw "Uri must be well-formed";
-		}
-
-		if (Std.string(parsed) != rawPort) {
+		// Digits only and within 65535, through IntParse: a regular expression
+		// compiled per URL checked the digits, then Std.parseInt read them,
+		// which answers differently past an Int on every target. A leading
+		// zero is still refused, as it was, so one port has one spelling.
+		var parsed:Int = rawPort.length > 5 ? -1 : IntParse.decimal(rawPort, 65535);
+		if (parsed < 0 || (rawPort.length > 1 && StringTools.fastCodeAt(rawPort, 0) == "0".code)) {
 			throw "Uri must be well-formed";
 		}
 
