@@ -55,7 +55,7 @@ import sys.net.Socket as SysSocket;
 @:fileXml('tags="haxe,release"')
 @:noDebug
 #end
-class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket {
+class Socket extends EventDispatcher implements IDataInput implements IDataOutput implements IPollableSocket #if nodejs implements crossbyte.core._internal.PassFlush #end {
 	/**
 		A slot for whatever the application wants this connection to carry.
 
@@ -291,8 +291,27 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Set it to `null` when the transfer ends. The callback runs inside
 		the registry's drain, so it must not close this socket's registry
 		registration out from under the loop; closing the socket is fine.
+
+		On Node it runs after each pass's flush, and from the tick while it is
+		set, the one thing a Node socket is ticked for.
 	**/
-	@:noCompletion public var __onWritableDrain:Void->Void;
+	@:noCompletion public var __onWritableDrain(default, set):Void->Void;
+
+	@:noCompletion private function set___onWritableDrain(value:Void->Void):Void->Void {
+		__onWritableDrain = value;
+		#if nodejs
+		__syncNodeTick();
+		#end
+		return value;
+	}
+
+	#if nodejs
+	// The runtime this socket's writes are flushed by; whether a flush is
+	// already asked for this pass; and whether it is being ticked.
+	@:noCompletion private var __nodeRuntime:CrossByte = null;
+	@:noCompletion private var __flushQueued:Bool = false;
+	@:noCompletion private var __ticking:Bool = false;
+	#end
 
 	/**
 	 * Bytes handed to one `readBytes` call. Larger than the 4 KB this used to
@@ -615,7 +634,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__bindNodeSocket(node);
 		node.connect({port: port, host: host});
 
-		CrossByte.current().addEventListener(TickEvent.TICK, this_onTick);
+		// Not ticked: a write asks for a flush at the end of the pass, and
+		// Node reports everything else as an event. See __syncNodeTick.
+		__nodeRuntime = CrossByte.current();
 		#else
 		__socket = new SysSocket();
 		@:privateAccess
@@ -1397,7 +1418,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#if (js && !nodejs)
 		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 		#elseif nodejs
-		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
+		__syncNodeTick();
 		#else
 		__closed = true;
 		#end
@@ -1495,6 +1516,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private inline function __queueWrite():Void {
+		#if nodejs
+		// Flushed once, at the end of the pass; see __flushPass. Only for a
+		// socket of Node's own: a WebSocket's writes wait for its flush().
+		if (!__flushQueued && __socket != null && __nodeRuntime != null) {
+			__flushQueued = true;
+			__nodeRuntime.__queuePassFlush(this);
+		}
+		#else
 		if (__cbInstance == null) {
 			return;
 		}
@@ -1505,6 +1534,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__cbInstance.queueWritable(this.__socket);
 			#end
 		}
+		#end
 	}
 
 	public inline function registryOnReadable():Void {
@@ -1687,12 +1717,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	@:noCompletion private function __releaseNode():Void {
 		__stopConnecting();
-		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
 		__isDirty = false;
 		flushFull = false;
+		__syncNodeTick();
 	}
 
 	/**
@@ -1742,11 +1772,60 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		socket.__input.endian = socket.__endian;
 
 		socket.__cbInstance = cbInstance;
+		socket.__nodeRuntime = cbInstance;
 		socket.__bindNodeSocket(node);
 
-		cbInstance.addEventListener(TickEvent.TICK, socket.this_onTick);
-
 		return socket;
+	}
+
+	/**
+		Ticked only while a writer is feeding the socket through
+		`__onWritableDrain`, which it expects to be asked again whether or not
+		anything drained. Every Node socket used to be ticked for as long as it
+		was open, to flush what had been written, a visit a tick for each of
+		thousands of idle connections, where a write now asks for its own
+		flush at the end of the pass.
+	**/
+	@:noCompletion private function __syncNodeTick():Void {
+		var wanted:Bool = __socket != null && __onWritableDrain != null && __nodeRuntime != null;
+		if (wanted && !__ticking) {
+			__ticking = true;
+			__nodeRuntime.addEventListener(TickEvent.TICK, this_onTick);
+		} else if (!wanted && __ticking) {
+			__ticking = false;
+			if (__nodeRuntime != null) {
+				__nodeRuntime.removeEventListener(TickEvent.TICK, this_onTick);
+			}
+		}
+	}
+
+	/**
+		The end of a pass in which something was written: flushed, and the
+		streaming writer, if there is one, offered the room, what the
+		registry's writable queue does natively. Contained, since this runs
+		from Node's own loop.
+	**/
+	@:noCompletion public function __flushPass():Void {
+		__flushQueued = false;
+		if (__socket == null) {
+			return;
+		}
+
+		try {
+			try {
+				flush();
+			} catch (e:Dynamic) {
+				// As the registry's retry does natively: the owner is told,
+				// and the connection left for the read side to reap.
+				__dispatchPooledIOError(Std.string(e));
+				return;
+			}
+			if (__onWritableDrain != null) {
+				__onWritableDrain();
+			}
+		} catch (e:Dynamic) {
+			__contain(e, "writable");
+		}
 	}
 	#end
 
@@ -1762,9 +1841,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			flush();
 		}
 		#elseif nodejs
-		// Data arrives on Node through the data event, not by polling, so the
-		// tick has nothing to read, it only pushes whatever writes have been
-		// queued since the last one, exactly as the browser branch does.
+		// Data arrives on Node through the data event, not by polling, and a
+		// write asks for its own flush at the end of the pass, so a Node
+		// socket is ticked only while a writer is feeding it through
+		// __onWritableDrain (see __syncNodeTick). The flush pushes what that
+		// writer wrote since the last one.
 		if (__socket != null) {
 			flush();
 
