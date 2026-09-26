@@ -732,6 +732,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On eval, the HTTP/1.1 client returns when a server closes without
+  answering, or ends a chunked body before its size line: an error, where
+  `load()` never returned. A socket's `readByte` answers 0 there at the end
+  of the stream instead of throwing, so the client read endless NUL bytes
+  into a line that never ended. A connection closing before the headers end
+  is now reported as that, rather than as a failure to read.
 - The HTTP/1.1 client's idle timeout is in milliseconds, as
   `URLRequest.idleTimeout` says. The socket was handed the milliseconds as
   seconds, so the default 30 second timeout waited 30,000 seconds, and a

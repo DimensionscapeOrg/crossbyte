@@ -1056,6 +1056,37 @@ class HttpTest extends utest.Test {
 	}
 	#end
 
+	public function testAServerClosingWithoutAnAnswerIsAnError():Void {
+		// On eval the end of the stream read as endless NUL bytes, so the
+		// status line never ended and load() never returned.
+		var fixture = holdRequest(true);
+		var http = new Http('http://127.0.0.1:${fixture.port}/gone');
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isFalse(completed);
+		Require.notNull(failure);
+	}
+
+	public function testAChunkedBodyEndingBeforeItsSizeLineIsAnError():Void {
+		// The size line read the end of the stream the same way on eval.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+		var http = new Http('http://127.0.0.1:${fixture.port}/cut');
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isFalse(completed);
+		Require.notNull(failure);
+	}
+
 	/**
 	 * Takes one request and answers nothing: closes at once, or holds the
 	 * connection until the client goes, three seconds at most.
