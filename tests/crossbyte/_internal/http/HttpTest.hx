@@ -442,6 +442,25 @@ class HttpTest extends utest.Test {
 		Assert.equals(2147483647, http.__parseContentLength("2147483647"));
 	}
 
+	public function testAStatusLineCarriesExactlyThreeDigits():Void {
+		// Was (\d+) through Std.parseInt: "HTTP/1.1 4294967496 OK" read as
+		// 200 on Linux native.
+		Assert.equals(200, Http.__parseStatusLine("HTTP/1.1 200 OK"));
+		Assert.equals(200, Http.__parseStatusLine("HTTP/1.1 200"));
+		Assert.equals(404, Http.__parseStatusLine("HTTP/1.0 404 Not Found"));
+		Assert.equals(503, Http.__parseStatusLine("HTTP/1.1  503\tBusy"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 4294967496 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 2000 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 20 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 099 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 +20 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 200OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1 200 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTX/1.1 200 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("ICY 200 OK"));
+	}
+
 	public function testAResponseDeclaringMoreThanAnIntIsAnError():Void {
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 4294967301\r\n\r\nhello");
 		var http = new Http('http://127.0.0.1:${fixture.port}/huge');

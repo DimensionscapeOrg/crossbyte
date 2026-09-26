@@ -54,6 +54,9 @@ import crossbyte._internal.http.HTTPResponseWriter;
  */
 final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private static inline var MAX_BUFFER_SIZE:Int = 1024 * 1024; // 1 MB
+
+	/** The largest chunk-size read at all: seven hex digits' worth. */
+	@:noCompletion private static inline var MAX_CHUNK_SIZE:Int = 0xFFFFFFF;
 	@:noCompletion private static final ALLOWED_METHODS:Array<String> = ["GET", "HEAD", "OPTIONS", "POST"];
 
 	/**
@@ -2182,48 +2185,82 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return formatted;
 	}
 
-	@:noCompletion private function __parseRange(h:String, total:UInt):{start:UInt, end:UInt} {
-		if (h == null) {
+	/**
+	 * Reads a single `bytes=first-last` range against a file of `total`
+	 * bytes, or answers null when it cannot be satisfied.
+	 *
+	 * By hand rather than through a regular expression, which was compiled
+	 * on every ranged request, and through `IntParse` rather than
+	 * `Std.parseInt`, which on Linux native read `bytes=4294967296-` as a
+	 * range starting at 0. A number past an `Int` is still a number here:
+	 * as a start it lies beyond any file this serves, as an end or a suffix
+	 * it covers the whole file, which is what RFC 9110 14.1.2 makes of it.
+	 */
+	@:noCompletion private static function __parseRange(h:String, total:Int):{start:Int, end:Int} {
+		if (h == null || total <= 0) {
+			// A range of an empty representation is never satisfiable.
 			return null;
 		}
 
-		var m:EReg = ~/^bytes=(\d*)-(\d*)$/;
-		if (!m.match(StringTools.trim(h))) {
+		var spec:String = StringTools.trim(h);
+		if (spec.length < 7 || spec.substr(0, 6).toLowerCase() != "bytes=") {
 			return null;
 		}
 
-		var sStr:String = m.matched(1), eStr = m.matched(2);
-		var start:UInt;
-		var end:UInt;
-
-		if (sStr == "" && eStr == "") {
+		var dash:Int = spec.indexOf("-", 6);
+		if (dash < 0) {
 			return null;
 		}
 
-		if (sStr == "") {
-			var n:Null<Int> = Std.parseInt(eStr);
-			if (n == null || n <= 0) {
+		var first:Int = __rangeNumber(spec.substring(6, dash));
+		var last:Int = __rangeNumber(spec.substr(dash + 1));
+		if (first == RANGE_INVALID || last == RANGE_INVALID || (first == RANGE_ABSENT && last == RANGE_ABSENT)) {
+			return null;
+		}
+
+		if (first == RANGE_ABSENT) {
+			// A suffix: the last `last` bytes.
+			if (last <= 0) {
 				return null;
 			}
+			return {start: total > last ? total - last : 0, end: total - 1};
+		}
 
-			start = (total > n) ? (total - n) : 0;
-			end = total - 1;
-		} else {
-			start = Std.parseInt(sStr);
-			end = (eStr == "") ? (total - 1) : Std.parseInt(eStr);
-			if (start >= total) {
-				return null;
-			}
+		if (first >= total) {
+			return null;
+		}
 
-			if (end >= total) {
-				end = total - 1;
-			}
+		var end:Int = (last == RANGE_ABSENT || last >= total) ? total - 1 : last;
+		if (end < first) {
+			return null;
+		}
+		return {start: first, end: end};
+	}
 
-			if (end < start) {
-				return null;
+	@:noCompletion private static inline var RANGE_ABSENT:Int = -1;
+	@:noCompletion private static inline var RANGE_INVALID:Int = -2;
+
+	/**
+	 * One side of a byte range: `RANGE_ABSENT` when empty, `RANGE_INVALID`
+	 * when not all digits, and the largest `Int` for digits past it.
+	 */
+	@:noCompletion private static function __rangeNumber(text:String):Int {
+		if (text.length == 0) {
+			return RANGE_ABSENT;
+		}
+
+		var value:Int = IntParse.decimal(text);
+		if (value >= 0) {
+			return value;
+		}
+
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			if (code < "0".code || code > "9".code) {
+				return RANGE_INVALID;
 			}
 		}
-		return {start: start, end: end};
+		return 0x7FFFFFFF;
 	}
 
 	@:noCompletion private static inline function __toHttpDate(t:Float):String {
@@ -2324,11 +2361,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var sName:String = hostHeader;
 		var sPort:String = null;
 		if (hostHeader != null) {
-			var i:Int = hostHeader.indexOf(":");
+			// The port follows the last colon, and for an IPv6 literal only a
+			// colon after the closing bracket: "[::1]:8080" split at its first
+			// colon named the server "[".
+			var close:Int = StringTools.startsWith(hostHeader, "[") ? hostHeader.indexOf("]") : -1;
+			var i:Int = hostHeader.indexOf(":", close < 0 ? 0 : close);
 			if (i > 0) {
 				sName = hostHeader.substr(0, i);
-				var p:Null<Int> = Std.parseInt(hostHeader.substr(i + 1));
-				if (p != null) {
+				// Through IntParse: Std.parseInt took trailing junk, and a
+				// number past an Int differently on every target.
+				var p:Int = IntParse.decimal(hostHeader.substr(i + 1), 65535);
+				if (p >= 0) {
 					sPort = Std.string(p);
 				}
 			}
@@ -2597,34 +2640,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 					sizeLine = sizeLine.substr(0, semi);
 				}
 
-				var hex:String = StringTools.trim(sizeLine);
-				if (hex.length == 0 || !~/^[0-9a-fA-F]+$/.match(hex)) {
-					__sendErrorResponse(400, "Bad Request");
-					return false;
-				}
-
-				// Leading zeros are legal in a chunk-size, so only the significant
-				// digits are counted. Past seven of them Std.parseInt stops
-				// agreeing with itself across targets, and the check below is
-				// written for exactly one of the four answers: eval and cpp return
-				// -1, jvm throws NumberFormatException, and node returns a number
-				// too large for Int, 0xFFFFFFFF arrives as 4294967295, which is
-				// not null and not negative, so it was accepted and this counter
-				// went on to expect a four gigabyte chunk.
-				//
-				// Seven digits is 0xFFFFFFF, far above any body this server will
-				// hold, and every target parses it identically.
-				var firstSignificant:Int = 0;
-				while (firstSignificant < hex.length - 1 && hex.charCodeAt(firstSignificant) == 48) {
-					firstSignificant++;
-				}
-				if (hex.length - firstSignificant > 7) {
-					__sendErrorResponse(400, "Bad Request");
-					return false;
-				}
-
-				var parsed:Null<Int> = Std.parseInt("0x" + hex);
-				if (parsed == null || parsed < 0) {
+				// Hex digits only, leading zeros allowed, and nothing past the
+				// bound, answered the same on every target. Std.parseInt had four
+				// answers past seven digits, -1 on eval and cpp, a throw on the
+				// jvm, and on Node a number too large for an Int, which was
+				// accepted, so 0xFFFFFFFF went on to expect a four gigabyte
+				// chunk, and this counted digits and ran a regular expression
+				// per chunk to stay clear of them. The bound is the one that
+				// guard enforced, far above any body this server holds.
+				var parsed:Int = IntParse.hex(StringTools.trim(sizeLine), MAX_CHUNK_SIZE);
+				if (parsed < 0) {
 					__sendErrorResponse(400, "Bad Request");
 					return false;
 				}
@@ -2810,15 +2835,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return null;
 	}
 
+	/**
+	 * Reads an IMF-fixdate, `Sun, 06 Nov 1994 08:49:37 GMT`, or answers null.
+	 *
+	 * The format is fixed width, so it is read by position. A regular
+	 * expression did this, and a literal one is compiled each time the
+	 * function runs, on every conditional request, which is what a browser
+	 * revalidating its cache sends for every asset.
+	 */
 	@:noCompletion private static function __parseHttpDate(s:String):Date {
-		var r = ~/^\w{3}, (\d{2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/;
-
-		if (!r.match(StringTools.trim(s))) {
+		var t:String = StringTools.trim(s);
+		if (t.length != 29 || t.charCodeAt(3) != ",".code || t.charCodeAt(4) != " ".code || t.charCodeAt(7) != " ".code || t.charCodeAt(11) != " ".code
+			|| t.charCodeAt(16) != " ".code || t.charCodeAt(19) != ":".code || t.charCodeAt(22) != ":".code || t.substr(25) != " GMT") {
 			return null;
 		}
 
-		var day:Null<Int> = Std.parseInt(r.matched(1));
-		var mon = switch (r.matched(2)) {
+		var day:Int = IntParse.decimal(t.substr(5, 2));
+		var mon = switch (t.substr(8, 3)) {
 			case "Jan": 0;
 			case "Feb": 1;
 			case "Mar": 2;
@@ -2838,11 +2871,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return null;
 		}
 
-		var year:Null<Int> = Std.parseInt(r.matched(3));
-		var hh:Null<Int> = Std.parseInt(r.matched(4));
-		var mm:Null<Int> = Std.parseInt(r.matched(5));
-		var ss:Null<Int> = Std.parseInt(r.matched(6));
-		if (year == null || day == null || hh == null || mm == null || ss == null) {
+		var year:Int = IntParse.decimal(t.substr(12, 4));
+		var hh:Int = IntParse.decimal(t.substr(17, 2));
+		var mm:Int = IntParse.decimal(t.substr(20, 2));
+		var ss:Int = IntParse.decimal(t.substr(23, 2));
+		if (year < 0 || day < 0 || hh < 0 || mm < 0 || ss < 0) {
 			return null;
 		}
 

@@ -1,5 +1,7 @@
 package crossbyte._internal.http;
 
+import crossbyte.utils.IntParse;
+
 /**
 	Cookies for the length of one request, carried across its redirects.
 
@@ -113,8 +115,16 @@ class CookieJar {
 			// speaking of between the response that sets a cookie and the hop
 			// that sends it back.
 			if (StringTools.startsWith(lower, "max-age=")) {
-				var age:Null<Int> = Std.parseInt(StringTools.trim(attribute.substr(8)));
-				if (age != null && age <= 0) {
+				// RFC 6265 5.2.2: digits, perhaps after a "-", and anything
+				// else is ignored. Zero or below deletes. Read through
+				// IntParse: Std.parseInt made 4294967296 a zero on Linux
+				// native, deleting a cookie meant to last a century, and threw
+				// out of the whole request on the jvm. Digits past an Int are
+				// still a number, a very long life, or long ago.
+				var raw:String = StringTools.trim(attribute.substr(8));
+				var negative:Bool = StringTools.startsWith(raw, "-");
+				var digits:String = negative ? raw.substr(1) : raw;
+				if (__isDigits(digits) && (negative || IntParse.decimal(digits) == 0)) {
 					expired = true;
 				}
 			}
@@ -126,6 +136,20 @@ class CookieJar {
 		}
 
 		__cookies.set(name, {value: value, host: host, secure: secure});
+	}
+
+	private static function __isDigits(text:String):Bool {
+		if (text.length == 0) {
+			return false;
+		}
+
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			if (code < "0".code || code > "9".code) {
+				return false;
+			}
+		}
+		return true;
 	}
 }
 

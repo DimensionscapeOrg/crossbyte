@@ -397,37 +397,17 @@ class Http {
 
 						var hexStr:String = StringTools.trim(sizeLine);
 
-						// Checked as hex before it is parsed, the way the
-						// Content-Length parser below checks its own field.
-						// Std.parseInt stops at the first character it cannot use,
-						// so "10junk" and "10 20" both came back as 16, a size
-						// line this client read differently from whatever wrote it,
-						// and nothing said so.
-						if (hexStr.length == 0 || !~/^[0-9a-fA-F]+$/.match(hexStr)) {
-							throw "Invalid chunk size: " + hexStr;
-						}
-
-						// Seven significant digits at most, leading zeros not
-						// counted. Past that Std.parseInt answers differently on
-						// every target: -1 on eval and cpp, a thrown
-						// NumberFormatException on jvm, and on node a number too
-						// large for Int, which is neither null nor negative and so
-						// walked straight past the test below. 0xFFFFFFF is already
+						// Hex digits only, and no more than seven significant
+						// ones, the same on every target. Std.parseInt stopped at
+						// the first character it could not use, so "10junk" read
+						// as 16, and past seven digits it answered differently on
+						// each target, on Node with a number too large for an
+						// Int, which walked past every check. 0xFFFFFFF is already
 						// far beyond MAX_CHUNKED_BODY_SIZE.
-						var firstSignificant:Int = 0;
-						while (firstSignificant < hexStr.length - 1 && hexStr.charCodeAt(firstSignificant) == 48) {
-							firstSignificant++;
-						}
-						if (hexStr.length - firstSignificant > 7) {
+						var chunkSize:Int = IntParse.hex(hexStr, 0xFFFFFFF);
+						if (chunkSize < 0) {
 							throw "Invalid chunk size: " + hexStr;
 						}
-
-						var parsed:Null<Int> = Std.parseInt('0x' + hexStr);
-						if (parsed == null || parsed < 0) {
-							throw "Invalid chunk size: " + hexStr;
-						}
-
-						var chunkSize:Int = parsed;
 
 						if (chunkSize == 0) {
 							var trailer:String = "";
@@ -643,13 +623,13 @@ class Http {
 			}
 
 			if (__status == 0) {
-				var regex:EReg = ~/^HTTP\/\d+\.\d+\s+(\d+)/;
-				if (!regex.match(line)) {
+				var code:Int = __parseStatusLine(line);
+				if (code < 0) {
 					__close();
 					onError('Malformed status line: ' + line);
 					return;
 				}
-				__status = Std.parseInt(regex.matched(1));
+				__status = code;
 				onStatus(__status);
 			} else {
 				var i:Int = line.indexOf(":");
@@ -684,6 +664,58 @@ class Http {
 		// every failure above returns instead, and an informational block is
 		// discarded and re-read before control gets here.
 		onHeaders(__responseHeaders);
+	}
+
+	/**
+	 * The status code of an HTTP/1.x status line, or -1 when it is not one.
+	 *
+	 * `HTTP/` DIGITs `.` DIGITs, whitespace, then exactly three digits, as RFC
+	 * 9112 4 has it. This was `(\d+)` through Std.parseInt, compiled per
+	 * response, and a status of any length was read however the target read
+	 * it: "HTTP/1.1 4294967496 OK" was 200 on Linux native.
+	 */
+	private static function __parseStatusLine(line:String):Int {
+		if (!StringTools.startsWith(line, "HTTP/")) {
+			return -1;
+		}
+
+		var length:Int = line.length;
+		var i:Int = __skipDigits(line, 5);
+		if (i == 5 || i >= length || StringTools.fastCodeAt(line, i) != ".".code) {
+			return -1;
+		}
+
+		var minor:Int = i + 1;
+		i = __skipDigits(line, minor);
+		if (i == minor) {
+			return -1;
+		}
+
+		var gap:Int = i;
+		while (i < length && (StringTools.fastCodeAt(line, i) == " ".code || StringTools.fastCodeAt(line, i) == "\t".code)) {
+			i++;
+		}
+		if (i == gap || i + 3 > length) {
+			return -1;
+		}
+		if (i + 3 < length && StringTools.fastCodeAt(line, i + 3) != " ".code && StringTools.fastCodeAt(line, i + 3) != "\t".code) {
+			return -1;
+		}
+
+		var code:Int = IntParse.decimal(line.substr(i, 3));
+		return code < 100 ? -1 : code;
+	}
+
+	private static function __skipDigits(text:String, from:Int):Int {
+		var i:Int = from;
+		while (i < text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			if (code < "0".code || code > "9".code) {
+				break;
+			}
+			i++;
+		}
+		return i;
 	}
 
 	/** Whether the caller supplied a header starting with `prefix` (lowercase, with its colon). **/
