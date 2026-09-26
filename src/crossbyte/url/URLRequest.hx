@@ -21,6 +21,20 @@ class URLRequest {
 	public var followRedirects:Bool;
 
 	/**
+		Whether a redirect from `https` to plain `http` may be followed.
+		Defaults to `false`, and such a redirect then fails the request.
+
+		Following one sends the rest of the exchange, and whatever the
+		response holds, in the clear, on the word of the server being left.
+		Set this only for a server known to redirect that way.
+
+		Separately, and always, `Authorization`, `Proxy-Authorization` and a
+		`Cookie` set in `requestHeaders` are dropped once a redirect leaves the
+		origin the request started at, as browsers, curl and Go drop them.
+	**/
+	public var followInsecureRedirects:Bool = false;
+
+	/**
 		Specifies the HTTP protocol version requested by URLLoader.
 
 		HTTP/1.1 is implemented by CrossByte core. HTTP/2 and HTTP/3 require

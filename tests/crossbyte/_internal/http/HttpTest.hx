@@ -800,6 +800,147 @@ class HttpTest extends utest.Test {
 			"a cookie went out with manageCookies off:\n" + fixture.requests[1]);
 	}
 
+	public function testCredentialsDoNotFollowARedirectToAnotherOrigin():Void {
+		// A 302 to another origin used to be followed with every header the
+		// caller wrote: the auditor's server received Authorization: Bearer
+		// sk-live-secret. The next origin gets the request without them.
+		var elsewhere = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var origin = serveOnce('HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:${elsewhere.port}/landing\r\nContent-Length: 0\r\n\r\n');
+
+		var http = new Http('http://127.0.0.1:${origin.port}/start', "GET",
+			["Authorization: Bearer sk-live-secret", "Proxy-Authorization: Basic cHJveHk=", "Cookie: sid=caller-set", "X-Trace: t-1"]);
+		var completed:Bytes = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		origin.waitDone();
+		elsewhere.waitDone();
+
+		Require.notNull(completed, "the redirect was not followed");
+		Assert.isTrue(origin.request.indexOf("sk-live-secret") >= 0, "the origin itself did not get the credentials");
+		Assert.isTrue(elsewhere.request.indexOf("sk-live-secret") < 0, "Authorization reached another origin:\n" + elsewhere.request);
+		Assert.isTrue(elsewhere.request.indexOf("cHJveHk=") < 0, "Proxy-Authorization reached another origin");
+		Assert.isTrue(elsewhere.request.indexOf("sid=caller-set") < 0, "a caller's Cookie reached another origin");
+		Assert.isTrue(elsewhere.request.indexOf("X-Trace: t-1") >= 0, "an ordinary header was dropped as well:\n" + elsewhere.request);
+	}
+
+	public function testCredentialsFollowARedirectWithinTheOrigin():Void {
+		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/start', "GET", ["Authorization: Bearer same-origin"]);
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
+		Assert.isTrue(fixture.requests[1].indexOf("Bearer same-origin") >= 0, "credentials were dropped within one origin");
+	}
+
+	public function testRedirectsOnlyGoWhereTheyAreAllowedTo():Void {
+		// https to http gives the rest of the exchange away in the clear, so it
+		// takes the caller's say-so; and only http and https are followed.
+		Assert.notNull(Http.__redirectRefusal(new URL("https://example.com/"), new URL("http://example.com/"), false));
+		Assert.isNull(Http.__redirectRefusal(new URL("https://example.com/"), new URL("http://example.com/"), true));
+		Assert.isNull(Http.__redirectRefusal(new URL("http://example.com/"), new URL("https://example.com/"), false));
+		Assert.isNull(Http.__redirectRefusal(new URL("https://example.com/"), new URL("https://other.example/"), false));
+		Assert.notNull(Http.__redirectRefusal(new URL("http://example.com/"), new URL("ftp://example.com/"), true));
+
+		Assert.equals("https://example.com:443", Http.__originOf(new URL("https://EXAMPLE.com/a")));
+		Assert.isTrue(Http.__originOf(new URL("http://example.com/")) != Http.__originOf(new URL("http://example.com:8080/")));
+		Assert.isTrue(Http.__originOf(new URL("http://example.com/")) != Http.__originOf(new URL("https://example.com/")));
+	}
+
+	public function testTenRedirectsEndingInAResponseSucceed():Void {
+		// MAX_REDIRECTS is ten; ten followed and then answered is within it.
+		// The old check read the count alone and reported this as too many.
+		var responses:Array<String> = [for (i in 0...10) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
+		responses.push("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
+		var fixture = serveMany(responses);
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/hop0');
+		var completed:Bytes = null;
+		var failure:String = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(failure, "ten redirects were reported as too many: " + failure);
+		Require.notNull(completed);
+		Assert.equals("done", completed.toString());
+	}
+
+	public function testElevenRedirectsAreTooMany():Void {
+		var responses:Array<String> = [for (i in 0...11) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
+		var fixture = serveMany(responses);
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/hop0');
+		var failure:String = null;
+		http.onComplete = data -> Assert.fail("an eleventh redirect was followed to completion");
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf("redirects") >= 0, failure);
+	}
+
+	public function testACallerHeaderCannotAddALine():Void {
+		// Written as given, a CR or LF in a caller's value ended the header and
+		// began one of the caller's choosing.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var http = new Http('http://127.0.0.1:${fixture.port}/', "GET", ["X-Forwarded: a\r\nInjected: yes", "Bad\r\nName: v"]);
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		for (line in fixture.request.split("\n")) {
+			Assert.isFalse(StringTools.startsWith(line, "Injected:"), "a caller's value added a header line:\n" + fixture.request);
+			Assert.isFalse(StringTools.startsWith(line, "Name:"), "a caller's name added a header line:\n" + fixture.request);
+		}
+		Assert.isTrue(fixture.request.indexOf("X-Forwarded: aInjected: yes") >= 0, fixture.request);
+	}
+
+	private static function serveMany(responses:Array<String>):TwoShotHttpServer {
+		var fixture = new TwoShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(responses.length);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				for (response in responses) {
+					peer = server.accept();
+					peer.setTimeout(2.0);
+					fixture.requests.push(readRequest(peer));
+					peer.output.writeString(response);
+					peer.output.flush();
+					closeQuietly(peer);
+					peer = null;
+				}
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		if (fixture.error != null) {
+			Assert.fail("HTTP fixture server failed to start: " + fixture.error);
+		}
+
+		return fixture;
+	}
+
 	private static function serveTwice(first:String, second:String):TwoShotHttpServer {
 		var fixture = new TwoShotHttpServer();
 		Thread.create(() -> {
