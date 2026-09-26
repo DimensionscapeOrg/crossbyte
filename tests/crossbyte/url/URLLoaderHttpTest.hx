@@ -28,6 +28,73 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.isTrue(fixture.requests[0].raw.indexOf("GET /fixed HTTP/1.1") == 0);
 	}
 
+	public function testTheResponseReachesTheLoaderWithItsHeaders():Void {
+		// HTTP_RESPONSE_STATUS was never dispatched, so Retry-After, ETag and
+		// Location could not be read at all.
+		var fixture = serveRequests(_ -> response(200, "OK", [
+			"Content-Length: 2", "ETag: \"abc\"", "Retry-After: 120", "Set-Cookie: a=1; Path=/", "Set-Cookie: b=2; Expires=Wed, 09 Jun 2100 10:18:14 GMT"
+		], "ok"), 1);
+		var url = 'http://127.0.0.1:${fixture.port}/resource';
+		var result = loadText(url);
+
+		fixture.waitDone();
+
+		Assert.equals(1, result.responses.length, "HTTP_RESPONSE_STATUS was not dispatched once");
+		if (result.responses.length > 0) {
+			var event:HTTPStatusEvent = result.responses[0];
+			Assert.equals(200, event.status);
+			Assert.equals(url, event.responseURL);
+			Assert.isFalse(event.redirected);
+			Assert.equals("\"abc\"", __header(event, "etag"));
+			Assert.equals("120", __header(event, "retry-after"));
+			var cookies = event.responseHeaders.filter(h -> h.name == "set-cookie").map(h -> h.value);
+			Assert.equals(2, cookies.length, "the two Set-Cookie fields were not kept apart: " + cookies);
+		}
+		Assert.isTrue(result.complete);
+	}
+
+	public function testARedirectedResponseNamesWhereItCameFrom():Void {
+		var fixture = serveRequests(request -> request.target == "/start" ? response(302, "Found", ["Location: /final", "Content-Length: 0"], "")
+			: response(200, "OK", ["Content-Length: 4", "X-Served-By: final"], "done"), 2);
+		var result = loadText('http://127.0.0.1:${fixture.port}/start');
+
+		fixture.waitDone();
+
+		Assert.equals(1, result.responses.length, "a redirect's own response was reported as the answer");
+		if (result.responses.length > 0) {
+			Assert.equals(200, result.responses[0].status);
+			Assert.isTrue(result.responses[0].redirected);
+			Assert.equals('http://127.0.0.1:${fixture.port}/final', result.responses[0].responseURL);
+			Assert.equals("final", __header(result.responses[0], "x-served-by"));
+		}
+	}
+
+	public function testAnErrorResponseIsReportedBeforeTheError():Void {
+		var fixture = serveRequests(_ -> response(503, "Service Unavailable", ["Content-Length: 4", "Retry-After: 30"], "busy"), 1);
+		var result = loadText('http://127.0.0.1:${fixture.port}/busy');
+
+		fixture.waitDone();
+
+		Assert.equals("HTTP error 503", result.error);
+		Assert.equals("busy", result.data);
+		Assert.equals(1, result.responses.length);
+		if (result.responses.length > 0) {
+			Assert.equals("30", __header(result.responses[0], "retry-after"));
+		}
+	}
+
+	private static function __header(event:HTTPStatusEvent, name:String):Null<String> {
+		if (event.responseHeaders == null) {
+			return null;
+		}
+		for (header in event.responseHeaders) {
+			if (header.name == name) {
+				return header.value;
+			}
+		}
+		return null;
+	}
+
 	public function testLoadsChunkedTextWithUnknownTotal():Void {
 		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\n\r\n", 1);
 		var result = loadText('http://127.0.0.1:${fixture.port}/chunked');
@@ -275,6 +342,80 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.equals(-1, result.progress[0].total);
 	}
 
+	#if (cpp || neko || hl)
+	// Only where the loader's worker is a thread: elsewhere it runs the load
+	// inside load(), so nothing can close it while it is in flight.
+	public function testClosingALoadInFlightEndsItQuietly():Void {
+		// A server that takes the request and holds it, answering nothing.
+		var ready = new Lock();
+		var finished = new Lock();
+		var arrived = new sys.thread.Deque<Bool>();
+		var port = 0;
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				port = server.host().port;
+				ready.release();
+				peer = server.accept();
+				peer.setTimeout(3.0);
+				readRequest(peer);
+				arrived.add(true);
+				// Until the client goes.
+				peer.input.readByte();
+			} catch (_:Dynamic) {
+				ready.release();
+			}
+			closeQuietly(peer);
+			closeQuietly(server);
+			finished.release();
+		});
+		if (!ready.wait(2.0) || port == 0) {
+			Assert.fail("the fixture server did not start");
+			return;
+		}
+
+		var loader = new URLLoader();
+		var events:Array<String> = [];
+		loader.addEventListener(Event.COMPLETE, _ -> events.push("complete"));
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("error: " + event.text));
+		var request = new URLRequest('http://127.0.0.1:${port}/held');
+		request.idleTimeout = 2000;
+		loader.load(request);
+
+		var inFlight = false;
+		pumpUntil(() -> inFlight = inFlight || arrived.pop(false) != null);
+		if (!inFlight) {
+			Assert.fail("the request never reached the server");
+			loader.close();
+			return;
+		}
+
+		// The worker thread is blocked reading. Closing ends that read, and
+		// what the thread reports next it reported through the loader's
+		// worker field, which close() had just cleared: an access violation
+		// on native.
+		loader.close();
+		var settle = haxe.Timer.stamp() + 0.5;
+		pumpUntil(() -> haxe.Timer.stamp() >= settle);
+
+		Assert.same([], events);
+		Assert.isTrue(finished.wait(3.0));
+
+		// And the loader is free for the next load.
+		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 2"], "ok"), 1);
+		loader.addEventListener(Event.COMPLETE, _ -> events.push("data: " + loader.data));
+		var next = new URLRequest('http://127.0.0.1:${fixture.port}/next');
+		next.idleTimeout = 2000;
+		loader.load(next);
+		pumpUntil(() -> events.length >= 2);
+		fixture.waitDone();
+		Assert.same(["complete", "data: ok"], events);
+	}
+	#end
+
 	private static function loadText(url:String):URLLoaderHttpResult {
 		return load(new URLRequest(url));
 	}
@@ -287,10 +428,12 @@ class URLLoaderHttpTest extends utest.Test {
 			error: null,
 			data: null,
 			statuses: [],
-			progress: []
+			progress: [],
+			responses: []
 		};
 
 		loader.addEventListener(HTTPStatusEvent.HTTP_STATUS, (event:HTTPStatusEvent) -> result.statuses.push(event.status));
+		loader.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, (event:HTTPStatusEvent) -> result.responses.push(event));
 		loader.addEventListener(ProgressEvent.PROGRESS, (event:ProgressEvent) -> result.progress.push({loaded: event.bytesLoaded, total: event.bytesTotal}));
 		loader.addEventListener(Event.COMPLETE, (_:Event) -> {
 			result.complete = true;
@@ -415,6 +558,7 @@ typedef URLLoaderHttpResult = {
 	var data:String;
 	var statuses:Array<Int>;
 	var progress:Array<{loaded:UInt, total:UInt}>;
+	var responses:Array<HTTPStatusEvent>;
 }
 
 typedef URLLoaderHttpFixtureRequest = {

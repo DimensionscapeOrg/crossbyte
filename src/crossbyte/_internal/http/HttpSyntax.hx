@@ -55,6 +55,124 @@ class HttpSyntax {
 	}
 
 	/**
+	 * A request path with its spelling settled, or null when its `..` steps
+	 * climb above the root.
+	 *
+	 * Repeated separators collapse, `.` and `..` steps are applied (RFC 3986
+	 * 5.2.4), a backslash separates segments as it does on the filesystem
+	 * Windows reads, and the result starts with `/`. A trailing separator, or
+	 * a trailing step, leaves the result ending in `/`, since it names a
+	 * directory. `*`, the target of a server-wide `OPTIONS`, is left alone.
+	 *
+	 * This is what lets a guard and the file it guards agree. The server
+	 * decoded the path once for middleware and the static resolver normalised
+	 * it again on its own, so a middleware refusing `/private/` saw
+	 * `//private/report.txt` and `/./private/report.txt` go past, and the
+	 * resolver then served `/private/report.txt` for both. One normalisation,
+	 * before middleware, means the path a guard checks is the path served.
+	 *
+	 * No browser sends a `..` that climbs above the root, it applies the
+	 * steps itself, so answering null for one, and 400 for the request,
+	 * refuses only what was written by hand to escape. A `..` inside a
+	 * segment, as in `/compare/v1.2..v1.3`, is part of a name and not a step.
+	 *
+	 * Allocates nothing for a path that is already settled, which is every
+	 * path a browser sends.
+	 */
+	public static function normalizePath(path:String):Null<String> {
+		if (path == null || path.length == 0) {
+			return "/";
+		}
+
+		if (path == "*" || !__needsNormalizing(path)) {
+			return path;
+		}
+
+		var segments:Array<String> = [];
+		var length:Int = path.length;
+		var directory:Bool = false;
+		var i:Int = 0;
+
+		while (i < length) {
+			var code:Int = StringTools.fastCodeAt(path, i);
+			if (code == "/".code || code == "\\".code) {
+				i++;
+				continue;
+			}
+
+			var start:Int = i;
+			while (i < length) {
+				code = StringTools.fastCodeAt(path, i);
+				if (code == "/".code || code == "\\".code) {
+					break;
+				}
+				i++;
+			}
+
+			var size:Int = i - start;
+			if (size == 1 && StringTools.fastCodeAt(path, start) == ".".code) {
+				directory = true;
+			} else if (size == 2 && StringTools.fastCodeAt(path, start) == ".".code && StringTools.fastCodeAt(path, start + 1) == ".".code) {
+				if (segments.length == 0) {
+					return null;
+				}
+				segments.pop();
+				directory = true;
+			} else {
+				segments.push(path.substr(start, size));
+				// A separator after the last segment makes it a directory.
+				directory = i < length;
+			}
+		}
+
+		if (segments.length == 0) {
+			return "/";
+		}
+
+		return "/" + segments.join("/") + (directory ? "/" : "");
+	}
+
+	/**
+	 * Whether `normalizePath` would change `path`: it does not start with
+	 * `/`, or it holds a backslash, an empty segment, or a `.` or `..` step.
+	 */
+	private static function __needsNormalizing(path:String):Bool {
+		var length:Int = path.length;
+		if (StringTools.fastCodeAt(path, 0) != "/".code) {
+			return true;
+		}
+
+		for (i in 0...length) {
+			var code:Int = StringTools.fastCodeAt(path, i);
+			if (code == "\\".code) {
+				return true;
+			}
+			if (code != "/".code || i + 1 >= length) {
+				continue;
+			}
+
+			var next:Int = StringTools.fastCodeAt(path, i + 1);
+			if (next == "/".code) {
+				return true;
+			}
+			if (next == ".".code) {
+				var after:Int = i + 2 < length ? StringTools.fastCodeAt(path, i + 2) : -1;
+				if (after == -1 || after == "/".code || after == "\\".code) {
+					return true;
+				}
+				if (after == ".".code) {
+					var third:Int = i + 3 < length ? StringTools.fastCodeAt(path, i + 3) : -1;
+					if (third == -1 || third == "/".code || third == "\\".code) {
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Strips from a header value everything that could end the header early.
 	 */
 	public static function sanitizeHeaderValue(v:String):String {

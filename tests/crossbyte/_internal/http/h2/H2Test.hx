@@ -145,6 +145,22 @@ class H2Test extends utest.Test {
 		Assert.equals("content-type", stream.headers[0].name);
 	}
 
+	public function testAStatusThatIsNotThreeDigitsIsNoStatus():Void {
+		// §8.3.2 makes :status three digits. Std.parseInt read 4294967496 as
+		// 200 on Linux native, 2147483647 on Windows, and threw on the jvm.
+		for (value in ["4294967496", "2000", "20", "+20", "abc", "099"]) {
+			var server = new ServerScript();
+			server.settings();
+			server.response(1, [new HpackHeader(":status", value)], "", true);
+
+			var connection = server.connect();
+			var stream = connection.request("GET", "http", "example.com", "/", []);
+			connection.pumpUntilClosed(stream);
+
+			Assert.equals(-1, stream.status, ":status " + value + " was read as a status");
+		}
+	}
+
 	public function testSettingsFromThePeerAreAcknowledged():Void {
 		var server = new ServerScript();
 		server.settings();
