@@ -39,6 +39,51 @@ class DtlsTransportTest extends utest.Test {
 	}
 
 	/**
+		An established session with nothing to do costs nothing to poll.
+
+		Nothing in an established session runs on a timer: records are read as
+		they arrive and written as they are sent. It was stepped every tick
+		regardless, three native calls per idle peer, finding nothing each
+		time. Counted rather than timed: the steps are what cost.
+	**/
+	public function testAnIdleEstablishedSessionIsNotStepped():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var heard:String = null;
+
+		pair.server.onMessage = function(payload) {
+			payload.position = 0;
+			heard = payload.readUTFBytes(payload.length);
+		};
+
+		if (!pair.run(() -> pair.client.connected && pair.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			return;
+		}
+
+		#if cpp
+		var before:Int = @:privateAccess pair.client.__steps + @:privateAccess pair.server.__steps;
+
+		for (i in 0...100) {
+			pair.client.poll(1000 + i);
+			pair.server.poll(1000 + i);
+		}
+
+		Assert.equals(before, @:privateAccess pair.client.__steps + @:privateAccess pair.server.__steps,
+			"polling an idle established session stepped it");
+		#end
+
+		// And it still carries what is sent, because arrival is what reads it.
+		pair.client.send(text("still here"));
+		pair.run(() -> heard != null);
+		Assert.equals("still here", heard);
+
+		pair.close();
+	}
+
+	/**
 		A handshake between two peers who each know only the other's
 		fingerprint.
 

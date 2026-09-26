@@ -127,6 +127,9 @@ class DtlsTransport {
 	@:noCompletion private var __handle:Int = -1;
 	@:noCompletion private var __closed:Bool = false;
 
+	/** Times the native session has been stepped, which is what an idle poll costs. For tests. **/
+	@:noCompletion private var __steps:Int = 0;
+
 	#if cpp
 	/** Only a server reads a ClientHello, so only a server needs one. **/
 	@:noCompletion private var __assembly:ClientHelloAssembly;
@@ -173,18 +176,38 @@ class DtlsTransport {
 	}
 
 	/**
-		Moves the handshake forward and delivers anything that has arrived.
+		Moves the handshake forward.
 
 		@param now Seconds, from a clock the caller uses consistently. DTLS runs
 		its own retransmission schedule off this, so a transport that is never
 		polled never retransmits a lost handshake datagram, and over UDP one
 		will be lost.
+
+		Once the session is established this does nothing, because nothing in
+		it runs on a timer any more: a record is decrypted as `receive` hands it
+		over and encrypted as `send` does. It used to step the native session
+		every tick anyway, three native calls per idle peer per tick, each
+		finding nothing, which at ten thousand peers and twelve ticks a second
+		is a third of a million calls a second doing nothing.
 	**/
 	public function poll(now:Float):Void {
 		#if cpp
+		if (connected) {
+			return;
+		}
+
+		__step(now);
+		#end
+	}
+
+	#if cpp
+	/** One step of the native session: timers, what was fed, and what came of it. **/
+	@:noCompletion private function __step(now:Float):Void {
 		if (__closed || __handle <= 0) {
 			return;
 		}
+
+		__steps++;
 
 		var state = NativeDtlsSession.step(__handle, now);
 
@@ -215,8 +238,8 @@ class DtlsTransport {
 		if (state == STATE_CLOSED) {
 			__endedByPeer();
 		}
-		#end
 	}
+	#end
 
 	/**
 		Hands over a datagram that arrived from the peer.
@@ -258,7 +281,10 @@ class DtlsTransport {
 		}
 
 		NativeDtlsSession.feed(__handle, __constPtr(bytes), bytes.length);
-		poll(now);
+
+		// Read straight away, established or not: this is the one moment an
+		// established session has anything to do.
+		__step(now);
 		return true;
 		#else
 		return false;
