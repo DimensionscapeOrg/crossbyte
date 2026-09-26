@@ -108,7 +108,7 @@ class HTTPRequestFramingTest extends utest.Test {
 			Assert.equals(413, responses[2].status, "a chunked body past a lowered limit was not refused");
 
 			var large:HTTPServer = __serve(seen, config -> config.maxRequestBodySize = 2 * 1024 * 1024);
-			var body:String = StringTools.rpad("", "x", 1536 * 1024);
+			var body:String = __repeat("x".code, 1536 * 1024);
 			HTTPTestSupport.exchangeEach(large, ['POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body], function(big):Void {
 				try large.close() catch (_:Dynamic) {}
 
@@ -154,7 +154,7 @@ class HTTPRequestFramingTest extends utest.Test {
 	public function testAnOversizedHeaderBlockIs431(async:Async):Void {
 		var seen:Array<String> = [];
 		var server:HTTPServer = __serve(seen);
-		var filler:String = StringTools.rpad("", "a", 70 * 1024);
+		var filler:String = __repeat("a".code, 70 * 1024);
 
 		HTTPTestSupport.exchangeEach(server, ['GET /upload HTTP/1.1\r\nHost: x\r\nX-Filler: $filler\r\n\r\n'], function(responses):Void {
 			try server.close() catch (_:Dynamic) {}
@@ -340,6 +340,20 @@ class HTTPRequestFramingTest extends utest.Test {
 		HTTPTestSupport.pumpUntilAsync(() -> answer != null, 5.0, _ -> done(answer));
 	}
 	#end
+
+	/**
+		`count` copies of one ASCII character, made in linear time.
+
+		Not `StringTools.rpad`, which asks its StringBuf for its length after
+		every piece it adds, and on hxcpp that length is counted by walking
+		every piece added so far. The 1.5 MB body this suite sends was a
+		trillion steps to build: the case took nine minutes on native.
+	**/
+	private static function __repeat(code:Int, count:Int):String {
+		var bytes:haxe.io.Bytes = haxe.io.Bytes.alloc(count);
+		bytes.fill(0, count, code);
+		return bytes.toString();
+	}
 
 	private function __serve(seen:Array<String>, ?configure:HTTPServerConfig->Void):HTTPServer {
 		var router:Router = new Router();
