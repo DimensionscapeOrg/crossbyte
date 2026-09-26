@@ -794,7 +794,10 @@ All notable changes to CrossByte will be documented in this file.
   arriving. Each datagram also cost a system call for the socket's own
   address and a formatted copy of the sender's; both are now kept. Reading
   2,000 waiting datagrams over loopback took 2.9 us each and 32 passes; it
-  takes 1.7 us and 2.
+  takes 1.7 us and 2. On the jvm every read also allocated, and zeroed, a
+  64 KB buffer to receive into and copy out of; it now receives straight
+  into the socket's own, and a datagram takes 1.7 us to read there rather
+  than 3.7.
 - Writing to a `Socket` before its connect has finished is no longer an
   error natively: the bytes wait and go once it has. The flush wrote to the
   socket anyway, which Windows refuses, so it threw, and the tick reported
