@@ -3,9 +3,14 @@ package crossbyte._internal.system.timer.heap;
 import haxe.Timer as HxTimer;
 
 class TimerHeap implements ITimerScheduler {
-	#if precision_tick
-	private static inline var EPS:Float = 1e-9;
-	#end
+	/**
+	 * How near the clock a timer counts as due. The clock is summed from frame
+	 * deltas and a due time from the clock plus a delay, and the two round
+	 * differently: two 50ms frames fell a rounding error short of the 0.1s a
+	 * 100ms timer was due at, and it waited a whole frame more. A nanosecond
+	 * is far below anything a timer is asked for.
+	 */
+	private static inline var DUE_EPSILON:Float = 1e-9;
 
 	public var size(get, never):Int;
 	public var isEmpty(get, never):Bool;
@@ -239,7 +244,7 @@ class TimerHeap implements ITimerScheduler {
 		var deadline:Float = budget > 0 ? HxTimer.stamp() + budget : 0.0;
 		var top:TimerNode = queue.peek();
 
-		while (top != null && top.time <= __now #if precision_tick + EPS #end) {
+		while (top != null && top.time <= __now + DUE_EPSILON) {
 			if (fired >= checkAt) {
 				if (fired >= maxFires || HxTimer.stamp() >= deadline) {
 					__cutShort = true;
@@ -351,7 +356,7 @@ class TimerHeap implements ITimerScheduler {
 	 * counts; intended for a metric read now and then, not for every frame.
 	 */
 	public function overdue():Int {
-		return queue.countDue(__now #if precision_tick + EPS #end, __pass);
+		return queue.countDue(__now + DUE_EPSILON, __pass);
 	}
 
 	// Puts a timer whose callback has just returned where it belongs next.

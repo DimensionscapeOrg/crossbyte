@@ -1,6 +1,7 @@
 package crossbyte.timer;
 
 import crossbyte.core.CrossByte;
+import crossbyte.utils.GlobalTimer;
 import haxe.Timer as HxTimer;
 import utest.Assert;
 
@@ -16,30 +17,104 @@ class HaxeTimerTest extends utest.Test {
 	static var early:EarlyTimer = new EarlyTimer();
 
 	public function testConstructorStartsTimerImmediately():Void {
+		var runtime = CrossByte.current();
 		var fired = 0;
 		var timer = new HxTimer(100);
 		timer.run = function() fired++;
 
-		@:privateAccess timer.__update(0.05);
+		runtime.pump(0.05, 0);
 		Assert.equals(0, fired);
 
-		@:privateAccess timer.__update(0.05);
+		runtime.pump(0.05, 0);
 		Assert.equals(1, fired);
 
 		timer.stop();
 	}
 
-	public function testStopIsIdempotent():Void {
-		var baseCount = @:privateAccess HxTimer.timerCount;
+	public function testAnIntervalRunsAtTheRateItAskedFor():Void {
+		// It counted tick deltas down and reset to the full interval after
+		// each run, dropping the overshoot, so a period rounded up to whole
+		// ticks: 100ms at 12 ticks a second ran every 167ms, 12 times in two
+		// seconds rather than 20.
+		var runtime = CrossByte.current();
+		var fired = 0;
 		var timer = new HxTimer(100);
+		timer.run = () -> fired++;
+		var global = 0;
+		var id = GlobalTimer.setInterval(() -> global++, 100);
 
-		Assert.equals(baseCount + 1, @:privateAccess HxTimer.timerCount);
+		for (_ in 0...24) {
+			runtime.pump(1 / 12, 0);
+		}
+		timer.stop();
+		GlobalTimer.clearInterval(id);
+
+		Assert.isTrue(fired >= 19 && fired <= 20, "a 100ms haxe.Timer ran " + fired + " times in 2s");
+		Assert.isTrue(global >= 19 && global <= 20, "a 100ms GlobalTimer.setInterval ran " + global + " times in 2s");
+	}
+
+	public function testATimerBehindRunsOnceAFrameRatherThanInABurst():Void {
+		var runtime = CrossByte.current();
+		var fired = 0;
+		var timer = new HxTimer(10);
+		timer.run = () -> fired++;
+
+		runtime.pump(0.5, 0);
+		Assert.equals(1, fired, "a stall made a burst");
+		runtime.pump(0, 0);
+		Assert.equals(2, fired);
+		timer.stop();
+	}
+
+	public function testStoppingOneTimerLeavesTheOthersRunning():Void {
+		// Timers were kept in one map by an id that wrapped, so a new timer
+		// could take a live one's id and evict it; there is no such map now.
+		var runtime = CrossByte.current();
+		var a = 0;
+		var b = 0;
+		var first = new HxTimer(50);
+		first.run = () -> a++;
+		var second = new HxTimer(50);
+		second.run = () -> b++;
+
+		first.stop();
+		runtime.pump(0.05, 0);
+		second.stop();
+
+		Assert.equals(0, a);
+		Assert.equals(1, b);
+	}
+
+	public function testStopIsIdempotent():Void {
+		var runtime = CrossByte.current();
+		var before = runtime.__timer.size;
+		var timer = new HxTimer(100);
+		Assert.equals(before + 1, runtime.__timer.size);
 
 		timer.stop();
-		Assert.equals(baseCount, @:privateAccess HxTimer.timerCount);
+		Assert.equals(before, runtime.__timer.size);
 
 		timer.stop();
-		Assert.equals(baseCount, @:privateAccess HxTimer.timerCount);
+		Assert.equals(before, runtime.__timer.size);
+	}
+
+	public function testARunThatThrowsKeepsTheTimerRunning():Void {
+		var runtime = CrossByte.current();
+		var fired = 0;
+		crossbyte.utils.Logger.sink = _ -> {};
+		var timer = new HxTimer(100);
+		timer.run = () -> {
+			fired++;
+			throw "run bug";
+		};
+
+		for (_ in 0...3) {
+			runtime.pump(0.1, 0);
+		}
+		crossbyte.utils.Logger.sink = null;
+		timer.stop();
+
+		Assert.equals(3, fired);
 	}
 
 	public function testTimerCreatedOnChildRuntimeStillFiresOnPrimordialRuntime():Void {
@@ -81,8 +156,7 @@ class HaxeTimerTest extends utest.Test {
 		var fired = 0;
 		var timer:HxTimer = null;
 
-		// The state before any runtime exists: no primordial, and the tick
-		// listener on nothing.
+		// The state before any runtime exists: no primordial to arm on.
 		__withNoRuntime(() -> {
 			try {
 				timer = new HxTimer(100);
@@ -90,58 +164,55 @@ class HaxeTimerTest extends utest.Test {
 			} catch (e:Dynamic) {
 				Assert.fail("making a timer with no runtime threw: " + e);
 			}
-			Assert.isNull(HxTimer.__listening, "the timer found a runtime to listen to where there was none");
+			Assert.isTrue(HxTimer.__waiting.indexOf(timer) >= 0, "the timer found a runtime where there was none");
 		});
 		if (timer == null) {
 			return;
 		}
 
-		// Nothing counts it down until a runtime is set up and takes it.
-		HxTimer.__primordialReady(runtime);
-		Assert.equals(runtime, HxTimer.__listening);
+		// __withNoRuntime put the runtime back and armed what was waiting.
+		Assert.equals(-1, HxTimer.__waiting.indexOf(timer));
 		runtime.pump(0.1, 0);
 		Assert.equals(1, fired);
 		timer.stop();
 	}
 
-	public function testStoppingATimerAfterItsRuntimeHasGoneDoesNotThrow():Void {
-		var timer = new HxTimer(100);
-		var runtime = CrossByte.current();
-
+	public function testStoppingATimerStillWaitingForARuntimeDoesNotThrow():Void {
 		__withNoRuntime(() -> {
+			var timer = new HxTimer(100);
 			try {
 				timer.stop();
 				Assert.pass();
 			} catch (e:Dynamic) {
-				Assert.fail("stopping a timer threw once its runtime had gone: " + e);
+				Assert.fail("stopping a waiting timer threw: " + e);
 			}
+			Assert.equals(-1, HxTimer.__waiting.indexOf(timer), "a stopped timer stayed waiting");
 		});
-
-		// Whatever it was listening on, it was taken off -- or other timers
-		// still running keep it listening, and there it is still attached.
-		Assert.isTrue(HxTimer.__listening == null || HxTimer.timerCount > 0);
-		HxTimer.__primordialReady(runtime);
 	}
 
-	// Runs `body` as if no runtime existed, restoring the one there is after.
-	// Timers still running from other cases are put back on it.
+	// Runs `body` as if no runtime existed, restoring the one there is after
+	// and arming, on it, whatever was made to wait meanwhile.
 	private static function __withNoRuntime(body:Void->Void):Void {
 		var primordial = CrossByte.__primordial;
-		var listening = HxTimer.__listening;
-		if (listening != null) {
-			listening.removeEventListener(crossbyte.events.TickEvent.TICK, HxTimer.onTick);
-			HxTimer.__listening = null;
-		}
 		CrossByte.__primordial = null;
+		#if target.threaded
+		var local = CrossByte.__threadLocalStorage.value;
+		CrossByte.__threadLocalStorage.value = null;
+		#end
+		var failure:Dynamic = null;
 		try {
 			body();
 		} catch (e:Dynamic) {
-			CrossByte.__primordial = primordial;
-			HxTimer.__primordialReady(primordial);
-			throw e;
+			failure = e;
 		}
 		CrossByte.__primordial = primordial;
+		#if target.threaded
+		CrossByte.__threadLocalStorage.value = local;
+		#end
 		HxTimer.__primordialReady(primordial);
+		if (failure != null) {
+			throw failure;
+		}
 	}
 }
 
