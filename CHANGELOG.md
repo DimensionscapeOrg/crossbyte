@@ -750,6 +750,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A PHP script is given every request header as `HTTP_*`, and the client
+  every response header the script sets. The bridge passed on eight request
+  headers and brought back three, `Cache-Control`, `Location` and
+  `Set-Cookie`: so behind it a script never saw `Origin`,
+  `X-Requested-With`, a CSRF token, a conditional request, `Range` or what a
+  proxy forwarded, and a client never got `ETag`, `Content-Disposition`,
+  `WWW-Authenticate`, `Vary`, `Access-Control-*` or a script's own fields.
+  Left out on the way in: the connection's own fields, `Content-Type` and
+  `Content-Length` (CGI has variables for them), `Proxy` (httpoxy), and any
+  name with an underscore, which would pass for its hyphenated twin. On the
+  way out: the CGI status, the framing, and what the server always writes,
+  `access-control-*` too when the server's own CORS is on. A body that
+  arrives already encoded, a script's under `zlib.output_compression`, or
+  a route's that names its `Content-Encoding`, is no longer encoded again.
 - On a cleartext listener with `http2Enabled`, something thrown while
   serving a connection's first HTTP/1.1 request is answered `500`, as on
   any later request. The server reads those first bytes itself to tell the
