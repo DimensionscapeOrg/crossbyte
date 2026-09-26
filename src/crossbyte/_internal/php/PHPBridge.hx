@@ -67,11 +67,9 @@ class PHPBridge {
 	private var __runtime:Null<CrossByte> = null;
 	private var __sweeping:Bool = false;
 	#if !nodejs
-	private var __reading:Array<{exchange:PHPExchange, socket:Socket}> = [];
+	private var __reading:Array<Outbound> = [];
 	private var __scratch:Bytes = Bytes.alloc(8192);
 	#end
-
-	static final PAD_SCRATCH = Bytes.alloc(256);
 
 	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>, timeoutSeconds:Float = DEFAULT_TIMEOUT) {
 		this.mode = mode;
@@ -188,28 +186,76 @@ class PHPBridge {
 			}
 		}
 
-		final out = new BytesBuffer();
-		out.add(Fcgi.rec(Fcgi.BEGIN_REQUEST, 1, beginRequestBody(Fcgi.ROLE_RESPONDER, false)));
+		var payload:Bytes;
 
-		var paramsBuf:BytesBuffer = new BytesBuffer();
-		for (k in env.keys()) {
-			paramsBuf.add(Fcgi.nvpair(k, env.get(k)));
+		try {
+			payload = encodeRequest(env, req.body);
+		} catch (e:Dynamic) {
+			exchange.fail(Std.string(e));
+			return exchange.future;
 		}
-
-		out.add(Fcgi.rec(Fcgi.PARAMS, 1, paramsBuf.getBytes()));
-		out.add(Fcgi.rec(Fcgi.PARAMS, 1, Bytes.alloc(0)));
-
-		var body:Bytes = req.body != null ? req.body : Bytes.alloc(0);
-		if (body.length > 0) {
-			out.add(Fcgi.rec(Fcgi.STDIN, 1, body));
-		}
-
-		out.add(Fcgi.rec(Fcgi.STDIN, 1, Bytes.alloc(0)));
-
-		var payload:Bytes = out.getBytes();
 
 		__begin(exchange, host, port, payload);
 		return exchange.future;
+	}
+
+	/**
+	 * The FastCGI records for one request: BEGIN_REQUEST, the parameters, and
+	 * the body as STDIN.
+	 *
+	 * A record's length field is sixteen bits, and both halves used to go in
+	 * one record each: a 100,000-byte POST declared 34,464 bytes, and php-fpm
+	 * then read the rest of the body as record headers. The body is now split
+	 * across as many STDIN records as it needs, which php-fpm reads as one
+	 * stream.
+	 *
+	 * Parameters are split too, but only between pairs. php-fpm parses each
+	 * PARAMS record on its own, so a pair split across two would be malformed
+	 * in both, and a single pair too large for one record cannot be sent at
+	 * all, which is refused here rather than sent broken.
+	 */
+	@:noCompletion private static function encodeRequest(env:Map<String, String>, body:Null<Bytes>):Bytes {
+		final out = new BytesBuffer();
+		var begin:Bytes = beginRequestBody(Fcgi.ROLE_RESPONDER, false);
+		Fcgi.record(out, Fcgi.BEGIN_REQUEST, 1, begin, 0, begin.length);
+
+		var params:BytesBuffer = new BytesBuffer();
+
+		for (k in env.keys()) {
+			var pair:Bytes = Fcgi.nvpair(k, env.get(k));
+
+			if (pair.length > Fcgi.MAX_CONTENT) {
+				throw 'The request parameter $k is ${pair.length} bytes, more than a FastCGI record can carry, so it cannot be sent to PHP.';
+			}
+
+			if (params.length + pair.length > Fcgi.MAX_CONTENT) {
+				var full:Bytes = params.getBytes();
+				Fcgi.record(out, Fcgi.PARAMS, 1, full, 0, full.length);
+				params = new BytesBuffer();
+			}
+
+			params.add(pair);
+		}
+
+		if (params.length > 0) {
+			var last:Bytes = params.getBytes();
+			Fcgi.record(out, Fcgi.PARAMS, 1, last, 0, last.length);
+		}
+
+		Fcgi.record(out, Fcgi.PARAMS, 1, null, 0, 0);
+
+		if (body != null) {
+			var offset:Int = 0;
+
+			while (offset < body.length) {
+				var length:Int = body.length - offset < Fcgi.MAX_CONTENT ? body.length - offset : Fcgi.MAX_CONTENT;
+				Fcgi.record(out, Fcgi.STDIN, 1, body, offset, length);
+				offset += length;
+			}
+		}
+
+		Fcgi.record(out, Fcgi.STDIN, 1, null, 0, 0);
+		return out.getBytes();
 	}
 
 	/**
@@ -276,11 +322,17 @@ class PHPBridge {
 		var socket:Socket = new Socket();
 		socket.setFastSend(true);
 
+		var outbound = new Outbound(exchange, socket, payload);
+
 		try {
 			socket.connect(new Host(host), port);
 			socket.setBlocking(false);
-			socket.output.write(payload);
-			socket.output.flush();
+			// Most requests fit the socket's send buffer and leave in this
+			// call. A larger body goes out over the ticks that follow, as the
+			// backend reads it. It used to be written in one burst, and a
+			// non-blocking socket with a full send buffer refuses the rest:
+			// the upload failed as though the backend were down.
+			__send(outbound);
 		} catch (e:Dynamic) {
 			try {
 				socket.close();
@@ -295,7 +347,7 @@ class PHPBridge {
 			return;
 		}
 
-		__reading.push({exchange: exchange, socket: socket});
+		__reading.push(outbound);
 
 		__track(exchange, function():Void {
 			try {
@@ -304,6 +356,39 @@ class PHPBridge {
 		});
 		#end
 	}
+
+	#if !nodejs
+	/**
+	 * Writes as much of the request as the socket will take now, and returns
+	 * whether all of it has gone. Stops without error when the send buffer is
+	 * full; anything else is thrown.
+	 */
+	private static function __send(outbound:Outbound):Bool {
+		var payload:Bytes = outbound.payload;
+
+		while (outbound.written < payload.length) {
+			var sent:Int = 0;
+
+			try {
+				sent = outbound.socket.output.writeBytes(payload, outbound.written, payload.length - outbound.written);
+			} catch (e:Dynamic) {
+				if (crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+					return false;
+				}
+
+				throw e;
+			}
+
+			if (sent <= 0) {
+				return false;
+			}
+
+			outbound.written += sent;
+		}
+
+		return true;
+	}
+	#end
 
 	/**
 	 * Records an exchange so the deadline sweep can see it, and starts the
@@ -368,6 +453,17 @@ class PHPBridge {
 			}
 
 			var closed:Bool = false;
+			var writeFailure:String = null;
+
+			// The rest of a request too large to leave in one write, before
+			// reading: a backend answers only once it has the whole body.
+			if (entry.written < entry.payload.length) {
+				try {
+					__send(entry);
+				} catch (e:Dynamic) {
+					writeFailure = Std.string(e);
+				}
+			}
 
 			// Drains what is there and stops on the blocked error a
 			// non-blocking socket raises when it is empty, which is the normal
@@ -397,7 +493,16 @@ class PHPBridge {
 				}
 			}
 
-			if (closed && !entry.exchange.settled) {
+			if (entry.exchange.settled) {
+				continue;
+			}
+
+			// Read first, so a backend that answered before taking the whole
+			// body, a missing script, say, is still heard.
+			if (writeFailure != null) {
+				entry.exchange.fail("PHP backend stopped taking the request after " + entry.written + " of " + entry.payload.length + " bytes: " + writeFailure);
+				__finish(entry.exchange);
+			} else if (closed) {
 				entry.exchange.fail("PHP backend closed the connection before finishing the response.");
 				__finish(entry.exchange);
 			}
@@ -408,10 +513,23 @@ class PHPBridge {
 
 		for (entry in waiting) {
 			if (!entry.exchange.settled && entry.exchange.expired()) {
-				entry.exchange.timeOut("reading the response");
+				entry.exchange.timeOut(__sending(entry.exchange) ? "sending the request" : "reading the response");
 				__finish(entry.exchange);
 			}
 		}
+	}
+
+	/** Whether part of this exchange's request is still waiting to be written. **/
+	private function __sending(exchange:PHPExchange):Bool {
+		#if !nodejs
+		for (entry in __reading) {
+			if (entry.exchange == exchange) {
+				return entry.written < entry.payload.length;
+			}
+		}
+		#end
+
+		return false;
 	}
 
 	private inline function _onExit(e:Event):Void {
@@ -454,26 +572,35 @@ private class Fcgi {
 	public static inline var STDERR:Int = 7;
 	public static inline var ROLE_RESPONDER:Int = 1;
 
-	public static function rec(typ:Int, reqId:Int, content:Bytes):Bytes {
-		var padLen:Int = (8 - (content.length & 7)) & 7;
-		var bb:BytesBuffer = new BytesBuffer();
-		bb.addByte(VERSION_1);
-		bb.addByte(typ);
-		bb.addByte((reqId >> 8) & 0xFF);
-		bb.addByte(reqId & 0xFF);
-		bb.addByte((content.length >> 8) & 0xFF);
-		bb.addByte(content.length & 0xFF);
-		bb.addByte(padLen);
-		bb.addByte(0);
-		if (content.length > 0) {
-			bb.add(content);
+	/**
+	 * The most content one record carries here: a multiple of eight, so a
+	 * full record needs no padding. The length field would take 65,535, but
+	 * php-fpm refuses a PARAMS record whose content and padding together pass
+	 * that, and padding 65,535 to eight would.
+	 */
+	public static inline var MAX_CONTENT:Int = 65528;
+
+	static final PADDING:Bytes = Bytes.alloc(8);
+
+	/** Appends one record carrying `length` bytes of `content` from `offset`. **/
+	public static function record(out:BytesBuffer, type:Int, reqId:Int, content:Null<Bytes>, offset:Int, length:Int):Void {
+		var padding:Int = (8 - (length & 7)) & 7;
+		out.addByte(VERSION_1);
+		out.addByte(type);
+		out.addByte((reqId >> 8) & 0xFF);
+		out.addByte(reqId & 0xFF);
+		out.addByte((length >> 8) & 0xFF);
+		out.addByte(length & 0xFF);
+		out.addByte(padding);
+		out.addByte(0);
+
+		if (length > 0) {
+			out.addBytes(content, offset, length);
 		}
 
-		if (padLen > 0) {
-			bb.add(Bytes.alloc(padLen));
+		if (padding > 0) {
+			out.addBytes(PADDING, 0, padding);
 		}
-
-		return bb.getBytes();
 	}
 
 	public static function nvpair(name:String, value:String):Bytes {
@@ -488,19 +615,31 @@ private class Fcgi {
 
 	private static inline function encLen(bb:BytesBuffer, n:Int):Void {
 		if (n < 128) {
-			var b:Bytes = Bytes.alloc(1);
-			b.set(0, n);
-			bb.add(b);
+			bb.addByte(n);
 		} else {
-			var b:Bytes = Bytes.alloc(4);
-			b.set(0, ((n >> 24) & 0x7F) | 0x80);
-			b.set(1, (n >> 16) & 0xFF);
-			b.set(2, (n >> 8) & 0xFF);
-			b.set(3, n & 0xFF);
-			bb.add(b);
+			bb.addByte(((n >> 24) & 0x7F) | 0x80);
+			bb.addByte((n >> 16) & 0xFF);
+			bb.addByte((n >> 8) & 0xFF);
+			bb.addByte(n & 0xFF);
 		}
 	}
 }
+
+#if !nodejs
+/** A native exchange's socket, and how much of its request has been written. **/
+private class Outbound {
+	public final exchange:PHPExchange;
+	public final socket:Socket;
+	public final payload:Bytes;
+	public var written:Int = 0;
+
+	public function new(exchange:PHPExchange, socket:Socket, payload:Bytes) {
+		this.exchange = exchange;
+		this.socket = socket;
+		this.payload = payload;
+	}
+}
+#end
 
 // The include is metadata on the class, so it lands in the generated .cpp
 // whatever the body's own guard says; left unguarded, a Linux or macOS build
