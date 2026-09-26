@@ -184,4 +184,20 @@ class ByteArrayOutputTest extends utest.Test {
 		Assert.isTrue(output.validateSize(7));
 		Assert.isFalse(output.validateSize(8));
 	}
+
+	public function testWriteUTFRefusesWhatItsLengthPrefixCannotState():Void {
+		// Sixteen bits of length; past 65535 it wrapped and desynchronised
+		// every read after the string.
+		var output = new ByteArrayOutput(8);
+		var raised:Dynamic = null;
+
+		try {
+			output.writeUTF(StringTools.lpad("", "x", 70000));
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.RangeError), "70000 bytes did not raise RangeError: " + Std.string(raised));
+		Assert.equals(0, output.bytesWritten);
+	}
 }

@@ -2,6 +2,7 @@ package crossbyte.io;
 
 import haxe.io.Bytes;
 import crossbyte.io.ByteArray;
+import crossbyte.errors.RangeError;
 
 /**
  * A buffered and growable binary output stream for writing primitive values into a `ByteArray`.
@@ -390,9 +391,16 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 *
 	 * @param value    The string to write.
 	 * @param reserved Whether the space has already been reserved.
+	 * @throws RangeError If the string is more than 65535 bytes as UTF-8.
 	 */
 	public inline function writeUTF(value:String, reserved:Bool = false):Void {
 		var b:Bytes = Bytes.ofString(value);
+
+		// A sixteen-bit prefix cannot describe more, and past it the length
+		// wrapped and every later read landed in the wrong place.
+		if (b.length > 0xFFFF) {
+			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${b.length}.');
+		}
 
 		if (!reserved) {
 			reserve(2 + b.length);

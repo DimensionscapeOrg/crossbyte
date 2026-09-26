@@ -20,6 +20,7 @@ import haxe.Json;
 import haxe.Serializer;
 import haxe.Unserializer;
 import crossbyte.errors.EOFError;
+import crossbyte.errors.RangeError;
 import crossbyte.net.ObjectEncoding;
 import crossbyte.utils.CompressionAlgorithm;
 #if format
@@ -1312,6 +1313,13 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 	public function writeUTF(value:String):Void {
 		var bytes = Bytes.ofString(value);
+
+		// The length prefix is sixteen bits. Past 65535 it wrapped: the
+		// string was written whole behind a length that described some other
+		// number of bytes, and every read after it landed in the wrong place.
+		if (bytes.length > 0xFFFF) {
+			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUTFBytes with a length of your own.');
+		}
 
 		writeShort(bytes.length);
 		writeBytes(bytes);

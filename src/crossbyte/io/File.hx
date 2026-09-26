@@ -135,14 +135,18 @@ final class File extends EventDispatcher {
 	public var name(get, null):String;
 
 	/**
-		The size of the file on the local disk in bytes. If `size` is 0, an
-		exception is thrown.
-		_Note:_ In the initial version of ActionScript 3.0, the `size`
-		property was defined as a uint object, which supported files with
-		sizes up to about 4 GB. It is now implemented as a Number object to
-		support larger files.
+		The size of the file on the local disk in bytes.
 
-		@throws IOError               If the file cannot be opened or read, or
+		An `Int`, so it states sizes up to 2,147,483,647 bytes, and a file
+		larger than that throws rather than answering. The standard library's
+		`stat` has an Int size too, and what it made of a larger file was
+		different everywhere and right nowhere: on Windows native a 3 GB file
+		and a 5 GB one both read as **0**, indistinguishable from an empty
+		file. The HTTP server refuses to serve such a file for the same
+		reason.
+
+		@throws IOError               If the file is larger than 2 GB, or if
+									  the file cannot be opened or read, or
 									  if a similar error is encountered in
 									  accessing the file, an exception is
 									  thrown with a message indicating a file
@@ -520,6 +524,8 @@ final class File extends EventDispatcher {
 
 	@:noCompletion private var __fileWorker:Worker;
 	@:noCompletion private var __fileStatsDirty:Bool = false;
+	// Set when the file is larger than `size` can state; `size` throws then.
+	@:noCompletion private var __sizeOverflows:Bool = false;
 	@:noCompletion private var __path:String;
 
 	/**
@@ -1641,10 +1647,12 @@ final class File extends EventDispatcher {
 			creationDate = fileInfo.ctime;
 			modificationDate = fileInfo.mtime;
 			size = fileInfo.size;
+			__sizeOverflows = __exceedsInt(path, fileInfo.size);
 		} else {
 			creationDate = null;
 			modificationDate = null;
 			size = 0;
+			__sizeOverflows = false;
 		}
 		extension = Path.extension(path);
 		type = extension;
@@ -1701,7 +1709,55 @@ final class File extends EventDispatcher {
 		if (__fileStatsDirty) {
 			__updateFileStats();
 		}
+
+		if (__sizeOverflows) {
+			throw new crossbyte.errors.IOError('$__path is larger than 2 GB, which File.size, an Int, cannot state.');
+		}
+
 		return size;
+	}
+
+	/**
+		Whether the file is longer than an Int can say, which the size `stat`
+		reported cannot answer by itself: a wrap, a clamp and Windows' zero all
+		look like ordinary sizes.
+
+		Asked of a 64-bit size where the target has one, and otherwise of the
+		file, as the HTTP server does: seek to the reported end and see whether
+		there is more.
+	**/
+	@:noCompletion private static function __exceedsInt(path:String, reported:Int):Bool {
+		#if (js && !nodejs)
+		return false;
+		#elseif cpp
+		return crossbyte.io._internal.NativeFileSync.size(path) > 2147483647.0;
+		#elseif jvm
+		var length:haxe.Int64 = new java.io.File(path).length();
+		return length > haxe.Int64.ofInt(0x7FFFFFFF);
+		#elseif nodejs
+		return (js.node.Fs.statSync(path).size : Float) > 2147483647.0;
+		#else
+		if (reported < 0) {
+			return true;
+		}
+
+		try {
+			var input = HaxeFile.read(path, true);
+
+			try {
+				input.seek(reported, sys.io.FileSeek.SeekBegin);
+				input.readByte();
+			} catch (_:Dynamic) {
+				input.close();
+				return false;
+			}
+
+			input.close();
+			return true;
+		} catch (_:Dynamic) {
+			return false;
+		}
+		#end
 	}
 
 	@:noCompletion private function get_type():String {

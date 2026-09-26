@@ -530,4 +530,32 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		}
 		Assert.equals(-1, corrupt, 'byte $corrupt corrupted after growth');
 	}
+
+	/**
+	 * The length in front of a writeUTF string is sixteen bits. Past 65535 it
+	 * wrapped: the whole string went out behind a length describing some
+	 * other number of bytes, so the reader stopped short and every read after
+	 * it landed in the middle of the string.
+	 */
+	public function testWriteUTFRefusesWhatItsLengthPrefixCannotState():Void {
+		var ba = new ByteArray();
+		var raised:Dynamic = null;
+
+		try {
+			ba.writeUTF(StringTools.lpad("", "x", 70000));
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.RangeError), "70000 bytes did not raise RangeError: " + Std.string(raised));
+		// Refused before anything was written, so the record stays in step.
+		Assert.equals(0, ba.length);
+
+		var widest:String = StringTools.lpad("", "y", 65535);
+		ba.writeUTF(widest);
+		ba.writeInt(42);
+		ba.position = 0;
+		Assert.equals(widest, ba.readUTF());
+		Assert.equals(42, ba.readInt());
+	}
 }
