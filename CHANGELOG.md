@@ -5,6 +5,16 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `Logger` categories and a record sink. `Logger.category("http.access")`
+  returns a logger whose level `Logger.setLevel("http.access", level)` sets
+  apart from the global one, inherited along the dots (`http` covers
+  `http.access`), and `Logger.log` takes a category too. A categorised
+  record names it, `[INFO] [http.access] ...`, or `"category"` in JSON.
+  `Logger.recordSink` receives each record whole: level, category, message,
+  fields, time and the formatted line, where `sink` only ever saw the line
+  and could not tell an error from a debug record. A category's level is
+  cached, so a record below it costs a comparison. The runtime logs the
+  failures it contains under `runtime`.
 - `CrossByte.post(callback)`: runs `callback` on the runtime's own thread,
   safe to call from any thread, and wakes the runtime for it. It was
   `__post`, marked internal although it is the one way to hand a runtime
@@ -534,6 +544,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Log timestamps are UTC with milliseconds, `2026-09-25T09:00:00.123Z`,
+  where they were local time to the second with no zone, and a control
+  character in a message or field is written as an escape. Anything parsing
+  the text format should expect both.
 - On the jvm, the interpreter, hl and neko, `CrossByte.current()` called
   from a thread no runtime belongs to throws `IllegalOperationError` rather
   than returning the primordial runtime, as it already did natively. Code on
@@ -717,6 +731,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A client can no longer forge records in the log. In text mode a message
+  or field value was written exactly as given, so a request path carrying
+  `%0A`, percent-decoded and logged at INFO, the default level, produced
+  a standalone `[ERROR]` line of the client's choosing. Line feeds, carriage
+  returns, the Unicode line and paragraph separators and the other control
+  characters are now written as escapes, in the message and in field keys
+  and values, and a quoted field value escapes its quotes and backslashes
+  too. `Logger.timestamps` gave local time to the second with no zone while
+  documented as UTC; it is now UTC with milliseconds and a `Z`, worked out
+  from the epoch rather than through `Date`.
 - A pending `Task` or running `Worker` no longer holds a tick listener of
   its own. Each attached one to its runtime and polled its queue every tick,
   and adding or removing a listener copies the runtime's whole list, so
