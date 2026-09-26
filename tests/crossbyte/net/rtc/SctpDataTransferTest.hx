@@ -316,6 +316,160 @@ class SctpDataTransferTest extends utest.Test {
 	}
 
 	/**
+		A peer cannot make the receiver track numbers without bound.
+
+		Any TSN up to 2^31 past the cumulative acknowledgement was taken, so a
+		peer that never sent the next number and sent the ones after it grew
+		the receiver's record of what had arrived for as long as it cared to:
+		400,000 entries and 24 MB in the audit, on unordered one-byte messages
+		that were delivered at once and so never touched the window. Anything
+		more than `MAX_TSN_AHEAD` past it is dropped unread now.
+	**/
+	public function testAPeerCannotMakeTheReceiverTrackNumbersWithoutBound():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var delivered:Int = 0;
+		transfer.onMessage = (_, _, _) -> delivered++;
+
+		var one = filled(1);
+		var tsn:Int = ((@:privateAccess transfer.__cumulativeTsn) + 2) | 0;
+		var sent:Int = 50000;
+
+		// The next number never comes; everything after it does.
+		for (_ in 0...sent) {
+			@:privateAccess transfer.__onData(new SctpDataChunk(tsn, 1, 0, SctpDataChunk.PPID_BINARY, one,
+				SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+			tsn = (tsn + 1) | 0;
+		}
+
+		var held:Int = 0;
+
+		for (_ in (@:privateAccess transfer.__received).keys()) {
+			held++;
+		}
+
+		Assert.isTrue(delivered > 0, "nothing was delivered, so nothing was taken to be held either");
+		Assert.isTrue(held <= SctpDataTransfer.MAX_TSN_AHEAD,
+			"the receiver holds " + held + " numbers past a hole the peer never filled, against a bound of " + SctpDataTransfer.MAX_TSN_AHEAD);
+	}
+
+	/**
+		With its window shut, the receiver takes nothing past what has arrived,
+		and still takes what fills a hole.
+
+		RFC 4960 section 6.2. The window was published and nothing held a peer
+		to it: past it the receiver threw away unfinished messages to make
+		room. Now what lies beyond the highest number already received is
+		dropped, with a SACK saying the window is still shut, while a number
+		below it, the one a message is waiting on, is taken, since that is
+		what completes a message and opens the window again.
+	**/
+	public function testAShutWindowTakesNothingPastWhatHasArrived():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var delivered:Int = 0;
+		transfer.onMessage = (_, _, _) -> delivered++;
+
+		var base:Int = @:privateAccess transfer.__cumulativeTsn;
+		var piece:Int = SctpDataTransfer.MAX_PAYLOAD;
+		var tsn:Int = (base + 2) | 0;
+
+		// A hole at base + 1, and two unfinished megabytes past it: the window
+		// is exactly full.
+		for (stream in 1...3) {
+			for (i in 0...Std.int(SctpDataTransfer.MAX_REASSEMBLY / piece)) {
+				@:privateAccess transfer.__onData(new SctpDataChunk(tsn, stream, 0, SctpDataChunk.PPID_BINARY, filled(piece),
+					i == 0 ? SctpDataChunk.FLAG_BEGINNING : 0).toChunk());
+				tsn = (tsn + 1) | 0;
+			}
+		}
+
+		Assert.equals(SctpAssociation.RECEIVE_WINDOW, @:privateAccess transfer.__buffered, "the window was not filled, so this proves nothing");
+		Assert.equals(0, advertised(transfer));
+
+		var failures:Int = 0;
+		transfer.onFailure = _ -> failures++;
+
+		// Past everything that has arrived: refused.
+		@:privateAccess transfer.__onData(new SctpDataChunk(tsn, 3, 0, SctpDataChunk.PPID_BINARY, filled(1),
+			SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+
+		Assert.equals(0, delivered, "a message past a shut window was taken");
+		Assert.equals(0, failures, "a message past a shut window made room by giving up what was held");
+		Assert.equals(SctpAssociation.RECEIVE_WINDOW, @:privateAccess transfer.__buffered);
+
+		// The hole below it: taken.
+		@:privateAccess transfer.__onData(new SctpDataChunk((base + 1) | 0, 4, 0, SctpDataChunk.PPID_BINARY, filled(1),
+			SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+
+		Assert.equals(1, delivered, "the number the receiver was waiting on was refused along with the rest");
+		Assert.equals(((tsn - 1) | 0), @:privateAccess transfer.__cumulativeTsn, "filling the hole did not carry the acknowledgement past it");
+	}
+
+	/**
+		The gap blocks describe exactly what arrived past a hole, and follow it
+		as the holes fill.
+	**/
+	public function testGapBlocksDescribeWhatArrivedPastTheHole():Void {
+		if (unsupported()) return;
+
+		var transfer = new SctpDataTransfer(new SctpAssociation());
+		var base:Int = @:privateAccess transfer.__cumulativeTsn;
+
+		function arrive(offset:Int):Void {
+			@:privateAccess transfer.__onData(new SctpDataChunk((base + offset) | 0, 1, 0, SctpDataChunk.PPID_BINARY, filled(1),
+				SctpDataChunk.FLAG_BEGINNING | SctpDataChunk.FLAG_ENDING | SctpDataChunk.FLAG_UNORDERED).toChunk());
+		}
+
+		function blocks():String {
+			var sack = @:privateAccess transfer.__buildSack();
+			var value = sack.value;
+			value.endian = Endian.BIG_ENDIAN;
+			value.position = 0;
+			var cumulative:Int = (value.readInt() - base) | 0;
+			value.readInt();
+			var count:Int = value.readUnsignedShort();
+			value.readUnsignedShort();
+			var out:Array<String> = [];
+
+			for (_ in 0...count) {
+				out.push(value.readUnsignedShort() + "-" + value.readUnsignedShort());
+			}
+
+			return cumulative + ":" + out.join(",");
+		}
+
+		// Offsets from the base; 1 is the hole.
+		for (offset in [3, 2, 5, 9, 7, 8]) {
+			arrive(offset);
+		}
+
+		Assert.equals("0:2-3,5-5,7-9", blocks());
+
+		arrive(4);
+		Assert.equals("0:2-5,7-9", blocks(), "a number between two runs did not join them");
+
+		arrive(1);
+		Assert.equals("5:2-4", blocks(), "filling the hole did not carry the acknowledgement over the run behind it");
+
+		arrive(6);
+		Assert.equals("9:", blocks());
+
+		// Far more islands than a SACK can carry: the lowest go.
+		for (i in 0...(SctpDataTransfer.MAX_SACK_BLOCKS * 2)) {
+			arrive(11 + 2 * i);
+		}
+
+		var sack = @:privateAccess transfer.__buildSack();
+		sack.value.position = 8;
+		Assert.equals(SctpDataTransfer.MAX_SACK_BLOCKS, sack.value.readUnsignedShort(), "a SACK reported more gap blocks than it may");
+		sack.value.position = 12;
+		Assert.equals(2, sack.value.readUnsignedShort(), "the first gap block reported is not the lowest");
+	}
+
+	/**
 		A peer that shuts down gracefully still gets what this end had
 		outstanding, before the answer goes.
 
