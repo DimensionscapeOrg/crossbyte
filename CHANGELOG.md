@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Deadlines for RPC calls. `RPCResponse.timeout(ms)` gives a call until
+  then to be answered, and `RPCSession.callTimeout` gives every call a
+  session makes, on either lane, a deadline unless it has its own. Past
+  it the call fails with a new `RPCTimeoutError` -- an `RPCError`, so a
+  handler forwarding it tells its own caller the call timed out -- the
+  connection is left as it was, and an answer arriving later is dropped.
+  A call with no deadline waited for as long as its connection lasted,
+  however long its peer took. A call without one arms nothing; one with
+  one holds a timer until it is answered. `RPCSession.handlerTimeout`
+  bounds how long a call the session's handler answers with a `Future`
+  may wait: past it the caller is answered `RPCError.TIMEOUT_MESSAGE`,
+  `onHandlerError` and `afterCall` are told, and the call gives up its
+  place among `maxCallsWaiting`, where a future that never completed held
+  one of the 256 for good.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four

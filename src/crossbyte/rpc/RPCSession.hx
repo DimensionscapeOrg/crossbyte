@@ -102,6 +102,33 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** How many inbound calls are waiting on an answer now; see `maxCallsWaiting`. */
 	public var callsWaiting(get, never):Int;
 
+	/**
+		How long, in milliseconds, each request this session makes -- through
+		its commands or with `request` -- may wait for its answer before it
+		fails with an `RPCTimeoutError`. `0`, as it starts, is no deadline: a
+		call waits for as long as the connection lasts. A call can have a
+		deadline of its own instead; see `RPCResponse.timeout`.
+
+		Read as each call is made. A call with no deadline arms nothing; one
+		with a deadline holds a timer until it is answered.
+	**/
+	public var callTimeout:Int = 0;
+
+	/**
+		How long, in milliseconds, a call this session's handler answers with
+		a `Future` may wait for that future. Past it the caller is answered
+		`RPCError.TIMEOUT_MESSAGE`, `onHandlerError` is told with an
+		`RPCTimeoutError`, `afterCall` sees the same, and the call stops
+		counting against `maxCallsWaiting`; the future completing later
+		answers nothing. `0`, as it starts, is no limit: a future that never
+		completes holds its place among the calls waiting for as long as the
+		connection lasts.
+
+		Both lanes, and only calls answered later: a method answering at once
+		has answered before any deadline could pass.
+	**/
+	public var handlerTimeout:Int = 0;
+
 	@:noCompletion private var __callsWaiting:Int = 0;
 	// Set once the connection has ended: an answer completing after that has
 	// nobody to go to.
@@ -187,9 +214,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 
 			if (old != null && old.__nc == __connection) {
 				old.__nc = null;
+				old.__session = null;
 			}
 			if (commands != null) {
 				commands.__nc = __connection;
+				commands.__session = cast this;
 			}
 			__syncOnDataBinding();
 		}
@@ -338,7 +367,11 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public function request<T>(op:Int, ?args:Array<Dynamic>):RPCResponse<T> {
 		final requestId = __nextRuntimeRequestId();
 		final response = new RPCResponse<T>(requestId, op);
+		response.__session = cast this;
 		__trackRuntimeResponse(requestId, cast response);
+		if (callTimeout > 0) {
+			response.__arm(callTimeout);
+		}
 		__sendRuntimeFrame(op, requestId, true, args);
 		return response;
 	}
@@ -737,9 +770,19 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (requestId != 0 && __isCurrent(epoch)) {
 			__sendRuntimeError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
 		}
-		if (answer == null || requestId == 0) {
+		if (__reported(answer, requestId, error)) {
 			__reportHandlerError(op, null, error);
 		}
+	}
+
+	/**
+		Whether a call's failure is reported on this side: when its caller is
+		not told what it was -- anything but an `RPCError`, or anything from a
+		one-way call -- and when it timed out, which its caller is told and
+		which is news here as well.
+	**/
+	@:noCompletion private static inline function __reported(answer:Null<String>, requestId:Int, error:Dynamic):Bool {
+		return answer == null || requestId == 0 || Std.isOfType(error, RPCTimeoutError);
 	}
 
 	/**
@@ -754,7 +797,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (requestId != 0 && answerable) {
 			__sendCompiledError(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
 		}
-		if (answer == null || requestId == 0) {
+		if (__reported(answer, requestId, error)) {
 			__reportHandlerError(op, method, error);
 		}
 	}
@@ -821,10 +864,34 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 			return;
 		}
 		__callsWaiting++;
+		// Settled once: by the future, or by `handlerTimeout`, whichever is
+		// first. Both run on this thread.
+		var settled:Bool = false;
+		var deadline:Int = TimerHandle.INVALID;
 		final finish = function():Void {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			if (deadline != TimerHandle.INVALID) {
+				Timer.clear(deadline);
+			}
 			__callsWaiting--;
 			settle(future);
 		};
+		if (handlerTimeout > 0) {
+			// A future that never completes held its place among the calls
+			// waiting, and its caller, for as long as the connection lasted.
+			deadline = Timer.setTimeout(handlerTimeout / 1000, function():Void {
+				deadline = TimerHandle.INVALID;
+				if (settled) {
+					return;
+				}
+				settled = true;
+				__callsWaiting--;
+				settle(__handlerTimedOut());
+			});
+		}
 		#if (cpp || neko || hl || java || jvm || eval)
 		// Which thread this is, told apart by a token of its own rather than
 		// by runtime: off cpp, CrossByte.current() is the primordial runtime
@@ -861,6 +928,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** What a failed future failed with: its cause, or else its message. **/
 	@:noCompletion private static inline function __failureOf<T>(future:Future<T>):Dynamic {
 		return future.cause != null ? future.cause : future.error;
+	}
+
+	/** The failure a call answered later settles with when `handlerTimeout` passes first. **/
+	@:noCompletion private static function __handlerTimedOut<T>():Future<T> {
+		final timedOut = new Future<T>();
+		// Read at once, by whoever settles with it: not a failure nobody heard.
+		timedOut.__failureObserved = true;
+		timedOut.__fail(RPCError.TIMEOUT_MESSAGE, new RPCTimeoutError());
+		return timedOut;
 	}
 
 	/**

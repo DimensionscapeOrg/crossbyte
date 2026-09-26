@@ -396,7 +396,8 @@ is not thread-safe.
 Each call waiting holds what it waits on, so a session limits how many may
 wait at once: `maxCallsWaiting`, 256 unless set. A call past it is refused
 before its method runs, with `RPCError.BUSY_MESSAGE`, as `beforeCall` refuses
-one. If the connection ends while a call waits, its answer is dropped.
+one. If the connection ends while a call waits, its answer is dropped. How
+long one may wait is `handlerTimeout`; see Deadlines, below.
 
 The runtime lane does the same for a registered handler that returns a
 `Future`. Which of those answer later is not known until they run, so while
@@ -549,3 +550,44 @@ connection closes or a transport error stops its reads, when the session is
 stopped, when the heartbeat gives up on the peer, and when the connection is
 ended over a frame that cannot be read. Its `RPCResponse` fails with a message
 saying which, so nothing waits for good on a peer that has gone.
+
+## Deadlines
+
+A peer that is still there can still leave a call unanswered. A call can be
+given a deadline -- the session's `callTimeout` for every call it makes, or
+one of its own with `timeout`, in milliseconds -- and past it the call fails
+with an `RPCTimeoutError` as its `cause`. The connection is left as it was,
+and an answer arriving later is dropped.
+
+```haxe
+// Given session:RPCSession<ChatCommands>, commands:ChatCommands.
+import crossbyte.rpc.RPCTimeoutError;
+
+session.callTimeout = 5000;
+
+final joining = commands.join("lobby").timeout(2000);
+joining.catchError(message -> {
+	if (Std.isOfType(joining.cause, RPCTimeoutError)) {
+		trace('no answer in time: $message');
+	}
+});
+```
+
+`timeout(0)` leaves a call no deadline. A call without one arms nothing and
+costs nothing for it; one with a deadline holds a timer until it is answered.
+
+A handler can be held to one as well. `handlerTimeout` is how long a call its
+handler answers with a `Future` may wait for that future: past it the caller is
+answered `RPCError.TIMEOUT_MESSAGE`, `onHandlerError` and `afterCall` are told
+with an `RPCTimeoutError`, and the call gives up its place among the
+`maxCallsWaiting`. Without it, a future that never completes holds that place
+for as long as the connection lasts.
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+session.handlerTimeout = 10000;
+```
+
+An `RPCTimeoutError` is an `RPCError`, so a handler forwarding a call that
+timed out -- as the hub above answers with an instance host's answer -- tells
+its own caller that it timed out, and reports it on its side too.

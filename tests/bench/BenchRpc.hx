@@ -72,7 +72,20 @@ class BenchRpc {
 			handler.pending.complete("player");
 		});
 
-		if (handler.moves == 0 || hooked.moves == 0 || client == null || server == null || hookedServer == null) {
+		// The same request from a session that gives every call a deadline:
+		// a timer armed as the call is made, and cleared by its answer. A
+		// session without one arms nothing, which "request and response"
+		// above measures.
+		var timedLink = BenchLink.pair();
+		var timedCommands = new BenchCommands();
+		var timedClient = new RPCSession<BenchCommands>(timedLink.client, timedCommands);
+		timedClient.callTimeout = 5000;
+		var timedServer = new RPCSession(timedLink.server, null, new BenchHandler());
+		Bench.run("request and response, with a deadline", function():Void {
+			timedCommands.name(7);
+		});
+
+		if (handler.moves == 0 || hooked.moves == 0 || client == null || server == null || hookedServer == null || timedServer == null) {
 			Sys.println("  (the handler was never called)");
 		}
 	}
