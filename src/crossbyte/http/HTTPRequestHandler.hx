@@ -1002,28 +1002,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
-		// file.load();
-		var total:Int = file.size; // file.data.length;
+		// Past 2 GB `File.size`, an Int, cannot state the length, and throws
+		// an IOError rather than answer with a wrong one: `stat`'s own Int size
+		// wrapped on some targets and read as 0 on Windows native, where a
+		// 3 GB file and an empty one looked the same. The throw is this
+		// refusal. Uncaught, it was a 500 on HTTP/1.1 only by way of the
+		// catch-all, and on HTTP/2 a reset stream. It replaces this handler's
+		// own check, an open, seek and read of every file it served.
+		var total:Int;
+		try {
+			total = file.size;
+		} catch (error:crossbyte.errors.IOError) {
+			// Its message says which: too large, or not readable at all.
+			Logger.error('Refusing to serve ${file.nativePath}: ${error.message}');
+			__sendErrorResponse(500, "Internal Server Error");
+			return;
+		}
 
-		// `File.size` comes from `FileSystem.stat`, whose size is an Int and
-		// cannot describe a file past 2 GB. What it reports instead is not the
-		// same everywhere, and on the target this ships to it is worse than a
-		// wrap: measured on Windows/cpp, files of 3 GB and 5 GB both report
-		// **0**. The size is not truncated to its low bits, it is absent, and
-		// a huge file is indistinguishable from an empty one.
-		//
-		// So the `total < 0` test this used to be never fired here at all --
-		// it was written for a wrap that hxcpp does not produce, and every
-		// oversized file went straight past it.
-		//
-		// The check deliberately does not care which way a target gets it
-		// wrong. It asks the file: seek to the reported end and read one byte.
-		// A file that really is that long is at EOF; one that is longer still
-		// has data there, whether the reported number came from a wrap, a
-		// clamp, or a failed stat returning zero. That costs one open, seek
-		// and read per file served, which is real but small beside the
-		// transfer it protects.
-		if (total < 0 || !__sizeIsComplete(file, total)) {
+		if (total < 0) {
 			Logger.error('Refusing to serve ${file.nativePath}: it is larger than an Int can express, so its size cannot be stated.');
 			__sendErrorResponse(500, "Internal Server Error");
 			return;
@@ -1114,53 +1110,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * large file still streams, since the buffered alternative loads the
 	 * whole file just to cut the slice.
 	 */
-	/**
-	 * Whether `reported` is the file's whole length rather than a wrapped one.
-	 *
-	 * Seeks to the reported end and reads a byte. At a true end that throws
-	 * `Eof`; anything read there means the file continues past the number
-	 * `stat` gave us, which on a 32-bit size means it wrapped.
-	 *
-	 * Static so it can be exercised directly: the wrap itself needs a file
-	 * over 4 GB to reproduce, but what this decides is the narrower question
-	 * of whether bytes exist beyond a stated length, and that is testable at
-	 * any size.
-	 *
-	 * An unopenable file answers `true`. It cannot be verified either way,
-	 * and the serve path that follows raises its own error for it; claiming a
-	 * size problem would name the wrong cause.
-	 */
-	@:noCompletion private static function __sizeIsComplete(file:File, reported:Int):Bool {
-		var stream:FileStream = new FileStream();
-
-		try {
-			stream.open(file, FileMode.READ);
-		} catch (_:Dynamic) {
-			try {
-				stream.close();
-			} catch (_:Dynamic) {}
-			return true;
-		}
-
-		var complete:Bool = true;
-
-		try {
-			stream.position = reported;
-			stream.readByte();
-			// A byte was there. The file outruns its stated length.
-			complete = false;
-		} catch (_:Dynamic) {
-			// Eof, or a seek that could not reach the position: either way
-			// nothing was found beyond the reported end.
-		}
-
-		try {
-			stream.close();
-		} catch (_:Dynamic) {}
-
-		return complete;
-	}
-
 	@:noCompletion private function __canStreamFile(statusCode:Int, headers:Array<URLRequestHeader>, fileSize:Int):Bool {
 		if (fileSize <= STREAM_THRESHOLD) {
 			return false;

@@ -377,6 +377,59 @@ class HTTPServerH2Test extends utest.Test {
 		}, size);
 	}
 
+	#if (java || jvm)
+	// Only the jvm can make a file past 2 GB here without writing one: it
+	// asks for a sparse file, which takes no disk on NTFS, ext4 or APFS.
+	public function testAFileTooLargeToStateIsRefusedOverBothProtocols(async:Async):Void {
+		// File.size throws past 2 GB, since an Int cannot state the length.
+		// The handler did not catch it: HTTP/1.1 answered 500 only through its
+		// catch-all, and HTTP/2 reset the stream.
+		var made:Bool = false;
+		var session = new H2Session(config -> made = __makeSparseFile(config.rootDirectory.resolvePath("huge.bin").nativePath, 3221225473.0));
+		if (!made) {
+			session.close();
+			Assert.warn("no room for a 3 GB file if this filesystem cannot make it sparse; not run");
+			async.done();
+			return;
+		}
+
+		session.start(function():Void {
+			session.request(1, "GET", "/huge.bin", true);
+			session.until(() -> session.finished(1) || session.resetCode(1) >= 0 || session.ended, function():Void {
+				Assert.equals(-1, session.resetCode(1), "the stream was reset instead of answered");
+				Assert.equals(500, session.status(1));
+
+				HTTPTestSupport.exchangeEach(session.server, ["GET /huge.bin HTTP/1.1\r\nHost: localhost\r\n\r\n"], function(responses):Void {
+					session.close();
+					Assert.equals(500, responses[0].status);
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+	 * Makes `path` a sparse file `length` bytes long, or answers false where
+	 * there would not be room for it should the filesystem ignore the request.
+	 */
+	private static function __makeSparseFile(path:String, length:Float):Bool {
+		var directory = new java.io.File(path).getParentFile();
+		var room:Float = haxe.Int64.toInt(directory.getUsableSpace() / 1048576) / 1024.0;
+		if (room < 16) {
+			return false;
+		}
+
+		var createNew:java.nio.file.OpenOption = cast java.nio.file.StandardOpenOption.CREATE_NEW;
+		var write:java.nio.file.OpenOption = cast java.nio.file.StandardOpenOption.WRITE;
+		var sparse:java.nio.file.OpenOption = cast java.nio.file.StandardOpenOption.SPARSE;
+		var channel = java.nio.file.Files.newByteChannel(new java.io.File(path).toPath(), createNew, write, sparse);
+		channel.position(haxe.Int64.fromFloat(length - 1));
+		channel.write(java.nio.ByteBuffer.allocate(1));
+		channel.close();
+		return true;
+	}
+	#end
+
 	public function testHttp11IsStillServedOnAnHttp2Listener(async:Async):Void {
 		// The listener offers both. A cleartext port cannot negotiate -- RFC
 		// 9113 3.1 retired the h2c upgrade -- so this is decided by looking at
