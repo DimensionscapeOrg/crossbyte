@@ -140,6 +140,8 @@ class TestSuites {
 		// bridge's threading and its GC-free zones are checked without a
 		// server.
 		runner.addCase(new crossbyte.db.NativePostgresBridgeTest());
+		// Where the worker pool has threads, and so a queue to bound.
+		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
 		#end
 	}
 

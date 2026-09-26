@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `AsyncDatabase.maxQueued` and `queueTimeout`, and backlog metrics. With a
+  worker per pooled connection -- what `AsyncDatabase.of` builds -- a job
+  never waits for a connection, so the pool's acquire timeout and wait
+  metrics never fire: all the waiting happens in the worker pool's queue,
+  which had no bound, no deadline and nothing measuring it, so a database
+  slower than the traffic showed up only as memory and latency growing
+  together. `maxQueued` makes `submit` throw once that many jobs are
+  waiting; `queueTimeout` fails a job that waited longer than that for a
+  worker, without running it or taking a connection. Both are off by
+  default, since a batch submitting thousands of statements at once is a
+  legitimate use of the queue; a server should set them. Given a
+  `Metrics` registry, `AsyncDatabase` publishes `db_async_queued`,
+  `db_async_running`, `db_async_queue_wait_seconds`, and the
+  `db_async_rejected_total` and `db_async_expired_total` it turned away.
 - `ConnectionPoolOptions.reset`, run on every connection as it is released
   -- including by `withConnection` after its body threw -- before anyone
   else can take it; a reset that throws retires the connection. A body that
