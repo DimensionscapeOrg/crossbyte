@@ -74,6 +74,11 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		#end
+		// A page's Socket against the echo endpoint ci/browser/run.js serves.
+		// The browser only: it is the one target where a Socket is a WebSocket.
+		#if (js && !nodejs)
+		runner.addCase(new crossbyte.net.BrowserSocketTest());
+		#end
 		// Also in `addUtils`, the way HpackTest is in two places: twelve cases
 		// registered here call `Require.notNull`, so the mechanism they depend
 		// on has to be checked on the targets that reach them. It needs

@@ -265,6 +265,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (__socket != null) {
 			buffered += __socket.writableLength;
 		}
+		#elseif (js && !nodejs)
+		// The same in a page, whose WebSocket queues what the network has not
+		// taken yet and reports it as bufferedAmount.
+		if (__socket != null) {
+			buffered += __socket.bufferedAmount;
+		}
 		#end
 
 		return buffered;
@@ -650,12 +656,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		if (__output.length > 0) {
+			#if (js && !nodejs)
+			// A page's WebSocket sends only once open. Until then, and it is
+			// what connect() leaves it as, the bytes wait here: send() on a
+			// connecting WebSocket throws, and this runs from the tick.
+			if (__socket.readyState != WebSocket.OPEN) {
+				return;
+			}
+			#end
 			try {
 				#if (js && !nodejs)
-				var buffer:ArrayBuffer = (__output : haxe.io.Bytes).getData();
-				if (buffer.byteLength > __output.length)
-					buffer = buffer.slice(0, __output.length);
-				__socket.send(buffer);
+				// Sent, then cleared. The buffer was never cleared, and the tick
+				// flushes every pass, so one write went out again on every
+				// tick for as long as the connection lasted: an 11-byte write
+				// reached the server as 25 messages in two seconds. send()
+				// copies what it is given, so a view is enough.
+				var pending:Int = __output.length;
+				__socket.send(new js.lib.Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending));
+				__retainPendingOutput(pending, pending);
 		#elseif nodejs
 				// Copied, not viewed. Node holds what it is handed until the
 				// kernel takes it, and __output is cleared and refilled by the
@@ -1242,6 +1260,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			} else {
 				__socket.end();
 			}
+			#elseif (js && !nodejs)
+			// Detached first, so the close the page reports afterwards does
+			// not arrive at a socket already cleaned up and announce it again.
+			var page:WebSocket = __socket;
+			page.onopen = null;
+			page.onmessage = null;
+			page.onclose = null;
+			page.onerror = null;
+			page.close();
 			#else
 			__socket.close();
 			#end
@@ -1362,7 +1389,23 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	// Event Handlers
 	@:noCompletion private function socket_onClose(_):Void {
+		#if (js && !nodejs)
+		// The page's WebSocket has closed, from either end. This dispatched
+		// CLOSE and left everything else as it was: still connected, still
+		// flushed from the tick, for as long as the page stayed open. It is
+		// cleaned up the way a native socket is, and CLOSE is announced only
+		// for a connection that came up, one that never opened has had its
+		// ioError, as it would natively.
+		var wasConnected:Bool = __connected;
+		if (__socket != null) {
+			__cleanSocket();
+		}
+		if (wasConnected) {
+			__dispatchPooledSimpleEvent(Event.CLOSE);
+		}
+		#else
 		__dispatchPooledSimpleEvent(Event.CLOSE);
+		#end
 	}
 
 	@:noCompletion private function socket_onError(e):Void {
