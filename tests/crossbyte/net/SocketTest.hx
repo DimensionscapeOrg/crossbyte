@@ -164,16 +164,26 @@ class SocketTest extends utest.Test {
 		Assert.isTrue(socket.__closed);
 	}
 
-	public function testInvalidHostDispatchesIOErrorWithoutSocket():Void {
+	/**
+		Reported once the lookup has failed, which is after `connect()`
+		returns: a name is looked up off the runtime's thread now, where it
+		used to be looked up -- and this reported -- inside the call.
+	**/
+	@:timeout(15000)
+	public function testInvalidHostDispatchesIOErrorWithoutSocket(async:utest.Async):Void {
 		var socket = new Socket();
 		var errors = 0;
 		socket.addEventListener(IOErrorEvent.IO_ERROR, _ -> errors++);
 
 		socket.connect("bad host name", 80);
+		Assert.equals(0, errors, "the lookup was waited on inside connect()");
 
-		Assert.equals(1, errors);
-		Assert.isNull(socket.__socket);
-		Assert.isFalse(socket.connected);
+		NetPump.until(() -> errors > 0, 10.0, function(_) {
+			Assert.equals(1, errors);
+			Assert.isNull(socket.__socket);
+			Assert.isFalse(socket.connected);
+			async.done();
+		});
 	}
 
 	public function testPartialFlushRetainsUnwrittenBytes():Void {

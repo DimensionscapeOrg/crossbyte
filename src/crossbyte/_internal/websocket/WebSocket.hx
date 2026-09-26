@@ -10,6 +10,9 @@ import js.node.Buffer;
 import js.node.Net;
 import js.node.Tls;
 import js.node.net.Socket as NodeSocket;
+#else
+import crossbyte._internal.net.Resolver;
+import sys.net.Host;
 #end
 import crossbyte.Function;
 import crossbyte.Timer as CBTimer;
@@ -205,6 +208,11 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	// rather than where it happened, because that is inside the constructor,
 	// before the owner has attached anything to hear it.
 	private var __connectFailure:String = null;
+
+	#if !nodejs
+	// Whether the host named in the URL is still being looked up.
+	private var __resolving:Bool = false;
+	#end
 
 	// Whether onclose has been called. A session can be closed from several
 	// places in one pass -- a failed write inside the frame that answers a
@@ -523,11 +531,41 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	#end
 
 	#if !nodejs
+	/**
+		Starts the connect. An address is connected to at once; a name is
+		looked up off the runtime's thread first (see `Resolver`) -- it used to
+		be looked up right here, holding every socket and timer on the runtime
+		for as long as the resolver took. The tick waits for the answer as it
+		waits for the connect, under the same deadline.
+	**/
 	private function __connect():Void {
+		if (!Resolver.needsLookup(__host)) {
+			__connectTo(null);
+			return;
+		}
+
+		__resolving = true;
+		var asked:FlexSocket = __socket;
+		Resolver.resolve(__host, function(resolved:Null<Host>, failure:Null<String>):Void {
+			if (__socket != asked || !__resolving) {
+				return;
+			}
+			__resolving = false;
+
+			if (resolved == null) {
+				// Reported by the tick, as a connect that failed at once is.
+				__connectFailure = __host + " did not resolve (" + failure + ")";
+				return;
+			}
+			__connectTo(resolved);
+		});
+	}
+
+	private function __connectTo(resolved:Null<Host>):Void {
 		try {
 			__socket.setBlocking(false);
 			__socket.setFastSend(true);
-			__socket.connect(__host, __port);
+			__socket.connectHost(resolved != null ? resolved : new Host(__host), __port);
 		} catch (e:Dynamic) {
 			// A connect in progress reports itself as a block, which is the
 			// ordinary case: the tick waits for it to finish. Anything else is
@@ -546,6 +584,16 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			__connectFailure = null;
 			__onError("Failed to connect to server: " + failure);
 			__close(1006);
+			return;
+		}
+
+		if (__resolving) {
+			// No connect to ask about until the name is looked up; only the
+			// deadline, which a resolver that never answers does not outlast.
+			if (haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
+				__onError("Failed to connect to server: " + __host + " was not looked up within " + connectTimeout + " ms");
+				__close(1006);
+			}
 			return;
 		}
 
@@ -1839,6 +1887,9 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		}
 
 		__closeWhenDrained = false;
+		#if !nodejs
+		__resolving = false;
+		#end
 		__disarmUpgradeDeadline();
 		__stopHeartbeat();
 		if (__closeDeadlineArmed) {

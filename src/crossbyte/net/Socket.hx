@@ -392,6 +392,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __peerShutdown:Bool = false;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __isConnecting:Bool;
+	// Whether the name connect() was given is still being looked up.
+	@:noCompletion private var __resolving:Bool = false;
+	// The tick listener a connect in progress is driven by; see
+	// __startConnecting.
+	@:noCompletion private var __connectingTick:TickEvent->Void = null;
 	@:noCompletion private var __isDirty = false;
 	@:noCompletion private var flushFull:Bool = false;
 	// Whether the close underway throws unsent output away rather than
@@ -501,6 +506,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		A host that cannot be resolved is reported as an `ioError` event rather
 		than thrown, so a listener is the only way to see it.
 
+		A name is looked up off the runtime's thread, so nothing else on the
+		runtime waits on the resolver, and `timeout` counts the lookup as part
+		of the attempt.
+
 		@param host The name or IP address of the host to connect to.
 		@param port The port number to connect to.
 		@throws SecurityError The port is outside 0-65535.
@@ -524,15 +533,21 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// no resolver to offer, so neither needs a Host looked up first.
 		__timestamp = Timer.stamp();
 		#else
+		// An address is taken as it is. A name is looked up off the runtime's
+		// thread -- see below -- where it used to be looked up here, holding
+		// every socket and timer on the runtime for as long as the resolver
+		// took: a second, for a name that does not exist.
 		var h:Host = null;
 
-		try {
-			h = new Host(host);
-		} catch (e:Dynamic) {
-			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+		if (!crossbyte._internal.net.Resolver.needsLookup(host)) {
+			try {
+				h = new Host(host);
+			} catch (e:Dynamic) {
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+				}
+				return;
 			}
-			return;
 		}
 
 		__timestamp = haxe.Timer.stamp();
@@ -605,6 +620,41 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw "Socket can only be initiated in a CrossByte threaded instance";
 		}
 
+		if (h == null) {
+			// The socket exists while the name is looked up, so close() works
+			// meanwhile; the answer is acted on only if this is still the
+			// connection it was asked for. The tick runs meanwhile too, for
+			// the deadline: the attempt's timeout counts the lookup.
+			var asked:SysSocket = __socket;
+			__resolving = true;
+			__startConnecting();
+			crossbyte._internal.net.Resolver.resolve(host, function(resolved:Null<Host>, failure:Null<String>):Void {
+				if (__socket != asked || !__resolving) {
+					return;
+				}
+				__resolving = false;
+				__stopConnecting();
+
+				if (resolved == null) {
+					__cleanupFailedConnect();
+					if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+						dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host: " + host + " did not resolve (" + failure + ")"));
+					}
+					return;
+				}
+
+				__beginConnect(resolved, port);
+			});
+			return;
+		}
+
+		__beginConnect(h, port);
+		#end
+	}
+
+	#if !js
+	/** Connects to an address already resolved; the rest of `connect()`. **/
+	@:noCompletion private function __beginConnect(h:Host, port:Int):Void {
 		try {
 			__socket.setBlocking(false);
 			__socket.connect(h, port);
@@ -656,8 +706,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// socket that has never been pumped.
 		__startConnecting();
 		#end
-		#end
 	}
+	#end
 
 	/**
 		Flushes any accumulated data in the socket's output buffer.
@@ -1302,6 +1352,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		} catch (e:Dynamic) {}
 
 		__stopConnecting();
+		__resolving = false;
 
 		if (__cbInstance != null) {
 			#if !js
@@ -1325,14 +1376,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private inline function __stopConnecting():Void {
 		if (__isConnecting && __cbInstance != null) {
-			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+			__cbInstance.removeEventListener(TickEvent.TICK, __connectingTick);
 			__isConnecting = false;
 		}
 	}
 
 	@:noCompletion private inline function __startConnecting():Void {
 		__isConnecting = true;
-		__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+		// One closure, kept, so the one removed is the one added. On eval two
+		// reads of `this_onTick` are two closures that do not compare equal,
+		// so removing a fresh one removed nothing and the socket went on
+		// being ticked -- a blocking read there, on a socket with nothing to
+		// say, and the runtime hung.
+		if (__connectingTick == null) {
+			__connectingTick = this_onTick;
+		}
+		__cbInstance.addEventListener(TickEvent.TICK, __connectingTick);
 	}
 
 	@:noCompletion private function __tryFlush():Void {
@@ -1674,6 +1733,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 		#else
 		if (__socket == null) {
+			return;
+		}
+
+		if (__resolving) {
+			// The name is still being looked up, so there is no connect to
+			// ask the socket about yet -- only the attempt's deadline, which
+			// counts the lookup. A resolver that never answers is not waited
+			// on past it.
+			if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+				__cleanSocket();
+				__dispatchPooledIOError("Connection failed: " + __host + " was not looked up within " + timeout + " ms");
+			}
 			return;
 		}
 
@@ -2163,6 +2234,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__cbInstance = null;
 		__connected = false;
 		__isConnecting = false;
+		__resolving = false;
 		__isDirty = false;
 		flushFull = false;
 		__closed = true;

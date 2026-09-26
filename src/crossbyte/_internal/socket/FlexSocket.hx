@@ -183,8 +183,19 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 		(this : Socket).close();
 	}
 
+	/**
+		Connects to `host`, looking it up first if it is a name -- here, on the
+		calling thread, for as long as the resolver takes. A caller on a
+		runtime's thread looks the name up with `Resolver` and calls
+		`connectHost` with the answer instead.
+	**/
 	public inline function connect(host:String, port:Int):Void {
 		(this : Socket).connect(new Host(host), port);
+	}
+
+	/** Connects to an address already resolved. **/
+	public inline function connectHost(host:Host, port:Int):Void {
+		(this : Socket).connect(host, port);
 	}
 
 	public inline function handshake():Void {

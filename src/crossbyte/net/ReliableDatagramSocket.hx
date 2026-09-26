@@ -507,6 +507,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __bundleHasAck:Bool = false;
 	@:noCompletion private var __bundleAck:Int = 0;
 	@:noCompletion private var __connectionTimeoutHandle:Int = -1;
+	// Whether connect() is looking a name up, and a count of its attempts so
+	// only the latest one's answer is acted on.
+	@:noCompletion private var __lookingUp:Bool = false;
+	@:noCompletion private var __lookups:Int = 0;
 	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
 	// Out-of-order frames, kept whole: a fragment's `more` flag is as much a
 	// part of it as its bytes.
@@ -721,13 +725,21 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		sender's address until the handshake completes, so what it can carry
 		is something the server can check, not something that must stay secret.
 
-		@param host The remote host to connect to.
+		`host` may be a name everywhere but Node. It is looked up off the
+		runtime's thread, and the handshake starts when the answer comes;
+		`remoteAddress` is the address it resolved to from then. The attempt's
+		timeout counts the lookup. A name that does not resolve is reported as
+		an `ioError` event, and the socket then closes, as an attempt that
+		timed out does.
+
+		@param host The remote address, or a name, to connect to.
 		@param port The remote UDP port to connect to.
 		@param payload Sent with the CONNECT: all of it, from 0 to its length,
 		       copied now, so changing it afterwards changes nothing sent.
 		@throws IOError If the socket is closed or otherwise invalid.
 		@throws IllegalOperationError If this socket was accepted by a server.
-		@throws ArgumentError If `host` is invalid or empty.
+		@throws ArgumentError If `host` is empty, or a malformed address, or
+		        -- on Node -- a name.
 		@throws RangeError If `port` is outside the valid UDP port range, or
 		        `payload` is larger than one frame,
 		        `ReliableDatagramProtocol.MAX_PAYLOAD_SIZE` bytes.
@@ -768,6 +780,16 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		__remoteAddress = host;
 		#else
+		// Whatever an earlier attempt was waiting on, its answer is not this
+		// one's.
+		__lookups++;
+		__lookingUp = false;
+
+		if (crossbyte._internal.net.Resolver.needsLookup(host) && CrossByte.current() != null) {
+			__connectByName(host, port, outgoing);
+			return;
+		}
+
 		var resolved:Host;
 		try {
 			resolved = new Host(host);
@@ -786,6 +808,54 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		__transport.receive();
 		__beginHandshake();
 	}
+
+	#if !nodejs
+	/**
+		`connect()` to a name: looked up off the runtime's thread (see
+		`Resolver`), and the handshake begun when the answer comes.
+
+		It used to be looked up in the call, on the runtime's thread, so every
+		socket and timer there waited on the resolver -- a second, for a name
+		that does not exist -- and a client reconnecting in a loop did it again
+		exactly while the resolver was failing. The attempt's deadline runs
+		from the call and is not restarted by the answer, so a resolver that
+		never answers times the attempt out as a silent peer would; a name
+		that does not resolve is reported as `ioError`, and the session
+		closed, as a failed attempt is.
+	**/
+	@:noCompletion private function __connectByName(host:String, port:Int, outgoing:ByteArray):Void {
+		__remoteAddress = "";
+		__remotePort = port;
+		__remoteResponsePort = 0;
+		__incoming = false;
+		__connectOut = outgoing;
+		__resetSequences();
+		__connectionId = __newConnectionId();
+		__transport.receive();
+
+		__clearHandshakeTimers();
+		__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+
+		var lookup:Int = __lookups;
+		__lookingUp = true;
+		crossbyte._internal.net.Resolver.resolve(host, function(resolved:Null<Host>, failure:Null<String>):Void {
+			// Closed, or asked to connect somewhere else, meanwhile.
+			if (__closed || lookup != __lookups) {
+				return;
+			}
+
+			if (resolved == null) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Could not connect to " + host + ": the name did not resolve (" + failure + ")"));
+				__dispose(true);
+				return;
+			}
+
+			__lookingUp = false;
+			__remoteAddress = resolved.toString();
+			__beginHandshake(true);
+		});
+	}
+	#end
 
 	/** A connection id: random, 32 bits, and never 0, which means none. **/
 	@:noCompletion private function __newConnectionId():Int {
@@ -1866,9 +1936,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return __inFrameCacheSize;
 	}
 
-	@:noCompletion private function __beginHandshake():Void {
-		__clearHandshakeTimers();
-		__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+	@:noCompletion private function __beginHandshake(deadlineArmed:Bool = false):Void {
+		// Armed already when the attempt began with a name to look up: the
+		// deadline counts the lookup, so it is not restarted after it.
+		if (!deadlineArmed) {
+			__clearHandshakeTimers();
+			__connectionTimeoutHandle = CBTimer.setTimeout(__timeout / 1000, __onConnectionFailed);
+		}
 
 		// Only a session that dialled repeats itself. An accepted one is
 		// answering a CONNECT it never asked for, from an address UDP let
@@ -2004,6 +2078,10 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 		var wasConnected:Bool = __connected;
 		__connected = false;
+		// An attempt still looking its peer's name up is an attempt, and ends
+		// as one does, though it has no address yet.
+		var wasLookingUp:Bool = __lookingUp;
+		__lookingUp = false;
 
 		if (__server != null) {
 			__server.__onSocketClosed(this);
@@ -2014,7 +2092,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 			__transport.close();
 		}
 
-		if (dispatchClose && (wasConnected || __remoteAddress != "")) {
+		if (dispatchClose && (wasConnected || __remoteAddress != "" || wasLookingUp)) {
 			dispatchEvent(new Event(Event.CLOSE));
 		}
 	}
