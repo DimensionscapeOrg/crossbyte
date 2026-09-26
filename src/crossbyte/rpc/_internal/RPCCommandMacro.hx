@@ -366,7 +366,9 @@ class RPCCommandMacro {
 	}
 
 	private static function readerForType(ct:ComplexType, errPos:Position):Expr {
-		var isOpt = isNullWrapped(ct);
+		// On the type, as the handler's side decides it, and not on how
+		// `ct` is written: through a typedef, `Null<T>` read no presence byte.
+		var isOpt = RPCContractMacroTools.isNullable(ct, errPos);
 		var base = unwrapNull(ct);
 		var key = typeKey(base, errPos);
 		var fn = TYPE_READERS.get(key);
