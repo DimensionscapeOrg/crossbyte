@@ -130,6 +130,11 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
+		#if !cpp
+		// The same failures on cpp go through libpq, and are covered against
+		// its stand-in by NativePostgresBridgeTest below.
+		runner.addCase(new crossbyte.db.TransactionFailureTest());
+		#end
 		#if cpp
 		// Against a libpq stand-in built beside the test binary, so the
 		// bridge's threading and its GC-free zones are checked without a
