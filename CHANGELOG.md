@@ -750,6 +750,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 request that has fully arrived is no longer held to
+  `requestTimeout`. Every open stream counted as a request still arriving,
+  so a long poll answered after `requestTimeout` found its connection
+  closed with a GOAWAY, and every other stream on it gone too. As over
+  HTTP/1.1, the clock stops once the request is in, and a connection's idle
+  time counts from the last frame either way.
 - A response body too large for the connection's output buffer is sent
   whole. It was written at once: what the peer had not taken by the first
   flush stayed buffered, the socket closed at `maxOutputBufferSize`, and a
