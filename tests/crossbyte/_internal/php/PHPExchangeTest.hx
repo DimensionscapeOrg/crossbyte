@@ -18,10 +18,10 @@ private typedef FpmRequest = {
  * The CGI header block, as `PHPExchange` hands it to the handler.
  *
  * Mostly fed FastCGI records directly, needing no backend and no socket. The
- * two cases about when a reply is read drive the bridge against a plain
- * blocking backend, and run on eval as well: the bridge reads only what the
- * runtime's poll set reports, so a socket eval cannot make non-blocking no
- * longer stalls it.
+ * cases about when the bridge connects and when it reads drive it against a
+ * plain blocking backend, and run on eval as well: the bridge connects on a
+ * thread of its own and reads only what the runtime's poll set reports, so a
+ * socket eval cannot make non-blocking no longer stalls it.
  */
 class PHPExchangeTest extends utest.Test {
 	#if !(js && !nodejs)
@@ -309,6 +309,7 @@ class PHPExchangeTest extends utest.Test {
 
 		__pollWithoutTicking(() -> future.completed, 5.0);
 		backend.close();
+		bridge.stop();
 
 		Assert.isTrue(future.completed, "the reply sat unread until a tick came round");
 		Assert.isTrue(future.succeeded, "the exchange failed: " + future.error);
@@ -335,10 +336,69 @@ class PHPExchangeTest extends utest.Test {
 		backend.close();
 
 		__pollWithoutTicking(() -> future.completed, 5.0);
+		bridge.stop();
 
 		Assert.isTrue(future.completed, "the hang-up was not heard until a tick came round");
 		Assert.isFalse(future.succeeded, "half a response was served as a whole one");
 		Assert.isTrue(future.error != null && future.error.indexOf("closed the connection before finishing") >= 0, "not reported as a hang-up: " + future.error);
+	}
+
+	public function testABackendNameThatDoesNotResolveDoesNotHoldExecute():Void {
+		// The backend's name was looked up, and connected to, inside execute(),
+		// on the runtime's thread, so a name that does not resolve held it
+		// for as long as the resolver took, a second being ordinary, and the
+		// exchange failed from inside the call. Both are done on the bridge's
+		// connector thread now, and the failure arrives afterwards. Under
+		// `.invalid`, which never resolves (RFC 6761), and fresh each run, so
+		// no resolver has the answer cached.
+		var name:String = "crossbyte-php-" + Std.random(0x3FFFFFFF) + ".invalid";
+		var bridge = new PHPBridge(PHPMode.Connect(name, 9000), "", ["index.php"], 30);
+
+		var started:Float = haxe.Timer.stamp();
+		var future = bridge.execute(__request());
+		var spent:Float = haxe.Timer.stamp() - started;
+
+		Assert.isFalse(future.completed, "the name was looked up, and failed, inside execute(): " + future.error);
+		Assert.isTrue(spent < 0.5, 'execute() spent $spent s on the backend\'s name');
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + 20;
+
+		while (!future.completed && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0.0);
+			Sys.sleep(0.005);
+		}
+
+		bridge.stop();
+
+		Assert.isTrue(future.completed, "a backend name that does not resolve was never reported");
+		Assert.isFalse(future.succeeded, "an exchange with a backend that does not exist succeeded");
+		Assert.isTrue(future.error != null && future.error.indexOf(name) >= 0, "the failure does not name the backend: " + future.error);
+	}
+
+	public function testABackendGivenByNameIsLookedUpOnceRatherThanPerRequest():Void {
+		var backend = new BlockingBackend();
+		var bridge = new PHPBridge(PHPMode.Connect("localhost", backend.port), "", ["index.php"], 10);
+		var runtime = crossbyte.core.CrossByte.current();
+
+		for (round in 0...3) {
+			var future = bridge.execute(__request());
+			__readRequest(backend.accept());
+			backend.reply(__cgi("Status: 200 OK\r\nContent-Type: text/plain\r\n\r\n", Bytes.ofString("round " + round)));
+
+			var deadline:Float = haxe.Timer.stamp() + 5;
+
+			while (!future.completed && haxe.Timer.stamp() < deadline) {
+				runtime.pump(1 / 60, 0.0);
+			}
+
+			Assert.isTrue(future.succeeded, "round " + round + " failed: " + future.error);
+		}
+
+		backend.close();
+		bridge.stop();
+
+		Assert.equals(1, bridge.__lookups, "the backend's name was looked up for every request");
 	}
 
 	/**
@@ -358,17 +418,32 @@ class PHPExchangeTest extends utest.Test {
 		}
 	}
 
-	/** Reads what the bridge sent until its request has ended, as php-fpm would. **/
+	/**
+		Reads what the bridge sends until its request has ended, as php-fpm
+		would. The runtime is pumped meanwhile: the bridge connects on a thread
+		of its own and writes the request once the runtime has the connection
+		back. Read only when select says there is something, since eval cannot
+		make a socket non-blocking.
+	**/
 	private static function __readRequest(peer:sys.net.Socket):FpmRequest {
+		var runtime = crossbyte.core.CrossByte.current();
 		var received = new BytesBuffer();
 		var chunk:Bytes = Bytes.alloc(65536);
+		var deadline:Float = haxe.Timer.stamp() + 10;
+		var parsed:FpmRequest = __parseAsPhpFpm(Bytes.alloc(0));
 
-		while (true) {
+		while (haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0.0);
+
+			if (sys.net.Socket.select([peer], [], [], 0.01).read.length == 0) {
+				continue;
+			}
+
 			var n:Int = peer.input.readBytes(chunk, 0, chunk.length);
 			received.addBytes(chunk, 0, n);
 
 			var snapshot:Bytes = received.getBytes();
-			var parsed:FpmRequest = __parseAsPhpFpm(snapshot);
+			parsed = __parseAsPhpFpm(snapshot);
 
 			if (parsed.stdinEnded || parsed.errors.length > 0) {
 				return parsed;
@@ -377,6 +452,8 @@ class PHPExchangeTest extends utest.Test {
 			received = new BytesBuffer();
 			received.add(snapshot);
 		}
+
+		return parsed;
 	}
 
 	private static function __request():PHPRequest {
@@ -553,17 +630,30 @@ private class BlockingBackend {
 
 	private var listener:sys.net.Socket;
 	private var peer:sys.net.Socket;
+	private var peers:Array<sys.net.Socket> = [];
 
 	public function new() {
 		listener = new sys.net.Socket();
 		listener.bind(new sys.net.Host("127.0.0.1"), 0);
-		listener.listen(1);
+		listener.listen(4);
 		port = listener.host().port;
 	}
 
-	/** The bridge's connection, which it made before `execute` returned. **/
+	/**
+		The bridge's next connection. It is made on the bridge's connector
+		thread, so it can arrive after `execute` returns; the runtime is pumped
+		while it does.
+	**/
 	public function accept():sys.net.Socket {
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + 10;
+
+		while (sys.net.Socket.select([listener], [], [], 0.01).read.length == 0 && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0.0);
+		}
+
 		peer = listener.accept();
+		peers.push(peer);
 		return peer;
 	}
 
@@ -573,12 +663,10 @@ private class BlockingBackend {
 	}
 
 	public function close():Void {
-		for (socket in [peer, listener]) {
-			if (socket != null) {
-				try {
-					socket.close();
-				} catch (_:Dynamic) {}
-			}
+		for (socket in peers.concat([listener])) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
 		}
 	}
 }
