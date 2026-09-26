@@ -150,6 +150,19 @@ class SctpAssociation {
 	**/
 	public dynamic function onClose(reason:String):Void {}
 
+	/**
+		Whether everything the layer above was given has been sent and
+		acknowledged.
+
+		A peer's SHUTDOWN is answered only once it has: RFC 4960 section 9.2
+		has what is outstanding delivered first, so a graceful close does not
+		lose the last messages. The data layer answers; with none attached
+		there is nothing to wait for.
+	**/
+	public dynamic function drained():Bool {
+		return true;
+	}
+
 	/** The ABORT flag saying its tag is the sender's own, reflected. **/
 	@:noCompletion private static inline var FLAG_TAG_REFLECTED:Int = 0x01;
 
@@ -207,7 +220,30 @@ class SctpAssociation {
 	public function poll(now:Float):Void {
 		clock = now;
 
-		if (__closed || now < __retryAt) {
+		if (__closed) {
+			return;
+		}
+
+		// Data still going out when the peer asked to shut down: answered the
+		// moment the last of it is acknowledged.
+		if (state == SHUTDOWN_RECEIVED) {
+			__answerShutdownIfDrained(now);
+			return;
+		}
+
+		if (now < __retryAt) {
+			return;
+		}
+
+		if (state == SHUTDOWN_ACK_SENT) {
+			// The peer asked to go and never confirmed the answer. It is gone
+			// either way.
+			if (__attempts >= MAX_ATTEMPTS) {
+				__end("The peer shut the association down.", false);
+				return;
+			}
+
+			__sendShutdownAck(now);
 			return;
 		}
 
@@ -263,15 +299,43 @@ class SctpAssociation {
 					// RFC 4960 section 8.5.1: this association's own tag, or the
 					// peer's reflected back with the T bit saying so. Anything
 					// else is an ABORT for an association that is not this one.
-					if (__abortIsForUs(chunk, packet)) {
+					if (__tagOrReflected(chunk, packet)) {
 						__end("The peer aborted the association" + __abortReason(chunk) + ".", false);
 					}
 
 					return true;
+				case SctpPacket.CHUNK_HEARTBEAT:
+					// RFC 4960 section 8.3: answered at once, with what it
+					// carried copied back unchanged. It never was, and a peer
+					// that hears no answer counts a failed path -- so a channel
+					// that only received, from a browser whose stack probes idle
+					// paths, was torn down after a few minutes of quiet.
+					if (__up() && __tagMatches(packet)) {
+						onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_HEARTBEAT_ACK, 0, chunk.value)]));
+					}
+				case SctpPacket.CHUNK_SHUTDOWN:
+					// RFC 4960 section 9.2: the peer has finished sending and
+					// wants to go. Its cumulative acknowledgement goes to the
+					// layer above like a SACK's, and the answer waits for what
+					// this end still has outstanding.
+					if ((state == ESTABLISHED || state == SHUTDOWN_RECEIVED) && __tagMatches(packet)) {
+						state = SHUTDOWN_RECEIVED;
+						passedUp = true;
+						onChunk(chunk, packet);
+					} else if (state == SHUTDOWN_ACK_SENT && __tagMatches(packet)) {
+						// The answer was lost, and the peer is asking again.
+						__sendShutdownAck(now);
+					}
+				case SctpPacket.CHUNK_SHUTDOWN_COMPLETE:
+					if (state == SHUTDOWN_ACK_SENT && __tagOrReflected(chunk, packet)) {
+						__end("The peer shut the association down.", false);
+						return true;
+					}
 				default:
-					// Everything else -- DATA, SACK, HEARTBEAT -- is for the
-					// layer above, which is where it goes once established.
-					if (state == ESTABLISHED && __tagMatches(packet)) {
+					// Everything else -- DATA and SACK -- is for the layer above,
+					// which is where it goes once established, and while a
+					// shutdown the peer asked for is finishing what was sent.
+					if ((state == ESTABLISHED || state == SHUTDOWN_RECEIVED) && __tagMatches(packet)) {
 						passedUp = true;
 						onChunk(chunk, packet);
 					}
@@ -282,6 +346,11 @@ class SctpAssociation {
 		// the layer above the peer is gone -- and then nothing is owed.
 		if (passedUp && !__closed) {
 			onPacketEnd();
+		}
+
+		// The acknowledgement that just arrived may have been of the last of it.
+		if (state == SHUTDOWN_RECEIVED) {
+			__answerShutdownIfDrained(now);
 		}
 
 		return true;
@@ -329,7 +398,7 @@ class SctpAssociation {
 			return;
 		}
 
-		var wasEstablished:Bool = state == ESTABLISHED;
+		var wasEstablished:Bool = __up();
 
 		if (notifyPeer) {
 			__sendAbort(reason);
@@ -492,12 +561,37 @@ class SctpAssociation {
 		return packet.verificationTag == localTag;
 	}
 
-	@:noCompletion private function __abortIsForUs(chunk:SctpChunk, packet:SctpPacket):Bool {
+	/**
+		The rule RFC 4960 section 8.5.1 gives an ABORT and a SHUTDOWN COMPLETE:
+		this association's own tag, or the peer's reflected with the T bit set.
+	**/
+	@:noCompletion private function __tagOrReflected(chunk:SctpChunk, packet:SctpPacket):Bool {
 		if ((chunk.flags & FLAG_TAG_REFLECTED) != 0) {
 			return remoteTag != 0 && packet.verificationTag == remoteTag;
 		}
 
 		return localTag != 0 && packet.verificationTag == localTag;
+	}
+
+	/** Established, or finishing a shutdown the peer asked for. **/
+	@:noCompletion private inline function __up():Bool {
+		return state == ESTABLISHED || state == SHUTDOWN_RECEIVED || state == SHUTDOWN_ACK_SENT;
+	}
+
+	@:noCompletion private function __answerShutdownIfDrained(now:Float):Void {
+		if (!drained()) {
+			return;
+		}
+
+		state = SHUTDOWN_ACK_SENT;
+		__attempts = 0;
+		__sendShutdownAck(now);
+	}
+
+	@:noCompletion private function __sendShutdownAck(now:Float):Void {
+		__attempts++;
+		__retryAt = now + RETRY_AFTER * __attempts;
+		onSend(packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN_ACK, 0)]));
 	}
 
 	/**

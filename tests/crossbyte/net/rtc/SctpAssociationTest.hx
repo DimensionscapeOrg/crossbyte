@@ -170,14 +170,14 @@ class SctpAssociationTest extends utest.Test {
 		// A chunk the data layer would want, on a tag that is not this
 		// association's.
 		var wrong = new SctpPacket(SctpAssociation.DEFAULT_PORT, SctpAssociation.DEFAULT_PORT, pair.server.localTag + 1,
-			[new SctpChunk(SctpPacket.CHUNK_HEARTBEAT, 0)]);
+			[new SctpChunk(SctpPacket.CHUNK_SACK, 0)]);
 
 		pair.server.receive(wrong.encode(), 0);
 		Assert.equals(0, seen, "a packet carrying another association's tag was passed up");
 
 		// And the same chunk with the right tag is.
 		var right = new SctpPacket(SctpAssociation.DEFAULT_PORT, SctpAssociation.DEFAULT_PORT, pair.server.localTag,
-			[new SctpChunk(SctpPacket.CHUNK_HEARTBEAT, 0)]);
+			[new SctpChunk(SctpPacket.CHUNK_SACK, 0)]);
 
 		pair.server.receive(right.encode(), 0);
 		Assert.equals(1, seen, "a packet on this association was not passed up");
@@ -297,6 +297,153 @@ class SctpAssociationTest extends utest.Test {
 
 		Assert.equals(SctpAssociationState.CLOSED, pair.server.state, "an ABORT with the peer's tag reflected was refused");
 		Assert.equals(1, closes);
+	}
+
+	/**
+		A HEARTBEAT is answered, with what it carried copied back unchanged.
+
+		RFC 4960 section 8.3 says it must be. It never was: only DATA and SACK
+		reached anything, and HEARTBEAT ACK was defined and never sent. A peer
+		whose stack probes idle paths -- a browser's does -- counts every
+		unanswered probe as a failure and gives the association up after a
+		few minutes of a channel that only received.
+	**/
+	public function testAHeartbeatIsAnsweredWithWhatItCarried():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+		var answers:Array<SctpChunk> = [];
+		pair.client.onSend = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload);
+
+			if (packet != null && packet.chunk(SctpPacket.CHUNK_HEARTBEAT_ACK) != null) {
+				answers.push(packet.chunk(SctpPacket.CHUNK_HEARTBEAT_ACK));
+			}
+		};
+
+		// Heartbeat Info, RFC 4960 section 3.3.5: opaque to everyone but the sender.
+		var info = new ByteArray();
+		info.endian = Endian.BIG_ENDIAN;
+		info.writeShort(1);
+		info.writeShort(12);
+		info.writeDouble(1234.5);
+		info.position = 0;
+
+		pair.client.receive(pair.server.packetFor([new SctpChunk(SctpPacket.CHUNK_HEARTBEAT, 0, info)]), 0);
+
+		Assert.equals(1, answers.length, "a HEARTBEAT drew " + answers.length + " answers rather than one");
+
+		if (answers.length == 1) {
+			var echoed = answers[0].value;
+			var same:Bool = echoed.length == info.length;
+
+			for (i in 0...info.length) {
+				if (!same || echoed[i] != info[i]) {
+					same = false;
+					break;
+				}
+			}
+
+			Assert.isTrue(same, "the HEARTBEAT ACK did not carry back what the HEARTBEAT did");
+		}
+
+		// Not for another association's tag.
+		var stray = new SctpPacket(SctpAssociation.DEFAULT_PORT, SctpAssociation.DEFAULT_PORT, pair.client.localTag + 1,
+			[new SctpChunk(SctpPacket.CHUNK_HEARTBEAT, 0, info)]);
+		pair.client.receive(stray.encode(), 0);
+		Assert.equals(1, answers.length, "a HEARTBEAT for another association was answered");
+	}
+
+	/**
+		A peer that shuts down gracefully is answered, and its going reported.
+
+		RFC 4960 section 9.2: SHUTDOWN, SHUTDOWN ACK, SHUTDOWN COMPLETE. It was
+		ignored, so the peer retransmitted its SHUTDOWN until it gave up and
+		aborted, and this end heard of none of it.
+	**/
+	public function testAShutdownFromThePeerIsAnsweredAndReported():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+		var answered:Int = 0;
+		pair.client.onSend = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload);
+
+			if (packet != null && packet.chunk(SctpPacket.CHUNK_SHUTDOWN_ACK) != null) {
+				answered++;
+			}
+		};
+
+		var reasons:Array<String> = [];
+		pair.client.onClose = reason -> reasons.push(reason);
+
+		// The peer has had everything this end sent, which is nothing.
+		var cumulative = new ByteArray();
+		cumulative.endian = Endian.BIG_ENDIAN;
+		cumulative.writeInt((pair.client.localTsn - 1) | 0);
+		cumulative.position = 0;
+
+		pair.client.receive(pair.server.packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN, 0, cumulative)]), 0);
+
+		Assert.equals(1, answered, "a SHUTDOWN with nothing outstanding was not answered at once");
+		Assert.equals(SctpAssociationState.SHUTDOWN_ACK_SENT, pair.client.state);
+		Assert.equals(0, reasons.length, "the association was reported gone before the peer confirmed");
+
+		// Lost, so the peer asks again, and is answered again.
+		pair.client.receive(pair.server.packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN, 0, cumulative)]), 0);
+		Assert.equals(2, answered, "a repeated SHUTDOWN was not answered again");
+
+		pair.client.receive(pair.server.packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN_COMPLETE, 0)]), 0);
+
+		Assert.equals(SctpAssociationState.CLOSED, pair.client.state, "SHUTDOWN COMPLETE did not close the association");
+		Assert.equals(1, reasons.length, "a peer that shut down was reported " + reasons.length + " times");
+
+		if (reasons.length == 1) {
+			Assert.isTrue(reasons[0].indexOf("shut") >= 0, "the reason does not say the peer shut down: " + reasons[0]);
+		}
+	}
+
+	/**
+		A peer that asks to shut down and never confirms is still let go.
+	**/
+	public function testAShutdownThePeerNeverConfirmsStillEnds():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+		var answered:Int = 0;
+		pair.client.onSend = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload);
+
+			if (packet != null && packet.chunk(SctpPacket.CHUNK_SHUTDOWN_ACK) != null) {
+				answered++;
+			}
+		};
+
+		var reasons:Array<String> = [];
+		pair.client.onClose = reason -> reasons.push(reason);
+
+		var cumulative = new ByteArray();
+		cumulative.endian = Endian.BIG_ENDIAN;
+		cumulative.writeInt((pair.client.localTsn - 1) | 0);
+		cumulative.position = 0;
+
+		pair.client.receive(pair.server.packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN, 0, cumulative)]), 0);
+
+		var now = 0.0;
+
+		while (reasons.length == 0 && now < 600) {
+			now += 0.5;
+			pair.client.poll(now);
+		}
+
+		Assert.equals(1, reasons.length, "an unconfirmed shutdown never ended the association");
+		Assert.equals(SctpAssociation.MAX_ATTEMPTS, answered, "the answer was sent " + answered + " times before giving up");
 	}
 
 	public function testStreamsAndWindowAreExchanged():Void {

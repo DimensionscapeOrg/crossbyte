@@ -691,6 +691,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- SCTP now answers a peer's HEARTBEAT and completes a peer's SHUTDOWN. Only
+  DATA and SACK reached anything: HEARTBEAT ACK was defined and never sent,
+  so a peer that probes idle paths -- a browser's stack does -- counted every
+  probe as a failure and could give up on a channel that only received after
+  a few minutes, and a graceful SHUTDOWN was ignored until the peer gave up
+  and aborted. A HEARTBEAT is now answered at once with its contents copied
+  back (RFC 4960 section 8.3). A SHUTDOWN stops new sends, waits for what
+  this end still has outstanding to be delivered and acknowledged, is
+  answered with SHUTDOWN ACK (resent if lost, given up after eight tries),
+  and on SHUTDOWN COMPLETE the association ends and `PeerConnection` closes
+  with "The peer shut the association down."
 - WebRTC data channels now have congestion control, and no longer flood a
   path. One `send` put everything the peer's window allowed on the wire at
   once -- a megabyte was 1,024 packets in one call -- and each fragment was
