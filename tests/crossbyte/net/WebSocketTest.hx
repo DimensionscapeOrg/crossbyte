@@ -356,7 +356,10 @@ class WebSocketTest extends utest.Test {
 		ws.__tickConnectListener = ws.__onTickConnect;
 		ws.__tickProcessListener = ws.__onTickProcess;
 		ws.__tickSSLHandshakeListener = ws.__onTickSSLHandshake;
-		ws.__socket = cast {};
+		// A real socket, never connected. Closing now closes the transport
+		// whether or not the session opened, and a stand-in object with no
+		// close() of its own is not something hxcpp can call one on.
+		ws.__socket = new crossbyte._internal.websocket.FlexSocket(false);
 		ws.__secure = false;
 		ws.__connected = false;
 		ws.onclose = _ -> {};

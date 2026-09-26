@@ -66,6 +66,13 @@ class PortableSuite {
 		#if !(js && !nodejs)
 		runner.addCase(new crossbyte.net.LocalAddressTest());
 		#end
+		// A TLS WebSocket server and a client that has to decide whether to
+		// trust it, over loopback. Node only: a page can neither listen nor
+		// choose what its own WebSocket trusts.
+		#if nodejs
+		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		runner.addCase(new crossbyte.net.WebSocketClientTest());
+		#end
 		// Also in `addUtils`, the way HpackTest is in two places: twelve cases
 		// registered here call `Require.notNull`, so the mechanism they depend
 		// on has to be checked on the targets that reach them. It needs

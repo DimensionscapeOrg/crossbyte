@@ -156,8 +156,20 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	public var registryClosed(get, never):Bool;
 
-	@SuppressWarnings("checkstyle:FieldDocComment")
-	@:noCompletion @:dox(hide) public var secure:Bool;
+	/**
+		Whether this connection runs over TLS.
+
+		Set it before `connect()` on a `WebSocket` to dial `wss://` rather
+		than `ws://`; the server's certificate is then checked, see
+		`WebSocket.verifyCert`. In a browser a socket always uses `wss://` on
+		a page served over HTTPS, since the page may not open anything less.
+		On a socket a `ServerSocket` accepted, it says whether the listener
+		terminated TLS for it.
+
+		A plain `Socket` client on a native target does not start TLS from
+		this: it is a TCP connection, and reads the setting only to report it.
+	**/
+	public var secure:Bool;
 
 	/**
 		Indicates the number of milliseconds to wait for a connection.

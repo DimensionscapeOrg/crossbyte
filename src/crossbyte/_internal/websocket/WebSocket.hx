@@ -112,13 +112,39 @@ class WebSocket {
 		return __pendingOutput == null ? 0 : __pendingOutput.length;
 	}
 
+	private static inline var CONNECT_TIMEOUT_MS:Int = 10000;
+
+	/**
+	 * How long a client waits, in milliseconds, for its connection to open
+	 * and then again for the answer to its upgrade. Read on the ticks that
+	 * follow construction, so it can be set straight after.
+	 */
+	public var connectTimeout:Int = CONNECT_TIMEOUT_MS;
+
 	private var __connected:Bool = false;
 	private var __timestamp:Float;
-	private var __timeout:Int = 10000;
+	private var __timeout:Int = CONNECT_TIMEOUT_MS;
 
 	private var __origin:String;
 	private var __protocols:Array<String> = [];
 	private var __secure:Bool;
+
+	// What a secure client checks the server against. Verified by default:
+	// every secure client used to be built with verification off, so any
+	// certificate for any host was accepted and whoever sat in the path could
+	// read the session.
+	private var __verifyCert:Bool = true;
+	private var __certAuthority:crossbyte.net.Certificate;
+
+	// A connect that failed before the first tick. Reported from that tick
+	// rather than where it happened, because that is inside the constructor,
+	// before the owner has attached anything to hear it.
+	private var __connectFailure:String = null;
+
+	// Whether onclose has been called. A session can be closed from several
+	// places in one pass, a failed write inside the frame that answers a
+	// close, say, and the owner is told once.
+	private var __closeReported:Bool = false;
 	private var __path:String;
 	private var __scheme:String;
 	private var __host:String;
@@ -140,7 +166,13 @@ class WebSocket {
 	private var __tickProcessListener:Event->Void;
 	private var __tickSSLHandshakeListener:Event->Void;
 
-	public function new(url:String, ?protocols:Array<String>, ?origin:String) {
+	/**
+	 * @param verifyCert For `wss://`: whether the server's certificate is
+	 *        checked against a trusted authority and the host name.
+	 * @param certAuthority For `wss://`: the authority to trust in place of
+	 *        the system's store, or `null` for the system's.
+	 */
+	public function new(url:String, ?protocols:Array<String>, ?origin:String, verifyCert:Bool = true, ?certAuthority:crossbyte.net.Certificate) {
 		#if !nodejs
 		__tickConnectListener = __onTickConnect;
 		__tickSSLHandshakeListener = __onTickSSLHandshake;
@@ -150,6 +182,8 @@ class WebSocket {
 
 		if (__isClient == null) {
 			__isClient = true;
+			__verifyCert = verifyCert;
+			__certAuthority = certAuthority;
 			this.url = url;
 			// benchmark the two for the fastest regular expression
 			// var regex:EReg = ~/^(\w+):\/\/([^\/:]+)(?::(\d+))?([^#]*)(?:#.*)?$/;
@@ -233,10 +267,20 @@ class WebSocket {
 		if (socket == null) {
 			__socket = new FlexSocket(__secure);
 			if (__secure) {
-				__socket.verifyCert = false;
+				// Checked unless the owner said not to. This was a flat
+				// `verifyCert = false`, so every secure client accepted any
+				// certificate for any host. The host name set below is what the
+				// certificate is then matched against, as well as the SNI name.
+				__socket.verifyCert = __verifyCert;
+				if (__certAuthority != null) {
+					__socket.setCA(__certAuthority.__native);
+				}
 				__socket.setHostname(__host);
 			}
-			__socket.output.bigEndian = true;
+			// No byte order is set on the output: frames go out as raw bytes,
+			// and on jvm a socket has no output at all until it connects, so
+			// setting one here threw before any client, ws:// included,
+			// had even started.
 			__connect();
 			__runtime.addEventListener(Event.TICK, __tickConnectListener);
 		} else {
@@ -274,11 +318,26 @@ class WebSocket {
 		};
 
 		if (__secure) {
+			// Node verifies unless told otherwise; what it lacked was a way
+			// for the owner to say either thing, to trust a private
+			// authority, or, for a development server, not to check.
+			var options:Dynamic = {port: __port, host: __host, rejectUnauthorized: __verifyCert};
+
 			// `servername` is the SNI name, and without it a host serving
 			// several certificates on one address has no way to pick this
 			// one's, the handshake then fails on a name mismatch that looks
-			// like a certificate error.
-			var tls = Tls.connect({port: __port, host: __host, servername: __host}, connected);
+			// like a certificate error. Only for a name, though: SNI may not
+			// carry an address (RFC 6066 3), and Node checks the certificate
+			// against `host` when there is none.
+			if (Net.isIP(__host) == 0) {
+				options.servername = __host;
+			}
+
+			if (__certAuthority != null) {
+				options.ca = [__certAuthority.__pem];
+			}
+
+			var tls = Tls.connect(options, connected);
 			__socket = cast tls;
 		} else {
 			__socket = Net.connect({port: __port, host: __host}, connected);
@@ -345,18 +404,37 @@ class WebSocket {
 			__socket.setBlocking(false);
 			__socket.setFastSend(true);
 			__socket.connect(__host, __port);
-		} catch (e:Dynamic) {}
+		} catch (e:Dynamic) {
+			// A connect in progress reports itself as a block, which is the
+			// ordinary case: the tick waits for it to finish. Anything else is
+			// a connect that has already failed, and every failure used to be
+			// swallowed here, leaving the tick to wait out the timeout for a
+			// connection that could never come.
+			if (!BlockedError.isBlocked(e)) {
+				__connectFailure = Std.string(e);
+			}
+		}
 	}
 
 	private function __onTickConnect(e:Event):Void {
+		if (__connectFailure != null) {
+			var failure:String = __connectFailure;
+			__connectFailure = null;
+			__onError("Failed to connect to server: " + failure);
+			__close(1006);
+			return;
+		}
+
 		if (!__connected) {
 			var sockets:Dynamic = FlexSocket.select(null, [__socket], null, 0);
 
 			if (sockets.write[0] == __socket) {
 				__onConnect();
-			} else if (haxe.Timer.stamp() - __timestamp > __timeout / 1000) {
-				__close(1006);
+			} else if (haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
+				// The reason first, then the close, so a listener that tears
+				// down on close has already been told why.
 				__onError("Failed to connect to server");
+				__close(1006);
 			}
 		}
 	}
@@ -364,6 +442,17 @@ class WebSocket {
 	#end
 
 	private function __onTickProcess(e:Event):Void {
+		// A client whose upgrade has gone unanswered. Nothing bounded this: a
+		// peer that accepted the connection and never replied, a TLS
+		// listener spoken to in plain text is one, held the client in
+		// CONNECTING for good. A server session is bounded by its server's
+		// `handshakeTimeout` instead.
+		if (readyState == CONNECTING && __isClient != false && haxe.Timer.stamp() - __timestamp > __timeout / 1000) {
+			__onError("The server did not answer the WebSocket upgrade");
+			__close(1006);
+			return;
+		}
+
 		// Retry anything the socket could not take last time before reading,
 		// so a temporarily full send buffer drains as soon as it has room.
 		__flushPendingOutput();
@@ -1140,6 +1229,11 @@ class WebSocket {
 		// a listener to retire, and would otherwise start talking like a
 		// client.
 		if (__isClient != false) {
+			// The answer is waited for as long as the connect was, measured
+			// from here rather than from the connect: a TLS handshake has
+			// already spent some of that.
+			__timestamp = haxe.Timer.stamp();
+			__timeout = connectTimeout;
 			__doHandshake();
 		}
 	}
@@ -1179,7 +1273,7 @@ class WebSocket {
 		// clear and fell through to __openConnection(), treating a failed
 		// handshake as a successful one.
 		var complete:Bool = false;
-		var failed:Bool = false;
+		var failure:String = null;
 
 		try {
 			__socket.handshake();
@@ -1190,7 +1284,7 @@ class WebSocket {
 			// covers the TLS layer's string form, which a typed catch here
 			// used to miss, turning a mid-handshake pause into a failure.
 			if (!BlockedError.isBlocked(e)) {
-				failed = true;
+				failure = Std.string(e);
 			}
 		}
 
@@ -1201,8 +1295,12 @@ class WebSocket {
 
 		// A terminal failure closes immediately instead of idling until the
 		// deadline; a merely stalled peer closes once the deadline passes.
-		if (failed || haxe.Timer.stamp() - __timestamp > __timeout / 1000) {
+		// Either way the owner is told why before the close, a certificate
+		// the client refused is the one failure here worth reading.
+		var expired:Bool = haxe.Timer.stamp() - __timestamp > __timeout / 1000;
+		if (failure != null || expired) {
 			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
+			__onError(failure != null ? "TLS handshake failed: " + failure : "TLS handshake timed out");
 			__close(1015);
 		}
 	}
@@ -1231,28 +1329,39 @@ class WebSocket {
 	private function __close(code:Int, ?reason:String):Void {
 		readyState = CLOSED;
 
-		if (__socket == null) {
-			onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
+		if (__closeReported) {
 			return;
 		}
 
-		if (__connected) {
-			#if nodejs
-			__socket.end(null);
-			#else
-			__socket.close();
-			#end
-
-			if (__heartbeatID > 0) {
-				GlobalTimer.clearInterval(__heartbeatID);
-			}
-
-			__connected = false;
-			__detachTickListeners();
-		} else {
-			__detachTickListeners();
+		if (__socket != null) {
+			// Closed whether or not the session ever opened. Only an open one
+			// used to be: a TLS handshake that failed, or a connect that timed
+			// out, detached its listeners and dropped the socket without
+			// closing it, so every refused or stalled connection kept its
+			// descriptor, and, accepted, kept its peer waiting, for as long
+			// as the process ran.
+			try {
+				#if nodejs
+				if (__connected) {
+					__socket.end(null);
+				} else {
+					__socket.destroy();
+				}
+				#else
+				__socket.close();
+				#end
+			} catch (_:Dynamic) {}
 		}
 
+		if (__heartbeatID > 0) {
+			GlobalTimer.clearInterval(__heartbeatID);
+			__heartbeatID = 0;
+		}
+
+		__connected = false;
+		__detachTickListeners();
+
+		__closeReported = true;
 		onclose(new WebsocketEvent(WebsocketEvent.CLOSE, this, null, code, reason));
 
 		__socket = null;

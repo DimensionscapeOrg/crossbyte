@@ -51,6 +51,34 @@ class WebSocket extends Socket {
 	private var __server:ServerWebSocket;
 
 	/**
+		Whether a `wss://` connection checks the server's certificate: that it
+		chains to an authority this client trusts, and that it names the host
+		being connected to.
+
+		On by default. Turn it off only for a development server presenting a
+		self-signed certificate, and prefer `certAuthority` even then. With
+		verification off the traffic is still encrypted, but anyone able to
+		sit between the two ends can present a certificate of their own and
+		read all of it.
+
+		Read when `connect()` is called.
+	**/
+	public var verifyCert:Bool = true;
+
+	/**
+		The authority this client trusts, in place of the system's, for a
+		`wss://` connection.
+
+		Set it to a private CA's certificate, or to a server's own self-signed
+		certificate, to verify a server the system's trust store does not know
+		without turning verification off. `null`, the default, trusts the
+		system's store.
+
+		Read when `connect()` is called.
+	**/
+	public var certAuthority:Certificate = null;
+
+	/**
 		Bytes of unsent frame data allowed to accumulate for this session
 		before it is closed with 1011, or `0` for no limit.
 
@@ -152,7 +180,12 @@ class WebSocket extends Socket {
 		var __webHost = urlReg.matched(2);
 		var __webPath = urlReg.matched(3);
 
-		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath);
+		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath, null, null, verifyCert,
+			certAuthority);
+		// `timeout` bounds the connection and the upgrade after it, as it
+		// bounds a plain socket's connect. The session used a fixed ten
+		// seconds of its own and never waited on the upgrade at all.
+		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
 		__init();
 	}
@@ -659,7 +692,17 @@ class WebSocket extends Socket {
 	}
 
 	@:noCompletion override private function socket_onError(e):Void {
-		dispatchEvent(new Event(IOErrorEvent.IO_ERROR));
+		// An IOErrorEvent carrying what went wrong. This dispatched a bare
+		// Event of the ioError type, so a listener typed for IOErrorEvent got
+		// something else, and a refused certificate or a connect that failed
+		// arrived with no account of which it was.
+		var text:String = "";
+		var failed:WebsocketEvent = Std.downcast(e, WebsocketEvent);
+		if (failed != null && failed.data != null) {
+			text = Std.string(failed.data);
+		}
+
+		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
 	}
 
 	@:noCompletion override private function socket_onMessage(msg:Dynamic):Void {
