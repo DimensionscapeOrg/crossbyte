@@ -173,7 +173,18 @@ class EventDispatcher implements IEventDispatcher {
 		}
 
 		for (i in 0...list.length) {
-			if (list[i].listener == cast listener) {
+			final registered:Dynamic = list[i].listener;
+			var same:Bool = registered == (cast listener);
+			#if !(cpp || js)
+			// `removeEventListener(type, this.handler)` reads the method again.
+			// hxcpp compares two reads of one bound method equal and JavaScript
+			// caches the binding, but on eval and the jvm each read is a new
+			// closure `==` never matches, so the listener was never removed.
+			if (!same) {
+				same = Reflect.compareMethods(registered, listener);
+			}
+			#end
+			if (same) {
 				if (list.length == 1) {
 					__eventMap.remove(type);
 					return;

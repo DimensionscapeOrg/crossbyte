@@ -1160,6 +1160,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `removeEventListener(type, this.handler)` removed nothing on eval and the
+  jvm. It reads the method again, and there every read of a bound method is
+  a new closure that `==` never matches, hxcpp compares two reads equal and
+  JavaScript caches the binding, so native and Node were right. The listener
+  stayed attached for good: a closed socket or a stopped component went on
+  being called, which is how `TCPConnection.close()` came to report its close
+  twice on eval. Listeners are now matched with `Reflect.compareMethods`
+  where `==` falls short.
 - OAuth's token exchange no longer blocks the runtime, and a provider
   that never answers no longer leaves it waiting forever. Native targets
   used the blocking `haxe.Http`, so a token endpoint taking 400 ms held
