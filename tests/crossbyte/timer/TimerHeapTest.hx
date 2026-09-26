@@ -274,6 +274,24 @@ class TimerHeapTest extends utest.Test {
 		Assert.equals(3, runs);
 	}
 
+	public function testATimerIsDueWhenTheClockReachesItByAnyPath():Void {
+		// The clock is summed from frame deltas and a due time from the clock
+		// plus a delay, and they round differently. From here, two 50ms steps
+		// land a rounding error short of the 0.1s a timer asked for, and it
+		// waited a whole frame more.
+		var heap = new TimerHeap();
+		for (_ in 0...16) {
+			heap.advanceTime(1 / 60);
+		}
+		var fired = 0;
+		heap.setTimeoutVoid(0.1, () -> fired++);
+
+		heap.advanceTime(0.05);
+		Assert.equals(0, fired);
+		heap.advanceTime(0.05);
+		Assert.equals(1, fired);
+	}
+
 	private static function __burn(seconds:Float):Void {
 		var end = haxe.Timer.stamp() + seconds;
 		while (haxe.Timer.stamp() < end) {}

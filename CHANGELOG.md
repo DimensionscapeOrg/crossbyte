@@ -731,6 +731,23 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `haxe.Timer` and `GlobalTimer.setInterval` run at the rate they are asked
+  for. CrossByte's `haxe.Timer` counted tick deltas down itself and reset
+  to the full interval after each run, dropping whatever the tick had
+  overshot by, so every period rounded up to a whole number of ticks: at
+  the default twelve ticks a second a 100ms timer ran 12 times in two
+  seconds instead of 20. Libraries written against the standard API ran
+  slow without knowing it. It also kept every timer in one map under a
+  counter that wrapped after 2^32 timers, where a new timer taking a live
+  one's id evicted it and it never ran again, and copied every live timer
+  into a new array on every tick. A `haxe.Timer` is now a timer on the
+  runtime's own scheduler, each run due one interval after the last was
+  due; a timer that has fallen behind runs once a frame until it catches
+  up rather than in a burst; and it runs on the runtime of the thread that
+  made it. `GlobalTimer` skips ids still in use when its own counter wraps.
+  The heap scheduler now counts a timer due within a nanosecond of the
+  clock as due: two 50ms frames could land a rounding error short of a
+  100ms timer, which then waited a frame more.
 - A client can no longer forge records in the log. In text mode a message
   or field value was written exactly as given, so a request path carrying
   `%0A`, percent-decoded and logged at INFO, the default level, produced
