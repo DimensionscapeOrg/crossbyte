@@ -336,12 +336,12 @@ class Logger {
 		return buffer.toString();
 	}
 
-	// time of day: a record's wall-clock time, in seconds since the epoch.
+	// A record's wall-clock time, in seconds since the epoch.
 	@:noCompletion private static function __now():Float {
 		#if (js && !nodejs)
 		return Date.now().getTime() / 1000;
 		#else
-		return Sys.time();
+		return Sys.time(); // time of day: a log record is stamped with when it happened
 		#end
 	}
 
