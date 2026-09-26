@@ -54,6 +54,7 @@ class TimerWheel implements ITimerScheduler {
 	public var isEmpty(get, never):Bool;
 	public var time(get, never):Float;
 	public final startTime:Float = HxTimer.stamp();
+	public var onError:Dynamic->Void = null;
 
 	@:noCompletion private var __buckets:Array<WheelNode>;
 	@:noCompletion private var __overflow:WheelNode;
@@ -300,7 +301,17 @@ class TimerWheel implements ITimerScheduler {
 
 			var id:Int = node.id;
 			var gen:Int = gens[id];
-			node.callback(new TimerHandle(id, gen));
+
+			// Contained, and settled as if it had returned before the failure
+			// is passed on; see the heap, which does the same.
+			var failed:Bool = false;
+			var failure:Dynamic = null;
+			try {
+				node.callback(new TimerHandle(id, gen));
+			} catch (error:Dynamic) {
+				failed = true;
+				failure = error;
+			}
 			fired++;
 
 			if (gens[id] != gen || nodes[id] != node) {
@@ -312,10 +323,28 @@ class TimerWheel implements ITimerScheduler {
 				__freeSlot(id);
 			}
 
+			if (failed) {
+				__fail(failure);
+			}
+
 			node = next;
 		}
 
 		return fired;
+	}
+
+	// Passes a callback's failure on, once the timer it came from is settled.
+	@:noCompletion private function __fail(error:Dynamic):Void {
+		if (onError != null) {
+			onError(error);
+			return;
+		}
+
+		#if cpp
+		cpp.Lib.rethrow(error);
+		#else
+		throw error;
+		#end
 	}
 
 	/**

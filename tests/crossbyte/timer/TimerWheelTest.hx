@@ -146,6 +146,25 @@ class TimerWheelTest extends utest.Test {
 		Assert.isTrue(wheel.isEmpty);
 	}
 
+	public function testARecurringTimerThatThrowsStaysArmed():Void {
+		var wheel = new TimerWheel();
+		var failures:Array<Dynamic> = [];
+		wheel.onError = error -> failures.push(error);
+		var fired = 0;
+		var handle = wheel.setInterval(0.010, 0.010, _ -> {
+			fired++;
+			throw "timer bug";
+		});
+
+		for (_ in 0...5) {
+			wheel.advanceTime(0.010, 1 << 28);
+		}
+
+		Assert.isTrue(fired >= 3, "the timer that threw was not re-armed: fired " + fired);
+		Assert.equals(fired, failures.length);
+		Assert.isTrue(wheel.isActive(handle));
+	}
+
 	public function testSizeTracksLiveTimers():Void {
 		var wheel = new TimerWheel();
 		Assert.isTrue(wheel.isEmpty);

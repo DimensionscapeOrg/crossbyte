@@ -34,20 +34,37 @@ class PassFlushTest extends utest.Test {
 		Assert.same(["early", "late"], flushed);
 	}
 
-	public function testAFlushThatThrowsLeavesTheRestForTheNextPass():Void {
+	public function testAFlushThatThrowsIsReportedAndTheRestStillGo():Void {
+		// It used to rethrow out of the pump and leave the rest for a next
+		// pass, which, driven by the runtime's own loop rather than a test,
+		// the throw had just cancelled along with the loop.
 		var runtime = CrossByte.current();
 		var flushed:Array<String> = [];
+		var reported:Array<crossbyte.events.UncaughtErrorEvent> = [];
+		var onUncaught = (event:crossbyte.events.UncaughtErrorEvent) -> reported.push(event);
+		runtime.addEventListener(crossbyte.events.UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+		crossbyte.utils.Logger.sink = _ -> {};
 		runtime.__queuePassFlush(new Holder("throws", flushed, () -> throw "a handler's own bug"));
 		runtime.__queuePassFlush(new Holder("after", flushed));
 
-		Assert.raises(() -> runtime.pump(0, 0));
-		Assert.same(["throws"], flushed);
+		var escaped:Dynamic = null;
+		try {
+			runtime.pump(0, 0);
+		} catch (e:Dynamic) {
+			escaped = e;
+		}
+		crossbyte.utils.Logger.sink = null;
+		runtime.removeEventListener(crossbyte.events.UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+
+		Assert.isNull(escaped, "the flush's failure escaped the pump: " + escaped);
+		Assert.same(["throws", "after"], flushed, "the one after the throw waited for another pass");
+		Assert.equals(1, reported.length);
+		if (reported.length > 0) {
+			Assert.equals("a handler's own bug", reported[0].error);
+		}
 
 		runtime.pump(0, 0);
-		Assert.same(["throws", "after"], flushed, "the one after the throw was lost");
-
-		runtime.pump(0, 0);
-		Assert.same(["throws", "after"], flushed);
+		Assert.same(["throws", "after"], flushed, "flushed again without asking again");
 	}
 
 	public function testTheTickIsInsideThePass():Void {

@@ -24,6 +24,12 @@ final class SocketRegistry {
 	public var size(get, null):Int;
 	public var isEmpty(get, null):Bool;
 
+	/**
+		Given what a socket's handler threw, and that socket; see
+		`NativeSocketRegistry.onHandlerError`. Null rethrows.
+	**/
+	public var onHandlerError:(error:Dynamic, socket:IPollableSocket) -> Void = null;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -159,7 +165,11 @@ final class SocketRegistry {
 			}
 
 			wait = 0;
-			cb.registryOnReadable();
+			try {
+				cb.registryOnReadable();
+			} catch (error:Dynamic) {
+				__handlerThrew(error, cb);
+			}
 		}
 		#end
 
@@ -168,7 +178,11 @@ final class SocketRegistry {
 		for (s in res.read) {
 			var cb:IPollableSocket = cast s.custom;
 			if (cb != null && !cb.registryClosed) {
-				cb.registryOnReadable();
+				try {
+					cb.registryOnReadable();
+				} catch (error:Dynamic) {
+					__handlerThrew(error, cb);
+				}
 			}
 		}
 	}
@@ -181,8 +195,21 @@ final class SocketRegistry {
 	@:noCompletion private inline function __onFlushSocket(sock:Socket):Void {
 		var cb:IPollableSocket = cast sock.custom;
 		if (cb != null && !cb.registryClosed) {
-			cb.registryOnWritable();
+			try {
+				cb.registryOnWritable();
+			} catch (error:Dynamic) {
+				__handlerThrew(error, cb);
+			}
 		}
+	}
+
+	@:noCompletion private function __handlerThrew(error:Dynamic, socket:IPollableSocket):Void {
+		if (onHandlerError != null) {
+			onHandlerError(error, socket);
+			return;
+		}
+
+		throw error;
 	}
 }
 #end

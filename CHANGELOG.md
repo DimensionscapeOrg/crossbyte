@@ -523,6 +523,12 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `HostApplication.advance` and `CrossByte.pump` no longer rethrow what a
+  handler threw during the step, and neither does a `PassFlush` holder's
+  failure escape the pass: both are contained and reported through
+  `UncaughtErrorEvent.UNCAUGHT_ERROR`, as they are under the runtime's own
+  loop. A host that caught failures around `advance` should listen for that
+  event instead.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -691,6 +697,28 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An exception from a timer, a tick listener or a socket's handler no
+  longer ends the process. The loop had no catch of its own, so one
+  handler's bug, a null dereference in one session's idle timeout, one
+  malformed message, left it: EXIT was never dispatched, output held for
+  the end of the pass was never sent, every other connection went down with
+  the one that failed, and a recurring timer that threw was dequeued for
+  good while its handle still read as live. On JavaScript the runtime's
+  frame chain carried the throw out to the platform, which ended the process
+  on Node. Each callback the runtime runs is now contained where it runs. A
+  timer is settled as if it had returned, so a recurring one stays armed;
+  every tick, INIT and EXIT listener runs whether or not one before it
+  threw; a stream socket whose handler threw is closed, dispatching `CLOSE`,
+  and the others carry on; held output is flushed past a holder that
+  throws; and the loop carries on past anything that fails between
+  callbacks, waiting out the frame so a failure that repeats every pass
+  cannot spin. A datagram socket is left open, since it is usually the one
+  socket a whole UDP service answers on and each datagram arrives whole.
+  Every failure is logged with `Logger.error`, with where it was caught and
+  its stack where the target keeps one, and dispatched on the runtime as the
+  new `UncaughtErrorEvent.UNCAUGHT_ERROR`, to report it elsewhere or to
+  decide it is fatal. Callbacks posted to the runtime were already contained
+  and are now reported the same way.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the
