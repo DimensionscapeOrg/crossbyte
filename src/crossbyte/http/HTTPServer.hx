@@ -65,7 +65,9 @@ class HTTPServer extends ServerSocket {
 				setALPN(["h2", "http/1.1"]);
 			}
 		}
-		docRoot = config.rootDirectory.nativePath;
+		// Null when the server has no static files; validate() has already
+		// refused everything that would need one.
+		docRoot = config.rootDirectory != null ? config.rootDirectory.nativePath : null;
 		autoIndex = (config.directoryIndex != null && config.directoryIndex.length > 0) ? config.directoryIndex : ["index.php", "index.html"];
 		__active = new ObjectMap();
 		__activeHttp2 = new ObjectMap();
