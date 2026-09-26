@@ -1160,6 +1160,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On eval, `sys.net.Socket`'s `input.readByte()` answered 0 at the end of a
+  connection instead of throwing `Eof` as every other target does, so a
+  reader waiting for a delimiter there, a line reader, read zeros for
+  ever. It reads through `readBytes` now, which knows the end when it sees
+  it. The HTTP client had worked around this for itself only.
 - On the jvm, `sys.net.Socket.setTimeout` did nothing, so a blocking read
   with nothing coming waited for ever. A blocking NIO channel has no read
   timeout of its own, `SO_TIMEOUT` reaches only the stream API, and the
