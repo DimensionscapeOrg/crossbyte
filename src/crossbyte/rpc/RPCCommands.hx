@@ -41,6 +41,7 @@ import haxe.ds.IntMap;
 	```
 **/
 @:autoBuild(crossbyte.rpc._internal.RPCCommandMacro.build())
+@:access(crossbyte.rpc.RPCSession)
 abstract class RPCCommands {
 	@:noCompletion private var __nc:NetConnection;
 	@:noCompletion private var __requestIdSeed:Int = 0;
@@ -74,19 +75,18 @@ abstract class RPCCommands {
 		return response;
 	}
 
-	@:noCompletion private function __resolveResponse<T>(requestId:Int, value:T):Void {
-		var response:RPCResponse<Dynamic> = null;
-		if (__pendingResponse != null && requestId == __pendingResponseId) {
-			response = __pendingResponse;
-			__pendingResponse = null;
-			__pendingResponseId = 0;
-		} else if (__pendingResponses != null) {
-			response = __pendingResponses.get(requestId);
-			if (response != null) {
-				__pendingResponses.remove(requestId);
-			}
-		}
+	/**
+		Completes the call waiting under `requestId` with `value`, the answer
+		to a call for `op`, if that call was for `op`. A response is matched
+		by its id and checked by its op: see `RPCSession.__answeredForAnotherOp`.
+	**/
+	@:noCompletion private function __resolveResponse<T>(op:Int, requestId:Int, value:T):Void {
+		final response = __takeResponse(requestId);
 		if (response == null) {
+			return;
+		}
+		if (response.op != op) {
+			RPCSession.__answeredForAnotherOp(response, op);
 			return;
 		}
 		(cast response : RPCResponse<T>).__resolve(value);
@@ -98,11 +98,28 @@ abstract class RPCCommands {
 		`RPCError`: a handler here answering with this response, forwarding
 		it, passes the message on, as it would one it threw.
 	**/
-	@:noCompletion private function __rejectResponse(requestId:Int, message:String):Void {
-		__failResponse(requestId, message, new RPCError(message));
+	@:noCompletion private function __rejectResponse(op:Int, requestId:Int, message:String):Void {
+		final response = __takeResponse(requestId);
+		if (response == null) {
+			return;
+		}
+		if (response.op != op) {
+			RPCSession.__answeredForAnotherOp(response, op);
+			return;
+		}
+		response.__fail(message, new RPCError(message));
 	}
 
 	@:noCompletion private function __failResponse(requestId:Int, message:String, cause:Null<Dynamic>):Void {
+		final response = __takeResponse(requestId);
+		if (response == null) {
+			return;
+		}
+		response.__fail(message, cause);
+	}
+
+	/** The call waiting under `requestId`, no longer waiting; `null` if there is none. **/
+	@:noCompletion private function __takeResponse(requestId:Int):RPCResponse<Dynamic> {
 		var response:RPCResponse<Dynamic> = null;
 		if (__pendingResponse != null && requestId == __pendingResponseId) {
 			response = __pendingResponse;
@@ -114,10 +131,7 @@ abstract class RPCCommands {
 				__pendingResponses.remove(requestId);
 			}
 		}
-		if (response == null) {
-			return;
-		}
-		response.__fail(message, cause);
+		return response;
 	}
 
 	/** A response this side cannot read: its own failure, not the other side's answer. **/

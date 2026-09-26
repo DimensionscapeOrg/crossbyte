@@ -12,7 +12,7 @@ using haxe.macro.Tools;
 
 class RPCContractMacroTools {
 	public static inline function isReservedSystemMethod(name:String):Bool {
-		return name == "ping" || name == "beforeCall" || name == "afterCall" || name == "dispatch";
+		return name == "ping" || name == "beforeCall" || name == "afterCall" || name == "dispatch" || name == "session";
 	}
 
 	public static inline function reservedSystemMethodMessage(name:String):String {
