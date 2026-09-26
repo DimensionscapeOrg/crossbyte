@@ -5,6 +5,12 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.crypto.SignatureKey`: an RSA or EC key parsed once into
+  mbedTLS and held natively, with `sign`, `verify`,
+  `joseSignatureLength` and `dispose`. For a key used more than once,
+  which `PublicKeySignature`'s PEM-taking functions parse every call. The
+  parsed key is wiped and freed when the object is collected, or at once by
+  `dispose`.
 - `BCrypt.hashAsync` and `verifyAsync`, and `Argon2id.hashAsync` and
   `verifyAsync`, which hash on a `TaskPool` worker and answer with a
   `Future`, completed on the calling runtime's thread at its next tick. A
@@ -718,6 +724,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- RSA and ECDSA signatures no longer leave copies of the private key in
+  freed memory, and `JWTSigner.RS256` and `ES256` parse their keys once
+  instead of for every token. Each sign and verify parsed the PEM afresh,
+  from a copy in the GC heap made per call and a native buffer freed
+  without being wiped, and rebuilt an EC key's precomputed tables every
+  time. Keys are now parsed once, into native memory that mbedTLS wipes
+  when it is freed, and every buffer that held a key is wiped before it
+  is released. Signing and verifying also run in a GC-free zone, since a
+  4096-bit RSA signature takes about 25 ms: on a worker, it held every
+  collection in the process for the rest of the signature it landed in.
 - Password hashing on a worker thread no longer stalls every collection
   in a native process. hxcpp collects only once every thread reaches a
   safe point, and neither libsodium's Argon2id nor BCrypt's inner loop

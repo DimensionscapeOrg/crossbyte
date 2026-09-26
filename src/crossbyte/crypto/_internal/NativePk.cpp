@@ -5,6 +5,7 @@
 // arguments, manages contexts, and converts between the ASN.1 DER ECDSA
 // signatures mbedTLS produces and the raw r||s form JWS carries.
 
+#include <hxcpp.h>
 #include "NativePk.h"
 
 #if defined(HX_WINDOWS) || defined(HX_MACOS) || defined(HX_LINUX) || defined(__unix__) || defined(_WIN32) || defined(__APPLE__)
@@ -14,24 +15,24 @@
 #ifdef CROSSBYTE_PK_ENABLED
 
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <atomic>
+#include <mutex>
 #include <vector>
 
 #include <mbedtls/pk.h>
 #include <mbedtls/ecdsa.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/bignum.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
 #include <mbedtls/asn1.h>
 #include <mbedtls/asn1write.h>
 #include <mbedtls/error.h>
-#include <stdio.h>
+#include <mbedtls/platform_util.h>
 
 #if defined(_WIN32)
 #include <windows.h>
 #include <bcrypt.h>
-#else
-#include <stdio.h>
 #endif
 
 // hxcpp compiles mbedTLS with MBEDTLS_THREADING_C and installs the
@@ -45,24 +46,15 @@ void _hx_ssl_init();
 namespace {
 	const size_t kSha256Length = 32;
 
-	// MBEDTLS_PK_SIGNATURE_MAX_SIZE postdates mbedTLS 2.9, which is what
-	// hxcpp bundles. 1024 bytes covers an RSA-8192 signature, well beyond
-	// the key sizes this API is used with.
+	// MBEDTLS_PK_SIGNATURE_MAX_SIZE postdates mbedTLS 2.9. 1024 bytes covers an
+	// RSA-8192 signature, well beyond the key sizes this API is used with.
 	const size_t kMaxSignatureLength = 1024;
 
-	// mbedTLS PEM parsing requires the buffer length to include a
-	// terminating NUL byte.
-	std::vector<unsigned char> asPemBuffer(const uint8_t *pem, int length) {
-		std::vector<unsigned char> buffer;
-		if (pem == nullptr || length <= 0) {
-			return buffer;
-		}
-		buffer.assign(pem, pem + length);
-		if (buffer.empty() || buffer.back() != '\0') {
-			buffer.push_back('\0');
-		}
-		return buffer;
-	}
+	// Returned for a key that has been disposed of, or is the wrong kind for
+	// the operation. Outside mbedTLS's error ranges.
+	const int kErrorNoKey = -0x7F01;
+
+	std::atomic<int> g_parses(0);
 
 	// Randomness for signing comes straight from the operating system's
 	// CSPRNG rather than an mbedTLS DRBG seeded from its entropy pollers,
@@ -91,19 +83,11 @@ namespace {
 #endif
 	}
 
-	int loadKey(mbedtls_pk_context *ctx, const uint8_t *pem, int length, bool isPrivate) {
-		std::vector<unsigned char> buffer = asPemBuffer(pem, length);
-		if (buffer.empty()) {
-			return -1;
-		}
-
-		if (isPrivate) {
-			return mbedtls_pk_parse_key(ctx, buffer.data(), buffer.size(), nullptr, 0);
-		}
-		return mbedtls_pk_parse_public_key(ctx, buffer.data(), buffer.size());
-	}
-
 	size_t ecCoordinateSize(mbedtls_pk_context *ctx) {
+		mbedtls_pk_type_t type = mbedtls_pk_get_type(ctx);
+		if (type != MBEDTLS_PK_ECKEY && type != MBEDTLS_PK_ECKEY_DH && type != MBEDTLS_PK_ECDSA) {
+			return 0;
+		}
 		mbedtls_ecp_keypair *ec = mbedtls_pk_ec(*ctx);
 		if (ec == nullptr) {
 			return 0;
@@ -195,173 +179,326 @@ namespace {
 		mbedtls_mpi_free(&s);
 		return rc;
 	}
+
+	// A parsed key and the lock its operations take. Native memory, so it can
+	// be used inside a GC-free zone. Freed by the owning object's finalizer
+	// only: disposing of a key wipes the context but leaves this in place, so
+	// a thread already waiting on the lock never finds it gone.
+	struct KeyState {
+		mbedtls_pk_context pk;
+		std::mutex lock;
+		bool isPrivate;
+		bool live;
+
+		KeyState(bool isPrivateKey) : isPrivate(isPrivateKey), live(false) {
+			mbedtls_pk_init(&pk);
+		}
+
+		~KeyState() {
+			if (live) {
+				mbedtls_pk_free(&pk);
+			}
+		}
+
+		// Under the lock. mbedtls_pk_free zeroes the key material it frees.
+		void release() {
+			if (live) {
+				mbedtls_pk_free(&pk);
+				live = false;
+			}
+		}
+	};
+
+	// The GC's handle on a KeyState, after the pattern of hxcpp's own sslpkey:
+	// the finalizer is what frees the native side when the key is dropped.
+	struct PkKey : public hx::Object {
+		HX_IS_INSTANCE_OF enum { _hx_ClassId = hx::clsIdAbstract };
+
+		KeyState *state;
+
+		void create(KeyState *keyState) {
+			state = keyState;
+			_hx_set_finalizer(this, finalize);
+		}
+
+		static void finalize(Dynamic obj) {
+			PkKey *key = (PkKey *)(obj.mPtr);
+			delete key->state;
+			key->state = nullptr;
+		}
+
+		String toString() HXCPP_OVERRIDE {
+			return HX_CSTRING("PublicKeySignature key");
+		}
+	};
+
+	KeyState *stateOf(Dynamic key) {
+		if (key.mPtr == 0) {
+			return nullptr;
+		}
+		PkKey *handle = dynamic_cast<PkKey *>(key.mPtr);
+		return handle == nullptr ? nullptr : handle->state;
+	}
 }
 
-extern "C" bool crossbyte_pk_available() {
+bool crossbyte_pk_available() {
 	return true;
 }
 
-extern "C" int crossbyte_pk_verify_sha256(const uint8_t *publicKeyPem, int publicKeyLength, const uint8_t *hash, const uint8_t *signature,
-	int signatureLength, int signatureFormat) {
-	if (hash == nullptr || signature == nullptr || signatureLength <= 0) {
-		return -1;
+::Dynamic crossbyte_pk_key_load(const uint8_t *pem, int pemLength, bool isPrivate, int *error) {
+	if (error != nullptr) {
+		*error = -1;
+	}
+	if (pem == nullptr || pemLength <= 0) {
+		return null();
 	}
 
-	mbedtls_pk_context ctx;
 	_hx_ssl_init();
-	mbedtls_pk_init(&ctx);
 
-	int rc = loadKey(&ctx, publicKeyPem, publicKeyLength, false);
+	// mbedTLS PEM parsing requires the length to count a terminating NUL.
+	// The copy is native memory, so the parse can run in a GC-free zone, and
+	// it is wiped before it is freed: a private key left in freed memory is a
+	// private key still in the process.
+	size_t capacity = (size_t)pemLength + 1;
+	unsigned char *buffer = (unsigned char *)malloc(capacity);
+	if (buffer == nullptr) {
+		return null();
+	}
+	memcpy(buffer, pem, (size_t)pemLength);
+	buffer[pemLength] = 0;
+	size_t parseLength = (pem[pemLength - 1] == 0) ? (size_t)pemLength : capacity;
+
+	KeyState *state = new KeyState(isPrivate);
+	g_parses++;
+
+	hx::EnterGCFreeZone();
+	int rc = isPrivate ? mbedtls_pk_parse_key(&state->pk, buffer, parseLength, nullptr, 0)
+		: mbedtls_pk_parse_public_key(&state->pk, buffer, parseLength);
+	hx::ExitGCFreeZone();
+
+	mbedtls_platform_zeroize(buffer, capacity);
+	free(buffer);
+
+	if (error != nullptr) {
+		*error = rc;
+	}
 	if (rc != 0) {
-		mbedtls_pk_free(&ctx);
-		return rc;
+		// mbedtls_pk_free on a context a failed parse left behind.
+		mbedtls_pk_free(&state->pk);
+		delete state;
+		return null();
 	}
 
-	std::vector<unsigned char> converted;
-	const uint8_t *effectiveSignature = signature;
-	size_t effectiveLength = (size_t)signatureLength;
-
-	if (signatureFormat == 1) {
-		size_t coordinate = ecCoordinateSize(&ctx);
-		rc = rawToDer(signature, signatureLength, coordinate, converted);
-		if (rc != 0) {
-			mbedtls_pk_free(&ctx);
-			return rc;
-		}
-		effectiveSignature = converted.data();
-		effectiveLength = converted.size();
-	}
-
-	rc = mbedtls_pk_verify(&ctx, MBEDTLS_MD_SHA256, hash, kSha256Length, effectiveSignature, effectiveLength);
-	mbedtls_pk_free(&ctx);
-	return rc;
+	state->live = true;
+	PkKey *key = new PkKey();
+	key->create(state);
+	return key;
 }
 
-extern "C" int crossbyte_pk_sign_sha256(const uint8_t *privateKeyPem, int privateKeyLength, const uint8_t *hash, uint8_t *out, int outCapacity,
-	int *outLength, int signatureFormat) {
-	if (hash == nullptr || out == nullptr || outLength == nullptr || outCapacity <= 0) {
+int crossbyte_pk_key_type(::Dynamic key) {
+	KeyState *state = stateOf(key);
+	if (state == nullptr) {
+		return 0;
+	}
+
+	std::lock_guard<std::mutex> guard(state->lock);
+	if (!state->live) {
+		return 0;
+	}
+
+	mbedtls_pk_type_t type = mbedtls_pk_get_type(&state->pk);
+	if (type == MBEDTLS_PK_RSA) {
+		return 1;
+	}
+	if (type == MBEDTLS_PK_ECKEY || type == MBEDTLS_PK_ECKEY_DH || type == MBEDTLS_PK_ECDSA) {
+		return 2;
+	}
+	return 0;
+}
+
+int crossbyte_pk_key_coordinate_size(::Dynamic key) {
+	KeyState *state = stateOf(key);
+	if (state == nullptr) {
 		return -1;
 	}
 
+	std::lock_guard<std::mutex> guard(state->lock);
+	if (!state->live) {
+		return -1;
+	}
+
+	size_t coordinate = ecCoordinateSize(&state->pk);
+	return coordinate == 0 ? -1 : (int)coordinate;
+}
+
+int crossbyte_pk_key_sign_sha256(::Dynamic key, const uint8_t *hash, uint8_t *out, int outCapacity, int *outLength, int signatureFormat) {
+	KeyState *state = stateOf(key);
+	if (state == nullptr || hash == nullptr || out == nullptr || outLength == nullptr || outCapacity <= 0) {
+		return -1;
+	}
 	*outLength = 0;
 
-	mbedtls_pk_context ctx;
-	_hx_ssl_init();
-	mbedtls_pk_init(&ctx);
+	// Everything the zone touches is native: the digest in, the signature out.
+	unsigned char digest[kSha256Length];
+	memcpy(digest, hash, kSha256Length);
+	unsigned char signature[kMaxSignatureLength];
+	size_t produced = 0;
+	int rc = 0;
 
-	int rc = loadKey(&ctx, privateKeyPem, privateKeyLength, true);
+	hx::EnterGCFreeZone();
+	{
+		std::lock_guard<std::mutex> guard(state->lock);
 
-	if (rc == 0) {
-		unsigned char scratch[kMaxSignatureLength];
-		size_t produced = 0;
+		if (!state->live || !state->isPrivate) {
+			rc = kErrorNoKey;
+		} else {
+			unsigned char der[kMaxSignatureLength];
+			size_t derLength = 0;
+			rc = mbedtls_pk_sign(&state->pk, MBEDTLS_MD_SHA256, digest, kSha256Length, der, &derLength, osRandom, nullptr);
 
-		rc = mbedtls_pk_sign(&ctx, MBEDTLS_MD_SHA256, hash, kSha256Length, scratch, &produced, osRandom, nullptr);
-
-		if (rc == 0) {
-			if (signatureFormat == 1) {
-				size_t coordinate = ecCoordinateSize(&ctx);
-				if (coordinate == 0 || outCapacity < (int)(coordinate * 2)) {
-					rc = -1;
-				} else {
-					rc = derToRaw(scratch, produced, coordinate, out);
-					if (rc == 0) {
-						*outLength = (int)(coordinate * 2);
+			if (rc == 0) {
+				if (signatureFormat == 1) {
+					size_t coordinate = ecCoordinateSize(&state->pk);
+					if (coordinate == 0 || coordinate * 2 > kMaxSignatureLength) {
+						rc = kErrorNoKey;
+					} else {
+						rc = derToRaw(der, derLength, coordinate, signature);
+						produced = coordinate * 2;
 					}
+				} else {
+					memcpy(signature, der, derLength);
+					produced = derLength;
 				}
-			} else if ((int)produced > outCapacity) {
-				rc = -1;
-			} else {
-				memcpy(out, scratch, produced);
-				*outLength = (int)produced;
 			}
 		}
 	}
+	hx::ExitGCFreeZone();
 
-	mbedtls_pk_free(&ctx);
+	if (rc != 0) {
+		return rc;
+	}
+	if ((int)produced > outCapacity) {
+		return -1;
+	}
+
+	memcpy(out, signature, produced);
+	*outLength = (int)produced;
+	return 0;
+}
+
+int crossbyte_pk_key_verify_sha256(::Dynamic key, const uint8_t *hash, const uint8_t *signature, int signatureLength, int signatureFormat) {
+	KeyState *state = stateOf(key);
+	if (state == nullptr || hash == nullptr || signature == nullptr || signatureLength <= 0 || signatureLength > (int)kMaxSignatureLength) {
+		return -1;
+	}
+
+	unsigned char digest[kSha256Length];
+	memcpy(digest, hash, kSha256Length);
+	unsigned char presented[kMaxSignatureLength];
+	memcpy(presented, signature, (size_t)signatureLength);
+	int rc = 0;
+
+	hx::EnterGCFreeZone();
+	{
+		std::lock_guard<std::mutex> guard(state->lock);
+
+		if (!state->live) {
+			rc = kErrorNoKey;
+		} else if (signatureFormat == 1) {
+			std::vector<unsigned char> der;
+			rc = rawToDer(presented, signatureLength, ecCoordinateSize(&state->pk), der);
+			if (rc == 0) {
+				rc = mbedtls_pk_verify(&state->pk, MBEDTLS_MD_SHA256, digest, kSha256Length, der.data(), der.size());
+			}
+		} else {
+			rc = mbedtls_pk_verify(&state->pk, MBEDTLS_MD_SHA256, digest, kSha256Length, presented, (size_t)signatureLength);
+		}
+	}
+	hx::ExitGCFreeZone();
+
 	return rc;
 }
 
-extern "C" const char *crossbyte_pk_error_message(int code) {
-	static char buffer[256];
+void crossbyte_pk_key_dispose(::Dynamic key) {
+	KeyState *state = stateOf(key);
+	if (state == nullptr) {
+		return;
+	}
+
+	hx::EnterGCFreeZone();
+	{
+		std::lock_guard<std::mutex> guard(state->lock);
+		state->release();
+	}
+	hx::ExitGCFreeZone();
+}
+
+::String crossbyte_pk_error_message(int code) {
+	if (code == kErrorNoKey) {
+		return HX_CSTRING("the key has been disposed of, or cannot do this");
+	}
+
+	char buffer[256];
+	buffer[0] = 0;
 	mbedtls_strerror(code, buffer, sizeof(buffer));
 	if (buffer[0] == '\0') {
 		snprintf(buffer, sizeof(buffer), "mbedTLS error %d", code);
 	}
-	return buffer;
+	return ::String::create(buffer);
 }
 
-extern "C" int crossbyte_pk_key_type(const uint8_t *keyPem, int keyLength, bool isPrivate) {
-	mbedtls_pk_context ctx;
-	_hx_ssl_init();
-	mbedtls_pk_init(&ctx);
-
-	int rc = loadKey(&ctx, keyPem, keyLength, isPrivate);
-	int result = 0;
-
-	if (rc == 0) {
-		mbedtls_pk_type_t type = mbedtls_pk_get_type(&ctx);
-		if (type == MBEDTLS_PK_RSA) {
-			result = 1;
-		} else if (type == MBEDTLS_PK_ECKEY || type == MBEDTLS_PK_ECKEY_DH || type == MBEDTLS_PK_ECDSA) {
-			result = 2;
-		}
-	}
-
-	mbedtls_pk_free(&ctx);
-	return result;
-}
-
-extern "C" int crossbyte_pk_ec_coordinate_size(const uint8_t *keyPem, int keyLength, bool isPrivate) {
-	mbedtls_pk_context ctx;
-	_hx_ssl_init();
-	mbedtls_pk_init(&ctx);
-
-	int rc = loadKey(&ctx, keyPem, keyLength, isPrivate);
-	int result = -1;
-
-	if (rc == 0) {
-		size_t coordinate = ecCoordinateSize(&ctx);
-		result = (coordinate == 0) ? -1 : (int)coordinate;
-	}
-
-	mbedtls_pk_free(&ctx);
-	return result;
+int crossbyte_pk_parse_count() {
+	return g_parses.load();
 }
 
 #else
 
-extern "C" bool crossbyte_pk_available() {
+bool crossbyte_pk_available() {
 	return false;
 }
 
-extern "C" int crossbyte_pk_verify_sha256(const uint8_t *publicKeyPem, int publicKeyLength, const uint8_t *hash, const uint8_t *signature,
-	int signatureLength, int signatureFormat) {
-	(void)publicKeyPem; (void)publicKeyLength; (void)hash; (void)signature; (void)signatureLength; (void)signatureFormat;
+::Dynamic crossbyte_pk_key_load(const uint8_t *pem, int pemLength, bool isPrivate, int *error) {
+	(void)pem; (void)pemLength; (void)isPrivate;
+	if (error != nullptr) {
+		*error = -1;
+	}
+	return null();
+}
+
+int crossbyte_pk_key_type(::Dynamic key) {
+	(void)key;
+	return 0;
+}
+
+int crossbyte_pk_key_coordinate_size(::Dynamic key) {
+	(void)key;
 	return -1;
 }
 
-extern "C" int crossbyte_pk_sign_sha256(const uint8_t *privateKeyPem, int privateKeyLength, const uint8_t *hash, uint8_t *out, int outCapacity,
-	int *outLength, int signatureFormat) {
-	(void)privateKeyPem; (void)privateKeyLength; (void)hash; (void)out; (void)outCapacity; (void)signatureFormat;
+int crossbyte_pk_key_sign_sha256(::Dynamic key, const uint8_t *hash, uint8_t *out, int outCapacity, int *outLength, int signatureFormat) {
+	(void)key; (void)hash; (void)out; (void)outCapacity; (void)signatureFormat;
 	if (outLength != nullptr) {
 		*outLength = 0;
 	}
 	return -1;
 }
 
-extern "C" const char *crossbyte_pk_error_message(int code) {
-	(void)code;
-	return "mbedTLS public-key support is unavailable on this target.";
-}
-
-extern "C" int crossbyte_pk_key_type(const uint8_t *keyPem, int keyLength, bool isPrivate) {
-	(void)keyPem; (void)keyLength; (void)isPrivate;
-	return 0;
-}
-
-extern "C" int crossbyte_pk_ec_coordinate_size(const uint8_t *keyPem, int keyLength, bool isPrivate) {
-	(void)keyPem; (void)keyLength; (void)isPrivate;
+int crossbyte_pk_key_verify_sha256(::Dynamic key, const uint8_t *hash, const uint8_t *signature, int signatureLength, int signatureFormat) {
+	(void)key; (void)hash; (void)signature; (void)signatureLength; (void)signatureFormat;
 	return -1;
+}
+
+void crossbyte_pk_key_dispose(::Dynamic key) {
+	(void)key;
+}
+
+::String crossbyte_pk_error_message(int code) {
+	(void)code;
+	return HX_CSTRING("mbedTLS public-key support is unavailable on this target.");
+}
+
+int crossbyte_pk_parse_count() {
+	return 0;
 }
 
 #endif
