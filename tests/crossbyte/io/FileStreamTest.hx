@@ -475,6 +475,230 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
+	public function testAnAsyncReadHandsOutOnlyWhatHasBeenLoaded():Void {
+		// Reading what bytesAvailable says from a progress handler, as the
+		// class documentation describes. The buffer was allocated at the
+		// file's full size before anything was read, so bytesAvailable
+		// counted the whole file from the first event and the read handed
+		// out zeros for everything not loaded yet: 6.4 MB of them from a
+		// 10 MB file that has none.
+		//
+		// Small pages rather than a big file, so it loads in several steps
+		// without writing megabytes on the interpreter.
+		var size:Int = 160 * 1024;
+		var file = __fileOf(size);
+		var input = new FileStream();
+		@:privateAccess input.__pageSize = 32 * 1024;
+		var consumed:Int = 0;
+		var wrong:Int = 0;
+		var completeSeen:Bool = false;
+		var chunk = new ByteArray();
+
+		var drain = function():Void {
+			var available:Int = input.bytesAvailable;
+
+			if (available <= 0) {
+				return;
+			}
+
+			input.readBytes(chunk, 0, available);
+
+			for (i in 0...available) {
+				if (chunk[i] != __patternAt(consumed + i)) {
+					wrong++;
+				}
+			}
+
+			consumed += available;
+		};
+
+		try {
+			input.addEventListener(ProgressEvent.PROGRESS, _ -> drain());
+			input.addEventListener(Event.COMPLETE, _ -> completeSeen = true);
+			input.openAsync(file, FileMode.READ);
+
+			pumpUntil(() -> completeSeen, 20.0);
+			drain();
+
+			Assert.isTrue(completeSeen);
+			Assert.equals(size, consumed);
+			Assert.equals(0, wrong, '$wrong of $consumed bytes handed out were not the file\'s');
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAndWait(input);
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
+	#if (cpp || neko || hl)
+	public function testReadAheadBoundsWhatAnAsyncReadHolds():Void {
+		// readAhead is how much to load beyond the reader. The whole file was
+		// loaded, and kept, whatever it said.
+		var size:Int = 4 * 1024 * 1024;
+		var readAhead:Int = 256 * 1024;
+		var file = __fileOf(size);
+		var input = new FileStream();
+		var completeSeen:Bool = false;
+
+		try {
+			input.readAhead = readAhead;
+			input.addEventListener(Event.COMPLETE, _ -> completeSeen = true);
+			input.openAsync(file, FileMode.READ);
+
+			// Give the loader time to overshoot if it is going to.
+			var until:Float = haxe.Timer.stamp() + 0.3;
+
+			while (haxe.Timer.stamp() < until) {
+				__pump();
+				Sys.sleep(0.001);
+			}
+
+			var held:Int = input.bytesAvailable;
+			Assert.isTrue(held > 0, "nothing was loaded");
+			Assert.isTrue(held <= readAhead, 'held $held bytes with readAhead at $readAhead');
+
+			// Reading makes room, and the rest arrives intact.
+			var chunk = new ByteArray();
+			var consumed:Int = 0;
+			var wrong:Int = 0;
+			var deadline:Float = haxe.Timer.stamp() + 20;
+
+			while (consumed < size && haxe.Timer.stamp() < deadline) {
+				var available:Int = input.bytesAvailable;
+
+				if (available > 0) {
+					input.readBytes(chunk, 0, available);
+
+					for (i in 0...available) {
+						if (chunk[i] != __patternAt(consumed + i)) {
+							wrong++;
+						}
+					}
+
+					consumed += available;
+				}
+
+				__pump();
+				Sys.sleep(0.001);
+			}
+
+			Assert.equals(size, consumed);
+			Assert.equals(0, wrong);
+			Assert.equals(size, input.position);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAndWait(input);
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+
+	public function testAnAsyncReadSeeksBackToWhatItDiscarded():Void {
+		// With readAhead bounding it, consumed bytes are dropped, so going
+		// back to them has to read them again rather than hand out whatever
+		// now sits at that offset of the buffer.
+		var size:Int = 2 * 1024 * 1024;
+		var file = __fileOf(size);
+		var input = new FileStream();
+
+		try {
+			input.readAhead = 64 * 1024;
+			input.openAsync(file, FileMode.READ);
+
+			var chunk = new ByteArray();
+			var consumed:Int = 0;
+			var deadline:Float = haxe.Timer.stamp() + 20;
+
+			while (consumed < 1024 * 1024 && haxe.Timer.stamp() < deadline) {
+				var available:Int = input.bytesAvailable;
+
+				if (available > 0) {
+					input.readBytes(chunk, 0, available);
+					consumed += available;
+				}
+
+				__pump();
+				Sys.sleep(0.001);
+			}
+
+			input.position = 10;
+			pumpUntil(() -> input.bytesAvailable >= 16, 10.0);
+
+			Assert.equals(10, input.position);
+			var again = new ByteArray();
+			input.readBytes(again, 0, 16);
+
+			for (i in 0...16) {
+				Assert.equals(__patternAt(10 + i), again[i]);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAndWait(input);
+		if (file.exists) {
+			file.deleteFile();
+		}
+	}
+	#end
+
+	private static function __pump():Void {
+		CrossByte.current().pump(1 / 60, 0);
+	}
+
+	/**
+	 * Closes an asynchronous stream and waits until it is. A loader still
+	 * running defers the close to its own completion, which a tick has to
+	 * deliver, and on Windows the file cannot be deleted while it is open.
+	 */
+	private static function __closeAndWait(stream:FileStream):Void {
+		try {
+			stream.close();
+		} catch (_:Dynamic) {}
+
+		var deadline:Float = haxe.Timer.stamp() + 5;
+
+		while (@:privateAccess stream.__isOpen && haxe.Timer.stamp() < deadline) {
+			__pump();
+			Sys.sleep(0.001);
+		}
+	}
+
+	/** A file of `size` bytes of `__patternAt`, written synchronously. **/
+	private static function __fileOf(size:Int):File {
+		var file = File.createTempFile();
+		var output = new FileStream();
+		var block = new ByteArray();
+		var written:Int = 0;
+
+		output.open(file, FileMode.WRITE);
+
+		while (written < size) {
+			var n:Int = size - written < 65536 ? size - written : 65536;
+			block.clear();
+
+			for (i in 0...n) {
+				block.writeByte(__patternAt(written + i));
+			}
+
+			output.writeBytes(block, 0, n);
+			written += n;
+		}
+
+		output.close();
+		return file;
+	}
+
+	/** Never zero, and different at nearby offsets. **/
+	private static inline function __patternAt(i:Int):Int {
+		return ((i * 7) & 0xFE) | 1;
+	}
+
 	/**
 	 * An exact copy. A ByteArray's storage runs past its length, and on hxcpp
 	 * `Bytes.compare` compares the storage, so comparing a ByteArray directly

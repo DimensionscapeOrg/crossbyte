@@ -168,6 +168,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 	@:noCompletion private var __buffer:ByteArray;
 	@:noCompletion private var __fileStreamMutex:Mutex;
 	@:noCompletion private var __pageSize:Int = 4096000;
+	// Asynchronous reading. The buffer holds the file from __bufferStart on;
+	// a position outside it bumps __loadGeneration, which tells the loader to
+	// start again from there. __loaded says it has reached the end.
+	@:noCompletion private var __bufferStart:Int = 0;
+	@:noCompletion private var __loadGeneration:Int = 0;
+	@:noCompletion private var __loaded:Bool = false;
+	@:noCompletion private var __reloadPending:Bool = false;
+	@:noCompletion private var __loaderWork:Dynamic->Void;
 
 	/**
 		Creates a FileStream object. Use the open() or openAsync() method to open a file.
@@ -346,47 +354,23 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		open(file, fileMode);
 
 		if (fileMode == READ) {
-			__buffer = new ByteArray(file.size);
-			__fileStreamWorker.doWork = function(m:Dynamic) {
-				var inputBytesAvailable:Int = 0;
-				var tempPos:Int = 0;
-				var bytesLoaded:Int = 0;
+			// Grows as data arrives. It was allocated at the file's full size
+			// up front, so bytesAvailable counted bytes nobody had read from
+			// disk yet, and reading "what is available" from a progress handler,
+			// as this class's own documentation says to, returned zeros:
+			// 6.4 MB of them from a 10 MB file. The whole file also stayed in
+			// memory whatever readAhead said.
+			__buffer = new ByteArray();
+			__bufferStart = 0;
+			__loadGeneration = 0;
+			__loaded = false;
 
-				while ((inputBytesAvailable = __getStreamBytesAvailable()) > 0) {
-					if (__pendingClose) {
-						// close() was called
-						__fileStreamWorker.sendComplete();
-						return;
-					}
+			var fileSize:Int = file.size;
 
-					var oldBytesLoaded = bytesLoaded;
-					__fileStreamMutex.acquire();
-					if (__buffer.bytesAvailable < readAhead) {
-						try {
-							var maxBytes:Int = Std.int(Math.min(__pageSize, inputBytesAvailable));
-
-							var chunkBytes:Bytes = Bytes.alloc(maxBytes);
-							tempPos = __buffer.position;
-							__buffer.position = __input.tell();
-							__input.readBytes(chunkBytes, 0, maxBytes);
-							__buffer.writeBytes(ByteArray.fromBytes(chunkBytes), 0, chunkBytes.length);
-							__buffer.position = tempPos;
-							bytesLoaded += maxBytes;
-						} catch (e:Dynamic) {
-							__fileStreamMutex.release();
-							__fileStreamWorker.sendError(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Index is out of bounds."));
-							return;
-						}
-					}
-					__fileStreamMutex.release();
-
-					if (oldBytesLoaded != bytesLoaded) {
-						__fileStreamWorker.sendProgress(new ProgressEvent(ProgressEvent.PROGRESS, bytesLoaded, __file.size));
-					}
-				}
-
-				__fileStreamWorker.sendComplete(new Event(Event.COMPLETE));
-			}
+			__loaderWork = function(m:Dynamic) {
+				__loadAsync(fileSize);
+			};
+			__fileStreamWorker.doWork = __loaderWork;
 		} else {
 			__buffer = new ByteArray();
 
@@ -431,6 +415,206 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		__fileStreamWorker.run();
 	}
 
+	/**
+	 * Loads an asynchronously opened file into the read buffer, on the
+	 * stream's worker.
+	 *
+	 * Appends as it reads, so the buffer only ever holds what has really been
+	 * read. Where the worker has a thread of its own it also waits for the
+	 * reader, loading only while less than `readAhead` is waiting to be read,
+	 * and a finite `readAhead` drops what has been consumed, together those
+	 * bound the memory to about `readAhead`. Where the worker runs inline
+	 * there is nobody to wait for, so it reads to the end, dispatching
+	 * progress as it goes.
+	 *
+	 * A position set outside what the buffer holds starts the load again
+	 * from there; `__loadGeneration` is how this learns of it.
+	 */
+	@:noCompletion private function __loadAsync(fileSize:Int):Void {
+		var generation:Int = -1;
+		var chunk:Bytes = null;
+
+		while (true) {
+			if (__pendingClose) {
+				// close() was called
+				__fileStreamWorker.sendComplete();
+				return;
+			}
+
+			__fileStreamMutex.acquire();
+
+			if (__buffer == null) {
+				__fileStreamMutex.release();
+				return;
+			}
+
+			var reposition:Bool = generation != __loadGeneration;
+			generation = __loadGeneration;
+			var next:Int = __bufferStart + __buffer.length;
+			var remaining:Int = fileSize - next;
+			var want:Int = remaining < __pageSize ? remaining : __pageSize;
+
+			#if (cpp || neko || hl)
+			if (readAhead != Math.POSITIVE_INFINITY) {
+				var unread:Int = __buffer.length - __buffer.position;
+				// Up to readAhead, in whole 4 KB pages, and nothing while the
+				// reader has that much waiting already.
+				var room:Float = readAhead - unread;
+				want = room <= 0 ? 0 : Std.int(Math.min(want, Math.ceil(room / 4096) * 4096));
+			}
+			#end
+
+			if (remaining <= 0) {
+				__loaded = true;
+			}
+
+			__fileStreamMutex.release();
+
+			if (remaining <= 0) {
+				break;
+			}
+
+			if (want <= 0) {
+				Sys.sleep(0.001);
+				continue;
+			}
+
+			var got:Int = 0;
+
+			try {
+				if (reposition) {
+					__input.seek(next, FileSeek.SeekBegin);
+				}
+
+				if (chunk == null || chunk.length < want) {
+					chunk = Bytes.alloc(want);
+				}
+
+				while (got < want) {
+					var read:Int = 0;
+
+					try {
+						read = __input.readBytes(chunk, got, want - got);
+					} catch (_:haxe.io.Eof) {
+						break;
+					}
+
+					if (read <= 0) {
+						break;
+					}
+
+					got += read;
+				}
+			} catch (e:Dynamic) {
+				__fileStreamWorker.sendError(new IOErrorEvent(IOErrorEvent.IO_ERROR, "The file could not be read: " + Std.string(e)));
+				return;
+			}
+
+			if (got <= 0) {
+				// Shorter than it was when opened.
+				__fileStreamMutex.acquire();
+				__loaded = true;
+				__fileStreamMutex.release();
+				break;
+			}
+
+			__fileStreamMutex.acquire();
+
+			if (__buffer == null || generation != __loadGeneration) {
+				// The reader moved while this was being read; start again.
+				__fileStreamMutex.release();
+				continue;
+			}
+
+			__discardConsumed();
+
+			var cursor:Int = __buffer.position;
+			__buffer.position = __buffer.length;
+			__buffer.writeBytes(ByteArray.fromBytes(chunk), 0, got);
+			__buffer.position = cursor;
+
+			var loaded:Int = __bufferStart + __buffer.length;
+			__fileStreamMutex.release();
+
+			__fileStreamWorker.sendProgress(new ProgressEvent(ProgressEvent.PROGRESS, loaded, fileSize));
+		}
+
+		__fileStreamWorker.sendComplete(new Event(Event.COMPLETE));
+	}
+
+	/**
+	 * Drops what the reader has consumed, when `readAhead` bounds the buffer.
+	 * By default it does not, the whole file is kept, as it always was, so a
+	 * stream can seek back without reading anything again. Held under the
+	 * stream's mutex.
+	 */
+	@:noCompletion private function __discardConsumed():Void {
+		if (readAhead == Math.POSITIVE_INFINITY) {
+			return;
+		}
+
+		var consumed:Int = __buffer.position;
+
+		// Half the buffer or more, so the move is paid for by what it frees.
+		if (consumed == 0 || consumed < __buffer.length - consumed) {
+			return;
+		}
+
+		var unread:Int = __buffer.length - consumed;
+		var data:Bytes = __buffer;
+
+		if (unread > 0) {
+			data.blit(0, data, consumed, unread);
+		}
+
+		__buffer.length = unread;
+		__buffer.position = 0;
+		__bufferStart += consumed;
+	}
+
+	/**
+	 * Moves the read position of an asynchronously opened file, and when that
+	 * is outside what the buffer holds, starts loading from there instead.
+	 * Held under the stream's mutex; returns whether the loader has to be
+	 * started again because it had already finished.
+	 */
+	@:noCompletion private function __seekAsync(value:Int):Bool {
+		var offset:Int = value - __bufferStart;
+
+		if (offset >= 0 && offset <= __buffer.length) {
+			__buffer.position = offset;
+			return false;
+		}
+
+		__buffer.length = 0;
+		__buffer.position = 0;
+		__bufferStart = value;
+		__loadGeneration++;
+
+		var restart:Bool = __loaded;
+		__loaded = false;
+		return restart;
+	}
+
+	/**
+	 * Starts the loader again after a position outside the buffer, or, while
+	 * it is still finishing its last load, has its completion do so.
+	 */
+	@:noCompletion private function __restartLoader():Void {
+		if (__fileStreamWorker == null || __loaderWork == null) {
+			return;
+		}
+
+		if (__fileStreamWorker.running) {
+			__reloadPending = true;
+			return;
+		}
+
+		// cancel() cleared the body along with everything else.
+		__fileStreamWorker.doWork = __loaderWork;
+		__fileStreamWorker.run();
+	}
+
 	private function __onFileStreamWorkerComplete(e:ThreadEvent):Void {
 		var event:Event = e.message;
 
@@ -443,6 +627,9 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		if (__pendingClose) {
 			__pendingClose = false;
 			close();
+		} else if (__reloadPending && __fileStreamWorker != null) {
+			__reloadPending = false;
+			__restartLoader();
 		}
 	}
 
@@ -1591,7 +1778,8 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			}
 			if (__fileMode == READ) {
 				__fileStreamMutex.acquire();
-				position = __buffer.position;
+				// The buffer may no longer start at the start of the file.
+				position = __bufferStart + __buffer.position;
 				__fileStreamMutex.release();
 				return position;
 			}
@@ -1609,9 +1797,20 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 					__input.seek(value, FileSeek.SeekBegin);
 				}
 			} else {
+				var restart:Bool = false;
 				__fileStreamMutex.acquire();
-				__buffer.position = value;
+
+				if (__fileMode == READ) {
+					restart = __seekAsync(value);
+				} else {
+					__buffer.position = value;
+				}
+
 				__fileStreamMutex.release();
+
+				if (restart) {
+					__restartLoader();
+				}
 			}
 		}
 
