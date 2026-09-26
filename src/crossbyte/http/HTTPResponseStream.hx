@@ -1,5 +1,7 @@
 package crossbyte.http;
 
+// Not built for the browser, like the HTTPRequestHandler it streams from.
+#if !(js && !nodejs)
 import crossbyte.io.ByteArray;
 
 /**
@@ -114,3 +116,4 @@ class HTTPResponseStream {
 		__handler = null;
 	}
 }
+#end
