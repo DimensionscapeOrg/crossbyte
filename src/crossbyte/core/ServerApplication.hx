@@ -71,7 +71,10 @@ class ServerApplication extends Application {
 		#end
 
 		Application.__application = this;
-		__crossByte = new CrossByte(true, POLL, false);
+		// Built from what the constructor passed up, timer strategy included.
+		// This named POLL and nothing else, so `new ServerApplication(WHEEL)`
+		// ran on the heap.
+		__crossByte = __createRuntime();
 
 		// A service default rather than the runtime's general-purpose one;
 		// see defaultTicksPerSecond. Applied before INIT so a subclass can

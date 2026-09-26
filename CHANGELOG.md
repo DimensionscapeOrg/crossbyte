@@ -523,6 +523,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A timer armed from inside a timer callback for a time already reached,
+  `setTimeout(0)`, or a reschedule into the past, fires on the next frame
+  rather than in the pass that armed it. Recurring timers still catch up
+  within a pass as before.
 - `HostApplication.advance` and `CrossByte.pump` no longer rethrow what a
   handler threw during the step, and neither does a `PassFlush` holder's
   failure escape the pass: both are contained and reported through
@@ -697,6 +701,33 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Every timer due in a frame now fires in that frame. The runtime fired at
+  most 256 a frame, about three thousand a second at the default twelve
+  ticks, and past that every timer ran late, and later every frame,
+  without bound: beside 400 reliable-UDP sessions each keeping a 50ms
+  retransmit clock, a 30 second idle timeout fired at 78 seconds. A frame's
+  timers are now bounded by time rather than by count. They may use one tick
+  interval, so only a burst that would hold the frame past its end, and keep
+  the sockets waiting, is spread over the frames after it; the new
+  `timerBacklog`, `timerLag` and `timerOverruns` on `CrossByte` say when that
+  happens. A timer armed during a pass waits for the next one, so a callback
+  that polls by re-arming itself for "now" runs once a frame rather than
+  filling the budget. A one-shot timer rescheduled or delayed from its own
+  callback now runs at its new time instead of being freed, and a timer that
+  pauses itself from its callback can be resumed instead of being destroyed.
+- The timing wheel (`TimerStrategy.WHEEL`) fires timers when they are due.
+  It placed a timer by the scheduler's clock, which a pass has already moved
+  to the end of the frame, instead of by where its cursor was: at sixty
+  frames a second `setTimeout(0)` fired after 517ms, a 5ms timer armed from
+  a callback fired in the same frame, early, and a 5ms `setInterval` fired
+  twice a second instead of 200 times. A timer due at once went into the
+  bucket the cursor had just left and waited a whole revolution. Timers are
+  now placed from the cursor's own time and never in a bucket already
+  walked, a pass stopped partway through a bucket finishes it on the next
+  pass instead of leaving the rest a revolution behind, and a timer more
+  than 24 days away no longer overflows its tick count and fires at once.
+  `new ServerApplication(WHEEL)` ran on the heap, because it built its
+  runtime without the strategy it was given; it now uses it.
 - An exception from a timer, a tick listener or a socket's handler no
   longer ends the process. The loop had no catch of its own, so one
   handler's bug, a null dereference in one session's idle timeout, one

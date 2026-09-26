@@ -95,6 +95,40 @@ class TimerQueue {
 		__siftDown(node.heapIndex);
 	}
 
+	/**
+	 * Counts the enabled nodes due at or before `time` that were not armed
+	 * during pass `pass`. A heap orders parents before children, so a node
+	 * not yet due has no due descendants: the walk visits only the due part
+	 * of the heap and the boundary around it.
+	 */
+	public function countDue(time:Float, pass:Int):Int {
+		var count:Int = 0;
+		var length:Int = __heap.length;
+		if (length == 0 || __heap[0].time > time) {
+			return 0;
+		}
+
+		var pending:Array<Int> = [0];
+		while (pending.length > 0) {
+			var i:Int = pending.pop();
+			var node:TimerNode = __heap[i];
+			if (node.time > time) {
+				continue;
+			}
+			if (node.enabled && node.armPass != pass) {
+				count++;
+			}
+			var left:Int = (i << 1) + 1;
+			if (left < length) {
+				pending.push(left);
+				if (left + 1 < length) {
+					pending.push(left + 1);
+				}
+			}
+		}
+		return count;
+	}
+
 	public inline function clear():Void {
 		for (i in 0...__heap.length) {
 			__heap[i].heapIndex = -1;
