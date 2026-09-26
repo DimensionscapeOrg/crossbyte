@@ -204,13 +204,17 @@ class Metrics {
 			if (histogram != null) {
 				__describe(buffer, described, histogram.name, "histogram", histogram.help);
 
-				var counts:Array<Float> = histogram.bucketCounts();
-				for (i in 0...histogram.bounds.length) {
-					__writeSample(buffer, histogram.name + "_bucket", __withLabel(histogram.labels, "le", __number(histogram.bounds[i])), counts[i]);
+				// One read for the whole series, so +Inf and _count are the same
+				// number: read twice, an observation between the reads made
+				// them differ.
+				var snapshot:Array<Float> = histogram.__snapshot();
+				var buckets:Int = snapshot.length - 2;
+				for (i in 0...buckets) {
+					__writeSample(buffer, histogram.name + "_bucket", __withLabel(histogram.labels, "le", __number(histogram.bounds[i])), snapshot[i]);
 				}
-				__writeSample(buffer, histogram.name + "_bucket", __withLabel(histogram.labels, "le", "+Inf"), histogram.count());
-				__writeSample(buffer, histogram.name + "_sum", histogram.labels, histogram.sum());
-				__writeSample(buffer, histogram.name + "_count", histogram.labels, histogram.count());
+				__writeSample(buffer, histogram.name + "_bucket", __withLabel(histogram.labels, "le", "+Inf"), snapshot[buckets]);
+				__writeSample(buffer, histogram.name + "_sum", histogram.labels, snapshot[buckets + 1]);
+				__writeSample(buffer, histogram.name + "_count", histogram.labels, snapshot[buckets]);
 			}
 		}
 

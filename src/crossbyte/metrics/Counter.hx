@@ -1,7 +1,9 @@
 package crossbyte.metrics;
 
 import crossbyte.errors.ArgumentError;
-#if (cpp || neko || hl || java || jvm)
+#if cpp
+import crossbyte.metrics._internal.AtomicFloats;
+#elseif (neko || hl || java || jvm)
 import sys.thread.Mutex;
 #end
 
@@ -12,7 +14,8 @@ import sys.thread.Mutex;
  * from two samples and detect a process restart when the value drops.
  * Anything that can decrease is a `Gauge`.
  *
- * Safe to increment from any thread.
+ * Safe to increment from any thread. On hxcpp an increment is an atomic
+ * compare-and-swap rather than a lock.
  */
 class Counter {
 	/**
@@ -30,9 +33,17 @@ class Counter {
 	 */
 	public var help(default, null):String;
 
+	#if cpp
+	// The total, as the one element of an array: it is updated in place with
+	// atomic instructions, which AtomicFloats does to array elements. A lock
+	// cost every increment about 230ns here, since acquiring an hxcpp Mutex
+	// enters and leaves a GC-free zone.
+	@:noCompletion private var __cells:Array<Float> = [0.0];
+	#else
 	@:noCompletion private var __value:Float = 0;
+	#end
 
-	#if (cpp || neko || hl || java || jvm)
+	#if (neko || hl || java || jvm)
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -42,7 +53,7 @@ class Counter {
 		this.labels = (labels == null) ? new Map() : labels;
 		this.help = help;
 
-		#if (cpp || neko || hl || java || jvm)
+		#if (neko || hl || java || jvm)
 		__lock = new Mutex();
 		#end
 	}
@@ -62,7 +73,9 @@ class Counter {
 			return;
 		}
 
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		AtomicFloats.add(__cells, 0, amount);
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
 		__value += amount;
 		__lock.release();
@@ -75,7 +88,9 @@ class Counter {
 	 * The current total.
 	 */
 	public function value():Float {
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		return AtomicFloats.load(__cells, 0);
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
 		var snapshot:Float = __value;
 		__lock.release();
@@ -90,7 +105,9 @@ class Counter {
 	 * counter makes a collector read it as a process restart.
 	 */
 	public function reset():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		AtomicFloats.store(__cells, 0, 0);
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
 		__value = 0;
 		__lock.release();
