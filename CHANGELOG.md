@@ -710,6 +710,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- ICE, STUN and TURN read an IPv4 address strictly. Its octets were read
+  with `Std.parseInt` and written modulo 256, so a peer's candidate of
+  `1.2.3.999` passed as numeric, was dialled through a resolver that took it
+  for a name, a blocking lookup on the event loop for every check, and
+  had a TURN relay permit 1.2.3.231; `010.1.1.1` was 10.1.1.1 here and
+  8.1.1.1 to the socket; and on the jvm an octet past 32 bits threw.
+  `IceAgent.addRemoteCandidate` now drops an IPv4 address that is not four
+  decimal octets up to 255 without leading zeros; `TurnClient.permit`,
+  `bindChannel` and `sendTo` refuse one with `ArgumentError`, keeping
+  nothing for `poll` to renew; and an ICE check from an IPv6 address is
+  answered without XOR-MAPPED-ADDRESS, which is written for IPv4 alone and
+  named 0.0.0.0, teaching the peer a local candidate that does not exist.
 - A WebRTC peer that changes network is followed. When the controlling
   peer, a browser whose Wi-Fi went, say, nominated the pair from its new
   address, this end answered and kept the pair it had, sending to an address
