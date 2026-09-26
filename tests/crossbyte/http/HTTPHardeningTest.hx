@@ -15,7 +15,39 @@ import utest.Assert;
  * nothing until this import changed: header injection and request smuggling
  * were unchecked on both the targets a page or a Node server would run on.
  */
+@:access(crossbyte.http.HTTPRequestHandler)
 class HTTPHardeningTest extends utest.Test {
+	/**
+		The server's `Content-Length` reader gives the same answer on every
+		target, and never a small number for a large one.
+
+		4294967296 is 2^32: `Std.parseInt` read it as 0 on Linux and macOS
+		native, as 2147483647 on Windows native, threw on the jvm and gave
+		null on eval, and the checks around it were right on none of them.
+	**/
+	public function testContentLengthPastAnIntIsNotALength():Void {
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("4294967296"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("4294967396"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("2147483648"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("18446744073709551616"));
+		Assert.equals(2147483647, HTTPRequestHandler.__parseContentLength("2147483647"));
+	}
+
+	public function testContentLengthReadsOnlyPlainDigits():Void {
+		Assert.equals(0, HTTPRequestHandler.__parseContentLength("0"));
+		Assert.equals(42, HTTPRequestHandler.__parseContentLength(" 42 "));
+		Assert.equals(7, HTTPRequestHandler.__parseContentLength("007"));
+		Assert.equals(5, HTTPRequestHandler.__parseContentLength("5, 5"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("5, 6"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("+5"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("-1"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("0x10"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("1 2"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength(""));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength("5,"));
+		Assert.equals(-1, HTTPRequestHandler.__parseContentLength(null));
+	}
+
 	public function testSanitizeHeaderValueStripsCrLf():Void {
 		var sanitized = HttpSyntax.sanitizeHeaderValue("x\r\nInjected: 1");
 

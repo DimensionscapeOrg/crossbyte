@@ -712,6 +712,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A request can no longer be smuggled inside another through a
+  `Content-Length` too large for an `Int`. The server checked the field was
+  all digits and then trusted `Std.parseInt`, which on Linux and macOS
+  native is `strtol` cast to an `int`: 4294967296 read as 0 and 4294967396
+  as 100. At 0 the server read no body and parsed the body as the next
+  request, so a request carried inside another reached the application
+  unseen by a proxy or firewall that inspected the outer one. On the jvm the
+  same field threw, answered 500 and logged an ERROR per request. The server
+  and the `URLLoader` client now read it through `IntParse`, so a length no
+  `Int` holds is refused, `400` on the server, an error on the client,
+  which had read it as an empty body, and an HTTP/2 request whose
+  `content-length` differs from the DATA it carried is reset as malformed,
+  as RFC 9113 8.1.1 requires, rather than handed to the application with a
+  length its body does not have.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the
