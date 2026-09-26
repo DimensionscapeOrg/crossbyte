@@ -226,8 +226,18 @@ class OAuth {
 				return;
 			}
 			// Cancelled, so a native worker blocked on the socket unwinds rather
-			// than waiting out its own idle limit.
+			// than waiting out its own idle limit. Through the token, not
+			// `loader.close()`: close drops the loader's worker while the request
+			// is still running, and the worker then reports through a null
+			// reference -- an access violation on native. The token closes the
+			// socket, and the loader winds down on its own, unheard.
+			#if js
 			loader.close();
+			#else
+			if (loader.cancelToken != null) {
+				loader.cancelToken.cancel();
+			}
+			#end
 			__fail(operation, "the token endpoint did not answer within " + timeout + " s", onError);
 		});
 
