@@ -1,5 +1,6 @@
 package crossbyte.net.rtc;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
@@ -312,6 +313,57 @@ class SctpDataTransferTest extends utest.Test {
 		pair.client.onSend = _ -> sent++;
 		pair.clientData.poll(pair.now + 60);
 		Assert.equals(0, sent, "an ended association kept retransmitting");
+	}
+
+	/**
+		A peer that shuts down gracefully still gets what this end had
+		outstanding, before the answer goes.
+
+		RFC 4960 section 9.2: the shutdown waits on the data. The SHUTDOWN was
+		ignored altogether, so the peer retransmitted it until it gave up and
+		aborted, and whatever was still in flight to it went with the
+		association.
+	**/
+	public function testAShutdownWaitsForWhatIsStillOutstanding():Void {
+		if (unsupported()) return;
+
+		var link = Link.open();
+		var delivered:Int = 0;
+		link.serverData.onMessage = (_, _, _) -> delivered++;
+
+		var answered:Int = 0;
+		link.watchToServer = function(payload:ByteArray):Void {
+			var packet = SctpPacket.decode(payload);
+
+			if (packet != null && packet.chunk(SctpPacket.CHUNK_SHUTDOWN_ACK) != null) {
+				answered++;
+			}
+		};
+
+		// Sent, and lost on the way.
+		link.cut = true;
+		link.clientData.send(0, filled(100), SctpDataChunk.PPID_BINARY, true, link.now);
+		link.runUntil(() -> false, 0.1);
+
+		// The peer asks to shut down, having had nothing from this end.
+		var cumulative = new ByteArray();
+		cumulative.endian = Endian.BIG_ENDIAN;
+		cumulative.writeInt((link.client.localTsn - 1) | 0);
+		cumulative.position = 0;
+		link.client.receive(link.server.packetFor([new SctpChunk(SctpPacket.CHUNK_SHUTDOWN, 0, cumulative)]), link.now);
+
+		Assert.equals(SctpAssociationState.SHUTDOWN_RECEIVED, link.client.state);
+		Assert.equals(0, answered, "the SHUTDOWN was answered with a message still undelivered");
+		Assert.raises(() -> link.clientData.send(0, filled(1), SctpDataChunk.PPID_BINARY, true, link.now), ArgumentError);
+
+		// The path comes back; the message is resent, delivered and
+		// acknowledged, and only then does the answer go.
+		link.cut = false;
+		link.runUntil(() -> answered > 0, 30);
+
+		Assert.equals(1, delivered, "the message outstanding when the peer asked to shut down was never delivered");
+		Assert.equals(1, answered, "the SHUTDOWN was never answered once the message was acknowledged");
+		Assert.equals(SctpAssociationState.SHUTDOWN_ACK_SENT, link.client.state);
 	}
 
 	/**

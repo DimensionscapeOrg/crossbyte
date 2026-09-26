@@ -29,4 +29,13 @@ enum abstract SctpAssociationState(Int) {
 
 	/** Open, and carrying data. **/
 	var ESTABLISHED = 4;
+
+	/**
+		The peer asked to shut down gracefully. Nothing new is sent, and what
+		is still outstanding is seen acknowledged before the answer goes.
+	**/
+	var SHUTDOWN_RECEIVED = 5;
+
+	/** The answer to the peer's SHUTDOWN has gone, and its confirmation has not come back. **/
+	var SHUTDOWN_ACK_SENT = 6;
 }
