@@ -994,6 +994,13 @@ class Http {
 	}
 
 	private function __buildQuery(obj:Dynamic):String {
+		// A URLVariables is a StringMap at run time, and its fields are the
+		// map's, not the caller's: a POST of one went out with an empty body.
+		var form:Null<String> = crossbyte.url.URLVariables.encodeData(obj);
+		if (form != null) {
+			return form;
+		}
+
 		var parts:Array<String> = [];
 
 		var fields = Reflect.fields(obj);

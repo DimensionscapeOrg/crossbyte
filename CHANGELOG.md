@@ -732,6 +732,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` sends a `URLVariables` as a form on every target: in the query
+  of a GET or HEAD, and otherwise as an `application/x-www-form-urlencoded`
+  body. At run time one is the map beneath it, so the native client read the
+  map's own fields and sent an empty body, and Node and the browser sent a
+  debug dump of the map. On Node a body is also sent with its
+  `Content-Length` whatever the method: Node frames a body only for methods
+  it expects one on, so a body on a DELETE, GET or OPTIONS went out bare, the
+  server read it as the next request, and the next call on the pooled socket
+  got a `400`.
 - With `http2Enabled` on cleartext, a connection that has not yet sent a
   request is counted, timed and drained. While the server waited to see
   which protocol it spoke, it escaped all three: with `maxConnections` at 2

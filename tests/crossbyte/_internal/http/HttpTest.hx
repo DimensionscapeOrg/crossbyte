@@ -885,6 +885,30 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(failure.indexOf("redirects") >= 0, failure);
 	}
 
+	public function testURLVariablesAreSentAsAForm():Void {
+		// A URLVariables is a StringMap at run time, and Reflect.fields read
+		// the map's own fields: a POST of one went out with an empty body.
+		var posted = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var post = new Http('http://127.0.0.1:${posted.port}/form', "POST", null, new crossbyte.url.URLVariables("name=Ada%20L&tag=a&tag=b"));
+		post.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		post.load();
+		posted.waitDone();
+
+		var body:String = posted.request.substr(posted.request.indexOf("\n\n") + 2);
+		var form:Array<String> = body.split("&");
+		form.sort(Reflect.compare);
+		Assert.same(["name=Ada%20L", "tag=a", "tag=b"], form);
+		Assert.isTrue(posted.request.indexOf("application/x-www-form-urlencoded") >= 0, posted.request);
+
+		var queried = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var get = new Http('http://127.0.0.1:${queried.port}/form', "GET", null, new crossbyte.url.URLVariables("q=x%20y"));
+		get.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		get.load();
+		queried.waitDone();
+
+		Assert.isTrue(StringTools.startsWith(queried.request, "GET /form?q=x%20y HTTP/1.1"), queried.request);
+	}
+
 	public function testACallerHeaderCannotAddALine():Void {
 		// Written as given, a CR or LF in a caller's value ended the header and
 		// began one of the caller's choosing.

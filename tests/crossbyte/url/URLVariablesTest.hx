@@ -3,6 +3,20 @@ package crossbyte.url;
 import utest.Assert;
 
 class URLVariablesTest extends utest.Test {
+	public function testEncodeDataFindsURLVariablesThroughDynamic():Void {
+		// URLRequest.data is Dynamic, where the abstract's toString() is out
+		// of reach; encodeData is how a client finds the form in it.
+		var data:Dynamic = new URLVariables("a=1&a=2&b=x%20y");
+		var parts:Array<String> = URLVariables.encodeData(data).split("&");
+		parts.sort(Reflect.compare);
+		Assert.same(["a=1", "a=2", "b=x%20y"], parts);
+
+		Assert.equals("", URLVariables.encodeData(new URLVariables()));
+		Assert.isNull(URLVariables.encodeData("a=1"));
+		Assert.isNull(URLVariables.encodeData({a: 1}));
+		Assert.isNull(URLVariables.encodeData(null));
+	}
+
 	public function testDecodePreservesRepeatedKeysAndSemicolonSeparators():Void {
 		var variables = new URLVariables("a=1&a=2;b=three%20four;c");
 
