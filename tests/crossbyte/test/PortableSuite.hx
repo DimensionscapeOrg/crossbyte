@@ -92,6 +92,23 @@ class PortableSuite {
 		// Nothing here owns a socket -- every parser is handed bytes -- so it
 		// runs wherever the code it fuzzes can be compiled, which is everywhere.
 		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());
+		// BCrypt is pure Haxe, so the published vectors hold it to the same
+		// answers on every target; hashes made on one have to verify on another.
+		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
+		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());
+		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
+		// Argon2id runs on Node through its own crypto.argon2; the browser has
+		// none and has to say so.
+		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
+		// HS256 is pure Haxe, so tokens verify alike on every target.
+		runner.addCase(new crossbyte.auth.jwt.JWTTest());
+		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
+		// Times past 2038 and a 32-bit Int are where the targets disagreed.
+		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
+		// PKCE everywhere; the token exchange itself against Node's own http
+		// server, since a stalled provider never answering was a Node failure.
+		// The browser has no server to run it against and skips that part.
+		runner.addCase(new crossbyte.auth.OAuthExchangeTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());

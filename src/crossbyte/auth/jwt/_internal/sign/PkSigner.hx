@@ -5,6 +5,7 @@ import crossbyte.auth.jwt.JWTAlgorithm;
 import crossbyte.crypto.PublicKeySignature;
 import crossbyte.crypto.PublicKeySignature.PublicKeyType;
 import crossbyte.crypto.PublicKeySignature.SignatureFormat;
+import crossbyte.crypto.SignatureKey;
 import haxe.crypto.Base64;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
@@ -21,6 +22,10 @@ import haxe.io.Bytes;
  * `ES256` signatures are carried by JWS as fixed-width `r || s`, not the
  * ASN.1 DER that ECDSA implementations normally emit; that conversion
  * happens in the native layer.
+ *
+ * Every key is parsed once, here, into a `SignatureKey`. Parsing the PEM per
+ * token left another copy of the private key in freed memory for every
+ * token signed, and rebuilt an EC key's tables for every one checked.
  */
 class PkSigner implements IJWTSigner {
 	public var algorithm(get, never):JWTAlgorithm;
@@ -28,8 +33,8 @@ class PkSigner implements IJWTSigner {
 
 	private var __algorithm:JWTAlgorithm;
 	private var __format:SignatureFormat;
-	private var __publicKeys:StringMap<String>;
-	private var __privateKey:String;
+	private var __publicKeys:StringMap<SignatureKey>;
+	private var __privateKey:SignatureKey;
 	private var __signKeyId:String;
 
 	private inline function get_algorithm():JWTAlgorithm {
@@ -78,11 +83,12 @@ class PkSigner implements IJWTSigner {
 			}
 			// A key of the wrong kind would fail every verification at
 			// runtime with no indication why; reject it at construction.
-			if (PublicKeySignature.keyType(pem) != expectedType) {
+			var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(pem, false, false);
+			if (key == null || key.type != expectedType) {
 				throw 'PkSigner: public key "$keyId" is not a valid $algorithm key';
 			}
 
-			__publicKeys.set(keyId, pem);
+			__publicKeys.set(keyId, key);
 			soleKeyId = keyId;
 			keyCount++;
 		}
@@ -92,10 +98,14 @@ class PkSigner implements IJWTSigner {
 		}
 
 		if (privateKey != null && privateKey != "") {
-			if (PublicKeySignature.keyType(privateKey, true) != expectedType) {
+			var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(privateKey, true, false);
+			if (key == null || key.type != expectedType) {
+				if (key != null) {
+					key.dispose();
+				}
 				throw 'PkSigner: private key is not a valid $algorithm key';
 			}
-			__privateKey = privateKey;
+			__privateKey = key;
 		}
 
 		if (signKeyId != null) {
@@ -121,7 +131,11 @@ class PkSigner implements IJWTSigner {
 			throw "PkSigner.sign: input must not be null";
 		}
 
-		return JWT.base64UrlEncodeBytes(PublicKeySignature.sign(__privateKey, Bytes.ofString(input), __format));
+		return JWT.base64UrlEncodeBytes(__privateKey.sign(Bytes.ofString(input), __format));
+	}
+
+	public function hasKey(keyId:Null<String>):Bool {
+		return keyId != null ? __publicKeys.exists(keyId) : __signKeyId != null;
 	}
 
 	public function verify(input:String, signature:String, ?keyId:String):Bool {
@@ -129,8 +143,8 @@ class PkSigner implements IJWTSigner {
 			return false;
 		}
 
-		var pem:String = (keyId != null) ? __publicKeys.get(keyId) : (__signKeyId != null ? __publicKeys.get(__signKeyId) : null);
-		if (pem == null) {
+		var key:Null<SignatureKey> = (keyId != null) ? __publicKeys.get(keyId) : (__signKeyId != null ? __publicKeys.get(__signKeyId) : null);
+		if (key == null) {
 			return false;
 		}
 
@@ -141,6 +155,6 @@ class PkSigner implements IJWTSigner {
 			return false;
 		}
 
-		return PublicKeySignature.verify(pem, Bytes.ofString(input), raw, __format);
+		return key.verify(Bytes.ofString(input), raw, __format);
 	}
 }

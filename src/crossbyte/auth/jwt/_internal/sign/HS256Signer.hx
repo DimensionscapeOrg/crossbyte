@@ -135,6 +135,10 @@ class HS256Signer implements IJWTSigner {
 		return false;
 	}
 
+	public function hasKey(keyId:Null<String>):Bool {
+		return keyId != null ? __keys.exists(keyId) : __hasSoleSecret;
+	}
+
 	private inline function __singleKeyId():String {
 		var k:String = null;
 		var seen:Bool = false;
