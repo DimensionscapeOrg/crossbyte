@@ -118,6 +118,27 @@ class SctpAssociation {
 	public dynamic function onChunk(chunk:SctpChunk, packet:SctpPacket):Void {}
 
 	/**
+		Called once a packet whose chunks went to `onChunk` has been read to
+		the end.
+
+		For the data layer, which decides what to send back once per packet
+		rather than once per chunk: an acknowledgement for several DATA chunks
+		is one SACK, and data the acknowledgement made room for goes out in the
+		same packet as the next one owed.
+	**/
+	public dynamic function onPacketEnd():Void {}
+
+	/**
+		The time the most recent `receive` or `poll` was given.
+
+		What the layer above measures an arriving acknowledgement against. It
+		reaches that layer through `onChunk`, which is not handed a time, and a
+		round trip measured from the previous poll instead would be off by up
+		to a whole tick.
+	**/
+	public var clock(default, null):Float = 0;
+
+	/**
 		Called once when an association that was established ends from the far
 		side or from a fault: the peer's ABORT, or the peer no longer answering.
 		Not called for `close()` or `abort()`, which the caller already knows
@@ -184,6 +205,8 @@ class SctpAssociation {
 	}
 
 	public function poll(now:Float):Void {
+		clock = now;
+
 		if (__closed || now < __retryAt) {
 			return;
 		}
@@ -222,6 +245,10 @@ class SctpAssociation {
 			return false;
 		}
 
+		clock = now;
+
+		var passedUp:Bool = false;
+
 		for (chunk in packet.chunks) {
 			switch (chunk.type) {
 				case SctpPacket.CHUNK_INIT:
@@ -245,9 +272,16 @@ class SctpAssociation {
 					// Everything else, DATA, SACK, HEARTBEAT, is for the
 					// layer above, which is where it goes once established.
 					if (state == ESTABLISHED && __tagMatches(packet)) {
+						passedUp = true;
 						onChunk(chunk, packet);
 					}
 			}
+		}
+
+		// A chunk handed up may have ended the association, a SACK can tell
+		// the layer above the peer is gone, and then nothing is owed.
+		if (passedUp && !__closed) {
+			onPacketEnd();
 		}
 
 		return true;
