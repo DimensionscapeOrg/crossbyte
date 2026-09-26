@@ -751,6 +751,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A connection's end is announced once, and the same way everywhere.
+  Natively a peer that connected and hung up within a tick, a load
+  balancer's health check, was announced closed twice, a tick after the
+  first time, so an `onDisconnect` ran twice and a live-connection count
+  drifted down by one per check. On Node a peer that left left its socket
+  connected and flushed from every tick for good: 200 tick listeners after
+  200 HTTP clients had come and gone. The socket is now released when Node
+  closes it, as a native one is. And Node sockets are half-open, so a
+  peer's FIN is decided by `peerShutdownPolicy` as it is natively: under
+  `HALF_OPEN` the socket stays writable and dispatches `PEER_CLOSE`, where
+  Node ended its own side at once and a peer that half-closed to finish its
+  request never got the answer. Under `CLOSE`, as before, it is closed.
 - On Node, a socket listener that throws costs its own connection, not the
   process. A socket's events arrive from Node's event loop rather than from
   anything of CrossByte's, so an exception from a listener, a data handler
