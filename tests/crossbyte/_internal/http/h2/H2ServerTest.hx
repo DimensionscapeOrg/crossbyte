@@ -243,6 +243,46 @@ class H2ServerTest extends utest.Test {
 		Assert.isNull(firstResetFor(requestFields([new HpackHeader("content-length", "0")])), "a true zero length was refused");
 	}
 
+	public function testABodyPastTheCapIsDeliveredEarlyAndTheStreamReset():Void {
+		// DATA was appended with no limit. Past the cap the request is handed
+		// over at once, marked, so it can be refused rather than buffered, and
+		// the stream is reset without error to stop the upload (§8.1).
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.maxRequestBodySize = 10;
+		var delivered:Array<H2ServerRequest> = [];
+		server.onRequest = request -> {
+			delivered.push(request);
+			server.respond(request.streamId, 413, []);
+		};
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		out.bytes();
+
+		var encoder = new HpackEncoder(4096);
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(requestFields([]))));
+		server.receive(frame(H2FrameType.DATA, 0, 1, Bytes.alloc(8)));
+		Assert.equals(0, delivered.length, "a body under the cap was delivered early");
+		server.receive(frame(H2FrameType.DATA, 0, 1, Bytes.alloc(8)));
+
+		Assert.equals(1, delivered.length);
+		Assert.isTrue(delivered[0].tooLarge);
+		Assert.equals(0, delivered[0].body.length);
+
+		var reset:Null<H2Frame> = null;
+		for (candidate in Collector.parse(out.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				reset = candidate;
+			}
+		}
+		Require.notNull(reset, "the stream was not reset to stop the upload");
+		Assert.equals(0, reset.payload.get(3), "the reset was not NO_ERROR");
+
+		// What still arrives is dropped, not delivered again.
+		server.receive(frame(H2FrameType.DATA, H2Flags.END_STREAM, 1, Bytes.alloc(8)));
+		Assert.equals(1, delivered.length);
+		Assert.isFalse(server.closed);
+	}
+
 	public function testDuplicatePseudoHeaderIsRejected():Void {
 		Assert.notNull(firstResetFor([
 			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/a"),

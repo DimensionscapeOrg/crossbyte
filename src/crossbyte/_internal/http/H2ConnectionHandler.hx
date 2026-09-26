@@ -10,6 +10,7 @@ import crossbyte._internal.http.h2.H2ServerConnection;
 import crossbyte._internal.http.h2.H2ServerRequest;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte.events.Event;
+import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.net.Socket;
@@ -37,6 +38,11 @@ class H2ConnectionHandler {
 	private final __php:PHPBridge;
 	private final __connection:H2ServerConnection;
 
+	// The server's per-response hook, which is where metrics are recorded.
+	// HTTP/1.1 handlers were hooked to it and these were not, so no HTTP/2
+	// response was ever counted.
+	private final __onResponse:Null<(HTTPStatusEvent, HTTPRequestHandler) -> Void>;
+
 	// Advanced on every read. An HTTP/2 connection is idle between requests
 	// by design, so silence alone means nothing, what matters is silence
 	// for longer than the configuration allows.
@@ -52,14 +58,19 @@ class H2ConnectionHandler {
 	 *        identified by looking at them. Fed to the frame layer before
 	 *        anything else, since they are the start of the preface.
 	 */
-	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?buffered:ByteArray) {
+	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?buffered:ByteArray,
+			?onResponse:(HTTPStatusEvent, HTTPRequestHandler) -> Void) {
 		__socket = socket;
 		__config = config;
 		__php = php;
+		__onResponse = onResponse;
 
 		__connection = new H2ServerConnection(__send);
 		__connection.maxResetStreams = config.http2MaxResetStreams;
 		__connection.resetWindowSeconds = config.http2ResetWindowSeconds;
+		// The limit an HTTP/1.1 body is held to. Without it DATA piled up for
+		// as long as a client sent it.
+		__connection.maxRequestBodySize = HTTPRequestHandler.MAX_BUFFER_SIZE;
 		__connection.onRequest = __serve;
 		__connection.onConnectionError = __onConnectionError;
 
@@ -153,8 +164,12 @@ class H2ConnectionHandler {
 		for (field in request.headers) {
 			if (headers.exists(field.name)) {
 				// Folded the way the HTTP/1.1 parser folds repeats, so a
-				// middleware sees one shape regardless of protocol.
-				headers.set(field.name, headers.get(field.name) + ", " + field.value);
+				// middleware sees one shape regardless of protocol, and cookie
+				// with "; ", which is how §8.2.3 says its split crumbs join. A
+				// comma made getCookie("sid") answer "abc123, theme=dark" for
+				// the cookies browsers send as separate fields.
+				var separator:String = field.name == "cookie" ? "; " : ", ";
+				headers.set(field.name, headers.get(field.name) + separator + field.value);
 			} else {
 				headers.set(field.name, field.value);
 			}
@@ -174,9 +189,13 @@ class H2ConnectionHandler {
 
 		var writer = new H2ResponseWriter(__connection, __socket, request.streamId);
 		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
+		if (__onResponse != null) {
+			var onResponse = __onResponse;
+			handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> onResponse(e, handler));
+		}
 
 		try {
-			handler.__serveDecodedRequest(request.method, target, query, headers, body);
+			handler.__serveDecodedRequest(request.method, target, query, headers, body, request.tooLarge);
 		} catch (error:Dynamic) {
 			Logger.error("HTTP/2 request handling failed: " + error);
 			__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);

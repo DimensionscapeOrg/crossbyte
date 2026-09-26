@@ -98,6 +98,21 @@ class H2ServerConnection {
 	 */
 	public var maxControlReplies:Int = DEFAULT_MAX_CONTROL_REPLIES;
 
+	/**
+	 * Bytes one request body may reach before the request is refused.
+	 * Negative disables the check.
+	 *
+	 * DATA was appended with no limit while window kept being granted, so one
+	 * stream could make the server hold as much as it cared to send: a 3 MB
+	 * upload reached a route the HTTP/1.1 path would have refused. Past this,
+	 * the request is delivered at once with `tooLarge` set and no body, so it
+	 * can be answered `413`; the stream is then reset with NO_ERROR, which is
+	 * §8.1's way of asking a client to stop sending, its window is never
+	 * topped up again, and what still arrives is counted for the connection's
+	 * window and dropped.
+	 */
+	public var maxRequestBodySize:Int = -1;
+
 	/** Called once per complete request. */
 	public var onRequest:H2ServerRequest->Void = _ -> {};
 
@@ -648,19 +663,48 @@ class H2ServerConnection {
 		var content:Bytes = frame.has(H2Flags.PADDED) ? H2Frame.stripPadding(frame.payload, frame.streamId) : frame.payload;
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
-		if (target != null) {
-			target.unacknowledged += counted;
-			target.appendBody(content);
-
-			if (frame.has(H2Flags.END_STREAM)) {
-				target.endOfStream = true;
-				__deliver(frame.streamId, target);
+		if (target != null && !target.overflowed) {
+			if (maxRequestBodySize >= 0 && target.bodyLength + content.length > maxRequestBodySize) {
+				__refuseOversized(target);
 			} else {
-				__topUpStreamWindow(target);
+				target.unacknowledged += counted;
+				target.appendBody(content);
+
+				if (frame.has(H2Flags.END_STREAM)) {
+					target.endOfStream = true;
+					__deliver(frame.streamId, target);
+				} else {
+					__topUpStreamWindow(target);
+				}
 			}
 		}
 
 		__topUpConnectionWindow();
+	}
+
+	/**
+	 * Answers a request whose body outgrew `maxRequestBodySize`, and asks the
+	 * client to stop sending it. See that field.
+	 */
+	private function __refuseOversized(target:H2Stream):Void {
+		target.overflowed = true;
+		// Released now rather than kept for a request that will never use it.
+		target.takeBody();
+
+		var request:H2ServerRequest;
+		try {
+			request = H2ServerRequest.fromHeaders(target.id, target.headers, null, true);
+		} catch (e:H2StreamError) {
+			resetStream(e.streamId, e.code);
+			return;
+		}
+
+		request.tooLarge = true;
+		onRequest(request);
+
+		// The answer has ended the stream on this side; this tells the client
+		// the rest of its body is not wanted, without calling it an error.
+		resetStream(target.id, H2ErrorCode.NO_ERROR);
 	}
 
 	private function __deliver(streamId:Int, target:H2Stream):Void {

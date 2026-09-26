@@ -291,7 +291,10 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered);
+		// The same per-response hook as HTTP/1.1, so HTTP/2 responses are counted
+		// and timed. They were not, so a server serving browsers over h2
+		// reported almost nothing.
+		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, this_onResponse);
 		__activeHttp2.set(socket, handler);
 		__connections++;
 		__armReceiveSweep();
@@ -491,12 +494,22 @@ class HTTPServer extends ServerSocket {
 				peak = pending;
 			}
 		}
+		// HTTP/2 connections hold output too, and were left out of both gauges.
+		for (socket in __activeHttp2.keys()) {
+			var pending:Int = (cast socket : crossbyte.net.Socket).outputBufferLength;
+			if (pending > peak) {
+				peak = pending;
+			}
+		}
 		return peak;
 	}
 
 	@:noCompletion private function __totalOutputBuffer():Int {
 		var total:Int = 0;
 		for (socket in __active.keys()) {
+			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
+		}
+		for (socket in __activeHttp2.keys()) {
 			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
 		}
 		return total;
