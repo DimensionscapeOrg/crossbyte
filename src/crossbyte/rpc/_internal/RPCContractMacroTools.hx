@@ -226,6 +226,43 @@ class RPCContractMacroTools {
 		}
 	}
 
+	/**
+		Whether a value of `ct` may be absent -- `Null<T>`, however it is
+		named -- so that on the wire it is a byte saying whether it is there
+		and then, if it is, the value.
+
+		Decided on the type and not on how it is written: the side that
+		answers and the side that reads the answer must agree, and one may
+		name through a typedef what the other writes out.
+	**/
+	public static function isNullable(ct:ComplexType, pos:Position):Bool {
+		if (ct == null) {
+			return false;
+		}
+		switch (ct) {
+			case TPath({name: "Null", pack: [], params: [_]}):
+				return true;
+			case _:
+		}
+		var type:Null<Type> = try Context.resolveType(ct, pos) catch (_:Dynamic) null;
+		while (type != null) {
+			switch (type) {
+				case TAbstract(ref, [_]) if (ref.get().name == "Null" && ref.get().pack.length == 0):
+					return true;
+				case TType(_, _):
+					// One typedef at a time: a full follow drops the Null.
+					type = Context.follow(type, true);
+				case TMono(ref):
+					type = ref.get();
+				case TLazy(lazy):
+					type = lazy();
+				case _:
+					return false;
+			}
+		}
+		return false;
+	}
+
 	/** `ct`, resolved where it was written, as `fullComplexType` writes it; as it was if it does not resolve. **/
 	public static function fullType(ct:ComplexType, pos:Position):ComplexType {
 		if (ct == null) {

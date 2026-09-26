@@ -691,6 +691,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC method returning `Null<T>` -- in a contract, with `@:rpc`, through
+  a typedef, or as `Future<Null<T>>` -- answers what its caller reads. The
+  caller reads a byte saying whether the answer is there before the
+  answer, as for an optional argument, and the handler wrote the answer
+  bare: its first byte was taken for that flag, the rest misread, and the
+  connection closed on the first answer that was not null, failing every
+  other call waiting on it. A null `String` could not be written at all on
+  eval and JavaScript, and went as "" on cpp. Both sides now decide
+  whether a type may be absent from the type itself, not from how it is
+  written, so a typedef of `Null<T>` reads and writes the flag too.
 - One RPC handler can serve many sessions, and answers each call on the
   connection it came in on. A handler held the session it was given last,
   so a server that gave one handler to every client -- as the guide's
