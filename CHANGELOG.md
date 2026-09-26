@@ -726,6 +726,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An asynchronous `FileStream` read hands out only bytes it has read. The
+  read buffer was allocated at the file's full size before anything was
+  loaded, so `bytesAvailable` counted the whole file from the first
+  progress event, and reading that much, which the class documentation
+  says to do, returned zeros for everything not loaded yet: 6.4 MB of them
+  from a 10 MB file on Node. The buffer now grows as data arrives. Where the
+  stream's worker has a thread of its own, `readAhead` is honoured as well:
+  loading pauses while that much is waiting to be read, and with a finite
+  `readAhead` consumed bytes are let go, so a stream holds about that much
+  rather than the whole file. Setting `position` outside what is held
+  starts loading again from there.
 - A chunked `FileStream` copy is exact. A synchronous `readBytes` past the
   end of the file padded the missing bytes with zeros and returned as
   though it had read them, so the usual loop, read a chunk until
