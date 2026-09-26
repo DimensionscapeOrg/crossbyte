@@ -691,6 +691,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An idle WebRTC peer no longer makes native calls every tick. Its DTLS
+  session was stepped on every tick -- step, pending and available, three
+  native calls finding nothing -- although nothing in an established session
+  runs on a timer: records are read as they arrive and written as they are
+  sent. `DtlsTransport.poll` now does nothing once the session is up, and
+  `receive` steps it. Measured natively, polling an idle established
+  transport went from 47 ns to under 1 ns.
 - WebRTC SDP and trickle ICE. An offer listing a second fingerprint under
   another hash was refused, because each `a=fingerprint` line overwrote the
   last and a hash this cannot check wrote nothing; the first sha-256 one is
