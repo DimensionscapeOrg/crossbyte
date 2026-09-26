@@ -512,6 +512,10 @@ class TimerWheel implements ITimerScheduler {
 			id = free.pop();
 		} else {
 			id = nodes.length;
+			if (id >= TimerHandle.MAX_TIMERS) {
+				// Past this the id no longer fits its handle; see the heap.
+				throw "TimerWheel full: " + TimerHandle.MAX_TIMERS + " timers are already alive on this runtime";
+			}
 			nodes.push(null);
 			gens.push(0);
 		}

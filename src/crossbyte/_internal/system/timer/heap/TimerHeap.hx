@@ -411,6 +411,11 @@ class TimerHeap implements ITimerScheduler {
 			id = free.pop();
 		} else {
 			id = nodes.length;
+			if (id >= TimerHandle.MAX_TIMERS) {
+				// Past this the id no longer fits its handle, and a handle
+				// would name some other timer.
+				throw "TimerHeap full: " + TimerHandle.MAX_TIMERS + " timers are already alive on this runtime";
+			}
 			nodes.push(null);
 			gens.push(0);
 		}
