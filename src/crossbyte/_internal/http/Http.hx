@@ -15,6 +15,7 @@ import crossbyte.http.HTTPRequestContext;
 import crossbyte.http.HTTPVersion;
 import crossbyte.io.ByteArray;
 import crossbyte.utils.CompressionAlgorithm;
+import crossbyte.utils.IntParse;
 import crossbyte.url.URL;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
@@ -820,27 +821,26 @@ class Http {
 		return StringTools.urlEncode(k) + "=" + StringTools.urlEncode(v);
 	}
 
+	/**
+	 * Reads a `Content-Length` field, or answers null when it is not one.
+	 *
+	 * Through `IntParse`, as the server reads the same field. `Std.parseInt`
+	 * is `strtol` cast to an `int` on Linux and macOS native, so a response
+	 * declaring 4294967296 bytes read as 0 there, an empty body, reported as
+	 * a complete download, and on the jvm the same header threw.
+	 */
 	private function __parseContentLength(header:String):Null<Int> {
 		if (header == null) {
 			return null;
 		}
 
-		var values = header.split(",");
-		var parsed:Null<Int> = null;
-		for (raw in values) {
-			var value = StringTools.trim(raw);
-			if (value.length == 0 || !~/^[0-9]+$/.match(value)) {
+		var parsed:Int = -1;
+		for (raw in header.split(",")) {
+			var value:Int = IntParse.decimal(StringTools.trim(raw));
+			if (value < 0 || (parsed >= 0 && parsed != value)) {
 				return null;
 			}
-
-			var n:Null<Int> = Std.parseInt(value);
-			if (n == null || n < 0) {
-				return null;
-			}
-			if (parsed != null && parsed != n) {
-				return null;
-			}
-			parsed = n;
+			parsed = value;
 		}
 
 		return parsed;

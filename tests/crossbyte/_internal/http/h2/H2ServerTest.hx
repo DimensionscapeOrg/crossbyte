@@ -228,6 +228,21 @@ class H2ServerTest extends utest.Test {
 		]));
 	}
 
+	public function testAContentLengthTheBodyDoesNotMatchIsMalformed():Void {
+		// §8.1.1. END_STREAM frames the body, but the field still reaches the
+		// application, which must not be told a length the body does not have.
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("content-length", "5")])), "a length with no body was accepted");
+		Assert.notNull(resetForBody(requestFields([new HpackHeader("content-length", "4")]), Bytes.ofString("hello")), "a short length was accepted");
+		// 2^32 + 5, which Std.parseInt read as 5 on Linux native: it must not
+		// be taken to match a five-byte body.
+		Assert.notNull(resetForBody(requestFields([new HpackHeader("content-length", "4294967301")]), Bytes.ofString("hello")),
+			"a length past an Int matched a five-byte body");
+		Assert.notNull(resetForBody(requestFields([new HpackHeader("content-length", "+5")]), Bytes.ofString("hello")), "a signed length was accepted");
+
+		Assert.isNull(resetForBody(requestFields([new HpackHeader("content-length", "5")]), Bytes.ofString("hello")), "a true length was refused");
+		Assert.isNull(firstResetFor(requestFields([new HpackHeader("content-length", "0")])), "a true zero length was refused");
+	}
+
 	public function testDuplicatePseudoHeaderIsRejected():Void {
 		Assert.notNull(firstResetFor([
 			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/a"),
@@ -697,6 +712,25 @@ class H2ServerTest extends utest.Test {
 
 		var encoder = new HpackEncoder(4096);
 		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, encoder.encode(fields)));
+
+		for (candidate in Collector.parse(out.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				return candidate;
+			}
+		}
+		return null;
+	}
+
+	/** Sends one request block and a body, and returns the RST_STREAM it drew, if any. */
+	private static function resetForBody(fields:Array<HpackHeader>, body:Bytes):Null<H2Frame> {
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		out.bytes();
+
+		var encoder = new HpackEncoder(4096);
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(fields)));
+		server.receive(frame(H2FrameType.DATA, H2Flags.END_STREAM, 1, body));
 
 		for (candidate in Collector.parse(out.bytes())) {
 			if (candidate.type == H2FrameType.RST_STREAM) {

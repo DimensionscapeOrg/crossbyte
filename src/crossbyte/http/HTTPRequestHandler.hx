@@ -20,6 +20,7 @@ import crossbyte.http.HTTPContentCoding;
 import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.CompressionAlgorithm;
+import crossbyte.utils.IntParse;
 import crossbyte.utils.Logger;
 import crossbyte.utils.LogLevel;
 import crossbyte._internal.http.headers.AcceptEncoding;
@@ -2517,13 +2518,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 			chunked = true;
 		}
 
-		var contentLength:Null<Int> = null;
+		var contentLength:Int = 0;
 		if (!chunked) {
 			var contentLengthHeader:String = __headers.exists("content-length") ? __headers.get("content-length") : null;
-			contentLength = __parseContentLength(contentLengthHeader);
-			if (contentLengthHeader != null && contentLength == null) {
-				__sendErrorResponse(400, "Bad Request");
-				return true;
+			if (contentLengthHeader != null) {
+				contentLength = __parseContentLength(contentLengthHeader);
+				if (contentLength < 0 || contentLength > MAX_BUFFER_SIZE) {
+					__sendErrorResponse(400, "Bad Request");
+					return true;
+				}
 			}
 		}
 
@@ -2539,7 +2542,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
-		if (!chunked && (contentLength == null || contentLength == 0)) {
+		if (!chunked && contentLength == 0) {
 			return false;
 		}
 
@@ -2734,27 +2737,35 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return (c >= "A".code && c <= "Z".code) ? c + 32 : c;
 	}
 
-	@:noCompletion private function __parseContentLength(header:String):Null<Int> {
+	/**
+	 * Reads a `Content-Length` field, or answers `-1` when it is not one.
+	 *
+	 * Repeated values, folded into a list by the header parser, must agree;
+	 * RFC 9112 6.3 lets a recipient accept `5, 5` and requires it to refuse
+	 * `5, 6`.
+	 *
+	 * Through `IntParse` rather than `Std.parseInt`, which is what made this a
+	 * smuggling vector. The field was checked to be all digits and then handed
+	 * to `Std.parseInt`, which on Linux and macOS native is `strtol` cast to an
+	 * `int`: 4294967296 read as 0 and 4294967396 as 100. At 0 the server read
+	 * no body and parsed the body as the next request, so a request carried
+	 * inside another reached the application unseen by whatever inspected the
+	 * outer one, the reason a request with both framings is already refused.
+	 * On the jvm the same field threw, and every such request was a 500 and an
+	 * ERROR line. A value too large for an `Int` is now simply not a length.
+	 */
+	@:noCompletion private static function __parseContentLength(header:String):Int {
 		if (header == null) {
-			return null;
+			return -1;
 		}
 
-		var values = header.split(",");
-		var parsed:Null<Int> = null;
-		for (raw in values) {
-			var value = StringTools.trim(raw);
-			if (value.length == 0 || !~/^[0-9]+$/.match(value)) {
-				return null;
+		var parsed:Int = -1;
+		for (raw in header.split(",")) {
+			var value:Int = IntParse.decimal(StringTools.trim(raw));
+			if (value < 0 || (parsed >= 0 && parsed != value)) {
+				return -1;
 			}
-
-			var n:Null<Int> = Std.parseInt(value);
-			if (n == null || n < 0 || n > MAX_BUFFER_SIZE) {
-				return null;
-			}
-			if (parsed != null && parsed != n) {
-				return null;
-			}
-			parsed = n;
+			parsed = value;
 		}
 
 		return parsed;
