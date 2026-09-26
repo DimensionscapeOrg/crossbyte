@@ -292,19 +292,20 @@ class RPCCommandMacro {
 
 		statements.push(macro framed.writeIntAt(0, framed.bytesWritten - 4));
 		statements.push(macro framed.flush());
-		statements.push(macro connection.send(framed));
+		statements.push(macro framed);
 
+		// The frame, which the stub hands to RPCCommands to send: one place
+		// decides what becomes of a call that cannot go.
 		return {
 			name: metaName,
 			doc: "Auto-generated RPC meta for " + commandName,
 			access: [APrivate, AInline],
 			kind: FFun({
 				args: [
-					{name: "connection", type: macro :crossbyte.net.NetConnection},
 					{name: "requestId", type: macro :Int}
 				].concat(args),
-				expr: macro {$b{statements};},
-				ret: macro :Void
+				expr: macro return $b{statements},
+				ret: macro :crossbyte.io.ByteArrayOutput
 			}),
 			pos: Context.currentPos()
 		};
@@ -314,11 +315,11 @@ class RPCCommandMacro {
 			responseType:Null<ComplexType>, opCode:Int):Field {
 		var argExprs = args.map(a -> macro $i{a.name});
 		var expr:Expr = if (responseType == null) {
-			macro $i{metaName}($a{[macro this.__nc, macro 0].concat(argExprs)});
+			macro this.__sendCall($i{metaName}($a{[macro 0].concat(argExprs)}));
 		} else {
 			macro {
 				var response:$retType = this.__createResponse($v{opCode});
-				$i{metaName}($a{[macro this.__nc, macro response.requestId].concat(argExprs)});
+				this.__sendRequest(response, $i{metaName}($a{[macro response.requestId].concat(argExprs)}));
 				return response;
 			};
 		}
