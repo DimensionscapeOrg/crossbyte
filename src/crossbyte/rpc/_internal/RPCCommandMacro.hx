@@ -317,9 +317,13 @@ class RPCCommandMacro {
 		var expr:Expr = if (responseType == null) {
 			macro this.__sendCall($i{metaName}($a{[macro 0].concat(argExprs)}));
 		} else {
+			// Framed before it waits, so an argument that cannot be framed
+			// throws with nothing left waiting for good.
 			macro {
-				var response:$retType = this.__createResponse($v{opCode});
-				this.__sendRequest(response, $i{metaName}($a{[macro response.requestId].concat(argExprs)}));
+				var __requestId:Int = this.__nextRequestId();
+				var __framed:crossbyte.io.ByteArrayOutput = $i{metaName}($a{[macro __requestId].concat(argExprs)});
+				var response:$retType = this.__createResponse($v{opCode}, __requestId);
+				this.__sendRequest(response, __framed);
 				return response;
 			};
 		}

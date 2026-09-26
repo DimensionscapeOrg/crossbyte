@@ -3,7 +3,7 @@ package crossbyte.rpc;
 // Built for every target, JavaScript included: the portable suite runs RPC on
 // Node and in a browser.
 
-import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IllegalOperationError;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.io.ByteArrayOutput;
 import crossbyte.net.NetConnection;
@@ -64,8 +64,12 @@ abstract class RPCCommands {
 
 	@:noCompletion abstract public function __rpc_handle_response(op:Int, requestId:Int, input:ByteArrayInput, failed:Bool):Void;
 
-	@:noCompletion private function __createResponse<T>(op:Int):RPCResponse<T> {
-		final requestId:Int = __nextRequestId();
+	/**
+		The call for `op` waiting under `requestId`, which the stub took from
+		`__nextRequestId` and framed its call with first: a call whose
+		arguments cannot be framed throws before anything waits.
+	**/
+	@:noCompletion private function __createResponse<T>(op:Int, requestId:Int):RPCResponse<T> {
 		final response = new RPCResponse<T>(requestId, op);
 		response.__commands = this;
 		if (__pendingResponse == null) {
@@ -92,33 +96,41 @@ abstract class RPCCommands {
 		by its id and checked by its op: see `RPCSession.__answeredForAnotherOp`.
 	**/
 	/**
-		Sends a one-way call's frame, as its stub built it.
+		What a call through commands no session has is told. They dereferenced
+		a null connection, which on hxcpp in release is a crash.
+	**/
+	@:noCompletion private static inline final UNBOUND_MESSAGE:String = "RPC commands are not bound to a session";
+
+	/**
+		Sends a one-way call's frame, as its stub built it. On a connection
+		that has ended it is dropped: nobody is told what becomes of a one-way
+		call.
 
 		@throws ArgumentError When the call is over its session's
 		`RPCSession.maxFrameLength`: it went out without complaint and ended
 		the connection on the other side.
+		@throws IllegalOperationError When these commands have no session.
 	**/
 	@:noCompletion private function __sendCall(framed:ByteArrayOutput):Void {
 		final session = __session;
-		if (session != null && session.__oversized(framed)) {
-			throw new ArgumentError(session.__oversizedMessage("RPC call", framed));
+		if (session == null) {
+			throw new IllegalOperationError(UNBOUND_MESSAGE);
 		}
-		__nc.send(framed);
+		session.__sendCallFrame(framed);
 	}
 
 	/**
-		Sends a request's frame, as its stub built it. One over its session's
-		`RPCSession.maxFrameLength` is not sent: `response` fails at once, with
-		an `ArgumentError` as its cause.
+		Sends a request's frame, as its stub built it, or fails `response` at
+		once when it cannot go -- see `RPCSession.__sendRequestFrame` -- or
+		these commands have no session.
 	**/
 	@:noCompletion private function __sendRequest<T>(response:RPCResponse<T>, framed:ByteArrayOutput):Void {
 		final session = __session;
-		if (session != null && session.__oversized(framed)) {
-			final message:String = session.__oversizedMessage("RPC call", framed);
-			__failResponse(response.requestId, message, new ArgumentError(message));
+		if (session == null) {
+			__failResponse(response.requestId, UNBOUND_MESSAGE, new IllegalOperationError(UNBOUND_MESSAGE));
 			return;
 		}
-		__nc.send(framed);
+		session.__sendRequestFrame(response, framed);
 	}
 
 	@:noCompletion private function __resolveResponse<T>(op:Int, requestId:Int, value:T):Void {
