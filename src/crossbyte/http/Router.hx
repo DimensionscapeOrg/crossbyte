@@ -37,18 +37,17 @@ import crossbyte.url.URLRequestHeader;
  * For the same reason `*rest` stands for at least one segment,
  * `/files/*rest` does not match `/files`, while `/files/` matches with an
  * empty capture, the slash being a segment of its own. Params hold
- * whatever their segments hold: the request path is URL-decoded before
- * middleware runs, and the router does not decode again. That upstream
- * decode also turns `+` into a space on sys targets, so params never hold
- * a literal `+` and a route spelling one in a literal segment is
- * unreachable until the handler's decoding is fixed.
+ * whatever their segments hold: the request path is percent-decoded and
+ * settled before middleware runs, repeated slashes collapsed, `.` and
+ * `..` steps applied, and the router does not decode again. A `+` is a
+ * literal `+`, and a `..` inside a segment, as in `v1.2..v1.3`, is part
+ * of it.
  *
- * Matching also sees the pre-rewrite path. The rewrite decision is
- * computed before middleware runs but applied only to requests the router
- * releases with `next()`, so a matched route, its `405` included,
- * preempts any rewrite configured for the same path, the default
- * `^/api/.*$` PHP rewrite among them. A deployment that wants both keeps
- * routes and rewrites on disjoint paths.
+ * Matching also sees the pre-rewrite path. Files and rewrites are
+ * resolved only for requests the router releases with `next()`, so a
+ * matched route, its `405` included, preempts any rewrite configured
+ * for the same path, and never costs a filesystem lookup. A deployment
+ * that wants both keeps routes and rewrites on disjoint paths.
  *
  * At the edges:
  *
