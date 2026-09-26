@@ -127,6 +127,87 @@ class HTTPPhpTest extends utest.Test {
 		world.close();
 	}
 
+	public function testAScriptSeesTheRequestsHeadersAndTheClientTheScripts():Void {
+		// The bridge passed a script eight request headers and gave the client
+		// four of the script's back, so CORS, named downloads, HTTP auth,
+		// conditional requests and CSRF checks broke behind it.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend);
+
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nX-Requested-With: XMLHttpRequest\r\n"
+			+ "If-None-Match: \"v1\"\r\nRange: bytes=0-1\r\nX-CSRF-Token: t0k\r\nX-Forwarded-Proto: https\r\n"
+			// Not passed on: httpoxy's Proxy, a name only an underscore tells
+			// apart from X-Forwarded-For, and the connection's own fields.
+			+ "Proxy: http://evil.example\r\nX_Forwarded_For: 6.6.6.6\r\nConnection: keep-alive, X-Hop\r\nX-Hop: secret\r\n\r\n");
+		HTTPTestSupport.pumpMore(10);
+
+		// FastCGI writes a parameter's name straight before its value.
+		for (pair in [
+			"HTTP_ORIGINhttps://app.example",
+			"HTTP_X_REQUESTED_WITHXMLHttpRequest",
+			"HTTP_IF_NONE_MATCH\"v1\"",
+			"HTTP_RANGEbytes=0-1",
+			"HTTP_X_CSRF_TOKENt0k",
+			"HTTP_X_FORWARDED_PROTOhttps",
+			"HTTP_HOSTlocalhost"
+		]) {
+			Assert.isTrue(backend.request.indexOf(pair) >= 0, "the script was not given " + pair);
+		}
+		for (name in ["HTTP_PROXY", "HTTP_X_FORWARDED_FOR", "HTTP_CONNECTION", "HTTP_X_HOP"]) {
+			Assert.equals(-1, backend.request.indexOf(name), "the script was given " + name);
+		}
+
+		backend.answer(200, "application/pdf", "pdf!", [
+			"ETag: \"v2\"",
+			"Content-Disposition: attachment; filename=\"a.pdf\"",
+			"WWW-Authenticate: Basic realm=\"x\"",
+			"Vary: Accept-Language",
+			"X-Custom: yes",
+			"Access-Control-Allow-Origin: https://app.example",
+			// The server's to write, whatever the script says.
+			"Content-Length: 999",
+			"Connection: close",
+			"Server: PHP"
+		]);
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 3.0);
+
+		var response = HTTPTestSupport.parseResponse(world.raw);
+		Assert.equals(200, response.status, "not the PHP response: " + world.raw);
+		Assert.equals("pdf!", response.body);
+		Assert.equals("\"v2\"", response.headers.get("etag"));
+		Assert.equals("attachment; filename=\"a.pdf\"", response.headers.get("content-disposition"));
+		Assert.equals("Basic realm=\"x\"", response.headers.get("www-authenticate"));
+		Assert.equals("Accept-Language", response.headers.get("vary"));
+		Assert.equals("yes", response.headers.get("x-custom"));
+		Assert.equals("https://app.example", response.headers.get("access-control-allow-origin"));
+		Assert.equals("4", response.headers.get("content-length"));
+		Assert.equals("CrossByte", response.headers.get("server"));
+		Assert.equals(-1, world.raw.indexOf("Status:"), "the CGI Status field reached the client");
+		Assert.equals(1, world.raw.split("\r\nServer:").length - 1, "two Server fields");
+
+		world.close();
+	}
+
+	public function testWhatAScriptEncodedIsNotEncodedAgain():Void {
+		// A script under zlib.output_compression names its own coding. Passing
+		// that field back means the server must not compress the body on top.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend);
+		var body:String = StringTools.rpad("", "a", 2000);
+
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\nAccept-Encoding: gzip\r\n\r\n");
+		backend.answer(200, "text/plain", body, ["Content-Encoding: br"]);
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 3.0);
+
+		var response = HTTPTestSupport.parseResponse(world.raw);
+		Assert.equals(200, response.status);
+		Assert.equals("br", response.headers.get("content-encoding"));
+		Assert.equals(1, world.raw.split("\r\nContent-Encoding:").length - 1, "the body was encoded twice");
+		Assert.equals(body, response.body);
+
+		world.close();
+	}
+
 	/**
 	 * Every Set-Cookie value in the first response, in order.
 	 *
@@ -163,6 +244,9 @@ private class FakeFastCGI {
 	public var received(default, null):Bool = false;
 	public var localPort(get, never):Int;
 
+	/** Every byte the bridge sent, one character each. */
+	public var request(default, null):String = "";
+
 	private var listener:ServerSocket;
 	private var peer:Socket;
 
@@ -178,7 +262,11 @@ private class FakeFastCGI {
 
 			peer.addEventListener(ProgressEvent.SOCKET_DATA, function(_):Void {
 				if (peer.bytesAvailable > 0) {
-					peer.readUTFBytes(peer.bytesAvailable);
+					var chunk = new ByteArray();
+					peer.readBytes(chunk, 0, peer.bytesAvailable);
+					for (i in 0...chunk.length) {
+						request += String.fromCharCode(chunk[i]);
+					}
 					received = true;
 				}
 			});

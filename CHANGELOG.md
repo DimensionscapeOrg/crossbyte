@@ -224,6 +224,49 @@ All notable changes to CrossByte will be documented in this file.
   message whole, with whether it was text, where messages ran together into
   one stream. `ping()`, `pong()`, `pingInterval` and `idleTimeout` are
   public, on the session and, for the sessions it accepts, on the server.
+- A response can be written as it is produced:
+  `HTTPRequestHandler.beginResponse(status, contentType, headers)` sends the
+  head and returns an `HTTPResponseStream` to `write` or `writeText` the body
+  into and `end`. Chunked under HTTP/1.1 (ended by closing for an HTTP/1.0
+  client), DATA on a stream held open under HTTP/2. `write` answers `false`
+  when the client has more waiting than it is reading, and `onDrain` says
+  when to go on; a producer that writes regardless is stopped at
+  `maxOutputBufferSize` with an error logged rather than held without bound.
+  The handler dispatches `Event.CLOSE` when its client goes, the connection
+  closed, or an HTTP/2 stream reset, and `connected` says whether it is
+  still there. `respondBytes` sends a body of bytes. `respond` took only a
+  String and always a `Content-Length`, so server-sent events, downloads
+  produced as they went and binary bodies needed `@:privateAccess`.
+- A rate-limited request is answered `429` with a `Retry-After` saying how
+  many seconds until it may try again, over HTTP/1.1 and HTTP/2, and the
+  limiter can be keyed on something other than the client's address:
+  `HTTPServerConfig.rateLimitKey(handler)` names the key a request counts
+  against, the address a trusted proxy forwards, an account, or null to
+  leave it unlimited. `HTTPRequestHandler.remoteAddress` is public, where a
+  route limiting logins per client needed `@:privateAccess` to read it.
+  `RateLimiter.secondsUntil(key)` says when a key could spend again, and
+  `RateLimiter.addressKey(address, prefixBits)` turns an address into the
+  key the server uses, an IPv6 one by its prefix.
+- `HTTPServerConfig.maxRequestBodySize`, the request body a server accepts,
+  on the wire and once decoded, over HTTP/1.1 and HTTP/2; one megabyte by
+  default, as before. It was fixed, and it counted the headers too. A body
+  past it is now `413`, refused on its `Content-Length` before any of it is
+  read and on a chunk's size line for a chunked one; a `Content-Length` past
+  the old fixed limit was answered `400`. A header block has its own limit,
+  64 KB, answered `431`.
+- `HTTPServerConfig.onExpectContinue(handler)`, asked with a request's
+  method, path and headers before a client sending `Expect: 100-continue` is
+  told to send its body. Returning `false` after answering, a `401`, say,
+  keeps the body from being sent at all. The server used to tell every such
+  client to go ahead before any middleware had seen the request.
+- `HTTPServerConfig.onError(handler, error)`, called when a middleware or
+  route throws or passes an error to `next()`. It can answer the request
+  itself, a JSON error body, say, and otherwise the server answers `500`,
+  or the status an `Int` error names, as before. An error that is not an
+  `Int` is now logged at ERROR with the method, the path and, where the
+  target keeps one, the stack; it was not logged at all, so a route that
+  threw a database error left only an INFO line reading `Status: 500`. The
+  client is still told only the status.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -910,6 +953,45 @@ All notable changes to CrossByte will be documented in this file.
   with a self-signed certificate must now either trust it,
   `certAuthority = Certificate.fromFile("server.pem")`: or set
   `verifyCert = false`.
+- The HTTP/1.1 client keeps connections. It asked for `Connection: close` on
+  every request, so each `URLLoader` load paid for a new connection, and over
+  `https` a new TLS handshake. Now a response read to its framed end, from a
+  server that did not ask to close, leaves its connection for the next
+  request to the same scheme, host and port, for up to four seconds, six an
+  origin and 64 in all. A kept connection the server has closed is noticed
+  before use, or else the request goes again on a new one, which is why
+  only `GET`, `HEAD`, `OPTIONS`, `PUT` and `DELETE` are sent on one. Plain
+  requests on loopback went from about 375 to 150 microseconds natively.
+  Not on eval.
+- The server's rate limiter keys an IPv6 client by its /64 rather than its
+  whole address, the block one subscriber is given; keyed on the whole
+  address, a client stepping through its own /64 had a new budget for every
+  request, and a thousand attempts from one against a limit of five were
+  refused none of the time. An IPv4-mapped address counts as the IPv4
+  address it maps. An HTTP/1.1 request is now counted once its headers are
+  read rather than as soon as they have arrived, so a key can come from
+  them; one refused before that, as malformed, is not counted.
+- An `HTTPServer` with no `rootDirectory` serves no files, and listens on
+  `127.0.0.1` unless told otherwise. A missing root used to mean
+  `File.applicationStorageDirectory`: the account's home directory on
+  Linux and macOS, `%APPDATA%` on Windows, and the address defaulted to
+  `0.0.0.0`, so a server with only routes answered every other path from
+  there, to anyone who could reach the port: `GET /.ssh/id_rsa` returned the
+  key, and a session the application had saved through `Store`, which keeps
+  its files in the same directory, was one guessable path away. Now a request
+  no middleware answers is `404` without the filesystem being touched, and
+  `validate()` refuses PHP, `rewrites` and extra `tryFiles` entries without a
+  root, since each names files under it. A server that serves files must set
+  `config.rootDirectory = new File(...)` to the directory it means, and one
+  that other machines must reach, anything deployed, or in a container,
+  must set `config.address = "0.0.0.0"`. The address guards against the
+  mistake that does not show: a public server left on loopback fails its
+  first request from outside, while a private one left public keeps working.
+  Static files whose path has a segment starting with `.`, `.env`,
+  `.git/config`, `.htpasswd`, are answered `404` as well, except under
+  `/.well-known/`, which RFC 8615 reserves for files meant to be published;
+  set `serveDotFiles` to serve them. Middleware and routes still see every
+  path.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -1917,6 +1999,213 @@ All notable changes to CrossByte will be documented in this file.
   completes its handshake inside `connect()`, which held the runtime's
   thread and, against a server on the same runtime, waited twenty seconds
   for an answer its own wait was preventing.
+- Counting a response in `HTTPServer`'s metrics no longer looks its status
+  class's counter up in the registry each time, a label map built, sorted
+  into a key, and the registry's lock taken on top of the counter's own. The
+  counter is looked up once and kept: 820 ns a response became 230 ns
+  natively, the rest being the counter's own lock, and about 195 ns became
+  2 on Node.
+- An HTTP/2 request that has fully arrived is no longer held to
+  `requestTimeout`. Every open stream counted as a request still arriving,
+  so a long poll answered after `requestTimeout` found its connection
+  closed with a GOAWAY, and every other stream on it gone too. As over
+  HTTP/1.1, the clock stops once the request is in, and a connection's idle
+  time counts from the last frame either way.
+- A response body too large for the connection's output buffer is sent
+  whole. It was written at once: what the peer had not taken by the first
+  flush stayed buffered, the socket closed at `maxOutputBufferSize`, and a
+  12 MB `respond()` went out as a `200` with its full `Content-Length` and
+  part of its body, logged and counted as a success. Such a body now goes
+  out as a large file does, in bursts on the socket's drain, and the
+  connection is kept alive after it.
+- A PHP script is given every request header as `HTTP_*`, and the client
+  every response header the script sets. The bridge passed on eight request
+  headers and brought back three, `Cache-Control`, `Location` and
+  `Set-Cookie`: so behind it a script never saw `Origin`,
+  `X-Requested-With`, a CSRF token, a conditional request, `Range` or what a
+  proxy forwarded, and a client never got `ETag`, `Content-Disposition`,
+  `WWW-Authenticate`, `Vary`, `Access-Control-*` or a script's own fields.
+  Left out on the way in: the connection's own fields, `Content-Type` and
+  `Content-Length` (CGI has variables for them), `Proxy` (httpoxy), and any
+  name with an underscore, which would pass for its hyphenated twin. On the
+  way out: the CGI status, the framing, and what the server always writes,
+  `access-control-*` too when the server's own CORS is on. A body that
+  arrives already encoded, a script's under `zlib.output_compression`, or
+  a route's that names its `Content-Encoding`, is no longer encoded again.
+- On a cleartext listener with `http2Enabled`, something thrown while
+  serving a connection's first HTTP/1.1 request is answered `500`, as on
+  any later request. The server reads those first bytes itself to tell the
+  versions apart, and the handler it passed them to parsed them outside its
+  usual catch, so the throw went up through the socket's dispatch into the
+  runtime's pump.
+- The server answers `500` for a file past 2 GB over HTTP/2 as well as
+  HTTP/1.1. `File.size` throws for such a file, since an Int cannot state
+  its length, and the static path did not catch it: HTTP/1.1 answered `500`
+  through its catch-all and HTTP/2 reset the stream. The server's own check,
+  an open, seek and read of every file it served, is gone with it.
+- On eval, the HTTP/1.1 client returns when a server closes without
+  answering, or ends a chunked body before its size line: an error, where
+  `load()` never returned. A socket's `readByte` answers 0 there at the end
+  of the stream instead of throwing, so the client read endless NUL bytes
+  into a line that never ended. A connection closing before the headers end
+  is now reported as that, rather than as a failure to read.
+- The HTTP/1.1 client's idle timeout is in milliseconds, as
+  `URLRequest.idleTimeout` says. The socket was handed the milliseconds as
+  seconds, so the default 30 second timeout waited 30,000 seconds, and a
+  server that never answered held the request for over eight hours. On the
+  jvm no socket read times out at all yet; that is `sys.net.Socket`'s.
+- `URLLoader.close()` with a request in flight no longer crashes a native
+  build with an access violation. The worker thread reported through the
+  loader's own worker field, which `close()` clears, so its next report,
+  the error from the read `close()` had just ended, was a call on null.
+  The URL tests now run in the native suite, where the loader's worker is a
+  thread; they had not run natively at all.
+- `RateLimiter` holds at most `maxKeys` keys, a new constructor argument,
+  100,000 by default, and forgets idle ones without a sweep. Keys are
+  whatever a client sends, account names, addresses, and every one was
+  kept, with a sweep of the lot run inside whichever `tryAcquire` found it
+  due: two million keys held 294 MB on Node, 270 MB on the jvm and 375 MB
+  natively, and that one call took 815 ms, 133 ms and 335 ms. Now buckets
+  live in two generations and an idle generation is dropped whole, in one
+  assignment: that same call takes 0.1 ms on Node, and the flood holds 8 to
+  13 MB. Past the cap, new keys share one bucket, so a flood of them is
+  limited as one client while the keys already held keep their own. A call
+  also costs less natively, 25 ns rather than 45, and `activeKeyCount()` no
+  longer walks the table.
+- `URLLoader` dispatches `HTTPStatusEvent.HTTP_RESPONSE_STATUS` on every
+  target, with the final response's `responseHeaders`, the `responseURL` it
+  came from and whether it was `redirected`; it never dispatched it, so
+  `Retry-After`, `ETag` and `Location` could not be read. And the transports
+  now report one exchange the same way. A 4xx or 5xx is an `IO_ERROR`
+  carrying its body over HTTP/2, on Node and in the browser, as it was on
+  native HTTP/1.1, where it had completed; Node follows redirects, with the
+  native client's rules for credentials and `https` to `http`, where it
+  completed with the 3xx; the browser's `idleTimeout` is time without
+  progress, as elsewhere, rather than a deadline on the whole exchange; and
+  an HTTP/2 response is content-decoded within the client's limits, where a
+  gzip body arrived compressed. HTTP/2 still does not follow redirects; the
+  3xx completes, and its `Location` is now readable.
+- `URLLoader` sends a `URLVariables` as a form on every target: in the query
+  of a GET or HEAD, and otherwise as an `application/x-www-form-urlencoded`
+  body. At run time one is the map beneath it, so the native client read the
+  map's own fields and sent an empty body, and Node and the browser sent a
+  debug dump of the map. On Node a body is also sent with its
+  `Content-Length` whatever the method: Node frames a body only for methods
+  it expects one on, so a body on a DELETE, GET or OPTIONS went out bare, the
+  server read it as the next request, and the next call on the pooled socket
+  got a `400`.
+- With `http2Enabled` on cleartext, a connection that has not yet sent a
+  request is counted, timed and drained. While the server waited to see
+  which protocol it spoke, it escaped all three: with `maxConnections` at 2
+  and `requestTimeout` at half a second, six silent sockets were all taken
+  and still open after `drain()`. They now count against the limit, close
+  at `requestTimeout`, and close when a drain starts. `drain()` also closes
+  at once an HTTP/1.1 connection that has never sent a byte, a browser's
+  preconnect held a drain for its whole timeout, and sends HTTP/2 clients a
+  GOAWAY when the drain starts rather than at its deadline: streams opened
+  after it are refused, those in flight finish, and each connection closes
+  with its last stream. An HTTP/2 response with no body, a 204, a 304, any
+  HEAD, no longer keeps its stream's concurrency slot, which after 128 of
+  them left a connection refusing every stream; and a stream refused for the
+  concurrency limit no longer skips its header block, which left the HPACK
+  table out of step with the client's for every block after.
+- HTTP/2 requests go through what HTTP/1.1 requests go through. Only the
+  HTTP/1.1 parser asked the rate limiter, so six requests over HTTP/2 were
+  all answered where HTTP/1.1 refused the fourth. DATA was appended with no
+  limit while window kept being granted, so one stream could make the server
+  hold as much as it sent: a 3 MB upload reached a route HTTP/1.1 refused.
+  Now a body past the limit is answered `413` at once, the stream is reset
+  without error so the client stops sending, its window is not topped up
+  again, and the connection carries on. HTTP/2 responses are counted and
+  timed in `metrics`, and HTTP/2 connections in the output-buffer gauges; a
+  gzip body is decoded before middleware sees it, as over HTTP/1.1; and
+  cookies a browser sends as separate fields are joined with `"; "`, as RFC
+  9113 8.2.3 has it, where a comma made `getCookie("sid")` answer
+  `abc123, theme=dark`.
+- A peer no longer decides how much memory the server or the `URLLoader`
+  client spends on a body. The server inflated a request body with no
+  ceiling, while its limit counted the compressed bytes on the wire, so a
+  32 KB gzip body became 32 MB at the route; it now stops decoding at the
+  same limit and answers `413`, and refuses more than two stacked content
+  codings with `415`, as the client already did for responses. The client
+  allocated a whole body from its `Content-Length` before a byte arrived, so
+  one header of 2000000000 cost two gigabytes; a declared length past the
+  new `Http.MAX_BODY_SIZE` (64 MB) is now refused before anything is
+  allocated, and a body framed by the connection closing is held to the same
+  bound. Such a body cut off by a reset was reported complete with part of
+  its content; only the connection's clean end completes it now.
+- CORS no longer grants every site a signed-in user's data. With
+  `corsAllowCredentials` on and `corsAllowedOrigins` left at its default of
+  `["*"]`, the server echoed whatever `Origin` arrived with
+  `Access-Control-Allow-Credentials: true`, so any page could read `/me` with
+  the user's cookies. `validate()` now refuses credentials with `"*"`; name
+  the origins instead. `"*"` is always answered as `*`, and
+  `Allow-Credentials` goes only beside an origin that was named. A preflight
+  is answered with `corsAllowedMethods` and `corsAllowedHeaders` rather than
+  by echoing what it asked for, which approved any method and header; a
+  page sending `Authorization` or a custom header now needs it listed.
+- A conditional request dated after January 2038 is answered `304` on
+  native builds. The server compared seconds with `Math.floor`, which
+  returns an `Int`, and seconds since 1970 no longer fit one then: on hxcpp
+  the cast wrapped, a `If-Modified-Since` in 2100 compared as long ago, and
+  the whole file went out again with a `200`.
+- `URLLoader` no longer hands a caller's credentials to whatever host a
+  redirect names. Every hop was written with every header the caller set,
+  so a `302` to another origin received `Authorization: Bearer ...`. Once a
+  redirect leaves the origin the request started at, `Authorization`,
+  `Proxy-Authorization` and a `Cookie` set in `requestHeaders` are dropped
+  for the rest of the exchange, as browsers, curl and Go drop them; cookies
+  the client manages already went only to the host that set them. A
+  redirect from `https` to `http` is refused unless
+  `URLRequest.followInsecureRedirects` is set, and one to any scheme but
+  those two is refused, where a malformed `Location` used to throw out of
+  the request. Ten redirects ending in a response are no longer reported
+  as too many. A caller's header line is written through the same
+  sanitiser as the server's, so a CR or LF in a value, one forwarded from
+  a client, say, can no longer add a header or a request of its own.
+- A middleware guard sees the path the server would serve. The request
+  path was only percent-decoded for middleware, while the static resolver
+  collapsed slashes and applied `.` and `..` on its own, so a guard refusing
+  `/private/` let `//private/report.txt` and `/./private/report.txt` through
+  and the file was served for both; on Windows and macOS `/PRIVATE/report.txt`
+  went the same way, and on Windows so did a trailing dot and an 8.3 short
+  name, `/ENV~1` served `.env`. `requestPath` is now settled once, before
+  middleware, over HTTP/1.1 and HTTP/2 alike: repeated slashes collapsed,
+  dot steps applied, a backslash read as `/`, and a path climbing above the
+  root answered `400`. On Windows and macOS a file is served only under the
+  spelling its directory lists, as on Linux. A `..` inside a name is part of
+  it: any `..` used to throw before the router ran, so
+  `/api/compare/v1.2..v1.3` answered 500. Files and rewrites are resolved only
+  once the middleware chain lets a request through, so a request a route
+  answers never touches the filesystem, where it paid three lookups and a
+  regular expression compile: natively on Windows, a routed request went from
+  79 to 31 microseconds end to end, and a static file from 265 to 200.
+- The HTTP server and clients read every other number a peer sends the same
+  way on every target, through `IntParse`: a byte range, a chunk size, the
+  port in a `Host` header or a URL, a cookie's `Max-Age`, a response's status
+  and, on Node, its length. `Std.parseInt` answers four ways past an `Int`, so
+  on Linux native `Range: bytes=4294967296-` was a range from byte 0, a
+  `Max-Age=4294967296` deleted a cookie meant to last a century, and an
+  HTTP/2 `:status` of 4294967496 was a 200; on the jvm the last two threw out
+  of the whole request. A status is now exactly three digits, a range number
+  past an `Int` reaches past any file, and a `Host` of `[::1]:8080` is no
+  longer named `[`. Ranges, chunk sizes, status lines, URL ports and
+  `If-Modified-Since` dates are read by hand rather than by a regular
+  expression compiled on every call.
+- A request can no longer be smuggled inside another through a
+  `Content-Length` too large for an `Int`. The server checked the field was
+  all digits and then trusted `Std.parseInt`, which on Linux and macOS
+  native is `strtol` cast to an `int`: 4294967296 read as 0 and 4294967396
+  as 100. At 0 the server read no body and parsed the body as the next
+  request, so a request carried inside another reached the application
+  unseen by a proxy or firewall that inspected the outer one. On the jvm the
+  same field threw, answered 500 and logged an ERROR per request. The server
+  and the `URLLoader` client now read it through `IntParse`, so a length no
+  `Int` holds is refused, `400` on the server, an error on the client,
+  which had read it as an empty body, and an HTTP/2 request whose
+  `content-length` differs from the DATA it carried is reset as malformed,
+  as RFC 9113 8.1.1 requires, rather than handed to the application with a
+  length its body does not have.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the

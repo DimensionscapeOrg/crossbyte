@@ -4,6 +4,7 @@ import crossbyte._internal.http.h2.hpack.HpackDecoder;
 import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
+import crossbyte.utils.IntParse;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import haxe.io.Eof;
@@ -474,8 +475,10 @@ class H2Connection {
 
 		for (header in decoded) {
 			if (header.name == ":status") {
-				var parsed:Null<Int> = Std.parseInt(header.value);
-				target.status = parsed == null ? -1 : parsed;
+				// Three digits (§8.3.2), read the same on every target. Past
+				// an Int, Std.parseInt made "4294967496" a 200 on Linux native.
+				var parsed:Int = header.value.length == 3 ? IntParse.decimal(header.value) : -1;
+				target.status = parsed < 100 ? -1 : parsed;
 			} else {
 				target.headers.push(header);
 			}

@@ -10,6 +10,7 @@ import crossbyte._internal.http.h2.H2ServerConnection;
 import crossbyte._internal.http.h2.H2ServerRequest;
 import crossbyte._internal.php.PHPBridge;
 import crossbyte.events.Event;
+import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.net.Socket;
@@ -37,6 +38,11 @@ class H2ConnectionHandler {
 	private final __php:PHPBridge;
 	private final __connection:H2ServerConnection;
 
+	// The server's per-response hook, which is where metrics are recorded.
+	// HTTP/1.1 handlers were hooked to it and these were not, so no HTTP/2
+	// response was ever counted.
+	private final __onResponse:Null<(HTTPStatusEvent, HTTPRequestHandler) -> Void>;
+
 	// Advanced on every read. An HTTP/2 connection is idle between requests
 	// by design, so silence alone means nothing, what matters is silence
 	// for longer than the configuration allows.
@@ -52,14 +58,19 @@ class H2ConnectionHandler {
 	 *        identified by looking at them. Fed to the frame layer before
 	 *        anything else, since they are the start of the preface.
 	 */
-	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?buffered:ByteArray) {
+	public function new(socket:Socket, config:HTTPServerConfig, ?php:PHPBridge, ?buffered:ByteArray,
+			?onResponse:(HTTPStatusEvent, HTTPRequestHandler) -> Void) {
 		__socket = socket;
 		__config = config;
 		__php = php;
+		__onResponse = onResponse;
 
 		__connection = new H2ServerConnection(__send);
 		__connection.maxResetStreams = config.http2MaxResetStreams;
 		__connection.resetWindowSeconds = config.http2ResetWindowSeconds;
+		// The limit an HTTP/1.1 body is held to. Without it DATA piled up for
+		// as long as a client sent it.
+		__connection.maxRequestBodySize = config.maxRequestBodySize;
 		__connection.onRequest = __serve;
 		__connection.onConnectionError = __onConnectionError;
 
@@ -83,6 +94,11 @@ class H2ConnectionHandler {
 			return;
 		}
 
+		// A response going out is activity too: idle time counts from the
+		// last frame either way, so a connection that has just answered a
+		// long poll is not taken for one silent since the request came in.
+		__lastActivity = haxe.Timer.stamp();
+
 		var out:ByteArray = new ByteArray();
 		out.writeBytes(bytes, 0, bytes.length);
 		__socket.writeBytes(out, 0, out.length);
@@ -100,13 +116,22 @@ class H2ConnectionHandler {
 		__connection.receive(inbound, 0, inbound.length);
 	}
 
+	/** Whether a drain has started here and every stream it let finish has. */
+	public var drained(get, never):Bool;
+
+	private inline function get_drained():Bool {
+		return __connection.goingAway && __connection.openStreams == 0 && __socket.connected;
+	}
+
 	/**
 	 * Closes the connection if it has gone quiet for longer than allowed.
 	 *
 	 * Two deadlines, because silence means different things. With no stream
 	 * open the peer is simply between requests, which HTTP/2 is designed for,
-	 * so it gets the keep-alive idle allowance. With a stream open it owes a
-	 * request body that never came, and that is the request timeout.
+	 * so it gets the keep-alive idle allowance. With a request still arriving
+	 * it owes a body that never came, and that is the request timeout. With
+	 * every open stream's request in hand the wait is the application's, and
+	 * there is no deadline.
 	 *
 	 * Without this an HTTP/2 connection was never reaped at all: the sweep
 	 * only walked HTTP/1.1 handlers, so a peer could open connections and go
@@ -116,15 +141,47 @@ class H2ConnectionHandler {
 	 *        for every handler it visits, HTTP/1.1 and HTTP/2 alike.
 	 */
 	public function checkDeadline(now:Float):Void {
-		var idle:Float = now - __lastActivity;
-		var limit:Float = __connection.openStreams > 0 ? __config.requestTimeout : __config.keepAliveTimeout;
+		// A draining connection ends when its last stream does.
+		if (drained) {
+			close();
+			return;
+		}
 
+		// A request still arriving owes its bytes within requestTimeout. One
+		// that has arrived is the application's to answer, for as long as that
+		// takes, a long poll, a slow upstream, as an HTTP/1.1 request stops
+		// its clock once read. Open streams all counted as arriving, so a long
+		// poll answering after requestTimeout found its connection gone, and
+		// every other stream on it with it.
+		var limit:Float;
+		if (__connection.receivingStreams > 0) {
+			limit = __config.requestTimeout;
+		} else if (__connection.openStreams > 0) {
+			return;
+		} else {
+			limit = __config.keepAliveTimeout;
+		}
+
+		var idle:Float = now - __lastActivity;
 		if (limit <= 0 || idle < limit) {
 			return;
 		}
 
 		Logger.info('HTTP/2 connection idle for ${Math.round(idle)}s; closing.');
 		close();
+	}
+
+	/**
+	 * Starts a graceful shutdown: a GOAWAY now, so the peer opens no more
+	 * streams here, while the ones it has run to their end. The connection
+	 * closes at once when none are open, and otherwise when the last one
+	 * finishes, which the server's sweep checks.
+	 */
+	public function beginDrain():Void {
+		__connection.goAwayGracefully();
+		if (__connection.openStreams == 0) {
+			close();
+		}
 	}
 
 	/** Ends the connection, telling the peer why before the socket goes. */
@@ -153,8 +210,12 @@ class H2ConnectionHandler {
 		for (field in request.headers) {
 			if (headers.exists(field.name)) {
 				// Folded the way the HTTP/1.1 parser folds repeats, so a
-				// middleware sees one shape regardless of protocol.
-				headers.set(field.name, headers.get(field.name) + ", " + field.value);
+				// middleware sees one shape regardless of protocol, and cookie
+				// with "; ", which is how §8.2.3 says its split crumbs join. A
+				// comma made getCookie("sid") answer "abc123, theme=dark" for
+				// the cookies browsers send as separate fields.
+				var separator:String = field.name == "cookie" ? "; " : ", ";
+				headers.set(field.name, headers.get(field.name) + separator + field.value);
 			} else {
 				headers.set(field.name, field.value);
 			}
@@ -174,9 +235,13 @@ class H2ConnectionHandler {
 
 		var writer = new H2ResponseWriter(__connection, __socket, request.streamId);
 		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
+		if (__onResponse != null) {
+			var onResponse = __onResponse;
+			handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> onResponse(e, handler));
+		}
 
 		try {
-			handler.__serveDecodedRequest(request.method, target, query, headers, body);
+			handler.__serveDecodedRequest(request.method, target, query, headers, body, request.tooLarge);
 		} catch (error:Dynamic) {
 			Logger.error("HTTP/2 request handling failed: " + error);
 			__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);

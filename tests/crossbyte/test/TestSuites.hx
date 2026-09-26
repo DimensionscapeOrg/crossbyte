@@ -100,6 +100,15 @@ class TestSuites {
 		runner.addCase(new crossbyte.http.HTTP2BackendTest());
 		#end
 		#end
+
+		#if cpp
+		// The URL group, for the native suite, which calls this and not
+		// addURL. So the loader had never run on the one target where its
+		// worker is a real thread, and close() with a request in flight
+		// crashed there with an access violation. addAll, which also calls
+		// addURL, never runs on cpp.
+		addURL(runner);
+		#end
 	}
 
 	public static function addIO(runner:Runner):Void {

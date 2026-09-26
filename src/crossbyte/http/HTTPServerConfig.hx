@@ -28,36 +28,177 @@ class HTTPServerConfig {
 	**/
 	public static inline var DEFAULT_MAX_OUTPUT_BUFFER:Int = 8 * 1024 * 1024;
 
+	/** The request body a server accepts by default: one megabyte. **/
+	public static inline var DEFAULT_MAX_REQUEST_BODY:Int = 1024 * 1024;
+
+	/**
+		Bytes a request body may reach, on the wire and once decoded, over
+		HTTP/1.1 and HTTP/2 alike. A larger one is answered `413 Payload Too
+		Large`, as soon as a `Content-Length` says so, before any of the body
+		is read. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
+
+		The limit used to be fixed at a megabyte that counted the request's
+		headers too, and a `Content-Length` past it was answered `400`, which
+		tells a client its request was malformed rather than too big. Raise it
+		for uploads; the whole body is held in memory before middleware runs.
+	**/
+	public var maxRequestBodySize:Int = DEFAULT_MAX_REQUEST_BODY;
+
+	/**
+		Asked, with the request's method, path and headers, whether a request
+		carrying `Expect: 100-continue` may send its body. Return `true` to let
+		it; to refuse, answer with `handler.respond()`, a `401`, say, and
+		return `false`. A `false` with no answer is answered `417`.
+
+		This is the moment authentication belongs in for such a request. The
+		server told every client to go ahead before any middleware had seen the
+		request, so an unauthenticated upload was invited and read in full
+		before it could be refused. Left `null`, a request within
+		`maxRequestBodySize` is told to go ahead, as before.
+	**/
+	public var onExpectContinue:(handler:HTTPRequestHandler) -> Bool = null;
+
+	/**
+		The address to listen on. Defaults to `127.0.0.1`, which only this
+		machine can reach.
+
+		Set it to `0.0.0.0` (or one interface's address) to serve other
+		machines, which a deployed server, and any server in a container,
+		needs. It used to default to `0.0.0.0`. The two mistakes are not alike:
+		a server that should be public and is not fails its first request from
+		outside, loudly, and is one line from fixed, while a development server
+		or an admin endpoint that should be private and is not keeps working
+		and shows nothing wrong.
+	**/
 	public var address:String;
 	public var port:UInt;
+
+	/**
+		The directory static files are served from, or `null` to serve none.
+
+		`null` is the default. A request that no middleware answers is then
+		`404 Not Found` without the filesystem being consulted, which is what
+		a server that only has routes wants.
+
+		It used to default to `File.applicationStorageDirectory`: the account's
+		home directory on Linux and macOS, `%APPDATA%` on Windows. A server that
+		only had routes, and never set a root, answered every other path from
+		there, on every interface: `GET /.ssh/id_rsa` returned the key, and the
+		files `Store` keeps under the same directory, sessions among them,
+		were one guessable path away. Name the directory to serve:
+
+		```haxe
+		config.rootDirectory = new File("/srv/www");
+		```
+
+		PHP, `rewrites`, and `tryFiles` entries past the first two all resolve
+		files under this directory, so `validate` refuses them without one.
+	**/
 	public var rootDirectory:File;
+
+	/**
+		Whether a static file whose path has a segment starting with `.` may be
+		served. Defaults to `false`.
+
+		Dotfiles are where secrets live: `.env`, `.git/`, `.htpasswd`,
+		`.ssh/`. A document root that is a checkout, or that a deploy copied a
+		whole project into, holds them without anyone having decided to publish
+		them. With this off, a request naming one is answered `404`, the same as
+		a file that is not there, so the answer does not confirm it exists.
+
+		`/.well-known/` is served either way. RFC 8615 reserves it for exactly
+		the files a site is meant to publish, an ACME challenge, a
+		`security.txt`: and refusing it would break certificate renewal.
+
+		This decides static files only. Middleware and routes see every path.
+	**/
+	public var serveDotFiles:Bool = false;
+
 	public var directoryIndex:Array<String>;
 	public var errorDocument:File;
 	public var whitelist:Array<String>;
 	public var blacklist:Array<String>;
 	public var customHeaders:Array<URLRequestHeader>;
 	public var middleware:Array<Middleware>;
+
 	/**
-		Refuses a request with `429` once its client has spent its budget.
+		Called when a middleware or route throws, or passes an error to
+		`next()`, with the request and what was thrown or passed.
 
-		Keyed on the remote address and consulted for **every** request, not
-		every connection. Leaving it out of the constructor does not leave the
-		server unlimited: one is fitted, with `RateLimiter`'s own defaults of ten
-		requests a minute per client.
+		The hook may answer the request itself, a JSON error body, say,
+		with `handler.respond()`, and must do so before it returns. If it does
+		not, the server answers `500`, or the status an `Int` error names; the
+		client is told the status and never the error's text.
 
-		The fitted budget is `DEFAULT_REQUESTS_PER_MINUTE`, which is a visitor's
-		page load with room to spare rather than `RateLimiter`'s own default of
-		ten, ten is smaller than one page, and a document with eleven assets
-		used to come back as ten served and two refused.
+		Whatever it does, an error that is not an `Int` is first logged at
+		ERROR with the method, the path and, where the target keeps one, the
+		stack. It used not to be logged at all: a route that threw a database
+		error left only an INFO line saying `Status: 500`.
+	**/
+	public var onError:(handler:HTTPRequestHandler, error:Dynamic) -> Void = null;
+	/**
+		Refuses a request with `429` once its client has spent its budget,
+		saying in `Retry-After` how many seconds until it may try again.
 
-		Pass a limiter of your own to say something different. A server behind a
-		proxy wants one sized to the proxy rather than to a visitor, since every
-		request then arrives from one address.
+		Keyed by `rateLimitKey`, the client's address unless that says
+		otherwise, and consulted for **every** request, not every connection.
+		Leaving it out of the constructor does not leave the server unlimited:
+		one is fitted, allowing `DEFAULT_REQUESTS_PER_MINUTE`, which is a
+		visitor's page load with room to spare rather than `RateLimiter`'s own
+		default of ten, ten is smaller than one page, and a document with
+		eleven assets used to come back as ten served and two refused.
+
+		Pass a limiter of your own to say something different.
 	**/
 	public var rateLimiter:RateLimiter;
+
+	/**
+		The key `rateLimiter` counts a request under, or null to leave the
+		request unlimited. Asked once the request's headers are read, so it can
+		look at them as well as at `handler.remoteAddress`.
+
+		Unset, a request is keyed by `RateLimiter.addressKey(remoteAddress)`: an
+		IPv4 address as it is and an IPv6 one by its /64, which is what one
+		subscriber is given. Keyed on the whole address, a client stepping
+		through its own /64 had a fresh budget for every request.
+
+		Behind a proxy every request arrives from the proxy's address, so key on
+		the address it forwards, but only when the request did come through
+		it, since anyone can send the header:
+
+		```haxe
+		config.rateLimitKey = handler -> {
+			var forwarded = handler.remoteAddress == "10.0.0.2" ? handler.getHeader("x-real-ip") : null;
+			RateLimiter.addressKey(forwarded != null ? forwarded : handler.remoteAddress);
+		};
+		```
+
+		A login route limiting attempts per account rather than per client can
+		use the same limiter, or one of its own, from middleware.
+	**/
+	public var rateLimitKey:(handler:HTTPRequestHandler) -> Null<String> = null;
 	public var corsEnabled:Bool;
+
+	/**
+		Origins a cross-origin page may read responses from, such as
+		`https://app.example.com`, or `["*"]`, the default, for any.
+
+		`"*"` is answered as `*`, never by echoing the request's `Origin`, and
+		cannot be combined with `corsAllowCredentials`: `validate` refuses the
+		pair, since it would let every site read what a signed-in user can.
+	**/
 	public var corsAllowedOrigins:Array<String>;
+
+	/**
+		Methods a preflight approves. The answer is this list whatever the
+		preflight asked for; a browser then refuses a method not on it.
+	**/
 	public var corsAllowedMethods:Array<String>;
+
+	/**
+		Request headers a preflight approves, such as `Authorization`. The
+		answer is this list whatever the preflight asked for.
+	**/
 	public var corsAllowedHeaders:Array<String>;
 	public var corsMaxAge:Int;
 	public var maxConnections:Int;
@@ -310,7 +451,7 @@ class HTTPServerConfig {
 		return tlsCertificatePath != null && tlsCertificatePath != "" && tlsKeyPath != null && tlsKeyPath != "";
 	}
 
-	public function new(address:String = "0.0.0.0", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
+	public function new(address:String = "127.0.0.1", port:UInt = 30000, rootDirectory:File = null, errorDocument:File = null,
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
@@ -319,7 +460,8 @@ class HTTPServerConfig {
 			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 100, http2Enabled:Bool = false) {
 		this.address = address;
 		this.port = port;
-		this.rootDirectory = rootDirectory == null ? File.applicationStorageDirectory : rootDirectory;
+		// Null means no static files at all. See `rootDirectory`.
+		this.rootDirectory = rootDirectory;
 		this.directoryIndex = directoryIndex == null ? ["index.php", "index.html"] : directoryIndex;
 		this.errorDocument = errorDocument;
 		this.whitelist = whitelist == null ? [] : whitelist;
@@ -358,7 +500,11 @@ class HTTPServerConfig {
 		Throws if this configuration describes a resolution order the server
 		will not follow. Called by `HTTPServer` on construction.
 
-		Only `tryFiles` is checked, and only its shape. `$uri` and `$uri/` are
+		Two things are checked: the shape of `tryFiles`, and that nothing which
+		resolves files under `rootDirectory`, PHP, `rewrites`, `tryFiles`
+		entries past the first two, is asked for without one.
+
+		`$uri` and `$uri/` are
 		tested by the resolver before it reads this list at all, before the
 		rewrite rules, and whether or not the list mentions them, so any
 		spelling other than those two first describes something that does not
@@ -382,6 +528,29 @@ class HTTPServerConfig {
 			if (tryFiles[i] == "$uri" || tryFiles[i] == "$uri/") {
 				throw new ArgumentError("tryFiles repeats \"" + tryFiles[i] + "\" at index " + i
 					+ "; it is only ever tested first, so the later entry does nothing.");
+			}
+		}
+
+		// Credentials are a grant of the signed-in user's data to the origins
+		// named, and "*" names every site. The server honoured the pair by
+		// echoing whatever Origin arrived, with Allow-Credentials: true, so any
+		// page on the web could read a user's /me with their cookies.
+		if (corsEnabled && corsAllowCredentials && corsAllowedOrigins != null && corsAllowedOrigins.indexOf("*") != -1) {
+			throw new ArgumentError("corsAllowCredentials needs corsAllowedOrigins to name the origins it trusts, such as [\"https://app.example.com\"]; with \"*\" every site could read what a signed-in user can.");
+		}
+
+		// Each of these names files under the document root. Without one they
+		// would do nothing at all, and a configuration that silently means
+		// less than it says is refused here for the reason given above.
+		if (rootDirectory == null) {
+			if (phpEnabled) {
+				throw new ArgumentError("phpEnabled needs a rootDirectory: PHP scripts are found under it. Set rootDirectory to the directory holding them.");
+			}
+			if (rewrites != null && rewrites.length > 0) {
+				throw new ArgumentError("rewrites need a rootDirectory: every rule resolves to a file under it. Set rootDirectory, or remove the rules.");
+			}
+			if (tryFiles.length > 2) {
+				throw new ArgumentError("tryFiles entries after \"$uri/\" need a rootDirectory: each names a file under it. Set rootDirectory, or remove them.");
 			}
 		}
 	}

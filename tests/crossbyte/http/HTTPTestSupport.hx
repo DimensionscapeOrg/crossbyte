@@ -110,6 +110,68 @@ class HTTPTestSupport {
 		});
 	}
 
+	/**
+	 * Sends each of `requests` on a connection of its own, one after another,
+	 * and hands back what each connection received, in order.
+	 *
+	 * A connection is read until its response is complete, or with
+	 * `untilClosed` until the server closes it, which is how a case shows a
+	 * second response never followed the first. One that answers nothing
+	 * before `timeout` comes back with status 0 rather than failing here, so
+	 * the case decides what that means.
+	 *
+	 * Each byte becomes one character of `raw` and `body`, as `__sendRequest`
+	 * in the handler suite does, so a binary body survives the trip.
+	 */
+	public static function exchangeEach(server:HTTPServer, requests:Array<String>, done:Array<HTTPTestResponse>->Void, untilClosed:Bool = false,
+			timeout:Float = 3.0):Void {
+		var responses:Array<HTTPTestResponse> = [];
+
+		function next(index:Int):Void {
+			if (index >= requests.length) {
+				done(responses);
+				return;
+			}
+
+			var request:String = requests[index];
+			var client:crossbyte.net.Socket = new crossbyte.net.Socket();
+			var raw:String = "";
+			var bytes:ByteArray = new ByteArray();
+			var closed:Bool = false;
+
+			client.addEventListener(crossbyte.events.Event.CONNECT, function(_):Void {
+				client.writeUTFBytes(request);
+				client.flush();
+			});
+			client.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_):Void {
+				if (client.bytesAvailable > 0) {
+					var chunk:ByteArray = new ByteArray();
+					client.readBytes(chunk, 0, client.bytesAvailable);
+					bytes.writeBytes(chunk, 0, chunk.length);
+					for (i in 0...chunk.length) {
+						raw += String.fromCharCode(chunk[i]);
+					}
+				}
+			});
+			client.addEventListener(crossbyte.events.Event.CLOSE, function(_):Void {
+				closed = true;
+			});
+
+			var headOnly:Bool = StringTools.startsWith(request, "HEAD ");
+			connectThen(client, server, function():Void {
+				pumpUntilAsync(() -> closed || (!untilClosed && isResponseComplete(raw, headOnly)), timeout, function(_):Void {
+					try {
+						client.close();
+					} catch (_:Dynamic) {}
+					responses.push(parseResponse(raw, bytes));
+					next(index + 1);
+				});
+			});
+		}
+
+		next(0);
+	}
+
 	/** Pumps `count` further times, for settling work that follows a close. */
 	public static function pumpMore(count:Int, step:Float = 1 / 60):Void {
 		var runtime:CrossByte = CrossByte.current();

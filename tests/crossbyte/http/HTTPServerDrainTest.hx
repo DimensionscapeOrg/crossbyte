@@ -86,6 +86,54 @@ class HTTPServerDrainTest extends utest.Test {
 		Assert.isFalse(server.listening);
 	}
 
+	/**
+		A connection that has not sent a byte has nothing in flight.
+
+		A browser opens one ahead of need, a preconnect, and drain() waited
+		for it to time out: the auditor's drain(4) with one such connection and
+		nothing else ran its whole four seconds. With HTTP/2 on cleartext it was
+		worse: a connection still deciding its protocol was not even known to
+		drain(), and survived it.
+	**/
+	public function testDrainClosesConnectionsThatNeverSpoke(async:Async):Void {
+		var cases:Array<Bool> = [false, true];
+
+		function next(index:Int):Void {
+			if (index >= cases.length) {
+				async.done();
+				return;
+			}
+
+			var http2:Bool = cases[index];
+			var server:HTTPServer = __makeServer(config -> config.http2Enabled = http2);
+			var client:Socket = new Socket();
+			var closed:Bool = false;
+			client.addEventListener(Event.CLOSE, _ -> closed = true);
+
+			HTTPTestSupport.connectThen(client, server, function():Void {
+				HTTPTestSupport.pumpUntilAsync(() -> server.activeConnections == 1, 2.0, function(accepted:Bool):Void {
+					Assert.isTrue(accepted, "the silent connection was not counted (http2Enabled=" + http2 + ")");
+
+					var started:Float = haxe.Timer.stamp();
+					var drained:Bool = false;
+					server.drain(4.0, () -> drained = true);
+
+					HTTPTestSupport.pumpUntilAsync(() -> drained && closed, 5.0, function(_):Void {
+						var took:Float = haxe.Timer.stamp() - started;
+						try client.close() catch (_:Dynamic) {}
+
+						Assert.isTrue(drained, "drain did not complete (http2Enabled=" + http2 + ")");
+						Assert.isTrue(closed, "the silent connection outlived the drain (http2Enabled=" + http2 + ")");
+						Assert.isTrue(took < 2.0, 'drain waited ${took}s on a connection that never spoke (http2Enabled=$http2)');
+						next(index + 1);
+					});
+				});
+			});
+		}
+
+		next(0);
+	}
+
 	public function testDrainClosesIdleKeepAliveConnectionImmediately(async:Async):Void {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
@@ -217,7 +265,7 @@ class HTTPServerDrainTest extends utest.Test {
 		});
 	}
 
-	private function __makeServer():HTTPServer {
+	private function __makeServer(?configure:HTTPServerConfig->Void):HTTPServer {
 		var root = File.createTempDirectory();
 		var indexFile = root.resolvePath("index.html");
 		var fixture = new ByteArray();
@@ -225,6 +273,9 @@ class HTTPServerDrainTest extends utest.Test {
 		indexFile.save(fixture);
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+		if (configure != null) {
+			configure(config);
+		}
 		__roots.push(root);
 		return new HTTPServer(config);
 	}

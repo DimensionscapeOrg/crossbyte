@@ -118,6 +118,109 @@ class HTTPServerDefaultsTest extends utest.Test {
 		});
 	}
 
+	/**
+		A server that never set `rootDirectory` serves no files at all.
+
+		The default root used to be `File.applicationStorageDirectory`, the
+		account's home on Linux and macOS, `%APPDATA%` on Windows, so a
+		server with only routes answered every other path from there. This is
+		the auditor's case: a session the application saved through `Store`,
+		which keeps its files under that same directory, was one guessable
+		path away. The canary is written where `Store` writes, which is where
+		the store tests already write, and removed afterwards.
+	**/
+	public function testAServerWithNoRootServesNoFiles(async:Async):Void {
+		var name:String = "http-root-canary-" + Std.random(0x3FFFFFFF);
+		var canary:String = "session-token-" + Std.random(0x3FFFFFFF);
+		var store:crossbyte.io.Store = null;
+		var failed:String = null;
+
+		crossbyte.io.Store.open(name).then(function(opened:crossbyte.io.Store):Void {
+			opened.putString("user:admin", canary).then(function(_):Void {
+				store = opened;
+			}, error -> failed = error);
+		}, error -> failed = error);
+
+		HTTPTestSupport.pumpUntilAsync(() -> store != null || failed != null, 5.0, function(_):Void {
+			if (store == null) {
+				Assert.fail("the canary could not be stored: " + failed);
+				async.done();
+				return;
+			}
+
+			var router:Router = new Router();
+			router.get("/api/health", ctx -> ctx.handler.respond(200, "application/json", '{"ok":true}'));
+
+			// Deliberately no root: this is what the plain constructor gives.
+			var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+			config.middleware.push(router.middleware());
+			var server:HTTPServer = new HTTPServer(config);
+
+			var hex:String = haxe.io.Bytes.ofString("user:admin").toHex();
+			HTTPTestSupport.exchangeEach(server, [
+				"GET /api/health HTTP/1.1\r\nHost: x\r\n\r\n",
+				'GET /stores/$name/$hex.value HTTP/1.1\r\nHost: x\r\n\r\n',
+				"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+			], function(responses):Void {
+				try server.close() catch (_:Dynamic) {}
+				__removeStore(store, name);
+
+				Assert.equals(200, responses[0].status, "the route itself was not answered");
+				Assert.equals(404, responses[1].status, "a file under the storage directory was served by a server with no root");
+				Assert.isTrue(responses[1].raw.indexOf(canary) < 0, "the stored session reached the client");
+				Assert.equals(404, responses[2].status, "a server with no root answered / with something other than 404");
+				async.done();
+			});
+		});
+	}
+
+	/** An unconfigured listener is reachable from this machine only. **/
+	public function testTheDefaultAddressIsLoopback():Void {
+		Assert.equals("127.0.0.1", new HTTPServerConfig().address);
+		Assert.isNull(new HTTPServerConfig().rootDirectory);
+		Assert.isFalse(new HTTPServerConfig().serveDotFiles);
+	}
+
+	/**
+		What resolves files under the root is refused without one, rather than
+		quietly doing nothing.
+	**/
+	public function testWhatNeedsARootIsRefusedWithoutOne():Void {
+		var php:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		php.phpEnabled = true;
+		Assert.raises(() -> php.validate(), crossbyte.errors.ArgumentError);
+
+		var rewrites:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		rewrites.rewrites.push({pattern: "^/app$", target: "/app.html"});
+		Assert.raises(() -> rewrites.validate(), crossbyte.errors.ArgumentError);
+
+		var fallback:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		fallback.tryFiles.push("/index.html");
+		Assert.raises(() -> fallback.validate(), crossbyte.errors.ArgumentError);
+
+		// The routes-only server itself is fine.
+		var plain:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		plain.validate();
+		Assert.pass();
+	}
+
+	private static function __removeStore(store:crossbyte.io.Store, name:String):Void {
+		try {
+			store.clear();
+			store.close();
+		} catch (_:Dynamic) {}
+
+		try {
+			var directory:String = haxe.io.Path.join([File.applicationStorageDirectory.nativePath, "stores", name]);
+			if (sys.FileSystem.exists(directory)) {
+				for (entry in sys.FileSystem.readDirectory(directory)) {
+					sys.FileSystem.deleteFile(haxe.io.Path.join([directory, entry]));
+				}
+				sys.FileSystem.deleteDirectory(directory);
+			}
+		} catch (_:Dynamic) {}
+	}
+
 	private function __makeServer():HTTPServer {
 		var root:File = File.createTempDirectory();
 		__roots.push(root);

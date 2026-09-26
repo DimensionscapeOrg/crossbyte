@@ -1,6 +1,7 @@
 package crossbyte.http;
 
 import crossbyte.net.RateLimiter;
+import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.http.RewriteEngine;
 import crossbyte.http.config.RewriteConditionType;
 import crossbyte.http.config.RewriteFlag;
@@ -47,7 +48,10 @@ class HTTPSupportTest extends utest.Test {
 		// /api path to /index.php with the PHP flag while phpEnabled defaults
 		// to false, so a stock server crashed on a path many services use.
 		Assert.equals(0, first.rewrites.length);
-		Assert.isTrue(first.rootDirectory != null);
+		// No root by default, and so no static files. The default was the
+		// account's home directory, served on every interface.
+		Assert.isNull(first.rootDirectory);
+		Assert.equals("127.0.0.1", first.address);
 		// Keep-alive defaults on: it is what HTTP/1.1 specifies and what
 		// removes the per-request handshake without client changes.
 		Assert.isTrue(first.keepAlive);
@@ -180,14 +184,40 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals("/a+b.html", RewriteEngine.normalize("/a+b.html"));
 		Assert.equals("/100%.html", RewriteEngine.normalize("/100%.html"));
 
-		var threw = false;
-		try {
-			RewriteEngine.normalize("/../../secret");
-		} catch (e:Dynamic) {
-			threw = Std.string(e) == "403";
+		// Climbing above the root is refused by answering null: it used to
+		// throw "403", which reached the client as a 500.
+		Assert.isNull(RewriteEngine.normalize("/../../secret"));
+		Assert.isNull(RewriteEngine.normalize("/a/../../secret"));
+		// A ".." inside a name is not a step, and used to be refused too.
+		Assert.equals("/compare/v1.2..v1.3", RewriteEngine.normalize("/compare/v1.2..v1.3"));
+		Assert.equals("/secret", RewriteEngine.normalize("/a/../secret"));
+	}
+
+	public function testPathNormalizationSettlesEverySpelling():Void {
+		for (spelling in ["/private/report.txt", "//private/report.txt", "/./private/report.txt", "/private//report.txt", "/x/../private/report.txt",
+			"/private/./report.txt", "\\private\\report.txt", "private/report.txt"]) {
+			Assert.equals("/private/report.txt", HttpSyntax.normalizePath(spelling), spelling);
 		}
 
-		Assert.isTrue(threw);
+		Assert.equals("/", HttpSyntax.normalizePath(""));
+		Assert.equals("/", HttpSyntax.normalizePath("/"));
+		Assert.equals("/", HttpSyntax.normalizePath("//"));
+		Assert.equals("/", HttpSyntax.normalizePath("/a/.."));
+		Assert.equals("/a/", HttpSyntax.normalizePath("/a/"));
+		Assert.equals("/a/", HttpSyntax.normalizePath("/a/."));
+		Assert.equals("/a/", HttpSyntax.normalizePath("/a//"));
+		Assert.equals("/a/", HttpSyntax.normalizePath("/a/b/.."));
+		Assert.equals("/...", HttpSyntax.normalizePath("/..."));
+		Assert.equals("/.env", HttpSyntax.normalizePath("/.env"));
+		Assert.equals("*", HttpSyntax.normalizePath("*"));
+		Assert.isNull(HttpSyntax.normalizePath("/.."));
+		Assert.isNull(HttpSyntax.normalizePath("/../a"));
+		Assert.isNull(HttpSyntax.normalizePath("\\..\\a"));
+
+		// A settled path comes back as the very same string: the common case
+		// allocates nothing.
+		var clean:String = "/api/users/42";
+		Assert.isTrue(HttpSyntax.normalizePath(clean) == clean);
 	}
 
 	public function testRewriteEngineSupportsHeaderConditionsAndBackrefs():Void {

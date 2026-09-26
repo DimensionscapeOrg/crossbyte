@@ -1,5 +1,6 @@
 package crossbyte._internal.http;
 
+import crossbyte.test.Require;
 import utest.Assert;
 
 /**
@@ -53,6 +54,33 @@ class CookieJarTest extends utest.Test {
 		// How a server signs you out mid-chain.
 		jar.store("session=; Max-Age=0", "example.com");
 		Assert.isNull(jar.headerFor("example.com", false));
+	}
+
+	public function testMaxAgeIsReadTheSameOnEveryTarget():Void {
+		// Std.parseInt made 4294967296 a zero on Linux native, deleting a
+		// cookie meant to last a century, and threw out of the request on
+		// the jvm. Digits past an Int are still a number; text is ignored.
+		var jar = new CookieJar();
+		jar.store("long=1; Max-Age=4294967296", "example.com");
+		jar.store("longer=1; Max-Age=99999999999999999999", "example.com");
+		jar.store("junk=1; Max-Age=abc", "example.com");
+		jar.store("signed=1; Max-Age=+5", "example.com");
+		var kept:String = jar.headerFor("example.com", false);
+		Require.notNull(kept, "every cookie was deleted");
+		Assert.isTrue(kept.indexOf("long=1") >= 0, "a Max-Age past an Int deleted the cookie: " + kept);
+		Assert.isTrue(kept.indexOf("longer=1") >= 0, kept);
+		Assert.isTrue(kept.indexOf("junk=1") >= 0, "an unreadable Max-Age was not ignored: " + kept);
+		Assert.isTrue(kept.indexOf("signed=1") >= 0, kept);
+
+		jar.store("long=; Max-Age=-1", "example.com");
+		jar.store("longer=; Max-Age=-99999999999999999999", "example.com");
+		jar.store("junk=; Max-Age=00", "example.com");
+		kept = jar.headerFor("example.com", false);
+		Require.notNull(kept);
+		Assert.isTrue(kept.indexOf("long=") < 0, "a negative Max-Age did not delete: " + kept);
+		Assert.isTrue(kept.indexOf("longer=") < 0, "a negative Max-Age past an Int did not delete: " + kept);
+		Assert.isTrue(kept.indexOf("junk=") < 0, "Max-Age=00 did not delete: " + kept);
+		Assert.equals("signed=1", kept);
 	}
 
 	public function testALaterValueReplacesAnEarlierOne():Void {

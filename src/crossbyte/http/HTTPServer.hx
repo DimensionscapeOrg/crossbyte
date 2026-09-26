@@ -31,6 +31,13 @@ class HTTPServer extends ServerSocket {
 	// Kept apart from __active rather than widened into it: the two hold
 	// different handlers and the sweep asks each a different question.
 	private var __activeHttp2:ObjectMap<Dynamic, H2ConnectionHandler>;
+
+	// Cleartext connections whose first bytes have not yet said which protocol
+	// they speak, with the time each must say it by (0 for none). Counted
+	// against maxConnections like any other: while waiting here they used to
+	// be counted by nothing, timed by nothing and drained by nothing, so six
+	// silent sockets all got in past a limit of two and outlived drain().
+	private var __sniffing:ObjectMap<Dynamic, Float>;
 	private var __maxConnections:Int;
 	private var __connections:Int;
 	private var docRoot:String;
@@ -39,6 +46,8 @@ class HTTPServer extends ServerSocket {
 
 	@:noCompletion private var __requestsTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __requestSeconds:crossbyte.metrics.Histogram;
+	// The status-class counters, by status / 100, each looked up once.
+	@:noCompletion private var __statusCounters:Array<Null<crossbyte.metrics.Counter>> = [for (_ in 0...10) null];
 	@:noCompletion private static inline var RECEIVE_SWEEP_INTERVAL:Float = 0.25;
 	@:noCompletion private var __sweepAccumulator:Float = 0;
 	@:noCompletion private var __sweepArmed:Bool = false;
@@ -65,10 +74,13 @@ class HTTPServer extends ServerSocket {
 				setALPN(["h2", "http/1.1"]);
 			}
 		}
-		docRoot = config.rootDirectory.nativePath;
+		// Null when the server has no static files; validate() has already
+		// refused everything that would need one.
+		docRoot = config.rootDirectory != null ? config.rootDirectory.nativePath : null;
 		autoIndex = (config.directoryIndex != null && config.directoryIndex.length > 0) ? config.directoryIndex : ["index.php", "index.html"];
 		__active = new ObjectMap();
 		__activeHttp2 = new ObjectMap();
+		__sniffing = new ObjectMap();
 		__maxConnections = config.maxConnections;
 
 		if (__config.phpEnabled) {
@@ -149,15 +161,33 @@ class HTTPServer extends ServerSocket {
 		var idleSockets:Array<Dynamic> = [];
 		for (socket in __active.keys()) {
 			var handler:HTTPRequestHandler = __active.get(socket);
-			if (handler.__isIdle()) {
+			// A connection that has never sent a byte, a browser's
+			// preconnect, has nothing in flight either, and held the drain
+			// open for its whole timeout.
+			if (handler.__isIdle() || !handler.__receivedAny) {
 				idleSockets.push(socket);
 			} else {
 				handler.__closeAfterResponse = true;
 			}
 		}
+		// Still deciding which protocol they speak: nothing has begun.
+		for (socket in __sniffing.keys()) {
+			idleSockets.push(socket);
+		}
 		for (socket in idleSockets) {
 			try {
 				(cast socket : crossbyte.net.Socket).close();
+			} catch (_:Dynamic) {}
+		}
+
+		// HTTP/2 clients are told now, with a GOAWAY, rather than at the
+		// deadline: they stop opening streams here, and what they have in
+		// flight finishes. A connection with nothing open closes at once, and
+		// the rest as their last stream ends.
+		var http2:Array<H2ConnectionHandler> = [for (handler in __activeHttp2) handler];
+		for (handler in http2) {
+			try {
+				handler.beginDrain();
 			} catch (_:Dynamic) {}
 		}
 
@@ -181,6 +211,15 @@ class HTTPServer extends ServerSocket {
 
 		var onTick:TickEvent->Void = null;
 		onTick = function(_:TickEvent):Void {
+			// Closed here as well as in the sweep, which a server with both
+			// timeouts turned off never arms.
+			if (__connections > 0) {
+				var finished:Array<H2ConnectionHandler> = [for (handler in __activeHttp2) if (handler.drained) handler];
+				for (handler in finished) {
+					handler.close();
+				}
+			}
+
 			if (__connections > 0 && haxe.Timer.stamp() < deadline) {
 				return;
 			}
@@ -195,7 +234,11 @@ class HTTPServer extends ServerSocket {
 	}
 
 	private function __finishDrain(onComplete:Void->Void):Void {
-		for (socket in __active.keys()) {
+		var sockets:Array<Dynamic> = [for (socket in __active.keys()) socket];
+		for (socket in __sniffing.keys()) {
+			sockets.push(socket);
+		}
+		for (socket in sockets) {
 			try {
 				(cast socket : crossbyte.net.Socket).close();
 			} catch (_:Dynamic) {}
@@ -204,8 +247,10 @@ class HTTPServer extends ServerSocket {
 		// Closed through the handler rather than the socket, so the peer gets a
 		// GOAWAY naming the last stream it processed instead of a connection
 		// that simply stops, which is the difference between a client that
-		// knows what to retry and one that guesses.
-		for (handler in __activeHttp2) {
+		// knows what to retry and one that guesses. Snapshotted first, since a
+		// close re-enters cleanupSocket, which removes from the map.
+		var http2:Array<H2ConnectionHandler> = [for (handler in __activeHttp2) handler];
+		for (handler in http2) {
 			try {
 				handler.close();
 			} catch (_:Dynamic) {}
@@ -213,6 +258,7 @@ class HTTPServer extends ServerSocket {
 
 		__active = new ObjectMap();
 		__activeHttp2 = new ObjectMap();
+		__sniffing = new ObjectMap();
 		__connections = 0;
 
 		try {
@@ -255,15 +301,51 @@ class HTTPServer extends ServerSocket {
 			}
 
 			// Cleartext has no negotiation to read, so the first bytes decide.
-			new H2PrefaceSniffer(e.socket, __onProtocolDecided);
+			__sniff(e.socket);
 			return;
 		}
 
 		__serveHttp1(e.socket);
 	}
 
+	/**
+	 * Watches a cleartext connection's first bytes, counted and timed while it
+	 * does. Counted against the same ceiling as a served connection, and held
+	 * to `requestTimeout`, since until it speaks it is a request that has not
+	 * arrived.
+	 */
+	@:noCompletion private function __sniff(socket:CBSocket):Void {
+		if (__connections >= __maxConnections) {
+			// Nothing to answer in: which protocol would be a guess.
+			Logger.error('Connection refused: concurrency limit ${__maxConnections}');
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+			return;
+		}
+
+		__sniffing.set(socket, __config.requestTimeout > 0 ? haxe.Timer.stamp() + __config.requestTimeout : 0);
+		__connections++;
+		__armReceiveSweep();
+
+		socket.addEventListener("close", (_) -> cleanupSocket(socket));
+		socket.addEventListener("error", (_) -> cleanupSocket(socket));
+
+		new H2PrefaceSniffer(socket, __onProtocolDecided);
+	}
+
 	/** Routes a sniffed cleartext connection to the handler it turned out to need. */
 	@:noCompletion private function __onProtocolDecided(socket:CBSocket, buffered:ByteArray, isHttp2:Bool):Void {
+		if (!__sniffing.exists(socket)) {
+			// Closed, timed out or drained while it was deciding.
+			return;
+		}
+
+		// Handed over rather than counted twice: the serve functions below
+		// count the connection themselves.
+		__sniffing.remove(socket);
+		__connections--;
+
 		if (isHttp2) {
 			__serveHttp2(socket, buffered);
 		} else {
@@ -289,7 +371,10 @@ class HTTPServer extends ServerSocket {
 			return;
 		}
 
-		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered);
+		// The same per-response hook as HTTP/1.1, so HTTP/2 responses are counted
+		// and timed. They were not, so a server serving browsers over h2
+		// reported almost nothing.
+		var handler:H2ConnectionHandler = new H2ConnectionHandler(socket, __config, php, buffered, this_onResponse);
 		__activeHttp2.set(socket, handler);
 		__connections++;
 		__armReceiveSweep();
@@ -401,6 +486,22 @@ class HTTPServer extends ServerSocket {
 		}
 
 		var now:Float = haxe.Timer.stamp();
+
+		// A connection still silent at its deadline never began a request, so
+		// there is nothing to answer it with; it is closed.
+		var silent:Array<Dynamic> = [];
+		for (socket in __sniffing.keys()) {
+			var deadline:Float = __sniffing.get(socket);
+			if (deadline > 0 && now >= deadline) {
+				silent.push(socket);
+			}
+		}
+		for (socket in silent) {
+			try {
+				(cast socket : CBSocket).close();
+			} catch (_:Dynamic) {}
+		}
+
 		for (handler in handlers) {
 			handler.__checkReceiveDeadline(now);
 		}
@@ -409,6 +510,14 @@ class HTTPServer extends ServerSocket {
 		}
 	}
 	private function cleanupSocket(sock:Dynamic):Void {
+		if (__sniffing.exists(sock)) {
+			__sniffing.remove(sock);
+			if (__connections > 0) {
+				__connections--;
+			}
+			return;
+		}
+
 		if (__active.exists(sock)) {
 			__active.remove(sock);
 			if (__connections > 0) {
@@ -489,12 +598,22 @@ class HTTPServer extends ServerSocket {
 				peak = pending;
 			}
 		}
+		// HTTP/2 connections hold output too, and were left out of both gauges.
+		for (socket in __activeHttp2.keys()) {
+			var pending:Int = (cast socket : crossbyte.net.Socket).outputBufferLength;
+			if (pending > peak) {
+				peak = pending;
+			}
+		}
 		return peak;
 	}
 
 	@:noCompletion private function __totalOutputBuffer():Int {
 		var total:Int = 0;
 		for (socket in __active.keys()) {
+			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
+		}
+		for (socket in __activeHttp2.keys()) {
 			total += (cast socket : crossbyte.net.Socket).outputBufferLength;
 		}
 		return total;
@@ -508,8 +627,19 @@ class HTTPServer extends ServerSocket {
 		// Status class rather than exact code: "2xx" and "5xx" are what
 		// alerts are written against, and one series per code would grow
 		// cardinality for no operational gain.
-		var statusClass:String = Std.int(e.status / 100) + "xx";
-		__config.metrics.counter(__requestsTotal.name, ["status" => statusClass]).inc();
+		//
+		// Each class's counter is looked up once and kept. Looking it up per
+		// response built a label map, sorted it into a key and took the
+		// registry's lock, on top of the counter's own, for every response.
+		var index:Int = Std.int(e.status / 100);
+		var counter:Null<crossbyte.metrics.Counter> = (index >= 0 && index < 10) ? __statusCounters[index] : null;
+		if (counter == null) {
+			counter = __config.metrics.counter(__requestsTotal.name, ["status" => index + "xx"]);
+			if (index >= 0 && index < 10) {
+				__statusCounters[index] = counter;
+			}
+		}
+		counter.inc();
 	}
 }
 #end
