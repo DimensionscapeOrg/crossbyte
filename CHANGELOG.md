@@ -1181,6 +1181,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A request body over 16 KB reaches the server whole over `https`, natively
+  and on the jvm. The client wrote it with `Output.writeBytes`, which writes
+  what it can and says how much, and a TLS socket takes one record, 16 KB,
+  at a time: the rest was dropped, and the server waited for it until the
+  request timed out. HTTP/2 wrote every frame the same way, so a full-sized
+  DATA frame lost its last nine bytes and the server closed the connection.
 - On the jvm, every `URLLoader` load left two sockets open until the process
   ended: the thread it ran on opened a selector for its reads, and nothing
   closed it when the thread ended. With eight loads in flight at a time,
