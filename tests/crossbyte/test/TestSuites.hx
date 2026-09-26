@@ -87,6 +87,8 @@ class TestSuites {
 		// The client, which drives a raw socket with its own TLS and so exists
 		// on no JavaScript target. Its test also spawns threads.
 		runner.addCase(new crossbyte._internal.http.HttpTest());
+		// The threads URLLoader's loads run on.
+		runner.addCase(new crossbyte._internal.http.LoadPoolTest());
 		// The backend end to end, which needs a listening socket and a thread,
 		// so it sits with the client rather than in PortableSuite.
 		//

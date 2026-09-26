@@ -314,6 +314,11 @@ class HTTP2Backend implements HTTPBackend {
 			socket.setALPN(["h2"]);
 		}
 
+		// The name is looked up here, on the calling thread. That is the
+		// load's own thread, URLLoader runs every load on one of its pool
+		// threads, never on a runtime's, so a slow resolver holds up this
+		// request and no one else's sockets or timers. Resolver, which hands
+		// its answer back to a runtime's thread, is for code on one.
 		socket.connect(host, port);
 
 		if (secure && socket.getALPN() != "h2") {
