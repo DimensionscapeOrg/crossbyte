@@ -706,6 +706,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Worker`, `TaskPool` and `Task` run their work on other threads on the
+  jvm and the interpreter, as they already did natively. They were written
+  for native, hl and neko only, and everywhere else ran the work inline on
+  the thread that asked for it: a `TaskPool(4)` given four 200ms jobs held
+  its caller for 800ms, `Worker.run()` did the whole job before returning,
+  and so `AsyncDatabase`, `URLLoader` and `File`'s async calls stalled the
+  loop they exist to keep free. `System.processorCount` also answered 0 off
+  native, so `new TaskPool(System.processorCount)` threw. It now asks the
+  JVM, Node's list of CPUs or a browser's `hardwareConcurrency`, falls back
+  to the environment and `/proc/cpuinfo` on the interpreter, hl and neko,
+  and is never below 1.
 - `CrossByte.current()` answers the calling thread's own runtime on every
   threaded target, not only natively. On the jvm, the interpreter, hl and
   neko it returned the primordial runtime on every thread, although its

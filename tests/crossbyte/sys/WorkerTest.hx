@@ -24,6 +24,37 @@ class WorkerTest extends utest.Test {
 		Assert.isFalse(worker.cancelRequested);
 	}
 
+	public function testRunReturnsWhileTheWorkIsStillGoing():Void {
+		// On the jvm and the interpreter run() did the work itself, on the
+		// runtime's thread, and dispatched COMPLETE before returning.
+		#if target.threaded
+		var worker = new Worker();
+		var caller = new sys.thread.Tls<Bool>();
+		caller.value = true;
+		var onCaller:Null<Bool> = null;
+		var completed = false;
+		worker.addEventListener(ThreadEvent.COMPLETE, (_:ThreadEvent) -> completed = true);
+		worker.doWork = _ -> {
+			onCaller = caller.value == true;
+			Sys.sleep(0.3);
+			worker.sendComplete("done");
+		};
+
+		var start = haxe.Timer.stamp();
+		worker.run();
+		var held = haxe.Timer.stamp() - start;
+		var completedDuringRun = completed;
+		pumpUntil(() -> completed, 5.0);
+
+		Assert.isTrue(held < 0.15, "run() held the caller for " + held + "s");
+		Assert.isFalse(completedDuringRun, "COMPLETE was dispatched inside run()");
+		Assert.isTrue(completed);
+		Assert.equals(false, onCaller, "the work ran on the thread that called run()");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testProgressIsDispatchedBeforeComplete():Void {
 		var worker = new Worker();
 		var events:Array<String> = [];
@@ -134,7 +165,7 @@ class WorkerTest extends utest.Test {
 	}
 
 	public function testCancelDetachesFromOwningRuntimeEvenIfCurrentRuntimeChanges():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
 		var worker = new Worker();
@@ -154,7 +185,7 @@ class WorkerTest extends utest.Test {
 	}
 
 	public function testEverythingQueuedIsDeliveredOnOneTick():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var worker = new Worker();
 		var progress:Int = 0;
 		var completed:Bool = false;
@@ -188,7 +219,7 @@ class WorkerTest extends utest.Test {
 	}
 
 	public function testDeliveryPerTickIsBounded():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var previous:Int = Worker.maxMessagesPerTick;
 		Worker.maxMessagesPerTick = 4;
 
@@ -228,19 +259,19 @@ class WorkerTest extends utest.Test {
 	}
 
 	private static function waitFor(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
-		#if (cpp || neko || hl)
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!done() && Sys.time() < deadline) {
+		#if target.threaded
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			Sys.sleep(0.001);
 		}
 		#end
 	}
 
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
