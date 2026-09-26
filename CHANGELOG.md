@@ -1213,6 +1213,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, a TLS socket's reads ignored `setTimeout`, so an https
+  response that stopped arriving was waited for for ever and the HTTP
+  client's idle limit never fired over https. The TLS socket now waits for
+  ciphertext the way the plain socket does since its own timeout fix.
+- On the jvm, `FlexSocket.DEFAULT_VERIFY_CERT` did nothing: a TLS socket
+  read only its own `verifyCert`, so turning verification off for every
+  socket, as a development setup does, still refused a self-signed server.
+  An unset `verifyCert` now falls back to the default, as it does natively.
 - On the jvm, a reliable datagram session a server dialled to an IPv6
   address never connected. It was filed under the address as the jvm spells
   it, `0:0:0:0:0:0:0:1`, while datagrams arrive from `::1`, so the peer's
