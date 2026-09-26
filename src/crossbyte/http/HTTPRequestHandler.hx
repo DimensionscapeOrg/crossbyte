@@ -54,7 +54,12 @@ import crossbyte._internal.http.HTTPResponseWriter;
  * closes and the handler collapses back to one-shot behavior.
  */
 final class HTTPRequestHandler extends EventDispatcher {
-	@:noCompletion private static inline var MAX_BUFFER_SIZE:Int = 1024 * 1024; // 1 MB
+	/**
+	 * Bytes a request's header block may take before it is answered `431`.
+	 * The body has its own limit, `HTTPServerConfig.maxRequestBodySize`; the
+	 * two used to share one megabyte, fixed.
+	 */
+	@:noCompletion private static inline var MAX_HEADER_BYTES:Int = 64 * 1024;
 
 	/** The largest chunk-size read at all: seven hex digits' worth. */
 	@:noCompletion private static inline var MAX_CHUNK_SIZE:Int = 0xFFFFFFF;
@@ -321,11 +326,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// surplus path a pipelined request takes after a buffered
 			// response.
 			if (__streamSource != null) {
-				if (__incomingBuffer.length > MAX_BUFFER_SIZE) {
+				if (__incomingBuffer.length > __bufferLimit()) {
 					// No status can be sent to explain this: the status line
 					// left with the head and the body is mid-flight. Dropping
 					// the connection is the only honest end.
-					Logger.error("Request buffer exceeded " + MAX_BUFFER_SIZE + " bytes while a response was streaming; closing.");
+					Logger.error("Request buffer exceeded " + __bufferLimit() + " bytes while a response was streaming; closing.");
 					__stopStream();
 					if (__origin.connected) {
 						__origin.close();
@@ -352,7 +357,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				__responded = false;
 			}
 
-			if (__incomingBuffer.length > MAX_BUFFER_SIZE) {
+			if (__incomingBuffer.length > __bufferLimit()) {
 				__sendErrorResponse(413, "Payload Too Large");
 				return;
 			}
@@ -489,8 +494,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__sendErrorResponse(408, "Request Timeout");
 	}
 
+	/**
+	 * What the connection's buffer may hold before it is refused outright:
+	 * one request's header block and body at their limits. The body and the
+	 * headers are each held to their own limit as they are read; this is the
+	 * backstop for bytes arriving faster than they can be.
+	 */
+	@:noCompletion private inline function __bufferLimit():Int {
+		return __config.maxRequestBodySize + MAX_HEADER_BYTES;
+	}
+
 	@:noCompletion private function __parseRequest():Void {
 		if (!__hasCompleteHeaderBlock(__incomingBuffer)) {
+			// No header block has ended in what is waiting, so all of it is
+			// one request's headers. They get a limit of their own, rather than
+			// a share of the body's.
+			if (__incomingBuffer.length - __incomingBuffer.position > MAX_HEADER_BYTES) {
+				__sendErrorResponse(431, "Request Header Fields Too Large");
+			}
 			return;
 		}
 
@@ -499,6 +520,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
+		var headerStart:Int = __incomingBuffer.position;
 		var requestLine:Null<String> = __readLine(__incomingBuffer);
 		if (requestLine == null) {
 			return;
@@ -607,6 +629,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 			} else {
 				__headers.set(key, value);
 			}
+		}
+
+		// A block that did end is held to the same limit as one still arriving.
+		if (__incomingBuffer.position - headerStart > MAX_HEADER_BYTES) {
+			__sendErrorResponse(431, "Request Header Fields Too Large");
+			return;
 		}
 
 		if (__httpVersion == "HTTP/1.1" && !__headers.exists("host")) {
@@ -2724,8 +2752,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 			var contentLengthHeader:String = __headers.exists("content-length") ? __headers.get("content-length") : null;
 			if (contentLengthHeader != null) {
 				contentLength = __parseContentLength(contentLengthHeader);
-				if (contentLength < 0 || contentLength > MAX_BUFFER_SIZE) {
+				if (contentLength < 0) {
 					__sendErrorResponse(400, "Bad Request");
+					return true;
+				}
+				// Too big is not malformed: 413, and before a byte of the body
+				// is read. This was a 400.
+				if (contentLength > __config.maxRequestBodySize) {
+					__sendErrorResponse(413, "Payload Too Large");
 					return true;
 				}
 			}
@@ -2734,13 +2768,36 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var expect:String = __headers.exists("expect") ? __headers.get("expect") : null;
 		if (expect != null) {
 			var expectValue:String = StringTools.trim(expect.toLowerCase());
-			if (expectValue == "100-continue") {
-				__origin.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
-				__origin.flush();
-			} else {
+			if (expectValue != "100-continue") {
 				__sendErrorResponse(417, "Expectation Failed");
 				return true;
 			}
+
+			// Asked before the client is told to send: the point of the
+			// expectation is that a request refused on its headers, no
+			// credentials, say, never has its body sent at all. The server
+			// used to say go ahead before any middleware had seen the request.
+			if (__config.onExpectContinue != null) {
+				var proceed:Bool = false;
+				try {
+					proceed = __config.onExpectContinue(this);
+				} catch (error:Dynamic) {
+					Logger.error("HTTPServerConfig.onExpectContinue threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
+				}
+
+				if (!proceed) {
+					if (!__responded) {
+						__sendErrorResponse(417, "Expectation Failed");
+					}
+					return true;
+				}
+			}
+
+			if (__responded || !__origin.connected) {
+				return true;
+			}
+			__origin.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
+			__origin.flush();
 		}
 
 		if (!chunked && contentLength == 0) {
@@ -2813,6 +2870,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 				}
 				__chunkBytesRemaining = parsed;
 
+				// A chunk that would take the body past its limit is refused on
+				// its size line, rather than once it has been buffered whole.
+				if (__bodyBuf.length + parsed > __config.maxRequestBodySize) {
+					__sendErrorResponse(413, "Payload Too Large");
+					return false;
+				}
+
 				if (__chunkBytesRemaining == 0) {
 					while (true) {
 						var trailer:String = __readLine(__incomingBuffer);
@@ -2841,7 +2905,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				return false;
 			}
 
-			if (__bodyBuf.length > MAX_BUFFER_SIZE) {
+			if (__bodyBuf.length > __config.maxRequestBodySize) {
 				__sendErrorResponse(413, "Payload Too Large");
 				return false;
 			}
@@ -2871,7 +2935,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			for (i in 0...__requestContentEncodings.length) {
 				var algorithm = __requestContentEncodings[__requestContentEncodings.length - 1 - i];
-				__requestBody.uncompress(algorithm, MAX_BUFFER_SIZE);
+				__requestBody.uncompress(algorithm, __config.maxRequestBodySize);
 			}
 		} catch (_:Dynamic) {
 			__sendErrorResponse(413, "Payload Too Large");

@@ -28,6 +28,36 @@ class HTTPServerConfig {
 	**/
 	public static inline var DEFAULT_MAX_OUTPUT_BUFFER:Int = 8 * 1024 * 1024;
 
+	/** The request body a server accepts by default: one megabyte. **/
+	public static inline var DEFAULT_MAX_REQUEST_BODY:Int = 1024 * 1024;
+
+	/**
+		Bytes a request body may reach, on the wire and once decoded, over
+		HTTP/1.1 and HTTP/2 alike. A larger one is answered `413 Payload Too
+		Large`, as soon as a `Content-Length` says so, before any of the body
+		is read. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
+
+		The limit used to be fixed at a megabyte that counted the request's
+		headers too, and a `Content-Length` past it was answered `400`, which
+		tells a client its request was malformed rather than too big. Raise it
+		for uploads; the whole body is held in memory before middleware runs.
+	**/
+	public var maxRequestBodySize:Int = DEFAULT_MAX_REQUEST_BODY;
+
+	/**
+		Asked, with the request's method, path and headers, whether a request
+		carrying `Expect: 100-continue` may send its body. Return `true` to let
+		it; to refuse, answer with `handler.respond()`, a `401`, say, and
+		return `false`. A `false` with no answer is answered `417`.
+
+		This is the moment authentication belongs in for such a request. The
+		server told every client to go ahead before any middleware had seen the
+		request, so an unauthenticated upload was invited and read in full
+		before it could be refused. Left `null`, a request within
+		`maxRequestBodySize` is told to go ahead, as before.
+	**/
+	public var onExpectContinue:(handler:HTTPRequestHandler) -> Bool = null;
+
 	/**
 		The address to listen on. Defaults to `127.0.0.1`, which only this
 		machine can reach.

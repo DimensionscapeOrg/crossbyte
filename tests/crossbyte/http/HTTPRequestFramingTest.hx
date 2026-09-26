@@ -71,11 +71,107 @@ class HTTPRequestFramingTest extends utest.Test {
 		});
 	}
 
-	private function __serve(seen:Array<String>):HTTPServer {
+	/**
+		A body too big is `413`, not `400`, and is refused on its
+		`Content-Length` before any of it is read.
+	**/
+	public function testALengthPastTheLimitIs413(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen);
+
+		HTTPTestSupport.exchangeEach(server, [
+			'POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${HTTPServerConfig.DEFAULT_MAX_REQUEST_BODY + 1}\r\n\r\n'
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals(413, responses[0].status, "a body one byte past the limit was not refused as too large");
+			Assert.equals(0, seen.length, "an oversized request reached the application");
+			async.done();
+		}, true);
+	}
+
+	/** The limit is the application's to set, both ways. **/
+	public function testTheBodyLimitIsConfigurable(async:Async):Void {
+		var seen:Array<String> = [];
+		var small:HTTPServer = __serve(seen, config -> config.maxRequestBodySize = 10);
+
+		HTTPTestSupport.exchangeEach(small, [
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nhelloworld",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try small.close() catch (_:Dynamic) {}
+
+			Assert.equals(413, responses[0].status, "a lowered limit was not applied");
+			Assert.equals(200, responses[1].status);
+			Assert.equals(413, responses[2].status, "a chunked body past a lowered limit was not refused");
+
+			var large:HTTPServer = __serve(seen, config -> config.maxRequestBodySize = 2 * 1024 * 1024);
+			var body:String = StringTools.rpad("", "x", 1536 * 1024);
+			HTTPTestSupport.exchangeEach(large, ['POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${body.length}\r\n\r\n' + body], function(big):Void {
+				try large.close() catch (_:Dynamic) {}
+
+				Assert.equals(200, big[0].status, "a raised limit was not applied");
+				Assert.equals("got " + body.length, big[0].body);
+				async.done();
+			}, false, 10.0);
+		});
+	}
+
+	/**
+		`Expect: 100-continue` waits for the application.
+
+		The server told every such client to send before any middleware had
+		seen the request, so an unauthenticated upload was invited in full.
+	**/
+	public function testExpectContinueAsksTheApplicationFirst(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen, config -> config.onExpectContinue = handler -> {
+			if (handler.getHeader("authorization") == "Bearer ok") {
+				return true;
+			}
+			handler.respond(401, "text/plain", "sign in first");
+			return false;
+		});
+
+		HTTPTestSupport.exchangeEach(server, [
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ok\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\nhello"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals(401, responses[0].status);
+			Assert.isTrue(responses[0].raw.indexOf("100 Continue") < 0, "an unauthenticated client was told to send its body");
+			Assert.isTrue(responses[1].raw.indexOf("HTTP/1.1 100 Continue") == 0, "an accepted client was not told to continue");
+			Assert.equals(200, responses[1].status);
+			Assert.equals("got 5", responses[1].body);
+			async.done();
+		});
+	}
+
+	/** Headers have a limit of their own, rather than a share of the body's. **/
+	public function testAnOversizedHeaderBlockIs431(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen);
+		var filler:String = StringTools.rpad("", "a", 70 * 1024);
+
+		HTTPTestSupport.exchangeEach(server, ['GET /upload HTTP/1.1\r\nHost: x\r\nX-Filler: $filler\r\n\r\n'], function(responses):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals(431, responses[0].status);
+			Assert.equals(0, seen.length);
+			async.done();
+		});
+	}
+
+	private function __serve(seen:Array<String>, ?configure:HTTPServerConfig->Void):HTTPServer {
 		var router:Router = new Router();
 		router.post("/upload", ctx -> ctx.handler.respond(200, "text/plain", "got " + ctx.handler.requestBody.length));
 
 		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		if (configure != null) {
+			configure(config);
+		}
 		config.middleware.push(function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
 			seen.push(handler.method + " " + handler.requestPath);
 			next();
