@@ -716,6 +716,25 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC call that cannot go fails as it is made, and nothing is left
+  waiting on an answer that cannot come. A request made after its
+  connection had ended waited for good over local IPC, whose send reports
+  a closed connection to `onError` rather than throwing; over TCP the send
+  threw out of the call and left its response waiting. It now fails at
+  once, with the `Reason` the connection ended with as its `cause`; a
+  request whose send throws fails with what it threw; and a one-way call
+  on an ended connection is dropped. Commands with no session
+  dereferenced a null connection, a crash on hxcpp in release; a request
+  through them now fails with an `IllegalOperationError`, and a one-way
+  call throws one. A call whose arguments cannot be framed throws before
+  it waits, where it was left waiting under its id. An answer for a
+  connection its own handler has closed is dropped rather than reported
+  as the handler failing. And an application's own `INetConnection`,
+  wrapped as a `NetConnection` again after a session was made on it,
+  `(connection : NetConnection).onClose = ...`: set its callback over
+  the session's hold on it, so the session never heard it end and its
+  calls waited for good; while a session observes such a connection,
+  wrapping it again gives the same `NetConnection`.
 - An RPC call the other side cannot take no longer ends the connection or
   leaves its caller waiting. A runtime call to a session with no runtime
   handlers ended that session's connection, the reader for a compiled

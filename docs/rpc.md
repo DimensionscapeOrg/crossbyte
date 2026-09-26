@@ -562,6 +562,13 @@ stopped, when the heartbeat gives up on the peer, and when the connection is
 ended over a frame that cannot be read. Its `RPCResponse` fails with a message
 saying which, so nothing waits for good on a peer that has gone.
 
+A call that cannot go at all fails as it is made: on a connection that has
+ended, with the `Reason` it ended with as its `cause`; when the transport's
+send throws, with what it threw; and through commands no session has bound,
+with an `IllegalOperationError`. A one-way call on a connection that has ended
+is dropped, as a one-way call's fate always is; one through commands with no
+session throws.
+
 ## Deadlines
 
 A peer that is still there can still leave a call unanswered. A call can be

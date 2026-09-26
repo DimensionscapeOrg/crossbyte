@@ -154,8 +154,10 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private static inline final READ_ON:Int = 1;
 	@:noCompletion private var __readState:Int = READ_UNSET;
 	// Set once the connection has ended: an answer completing after that has
-	// nobody to go to.
+	// nobody to go to, and a call made after it fails at once, with the
+	// reason it ended.
 	@:noCompletion private var __ended:Bool = false;
+	@:noCompletion private var __endReason:Null<Reason> = null;
 	// Which of its connection's lives the session is on, advanced each time
 	// the connection ends. A call answered later keeps the one it came in on,
 	// and is answered only while it is still current: a connection that takes
@@ -290,6 +292,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	/** The connection can carry no answer now, so nothing waiting on one gets it. **/
 	@:noCompletion private function __connectionEnded(reason:Reason):Void {
 		__ended = true;
+		__endReason = reason;
 		// `| 0` so it wraps on JavaScript as it does elsewhere.
 		__epoch = (__epoch + 1) | 0;
 		__active = false;
@@ -382,36 +385,33 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		@throws ArgumentError When the call is over `maxFrameLength`.
 	**/
 	public function call(op:Int, ?args:Array<Dynamic>):Void {
-		final framed = __runtimeFrame(op, 0, args);
-		if (__oversized(framed)) {
-			throw new ArgumentError(__oversizedMessage("RPC call", framed));
-		}
-		__connection.send(framed);
+		__sendCallFrame(__runtimeFrame(op, 0, args));
 	}
 
 	/**
 	 * Sends a request/response runtime RPC call on the dynamic lane.
 	 *
 	 * The response payload is decoded through the runtime codec and resolved into a
-	 * normal `RPCResponse<T>`. A call over `maxFrameLength` is not sent: its
-	 * response fails at once, with an `ArgumentError` as its cause.
+	 * normal `RPCResponse<T>`. A call that cannot go fails at once: over
+	 * `maxFrameLength`, with an `ArgumentError` as its cause; on a connection
+	 * that has ended, with the `Reason` it ended with; and when the send
+	 * throws, with what it threw.
+	 *
+	 * @throws String When an argument is of a type the runtime lane does not carry;
+	 * nothing is left waiting.
 	 */
 	public function request<T>(op:Int, ?args:Array<Dynamic>):RPCResponse<T> {
 		final requestId = __nextRuntimeRequestId();
+		// Framed before it waits, so an argument that cannot be sent leaves
+		// nothing waiting for good.
+		final framed = __runtimeFrame(op, requestId, args);
 		final response = new RPCResponse<T>(requestId, op);
 		response.__session = cast this;
 		__trackRuntimeResponse(requestId, cast response);
 		if (callTimeout > 0) {
 			response.__arm(callTimeout);
 		}
-		final framed = __runtimeFrame(op, requestId, args);
-		if (__oversized(framed)) {
-			__takeRuntimeResponse(requestId);
-			final message:String = __oversizedMessage("RPC call", framed);
-			response.__fail(message, new ArgumentError(message));
-			return response;
-		}
-		__connection.send(framed);
+		__sendRequestFrame(response, framed);
 		return response;
 	}
 
@@ -722,7 +722,73 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__oversized(framed)) {
 			throw new ArgumentError(__oversizedMessage("RPC answer", framed));
 		}
-		__connection.send(framed);
+		// An answer for a connection that has ended, its handler closed it,
+		// has nobody to go to.
+		if (!__ended) {
+			__connection.send(framed);
+		}
+	}
+
+	/**
+		Why a call made now cannot go, or `null` if it can: the connection has
+		ended. The message for a caller, and the `Reason` it ended with as the
+		cause.
+	**/
+	@:noCompletion private inline function __closedMessage():String {
+		return "RPC connection closed: " + Std.string(__endReason);
+	}
+
+	/**
+		Sends a request's frame, or fails `response` at once when it cannot go:
+		the connection has ended, the frame is over `maxFrameLength`, or the
+		send throws. Nothing is left waiting on an answer that cannot come.
+
+		Over TCP a send on a closed connection threw out of the call, and left
+		its response waiting; over local IPC it was reported to `onError`, and
+		the response waited for good.
+	**/
+	@:noCompletion private function __sendRequestFrame<T>(response:RPCResponse<T>, framed:ByteArrayOutput):Void {
+		var message:Null<String> = null;
+		var cause:Dynamic = null;
+		if (__oversized(framed)) {
+			message = __oversizedMessage("RPC call", framed);
+			cause = new ArgumentError(message);
+		} else if (__ended) {
+			message = __closedMessage();
+			cause = __endReason;
+		} else {
+			try {
+				__connection.send(framed);
+			} catch (error:Dynamic) {
+				message = "RPC call could not be sent: " + Std.string(error);
+				cause = error;
+			}
+		}
+		if (message != null) {
+			// Out of where it waits first, as a deadline takes it.
+			if (response.__commands != null) {
+				response.__commands.__takeResponse(response.requestId);
+			} else {
+				__takeRuntimeResponse(response.requestId);
+			}
+			response.__fail(message, cause);
+		}
+	}
+
+	/**
+		Sends a one-way call's frame. Over `maxFrameLength` it throws; on a
+		connection that has ended it is dropped, since nobody is told what
+		becomes of a one-way call.
+
+		@throws ArgumentError When the call is over `maxFrameLength`.
+	**/
+	@:noCompletion private function __sendCallFrame(framed:ByteArrayOutput):Void {
+		if (__oversized(framed)) {
+			throw new ArgumentError(__oversizedMessage("RPC call", framed));
+		}
+		if (!__ended) {
+			__connection.send(framed);
+		}
 	}
 
 	/** Whether `framed`, its 4-byte length first, holds more than `maxFrameLength`. **/
@@ -918,10 +984,15 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (__oversized(framed)) {
 			throw new ArgumentError(__oversizedMessage("RPC answer", framed));
 		}
-		__connection.send(framed);
+		if (!__ended) {
+			__connection.send(framed);
+		}
 	}
 
 	@:noCompletion private function __sendRuntimeError(op:Int, requestId:Int, message:String):Void {
+		if (__ended) {
+			return;
+		}
 		final flags:Int = RPCWire.FLAG_RUNTIME | RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR;
 		var framed:ByteArrayOutput = __errorFrame(flags, op, requestId, message);
 		if (__oversized(framed)) {
