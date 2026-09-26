@@ -712,6 +712,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A conditional request dated after January 2038 is answered `304` on
+  native builds. The server compared seconds with `Math.floor`, which
+  returns an `Int`, and seconds since 1970 no longer fit one then: on hxcpp
+  the cast wrapped, a `If-Modified-Since` in 2100 compared as long ago, and
+  the whole file went out again with a `200`.
 - `URLLoader` no longer hands a caller's credentials to whatever host a
   redirect names. Every hop was written with every header the caller set,
   so a `302` to another origin received `Authorization: Bearer ...`. Once a

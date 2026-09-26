@@ -949,7 +949,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (ims != null) {
 			try {
 				var since:Date = __parseHttpDate(ims);
-				if (since != null && Math.floor(lastModifiedTime / 1000) <= Math.floor(since.getTime() / 1000)) {
+				// Math.ffloor, not Math.floor: floor returns an Int, and seconds
+				// since 1970 leave an Int in January 2038. On hxcpp the cast
+				// wrapped, so a validator dated after that compared as long ago
+				// and every such revalidation was answered with the whole file.
+				if (since != null && Math.ffloor(lastModifiedTime / 1000) <= Math.ffloor(since.getTime() / 1000)) {
 					var h:Array<URLRequestHeader> = [new URLRequestHeader("Accept-Ranges", "bytes"), lastModHeader];
 					__dispatchResponse(304, "Not Modified", h, "text/plain", "", true);
 					return;
