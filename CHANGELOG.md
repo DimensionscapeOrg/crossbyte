@@ -5,6 +5,19 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- A response can be written as it is produced:
+  `HTTPRequestHandler.beginResponse(status, contentType, headers)` sends the
+  head and returns an `HTTPResponseStream` to `write` or `writeText` the body
+  into and `end`. Chunked under HTTP/1.1 (ended by closing for an HTTP/1.0
+  client), DATA on a stream held open under HTTP/2. `write` answers `false`
+  when the client has more waiting than it is reading, and `onDrain` says
+  when to go on; a producer that writes regardless is stopped at
+  `maxOutputBufferSize` with an error logged rather than held without bound.
+  The handler dispatches `Event.CLOSE` when its client goes, the connection
+  closed, or an HTTP/2 stream reset, and `connected` says whether it is
+  still there. `respondBytes` sends a body of bytes. `respond` took only a
+  String and always a `Content-Length`, so server-sent events, downloads
+  produced as they went and binary bodies needed `@:privateAccess`.
 - A rate-limited request is answered `429` with a `Retry-After` saying how
   many seconds until it may try again, over HTTP/1.1 and HTTP/2, and the
   limiter can be keyed on something other than the client's address:

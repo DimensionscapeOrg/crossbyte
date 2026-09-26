@@ -22,9 +22,19 @@ typedef HTTPResponseHead = {
 	var statusMessage:String;
 	var headers:Array<URLRequestHeader>;
 
-	/** Body length, or `null` when the status omits a body entirely. */
+	/**
+	 * Body length, or `null` when the status omits a body entirely, or,
+	 * with `chunked`, when the body's length is not known yet.
+	 */
 	var contentLength:Null<Int>;
 
 	/** Whether the connection should survive this response. */
 	var keepAlive:Bool;
+
+	/**
+	 * A body of unknown length follows, written as it becomes available and
+	 * ended by `endResponse`: chunked transfer coding under HTTP/1.1, DATA
+	 * frames on a stream left open under HTTP/2.
+	 */
+	@:optional var chunked:Bool;
 }
