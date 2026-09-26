@@ -250,6 +250,9 @@ class TurnClient {
 		finds it. A permission lasts five minutes, and refreshing the allocation
 		does not renew it (RFC 5766 section 8) -- `poll` asks again well inside
 		that, the way it does for a channel.
+
+		@throws ArgumentError When `peerAddress` is not an IPv4 address: the
+		allocation is IPv4, and so are the peers it can reach.
 	**/
 	public function permit(peerAddress:String, now:Float):Void {
 		if (__closed || !active || peerAddress == null) {
@@ -259,6 +262,8 @@ class TurnClient {
 		var permission = __permissionFor(peerAddress);
 
 		if (permission == null) {
+			// Before it is kept, or `poll` would renew it -- and throw -- for good.
+			__requireIPv4(peerAddress);
 			permission = new TurnPermission(peerAddress);
 			__permitted.push(permission);
 		}
@@ -274,6 +279,8 @@ class TurnClient {
 		Wrapped in a Send indication, which is not acknowledged and not
 		retransmitted -- the relay forwards it or it does not, exactly as a
 		datagram sent directly would arrive or not.
+
+		@throws ArgumentError When `peerAddress` is not an IPv4 address.
 	**/
 	public function sendTo(payload:ByteArray, peerAddress:String, peerPort:Int):Void {
 		if (__closed || !active) {
@@ -309,6 +316,8 @@ class TurnClient {
 		describes it as doing both -- but the permission is still asked for
 		separately, since it has to be in place for the indications that carry
 		the traffic in the meantime.
+
+		@throws ArgumentError When `peerAddress` is not an IPv4 address.
 	**/
 	public function bindChannel(peerAddress:String, peerPort:Int, now:Float):Void {
 		if (__closed || !active || !useChannels || peerAddress == null) {
@@ -323,6 +332,10 @@ class TurnClient {
 		}
 
 		if (channel == null) {
+			// Here rather than first: this runs for every datagram relayed, and
+			// a channel already kept was checked when it was made.
+			__requireIPv4(peerAddress);
+
 			if (__nextChannel > LAST_CHANNEL) {
 				// Sixteen thousand peers on one allocation is not a case this
 				// will meet, and silently reusing a number would send one
@@ -340,6 +353,21 @@ class TurnClient {
 			StunMessage.channelNumber(channel.number),
 			StunMessage.xorPeerAddress(peerAddress, peerPort)
 		], now);
+	}
+
+	/**
+		Refuses a peer that is not an IPv4 address, which XOR-PEER-ADDRESS is
+		written as here and an IPv4 allocation's peers are.
+
+		Its octets were read with `Std.parseInt` and written modulo 256, so
+		1.2.3.999 was permitted as 1.2.3.231 and an IPv6 address as whatever
+		its first group read as, the relay then forwarding to a host nobody
+		named.
+	**/
+	@:noCompletion private static function __requireIPv4(peerAddress:String):Void {
+		if (StunMessage.ipv4Octets(peerAddress) == null) {
+			throw new ArgumentError("The allocation relays to IPv4 peers, and \"" + peerAddress + "\" is not an IPv4 address.");
+		}
 	}
 
 	/** The channel bound to a peer, if one was ever asked for. **/

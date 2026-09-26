@@ -1,8 +1,10 @@
 package crossbyte.net._internal.stun;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
 import crossbyte.net.ReflexiveAddress;
+import crossbyte.utils.IntParse;
 import haxe.Int64;
 import haxe.crypto.Crc32;
 import haxe.crypto.Hmac;
@@ -394,30 +396,70 @@ class StunMessage {
 	}
 
 	/**
-		An `XOR-MAPPED-ADDRESS` attribute for an IPv4 endpoint.
+		An `XOR-MAPPED-ADDRESS` attribute for an IPv4 endpoint: what an ICE
+		agent answers a check with, and what a STUN server sends.
 
-		Only a server needs to write one. It is here so the parser can be tested
-		against something other than itself.
+		@throws ArgumentError When `address` is not an IPv4 address (see
+		`ipv4Octets`). This writes IPv4 alone.
 	**/
 	public static function xorMappedAddress(address:String, port:Int):StunAttribute {
 		return new StunAttribute(ATTR_XOR_MAPPED_ADDRESS, __writeXorAddress(address, port));
 	}
 
-	@:noCompletion private static function __writeXorAddress(address:String, port:Int):ByteArray {
+	/**
+		The four octets of an IPv4 address written the one way every reader
+		agrees on -- four decimal numbers up to 255, dot-separated, none with
+		a leading zero -- or null for anything else: an IPv6 address, a name,
+		or something that only looks like an address.
+
+		The octets were read with `Std.parseInt`, which answers four different
+		ways past 32 bits by target and throws on the jvm, and written modulo
+		256, so a peer naming 1.2.3.999 had a relay permit 1.2.3.231. The
+		leading zero matters because `inet_addr` reads 010 as octal: that is
+		8.1.1.1 to the socket and would be 10.1.1.1 here.
+	**/
+	public static function ipv4Octets(address:String):Null<Array<Int>> {
+		if (address == null) {
+			return null;
+		}
+
 		var parts:Array<String> = address.split(".");
+
+		if (parts.length != 4) {
+			return null;
+		}
+
+		var octets:Array<Int> = [];
+
+		for (part in parts) {
+			var octet:Int = IntParse.decimal(part, 255);
+
+			if (octet < 0 || (part.length > 1 && StringTools.fastCodeAt(part, 0) == "0".code)) {
+				return null;
+			}
+
+			octets.push(octet);
+		}
+
+		return octets;
+	}
+
+	@:noCompletion private static function __writeXorAddress(address:String, port:Int):ByteArray {
+		var octets = ipv4Octets(address);
+
+		if (octets == null) {
+			throw new ArgumentError("\"" + address + "\" is not an IPv4 address, and only an IPv4 one can be written here.");
+		}
+
 		var value = new ByteArray();
 		value.endian = Endian.BIG_ENDIAN;
 		value.writeByte(0);
 		value.writeByte(FAMILY_IPV4);
 		value.writeShort(port ^ (MAGIC_COOKIE >>> 16));
-
-		var shifts:Array<Int> = [24, 16, 8, 0];
-
-		for (i in 0...4) {
-			var octet:Int = parts.length > i ? Std.parseInt(parts[i]) : 0;
-			value.writeByte(octet ^ ((MAGIC_COOKIE >>> shifts[i]) & 0xFF));
-		}
-
+		value.writeByte(octets[0] ^ ((MAGIC_COOKIE >>> 24) & 0xFF));
+		value.writeByte(octets[1] ^ ((MAGIC_COOKIE >>> 16) & 0xFF));
+		value.writeByte(octets[2] ^ ((MAGIC_COOKIE >>> 8) & 0xFF));
+		value.writeByte(octets[3] ^ (MAGIC_COOKIE & 0xFF));
 		value.position = 0;
 		return value;
 	}
@@ -572,6 +614,8 @@ class StunMessage {
 		The same obscuring as a mapped address and for the same reason: a NAT
 		that rewrote anything resembling an address in a passing packet would
 		otherwise corrupt the very field that says who to relay to.
+
+		@throws ArgumentError When `address` is not an IPv4 address.
 	**/
 	public static function xorPeerAddress(address:String, port:Int):StunAttribute {
 		return new StunAttribute(ATTR_XOR_PEER_ADDRESS, __writeXorAddress(address, port));

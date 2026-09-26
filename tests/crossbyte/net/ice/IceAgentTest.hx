@@ -172,6 +172,71 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		Nor is an address that only looks like one.
+
+		Four runs of digits was the whole test, so 1.2.3.999 passed as numeric.
+		It is not an address to the socket: hxcpp's resolver finds no literal
+		in it and looks it up as a name, blocking the loop per check just as a
+		name does. And 010.1.1.1 is 8.1.1.1 to `inet_addr`, which reads a
+		leading zero as octal, but ten to anything reading decimal.
+	**/
+	public function testAnAddressThatOnlyLooksLikeOneIsNotDialled():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		var bob = new IceAgent(false, credentials("bob"));
+		alice.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+
+		var dialled:Array<String> = [];
+		alice.onSend = (_, address:String, _) -> if (dialled.indexOf(address) < 0) dialled.push(address);
+
+		for (address in ["1.2.3.999", "256.0.0.1", "1.2.3.4294967296", "010.1.1.1"]) {
+			Assert.isFalse(alice.addRemoteCandidate(IceCandidate.host(address, PORT)), address + " was taken as an address");
+		}
+
+		Assert.isTrue(alice.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT)));
+		alice.start(bob.localCredentials, 0);
+
+		for (i in 0...100) {
+			alice.poll(i * 0.05);
+		}
+
+		Assert.equals(BOB_ADDRESS, dialled.join(","), "the agent sent checks to " + dialled.join(","));
+	}
+
+	/**
+		Two agents on IPv6 connect without either inventing an address.
+
+		The answer to a check names where it came from, and the attribute says
+		IPv4 alone. An IPv6 source was split on dots and read as numbers, so
+		every answer named 0.0.0.0, and the agent that asked took that for a
+		reflexive view of itself -- a local candidate that does not exist.
+		Answered without it, the check succeeds and nothing is learned.
+	**/
+	public function testAgentsOnIPv6InventNoAddress():Void {
+		if (unsupported()) return;
+
+		var alice = new IceAgent(true, credentials("alice"));
+		var bob = new IceAgent(false, credentials("bob"));
+		var wire = new Wire(alice, "fe80::1", bob, "fe80::2");
+
+		alice.addLocalCandidate(IceCandidate.host("fe80::1", PORT));
+		bob.addLocalCandidate(IceCandidate.host("fe80::2", PORT));
+		alice.addRemoteCandidate(IceCandidate.host("fe80::2", PORT));
+		bob.addRemoteCandidate(IceCandidate.host("fe80::1", PORT));
+
+		alice.start(bob.localCredentials, 0);
+		bob.start(alice.localCredentials, 0);
+
+		Assert.isTrue(wire.run(() -> alice.state == CONNECTED && bob.state == CONNECTED), "the two agents never connected");
+
+		for (agent in [alice, bob]) {
+			var locals:Array<String> = [for (local in @:privateAccess agent.__locals) local.address];
+			Assert.equals(1, locals.length, "an agent learned " + locals.join(",") + " from answers over IPv6");
+		}
+	}
+
+	/**
 		A path stays a path only while the peer keeps agreeing to it.
 
 		RFC 7675. ICE proves a path once, and nothing about that proof stays
