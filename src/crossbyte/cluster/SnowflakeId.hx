@@ -127,7 +127,13 @@ class SnowflakeId {
 		rather than when it was.
 	**/
 	public static function timestampOf(id:Int64, epochMs:Float = DEFAULT_EPOCH_MS):Float {
-		return Int64.toInt(elapsedOf(id)) + epochMs;
+		// Forty one bits of milliseconds, read as a Float from its two halves.
+		// It went through Int, which holds 31, and threw Overflow for every id
+		// minted more than 24.8 days after the epoch, after 2020-01-25 for
+		// the default one.
+		final elapsed:Int64 = elapsedOf(id);
+		final low:Float = elapsed.low < 0 ? elapsed.low + 4294967296.0 : elapsed.low + 0.0;
+		return elapsed.high * 4294967296.0 + low + epochMs;
 	}
 
 	/** Which node minted an identifier. **/
