@@ -795,6 +795,13 @@ All notable changes to CrossByte will be documented in this file.
   the system for the socket's local address, to learn whether it was bound
   yet, and built a `Host` and an `Address` for its destination; it now asks
   until the socket is bound, and keeps the last destination's address.
+- On Node an open connection is no longer visited every tick. Each Node
+  socket was ticked for as long as it was open, to flush whatever had been
+  written: 400 idle sockets cost a pump 3.4 us, and the cost grew with
+  every connection held. A write now asks for a flush at the end of the
+  pass, sooner than the next tick, and a socket is ticked only while a
+  streaming response is feeding it: the same pump costs 0.3 us, with no
+  tick listeners.
 - A connection's end is announced once, and the same way everywhere.
   Natively a peer that connected and hung up within a tick, a load
   balancer's health check, was announced closed twice, a tick after the

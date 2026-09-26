@@ -136,6 +136,50 @@ class SocketCloseTest extends utest.Test {
 		});
 	}
 
+	#if nodejs
+	/**
+		An idle connection costs a Node runtime nothing a tick, and what is
+		written to it without a flush still goes.
+
+		Every Node socket was ticked for as long as it was open, to flush what
+		had been written: a visit a tick for each connection, idle or not. A
+		write now asks for a flush at the end of the pass, and a socket is
+		ticked only while a streaming writer is feeding it.
+	**/
+	@:timeout(15000)
+	public function testAnIdleNodeConnectionIsNotTicked(async:Async):Void {
+		var before:Int = __tickListeners();
+		var server = new ServerSocket();
+		var accepted:Socket = null;
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) accepted = e.socket);
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var client = new Socket();
+			var got:String = "";
+			client.addEventListener(ProgressEvent.SOCKET_DATA, function(_) got += client.readUTFBytes(client.bytesAvailable));
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> accepted != null && client.connected, 5.0, function(_) {
+				Assert.equals(before, __tickListeners(), "open connections are visited every tick");
+
+				// Written, and never flushed.
+				accepted.writeUTFBytes("unflushed");
+
+				NetPump.until(() -> got == "unflushed", 5.0, function(_) {
+					Assert.equals("unflushed", got, "a write without a flush never went");
+					Assert.equals(before, __tickListeners(), "a connection that was written to is still visited every tick");
+					try client.close() catch (_:Dynamic) {}
+					try accepted.close() catch (_:Dynamic) {}
+					try server.close() catch (_:Dynamic) {}
+					async.done();
+				});
+			});
+		});
+	}
+	#end
+
 	private static function __tickListeners():Int {
 		var runtime:CrossByte = CrossByte.current();
 		var listeners:Array<Dynamic> = runtime.__eventMap == null ? null : runtime.__eventMap.get(TickEvent.TICK);
