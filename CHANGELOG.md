@@ -785,6 +785,23 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `ReliableDatagramServerSocket.connect()` to a name, and so
+  `NetHost.dial()` on a reliable-UDP host, looks it up off the runtime's
+  thread. It was looked up in the call, so every session the server
+  carries, and every other socket and timer on the runtime, waited on the
+  resolver: two seconds, natively, for a single-label name that does not
+  exist. Now the session is returned at once and filed under the address
+  the name resolves to, its handshake begun, when the answer comes; its
+  timeout counts the lookup, and its `remoteAddress` reads empty until
+  then. What to change: what the call threw `ArgumentError` for, given a
+  name, it now reports on the session as an `ioError` event followed by
+  the session's close, a name that does not resolve, and an endpoint
+  this server has a session to already, so listen for `ioError`.
+  `congestionControlFor` is asked about a session dialled by name once
+  the name is looked up, and one that throws is reported the same way.
+  Closing the server closes a session still waiting on its name. An
+  address is still resolved, and refused, in the call; on Node a name is
+  still refused.
 - `DatagramSocket.connect()` to a name looks it up off the runtime's
   thread, as `send()` to one already did. It was looked up in the call,
   so every socket and timer on the runtime waited on the resolver: a
