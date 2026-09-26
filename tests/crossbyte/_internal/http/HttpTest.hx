@@ -298,19 +298,17 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testResolveLocationHandlesAbsoluteAndRootRelativeUrls():Void {
-		var http = new Http("http://example.com/dir/page");
 		var base = new URL("http://example.com/dir/page");
 
-		Assert.equals("https://other.example/path?q=1", http.__resolveLocation(base, "https://other.example/path?q=1"));
-		Assert.equals("http://example.com/root?x=1", http.__resolveLocation(base, "/root?x=1"));
+		Assert.equals("https://other.example/path?q=1", Http.__resolveLocation(base, "https://other.example/path?q=1"));
+		Assert.equals("http://example.com/root?x=1", Http.__resolveLocation(base, "/root?x=1"));
 	}
 
 	public function testResolveLocationKeepsNonDefaultPortAndRelativeDirectory():Void {
-		var http = new Http("http://example.com:8080/dir/page");
 		var base = new URL("http://example.com:8080/dir/page");
 
-		Assert.equals("http://example.com:8080/dir/next", http.__resolveLocation(base, "next"));
-		Assert.equals("http://example.com:8080/dir/sub/next?x=1", http.__resolveLocation(base, "sub/next?x=1"));
+		Assert.equals("http://example.com:8080/dir/next", Http.__resolveLocation(base, "next"));
+		Assert.equals("http://example.com:8080/dir/sub/next?x=1", Http.__resolveLocation(base, "sub/next?x=1"));
 	}
 
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
@@ -851,6 +849,25 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(Http.__originOf(new URL("http://example.com/")) != Http.__originOf(new URL("https://example.com/")));
 	}
 
+	public function testAHeadStaysAHeadThroughARedirect():Void {
+		// A 301, 302 or 303 turns the request into a GET, as browsers do. A
+		// HEAD was turned into one too, and downloaded the body it had asked
+		// not to be sent.
+		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n");
+		var http = new Http('http://127.0.0.1:${fixture.port}/start', "HEAD");
+		var failure:String = null;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(failure, failure);
+		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
+		if (fixture.requests.length == 2) {
+			Assert.equals(0, fixture.requests[1].indexOf("HEAD /final HTTP/1.1"), fixture.requests[1]);
+		}
+	}
+
 	public function testTenRedirectsEndingInAResponseSucceed():Void {
 		// MAX_REDIRECTS is ten; ten followed and then answered is within it.
 		// The old check read the count alone and reported this as too many.
@@ -1032,11 +1049,10 @@ class HttpTest extends utest.Test {
 	}
 	#end
 
-	#if !(eval || java || jvm)
+	#if !eval
 	// Not on eval, where a read that times out raises a native Unix_error no
-	// Haxe catch can see, and so ends the process. Not on the jvm, where
-	// sys.net.Socket.setTimeout stores the value and nothing reads it, so no
-	// read there times out at all, this client's or the fixture's.
+	// Haxe catch can see, and so ends the process. On the jvm since
+	// sys.net.Socket.setTimeout reaches a blocking read there.
 	public function testTheIdleTimeoutIsInMilliseconds():Void {
 		// The socket was handed the milliseconds as seconds, so this waited
 		// until the server gave up, three seconds on, rather than 300 ms.
@@ -1086,6 +1102,93 @@ class HttpTest extends utest.Test {
 
 		Assert.isFalse(completed);
 		Require.notNull(failure);
+	}
+
+	// ------------------------------------------------------ cancelling a load
+
+	public function testACancelBeforeTheSocketIsMadeSendsNothing():Void {
+		// Cancelled after load() looked at its token and before the socket
+		// existed. The cancel found no socket to close and was lost: the
+		// request went out regardless, and its thread then waited out the
+		// idle timeout for an answer nobody wanted.
+		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
+		var http = new CancelledOnTheWay('http://127.0.0.1:${fixture.port}/late', 0);
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isFalse(completed, "a cancelled request completed");
+		Assert.equals("Request cancelled", failure);
+		Assert.equals(0, fixture.requests.length, "a cancelled request went out anyway");
+	}
+
+	public function testACancelBetweenRedirectsSendsNoMore():Void {
+		// The same window between two hops: the first hop's socket is closed
+		// and the next one's not yet made.
+		var fixture = serveWithin([
+			"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+		], 0.5);
+		var http = new CancelledOnTheWay('http://127.0.0.1:${fixture.port}/first', 1);
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isFalse(completed, "a cancelled request completed");
+		Assert.equals("Request cancelled", failure);
+		Assert.equals(1, fixture.requests.length, "the redirect was followed after the cancel");
+	}
+
+	public function testACancelledCloseDelimitedBodyIsNotComplete():Void {
+		// Such a body ends when the stream does, and a cancel ends the stream
+		// the same way the server closing does: what had arrived was delivered
+		// as the whole response.
+		var fixture = holdAfter("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npartial");
+		var http = new Http('http://127.0.0.1:${fixture.port}/partial');
+		var completed:Bytes = null;
+		var failure:String = null;
+		http.onProgress = (loaded, total) -> {
+			if (loaded > 0) {
+				http.cancelToken.cancel();
+			}
+		};
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed, "a body cut short by a cancel was delivered as complete");
+		Assert.equals("Request cancelled", failure);
+	}
+
+	public function testACancelFromAnotherThreadReachesAReadAtOnce():Void {
+		// The cancel shuts the socket down rather than closing it, which wakes
+		// a waiting read on every target and tells the server at once.
+		var fixture = holdRequest(false);
+		var http = new Http('http://127.0.0.1:${fixture.port}/held', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 5000);
+		var failure:String = null;
+		http.onError = (message, ?data) -> failure = message;
+		var token = http.cancelToken;
+		Thread.create(() -> {
+			// Once the server has the request: the read is waiting by then.
+			if (fixture.requested.wait(2.0)) {
+				token.cancel();
+			}
+		});
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		fixture.waitDone();
+
+		Assert.equals("Request cancelled", failure);
+		Assert.isTrue(took < 2.0, 'the cancelled read went on for ${took} s');
+		Assert.equals("the client went", fixture.ended);
 	}
 
 	#if !eval
@@ -1172,10 +1275,9 @@ class HttpTest extends utest.Test {
 				peer = server.accept();
 				peer.setTimeout(3.0);
 				fixture.request = readRequest(peer);
+				fixture.requested.release();
 				if (!closeAtOnce) {
-					try {
-						peer.input.readBytes(Bytes.alloc(1), 0, 1);
-					} catch (_:Dynamic) {}
+					fixture.ended = __awaitClientGoing(peer);
 				}
 			} catch (e:Dynamic) {
 				fixture.error = e;
@@ -1190,6 +1292,106 @@ class HttpTest extends utest.Test {
 		if (!fixture.ready.wait(2.0)) {
 			Assert.fail("Timed out waiting for HTTP fixture server");
 		}
+		return fixture;
+	}
+
+	/**
+	 * Takes one request, answers it with `response`, and holds the connection
+	 * until the client goes, three seconds at most.
+	 */
+	private static function holdAfter(response:String):OneShotHttpServer {
+		var fixture = new OneShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				peer = server.accept();
+				peer.setTimeout(3.0);
+				fixture.request = readRequest(peer);
+				fixture.requested.release();
+				peer.output.writeString(response);
+				peer.output.flush();
+				fixture.ended = __awaitClientGoing(peer);
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		return fixture;
+	}
+
+	/** How a wait for the client to hang up ended. */
+	private static function __awaitClientGoing(peer:SysSocket):String {
+		try {
+			peer.input.readBytes(Bytes.alloc(1), 0, 1);
+			return "a byte arrived";
+		} catch (_:haxe.io.Eof) {
+			return "the client went";
+		} catch (e:Dynamic) {
+			return Std.string(e);
+		}
+	}
+
+	/**
+	 * Answers each connection with the next of `responses`, waiting no more
+	 * than `window` seconds for each to arrive, and stops at the first that
+	 * does not. So a request that should never be sent can be seen not to be,
+	 * with no thread left waiting in accept() for it.
+	 */
+	private static function serveWithin(responses:Array<String>, window:Float):TwoShotHttpServer {
+		var fixture = new TwoShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(responses.length);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				for (response in responses) {
+					if (SysSocket.select([server], null, null, window).read.length == 0) {
+						break;
+					}
+					peer = server.accept();
+					peer.setBlocking(true);
+					peer.setTimeout(2.0);
+					fixture.requests.push(readRequest(peer));
+					peer.output.writeString(response);
+					peer.output.flush();
+					closeQuietly(peer);
+					peer = null;
+				}
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		if (fixture.error != null) {
+			Assert.fail("HTTP fixture server failed to start: " + fixture.error);
+		}
+
 		return fixture;
 	}
 
@@ -1483,6 +1685,12 @@ private class OneShotHttpServer {
 	public var ready:Lock = new Lock();
 	public var done:Lock = new Lock();
 
+	/** Released once the request has been read. */
+	public var requested:Lock = new Lock();
+
+	/** How the server's wait for the client ended, where it waits for one. */
+	public var ended:String = null;
+
 	public function new() {}
 
 	public function waitDone():Void {
@@ -1492,6 +1700,29 @@ private class OneShotHttpServer {
 		if (error != null) {
 			Assert.fail("HTTP fixture request failed: " + error);
 		}
+	}
+}
+
+/**
+ * Cancelled at the start of its `hop`th connection attempt, counting from
+ * zero: after `load()` has looked at the token, and before there is a socket
+ * for the cancel to reach. A cancel from another thread lands there as often
+ * as the timing allows; this lands there every time.
+ */
+private class CancelledOnTheWay extends Http {
+	private var __cancelAt:Int;
+	private var __attempts:Int = 0;
+
+	public function new(url:String, hop:Int) {
+		super(url);
+		__cancelAt = hop;
+	}
+
+	override private function __tryRequest():Void {
+		if (__attempts++ == __cancelAt) {
+			cancelToken.cancel();
+		}
+		super.__tryRequest();
 	}
 }
 

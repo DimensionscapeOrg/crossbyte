@@ -472,6 +472,7 @@ class H2Connection {
 			// then dropped.
 			return;
 		}
+		target.framesIn++;
 
 		for (header in decoded) {
 			if (header.name == ":status") {
@@ -506,6 +507,9 @@ class H2Connection {
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
 		if (target != null) {
+			// What lets a client's timeout be time without progress on this
+			// stream rather than a deadline on the whole response.
+			target.framesIn++;
 			target.recvWindow -= counted;
 			target.unacknowledged += counted;
 			target.appendBody(content);
@@ -789,7 +793,12 @@ class H2Connection {
 	}
 
 	private function __write(bytes:Bytes):Void {
-		__output.writeBytes(bytes, 0, bytes.length);
+		// Full, not writeBytes, which may write only part and says how much.
+		// Over TLS it takes at most one 16 KB record, and a DATA frame of the
+		// default largest size is 16 KB and nine: the frame's last nine bytes
+		// were dropped, and the peer read the next frame's header out of the
+		// middle of this one's payload.
+		__output.writeFullBytes(bytes, 0, bytes.length);
 		__output.flush();
 	}
 

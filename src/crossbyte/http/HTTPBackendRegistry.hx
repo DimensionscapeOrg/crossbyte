@@ -1,6 +1,6 @@
 package crossbyte.http;
 
-#if (cpp || neko || hl || java || jvm)
+#if target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -16,7 +16,7 @@ import sys.thread.Mutex;
 class HTTPBackendRegistry {
 	private static var __backends:Array<HTTPBackend> = [];
 
-	#if (cpp || neko || hl || java || jvm)
+	#if target.threaded
 	private static final __lock:Mutex = new Mutex();
 	#end
 
@@ -150,13 +150,13 @@ class HTTPBackendRegistry {
 	}
 
 	@:noCompletion private static inline function __acquire():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.acquire();
 		#end
 	}
 
 	@:noCompletion private static inline function __release():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.release();
 		#end
 	}
