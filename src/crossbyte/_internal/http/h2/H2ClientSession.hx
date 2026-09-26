@@ -161,6 +161,11 @@ class H2ClientSession {
 	 *
 	 * Blocks the calling thread only on its own stream. Other requests on this
 	 * connection continue while it waits, which is the point.
+	 *
+	 * `timeoutSeconds` is an idle limit: the longest the response may go with
+	 * nothing arriving for it, and the longest a window may keep its body
+	 * from going out. A response that keeps coming is waited for however
+	 * long it takes.
 	 */
 	public function execute(method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Null<Bytes>,
 			timeoutSeconds:Float, ?cancelToken:HTTPCancelToken):H2Stream {
@@ -246,8 +251,8 @@ class H2ClientSession {
 			return target;
 		}
 
-		if (!waiter.wait(timeoutSeconds)) {
-			// The peer never finished. The stream is reset rather than
+		if (!__awaitEnd(target, waiter, timeoutSeconds)) {
+			// The peer went quiet on it. The stream is reset rather than
 			// abandoned: leaving it open holds a slot against
 			// MAX_CONCURRENT_STREAMS for the life of the connection.
 			__lock.acquire();
@@ -262,6 +267,52 @@ class H2ClientSession {
 
 		__finish(streamId, cancelToken, onCancelled);
 		return target;
+	}
+
+	/**
+	 * Waits for `target` to end for as long as its peer keeps sending it
+	 * something, and gives up once it has sent nothing for `timeoutSeconds`.
+	 * False when it gave up.
+	 *
+	 * An idle limit, as the HTTP/1.1 client's socket timeout is and Node's
+	 * request timeout is. This waited `timeoutSeconds` once, from the start,
+	 * so the same `idleTimeout` that let a large download over HTTP/1.1 run
+	 * for as long as it kept moving cut it off over HTTP/2 however fast it
+	 * was arriving.
+	 *
+	 * The reader counts the stream's frames rather than timing them, since a
+	 * clock read per frame cost the frame path about 8% on small frames.
+	 * This looks at the count four times per timeout, and a look that finds it
+	 * moved starts the quiet period over from then. So the limit is never
+	 * reached early, and at most a quarter of it late.
+	 */
+	private function __awaitEnd(target:H2Stream, waiter:Lock, timeoutSeconds:Float):Bool {
+		var slice:Float = timeoutSeconds / 4;
+		__lock.acquire();
+		var seen:Int = target.framesIn;
+		__lock.release();
+		var quietSince:Float = haxe.Timer.stamp();
+
+		while (!waiter.wait(slice)) {
+			__lock.acquire();
+			var frames:Int = target.framesIn;
+			var ended:Bool = target.isClosed();
+			__lock.release();
+
+			if (ended) {
+				// Closed as the wait ran out, its wake-up not yet taken.
+				return true;
+			}
+
+			var now:Float = haxe.Timer.stamp();
+			if (frames != seen) {
+				seen = frames;
+				quietSince = now;
+			} else if (now - quietSince >= timeoutSeconds) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**

@@ -376,6 +376,41 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals(0, server.streamIds.length);
 	}
 
+	public function testARequestCancelledBeforeItStartsLeavesTheConnectionAlone():Void {
+		// Refused by the session before anything was sent, which the backend
+		// took for a failed connection and closed, the connection every
+		// other request to the origin was sharing.
+		var server = new H2RouteServer(request -> request.path == "/slow" ? {status: 200, chunks: ["done"], gap: 0.5} : {status: 200});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var first:String = null;
+		var done = new Lock();
+		var slow = new Http('http://127.0.0.1:${server.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		slow.onComplete = data -> first = "COMPLETED " + data.toString();
+		slow.onError = (message, ?data) -> first = message;
+		Thread.create(() -> {
+			slow.load();
+			done.release();
+		});
+		var until:Float = haxe.Timer.stamp() + 5;
+		while (server.requests().length == 0 && haxe.Timer.stamp() < until) {
+			Sys.sleep(0.01);
+		}
+
+		var second:String = null;
+		var cancelled = new Http('http://127.0.0.1:${server.port}/never', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		cancelled.onComplete = data -> second = "COMPLETED " + data.toString();
+		cancelled.onError = (message, ?data) -> second = message;
+		cancelled.cancelToken.cancel();
+		cancelled.load();
+
+		Assert.isTrue(done.wait(10), "the request in flight never returned");
+		server.stop();
+		Assert.equals("Request cancelled", second);
+		Assert.equals("COMPLETED done", first, "the request sharing the connection failed with it");
+		Assert.equals(1, server.connections());
+	}
+
 	// ------------------------------------------------------ multiplexing
 
 	public function testTwoRequestsReuseOneConnection():Void {
@@ -825,6 +860,223 @@ class HTTP2BackendTest extends utest.Test {
 		server.waitDone();
 
 		Assert.notNull(error);
+	}
+
+	// ------------------------------------------------------ redirects
+
+	public function testARedirectOverHttp2IsFollowed():Void {
+		// A 3xx completed here with its Location unfollowed, where the
+		// HTTP/1.1 client, Node and the browser all followed it.
+		var server = new H2RouteServer(request -> switch (request.path) {
+			case "/dir/start": {status: 302, fields: [new HpackHeader("location", "../final?x=1")]};
+			case "/final?x=1": {status: 200, chunks: ["done"]};
+			default: {status: 500};
+		});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var statuses:Array<Int> = [];
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/dir/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onStatus = status -> statuses.push(status);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+
+		Assert.equals("COMPLETED done", outcome);
+		// Each hop reported as it went, as over HTTP/1.1.
+		Assert.same([302, 200], statuses);
+		Assert.same(["/dir/start", "/final?x=1"], [for (request in server.requests()) request.path]);
+		// Where the response came from, which is what URLLoader reports.
+		Assert.equals('http://127.0.0.1:${server.port}/final?x=1', http.url);
+		Assert.isTrue(http.redirected);
+		// And the second hop rode the first one's connection.
+		Assert.equals(1, server.connections());
+	}
+
+	public function testAnHttp2RedirectToAnotherOriginLeavesTheCredentialsBehind():Void {
+		var elsewhere = new H2RouteServer(_ -> {status: 200, chunks: ["ok"]});
+		var origin = new H2RouteServer(_ -> {status: 302, fields: [new HpackHeader("location", 'http://127.0.0.1:${elsewhere.port}/landing')]});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${origin.port}/start', "GET",
+			["Authorization: Bearer sk-live-secret", "Proxy-Authorization: Basic cHJveHk=", "Cookie: sid=caller-set", "X-Trace: t-1"], null, null, null,
+			HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		origin.stop();
+		elsewhere.stop();
+
+		Assert.equals("COMPLETED ok", outcome);
+		var asked:Array<H2RouteRequest> = origin.requests();
+		var landed:Array<H2RouteRequest> = elsewhere.requests();
+		Assert.equals(1, asked.length);
+		Assert.equals(1, landed.length, "the redirect was not followed");
+		if (asked.length != 1 || landed.length != 1) {
+			return;
+		}
+		Assert.equals("Bearer sk-live-secret", asked[0].headers.get("authorization"), "the origin itself did not get the credentials");
+		Assert.isFalse(landed[0].headers.exists("authorization"), "Authorization reached another origin");
+		Assert.isFalse(landed[0].headers.exists("proxy-authorization"), "Proxy-Authorization reached another origin");
+		Assert.isFalse(landed[0].headers.exists("cookie"), "a caller's Cookie reached another origin");
+		Assert.equals("t-1", landed[0].headers.get("x-trace"), "an ordinary header was dropped as well");
+	}
+
+	public function testAnHttp2SeeOtherTurnsAPostIntoAGet():Void {
+		var server = new H2RouteServer(request -> request.path == "/submit" ? {status: 303, fields: [new HpackHeader("location", "/final")]} : {
+			status: 200,
+			chunks: ["ok"]
+		});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/submit', "POST", null, null, "text/plain", "payload", HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+
+		Assert.equals("COMPLETED ok", outcome);
+		var requests:Array<H2RouteRequest> = server.requests();
+		Assert.equals(2, requests.length, "the redirect was not followed");
+		if (requests.length != 2) {
+			return;
+		}
+		Assert.equals("POST", requests[0].method);
+		Assert.equals("payload", requests[0].body);
+		Assert.equals("GET", requests[1].method);
+		Assert.equals("", requests[1].body);
+		Assert.isFalse(requests[1].headers.exists("content-type"), "the dropped body's Content-Type went with the GET");
+	}
+
+	public function testAnHttp2RedirectCarriesTheCookieItSet():Void {
+		// A sign-in answering 302 with a session cookie, which the page it
+		// sends the client to needs to see.
+		var server = new H2RouteServer(request -> request.path == "/signin" ? {
+			status: 302,
+			fields: [new HpackHeader("location", "/landing"), new HpackHeader("set-cookie", "session=abc123; Path=/; HttpOnly")]
+		} : {status: 200, chunks: ["ok"]});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/signin', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+
+		Assert.equals("COMPLETED ok", outcome);
+		var requests:Array<H2RouteRequest> = server.requests();
+		Assert.equals(2, requests.length, "the redirect was not followed");
+		if (requests.length != 2) {
+			return;
+		}
+		Assert.isFalse(requests[0].headers.exists("cookie"), "a cookie was sent before anything set one");
+		Assert.equals("session=abc123", requests[1].headers.get("cookie"));
+	}
+
+	public function testAnHttp2RedirectLimitIsTheHttp11One():Void {
+		// Ten followed and then answered is within Http.MAX_REDIRECTS; an
+		// eleventh is one too many.
+		function hops(answerAt:Int):H2RouteServer {
+			return new H2RouteServer(request -> {
+				var hop:Int = Std.parseInt(request.path.substr(4));
+				return hop == answerAt ? {status: 200, chunks: ["done"]} : {status: 302, fields: [new HpackHeader("location", '/hop${hop + 1}')]};
+			});
+		}
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var ten = hops(10);
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${ten.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		ten.stop();
+		Assert.equals("COMPLETED done", outcome);
+
+		var endless = hops(-1);
+		outcome = null;
+		http = new Http('http://127.0.0.1:${endless.port}/hop0', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		endless.stop();
+		Assert.equals("Exceeded the number of allowed redirects", outcome);
+		Assert.equals(11, endless.requests().length);
+	}
+
+	public function testAnHttp2RedirectLeavingHttpIsRefused():Void {
+		var server = new H2RouteServer(_ -> {status: 302, fields: [new HpackHeader("location", "ftp://127.0.0.1/file")]});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+
+		Assert.equals("Refused a redirect to ftp: only http and https are followed", outcome);
+	}
+
+	public function testAnHttp2RedirectIsHandedBackWhenNotFollowed():Void {
+		var server = new H2RouteServer(_ -> {status: 302, fields: [new HpackHeader("location", "/final")]});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/start', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000, "CrossByte", false);
+		http.onStatus = status -> outcome = "status " + status;
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+
+		Assert.equals("status 302", outcome);
+		Assert.equals(1, server.requests().length);
+		Assert.isFalse(http.redirected);
+	}
+
+	// ------------------------------------------------------ idle timeout
+
+	public function testAnHttp2ResponseStillArrivingOutlivesTheTimeout():Void {
+		// A 600 ms idle timeout, and a body in five pieces a quarter second
+		// apart: well over a second in all, never quiet for 600 ms. The
+		// timeout was a deadline on the whole response over HTTP/2, so this
+		// was cut off where the HTTP/1.1 client let it finish.
+		var server = new H2RouteServer(_ -> {status: 200, chunks: ["a", "b", "c", "d", "e"], gap: 0.25});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_2, 600);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		http.load();
+		server.stop();
+
+		Assert.equals("COMPLETED abcde", outcome);
+	}
+
+	public function testAnHttp2ResponseThatStopsTimesOutFromItsLastFrame():Void {
+		// Two pieces, then nothing: the timeout runs from the last of them.
+		var server = new H2RouteServer(_ -> {status: 200, chunks: ["a", "b"], gap: 0.3, hold: true});
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcome:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/stalls', "GET", null, null, null, null, HttpVersion.HTTP_2, 500);
+		http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+		http.onError = (message, ?data) -> outcome = message;
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		server.stop();
+
+		Assert.equals('Request to http://127.0.0.1:${server.port} timed out after 0.5s', outcome);
+		// The last piece came at 0.6 s, so no sooner than 1.1 s: a deadline
+		// counted from the start ended it at half a second.
+		Assert.isTrue(took >= 1.0, 'timed out after ${took}s, before the stream had been idle 0.5s');
+		Assert.isTrue(took < 5.0, 'a stalled stream took ${took}s to time out');
 	}
 }
 
@@ -1900,6 +2152,193 @@ private class H2GoAwayServer {
 			__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS, id, block);
 			__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, id, Bytes.ofString(path));
 			return path;
+		}
+	}
+
+	private function __writeFrame(peer:SysSocket, type:H2FrameType, flags:Int, streamId:Int, payload:Bytes):Void {
+		var out = new BytesBuffer();
+		H2Frame.writeHeader(out, payload.length, type, flags, streamId);
+		if (payload.length > 0) {
+			out.addBytes(payload, 0, payload.length);
+		}
+		var bytes = out.getBytes();
+		peer.output.writeBytes(bytes, 0, bytes.length);
+		peer.output.flush();
+	}
+}
+
+/** A request as `H2RouteServer` received it. */
+private typedef H2RouteRequest = {
+	var method:String;
+	var path:String;
+	var headers:Map<String, String>;
+	var body:String;
+}
+
+/**
+ * How `H2RouteServer` answers a request: its status and fields, then its body
+ * in `chunks`, waiting `gap` seconds before each. With `hold` the stream is
+ * left open after the last chunk rather than ended.
+ */
+private typedef H2RouteAnswer = {
+	var status:Int;
+	@:optional var fields:Array<HpackHeader>;
+	@:optional var chunks:Array<String>;
+	@:optional var gap:Float;
+	@:optional var hold:Bool;
+}
+
+/**
+ * Answers requests by what `route` makes of them, on every connection it is
+ * given and for as long as each is kept: what a redirect chain needs, where a
+ * hop to the same origin rides the connection the last one came on and a hop
+ * to another origin dials another server.
+ *
+ * Accepts until `stop()`, thirty seconds at most, polling so no thread is left
+ * in accept() on a target where closing a listener does not wake it.
+ */
+private class H2RouteServer {
+	public var port(default, null):Int = 0;
+
+	private final __route:H2RouteRequest->H2RouteAnswer;
+	private final __listener:SysSocket = new SysSocket();
+	private final __lock:Mutex = new Mutex();
+	private final __requests:Array<H2RouteRequest> = [];
+	private var __connections:Int = 0;
+	private var __stopped:Bool = false;
+
+	public function new(route:H2RouteRequest->H2RouteAnswer) {
+		__route = route;
+		__listener.bind(new Host("127.0.0.1"), 0);
+		__listener.listen(4);
+		port = __listener.host().port;
+		Thread.create(__accept);
+	}
+
+	/** The requests answered so far, in the order they arrived. */
+	public function requests():Array<H2RouteRequest> {
+		__lock.acquire();
+		var copy:Array<H2RouteRequest> = __requests.copy();
+		__lock.release();
+		return copy;
+	}
+
+	public function connections():Int {
+		__lock.acquire();
+		var count:Int = __connections;
+		__lock.release();
+		return count;
+	}
+
+	public function stop():Void {
+		__lock.acquire();
+		__stopped = true;
+		__lock.release();
+	}
+
+	private function __isStopped():Bool {
+		__lock.acquire();
+		var stopped:Bool = __stopped;
+		__lock.release();
+		return stopped;
+	}
+
+	private function __accept():Void {
+		var until:Float = haxe.Timer.stamp() + 30;
+		while (!__isStopped() && haxe.Timer.stamp() < until) {
+			var ready:Bool = try SysSocket.select([__listener], null, null, 0.05).read.length > 0 catch (_:Dynamic) false;
+			if (!ready) {
+				continue;
+			}
+			var peer:SysSocket = try __listener.accept() catch (_:Dynamic) null;
+			if (peer != null) {
+				__lock.acquire();
+				__connections++;
+				__lock.release();
+				__spawn(peer);
+			}
+		}
+		try __listener.close() catch (_:Dynamic) {}
+	}
+
+	private function __spawn(peer:SysSocket):Void {
+		Thread.create(() -> __serve(peer));
+	}
+
+	private function __serve(peer:SysSocket):Void {
+		try {
+			peer.setBlocking(true);
+			// Until the client hangs up, which a pooled client does only when
+			// its pool lets go of the connection.
+			peer.setTimeout(10.0);
+			var preface = Bytes.alloc(H2Connection.PREFACE.length);
+			peer.input.readFullBytes(preface, 0, preface.length);
+			__writeFrame(peer, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+
+			var decoder = new HpackDecoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+			var encoder = new HpackEncoder(H2Settings.DEFAULT_HEADER_TABLE_SIZE);
+			var open:Map<Int, H2RouteRequest> = new Map();
+
+			while (true) {
+				var header = Bytes.alloc(H2Frame.HEADER_SIZE);
+				peer.input.readFullBytes(header, 0, H2Frame.HEADER_SIZE);
+				var length:Int = H2Frame.lengthOf(header);
+				var payload = Bytes.alloc(length);
+				if (length > 0) {
+					peer.input.readFullBytes(payload, 0, length);
+				}
+				var type:Int = header.get(3);
+				var flags:Int = header.get(4);
+				var id:Int = ((header.get(5) & 0x7f) << 24) | (header.get(6) << 16) | (header.get(7) << 8) | header.get(8);
+
+				var request:H2RouteRequest = null;
+				if (type == (H2FrameType.HEADERS : Int)) {
+					request = {method: "GET", path: "/", headers: new Map(), body: ""};
+					for (field in decoder.decode(payload)) {
+						switch (field.name) {
+							case ":method":
+								request.method = field.value;
+							case ":path":
+								request.path = field.value;
+							default:
+								request.headers.set(field.name, field.value);
+						}
+					}
+					open.set(id, request);
+				} else if (type == (H2FrameType.DATA : Int) && open.exists(id)) {
+					request = open.get(id);
+					request.body += payload.toString();
+				}
+
+				if (request == null || (flags & H2Flags.END_STREAM) == 0) {
+					continue;
+				}
+				open.remove(id);
+				__lock.acquire();
+				__requests.push(request);
+				__lock.release();
+				__answer(peer, encoder, id, __route(request));
+			}
+		} catch (_:Dynamic) {}
+		try peer.close() catch (_:Dynamic) {}
+	}
+
+	private function __answer(peer:SysSocket, encoder:HpackEncoder, id:Int, answer:H2RouteAnswer):Void {
+		var fields:Array<HpackHeader> = [new HpackHeader(":status", Std.string(answer.status))];
+		if (answer.fields != null) {
+			for (field in answer.fields) {
+				fields.push(field);
+			}
+		}
+		var chunks:Array<String> = answer.chunks != null ? answer.chunks : [];
+		var ends:Bool = answer.hold != true;
+		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS | (chunks.length == 0 && ends ? H2Flags.END_STREAM : 0), id, encoder.encode(fields));
+		for (i in 0...chunks.length) {
+			if (answer.gap != null && answer.gap > 0) {
+				Sys.sleep(answer.gap);
+			}
+			var last:Bool = i == chunks.length - 1;
+			__writeFrame(peer, H2FrameType.DATA, last && ends ? H2Flags.END_STREAM : 0, id, Bytes.ofString(chunks[i]));
 		}
 	}
 

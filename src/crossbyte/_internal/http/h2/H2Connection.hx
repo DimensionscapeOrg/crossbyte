@@ -472,6 +472,7 @@ class H2Connection {
 			// then dropped.
 			return;
 		}
+		target.framesIn++;
 
 		for (header in decoded) {
 			if (header.name == ":status") {
@@ -506,6 +507,9 @@ class H2Connection {
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
 		if (target != null) {
+			// What lets a client's timeout be time without progress on this
+			// stream rather than a deadline on the whole response.
+			target.framesIn++;
 			target.recvWindow -= counted;
 			target.unacknowledged += counted;
 			target.appendBody(content);
