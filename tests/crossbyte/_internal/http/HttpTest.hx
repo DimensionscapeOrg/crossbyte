@@ -298,19 +298,17 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testResolveLocationHandlesAbsoluteAndRootRelativeUrls():Void {
-		var http = new Http("http://example.com/dir/page");
 		var base = new URL("http://example.com/dir/page");
 
-		Assert.equals("https://other.example/path?q=1", http.__resolveLocation(base, "https://other.example/path?q=1"));
-		Assert.equals("http://example.com/root?x=1", http.__resolveLocation(base, "/root?x=1"));
+		Assert.equals("https://other.example/path?q=1", Http.__resolveLocation(base, "https://other.example/path?q=1"));
+		Assert.equals("http://example.com/root?x=1", Http.__resolveLocation(base, "/root?x=1"));
 	}
 
 	public function testResolveLocationKeepsNonDefaultPortAndRelativeDirectory():Void {
-		var http = new Http("http://example.com:8080/dir/page");
 		var base = new URL("http://example.com:8080/dir/page");
 
-		Assert.equals("http://example.com:8080/dir/next", http.__resolveLocation(base, "next"));
-		Assert.equals("http://example.com:8080/dir/sub/next?x=1", http.__resolveLocation(base, "sub/next?x=1"));
+		Assert.equals("http://example.com:8080/dir/next", Http.__resolveLocation(base, "next"));
+		Assert.equals("http://example.com:8080/dir/sub/next?x=1", Http.__resolveLocation(base, "sub/next?x=1"));
 	}
 
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
@@ -849,6 +847,25 @@ class HttpTest extends utest.Test {
 		Assert.equals("https://example.com:443", Http.__originOf(new URL("https://EXAMPLE.com/a")));
 		Assert.isTrue(Http.__originOf(new URL("http://example.com/")) != Http.__originOf(new URL("http://example.com:8080/")));
 		Assert.isTrue(Http.__originOf(new URL("http://example.com/")) != Http.__originOf(new URL("https://example.com/")));
+	}
+
+	public function testAHeadStaysAHeadThroughARedirect():Void {
+		// A 301, 302 or 303 turns the request into a GET, as browsers do. A
+		// HEAD was turned into one too, and downloaded the body it had asked
+		// not to be sent.
+		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\n\r\n",
+			"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n");
+		var http = new Http('http://127.0.0.1:${fixture.port}/start', "HEAD");
+		var failure:String = null;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(failure, failure);
+		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
+		if (fixture.requests.length == 2) {
+			Assert.equals(0, fixture.requests[1].indexOf("HEAD /final HTTP/1.1"), fixture.requests[1]);
+		}
 	}
 
 	public function testTenRedirectsEndingInAResponseSucceed():Void {

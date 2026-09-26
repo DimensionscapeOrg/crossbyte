@@ -38,6 +38,15 @@ class H2Stream {
 	public var endOfStream:Bool = false;
 
 	/**
+	 * Frames the peer has sent this stream: one per header block and one per
+	 * DATA frame. Counted rather than timed, so the frame path pays an
+	 * increment and not a clock read; a client waiting on the stream reads it
+	 * to tell a response still arriving from one that has gone quiet. Only
+	 * ever compared for a change, so wrapping is harmless.
+	 */
+	public var framesIn:Int = 0;
+
+	/**
 	 * True once the request body outgrew what the server will hold: the
 	 * request has been answered, and its remaining DATA is counted for the
 	 * connection's window and otherwise dropped.
