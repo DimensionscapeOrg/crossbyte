@@ -630,13 +630,34 @@ final class File extends EventDispatcher {
 
 		var fileClone:Dynamic = Type.createEmptyInstance(fileClass);
 
+		// The file's own state, not the dispatcher's. Every instance field was
+		// copied, EventDispatcher's included, so the clone shared the original's
+		// listener map -- a listener added to either reached both -- and on the
+		// dynamic targets the original's bound methods were copied onto the
+		// clone too, so `clone.addEventListener` registered on the original.
+		var dispatcherFields:Array<String> = Type.getInstanceFields(EventDispatcher);
 		var fields:Array<String> = Type.getInstanceFields(fileClass);
 		for (field in fields) {
+			if (dispatcherFields.indexOf(field) != -1) {
+				continue;
+			}
 			try {
-				Reflect.setProperty(fileClone, field, Reflect.getProperty(this, field));
+				var value:Dynamic = Reflect.getProperty(this, field);
+				if (!Reflect.isFunction(value)) {
+					Reflect.setProperty(fileClone, field, value);
+				}
 			} catch (e:Dynamic) {}
 		}
-		return fileClone;
+
+		// What EventDispatcher's constructor would have set.
+		var clone:File = fileClone;
+		@:privateAccess {
+			clone.__eventMap = null;
+			clone.__targetDispatcher = null;
+			clone.__nextListenerOrder = 0;
+			clone.__walking = 0;
+		}
+		return clone;
 	}
 
 	/**
