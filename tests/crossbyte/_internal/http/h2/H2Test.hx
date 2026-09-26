@@ -261,6 +261,223 @@ class H2Test extends utest.Test {
 		Assert.isNull(connection.goAwayCode);
 	}
 
+	public function testAResponseArrivingAfterOurResetIsDiscarded():Void {
+		var server = new ServerScript();
+		server.settings();
+		// The peer answers stream 1 as though it never saw our reset -- it
+		// may well have sent this before the reset reached it. The custom
+		// field goes into the dynamic table, and stream 3's response refers
+		// back to it.
+		server.response(1, [new HpackHeader(":status", "200"), new HpackHeader("x-trace", "abc")], "too late", true);
+		server.response(3, [new HpackHeader(":status", "200"), new HpackHeader("x-trace", "abc")], "ok", true);
+
+		var connection = server.connect();
+		var cancelled = connection.request("GET", "http", "example.com", "/cancelled", []);
+		var kept = connection.request("GET", "http", "example.com", "/kept", []);
+		connection.resetStream(cancelled.id, H2ErrorCode.CANCEL);
+		connection.pumpUntilClosed(kept);
+
+		// Nothing of the late response lands on the stream that was reset.
+		// It is still in the connection's map, and filling it in was how a
+		// cancelled request came to report itself complete.
+		Assert.equals(-1, cancelled.status);
+		Assert.equals(0, cancelled.headers.length);
+		Assert.equals(0, cancelled.bodyLength);
+		Assert.isFalse(cancelled.endOfStream);
+
+		// The discarded block was still decoded (5.1): without it, the next
+		// block's reference into the dynamic table points at nothing.
+		Assert.equals(200, kept.status);
+		Require.notNull(kept.headers[0]);
+		Assert.equals("abc", kept.headers[0].value);
+		Assert.equals("ok", kept.takeBody().toString());
+	}
+
+	public function testResettingAFinishedStreamSendsNothing():Void {
+		var server = new ServerScript();
+		server.settings();
+		server.response(1, [new HpackHeader(":status", "200")], "done", true);
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(stream);
+		connection.resetStream(stream.id, H2ErrorCode.CANCEL);
+
+		// The stream is over on both sides; a reset now is a frame on a
+		// closed stream, which 5.1 forbids sending.
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			Assert.notEquals(H2FrameType.RST_STREAM, frame.type);
+		}
+		Assert.equals("done", stream.takeBody().toString());
+	}
+
+	@:access(crossbyte._internal.http.h2.H2Connection)
+	public function testAFinishedStreamIsForgotten():Void {
+		var server = new ServerScript();
+		server.settings();
+		var count:Int = 100;
+		for (i in 0...count) {
+			server.response(1 + 2 * i, [new HpackHeader(":status", "200"), new HpackHeader("x-request", Std.string(i))], "body " + i, true);
+		}
+
+		var connection = server.connect();
+		for (i in 0...count) {
+			var stream = connection.request("GET", "http", "example.com", "/" + i, []);
+			connection.pumpUntilClosed(stream);
+
+			Assert.equals("body " + i, stream.takeBody().toString());
+			Assert.isNull(connection.stream(stream.id));
+		}
+
+		// A pooled connection lives as long as it is used, and it kept every
+		// stream it had ever opened: a hundred here, and one more -- with its
+		// header list -- for every request after.
+		var held:Int = 0;
+		for (_ in connection.__streams) {
+			held++;
+		}
+		Assert.equals(0, held);
+	}
+
+	public function testALateResponseForAForgottenStreamIsStillAccountedFor():Void {
+		var server = new ServerScript();
+		server.settings();
+		// Stream 1 is reset before any of this arrives. Its response still
+		// adds a field to the HPACK table, and still spends more than half
+		// the connection's receive window.
+		var chunk:String = StringTools.rpad("", "x", 8192);
+		server.rawHeaders(1, [new HpackHeader(":status", "200"), new HpackHeader("x-late", "yes")], true);
+		for (_ in 0...5) {
+			server.data(1, chunk, false);
+		}
+		server.data(1, "end", true);
+		server.response(3, [new HpackHeader(":status", "200"), new HpackHeader("x-late", "yes")], "ok", true);
+
+		var connection = server.connect();
+		var forgotten = connection.request("GET", "http", "example.com", "/forgotten", []);
+		var kept = connection.request("GET", "http", "example.com", "/kept", []);
+		connection.resetStream(forgotten.id, H2ErrorCode.CANCEL);
+		Assert.isNull(connection.stream(forgotten.id));
+
+		connection.pumpUntilClosed(kept);
+
+		Assert.equals(-1, forgotten.status);
+		Assert.equals(0, forgotten.bodyLength);
+
+		// The header block was decoded though its stream was gone: stream 3's
+		// reference into the dynamic table finds the field it added.
+		Require.notNull(kept.headers[0]);
+		Assert.equals("x-late", kept.headers[0].name);
+		Assert.equals("yes", kept.headers[0].value);
+		Assert.equals("ok", kept.takeBody().toString());
+
+		// And the DATA was counted against the connection window. Dropped
+		// uncounted, the window the peer believes in drains and is never
+		// topped up, and every stream on the connection stalls.
+		var connectionCredit:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type == H2FrameType.WINDOW_UPDATE) {
+				// Nothing is owed to a stream that is gone.
+				Assert.equals(0, frame.streamId);
+				connectionCredit += ((frame.payload.get(0) & 0x7f) << 24) | (frame.payload.get(1) << 16) | (frame.payload.get(2) << 8)
+					| frame.payload.get(3);
+			}
+		}
+		// Credit is returned once half the window is spent, and only the
+		// discarded body could have spent it: stream 3 carried two bytes.
+		Assert.isTrue(connectionCredit > H2Settings.DEFAULT_INITIAL_WINDOW_SIZE >> 1, 'connection window credited $connectionCredit bytes');
+	}
+
+	public function testAResponseBeforeTheWholeBodyEndsTheUpload():Void {
+		var server = new ServerScript();
+		server.settings();
+		// RFC 9113 8.1: a server may answer before it has read the whole
+		// request, and then say it wants no more with RST_STREAM(NO_ERROR).
+		// No WINDOW_UPDATE ever comes, so the upload stops at the initial
+		// 65535 bytes and waits -- which is when these arrive.
+		server.response(1, [new HpackHeader(":status", "413")], "too big", true);
+		server.rstStream(1, H2ErrorCode.NO_ERROR);
+
+		var connection = server.connect();
+		var stream = connection.request("POST", "http", "example.com", "/upload", [], Bytes.alloc(100000));
+
+		// Returned rather than thrown: this used to wait on for the stream's
+		// window, which never reopens, and fail the whole connection with a
+		// FLOW_CONTROL_ERROR once there was nothing left to read.
+		Assert.isTrue(stream.isClosed());
+		Assert.isTrue(stream.endOfStream);
+		Assert.equals(413, stream.status);
+		Assert.equals("too big", stream.takeBody().toString());
+
+		var sent:Int = 0;
+		var resets:Array<H2Frame> = [];
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			if (frame.type == H2FrameType.DATA && frame.streamId == 1) {
+				sent += frame.payload.length;
+				// The body was abandoned, not finished.
+				Assert.isFalse(frame.has(H2Flags.END_STREAM));
+			}
+			if (frame.type == H2FrameType.RST_STREAM) {
+				resets.push(frame);
+			}
+		}
+		Assert.equals(65535, sent);
+
+		// Our half is released too. The response ended the peer's half only,
+		// and a peer that sent no reset of its own would hold the stream open
+		// for an END_STREAM that is never sent.
+		Assert.equals(1, resets.length);
+		Require.notNull(resets[0]);
+		Assert.equals(1, resets[0].streamId);
+		Assert.equals(H2ErrorCode.CANCEL, (resets[0].payload.get(3) : H2ErrorCode));
+	}
+
+	public function testAResetDuringTheUploadEndsItQuietly():Void {
+		var server = new ServerScript();
+		server.settings();
+		server.rstStream(1, H2ErrorCode.CANCEL);
+
+		var connection = server.connect();
+		var stream = connection.request("POST", "http", "example.com", "/upload", [], Bytes.alloc(100000));
+
+		Assert.isTrue(stream.isClosed());
+		Assert.isFalse(stream.endOfStream);
+		Assert.equals(H2ErrorCode.CANCEL, stream.resetCode);
+
+		// Nothing more for a stream the peer reset: no further DATA, and no
+		// RST_STREAM in reply to its own (5.4.2).
+		var sent:Int = 0;
+		for (frame in ServerScript.parseFrames(server.written(), H2Connection.PREFACE.length)) {
+			Assert.notEquals(H2FrameType.RST_STREAM, frame.type);
+			if (frame.type == H2FrameType.DATA) {
+				sent += frame.payload.length;
+			}
+		}
+		Assert.equals(65535, sent);
+	}
+
+	public function testGoAwayRefusesEveryStreamAboveTheLastProcessedId():Void {
+		var server = new ServerScript();
+		server.settings();
+		server.goAway(1, H2ErrorCode.NO_ERROR);
+
+		var connection = server.connect();
+		var streams = [for (i in 0...5) connection.request("GET", "http", "example.com", "/" + i, [])];
+		connection.pumpUntilClosed(streams[streams.length - 1]);
+
+		// Refusing a stream closes it, and closing takes it out of the map the
+		// refusal walks -- so all four must go, not whichever the walk reached
+		// before its map changed under it.
+		Assert.isNull(streams[0].resetCode);
+		Assert.isFalse(streams[0].isClosed());
+		for (i in 1...streams.length) {
+			Assert.isTrue(streams[i].isClosed(), 'stream ${streams[i].id} was not refused');
+			Assert.equals(H2ErrorCode.REFUSED_STREAM, streams[i].resetCode);
+			Assert.isNull(connection.stream(streams[i].id));
+		}
+		Assert.equals(streams[0], connection.stream(streams[0].id));
+	}
+
 	public function testGoAwayRefusesStreamsAboveTheLastProcessedId():Void {
 		var server = new ServerScript();
 		server.settings();

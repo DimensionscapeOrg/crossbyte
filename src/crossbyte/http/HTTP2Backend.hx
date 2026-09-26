@@ -11,6 +11,7 @@ import crossbyte._internal.http.h2.H2ConnectionError;
 import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2Settings;
 import crossbyte._internal.http.h2.H2Stream;
+import crossbyte._internal.http.h2.H2StreamError;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte._internal.socket.FlexSocket;
 import crossbyte.url.URL;
@@ -43,9 +44,11 @@ import haxe.io.Bytes;
  * opening one each. That is the point of HTTP/2, and it also means the second
  * request to a host skips the handshakes and starts with a warm HPACK table.
  *
- * Still missing: cancellation. `HTTPBackend.load()` returns `Void`, so an
- * abandoned request has no handle through which to reset its stream, and the
- * slot stays held until the response arrives or the timeout fires.
+ * Cancelling through the request's `cancelToken` resets its stream and
+ * leaves the connection to the other requests on it. A request cancelled
+ * before the end of its response reports `"Request cancelled"` and never
+ * completes, however much of the response then arrives; one whose response
+ * had already ended when the cancel came completes as usual.
  */
 class HTTP2Backend implements HTTPBackend {
 	/**
@@ -129,6 +132,14 @@ class HTTP2Backend implements HTTPBackend {
 			if (session.dead) {
 				H2ConnectionPool.discard(session);
 			}
+		} catch (e:H2StreamError) {
+			// One stream failed -- a timeout -- and has been reset. The
+			// connection is left pooled for the requests still on it and the
+			// next: discarding it here failed all of them along with this one.
+			if (session != null && session.dead) {
+				H2ConnectionPool.discard(session);
+			}
+			context.onError(e.message);
 		} catch (e:H2ConnectionError) {
 			if (session != null) {
 				H2ConnectionPool.discard(session);
@@ -172,25 +183,39 @@ class HTTP2Backend implements HTTPBackend {
 	}
 
 	private function __report(context:HTTPRequestContext, stream:H2Stream, connection:H2Connection):Void {
-		if (context.cancelToken != null && context.cancelToken.cancelled && stream.status < 0) {
+		if (context.cancelToken != null && context.cancelToken.cancelled && !stream.endOfStream) {
 			// Reported as cancellation rather than as the reset it produced:
 			// the caller asked for this, and "stream reset" would read as the
 			// peer having done something.
+			//
+			// Keyed on the end of the stream, not on its status. A cancel that
+			// lands after the response headers but before the last of the body
+			// still abandons the request, and testing the status reported it
+			// complete with whatever part of the body had arrived.
 			context.onError("Request cancelled");
 			return;
 		}
 
-		if (stream.resetCode != null && stream.status < 0) {
-			var code:H2ErrorCode = stream.resetCode;
-			context.onError('Stream reset by peer: ${code.toString()}');
-			return;
-		}
+		// Everything below this block is a stream that reached its end. One
+		// that did not is an error however much of it arrived: these branches
+		// tested for a missing status, so a reset or a hang-up after the
+		// headers reported the response complete with a truncated body.
+		if (!stream.endOfStream) {
+			if (stream.resetCode != null) {
+				var code:H2ErrorCode = stream.resetCode;
+				context.onError('Stream reset by peer: ${code.toString()}');
+				return;
+			}
 
-		if (stream.status < 0 && !stream.endOfStream) {
-			// The peer hung up before the response headers arrived. Distinct
-			// from a malformed message, and the distinction is what tells a
-			// caller whether retrying is worth anything.
-			context.onError("Connection closed before the response headers arrived");
+			if (stream.status < 0) {
+				// The peer hung up before the response headers arrived.
+				// Distinct from a malformed message, and the distinction is
+				// what tells a caller whether retrying is worth anything.
+				context.onError("Connection closed before the response headers arrived");
+				return;
+			}
+
+			context.onError("Connection closed before the response body completed");
 			return;
 		}
 

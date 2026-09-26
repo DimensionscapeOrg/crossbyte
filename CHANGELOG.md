@@ -683,6 +683,75 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 request cancelled before its response arrived no longer
+  completes. `cancel()` reset the stream and woke the request, but the
+  stream stayed in the connection's map, so a response arriving after the
+  cancel was still written into it -- status, headers and body -- and a
+  request that read its stream after that reported the response through
+  `onComplete`, with a full body or an empty one depending on how much had
+  landed. The suite saw it once, on jvm. Looped, the case failed about once
+  in a thousand runs there under load, and 12 times in 3000 on cpp, where
+  the suite had never caught it. Frames for a stream already closed on this
+  side are now discarded, as RFC 9113 5.1 requires, with HPACK and
+  flow-control state still advanced. The cancel handler is now registered
+  before the request lets go of the session's lock. Registered after it, a
+  cancel landing just as the request went out had nothing to run, and was
+  applied only once the response had completed the stream. A request
+  cancelled after its response headers but before the end of its body
+  reports "Request cancelled" rather than completing with the part that
+  had arrived. Resetting a stream that has already ended no longer sends
+  RST_STREAM on a closed stream.
+- An HTTP/2 response cut short after its headers is an error, not a
+  response. When the server reset the stream, or the connection closed,
+  between the headers and the end of the body, the request completed
+  through `onComplete` with whatever part of the body had arrived: the
+  errors for those cases were given only when the status had not arrived
+  either. A stream that never saw END_STREAM now never completes. A reset
+  reports "Stream reset by peer: CODE" as before, a connection lost before
+  the headers "Connection closed before the response headers arrived" as
+  before, and one lost after them "Connection closed before the response
+  body completed".
+- A pooled HTTP/2 client connection no longer keeps every stream it has
+  carried. `H2Connection` never took a stream out of its map, so a
+  connection in use grew by one stream and its response headers per
+  request for as long as it stayed open, and every SETTINGS from the
+  server walked all of them. A stream is now forgotten as it closes. A frame
+  arriving for it later is discarded as one for an unknown stream, with
+  its header block still decoded and its DATA still counted against the
+  connection's window. A GOAWAY that refuses several streams closes them
+  after walking the map, not during.
+- An HTTP/2 upload the server ends early no longer stalls and takes the
+  connection with it. RFC 9113 8.1 lets a server answer, or reset the
+  stream, before it has read the whole request body. A body larger than
+  the send window was then left waiting for a WINDOW_UPDATE that a closed
+  stream never gets. After thirty quiet seconds it failed the connection
+  with a FLOW_CONTROL_ERROR, and every other request on it with it, and
+  reported that instead of the server's answer. Had it got past that, the
+  stream was marked open again, and the caller would have waited out its
+  timeout. The upload now stops as soon as the stream ends. The request
+  returns the response when the server finished one -- sending
+  RST_STREAM(CANCEL) so the server's half is released too -- and "Stream
+  reset by peer: CODE" when it reset instead. The connection stays in the
+  pool for other requests.
+- An HTTP/2 request can be timed out and cancelled while its body is
+  still going out. Its timeout started only once the whole body had been
+  sent, and its cancel handler was registered only then. A body waiting on
+  a flow-control window counted any frame on the connection as progress.
+  So an upload the server had stopped taking waited as long as the
+  connection was busy -- 36 s for a 1.5 s timeout in the test -- and on a
+  quiet connection gave up after thirty seconds by failing the connection
+  and every request on it. A cancel did nothing until then. The timeout now
+  also bounds how long a body's window may stay shut, so an upload that is
+  slow but moving is not cut off. The cancel handler is registered before
+  the body is sent. Either one resets only that stream, and a cancel wakes
+  its body at once. Each body waiting on a window is now woken by every
+  frame, where one shared wake-up used to reach only one of them. A
+  timeout, during the body or while waiting for the response, is now an
+  error in that stream only: it reports "Request to ORIGIN timed out after
+  Ns" without the "HTTP/2 connection error: " prefix, and leaves the
+  connection pooled. It used to close the connection, failing every other
+  request on it; a peer that has gone silent is now found when the
+  connection itself fails, not by the first timeout.
 - On JavaScript, the runtime lane's RPC request ids overflowed as the
   compiled lane's did before the `RPCCommands.__nextRequestId` fix below:
   an `Int` there is a double, so after 2^31 - 1 runtime calls on one
