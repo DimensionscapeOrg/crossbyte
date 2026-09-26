@@ -141,9 +141,18 @@ class Application extends EventDispatcher {
 		#end
 
 		__application = this;
-		__crossByte = new CrossByte(true, __crossByteLoopType, __crossByteHostDriven, __crossByteTimers);
+		__crossByte = __createRuntime();
 		__crossByte.addEventListener(Event.INIT, __onInit);
 		__crossByte.addEventListener(Event.EXIT, __onExit);
+	}
+
+	/**
+	 * Builds the primordial runtime from what the constructor was given: the
+	 * loop, whether a host drives it, and the timer strategy. One place, so a
+	 * subclass cannot build it from anything else.
+	 */
+	@:noCompletion private function __createRuntime():CrossByte {
+		return new CrossByte(true, __crossByteLoopType, __crossByteHostDriven, __crossByteTimers);
 	}
 
 	/**

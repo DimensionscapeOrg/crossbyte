@@ -34,9 +34,26 @@ import haxe.Timer as HxTimer;
  *   heap.
  * - **Exact ordering.** Two timers in the same tick fire in bucket order, not
  *   by their exact times. The heap orders them precisely.
+ * - **Catch-up past a revolution.** After a stall longer than the ring, the
+ *   whole revolutions beyond the first are skipped rather than walked, so a
+ *   recurring timer does not fire once for each tick it missed. The heap
+ *   fires every one.
  *
  * So: many short timers, high churn, granularity to spare, the wheel. Few
  * timers, long or arbitrary delays, or exact ordering, the heap.
+ *
+ * ## Where a timer goes
+ *
+ * A bucket is chosen from the time of the tick the cursor last reached, not
+ * from the scheduler's clock. The two differ during a pass: the clock has
+ * already moved to the end of the frame while the cursor walks the frame one
+ * tick at a time. Placing by the clock put a timer re-armed from a callback
+ * behind the cursor, where it waited a whole revolution, a `setInterval`
+ * of five milliseconds fired twice a second at sixty frames a second, and
+ * put one armed in a callback early, a bucket counted from the end of the
+ * frame but reached from its start. A timer due at or before the cursor
+ * goes in the next bucket: the cursor's own has been walked already, and
+ * `setTimeout(0)` sat there for a revolution, 517 milliseconds.
  */
 class TimerWheel implements ITimerScheduler {
 	/**
@@ -47,21 +64,50 @@ class TimerWheel implements ITimerScheduler {
 	 */
 	public static inline var RESOLUTION:Float = 0.001;
 
-	/** Ticks held in the ring; the direct range is `BUCKETS * RESOLUTION`. */
+	/** Ticks held in the ring; the direct range is `BUCKETS * RESOLUTION`. A power of two. */
 	public static inline var BUCKETS:Int = 512;
+
+	/** Fires between reads of the clock while a budget is kept; see the heap. */
+	private static inline var BUDGET_STRIDE:Int = 32;
 
 	public var size(get, never):Int;
 	public var isEmpty(get, never):Bool;
 	public var time(get, never):Float;
 	public final startTime:Float = HxTimer.stamp();
 	public var onError:Dynamic->Void = null;
+	public var cutShort(get, never):Bool;
 
 	@:noCompletion private var __buckets:Array<WheelNode>;
 	@:noCompletion private var __overflow:WheelNode;
+
+	/**
+	 * The bucket the cursor last reached, and how many ticks from the start
+	 * that is. The cursor's time is `__tick * RESOLUTION`, kept as a count
+	 * rather than a running sum so it never drifts from the clock. A Float,
+	 * so it stays exact far past where an Int would wrap.
+	 */
 	@:noCompletion private var __cursor:Int = 0;
+	@:noCompletion private var __tick:Float = 0;
 	@:noCompletion private var __now:Float = 0.0;
-	@:noCompletion private var __accum:Float = 0.0;
+
+	/** The tick the last pass meant to reach. */
+	@:noCompletion private var __target:Float = 0;
+
+	/** The bucket at the cursor still holds timers a budget stopped short of. */
+	@:noCompletion private var __partial:Bool = false;
+	@:noCompletion private var __cutShort:Bool = false;
 	@:noCompletion private var __size:Int = 0;
+
+	// The current pass's limits, kept here so the bucket walk can check them.
+	@:noCompletion private var __fired:Int = 0;
+	@:noCompletion private var __checkAt:Int = 0;
+	@:noCompletion private var __maxFires:Int = 0;
+	@:noCompletion private var __deadline:Float = 0;
+
+	// The node whose callback is running, and whether that callback gave it a
+	// new time itself; see the heap.
+	@:noCompletion private var __firing:WheelNode = null;
+	@:noCompletion private var __rearmed:Bool = false;
 
 	@:noCompletion private var nodes:Array<WheelNode> = [];
 	@:noCompletion private var gens:Array<Int> = [];
@@ -84,6 +130,10 @@ class TimerWheel implements ITimerScheduler {
 
 	public inline function get_time():Float {
 		return __now;
+	}
+
+	private inline function get_cutShort():Bool {
+		return __cutShort;
 	}
 
 	public inline function setTimeout(delay:Float, callback:TimerHandle->Void):TimerHandle {
@@ -152,9 +202,16 @@ class TimerWheel implements ITimerScheduler {
 		}
 
 		var node:WheelNode = nodes[handle.id()];
-		__unlink(node);
 		node.time = time;
 
+		if (node == __firing) {
+			// From its own callback: linked once the callback returns, at the
+			// time it asked for, rather than freed or advanced by an interval.
+			__rearmed = true;
+			return true;
+		}
+
+		__unlink(node);
 		if (node.enabled && node.pausedAt == null) {
 			__link(node);
 		}
@@ -207,7 +264,11 @@ class TimerWheel implements ITimerScheduler {
 				node.pausedAt = null;
 		}
 
-		__link(node);
+		if (node == __firing) {
+			__rearmed = true;
+		} else {
+			__link(node);
+		}
 		return true;
 	}
 
@@ -222,7 +283,7 @@ class TimerWheel implements ITimerScheduler {
 		var soonest:Null<Float> = null;
 
 		for (offset in 0...BUCKETS) {
-			var node:WheelNode = __buckets[(__cursor + offset) % BUCKETS];
+			var node:WheelNode = __buckets[(__cursor + offset) & (BUCKETS - 1)];
 			while (node != null) {
 				if (soonest == null || node.time < soonest) {
 					soonest = node.time;
@@ -248,45 +309,117 @@ class TimerWheel implements ITimerScheduler {
 		return soonest;
 	}
 
-	public function advanceTime(dt:Float, maxFires:Int = 256):Int {
+	/**
+	 * Walks the cursor up to the tick the new time has reached, firing each
+	 * bucket on the way. Unbounded by count unless `maxFires` says so; see
+	 * the heap for why, and for what `budget` does. A bucket a budget stops
+	 * partway through is finished first by the next call.
+	 */
+	public function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int {
 		__now += dt;
-		__accum += dt;
+		__cutShort = false;
+		__fired = 0;
+		__maxFires = maxFires;
+		__checkAt = (budget > 0 && BUDGET_STRIDE < maxFires) ? BUDGET_STRIDE : maxFires;
+		__deadline = budget > 0 ? HxTimer.stamp() + budget : 0.0;
 
-		var fired:Int = 0;
-		var ticks:Int = 0;
+		// The last tick whose time has been reached. The small allowance keeps
+		// a clock summed from frame deltas from falling a whole tick short of
+		// a boundary it has reached to within rounding.
+		var target:Float = Math.ffloor(__now / RESOLUTION + 1e-7);
+		__target = target;
 
-		while (__accum >= RESOLUTION && fired < maxFires) {
-			__accum -= RESOLUTION;
-			__cursor = (__cursor + 1) % BUCKETS;
-			fired += __fireBucket(__cursor, maxFires - fired);
+		if (__partial) {
+			__fireBucket(__cursor);
+			if (__partial) {
+				__cutShort = true;
+				return __fired;
+			}
+		}
+
+		var walked:Int = 0;
+		while (__tick < target) {
+			if (walked >= BUCKETS && target - __tick >= BUCKETS) {
+				// A full revolution has been walked in this call and more are
+				// still to go. Everything the ring held has been visited, and
+				// anything re-armed on the way sits within a revolution of the
+				// cursor, so the whole revolutions ahead hold nothing new: they
+				// are skipped rather than spun through, for a stall, a
+				// suspend, a breakpoint, that nobody is waiting on. The
+				// same call the frame loop makes when it gives up schedule
+				// debt. What they would have caught up on is late, not early.
+				__tick += Math.ffloor((target - __tick) / BUCKETS) * BUCKETS;
+				__admitOverflow();
+				continue;
+			}
+
+			__tick += 1;
+			__cursor = (__cursor + 1) & (BUCKETS - 1);
+			walked++;
 
 			if (__cursor == 0) {
 				__admitOverflow();
 			}
 
-			// One full revolution has visited every bucket, so anything still
-			// held is scheduled beyond this pass. Continuing would spin the
-			// ring for a stall nobody is waiting on, so the remaining whole
-			// revolutions are dropped, the same call the frame loop makes
-			// when it declares a stall unrecoverable rather than repaying it.
-			if (++ticks >= BUCKETS) {
-				var revolution:Float = BUCKETS * RESOLUTION;
-				if (__accum >= revolution) {
-					__accum = __accum % revolution;
-				}
+			__fireBucket(__cursor);
+			if (__partial) {
+				__cutShort = true;
 				break;
 			}
 		}
 
-		return fired;
+		return __fired;
 	}
 
-	@:noCompletion private function __fireBucket(index:Int, budget:Int):Int {
-		var node:WheelNode = __buckets[index];
-		var fired:Int = 0;
+	/**
+	 * How many timers are due and still waiting because the last pass was
+	 * cut short: those in the bucket it stopped in and in the buckets it
+	 * did not reach. Zero after a pass that finished.
+	 */
+	public function overdue():Int {
+		if (!__cutShort) {
+			return 0;
+		}
 
-		while (node != null && fired < budget) {
-			var next:WheelNode = node.next;
+		var count:Int = 0;
+		var ahead:Float = __target - __tick;
+		var buckets:Int = ahead >= BUCKETS ? BUCKETS : Std.int(ahead);
+
+		for (offset in (__partial ? 0 : 1)...(buckets + 1)) {
+			var node:WheelNode = __buckets[(__cursor + offset) & (BUCKETS - 1)];
+			while (node != null) {
+				if (node.enabled) {
+					count++;
+				}
+				node = node.next;
+			}
+		}
+
+		var node:WheelNode = __overflow;
+		while (node != null) {
+			if (node.enabled && node.time <= __now) {
+				count++;
+			}
+			node = node.next;
+		}
+
+		return count;
+	}
+
+	@:noCompletion private function __fireBucket(index:Int):Void {
+		var node:WheelNode;
+
+		// Taken from the head until the bucket is empty. Nothing linked while
+		// it is walked can land in it: a bucket is chosen at least one tick
+		// past the cursor's, and this is the cursor's.
+		while ((node = __buckets[index]) != null) {
+			if (__fired >= __checkAt) {
+				if (__fired >= __maxFires || HxTimer.stamp() >= __deadline) {
+					__partial = true;
+					return;
+				}
+				__checkAt = (__fired + BUDGET_STRIDE < __maxFires) ? __fired + BUDGET_STRIDE : __maxFires;
+			}
 
 			// Unlinked before the callback runs, so a callback that clears or
 			// reschedules this timer operates on a node that is not in any
@@ -295,7 +428,6 @@ class TimerWheel implements ITimerScheduler {
 
 			if (!node.enabled) {
 				__freeSlot(node.id);
-				node = next;
 				continue;
 			}
 
@@ -306,31 +438,36 @@ class TimerWheel implements ITimerScheduler {
 			// is passed on; see the heap, which does the same.
 			var failed:Bool = false;
 			var failure:Dynamic = null;
+			__firing = node;
+			__rearmed = false;
 			try {
 				node.callback(new TimerHandle(id, gen));
 			} catch (error:Dynamic) {
 				failed = true;
 				failure = error;
 			}
-			fired++;
+			__fired++;
+			__firing = null;
 
 			if (gens[id] != gen || nodes[id] != node) {
 				// Freed or replaced by its own callback; nothing left to do.
+			} else if (__rearmed) {
+				__link(node);
 			} else if (node.enabled && node.interval > 0) {
 				node.time += node.interval;
 				__link(node);
-			} else {
+			} else if (node.enabled || node.pausedAt == null) {
+				// A one-shot that has run, or one cleared lazily from its own
+				// callback. One that paused itself stays live, to be resumed.
 				__freeSlot(id);
 			}
 
 			if (failed) {
 				__fail(failure);
 			}
-
-			node = next;
 		}
 
-		return fired;
+		__partial = false;
 	}
 
 	// Passes a callback's failure on, once the timer it came from is settled.
@@ -388,10 +525,18 @@ class TimerWheel implements ITimerScheduler {
 	}
 
 	@:noCompletion private function __link(node:WheelNode):Void {
-		var ticks:Int = Math.ceil((node.time - __now) / RESOLUTION);
+		// Counted from the cursor's time, not the clock's; see the class notes.
+		// ceil rather than floor, so a timer is never reached before the time
+		// it asked for; being late by under a tick is the wheel's trade, being
+		// early would be a lie. The allowance only absorbs rounding in the
+		// subtraction. Kept a Float until it is known to be small: a timer
+		// days out is more ticks than an Int holds, and one that wrapped
+		// negative fired at once.
+		var ticks:Float = Math.fceil((node.time - __tick * RESOLUTION) / RESOLUTION - 1e-9);
 
-		if (ticks < 0) {
-			ticks = 0;
+		if (ticks < 1) {
+			// Due at or before the cursor, whose bucket has been walked.
+			ticks = 1;
 		}
 
 		if (ticks >= BUCKETS) {
@@ -405,10 +550,7 @@ class TimerWheel implements ITimerScheduler {
 			return;
 		}
 
-		// ceil rather than floor, so a timer is never reached before the time
-		// it asked for; being late by under a tick is the wheel's trade, being
-		// early would be a lie.
-		var index:Int = (__cursor + ticks) % BUCKETS;
+		var index:Int = (__cursor + Std.int(ticks)) & (BUCKETS - 1);
 		node.bucket = index;
 		node.prev = null;
 		node.next = __buckets[index];

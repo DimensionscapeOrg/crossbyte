@@ -26,5 +26,21 @@ interface ITimerScheduler {
 	public function delay(handle:TimerHandle, dt:Float):Bool;
 	public function setEnabled(handle:TimerHandle, enabled:Bool, policy:ResumePolicy = ResumePolicy.KeepPhase, time:Float = 0.0):Bool;
 	public function nextDue():Null<Float>;
-	public function advanceTime(time:Float, maxFires:Int = 256):Int;
+
+	/**
+		Fires what is due by `time + dt`. Nothing is capped by count unless
+		`maxFires` says so; `budget`, when above zero, is the wall-clock
+		seconds the call may spend before leaving the rest for the next one.
+		A timer armed during the call waits for the next one.
+	**/
+	public function advanceTime(dt:Float, maxFires:Int = 0x7FFFFFFF, budget:Float = 0.0):Int;
+
+	/** Whether the last `advanceTime` stopped with timers still due. **/
+	public var cutShort(get, never):Bool;
+
+	/**
+		How many timers are due and still waiting because the last pass was
+		cut short. Costs what it counts; for a metric, not for every frame.
+	**/
+	public function overdue():Int;
 }

@@ -170,6 +170,115 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.isEmpty, "the one-shot that threw was not freed");
 	}
 
+	public function testEveryDueTimerFiresInOnePass():Void {
+		// There was a cap of 256 fires a pass, and the runtime never passed
+		// anything but the default: past 256 due a frame, every timer ran
+		// late, and later every frame.
+		var heap = new TimerHeap();
+		var fired = 0;
+		for (_ in 0...1000) {
+			heap.setTimeoutVoid(0.1, () -> fired++);
+		}
+
+		Assert.equals(1000, heap.advanceTime(0.1));
+		Assert.equals(1000, fired);
+		Assert.isFalse(heap.cutShort);
+		Assert.equals(0, heap.overdue());
+	}
+
+	public function testABudgetSpreadsAPassAndCountsWhatItLeaves():Void {
+		var heap = new TimerHeap();
+		var fired = 0;
+		for (_ in 0...100) {
+			heap.setTimeoutVoid(0.1, () -> {
+				fired++;
+				__burn(0.0005);
+			});
+		}
+
+		var first = heap.advanceTime(0.1, 0x7FFFFFFF, 0.002);
+		Assert.isTrue(heap.cutShort, "a pass well over its budget was not cut short");
+		Assert.isTrue(first < 100, "the budget did not stop the pass: " + first);
+		Assert.equals(100 - first, heap.overdue());
+
+		// What it left goes on the next passes, without the clock moving.
+		var passes = 1;
+		while (fired < 100 && passes < 100) {
+			heap.advanceTime(0, 0x7FFFFFFF, 0.002);
+			passes++;
+		}
+		Assert.equals(100, fired);
+		Assert.isFalse(heap.cutShort);
+		Assert.equals(0, heap.overdue());
+	}
+
+	public function testATimerArmedDuringAPassWaitsForTheNextOne():Void {
+		// A callback that re-arms itself for now, polling until something
+		// is ready, ran again inside the same pass until a cap stopped it.
+		var heap = new TimerHeap();
+		var runs = 0;
+		function again():Void {
+			runs++;
+			heap.setTimeoutVoid(0, again);
+		}
+		heap.setTimeoutVoid(0.1, again);
+
+		heap.advanceTime(0.1);
+		Assert.equals(1, runs, "a timer re-armed for now ran again in the pass that armed it");
+		Assert.equals(0, heap.overdue(), "one armed during the pass is not late");
+		heap.advanceTime(1 / 60);
+		Assert.equals(2, runs);
+		heap.advanceTime(0);
+		Assert.equals(3, runs);
+	}
+
+	public function testATimerRescheduledFromItsOwnCallbackRunsAtItsNewTime():Void {
+		// It used to be freed once the callback returned, taking the new time
+		// with it.
+		var heap = new TimerHeap();
+		var runs:Array<Float> = [];
+		var handle = heap.setTimeout(1.0, h -> {
+			runs.push(heap.time);
+			if (runs.length == 1) {
+				heap.reschedule(h, heap.time + 2.0);
+			}
+		});
+
+		heap.advanceTime(1.0);
+		Assert.isTrue(heap.isActive(handle), "the snoozed timer was freed");
+		heap.advanceTime(1.0);
+		heap.advanceTime(1.0);
+		Assert.same([1.0, 3.0], runs);
+		Assert.isFalse(heap.isActive(handle));
+	}
+
+	public function testARecurringTimerThatPausesItselfCanBeResumed():Void {
+		// Pausing from its own callback used to free it instead.
+		var heap = new TimerHeap();
+		var runs = 0;
+		var handle = heap.setInterval(1.0, 1.0, h -> {
+			runs++;
+			if (runs == 2) {
+				heap.setEnabled(h, false);
+			}
+		});
+
+		for (_ in 0...4) {
+			heap.advanceTime(1.0);
+		}
+		Assert.equals(2, runs);
+		Assert.isTrue(heap.isActive(handle), "pausing itself destroyed the timer");
+
+		Assert.isTrue(heap.setEnabled(handle, true, ResumePolicy.FromNow));
+		heap.advanceTime(1.0);
+		Assert.equals(3, runs);
+	}
+
+	private static function __burn(seconds:Float):Void {
+		var end = haxe.Timer.stamp() + seconds;
+		while (haxe.Timer.stamp() < end) {}
+	}
+
 	public function testPauseResumeKeepPhaseFromZeroPreservesRemainingDelay():Void {
 		var heap = new TimerHeap();
 		var fired = 0;
