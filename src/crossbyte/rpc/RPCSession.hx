@@ -295,7 +295,8 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__endReason = reason;
 		// `| 0` so it wraps on JavaScript as it does elsewhere.
 		__epoch = (__epoch + 1) | 0;
-		__active = false;
+		// Stopped, not forgotten: `start()` still stands, for a connection
+		// that becomes ready again.
 		__stopHeartbeat();
 		__failAllPending("RPC connection closed: " + Std.string(reason));
 	}
@@ -1164,9 +1165,23 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		__failAllPending("RPC session stopped");
 	}
 
-	/** The connection has become ready: a heartbeat asked for before it was starts now. **/
+	/**
+		The connection has become ready: a heartbeat asked for before it was
+		starts now, and a connection that had ended, a `LocalConnection`
+		listening again, which takes its next peer on the same object, is
+		answered on again.
+
+		The session stayed ended once its connection first closed: for every
+		peer after the first, each error answer and each answer given later was
+		dropped, and the heartbeat stayed off. What was waiting from the last
+		peer stays on its own life of the connection, and answers nobody.
+	**/
 	@:noCompletion private function __connectionReady():Void {
-		if (__active && !__ended && !__hasHeartbeat) {
+		if (__ended) {
+			__ended = false;
+			__endReason = null;
+		}
+		if (__active && !__hasHeartbeat) {
 			__resumeHeartbeat();
 		}
 	}
