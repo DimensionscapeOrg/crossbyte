@@ -599,6 +599,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				__dispatchSendError("A datagram could not be sent: " + Std.string(error.message));
 			} catch (thrown:Dynamic) {
+				// To report through runtime.__uncaught(thrown, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
 				crossbyte.utils.Logger.error('An "ioError" listener threw: ' + Std.string(thrown));
 			}
 		}
@@ -970,6 +971,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				__receiveNode(message, remote);
 			} catch (e:Dynamic) {
+				// To report through runtime.__uncaught(e, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
 				crossbyte.utils.Logger.error('A datagram listener threw handling a datagram from ${remote.address}:${remote.port}: ' + Std.string(e));
 			}
 		});
@@ -978,6 +980,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			try {
 				__dispatchIoError(Std.string(e));
 			} catch (thrown:Dynamic) {
+				// To report through runtime.__uncaught(thrown, UncaughtErrorEvent.SOCKET, this) once the runtime has it (C1).
 				crossbyte.utils.Logger.error('An "ioError" listener threw: ' + Std.string(thrown));
 			}
 		});
