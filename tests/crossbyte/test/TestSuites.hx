@@ -269,6 +269,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.utils.UtilsTest());
 		runner.addCase(new crossbyte.utils.LoggerTest());
+		runner.addCase(new crossbyte.utils.IntParseTest());
 	}
 
 	public static function addMetrics(runner:Runner):Void {
