@@ -260,11 +260,21 @@ session.onHandlerError = (op, method, error) -> {
 A one-way call has nobody to answer, so whatever it throws, `RPCError` or not,
 goes to `onHandlerError`.
 
-What does end a connection is a frame that cannot be read: longer than
-`RPCHandler.MAX_FRAME_LEN` (8 MiB), for a method this side does not have, or
-with arguments that do not decode or that run past the end of the frame.
-Nothing after such a frame could be trusted to line up, so the session closes
-the connection, and every call still waiting on it fails.
+What does end a connection is a frame that cannot be read: longer than the
+session's `maxFrameLength` (8 MiB unless set), for a method this side's handler
+does not have, or with arguments that do not decode or that run past the end
+of the frame. Nothing after such a frame could be trusted to line up, so the
+session closes the connection, and every call still waiting on it fails.
+
+A frame too long is caught before it is sent as well: a request over the
+sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
+`cause`, a one-way call throws one, and an answer too long is not sent -- its
+caller is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
+Both ends of a connection should agree on the limit.
+
+A request to a session with no handler to answer it -- one with only commands,
+calling out -- is answered `RPCError.NO_HANDLER_MESSAGE`, and a one-way call to
+one is dropped.
 
 ## Hooks: one place for every call
 
@@ -497,8 +507,9 @@ session.call(LOG, ["one-way", 2, true]);
 
 Values on this lane carry a tag each, so an array can mix them: `null`,
 `Bool`, `Int`, `Float`, `String` and `haxe.io.Bytes`. A request to a number
-nobody registered is answered with an error; a one-way call to one is dropped.
-`deregister` removes a handler.
+nobody registered is answered with an error -- by any session, whether or not
+it has runtime handlers -- and a one-way call to one is dropped. `deregister`
+removes a handler.
 
 A runtime handler fails the way a compiled one does -- an `RPCError`'s message
 is the answer, anything else is `INTERNAL_MESSAGE` and goes to

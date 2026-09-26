@@ -716,6 +716,23 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC call the other side cannot take no longer ends the connection or
+  leaves its caller waiting. A runtime call to a session with no runtime
+  handlers ended that session's connection -- the reader for a compiled
+  handler took the frame for garbage -- where the guide promised an error
+  answer; it is now answered as the runtime lane answers. A compiled
+  request to a session with no handler was dropped, and its caller waited
+  on a connection that stayed up; it is now answered
+  `RPCError.NO_HANDLER_MESSAGE`. A frame over the 8 MiB limit went out
+  without complaint and ended the connection on the other side, failing
+  every call waiting on it; a request over it now fails at once with an
+  `ArgumentError`, a one-way call throws one, and an answer over it is
+  not sent -- its caller is answered `RPCError.INTERNAL_MESSAGE` and
+  `onHandlerError` is told. The limit is `RPCSession.maxFrameLength`,
+  which each session reads and sends by, where it was a constant. A
+  session now reads every frame in one place whatever it has bound; a
+  frame whose flags are neither a call nor an answer, which was taken for
+  a one-way call, now ends the connection as any unreadable frame does.
 - The RPC heartbeat keeps healthy connections and drops dead ones. Pings
   were one-way and nobody answered them, so a client heartbeating a server
   that only answers calls heard nothing between calls and closed a healthy
