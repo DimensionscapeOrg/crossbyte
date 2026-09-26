@@ -206,6 +206,8 @@ class HTTPServerH2Test extends utest.Test {
 			session.until(() -> Lambda.foreach(streams, id -> session.finished(id)) || session.ended, () -> {
 				session.close();
 				Assert.same([200, 200, 200, 429, 429, 429], [for (id in streams) session.status(id)]);
+				// Three a minute is one every twenty seconds: when to come back.
+				Assert.equals("20", session.header(7, "retry-after"));
 				async.done();
 			});
 		});

@@ -131,6 +131,171 @@ class RateLimiter {
 	}
 
 	/**
+	 * Seconds until `key` could spend `cost` tokens: `0` when it could now,
+	 * and `Math.POSITIVE_INFINITY` for a cost above the bucket's capacity,
+	 * which it never could. What a `Retry-After` should say. Spends nothing.
+	 */
+	public function secondsUntil(key:String, cost:Int = 1):Float {
+		if (cost < 1) {
+			throw "cost must be at least 1";
+		}
+		if (cost > __capacity) {
+			return Math.POSITIVE_INFINITY;
+		}
+		if (key == null) {
+			key = "";
+		}
+
+		var bucket:Null<Bucket> = __peek(key);
+		if (bucket == null) {
+			return 0;
+		}
+
+		var now:Float = __clock();
+		var tokens:Float = bucket.tokens;
+		if (now > bucket.updatedAt) {
+			tokens = Math.min(__capacity, tokens + (now - bucket.updatedAt) * __refillPerSecond);
+		}
+		return tokens >= cost ? 0 : (cost - tokens) / __refillPerSecond;
+	}
+
+	/**
+	 * The key a client address should be limited under.
+	 *
+	 * An IPv4 address is its own key. An IPv6 address is keyed by its first
+	 * `prefixBits` bits, a /64 unless told otherwise: that is the block one
+	 * subscriber is given, and every address in it is theirs to use, so keying
+	 * on the whole address let one client take a new bucket per request,
+	 * a thousand attempts from one /64 against a limit of five were refused
+	 * none of the time. An IPv4-mapped IPv6 address (`::ffff:192.0.2.1`, what
+	 * a dual-stack listener reports for an IPv4 client) is keyed as the IPv4
+	 * address it maps, so a client is one key whichever way it arrived. A
+	 * zone (`%eth0`) and brackets are ignored. Anything that is not an address
+	 * comes back as it was.
+	 *
+	 * The key for IPv6 is the prefix written out in full, every group, with
+	 * the length: `2001:db8:1:2:0:0:0:0/64`.
+	 */
+	public static function addressKey(address:String, prefixBits:Int = 64):String {
+		if (address == null) {
+			return "";
+		}
+		if (address.indexOf(":") < 0) {
+			return address;
+		}
+
+		var groups:Null<Array<Int>> = __parseIPv6(address);
+		if (groups == null) {
+			return address;
+		}
+
+		if (groups[0] == 0 && groups[1] == 0 && groups[2] == 0 && groups[3] == 0 && groups[4] == 0 && groups[5] == 0xFFFF) {
+			return (groups[6] >> 8) + "." + (groups[6] & 0xFF) + "." + (groups[7] >> 8) + "." + (groups[7] & 0xFF);
+		}
+
+		if (prefixBits < 0) {
+			prefixBits = 0;
+		} else if (prefixBits > 128) {
+			prefixBits = 128;
+		}
+
+		var key:StringBuf = new StringBuf();
+		for (i in 0...8) {
+			var kept:Int = prefixBits - i * 16;
+			var group:Int = kept >= 16 ? groups[i] : (kept <= 0 ? 0 : groups[i] & ((0xFFFF << (16 - kept)) & 0xFFFF));
+			if (i > 0) {
+				key.add(":");
+			}
+			key.add(StringTools.hex(group).toLowerCase());
+		}
+		key.add("/");
+		key.add(prefixBits);
+		return key.toString();
+	}
+
+	/** The eight groups of an IPv6 address in text, or null when it is not one. */
+	@:noCompletion private static function __parseIPv6(text:String):Null<Array<Int>> {
+		if (StringTools.startsWith(text, "[") && StringTools.endsWith(text, "]")) {
+			text = text.substr(1, text.length - 2);
+		}
+		var zone:Int = text.indexOf("%");
+		if (zone >= 0) {
+			text = text.substr(0, zone);
+		}
+
+		var halves:Array<String> = text.split("::");
+		if (halves.length > 2) {
+			return null;
+		}
+
+		var head:Null<Array<Int>> = __parseGroups(halves[0], halves.length == 1);
+		var tail:Null<Array<Int>> = halves.length == 2 ? __parseGroups(halves[1], true) : [];
+		if (head == null || tail == null) {
+			return null;
+		}
+
+		var missing:Int = 8 - head.length - tail.length;
+		if (halves.length == 1 ? missing != 0 : missing < 1) {
+			return null;
+		}
+
+		var groups:Array<Int> = head;
+		for (_ in 0...missing) {
+			groups.push(0);
+		}
+		for (group in tail) {
+			groups.push(group);
+		}
+		return groups;
+	}
+
+	/**
+	 * Colon-separated groups of up to four hex digits, the last of which may
+	 * be a dotted IPv4 address standing for two groups when `mayEndInIPv4`.
+	 */
+	@:noCompletion private static function __parseGroups(text:String, mayEndInIPv4:Bool):Null<Array<Int>> {
+		var groups:Array<Int> = [];
+		if (text.length == 0) {
+			return groups;
+		}
+
+		var parts:Array<String> = text.split(":");
+		for (i in 0...parts.length) {
+			var part:String = parts[i];
+			if (i == parts.length - 1 && mayEndInIPv4 && part.indexOf(".") >= 0) {
+				var octets:Array<String> = part.split(".");
+				if (octets.length != 4) {
+					return null;
+				}
+				var values:Array<Int> = [];
+				for (octet in octets) {
+					if (octet.length == 0 || octet.length > 3) {
+						return null;
+					}
+					var value:Int = crossbyte.utils.IntParse.decimal(octet, 255);
+					if (value < 0) {
+						return null;
+					}
+					values.push(value);
+				}
+				groups.push((values[0] << 8) | values[1]);
+				groups.push((values[2] << 8) | values[3]);
+				continue;
+			}
+
+			if (part.length == 0 || part.length > 4) {
+				return null;
+			}
+			var group:Int = crossbyte.utils.IntParse.hex(part, 0xFFFF);
+			if (group < 0) {
+				return null;
+			}
+			groups.push(group);
+		}
+		return groups;
+	}
+
+	/**
 	 * Returns the number of whole tokens currently available to `key`
 	 * without consuming any.
 	 */
