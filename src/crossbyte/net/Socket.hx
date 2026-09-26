@@ -563,7 +563,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var node = new NodeSocket();
 		__socket = node;
 		node.on(SocketEvent.Connect, function() {
-			socket_onOpen(null);
+			try {
+				socket_onOpen(null);
+			} catch (e:Dynamic) {
+				__contain(e, Event.CONNECT);
+			}
 		});
 		__bindNodeSocket(node);
 		node.connect({port: port, host: host});
@@ -1463,15 +1467,46 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function __bindNodeSocket(node:NodeSocket):Void {
 		node.setNoDelay(true);
 
+		// Each one contained. These run from Node's event loop, not from
+		// anything of CrossByte's, so a listener that threw, a data handler
+		// meeting input it could not parse, say, threw into Node, which
+		// ended the process: every other connection with it.
 		node.on(SocketEvent.Data, function(chunk) {
-			socket_onMessage(chunk);
+			try {
+				socket_onMessage(chunk);
+			} catch (e:Dynamic) {
+				__contain(e, ProgressEvent.SOCKET_DATA);
+			}
 		});
 		node.on(SocketEvent.Error, function(_) {
-			socket_onError(null);
+			try {
+				socket_onError(null);
+			} catch (e:Dynamic) {
+				__contain(e, IOErrorEvent.IO_ERROR);
+			}
 		});
 		node.on(SocketEvent.Close, function(_) {
-			socket_onClose(null);
+			try {
+				socket_onClose(null);
+			} catch (e:Dynamic) {
+				__contain(e, Event.CLOSE);
+			}
 		});
+	}
+
+	/**
+		A listener threw from inside one of Node's callbacks: logged, and this
+		connection closed, since whatever it was in the middle of cannot be
+		trusted to be finished. The rest of the process carries on.
+	**/
+	@:noCompletion private function __contain(error:Dynamic, event:String):Void {
+		crossbyte.utils.Logger.error('A "$event" listener threw, and the connection it was handling was closed: ' + Std.string(error));
+
+		try {
+			if (__socket != null) {
+				close();
+			}
+		} catch (_:Dynamic) {}
 	}
 
 	/**

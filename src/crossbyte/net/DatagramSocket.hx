@@ -751,12 +751,25 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		__family = family;
 		__socket = Dgram.createSocket({type: family});
 
+		// Contained: these run from Node's event loop, and a listener that
+		// threw there ended the process. A datagram socket is not closed for
+		// it, one socket carries every peer of a server, and one handler
+		// failing on one datagram is no reason to stop hearing the rest, so
+		// the failure is logged and the next datagram delivered as usual.
 		__socket.on("message", function(message:Buffer, remote:js.node.dgram.Socket.MessageRemoteInfo):Void {
-			__receiveNode(message, remote);
+			try {
+				__receiveNode(message, remote);
+			} catch (e:Dynamic) {
+				crossbyte.utils.Logger.error('A datagram listener threw handling a datagram from ${remote.address}:${remote.port}: ' + Std.string(e));
+			}
 		});
 
 		__socket.on("error", function(e:Dynamic):Void {
-			__dispatchIoError(Std.string(e));
+			try {
+				__dispatchIoError(Std.string(e));
+			} catch (thrown:Dynamic) {
+				crossbyte.utils.Logger.error('An "ioError" listener threw: ' + Std.string(thrown));
+			}
 		});
 	}
 

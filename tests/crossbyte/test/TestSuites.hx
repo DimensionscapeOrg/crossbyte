@@ -239,6 +239,10 @@ class TestSuites {
 		#if (js && !nodejs)
 		runner.addCase(new crossbyte.net.BrowserSocketTest());
 		#end
+		// Node's event loop, which only Node has; reached through PortableSuite.
+		#if nodejs
+		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
+		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
 		runner.addCase(new crossbyte.net.RUDPHardeningTest());
