@@ -36,6 +36,18 @@ class Http {
 	public static var MAX_CHUNKED_BODY_SIZE:Int = 64 * 1024 * 1024;
 
 	/**
+	 * Maximum number of bytes a response body framed by `Content-Length`, or by
+	 * the connection closing, may declare or deliver. Defaults to 64 MB; set to
+	 * `<= 0` to disable. `MAX_CHUNKED_BODY_SIZE` is the same bound for a
+	 * chunked body.
+	 *
+	 * A declared length is checked before anything is allocated for it. The
+	 * body used to be allocated whole from the header, so one response saying
+	 * `Content-Length: 2000000000` cost two gigabytes before a byte arrived.
+	 */
+	public static var MAX_BODY_SIZE:Int = 64 * 1024 * 1024;
+
+	/**
 	 * Maximum number of bytes a decoded response body may reach before the
 	 * download is abandoned. Defaults to 64 MB; set to `<= 0` to disable.
 	 *
@@ -437,6 +449,9 @@ class Http {
 
 				case "fixed":
 					var total:Int = contentLength;
+					if (MAX_BODY_SIZE > 0 && total > MAX_BODY_SIZE) {
+						throw "Response declared " + total + " bytes, more than the " + MAX_BODY_SIZE + " allowed";
+					}
 					data = Bytes.alloc(total);
 					var offset:Int = 0;
 
@@ -523,11 +538,20 @@ class Http {
 						var n:Int;
 						try {
 							n = __socket.input.readBytes(b, 0, b.length);
-						} catch (e:Dynamic) {
+						} catch (_:haxe.io.Eof) {
+							// The connection closing is how this body ends.
 							n = 0;
+						} catch (e:Dynamic) {
+							// Anything else is the body being cut off: a reset, a
+							// timeout. Every error was read as the end and the
+							// response reported complete with part of its body.
+							throw "Connection lost before the body ended: " + Std.string(e);
 						}
 						if (n <= 0)
 							break;
+						if (MAX_BODY_SIZE > 0 && buffer.length + n > MAX_BODY_SIZE) {
+							throw "Response body exceeded " + MAX_BODY_SIZE + " bytes";
+						}
 						buffer.addBytes(b, 0, n);
 						bytesLoaded += n;
 						onProgress(bytesLoaded, bytesTotalForProgress);

@@ -58,6 +58,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	/** The largest chunk-size read at all: seven hex digits' worth. */
 	@:noCompletion private static inline var MAX_CHUNK_SIZE:Int = 0xFFFFFFF;
+
+	/** Content codings one request body may stack. */
+	@:noCompletion private static inline var MAX_REQUEST_CODINGS:Int = 2;
 	@:noCompletion private static final ALLOWED_METHODS:Array<String> = ["GET", "HEAD", "OPTIONS", "POST"];
 
 	/**
@@ -1798,6 +1801,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
+		// They multiply, each pass expanding what the last produced, and no
+		// client stacks more than a proxy might add to one. The URLLoader
+		// client allows the same two on a response.
+		if (encodings.length > MAX_REQUEST_CODINGS) {
+			__sendErrorResponse(415, "Too many content codings");
+			return null;
+		}
+
 		return encodings;
 	}
 
@@ -2784,17 +2795,40 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private function __finishRequestBody():Void {
-		if (__requestBody != null && __requestBody.length > 0 && __requestContentEncodings != null && __requestContentEncodings.length > 0) {
-			try {
-				for (i in 0...__requestContentEncodings.length) {
-					var algorithm = __requestContentEncodings[__requestContentEncodings.length - 1 - i];
-					__requestBody.uncompress(algorithm);
-				}
-			} catch (e:Dynamic) {
-				__sendErrorResponse(415, "Unsupported Content-Encoding");
-				return;
+	/**
+	 * Undoes the request's content codings, never past the ceiling the body
+	 * is held to on the wire. Answers the request and returns false when that
+	 * cannot be done.
+	 *
+	 * The ceiling is the point. The wire limit counts compressed bytes and
+	 * compression ratios have none, so a 32 KB gzip body became 32 MB at the
+	 * route; a decoder given a ceiling stops at it and never takes the rest.
+	 *
+	 * Refused with 413 whether the body grew past the ceiling or was not
+	 * valid for its coding: the decoders report both the same way, and for
+	 * every well-formed body that fails, the ceiling is why.
+	 */
+	@:noCompletion private function __decodeRequestBody():Bool {
+		if (__requestBody == null || __requestBody.length == 0 || __requestContentEncodings == null || __requestContentEncodings.length == 0) {
+			return true;
+		}
+
+		try {
+			for (i in 0...__requestContentEncodings.length) {
+				var algorithm = __requestContentEncodings[__requestContentEncodings.length - 1 - i];
+				__requestBody.uncompress(algorithm, MAX_BUFFER_SIZE);
 			}
+		} catch (_:Dynamic) {
+			__sendErrorResponse(413, "Payload Too Large");
+			return false;
+		}
+
+		return true;
+	}
+
+	@:noCompletion private function __finishRequestBody():Void {
+		if (!__decodeRequestBody()) {
+			return;
 		}
 
 		var onComplete = __bodyComplete;

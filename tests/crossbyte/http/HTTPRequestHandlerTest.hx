@@ -268,6 +268,61 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, false, body);
 	}
 
+	public function testAnInflatedBodyPastTheCeilingIsRefused(async:Async):Void {
+		// Two megabytes of zeros gzip to about two kilobytes, well inside the
+		// wire limit. The limit counted wire bytes and inflation had no ceiling,
+		// so a 32 KB body became 32 MB at the route.
+		var zeros:ByteArray = new ByteArray();
+		zeros.length = 2 * 1024 * 1024;
+		zeros.compress(CompressionAlgorithm.GZIP);
+		var reached:Bool = false;
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				reached = true;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: ${zeros.length}\r\n\r\n', function(response):Void {
+			Assert.equals(413, response.status);
+			Assert.isFalse(reached, "an inflated body past the ceiling reached middleware");
+			async.done();
+		}, null, false, zeros);
+	}
+
+	public function testMoreThanTwoStackedCodingsAreRefused(async:Async):Void {
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello");
+		body.compress(CompressionAlgorithm.GZIP);
+		body.compress(CompressionAlgorithm.GZIP);
+		body.compress(CompressionAlgorithm.GZIP);
+
+		__sendRequest(async, [], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip, gzip, gzip\r\nContent-Length: ${body.length}\r\n\r\n',
+			function(response):Void {
+				Assert.equals(415, response.status);
+				Assert.equals("Too many content codings", response.body);
+				async.done();
+			}, null, false, body);
+	}
+
+	public function testTwoStackedCodingsStillDecode(async:Async):Void {
+		var bodyText:String = null;
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello twice");
+		body.compress(CompressionAlgorithm.GZIP);
+		body.compress(CompressionAlgorithm.DEFLATE);
+
+		__sendRequest(async, [
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				handler.respond(200, "text/plain", "ok");
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip, deflate\r\nContent-Length: ${body.length}\r\n\r\n', function(response):Void {
+			Assert.equals(200, response.status);
+			Assert.equals("hello twice", bodyText);
+			async.done();
+		}, null, false, body);
+	}
+
 	public function testUnsupportedRequestContentEncodingReturns415AndSkipsRouting(async:Async):Void {
 		var body:ByteArray = new ByteArray();
 		body.writeUTFBytes("hello world");
