@@ -9,9 +9,9 @@ import haxe.io.Bytes;
  * One FastCGI request/response exchange, in progress.
  *
  * The parsing lives here rather than in the bridge because it is the half that
- * does not care how the bytes arrived. A native build reads them from a
- * non-blocking socket on a tick; Node is handed them by an event. Both feed
- * `receive`, and neither knows anything about records.
+ * does not care how the bytes arrived. A native build reads them from its
+ * socket when the runtime's poll set reports them; Node is handed them by an
+ * event. Both feed `receive`, and neither knows anything about records.
  *
  * That split is also what makes the two implementations testable as one thing.
  * The old bridge read and parsed in a single blocking loop, so the parser could

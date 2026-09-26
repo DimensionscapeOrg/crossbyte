@@ -1164,6 +1164,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A PHP response waited for the runtime's next tick before it was read. The
+  bridge read its FastCGI connection from a tick listener, so at the default
+  twelve ticks a second a response arrived up to 84ms after PHP sent it,
+  however quickly PHP had answered: measured against a backend that answers
+  at once, 49-53ms on average in a server's `POLL` loop. The connection is in
+  the runtime's poll set now, as `crossbyte.net.Socket`'s are, and the reply
+  is read when it arrives: 0.5-0.7ms on average in the same measurement. A
+  backend that hangs up mid-response is heard as it hangs up. On eval, where
+  a socket cannot be made non-blocking, the bridge no longer blocks the
+  runtime reading a reply that has not arrived yet. Node was already told of
+  arrivals by an event.
 - Recording a metric took a lock on hxcpp, and acquiring an hxcpp `Mutex`
   enters and leaves a GC-free zone: about 230ns for each `Counter.inc`,
   `Gauge` update and `Histogram.observe`, so the two an HTTP server records
