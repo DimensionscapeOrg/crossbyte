@@ -3,14 +3,18 @@
 #include "NativeLocalConnection.h"
 
 #include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #if defined(_WIN32)
 #include <Windows.h>
 #else
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <thread>
 #include <unistd.h>
@@ -28,6 +32,13 @@ namespace
 	const char* PIPE_PREFIX = "/tmp/crossbyte_local_connection_";
 	const size_t PIPE_PREFIX_LENGTH = std::strlen(PIPE_PREFIX);
 
+	// Whether another attempt fits before `deadline`: a connect with no time
+	// left makes one attempt, and does not sleep a slice first.
+	bool sliceLeft(std::chrono::steady_clock::time_point deadline)
+	{
+		return std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_WAIT_SLICE_MS) < deadline;
+	}
+
 #if defined(_WIN32)
 	bool isInvalid(HANDLE pipe)
 	{
@@ -39,15 +50,23 @@ namespace
 		return std::string("\\\\.\\pipe\\") + (name == nullptr ? "" : name);
 	}
 
+	// The one instance of the name, or nothing if the name is taken.
+	//
+	// The pipe was made with PIPE_UNLIMITED_INSTANCES, so a second listen()
+	// on a name in use made a second instance beside the first, and clients
+	// went to whichever the system picked. FILE_FLAG_FIRST_PIPE_INSTANCE
+	// refuses a name any instance of which exists, and one instance is all a
+	// listener needs: it takes each client in turn, and native_disconnect
+	// makes it ready for the next.
 	extern "C" void* native_createInboundPipe(const char* name)
 	{
 		std::string pipeName = makePipeName(name);
 
 		HANDLE pipe = CreateNamedPipeA(
 			pipeName.c_str(),
-			PIPE_ACCESS_DUPLEX,
+			PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
 			PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT,
-			PIPE_UNLIMITED_INSTANCES,
+			1,
 			PIPE_BUFFER_SIZE,
 			PIPE_BUFFER_SIZE,
 			0,
@@ -70,8 +89,26 @@ namespace
 			return true;
 		}
 
+		// ERROR_NO_DATA: a client came and went before this looked. It is
+		// taken like any other: what it wrote is read, its leaving is found,
+		// and native_disconnect readies the instance for the next. It was
+		// taken for "nobody yet", and the instance stayed closing for good,
+		// every later client finding it busy.
 		DWORD error = GetLastError();
-		return error == ERROR_PIPE_CONNECTED;
+		return error == ERROR_PIPE_CONNECTED || error == ERROR_NO_DATA;
+	}
+
+	// Lets the client go and keeps the name: the instance takes the next
+	// client through native_accept, and nobody else can take the name
+	// between the two.
+	extern "C" bool native_disconnect(void* pipe)
+	{
+		HANDLE handle = static_cast<HANDLE>(pipe);
+		if (isInvalid(handle))
+		{
+			return false;
+		}
+		return DisconnectNamedPipe(handle) != FALSE;
 	}
 
 	extern "C" int native_read(void* pipe, unsigned char* buffer, int bufferSize)
@@ -124,16 +161,18 @@ namespace
 		return 0;
 	}
 
-	extern "C" bool native_write(void* pipe, const unsigned char* buffer, int bufferSize)
+	// As much of `buffer` as the pipe takes now, without waiting: the bytes
+	// written, 0 when the pipe is full, -1 when the connection is gone. A
+	// nonblocking byte-mode pipe with too little room writes what fits.
+	extern "C" int native_writeSome(void* pipe, const unsigned char* buffer, int bufferSize)
 	{
 		HANDLE handle = static_cast<HANDLE>(pipe);
-		if (isInvalid(handle) || buffer == nullptr || bufferSize <= 0)
+		if (isInvalid(handle) || buffer == nullptr || bufferSize < 0)
 		{
-			return false;
+			return -1;
 		}
 
 		int totalWritten = 0;
-		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
 		while (totalWritten < bufferSize)
 		{
 			int writeSize = bufferSize - totalWritten;
@@ -142,34 +181,61 @@ namespace
 				writeSize = PIPE_BUFFER_SIZE;
 			}
 			DWORD bytesWritten = 0;
-			if (WriteFile(handle, buffer + totalWritten, static_cast<DWORD>(writeSize), &bytesWritten, nullptr))
+			if (!WriteFile(handle, buffer + totalWritten, static_cast<DWORD>(writeSize), &bytesWritten, nullptr))
 			{
-				if (bytesWritten > 0)
+				DWORD error = GetLastError();
+				if (error == ERROR_NO_DATA || error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_PIPE_NOT_CONNECTED)
 				{
-					totalWritten += static_cast<int>(bytesWritten);
-					continue;
+					return totalWritten > 0 ? totalWritten : -1;
 				}
+				break;
 			}
+			if (bytesWritten == 0)
+			{
+				break;
+			}
+			totalWritten += static_cast<int>(bytesWritten);
+		}
 
-			DWORD error = GetLastError();
-			if (error == ERROR_NO_DATA)
+		return totalWritten;
+	}
+
+	// All of `buffer`, waiting up to CONNECT_TIMEOUT_MS: for tests that write a
+	// raw frame. LocalConnection writes through native_writeSome.
+	//
+	// It waits outside the collector's reach. LocalConnection.send wrote
+	// through this, on the runtime's thread, and a collection another thread
+	// started meanwhile waited for it, the peer's reader among them, so a
+	// frame larger than the pipe waited on a reader that waited on it, until
+	// the five seconds were up. `buffer` stays where it is: the caller holds
+	// it, and hxcpp's collector does not move objects.
+	extern "C" bool native_write(void* pipe, const unsigned char* buffer, int bufferSize)
+	{
+		HANDLE handle = static_cast<HANDLE>(pipe);
+		if (isInvalid(handle) || buffer == nullptr || bufferSize <= 0)
+		{
+			return false;
+		}
+
+		hx::AutoGCFreeZone waiting;
+		int totalWritten = 0;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(CONNECT_TIMEOUT_MS);
+		while (totalWritten < bufferSize)
+		{
+			int written = native_writeSome(pipe, buffer + totalWritten, bufferSize - totalWritten);
+			if (written < 0)
+			{
+				return false;
+			}
+			totalWritten += written;
+			if (totalWritten < bufferSize)
 			{
 				if (std::chrono::steady_clock::now() >= deadline)
 				{
 					return false;
 				}
 				Sleep(1);
-				continue;
 			}
-			if (error == ERROR_BROKEN_PIPE || error == ERROR_INVALID_HANDLE || error == ERROR_PIPE_NOT_CONNECTED)
-			{
-				return false;
-			}
-			if (std::chrono::steady_clock::now() >= deadline)
-			{
-				return false;
-			}
-			Sleep(1);
 		}
 
 		return true;
@@ -195,7 +261,12 @@ namespace
 		}
 		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
-		do
+		// It may wait for a listener, on the caller's thread: outside the
+		// collector's reach meanwhile, so a collection another thread starts
+		// does not wait for it. Nothing of the GC's is touched from here on;
+		// the name was copied above.
+		hx::AutoGCFreeZone waiting;
+		while (true)
 		{
 			HANDLE pipe = CreateFileA(
 				pipeName.c_str(),
@@ -214,21 +285,24 @@ namespace
 			}
 
 			DWORD error = GetLastError();
+			if (error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND)
+			{
+				return nullptr;
+			}
+			// No time left for another attempt: one try, without the wait.
+			if (!sliceLeft(deadline))
+			{
+				return nullptr;
+			}
 			if (error == ERROR_PIPE_BUSY)
 			{
 				WaitNamedPipeA(pipeName.c_str(), CONNECT_WAIT_SLICE_MS);
 			}
-			else if (error == ERROR_FILE_NOT_FOUND)
+			else
 			{
 				Sleep(CONNECT_WAIT_SLICE_MS);
 			}
-			else
-			{
-				return nullptr;
-			}
-		} while (std::chrono::steady_clock::now() < deadline);
-
-		return nullptr;
+		}
 	}
 
 	extern "C" void* native_connect(const char* name)
@@ -284,10 +358,22 @@ namespace
 		return error != ERROR_BROKEN_PIPE && error != ERROR_INVALID_HANDLE && error != ERROR_PIPE_NOT_CONNECTED;
 	}
 #else
+	// A send to a peer that has gone raises SIGPIPE, whose default action
+	// ends the process, unless the send says not to. macOS has no flag for
+	// it and sets SO_NOSIGPIPE on the socket instead; see
+	// configureConnectedSocket.
+#if defined(MSG_NOSIGNAL)
+	constexpr int SEND_FLAGS = MSG_NOSIGNAL;
+#else
+	constexpr int SEND_FLAGS = 0;
+#endif
+
 	struct NativeLocalConnectionHandle
 	{
 		int listenFd;
 		int clientFd;
+		// Held for as long as this listens on its name: see createInboundPipe.
+		int lockFd;
 		char path[108];
 	};
 
@@ -313,10 +399,19 @@ namespace
 #endif
 	}
 
+	// The socket path for `name`.
+	//
+	// It was the name with everything outside [A-Za-z0-9_-] made '_' and cut to
+	// 48 characters, so "a.b" and "a_b", or two long names alike for their
+	// first 48, were one socket, and the second to listen took the first's
+	// clients. A name that needs neither keeps its path; any other is a
+	// readable part of it and a 64-bit FNV-1a hash of the whole.
 	std::string sanitizePipeName(const char* name)
 	{
+		const size_t budget = 48;
 		std::string source = (name == nullptr || name[0] == '\0') ? "default" : name;
 		std::string sanitized;
+		bool changed = false;
 
 		for (char c : source)
 		{
@@ -327,20 +422,26 @@ namespace
 			else
 			{
 				sanitized.push_back('_');
+				changed = true;
 			}
 		}
 
-		if (sanitized.empty())
+		if (!changed && sanitized.size() <= budget)
 		{
-			sanitized = "default";
+			return std::string(PIPE_PREFIX) + sanitized;
 		}
 
-		if (sanitized.size() + PIPE_PREFIX_LENGTH > 80)
+		uint64_t hash = 1469598103934665603ULL;
+		for (unsigned char c : source)
 		{
-			sanitized = sanitized.substr(0, 80 - PIPE_PREFIX_LENGTH);
+			hash ^= c;
+			hash *= 1099511628211ULL;
 		}
+		char hex[17];
+		std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(hash));
 
-		return std::string(PIPE_PREFIX) + sanitized;
+		const size_t keep = budget - 17;
+		return std::string(PIPE_PREFIX) + sanitized.substr(0, sanitized.size() < keep ? sanitized.size() : keep) + "_" + hex;
 	}
 
 	std::string makePipeName(const char* name)
@@ -358,6 +459,7 @@ namespace
 
 		handle->listenFd = -1;
 		handle->clientFd = -1;
+		handle->lockFd = -1;
 		handle->path[0] = '\0';
 		return handle;
 	}
@@ -372,10 +474,49 @@ namespace
 		return handle->clientFd >= 0 ? handle->clientFd : handle->listenFd;
 	}
 
+	// An exclusive lock on `path`.lock, taken without waiting: the descriptor
+	// holding it, or -1 when another listener has it. The system lets it go
+	// when its holder exits, however it exits, so a name a crashed listener
+	// left is free again. Checked to be the file now at that path, since a
+	// listener closing removes it: a lock on one already removed holds
+	// nothing.
+	int lockName(const std::string& path)
+	{
+		std::string lockPath = path + ".lock";
+		for (int attempt = 0; attempt < 8; attempt++)
+		{
+			int fd = open(lockPath.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+			if (fd < 0)
+			{
+				return -1;
+			}
+			if (flock(fd, LOCK_EX | LOCK_NB) != 0)
+			{
+				close(fd);
+				return -1;
+			}
+			struct stat held;
+			struct stat current;
+			if (fstat(fd, &held) == 0 && stat(lockPath.c_str(), &current) == 0 && held.st_ino == current.st_ino && held.st_dev == current.st_dev)
+			{
+				return fd;
+			}
+			close(fd);
+		}
+		return -1;
+	}
+
+	// The listener for `name`, or nothing if another listener has it.
+	//
+	// It removed whatever socket file was at the path before binding, so a
+	// second listen() on a name in use took the first's place, and its
+	// clients. The name is now held by a lock: a live listener's name is
+	// refused, and only a stale file, from a listener that has gone, is
+	// removed.
 	extern "C" void* native_createInboundPipe(const char* name)
 	{
 		std::string pipeName = makePipeName(name);
-		if (pipeName.size() >= sizeof(((sockaddr_un*)nullptr)->sun_path))
+		if (pipeName.size() + 5 >= sizeof(((sockaddr_un*)nullptr)->sun_path))
 		{
 			return nullptr;
 		}
@@ -386,9 +527,17 @@ namespace
 			return nullptr;
 		}
 
+		int lockFd = lockName(pipeName);
+		if (lockFd < 0)
+		{
+			delete handle;
+			return nullptr;
+		}
+
 		int listenFd = socket(AF_UNIX, SOCK_STREAM, 0);
 		if (listenFd < 0)
 		{
+			close(lockFd);
 			delete handle;
 			return nullptr;
 		}
@@ -405,12 +554,14 @@ namespace
 		)
 		{
 			close(listenFd);
+			close(lockFd);
 			delete handle;
 			return nullptr;
 		}
 
 		configureListeningSocket(listenFd);
 		handle->listenFd = listenFd;
+		handle->lockFd = lockFd;
 		std::memcpy(handle->path, pipeName.data(), pipeName.size());
 		handle->path[pipeName.size()] = '\0';
 		return handle;
@@ -436,6 +587,23 @@ namespace
 		}
 		handle->clientFd = clientFd;
 		configureConnectedSocket(clientFd);
+		return true;
+	}
+
+	// Lets the client go and keeps listening: the next accept takes the next
+	// client, and the name is held throughout.
+	extern "C" bool native_disconnect(void* pipe)
+	{
+		auto* handle = static_cast<NativeLocalConnectionHandle*>(pipe);
+		if (isInvalid(handle) || handle->listenFd < 0)
+		{
+			return false;
+		}
+		if (handle->clientFd >= 0)
+		{
+			close(handle->clientFd);
+			handle->clientFd = -1;
+		}
 		return true;
 	}
 
@@ -504,6 +672,48 @@ namespace
 		return 0;
 	}
 
+	// As much of `buffer` as the socket takes now, without waiting: the bytes
+	// written, 0 when it is full, -1 when the connection is gone.
+	extern "C" int native_writeSome(void* pipe, const unsigned char* buffer, int bufferSize)
+	{
+		auto* handle = static_cast<NativeLocalConnectionHandle*>(pipe);
+		if (isInvalid(handle) || buffer == nullptr || bufferSize < 0)
+		{
+			return -1;
+		}
+
+		int fd = getActiveFd(handle);
+		if (fd < 0 || fd == handle->listenFd)
+		{
+			return -1;
+		}
+
+		int bytesWritten = 0;
+		while (bytesWritten < bufferSize)
+		{
+			ssize_t sendResult = send(fd, reinterpret_cast<const char*>(buffer) + bytesWritten, bufferSize - bytesWritten, MSG_DONTWAIT | SEND_FLAGS);
+			if (sendResult > 0)
+			{
+				bytesWritten += static_cast<int>(sendResult);
+				continue;
+			}
+			if (sendResult < 0 && errno == EINTR)
+			{
+				continue;
+			}
+			if (sendResult < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			{
+				break;
+			}
+			return bytesWritten > 0 ? bytesWritten : -1;
+		}
+
+		return bytesWritten;
+	}
+
+	// All of `buffer`: for tests that write a raw frame. LocalConnection
+	// writes through native_writeSome. It waits outside the collector's
+	// reach; see the Windows version.
 	extern "C" bool native_write(void* pipe, const unsigned char* buffer, int bufferSize)
 	{
 		auto* handle = static_cast<NativeLocalConnectionHandle*>(pipe);
@@ -518,10 +728,11 @@ namespace
 			return false;
 		}
 
+		hx::AutoGCFreeZone waiting;
 		int bytesWritten = 0;
 		while (bytesWritten < bufferSize)
 		{
-			ssize_t sendResult = send(fd, reinterpret_cast<const char*>(buffer) + bytesWritten, bufferSize - bytesWritten, 0);
+			ssize_t sendResult = send(fd, reinterpret_cast<const char*>(buffer) + bytesWritten, bufferSize - bytesWritten, SEND_FLAGS);
 			if (sendResult > 0)
 			{
 				bytesWritten += static_cast<int>(sendResult);
@@ -560,8 +771,18 @@ namespace
 			close(handle->listenFd);
 			unlink(handle->path);
 			handle->listenFd = -1;
-			handle->path[0] = '\0';
 		}
+
+		if (handle->lockFd >= 0)
+		{
+			// Removed while still held, so nobody locks the file on its way
+			// out; see lockName.
+			std::string lockPath = std::string(handle->path) + ".lock";
+			unlink(lockPath.c_str());
+			close(handle->lockFd);
+			handle->lockFd = -1;
+		}
+		handle->path[0] = '\0';
 
 		delete handle;
 	}
@@ -591,7 +812,10 @@ namespace
 			timeoutMs = 0;
 		}
 		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
-		do
+		// See the Windows version: it may wait, so it waits outside the
+		// collector's reach, having copied the name.
+		hx::AutoGCFreeZone waiting;
+		while (true)
 		{
 			int fd = socket(AF_UNIX, SOCK_STREAM, 0);
 			if (fd < 0)
@@ -609,17 +833,14 @@ namespace
 
 			int error = errno;
 			close(fd);
-			if (error != ENOENT && error != ECONNREFUSED)
+			if ((error != ENOENT && error != ECONNREFUSED) || !sliceLeft(deadline))
 			{
 				delete handle;
 				return nullptr;
 			}
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(CONNECT_WAIT_SLICE_MS));
-		} while (std::chrono::steady_clock::now() < deadline);
-
-		delete handle;
-		return nullptr;
+		}
 	}
 
 	extern "C" void* native_connect(const char* name)

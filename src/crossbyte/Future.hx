@@ -6,7 +6,7 @@ import crossbyte.events.EventType;
 import crossbyte.events.IEventDispatcher;
 import crossbyte.events.TickEvent;
 import crossbyte.utils.Logger;
-#if (cpp || neko || hl || java || jvm)
+#if (neko || hl || java || jvm)
 import sys.thread.Mutex;
 #end
 
@@ -86,8 +86,14 @@ class Future<T> implements IEventDispatcher {
 	#elseif (java || jvm)
 	@:volatile @:noCompletion private var __published:Int = 0;
 	#end
-	@:noCompletion private var __onResult:Array<T->Void> = [];
-	@:noCompletion private var __onError:Array<String->Void> = [];
+	// The handlers registered, in order: the first of each kind in a field of
+	// its own, since most futures have one, and any after it in a list made
+	// only then. Two lists were made for every future, and so for every RPC
+	// request, whether or not anything was ever registered.
+	@:noCompletion private var __onResult1:Null<T->Void> = null;
+	@:noCompletion private var __onError1:Null<String->Void> = null;
+	@:noCompletion private var __onResultMore:Null<Array<T->Void>> = null;
+	@:noCompletion private var __onErrorMore:Null<Array<String->Void>> = null;
 	@:noCompletion private var __dispatcher:Null<EventDispatcher>;
 
 	// Whether anyone has said what to do if this fails. Only used to decide
@@ -110,8 +116,17 @@ class Future<T> implements IEventDispatcher {
 		handler is expected here, and holding a lock across code we do not
 		control invites a deadlock. So state changes under the lock, the handler
 		list is swapped out, and the calls happen after the release.
+
+		On cpp it is a word of this object's own, taken with an atomic
+		compare-and-swap and let go with an atomic store; see `__acquire`. It
+		was a `sys.thread.Mutex`: an object with a finalizer made for every
+		future, and so for every RPC request, and taken twice on each round
+		trip, by `then` and by the answer, at about 250ns a time, since
+		taking one enters and leaves a GC-free zone.
 	**/
-	#if (cpp || neko || hl || java || jvm)
+	#if cpp
+	@:noCompletion private var __lockWord:Int = 0;
+	#elseif (neko || hl || java || jvm)
 	@:noCompletion private final __lock:Mutex = new Mutex();
 	#end
 
@@ -149,25 +164,49 @@ class Future<T> implements IEventDispatcher {
 
 			if (wasSuccessful) {
 				if (onResult != null) {
-					__safely(() -> onResult(value), "result");
+					__runResult(onResult, value);
 				}
 			} else if (onError != null) {
-				__safely(() -> onError(failure), "error");
+				__runError(onError, failure);
 			}
 
 			return this;
 		}
 
 		if (onResult != null) {
-			__onResult.push(onResult);
+			__addResult(onResult);
 		}
 
 		if (onError != null) {
-			__onError.push(onError);
+			__addError(onError);
 		}
 
 		__release();
 		return this;
+	}
+
+	/** Registers `handler`, under the lock. **/
+	@:noCompletion private inline function __addResult(handler:T->Void):Void {
+		if (__onResult1 == null && __onResultMore == null) {
+			__onResult1 = handler;
+		} else {
+			if (__onResultMore == null) {
+				__onResultMore = [];
+			}
+			__onResultMore.push(handler);
+		}
+	}
+
+	/** Registers `handler`, under the lock. **/
+	@:noCompletion private inline function __addError(handler:String->Void):Void {
+		if (__onError1 == null && __onErrorMore == null) {
+			__onError1 = handler;
+		} else {
+			if (__onErrorMore == null) {
+				__onErrorMore = [];
+			}
+			__onErrorMore.push(handler);
+		}
 	}
 
 	/**
@@ -190,13 +229,13 @@ class Future<T> implements IEventDispatcher {
 			__release();
 
 			if (!wasSuccessful) {
-				__safely(() -> onError(failure), "error");
+				__runError(onError, failure);
 			}
 
 			return this;
 		}
 
-		__onError.push(onError);
+		__addError(onError);
 		__release();
 		return this;
 	}
@@ -399,17 +438,31 @@ class Future<T> implements IEventDispatcher {
 		result = value;
 		__publish(1);
 
-		var handlers = __onResult;
-		__onResult = [];
-		__onError = [];
+		final first = __onResult1;
+		final more = __onResultMore;
+		__onResult1 = null;
+		__onResultMore = null;
+		__onError1 = null;
+		__onErrorMore = null;
 		__release();
 
-		for (handler in handlers) {
-			__safely(() -> handler(value), "result");
+		if (first != null) {
+			__runResult(first, value);
+		}
+		if (more != null) {
+			for (handler in more) {
+				__runResult(handler, value);
+			}
 		}
 
+		// Contained as a handler is. A listener that threw escaped into
+		// whoever completed this, for an RPC response, the session reading
+		// its connection, which took the throw for a frame it could not read,
+		// closed the connection and failed every other call waiting on it.
 		if (hasEventListener(RESULT)) {
-			dispatchEvent(new Event(RESULT));
+			__safely(() -> {
+				dispatchEvent(new Event(RESULT));
+			}, "result event");
 		}
 		return true;
 	}
@@ -448,18 +501,28 @@ class Future<T> implements IEventDispatcher {
 		this.cause = cause;
 		__publish(2);
 
-		var handlers = __onError;
-		__onResult = [];
-		__onError = [];
+		final first = __onError1;
+		final more = __onErrorMore;
+		__onResult1 = null;
+		__onResultMore = null;
+		__onError1 = null;
+		__onErrorMore = null;
 		var observed:Bool = __failureObserved;
 		__release();
 
-		for (handler in handlers) {
-			__safely(() -> handler(message), "error");
+		if (first != null) {
+			__runError(first, message);
+		}
+		if (more != null) {
+			for (handler in more) {
+				__runError(handler, message);
+			}
 		}
 
 		if (hasEventListener(ERROR)) {
-			dispatchEvent(new Event(ERROR));
+			__safely(() -> {
+				dispatchEvent(new Event(ERROR));
+			}, "error event");
 		}
 
 		if (!observed) {
@@ -481,25 +544,82 @@ class Future<T> implements IEventDispatcher {
 	 * Reported rather than swallowed: the handler is the caller's code and the
 	 * bug is theirs to see.
 	 */
-	@:noCompletion private inline function __acquire():Void {
-		#if (cpp || neko || hl || java || jvm)
-		__lock.acquire();
-		#end
-	}
-
-	@:noCompletion private inline function __release():Void {
-		#if (cpp || neko || hl || java || jvm)
-		__lock.release();
-		#end
-	}
-
 	@:noCompletion private function __safely(run:Void->Void, phase:String):Void {
 		try {
 			run();
 		} catch (e:Dynamic) {
-			Logger.error("A Future " + phase + " handler threw and was contained: " + Std.string(e));
+			__contained(phase, e);
 		}
 	}
+
+	/** Runs a result handler as `__safely` runs anything, without a closure made to do it. **/
+	@:noCompletion private function __runResult(handler:T->Void, value:T):Void {
+		try {
+			handler(value);
+		} catch (e:Dynamic) {
+			__contained("result", e);
+		}
+	}
+
+	/** Runs an error handler as `__safely` runs anything, without a closure made to do it. **/
+	@:noCompletion private function __runError(handler:String->Void, message:String):Void {
+		try {
+			handler(message);
+		} catch (e:Dynamic) {
+			__contained("error", e);
+		}
+	}
+
+	@:noCompletion private static function __contained(phase:String, error:Dynamic):Void {
+		Logger.error("A Future " + phase + " handler threw and was contained: " + Std.string(error));
+	}
+
+	/**
+		Takes the lock. On cpp, the word is set from 0 to 1 by an atomic
+		compare-and-swap: one instruction when nobody else holds it, which is
+		every time a future is made, observed and completed on one thread.
+		Another thread holds it for a handful of instructions, swapping a
+		handler list, never running one, so a contended acquire waits for it
+		in `__contend`.
+	**/
+	@:noCompletion private inline function __acquire():Void {
+		#if cpp
+		if ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __lockWord) : Int) != 0) {
+			__contend();
+		}
+		#elseif (neko || hl || java || jvm)
+		__lock.acquire();
+		#end
+	}
+
+	/** Lets go of the lock: on cpp an atomic store, which publishes what was written under it. **/
+	@:noCompletion private inline function __release():Void {
+		#if cpp
+		untyped __cpp__("_hx_atomic_store(&{0}, 0)", __lockWord);
+		#elseif (neko || hl || java || jvm)
+		__lock.release();
+		#end
+	}
+
+	#if cpp
+	/**
+		Waits for another thread to let go of the lock. It may be allocating as
+		it holds it, a handler list growing, and a collection waits for
+		every thread, so this lets the collector stop it between tries rather
+		than spinning where it cannot; and it yields its time slice after a
+		while, in case the holder is not running.
+	**/
+	@:noCompletion private function __contend():Void {
+		var tries:Int = 0;
+		while ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __lockWord) : Int) != 0) {
+			cpp.vm.Gc.safePoint();
+			if (++tries >= 64) {
+				tries = 0;
+				Sys.sleep(0);
+			}
+		}
+	}
+	#end
 
 	/**
 	 * Complains, one tick later, about a failure nobody was listening for.

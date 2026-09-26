@@ -235,6 +235,21 @@ class RPCRobustnessTest extends utest.Test {
 		Assert.stringContains("RPC connection closed", runtime.error);
 	}
 
+	public function testACallFailedByItsConnectionEndingCarriesTheReason():Void {
+		// It failed with a message and no cause, so a caller, a gateway,
+		// could not tell a connection gone from a peer refusing.
+		var link = LinkedConnection.pair();
+		var commands = new RobustCommands();
+		var session = new RPCSession<RobustCommands>(link.client, commands);
+		var compiled = commands.getName(1);
+		var runtime:RPCResponse<Dynamic> = session.request(77, [1]);
+
+		link.client.close();
+
+		Assert.isTrue(Type.enumEq(Reason.Closed, compiled.cause), "no Reason: " + compiled.cause);
+		Assert.isTrue(Type.enumEq(Reason.Closed, runtime.cause), "no Reason: " + runtime.cause);
+	}
+
 	public function testTheApplicationsOnCloseRunsBesideTheSessions():Void {
 		// The session is told without taking the application's callback,
 		// whether that was set before the session or after it.

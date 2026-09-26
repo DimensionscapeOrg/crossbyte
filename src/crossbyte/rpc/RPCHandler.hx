@@ -4,8 +4,6 @@ package crossbyte.rpc;
 // Node and in a browser.
 
 import crossbyte.Future;
-import crossbyte.net.NetConnection;
-import crossbyte.rpc.RPCCommands;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.io.ByteArrayInput;
 import crossbyte.io.ByteArrayOutput;
@@ -49,6 +47,11 @@ import crossbyte.io.ByteArrayOutput;
 	as well as its own, a contract method can be implemented by an ancestor,
 	and hooks overridden in a shared base class apply to every handler built
 	on it.
+
+	One handler can serve any number of sessions: a server with one room,
+	one queue or one world makes one handler and gives it to the session of
+	every client it accepts. Each call is answered on the connection it came
+	in on, and `session` says, while a method runs, whose call it is.
 **/
 @:autoBuild(crossbyte.rpc._internal.RPCHandlerMacro.build())
 @:access(crossbyte.net.Socket)
@@ -57,61 +60,32 @@ import crossbyte.io.ByteArrayOutput;
 abstract class RPCHandler {
 	public static inline final MAX_FRAME_LEN:Int = 8 * 1024 * 1024;
 
-	@:noCompletion private var this_connection:NetConnection;
-	@:noCompletion private var this_commands:RPCCommands;
+	/**
+		The session whose call is running, while one is: a method reads it to
+		tell its callers apart, `session.data` for what the application
+		keeps per client, `session.commands` to call that client back, and
+		`session.connection` for where it is. `null` between calls.
+
+		A handler held the one session it was given last, so a handler given
+		to a second session answered every call on that session's connection:
+		one client's answer went to another, and since each client numbers its
+		calls from 1, it answered whichever call of theirs had the same number.
+
+		A method that answers later, with a `Future`, is answered on its
+		caller's connection whatever `session` says by then. Code that needs
+		the caller after its method has returned keeps `session` itself.
+	**/
+	public var session(get, never):RPCSession<Dynamic, Dynamic>;
+
+	// The session whose call is being dispatched, set by that session for as
+	// long as it dispatches to this handler, and where its frame ends: the
+	// generated decoders read no further. Neither is the handler's own between
+	// calls, since it may serve any number of sessions.
 	@:noCompletion private var this_session:RPCSession<Dynamic, Dynamic>;
-	// Where the frame being dispatched ends; the generated decoders read no
-	// further.
 	@:noCompletion private var this_frameEnd:Int = RPCWire.NO_FRAME_END;
 
-	@:noCompletion private inline function this_socket_onData(input:ByteArrayInput):Void {
-		while (input.bytesAvailable >= 9) {
-			final lenPos:Int = input.position;
-			final payloadLen:Int = input.readInt();
-
-			if (payloadLen < RPCWire.MIN_PAYLOAD_LEN || (MAX_FRAME_LEN != 0 && payloadLen > MAX_FRAME_LEN)) {
-				throw "Invalid RPC frame length";
-			}
-
-			if (input.bytesAvailable < payloadLen) {
-				input.position = lenPos;
-				break;
-			}
-
-			final frameEnd:Int = input.position + payloadLen;
-			this_frameEnd = frameEnd;
-			if (this_commands != null) {
-				this_commands.__frameEnd = frameEnd;
-			}
-			final flags:Int = input.readByte();
-			if ((flags & RPCWire.FLAG_RUNTIME) != 0) {
-				throw "Runtime RPC frame delivered to compile-time handler lane";
-			}
-			final op:Int = input.readInt();
-			if (flags == 0) {
-				this.dispatch(op, input, 0);
-			} else if (flags == RPCWire.FLAG_REQUEST) {
-				this.dispatch(op, input, input.readVarUInt());
-			} else if (flags == RPCWire.FLAG_RESPONSE) {
-				final requestId:Int = input.readVarUInt();
-				if (this_commands != null) {
-					this_commands.__rpc_handle_response(op, requestId, input, false);
-				}
-			} else if (flags == (RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR)) {
-				final requestId:Int = input.readVarUInt();
-				if (this_commands != null) {
-					this_commands.__rpc_handle_response(op, requestId, input, true);
-				}
-			} else {
-				final requestId:Int = ((flags & RPCWire.FLAG_REQUEST) != 0) ? input.readVarUInt() : 0;
-				this.dispatch(op, input, requestId);
-			}
-			input.position = frameEnd;
-		}
-		@:privateAccess final now:Float = Timer.tryGetTime();
-		if (now >= 0.0) {
-			this_connection.inTimestamp = now;
-		}
+	@:noCompletion private inline function get_session():RPCSession<Dynamic, Dynamic> {
+		return this_session;
 	}
 
 	abstract public function dispatch(op:Int, input:ByteArrayInput, requestId:Int):Void;
@@ -162,12 +136,9 @@ abstract class RPCHandler {
 		at the next one.
 	**/
 	@:noCompletion private function __rpc_fail(op:Int, method:String, requestId:Int, error:Dynamic):Void {
-		final answer:Null<String> = RPCSession.__answerFor(error);
-		if (requestId != 0) {
-			__rpc_send_error(op, requestId, answer != null ? answer : RPCError.INTERNAL_MESSAGE);
-		}
-		if ((answer == null || requestId == 0) && this_session != null) {
-			this_session.__reportHandlerError(op, method, error);
+		final session = this_session;
+		if (session != null) {
+			session.__callFailed(op, method, requestId, error, true);
 		}
 	}
 
@@ -183,7 +154,7 @@ abstract class RPCHandler {
 			return true;
 		}
 		if (requestId != 0) {
-			__rpc_send_error(op, requestId, RPCError.BUSY_MESSAGE);
+			session.__sendCompiledError(op, requestId, RPCError.BUSY_MESSAGE);
 		}
 		return false;
 	}
@@ -192,60 +163,61 @@ abstract class RPCHandler {
 		Settles a call whose method answered with `future`, not complete yet,
 		or failed, once it completes, on the session's thread: `answer` sends
 		its value, a failure is answered as a throw is, and `afterCall` is told
-		then, not when the method returned. A connection that has gone by then,
-		or a handler moved to another session, gets nothing.
+		then, not when the method returned.
+
+		Answered on the session the call came from, which is kept here: by the
+		time the future completes, this handler may be running another
+		session's call. And only while that session's connection is the one
+		the call came in on. One that has ended gets nothing, and neither does
+		the next peer of a connection that takes another, a `LocalConnection`
+		listening again, which could have a call of its own waiting under
+		the old one's id.
 	**/
-	@:noCompletion private function __rpc_later<T>(op:Int, method:String, requestId:Int, future:Future<T>, answer:T->Void, hooked:Bool):Void {
-		final connection = this_connection;
+	@:noCompletion private function __rpc_later<T>(op:Int, method:String, requestId:Int, future:Future<T>,
+			answer:(RPCSession<Dynamic, Dynamic>, T) -> Void, hooked:Bool):Void {
+		final session = this_session;
+		final epoch:Int = session.__epoch;
 		final settle = function(settled:Future<T>):Void {
 			var failure:Dynamic = null;
-			// Answered only where the call came from. Moved to another session,
-			// this handler would send the old request's id to a new peer, which
-			// could have a call of its own waiting under it.
-			final answerable:Bool = requestId != 0 && this_connection == connection && !__rpc_gone();
+			final answerable:Bool = requestId != 0 && session.__isCurrent(epoch);
 			if (settled.succeeded) {
 				if (answerable) {
 					try {
-						answer(settled.result);
+						answer(session, settled.result);
 					} catch (error:Dynamic) {
 						failure = error;
-						__rpc_fail(op, method, requestId, error);
+						session.__callFailed(op, method, requestId, error, true);
 					}
 				}
 			} else {
 				failure = RPCSession.__failureOf(settled);
-				if (requestId == 0 || answerable) {
-					__rpc_fail(op, method, requestId, failure);
-				} else if (RPCSession.__answerFor(failure) == null) {
-					// Nobody to answer, but the handler failing is still news.
-					__rpc_report(op, method, failure);
-				}
+				session.__callFailed(op, method, requestId, failure, answerable);
 			}
 			if (hooked) {
 				try {
 					afterCall(method, requestId, failure);
 				} catch (error:Dynamic) {
-					__rpc_report(op, method, error);
+					session.__reportHandlerError(op, method, error);
 				}
 			}
 		};
-		final session = this_session;
-		if (session != null) {
-			session.__settleOnThisThread(future, settle);
-		} else {
-			future.then(_ -> settle(future), _ -> settle(future));
-		}
+		session.__settleOnThisThread(future, settle);
 	}
 
-	/** Whether there is no longer a connection to answer on. **/
-	@:noCompletion private inline function __rpc_gone():Bool {
-		return this_connection == null || (this_session != null && this_session.__ended);
+	/** Sends the answer the generated code has framed, on the calling session. **/
+	@:noCompletion private inline function __rpc_answer(framed:ByteArrayOutput):Void {
+		this_session.__sendAnswer(framed);
+	}
+
+	/** Sends an answer framed later, on the session its call came from. **/
+	@:noCompletion private inline function __rpc_answerOn(session:RPCSession<Dynamic, Dynamic>, framed:ByteArrayOutput):Void {
+		session.__sendAnswer(framed);
 	}
 
 	/** Answers a request `beforeCall` refused; a refused one-way call has nobody to tell. **/
 	@:noCompletion private function __rpc_refuse(op:Int, requestId:Int, refusal:RPCError):Void {
-		if (requestId != 0) {
-			__rpc_send_error(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE);
+		if (requestId != 0 && this_session != null) {
+			this_session.__sendCompiledError(op, requestId, refusal.message != null ? refusal.message : RPCError.INTERNAL_MESSAGE);
 		}
 	}
 
@@ -254,22 +226,6 @@ abstract class RPCHandler {
 		if (this_session != null) {
 			this_session.__reportHandlerError(op, method, error);
 		}
-	}
-
-	@:noCompletion private function __rpc_send_error(op:Int, requestId:Int, message:String):Void {
-		// An answer completing after its connection went has nobody to go to.
-		if (__rpc_gone()) {
-			return;
-		}
-		final framed:ByteArrayOutput = new ByteArrayOutput(RPCWire.MIN_PAYLOAD_LEN + 8);
-		framed.writeInt(0);
-		framed.writeByte(RPCWire.FLAG_RESPONSE | RPCWire.FLAG_ERROR);
-		framed.writeInt(op);
-		framed.writeVarUInt(requestId);
-		framed.writeVarUTF(message);
-		framed.writeIntAt(0, framed.bytesWritten - 4);
-		framed.flush();
-		this_connection.send(framed);
 	}
 
 	/**

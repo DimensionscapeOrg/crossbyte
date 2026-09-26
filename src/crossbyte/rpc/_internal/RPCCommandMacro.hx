@@ -292,19 +292,20 @@ class RPCCommandMacro {
 
 		statements.push(macro framed.writeIntAt(0, framed.bytesWritten - 4));
 		statements.push(macro framed.flush());
-		statements.push(macro connection.send(framed));
+		statements.push(macro framed);
 
+		// The frame, which the stub hands to RPCCommands to send: one place
+		// decides what becomes of a call that cannot go.
 		return {
 			name: metaName,
 			doc: "Auto-generated RPC meta for " + commandName,
 			access: [APrivate, AInline],
 			kind: FFun({
 				args: [
-					{name: "connection", type: macro :crossbyte.net.NetConnection},
 					{name: "requestId", type: macro :Int}
 				].concat(args),
-				expr: macro {$b{statements};},
-				ret: macro :Void
+				expr: macro return $b{statements},
+				ret: macro :crossbyte.io.ByteArrayOutput
 			}),
 			pos: Context.currentPos()
 		};
@@ -314,11 +315,15 @@ class RPCCommandMacro {
 			responseType:Null<ComplexType>, opCode:Int):Field {
 		var argExprs = args.map(a -> macro $i{a.name});
 		var expr:Expr = if (responseType == null) {
-			macro $i{metaName}($a{[macro this.__nc, macro 0].concat(argExprs)});
+			macro this.__sendCall($i{metaName}($a{[macro 0].concat(argExprs)}));
 		} else {
+			// Framed before it waits, so an argument that cannot be framed
+			// throws with nothing left waiting for good.
 			macro {
-				var response:$retType = this.__createResponse($v{opCode});
-				$i{metaName}($a{[macro this.__nc, macro response.requestId].concat(argExprs)});
+				var __requestId:Int = this.__nextRequestId();
+				var __framed:crossbyte.io.ByteArrayOutput = $i{metaName}($a{[macro __requestId].concat(argExprs)});
+				var response:$retType = this.__createResponse($v{opCode}, __requestId);
+				this.__sendRequest(response, __framed);
 				return response;
 			};
 		}
@@ -366,7 +371,9 @@ class RPCCommandMacro {
 	}
 
 	private static function readerForType(ct:ComplexType, errPos:Position):Expr {
-		var isOpt = isNullWrapped(ct);
+		// On the type, as the handler's side decides it, and not on how
+		// `ct` is written: through a typedef, `Null<T>` read no presence byte.
+		var isOpt = RPCContractMacroTools.isNullable(ct, errPos);
 		var base = unwrapNull(ct);
 		var key = typeKey(base, errPos);
 		var fn = TYPE_READERS.get(key);
@@ -390,11 +397,11 @@ class RPCCommandMacro {
 					if (failed) {
 						var message = input.readVarUTF();
 						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						this.__rejectResponse(requestId, message);
+						this.__rejectResponse(op, requestId, message);
 					} else {
 						var value = $read;
 						crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-						this.__resolveResponse(requestId, value);
+						this.__resolveResponse(op, requestId, value);
 					}
 					return;
 				}
@@ -405,7 +412,7 @@ class RPCCommandMacro {
 			if (failed) {
 				var message = input.readVarUTF();
 				crossbyte.rpc._internal.RPCWire.requireWithin(input, this.__frameEnd);
-				this.__rejectResponse(requestId, message);
+				this.__rejectResponse(op, requestId, message);
 			} else {
 				this.__rejectUnknownResponse(requestId, op);
 			}

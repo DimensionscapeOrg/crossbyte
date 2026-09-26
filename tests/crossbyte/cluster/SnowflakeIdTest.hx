@@ -120,6 +120,31 @@ class SnowflakeIdTest extends utest.Test {
 		Assert.equals(0, outOfOrder, "identifiers went backwards " + outOfOrder + " times");
 	}
 
+	/**
+		When an identifier says it was minted, for any time its forty one bits
+		can hold. It was read through an Int, and threw Overflow for every
+		identifier minted more than 24.8 days after the epoch.
+	**/
+	public function testTimestampOfReadsBackWhenAnIdWasMinted():Void {
+		var day:Float = 24.0 * 60 * 60 * 1000;
+		// A day in, a month in (past what an Int holds), a date in 2026, and
+		// the last millisecond forty one bits reach.
+		for (offset in [day, 31.0 * day, 1782864000000.0 - SnowflakeId.DEFAULT_EPOCH_MS, 2199023255551.0]) {
+			var now:Float = SnowflakeId.DEFAULT_EPOCH_MS + offset;
+			var ids = new SnowflakeId(9, SnowflakeId.DEFAULT_EPOCH_MS, function():Float return now);
+			var id = ids.next();
+			var read:Float = -1;
+			try {
+				read = SnowflakeId.timestampOf(id);
+			} catch (e:Dynamic) {
+				Assert.fail('timestampOf threw for $offset ms after the epoch: $e');
+				continue;
+			}
+			Assert.equals(now, read, 'read back ${read - now} ms off, $offset ms after the epoch');
+			Assert.equals(9, SnowflakeId.nodeOf(id));
+		}
+	}
+
 	/** A node number outside the field it has to fit in is refused. **/
 	public function testANodeNumberThatDoesNotFitIsRefused():Void {
 		Assert.raises(function():Void {

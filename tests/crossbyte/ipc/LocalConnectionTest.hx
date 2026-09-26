@@ -5,8 +5,10 @@ import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.net.NetConnection;
 import crossbyte.net.Protocol;
+import haxe.io.Bytes;
 import utest.Assert;
 
+@:access(crossbyte.ipc.LocalConnection)
 class LocalConnectionTest extends utest.Test {
 	public function testSupportFlagMatchesTarget():Void {
 		#if (cpp && (windows || linux || mac || macos))
@@ -124,9 +126,10 @@ class LocalConnectionTest extends utest.Test {
 	}
 
 	public function testAConnectionWhosePeerWentAwayIsLetGoOfByTheRuntime():Void {
-		// Its tick listener stays on for as long as it can deliver. It came off
-		// after every drain before, so the runtime never held a dead connection;
-		// held until close(), one never closed would be held for good.
+		// The runtime holds nothing of a connection whose peer went away. It
+		// delivered through a tick listener, which had to come off again when
+		// the connection ended; it delivers through posts to the runtime now,
+		// which leave nothing behind, and this stays to say so.
 		#if (cpp && (windows || linux || mac || macos))
 		var runtime = CrossByte.current();
 		var before = tickListeners(runtime);
@@ -253,6 +256,485 @@ class LocalConnectionTest extends utest.Test {
 		#end
 	}
 
+	public function testAConnectionMadeFromAUrlIsToldItIsReady():Void {
+		// `new NetConnection("local://...")` connects as it is made, and
+		// connect() dispatched Ready from inside itself: an onReady set once
+		// the constructor had returned, as the RPC guide sets one, never ran.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("url");
+		var server = new LocalConnection();
+		var connection:NetConnection = null;
+		try {
+			server.listen(name);
+			connection = new NetConnection('local://$name');
+			var ready = false;
+			connection.onReady = () -> ready = true;
+			pumpUntil(() -> ready, 2.0);
+			Assert.isTrue(ready, "onReady set after the connection was made never ran");
+		} catch (e:Dynamic) {
+			if (connection != null) {
+				connection.close();
+			}
+			closeQuietly(server);
+			throw e;
+		}
+		connection.close();
+		closeQuietly(server);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testSendDoesNotWaitForAPeerThatIsNotReading():Void {
+		// send() wrote until all of it was gone, on the runtime's thread: five
+		// seconds a send on Windows, and for good elsewhere, to a peer that
+		// had stopped reading. What the channel does not take is queued now,
+		// and a peer that leaves more than maxQueuedBytes unread is closed,
+		// with an error that says so.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("stuck");
+		var peer = LocalConnection.__createInboundPipe(name);
+		var client = new LocalConnection();
+		var errors:Array<String> = [];
+		var closed = false;
+		var closedWith:String = null;
+		client.onError = reason -> errors.push(Std.string(reason));
+		client.onClose = reason -> {
+			closed = true;
+			closedWith = Std.string(reason);
+		};
+		var slowest = 0.0;
+		var sends = 0;
+
+		try {
+			Assert.notNull(peer, "the peer did not listen");
+			client.connect(name);
+			var acceptBy = haxe.Timer.stamp() + 2.0;
+			while (!LocalConnection.__accept(peer) && haxe.Timer.stamp() < acceptBy) {
+				Sys.sleep(0.001);
+			}
+			var frame = new ByteArray();
+			frame.length = 1024 * 1024;
+			var began = haxe.Timer.stamp();
+			while (client.connected && sends < 40 && haxe.Timer.stamp() - began < 3.0) {
+				var started = haxe.Timer.stamp();
+				client.send(frame);
+				var took = haxe.Timer.stamp() - started;
+				if (took > slowest) {
+					slowest = took;
+				}
+				sends++;
+			}
+			pumpUntil(() -> closed, 1.0);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			LocalConnection.__close(peer);
+			throw e;
+		}
+
+		closeQuietly(client);
+		LocalConnection.__close(peer);
+		Assert.isTrue(slowest < 0.25, 'a send waited ${slowest}s for a peer that was not reading');
+		Assert.isFalse(client.connected, 'still connected after $sends sends of 1 MB that nobody read');
+		Assert.isTrue(closed, "the connection was not closed");
+		Assert.isTrue(closedWith != null && closedWith.indexOf("not reading") >= 0, 'it was closed with $closedWith');
+		Assert.isTrue(errors.filter(error -> error.indexOf("not reading") >= 0).length > 0, 'no error said the peer was not reading: $errors');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testTwoSidesSendingAtOnceDoNotWaitOnEachOther():Void {
+		// Each side's send held its own lock while it waited for the other to
+		// read, and its reader needed that lock to read: two sides filling each
+		// other's channels at once each waited on the other, five seconds a
+		// send on Windows, and for good elsewhere, and a write that gave up
+		// part way through a frame left the other side reading from the middle
+		// of it.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("both");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var toServer:Array<Int> = [];
+		var toClient:Array<Int> = [];
+		var problems:Array<String> = [];
+		var readyCount = 0;
+		var frames = 4;
+		var size = 512 * 1024;
+		server.readEnabled = true;
+		client.readEnabled = true;
+		server.onData = input -> toServer.push(numberOf(input, size));
+		client.onData = input -> toClient.push(numberOf(input, size));
+		server.onError = reason -> problems.push('server: $reason');
+		client.onError = reason -> problems.push('client: $reason');
+		server.onReady = () -> readyCount++;
+		client.onReady = () -> readyCount++;
+		var took = 0.0;
+		var bothSent = false;
+
+		try {
+			server.listen(name);
+			client.connect(name);
+			pumpUntil(() -> readyCount == 2, 2.0);
+			Assert.equals(2, readyCount);
+
+			var finished = new sys.thread.Lock();
+			var began = haxe.Timer.stamp();
+			sys.thread.Thread.create(() -> {
+				for (i in 0...frames) {
+					server.send(numbered(i, size));
+				}
+				finished.release();
+			});
+			for (i in 0...frames) {
+				client.send(numbered(i, size));
+			}
+			bothSent = finished.wait(30.0);
+			took = haxe.Timer.stamp() - began;
+			pumpUntil(() -> toServer.length >= frames && toClient.length >= frames, 5.0);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(server);
+		var expected = [for (i in 0...frames) i];
+		Assert.isTrue(bothSent, "the other side's sends never finished");
+		Assert.isTrue(took < 1.0, 'sending took ${took}s');
+		Assert.same(expected, toServer);
+		Assert.same(expected, toClient);
+		Assert.equals(0, problems.length, problems.join("; "));
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testFramesLargerThanTheChannelArriveWhole():Void {
+		// Each is written as far as the channel takes it and the rest queued,
+		// from where it stopped.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("large");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var received:Array<Int> = [];
+		var readyCount = 0;
+		var size = 3 * 1024 * 1024;
+		server.readEnabled = true;
+		server.onData = input -> received.push(input.length == 5 ? -2 : numberOf(input, size));
+		server.onReady = () -> readyCount++;
+		client.onReady = () -> readyCount++;
+
+		try {
+			server.listen(name);
+			client.connect(name);
+			pumpUntil(() -> readyCount == 2, 2.0);
+			for (i in 0...3) {
+				client.send(numbered(i, size));
+			}
+			client.send(bytesOf("after"));
+			pumpUntil(() -> received.length >= 4, 10.0);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(server);
+		Assert.same([0, 1, 2, -2], received);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testManyMessagesAreDeliveredInATick():Void {
+		// Thirty-two a tick were delivered, whatever they cost: 384 a second
+		// at 12 ticks a second, and anything faster waited in a queue with no
+		// bound. Delivery is by time now.
+		#if (cpp && (windows || linux || mac || macos))
+		var runtime = CrossByte.current();
+		var name = uniqueName("many");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var received:Array<String> = [];
+		var readyCount = 0;
+		var count = 2000;
+		server.readEnabled = true;
+		server.onData = input -> received.push(input.readUTFBytes(input.length));
+		server.onReady = () -> readyCount++;
+		client.onReady = () -> readyCount++;
+		var afterOneTick = 0;
+
+		try {
+			server.listen(name);
+			client.connect(name);
+			pumpUntil(() -> readyCount == 2, 2.0);
+			for (i in 0...count) {
+				client.send(bytesOf('m$i'));
+			}
+			// The reader takes them in meanwhile, with the runtime not ticking.
+			Sys.sleep(0.3);
+			runtime.pump(1 / 60, 0);
+			afterOneTick = received.length;
+			pumpUntil(() -> received.length >= count, 5.0);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(server);
+		Assert.isTrue(afterOneTick > 256, 'one tick delivered $afterOneTick of $count');
+		Assert.same([for (i in 0...count) 'm$i'], received);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAReceiverThatFallsBehindStopsTakingData():Void {
+		// Everything that arrived was read and queued for the runtime, however
+		// far behind it was, so a sender faster than the application grew this
+		// process without bound. Past maxQueuedBytes waiting to be delivered
+		// the reader stops, and the sender's data waits on its own side.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("behind");
+		var server = new LocalConnection();
+		var client = new LocalConnection();
+		var received:Array<Int> = [];
+		var readyCount = 0;
+		var size = 256 * 1024;
+		server.maxQueuedBytes = 1024 * 1024;
+		server.readEnabled = true;
+		server.onData = input -> received.push(numberOf(input, size));
+		server.onReady = () -> readyCount++;
+		client.onReady = () -> readyCount++;
+		var sent = 0;
+		var held = 0;
+
+		try {
+			server.listen(name);
+			client.connect(name);
+			pumpUntil(() -> readyCount == 2, 2.0);
+			// Paced as a sender should be, and without the runtime delivering
+			// anything meanwhile.
+			var began = haxe.Timer.stamp();
+			while (sent < 64 && haxe.Timer.stamp() - began < 2.0) {
+				if (client.bytesPending > 512 * 1024) {
+					Sys.sleep(0.001);
+					continue;
+				}
+				client.send(numbered(sent, size));
+				sent++;
+			}
+			held = server.__inQueued;
+			pumpUntil(() -> received.length >= sent, 5.0);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(server);
+			throw e;
+		}
+
+		var stillConnected = client.connected;
+		closeQuietly(client);
+		closeQuietly(server);
+		Assert.isTrue(sent < 16, 'the receiver took in $sent frames of 256 KB with none delivered');
+		Assert.isTrue(held <= 1024 * 1024 + 2 * size, 'the receiver held $held bytes for delivery');
+		Assert.isTrue(stillConnected, "a sender that paced itself was cut off");
+		Assert.same([for (i in 0...sent) i], received);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testSendingToAPeerThatHasGoneEndsTheConnectionNotTheProcess():Void {
+		// On POSIX a send to a peer that had gone raised SIGPIPE, which ends
+		// the process. send() looked first, and a peer that had simply gone
+		// looked closed; one that said something before it went looked open
+		// until that was read, and the send went ahead.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("gone");
+		var peer = LocalConnection.__createInboundPipe(name);
+		var client = new LocalConnection();
+		var closed = false;
+		client.onClose = _ -> closed = true;
+
+		try {
+			Assert.notNull(peer, "the peer did not listen");
+			client.connect(name);
+			var acceptBy = haxe.Timer.stamp() + 2.0;
+			while (!LocalConnection.__accept(peer) && haxe.Timer.stamp() < acceptBy) {
+				Sys.sleep(0.001);
+			}
+			var parting = new ByteArray();
+			parting.writeInt(3);
+			parting.writeUTFBytes("bye");
+			LocalConnection.__write(peer, (cast parting : Bytes).getData(), parting.length);
+			LocalConnection.__close(peer);
+			// At once, while what the peer said is still unread here.
+			for (_ in 0...200) {
+				if (!client.connected) {
+					break;
+				}
+				client.send(bytesOf("anyone there?"));
+			}
+			var deadline = haxe.Timer.stamp() + 2.0;
+			while (client.connected && haxe.Timer.stamp() < deadline) {
+				client.send(bytesOf("anyone there?"));
+				pumpUntil(() -> false, 0.005);
+			}
+			pumpUntil(() -> closed, 1.0);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			throw e;
+		}
+
+		closeQuietly(client);
+		Assert.isFalse(client.connected, "a connection whose peer went is still connected");
+		Assert.isTrue(closed, "a connection whose peer went was not closed");
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testASecondListenerOnANameInUseIsRefused():Void {
+		// Windows made a second instance of the pipe beside the first, and
+		// POSIX removed the first's socket file and bound its own: either way
+		// listen() said nothing, and the first listener's clients went to the
+		// second.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("taken");
+		var first = new LocalConnection();
+		var second = new LocalConnection();
+		var client = new LocalConnection();
+		var firstGot:String = null;
+		var secondGot:String = null;
+		first.readEnabled = true;
+		second.readEnabled = true;
+		first.onData = input -> firstGot = input.readUTFBytes(input.length);
+		second.onData = input -> secondGot = input.readUTFBytes(input.length);
+		var refused = false;
+
+		try {
+			first.listen(name);
+			refused = throws(() -> second.listen(name));
+			client.connect(name);
+			pumpUntil(() -> first.connected || second.connected, 2.0);
+			client.send(bytesOf("for the first"));
+			pumpUntil(() -> firstGot != null || secondGot != null, 2.0);
+		} catch (e:Dynamic) {
+			closeQuietly(client);
+			closeQuietly(second);
+			closeQuietly(first);
+			throw e;
+		}
+
+		closeQuietly(client);
+		closeQuietly(second);
+		closeQuietly(first);
+		Assert.isTrue(refused, "a second listen() on a name in use was not refused");
+		Assert.isNull(secondGot, "the second listener took the first's client");
+		Assert.equals("for the first", firstGot);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAClientThatWritesAndLeavesBeforeItIsTakenIsHeard():Void {
+		// On Windows a client that had come and gone before the listener next
+		// looked left the pipe closing: ConnectNamedPipe answered ERROR_NO_DATA,
+		// which was taken for "nobody yet", and the listener took nobody again.
+		#if (cpp && (windows || linux || mac || macos))
+		var name = uniqueName("brief");
+		var server = new LocalConnection();
+		var later = new LocalConnection();
+		var received:Array<String> = [];
+		server.readEnabled = true;
+		server.onData = input -> received.push(input.readUTFBytes(input.length));
+
+		try {
+			server.listen(name);
+			// Idle, the listener looks every few milliseconds; the client below
+			// is gone within microseconds.
+			Sys.sleep(0.05);
+			var brief = LocalConnection.__connect(name, 2000);
+			Assert.notNull(brief, "the brief client did not connect");
+			var frame = new ByteArray();
+			frame.writeInt(5);
+			frame.writeUTFBytes("brief");
+			LocalConnection.__write(brief, (cast frame : Bytes).getData(), frame.length);
+			LocalConnection.__close(brief);
+			pumpUntil(() -> received.length >= 1, 2.0);
+
+			later.connect(name);
+			pumpUntil(() -> server.connected, 2.0);
+			later.send(bytesOf("later"));
+			pumpUntil(() -> received.length >= 2, 2.0);
+		} catch (e:Dynamic) {
+			closeQuietly(later);
+			closeQuietly(server);
+			throw e;
+		}
+
+		closeQuietly(later);
+		closeQuietly(server);
+		Assert.same(["brief", "later"], received);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testNamesAlikeUpToPunctuationOrLengthAreDifferentChannels():Void {
+		// POSIX made a name's socket path by turning everything but letters,
+		// digits, '-' and '_' into '_', and cutting it to 48 characters: "a.b"
+		// and "a_b", or two long names alike for their first 48, were one
+		// channel.
+		#if (cpp && (windows || linux || mac || macos))
+		var base = uniqueName("alike");
+		var long = base + "_" + [for (_ in 0...60) "x"].join("");
+		var problems:Array<String> = [];
+		for (pair in [[base + ".dot", base + "_dot"], [long + "1", long + "2"]]) {
+			var a = new LocalConnection();
+			var b = new LocalConnection();
+			var toA = new LocalConnection();
+			var toB = new LocalConnection();
+			var gotA:String = null;
+			var gotB:String = null;
+			a.readEnabled = true;
+			b.readEnabled = true;
+			a.onData = input -> gotA = input.readUTFBytes(input.length);
+			b.onData = input -> gotB = input.readUTFBytes(input.length);
+			try {
+				a.listen(pair[0]);
+				if (throws(() -> b.listen(pair[1]))) {
+					problems.push('${pair[1]} was refused as in use by ${pair[0]}');
+				} else {
+					toA.connect(pair[0]);
+					toB.connect(pair[1]);
+					pumpUntil(() -> a.connected && b.connected, 2.0);
+					toA.send(bytesOf("to a"));
+					toB.send(bytesOf("to b"));
+					pumpUntil(() -> gotA != null && gotB != null, 2.0);
+					if (gotA != "to a" || gotB != "to b") {
+						problems.push('${pair[0]} got $gotA and ${pair[1]} got $gotB');
+					}
+				}
+			} catch (e:Dynamic) {
+				problems.push('${pair[0]}: threw $e');
+			}
+			closeQuietly(toA);
+			closeQuietly(toB);
+			closeQuietly(a);
+			closeQuietly(b);
+		}
+		Assert.equals(0, problems.length, problems.join("; "));
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testNetConnectionRoundTripKeepsLocalTransport():Void {
 		var local = new LocalConnection();
 		var wrapped:NetConnection = local;
@@ -260,6 +742,34 @@ class LocalConnectionTest extends utest.Test {
 
 		Assert.equals(Protocol.LOCAL, wrapped.protocol);
 		Assert.equals(local, restored);
+	}
+
+	// `size` bytes: `id`, then a pattern that shifts with it, so a frame read
+	// from its middle or cut short does not pass for one.
+	private static function numbered(id:Int, size:Int):ByteArray {
+		var bytes = Bytes.alloc(size);
+		bytes.setInt32(0, id);
+		for (i in 4...size) {
+			bytes.set(i, (id + i) & 0xFF);
+		}
+		return ByteArray.fromBytes(bytes);
+	}
+
+	// The id of a frame made by `numbered`, or -1 if it is not one of `size`.
+	private static function numberOf(input:crossbyte.io.ByteArrayInput, size:Int):Int {
+		if (input.length != size) {
+			return -1;
+		}
+		var bytes = Bytes.alloc(size);
+		input.position = 0;
+		input.readBytes(bytes, 0, size);
+		var id = bytes.getInt32(0);
+		for (i in 4...size) {
+			if (bytes.get(i) != ((id + i) & 0xFF)) {
+				return -1;
+			}
+		}
+		return id;
 	}
 
 	private static function bytesOf(value:String):ByteArray {
