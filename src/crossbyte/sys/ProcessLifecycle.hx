@@ -2,6 +2,7 @@ package crossbyte.sys;
 
 import crossbyte.core.CrossByte;
 import crossbyte.events.TickEvent;
+import crossbyte.utils.LogLevel;
 import crossbyte.utils.Logger;
 #if cpp
 import crossbyte.sys._internal.NativeLifecycle;
@@ -269,7 +270,8 @@ final class ProcessLifecycle {
 	/**
 	 * Registers a shutdown callback. Callbacks run exactly once, in
 	 * registration order; a callback registered after dispatch runs
-	 * immediately. Exceptions thrown by a callback are swallowed so later
+	 * immediately. An exception thrown by a callback is logged with
+	 * `Logger.error` (category "runtime") and goes no further, so later
 	 * callbacks and the exit path still run.
 	 */
 	public static function onShutdown(callback:() -> Void):Void {
@@ -401,12 +403,16 @@ final class ProcessLifecycle {
 		__tickListener = null;
 	}
 
-	@:noCompletion private static inline function __invoke(callback:() -> Void):Void {
+	@:noCompletion private static function __invoke(callback:() -> Void):Void {
 		try {
 			callback();
-		} catch (_:Dynamic) {
+		} catch (error:Dynamic) {
 			// A failing shutdown callback must not block the remaining
-			// callbacks or the exit path.
+			// callbacks or the exit path. It is logged, as the runtime logs
+			// any other callback's failure: this was swallowed without a
+			// word, so a drain that never flushed left nothing behind to say
+			// why.
+			Logger.log(LogLevel.ERROR, "A shutdown callback threw: " + Std.string(error), null, "runtime");
 		}
 	}
 

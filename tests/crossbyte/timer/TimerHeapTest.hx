@@ -1,6 +1,7 @@
 package crossbyte.timer;
 
 import crossbyte._internal.system.timer.ResumePolicy;
+import crossbyte._internal.system.timer.TimerHandle;
 import crossbyte._internal.system.timer.heap.TimerHeap;
 import utest.Assert;
 
@@ -272,6 +273,22 @@ class TimerHeapTest extends utest.Test {
 		Assert.isTrue(heap.setEnabled(handle, true, ResumePolicy.FromNow));
 		heap.advanceTime(1.0);
 		Assert.equals(3, runs);
+	}
+
+	public function testAHandleIsNeverNegative():Void {
+		// The generation's top bit was the sign bit: from a slot's 2048th
+		// reuse every handle was negative, and one could equal INVALID.
+		var heap = new TimerHeap();
+		var negative = 0;
+		for (_ in 0...(1 << TimerHandle.GEN_BITS)) {
+			var handle = heap.setTimeoutVoid(1.0, () -> {});
+			if ((handle : Int) < 0) {
+				negative++;
+			}
+			heap.clear(handle);
+		}
+		Assert.equals(0, negative);
+		Assert.isTrue((new TimerHandle(TimerHandle.ID_MASK, TimerHandle.GEN_MASK) : Int) != (TimerHandle.INVALID : Int));
 	}
 
 	public function testATimerIsDueWhenTheClockReachesItByAnyPath():Void {

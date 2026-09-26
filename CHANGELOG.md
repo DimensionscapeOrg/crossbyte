@@ -739,6 +739,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Timer handles are never negative. The id took 20 bits and the 12-bit
+  generation above it reached the sign bit, so from a slot's 2,048th reuse
+  every handle for it was negative, against what `TimerHandle` said of
+  itself, and a live handle at the top id could equal `TimerHandle.INVALID`.
+  The id has 19 bits now: a runtime's scheduler holds up to 524,288 timers at
+  once and throws when asked for more, where ids past 1,048,576 used to wrap
+  onto other timers without a word.
+- A shutdown callback that throws is logged with `Logger.error` (category
+  `runtime`). It was swallowed silently; the callbacks after it and the exit
+  path still run.
 - A `ServerApplication` runs on Node, an `Application` can be made on the
   interpreter, and `docker stop` or Ctrl+C on a jvm or Node service runs the
   shutdown callbacks. `ServerApplication`'s POLL loop threw on JavaScript at
