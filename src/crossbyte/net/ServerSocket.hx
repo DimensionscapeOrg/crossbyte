@@ -476,7 +476,18 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
-			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+
+			// Contained: this runs from Node's event loop, and a connect
+			// listener that threw ended the process, every connection the
+			// server held, for a fault in handling one.
+			try {
+				dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, socket));
+			} catch (e:Dynamic) {
+				crossbyte.utils.Logger.error('A "connect" listener threw, and the connection it was handling was closed: ' + Std.string(e));
+				try {
+					socket.close();
+				} catch (_:Dynamic) {}
+			}
 		};
 
 		if (secure) {

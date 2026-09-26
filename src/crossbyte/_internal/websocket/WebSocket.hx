@@ -404,7 +404,11 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 */
 	private function __connectNode():Void {
 		var connected = function():Void {
-			__openConnection(null);
+			try {
+				__openConnection(null);
+			} catch (e:Dynamic) {
+				__contain(e);
+			}
 		};
 
 		if (__secure) {
@@ -443,25 +447,53 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 * report any of them differently.
 	 */
 	private function __bindNodeTransport():Void {
+		// Each one contained: these run from Node's event loop, so a listener
+		// that threw, a message handler meeting input it could not parse,
+		// threw into Node, which ended the process and every session in it.
 		__socket.on("data", function(chunk:Buffer):Void {
-			__receiveNode(chunk);
+			try {
+				__receiveNode(chunk);
+			} catch (e:Dynamic) {
+				__contain(e);
+			}
 		});
 
 		__socket.on("error", function(e:Dynamic):Void {
-			// Reported before the close that follows it, so the reason reaches
-			// the caller rather than only the fact.
-			__onError("WebSocket transport failed: " + Std.string(e));
-			__close(1006);
+			try {
+				// Reported before the close that follows it, so the reason
+				// reaches the caller rather than only the fact.
+				__onError("WebSocket transport failed: " + Std.string(e));
+				__close(1006);
+			} catch (thrown:Dynamic) {
+				__contain(thrown);
+			}
 		});
 
 		__socket.on("close", function(_):Void {
-			if (readyState != CLOSED) {
-				// 1006 rather than 1000: the peer went without a close frame,
-				// which is ordinary, a dropped connection, a killed process,
-				// and is exactly what 1006 is for.
-				__close(1006);
+			try {
+				if (readyState != CLOSED) {
+					// 1006 rather than 1000: the peer went without a close
+					// frame, which is ordinary, a dropped connection, a
+					// killed process, and is exactly what 1006 is for.
+					__close(1006);
+				}
+			} catch (e:Dynamic) {
+				__contain(e);
 			}
 		});
+	}
+
+	/**
+		A listener threw from inside one of Node's callbacks: logged, and the
+		session closed with 1011, since whatever it was in the middle of
+		cannot be trusted to be finished. The rest of the process carries on.
+	**/
+	private function __contain(error:Dynamic):Void {
+		Logger.error("A WebSocket listener threw, and the session it was handling was closed: " + Std.string(error));
+
+		try {
+			abort(1011, "internal error");
+		} catch (_:Dynamic) {}
 	}
 
 	/**

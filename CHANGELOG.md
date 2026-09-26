@@ -751,6 +751,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Node, a socket listener that throws costs its own connection, not the
+  process. A socket's events arrive from Node's event loop rather than from
+  anything of CrossByte's, so an exception from a listener, a data handler
+  meeting a message it could not parse, went to Node, which exited: every
+  other client went with the one that sent it. Now it is logged at ERROR
+  and that connection closed: a `Socket` closed, a WebSocket session closed
+  with 1011, a connection whose `connect` listener threw on a `ServerSocket`
+  closed. A `DatagramSocket` is left open, since one socket carries every
+  peer, and the next datagram is delivered as usual.
 - WebSocket sessions are read when there is something to read, not on every
   tick. Each open session added a tick listener of its own and made a
   receive every tick whether or not anything had arrived, on hxcpp one
