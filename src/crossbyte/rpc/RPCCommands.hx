@@ -219,18 +219,18 @@ abstract class RPCCommands {
 		stopped or the connection closes, so callers are not left waiting forever for
 		a reply that can no longer arrive. Must only be called on the owning thread.
 	**/
-	@:noCompletion private function __failAllPending(message:String):Void {
+	@:noCompletion private function __failAllPending(message:String, ?cause:Dynamic):Void {
 		final pending = __pendingResponse;
 		if (pending != null) {
 			__pendingResponse = null;
 			__pendingResponseId = 0;
-			pending.__reject(message);
+			pending.__fail(message, cause);
 		}
 		final map = __pendingResponses;
 		if (map != null) {
 			__pendingResponses = null;
 			for (response in map) {
-				response.__reject(message);
+				response.__fail(message, cause);
 			}
 		}
 	}

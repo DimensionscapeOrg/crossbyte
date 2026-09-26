@@ -6,6 +6,10 @@ import crossbyte._internal.system.timer.TimerHandle;
 // Node and in a browser, where a NetConnection's Socket is a WebSocket.
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IOError;
+import crossbyte.io.ByteArray;
+import crossbyte.net.INetConnection;
+import crossbyte.net.Transport;
 import crossbyte.net.Reason;
 import crossbyte.utils.LogLevel;
 import crossbyte.utils.Logger;
@@ -278,6 +282,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	public function new(connection:NetConnection, ?commands:C, ?handler:RPCHandler) {
 		super();
 		__connection = connection;
+		__isUp = connection.connected;
 		this.commands = commands;
 		this.handler = handler;
 		// Told as the connection ends, whenever and whether the application
@@ -289,8 +294,171 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		(connection : NetConnectionBase).__observeReady(__connectionReady);
 	}
 
+	/** The shortest wait before a session made by `dial` dials again, in seconds. **/
+	public static inline final MIN_REDIAL:Float = 0.25;
+
+	/** The longest, in seconds: the wait doubles from `MIN_REDIAL` each time a dial fails. **/
+	public static inline final MAX_REDIAL:Float = 30.0;
+
+	/**
+		Called when the connection becomes ready: connected, or, for a
+		listening `LocalConnection`, or a session made by `dial`, connected
+		again. Not for a connection ready before the session was made, as an
+		accepted one is.
+	**/
+	public dynamic function onUp():Void {}
+
+	/**
+		Called when a connection that was usable ends, with the reason its
+		transport gave. The calls waiting on it have failed by then, with that
+		reason as their `cause`.
+	**/
+	public dynamic function onDown(reason:Reason):Void {}
+
+	/** Whether calls can go now: the connection is up and has not ended. **/
+	public var up(get, never):Bool;
+
+	@:noCompletion private inline function get_up():Bool {
+		return __isUp && !__ended && __connection.connected;
+	}
+
+	// Whether the connection has been ready since it last ended, from the
+	// start, for one ready before the session was made, so that being told
+	// twice, as a connection ready as the session takes it may tell it
+	// again, is one onUp.
+	@:noCompletion private var __isUp:Bool = false;
+
+	// For a session made by dial(): where it dials, how long it waits before
+	// the next attempt, and the timer waiting; and, for any session, whether
+	// close() has ended it for good.
+	@:noCompletion private var __dialUri:Null<String> = null;
+	@:noCompletion private var __redialDelay:Float = MIN_REDIAL;
+	@:noCompletion private var __redialTimer:Int = TimerHandle.INVALID;
+	@:noCompletion private var __closed:Bool = false;
+
+	/**
+		A client session that dials `uri`, as `NetConnection` does, `tcp://`,
+		`ws://`, `wss://`, `rudp://` or `local://`, and dials it again whenever
+		its connection ends, until `close()`: at once after an end, then waiting
+		from `MIN_REDIAL` up to `MAX_REDIAL` seconds, doubling, between attempts
+		that fail.
+
+		While it is down, before its first connection is up, and between one
+		connection and the next, a call through it fails as it is made, with a
+		`Reason` as its `cause`: why the last connection ended, or why the last
+		attempt failed. A call waiting when a connection ends fails with that
+		connection's reason. `onUp` and `onDown` say when it comes and goes, and
+		`up` whether it is up now.
+
+		A gateway to a backend used to build this itself: dial, back off, bind
+		a new session to each new connection, and check it was up before each
+		call, since a call on a closed TCP connection threw out of its stub.
+
+		Its `connection` is each connection in turn. Its commands, handler,
+		`data` and hooks stay with it across them, and so does `start()`: a
+		heartbeat runs on each connection while it is up. Made on the thread
+		whose runtime will run it, which dials from its own timers.
+	**/
+	public static function dial<C:RPCCommands>(uri:String, ?commands:C, ?handler:RPCHandler):RPCSession<C, Dynamic> {
+		final session = new RPCSession<C, Dynamic>(new Unconnected(uri), commands, handler);
+		session.__dialUri = uri;
+		session.__ended = true;
+		session.__endReason = Reason.Error("Not connected to " + uri + " yet");
+		// The first attempt at the next tick, not in here: a connect that
+		// finishes as it is made, local IPC, or anything on eval, would
+		// be up, and have told onUp, before the caller could set it.
+		session.__redialTimer = Timer.setTimeout(0, session.__dial);
+		return session;
+	}
+
+	/**
+		Ends the session: it stops its heartbeat, dials no more if it was made
+		by `dial`, and closes its connection, whose end its calls waiting and
+		`onDown` hear as ever.
+	**/
+	public function close():Void {
+		__closed = true;
+		if (__redialTimer != TimerHandle.INVALID) {
+			Timer.clear(__redialTimer);
+			__redialTimer = TimerHandle.INVALID;
+		}
+		__active = false;
+		__stopHeartbeat();
+		try {
+			__connection.close();
+		} catch (_:Dynamic) {}
+		// A connection whose close says nothing, some of an application's
+		// own, has ended all the same.
+		if (!__ended) {
+			__connectionEnded(Reason.Closed);
+		}
+	}
+
+	/** One attempt: a new connection to `__dialUri`, which the session moves to. **/
+	@:noCompletion private function __dial():Void {
+		__redialTimer = TimerHandle.INVALID;
+		if (__closed) {
+			return;
+		}
+		var connection:Null<NetConnection> = null;
+		try {
+			// A single try over local IPC, whose connect waits on this thread
+			// for a listener: a dial never holds up the runtime waiting.
+			connection = new NetConnection(__dialUri, null, null, null, null, false, 0);
+		} catch (error:Dynamic) {
+			// Refused as it was made, a local:// name nobody listens on.
+			__endReason = Reason.Error("Could not connect to " + __dialUri + ": " + Std.string(error));
+			__redialLater();
+			return;
+		}
+		__moveTo(connection);
+	}
+
+	/** Dials again once the wait is up, and waits longer next time. **/
+	@:noCompletion private function __redialLater():Void {
+		if (__closed || __dialUri == null || __redialTimer != TimerHandle.INVALID) {
+			return;
+		}
+		final delay:Float = __redialDelay;
+		__redialDelay = __redialDelay * 2 > MAX_REDIAL ? MAX_REDIAL : __redialDelay * 2;
+		__redialTimer = Timer.setTimeout(delay, __dial);
+	}
+
+	/**
+		Lets go of the connection it had, which has ended, and takes
+		`connection`: reads it, observes it, and binds its commands to it. The
+		session stays down until `connection` says it is ready.
+	**/
+	@:noCompletion private function __moveTo(connection:NetConnection):Void {
+		final old:NetConnectionBase = __connection;
+		old.__observeClose(null);
+		old.__observeReady(null);
+		if (__readState == READ_ON) {
+			try {
+				__connection.onData = __noData;
+				__connection.readEnabled = false;
+			} catch (_:Dynamic) {}
+		}
+		__connection = connection;
+		__readState = READ_UNSET;
+		__isUp = false;
+		if (__commands != null) {
+			__commands.__nc = connection;
+		}
+		(connection : NetConnectionBase).__observeClose(__connectionEnded);
+		(connection : NetConnectionBase).__observeReady(__connectionReady);
+		__syncOnDataBinding();
+		// Connected already, a connect that finishes as it is made, as on
+		// eval, told whoever was listening before this was.
+		if (connection.connected) {
+			__connectionReady();
+		}
+	}
+
 	/** The connection can carry no answer now, so nothing waiting on one gets it. **/
 	@:noCompletion private function __connectionEnded(reason:Reason):Void {
+		final wasUp:Bool = __isUp && !__ended;
+		__isUp = false;
 		__ended = true;
 		__endReason = reason;
 		// `| 0` so it wraps on JavaScript as it does elsewhere.
@@ -298,7 +466,24 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		// Stopped, not forgotten: `start()` still stands, for a connection
 		// that becomes ready again.
 		__stopHeartbeat();
-		__failAllPending("RPC connection closed: " + Std.string(reason));
+		__failAllPending("RPC connection closed: " + Std.string(reason), reason);
+		if (wasUp) {
+			try {
+				onDown(reason);
+			} catch (error:Dynamic) {
+				Logger.error("RPCSession.onDown threw: " + Std.string(error));
+			}
+		}
+		if (__dialUri != null && !__closed) {
+			// At once after a connection that was up; later after an attempt
+			// that never got that far.
+			if (wasUp) {
+				__redialDelay = MIN_REDIAL;
+				__dial();
+			} else {
+				__redialLater();
+			}
+		}
 	}
 
 	/** Whether the connection is still on the life `epoch` names, and has not ended. **/
@@ -1099,18 +1284,18 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * Drains pending runtime request/response calls so callers are not left waiting on
 	 * a reply that can no longer arrive. Must only be called on the owning thread.
 	 */
-	@:noCompletion private function __failAllRuntimePending(message:String):Void {
+	@:noCompletion private function __failAllRuntimePending(message:String, ?cause:Dynamic):Void {
 		final pending = __runtimePendingResponse;
 		if (pending != null) {
 			__runtimePendingResponse = null;
 			__runtimePendingResponseId = 0;
-			pending.__reject(message);
+			pending.__fail(message, cause);
 		}
 		final map = __runtimePendingResponses;
 		if (map != null) {
 			__runtimePendingResponses = null;
 			for (response in map) {
-				response.__reject(message);
+				response.__fail(message, cause);
 			}
 		}
 	}
@@ -1122,12 +1307,16 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 * This is invoked when the session is stopped or the underlying connection closes,
 	 * ensuring no `RPCResponse` is left perpetually uncompleted. Must only be called on
 	 * the owning thread.
+	 *
+	 * `cause` is the `Reason` the connection ended with, when it did: a call that
+	 * failed as its connection went carried a message and nothing a caller could
+	 * decide by, and a gateway could not tell a backend gone from a refusal.
 	 */
-	@:noCompletion private function __failAllPending(message:String):Void {
+	@:noCompletion private function __failAllPending(message:String, ?cause:Dynamic):Void {
 		if (__commands != null) {
-			__commands.__failAllPending(message);
+			__commands.__failAllPending(message, cause);
 		}
-		__failAllRuntimePending(message);
+		__failAllRuntimePending(message, cause);
 	}
 
 	/**
@@ -1177,12 +1366,22 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		peer stays on its own life of the connection, and answers nobody.
 	**/
 	@:noCompletion private function __connectionReady():Void {
+		if (__isUp) {
+			return;
+		}
+		__isUp = true;
 		if (__ended) {
 			__ended = false;
 			__endReason = null;
 		}
+		__redialDelay = MIN_REDIAL;
 		if (__active && !__hasHeartbeat) {
 			__resumeHeartbeat();
+		}
+		try {
+			onUp();
+		} catch (error:Dynamic) {
+			Logger.error("RPCSession.onUp threw: " + Std.string(error));
 		}
 	}
 
@@ -1303,7 +1502,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		if (Logger.isEnabled(LogLevel.DEBUG)) {
 			Logger.debug('RPC session $sessionId heard nothing for $silence s; closing its connection');
 		}
-		__failAllPending("RPC connection timed out: nothing arrived for " + __heartbeatTimeout + " ms");
+		__failAllPending("RPC connection timed out: nothing arrived for " + __heartbeatTimeout + " ms", Reason.Timeout);
 		try {
 			__connection.close();
 		} catch (_:Dynamic) {}
@@ -1315,7 +1514,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __terminateProtocol(reason:Reason):Void {
-		__failAllPending("RPC connection terminated: " + Std.string(reason));
+		__failAllPending("RPC connection terminated: " + Std.string(reason), reason);
 		try {
 			__connection.onError(reason);
 		} catch (_:Dynamic) {}
@@ -1373,5 +1572,104 @@ private class HandlerDeadline<T> {
 		settled = true;
 		session.__callsWaiting--;
 		settle(RPCSession.__handlerTimedOut());
+	}
+}
+
+/**
+	What a session made by `RPCSession.dial` holds before its first
+	connection: never connected, sending nothing, closing nothing.
+**/
+private class Unconnected extends NetConnectionBase implements INetConnection {
+	public var remoteAddress(get, never):String;
+	public var remotePort(get, never):Int;
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+	public var connected(get, never):Bool;
+	public var readEnabled(get, set):Bool;
+	public var onData(get, set):ByteArrayInput->Void;
+	public var onClose(get, set):Reason->Void;
+	public var onError(get, set):Reason->Void;
+	public var onReady(get, set):Void->Void;
+
+	final __uri:String;
+	var __readEnabled:Bool = false;
+	var __onData:ByteArrayInput->Void = null;
+	var __onClose:Reason->Void = null;
+	var __onError:Reason->Void = null;
+	var __onReady:Void->Void = null;
+
+	public function new(uri:String) {
+		__uri = uri;
+		protocol = TCP;
+	}
+
+	public function expose():Transport {
+		return null;
+	}
+
+	public function send(data:ByteArray):Void {
+		throw new IOError("Not connected to " + __uri);
+	}
+
+	public function close():Void {}
+
+	inline function get_remoteAddress():String {
+		return __uri;
+	}
+
+	inline function get_remotePort():Int {
+		return 0;
+	}
+
+	inline function get_localAddress():String {
+		return "";
+	}
+
+	inline function get_localPort():Int {
+		return 0;
+	}
+
+	inline function get_connected():Bool {
+		return false;
+	}
+
+	inline function get_readEnabled():Bool {
+		return __readEnabled;
+	}
+
+	inline function set_readEnabled(value:Bool):Bool {
+		return __readEnabled = value;
+	}
+
+	inline function get_onData():ByteArrayInput->Void {
+		return __onData;
+	}
+
+	inline function set_onData(value:ByteArrayInput->Void):ByteArrayInput->Void {
+		return __onData = value;
+	}
+
+	inline function get_onClose():Reason->Void {
+		return __onClose;
+	}
+
+	inline function set_onClose(value:Reason->Void):Reason->Void {
+		return __onClose = value;
+	}
+
+	inline function get_onError():Reason->Void {
+		return __onError;
+	}
+
+	inline function set_onError(value:Reason->Void):Reason->Void {
+		return __onError = value;
+	}
+
+	inline function get_onReady():Void->Void {
+		return __onReady;
+	}
+
+	inline function set_onReady(value:Void->Void):Void->Void {
+		return __onReady = value;
 	}
 }
