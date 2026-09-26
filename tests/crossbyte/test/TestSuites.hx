@@ -183,6 +183,7 @@ class TestSuites {
 		// node blocks the very loop the socket is delivered on, so the query
 		// never completes and every case times out.
 		runner.addCase(new crossbyte.net.StunClientTest());
+		runner.addCase(new crossbyte.net.SysSocketTimeoutTest());
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
 		runner.addCase(new crossbyte.cluster.RendezvousTest());
 		runner.addCase(new crossbyte.cluster.MembershipTest());

@@ -1160,6 +1160,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, `sys.net.Socket.setTimeout` did nothing, so a blocking read
+  with nothing coming waited for ever. A blocking NIO channel has no read
+  timeout of its own, `SO_TIMEOUT` reaches only the stream API, and the
+  value was stored and never read. CrossByte's HTTP client reads a response
+  that way with its idle limit as the timeout, so on the jvm it could wait for
+  ever on a server that stopped sending. A blocking read with a timeout now
+  waits for data on the thread's selector first and throws when none comes.
 - `FileStream.openAsync` for writing throws `IllegalOperationError` on a
   target without threads, Node, in practice, instead of never returning.
   Its writer is a worker that waits for writes, and with no thread of its own
