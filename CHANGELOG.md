@@ -523,6 +523,11 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On the jvm, the interpreter, hl and neko, `CrossByte.current()` called
+  from a thread no runtime belongs to throws `IllegalOperationError` rather
+  than returning the primordial runtime, as it already did natively. Code on
+  a worker thread that needs a runtime should capture it on the runtime's
+  own thread and hand work back through its post queue.
 - A timer armed from inside a timer callback for a time already reached --
   `setTimeout(0)`, or a reschedule into the past -- fires on the next frame
   rather than in the pass that armed it. Recurring timers still catch up
@@ -701,6 +706,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `CrossByte.current()` answers the calling thread's own runtime on every
+  threaded target, not only natively. On the jvm, the interpreter, hl and
+  neko it returned the primordial runtime on every thread, although its
+  documentation said it resolved the thread's runtime first: a child
+  runtime's thread, or a worker thread, registered its sockets and timers
+  with the main runtime and then touched them from the wrong thread -- the
+  race behind the LocalConnection failures -- and `ThreadUtil.isPrimordial`
+  was true on every thread. The list of runtimes the process keeps is no
+  longer a map keyed by thread, which on the interpreter could never find an
+  entry again.
 - Every timer due in a frame now fires in that frame. The runtime fired at
   most 256 a frame -- about three thousand a second at the default twelve
   ticks -- and past that every timer ran late, and later every frame,

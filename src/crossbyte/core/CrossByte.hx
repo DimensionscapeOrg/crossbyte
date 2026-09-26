@@ -20,14 +20,11 @@ import crossbyte.utils.Logger;
 import haxe.EntryPoint;
 import haxe.Timer;
 import haxe.ds.Map;
-#if (cpp || neko || hl)
+#if target.threaded
+import sys.thread.Mutex;
 import sys.thread.Thread;
 import sys.thread.Tls;
 #end
-#if cpp
-import sys.thread.Mutex;
-#end
-import haxe.ds.ObjectMap;
 #if cpp
 import crossbyte._internal.socket.NativeSocketRegistry;
 #elseif !js
@@ -124,22 +121,31 @@ final class CrossByte extends EventDispatcher {
 		return defaultSocketCapacity > 0 ? defaultSocketCapacity : DEFAULT_MAX_SOCKETS;
 	}
 	
-	#if cpp
-	// Guards cross-thread access to the shared runtime registry
-	// (__instances/__instanceCount) and the published primordial state
-	// (__primordial/__primordialThread). Acquired around mutation in
-	// __setup()/__runEventLoop()/exit()/__finalizeExit() and around the
-	// happens-before publish/read of the primordial fields.
+	#if target.threaded
+	// Guards cross-thread access to the list of runtimes (__runtimes) and the
+	// published primordial state (__primordial/__primordialThread). Acquired
+	// around mutation in __setup()/__runEventLoop()/exit()/__finalizeExit()
+	// and around the happens-before publish/read of the primordial fields.
 	@:noCompletion private static var __registryLock:Mutex = new Mutex();
-	@:noCompletion private static var __instances:Map<Thread, CrossByte> = new ObjectMap();
-	@:noCompletion private static var __instanceCount:AtomicInt = 0;
-	@:noCompletion private var __socketRegistry:NativeSocketRegistry;
+
+	// Every runtime other than the primordial one that has not yet exited.
+	// A list rather than a map keyed by thread: eval hands out a new Thread
+	// value for every Thread.current() call, so keys by identity never match.
+	@:noCompletion private static var __runtimes:Array<CrossByte> = [];
+
+	// Which runtime each thread belongs to. On every threaded target: this
+	// used to be native only, and elsewhere current() answered the primordial
+	// runtime on every thread, so a child runtime on the jvm registered its
+	// sockets and timers with the main one, from the wrong thread.
 	@:noCompletion private static var __threadLocalStorage:Tls<CrossByte> = new Tls();
 	@:noCompletion private static var __primordialThread:Thread;
+	#end
 
+	#if cpp
+	@:noCompletion private var __socketRegistry:NativeSocketRegistry;
 	#elseif !js
 	@:noCompletion private var __socketRegistry:SocketRegistry;
-	#end	
+	#end
 
 	@:noCompletion private static var __init:Bool = __onCrossByteInit();
 	@:noCompletion private static var __primordial:CrossByte;
@@ -173,11 +179,17 @@ final class CrossByte extends EventDispatcher {
 	 * instance. If none is attached, it falls back to the primordial runtime
 	 * only when called from the primordial thread.
 	 *
+	 * On every threaded target -- native, the jvm, the interpreter, hl and
+	 * neko -- a thread with no runtime of its own is refused rather than
+	 * handed the primordial one: anything it registered there would be
+	 * touched from two threads. JavaScript has one thread and one runtime.
+	 *
 	 * @return The current thread's CrossByte instance, or the primordial
 	 *         application runtime when called from the primordial thread.
+	 * @throws IllegalOperationError On a thread no runtime belongs to.
 	 */
 	public static inline function current():CrossByte {
-		#if cpp
+		#if target.threaded
 		var instance:CrossByte = __threadLocalStorage.value;
 		if (instance == null) {
 			// Fast path stays lock-free. The primordial fields are published under
@@ -197,6 +209,38 @@ final class CrossByte extends EventDispatcher {
 		return instance;
 		#else
 		return __primordial;
+		#end
+	}
+
+	/**
+	 * `current()` without the throw: the thread's runtime, or null on a
+	 * thread that has none. For code that has an answer for that case, where
+	 * a try/catch around `current()` would cost an exception to find out.
+	 */
+	@:noCompletion public static function __currentOrNull():Null<CrossByte> {
+		#if target.threaded
+		var instance:CrossByte = __threadLocalStorage.value;
+		if (instance != null) {
+			return instance;
+		}
+		var primordial:CrossByte = __primordial;
+		var primordialThread:Thread = __primordialThread;
+		return (primordial != null && primordialThread != null && Thread.current() == primordialThread) ? primordial : null;
+		#else
+		return __primordial;
+		#end
+	}
+
+	/**
+	 * Whether the calling thread is the one this runtime runs on: its loop's
+	 * thread, or the thread that pumps it. On JavaScript, always.
+	 */
+	@:noCompletion public function __isOwnThread():Bool {
+		#if target.threaded
+		var owner:Thread = __ownerThread;
+		return owner != null ? Thread.current() == owner : __currentOrNull() == this;
+		#else
+		return true;
 		#end
 	}
 
@@ -299,8 +343,8 @@ final class CrossByte extends EventDispatcher {
 	// tick, and a runtime nobody posts to pays a field read.
 	@:noCompletion private var __posted:Null<Array<Void->Void>> = null;
 	@:noCompletion private var __hasPosted:Bool = false;
-	#if (cpp || neko || hl || java || jvm || eval)
-	@:noCompletion private final __postLock:sys.thread.Mutex = new sys.thread.Mutex();
+	#if target.threaded
+	@:noCompletion private final __postLock:Mutex = new Mutex();
 	#end
 	#if js
 	@:noCompletion private var __passFlushScheduled:Bool = false;
@@ -309,8 +353,10 @@ final class CrossByte extends EventDispatcher {
 
 	#if cpp
 	@:noCompletion private var __threadPriority:ThreadPriority = NORMAL;
+	#end
+	#if target.threaded
 	// The thread this runtime is bound to (its loop thread, or the host pump
-	// thread). exit() deregisters this entry even when called from another
+	// thread). exit() deregisters the runtime even when called from another
 	// thread, and __didDeregister makes the deregistration idempotent.
 	@:noCompletion private var __ownerThread:Thread;
 	@:noCompletion private var __didDeregister:Bool = false;
@@ -399,16 +445,11 @@ final class CrossByte extends EventDispatcher {
 	}*/
 	public function exit():Void {
 		__setRunning(false);
-		#if cpp
+		#if target.threaded
 		__registryLock.acquire();
 		if (!__didDeregister) {
 			__didDeregister = true;
-			// Remove the runtime's own thread entry, not the caller's, so a
-			// cross-thread exit() does not leak the owning thread's entry or
-			// drift __instanceCount.
-			var owner:Thread = __ownerThread != null ? __ownerThread : Thread.current();
-			__instances.remove(owner);
-			__instanceCount--;
+			__runtimes.remove(this);
 		}
 		__registryLock.release();
 		#end
@@ -437,7 +478,7 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
-		#if cpp
+		#if target.threaded
 		__ownerThread = Thread.current();
 		__threadLocalStorage.value = this;
 		#end
@@ -507,7 +548,7 @@ final class CrossByte extends EventDispatcher {
 		as `UncaughtErrorEvent.UNCAUGHT_ERROR` -- and does not stop the rest.
 	**/
 	@:noCompletion public function __post(callback:Void->Void):Void {
-		#if (cpp || neko || hl || java || jvm || eval)
+		#if target.threaded
 		__postLock.acquire();
 		#end
 		if (__posted == null) {
@@ -515,19 +556,19 @@ final class CrossByte extends EventDispatcher {
 		}
 		__posted.push(callback);
 		__hasPosted = true;
-		#if (cpp || neko || hl || java || jvm || eval)
+		#if target.threaded
 		__postLock.release();
 		#end
 	}
 
 	@:noCompletion private function __runPosted():Void {
-		#if (cpp || neko || hl || java || jvm || eval)
+		#if target.threaded
 		__postLock.acquire();
 		#end
 		final batch = __posted;
 		__posted = null;
 		__hasPosted = false;
-		#if (cpp || neko || hl || java || jvm || eval)
+		#if target.threaded
 		__postLock.release();
 		#end
 
@@ -795,9 +836,6 @@ final class CrossByte extends EventDispatcher {
 
 	@:noCompletion private inline function __setup():Void {
 		#if cpp
-		__registryLock.acquire();
-		__instanceCount++;
-		__registryLock.release();
 		__socketRegistry = new NativeSocketRegistry(__initialSocketCapacity());
 		#elseif !js
 		__socketRegistry = new SocketRegistry(__initialSocketCapacity());
@@ -821,7 +859,7 @@ final class CrossByte extends EventDispatcher {
 		#end
 
 		if (__usesHostLoop) {
-			#if cpp
+			#if target.threaded
 			// Publish registry + primordial state under the lock so it is visible
 			// (happens-before) to any threads that later read it via current().
 			var currentThread:Thread = Thread.current();
@@ -829,8 +867,9 @@ final class CrossByte extends EventDispatcher {
 			if (__isPrimordial) {
 				__primordial = this;
 				__primordialThread = currentThread;
+			} else {
+				__runtimes.push(this);
 			}
-			__instances.set(currentThread, this);
 			__registryLock.release();
 			__ownerThread = currentThread;
 			__threadLocalStorage.value = this;
@@ -847,7 +886,7 @@ final class CrossByte extends EventDispatcher {
 
 		if (__isPrimordial) {
 			EntryPoint.runInMainThread(__runEventLoop);
-			#if cpp
+			#if target.threaded
 			// Publish primordial state under the lock before any child runtimes
 			// (and their threads) can be created, establishing happens-before for
 			// reads through current().
@@ -855,13 +894,17 @@ final class CrossByte extends EventDispatcher {
 			__registryLock.acquire();
 			__primordial = this;
 			__primordialThread = t;
-			__instances.set(t, this);
 			__registryLock.release();
 			#else
 			__primordial = this;
 			#end
 			__adoptEarlyTimers();
 		} else {
+			#if target.threaded
+			__registryLock.acquire();
+			__runtimes.push(this);
+			__registryLock.release();
+			#end
 			EntryPoint.addThread(__runEventLoop);
 		}
 	}
@@ -902,14 +945,9 @@ final class CrossByte extends EventDispatcher {
 		setThreadPriority(__threadPriority);
 		#end
 
-		#if cpp
+		#if target.threaded
 		__ownerThread = Thread.current();
 		__threadLocalStorage.value = this;
-		if (!__isPrimordial) {
-			__registryLock.acquire();
-			__instances.set(__ownerThread, this);
-			__registryLock.release();
-		}
 		#end
 		CBTimer.bindCurrentThread(__timer);
 
@@ -1082,7 +1120,7 @@ final class CrossByte extends EventDispatcher {
 	// instance. __finalizeExit does this too, but only on the one call that flips
 	// __didExit, so it cannot repair a claim made after that.
 	@:noCompletion private function __releaseThreadLocal():Void {
-		#if cpp
+		#if target.threaded
 		if (__threadLocalStorage.value != this) {
 			return;
 		}
@@ -1124,7 +1162,7 @@ final class CrossByte extends EventDispatcher {
 			NativeWindowsRuntime.endTimingPeriod(1);
 		}
 		#end
-		#if cpp
+		#if target.threaded
 		if (__isPrimordial) {
 			__registryLock.acquire();
 			if (__primordial == this) {
