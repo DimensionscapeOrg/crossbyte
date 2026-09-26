@@ -171,6 +171,39 @@ All notable changes to CrossByte will be documented in this file.
   reliable channels, as RFC 8831 has it. Checked against Chrome both ways:
   each gives up on a message the other lost, and the other delivers the
   rest in order.
+- `LocalConnection.maxQueuedBytes`, the most a connection holds in each
+  direction -- 16 MB by default, two frames of the largest size -- and
+  `bytesPending`, what `send` has queued that the peer has not taken yet.
+  A sender with more than that to send at once paces itself on
+  `bytesPending`; see the entry under Fixed on a peer that stops reading.
+- `RPCSession.dial(uri, ?commands, ?handler)`: a client session that dials
+  its server, and dials again whenever its connection ends -- at once, then
+  after a wait doubling from `MIN_REDIAL` (0.25 s) to `MAX_REDIAL` (30 s)
+  while the server stays away -- until `close()`. While it is down a call
+  through it fails as it is made, with the `Reason` the last connection
+  ended with, or the last attempt failed with, as its `cause`. Its
+  commands, handler, `data` and heartbeat stay with it across connections.
+  A gateway surviving a backend restart built this itself -- dial, back
+  off, rebind, and check the backend was up before each call, since a call
+  on a closed TCP connection threw out of its stub. Every session also has
+  `onUp` and `onDown`, told as its connection becomes ready and as one that
+  was usable ends, `up`, and `close()`. `NetConnection`'s constructor takes
+  a `connectTimeout` for `local://`, whose connect waits on the calling
+  thread; a dial makes a single try.
+- Deadlines for RPC calls. `RPCResponse.timeout(ms)` gives a call until
+  then to be answered, and `RPCSession.callTimeout` gives every call a
+  session makes, on either lane, a deadline unless it has its own. Past
+  it the call fails with a new `RPCTimeoutError` -- an `RPCError`, so a
+  handler forwarding it tells its own caller the call timed out -- the
+  connection is left as it was, and an answer arriving later is dropped.
+  A call with no deadline waited for as long as its connection lasted,
+  however long its peer took. A call without one arms nothing; one with
+  one holds a timer until it is answered. `RPCSession.handlerTimeout`
+  bounds how long a call the session's handler answers with a `Future`
+  may wait: past it the caller is answered `RPCError.TIMEOUT_MESSAGE`,
+  `onHandlerError` and `afterCall` are told, and the call gives up its
+  place among `maxCallsWaiting`, where a future that never completed held
+  one of the 256 for good.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -758,6 +791,42 @@ All notable changes to CrossByte will be documented in this file.
   `UncaughtErrorEvent.UNCAUGHT_ERROR`, as they are under the runtime's own
   loop. A host that caught failures around `advance` should listen for that
   event instead.
+- A `LocalConnection` delivers what arrives for up to 2 ms at a time on
+  its runtime's thread. It delivered 32 messages a tick, whatever they
+  cost -- 384 a second at the default tick rate -- and anything faster
+  waited in a queue with no bound: 2000 small messages took 63 ticks, and
+  now arrive in one. Delivery is posted to the runtime when there is
+  something to deliver, where a listener ran on every tick for every
+  connection, and a reader with nothing to do looks every 10 ms rather
+  than every millisecond, easing off from 1 ms as it stays idle. What
+  waits to be delivered is bounded by `maxQueuedBytes`: past it the
+  reader stops reading, and what the peer sends waits on its side. A
+  `SharedChannel` keeps a connection to each channel it sends to -- up to
+  16, each closed after 45 s without a send -- where it kept one, and
+  closed it and dialled again whenever a send went somewhere other than
+  the last one had.
+- An RPC round trip costs less than half what it did natively: a request
+  answered 928 ns to 405 ns, one answered later 1.88 us to 537 ns, and one
+  with a `then` callback 2.13 us to 568 ns (BenchRpc, best of 11). Every
+  `Future` -- so every `RPCResponse`, and every `Completer` -- made a
+  `sys.thread.Mutex`, an object with a finalizer, and two handler lists,
+  and the caller took the lock twice a round trip at about 250 ns each,
+  since taking one on hxcpp enters and leaves a GC-free zone. On cpp the
+  lock is now a word of the future's own taken with an atomic
+  compare-and-swap, and the handler lists are made only for a second
+  handler of a kind. A handler's throw is contained without a closure
+  made to run it. Other targets keep their `Mutex`.
+- `RPCSession.start()` heartbeats whether or not the session has commands,
+  so a server that calls it on the sessions it accepts now pings its
+  clients and closes one it hears nothing from for `heartbeatTimeout`. Its
+  clients answer only if they run this version: a session of an earlier
+  one does not answer pings, so heartbeat an older peer only from a side
+  that also calls it often enough to be answered. A ping no longer passes
+  through `beforeCall` and `afterCall`, which could refuse it or count it
+  against a caller's allowance; a handler's own `ping()` is still told of
+  each. On a heartbeat timeout `onClose` is told once, with the reason the
+  transport gives for a close -- `Closed` -- rather than `Closed` and then
+  `Timeout`; the calls waiting fail with a message saying it timed out.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -1458,6 +1527,165 @@ All notable changes to CrossByte will be documented in this file.
   T bit set, and a reason the peer gives is passed on.
   `DtlsTransport.onClose`, `DtlsTransport.close(notifyPeer)` and
   `TurnClient.onLost` are the pieces underneath.
+- A `NetConnection` over a WebSocket tells `onClose` how its peer closed:
+  `Reason.Code` with the close frame's code and reason. It said
+  `Reason.Closed` whatever the peer sent, so a server going away (1001)
+  and one refusing a client by policy (1008) were one close to the
+  application, and to an RPC call that failed because of it -- whose
+  `cause` is now that `Reason` too. `Reason.Closed` is what a close with
+  no code known reports.
+- A `LocalConnection` whose peer stops reading no longer stops its own
+  side. `send` wrote on the runtime's thread until everything had gone --
+  five seconds a send on Windows, for good on Linux and macOS -- holding
+  the lock its own reader needed, so two processes filling each other's
+  channels each waited on the other; it waited where the collector could
+  not reach it, so a frame larger than the channel stalled any thread
+  that collected meanwhile, the peer's reader among them, until the write
+  gave up; and a write that gave up part way through a frame left the
+  peer reading from its middle. `send` now writes what the channel takes
+  and queues the rest, which the reader thread writes as the peer reads,
+  each frame whole. A peer that leaves more than `maxQueuedBytes` unread
+  is taken to be stuck: the connection is closed, with an error saying so
+  that is its close reason too. On Linux a send to a peer that had gone
+  raised SIGPIPE, which ends the process; it is sent with `MSG_NOSIGNAL`
+  (`SO_NOSIGPIPE` on macOS), and the connection closes instead.
+- A second `listen()` on a `LocalConnection` name in use throws, on both
+  platforms, where Windows made a second instance of the pipe beside the
+  first and POSIX removed the first listener's socket file and bound its
+  own: either way the first listener's clients went to the second. On
+  POSIX a name's socket path turned everything but letters, digits, `-`
+  and `_` into `_` and was cut to 48 characters, so `a.b` and `a_b`, or
+  two long names alike for their first 48, were one channel; such a name
+  is now kept apart by a 64-bit hash of all of it, and a name that needed
+  neither keeps its path. A listener lets each client go and takes the
+  next with the name held throughout, where it closed and made its
+  endpoint again with the name anyone's in between. On Windows a client
+  that came and went before the listener next looked -- as a
+  `SharedChannel` switching destinations did -- left the pipe closing,
+  which was taken for nobody yet, and the listener took nobody again: it
+  is taken like any other, and what it wrote is delivered.
+- A `NodeChannel` whose peer drops it comes back whatever clock it is
+  polled with. `poll(now)` compared its caller's time with retries
+  scheduled on `haxe.Timer.stamp()`; polled with the runtime's uptime, as
+  `crossbyte.Timer.stamp()` gives it, it was always early on Linux native,
+  jvm and eval, where the two clocks are far apart, and a link that
+  dropped once never came back. It worked on Windows and Node only because
+  both clocks start near zero there. `poll` now reads the clock itself;
+  `now` is optional and not read.
+- `SnowflakeId.timestampOf` reads back when any identifier was minted. It
+  converted the forty one bits of milliseconds through an `Int`, which
+  holds thirty one, and threw `Overflow` for every identifier minted more
+  than 24.8 days after the epoch -- after 2020-01-25 for the default one.
+- An RPC call that fails because its connection ended has the `Reason` it
+  ended with as its `cause` -- `Timeout` for a heartbeat that gave up -- so
+  a caller, a gateway above all, can tell a peer gone from a peer refusing,
+  whose failure has an `RPCError`. It had a message and nothing else.
+- A `LocalConnection` tells `onReady` at the next tick after `connect()`,
+  not from inside it. `new NetConnection("local://...")` connects as it is
+  made, so an `onReady` set once it had returned -- as the RPC guide sets
+  one -- never ran.
+- A `Future`'s `RESULT` or `ERROR` listener that throws is contained, as a
+  `then` callback that throws already was: logged, and nothing else
+  affected. It escaped into whatever completed the future. For an
+  `RPCResponse` that was the session reading its connection, which took
+  the throw for a frame it could not read, closed the connection and
+  failed every call still waiting -- and failing those ran their
+  listeners too, so one that threw escaped out of the read altogether.
+- An RPC session on a listening `LocalConnection` answers every client it
+  takes, not just the first. The listener takes its next client on the
+  same object, and the session stayed ended once the first had gone: for
+  each client after it, every error answer and every answer given later
+  was dropped -- a second worker's refused call never heard it was
+  refused -- and the heartbeat stayed off. A session is now answered on
+  again when its connection becomes ready again, and a heartbeat started
+  with `start()` resumes. A call from the last client still waiting then
+  answers nobody: it is kept to the life of the connection it came in on,
+  so the next client, numbering its calls from 1 too, cannot be handed its
+  answer.
+- An RPC call that cannot go fails as it is made, and nothing is left
+  waiting on an answer that cannot come. A request made after its
+  connection had ended waited for good over local IPC, whose send reports
+  a closed connection to `onError` rather than throwing; over TCP the send
+  threw out of the call and left its response waiting. It now fails at
+  once, with the `Reason` the connection ended with as its `cause`; a
+  request whose send throws fails with what it threw; and a one-way call
+  on an ended connection is dropped. Commands with no session
+  dereferenced a null connection, a crash on hxcpp in release; a request
+  through them now fails with an `IllegalOperationError`, and a one-way
+  call throws one. A call whose arguments cannot be framed throws before
+  it waits, where it was left waiting under its id. An answer for a
+  connection its own handler has closed is dropped rather than reported
+  as the handler failing. And an application's own `INetConnection`,
+  wrapped as a `NetConnection` again after a session was made on it --
+  `(connection : NetConnection).onClose = ...` -- set its callback over
+  the session's hold on it, so the session never heard it end and its
+  calls waited for good; while a session observes such a connection,
+  wrapping it again gives the same `NetConnection`.
+- An RPC call the other side cannot take no longer ends the connection or
+  leaves its caller waiting. A runtime call to a session with no runtime
+  handlers ended that session's connection -- the reader for a compiled
+  handler took the frame for garbage -- where the guide promised an error
+  answer; it is now answered as the runtime lane answers. A compiled
+  request to a session with no handler was dropped, and its caller waited
+  on a connection that stayed up; it is now answered
+  `RPCError.NO_HANDLER_MESSAGE`. A frame over the 8 MiB limit went out
+  without complaint and ended the connection on the other side, failing
+  every call waiting on it; a request over it now fails at once with an
+  `ArgumentError`, a one-way call throws one, and an answer over it is
+  not sent -- its caller is answered `RPCError.INTERNAL_MESSAGE` and
+  `onHandlerError` is told. The limit is `RPCSession.maxFrameLength`,
+  which each session reads and sends by, where it was a constant. A
+  session now reads every frame in one place whatever it has bound; a
+  frame whose flags are neither a call nor an answer, which was taken for
+  a one-way call, now ends the connection as any unreadable frame does.
+- The RPC heartbeat keeps healthy connections and drops dead ones. Pings
+  were one-way and nobody answered them, so a client heartbeating a server
+  that only answers calls heard nothing between calls and closed a healthy
+  connection after 90 to 135 seconds. Every session now answers a ping with
+  a pong -- a response under request id 0, which answers no call, so an
+  earlier version passes over it. A peer that never sent a byte was compared
+  against a deadline that moved with the clock and was never timed out;
+  what the heartbeat has heard is now counted from when it started. It ran
+  only on a session with commands, so a server never dropped a client that
+  had vanished; it now runs on any session. `start()` before the connection
+  was up never started it, and it now starts once the connection is ready.
+  `start()` twice ran two heartbeats, one of which outlived `stop()` and,
+  once the connection closed, threw out of the tick; it now carries on as
+  it was. A timeout reported the close twice, `Closed` and then `Timeout`;
+  the calls waiting now fail saying the connection timed out, and
+  `close()` alone reports the end. It also logged five lines at INFO for
+  every session on every beat, and logs nothing now.
+- An RPC method returning `Null<T>` -- in a contract, with `@:rpc`, through
+  a typedef, or as `Future<Null<T>>` -- answers what its caller reads. The
+  caller reads a byte saying whether the answer is there before the
+  answer, as for an optional argument, and the handler wrote the answer
+  bare: its first byte was taken for that flag, the rest misread, and the
+  connection closed on the first answer that was not null, failing every
+  other call waiting on it. A null `String` could not be written at all on
+  eval and JavaScript, and went as "" on cpp. Both sides now decide
+  whether a type may be absent from the type itself, not from how it is
+  written, so a typedef of `Null<T>` reads and writes the flag too.
+- One RPC handler can serve many sessions, and answers each call on the
+  connection it came in on. A handler held the session it was given last,
+  so a server that gave one handler to every client -- as the guide's
+  `ChatHandler` and `MatchQueueHandler` invite -- sent every answer to its
+  newest client. Since each client numbers its calls from 1, that client's
+  own call with the same number was completed with it: Bob, asking for a
+  `String`, was answered with Alice's `Int`, and Alice waited for good. A
+  session now binds its handler while it dispatches to it -- a field
+  write per delivery, put back after, so a call one session sets off in
+  another over an in-memory connection leaves the handler as it found it
+  -- and a method answering later, with a `Future`, is answered on the
+  session it was called from, which the handler keeps from the call. The
+  guide's four players queued on one handler were all answered by the
+  fourth's connection, three of them never. A response is now checked
+  against its call's op as well as its id: one for another op fails the
+  call, on both lanes, rather than completing it with a value of another
+  type. `RPCHandler.session` is the session whose call is running, `null`
+  between calls, so a handler can tell its callers apart -- `session.data`,
+  `session.commands`. `session` joins `ping` and `dispatch` as a name a
+  contract cannot use. The guide now gives one `ChatHandler` to every
+  client, and says how one handler serves many.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the

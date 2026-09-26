@@ -271,9 +271,18 @@ class TestSuites {
 		runner.addCase(new crossbyte.rpc.RPCContractTest());
 		runner.addCase(new crossbyte.rpc.RPCCallHookTest());
 		runner.addCase(new crossbyte.rpc.RPCAsyncTest());
+		runner.addCase(new crossbyte.rpc.RPCSharedHandlerTest());
+		runner.addCase(new crossbyte.rpc.RPCNullReturnTest());
+		runner.addCase(new crossbyte.rpc.RPCHeartbeatTest());
+		runner.addCase(new crossbyte.rpc.RPCDeadlineTest());
+		runner.addCase(new crossbyte.rpc.RPCUnhandledCallTest());
+		runner.addCase(new crossbyte.rpc.RPCUnsendableCallTest());
+		runner.addCase(new crossbyte.rpc.RPCReadyAgainTest());
+		runner.addCase(new crossbyte.rpc.RPCPeerCloseCodeTest());
 		// Real sockets pumped until something happens, which Node cannot do,
 		// so not in the portable suite.
 		runner.addCase(new crossbyte.rpc.RPCConnectionEndTest());
+		runner.addCase(new crossbyte.rpc.RPCDialTest());
 	}
 
 	public static function addResources(runner:Runner):Void {

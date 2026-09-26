@@ -528,7 +528,9 @@ class RPCHandlerMacro {
 		final name:Expr = macro $v{m.name};
 		final futureType:ComplexType = TPath({pack: ["crossbyte"], name: "Future", params: [TPType(payload)]});
 		final sendNow = sendResponseExpr(m.op, macro requestId, macro __result, payload, m.pos);
-		final sendLater = sendResponseExpr(m.op, macro requestId, macro __value, payload, m.pos);
+		// On the session the call came from, which `__rpc_later` kept and
+		// hands back: by then this handler may be running another's call.
+		final sendLater = sendResponseExpr(m.op, macro requestId, macro __value, payload, m.pos, macro __session);
 		final noFuture:Expr = macro $v{"RPC handler method '" + m.name + "' answered with no future"};
 		final after:Expr = callsAfter ? macro try {
 			this.afterCall($name, requestId, __failure);
@@ -560,7 +562,7 @@ class RPCHandlerMacro {
 			if (__answered) {
 				$after;
 			} else {
-				this.__rpc_later($op, $name, requestId, __future, function(__value:$payload):Void {
+				this.__rpc_later($op, $name, requestId, __future, function(__session:crossbyte.rpc.RPCSession<Dynamic, Dynamic>, __value:$payload):Void {
 					$sendLater;
 				}, $v{callsAfter});
 			}
@@ -875,10 +877,32 @@ class RPCHandlerMacro {
 		return a.opt ? makeNullType(unwrapNull(a.type)) : a.type;
 	}
 
-	static function sendResponseExpr(op:Int, requestId:Expr, value:Expr, ret:ComplexType, pos:Position):Expr {
+	/**
+		Frames `value` as the answer to `requestId` and sends it: on the
+		session whose call is running, or on `session` for a call answered
+		later.
+	**/
+	static function sendResponseExpr(op:Int, requestId:Expr, value:Expr, ret:ComplexType, pos:Position, ?session:Expr):Expr {
 		var key = typeKey(ret, pos);
 		var writer = TYPE_WRITERS.get(key);
 		var writeValue = writer(macro framed, value);
+		// A `Null<T>` answer says first whether it is there, as its caller
+		// reads it. It was written bare: the caller read the answer's first
+		// byte as the presence byte, misread the rest, and ended the
+		// connection -- and a null String could not be written at all.
+		if (RPCContractMacroTools.isNullable(ret, pos)) {
+			final present:Expr = writeValue;
+			writeValue = macro {
+				framed.reserve(1);
+				if ($value == null) {
+					framed.writeByte(0);
+				} else {
+					framed.writeByte(1);
+					$present;
+				}
+			};
+		}
+		final send:Expr = session == null ? macro this.__rpc_answer(framed) : macro this.__rpc_answerOn($session, framed);
 		return macro {
 			var framed:crossbyte.io.ByteArrayOutput = new crossbyte.io.ByteArrayOutput(crossbyte.rpc._internal.RPCWire.MIN_PAYLOAD_LEN + 4);
 			framed.writeInt(0);
@@ -888,7 +912,7 @@ class RPCHandlerMacro {
 			$writeValue;
 			framed.writeIntAt(0, framed.bytesWritten - 4);
 			framed.flush();
-			this.this_connection.send(framed);
+			$send;
 		};
 	}
 

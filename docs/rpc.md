@@ -53,12 +53,15 @@ ordinary class does. The build checks its signatures against the contract's.
 
 ```haxe
 class ChatHandler extends RPCHandler implements ChatContract {
+	// One count per room, for everyone: every client's session shares this
+	// handler, so these are the server's rooms, not one client's.
 	var members = new Map<String, Int>();
 
 	public function new() {}
 
 	public function say(room:String, text:String):Void {
-		trace('[$room] $text');
+		// `session` is the session whose call this is.
+		trace('[$room] ${session.connection.remoteAddress}: $text');
 	}
 
 	public function join(room:String):Int {
@@ -70,14 +73,15 @@ class ChatHandler extends RPCHandler implements ChatContract {
 ```
 
 An `RPCSession` binds either or both to a connection. A server makes one per
-client it accepts:
+client it accepts, and gives every one of them the same handler:
 
 ```haxe
 import crossbyte.net.NetHost;
 import crossbyte.rpc.RPCSession;
 
+var chat = new ChatHandler();
 var host = new NetHost("tcp://127.0.0.1:4000", connection -> {
-	new RPCSession(connection, null, new ChatHandler());
+	new RPCSession(connection, null, chat);
 });
 host.listen();
 ```
@@ -100,6 +104,27 @@ connection.onReady = () -> {
 The session takes over the connection's `onData`; leave it to the session.
 Both ends can have both: a session with commands and a handler calls the
 other side and answers it on one connection.
+
+## One handler, many clients
+
+A handler can serve any number of sessions, and usually should: a server's
+rooms, queues and world are one set of state, and the handler that answers
+for them is one object. Each call is answered on the connection it came in
+on. While a method runs, the handler's `session` is the session whose call
+it is, so a method can tell its callers apart:
+
+- `session.data` holds whatever the application keeps per client -- a
+  player, a login -- set when the session is made;
+- `session.commands` calls that client back, if the session has commands;
+- `session.connection` is its connection.
+
+Between calls `session` is `null`. A method that answers later, with a
+`Future` (below), is answered on its caller's connection whenever that
+future completes; code that needs the caller after its method has returned
+keeps `session` in a variable of its own.
+
+A handler with state of its own per client -- nothing shared -- can still be
+made per session; it simply never sees another.
 
 ## One-way calls and requests
 
@@ -192,7 +217,8 @@ fails the build rather than quietly answering nothing.
 
 Two names are the protocol's own and cannot be RPC methods: `ping`, which
 every session answers and uses for heartbeats, and `dispatch`. Neither can
-`beforeCall` or `afterCall`, below.
+`beforeCall` or `afterCall`, below, nor `session`, the handler's view of who
+is calling.
 
 ## When a handler fails
 
@@ -234,11 +260,21 @@ session.onHandlerError = (op, method, error) -> {
 A one-way call has nobody to answer, so whatever it throws, `RPCError` or not,
 goes to `onHandlerError`.
 
-What does end a connection is a frame that cannot be read: longer than
-`RPCHandler.MAX_FRAME_LEN` (8 MiB), for a method this side does not have, or
-with arguments that do not decode or that run past the end of the frame.
-Nothing after such a frame could be trusted to line up, so the session closes
-the connection, and every call still waiting on it fails.
+What does end a connection is a frame that cannot be read: longer than the
+session's `maxFrameLength` (8 MiB unless set), for a method this side's handler
+does not have, or with arguments that do not decode or that run past the end
+of the frame. Nothing after such a frame could be trusted to line up, so the
+session closes the connection, and every call still waiting on it fails.
+
+A frame too long is caught before it is sent as well: a request over the
+sending session's `maxFrameLength` fails at once with an `ArgumentError` as its
+`cause`, a one-way call throws one, and an answer too long is not sent -- its
+caller is answered `RPCError.INTERNAL_MESSAGE`, and `onHandlerError` is told.
+Both ends of a connection should agree on the limit.
+
+A request to a session with no handler to answer it -- one with only commands,
+calling out -- is answered `RPCError.NO_HANDLER_MESSAGE`, and a one-way call to
+one is dropped.
 
 ## Hooks: one place for every call
 
@@ -324,7 +360,9 @@ a contract, a method answered later returns `Future<T>`, and its commands class
 still gets a stub returning `RPCResponse<T>`.
 
 For a future of its own, a handler makes a `Completer`, returns its `future`,
-and completes it when it can -- here, when four players are queued:
+and completes it when it can -- here, when four players are queued. One
+handler serves every player's session, so the fourth player's call completes
+all four futures, and each answer goes to the player who asked:
 
 ```haxe
 import crossbyte.Completer;
@@ -368,7 +406,8 @@ is not thread-safe.
 Each call waiting holds what it waits on, so a session limits how many may
 wait at once: `maxCallsWaiting`, 256 unless set. A call past it is refused
 before its method runs, with `RPCError.BUSY_MESSAGE`, as `beforeCall` refuses
-one. If the connection ends while a call waits, its answer is dropped.
+one. If the connection ends while a call waits, its answer is dropped. How
+long one may wait is `handlerTimeout`; see Deadlines, below.
 
 The runtime lane does the same for a registered handler that returns a
 `Future`. Which of those answer later is not known until they run, so while
@@ -468,8 +507,9 @@ session.call(LOG, ["one-way", 2, true]);
 
 Values on this lane carry a tag each, so an array can mix them: `null`,
 `Bool`, `Int`, `Float`, `String` and `haxe.io.Bytes`. A request to a number
-nobody registered is answered with an error; a one-way call to one is dropped.
-`deregister` removes a handler.
+nobody registered is answered with an error -- by any session, whether or not
+it has runtime handlers -- and a one-way call to one is dropped. `deregister`
+removes a handler.
 
 A runtime handler fails the way a compiled one does -- an `RPCError`'s message
 is the answer, anything else is `INTERNAL_MESSAGE` and goes to
@@ -491,10 +531,19 @@ and a compiled method's hash never collide.
 
 ## Sessions, heartbeats and pending calls
 
-`start()` begins the session's bookkeeping and, when it has commands, its
-heartbeat: a `ping` every `heartbeatInterval` milliseconds (45 seconds unless
-set), and the connection closed if nothing arrives for `heartbeatTimeout`
-(90 seconds). `stop()` ends both without closing the connection.
+`start()` begins the session's heartbeat, with commands or without: a `ping`
+every `heartbeatInterval` milliseconds (45 seconds unless set) when nothing
+else has been sent, and the connection closed if nothing arrives for
+`heartbeatTimeout` (90 seconds). Every session answers a ping, so a peer with
+nothing to say is still heard from, and a server that only answers calls can
+heartbeat its clients to find the ones that have vanished. A ping is not a
+call: `beforeCall` and `afterCall` never see one. `stop()` ends the heartbeat
+without closing the connection.
+
+Started before its connection is up, the heartbeat begins once the connection
+is ready; started again, it carries on as it was. When it times out, the calls
+waiting fail saying so, and the connection is closed, which its `onClose`
+hears once.
 
 ```haxe
 // Given session:RPCSession<ChatCommands>, connection:crossbyte.net.NetConnection.
@@ -512,3 +561,86 @@ connection closes or a transport error stops its reads, when the session is
 stopped, when the heartbeat gives up on the peer, and when the connection is
 ended over a frame that cannot be read. Its `RPCResponse` fails with a message
 saying which, so nothing waits for good on a peer that has gone.
+
+A call that cannot go at all fails as it is made: on a connection that has
+ended, with the `Reason` it ended with as its `cause`; when the transport's
+send throws, with what it threw; and through commands no session has bound,
+with an `IllegalOperationError`. A one-way call on a connection that has ended
+is dropped, as a one-way call's fate always is; one through commands with no
+session throws.
+
+A call failed by its connection ending has the `Reason` it ended with as its
+`cause`, and a call refused by the other side has an `RPCError`, so a caller
+can tell a peer that has gone from a peer that said no. Over a WebSocket the
+`Reason` is `Code` with the code and reason the peer closed with -- 1001 for
+a server going away, 1008 for one refusing by policy -- and `Closed` when the
+connection ended with no code known.
+
+## A client that comes back
+
+A client that must survive its server restarting -- a gateway in front of a
+backend -- dials with `RPCSession.dial` rather than making a connection itself.
+The session dials again whenever its connection ends: at once, and then after
+a wait that doubles from `MIN_REDIAL` to `MAX_REDIAL` while the server stays
+away. Its commands, handler, `data` and heartbeat stay with it from one
+connection to the next.
+
+```haxe
+// Given commands:ChatCommands.
+var backend = RPCSession.dial("tcp://127.0.0.1:4000", commands);
+backend.onUp = () -> trace("backend up");
+backend.onDown = reason -> trace('backend down: $reason');
+
+commands.join("lobby").then(count -> trace('$count in the room'), message -> {
+	// While the backend is away a call fails at once, and its cause is the
+	// Reason the backend went.
+	trace('not now: $message');
+});
+```
+
+While it is down -- before its first connection, and between one and the next
+-- a call fails as it is made, with a `Reason` as its `cause`. `up` says whether
+it is up now, `onUp` and `onDown` when it comes and goes, and `close()` ends it:
+it dials no more. It makes its first attempt at the next tick, so callbacks set
+after `dial` returns hear it.
+
+## Deadlines
+
+A peer that is still there can still leave a call unanswered. A call can be
+given a deadline -- the session's `callTimeout` for every call it makes, or
+one of its own with `timeout`, in milliseconds -- and past it the call fails
+with an `RPCTimeoutError` as its `cause`. The connection is left as it was,
+and an answer arriving later is dropped.
+
+```haxe
+// Given session:RPCSession<ChatCommands>, commands:ChatCommands.
+import crossbyte.rpc.RPCTimeoutError;
+
+session.callTimeout = 5000;
+
+final joining = commands.join("lobby").timeout(2000);
+joining.catchError(message -> {
+	if (Std.isOfType(joining.cause, RPCTimeoutError)) {
+		trace('no answer in time: $message');
+	}
+});
+```
+
+`timeout(0)` leaves a call no deadline. A call without one arms nothing and
+costs nothing for it; one with a deadline holds a timer until it is answered.
+
+A handler can be held to one as well. `handlerTimeout` is how long a call its
+handler answers with a `Future` may wait for that future: past it the caller is
+answered `RPCError.TIMEOUT_MESSAGE`, `onHandlerError` and `afterCall` are told
+with an `RPCTimeoutError`, and the call gives up its place among the
+`maxCallsWaiting`. Without it, a future that never completes holds that place
+for as long as the connection lasts.
+
+```haxe
+// Given session:RPCSession<ChatCommands>.
+session.handlerTimeout = 10000;
+```
+
+An `RPCTimeoutError` is an `RPCError`, so a handler forwarding a call that
+timed out -- as the hub above answers with an instance host's answer -- tells
+its own caller that it timed out, and reports it on its side too.

@@ -59,6 +59,15 @@ class BenchRpc {
 			commands.name(7);
 		});
 
+		// As a caller does: a callback for the answer. The callback is made
+		// once, so what is timed is registering it and running it.
+		var answered:Int = 0;
+		var onAnswer = (name:String) -> answered++;
+		Bench.run("request, response and then()", function():Void {
+			commands.later(7).then(onAnswer);
+			handler.pending.complete("player");
+		});
+
 		// The same request to a method that answers with a Future: one complete
 		// already -- a cached answer, the same future each time, so what is
 		// timed is the dispatch and not the handler's allocation -- and one
@@ -72,7 +81,20 @@ class BenchRpc {
 			handler.pending.complete("player");
 		});
 
-		if (handler.moves == 0 || hooked.moves == 0 || client == null || server == null || hookedServer == null) {
+		// The same request from a session that gives every call a deadline:
+		// a timer armed as the call is made, and cleared by its answer. A
+		// session without one arms nothing, which "request and response"
+		// above measures.
+		var timedLink = BenchLink.pair();
+		var timedCommands = new BenchCommands();
+		var timedClient = new RPCSession<BenchCommands>(timedLink.client, timedCommands);
+		timedClient.callTimeout = 5000;
+		var timedServer = new RPCSession(timedLink.server, null, new BenchHandler());
+		Bench.run("request and response, with a deadline", function():Void {
+			timedCommands.name(7);
+		});
+
+		if (handler.moves == 0 || hooked.moves == 0 || client == null || server == null || hookedServer == null || timedServer == null) {
 			Sys.println("  (the handler was never called)");
 		}
 	}

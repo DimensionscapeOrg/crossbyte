@@ -29,7 +29,7 @@ import crossbyte.net.Socket;
 	link.onMessage = payload -> handle(payload);
 	link.onUp = () -> catchUp();
 	link.send(payload);
-	link.poll(now);            // from the tick, for reconnects
+	link.poll();               // from the tick, for reconnects
 	```
 
 	An accepted connection is the same thing without the dialling:
@@ -164,9 +164,17 @@ class NodeChannel {
 		Called from the tick. Nothing else here needs time, so a channel that
 		is never polled still carries messages -- it just never comes back
 		after the far end goes away.
+
+		It reads the time itself, from `haxe.Timer.stamp()`, the clock its
+		retries are scheduled by. It used to take the time from its caller,
+		and a caller passing another clock -- `crossbyte.Timer.stamp()`, the
+		runtime's uptime, which on Linux native, jvm and eval is far behind
+		-- was always before the retry: a link that dropped once never came
+		back. `now` is not read; it is kept so that callers passing it still
+		build.
 	**/
-	public function poll(now:Float):Void {
-		if (__closed || __up || !__dials || __retryAt < 0 || now < __retryAt) {
+	public function poll(?now:Float):Void {
+		if (__closed || __up || !__dials || __retryAt < 0 || haxe.Timer.stamp() < __retryAt) {
 			return;
 		}
 

@@ -106,6 +106,50 @@ class RPCConnectionEndTest extends utest.Test {
 		#end
 	}
 
+	public function testASessionOnALocalListenerAnswersItsNextClient():Void {
+		// A listening LocalConnection takes its next client on the same
+		// object. The session on it stayed ended once the first had gone, and
+		// dropped every error answer the second was owed.
+		#if (cpp && (windows || linux || mac || macos))
+		var server = new LocalConnection();
+		var clients:Array<LocalConnection> = [];
+		try {
+			var name = '__crossbyte_rpc_again_${Std.int(haxe.Timer.stamp() * 1000)}_${Std.random(1000000)}';
+			server.listen(name);
+			var serverSession = new RPCSession(server, null, new RefusingEndHandler());
+
+			var answers:Array<String> = [];
+			for (round in 0...2) {
+				var client = new LocalConnection();
+				clients.push(client);
+				client.connect(name);
+				var commands = new EndCommands();
+				var session = new RPCSession<EndCommands>(client, commands);
+				pumpUntil(() -> server.connected, 2.0);
+				var refused = commands.nameOf(-1);
+				pumpUntil(() -> refused.completed, 2.0);
+				answers.push(refused.completed ? refused.error : "never answered");
+				client.close();
+				pumpUntil(() -> !server.connected, 2.0);
+			}
+
+			Assert.same(["no player -1", "no player -1"], answers);
+		} catch (e:Dynamic) {
+			for (client in clients) {
+				client.close();
+			}
+			server.close();
+			throw e;
+		}
+		for (client in clients) {
+			client.close();
+		}
+		server.close();
+		#else
+		Assert.pass();
+		#end
+	}
+
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
 		var deadline = haxe.Timer.stamp() + timeout;
@@ -133,4 +177,15 @@ private class EndCommands extends RPCCommands {
 	public function new() {}
 
 	@:rpc public function nameOf(id:Int):RPCResponse<String> {}
+}
+
+private class RefusingEndHandler extends RPCHandler {
+	public function new() {}
+
+	@:rpc public function nameOf(id:Int):String {
+		if (id < 0) {
+			throw new RPCError('no player $id');
+		}
+		return 'player-$id';
+	}
 }

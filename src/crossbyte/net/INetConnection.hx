@@ -32,7 +32,11 @@ interface INetConnection {
 	public var outTimestamp(default, null):Float;
 	/** Called when incoming data is available. */
 	public var onData(get, set):ByteArrayInput->Void;
-	/** Called when the connection closes. */
+	/**
+		Called when the connection closes, with why: `Reason.Closed` for a
+		plain close, and otherwise what the transport knows -- the code and
+		reason a WebSocket peer closed with as `Reason.Code`, for one.
+	**/
 	public var onClose(get, set):Reason->Void;
 	/** Called when the transport reports an error. */
 	public var onError(get, set):Reason->Void;

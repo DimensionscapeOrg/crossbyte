@@ -103,6 +103,53 @@ class NodeChannelTest extends utest.Test {
 		link.close();
 	}
 
+	/**
+		A link whose peer drops it comes back, whatever clock it is polled
+		with.
+
+		`poll` took the time from its caller and compared it with retries
+		scheduled on `haxe.Timer.stamp()`. Polled with the runtime's uptime,
+		as `crossbyte.Timer.stamp()` gives it, it was always early on Linux
+		native, jvm and eval, where the two clocks are far apart, and a link
+		that dropped once never came back. The time passed here is one far
+		behind on every target.
+	**/
+	public function testALinkThatDropsComesBackWhateverTheCallersClock():Void {
+		var server = new ServerSocket();
+		var accepted:Array<NodeChannel> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(event):Void {
+			accepted.push(NodeChannel.adopt(cast event.socket));
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var link = NodeChannel.dial("127.0.0.1", server.localPort);
+		var ups = 0;
+		var downs = 0;
+		link.onUp = () -> ups++;
+		link.onDown = _ -> downs++;
+		pumpUntil(() -> link.up && accepted.length == 1, 5.0);
+		Assert.isTrue(link.up, "the link never came up");
+
+		// The far end drops it.
+		accepted[0].close();
+		pumpUntil(() -> !link.up, 5.0);
+		Assert.equals(1, downs, "the drop was not noticed");
+
+		pumpUntil(() -> {
+			link.poll(0.0);
+			return link.up;
+		}, 5.0);
+
+		Assert.isTrue(link.up, "a link polled with a clock of its caller's never came back");
+		Assert.equals(2, ups);
+		link.close();
+		for (channel in accepted) {
+			channel.close();
+		}
+		closeQuietly(server);
+	}
+
 	/** A closed link refuses to take more rather than holding it. **/
 	public function testAClosedLinkTakesNothingMore():Void {
 		var vacant = new ServerSocket();
@@ -134,9 +181,9 @@ class NodeChannelTest extends utest.Test {
 
 	static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
+		var deadline = haxe.Timer.stamp() + timeout;
 
-		while (!done() && Sys.time() < deadline) {
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
