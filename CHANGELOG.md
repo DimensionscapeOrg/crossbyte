@@ -731,6 +731,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Config.getInt` refuses a value too big for an `Int` on every target, and
+  `Version` reads an oversized segment the same everywhere. Both used
+  `Std.parseInt`, whose answer past 32 bits depends on the target:
+  4294967296 read as 0 on Linux native and 2147483647 on Windows native,
+  threw a `NumberFormatException` on the jvm and came back wider than an
+  `Int` on JavaScript, so a configured connection limit could quietly become
+  0. `getInt` now throws `ArgumentError` for it as for any other malformed
+  value, and a version segment past three digits reads as 999, the most
+  `hash` has room for. A suffix such as `-beta` still reads as the digits
+  before it.
 - `haxe.Timer` and `GlobalTimer.setInterval` run at the rate they are asked
   for. CrossByte's `haxe.Timer` counted tick deltas down itself and reset
   to the full interval after each run, dropping whatever the tick had
