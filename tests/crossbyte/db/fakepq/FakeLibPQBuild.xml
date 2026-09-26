@@ -1,0 +1,19 @@
+<xml>
+	<pragma once="true"/>
+
+	<!-- A libpq stand-in, built as its own shared library beside the test
+	     binary so the bridge loads it the way it loads the real one. No hxcpp
+	     headers and no precompiled header: it is plain C with a C interface. -->
+	<files id="crossbyte-fakepq">
+		<file name="${this_dir}/fake_libpq.c"/>
+	</files>
+
+	<target id="crossbyte-fakepq" tool="linker" toolid="dll" output="crossbyte_fakepq">
+		<files id="crossbyte-fakepq"/>
+	</target>
+
+	<!-- A sub-target of the test binary, so one haxe build produces both. -->
+	<target id="haxe">
+		<target id="crossbyte-fakepq"/>
+	</target>
+</xml>

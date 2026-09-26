@@ -357,6 +357,208 @@ class PostgresIntegrationTest extends utest.Test {
 		#end
 	}
 
+	public function testCommitOfAFailedTransactionThrows():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// PostgreSQL answers this COMMIT with success and the tag ROLLBACK.
+		// Only the tag says the insert was thrown away.
+		connection.begin();
+		connection.request('INSERT INTO $table (id, label, amount) VALUES (1, \'lost\', 1)');
+
+		try {
+			connection.request("SELECT * FROM a_table_that_does_not_exist");
+		} catch (_:Dynamic) {}
+
+		Assert.raises(() -> connection.commit(), crossbyte.errors.SQLError);
+		Assert.isFalse(connection.inTransaction);
+		Assert.equals(0, __count());
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testCommitRefusedByADeferredConstraintThrows():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// The COMMIT itself fails here: a deferred foreign key is checked only
+		// then.
+		connection.request('CREATE TABLE ${table}_child (id INTEGER, parent INTEGER REFERENCES $table (id) DEFERRABLE INITIALLY DEFERRED)');
+
+		connection.begin();
+		connection.request('INSERT INTO ${table}_child (id, parent) VALUES (1, 999)');
+
+		Assert.raises(() -> connection.commit(), crossbyte.errors.SQLError);
+		Assert.isFalse(connection.inTransaction);
+		Assert.isTrue(connection.ping());
+
+		try {
+			connection.request('DROP TABLE ${table}_child');
+		} catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testConcurrentQueriesThroughAsyncDatabaseEachGetTheirOwnRows():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// A worker per pooled connection, all querying at once: the default
+		// AsyncDatabase shape. Every connection in the process wrote one shared
+		// result buffer, so a query could come back with another's rows.
+		var config:PostgresConfig = __config();
+		var pool = new ConnectionPool<PostgresConnection>({
+			factory: function():PostgresConnection {
+				var opened = new PostgresConnection();
+				opened.open(config);
+				return opened;
+			},
+			close: c -> c.close(),
+			maxSize: 8
+		});
+		var db = AsyncDatabase.of(pool);
+		var tasks = [];
+
+		for (worker in 0...8) {
+			tasks.push(db.submit(function(c:PostgresConnection):Int {
+				var wrong:Int = 0;
+
+				for (n in 0...250) {
+					var value:String = 'worker-$worker-query-$n';
+					var result = c.requestParams("SELECT $1::text", [Text(value)]);
+
+					if (result.rows.length != 1 || result.rows[0][0] == null || result.rows[0][0].toString() != value) {
+						wrong++;
+					}
+				}
+
+				return wrong;
+			}));
+		}
+
+		var wrong:Int = 0;
+		var failures:Array<String> = [];
+
+		for (task in tasks) {
+			try {
+				wrong += task.await();
+			} catch (e:Dynamic) {
+				failures.push(Std.string(e));
+			}
+		}
+
+		db.shutdown();
+
+		Assert.equals(0, wrong, 'answers that belonged to another query: $wrong of 2000');
+		Assert.equals(0, failures.length, failures.length == 0 ? "" : '${failures.length} of 8 workers threw, the first with: ${failures[0]}');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testStatementTimeoutStopsASlowStatement():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		var config:PostgresConfig = __config();
+		config.statementTimeout = 0.3;
+
+		var bounded = new PostgresConnection();
+		bounded.open(config);
+
+		var started:Float = haxe.Timer.stamp();
+		var message:String = null;
+
+		try {
+			bounded.request("SELECT pg_sleep(10)");
+		} catch (e:Dynamic) {
+			message = Std.string(e);
+		}
+
+		var elapsed:Float = haxe.Timer.stamp() - started;
+		bounded.close();
+
+		Require.notNull(message);
+		Assert.isTrue(message.indexOf("statement timeout") >= 0, message);
+		Assert.isTrue(elapsed < 5, 'a 0.3 s statement timeout took ${elapsed}s to fire');
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testCancelStopsAStatementFromAnotherThread():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		var done = new sys.thread.Lock();
+		var message:String = null;
+
+		sys.thread.Thread.create(function():Void {
+			try {
+				connection.request("SELECT pg_sleep(10)");
+			} catch (e:Dynamic) {
+				message = Std.string(e);
+			}
+
+			done.release();
+		});
+
+		Sys.sleep(0.5);
+
+		var started:Float = haxe.Timer.stamp();
+		Assert.isTrue(connection.cancel());
+		Assert.isTrue(done.wait(8.0));
+		var elapsed:Float = haxe.Timer.stamp() - started;
+
+		Require.notNull(message);
+		Assert.isTrue(message.indexOf("canceling statement due to user request") >= 0, message);
+		Assert.isTrue(elapsed < 5, 'the statement ran on for ${elapsed}s after it was cancelled');
+		Assert.isTrue(connection.ping());
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testKeepAliveAndUserTimeoutAreAcceptedByLibpq():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// A keyword libpq does not know fails the connection outright, so an
+		// open that succeeds is libpq accepting every one of them.
+		var config:PostgresConfig = __config();
+		config.keepAliveIdle = 30;
+		config.keepAliveInterval = 5;
+		config.keepAliveCount = 3;
+		config.tcpUserTimeout = 10;
+		config.connectionParameters = ["application_name" => "crossbyte-it"];
+
+		var probed = new PostgresConnection();
+		probed.open(config);
+
+		var rows:Array<Dynamic> = __rows(probed.request("SHOW application_name"));
+		probed.close();
+
+		Assert.equals(1, rows.length);
+		Assert.equals("crossbyte-it", Std.string(Reflect.field(rows[0], "application_name")));
+		#else
+		Assert.pass();
+		#end
+	}
+
 	#if cpp
 	@:noCompletion private function __skip():Bool {
 		if (__configured()) {

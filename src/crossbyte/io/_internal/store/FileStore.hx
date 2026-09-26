@@ -21,9 +21,18 @@ import sys.io.File as SysFile;
  * collisions between `Token` and `token` are all real keys and all impossible
  * or dangerous as paths.
  *
- * Writes are atomic: a temporary file, then a rename. A store that corrupts on
- * a power cut is worse than no store, because it is trusted. Rename is the only
- * operation a filesystem gives that is atomic enough to build on.
+ * Writes are atomic: a temporary file of the writer's own, flushed to disk,
+ * then renamed over the old value in one step. A store that corrupts on a power
+ * cut is worse than no store, because it is trusted. Rename is the only
+ * operation a filesystem gives that is atomic enough to build on, as long as
+ * it is one rename. This used to delete the old value and then rename, because
+ * the standard library's rename refuses to replace a file on Windows; a process
+ * that died between the two lost the key, and the next open threw away the
+ * complete new value as debris. Every writer also shared one temporary name,
+ * and nothing was flushed.
+ *
+ * The flush is what the interpreter cannot do: eval has no fsync. There a
+ * power cut can cost the latest write, though never tear one.
  *
  * Asynchronous by signature and synchronous underneath. That is deliberate and
  * it is not a lie: the callback contract is what lets a target that genuinely
@@ -58,15 +67,37 @@ class FileStore implements IStoreBackend {
 				return;
 			}
 
-			// Anything left behind by a write that died mid-rename. Removed on
-			// open rather than ignored, so a crash does not slowly fill the
-			// directory with debris that looks like data.
+			// Anything left behind by a write that died before its rename.
+			// Removed on open rather than ignored, so a crash does not slowly
+			// fill the directory with debris that looks like data: a write that
+			// never renamed never completed, and the old value is still there.
+			//
+			// With one exception. The previous writer deleted the old value
+			// before renaming, and used `<key>.value.writing` for every write;
+			// a process that died between those two steps left that file as
+			// the only copy of the key. It is promoted, not deleted.
 			for (entry in FileSystem.readDirectory(directory)) {
-				if (StringTools.endsWith(entry, TEMP_SUFFIX)) {
-					try {
-						FileSystem.deleteFile(haxe.io.Path.join([directory, entry]));
-					} catch (_:Dynamic) {}
+				if (!StringTools.endsWith(entry, TEMP_SUFFIX)) {
+					continue;
 				}
+
+				var temporary:String = haxe.io.Path.join([directory, entry]);
+				var stem:String = entry.substr(0, entry.length - TEMP_SUFFIX.length);
+
+				if (StringTools.endsWith(stem, ENTRY_SUFFIX)) {
+					var value:String = haxe.io.Path.join([directory, stem]);
+
+					if (!FileSystem.exists(value)) {
+						try {
+							__replace(temporary, value);
+							continue;
+						} catch (_:Dynamic) {}
+					}
+				}
+
+				try {
+					FileSystem.deleteFile(temporary);
+				} catch (_:Dynamic) {}
 			}
 
 			done(null);
@@ -79,14 +110,16 @@ class FileStore implements IStoreBackend {
 		try {
 			var path:String = __pathFor(key);
 
-			if (!FileSystem.exists(path)) {
+			var bytes:Null<Bytes> = FileSystem.exists(path) ? __read(path) : null;
+
+			if (bytes == null) {
 				// Absent, and only that. Never an empty ByteArray standing in
 				// for a missing one.
 				done(null, null);
 				return;
 			}
 
-			done(null, ByteArray.fromBytes(SysFile.getBytes(path)));
+			done(null, ByteArray.fromBytes(bytes));
 		} catch (e:Dynamic) {
 			done("Could not read '" + key + "': " + Std.string(e), null);
 		}
@@ -97,20 +130,25 @@ class FileStore implements IStoreBackend {
 
 		try {
 			var path:String = __pathFor(key);
-			temporary = path + TEMP_SUFFIX;
+			// The writer's own: two runtimes, or two processes, writing one key
+			// at once each write a whole file of their own, and the last rename
+			// wins. A shared name let their bytes interleave in one file.
+			temporary = path + "." + __writerTag() + TEMP_SUFFIX;
 
 			var bytes:Bytes = value;
 			SysFile.saveBytes(temporary, bytes);
 
-			// Rename over the old value rather than truncating and rewriting
-			// it. A reader either sees the whole previous value or the whole
-			// new one; truncate-then-write has a window where it sees neither.
-			if (FileSystem.exists(path)) {
-				FileSystem.deleteFile(path);
-			}
+			// On disk before it has a name a reader can find: renaming data the
+			// operating system has not written yet can leave, after a power cut,
+			// a value of the right name and the wrong contents.
+			__sync(temporary);
 
-			FileSystem.rename(temporary, path);
+			// Over the old value in one step. A reader sees the whole previous
+			// value or the whole new one, and there is no moment in which the
+			// key is absent.
+			__replace(temporary, path);
 			temporary = null;
+			__syncDirectory(directory);
 			done(null);
 		} catch (e:Dynamic) {
 			if (temporary != null) {
@@ -186,11 +224,13 @@ class FileStore implements IStoreBackend {
 				// by the visitor itself removing as it goes. Skipped, because a
 				// key that is gone is not an error for an iteration that has
 				// already promised nothing about ordering or a snapshot.
-				if (!FileSystem.exists(path)) {
+				var bytes:Null<Bytes> = FileSystem.exists(path) ? __read(path) : null;
+
+				if (bytes == null) {
 					continue;
 				}
 
-				if (!visit(key, ByteArray.fromBytes(SysFile.getBytes(path)))) {
+				if (!visit(key, ByteArray.fromBytes(bytes))) {
 					break;
 				}
 			}
@@ -231,6 +271,142 @@ class FileStore implements IStoreBackend {
 	 */
 	private function __pathFor(key:String):String {
 		return haxe.io.Path.join([directory, Bytes.ofString(key).toHex() + ENTRY_SUFFIX]);
+	}
+
+	/**
+	 * A value's bytes, or `null` if it is gone.
+	 *
+	 * On Windows a file that is being renamed over refuses to open for the
+	 * moment the replace takes, where POSIX hands a reader the old file or the
+	 * new one. That is a write in progress, not a failed read, so it is ridden
+	 * out, briefly, and only there, rather than reported.
+	 */
+	private static function __read(path:String):Null<Bytes> {
+		var attempt:Int = 0;
+
+		while (true) {
+			try {
+				return SysFile.getBytes(path);
+			} catch (e:Dynamic) {
+				if (!crossbyte.sys.System.isWindows || ++attempt >= 200) {
+					if (!FileSystem.exists(path)) {
+						return null;
+					}
+
+					throw e;
+				}
+
+				Sys.sleep(0.001);
+			}
+		}
+	}
+
+	private static var __writes:Int = 0;
+
+	/** Distinct per write, in this process and against any other. **/
+	private static function __writerTag():String {
+		__writes = (__writes + 1) & 0x7FFFFFFF;
+		return StringTools.hex(Std.random(0x7FFFFFFF), 8) + StringTools.hex(__writes, 8);
+	}
+
+	/**
+	 * Renames `from` over `to`, replacing it, in one step.
+	 *
+	 * The standard library's rename does that on POSIX, and on Node and eval
+	 * everywhere, but on hxcpp for Windows it is `_wrename` and on the jvm
+	 * `File.renameTo`, and both refuse to replace a file there.
+	 */
+	private static function __replace(from:String, to:String):Void {
+		#if cpp
+		var failure:String = crossbyte.io._internal.NativeFileSync.replace(from, to);
+
+		if (failure != null && failure != "") {
+			throw failure;
+		}
+		#elseif jvm
+		// Cast: Haxe sees a Java enum as an enum, not as the interface it
+		// implements.
+		var replace:java.nio.file.CopyOption = cast java.nio.file.StandardCopyOption.REPLACE_EXISTING;
+		var atomic:java.nio.file.CopyOption = cast java.nio.file.StandardCopyOption.ATOMIC_MOVE;
+		java.nio.file.Files.move(java.nio.file.Paths.get(from), java.nio.file.Paths.get(to), replace, atomic);
+		#elseif (nodejs || eval)
+		FileSystem.rename(from, to);
+		#else
+		// No single-step replace to reach for here. The old two-step
+		// replacement, which is what every target did before, and only where
+		// the one step refused.
+		try {
+			FileSystem.rename(from, to);
+		} catch (e:Dynamic) {
+			if (!FileSystem.exists(to)) {
+				throw e;
+			}
+
+			FileSystem.deleteFile(to);
+			FileSystem.rename(from, to);
+		}
+		#end
+	}
+
+	/** Flushes a file to stable storage, where the target can. **/
+	private static function __sync(path:String):Void {
+		#if cpp
+		var failure:String = crossbyte.io._internal.NativeFileSync.sync(path);
+
+		if (failure != null && failure != "") {
+			throw failure;
+		}
+		#elseif jvm
+		// Cast: Haxe sees a Java enum as an enum, not as the interface it
+		// implements.
+		var write:java.nio.file.OpenOption = cast java.nio.file.StandardOpenOption.WRITE;
+		var channel = java.nio.channels.FileChannel.open(java.nio.file.Paths.get(path), write);
+
+		try {
+			channel.force(true);
+		} catch (e:Dynamic) {
+			channel.close();
+			throw e;
+		}
+
+		channel.close();
+		#elseif nodejs
+		var fd:Int = js.node.Fs.openSync(path, "r+");
+
+		try {
+			js.node.Fs.fsyncSync(fd);
+		} catch (e:Dynamic) {
+			js.node.Fs.closeSync(fd);
+			throw e;
+		}
+
+		js.node.Fs.closeSync(fd);
+		#end
+	}
+
+	/**
+	 * Flushes the directory, so the rename in it survives a power cut too. POSIX
+	 * keeps a name separately from the file it names. Best effort: nothing to
+	 * do on Windows, and some filesystems refuse.
+	 */
+	private static function __syncDirectory(path:String):Void {
+		#if cpp
+		crossbyte.io._internal.NativeFileSync.syncDirectory(path);
+		#elseif nodejs
+		if (crossbyte.sys.System.isWindows) {
+			return;
+		}
+
+		try {
+			var fd:Int = js.node.Fs.openSync(path, "r");
+
+			try {
+				js.node.Fs.fsyncSync(fd);
+			} catch (_:Dynamic) {}
+
+			js.node.Fs.closeSync(fd);
+		} catch (_:Dynamic) {}
+		#end
 	}
 
 	private function __decode(encoded:String):Null<String> {

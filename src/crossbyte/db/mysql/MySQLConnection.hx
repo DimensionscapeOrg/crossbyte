@@ -96,45 +96,72 @@ class MySQLConnection extends EventDispatcher {
 		}
 	}
 
-	// Transactions
+	// Transactions. Each throws an `SQLError` when the server refuses, after
+	// dispatching it as an `SQLErrorEvent` as well. They used to dispatch and
+	// return, so a failed COMMIT read as a committed one to every caller that
+	// was not listening, `AsyncDatabase.transaction` and `SchemaMigrator`
+	// among them, the way SQLiteConnection, which throws, never did.
 	public function begin():Void {
 		try {
 			__connection.request("START TRANSACTION;");
-			__inTransaction = true;
-			__dispatch(SQLEvent.BEGIN);
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.BEGIN, "Begin failed", e);
+			__fail(SQLEvent.BEGIN, "Begin failed", e);
 		}
+
+		__inTransaction = true;
+		__dispatch(SQLEvent.BEGIN);
 	}
 
+	/**
+		Commits, or throws an `SQLError` saying why not.
+
+		`inTransaction` stays `true` after a failed COMMIT. Whether MySQL has
+		ended the transaction depends on why it failed, and of the two ways to
+		be wrong this is the harmless one: a ROLLBACK sent to a connection with
+		no transaction does nothing, while a connection believed idle and
+		still inside one takes its locks, and the next borrower's writes, with
+		it.
+	**/
 	public function commit():Void {
 		try {
 			__connection.request("COMMIT;");
-			__inTransaction = false;
-			__dispatch(SQLEvent.COMMIT);
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.COMMIT, "Commit failed", e);
+			__fail(SQLEvent.COMMIT, "Commit failed", e);
 		}
+
+		__inTransaction = false;
+		__dispatch(SQLEvent.COMMIT);
 	}
 
 	public function rollback():Void {
+		var failure:Dynamic = null;
+
 		try {
 			__connection.request("ROLLBACK;");
-			__inTransaction = false;
-			__dispatch(SQLEvent.ROLLBACK);
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.ROLLBACK, "Rollback failed", e);
+			failure = e;
 		}
+
+		// A ROLLBACK that fails has lost the connection, and the server ends
+		// the transaction with it.
+		__inTransaction = false;
+
+		if (failure != null) {
+			__fail(SQLEvent.ROLLBACK, "Rollback failed", failure);
+		}
+
+		__dispatch(SQLEvent.ROLLBACK);
 	}
 
 	public function setSavepoint(name:String = null):Void {
 		var sp:String = __sanitizeSavePoint(name);
 		try {
 			__connection.request('SAVEPOINT ' + sp + ';');
-			__dispatch(SQLEvent.SET_SAVEPOINT);
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
+			__fail(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
 		}
+
+		__dispatch(SQLEvent.SET_SAVEPOINT);
 	}
 
 	public function rollbackToSavepoint(name:String):Void {
@@ -146,11 +173,12 @@ class MySQLConnection extends EventDispatcher {
 		var sp:String = __sanitizeSavePoint(name);
 
 		try {
-			__connection.request('ROLLBACK TO SAVEPOINT ' + sp + ';'); // <-- add SAVEPOINT
-			__dispatch(SQLEvent.ROLLBACK_TO_SAVEPOINT);
+			__connection.request('ROLLBACK TO SAVEPOINT ' + sp + ';');
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
+			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
+
+		__dispatch(SQLEvent.ROLLBACK_TO_SAVEPOINT);
 	}
 
 	public function releaseSavepoint(name:String):Void {
@@ -158,10 +186,11 @@ class MySQLConnection extends EventDispatcher {
 
 		try {
 			__connection.request('RELEASE SAVEPOINT ' + sp + ';');
-			__dispatch(SQLEvent.RELEASE_SAVEPOINT);
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
+			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
+
+		__dispatch(SQLEvent.RELEASE_SAVEPOINT);
 	}
 
 	public inline function request(sql:String):ResultSet {
@@ -250,6 +279,17 @@ class MySQLConnection extends EventDispatcher {
 
 	@:noCompletion private inline function __dispatchError(op:String, msg:String, e:Dynamic):Void {
 		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(op, e, msg)));
+	}
+
+	/**
+		Reports a failed transaction step both ways: as the `SQLErrorEvent` it
+		always was, and as the `SQLError` it now throws.
+	**/
+	@:noCompletion private function __fail(op:String, msg:String, e:Dynamic):Void {
+		var detail:String = Std.string(e);
+		var error:SQLError = new SQLError(op, detail, msg + ": " + detail);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
 	}
 }
 #end
