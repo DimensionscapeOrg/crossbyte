@@ -6,6 +6,7 @@ import crossbyte.net.rtc._internal.sctp.SctpAssociation;
 import crossbyte.net.rtc._internal.sctp.SctpAssociationState;
 import crossbyte.net.rtc._internal.sctp.SctpPacket;
 import crossbyte.net.rtc._internal.sctp.SctpPacket.SctpChunk;
+import crossbyte.net.rtc._internal.sctp.SctpParameter;
 import utest.Assert;
 
 /**
@@ -444,6 +445,52 @@ class SctpAssociationTest extends utest.Test {
 
 		Assert.equals(1, reasons.length, "an unconfirmed shutdown never ended the association");
 		Assert.equals(SctpAssociation.MAX_ATTEMPTS, answered, "the answer was sent " + answered + " times before giving up");
+	}
+
+	/**
+		Both ends say they understand FORWARD TSN, and both hear it.
+
+		RFC 3758 has a peer abandon nothing it sends, and act on no FORWARD TSN,
+		unless the other said it understands them -- with the parameter, or by
+		listing the chunk as a supported extension. Neither INIT nor INIT ACK
+		carried either, so a browser opening a channel with
+		`maxRetransmits: 0` had it made reliable without a word.
+	**/
+	public function testBothEndsSayTheyUnderstandForwardTsn():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var init:SctpPacket = null;
+
+		pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+		Assert.isTrue(pair.client.peerSupportsForwardTsn, "the answering end did not say it understands FORWARD TSN");
+		Assert.isTrue(pair.server.peerSupportsForwardTsn, "the asking end did not say it understands FORWARD TSN");
+
+		// And in both of the forms a peer may look for.
+		var fresh = new SctpAssociation();
+		fresh.onSend = payload -> init = SctpPacket.decode(payload);
+		fresh.associate(0);
+
+		var chunk = init != null ? init.chunk(SctpPacket.CHUNK_INIT) : null;
+
+		if (chunk == null) {
+			Assert.fail("no INIT was sent");
+			return;
+		}
+
+		var parameters = SctpParameter.readAll(chunk.value, 16, chunk.value.length);
+		Assert.notNull(SctpParameter.find(parameters, SctpParameter.FORWARD_TSN_SUPPORTED), "the INIT has no Forward-TSN-Supported parameter");
+
+		var extensions = SctpParameter.find(parameters, SctpParameter.SUPPORTED_EXTENSIONS);
+		Assert.notNull(extensions, "the INIT lists no supported extensions");
+
+		if (extensions != null) {
+			extensions.value.position = 0;
+			Assert.equals(SctpPacket.CHUNK_FORWARD_TSN, extensions.value.readUnsignedByte(), "FORWARD TSN is not among the extensions listed");
+		}
+
+		fresh.close();
 	}
 
 	public function testStreamsAndWindowAreExchanged():Void {

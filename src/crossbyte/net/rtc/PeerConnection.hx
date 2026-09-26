@@ -553,13 +553,21 @@ class PeerConnection {
 		Refused before then rather than queued, for the reason every layer here
 		refuses early sends: a caller cannot tell a queued message from a sent
 		one, and `ready.then` makes waiting explicit and cheap.
+
+		@param maxRetransmits How many times a message may be sent again
+		before it is given up on -- 0 sends each once -- for a channel that
+		would rather lose a message than wait for it, as a game's state
+		channel does. See `DataChannel.maxRetransmits`.
+		@param maxPacketLifeTime Milliseconds a message is tried for, the other
+		way to say the same. One or the other, not both.
 	**/
-	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = ""):DataChannel {
+	public function createDataChannel(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
+			?maxPacketLifeTime:Int):DataChannel {
 		if (!connected || __channels == null) {
 			throw new ArgumentError("This connection is not ready yet. Wait on `ready` before creating channels.");
 		}
 
-		return __channels.create(label, ordered, protocol);
+		return __channels.create(label, ordered, protocol, maxRetransmits, maxPacketLifeTime);
 	}
 
 	/**

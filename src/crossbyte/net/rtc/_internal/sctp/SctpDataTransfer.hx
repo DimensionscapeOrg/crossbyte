@@ -346,6 +346,12 @@ class SctpDataTransfer {
 	/** Whether the next packet may go past the congestion window, as a fast retransmission's first does. **/
 	@:noCompletion private var __forceNext:Bool = false;
 
+	/** Fragments given up on that the peer's cumulative acknowledgement has not yet passed. **/
+	@:noCompletion private var __abandonedCount:Int = 0;
+
+	/** A FORWARD TSN should go out with the next flush. **/
+	@:noCompletion private var __forwardTsnOwed:Bool = false;
+
 	// ------------------------------------------------------------------
 	// Receiving
 	// ------------------------------------------------------------------
@@ -424,6 +430,8 @@ class SctpDataTransfer {
 					__onSack(chunk);
 				case SctpPacket.CHUNK_SHUTDOWN:
 					__onShutdown(chunk);
+				case SctpPacket.CHUNK_FORWARD_TSN:
+					__onForwardTsn(chunk);
 				default:
 			}
 		};
@@ -442,9 +450,22 @@ class SctpDataTransfer {
 
 		@param ordered Whether this waits for anything ahead of it on its
 		stream. Unordered is not unreliable: it still arrives, and is still
-		resent if it does not.
+		resent if it does not -- unless one of the two limits below says
+		otherwise.
+		@param maxRetransmits How many times the message may be sent again
+		before it is given up on, RFC 3758's limited retransmissions; 0 sends
+		it once. -1 for no limit.
+		@param lifetime Seconds from now after which it is given up on,
+		whether or not it was ever sent: RFC 3758's timed reliability. -1 for
+		no limit.
+
+		A message given up on is dropped, and a FORWARD TSN tells the peer to
+		stop waiting for it. Only when the peer said it understands one
+		(`SctpAssociation.peerSupportsForwardTsn`): without that the limits
+		are ignored and the message is reliable, as RFC 8831 says.
 	**/
-	public function send(streamId:Int, payload:ByteArray, protocolId:Int, ordered:Bool = true, now:Float = 0):Void {
+	public function send(streamId:Int, payload:ByteArray, protocolId:Int, ordered:Bool = true, now:Float = 0, maxRetransmits:Int = -1,
+			lifetime:Float = -1):Void {
 		if (association.state != SctpAssociationState.ESTABLISHED) {
 			if (association.state == SctpAssociationState.SHUTDOWN_RECEIVED
 				|| association.state == SctpAssociationState.SHUTDOWN_ACK_SENT) {
@@ -468,6 +489,15 @@ class SctpDataTransfer {
 		var total:Int = payload == null ? 0 : payload.length;
 		var offset:Int = 0;
 		var first:Bool = true;
+
+		// One record per message that may be given up on, shared by its
+		// fragments: abandoning is all or nothing. A reliable message has none
+		// and costs nothing extra.
+		var message:Null<Abandonable> = null;
+
+		if ((maxRetransmits >= 0 || lifetime >= 0) && association.peerSupportsForwardTsn) {
+			message = new Abandonable(maxRetransmits, lifetime >= 0 ? now + lifetime : Math.POSITIVE_INFINITY);
+		}
 
 		// A zero length message is still a message and still needs one chunk,
 		// so this runs at least once.
@@ -495,7 +525,7 @@ class SctpDataTransfer {
 			// handed out as fragments go on the wire, in the order they were
 			// queued, so waiting for the window reorders nothing -- and a
 			// message's fragments, queued together, are numbered together.
-			__pending.push(new Queued(streamId, protocolId, fragment, flags));
+			__pending.push(new Queued(streamId, protocolId, fragment, flags, message));
 			__pendingBytes += size;
 
 			offset += size;
@@ -605,6 +635,12 @@ class SctpDataTransfer {
 
 		__sendQueued(now);
 
+		// After both, since either can give a message up: the peer is told to
+		// move past it before anything else has to wait on it.
+		if (__forwardTsnOwed) {
+			__sendForwardTsn(now);
+		}
+
 		if (__bundle.length > 0) {
 			__emit();
 		}
@@ -640,6 +676,13 @@ class SctpDataTransfer {
 				continue;
 			}
 
+			// Given up on rather than sent again, when its message said how
+			// many times it may go or for how long (RFC 3758 section 3.5).
+			if (outstanding.message != null && outstanding.message.spent(outstanding.transmissions, now)) {
+				__abandonAround(at - 1);
+				continue;
+			}
+
 			// The window binds retransmissions as it does new data, except for
 			// the first packet after a loss is found: RFC 4960 section 7.2.4
 			// sends that one regardless, since waiting would cost a timeout.
@@ -668,6 +711,25 @@ class SctpDataTransfer {
 			var next = __pending[__pendingAt];
 			var length:Int = next.payload.length;
 			var size:Int = __chunkSize(length);
+
+			// Past its lifetime before it ever went, or part of a message given
+			// up on already: dropped here, costing no TSN and no sequence number,
+			// so the peer has nothing to be told. A message given up on after
+			// part of it went takes that part with it.
+			if (next.message != null && next.message.spent(0, now)) {
+				__pendingAt++;
+				__pendingBytes -= length;
+
+				if (!next.message.abandoned) {
+					next.message.abandoned = true;
+
+					if ((next.flags & SctpDataChunk.FLAG_BEGINNING) == 0) {
+						__abandonRest(next, now);
+					}
+				}
+
+				continue;
+			}
 
 			// The peer's window. One fragment may always be in flight, however
 			// closed the window is: a SACK is the only thing that says it has
@@ -701,7 +763,7 @@ class SctpDataTransfer {
 			var data = new SctpDataChunk(__nextTsn, next.streamId, sequence, next.protocolId, next.payload, next.flags);
 			__nextTsn = (__nextTsn + 1) | 0;
 
-			var outstanding = new Outstanding(data, size, now);
+			var outstanding = new Outstanding(data, size, now, next.message);
 			__unacknowledged.push(outstanding);
 
 			__pendingAt++;
@@ -712,6 +774,150 @@ class SctpDataTransfer {
 			__armTimer(now);
 			__lastSentAt = now;
 		}
+	}
+
+	/**
+		Gives the rest of a message that part of went, and that is being given
+		up on in the queue, one TSN of its own: abandoned as it is numbered,
+		and never sent, so a FORWARD TSN has a number to move the peer past
+		and a reason to name the message's stream and sequence.
+
+		The peer holds what went, and on an ordered stream waits for the
+		message's sequence number. Whenever all of it that went had already
+		been acknowledged there was nothing outstanding to abandon, so no
+		FORWARD TSN was sent, and the stream waited for good -- every later
+		message on it held behind one that would never complete. usrsctp does
+		the same, with a chunk it marks to be skipped.
+
+		Nothing can have been sent between this message's first fragment and
+		now, since the queue goes out in order: `__messageSequence` is still
+		its sequence number.
+	**/
+	@:noCompletion private function __abandonRest(next:Queued, now:Float):Void {
+		var unordered:Bool = (next.flags & SctpDataChunk.FLAG_UNORDERED) != 0;
+		var data = new SctpDataChunk(__nextTsn, next.streamId, unordered ? 0 : __messageSequence, next.protocolId, new ByteArray(),
+			(unordered ? SctpDataChunk.FLAG_UNORDERED : 0) | SctpDataChunk.FLAG_ENDING);
+		__nextTsn = (__nextTsn + 1) | 0;
+
+		var rest = new Outstanding(data, __chunkSize(0), now, next.message);
+		rest.abandoned = true;
+		__abandonedCount++;
+		__unacknowledged.push(rest);
+
+		// With whatever of it is still outstanding.
+		__abandonAround(__unacknowledged.length - 1);
+	}
+
+	/**
+		Gives up on the message the outstanding fragment at `index` belongs to:
+		every fragment of it still outstanding, which sit together since a
+		message's fragments are numbered together. Nothing of it is sent again,
+		and none of it counts as in flight.
+	**/
+	@:noCompletion private function __abandonAround(index:Int):Void {
+		var message = __unacknowledged[index].message;
+		message.abandoned = true;
+
+		var first:Int = index;
+
+		while (first > __outstandingAt && __unacknowledged[first - 1].message == message) {
+			first--;
+		}
+
+		var at:Int = first;
+
+		while (at < __unacknowledged.length && __unacknowledged[at].message == message) {
+			var outstanding = __unacknowledged[at];
+			at++;
+
+			if (outstanding.acked || outstanding.abandoned) {
+				continue;
+			}
+
+			outstanding.abandoned = true;
+			__abandonedCount++;
+
+			if (outstanding.lost) {
+				outstanding.lost = false;
+				__lostCount--;
+			} else {
+				__flightSize -= outstanding.size;
+				__inFlight -= outstanding.data.payload.length;
+			}
+		}
+
+		// The peer is waiting on those numbers and has to be told to stop.
+		__forwardTsnOwed = true;
+	}
+
+	/**
+		Tells the peer to move its cumulative acknowledgement past what was
+		given up on: RFC 3758's Advanced.Peer.Ack.Point, the furthest TSN with
+		nothing before it that is not either held by the peer or abandoned.
+		With it, for each ordered stream, the last sequence number abandoned,
+		so the peer stops holding that stream for it.
+	**/
+	@:noCompletion private function __sendForwardTsn(now:Float):Void {
+		__forwardTsnOwed = false;
+
+		var through:Int = __cumulativeAcked;
+		var abandoned:Bool = false;
+		var streams:IntMap<Int> = null;
+		var at:Int = __outstandingAt;
+
+		while (at < __unacknowledged.length) {
+			var outstanding = __unacknowledged[at];
+
+			if (!outstanding.acked && !outstanding.abandoned) {
+				break;
+			}
+
+			through = outstanding.data.tsn;
+
+			if (outstanding.abandoned) {
+				abandoned = true;
+
+				if (!outstanding.data.unordered) {
+					if (streams == null) {
+						streams = new IntMap();
+					}
+
+					// In TSN order, so the last one seen is the latest abandoned.
+					streams.set(outstanding.data.streamId, outstanding.data.streamSequence);
+				}
+			}
+
+			at++;
+		}
+
+		if (!abandoned || !SctpDataChunk.isEarlier(__cumulativeAcked, through)) {
+			return;
+		}
+
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeInt(through);
+
+		if (streams != null) {
+			for (streamId in streams.keys()) {
+				value.writeShort(streamId);
+				value.writeShort(streams.get(streamId));
+			}
+		}
+
+		value.position = 0;
+
+		// A packet of its own, in front of anything else still to go.
+		if (__bundle.length > 0) {
+			__emit();
+		}
+
+		__bundle.push(new SctpChunk(SctpPacket.CHUNK_FORWARD_TSN, 0, value));
+		__emit();
+
+		// RFC 3758 section 3.5 C5: a timer running, so a FORWARD TSN that is
+		// lost is sent again rather than leaving the peer waiting for good.
+		__armTimer(now);
 	}
 
 	/**
@@ -831,6 +1037,11 @@ class SctpDataTransfer {
 		for (at in __outstandingAt...__unacknowledged.length) {
 			var outstanding = __unacknowledged[at];
 
+			// Given up on already, and waiting only for the peer to move past it.
+			if (outstanding.abandoned) {
+				continue;
+			}
+
 			if (outstanding.acked) {
 				if (!reneged) {
 					continue;
@@ -846,6 +1057,12 @@ class SctpDataTransfer {
 
 			outstanding.lost = true;
 			__lostCount++;
+		}
+
+		// A FORWARD TSN the peer has not acted on may have been lost, and the
+		// timer is what sends it again (RFC 3758 section 3.5).
+		if (__abandonedCount > 0) {
+			__forwardTsnOwed = true;
 		}
 
 		__beginOpportunity();
@@ -925,6 +1142,14 @@ class SctpDataTransfer {
 
 			__outstandingAt++;
 
+			// Passed by the acknowledgement at last, which is what a FORWARD
+			// TSN was waiting for. Neither in flight nor lost, and not data the
+			// path carried, so not counted as acknowledged either.
+			if (outstanding.abandoned) {
+				__abandonedCount--;
+				continue;
+			}
+
 			if (!outstanding.acked) {
 				acked += outstanding.size;
 
@@ -964,7 +1189,7 @@ class SctpDataTransfer {
 					continue;
 				}
 
-				if (offset >= __gapStarts[block] && !outstanding.acked) {
+				if (offset >= __gapStarts[block] && !outstanding.acked && !outstanding.abandoned) {
 					outstanding.acked = true;
 					acked += outstanding.size;
 					highestNewlyAcked = at;
@@ -995,7 +1220,7 @@ class SctpDataTransfer {
 		for (at in __outstandingAt...(highestNewlyAcked + 1)) {
 			var outstanding = __unacknowledged[at];
 
-			if (outstanding.acked || outstanding.lost || outstanding.fastRetransmitted) {
+			if (outstanding.acked || outstanding.lost || outstanding.abandoned || outstanding.fastRetransmitted) {
 				continue;
 			}
 
@@ -1013,6 +1238,12 @@ class SctpDataTransfer {
 
 		if (acked > 0) {
 			__errorCount = 0;
+		}
+
+		// RFC 3758 section 3.5 C3: while the peer's acknowledgement is short of
+		// what was given up on, it is told again.
+		if (__abandonedCount > 0) {
+			__forwardTsnOwed = true;
 		}
 
 		if (newestSample != Math.NEGATIVE_INFINITY) {
@@ -1463,6 +1694,144 @@ class SctpDataTransfer {
 		__deliverOrHold(head.streamId, head.streamSequence, head.protocolId, whole, head.unordered);
 	}
 
+	/**
+		The peer abandoned everything up to a TSN: RFC 3758 section 3.6.
+
+		What partial reliability rests on. A peer that gives up on a message --
+		a channel opened with `maxRetransmits: 0`, or one whose lifetime ran out
+		-- says so with this, and without it the hole that message left was
+		permanent: the cumulative acknowledgement stopped there, every later
+		number piled up behind it, and an ordered stream waited for good.
+
+		The acknowledgement moves to the new TSN, and on over anything already
+		held beyond it. Fragments at or below it belong to messages that will
+		never complete, and go. Each stream named with a sequence number
+		skips to the one after it, delivering what it was holding up to there
+		-- messages that arrived complete and waited only on one that was
+		abandoned. Answered with a SACK at once, as a DATA chunk would be.
+	**/
+	@:noCompletion private function __onForwardTsn(chunk:SctpChunk):Void {
+		if (chunk.value.length < 4) {
+			return;
+		}
+
+		__sackNeeded = true;
+		__sackNow = true;
+
+		var value = chunk.value;
+		value.endian = Endian.BIG_ENDIAN;
+		value.position = 0;
+
+		var through:Int = value.readInt();
+		var distance:Int = (through - __cumulativeTsn) | 0;
+
+		// Already past it, which a repeated FORWARD TSN is; and further than
+		// anything this end tracks, which no sender could have sent.
+		if (distance <= 0 || distance > MAX_TSN_AHEAD) {
+			return;
+		}
+
+		__received.dropThrough(through, __cumulativeTsn);
+		__cumulativeTsn = __received.advance(through);
+		__abandonFragmentsThrough(through);
+
+		while (value.position + 4 <= value.length) {
+			var streamId:Int = value.readUnsignedShort();
+			var sequence:Int = value.readUnsignedShort();
+			__skipThrough(streamId, sequence);
+		}
+	}
+
+	/**
+		Drops held fragments at or below `through` -- parts of messages the
+		peer abandoned -- and any left after them that no longer begin a
+		message, which could now never complete either.
+	**/
+	@:noCompletion private function __abandonFragmentsThrough(through:Int):Void {
+		var keys:Array<Int> = [for (key in __partial.keys()) key];
+
+		for (key in keys) {
+			var holding = __partial.get(key);
+			var fragments = holding.fragments;
+			var keep:Int = 0;
+
+			while (keep < fragments.length && !SctpDataChunk.isEarlier(through, fragments[keep].tsn)) {
+				keep++;
+			}
+
+			while (keep < fragments.length && !fragments[keep].beginning) {
+				keep++;
+			}
+
+			if (keep == 0) {
+				continue;
+			}
+
+			if (keep == fragments.length) {
+				__forget(key);
+				continue;
+			}
+
+			var dropped:Int = 0;
+
+			for (i in 0...keep) {
+				dropped += fragments[i].payload.length;
+
+				if (fragments[i].ending) {
+					holding.endings--;
+				}
+			}
+
+			holding.fragments = fragments.slice(keep);
+			holding.bytes -= dropped;
+			__buffered -= dropped;
+		}
+	}
+
+	/**
+		An ordered stream moves past `sequence`, the last one the peer
+		abandoned on it. What it held up to there goes up in order -- those
+		arrived whole and waited only on the abandoned one -- and then whatever
+		follows on from it.
+	**/
+	@:noCompletion private function __skipThrough(streamId:Int, sequence:Int):Void {
+		var expected:Int = __expectedSequence.exists(streamId) ? __expectedSequence.get(streamId) : 0;
+
+		// Sixteen-bit serial arithmetic: already past it is behind by less than
+		// half the space.
+		if (((sequence - expected) & 0xFFFF) >= 0x8000) {
+			return;
+		}
+
+		var waiting:Held = __held.exists(streamId) ? __held.get(streamId) : null;
+
+		if (waiting != null && waiting.count > 0) {
+			// Walked by what is held rather than by the range, which a peer
+			// could make thirty thousand numbers long.
+			var due:Array<Int> = [];
+
+			for (held in waiting.bySequence.keys()) {
+				if (((held - expected) & 0xFFFF) <= ((sequence - expected) & 0xFFFF)) {
+					due.push(held);
+				}
+			}
+
+			due.sort((a, b) -> ((a - expected) & 0xFFFF) - ((b - expected) & 0xFFFF));
+
+			for (held in due) {
+				var pending = waiting.bySequence.get(held);
+				waiting.bySequence.remove(held);
+				waiting.count--;
+				waiting.bytes -= pending.payload.length;
+				__buffered -= pending.payload.length;
+				onMessage(streamId, pending.payload, pending.protocolId);
+			}
+		}
+
+		__expectedSequence.set(streamId, (sequence + 1) & 0xFFFF);
+		__drainHeld(streamId);
+	}
+
 	/** Drops what a stream was reassembling, and stops counting it. **/
 	@:noCompletion private function __forget(key:Int):Void {
 		if (__partial.exists(key)) {
@@ -1730,6 +2099,33 @@ private class TsnRuns {
 		return cumulative;
 	}
 
+	/**
+		Forgets everything at or below `through`, which is at most
+		`SctpDataTransfer.MAX_TSN_AHEAD` past `cumulative`: a FORWARD TSN has
+		moved the acknowledgement there, so those numbers are simply past.
+	**/
+	public function dropThrough(through:Int, cumulative:Int):Void {
+		var limit:Int = (through - cumulative) | 0;
+
+		while (ends.length > head && ((ends[head] - cumulative) | 0) <= limit) {
+			size -= ((ends[head] - starts[head]) | 0) + 1;
+			head++;
+		}
+
+		// A run straddling it keeps the part above.
+		if (ends.length > head && ((starts[head] - cumulative) | 0) <= limit) {
+			var kept:Int = (through + 1) | 0;
+			size -= (kept - starts[head]) | 0;
+			starts[head] = kept;
+		}
+
+		if (head == ends.length) {
+			starts.resize(0);
+			ends.resize(0);
+			head = 0;
+		}
+	}
+
 	/** Every TSN held, in order. For inspection; nothing on the data path walks it. **/
 	public function keys():Iterator<Int> {
 		var all:Array<Int> = [];
@@ -1759,11 +2155,42 @@ private class Queued {
 	public var payload:ByteArray;
 	public var flags:Int;
 
-	public function new(streamId:Int, protocolId:Int, payload:ByteArray, flags:Int) {
+	/** The message it is part of, when that may be given up on; null when it is reliable. **/
+	public var message:Null<Abandonable>;
+
+	public function new(streamId:Int, protocolId:Int, payload:ByteArray, flags:Int, message:Null<Abandonable>) {
 		this.streamId = streamId;
 		this.protocolId = protocolId;
 		this.payload = payload;
 		this.flags = flags;
+		this.message = message;
+	}
+}
+
+/**
+	A message that may be given up on, RFC 3758, and whether it has been.
+	Shared by every fragment of it, since a message is abandoned whole.
+**/
+private class Abandonable {
+	/** Times it may be sent again; -1 for no limit. **/
+	public var maxRetransmits:Int;
+
+	/** When it is given up on, on the clock `send` was given. **/
+	public var expiresAt:Float;
+
+	public var abandoned:Bool = false;
+
+	public function new(maxRetransmits:Int, expiresAt:Float) {
+		this.maxRetransmits = maxRetransmits;
+		this.expiresAt = expiresAt;
+	}
+
+	/**
+		Whether a fragment of it that was sent `transmissions` times and is
+		about to be sent again should be given up on instead.
+	**/
+	public inline function spent(transmissions:Int, now:Float):Bool {
+		return abandoned || (maxRetransmits >= 0 && transmissions > maxRetransmits) || now >= expiresAt;
 	}
 }
 
@@ -1786,17 +2213,24 @@ private class Outstanding {
 	/** Found lost and waiting to go again, and so not in flight either. **/
 	public var lost:Bool = false;
 
+	/** Given up on: never sent again, and past it the peer is told to move on. Not in flight. **/
+	public var abandoned:Bool = false;
+
 	/** SACKs that have reported it missing. **/
 	public var misses:Int = 0;
 
 	/** Sent again by fast retransmit, which happens once; after that only the timer resends it. **/
 	public var fastRetransmitted:Bool = false;
 
-	public function new(data:SctpDataChunk, size:Int, sentAt:Float) {
+	/** The message it is part of, when that may be given up on. **/
+	public var message:Null<Abandonable>;
+
+	public function new(data:SctpDataChunk, size:Int, sentAt:Float, message:Null<Abandonable>) {
 		this.data = data;
 		this.chunk = data.toChunk();
 		this.size = size;
 		this.sentAt = sentAt;
+		this.message = message;
 	}
 }
 

@@ -83,14 +83,26 @@ class DataChannelSet {
 		buffering, since a caller cannot otherwise tell a message that went from
 		one that is waiting.
 	**/
-	public function create(label:String, ordered:Bool = true, protocol:String = ""):DataChannel {
+	public function create(label:String, ordered:Bool = true, protocol:String = "", ?maxRetransmits:Int,
+			?maxPacketLifeTime:Int):DataChannel {
+		// The WebRTC API's rules: one limit or the other, each an unsigned
+		// short.
+		if (maxRetransmits != null && maxPacketLifeTime != null) {
+			throw new ArgumentError("A channel may limit how many times a message is sent or for how long, not both.");
+		}
+
+		if ((maxRetransmits != null && (maxRetransmits < 0 || maxRetransmits > 65535))
+			|| (maxPacketLifeTime != null && (maxPacketLifeTime < 0 || maxPacketLifeTime > 65535))) {
+			throw new ArgumentError("maxRetransmits and maxPacketLifeTime must be between 0 and 65535.");
+		}
+
 		var id:Int = __freeStreamId();
 
-		var channel = @:privateAccess new DataChannel(transfer, id, label, ordered, protocol);
+		var channel = @:privateAccess new DataChannel(transfer, id, label, ordered, protocol, maxRetransmits, maxPacketLifeTime);
 		__channels.set(id, channel);
 		@:privateAccess channel.__onClosed = __release;
 
-		var open = DcepMessage.open(label, ordered, protocol);
+		var open = DcepMessage.open(label, ordered, protocol, maxRetransmits, maxPacketLifeTime);
 
 		// The OPEN travels on the very stream it is about, told apart from that
 		// channel's messages by its identifier alone. That is what saves a
@@ -156,7 +168,12 @@ class DataChannelSet {
 			return;
 		}
 
-		var channel = @:privateAccess new DataChannel(transfer, streamId, message.label, !message.unordered, message.protocol);
+		// With the peer's own terms. A browser's `{ordered: false,
+		// maxRetransmits: 0}` channel was answered as a reliable one: the type
+		// and the reliability parameter were parsed and dropped, so what this
+		// end sent back on it was retransmitted like everything else.
+		var channel = @:privateAccess new DataChannel(transfer, streamId, message.label, !message.unordered, message.protocol,
+			message.maxRetransmits, message.maxPacketLifeTime);
 		__channels.set(streamId, channel);
 		@:privateAccess channel.__onClosed = __release;
 
