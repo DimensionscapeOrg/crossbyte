@@ -197,6 +197,44 @@ class EventDispatcherTest extends utest.Test {
 		dispatcher.dispatchEvent(new Event("demo"));
 		Assert.same(["first", "second", "late"], calls);
 	}
+
+	public function testABoundMethodIsRemovedByAFreshReadOfIt():Void {
+		// `removeEventListener(type, this.onTick)` reads the method again. On
+		// eval and the jvm every read is a new closure that `==` never matches,
+		// so the listener stayed attached for good: a closed socket or a
+		// stopped timer went on being called.
+		var dispatcher = new EventDispatcher();
+		var subscriber = new MethodSubscriber();
+		dispatcher.addEventListener("demo", subscriber.handle);
+		dispatcher.removeEventListener("demo", subscriber.handle);
+		dispatcher.dispatchEvent(new Event("demo"));
+
+		Assert.equals(0, subscriber.calls, "the removed method was still called");
+		Assert.isFalse(dispatcher.hasEventListener("demo"));
+	}
+
+	public function testRemovingOneObjectsMethodLeavesAnothersAttached():Void {
+		var dispatcher = new EventDispatcher();
+		var first = new MethodSubscriber();
+		var second = new MethodSubscriber();
+		dispatcher.addEventListener("demo", first.handle);
+		dispatcher.addEventListener("demo", second.handle);
+		dispatcher.removeEventListener("demo", first.handle);
+		dispatcher.dispatchEvent(new Event("demo"));
+
+		Assert.equals(0, first.calls);
+		Assert.equals(1, second.calls);
+	}
+}
+
+private class MethodSubscriber {
+	public var calls:Int = 0;
+
+	public function new() {}
+
+	public function handle(_:Event):Void {
+		calls++;
+	}
 }
 
 private class DispatcherOwner implements IEventDispatcher {
