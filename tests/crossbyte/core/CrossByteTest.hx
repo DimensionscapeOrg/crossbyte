@@ -69,9 +69,6 @@ class CrossByteTest extends utest.Test {
 		var arrived = new Lock();
 		var seen:Array<String> = [];
 		var child = CrossByte.make();
-		// make() rebinds this thread's timers to the child; pumping the
-		// primordial takes them back for the cases that follow.
-		primordial.pump(0, 0);
 
 		child.__post(() -> {
 			seen.push(CrossByte.current() == child ? "child" : "other");

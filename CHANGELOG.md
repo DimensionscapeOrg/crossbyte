@@ -5,6 +5,12 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `CrossByte.make(loopType, timers, configure)`: a callback run with the new
+  child runtime, on the calling thread, before the child's thread starts,
+  the place to set `tps` and add `INIT` and `EXIT` listeners. The thread
+  used to start inside `make()`, so anything done to the returned runtime
+  raced its first frame, and an INIT listener added afterwards could miss
+  INIT.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -706,6 +712,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `CrossByte.make()` no longer takes over the calling thread's timers, and
+  a child runtime exits with the runtime that made it. `make()` bound the
+  new runtime's timer scheduler to the thread that called it, so once a
+  server had started a simulation thread from its INIT handler, a
+  `crossbyte.Timer` armed on the main thread, an RPC heartbeat, a
+  retransmit clock, ran on the child's thread. Off native the binding was
+  one field for the whole process, so whichever runtime ran last owned
+  every thread's timers. And once the primordial runtime had exited, the
+  process went on waiting for children nothing would ever stop. A child now
+  binds its timers on its own thread, the binding is per thread on every
+  threaded target, a runtime that exits exits the ones it made, all of
+  them, from the primordial one, and a host-driven runtime that exits
+  hands its thread's timers back along with the thread.
 - `Worker`, `TaskPool` and `Task` run their work on other threads on the
   jvm and the interpreter, as they already did natively. They were written
   for native, hl and neko only, and everywhere else ran the work inline on
