@@ -79,6 +79,26 @@ class DataChannel {
 	/** An application-level protocol name, carried for the peer's benefit. **/
 	public var protocol(default, null):String;
 
+	/**
+		How many times a message may be sent again before it is given up on,
+		or null for a channel that tries until it arrives.
+
+		0 sends each message once. What a game's state channel wants: a
+		position that arrives late is worth less than the next one, and
+		waiting for it holds up everything behind it. RFC 3758's limited
+		retransmissions, which a browser asks for with `maxRetransmits`.
+		Honoured only when the peer said it understands partial reliability;
+		otherwise messages are reliable, as RFC 8831 has it.
+	**/
+	public var maxRetransmits(default, null):Null<Int>;
+
+	/**
+		How long, in milliseconds, a message is tried for before it is given
+		up on, whether or not it was ever sent, or null for no limit. RFC
+		3758's timed reliability, a browser's `maxPacketLifeTime`.
+	**/
+	public var maxPacketLifeTime(default, null):Null<Int>;
+
 	/** Whether the channel has been acknowledged and can carry messages. **/
 	public var open(default, null):Bool = false;
 
@@ -123,14 +143,24 @@ class DataChannel {
 	@:noCompletion private var __onClosed:DataChannel->Void;
 
 	@:allow(crossbyte.net.rtc)
-	private function new(transfer:SctpDataTransfer, id:Int, label:String, ordered:Bool, protocol:String) {
+	private function new(transfer:SctpDataTransfer, id:Int, label:String, ordered:Bool, protocol:String, ?maxRetransmits:Int,
+			?maxPacketLifeTime:Int) {
 		this.__transfer = transfer;
 		this.id = id;
 		this.label = label != null ? label : "";
 		this.ordered = ordered;
 		this.protocol = protocol != null ? protocol : "";
+		this.maxRetransmits = maxRetransmits;
+		this.maxPacketLifeTime = maxPacketLifeTime;
 		this.opened = new Future<DataChannel>();
+
+		// The transfer's terms: a count, and seconds rather than milliseconds.
+		__retransmits = maxRetransmits != null ? maxRetransmits : -1;
+		__lifetime = maxPacketLifeTime != null ? maxPacketLifeTime / 1000 : -1;
 	}
+
+	@:noCompletion private var __retransmits:Int = -1;
+	@:noCompletion private var __lifetime:Float = -1;
 
 	/**
 		Sends text.
@@ -164,7 +194,7 @@ class DataChannel {
 		}
 
 		payload.position = 0;
-		__transfer.send(id, payload, protocolId, ordered, __now());
+		__transfer.send(id, payload, protocolId, ordered, __now(), __retransmits, __lifetime);
 	}
 
 	/** Sends bytes, which arrive as bytes rather than as text. **/
@@ -180,11 +210,11 @@ class DataChannel {
 			var placeholder = new ByteArray();
 			placeholder.writeByte(0);
 			placeholder.position = 0;
-			__transfer.send(id, placeholder, SctpDataChunk.PPID_BINARY_EMPTY, ordered, __now());
+			__transfer.send(id, placeholder, SctpDataChunk.PPID_BINARY_EMPTY, ordered, __now(), __retransmits, __lifetime);
 			return;
 		}
 
-		__transfer.send(id, payload, SctpDataChunk.PPID_BINARY, ordered, __now());
+		__transfer.send(id, payload, SctpDataChunk.PPID_BINARY, ordered, __now(), __retransmits, __lifetime);
 	}
 
 	public function close():Void {

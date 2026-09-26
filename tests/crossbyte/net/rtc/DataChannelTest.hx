@@ -76,6 +76,121 @@ class DataChannelTest extends utest.Test {
 	}
 
 	/**
+		When the association goes, every channel on it goes too, and says so.
+
+		This is what `PeerConnection` does with an ABORT, a close_notify, lost
+		consent or its own `close()`. Before it, a channel outlived the
+		association under it: `open` stayed true, `onClose` never ran, a channel
+		still waiting for its acknowledgement left `opened` pending forever, and
+		the first sign of any of it was a `send` that threw.
+	**/
+	public function testEveryChannelClosesWhenTheSetIsClosed():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:DataChannel = null;
+		pair.serverChannels.onChannel = channel -> accepted = channel;
+
+		var chat = pair.clientChannels.create("chat");
+		Assert.isTrue(pair.run(() -> chat.open && accepted != null), "the channel never opened");
+
+		// And one whose acknowledgement has not come back, since that is the
+		// case where a caller is waiting on a future.
+		var waiting = pair.clientChannels.create("waiting");
+		var waitingSettled:String = null;
+		waiting.opened.then(_ -> waitingSettled = "resolved", error -> waitingSettled = error);
+
+		var closes:Array<String> = [];
+		chat.onClose = () -> closes.push("chat");
+		waiting.onClose = () -> closes.push("waiting");
+
+		pair.clientChannels.closeAll();
+
+		Assert.isFalse(chat.open, "a channel whose association ended still reports itself open");
+		Assert.isFalse(waiting.open);
+		Assert.equals(2, closes.length, "onClose ran for " + closes.join(",") + " rather than for both channels");
+		Assert.notNull(waitingSettled, "a channel still waiting for its acknowledgement left `opened` pending");
+		Assert.notEquals("resolved", waitingSettled, "a channel that closed before it was acknowledged reported itself opened");
+		Assert.isNull(pair.clientChannels.channel(chat.id), "a closed channel is still held by the set");
+		Assert.raises(() -> chat.send("after the end"), ArgumentError);
+
+		// Once each, however many times the association's end is reported.
+		pair.clientChannels.closeAll();
+		Assert.equals(2, closes.length, "closing again reported the channels again");
+	}
+
+	/**
+		A channel's reliability crosses to the peer, both ways.
+
+		`createDataChannel` had no way to ask for it, and a browser's
+		`{ordered: false, maxRetransmits: 0}` arrived as a channel type and a
+		reliability parameter that DCEP read and dropped, the accepting end
+		made it reliable, and retransmitted what it sent on it like everything
+		else. The main reason a game picks a data channel was not available.
+	**/
+	public function testAChannelsReliabilityCrossesToThePeer():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:Array<DataChannel> = [];
+		pair.serverChannels.onChannel = channel -> accepted.push(channel);
+
+		var state = pair.clientChannels.create("state", false, "", 0);
+		var timed = pair.clientChannels.create("timed", true, "", null, 250);
+		var reliable = pair.clientChannels.create("chat");
+
+		Assert.isTrue(pair.run(() -> accepted.length == 3), "the channels never arrived");
+		Assert.equals(0, state.maxRetransmits);
+		Assert.isNull(state.maxPacketLifeTime);
+
+		for (channel in accepted) {
+			switch (channel.label) {
+				case "state":
+					Assert.equals(0, channel.maxRetransmits, "the peer's maxRetransmits was dropped");
+					Assert.isNull(channel.maxPacketLifeTime);
+					Assert.isFalse(channel.ordered);
+				case "timed":
+					Assert.equals(250, channel.maxPacketLifeTime, "the peer's maxPacketLifeTime was dropped");
+					Assert.isNull(channel.maxRetransmits);
+					Assert.isTrue(channel.ordered);
+				default:
+					Assert.isNull(channel.maxRetransmits, "a reliable channel arrived with a limit");
+					Assert.isNull(channel.maxPacketLifeTime);
+			}
+		}
+
+		// The WebRTC API's rules on what may be asked.
+		Assert.raises(() -> pair.clientChannels.create("both", false, "", 1, 100), ArgumentError);
+		Assert.raises(() -> pair.clientChannels.create("negative", false, "", -1), ArgumentError);
+		Assert.raises(() -> pair.clientChannels.create("huge", false, "", null, 70000), ArgumentError);
+	}
+
+	/**
+		The DCEP OPEN carries the partially reliable types a browser uses.
+	**/
+	public function testThePartiallyReliableTypesSurviveTheRoundTrip():Void {
+		var rexmit = DcepMessage.decode(DcepMessage.open("state", false, "", 3).encode());
+		Assert.equals(DcepMessage.PARTIAL_RETRANSMIT_UNORDERED, rexmit.channelType);
+		Assert.equals(3, rexmit.maxRetransmits);
+		Assert.isNull(rexmit.maxPacketLifeTime);
+		Assert.isTrue(rexmit.unordered);
+
+		var timed = DcepMessage.decode(DcepMessage.open("timed", true, "", null, 1500).encode());
+		Assert.equals(DcepMessage.PARTIAL_TIMED, timed.channelType);
+		Assert.equals(1500, timed.maxPacketLifeTime);
+		Assert.isNull(timed.maxRetransmits);
+
+		var reliable = DcepMessage.decode(DcepMessage.open("chat").encode());
+		Assert.equals(DcepMessage.RELIABLE, reliable.channelType);
+		Assert.isNull(reliable.maxRetransmits);
+		Assert.isNull(reliable.maxPacketLifeTime);
+
+		// What a browser sends for {ordered: false, maxRetransmits: 0}.
+		var browser = DcepMessage.decode(new DcepMessage(DcepMessage.OPEN, 0x81, 0, 0, "state", "").encode());
+		Assert.equals(0, browser.maxRetransmits);
+	}
+
+	/**
 		The parity rule, which is the whole of the collision avoidance.
 
 		The peer that was the DTLS client takes even stream numbers and the

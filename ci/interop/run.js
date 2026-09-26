@@ -237,7 +237,78 @@ function hasRoutableAddress() {
   return false;
 }
 
-async function browserOffers(page, mdns) {
+/**
+ * The pair the browser is using belongs to the ICE session with this ufrag.
+ *
+ * Chrome's candidate stats name the ufrag; a version that does not is taken
+ * at its word, the rest of the round trip still standing as the proof.
+ */
+async function waitForBrowserSession(page, ufrag, what) {
+  const moved = await page.waitForFunction(expected => window.__selectedUfrag().then(u => u === expected || u === 'n/a'),
+    { timeout: 15000 }, ufrag).then(() => true, () => false);
+
+  if (!moved) {
+    throw new Error('the browser never moved to the pair ' + what + ' found');
+  }
+
+  const seen = await page.evaluate('window.__selectedUfrag()');
+  console.log('    browser pair ufrag after ' + what + ': ' + seen + (seen === 'n/a' ? ' (not in this browser\'s stats)' : ''));
+}
+
+/**
+ * ICE restart from the browser, as it does when its network changes: new
+ * credentials in a new offer, the DTLS session and every channel kept. The
+ * answer has to state CrossByte's DTLS role, a browser refuses `actpass`
+ * in an answer, and a message on the channel opened before the restart has
+ * to make the round trip after it.
+ */
+async function restartFromBrowser(page, peer) {
+  const reoffer = await page.evaluate('window.__restartIce()');
+  const ufrag = (/a=ice-ufrag:(\S+)/.exec(reoffer) || [])[1];
+
+  peer.send({ restart: reoffer });
+  const answer = await peer.wait('restart-answer', 15000);
+
+  if (!answer.restarting) {
+    throw new Error('new credentials in the browser\'s offer did not restart CrossByte\'s side');
+  }
+
+  if (/a=setup:actpass/.test(answer.sdp)) {
+    throw new Error('CrossByte answered the restart with a=setup:actpass, which an answer may not say');
+  }
+
+  await page.evaluate('window.__acceptRestartAnswer(' + JSON.stringify(answer.sdp) + ')');
+  await waitForBrowserSession(page, ufrag, 'its restart');
+  await page.evaluate('window.__sendOnInterop("after restart")');
+
+  const restarted = await peer.wait('restarted', 25000).catch(() => null);
+
+  if (!restarted || !restarted.switched || !restarted.echoed) {
+    throw new Error('CrossByte did not move the session to the restart\'s path and carry a message on it: ' + JSON.stringify(restarted));
+  }
+
+  await page.waitForFunction('window.__interop.echoed === "echo:after restart"', { timeout: 10000 }).catch(() => {
+    throw new Error('the message sent after the restart did not come back');
+  });
+}
+
+/** ICE restart from CrossByte, whose new offer the browser answers. */
+async function restartTowardBrowser(page, peer) {
+  const reoffer = await peer.wait('restart-offer', 20000);
+  const answer = await page.evaluate('window.__answerRestart(' + JSON.stringify(reoffer.sdp) + ')');
+  const ufrag = (/a=ice-ufrag:(\S+)/.exec(answer) || [])[1];
+
+  peer.send({ answer });
+  const restarted = await peer.wait('restarted', 25000).catch(() => null);
+
+  if (!restarted || !restarted.switched || !restarted.echoed) {
+    throw new Error('CrossByte did not move the session to the restart\'s path and carry a message on it: ' + JSON.stringify(restarted));
+  }
+
+  await waitForBrowserSession(page, ufrag, 'CrossByte\'s restart');
+}
+
+async function browserOffers(page, mdns, shared) {
   console.log('\n=== the browser offers, CrossByte answers ===');
   console.log('  CrossByte should end up ICE-controlled and the DTLS client');
 
@@ -247,7 +318,7 @@ async function browserOffers(page, mdns) {
     throw new Error('the browser produced no data channel offer');
   }
 
-  const peer = startPeer({ mode: 'answer', sdp: offer });
+  const peer = startPeer({ mode: 'answer', sdp: offer, host: shared, restart: true });
 
   try {
     const answer = await peer.wait('answer', 15000);
@@ -290,17 +361,61 @@ async function browserOffers(page, mdns) {
     }
 
     checkPath(ready, mdns, offer, answer.sdp);
+
+    // Partial reliability, RFC 3758 and RFC 8832's channel types. The terms
+    // the browser asked for have to arrive intact...
+    for (const expected of [{ label: 'state', ordered: false }, { label: 'ordered-state', ordered: true }]) {
+      const terms = peer.events.find(event => event.event === 'terms' && event.label === expected.label);
+
+      if (!terms || terms.ordered !== expected.ordered || terms.maxRetransmits !== 0 || terms.maxPacketLifeTime != null) {
+        throw new Error('the browser asked for ' + JSON.stringify(expected) + ' with maxRetransmits 0 and CrossByte read ' +
+          JSON.stringify(terms));
+      }
+    }
+
+    // ...and a message CrossByte gave up on has to be skipped by the browser,
+    // which holds the ordered messages after it until a FORWARD TSN says so.
+    await page.waitForFunction('window.__interop.orderedState.length >= 5', { timeout: 15000 }).catch(() => {});
+    const orderedState = await page.evaluate('window.__interop.orderedState');
+
+    if (!peer.events.find(event => event.event === 'lost')) {
+      throw new Error('the peer never lost the message it was meant to, so nothing needed skipping');
+    }
+
+    if (JSON.stringify(orderedState) !== JSON.stringify(['kept-1', 'kept-2', 'kept-3', 'kept-4', 'kept-5'])) {
+      throw new Error('after CrossByte gave up on a message the browser received ' + JSON.stringify(orderedState) +
+        ': it did not act on the FORWARD TSN, or took the lost message after all');
+    }
+
+    // The other way: CrossByte lost the browser's first message on arrival, so
+    // what it delivers after that is its reading of Chrome's FORWARD TSN.
+    const received = await peer.wait('ordered-received', 15000).catch(() => null);
+    const dropped = peer.events.find(event => event.event === 'dropped');
+
+    if (!dropped || dropped.text !== 'b-lost') {
+      throw new Error('the peer never lost the browser\'s first message, so nothing needed skipping: ' + JSON.stringify(dropped));
+    }
+
+    if (!received || JSON.stringify(received.texts) !== JSON.stringify(['b-kept-1', 'b-kept-2', 'b-kept-3', 'b-kept-4', 'b-kept-5'])) {
+      throw new Error('after the browser gave up on a message CrossByte received ' + JSON.stringify(received && received.texts) +
+        ': it did not follow the browser\'s FORWARD TSN');
+    }
+
     console.log('  passed: answered, and took the ICE-controlled / DTLS-client pair');
+    console.log('  passed: partially reliable channels read both ways, and a message given up on was skipped each way');
+
+    await restartFromBrowser(page, peer);
+    console.log('  passed: the browser restarted ICE, and the session moved to the new path with its channel');
   } finally {
     peer.kill();
   }
 }
 
-async function crossbyteOffers(page, mdns) {
+async function crossbyteOffers(page, mdns, shared) {
   console.log('\n=== CrossByte offers, the browser answers ===');
   console.log('  CrossByte should end up ICE-controlling and the DTLS server');
 
-  const peer = startPeer({ mode: 'offer' });
+  const peer = startPeer({ mode: 'offer', host: shared, restart: true });
 
   try {
     const offer = await peer.wait('offer', 15000);
@@ -342,7 +457,20 @@ async function crossbyteOffers(page, mdns) {
     }
 
     checkPath(ready, mdns, answer, offer.sdp);
+
+    // The terms CrossByte wrote into DCEP, as the browser reads them.
+    await page.waitForFunction('window.__interop.stateTerms !== null', { timeout: 10000 }).catch(() => {});
+    const stateTerms = await page.evaluate('window.__interop.stateTerms');
+
+    if (!stateTerms || stateTerms.ordered !== false || stateTerms.maxRetransmits !== 0) {
+      throw new Error('CrossByte opened an unordered channel with maxRetransmits 0 and the browser read ' + JSON.stringify(stateTerms));
+    }
+
     console.log('  passed: offered, and took the ICE-controlling / DTLS-server pair');
+    console.log('  passed: the browser read the partially reliable channel CrossByte opened');
+
+    await restartTowardBrowser(page, peer);
+    console.log('  passed: CrossByte restarted ICE, and the session moved to the new path with its channel');
   } finally {
     peer.kill();
   }
@@ -359,9 +487,14 @@ async function crossbyteOffers(page, mdns) {
   // check. Off is kept as well, because it is the only configuration where
   // CrossByte's own checks reach a candidate the browser published, the
   // sending half of ICE, which the other configuration never exercises.
-  for (const mdns of [true, false]) {
+  //
+  // And once more with CrossByte's connection on a PeerConnectionHost, the
+  // shared socket a server holds its peers on. The host routes the browser's
+  // checks by the ufrag they name and the answers to its own by transaction,
+  // so the browser is the judge of both; mDNS on, as a server's visitors are.
+  for (const { mdns, shared } of [{ mdns: true, shared: false }, { mdns: false, shared: false }, { mdns: true, shared: true }]) {
     console.log('\n########  browser ' + (mdns ? 'hiding its addresses (.local mDNS names)' :
-      'publishing real addresses') + '  ########');
+      'publishing real addresses') + (shared ? ', CrossByte on a shared socket' : '') + '  ########');
 
     const browser = await puppeteer.launch({
       args: [
@@ -380,14 +513,14 @@ async function crossbyteOffers(page, mdns) {
 
       try {
         await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'domcontentloaded' });
-        await direction(page, mdns);
+        await direction(page, mdns, shared);
 
         if (pageErrors.length > 0) {
           throw new Error('the page reported errors:\n  ' + pageErrors.join('\n  '));
         }
       } catch (error) {
         failed = failed || error.message;
-        console.error('\nFAILED (' + direction.name + ', mdns ' + mdns + '): ' + error.message);
+        console.error('\nFAILED (' + direction.name + ', mdns ' + mdns + ', shared ' + shared + '): ' + error.message);
         const log = await page.evaluate('(window.__interop && window.__interop.log || []).join("\n")').catch(() => '');
         if (log) console.error('browser log:\n' + log);
         if (pageErrors.length) console.error('page errors:\n  ' + pageErrors.join('\n  '));
@@ -410,5 +543,6 @@ async function crossbyteOffers(page, mdns) {
   console.log('INTEROP PASSED');
   console.log('  a real RTCPeerConnection and CrossByte opened a data channel and');
   console.log('  exchanged messages, in both directions and both role pairings,');
-  console.log('  against a browser publishing its addresses and one hiding them.');
+  console.log('  against a browser publishing its addresses and one hiding them,');
+  console.log('  and with CrossByte on a socket of its own and on a shared one.');
 })();

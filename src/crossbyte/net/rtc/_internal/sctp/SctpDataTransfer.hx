@@ -35,6 +35,34 @@ import haxe.ds.IntMap;
 	receiver holds them until it has both ends. Nothing is delivered half
 	finished, which is why an E that never arrives holds one message rather than
 	corrupting it.
+
+	## How fast: RFC 4960 section 7
+
+	Two windows decide what may be in the network at once, and the smaller one
+	wins. The peer's says how much it can hold. The congestion window says how
+	much the path between can carry, and nothing else can tell: a sender that
+	knew only the peer's window put a megabyte on the wire in one call,
+	1,024 packets at once, into a path that dropped all but a handful, then
+	retransmitted each fragment on its own fixed timer.
+
+	The congestion window starts at ten packets and doubles each round trip
+	while everything arrives (slow start). Past the first loss it grows by one
+	packet a round trip instead. A loss found from what arrived after it, a
+	fragment three SACKs have reported missing, is sent again at once and
+	halves the window (fast retransmit). A fragment nothing ever acknowledges
+	waits out the retransmission timeout, which then doubles, and the window
+	drops to one packet. The timeout is measured from real round trips (RFC
+	6298, as RFC 4960 section 6.3.1 has it) rather than fixed, so a slow path
+	is not flooded with copies and a fast one does not wait on a guess.
+
+	No more than `MAX_BURST` packets leave at any one opportunity, whatever the
+	windows allow: an acknowledgement that frees a large part of the window at
+	once lets the next packets out a few at a time, spaced by the
+	acknowledgements that follow, rather than as one burst into a path that
+	may just have dropped the last one.
+
+	Ten timeouts in a row with nothing acknowledged between them, and the peer
+	is unreachable: the association ends with an ABORT.
 **/
 class SctpDataTransfer {
 	/**
@@ -47,8 +75,17 @@ class SctpDataTransfer {
 	**/
 	public static inline var MAX_PAYLOAD:Int = 1024;
 
-	/** How long an unacknowledged fragment waits before being sent again. **/
-	public static inline var RETRANSMIT_AFTER:Float = 0.5;
+	/** What a DATA chunk adds to its payload: four bytes of chunk header and twelve of DATA. **/
+	public static inline var DATA_CHUNK_HEADER:Int = 16;
+
+	/**
+		The most chunks one packet carries, in bytes: one full fragment.
+
+		Small messages waiting together go out together up to this, and a SACK
+		owed rides in front of them. A full fragment still goes alone, so no
+		packet is larger than one fragment always made it.
+	**/
+	public static inline var MAX_BUNDLE:Int = MAX_PAYLOAD + DATA_CHUNK_HEADER;
 
 	/**
 		The most this end will queue for a peer that cannot take it yet.
@@ -64,8 +101,68 @@ class SctpDataTransfer {
 	**/
 	public static inline var MAX_BUFFERED:Int = 8 * 1024 * 1024;
 
-	/** Attempts before the association is considered broken. **/
+	/**
+		Retransmission timeouts in a row, with nothing acknowledged between
+		them, before the peer is taken to be unreachable: RFC 4960's
+		Association.Max.Retrans.
+	**/
 	public static inline var MAX_ATTEMPTS:Int = 10;
+
+	/** The unit the congestion window moves by: one full packet. **/
+	public static inline var MTU:Int = MAX_BUNDLE;
+
+	/**
+		The congestion window a transfer starts with: ten packets, as RFC 6928
+		gives TCP and as browsers' SCTP stacks use.
+	**/
+	public static inline var INITIAL_WINDOW:Int = 10 * MTU;
+
+	/** The least the window is halved to, RFC 4960's 4 * MTU. **/
+	public static inline var MIN_WINDOW:Int = 4 * MTU;
+
+	/**
+		Packets sent at any one opportunity, whatever the windows allow: RFC
+		4960's Max.Burst.
+	**/
+	public static inline var MAX_BURST:Int = 4;
+
+	/** SACKs reporting a fragment missing before it is sent again without waiting (RFC 9260). **/
+	public static inline var FAST_RETRANSMIT_AFTER:Int = 3;
+
+	/** The retransmission timeout before any round trip has been measured, RFC 6298's. **/
+	public static inline var INITIAL_RTO:Float = 1.0;
+
+	/**
+		The least a retransmission timeout can be.
+
+		Above the 200 ms a peer may hold a SACK back for, so a lone message
+		that is merely being acknowledged late is not sent again.
+	**/
+	public static inline var MIN_RTO:Float = 0.4;
+
+	/** The most a timeout doubles to. **/
+	public static inline var MAX_RTO:Float = 10.0;
+
+	/** A SACK with no gap blocks: the chunk header and twelve bytes. **/
+	private static inline var SACK_MIN_SIZE:Int = 16;
+
+	/**
+		How far past the cumulative acknowledgement a TSN is taken at all.
+
+		Anything further is dropped unread, as RFC 4960 leaves a receiver free
+		to do with what it cannot track. A peer reading this end's window never
+		comes near it: sixteen thousand fragments outstanding past one lost one
+		is sixteen megabytes of full-sized ones. And it is what bounds what a
+		peer that never sends the next number can make this end hold.
+	**/
+	public static inline var MAX_TSN_AHEAD:Int = 16384;
+
+	/**
+		Gap blocks one SACK reports, at most: the lowest ones, which are what
+		the sender needs first. The rest follow in later SACKs as the holes
+		below them fill.
+	**/
+	public static inline var MAX_SACK_BLOCKS:Int = 128;
 
 	/**
 		The most one reassembling message may hold before it is abandoned.
@@ -112,15 +209,60 @@ class SctpDataTransfer {
 	/** The association this runs over. **/
 	public var association(default, null):SctpAssociation;
 
+	/**
+		The largest message the peer said it will take, in bytes, or 0 for any
+		size: its `a=max-message-size`, RFC 8841. `send` refuses anything
+		larger, as the RFC says a sender must, the peer would take every
+		fragment, acknowledge it, and then drop the message whole, so this end
+		would see it delivered and the application at the other would never
+		see it at all.
+	**/
+	public var peerMaxMessageSize:Int = 0;
+
 	/** Called with each whole message, once it is complete and in order. **/
 	public dynamic function onMessage(streamId:Int, payload:ByteArray, protocolId:Int):Void {}
 
-	/** Called when a fragment could not be delivered after every attempt. **/
+	/**
+		Called when a message arriving here had to be given up: one that grew
+		past `MAX_REASSEMBLY` or `MAX_FRAGMENTS`, a stream held past
+		`MAX_HELD`, or more held than the window offered.
+
+		Data this end sends that the peer never acknowledges is not reported
+		here. That ends the association, through `SctpAssociation.onClose`.
+	**/
 	public dynamic function onFailure(reason:String):Void {}
 
+	// ------------------------------------------------------------------
+	// Sending
+	// ------------------------------------------------------------------
+
+	/** The TSN the next fragment put on the wire will carry. **/
 	@:noCompletion private var __nextTsn:Int;
+
 	@:noCompletion private var __outboundSequence:IntMap<Int> = new IntMap();
+
+	/** The stream sequence number the message being sent right now was given. **/
+	@:noCompletion private var __messageSequence:Int = 0;
+
+	/**
+		Everything sent and not yet covered by the peer's cumulative
+		acknowledgement, in TSN order from `__outstandingAt`.
+
+		In order because they are sent in order and a retransmission keeps its
+		place, which is what lets a SACK be read in one pass: its cumulative
+		acknowledgement takes a run off the front, and its gap blocks, sorted
+		the same way, are matched against the rest walking forward once. It was
+		a list searched once per gap block and then removed from one element at
+		a time, so a SACK with 4,000 gap blocks over 8,192 fragments cost 60 ms.
+
+		Fragments a gap block covered stay until the cumulative acknowledgement
+		passes them. A receiver may take back what it reported holding (RFC
+		4960 section 6.2), and one that has cannot be answered from nothing.
+	**/
 	@:noCompletion private var __unacknowledged:Array<Outstanding> = [];
+
+	/** Where the live part of `__unacknowledged` starts. **/
+	@:noCompletion private var __outstandingAt:Int = 0;
 
 	/**
 		How much room the peer last said it had.
@@ -132,11 +274,51 @@ class SctpDataTransfer {
 	**/
 	@:noCompletion private var __peerWindow:Int;
 
-	/** Bytes sent and not yet acknowledged, which is what fills that room. **/
+	/**
+		Payload bytes in the network: sent, and neither acknowledged nor found
+		lost. What fills the peer's window, which RFC 4960 counts in user data.
+	**/
 	@:noCompletion private var __inFlight:Int = 0;
 
-	/** Built, given a number, and waiting for the window to open. **/
-	@:noCompletion private var __pending:Array<SctpDataChunk> = [];
+	/** The same, counted as chunks on the wire, which is what fills the congestion window. **/
+	@:noCompletion private var __flightSize:Int = 0;
+
+	@:noCompletion private var __cwnd:Int = INITIAL_WINDOW;
+	@:noCompletion private var __ssthresh:Int;
+	@:noCompletion private var __partialBytesAcked:Int = 0;
+	@:noCompletion private var __inFastRecovery:Bool = false;
+
+	/** The highest TSN outstanding when fast recovery began; it ends once that is acknowledged. **/
+	@:noCompletion private var __fastRecoveryExit:Int = 0;
+
+	/** The highest cumulative acknowledgement the peer has sent. An older SACK is stale. **/
+	@:noCompletion private var __cumulativeAcked:Int;
+
+	/** Fragments found lost and waiting to be sent again. **/
+	@:noCompletion private var __lostCount:Int = 0;
+
+	/** RFC 6298's SRTT and RTTVAR, in seconds. SRTT is negative until the first sample. **/
+	@:noCompletion private var __srtt:Float = -1;
+
+	@:noCompletion private var __rttvar:Float = 0;
+	@:noCompletion private var __rto:Float = INITIAL_RTO;
+
+	/** The retransmission timer, RFC 4960's T3-rtx: one for the association, since it has one path. **/
+	@:noCompletion private var __timerRunning:Bool = false;
+
+	@:noCompletion private var __timerAt:Float = 0;
+
+	/** Timeouts in a row with nothing acknowledged between them. **/
+	@:noCompletion private var __errorCount:Int = 0;
+
+	/** Whether a SACK arrived since the last timeout, which a probe into a closed window is excused by. **/
+	@:noCompletion private var __heardSinceTimeout:Bool = false;
+
+	/** When data last left, so a window unused for a timeout can decay (RFC 4960 section 7.2.1). **/
+	@:noCompletion private var __lastSentAt:Float = 0;
+
+	/** Queued, not yet numbered, waiting for the windows to open. **/
+	@:noCompletion private var __pending:Array<Queued> = [];
 
 	/**
 		Where `__pending` has been drained to.
@@ -150,28 +332,45 @@ class SctpDataTransfer {
 
 	@:noCompletion private var __pendingBytes:Int = 0;
 
-	/** When the last probe went out into a window with no room in it. **/
-	@:noCompletion private var __probedAt:Float = Math.NEGATIVE_INFINITY;
+	/** The chunks of the packet being assembled, reused from one packet to the next. **/
+	@:noCompletion private var __bundle:Array<SctpChunk> = [];
 
-	/**
-		The most recent time this end was told.
+	@:noCompletion private var __bundleBytes:Int = 0;
 
-		A SACK arrives through `association.onChunk`, which is not given one,
-		and the window it opens should be used before the next `poll` rather
-		than after it.
-	**/
-	@:noCompletion private var __lastSeen:Float = 0;
+	/** Packets sent since the current opportunity to send began. **/
+	@:noCompletion private var __burst:Int = 0;
+
+	/** Something arrived that may have opened a window; the packet it came in is still being read. **/
+	@:noCompletion private var __flushOwed:Bool = false;
+
+	/** Whether the next packet may go past the congestion window, as a fast retransmission's first does. **/
+	@:noCompletion private var __forceNext:Bool = false;
+
+	/** Fragments given up on that the peer's cumulative acknowledgement has not yet passed. **/
+	@:noCompletion private var __abandonedCount:Int = 0;
+
+	/** A FORWARD TSN should go out with the next flush. **/
+	@:noCompletion private var __forwardTsnOwed:Bool = false;
+
+	// ------------------------------------------------------------------
+	// Receiving
+	// ------------------------------------------------------------------
 
 	@:noCompletion private var __cumulativeTsn:Int;
-	/**
-		Which numbers have arrived above the cumulative acknowledgement.
 
-		A set, and only ever asked whether it contains one, `__onData` uses
-		it to spot a duplicate and `__buildSack` to describe the holes. It
-		used to hold the chunk itself, which meant a chunk arriving above a
-		gap kept its whole payload alive for a value nothing ever read.
+	/**
+		Which numbers have arrived above the cumulative acknowledgement, kept
+		as runs.
+
+		Asked whether it holds one, `__onData` uses it to spot a duplicate,
+		and read out whole by `__buildSack`, whose gap blocks are exactly these
+		runs. It was a map of single numbers, which the SACK builder probed at
+		each of 511 offsets for every SACK sent, holes or none; and which took
+		any number up to 2^31 ahead, so a peer that never sent the next one
+		could make it hold as many as it liked, 400,000 entries, 24 MB, in
+		the auditor's run.
 	**/
-	@:noCompletion private var __received:IntMap<Bool> = new IntMap();
+	@:noCompletion private var __received:TsnRuns = new TsnRuns();
 
 	/**
 		Everything held for the application, across every stream.
@@ -183,10 +382,27 @@ class SctpDataTransfer {
 		`SctpDataTransferTest` walks the real structures and compares.
 	**/
 	@:noCompletion private var __buffered:Int = 0;
+
 	@:noCompletion private var __partial:IntMap<Reassembly> = new IntMap();
 	@:noCompletion private var __expectedSequence:IntMap<Int> = new IntMap();
 	@:noCompletion private var __held:IntMap<Held> = new IntMap();
+
+	/** A SACK is owed. **/
 	@:noCompletion private var __sackNeeded:Bool = false;
+
+	/**
+		A SACK is owed now rather than at the next poll: a gap, a duplicate, or
+		a second packet of DATA since the last one (RFC 4960 section 6.2).
+
+		SACKs used to go only from `poll`, once a tick. At the default twelve
+		ticks a second that held every acknowledgement up to 83 ms, and one
+		SACK then answered however many packets had come in, which leaves a
+		sender nothing to pace itself by.
+	**/
+	@:noCompletion private var __sackNow:Bool = false;
+
+	@:noCompletion private var __dataPacketsSinceSack:Int = 0;
+	@:noCompletion private var __packetHadData:Bool = false;
 
 	public function new(association:SctpAssociation) {
 		if (association == null) {
@@ -195,7 +411,12 @@ class SctpDataTransfer {
 
 		this.association = association;
 		this.__nextTsn = association.localTsn;
+		this.__cumulativeAcked = (association.localTsn - 1) | 0;
 		this.__peerWindow = association.peerReceiveWindow;
+
+		// RFC 4960 section 7.2.1: as high as the peer's window, so slow start
+		// runs until the first loss says where the path's limit is.
+		this.__ssthresh = association.peerReceiveWindow > MIN_WINDOW ? association.peerReceiveWindow : MIN_WINDOW;
 
 		// One before the peer's first, so the first fragment it sends advances
 		// the cumulative acknowledgement by exactly one.
@@ -207,8 +428,20 @@ class SctpDataTransfer {
 					__onData(chunk);
 				case SctpPacket.CHUNK_SACK:
 					__onSack(chunk);
+				case SctpPacket.CHUNK_SHUTDOWN:
+					__onShutdown(chunk);
+				case SctpPacket.CHUNK_FORWARD_TSN:
+					__onForwardTsn(chunk);
 				default:
 			}
+		};
+
+		association.onPacketEnd = __afterPacket;
+
+		// A shutdown the peer asks for waits on this: everything queued sent,
+		// and everything sent acknowledged.
+		association.drained = function():Bool {
+			return __pendingAt == __pending.length && __outstandingAt == __unacknowledged.length;
 		};
 	}
 
@@ -217,11 +450,34 @@ class SctpDataTransfer {
 
 		@param ordered Whether this waits for anything ahead of it on its
 		stream. Unordered is not unreliable: it still arrives, and is still
-		resent if it does not.
+		resent if it does not, unless one of the two limits below says
+		otherwise.
+		@param maxRetransmits How many times the message may be sent again
+		before it is given up on, RFC 3758's limited retransmissions; 0 sends
+		it once. -1 for no limit.
+		@param lifetime Seconds from now after which it is given up on,
+		whether or not it was ever sent: RFC 3758's timed reliability. -1 for
+		no limit.
+
+		A message given up on is dropped, and a FORWARD TSN tells the peer to
+		stop waiting for it. Only when the peer said it understands one
+		(`SctpAssociation.peerSupportsForwardTsn`): without that the limits
+		are ignored and the message is reliable, as RFC 8831 says.
 	**/
-	public function send(streamId:Int, payload:ByteArray, protocolId:Int, ordered:Bool = true, now:Float = 0):Void {
+	public function send(streamId:Int, payload:ByteArray, protocolId:Int, ordered:Bool = true, now:Float = 0, maxRetransmits:Int = -1,
+			lifetime:Float = -1):Void {
 		if (association.state != SctpAssociationState.ESTABLISHED) {
+			if (association.state == SctpAssociationState.SHUTDOWN_RECEIVED
+				|| association.state == SctpAssociationState.SHUTDOWN_ACK_SENT) {
+				throw new ArgumentError("The peer is shutting the association down, so nothing new can be sent over it.");
+			}
+
 			throw new ArgumentError("The association is not open, so there is nothing to send over.");
+		}
+
+		if (peerMaxMessageSize > 0 && payload != null && payload.length > peerMaxMessageSize) {
+			throw new ArgumentError("A message of " + payload.length + " bytes is larger than the " + peerMaxMessageSize
+				+ " the peer accepts in one message.");
 		}
 
 		if (__pendingBytes + (payload == null ? 0 : payload.length) > MAX_BUFFERED) {
@@ -230,18 +486,18 @@ class SctpDataTransfer {
 				+ " already waiting; watch bufferedAmount.");
 		}
 
-		__lastSeen = now;
-
-		var sequence:Int = 0;
-
-		if (ordered) {
-			sequence = __outboundSequence.exists(streamId) ? __outboundSequence.get(streamId) : 0;
-			__outboundSequence.set(streamId, (sequence + 1) & 0xFFFF);
-		}
-
 		var total:Int = payload == null ? 0 : payload.length;
 		var offset:Int = 0;
 		var first:Bool = true;
+
+		// One record per message that may be given up on, shared by its
+		// fragments: abandoning is all or nothing. A reliable message has none
+		// and costs nothing extra.
+		var message:Null<Abandonable> = null;
+
+		if ((maxRetransmits >= 0 || lifetime >= 0) && association.peerSupportsForwardTsn) {
+			message = new Abandonable(maxRetransmits, lifetime >= 0 ? now + lifetime : Math.POSITIVE_INFINITY);
+		}
 
 		// A zero length message is still a message and still needs one chunk,
 		// so this runs at least once.
@@ -265,20 +521,18 @@ class SctpDataTransfer {
 				| (last ? SctpDataChunk.FLAG_ENDING : 0)
 				| (ordered ? 0 : SctpDataChunk.FLAG_UNORDERED);
 
-			var data = new SctpDataChunk(__nextTsn, streamId, sequence, protocolId, fragment, flags);
-			__nextTsn = (__nextTsn + 1) | 0;
-
-			// Numbered here and sent when there is room for it. The numbers
-			// are handed out in the order the caller asked for and the queue
-			// drains in that order, so waiting for the window does not
-			// reorder anything.
-			__pending.push(data);
+			// Queued without a number. TSNs and stream sequence numbers are
+			// handed out as fragments go on the wire, in the order they were
+			// queued, so waiting for the window reorders nothing, and a
+			// message's fragments, queued together, are numbered together.
+			__pending.push(new Queued(streamId, protocolId, fragment, flags, message));
 			__pendingBytes += size;
 
 			offset += size;
 			first = false;
 		} while (offset < total);
 
+		__beginOpportunity();
 		__flush(now);
 	}
 
@@ -297,87 +551,903 @@ class SctpDataTransfer {
 	}
 
 	/**
-		Sends what the peer has room for, and nothing it has not.
-
-		The rule is RFC 4960's: what is outstanding may not exceed the
-		receiver's advertised window. The exception is the same one, and it is
-		not optional, a window with no room in it is reported by a SACK, a
-		SACK only comes back for something sent, so a sender that waited for
-		room while sending nothing would wait for a message that only its own
-		sending could provoke. One chunk goes regardless, no more often than a
-		retransmission would, and the acknowledgement of it carries the window
-		that was reopened.
+		Resends what has timed out, sends any SACK still owed, and sends what
+		the windows now allow.
 	**/
-	@:noCompletion private function __flush(now:Float):Void {
-		while (__pendingAt < __pending.length) {
-			var next = __pending[__pendingAt];
-			var size:Int = next.payload.length;
-
-			if (__inFlight + size > __peerWindow) {
-				if (__inFlight > 0 || now < __probedAt + RETRANSMIT_AFTER) {
-					// Stopping short, so the part already drained is dropped
-					// off the front rather than left to accumulate across
-					// however many times the window closes.
-					if (__pendingAt > 64 && __pendingAt * 2 >= __pending.length) {
-						__pending = __pending.slice(__pendingAt);
-						__pendingAt = 0;
-					}
-
-					return;
-				}
-
-				__probedAt = now;
-			}
-
-			__pendingAt++;
-			__pendingBytes -= size;
-			__inFlight += size;
-			__unacknowledged.push(new Outstanding(next, now));
-			association.onSend(association.packetFor([next.toChunk()]));
+	public function poll(now:Float):Void {
+		// An association that has ended has nobody to resend to, and its
+		// onSend leads into a session that is closing too.
+		if (association.state == SctpAssociationState.CLOSED) {
+			return;
 		}
 
-		__pending = [];
-		__pendingAt = 0;
+		if (__timerRunning && now >= __timerAt) {
+			__onTimeout(now);
+
+			if (association.state == SctpAssociationState.CLOSED) {
+				return;
+			}
+		}
+
+		// RFC 4960 section 7.2.1: a window nobody has used for a timeout is a
+		// measurement of a path that may have changed since, so it decays
+		// rather than being spent at once when sending resumes.
+		if (__flightSize == 0 && __cwnd > MIN_WINDOW && __nextTsn != association.localTsn && now - __lastSentAt > __rto) {
+			__cwnd = (__cwnd >> 1) > MIN_WINDOW ? (__cwnd >> 1) : MIN_WINDOW;
+			__lastSentAt = now;
+		}
+
+		// Each tick is an opportunity of its own: a window that reopened while
+		// nothing was being sent is only noticed here, and a SACK held back
+		// for company goes now.
+		__beginOpportunity();
+
+		if (__lostCount > 0 || __pendingAt < __pending.length || __sackNeeded) {
+			__flush(now, __sackNeeded);
+		}
+	}
+
+	/** How many fragments are still waiting for the peer's cumulative acknowledgement. **/
+	public function outstandingCount():Int {
+		return __unacknowledged.length - __outstandingAt;
+	}
+
+	/** The congestion window, in bytes of chunks. **/
+	public var congestionWindow(get, never):Int;
+
+	@:noCompletion private function get_congestionWindow():Int {
+		return __cwnd;
+	}
+
+	/** The current retransmission timeout, in seconds. **/
+	public var retransmissionTimeout(get, never):Float;
+
+	@:noCompletion private function get_retransmissionTimeout():Float {
+		return __rto;
+	}
+
+	// ------------------------------------------------------------------
+	// Transmission
+	// ------------------------------------------------------------------
+
+	@:noCompletion private inline function __beginOpportunity():Void {
+		__burst = 0;
 	}
 
 	/**
-		Resends what has not been acknowledged, and sends any owed SACK.
-	**/
-	public function poll(now:Float):Void {
-		__lastSeen = now;
+		Puts on the wire what the windows allow: fragments found lost first,
+		oldest first, then new ones in the order they were queued.
 
-		if (__sackNeeded) {
-			__sackNeeded = false;
-			association.onSend(association.packetFor([__buildSack()]));
+		@param sackAlone Whether a SACK owed goes out even with no data to
+		carry it.
+	**/
+	@:noCompletion private function __flush(now:Float, sackAlone:Bool = false):Void {
+		// And while a shutdown the peer asked for is waiting on what this end
+		// still has to deliver: RFC 4960 section 9.2 has it retransmitted as
+		// usual, and what was queued before the SHUTDOWN still goes.
+		if (association.state != SctpAssociationState.ESTABLISHED && association.state != SctpAssociationState.SHUTDOWN_RECEIVED) {
+			return;
 		}
 
-		for (outstanding in __unacknowledged) {
-			if (now < outstanding.sentAt + RETRANSMIT_AFTER * (outstanding.attempts + 1)) {
+		if (__lostCount > 0) {
+			__resendLost(now);
+		}
+
+		__sendQueued(now);
+
+		// After both, since either can give a message up: the peer is told to
+		// move past it before anything else has to wait on it.
+		if (__forwardTsnOwed) {
+			__sendForwardTsn(now);
+		}
+
+		if (__bundle.length > 0) {
+			__emit();
+		}
+
+		// A SACK owed now that found no data to ride with, or data too large
+		// to share a packet with, goes on its own.
+		if (__sackNeeded && (sackAlone || __sackNow)) {
+			__bundle.push(__buildSack());
+			__sackSent();
+			__emit();
+		}
+
+		// Compacted in place once the part already sent is the larger half.
+		if (__pendingAt == __pending.length) {
+			if (__pendingAt > 0) {
+				__pending.resize(0);
+				__pendingAt = 0;
+			}
+		} else if (__pendingAt > 64 && __pendingAt * 2 >= __pending.length) {
+			__pending.splice(0, __pendingAt);
+			__pendingAt = 0;
+		}
+	}
+
+	@:noCompletion private function __resendLost(now:Float):Void {
+		var at:Int = __outstandingAt;
+
+		while (at < __unacknowledged.length && __lostCount > 0) {
+			var outstanding = __unacknowledged[at];
+			at++;
+
+			if (!outstanding.lost) {
 				continue;
 			}
 
-			if (outstanding.attempts >= MAX_ATTEMPTS) {
-				onFailure("A fragment went unacknowledged after " + MAX_ATTEMPTS + " attempts.");
-				__inFlight -= outstanding.data.payload.length;
-				__unacknowledged.remove(outstanding);
+			// Given up on rather than sent again, when its message said how
+			// many times it may go or for how long (RFC 3758 section 3.5).
+			if (outstanding.message != null && outstanding.message.spent(outstanding.transmissions, now)) {
+				__abandonAround(at - 1);
+				continue;
+			}
+
+			// The window binds retransmissions as it does new data, except for
+			// the first packet after a loss is found: RFC 4960 section 7.2.4
+			// sends that one regardless, since waiting would cost a timeout.
+			if (!__forceNext && __flightSize >= __cwnd) {
 				return;
 			}
 
-			outstanding.attempts++;
+			if (!__room(outstanding.size)) {
+				return;
+			}
+
+			outstanding.lost = false;
+			outstanding.transmissions++;
 			outstanding.sentAt = now;
-			association.onSend(association.packetFor([outstanding.data.toChunk()]));
+			__lostCount--;
+			__flightSize += outstanding.size;
+			__inFlight += outstanding.data.payload.length;
+			__add(outstanding.chunk, outstanding.size);
+			__armTimer(now);
+			__lastSentAt = now;
+		}
+	}
+
+	@:noCompletion private function __sendQueued(now:Float):Void {
+		while (__pendingAt < __pending.length) {
+			var next = __pending[__pendingAt];
+			var length:Int = next.payload.length;
+			var size:Int = __chunkSize(length);
+
+			// Past its lifetime before it ever went, or part of a message given
+			// up on already: dropped here, costing no TSN and no sequence number,
+			// so the peer has nothing to be told. A message given up on after
+			// part of it went takes that part with it.
+			if (next.message != null && next.message.spent(0, now)) {
+				__pendingAt++;
+				__pendingBytes -= length;
+
+				if (!next.message.abandoned) {
+					next.message.abandoned = true;
+
+					if ((next.flags & SctpDataChunk.FLAG_BEGINNING) == 0) {
+						__abandonRest(next, now);
+					}
+				}
+
+				continue;
+			}
+
+			// The peer's window. One fragment may always be in flight, however
+			// closed the window is: a SACK is the only thing that says it has
+			// reopened, and a SACK only answers something sent (RFC 4960
+			// section 6.1).
+			if (__inFlight > 0 && __inFlight + length > __peerWindow) {
+				return;
+			}
+
+			// The path's. Filled to the packet that crosses it and no further,
+			// as RFC 4960 section 6.1 allows.
+			if (__flightSize > 0 && __flightSize >= __cwnd) {
+				return;
+			}
+
+			if (!__room(size)) {
+				return;
+			}
+
+			var sequence:Int = 0;
+
+			if ((next.flags & SctpDataChunk.FLAG_UNORDERED) == 0) {
+				if ((next.flags & SctpDataChunk.FLAG_BEGINNING) != 0) {
+					__messageSequence = __outboundSequence.exists(next.streamId) ? __outboundSequence.get(next.streamId) : 0;
+					__outboundSequence.set(next.streamId, (__messageSequence + 1) & 0xFFFF);
+				}
+
+				sequence = __messageSequence;
+			}
+
+			var data = new SctpDataChunk(__nextTsn, next.streamId, sequence, next.protocolId, next.payload, next.flags);
+			__nextTsn = (__nextTsn + 1) | 0;
+
+			var outstanding = new Outstanding(data, size, now, next.message);
+			__unacknowledged.push(outstanding);
+
+			__pendingAt++;
+			__pendingBytes -= length;
+			__flightSize += size;
+			__inFlight += length;
+			__add(outstanding.chunk, size);
+			__armTimer(now);
+			__lastSentAt = now;
+		}
+	}
+
+	/**
+		Gives the rest of a message that part of went, and that is being given
+		up on in the queue, one TSN of its own: abandoned as it is numbered,
+		and never sent, so a FORWARD TSN has a number to move the peer past
+		and a reason to name the message's stream and sequence.
+
+		The peer holds what went, and on an ordered stream waits for the
+		message's sequence number. Whenever all of it that went had already
+		been acknowledged there was nothing outstanding to abandon, so no
+		FORWARD TSN was sent, and the stream waited for good, every later
+		message on it held behind one that would never complete. usrsctp does
+		the same, with a chunk it marks to be skipped.
+
+		Nothing can have been sent between this message's first fragment and
+		now, since the queue goes out in order: `__messageSequence` is still
+		its sequence number.
+	**/
+	@:noCompletion private function __abandonRest(next:Queued, now:Float):Void {
+		var unordered:Bool = (next.flags & SctpDataChunk.FLAG_UNORDERED) != 0;
+		var data = new SctpDataChunk(__nextTsn, next.streamId, unordered ? 0 : __messageSequence, next.protocolId, new ByteArray(),
+			(unordered ? SctpDataChunk.FLAG_UNORDERED : 0) | SctpDataChunk.FLAG_ENDING);
+		__nextTsn = (__nextTsn + 1) | 0;
+
+		var rest = new Outstanding(data, __chunkSize(0), now, next.message);
+		rest.abandoned = true;
+		__abandonedCount++;
+		__unacknowledged.push(rest);
+
+		// With whatever of it is still outstanding.
+		__abandonAround(__unacknowledged.length - 1);
+	}
+
+	/**
+		Gives up on the message the outstanding fragment at `index` belongs to:
+		every fragment of it still outstanding, which sit together since a
+		message's fragments are numbered together. Nothing of it is sent again,
+		and none of it counts as in flight.
+	**/
+	@:noCompletion private function __abandonAround(index:Int):Void {
+		var message = __unacknowledged[index].message;
+		message.abandoned = true;
+
+		var first:Int = index;
+
+		while (first > __outstandingAt && __unacknowledged[first - 1].message == message) {
+			first--;
 		}
 
-		// A window that reopened while nothing was being sent is only heard
-		// about here, and anything waiting on it has been waiting since.
+		var at:Int = first;
+
+		while (at < __unacknowledged.length && __unacknowledged[at].message == message) {
+			var outstanding = __unacknowledged[at];
+			at++;
+
+			if (outstanding.acked || outstanding.abandoned) {
+				continue;
+			}
+
+			outstanding.abandoned = true;
+			__abandonedCount++;
+
+			if (outstanding.lost) {
+				outstanding.lost = false;
+				__lostCount--;
+			} else {
+				__flightSize -= outstanding.size;
+				__inFlight -= outstanding.data.payload.length;
+			}
+		}
+
+		// The peer is waiting on those numbers and has to be told to stop.
+		__forwardTsnOwed = true;
+	}
+
+	/**
+		Tells the peer to move its cumulative acknowledgement past what was
+		given up on: RFC 3758's Advanced.Peer.Ack.Point, the furthest TSN with
+		nothing before it that is not either held by the peer or abandoned.
+		With it, for each ordered stream, the last sequence number abandoned,
+		so the peer stops holding that stream for it.
+	**/
+	@:noCompletion private function __sendForwardTsn(now:Float):Void {
+		__forwardTsnOwed = false;
+
+		var through:Int = __cumulativeAcked;
+		var abandoned:Bool = false;
+		var streams:IntMap<Int> = null;
+		var at:Int = __outstandingAt;
+
+		while (at < __unacknowledged.length) {
+			var outstanding = __unacknowledged[at];
+
+			if (!outstanding.acked && !outstanding.abandoned) {
+				break;
+			}
+
+			through = outstanding.data.tsn;
+
+			if (outstanding.abandoned) {
+				abandoned = true;
+
+				if (!outstanding.data.unordered) {
+					if (streams == null) {
+						streams = new IntMap();
+					}
+
+					// In TSN order, so the last one seen is the latest abandoned.
+					streams.set(outstanding.data.streamId, outstanding.data.streamSequence);
+				}
+			}
+
+			at++;
+		}
+
+		if (!abandoned || !SctpDataChunk.isEarlier(__cumulativeAcked, through)) {
+			return;
+		}
+
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeInt(through);
+
+		if (streams != null) {
+			for (streamId in streams.keys()) {
+				value.writeShort(streamId);
+				value.writeShort(streams.get(streamId));
+			}
+		}
+
+		value.position = 0;
+
+		// A packet of its own, in front of anything else still to go.
+		if (__bundle.length > 0) {
+			__emit();
+		}
+
+		__bundle.push(new SctpChunk(SctpPacket.CHUNK_FORWARD_TSN, 0, value));
+		__emit();
+
+		// RFC 3758 section 3.5 C5: a timer running, so a FORWARD TSN that is
+		// lost is sent again rather than leaving the peer waiting for good.
+		__armTimer(now);
+	}
+
+	/**
+		Whether a chunk of `size` fits in the packet being assembled, sending
+		that packet and starting another when it does not. False once this
+		opportunity has sent all it may.
+	**/
+	@:noCompletion private function __room(size:Int):Bool {
+		if (__bundle.length == 0) {
+			if (__burst >= MAX_BURST) {
+				return false;
+			}
+
+			// A SACK owed rides in front, and costs nothing extra to send. A
+			// SACK is sixteen bytes at the least, so beside a full fragment it
+			// is not even built.
+			if (__sackNeeded && size + SACK_MIN_SIZE <= MAX_BUNDLE) {
+				var sack = __buildSack();
+
+				if (sack.value.length + SctpChunk.HEADER_LENGTH + size <= MAX_BUNDLE) {
+					__bundle.push(sack);
+					__bundleBytes = sack.value.length + SctpChunk.HEADER_LENGTH;
+					__sackSent();
+				}
+			}
+
+			return true;
+		}
+
+		if (__bundleBytes + size <= MAX_BUNDLE) {
+			return true;
+		}
+
+		__emit();
+
+		if (__burst >= MAX_BURST) {
+			return false;
+		}
+
+		return true;
+	}
+
+	@:noCompletion private inline function __add(chunk:SctpChunk, size:Int):Void {
+		__bundle.push(chunk);
+		__bundleBytes += size;
+	}
+
+	@:noCompletion private function __emit():Void {
+		association.onSend(association.packetFor(__bundle));
+		__bundle.resize(0);
+		__bundleBytes = 0;
+		__burst++;
+		__forceNext = false;
+	}
+
+	@:noCompletion private inline function __sackSent():Void {
+		__sackNeeded = false;
+		__sackNow = false;
+		__dataPacketsSinceSack = 0;
+	}
+
+	@:noCompletion private inline function __armTimer(now:Float):Void {
+		if (!__timerRunning) {
+			__timerRunning = true;
+			__timerAt = now + __rto;
+		}
+	}
+
+	/** A DATA chunk's size on the wire, padding included. **/
+	@:noCompletion private static inline function __chunkSize(payload:Int):Int {
+		return DATA_CHUNK_HEADER + ((payload + 3) & ~3);
+	}
+
+	/**
+		The retransmission timer ran out: RFC 4960 section 6.3.3.
+
+		Everything still in flight is taken to be lost, the timeout doubles,
+		and the congestion window drops to one packet, a timeout means
+		nothing came back for a whole timeout, which is the path saying it
+		cannot carry what was sent. The oldest go again first.
+	**/
+	@:noCompletion private function __onTimeout(now:Float):Void {
+		__timerRunning = false;
+
+		// A peer whose window is closed may keep it closed as long as it likes,
+		// and the probes this end sends meanwhile are not answered by data. So
+		// long as it is still sending SACKs, that is a busy peer rather than a
+		// missing one (RFC 9260 section 6.1).
+		if (!(__peerWindow <= 0 && __heardSinceTimeout)) {
+			__errorCount++;
+		}
+
+		__heardSinceTimeout = false;
+
+		if (__errorCount > MAX_ATTEMPTS) {
+			// RFC 4960 section 8.1: past the limit the peer is unreachable and
+			// the association is over. Dropping just the fragment, which is
+			// what happened once, left a reliable ordered stream a hole that
+			// nothing would ever fill.
+			association.__end("The peer stopped acknowledging data: nothing was acknowledged through " + MAX_ATTEMPTS
+				+ " retransmission timeouts in a row.", true);
+			return;
+		}
+
+		__rto = __rto * 2 > MAX_RTO ? MAX_RTO : __rto * 2;
+		__ssthresh = (__cwnd >> 1) > MIN_WINDOW ? (__cwnd >> 1) : MIN_WINDOW;
+		__cwnd = MTU;
+		__partialBytesAcked = 0;
+		__inFastRecovery = false;
+
+		// A receiver may take back what a gap block reported (RFC 4960
+		// section 6.2): the fragment at the cumulative point can only read as
+		// held if it was. Everything it said it held goes again, since
+		// otherwise nothing would ever send the fragment it is waiting for.
+		var reneged:Bool = __outstandingAt < __unacknowledged.length && __unacknowledged[__outstandingAt].acked;
+
+		for (at in __outstandingAt...__unacknowledged.length) {
+			var outstanding = __unacknowledged[at];
+
+			// Given up on already, and waiting only for the peer to move past it.
+			if (outstanding.abandoned) {
+				continue;
+			}
+
+			if (outstanding.acked) {
+				if (!reneged) {
+					continue;
+				}
+
+				outstanding.acked = false;
+			} else if (outstanding.lost) {
+				continue;
+			} else {
+				__flightSize -= outstanding.size;
+				__inFlight -= outstanding.data.payload.length;
+			}
+
+			outstanding.lost = true;
+			__lostCount++;
+		}
+
+		// A FORWARD TSN the peer has not acted on may have been lost, and the
+		// timer is what sends it again (RFC 3758 section 3.5).
+		if (__abandonedCount > 0) {
+			__forwardTsnOwed = true;
+		}
+
+		__beginOpportunity();
+		__forceNext = true;
 		__flush(now);
 	}
 
-	/** How many fragments are still waiting to be acknowledged. **/
-	public function outstandingCount():Int {
-		return __unacknowledged.length;
+	// ------------------------------------------------------------------
+	// Acknowledgements
+	// ------------------------------------------------------------------
+
+	@:noCompletion private function __onSack(chunk:SctpChunk):Void {
+		if (chunk.value.length < 12) {
+			return;
+		}
+
+		var value = chunk.value;
+		value.endian = Endian.BIG_ENDIAN;
+		value.position = 0;
+
+		var cumulative:Int = value.readInt();
+		var window:Int = value.readInt();
+		var gaps:Int = value.readUnsignedShort();
+		value.readUnsignedShort();
+
+		__acknowledge(cumulative, window, value, gaps);
 	}
 
+	/**
+		A SHUTDOWN carries the peer's cumulative acknowledgement and nothing
+		else (RFC 4960 section 9.2), and is read like a SACK with no gaps whose
+		window is the one already known.
+	**/
+	@:noCompletion private function __onShutdown(chunk:SctpChunk):Void {
+		if (chunk.value.length < 4) {
+			return;
+		}
+
+		chunk.value.endian = Endian.BIG_ENDIAN;
+		chunk.value.position = 0;
+
+		__acknowledge(chunk.value.readInt(), __peerWindow, null, 0);
+	}
+
+	/**
+		What an acknowledgement says: everything up to `cumulative`, the gap
+		blocks after it, and the room the peer has.
+	**/
+	@:noCompletion private function __acknowledge(cumulative:Int, window:Int, value:Null<ByteArray>, gaps:Int):Void {
+		var now:Float = association.clock;
+
+		// Older than one already read, which reordering produces: what it
+		// says has been superseded (RFC 4960 section 6.2.1).
+		if (SctpDataChunk.isEarlier(cumulative, __cumulativeAcked)) {
+			return;
+		}
+
+		// Acknowledging a TSN never sent is not an acknowledgement of anything.
+		if (SctpDataChunk.isEarlier((__nextTsn - 1) | 0, cumulative)) {
+			return;
+		}
+
+		__heardSinceTimeout = true;
+
+		var flightBefore:Int = __flightSize;
+		var acked:Int = 0;
+		var newestSample:Float = Math.NEGATIVE_INFINITY;
+		var advanced:Bool = cumulative != __cumulativeAcked;
+
+		// The run the cumulative acknowledgement covers, off the front.
+		while (__outstandingAt < __unacknowledged.length) {
+			var outstanding = __unacknowledged[__outstandingAt];
+
+			if (SctpDataChunk.isEarlier(cumulative, outstanding.data.tsn)) {
+				break;
+			}
+
+			__outstandingAt++;
+
+			// Passed by the acknowledgement at last, which is what a FORWARD
+			// TSN was waiting for. Neither in flight nor lost, and not data the
+			// path carried, so not counted as acknowledged either.
+			if (outstanding.abandoned) {
+				__abandonedCount--;
+				continue;
+			}
+
+			if (!outstanding.acked) {
+				acked += outstanding.size;
+
+				if (outstanding.lost) {
+					outstanding.lost = false;
+					__lostCount--;
+				} else {
+					__flightSize -= outstanding.size;
+					__inFlight -= outstanding.data.payload.length;
+				}
+
+				// Karn's rule: a fragment sent more than once cannot say which
+				// copy is being answered.
+				if (outstanding.transmissions == 1 && outstanding.sentAt > newestSample) {
+					newestSample = outstanding.sentAt;
+				}
+			}
+		}
+
+		__cumulativeAcked = cumulative;
+
+		// The gap blocks, read once and matched against what is outstanding
+		// in a single walk forward.
+		var blocks:Int = value == null ? 0 : __readGapBlocks(value, gaps);
+		var highestNewlyAcked:Int = -1;
+
+		if (blocks > 0) {
+			var block:Int = 0;
+			var at:Int = __outstandingAt;
+
+			while (at < __unacknowledged.length && block < blocks) {
+				var outstanding = __unacknowledged[at];
+				var offset:Int = (outstanding.data.tsn - cumulative) | 0;
+
+				if (offset > __gapEnds[block]) {
+					block++;
+					continue;
+				}
+
+				if (offset >= __gapStarts[block] && !outstanding.acked && !outstanding.abandoned) {
+					outstanding.acked = true;
+					acked += outstanding.size;
+					highestNewlyAcked = at;
+
+					if (outstanding.lost) {
+						outstanding.lost = false;
+						__lostCount--;
+					} else {
+						__flightSize -= outstanding.size;
+						__inFlight -= outstanding.data.payload.length;
+					}
+
+					if (outstanding.transmissions == 1 && outstanding.sentAt > newestSample) {
+						newestSample = outstanding.sentAt;
+					}
+				}
+
+				at++;
+			}
+		}
+
+		// Miss indications, RFC 9260 section 7.2.4: a fragment still missing
+		// below the highest one this SACK newly reported is one more report
+		// that it did not arrive. Three, and it is sent again without waiting
+		// out the timeout.
+		var fastRetransmit:Bool = false;
+
+		for (at in __outstandingAt...(highestNewlyAcked + 1)) {
+			var outstanding = __unacknowledged[at];
+
+			if (outstanding.acked || outstanding.lost || outstanding.abandoned || outstanding.fastRetransmitted) {
+				continue;
+			}
+
+			outstanding.misses++;
+
+			if (outstanding.misses >= FAST_RETRANSMIT_AFTER) {
+				outstanding.fastRetransmitted = true;
+				outstanding.lost = true;
+				__lostCount++;
+				__flightSize -= outstanding.size;
+				__inFlight -= outstanding.data.payload.length;
+				fastRetransmit = true;
+			}
+		}
+
+		if (acked > 0) {
+			__errorCount = 0;
+		}
+
+		// RFC 3758 section 3.5 C3: while the peer's acknowledgement is short of
+		// what was given up on, it is told again.
+		if (__abandonedCount > 0) {
+			__forwardTsnOwed = true;
+		}
+
+		if (newestSample != Math.NEGATIVE_INFINITY) {
+			__sampleRoundTrip(now - newestSample);
+		}
+
+		// The congestion window, which moves only on a SACK that moved the
+		// cumulative acknowledgement (RFC 4960 section 7.2.1 and 7.2.2).
+		if (advanced && acked > 0) {
+			// Grown only when it was full. A sender that is not using its
+			// window learns nothing from acknowledgements about how much more
+			// the path could carry.
+			var full:Bool = flightBefore + MTU > __cwnd;
+
+			if (__cwnd <= __ssthresh) {
+				if (full && !__inFastRecovery) {
+					__cwnd += acked < 2 * MTU ? acked : 2 * MTU;
+				}
+			} else {
+				__partialBytesAcked += acked;
+
+				if (__partialBytesAcked >= __cwnd) {
+					if (flightBefore >= __cwnd) {
+						__partialBytesAcked -= __cwnd;
+						__cwnd += MTU;
+					} else {
+						__partialBytesAcked = __cwnd;
+					}
+				}
+			}
+
+			if (__inFastRecovery && !SctpDataChunk.isEarlier(cumulative, __fastRecoveryExit)) {
+				__inFastRecovery = false;
+			}
+		}
+
+		if (fastRetransmit && !__inFastRecovery) {
+			// Once per loss event, not per fragment found missing: everything
+			// outstanding when it began is one event (RFC 4960 section 7.2.4).
+			__inFastRecovery = true;
+			__fastRecoveryExit = (__nextTsn - 1) | 0;
+			__ssthresh = (__cwnd >> 1) > MIN_WINDOW ? (__cwnd >> 1) : MIN_WINDOW;
+			__cwnd = __ssthresh;
+			__partialBytesAcked = 0;
+		}
+
+		if (fastRetransmit) {
+			__forceNext = true;
+		}
+
+		// What the peer has room for, less what is still on its way to it
+		// (RFC 4960 section 6.2.1).
+		__peerWindow = window;
+
+		// The timer follows the oldest fragment: restarted when the
+		// cumulative acknowledgement moves, stopped when nothing is left.
+		if (__outstandingAt == __unacknowledged.length) {
+			__timerRunning = false;
+			__partialBytesAcked = 0;
+		} else if (advanced) {
+			__timerRunning = true;
+			__timerAt = now + __rto;
+		}
+
+		// Compacted in place once the acknowledged part is the larger half.
+		if (__outstandingAt == __unacknowledged.length) {
+			__unacknowledged.resize(0);
+			__outstandingAt = 0;
+		} else if (__outstandingAt > 64 && __outstandingAt * 2 >= __unacknowledged.length) {
+			__unacknowledged.splice(0, __outstandingAt);
+			__outstandingAt = 0;
+		}
+
+		// The room this freed is sent into once the packet it arrived in has
+		// been read, so a SACK owed for DATA in the same packet rides along.
+		__flushOwed = true;
+	}
+
+	/** Gap block bounds, reused from one SACK to the next. **/
+	@:noCompletion private var __gapStarts:Array<Int> = [];
+
+	@:noCompletion private var __gapEnds:Array<Int> = [];
+
+	/**
+		Reads a SACK's gap blocks into `__gapStarts` and `__gapEnds`, in
+		order, and says how many there are.
+
+		A peer should send them in order and not overlapping. One that did not
+		would have its blocks sorted here rather than trusted, since the walk
+		that uses them only goes forward.
+	**/
+	@:noCompletion private function __readGapBlocks(value:ByteArray, gaps:Int):Int {
+		var count:Int = 0;
+		var sorted:Bool = true;
+
+		for (_ in 0...gaps) {
+			if (value.position + 4 > value.length) {
+				break;
+			}
+
+			var start:Int = value.readUnsignedShort();
+			var end:Int = value.readUnsignedShort();
+
+			// Offset zero is the cumulative acknowledgement itself, which no
+			// gap can start at, and a block that ends before it starts
+			// describes nothing.
+			if (start == 0 || end < start) {
+				continue;
+			}
+
+			if (count > 0 && start <= __gapEnds[count - 1]) {
+				sorted = false;
+			}
+
+			__gapStarts[count] = start;
+			__gapEnds[count] = end;
+			count++;
+		}
+
+		if (!sorted) {
+			// Insertion sort: nearly always nothing to move, and bounded by
+			// what fits in one chunk when there is.
+			for (i in 1...count) {
+				var start:Int = __gapStarts[i];
+				var end:Int = __gapEnds[i];
+				var j:Int = i - 1;
+
+				while (j >= 0 && __gapStarts[j] > start) {
+					__gapStarts[j + 1] = __gapStarts[j];
+					__gapEnds[j + 1] = __gapEnds[j];
+					j--;
+				}
+
+				__gapStarts[j + 1] = start;
+				__gapEnds[j + 1] = end;
+			}
+		}
+
+		return count;
+	}
+
+	/**
+		Folds one round trip into the retransmission timeout: RFC 6298 section
+		2, which RFC 4960 section 6.3.1 adopts.
+
+		A fixed half second, which is what this was, was wrong both ways. A
+		path slower than that had every fragment sent again before its
+		acknowledgement could arrive, several times over, into the congestion
+		it was already causing; a faster one waited on a figure that had
+		nothing to do with it.
+	**/
+	@:noCompletion private function __sampleRoundTrip(sample:Float):Void {
+		// Two clocks mixed, or a clock that went backwards: a sample that says
+		// nothing about the path.
+		if (sample < 0 || sample > 60) {
+			return;
+		}
+
+		if (__srtt < 0) {
+			__srtt = sample;
+			__rttvar = sample / 2;
+		} else {
+			var difference:Float = __srtt - sample;
+
+			if (difference < 0) {
+				difference = -difference;
+			}
+
+			__rttvar = 0.75 * __rttvar + 0.25 * difference;
+			__srtt = 0.875 * __srtt + 0.125 * sample;
+		}
+
+		var rto:Float = __srtt + 4 * __rttvar;
+		__rto = rto < MIN_RTO ? MIN_RTO : (rto > MAX_RTO ? MAX_RTO : rto);
+	}
+
+	/**
+		Whatever the packet just read asked for, sent once it has all been read.
+	**/
+	@:noCompletion private function __afterPacket():Void {
+		if (association.state == SctpAssociationState.CLOSED) {
+			return;
+		}
+
+		// RFC 4960 section 6.2: a SACK for at least every second packet that
+		// carried DATA, rather than one a tick for all of them.
+		if (__packetHadData) {
+			__packetHadData = false;
+			__dataPacketsSinceSack++;
+
+			if (__dataPacketsSinceSack >= 2) {
+				__sackNow = true;
+			}
+		}
+
+		if (__flushOwed || __sackNow) {
+			__flushOwed = false;
+			__beginOpportunity();
+			__flush(association.clock);
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// Receiving
 	// ------------------------------------------------------------------
 
 	@:noCompletion private function __onData(chunk:SctpChunk):Void {
@@ -391,13 +1461,46 @@ class SctpDataTransfer {
 		// the previous acknowledgement was the thing that went missing, so
 		// staying silent would keep the sender retransmitting forever.
 		__sackNeeded = true;
+		__packetHadData = true;
 
-		if (__received.exists(data.tsn) || !SctpDataChunk.isEarlier(__cumulativeTsn, data.tsn)) {
+		var distance:Int = (data.tsn - __cumulativeTsn) | 0;
+
+		if (distance <= 0 || __received.contains(data.tsn, __cumulativeTsn)) {
+			// And owed at once (RFC 4960 section 6.2): the sender is repeating
+			// itself because it has not heard.
+			__sackNow = true;
 			return;
 		}
 
-		__received.set(data.tsn, true);
-		__advanceCumulative();
+		// Further ahead than anything this end tracks.
+		if (distance > MAX_TSN_AHEAD) {
+			__sackNow = true;
+			return;
+		}
+
+		// RFC 4960 section 6.2: with the window shut, nothing past what has
+		// already arrived is taken. What fills a hole below it still is,
+		// since that is what completes a message and opens the window again.
+		// Dropped with a SACK at once, which is how the sender learns the
+		// window is still shut.
+		if (SctpAssociation.RECEIVE_WINDOW - __buffered <= 0 && distance > __received.highest(__cumulativeTsn)) {
+			__sackNow = true;
+			return;
+		}
+
+		// Out of order, or filling a hole: either way the sender's picture of
+		// what arrived is wrong and the next SACK is what corrects it.
+		if (distance != 1 || __received.runs > 0) {
+			__sackNow = true;
+		}
+
+		if (distance == 1) {
+			// Next in line, and it may join the run that was waiting on it.
+			__cumulativeTsn = __received.advance(data.tsn);
+		} else {
+			__received.add(data.tsn, __cumulativeTsn);
+		}
+
 		__reassemble(data);
 
 		if (__buffered > SctpAssociation.RECEIVE_WINDOW) {
@@ -413,14 +1516,11 @@ class SctpDataTransfer {
 		respects the figure never brings us here. This is for one that does
 		not, and the choice is which way to fail.
 
-		Refusing the chunk is the obvious answer and the wrong one. Nothing
-		in this stack reads the peer's window either, `peerReceiveWindow` is
-		recorded on the INIT and never looked at again, so two CrossByte
-		ends would sit retransmitting into a refusal with neither one
-		yielding. Worse, what is held is by definition incomplete, so the very
-		chunks that would finish a message and free its bytes are among those
-		turned away, and a peer holding several part-assembled messages at
-		once would have no way back even if it were reading the window.
+		Refusing the chunk is the obvious answer and the wrong one. What is
+		held is by definition incomplete, so the very chunks that would finish
+		a message and free its bytes are among those turned away, and a peer
+		holding several part-assembled messages at once would have no way back
+		even if it were reading the window.
 
 		Giving some back cannot deadlock, because it always makes room. It is
 		also what `MAX_REASSEMBLY` and `MAX_HELD` already do a stream at a
@@ -435,11 +1535,8 @@ class SctpDataTransfer {
 		loses one of them and hears about it on `onFailure`, where before it
 		would have been held and completed. Reaching that takes several
 		very large messages on different streams at the same time, which is
-		not what a data channel is usually carrying. It cannot happen to a
-		peer that reads the window, and the way to make it impossible
-		between two CrossByte ends is for the sending side to read it too,
-		`peerReceiveWindow` is recorded on the INIT and nothing consults it,
-		so this end still sends whatever it is handed.
+		not what a data channel is usually carrying, and it cannot happen to
+		a peer that reads the window, which this end's own sender now does.
 	**/
 	@:noCompletion private function __reclaim():Void {
 		var target:Int = Std.int(SctpAssociation.RECEIVE_WINDOW / 2);
@@ -476,20 +1573,6 @@ class SctpDataTransfer {
 		if (dropped > 0) {
 			onFailure("The peer sent more than the " + SctpAssociation.RECEIVE_WINDOW + " bytes this end offered to hold, so "
 				+ freed + " bytes of unfinished messages on " + dropped + " streams were given up.");
-		}
-	}
-
-	/** Walks the cumulative acknowledgement forward over everything contiguous. **/
-	@:noCompletion private function __advanceCumulative():Void {
-		while (__received.exists((__cumulativeTsn + 1) | 0)) {
-			__cumulativeTsn = (__cumulativeTsn + 1) | 0;
-			// Nothing reads an entry once the cumulative has passed it: the SACK
-			// gap blocks start at __cumulativeTsn + 1, and __onData refuses a
-			// chunk at or below the cumulative on the isEarlier test, whether or
-			// not the map still holds it. Left in, this retained every chunk that
-			// ever arrived, payload included, for the life of the
-			// association, on ordinary traffic and not merely a hostile peer.
-			__received.remove(__cumulativeTsn);
 		}
 	}
 
@@ -611,6 +1694,144 @@ class SctpDataTransfer {
 		__deliverOrHold(head.streamId, head.streamSequence, head.protocolId, whole, head.unordered);
 	}
 
+	/**
+		The peer abandoned everything up to a TSN: RFC 3758 section 3.6.
+
+		What partial reliability rests on. A peer that gives up on a message,
+		a channel opened with `maxRetransmits: 0`, or one whose lifetime ran out,
+		says so with this, and without it the hole that message left was
+		permanent: the cumulative acknowledgement stopped there, every later
+		number piled up behind it, and an ordered stream waited for good.
+
+		The acknowledgement moves to the new TSN, and on over anything already
+		held beyond it. Fragments at or below it belong to messages that will
+		never complete, and go. Each stream named with a sequence number
+		skips to the one after it, delivering what it was holding up to there,
+		messages that arrived complete and waited only on one that was
+		abandoned. Answered with a SACK at once, as a DATA chunk would be.
+	**/
+	@:noCompletion private function __onForwardTsn(chunk:SctpChunk):Void {
+		if (chunk.value.length < 4) {
+			return;
+		}
+
+		__sackNeeded = true;
+		__sackNow = true;
+
+		var value = chunk.value;
+		value.endian = Endian.BIG_ENDIAN;
+		value.position = 0;
+
+		var through:Int = value.readInt();
+		var distance:Int = (through - __cumulativeTsn) | 0;
+
+		// Already past it, which a repeated FORWARD TSN is; and further than
+		// anything this end tracks, which no sender could have sent.
+		if (distance <= 0 || distance > MAX_TSN_AHEAD) {
+			return;
+		}
+
+		__received.dropThrough(through, __cumulativeTsn);
+		__cumulativeTsn = __received.advance(through);
+		__abandonFragmentsThrough(through);
+
+		while (value.position + 4 <= value.length) {
+			var streamId:Int = value.readUnsignedShort();
+			var sequence:Int = value.readUnsignedShort();
+			__skipThrough(streamId, sequence);
+		}
+	}
+
+	/**
+		Drops held fragments at or below `through`, parts of messages the
+		peer abandoned, and any left after them that no longer begin a
+		message, which could now never complete either.
+	**/
+	@:noCompletion private function __abandonFragmentsThrough(through:Int):Void {
+		var keys:Array<Int> = [for (key in __partial.keys()) key];
+
+		for (key in keys) {
+			var holding = __partial.get(key);
+			var fragments = holding.fragments;
+			var keep:Int = 0;
+
+			while (keep < fragments.length && !SctpDataChunk.isEarlier(through, fragments[keep].tsn)) {
+				keep++;
+			}
+
+			while (keep < fragments.length && !fragments[keep].beginning) {
+				keep++;
+			}
+
+			if (keep == 0) {
+				continue;
+			}
+
+			if (keep == fragments.length) {
+				__forget(key);
+				continue;
+			}
+
+			var dropped:Int = 0;
+
+			for (i in 0...keep) {
+				dropped += fragments[i].payload.length;
+
+				if (fragments[i].ending) {
+					holding.endings--;
+				}
+			}
+
+			holding.fragments = fragments.slice(keep);
+			holding.bytes -= dropped;
+			__buffered -= dropped;
+		}
+	}
+
+	/**
+		An ordered stream moves past `sequence`, the last one the peer
+		abandoned on it. What it held up to there goes up in order, those
+		arrived whole and waited only on the abandoned one, and then whatever
+		follows on from it.
+	**/
+	@:noCompletion private function __skipThrough(streamId:Int, sequence:Int):Void {
+		var expected:Int = __expectedSequence.exists(streamId) ? __expectedSequence.get(streamId) : 0;
+
+		// Sixteen-bit serial arithmetic: already past it is behind by less than
+		// half the space.
+		if (((sequence - expected) & 0xFFFF) >= 0x8000) {
+			return;
+		}
+
+		var waiting:Held = __held.exists(streamId) ? __held.get(streamId) : null;
+
+		if (waiting != null && waiting.count > 0) {
+			// Walked by what is held rather than by the range, which a peer
+			// could make thirty thousand numbers long.
+			var due:Array<Int> = [];
+
+			for (held in waiting.bySequence.keys()) {
+				if (((held - expected) & 0xFFFF) <= ((sequence - expected) & 0xFFFF)) {
+					due.push(held);
+				}
+			}
+
+			due.sort((a, b) -> ((a - expected) & 0xFFFF) - ((b - expected) & 0xFFFF));
+
+			for (held in due) {
+				var pending = waiting.bySequence.get(held);
+				waiting.bySequence.remove(held);
+				waiting.count--;
+				waiting.bytes -= pending.payload.length;
+				__buffered -= pending.payload.length;
+				onMessage(streamId, pending.payload, pending.protocolId);
+			}
+		}
+
+		__expectedSequence.set(streamId, (sequence + 1) & 0xFFFF);
+		__drainHeld(streamId);
+	}
+
 	/** Drops what a stream was reassembling, and stops counting it. **/
 	@:noCompletion private function __forget(key:Int):Void {
 		if (__partial.exists(key)) {
@@ -721,25 +1942,10 @@ class SctpDataTransfer {
 		missing rather than everything since.
 	**/
 	@:noCompletion private function __buildSack():SctpChunk {
-		var blocks:Array<{start:Int, end:Int}> = [];
-		var offset:Int = 1;
-		var maximum:Int = 512;
-
-		while (offset < maximum) {
-			var tsn:Int = (__cumulativeTsn + offset) | 0;
-
-			if (__received.exists(tsn)) {
-				var startOffset:Int = offset;
-
-				while (offset < maximum && __received.exists((__cumulativeTsn + offset) | 0)) {
-					offset++;
-				}
-
-				blocks.push({start: startOffset, end: offset - 1});
-			} else {
-				offset++;
-			}
-		}
+		// The runs are the gap blocks, so there is nothing to search: an
+		// association with no holes, nearly every SACK ever sent, writes
+		// sixteen bytes and is done.
+		var blocks:Int = __received.runs < MAX_SACK_BLOCKS ? __received.runs : MAX_SACK_BLOCKS;
 
 		var value = new ByteArray();
 		value.endian = Endian.BIG_ENDIAN;
@@ -747,72 +1953,20 @@ class SctpDataTransfer {
 
 		value.writeInt(__cumulativeTsn);
 		value.writeInt(free > 0 ? free : 0);
-		value.writeShort(blocks.length);
+		value.writeShort(blocks);
 		value.writeShort(0);
 
-		for (block in blocks) {
-			value.writeShort(block.start);
-			value.writeShort(block.end);
+		for (i in 0...blocks) {
+			var at:Int = __received.head + i;
+
+			// Offsets from the cumulative acknowledgement, which MAX_TSN_AHEAD
+			// keeps within the sixteen bits the field has.
+			value.writeShort((__received.starts[at] - __cumulativeTsn) | 0);
+			value.writeShort((__received.ends[at] - __cumulativeTsn) | 0);
 		}
 
 		value.position = 0;
 		return new SctpChunk(SctpPacket.CHUNK_SACK, 0, value);
-	}
-
-	@:noCompletion private function __onSack(chunk:SctpChunk):Void {
-		if (chunk.value.length < 12) {
-			return;
-		}
-
-		chunk.value.endian = Endian.BIG_ENDIAN;
-		chunk.value.position = 0;
-
-		var cumulative:Int = chunk.value.readInt();
-
-		// What the peer has room for. Read and discarded until now, which is
-		// what let this end send at whatever rate it was handed data.
-		__peerWindow = chunk.value.readInt();
-
-		var gaps:Int = chunk.value.readUnsignedShort();
-		chunk.value.readUnsignedShort();
-
-		var acknowledged:Array<Outstanding> = [];
-
-		for (outstanding in __unacknowledged) {
-			if (!SctpDataChunk.isEarlier(cumulative, outstanding.data.tsn)) {
-				acknowledged.push(outstanding);
-			}
-		}
-
-		// The islands past the hole, so a fragment that did arrive is not sent
-		// again just because something before it did not.
-		for (_ in 0...gaps) {
-			if (chunk.value.position + 4 > chunk.value.length) {
-				break;
-			}
-
-			var start:Int = chunk.value.readUnsignedShort();
-			var end:Int = chunk.value.readUnsignedShort();
-
-			for (outstanding in __unacknowledged) {
-				var distance:Float = (outstanding.data.tsn - cumulative) & 0xFFFFFFFF;
-
-				if (distance >= start && distance <= end) {
-					acknowledged.push(outstanding);
-				}
-			}
-		}
-
-		for (outstanding in acknowledged) {
-			if (__unacknowledged.remove(outstanding)) {
-				__inFlight -= outstanding.data.payload.length;
-			}
-		}
-
-		// The room this just freed is the room the next chunk was waiting
-		// for, and waiting for the next poll to notice would idle the link
-		// for a tick on every acknowledgement.
-		__flush(__lastSeen);
 	}
 }
 
@@ -838,19 +1992,248 @@ private class Reassembly {
 	public function new() {}
 }
 
-/** A fragment that has gone out and not been acknowledged. **/
-private class Outstanding {
-	public var data:SctpDataChunk;
-	public var sentAt:Float;
-	public var attempts:Int = 0;
+/**
+	The TSNs a receiver holds above its cumulative acknowledgement, as runs of
+	consecutive numbers in order.
 
-	public function new(data:SctpDataChunk, sentAt:Float) {
-		this.data = data;
-		this.sentAt = sentAt;
+	Numbers wrap, so every comparison is by distance from the cumulative
+	acknowledgement, which the caller passes, everything here is at most
+	`SctpDataTransfer.MAX_TSN_AHEAD` past it, so a distance is always a small
+	positive number. Runs come off the front as the acknowledgement passes
+	them, through a cursor compacted once the passed part is the larger half.
+**/
+private class TsnRuns {
+	public var starts:Array<Int> = [];
+	public var ends:Array<Int> = [];
+
+	/** Where the live runs start. **/
+	public var head:Int = 0;
+
+	/** How many runs are held, which is how many gap blocks describe them. **/
+	public var runs(get, never):Int;
+
+	/** How many TSNs are held. **/
+	public var size(default, null):Int = 0;
+
+	public function new() {}
+
+	private inline function get_runs():Int {
+		return ends.length - head;
+	}
+
+	/** The first run from `head` whose end is at or past `distance`, or the end of the list. **/
+	private function search(distance:Int, cumulative:Int):Int {
+		var low:Int = head;
+		var high:Int = ends.length;
+
+		while (low < high) {
+			var middle:Int = (low + high) >> 1;
+
+			if (((ends[middle] - cumulative) | 0) < distance) {
+				low = middle + 1;
+			} else {
+				high = middle;
+			}
+		}
+
+		return low;
+	}
+
+	public function contains(tsn:Int, cumulative:Int):Bool {
+		var distance:Int = (tsn - cumulative) | 0;
+		var at:Int = search(distance, cumulative);
+		return at < ends.length && ((starts[at] - cumulative) | 0) <= distance;
+	}
+
+	/** The distance past `cumulative` of the highest TSN held, or 0 with none. **/
+	public function highest(cumulative:Int):Int {
+		return ends.length > head ? ((ends[ends.length - 1] - cumulative) | 0) : 0;
+	}
+
+	/** Adds a TSN past `cumulative + 1` that is not already held. **/
+	public function add(tsn:Int, cumulative:Int):Void {
+		var at:Int = search((tsn - cumulative) | 0, cumulative);
+		var joinsBefore:Bool = at > head && ((ends[at - 1] + 1) | 0) == tsn;
+		var joinsAfter:Bool = at < ends.length && ((tsn + 1) | 0) == starts[at];
+
+		if (joinsBefore && joinsAfter) {
+			// It was the one number between two runs, which are now one.
+			ends[at - 1] = ends[at];
+			starts.splice(at, 1);
+			ends.splice(at, 1);
+		} else if (joinsBefore) {
+			ends[at - 1] = tsn;
+		} else if (joinsAfter) {
+			starts[at] = tsn;
+		} else {
+			starts.insert(at, tsn);
+			ends.insert(at, tsn);
+		}
+
+		size++;
+	}
+
+	/**
+		The cumulative acknowledgement after `cumulative` has just arrived: the
+		first run joins it when that run begins right after.
+	**/
+	public function advance(cumulative:Int):Int {
+		if (ends.length > head && starts[head] == ((cumulative + 1) | 0)) {
+			var end:Int = ends[head];
+			size -= ((end - starts[head]) | 0) + 1;
+			head++;
+
+			if (head == ends.length) {
+				starts.resize(0);
+				ends.resize(0);
+				head = 0;
+			} else if (head > 32 && head * 2 >= ends.length) {
+				starts.splice(0, head);
+				ends.splice(0, head);
+				head = 0;
+			}
+
+			return end;
+		}
+
+		return cumulative;
+	}
+
+	/**
+		Forgets everything at or below `through`, which is at most
+		`SctpDataTransfer.MAX_TSN_AHEAD` past `cumulative`: a FORWARD TSN has
+		moved the acknowledgement there, so those numbers are simply past.
+	**/
+	public function dropThrough(through:Int, cumulative:Int):Void {
+		var limit:Int = (through - cumulative) | 0;
+
+		while (ends.length > head && ((ends[head] - cumulative) | 0) <= limit) {
+			size -= ((ends[head] - starts[head]) | 0) + 1;
+			head++;
+		}
+
+		// A run straddling it keeps the part above.
+		if (ends.length > head && ((starts[head] - cumulative) | 0) <= limit) {
+			var kept:Int = (through + 1) | 0;
+			size -= (kept - starts[head]) | 0;
+			starts[head] = kept;
+		}
+
+		if (head == ends.length) {
+			starts.resize(0);
+			ends.resize(0);
+			head = 0;
+		}
+	}
+
+	/** Every TSN held, in order. For inspection; nothing on the data path walks it. **/
+	public function keys():Iterator<Int> {
+		var all:Array<Int> = [];
+
+		for (at in head...ends.length) {
+			var tsn:Int = starts[at];
+
+			while (true) {
+				all.push(tsn);
+
+				if (tsn == ends[at]) {
+					break;
+				}
+
+				tsn = (tsn + 1) | 0;
+			}
+		}
+
+		return all.iterator();
 	}
 }
 
-/** A complete message waiting for its turn on a stream. **/
+/** A fragment handed to `send` and not yet on the wire. It has no TSN until it goes. **/
+private class Queued {
+	public var streamId:Int;
+	public var protocolId:Int;
+	public var payload:ByteArray;
+	public var flags:Int;
+
+	/** The message it is part of, when that may be given up on; null when it is reliable. **/
+	public var message:Null<Abandonable>;
+
+	public function new(streamId:Int, protocolId:Int, payload:ByteArray, flags:Int, message:Null<Abandonable>) {
+		this.streamId = streamId;
+		this.protocolId = protocolId;
+		this.payload = payload;
+		this.flags = flags;
+		this.message = message;
+	}
+}
+
+/**
+	A message that may be given up on, RFC 3758, and whether it has been.
+	Shared by every fragment of it, since a message is abandoned whole.
+**/
+private class Abandonable {
+	/** Times it may be sent again; -1 for no limit. **/
+	public var maxRetransmits:Int;
+
+	/** When it is given up on, on the clock `send` was given. **/
+	public var expiresAt:Float;
+
+	public var abandoned:Bool = false;
+
+	public function new(maxRetransmits:Int, expiresAt:Float) {
+		this.maxRetransmits = maxRetransmits;
+		this.expiresAt = expiresAt;
+	}
+
+	/**
+		Whether a fragment of it that was sent `transmissions` times and is
+		about to be sent again should be given up on instead.
+	**/
+	public inline function spent(transmissions:Int, now:Float):Bool {
+		return abandoned || (maxRetransmits >= 0 && transmissions > maxRetransmits) || now >= expiresAt;
+	}
+}
+
+/** A fragment that has gone out and not been acknowledged. **/
+private class Outstanding {
+	public var data:SctpDataChunk;
+
+	/** Encoded once, when first sent, and the same bytes resent. **/
+	public var chunk:SctpChunk;
+
+	/** Its size on the wire, which is what it takes of the congestion window. **/
+	public var size:Int;
+
+	public var sentAt:Float;
+	public var transmissions:Int = 1;
+
+	/** Reported held by a gap block, and so not in flight. **/
+	public var acked:Bool = false;
+
+	/** Found lost and waiting to go again, and so not in flight either. **/
+	public var lost:Bool = false;
+
+	/** Given up on: never sent again, and past it the peer is told to move on. Not in flight. **/
+	public var abandoned:Bool = false;
+
+	/** SACKs that have reported it missing. **/
+	public var misses:Int = 0;
+
+	/** Sent again by fast retransmit, which happens once; after that only the timer resends it. **/
+	public var fastRetransmitted:Bool = false;
+
+	/** The message it is part of, when that may be given up on. **/
+	public var message:Null<Abandonable>;
+
+	public function new(data:SctpDataChunk, size:Int, sentAt:Float, message:Null<Abandonable>) {
+		this.data = data;
+		this.chunk = data.toChunk();
+		this.size = size;
+		this.sentAt = sentAt;
+		this.message = message;
+	}
+}
+
 /**
 	What one stream is holding until the sequence before it arrives.
 
@@ -876,6 +2259,7 @@ private class Held {
 	public function new() {}
 }
 
+/** A complete message waiting for its turn on a stream. **/
 private class PendingMessage {
 	public var sequence:Int;
 	public var protocolId:Int;
