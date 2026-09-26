@@ -1213,6 +1213,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Natively, a host loop that only calls `pump()` -- no sleep, nothing
+  allocated, as a benchmark or an embedder's busy loop does -- stalled every
+  other thread at its next garbage collection for good: the collector waits
+  for each thread to reach a safepoint, and that loop never did. `pump()`
+  reaches one now, at no measurable cost (an idle pump is 52-53 ns either
+  way).
 - On the jvm, a TLS socket's reads ignored `setTimeout`, so an https
   response that stopped arriving was waited for for ever and the HTTP
   client's idle limit never fired over https. The TLS socket now waits for
