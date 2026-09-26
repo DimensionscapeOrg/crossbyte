@@ -35,6 +35,12 @@ final class NativeSocketRegistry {
 	**/
 	public var onHandlerError:(error:Dynamic, socket:IPollableSocket) -> Void = null;
 
+	/**
+		Seconds spent blocked inside poll since the runtime last took it, so
+		the POLL loop can tell the time it waited from the time it worked.
+	**/
+	@:noCompletion public var __waited:Float = 0.0;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -129,7 +135,15 @@ final class NativeSocketRegistry {
 			__isDirty = false;
 		}
 
-		__poll.events(timeout);
+		if (timeout > 0) {
+			// Timed only when it can block, which is the POLL loop's case;
+			// the DEFAULT loop's per-frame poll pays nothing for it.
+			var waitStart:Float = haxe.Timer.stamp();
+			__poll.events(timeout);
+			__waited += haxe.Timer.stamp() - waitStart;
+		} else {
+			__poll.events(timeout);
+		}
 		for (i in __poll.readIndexes) {
 			if (i == -1) {
 				break;

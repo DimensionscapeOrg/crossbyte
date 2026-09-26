@@ -311,6 +311,14 @@ final class CrossByte extends EventDispatcher {
 
 	// ==== Public Variables ====
 	public var tps(get, set):UInt;
+
+	/**
+	 * The share of the last frame's tick interval spent working, as a
+	 * percentage from 0 to 100: timers, tick listeners, socket handlers and
+	 * posted callbacks, and not the time spent waiting for the next tick or
+	 * blocked in poll. A POLL loop's socket handlers used to go uncounted,
+	 * so a server busy half of every frame reported 0%.
+	 */
 	public var cpuLoad(get, never):Float;
 	public var uptime(get, never):Float;
 
@@ -333,6 +341,35 @@ final class CrossByte extends EventDispatcher {
 	 */
 	public var timerOverruns(get, never):Int;
 
+	/**
+	 * How far past its deadline the last frame ended, in seconds. A few
+	 * hundred microseconds is the clock's own overshoot; more is a frame
+	 * whose work outran its tick, and the next frame starts that much short.
+	 * Zero for a host-driven runtime, whose frames the host schedules.
+	 */
+	public var loopLag(get, never):Float;
+
+	/**
+	 * How many frames have run past their deadline with no time left to
+	 * wait, since the runtime started.
+	 */
+	public var frameOverruns(get, never):Int;
+
+	/**
+	 * Seconds of schedule the loop has given up since the runtime started. A
+	 * stall longer than is worth repaying -- a suspended process, a
+	 * breakpoint, a frame that ran for seconds -- restarts the schedule from
+	 * the present instead of running a burst of frames to catch up, and what
+	 * that skipped is counted here.
+	 */
+	public var droppedScheduleDebt(get, never):Float;
+
+	/**
+	 * Callbacks posted to this runtime that have not run yet. Readable from
+	 * any thread.
+	 */
+	public var postQueueDepth(get, never):Int;
+
 	// ==== Private Variables ====
 	@:noCompletion private var __tickInterval:Float;
 
@@ -349,6 +386,9 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __tps:UInt;
 	@:noCompletion private var __dt:Float = 0.0;
 	@:noCompletion private var __timerOverruns:Int = 0;
+	@:noCompletion private var __loopLag:Float = 0.0;
+	@:noCompletion private var __frameOverruns:Int = 0;
+	@:noCompletion private var __droppedScheduleDebt:Float = 0.0;
 
 	/**
 	 * When the current frame is due to end, as an absolute time.
@@ -610,10 +650,15 @@ final class CrossByte extends EventDispatcher {
 		}
 
 		#if !js
+		// What the poll spent blocked is the host's timeout, not this frame's
+		// work; see __pollBasedMainLoop.
+		__socketRegistry.__waited = 0.0;
 		__socketRegistry.update(socketTimeout);
 		__flushHeld();
-		#end
+		__cpuTime = Timer.stamp() - frameStart - __socketRegistry.__waited;
+		#else
 		__cpuTime = Timer.stamp() - frameStart;
+		#end
 	}
 
 	/**
@@ -990,6 +1035,29 @@ final class CrossByte extends EventDispatcher {
 		return __timerOverruns;
 	}
 
+	@:noCompletion private inline function get_loopLag():Float {
+		return __loopLag;
+	}
+
+	@:noCompletion private inline function get_frameOverruns():Int {
+		return __frameOverruns;
+	}
+
+	@:noCompletion private inline function get_droppedScheduleDebt():Float {
+		return __droppedScheduleDebt;
+	}
+
+	@:noCompletion private function get_postQueueDepth():Int {
+		#if target.threaded
+		__postLock.acquire();
+		#end
+		var depth:Int = __posted == null ? 0 : __posted.length;
+		#if target.threaded
+		__postLock.release();
+		#end
+		return depth;
+	}
+
 	// ==== Private Methods ====
 
 	// Socket polling is now shared across cpp and non-cpp targets.
@@ -1167,8 +1235,11 @@ final class CrossByte extends EventDispatcher {
 
 	@:noCompletion private function get_cpuLoad():Float {
 		var free:Float = ((__tickInterval - __cpuTime) / __tickInterval) * 100;
+		var load:Float = Math.min(Math.floor((100 - free) * 100) / 100, 100);
 
-		return Math.min(Math.floor((100 - free) * 100) / 100, 100);
+		// A frame's work is its time less its waiting, and two readings of
+		// the clock can put that a hair below zero.
+		return load > 0 ? load : 0.0;
 	}
 
 	#if precision_tick
@@ -1310,7 +1381,11 @@ final class CrossByte extends EventDispatcher {
 			return;
 		}
 
-		if (Timer.stamp() >= __frameDeadline) {
+		var now:Float = Timer.stamp();
+		if (now >= __frameDeadline) {
+			// How late the platform brought this turn: its timer's delay plus
+			// whatever else held its loop.
+			__loopLag = now - __frameDeadline;
 			__advanceDeadline();
 			// A throw here would leave the platform's own loop to report it,
 			// which on Node ends the process and in a page stops the runtime
@@ -1324,6 +1399,11 @@ final class CrossByte extends EventDispatcher {
 			if (!__getRunning()) {
 				__finalizeExit();
 				return;
+			}
+
+			// Its work ran past the next frame's deadline.
+			if (Timer.stamp() >= __frameDeadline) {
+				__frameOverruns++;
 			}
 		}
 
@@ -1570,6 +1650,7 @@ final class CrossByte extends EventDispatcher {
 		// originally. Timers cannot be starved by it: the budget is bounded
 		// by the frame, and whatever it does not consume is slept off below.
 		var remaining:Float = __frameDeadline - Timer.stamp();
+		__socketRegistry.__waited = 0.0;
 
 		while (remaining >= MIN_POLL_WAIT && __getRunning()) {
 			#if !js
@@ -1584,6 +1665,10 @@ final class CrossByte extends EventDispatcher {
 			remaining = __frameDeadline - Timer.stamp();
 		}
 
+		// The frame's work is what it spent less what poll spent blocked.
+		// It was taken before the poll, so every socket handler went
+		// uncounted: a server busy half of every frame reported 0%.
+		__cpuTime = Timer.stamp() - frameStart - __socketRegistry.__waited;
 		__wait(frameStart);
 		#end
 	}
@@ -1608,13 +1693,29 @@ final class CrossByte extends EventDispatcher {
 		var cap:Float = MAX_SCHEDULE_DEBT > __tickInterval ? MAX_SCHEDULE_DEBT : __tickInterval;
 
 		if (now - __frameDeadline > cap) {
-			__frameDeadline = now + __tickInterval;
+			var restarted:Float = now + __tickInterval;
+			// How far the schedule moves: the frames it will never run.
+			__droppedScheduleDebt += restarted - __frameDeadline;
+			__frameDeadline = restarted;
 		}
+	}
+
+	/**
+	 * Notes how the frame whose wait is ending met its deadline: how late
+	 * the loop is, and whether the frame's work left it any wait at all.
+	 */
+	@:noCompletion private inline function __noteFrameEnd(overran:Bool):Void {
+		if (overran) {
+			__frameOverruns++;
+		}
+		var late:Float = Timer.stamp() - __frameDeadline;
+		__loopLag = late > 0 ? late : 0.0;
 	}
 
 	private #if final inline #end function __wait(frameStartTime:Float):Void {
 #if js
 		#else
+		var overran:Bool = Timer.stamp() >= __frameDeadline;
 		#if precision_tick
 		var minSleep = 0.001;
 
@@ -1631,6 +1732,7 @@ final class CrossByte extends EventDispatcher {
 			Sys.sleep(minSleep);
 		}
 
+		__noteFrameEnd(overran);
 		__dt = Timer.stamp() - frameStartTime;
 		__advanceDeadline();
 		#else
@@ -1674,6 +1776,7 @@ final class CrossByte extends EventDispatcher {
 			#end
 		}
 
+		__noteFrameEnd(overran);
 		__dt = Timer.stamp() - frameStartTime;
 		__advanceDeadline();
 		#end
@@ -1681,10 +1784,13 @@ final class CrossByte extends EventDispatcher {
 	}
 
 	// Runs what was posted, then sends what it asked to have sent, before
-	// the loop goes back to waiting.
+	// the loop goes back to waiting. Counted as the frame's work: done inside
+	// the wait, it was missing from cpuLoad.
 	@:noCompletion private function __runPostedNow():Void {
+		var start:Float = Timer.stamp();
 		__runPosted();
 		__flushHeld();
+		__cpuTime += Timer.stamp() - start;
 	}
 
 	#if !js
