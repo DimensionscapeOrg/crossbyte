@@ -571,7 +571,10 @@ session throws.
 
 A call failed by its connection ending has the `Reason` it ended with as its
 `cause`, and a call refused by the other side has an `RPCError`, so a caller
-can tell a peer that has gone from a peer that said no.
+can tell a peer that has gone from a peer that said no. Over a WebSocket the
+`Reason` is `Code` with the code and reason the peer closed with, 1001 for
+a server going away, 1008 for one refusing by policy, and `Closed` when the
+connection ended with no code known.
 
 ## A client that comes back
 
