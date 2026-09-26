@@ -14,9 +14,11 @@ import crossbyte.db.postgres._internal.PostgresWire;
 import haxe.io.Bytes;
 #if cpp
 import crossbyte.db.postgres._internal.NativePostgres;
+import crossbyte.db.postgres._internal.PostgresConnInfo;
 import crossbyte.ipc._internal.VoidPointer;
 import haxe.io.Path;
 import sys.FileSystem;
+import sys.thread.Mutex;
 #end
 #if php
 import php.Global;
@@ -38,6 +40,10 @@ class PostgresConnection extends EventDispatcher {
 	@:noCompletion private var __connection:Dynamic;
 	#if cpp
 	@:noCompletion private var __nativeHandle:VoidPointer;
+	// Held by cancel(), which may run on any thread, and by close(), so the
+	// handle a cancel is using cannot be freed under it. Nothing on the query
+	// path takes it.
+	@:noCompletion private var __handleLock:Mutex = new Mutex();
 	#end
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __autocommit:Bool = true;
@@ -58,21 +64,23 @@ class PostgresConnection extends EventDispatcher {
 		}
 
 		#if cpp
-		try {
-			var host:String = cfg.host != null ? cfg.host : "127.0.0.1";
-			var port:Int = cfg.port != null ? cfg.port : 5432;
-			var database:String = cfg.database != null ? cfg.database : "postgres";
-			var user:String = cfg.user != null ? cfg.user : "";
-			var pass:String = cfg.password != null ? cfg.password : "";
-			var sslMode:String = cfg.sslMode != null ? cfg.sslMode : "";
-			var connectTimeout:Int = cfg.connectTimeout != null ? cfg.connectTimeout : 5;
-			var libraryPaths = __libraryCandidates(cfg);
+		// Outside the try: a setting that cannot be expressed is a mistake in
+		// the config, not a failure to connect, and should read as one.
+		var conninfo:String = PostgresConnInfo.build(cfg);
 
-			__nativeHandle = NativePostgres.open(host, port, user, pass, database, sslMode, connectTimeout, libraryPaths);
-			if (__nativeHandle == null) {
-				throw new IOError(NativePostgres.lastError());
+		try {
+			var handle:VoidPointer = NativePostgres.open(conninfo, __libraryCandidates(cfg));
+			// Read from the handle rather than from anything shared: the reason
+			// used to be one process-wide string, so connections opening on
+			// several pool workers at once could each report another's failure.
+			var failure:String = NativePostgres.error(handle);
+
+			if (failure != null && failure != "") {
+				NativePostgres.close(handle);
+				throw new IOError(failure);
 			}
 
+			__nativeHandle = handle;
 			__dispatchEvent(new SQLEvent(SQLEvent.OPEN));
 		} catch (e:Dynamic) {
 			throw new IOError(e);
@@ -118,8 +126,15 @@ class PostgresConnection extends EventDispatcher {
 	public function close():Void {
 		#if cpp
 		if (__nativeHandle != null) {
-			NativePostgres.close(__nativeHandle);
+			// Taken out under the lock, so a cancel() already running finishes
+			// with the handle before it is freed, and one arriving later finds
+			// nothing to cancel.
+			__handleLock.acquire();
+			var handle:VoidPointer = __nativeHandle;
 			__nativeHandle = null;
+			__handleLock.release();
+
+			NativePostgres.close(handle);
 			__inTransaction = false;
 			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
@@ -315,28 +330,61 @@ class PostgresConnection extends EventDispatcher {
 
 		#if cpp
 		var encoded:Bytes = PostgresWire.encodeParameters(params == null ? [] : params);
-		var data = cpp.NativeArray.address(encoded.getData(), 0);
-		var length:Int = NativePostgres.requestParams(__nativeHandle, sql == null ? "" : sql, cast data, encoded.length);
+		// One call, and the block it returns is this call's own. It used to be
+		// a length from one call and then the bytes from a second, read a byte
+		// at a time out of a buffer every connection in the process shared --
+		// so between the two another thread's query could replace it.
+		var data:haxe.io.BytesData = NativePostgres.requestParams(__nativeHandle, sql == null ? "" : sql, encoded.getData(), encoded.length);
 
-		if (length < 0) {
+		if (data == null) {
 			throw new IOError("Postgres bridge returned no result block.");
-		}
-
-		var block:Bytes = Bytes.alloc(length);
-		var source = NativePostgres.resultData();
-
-		for (i in 0...length) {
-			block.set(i, source.at(i));
 		}
 
 		// Raises the server message for an error block, so a failed statement
 		// cannot read as a statement that matched nothing.
-		var result:PostgresRawResult = PostgresWire.decodeResult(block);
+		var result:PostgresRawResult = PostgresWire.decodeResult(Bytes.ofData(data));
 		__lastAffectedRows = result.affectedRows;
 		__lastInsertRowID = result.lastInsertRowID;
 		return result;
 		#else
 		throw new IOError("Bound parameters need the native libpq bridge, which this target does not have.");
+		#end
+	}
+
+	/**
+		Asks the server to abandon the statement this connection is running.
+
+		Safe to call from any thread, which is the point: the thread that sent
+		the statement is blocked waiting for its answer, so it is another one
+		-- a watchdog, a request that was abandoned, a shutdown -- that decides
+		to stop it. The statement then fails on its own thread with the
+		server's "canceling statement due to user request".
+
+		Returns whether the request reached the server. That is not a promise
+		the statement was stopped: one that finished in the meantime simply
+		completes, and a cancel with nothing running does nothing. For a limit
+		on every statement rather than an intervention in one, set
+		`PostgresConfig.statementTimeout`.
+
+		Needs the native driver; elsewhere it returns `false`.
+	**/
+	public function cancel():Bool {
+		#if cpp
+		__handleLock.acquire();
+
+		var sent:Bool = false;
+
+		try {
+			sent = __nativeHandle != null && NativePostgres.cancel(__nativeHandle);
+		} catch (e:Dynamic) {
+			__handleLock.release();
+			throw e;
+		}
+
+		__handleLock.release();
+		return sent;
+		#else
+		return false;
 		#end
 	}
 

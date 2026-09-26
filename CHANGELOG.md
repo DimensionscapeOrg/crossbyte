@@ -5,6 +5,19 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `PostgresConfig.statementTimeout`, `keepAliveIdle`, `keepAliveInterval`,
+  `keepAliveCount`, `tcpUserTimeout` and `connectionParameters`, and
+  `PostgresConnection.cancel()`. Nothing could bound a PostgreSQL statement:
+  no timeout, no way to cancel one, and no way to hand libpq a setting the
+  config did not name, so a database host that vanished mid-query was
+  noticed only when TCP gave up, about two hours later. `statementTimeout` is
+  sent as `statement_timeout` when the session starts, so it costs no round
+  trip; the keepalive settings and `tcpUserTimeout` let a dead peer be
+  noticed in seconds; `connectionParameters` passes any other libpq keyword
+  through, quoted. `cancel()` asks the server to stop the statement a
+  connection is running, and is safe from any thread -- which is where it is
+  needed, since the thread that sent the statement is waiting for its
+  answer. Defaults are unchanged. Native driver only.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -691,6 +704,30 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Native PostgreSQL connections no longer share one result buffer. Every
+  connection and thread in the process wrote the bridge's single buffer --
+  results, escaped strings, and the reason an open failed -- and
+  `requestParams` read its result back through a second call, a byte at a
+  time. With `AsyncDatabase`'s default of a worker per pooled connection, a
+  query could come back with another query's rows, an open could report
+  another connection's failure, and a thread could read a buffer another
+  had just grown and freed. Against a stand-in libpq, 8 workers running 400
+  bound queries each got an answer that belonged to another query and 7 of
+  them threw; another run crashed the process. Each connection now keeps
+  its own state, and each call returns its own result in one call, copied
+  from libpq's memory straight into the block the caller receives. Loading
+  libpq is locked. A connection configured with its own `libraryPath` now
+  gets that library even after another has been loaded; the first library
+  loaded used to serve every connection after it.
+- A PostgreSQL query or connect no longer holds up garbage collection on
+  every thread. The bridge called libpq with the thread still counted as
+  running Haxe code, so the next collection anywhere waited for the query
+  to finish: a slow report, a lock wait or an unreachable database host
+  stopped the runtime thread and every socket it served. Against a
+  stand-in libpq, a collection waited 2.3 seconds for a query and 1.25 for
+  a connect. Connecting, executing, cancelling and closing now run in a
+  GC-free zone, with the statement and its parameters copied out of the
+  Haxe heap first.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the
