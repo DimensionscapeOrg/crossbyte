@@ -1164,6 +1164,24 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Cancelling an HTTP/1.1 load -- `URLLoader.close()` with a load in flight,
+  or its `cancelToken` -- ends it on every target, and at once. A cancel that
+  landed after the load had looked at its token and before its socket
+  existed -- while the connection pool was searched, while the socket was
+  made, or between two redirects -- found nothing to close and was lost: the
+  request went out anyway, and its thread waited out the idle timeout for an
+  answer nobody wanted. And the cancel closed the socket from the cancelling
+  thread. On Linux that does not wake a read already waiting on the socket,
+  so the server heard nothing until the read gave up; on eval it killed the
+  loading thread with an error no catch sees, and the reset it caused killed
+  the server's reader too; and closing a TLS socket frees its mbedTLS
+  context under a read that may still be using it. Now the socket is
+  published under a lock the cancel also takes, so one always finds the
+  other, and it is shut down rather than closed, which ends the read and
+  tells the server at once; the loading thread closes it itself. A cancelled
+  load reports `Request cancelled` whichever step failed under it, and a
+  body that ends with the connection is no longer delivered as complete when
+  a cancel is what ended it.
 - `File.clone()` gave the clone the original's listeners, where its
   documentation says registrations are not copied. It copied every instance
   field by reflection, `EventDispatcher`'s listener map included, so once the

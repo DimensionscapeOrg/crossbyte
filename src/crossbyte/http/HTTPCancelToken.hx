@@ -1,6 +1,6 @@
 package crossbyte.http;
 
-#if (cpp || neko || hl || java || jvm)
+#if target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -24,7 +24,7 @@ class HTTPCancelToken {
 
 	private var __handlers:Array<Void->Void> = [];
 
-	#if (cpp || neko || hl || java || jvm)
+	#if target.threaded
 	private final __lock:Mutex = new Mutex();
 	#end
 
@@ -88,13 +88,13 @@ class HTTPCancelToken {
 	}
 
 	private inline function __acquire():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.acquire();
 		#end
 	}
 
 	private inline function __release():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.release();
 		#end
 	}
