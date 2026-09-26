@@ -1343,7 +1343,11 @@ class Http {
 			__socket.output.writeString(CRLF);
 
 			if (body != null) {
-				__socket.output.writeBytes(body, 0, body.length);
+				// Full, not writeBytes: that writes what it can and says how
+				// much, and over TLS it can never take more than one record,
+				// 16 KB. The rest of a larger body was dropped, and the server
+				// waited for bytes that were never coming.
+				__socket.output.writeFullBytes(body, 0, body.length);
 			}
 
 			__socket.output.flush();
