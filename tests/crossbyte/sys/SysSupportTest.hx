@@ -133,12 +133,13 @@ class SysSupportTest extends utest.Test {
 	}
 
 	public function testSystemFallbackPropertiesStaySafeOnNonCppTargets():Void {
+		// Every target reports at least one processor. It was 0 everywhere but
+		// native, and a TaskPool sized by it threw.
+		Assert.isTrue(System.processorCount >= 1, "processorCount is " + System.processorCount);
 		#if cpp
-		Assert.isTrue(System.processorCount >= 0);
 		Assert.notNull(System.processAffinity);
 		Assert.isTrue(System.processAffinity.length >= 0);
 		#else
-		Assert.equals(0, System.processorCount);
 		Assert.same([false], System.processAffinity);
 		Assert.equals("", System.getDeviceId());
 		Assert.equals(0, System.memoryUsage());

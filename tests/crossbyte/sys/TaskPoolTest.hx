@@ -3,7 +3,7 @@
 import crossbyte.core.CrossByte;
 import crossbyte.sys.TaskState;
 import utest.Assert;
-#if (cpp || neko || hl)
+#if target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -27,6 +27,51 @@ class TaskPoolTest extends utest.Test {
 		var pool = new TaskPool(workerCount);
 		__pools.push(pool);
 		return pool;
+	}
+
+	public function testJobsRunOffTheSubmittingThread():Void {
+		// On the jvm and the interpreter a pool ran every job inline, on the
+		// thread that submitted it: four 200ms jobs held the caller for 800ms,
+		// so AsyncDatabase, URLLoader and File's async calls stalled the very
+		// loop they exist to spare.
+		#if target.threaded
+		var pool = makePool(4);
+		var caller = new sys.thread.Tls<Bool>();
+		caller.value = true;
+		var onCaller = 0;
+		var guard = new Mutex();
+
+		var start = haxe.Timer.stamp();
+		var tasks = [
+			for (_ in 0...4)
+				pool.submit(() -> {
+					if (caller.value == true) {
+						guard.acquire();
+						onCaller++;
+						guard.release();
+					}
+					Sys.sleep(0.2);
+				})
+		];
+		var submitted = haxe.Timer.stamp() - start;
+		for (task in tasks) {
+			task.await();
+		}
+		var finished = haxe.Timer.stamp() - start;
+
+		Assert.equals(0, onCaller, "jobs ran on the thread that submitted them");
+		Assert.isTrue(submitted < 0.15, "submitting four jobs held the caller for " + submitted + "s");
+		Assert.isTrue(finished < 0.7, "four 200ms jobs on four workers took " + finished + "s");
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAPoolCanBeSizedByTheProcessorCount():Void {
+		// processorCount was 0 everywhere but native, and a pool of 0 throws.
+		Assert.isTrue(System.processorCount >= 1, "processorCount is " + System.processorCount);
+		var pool = makePool(System.processorCount);
+		Assert.equals(System.processorCount, pool.workerCount);
 	}
 
 	public function testTasksRunAndComplete():Void {
@@ -70,17 +115,27 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testCompletionDispatchesOnOwningRuntimeTick():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
 		var pool = makePool(1);
 		var callbackRuntime:CrossByte = null;
 		var callbackCount = 0;
-		var task = pool.submitResult(() -> 42);
+		// Held until the handler is attached. A job that finished first made
+		// onComplete call the handler at once, on this thread, which is a
+		// different contract from the one this case is about -- and on the
+		// jvm, where a pool thread picks a job up within microseconds, it
+		// finished first every time.
+		var gate = new sys.thread.Lock();
+		var task = pool.submitResult(() -> {
+			gate.wait();
+			return 42;
+		});
 		task.onComplete(_ -> {
 			callbackCount++;
 			callbackRuntime = CrossByte.current();
 		});
+		gate.release();
 
 		Assert.equals(42, task.await());
 		Assert.equals(0, callbackCount);
@@ -121,7 +176,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testMultipleWorkersCanRunMultipleTasks():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var pool = makePool(4);
 		var lock = new Mutex();
 		var running:Int = 0;
@@ -153,7 +208,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testCancelBeforeStartDispatchesCancel():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var pool = makePool(1);
 		var cancelled = false;
 		pool.submit(() -> {
@@ -177,7 +232,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testCancelAfterStartFails():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var pool = makePool(1);
 		var started = false;
 		var task = pool.submit(() -> {
@@ -220,7 +275,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testIdleWorkersDoNotStallGarbageCollection():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		// Idle workers must park inside a GC-free zone. hxcpp does not wrap
 		// `Condition.wait()` in one, so a pool that parks there keeps its workers
 		// off every GC safepoint and the next collection triggered by this thread
@@ -251,7 +306,7 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	public function testShutdownNowCancelsQueuedTasks():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var pool = makePool(1);
 		var running = false;
 
@@ -292,15 +347,15 @@ class TaskPoolTest extends utest.Test {
 	}
 
 	@:noCompletion private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		pumpRuntimeUntil(CrossByte.current(), done, timeoutSeconds);
 		#end
 	}
 
 	@:noCompletion private static function pumpRuntimeUntil(runtime:CrossByte, done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
-		#if (cpp || neko || hl)
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!done() && Sys.time() < deadline) {
+		#if target.threaded
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
