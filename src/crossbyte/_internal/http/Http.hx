@@ -140,6 +140,20 @@ class Http {
 		}
 	}
 
+	/** The URL the response came from: the request's, or the last redirect's. */
+	public var url(get, never):String;
+
+	private function get_url():String {
+		return Std.string(__url);
+	}
+
+	/** Whether a redirect was followed to reach the response. */
+	public var redirected(get, never):Bool;
+
+	private inline function get_redirected():Bool {
+		return __redirect;
+	}
+
 	public function advance():Void {}
 
 	public function loadAsync():Void {
@@ -608,11 +622,20 @@ class Http {
 	}
 
 	@:noCompletion private function __decodeResponseBody(data:Bytes):Bytes {
+		return decodeResponseBody(data, __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null);
+	}
+
+	/**
+	 * Undoes a response's content codings, within `MAX_CONTENT_CODINGS` and
+	 * `MAX_DECOMPRESSED_BODY_SIZE`. Throws the coding's name, a `String`, for
+	 * one this build cannot decode, and an exception for a body past the
+	 * limits. Shared with the HTTP/2 backend, which did not decode at all.
+	 */
+	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>):Bytes {
 		if (data == null || data.length == 0) {
 			return data;
 		}
 
-		var header = __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null;
 		if (header == null || StringTools.trim(header) == "") {
 			return data;
 		}
