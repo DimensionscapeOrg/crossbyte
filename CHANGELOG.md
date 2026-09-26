@@ -691,6 +691,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- WebRTC peers on different runtimes no longer share an unguarded DTLS
+  session table. Every native DTLS session in the process lived in one map,
+  named by one counter, and peers on two child runtimes inserted into,
+  erased from and searched it at the same time: a lookup landing mid-
+  rebalance found a live session gone (a stress test with four threads
+  failed three runs in three), and two sessions opened together could be
+  given the same handle. The table, the counter and the first seeding of
+  the shared RNG are now guarded by a mutex held for the map operation
+  alone, which costs about 9 ns per native DTLS call uncontended.
 - A WebRTC connection that cannot finish coming up now gives up. Only some
   of its phases had an end: as the DTLS server it waited for a ClientHello
   with no timer running, the SCTP listener waited for an INIT forever, a

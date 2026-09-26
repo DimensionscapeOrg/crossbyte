@@ -4,6 +4,9 @@ import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import utest.Assert;
 import crossbyte.test.Require;
+#if cpp
+import crossbyte.net.rtc._internal.NativeDtlsSession;
+#end
 
 /**
 	Two DTLS sessions handed each other's datagrams, with no network between
@@ -223,6 +226,83 @@ class DtlsTransportTest extends utest.Test {
 		}
 
 		client.close();
+	}
+
+	/**
+		Sessions opened, used and closed on several threads at once stay
+		separate.
+
+		Every session lives in one process-wide table, keyed by a handle from
+		one process-wide counter, and neither was guarded: peers on two child
+		runtimes inserted into, erased from and searched the same map at the
+		same moment. A lookup that lands mid-rebalance follows a stale node,
+		a live handle reads as gone, or a closed one as live, and two opens
+		that race on the counter get the same handle, so each then drives the
+		other's session.
+	**/
+	public function testSessionsOnSeveralThreadsStaySeparate():Void {
+		#if cpp
+		if (unsupported()) return;
+
+		var certificate = DtlsCertificate.generate("threads", 1);
+		var threads:Int = 4;
+		var rounds:Int = 400;
+		var results = new sys.thread.Deque<String>();
+
+		for (t in 0...threads) {
+			sys.thread.Thread.create(function():Void {
+				var problem:String = null;
+
+				try {
+					for (round in 0...rounds) {
+						var handle:Int = NativeDtlsSession.open(((t + round) & 1) == 0, certificate.certificatePem, certificate.privateKeyPem);
+
+						if (handle <= 0) {
+							problem = "a session would not open: " + handle;
+							break;
+						}
+
+						// Looked up over and over while the other threads insert
+						// and erase around it.
+						for (_ in 0...500) {
+							if (NativeDtlsSession.error(handle) != 0) {
+								problem = "a live session's handle stopped finding it";
+								break;
+							}
+						}
+
+						NativeDtlsSession.close(handle);
+
+						if (problem == null && NativeDtlsSession.error(handle) == 0) {
+							problem = "a closed session's handle still found one";
+						}
+
+						if (problem != null) {
+							break;
+						}
+					}
+				} catch (e:Dynamic) {
+					problem = Std.string(e);
+				}
+
+				results.add(problem == null ? "" : problem);
+			});
+		}
+
+		var problems:Array<String> = [];
+
+		for (_ in 0...threads) {
+			var problem:String = results.pop(true);
+
+			if (problem != "") {
+				problems.push(problem);
+			}
+		}
+
+		Assert.equals(0, problems.length, problems.join("; "));
+		#else
+		Assert.isFalse(DtlsTransport.isSupported);
+		#end
 	}
 
 	/**
