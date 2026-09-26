@@ -226,6 +226,79 @@ class SctpAssociationTest extends utest.Test {
 		Assert.equals(SctpAssociationState.CLOSED, alone.state);
 	}
 
+	/**
+		A peer that aborts is reported, with the reason it gave.
+
+		An ABORT used to close the association without telling anything above
+		it: no event, no future, and the channels on top went on reporting
+		themselves open. This is what a browser's `pc.close()` puts on the
+		wire, so it was the ordinary way for a peer to leave, and nothing heard
+		it.
+	**/
+	public function testAnAbortFromThePeerIsReported():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+		var reasons:Array<String> = [];
+		pair.server.onClose = reason -> reasons.push(reason);
+
+		// The peer leaving, and saying why.
+		pair.client.abort("tab closed");
+		pair.step();
+
+		Assert.equals(SctpAssociationState.CLOSED, pair.server.state, "the ABORT did not end the association");
+		Assert.equals(1, reasons.length, "a peer that aborted was reported " + reasons.length + " times rather than once");
+
+		if (reasons.length == 1) {
+			Assert.isTrue(reasons[0].indexOf("aborted") >= 0, "the reason does not say the peer aborted: " + reasons[0]);
+			Assert.isTrue(reasons[0].indexOf("tab closed") >= 0, "the reason the peer gave was lost: " + reasons[0]);
+		}
+
+		// And the end that aborted is not told about its own decision.
+		Assert.equals(SctpAssociationState.CLOSED, pair.client.state);
+	}
+
+	/**
+		An ABORT stamped for some other association ends nothing.
+
+		RFC 4960 section 8.5.1: the association's own tag, or the peer's
+		reflected with the T bit set. It used to take any ABORT at all, which
+		inside a DTLS session only the peer can send, but an ABORT belonging
+		to an association that has already been replaced is still not about
+		this one.
+	**/
+	public function testAnAbortCarryingTheWrongTagIsIgnored():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		pair.run(() -> pair.client.state == SctpAssociationState.ESTABLISHED && pair.server.state == SctpAssociationState.ESTABLISHED);
+
+		var closes:Int = 0;
+		pair.server.onClose = _ -> closes++;
+
+		var stale = new SctpPacket(SctpAssociation.DEFAULT_PORT, SctpAssociation.DEFAULT_PORT, pair.server.localTag + 1,
+			[new SctpChunk(SctpPacket.CHUNK_ABORT, 0)]);
+		pair.server.receive(stale.encode(), 0);
+
+		// The peer's own tag without the flag saying it is reflected.
+		var unflagged = new SctpPacket(SctpAssociation.DEFAULT_PORT, SctpAssociation.DEFAULT_PORT, pair.server.remoteTag,
+			[new SctpChunk(SctpPacket.CHUNK_ABORT, 0)]);
+		pair.server.receive(unflagged.encode(), 0);
+
+		Assert.equals(SctpAssociationState.ESTABLISHED, pair.server.state, "an ABORT for another association ended this one");
+		Assert.equals(0, closes);
+
+		// Reflected, and flagged as such: that one is ours.
+		var reflected = new SctpPacket(SctpAssociation.DEFAULT_PORT, SctpAssociation.DEFAULT_PORT, pair.server.remoteTag,
+			[new SctpChunk(SctpPacket.CHUNK_ABORT, 0x01)]);
+		pair.server.receive(reflected.encode(), 0);
+
+		Assert.equals(SctpAssociationState.CLOSED, pair.server.state, "an ABORT with the peer's tag reflected was refused");
+		Assert.equals(1, closes);
+	}
+
 	public function testStreamsAndWindowAreExchanged():Void {
 		if (unsupported()) return;
 

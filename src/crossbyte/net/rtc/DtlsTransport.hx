@@ -97,6 +97,30 @@ class DtlsTransport {
 	/** Called with each decrypted message. **/
 	public dynamic function onMessage(payload:ByteArray):Void {}
 
+	/**
+		Called once when an established session is ended from the far side:
+		the peer's close_notify, a fatal alert, or a record mbedTLS will not go
+		on past. Not called for `close()`, which the caller already knows about.
+
+		Without it a peer that closed its end was indistinguishable from one
+		that had gone quiet: the session stayed `connected`, `send` went on
+		encrypting into it, and the only thing that ever noticed was ICE
+		consent, thirty seconds later and with a reason that named the wrong
+		layer.
+	**/
+	public dynamic function onClose(reason:String):Void {}
+
+	/** mbedtls's code for a peer that said goodbye rather than failed. **/
+	@:noCompletion private static inline var PEER_CLOSE_NOTIFY:Int = -0x7880;
+
+	@:noCompletion private static inline var FATAL_ALERT:Int = -0x7780;
+	@:noCompletion private static inline var CLIENT_RECONNECT:Int = -0x6780;
+
+	/** The states `NativeDtlsSession.step` reports. **/
+	@:noCompletion private static inline var STATE_ESTABLISHED:Int = 1;
+
+	@:noCompletion private static inline var STATE_CLOSED:Int = 2;
+
 	@:noCompletion private var __handle:Int = -1;
 	@:noCompletion private var __closed:Bool = false;
 
@@ -168,7 +192,7 @@ class DtlsTransport {
 			return;
 		}
 
-		if (!connected && state == 1) {
+		if (!connected && state == STATE_ESTABLISHED) {
 			if (!__verifyPeer()) {
 				return;
 			}
@@ -177,7 +201,14 @@ class DtlsTransport {
 			@:privateAccess established.__resolve(this);
 		}
 
+		// Before the session's end is reported: a peer that sends a last
+		// message and then closes meant both, and the message was decrypted
+		// before the alert was read.
 		__deliver();
+
+		if (state == STATE_CLOSED) {
+			__endedByPeer();
+		}
 		#end
 	}
 
@@ -257,7 +288,17 @@ class DtlsTransport {
 		#end
 	}
 
-	public function close():Void {
+	/**
+		Ends the session.
+
+		@param notifyPeer Whether to tell the peer first, with a close_notify
+		handed to `onSend` before this returns. On by default, because a peer
+		that is not told keeps its end open until something times out. Off for
+		a path that is already known to be dead, RFC 7675 asks a sender whose
+		consent has expired to stop transmitting, and a goodbye is a
+		transmission.
+	**/
+	public function close(notifyPeer:Bool = true):Void {
 		#if cpp
 		if (__closed) {
 			return;
@@ -267,6 +308,11 @@ class DtlsTransport {
 		connected = false;
 
 		if (__handle > 0) {
+			if (notifyPeer) {
+				NativeDtlsSession.notifyClose(__handle);
+				__flush();
+			}
+
 			NativeDtlsSession.close(__handle);
 			__handle = -1;
 		}
@@ -399,6 +445,37 @@ class DtlsTransport {
 		}
 
 		close();
+	}
+
+	/**
+		The peer ended the session, or the session ended under it.
+
+		Nothing is sent back: mbedtls has marked the context finished, and a
+		close_notify in answer to one is a courtesy nobody is left to receive.
+	**/
+	@:noCompletion private function __endedByPeer():Void {
+		if (__closed) {
+			return;
+		}
+
+		var code:Int = NativeDtlsSession.error(__handle);
+		var reason:String = "The DTLS session failed: mbedTLS returned " + code + ".";
+
+		if (code == PEER_CLOSE_NOTIFY) {
+			reason = "The peer closed the DTLS session.";
+		} else if (code == FATAL_ALERT) {
+			reason = "The peer ended the DTLS session with a fatal alert.";
+		} else if (code == CLIENT_RECONNECT) {
+			reason = "The peer began a new DTLS session from the same address, which ends this one.";
+		}
+
+		if (!connected) {
+			__fail(reason);
+			return;
+		}
+
+		close(false);
+		onClose(reason);
 	}
 	#end
 }

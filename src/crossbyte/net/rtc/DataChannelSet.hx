@@ -105,6 +105,23 @@ class DataChannelSet {
 		return __channels.get(id);
 	}
 
+	/**
+		Closes every channel, because the association under them has ended.
+
+		Each is closed the ordinary way, so each reports `onClose` and one still
+		waiting for its acknowledgement settles `opened`. Without this a channel
+		outlived its association: `open` stayed true after the peer had aborted,
+		and the first sign of it was a `send` that threw.
+	**/
+	public function closeAll():Void {
+		// Copied first: closing a channel removes it from the map being read.
+		var closing:Array<DataChannel> = [for (channel in __channels) channel];
+
+		for (channel in closing) {
+			channel.close();
+		}
+	}
+
 	@:noCompletion private function __onControl(streamId:Int, payload:ByteArray):Void {
 		var message = DcepMessage.decode(payload);
 

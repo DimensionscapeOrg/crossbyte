@@ -76,6 +76,50 @@ class DataChannelTest extends utest.Test {
 	}
 
 	/**
+		When the association goes, every channel on it goes too, and says so.
+
+		This is what `PeerConnection` does with an ABORT, a close_notify, lost
+		consent or its own `close()`. Before it, a channel outlived the
+		association under it: `open` stayed true, `onClose` never ran, a channel
+		still waiting for its acknowledgement left `opened` pending forever, and
+		the first sign of any of it was a `send` that threw.
+	**/
+	public function testEveryChannelClosesWhenTheSetIsClosed():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.open();
+		var accepted:DataChannel = null;
+		pair.serverChannels.onChannel = channel -> accepted = channel;
+
+		var chat = pair.clientChannels.create("chat");
+		Assert.isTrue(pair.run(() -> chat.open && accepted != null), "the channel never opened");
+
+		// And one whose acknowledgement has not come back, since that is the
+		// case where a caller is waiting on a future.
+		var waiting = pair.clientChannels.create("waiting");
+		var waitingSettled:String = null;
+		waiting.opened.then(_ -> waitingSettled = "resolved", error -> waitingSettled = error);
+
+		var closes:Array<String> = [];
+		chat.onClose = () -> closes.push("chat");
+		waiting.onClose = () -> closes.push("waiting");
+
+		pair.clientChannels.closeAll();
+
+		Assert.isFalse(chat.open, "a channel whose association ended still reports itself open");
+		Assert.isFalse(waiting.open);
+		Assert.equals(2, closes.length, "onClose ran for " + closes.join(",") + " rather than for both channels");
+		Assert.notNull(waitingSettled, "a channel still waiting for its acknowledgement left `opened` pending");
+		Assert.notEquals("resolved", waitingSettled, "a channel that closed before it was acknowledged reported itself opened");
+		Assert.isNull(pair.clientChannels.channel(chat.id), "a closed channel is still held by the set");
+		Assert.raises(() -> chat.send("after the end"), ArgumentError);
+
+		// Once each, however many times the association's end is reported.
+		pair.clientChannels.closeAll();
+		Assert.equals(2, closes.length, "closing again reported the channels again");
+	}
+
+	/**
 		The parity rule, which is the whole of the collision avoidance.
 
 		The peer that was the DTLS client takes even stream numbers and the
