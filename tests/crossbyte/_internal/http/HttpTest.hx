@@ -364,7 +364,8 @@ class HttpTest extends utest.Test {
 		Assert.equals(5, progress[progress.length - 1].total);
 		Assert.isTrue(fixture.request.indexOf("GET /fixed?existing=1 HTTP/1.1") == 0);
 		Assert.isTrue(fixture.request.indexOf("Host: 127.0.0.1:" + fixture.port) >= 0);
-		Assert.isTrue(fixture.request.indexOf("Connection: close") >= 0);
+		// Kept for the next request, except on eval, which keeps none.
+		Assert.isTrue(fixture.request.indexOf(#if eval "Connection: close" #else "Connection: keep-alive" #end) >= 0);
 		Assert.isTrue(fixture.request.indexOf("Accept-Encoding: identity") >= 0);
 	}
 
@@ -1087,6 +1088,72 @@ class HttpTest extends utest.Test {
 		Require.notNull(failure);
 	}
 
+	#if !eval
+	// Kept connections are not used on eval, where a reset is uncatchable.
+	public function testAConnectionIsKeptForTheNextRequest():Void {
+		// Every request asked for Connection: close, so each was a new
+		// connection, and over https a new handshake.
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		for (i in 0...3) {
+			Assert.equals("ok", __get('http://127.0.0.1:${server.port}/n$i'));
+		}
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(1, server.connections, "each request opened a connection of its own");
+		Assert.equals(3, server.requestCount());
+		Assert.isTrue(server.request(0).indexOf("Connection: keep-alive") >= 0);
+	}
+
+	public function testAKeptConnectionTheServerClosedIsReplaced():Void {
+		// The server reads the second request on the connection and closes it
+		// unanswered, as one timing out an idle connection does while the
+		// request is on its way. The request goes again, on a new one.
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> request == 0 ? "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok" : null);
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/first'));
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/second'));
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(2, server.connections);
+	}
+
+	public function testAPostIsNotSentOnAKeptConnection():Void {
+		// Whether a server acted on a request its connection died under cannot
+		// be known, so only a request that may be sent twice uses one.
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/read'));
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/write', "POST", "body"));
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(2, server.connections);
+	}
+
+	public function testAResponseThatClosesIsNotKept():Void {
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok");
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/a'));
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/b'));
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(2, server.connections);
+	}
+
+	private static function __get(url:String, method:String = "GET", ?data:String):Null<String> {
+		var http = new Http(url, method, null, null, null, data);
+		var result:Null<String> = null;
+		http.onComplete = bytes -> result = bytes.toString();
+		http.onError = (message, ?body) -> result = "error: " + message;
+		http.load();
+		return result;
+	}
+	#end
+
 	/**
 	 * Takes one request and answers nothing: closes at once, or holds the
 	 * connection until the client goes, three seconds at most.
@@ -1275,6 +1342,120 @@ class HttpTest extends utest.Test {
 		} catch (_:Dynamic) {}
 	}
 }
+
+#if !eval
+/**
+ * A server that keeps connections: each on a thread of its own, answering
+ * every request on it as `respond(connection, request)` says -- the indexes
+ * count from zero -- until that answers null, when it closes unanswered.
+ */
+private class KeptAliveServer {
+	public var port(default, null):Int = 0;
+	public var connections(get, never):Int;
+
+	private final __lock:sys.thread.Mutex = new sys.thread.Mutex();
+	private final __requests:Array<String> = [];
+	private final __server:SysSocket = new SysSocket();
+	private final __respond:(Int, Int) -> Null<String>;
+	private var __connections:Int = 0;
+
+	public function new(respond:(Int, Int) -> Null<String>) {
+		__respond = respond;
+		__server.bind(new Host("127.0.0.1"), 0);
+		__server.listen(8);
+		port = __server.host().port;
+		Thread.create(__accept);
+	}
+
+	private function get_connections():Int {
+		__lock.acquire();
+		var count:Int = __connections;
+		__lock.release();
+		return count;
+	}
+
+	public function requestCount():Int {
+		__lock.acquire();
+		var count:Int = __requests.length;
+		__lock.release();
+		return count;
+	}
+
+	public function request(index:Int):String {
+		__lock.acquire();
+		var text:String = index < __requests.length ? __requests[index] : "";
+		__lock.release();
+		return text;
+	}
+
+	public function close():Void {
+		try {
+			__server.close();
+		} catch (_:Dynamic) {}
+	}
+
+	private function __accept():Void {
+		while (true) {
+			var peer:SysSocket;
+			try {
+				peer = __server.accept();
+			} catch (_:Dynamic) {
+				return;
+			}
+			__lock.acquire();
+			var index:Int = __connections++;
+			__lock.release();
+			Thread.create(() -> __serve(peer, index));
+		}
+	}
+
+	private function __serve(peer:SysSocket, connection:Int):Void {
+		var request:Int = 0;
+		try {
+			peer.setTimeout(5.0);
+			while (true) {
+				var text:String = __readRequest(peer);
+				__lock.acquire();
+				__requests.push(text);
+				__lock.release();
+
+				var answer:Null<String> = __respond(connection, request++);
+				if (answer == null) {
+					break;
+				}
+				peer.output.writeString(answer);
+				peer.output.flush();
+				if (answer.indexOf("Connection: close") >= 0) {
+					break;
+				}
+			}
+		} catch (_:Dynamic) {}
+		try {
+			peer.close();
+		} catch (_:Dynamic) {}
+	}
+
+	private static function __readRequest(peer:SysSocket):String {
+		var lines:Array<String> = [];
+		var length:Int = 0;
+		while (true) {
+			var line:String = peer.input.readLine();
+			if (line == "") {
+				break;
+			}
+			lines.push(line);
+			var colon:Int = line.indexOf(":");
+			if (colon > 0 && line.substr(0, colon).toLowerCase() == "content-length") {
+				length = Std.parseInt(StringTools.trim(line.substr(colon + 1)));
+			}
+		}
+		if (length > 0) {
+			lines.push(peer.input.read(length).toString());
+		}
+		return lines.join("\n");
+	}
+}
+#end
 
 private class TwoShotHttpServer {
 	public var port:Int = 0;

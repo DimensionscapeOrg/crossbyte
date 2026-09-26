@@ -566,6 +566,16 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The HTTP/1.1 client keeps connections. It asked for `Connection: close` on
+  every request, so each `URLLoader` load paid for a new connection, and over
+  `https` a new TLS handshake. Now a response read to its framed end, from a
+  server that did not ask to close, leaves its connection for the next
+  request to the same scheme, host and port, for up to four seconds, six an
+  origin and 64 in all. A kept connection the server has closed is noticed
+  before use, or else the request goes again on a new one -- which is why
+  only `GET`, `HEAD`, `OPTIONS`, `PUT` and `DELETE` are sent on one. Plain
+  requests on loopback went from about 375 to 150 microseconds natively.
+  Not on eval.
 - The server's rate limiter keys an IPv6 client by its /64 rather than its
   whole address, the block one subscriber is given; keyed on the whole
   address, a client stepping through its own /64 had a new budget for every
