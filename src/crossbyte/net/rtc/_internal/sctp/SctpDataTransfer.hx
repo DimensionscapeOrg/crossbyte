@@ -115,7 +115,14 @@ class SctpDataTransfer {
 	/** Called with each whole message, once it is complete and in order. **/
 	public dynamic function onMessage(streamId:Int, payload:ByteArray, protocolId:Int):Void {}
 
-	/** Called when a fragment could not be delivered after every attempt. **/
+	/**
+		Called when a message arriving here had to be given up: one that grew
+		past `MAX_REASSEMBLY` or `MAX_FRAGMENTS`, a stream held past
+		`MAX_HELD`, or more held than the window offered.
+
+		Data this end sends that the peer never acknowledges is not reported
+		here. That ends the association, through `SctpAssociation.onClose`.
+	**/
 	public dynamic function onFailure(reason:String):Void {}
 
 	@:noCompletion private var __nextTsn:Int;
@@ -363,9 +370,14 @@ class SctpDataTransfer {
 			}
 
 			if (outstanding.attempts >= MAX_ATTEMPTS) {
-				onFailure("A fragment went unacknowledged after " + MAX_ATTEMPTS + " attempts.");
-				__inFlight -= outstanding.data.payload.length;
-				__unacknowledged.remove(outstanding);
+				// RFC 4960 section 8.1: past the limit the peer is unreachable
+				// and the association is over. Dropping this one fragment, which
+				// is what happened, left a reliable ordered stream a hole that
+				// nothing would ever fill -- everything after it on the stream
+				// stalled for good, later fragments were resent up to eleven
+				// times, and the association went on reporting itself open.
+				association.__end("The peer stopped acknowledging data: a fragment went unacknowledged after " + MAX_ATTEMPTS
+					+ " attempts.", true);
 				return;
 			}
 
