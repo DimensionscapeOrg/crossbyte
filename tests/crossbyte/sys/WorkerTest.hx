@@ -164,21 +164,54 @@ class WorkerTest extends utest.Test {
 		Assert.equals("second", worker.result);
 	}
 
-	public function testCancelDetachesFromOwningRuntimeEvenIfCurrentRuntimeChanges():Void {
+	public function testAWorkerDeliversToTheRuntimeItRanOnAndHoldsNoTickListener():Void {
+		// A running worker held a tick listener on its runtime and polled its
+		// queue every tick. It posts to the runtime instead, which wakes it.
 		#if target.threaded
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
 		var worker = new Worker();
-		worker.doWork = _ -> Sys.sleep(0.05);
+		var completed = false;
+		var sent = false;
+		worker.addEventListener(ThreadEvent.COMPLETE, (_:ThreadEvent) -> completed = true);
+		worker.doWork = _ -> {
+			worker.sendComplete("done");
+			sent = true;
+		};
 
 		worker.run();
-		Assert.isTrue(child.hasEventListener(crossbyte.events.TickEvent.TICK));
+		Assert.isFalse(child.hasEventListener(crossbyte.events.TickEvent.TICK), "a running worker holds a tick listener");
+		waitFor(() -> sent);
 
 		primordial.pump(0, 0);
-		worker.cancel(false);
-
-		Assert.isFalse(child.hasEventListener(crossbyte.events.TickEvent.TICK));
+		Assert.isFalse(completed, "delivered to a runtime other than the one it ran on");
+		child.pump(0, 0);
+		Assert.isTrue(completed);
 		child.exit();
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testACancelledWorkerDeliversNothingMore():Void {
+		#if target.threaded
+		var child = new CrossByte(false, DEFAULT, true);
+		var worker = new Worker();
+		var progress = 0;
+		var sent = false;
+		worker.addEventListener(ThreadEvent.PROGRESS, (_:ThreadEvent) -> progress++);
+		worker.doWork = _ -> {
+			worker.sendProgress(1);
+			sent = true;
+		};
+
+		worker.run();
+		waitFor(() -> sent);
+		worker.cancel(false);
+		child.pump(0, 0);
+		child.exit();
+
+		Assert.equals(0, progress);
 		#else
 		Assert.pass();
 		#end

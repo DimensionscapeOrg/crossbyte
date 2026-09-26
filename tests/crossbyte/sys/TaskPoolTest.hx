@@ -67,6 +67,37 @@ class TaskPoolTest extends utest.Test {
 		#end
 	}
 
+	public function testPendingTasksHoldNoTickListeners():Void {
+		// Each pending task held a tick listener of its own, and adding or
+		// removing one copied the runtime's whole list: 8000 tasks took 2.3s
+		// to submit, and every idle tick polled all of them.
+		#if target.threaded
+		var runtime = CrossByte.current();
+		var before = __tickListeners(runtime);
+		var gate = new sys.thread.Lock();
+		var pool = makePool(2);
+		var tasks = [for (_ in 0...1000) pool.submit(() -> gate.wait())];
+
+		Assert.equals(before, __tickListeners(runtime), "pending tasks attached tick listeners");
+
+		for (_ in 0...1000) {
+			gate.release();
+		}
+		for (task in tasks) {
+			task.await();
+		}
+		pumpUntil(() -> __tickListeners(runtime) == before);
+		Assert.equals(before, __tickListeners(runtime));
+		#else
+		Assert.pass();
+		#end
+	}
+
+	private static function __tickListeners(runtime:CrossByte):Int {
+		var list:Array<Dynamic> = @:privateAccess runtime.__eventMap == null ? null : cast @:privateAccess runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		return list == null ? 0 : list.length;
+	}
+
 	public function testAPoolCanBeSizedByTheProcessorCount():Void {
 		// processorCount was 0 everywhere but native, and a pool of 0 throws.
 		Assert.isTrue(System.processorCount >= 1, "processorCount is " + System.processorCount);
