@@ -37,6 +37,16 @@ class JvmSslSocket extends sys.net.Socket {
 
 	public var verifyCert:Null<Bool>;
 
+	/**
+		This socket's own `verifyCert`, or `DEFAULT_VERIFY_CERT` when it has
+		none -- the order the native socket uses. The default was never read
+		here, so turning verification off for every socket, as a development
+		setup does, left the jvm verifying and refusing the certificate.
+	**/
+	@:noCompletion private inline function __verifies():Null<Bool> {
+		return verifyCert != null ? verifyCert : DEFAULT_VERIFY_CERT;
+	}
+
 	// Configured on the listener before bind(); copied to each connection.
 	@:noCompletion private var __certificate:JvmSslCertificate;
 	@:noCompletion private var __key:JvmSslKey;
@@ -289,7 +299,7 @@ class JvmSslSocket extends sys.net.Socket {
 		// without this the client is never asked for a certificate and the
 		// store is never consulted. `verifyCert` is what requireClientCertificate
 		// sets, so the two travel together.
-		if (!clientMode && verifyCert == true) {
+		if (!clientMode && __verifies() == true) {
 			__engine.setNeedClientAuth(true);
 		}
 
@@ -307,7 +317,7 @@ class JvmSslSocket extends sys.net.Socket {
 			// host picks a certificate at all, so a client that is not
 			// verifying still has to ask for the right one -- dropping SNI here
 			// would quietly get it served the wrong host.
-			if (verifyCert != false) {
+			if (__verifies() != false) {
 				parameters.setEndpointIdentificationAlgorithm("HTTPS");
 			}
 
@@ -371,7 +381,7 @@ class JvmSslSocket extends sys.net.Socket {
 		var trust:Null<java.NativeArray<TrustManager>> = null;
 		var ca = __ca != null ? __ca : DEFAULT_CA;
 
-		if (verifyCert == false) {
+		if (__verifies() == false) {
 			// Asked for explicitly, and it means the peer is no longer
 			// authenticated: the traffic is still encrypted, but anything able
 			// to sit in the middle can present its own certificate. Unset --
@@ -486,6 +496,10 @@ class JvmSslSocket extends sys.net.Socket {
 		if (__netIn.position() > 0 && __consume()) {
 			return;
 		}
+
+		// A blocking read on the channel has no timeout of its own, so an
+		// https response that stopped arriving was waited for for ever.
+		sys.net.Socket.__awaitReadable(socket, __timeout);
 
 		var read = try {
 			socket.read(__netIn);

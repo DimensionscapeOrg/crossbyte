@@ -524,52 +524,8 @@ private class SocketInput extends haxe.io.Input {
 		this.channel = channel;
 	}
 
-	/**
-		A blocking NIO channel has no read timeout -- SO_TIMEOUT reaches only
-		the stream API, never `channel.read` -- so `setTimeout` was stored and
-		never read, and a read with nothing coming waited for ever: the HTTP
-		client's idle limit did nothing here. Waiting for readability on the
-		thread's selector first gives the timeout the other targets honour.
-	**/
 	function __awaitReadable():Void {
-		if (timeout <= 0 || !channel.isBlocking()) {
-			return;
-		}
-
-		var selector = Socket.__threadSelector();
-		var ready:Int = 0;
-		var failure:Dynamic = null;
-		try {
-			channel.configureBlocking(false);
-			channel.register(selector, SelectionKey.OP_READ);
-			// 0 would mean no limit to select; the shortest real wait is 1 ms.
-			var millis:Float = Math.ceil(timeout * 1000);
-			ready = selector.select(haxe.Int64.fromFloat(millis < 1 ? 1 : millis));
-		} catch (e:Dynamic) {
-			failure = e;
-		}
-		try {
-			var keys = selector.keys().iterator();
-			while (keys.hasNext()) {
-				var k:SelectionKey = keys.next();
-				k.cancel();
-			}
-			selector.selectNow();
-		} catch (_:Dynamic) {}
-		try {
-			channel.configureBlocking(true);
-		} catch (e:Dynamic) {
-			if (failure == null) {
-				failure = e;
-			}
-		}
-
-		if (failure != null) {
-			throw Custom(failure);
-		}
-		if (ready == 0) {
-			throw Custom("Timeout");
-		}
+		Socket.__awaitReadable(channel, timeout);
 	}
 
 	public override function readByte():Int {
@@ -908,6 +864,55 @@ class Socket {
 		a `Selector` is not safe to use from several at once.
 	**/
 	@:noCompletion private static var __selectors:JThreadLocal = new JThreadLocal();
+
+	/**
+		A blocking NIO channel has no read timeout -- SO_TIMEOUT reaches only
+		the stream API, never `channel.read` -- so `setTimeout` was stored and
+		never read, and a read with nothing coming waited for ever: the HTTP
+		client's idle limit did nothing here. Waiting for readability on the
+		thread's selector first gives the timeout the other targets honour.
+		The TLS socket calls this too, before it reads ciphertext.
+	**/
+	@:noCompletion private static function __awaitReadable(channel:SocketChannel, timeout:Float):Void {
+		if (timeout <= 0 || channel == null || !channel.isBlocking()) {
+			return;
+		}
+
+		var selector = __threadSelector();
+		var ready:Int = 0;
+		var failure:Dynamic = null;
+		try {
+			channel.configureBlocking(false);
+			channel.register(selector, SelectionKey.OP_READ);
+			// 0 would mean no limit to select; the shortest real wait is 1 ms.
+			var millis:Float = Math.ceil(timeout * 1000);
+			ready = selector.select(haxe.Int64.fromFloat(millis < 1 ? 1 : millis));
+		} catch (e:Dynamic) {
+			failure = e;
+		}
+		try {
+			var keys = selector.keys().iterator();
+			while (keys.hasNext()) {
+				var k:SelectionKey = keys.next();
+				k.cancel();
+			}
+			selector.selectNow();
+		} catch (_:Dynamic) {}
+		try {
+			channel.configureBlocking(true);
+		} catch (e:Dynamic) {
+			if (failure == null) {
+				failure = e;
+			}
+		}
+
+		if (failure != null) {
+			throw Custom(failure);
+		}
+		if (ready == 0) {
+			throw Custom("Timeout");
+		}
+	}
 
 	@:noCompletion private static function __threadSelector():Selector {
 		var existing:Dynamic = __selectors.get();

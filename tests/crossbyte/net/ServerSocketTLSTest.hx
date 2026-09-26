@@ -274,6 +274,147 @@ class ServerSocketTLSTest extends utest.Test {
 		between two halves of this one.
 	**/
 	#if (java || jvm)
+	/**
+		A TLS read with a timeout set gives up at the timeout on the jvm. A
+		blocking channel read has no timeout of its own and the TLS socket read
+		ciphertext that way, so an https response that stopped arriving -- or
+		never started -- was waited for for ever: the HTTP client's idle limit
+		never fired.
+	**/
+	public function testATlsReadGivesUpAtItsTimeout():Void {
+		var outcome = __readFromTlsServer(false, 0.3, null);
+		if (outcome == null) {
+			return;
+		}
+
+		Assert.isTrue(outcome.finished, "the TLS read never gave up");
+		Assert.isNull(outcome.failure, outcome.failure);
+		Assert.isTrue(outcome.gaveUp, "a TLS read with nothing to read returned something");
+		Assert.isTrue(outcome.took < 5.0, 'the TLS read gave up only after ${outcome.took} s');
+		Assert.isTrue(outcome.took >= 0.2, 'the TLS read gave up after ${outcome.took} s, before its timeout');
+	}
+
+	/**
+		`DEFAULT_VERIFY_CERT` applies to a TLS socket that sets no `verifyCert`
+		of its own, as it does natively. The jvm never read it, so turning
+		verification off for every socket still refused a self-signed server.
+	**/
+	public function testTheDefaultVerifySettingIsHonoured():Void {
+		var previous = crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT;
+		crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT = false;
+		var outcome = try __readFromTlsServer(true, 5.0, "hi") catch (e:Dynamic) {
+			crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT = previous;
+			throw e;
+		}
+		crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT = previous;
+		if (outcome == null) {
+			return;
+		}
+
+		Assert.isTrue(outcome.finished, "the client never finished");
+		Assert.isNull(outcome.failure, "a self-signed server was refused with verification off by default: " + outcome.failure);
+		Assert.equals("h".code, outcome.firstByte);
+	}
+
+	/**
+		A CrossByte TLS server that greets with `greeting` (or says nothing),
+		and a client on another thread that reads one byte with `timeout` set.
+		`defaultVerify` leaves the client's own verifyCert unset; otherwise it
+		is false. Null when there is no openssl to make a certificate.
+	**/
+	function __readFromTlsServer(defaultVerify:Bool, timeout:Float, greeting:Null<String>):Null<{
+		finished:Bool,
+		failure:Null<String>,
+		gaveUp:Bool,
+		took:Float,
+		firstByte:Int
+	}> {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return null;
+		}
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var server = new ServerSocket(true);
+		var accepted:crossbyte.net.Socket = null;
+		server.addEventListener(crossbyte.events.ServerSocketConnectEvent.CONNECT, function(e:crossbyte.events.ServerSocketConnectEvent) {
+			accepted = e.socket;
+			if (greeting != null) {
+				accepted.writeUTFBytes(greeting);
+				accepted.flush();
+			}
+		});
+		server.setCertificate(fixture.certificate, fixture.key);
+
+		var failure:Null<String> = null;
+		var gaveUp:Bool = false;
+		var took:Float = -1;
+		var firstByte:Int = -1;
+		var handoff = new sys.thread.Lock();
+		var finished:Bool = false;
+
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			var port = server.localPort;
+
+			sys.thread.Thread.create(() -> {
+				var client = new crossbyte._internal.socket.FlexSocket(true);
+				try {
+					if (!defaultVerify) {
+						client.verifyCert = false;
+					}
+					client.connect("127.0.0.1", port);
+					client.setTimeout(timeout);
+					var started = haxe.Timer.stamp();
+					try {
+						firstByte = client.input.readByte();
+					} catch (e:Dynamic) {
+						if (greeting != null) {
+							failure = Std.string(e);
+						}
+						gaveUp = true;
+					}
+					took = haxe.Timer.stamp() - started;
+				} catch (e:Dynamic) {
+					failure = Std.string(e);
+				}
+				try {
+					client.close();
+				} catch (_:Dynamic) {}
+				handoff.release();
+			});
+
+			var deadline = haxe.Timer.stamp() + 20;
+			while (haxe.Timer.stamp() < deadline && !finished) {
+				runtime.pump(1 / 60, 0);
+				finished = handoff.wait(0.002);
+			}
+		} catch (e:Dynamic) {
+			failure = Std.string(e);
+		}
+
+		if (accepted != null) {
+			try {
+				accepted.close();
+			} catch (_:Dynamic) {}
+		}
+		try {
+			server.close();
+		} catch (_:Dynamic) {}
+
+		return {
+			finished: finished,
+			failure: failure,
+			gaveUp: gaveUp,
+			took: took,
+			firstByte: firstByte
+		};
+	}
+	#end
+
+	#if (java || jvm)
 	public function testTlsCarriesDataAndNotJustAHandshake():Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
