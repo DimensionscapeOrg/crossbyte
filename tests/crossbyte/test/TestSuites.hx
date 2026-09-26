@@ -232,6 +232,11 @@ class TestSuites {
 		// stopped reading waits rather than buffering.
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		#end
+		// Registered for the browser, which reaches it through PortableSuite;
+		// written here too so the one list describes everything that runs.
+		#if (js && !nodejs)
+		runner.addCase(new crossbyte.net.BrowserSocketTest());
+		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
 		runner.addCase(new crossbyte.net.RUDPHardeningTest());
