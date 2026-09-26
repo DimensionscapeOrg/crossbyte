@@ -523,6 +523,18 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A reliable datagram session that has nothing to say stays up, and one
+  whose peer has gone is given up after a minute. A session sent no
+  keepalive and closed itself when it had heard nothing for 75 seconds, so a
+  quiet session died somewhere between 75 and 150 seconds in with both ends
+  running, while a dead peer took as long to notice. Now a session that has
+  sent nothing for `keepAliveInterval` (15 seconds, which also holds a NAT's
+  mapping open) sends a keepalive, and one that has heard nothing for
+  `idleTimeout` (60 seconds) dispatches `ioError` and closes. Both are set
+  on `ReliableDatagramSocket`, or on `ReliableDatagramServerSocket` for the
+  sessions it accepts and dials; zero turns either off. The keepalive is
+  the session's HANDSHAKE sent again, which every version answers with an
+  acknowledgement, so an older peer keeps the session up as well.
 - A `wss://` client checks the server's certificate: that it chains to an
   authority the client trusts, and that it names the host being connected
   to. Every secure `WebSocket` -- and so every `NetConnection` to a
@@ -704,6 +716,25 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable datagram peer that crashes and comes back on the same address
+  and port gets back in. Its old session on the server took every CONNECT
+  the new one sent, answered none, and was kept alive by them, so the peer
+  was locked out for as long as it kept trying: 29 attempts over 173
+  seconds, in the case that found it. A CONNECT now carries an id for its
+  attempt, in a field older builds never read; one with a new id, from the
+  address of a session already held, has the server ask the old peer
+  whether it is still there, and the next CONNECT to find no answer replaces
+  the session -- about three seconds on. A peer still there answers, so a
+  CONNECT sent in its name cannot take its session. A HANDSHAKE echoes the
+  id it answers, so a new attempt ignores one meant for its predecessor.
+  `ReliableDatagramServerSocket.close()` sends each session's peer a FIN,
+  where it sent nothing and every client went on sending into a closed port;
+  and a server answers a peer that sends as though it had a session and has
+  none -- the server restarted, or gave it up -- with a FIN, ending that
+  session at once rather than at the peer's own timeout. On Node, closing a
+  `DatagramSocket` waits for its sends to finish, since Node sends a turn
+  later and closing cancelled them: the FIN a closing session sends last
+  never left.
 - In a browser, a `Socket` sends each write once. It sent its buffer and
   never cleared it, and the tick flushes every pass, so one write went out
   again on every tick for as long as the connection lasted: an 11-byte write

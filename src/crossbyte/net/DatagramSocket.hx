@@ -242,6 +242,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	@:noCompletion private var __remotePort:Int = 0;
 	#if nodejs
 	@:noCompletion private var __socket:NodeDatagram;
+
+	// Sends Node has not finished, and a close waiting for them. Node sends a
+	// turn later even to a numeric address -- it looks the address up first
+	// -- so closing straight after a send cancelled it: the FIN a closing
+	// session sends last was the datagram that never left.
+	@:noCompletion private var __sendsInFlight:Int = 0;
+	@:noCompletion private var __closeWhenSent:NodeDatagram = null;
+	@:noCompletion private var __onSent:js.lib.Error->Int->Void = null;
+
 	// Chosen from the first address this socket is given, because Node fixes
 	// the family when the socket is made where a sys.net.UdpSocket does not.
 	@:noCompletion private var __family:String = null;
@@ -325,9 +334,20 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		}
 
 		stopReceiving();
+		#if nodejs
+		if (__sendsInFlight > 0) {
+			// Closed once the last send is done; see __onSent.
+			__closeWhenSent = __socket;
+		} else {
+			try {
+				__socket.close();
+			} catch (_:Dynamic) {}
+		}
+		#else
 		try {
 			__socket.close();
 		} catch (_:Dynamic) {}
+		#end
 		__socket = null;
 		__bound = false;
 		__connected = false;
@@ -481,7 +501,11 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			// to send.
 			var payload:ByteArray = new ByteArray();
 			payload.writeBytes(bytes, offset, length);
-			__nodeSocket(address).send(Buffer.hxFromBytes(payload), 0, length, port, address);
+			if (__onSent == null) {
+				__onSent = __sent;
+			}
+			__nodeSocket(address).send(Buffer.hxFromBytes(payload), 0, length, port, address, __onSent);
+			__sendsInFlight++;
 			__rememberLocalEndpoint();
 			#else
 			var host:Host = new Host(address);
@@ -504,6 +528,24 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 		}
 	}
+
+	#if nodejs
+	/**
+		Node's word that a send has finished, one way or the other. The last
+		one to finish closes a socket that was closed while they were out.
+	**/
+	@:noCompletion private function __sent(_:js.lib.Error, _:Int):Void {
+		__sendsInFlight--;
+
+		if (__sendsInFlight <= 0 && __closeWhenSent != null) {
+			var socket:NodeDatagram = __closeWhenSent;
+			__closeWhenSent = null;
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+	#end
 
 	/**
 		Stops receiving datagrams and removes the socket from the registry if it is
