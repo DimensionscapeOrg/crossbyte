@@ -732,6 +732,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `RateLimiter` holds at most `maxKeys` keys, a new constructor argument,
+  100,000 by default, and forgets idle ones without a sweep. Keys are
+  whatever a client sends, account names, addresses, and every one was
+  kept, with a sweep of the lot run inside whichever `tryAcquire` found it
+  due: two million keys held 294 MB on Node, 270 MB on the jvm and 375 MB
+  natively, and that one call took 815 ms, 133 ms and 335 ms. Now buckets
+  live in two generations and an idle generation is dropped whole, in one
+  assignment: that same call takes 0.1 ms on Node, and the flood holds 8 to
+  13 MB. Past the cap, new keys share one bucket, so a flood of them is
+  limited as one client while the keys already held keep their own. A call
+  also costs less natively, 25 ns rather than 45, and `activeKeyCount()` no
+  longer walks the table.
 - `URLLoader` dispatches `HTTPStatusEvent.HTTP_RESPONSE_STATUS` on every
   target, with the final response's `responseHeaders`, the `responseURL` it
   came from and whether it was `redirected`; it never dispatched it, so
