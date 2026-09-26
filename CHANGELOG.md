@@ -732,6 +732,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The server answers `500` for a file past 2 GB over HTTP/2 as well as
+  HTTP/1.1. `File.size` throws for such a file, since an Int cannot state
+  its length, and the static path did not catch it: HTTP/1.1 answered `500`
+  through its catch-all and HTTP/2 reset the stream. The server's own check,
+  an open, seek and read of every file it served, is gone with it.
 - On eval, the HTTP/1.1 client returns when a server closes without
   answering, or ends a chunked body before its size line: an error, where
   `load()` never returned. A socket's `readByte` answers 0 there at the end
