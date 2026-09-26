@@ -13,6 +13,7 @@ import crossbyte.errors.IOError;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.events.ReliableDatagramSocketConnectEvent;
@@ -20,9 +21,9 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrame;
 import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagramFrameType;
 import haxe.ds.StringMap;
-#if nodejs
 import crossbyte._internal.net.IPv6;
-#else
+#if !nodejs
+import crossbyte._internal.net.Resolver;
 import sys.net.Host;
 #end
 
@@ -182,7 +183,10 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		Called once a session, before its handshake. Return a new instance
 		each time: a policy keeps the state of the one session it serves. For
 		an accepted session a hook that throws refuses the CONNECT, as `admit`
-		does; for a dialled one the throw reaches the caller of `connect`.
+		does; for one dialled by address the throw reaches the caller of
+		`connect`, and for one dialled by name, asked about once the name is
+		looked up, it is reported as that session's `ioError`, and the
+		session closed.
 		A session's policy can also be changed later, through
 		`ReliableDatagramSocket.congestionControl`: once the peer has said
 		in its `connectPayload` what kind of link it is on, for instance.
@@ -192,6 +196,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	}
 
 	@:noCompletion private var __connections:StringMap<ReliableDatagramSocket>;
+
+	// Sessions dialled by name whose names are still being looked up. They
+	// have no endpoint to be filed under in `__connections` until the answer
+	// comes, and are kept here meanwhile so that close() reaches them.
+	@:noCompletion private var __dialling:Array<ReliableDatagramSocket> = null;
 
 	// Keys of accepted sessions that have not finished handshaking. Counted
 	// alongside rather than measured, because measuring means walking the
@@ -268,6 +277,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		for (connection in __connections) {
 			connections.push(connection);
 		}
+		// And those still looking their peer's name up, which are this
+		// server's as much, though filed under no endpoint yet.
+		if (__dialling != null) {
+			for (connection in __dialling) {
+				connections.push(connection);
+			}
+			__dialling = null;
+		}
 		__connections = new StringMap();
 		__pending = new StringMap();
 		__pendingCount = 0;
@@ -333,12 +350,24 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		session dialled from a bound-but-not-listening server would send its
 		handshake and never hear the answer.
 
+		`address` may be a name everywhere but Node, and it is not looked up
+		on the runtime's thread: the session is returned at once, and filed
+		under the address the name resolves to, its handshake begun, when the
+		answer comes. Until then its `remoteAddress` reads empty; its timeout
+		counts the lookup. What this call throws for an address it reports on
+		such a session instead, as an `ioError` event followed by the
+		session's close: a name that does not resolve, an endpoint that has a
+		session here already, and a `congestionControlFor` that throws. On a
+		thread with no CrossByte runtime a name is looked up in the call, as
+		it always was.
+
+		@param address The peer's address, or a name.
 		@param timeoutMs Session timeout in milliseconds, or `0` for the default.
 		@param payload Sent with every CONNECT, as `ReliableDatagramSocket.connect`
 		       sends it: copied now, and at most one frame.
 		@throws IOError if this server is closed, unbound, or not listening.
-		@throws ArgumentError if the address cannot be resolved, or a session to
-		this endpoint already exists.
+		@throws ArgumentError if the address is malformed, or, on Node, a
+		name, or if a session to this endpoint already exists.
 		@throws RangeError if `payload` is larger than one frame.
 	**/
 	public function connect(address:String, port:Int, timeoutMs:Int = 0, ?payload:ByteArray):ReliableDatagramSocket {
@@ -368,6 +397,12 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		resolved = address;
 		#else
+		// Without a runtime on this thread there is nothing to hand an answer
+		// back to, so a name is looked up here, as it always was.
+		if (Resolver.needsLookup(address) && Resolver.runtimeHere() != null) {
+			return __dialByName(address, port, timeoutMs, outgoing);
+		}
+
 		try {
 			resolved = new Host(address).toString();
 		} catch (_:Dynamic) {
@@ -389,6 +424,75 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__connections.set(key, socket);
 		return socket;
 	}
+
+	#if !nodejs
+	/**
+		`connect()` to a name: the session is made and returned now, and the
+		name looked up off the runtime's thread (see `Resolver`); the session
+		is filed under the address it resolves to, and its handshake begun,
+		when the answer comes.
+
+		It used to be looked up in the call, on the runtime's thread, so every
+		session this server carries waited on the resolver, a second, for a
+		name that does not exist. What the call refused by throwing it now
+		reports on the session, which it has already handed over: a name that
+		does not resolve, an endpoint with a session here already, and a
+		`congestionControlFor` that throws, each asked about only once the
+		address is known.
+	**/
+	@:noCompletion private function __dialByName(name:String, port:Int, timeoutMs:Int, outgoing:ByteArray):ReliableDatagramSocket {
+		var socket = ReliableDatagramSocket.__createDialed(__socket, null, port, this, socketMode, timeoutMs, outgoing, null);
+		if (__dialling == null) {
+			__dialling = [];
+		}
+		__dialling.push(socket);
+
+		Resolver.resolve(name, function(host:Null<Host>, failure:Null<String>):Void {
+			// Closed meanwhile, the session, the server with it, or the
+			// attempt at its deadline, and taken off the list then.
+			if (__dialling == null || !__dialling.remove(socket)) {
+				return;
+			}
+
+			if (host == null) {
+				__refuseDialled(socket, "Could not connect to " + name + ": the name did not resolve (" + failure + ")");
+				return;
+			}
+
+			// As the address arrives from the socket, so the session is found
+			// by it.
+			var resolved:String = IPv6.compress(host.toString());
+			var key:String = __endpointKey(resolved, port);
+			if (__connections.exists(key)) {
+				__refuseDialled(socket, "Could not connect to " + name + ": a reliable datagram session to " + key + " already exists on this server.");
+				return;
+			}
+
+			var congestion:CongestionControl = null;
+			try {
+				congestion = congestionControlFor(resolved, port);
+			} catch (e:Dynamic) {
+				__refuseDialled(socket, "Could not connect to " + name + ": congestionControlFor threw " + Std.string(e));
+				return;
+			}
+
+			__connections.set(key, socket);
+			socket.__beginDialled(resolved, congestion);
+		});
+
+		return socket;
+	}
+
+	/**
+		Tells a session dialled by name why it cannot go ahead, and closes it.
+		Its address is never set, so closing it disturbs no session filed under
+		the endpoint it would have had.
+	**/
+	@:noCompletion private static function __refuseDialled(socket:ReliableDatagramSocket, reason:String):Void {
+		socket.dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, reason));
+		socket.__dispose(true);
+	}
+	#end
 
 	/**
 		Asks a STUN server what address and port this server appears as from
@@ -845,6 +949,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		var key:String = __endpointKey(socket.remoteAddress, socket.remotePort);
 		__connections.remove(key);
 		__releasePending(key);
+		// One closed while its peer's name was looked up was filed only
+		// here; its answer, when it comes, finds it gone.
+		if (__dialling != null) {
+			__dialling.remove(socket);
+		}
 	}
 
 	// Removal answers whether it was still pending, so this stays exact

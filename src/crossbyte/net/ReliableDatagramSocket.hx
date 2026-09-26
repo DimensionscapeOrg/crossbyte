@@ -1276,8 +1276,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 * forces, leaves both the server and the session reading the same socket,
 	 * and leaves the server free to accept a duplicate session for an endpoint
 	 * the dialled one already holds.
+	 *
+	 * A null `remoteAddress` is a peer whose name is still being looked up:
+	 * the attempt's deadline starts now, and counts the lookup, and the
+	 * handshake waits for `__beginDialled` with the answer.
 	 */
-	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:String, remotePort:Int,
+	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:Null<String>, remotePort:Int,
 			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray,
 			congestion:CongestionControl):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
@@ -1303,15 +1307,34 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		socket.__mode = mode;
 		socket.__server = server;
 		socket.__transport = transport;
-		socket.__remoteAddress = remoteAddress;
+		socket.__remoteAddress = remoteAddress != null ? remoteAddress : "";
 		socket.__remotePort = remotePort;
 		socket.__remoteResponsePort = 0;
 		socket.__keepAliveInterval = server.keepAliveInterval;
 		socket.__idleTimeout = server.idleTimeout;
 		socket.__resetSequences();
 		socket.__connectionId = socket.__newConnectionId();
-		socket.__beginHandshake();
+		if (remoteAddress == null) {
+			socket.__lookingUp = true;
+			socket.__connectionTimeoutHandle = CBTimer.setTimeout(socket.__timeout / 1000, socket.__onConnectionFailed);
+		} else {
+			socket.__beginHandshake();
+		}
 		return socket;
+	}
+
+	/**
+		A dialled session's peer, looked up: the address its name resolved to,
+		and the policy the server chose for it. The handshake begins, under the
+		deadline that has been running since the call.
+	**/
+	@:noCompletion private function __beginDialled(remoteAddress:String, congestion:Null<CongestionControl>):Void {
+		__lookingUp = false;
+		if (congestion != null) {
+			__congestion = congestion;
+		}
+		__remoteAddress = remoteAddress;
+		__beginHandshake(true);
 	}
 
 	@:noCompletion private function __acceptFrame(frame:ReliableDatagramFrame):Void {

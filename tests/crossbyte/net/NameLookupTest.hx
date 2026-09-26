@@ -384,8 +384,8 @@ class NameLookupTest extends utest.Test {
 	/**
 		`DatagramSocket.connect()` to a name returns at once, and a name that
 		does not resolve is reported afterwards, as `send()` to one is. It was
-		looked up in the call, and one that did not resolve was thrown as
-		`ArgumentError` once the resolver had taken its second over it.
+		looked up in the call, holding the runtime for as long as the resolver
+		took, and one that did not resolve was thrown.
 
 		The socket reads as connected meanwhile, so a datagram sent with no
 		destination is taken and waits for the answer, and goes with the
@@ -528,11 +528,177 @@ class NameLookupTest extends utest.Test {
 	}
 
 	/**
-		The runtime goes on while a datagram socket's peer is looked up
-		slowly: a single label, which on Windows the resolver asks LLMNR and
-		NetBIOS about too before it gives up, as in
-		`testTheRuntimeRunsWhileASlowLookupDoes`. It was looked up in the
-		call, with every socket and timer on the runtime waiting.
+		`ReliableDatagramServerSocket.connect()` to a name returns its session
+		at once, and a name that does not resolve is reported on the session,
+		which then closes, as `ReliableDatagramSocket.connect()` does. The
+		server looked the name up in the call, holding every session it
+		carries, and threw `ArgumentError` for one that did not resolve.
+	**/
+	@:timeout(20000)
+	public function testAServerDiallingAMissingNameIsNotHeldByTheLookup(async:Async):Void {
+		var server = new ReliableDatagramServerSocket();
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var name:String = __missingName();
+		var session:ReliableDatagramSocket = null;
+		var thrown:Dynamic = null;
+
+		var started:Float = haxe.Timer.stamp();
+		try {
+			session = server.connect(name, 9);
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		var spent:Float = haxe.Timer.stamp() - started;
+
+		Assert.isNull(thrown, "connect() looked the name up in the call and threw: " + thrown);
+		Assert.isTrue(spent < PROMPT, 'connect() spent $spent s on a name: it waited on the resolver');
+		if (session == null) {
+			try server.close() catch (_:Dynamic) {}
+			async.done();
+			return;
+		}
+		Assert.equals("", session.remoteAddress, "a session whose peer is still being looked up reports an address");
+
+		var failure:String = null;
+		var closed:Bool = false;
+		session.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
+		session.addEventListener(Event.CLOSE, function(_) closed = true);
+
+		NetPump.until(() -> failure != null && closed, 15.0, function(_) {
+			Assert.isTrue(failure != null && failure.indexOf(name) >= 0, "the failure does not name what did not resolve: " + failure);
+			Assert.isTrue(closed, "a session whose name did not resolve was not closed");
+			try server.close() catch (_:Dynamic) {}
+			async.done();
+		});
+	}
+
+	/**
+		A name that resolves is dialled from the server's own port, through
+		one lookup off the runtime's thread, and the session is filed under
+		the address the name resolved to: the peer's replies reach it, and a
+		second session to that endpoint is refused, thrown when it is asked
+		for by address, as it always was, and reported on the session when by
+		name, once the name is looked up.
+	**/
+	@:timeout(15000)
+	public function testAServerDialsAName(async:Async):Void {
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+		var acceptedByBob:Array<ReliableDatagramSocket> = [];
+		bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent) acceptedByBob.push(e.socket));
+		alice.bind(0, "127.0.0.1");
+		alice.listen();
+		bob.bind(0, "127.0.0.1");
+		bob.listen();
+
+		NetPump.until(() -> alice.localPort > 0 && bob.localPort > 0, 5.0, function(_) {
+			var lookups:Int = crossbyte._internal.net.Resolver.__started;
+			var toBob = alice.connect("localhost", bob.localPort);
+			Assert.equals(lookups + 1, crossbyte._internal.net.Resolver.__started, "the name was not looked up off the runtime's thread");
+
+			var connected:Bool = false;
+			var failure:String = null;
+			toBob.addEventListener(Event.CONNECT, function(_) connected = true);
+			toBob.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
+
+			NetPump.until(() -> (connected && acceptedByBob.length > 0) || failure != null, 10.0, function(_) {
+				Assert.isTrue(connected, "a session dialled to a name never connected: " + failure);
+				Assert.equals("127.0.0.1", toBob.remoteAddress, "the session does not report the address its name resolved to");
+				Assert.equals(1, acceptedByBob.length);
+				if (acceptedByBob.length > 0) {
+					Assert.equals(alice.localPort, acceptedByBob[0].remotePort, "dialled from a port other than the server's own");
+				}
+
+				Assert.raises(() -> alice.connect("127.0.0.1", bob.localPort), crossbyte.errors.ArgumentError);
+
+				var again:ReliableDatagramSocket = null;
+				try {
+					again = alice.connect("localhost", bob.localPort);
+				} catch (e:Dynamic) {
+					Assert.fail("a second session to one endpoint, dialled by name, was refused in the call: " + e);
+				}
+				var refusal:String = null;
+				var againClosed:Bool = false;
+				if (again != null) {
+					again.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) refusal = e.text);
+					again.addEventListener(Event.CLOSE, function(_) againClosed = true);
+				}
+
+				NetPump.until(() -> again == null || (refusal != null && againClosed), 10.0, function(_) {
+					Assert.notNull(refusal, "a second session to one endpoint, dialled by name, was not refused");
+					Assert.isTrue(againClosed, "a refused session was not closed");
+					Assert.isTrue(toBob.connected, "refusing a second session disturbed the first");
+					try alice.close() catch (_:Dynamic) {}
+					try bob.close() catch (_:Dynamic) {}
+					NetPump.wait(0.1, () -> async.done());
+				});
+			});
+		});
+	}
+
+	/**
+		Closing a server while a session it is dialling by name is looked up
+		closes that session with the rest, and the answer, when it comes,
+		dials nobody.
+	**/
+	@:timeout(15000)
+	public function testAServerClosedWhileDiallingANameClosesTheSession(async:Async):Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var uncaught:Array<String> = [];
+		var onUncaught = function(e:crossbyte.events.UncaughtErrorEvent) uncaught.push(Std.string(e.error));
+		runtime.addEventListener(crossbyte.events.UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new DatagramSocket();
+		var heardByBob:Int = 0;
+		bob.addEventListener(DatagramSocketDataEvent.DATA, function(_) heardByBob++);
+		alice.bind(0, "127.0.0.1");
+		alice.listen();
+		bob.bind(0, "127.0.0.1");
+		bob.receive();
+
+		NetPump.until(() -> alice.localPort > 0 && bob.localPort > 0, 5.0, function(_) {
+			var toBob:ReliableDatagramSocket = null;
+			try {
+				toBob = alice.connect("localhost", bob.localPort);
+			} catch (e:Dynamic) {
+				Assert.fail("connect() threw: " + e);
+			}
+			var closed:Bool = false;
+			var failures:Array<String> = [];
+			if (toBob != null) {
+				toBob.addEventListener(Event.CLOSE, function(_) closed = true);
+				toBob.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failures.push(e.text));
+			}
+			alice.close();
+			Assert.isTrue(closed, "closing the server did not close a session it was dialling by name");
+
+			// Its answer is in once that of a lookup started after it is, give
+			// or take the order two threads finish in.
+			var probe = new DatagramSocket();
+			probe.connect("localhost", bob.localPort);
+			NetPump.until(() -> probe.remoteAddress != "", 10.0, function(_) {
+				NetPump.wait(0.3, function() {
+					runtime.removeEventListener(crossbyte.events.UncaughtErrorEvent.UNCAUGHT_ERROR, onUncaught);
+					Assert.same([], uncaught, "the answer for a session closed with its server failed on the runtime");
+					Assert.same([], failures, "a session closed with its server reported on the answer");
+					Assert.equals(0, heardByBob, "a session closed with its server dialled its peer when the answer came");
+					probe.close();
+					bob.close();
+					async.done();
+				});
+			});
+		});
+	}
+
+	/**
+		The runtime goes on while a datagram socket's peer, and a peer a
+		server dials, are looked up slowly: a single label, which on Windows
+		the resolver asks LLMNR and NetBIOS about too before it gives up, as
+		in `testTheRuntimeRunsWhileASlowLookupDoes`. Both were looked up in
+		the call, with every socket and timer on the runtime waiting.
 	**/
 	@:timeout(40000)
 	public function testTheRuntimeRunsWhileDatagramPeersAreLookedUp(async:Async):Void {
@@ -544,24 +710,33 @@ class NameLookupTest extends utest.Test {
 		var socketFailed:Bool = false;
 		socket.addEventListener(IOErrorEvent.IO_ERROR, function(_) socketFailed = true);
 
+		var server = new ReliableDatagramServerSocket();
+		server.bind(0, "127.0.0.1");
+		server.listen();
+		var dialFailed:Bool = false;
+
 		runtime.addEventListener(crossbyte.events.TickEvent.TICK, onTick);
 		var thrown:Dynamic = null;
 		var started:Float = haxe.Timer.stamp();
 		try {
 			socket.connect("crossbyte-missing-" + Std.random(0x3FFFFFFF), 9);
+			var session = server.connect("crossbyte-missing-" + Std.random(0x3FFFFFFF), 9);
+			session.addEventListener(IOErrorEvent.IO_ERROR, function(_) dialFailed = true);
 		} catch (e:Dynamic) {
 			thrown = e;
 		}
 		var spent:Float = haxe.Timer.stamp() - started;
 
 		Assert.isNull(thrown, "a name was looked up in the call: " + thrown);
-		Assert.isTrue(spent < PROMPT, 'connect() spent $spent s on a name: the runtime waited on the resolver');
+		Assert.isTrue(spent < PROMPT, 'connecting to two names spent $spent s: the runtime waited on the resolver');
 
-		NetPump.until(() -> thrown != null || socketFailed, 35.0, function(_) {
+		NetPump.until(() -> thrown != null || (socketFailed && dialFailed), 35.0, function(_) {
 			runtime.removeEventListener(crossbyte.events.TickEvent.TICK, onTick);
 			Assert.isTrue(socketFailed, "a datagram socket's peer that does not resolve was never reported");
-			Assert.isTrue(ticks > 1, 'the runtime ticked $ticks times while the name was looked up');
+			Assert.isTrue(dialFailed, "a dialled peer that does not resolve was never reported");
+			Assert.isTrue(ticks > 1, 'the runtime ticked $ticks times while the names were looked up');
 			socket.close();
+			try server.close() catch (_:Dynamic) {}
 			async.done();
 		});
 	}
