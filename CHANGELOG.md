@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `JWT.verify`, which answers with a `JWTVerification`: the claims, or a
+  `JWTRejection` naming the first check the token failed,
+  `malformed`, `too-large`, `unsupported-algorithm`,
+  `algorithm-mismatch`, `type-not-accepted`, `unknown-key`,
+  `bad-signature`, `missing-expiry`, `expired`, `not-yet-valid`,
+  `issued-in-future`, `wrong-issuer` or `wrong-audience`. `verifyToken`
+  answered all of them with the same `null`, so an expired session and a
+  forged token looked alike in a log. With it: `JWT.maxTokenLength`, the
+  cap on what is parsed, which was a fixed 4096 characters and still
+  defaults to that; `JWT.acceptedTypes` and `JWT.requireType`, for which
+  `typ` headers pass; and `JWT.updateKeys`, which swaps a verifier's keys
+  and keeps its other settings, where rotating keys meant building a new
+  `JWT`. `JWKSet.signer(RS256)` turns a fetched key set into what
+  `updateKeys` takes, and `unknown-key` is the cue to fetch it again.
 - `crossbyte.crypto.SignatureKey`: an RSA or EC key parsed once into
   mbedTLS and held natively, with `sign`, `verify`,
   `joseSignatureLength` and `dispose`. For a key used more than once,
@@ -724,6 +738,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `JWT.verifyToken` accepts tokens from other issuers. It refused any
+  whose `typ` was not exactly `JWT`: AWS Cognito's and Sign in with
+  Apple's, which carry none, RFC 9068 access tokens (`at+jwt`), and a
+  lower-case `jwt`. `typ` is now compared in any case, with an
+  `application/` prefix ignored as RFC 7515 allows, against
+  `acceptedTypes`: `JWT` and `at+jwt` by default, and a token with no
+  `typ` passes unless `requireType` is set.
 - RSA and ECDSA signatures no longer leave copies of the private key in
   freed memory, and `JWTSigner.RS256` and `ES256` parse their keys once
   instead of for every token. Each sign and verify parsed the PEM afresh,

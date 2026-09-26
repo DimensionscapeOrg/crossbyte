@@ -52,7 +52,13 @@ abstract JWTHeader(JWTHeaderData) {
 	public static inline function make(algorithm:JWTAlgorithm, ?keyId:String, ?type:String = "JWT"):JWTHeader
 		return new JWTHeader({alg: algorithm, typ: type, kid: keyId});
 
-	/** Returns `true` when the header uses a supported algorithm and expected type. */
+	/**
+	 * Returns `true` when the header uses a supported algorithm and, when
+	 * `requireTypeJWT` is set, a `typ` of exactly `JWT`.
+	 *
+	 * `JWT.verify` does not use this for `typ`: it accepts the types in
+	 * `JWT.acceptedTypes` in any case, and a header with none.
+	 */
 	public inline function isValid(?requireTypeJWT:Bool = true):Bool {
 		if (requireTypeJWT && this.typ != "JWT") {
 			return false;
@@ -73,7 +79,8 @@ abstract JWTHeader(JWTHeaderData) {
 /** Raw data shape encoded into a JWT header segment. */
 typedef JWTHeaderData = {
 	var alg:JWTAlgorithm;
-	var typ:String;
+	/** Optional: AWS Cognito, Sign in with Apple and RFC 8037's own examples send none. */
+	@:optional var typ:String;
 	@:optional var kid:String;
 	@:optional var cty:String;
 }
