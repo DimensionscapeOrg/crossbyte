@@ -128,6 +128,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Indicates whether the socket is connected to a default remote endpoint.
 		When connected, `send()` can omit the `address` and `port` arguments.
+		True from the moment `connect()` is given a name, while the name is
+		looked up.
 	**/
 	public var connected(get, never):Bool;
 
@@ -161,7 +163,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 
 	/**
 		The default remote IP address for a connected socket, or an empty string when
-		the socket is not connected.
+		the socket is not connected, or while a name given to `connect()` is
+		looked up.
 	**/
 	public var remoteAddress(get, never):String;
 
@@ -295,6 +298,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	// The names this socket has sent to: what each resolved to, and the
 	// datagrams waiting on one still being looked up.
 	@:noCompletion private var __names:haxe.ds.StringMap<DatagramName> = null;
+
+	// The name connect() was given, while it is looked up, and the datagrams
+	// sent to the peer meanwhile; and a count of connect() calls, so that only
+	// the latest one's answer is acted on.
+	@:noCompletion private var __peerName:String = null;
+	@:noCompletion private var __peerHeld:Array<HeldDatagram> = null;
+	@:noCompletion private var __connects:Int = 0;
 	#end
 	@:noCompletion private var __timeout:Int = 20000;
 
@@ -387,6 +397,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		// Datagrams still waiting on a name go with the socket they were
 		// waiting to leave by; an answer arriving later finds nothing to do.
 		__names = null;
+		__peerName = null;
+		__peerHeld = null;
 		__sendTarget = null;
 		__sendAddress = null;
 		__localText = null;
@@ -403,11 +415,28 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		Connects the socket to a default remote UDP endpoint.
 		Once connected, `send()` can omit its `address` and `port` parameters and
 		received datagrams are limited to the connected peer.
-		@param host The remote host to connect to.
+
+		`host` may be a name everywhere but Node, and it is not looked up on
+		the runtime's thread: `connect()` returns at once, and the socket is
+		connected to the address the name resolves to when the answer comes.
+		Until then `connected` reads true and `remoteAddress` reads empty;
+		datagrams sent with no destination wait for the answer, up to 64 of
+		them, as datagrams sent to a name do; and the socket receives as it
+		did before the call, having no address yet to tell its peer by. A
+		name that does not resolve, or an answer the socket cannot be
+		connected to, is reported as an `ioError` event after the call
+		returns: the datagrams waiting on it are dropped, and the socket is
+		left unconnected. On a thread with no CrossByte runtime a name is
+		looked up in the call, as it always was.
+
+		@param host The remote address, or a name, to connect to.
 		@param port The remote UDP port to connect to.
-		@throws ArgumentError If `host` is invalid or empty.
+		@throws ArgumentError If `host` is empty.
 		@throws RangeError If `port` is outside the valid UDP port range.
-		@throws IOError If the socket cannot connect.
+		@throws IOError If the socket is closed, or cannot be connected to
+		        `host` there and then: an address it cannot take, a name on
+		        Node, or, on a thread with no runtime, a name that does
+		        not resolve.
 	**/
 	public function connect(host:String, port:Int):Void {
 		if (host == null || host.length == 0) {
@@ -415,6 +444,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		}
 
 		__validateRemotePort(port);
+
+		// Refused here, where the caller hears of it. A name looked up for a
+		// closed socket would find nothing to connect when the answer came,
+		// and nobody to tell.
+		if (__socket == null) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
 
 		try {
 			#if nodejs
@@ -439,6 +475,25 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			__remotePort = port;
 			__rememberLocalEndpoint();
 			#else
+			// Whatever an earlier connect() was waiting on, its answer is not
+			// this one's, and what was sent to that peer does not go to this.
+			// Abandoned, it leaves the socket unconnected, whatever this call
+			// comes to.
+			__connects++;
+			if (__peerName != null) {
+				__peerName = null;
+				__peerHeld = null;
+				__connected = false;
+				__remotePort = 0;
+			}
+
+			// Without a runtime on this thread there is nothing to hand an
+			// answer back to, so a name is looked up here, as it always was.
+			if (Resolver.needsLookup(host) && Resolver.runtimeHere() != null) {
+				__connectByName(host, port);
+				return;
+			}
+
 			var remote:Host = new Host(host);
 			__socket.connect(remote, port);
 			// Connecting can narrow the local address to one interface.
@@ -462,6 +517,93 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			}
 		}
 	}
+
+	#if !nodejs
+	/**
+		`connect()` to a name: looked up off the runtime's thread (see
+		`Resolver`), and the socket connected when the answer comes.
+
+		It used to be looked up in the call, on the runtime's thread, so every
+		socket and timer there waited on the resolver, a second, for a name
+		that does not exist, and one that did not resolve was thrown. The
+		socket counts as connected from the call, so `send()` with no
+		destination is taken meanwhile and waits for the answer.
+	**/
+	@:noCompletion private function __connectByName(host:String, port:Int):Void {
+		__connected = true;
+		__remoteAddress = "";
+		__remotePort = port;
+		__peerName = host;
+
+		var attempt:Int = __connects;
+		var socket:UdpSocket = __socket;
+		Resolver.resolve(host, function(resolved:Null<Host>, failure:Null<String>):Void {
+			// Closed, or connected somewhere else, meanwhile.
+			if (__socket != socket || attempt != __connects) {
+				return;
+			}
+			__onPeerAnswer(host, port, resolved, failure);
+		});
+	}
+
+	/**
+		The answer for a peer `connect()` was given by name: the socket is
+		connected to it, and what waited on it is sent. A name that did not
+		resolve, or an address the system would not connect to, leaves the
+		socket unconnected instead, and what waited is dropped and reported,
+		once for all of it.
+	**/
+	@:noCompletion private function __onPeerAnswer(host:String, port:Int, resolved:Null<Host>, failure:Null<String>):Void {
+		var held:Null<Array<HeldDatagram>> = __peerHeld;
+		__peerHeld = null;
+		__peerName = null;
+
+		var problem:String = null;
+		if (resolved == null) {
+			problem = "the name did not resolve" + (failure != null ? " (" + failure + ")" : "");
+		} else {
+			try {
+				__socket.connect(resolved, port);
+			} catch (e:Dynamic) {
+				problem = Std.string(e);
+			}
+		}
+
+		if (problem != null) {
+			__connected = false;
+			__remotePort = 0;
+			var dropped:Int = held != null ? held.length : 0;
+			// Not __dispatchIoError, which stops the socket receiving: nothing
+			// is wrong with it, only with the peer it was asked to connect to.
+			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Could not connect to " + host + ":" + port + ": " + problem
+				+ (dropped == 0 ? "." : ", so " + dropped + (dropped == 1 ? " datagram waiting on it was" : " datagrams waiting on it were") + " dropped.")));
+			return;
+		}
+
+		// Connecting can narrow the local address to one interface.
+		__localText = null;
+		__remoteAddress = IPv6.compress(resolved.toString());
+		__bound = __getLocalEndpoint() != null;
+
+		if (held == null) {
+			return;
+		}
+		var target:Address = new Address();
+		target.setHost(resolved);
+		target.port = port;
+		for (datagram in held) {
+			// A listener told of a failed send may have closed the socket.
+			if (__socket == null) {
+				return;
+			}
+			try {
+				__socket.sendTo(datagram.bytes, 0, datagram.bytes.length, target);
+			} catch (e:Dynamic) {
+				__dispatchSendError("Send to " + host + ":" + port + " failed: " + Std.string(e));
+			}
+		}
+	}
+	#end
 
 	/**
 		Begins receiving datagrams and dispatching `DatagramSocketDataEvent.DATA`
@@ -501,7 +643,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		asynchronously. Either way a name that does not resolve is reported
 		as an `ioError` event, and the datagrams sent to it are dropped. On a
 		thread with no CrossByte runtime a name is looked up in the call, as
-		it always was.
+		it always was. A datagram sent with no destination while a name given
+		to `connect()` is looked up waits for that answer the same way.
 
 		@param bytes The payload bytes to send.
 		@param offset The zero-based offset into `bytes` at which sending should begin.
@@ -542,6 +685,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			if (!__connected) {
 				throw new ArgumentError("One of the parameters is invalid");
 			}
+
+			#if !nodejs
+			if (__peerName != null) {
+				// Connected to a name still being looked up: kept for the
+				// answer, which sends it.
+				__peerHeld = __keep(__peerHeld, __remotePort, bytes, offset, length);
+				return;
+			}
+			#end
 
 			address = __remoteAddress;
 			port = __remotePort;
@@ -764,16 +916,26 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/** Keeps a copy of a datagram to `address` until the name's answer comes. **/
 	@:noCompletion private function __holdForName(address:String, port:Int, bytes:ByteArray, offset:Int, length:Int):Void {
 		var name:DatagramName = __names.get(address);
-		if (name.held == null) {
-			name.held = [];
+		name.held = __keep(name.held, port, bytes, offset, length);
+	}
+
+	/**
+		`held`, or a new list if it is null, with a copy of a datagram waiting
+		on a name added, unless `MAX_HELD_PER_NAME` wait already, when it is
+		dropped, as a full send buffer drops one.
+	**/
+	@:noCompletion private static function __keep(held:Null<Array<HeldDatagram>>, port:Int, bytes:ByteArray, offset:Int, length:Int):Array<HeldDatagram> {
+		if (held == null) {
+			held = [];
 		}
-		if (name.held.length >= MAX_HELD_PER_NAME) {
-			return;
+		if (held.length >= MAX_HELD_PER_NAME) {
+			return held;
 		}
 
 		var copy:Bytes = Bytes.alloc(length);
 		copy.blit(0, bytes, offset, length);
-		name.held.push(new HeldDatagram(port, copy));
+		held.push(new HeldDatagram(port, copy));
+		return held;
 	}
 	#end
 
