@@ -5,6 +5,23 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- A WebSocket server sees the request a session was opened by, and decides
+  on it. `ServerWebSocket.upgrade(request)` is asked before the `101` goes
+  out and can refuse the session -- answered with `request.status`, 403
+  unless changed -- or choose its subprotocol; `WebSocketRequest` carries
+  the path, query, headers, cookies, `Origin`, the subprotocols offered and
+  the peer's address, and the session keeps it as `WebSocket.request`. The
+  request was parsed and thrown away, so a session could not be
+  authenticated, a page from another site could not be refused, and a
+  browser that offered a subprotocol failed to connect at all: none was
+  ever echoed. `WebSocket.protocols` asks for subprotocols from a client
+  and `protocol` says which was agreed. `sendText` sends a message a
+  browser receives as a string, where everything was binary and reached a
+  page as a `Blob`; `sendBinary` sends one at once. A session with a
+  listener for the new `WebSocketMessageEvent.MESSAGE` receives each
+  message whole, with whether it was text, where messages ran together into
+  one stream. `ping()`, `pong()`, `pingInterval` and `idleTimeout` are
+  public, on the session and, for the sessions it accepts, on the server.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -523,6 +540,24 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A WebSocket session pings a peer it has heard nothing from for 30
+  seconds, and closes with 1006 one it has heard nothing from for 60. The
+  heartbeat was dead code on both ends and there was no idle timeout, so a
+  peer that vanished without closing was held for good with everything sent
+  to it piling up. Both are set per session or, for its sessions, on the
+  server; zero turns either off. And an accepted subprotocol is now echoed:
+  with no `upgrade` hook, the first one a client offers is accepted.
+- `WebSocket.closeWith()` -- and so `ServerWebSocket.drain()` -- carries out
+  the closing handshake. The close frame carries its code and reason, where
+  it carried nothing and a peer saw 1005 or 1000, so a drain's 1001 never
+  arrived; the connection stays up for the peer's answer, with everything
+  written before the close still going out first -- natively it was closed
+  straight after queueing the frame, which dropped both the frame and what
+  was queued ahead of it -- and closes once the answer comes, or after five
+  seconds. The `close` event reports the code and reason the peer answered
+  with, or 1006 if it never did. A peer that breaks the protocol is sent a
+  close frame saying why before the connection goes. `close()` still closes
+  at once.
 - A reliable datagram session that has nothing to say stays up, and one
   whose peer has gone is given up after a minute. A session sent no
   keepalive and closed itself when it had heard nothing for 75 seconds, so a
@@ -716,6 +751,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- WebSocket sessions are read when there is something to read, not on every
+  tick. Each open session added a tick listener of its own and made a
+  receive every tick whether or not anything had arrived -- on hxcpp one
+  that raised an exception to say nothing had -- so ten thousand idle
+  sessions cost over a hundred thousand system calls a second. They now sit
+  in the runtime's socket registry, read when their socket is readable and
+  retried when a write is waiting, and an idle one costs nothing. A session
+  a server accepted reports its peer's address and port, and its own, where
+  it reported none; an upgrade the server cannot accept is answered with a
+  status rather than a dropped connection; and what a session has read past
+  is let go once there is enough of it, rather than kept until a read ends
+  exactly on a frame.
 - A reliable datagram peer that crashes and comes back on the same address
   and port gets back in. Its old session on the server took every CONNECT
   the new one sent, answered none, and was kept alive by them, so the peer

@@ -72,6 +72,7 @@ class PortableSuite {
 		#if nodejs
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
+		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		#end

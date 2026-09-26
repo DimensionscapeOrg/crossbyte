@@ -354,7 +354,6 @@ class WebSocketTest extends utest.Test {
 		var ws = emptyWebSocket();
 		ws.__runtime = child;
 		ws.__tickConnectListener = ws.__onTickConnect;
-		ws.__tickProcessListener = ws.__onTickProcess;
 		ws.__tickSSLHandshakeListener = ws.__onTickSSLHandshake;
 		// A real socket, never connected. Closing now closes the transport
 		// whether or not the session opened, and a stand-in object with no
