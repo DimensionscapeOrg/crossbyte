@@ -195,7 +195,12 @@ class NameLookupTest extends utest.Test {
 		});
 	}
 
-	#if (cpp || java || jvm)
+	// hxcpp only until M3 is merged: on the other threaded targets
+	// `CrossByte.current()` still answers the primordial runtime from any
+	// thread, so a thread without one cannot be told apart and the lookup
+	// is handed to the primordial runtime instead. Widen to
+	// (cpp || java || jvm) once current() throws there too.
+	#if cpp
 	/**
 		A thread with no runtime has nowhere to hand an answer back to, so a
 		name is looked up there in the call, as it always was. Asking whether
