@@ -27,6 +27,13 @@ class H2ServerRequest {
 	/** Request body, empty when there was none. */
 	public var body:Bytes;
 
+	/**
+	 * Set when the body grew past `H2ServerConnection.maxRequestBodySize`
+	 * before it ended. The request is delivered then, with no body, so it can
+	 * be answered `413` rather than buffered further.
+	 */
+	public var tooLarge:Bool = false;
+
 	public function new(streamId:Int, method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Bytes) {
 		this.streamId = streamId;
 		this.method = method;
@@ -49,8 +56,11 @@ class H2ServerRequest {
 	/**
 	 * Builds a request from a decoded header block, or throws `H2StreamError`
 	 * when the message is malformed.
+	 *
+	 * @param partial The body stopped short of its end, so `content-length`
+	 *        cannot be held to it.
 	 */
-	public static function fromHeaders(streamId:Int, decoded:Array<HpackHeader>, body:Bytes):H2ServerRequest {
+	public static function fromHeaders(streamId:Int, decoded:Array<HpackHeader>, body:Bytes, partial:Bool = false):H2ServerRequest {
 		var method:String = null;
 		var scheme:String = null;
 		var authority:String = null;
@@ -119,7 +129,7 @@ class H2ServerRequest {
 					// Linux native.
 					var declared:Int = IntParse.decimal(field.value);
 					var received:Int = body == null ? 0 : body.length;
-					if (declared != received) {
+					if (declared < 0 || (!partial && declared != received)) {
 						throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR,
 							'content-length "${field.value}" does not match the $received bytes of DATA received');
 					}

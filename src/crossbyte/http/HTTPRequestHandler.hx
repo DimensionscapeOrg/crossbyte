@@ -680,7 +680,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * where that finishes.
 	 */
 	@:noCompletion private function __serveDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
-			body:ByteArray):Void {
+			body:ByteArray, tooLarge:Bool = false):Void {
 		__method = method;
 		__queryString = queryString;
 		__headers = headers;
@@ -700,6 +700,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 		__requestPath = settled;
 		__filePath = null;
+
+		// What the HTTP/1.1 parser applies as it reads a request, applied here
+		// to one that arrived as frames. HTTP/2 used to skip all of it: six
+		// requests on one connection were all answered 200 where HTTP/1.1
+		// refused the fourth, and a gzip body reached middleware compressed.
+		if (__config.rateLimiter != null && __config.rateLimiter.isRateLimited(__origin.remoteAddress)) {
+			__sendErrorResponse(429, "Too Many Requests");
+			return;
+		}
+
+		if (tooLarge) {
+			__sendErrorResponse(413, "Payload Too Large");
+			return;
+		}
+
+		__requestContentEncodings = __parseContentEncodingHeader();
+		if (__requestContentEncodings == null || !__decodeRequestBody()) {
+			return;
+		}
 
 		__dispatchParsedRequest();
 	}

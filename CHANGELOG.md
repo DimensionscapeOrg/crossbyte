@@ -712,6 +712,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- HTTP/2 requests go through what HTTP/1.1 requests go through. Only the
+  HTTP/1.1 parser asked the rate limiter, so six requests over HTTP/2 were
+  all answered where HTTP/1.1 refused the fourth. DATA was appended with no
+  limit while window kept being granted, so one stream could make the server
+  hold as much as it sent: a 3 MB upload reached a route HTTP/1.1 refused.
+  Now a body past the limit is answered `413` at once, the stream is reset
+  without error so the client stops sending, its window is not topped up
+  again, and the connection carries on. HTTP/2 responses are counted and
+  timed in `metrics`, and HTTP/2 connections in the output-buffer gauges; a
+  gzip body is decoded before middleware sees it, as over HTTP/1.1; and
+  cookies a browser sends as separate fields are joined with `"; "`, as RFC
+  9113 8.2.3 has it, where a comma made `getCookie("sid")` answer
+  `abc123, theme=dark`.
 - A peer no longer decides how much memory the server or the `URLLoader`
   client spends on a body. The server inflated a request body with no
   ceiling, while its limit counted the compressed bytes on the wire, so a
