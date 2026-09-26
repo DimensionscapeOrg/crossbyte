@@ -1210,6 +1210,39 @@ All notable changes to CrossByte will be documented in this file.
   is now looked up before the question is asked, and one that does not
   resolve fails it with that reason. On Node, which looks the name up
   itself for each request, it still waits for the deadline.
+- The PHP bridge looked its backend up and connected to it on the runtime's
+  thread, for every request, so each PHP request held every socket and timer
+  on the runtime for a name lookup and a connect: 0.29ms for an address and
+  0.47ms for `localhost` on loopback, measured, and for a name that does not
+  resolve as long as the resolver took, commonly a second. Both happen on a
+  thread of the bridge's own now, which hands the connection back through the
+  runtime's post queue: a request holds the runtime for 0.02ms, and the round
+  trip is no slower. A name is looked up once, and again only after a
+  connect to its address fails, so a backend that moves is found at its new
+  address. A request that times out while connecting says so.
+- A PHP response waited for the runtime's next tick before it was read. The
+  bridge read its FastCGI connection from a tick listener, so at the default
+  twelve ticks a second a response arrived up to 84ms after PHP sent it,
+  however quickly PHP had answered: measured against a backend that answers
+  at once, 49-53ms on average in a server's `POLL` loop. The connection is in
+  the runtime's poll set now, as `crossbyte.net.Socket`'s are, and the reply
+  is read when it arrives: 0.5-0.7ms on average in the same measurement. A
+  backend that hangs up mid-response is heard as it hangs up. On eval, where
+  a socket cannot be made non-blocking, the bridge no longer blocks the
+  runtime reading a reply that has not arrived yet. Node was already told of
+  arrivals by an event.
+- Recording a metric took a lock on hxcpp, and acquiring an hxcpp `Mutex`
+  enters and leaves a GC-free zone: about 230ns for each `Counter.inc`,
+  `Gauge` update and `Histogram.observe`, so the two an HTTP server records
+  for every response cost it close to half a microsecond. They are atomic
+  instructions now, measured at 5ns for an increment and 15ns for both of a
+  response's updates. A histogram observation adds to the one bucket it
+  falls in rather than to every bucket above it, which is cheaper on the
+  other targets too, and a histogram's count is the total of its buckets. A
+  scrape reads each histogram once, so its `+Inf` bucket and `_count` agree:
+  they were read separately, and an observation between the two reads made
+  them differ. On hxcpp a histogram's `_sum` can count an observation its
+  buckets do not show yet, or the reverse, while observations arrive.
 - `File.clone()` gave the clone the original's listeners, where its
   documentation says registrations are not copied. It copied every instance
   field by reflection, `EventDispatcher`'s listener map included, so once the

@@ -19,9 +19,15 @@ import sys.FileSystem;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 #if !nodejs
+import crossbyte._internal.socket.BlockedError;
+import crossbyte._internal.socket.IPollableSocket;
 import sys.net.Host;
 import sys.net.Socket;
 import sys.io.Process;
+#if target.threaded
+import sys.thread.Deque;
+import sys.thread.Thread;
+#end
 #end
 
 using StringTools;
@@ -69,6 +75,19 @@ class PHPBridge {
 	#if !nodejs
 	private var __reading:Array<Outbound> = [];
 	private var __scratch:Bytes = Bytes.alloc(8192);
+	#if target.threaded
+	// Where connects go to be made; see __connectOffThread. Null until the
+	// first exchange, and again after stop().
+	private var __connector:Null<Deque<ConnectorJob>> = null;
+	#end
+
+	/**
+		How many times the backend's name has been looked up. Written only by
+		the thread that makes the connects, and read after an exchange it
+		connected has settled, which the hand-back through the post queue
+		orders after the write.
+	**/
+	@:noCompletion public var __lookups:Int = 0;
 	#end
 
 	public function new(mode:PHPMode, ?docRoot:String, ?autoIndex:Array<String>, timeoutSeconds:Float = DEFAULT_TIMEOUT) {
@@ -122,6 +141,14 @@ class PHPBridge {
 			} catch (_:Dynamic) {};
 			_proc = null;
 		}
+
+		#if (!nodejs && target.threaded)
+		// The connector finishes what it was already given, then ends.
+		if (__connector != null) {
+			__connector.add(Stop);
+			__connector = null;
+		}
+		#end
 	}
 
 	/**
@@ -261,10 +288,11 @@ class PHPBridge {
 	/**
 	 * Opens the transport and starts the exchange.
 	 *
-	 * The two targets differ only in how bytes come back. Node is told and a
-	 * native build has to ask, so a native build reads from the tick it is
-	 * already being given; everything else -- the parser, the deadline, the
-	 * table -- is shared, and that is the point of the split.
+	 * The two targets differ only in how they learn that bytes have come
+	 * back: Node by an event, a native build from the runtime's poll set,
+	 * which its socket joins the way `crossbyte.net.Socket`'s do. Everything
+	 * else -- the parser, the deadline, the table -- is shared, and that is
+	 * the point of the split.
 	 */
 	private function __begin(exchange:PHPExchange, host:String, port:Int, payload:Bytes):Void {
 		#if nodejs
@@ -319,41 +347,30 @@ class PHPBridge {
 
 		socket.connect(host, port);
 		#else
-		var socket:Socket = new Socket();
-		socket.setFastSend(true);
-
-		var outbound = new Outbound(exchange, socket, payload);
-
-		try {
-			socket.connect(new Host(host), port);
-			socket.setBlocking(false);
-			// Most requests fit the socket's send buffer and leave in this
-			// call. A larger body goes out over the ticks that follow, as the
-			// backend reads it. It used to be written in one burst, and a
-			// non-blocking socket with a full send buffer refuses the rest:
-			// the upload failed as though the backend were down.
-			__send(outbound);
-		} catch (e:Dynamic) {
-			try {
-				socket.close();
-			} catch (_:Dynamic) {}
-
-			if (exchange.expired()) {
-				exchange.timeOut("connecting");
-			} else {
-				exchange.fail("Could not reach the PHP backend: " + Std.string(e));
-			}
-
-			return;
-		}
-
+		var outbound = new Outbound(this, exchange, host, port, payload);
 		__reading.push(outbound);
 
+		// Tracked from the start, so the deadline covers the connect as well.
 		__track(exchange, function():Void {
-			try {
-				socket.close();
-			} catch (_:Dynamic) {}
+			__release(outbound);
 		});
+
+		#if target.threaded
+		__connectOffThread(outbound);
+		#else
+		// No thread to connect on, so it is made here, as it always was.
+		var socket:Null<Socket> = null;
+		var failure:Dynamic = null;
+
+		try {
+			__lookups++;
+			socket = __open(new Host(host), port);
+		} catch (e:Dynamic) {
+			failure = e;
+		}
+
+		__connected(outbound, socket, failure);
+		#end
 		#end
 	}
 
@@ -387,6 +404,330 @@ class PHPBridge {
 		}
 
 		return true;
+	}
+
+	#if target.threaded
+	/**
+	 * Hands the exchange's connect to the bridge's connector thread, starting
+	 * it with the first one.
+	 *
+	 * The connect was made here, on the runtime's thread, for every request:
+	 * a lookup of the backend's name and then a blocking connect, and every
+	 * socket and timer on the runtime waited for both. For a backend given
+	 * by name -- a container's name, `localhost` -- the lookup was repeated
+	 * each time; for one that is slow to answer, or does not exist, the wait
+	 * was as long as the resolver or the connect cared to take. Now this call
+	 * costs a queue append, and the socket comes back through the runtime's
+	 * post queue, which wakes the runtime for it.
+	 *
+	 * One thread, taking connects in turn: a connect to a backend that is up
+	 * takes a fraction of a millisecond, and one to a backend that is not
+	 * would keep a second waiting no less than the first. The deadline covers
+	 * an exchange from the moment it is queued.
+	 */
+	private function __connectOffThread(outbound:Outbound):Void {
+		var runtime:Null<CrossByte> = __runtime;
+
+		if (runtime == null) {
+			outbound.exchange.fail("PHP backend at " + outbound.host + ":" + outbound.port + " was not tried: there is no runtime to hand the connection back to.");
+			__finish(outbound.exchange);
+			return;
+		}
+
+		if (__connector == null) {
+			var jobs = new Deque<ConnectorJob>();
+			__connector = jobs;
+			Thread.create(() -> __connectLoop(jobs, runtime));
+		}
+
+		__connector.add(Connect(outbound));
+	}
+
+	/**
+	 * The connector thread: looks the backend up and connects to it, blocking
+	 * here rather than on the runtime, and hands each socket back through the
+	 * runtime's post queue.
+	 *
+	 * The address a name resolves to is kept, and looked up again only after
+	 * a connect to it fails: a backend that moved -- a container restarted
+	 * under a new address -- is found at its new one on the next request,
+	 * and one that stays put is looked up once. Kept here, on this thread,
+	 * so it needs no lock.
+	 */
+	private function __connectLoop(jobs:Deque<ConnectorJob>, runtime:CrossByte):Void {
+		var resolvedName:Null<String> = null;
+		var resolved:Null<Host> = null;
+
+		while (true) {
+			var outbound:Outbound = switch (jobs.pop(true)) {
+				case Connect(queued): queued;
+				case Stop: return;
+			}
+
+			// Read across threads without a lock, so possibly stale; a connect
+			// made for an exchange that has already given up is closed on the
+			// runtime's thread instead. This only saves making it.
+			if (outbound.exchange.settled) {
+				continue;
+			}
+
+			var socket:Null<Socket> = null;
+			var failure:Dynamic = null;
+
+			try {
+				if (resolved == null || resolvedName != outbound.host) {
+					__lookups++;
+					resolved = new Host(outbound.host);
+					resolvedName = outbound.host;
+				}
+
+				socket = __open(resolved, outbound.port);
+			} catch (e:Dynamic) {
+				failure = e;
+				resolved = null;
+				resolvedName = null;
+			}
+
+			var connected:Null<Socket> = socket;
+			var why:Dynamic = failure;
+
+			if (!runtime.post(() -> __connected(outbound, connected, why))) {
+				// The runtime has exited, and nothing will ever run that.
+				if (connected != null) {
+					try {
+						connected.close();
+					} catch (_:Dynamic) {}
+				}
+				return;
+			}
+		}
+	}
+	#end
+
+	/** A socket connected to `host`, blocking until it is or cannot be. **/
+	private static function __open(host:Host, port:Int):Socket {
+		var socket:Socket = new Socket();
+
+		try {
+			socket.setFastSend(true);
+			socket.connect(host, port);
+		} catch (e:Dynamic) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+
+			#if cpp
+			cpp.Lib.rethrow(e);
+			#else
+			throw e;
+			#end
+		}
+
+		return socket;
+	}
+
+	/**
+	 * The connect's outcome, on the runtime's thread: sends the request and
+	 * puts the socket in the poll set, or fails the exchange.
+	 */
+	private function __connected(outbound:Outbound, socket:Null<Socket>, failure:Dynamic):Void {
+		var exchange:PHPExchange = outbound.exchange;
+
+		// Timed out, or let go, while the connect was under way.
+		if (outbound.closed || exchange.settled) {
+			if (socket != null) {
+				try {
+					socket.close();
+				} catch (_:Dynamic) {}
+			}
+
+			return;
+		}
+
+		if (socket == null) {
+			if (exchange.expired()) {
+				exchange.timeOut("connecting");
+			} else {
+				exchange.fail("Could not reach the PHP backend at " + outbound.host + ":" + outbound.port + ": " + Std.string(failure));
+			}
+
+			__finish(exchange);
+			return;
+		}
+
+		outbound.socket = socket;
+
+		try {
+			socket.setBlocking(false);
+			// Most requests fit the socket's send buffer and leave in this
+			// call. A larger body goes out over the passes that follow, as the
+			// backend reads it. It used to be written in one burst, and a
+			// non-blocking socket with a full send buffer refuses the rest:
+			// the upload failed as though the backend were down.
+			__send(outbound);
+		} catch (e:Dynamic) {
+			exchange.fail("Could not reach the PHP backend at " + outbound.host + ":" + outbound.port + ": " + Std.string(e));
+			__finish(exchange);
+			return;
+		}
+
+		__watch(outbound);
+	}
+
+	/**
+	 * Puts the exchange's socket in the runtime's poll set, so the reply is
+	 * read the moment it arrives.
+	 *
+	 * It was read from the tick instead, which the runtime dispatches twelve
+	 * times a second by default: every PHP response waited for the next one,
+	 * up to 84ms and 42ms on average, whatever the backend took. A server's
+	 * loop spends the time between ticks waiting in poll, and a socket in its
+	 * set ends that wait when data arrives.
+	 */
+	private function __watch(outbound:Outbound):Void {
+		var runtime:CrossByte = __runtime;
+
+		if (runtime == null) {
+			return;
+		}
+
+		outbound.socket.custom = outbound;
+		@:privateAccess runtime.registerSocket(outbound.socket);
+		outbound.runtime = runtime;
+
+		// What did not fit the send buffer goes when the registry next asks,
+		// and again after that for as long as the buffer stays full.
+		if (outbound.written < outbound.payload.length) {
+			@:privateAccess runtime.queueWritable(outbound.socket);
+		}
+	}
+
+	/**
+	 * Takes the socket out of the poll set and closes it. An exchange let go
+	 * while its connect is under way has no socket yet; the connect's
+	 * outcome finds it closed, and closes the socket itself.
+	 */
+	private function __release(outbound:Outbound):Void {
+		outbound.closed = true;
+
+		if (outbound.runtime != null) {
+			@:privateAccess outbound.runtime.deregisterSocket(outbound.socket);
+			outbound.runtime = null;
+		}
+
+		if (outbound.socket != null) {
+			try {
+				outbound.socket.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+
+	/**
+	 * The backend sent something, or hung up: reads what is there, and
+	 * settles the exchange once the response is whole or cannot be.
+	 */
+	private function __onReadable(entry:Outbound):Void {
+		if (entry.exchange.settled) {
+			return;
+		}
+
+		try {
+			if (__drain(entry) && !entry.exchange.settled) {
+				entry.exchange.fail("PHP backend closed the connection before finishing the response.");
+				__finish(entry.exchange);
+			}
+		} catch (e:Dynamic) {
+			__abandon(entry, e);
+		}
+	}
+
+	/** The socket may take more of a request too large for one write. **/
+	private function __onWritable(entry:Outbound):Void {
+		if (entry.exchange.settled || entry.written >= entry.payload.length) {
+			return;
+		}
+
+		var failure:Dynamic = null;
+
+		try {
+			if (!__send(entry) && entry.runtime != null) {
+				@:privateAccess entry.runtime.queueWritable(entry.socket);
+			}
+			return;
+		} catch (e:Dynamic) {
+			failure = e;
+		}
+
+		try {
+			// Read first, so a backend that answered before taking the whole
+			// body -- a missing script, say -- is still heard.
+			__drain(entry);
+		} catch (e:Dynamic) {
+			__abandon(entry, e);
+			return;
+		}
+
+		if (!entry.exchange.settled) {
+			entry.exchange.fail("PHP backend stopped taking the request after " + entry.written + " of " + entry.payload.length + " bytes: "
+				+ Std.string(failure));
+			__finish(entry.exchange);
+		}
+	}
+
+	/**
+	 * Fails an exchange whose handling threw. Settled here rather than left to
+	 * the registry, which reports a throw and keeps the socket: still
+	 * readable, so handled, and thrown, again on every pass until the
+	 * deadline.
+	 */
+	private function __abandon(entry:Outbound, error:Dynamic):Void {
+		if (!entry.exchange.settled) {
+			entry.exchange.fail("Reading the PHP backend's response failed: " + Std.string(error), error);
+		}
+
+		__finish(entry.exchange);
+	}
+
+	/**
+	 * Reads what has arrived into the exchange, and succeeds it once
+	 * END_REQUEST is in. Returns whether the backend hung up first.
+	 */
+	private function __drain(entry:Outbound):Bool {
+		while (true) {
+			#if eval
+			// A socket cannot be made non-blocking on eval, and a read with
+			// nothing there would stop the runtime until the backend sent more.
+			if (Socket.select([entry.socket], [], [], 0).read.length == 0) {
+				return false;
+			}
+			#end
+
+			var read:Int = 0;
+
+			try {
+				read = entry.socket.input.readBytes(__scratch, 0, __scratch.length);
+			} catch (e:Dynamic) {
+				// Blocked is the end of what has arrived; anything else is the
+				// end of the connection.
+				return !BlockedError.isBlocked(e);
+			}
+
+			if (read <= 0) {
+				return false;
+			}
+
+			if (entry.exchange.receive(__scratch, read)) {
+				entry.exchange.succeed();
+				__finish(entry.exchange);
+				return false;
+			}
+
+			// Short of the buffer: that was everything there was, and the
+			// registry will say when there is more.
+			if (read < __scratch.length) {
+				return false;
+			}
+		}
 	}
 	#end
 
@@ -436,100 +777,39 @@ class PHPBridge {
 	}
 
 	/**
-	 * One frame's worth of work: read whatever has arrived, then fail whatever
-	 * has run out of time.
+	 * Fails whatever has run out of time. The sockets are not read here: the
+	 * runtime reads them when they are ready.
 	 *
 	 * The deadline is swept here rather than left to a socket timeout because
 	 * a socket timeout bounds one read. A backend sending a byte a second
 	 * resets it forever and never trips it, while this notices.
 	 */
 	private function __onTick(_:TickEvent):Void {
-		#if !nodejs
-		var reading = __reading.copy();
-
-		for (entry in reading) {
-			if (entry.exchange.settled) {
-				continue;
-			}
-
-			var closed:Bool = false;
-			var writeFailure:String = null;
-
-			// The rest of a request too large to leave in one write, before
-			// reading: a backend answers only once it has the whole body.
-			if (entry.written < entry.payload.length) {
-				try {
-					__send(entry);
-				} catch (e:Dynamic) {
-					writeFailure = Std.string(e);
-				}
-			}
-
-			// Drains what is there and stops on the blocked error a
-			// non-blocking socket raises when it is empty, which is the normal
-			// end of a frame's reading rather than a failure.
-			while (true) {
-				var read:Int = 0;
-
-				try {
-					read = entry.socket.input.readBytes(__scratch, 0, __scratch.length);
-				} catch (e:Dynamic) {
-					if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
-						closed = true;
-					}
-
-					break;
-				}
-
-				if (read <= 0) {
-					break;
-				}
-
-				if (entry.exchange.receive(__scratch, read)) {
-					entry.exchange.succeed();
-					__finish(entry.exchange);
-					closed = false;
-					break;
-				}
-			}
-
-			if (entry.exchange.settled) {
-				continue;
-			}
-
-			// Read first, so a backend that answered before taking the whole
-			// body -- a missing script, say -- is still heard.
-			if (writeFailure != null) {
-				entry.exchange.fail("PHP backend stopped taking the request after " + entry.written + " of " + entry.payload.length + " bytes: " + writeFailure);
-				__finish(entry.exchange);
-			} else if (closed) {
-				entry.exchange.fail("PHP backend closed the connection before finishing the response.");
-				__finish(entry.exchange);
-			}
-		}
-		#end
-
 		var waiting = __pending.copy();
 
 		for (entry in waiting) {
 			if (!entry.exchange.settled && entry.exchange.expired()) {
-				entry.exchange.timeOut(__sending(entry.exchange) ? "sending the request" : "reading the response");
+				entry.exchange.timeOut(__phase(entry.exchange));
 				__finish(entry.exchange);
 			}
 		}
 	}
 
-	/** Whether part of this exchange's request is still waiting to be written. **/
-	private function __sending(exchange:PHPExchange):Bool {
+	/** What an exchange that ran out of time was doing: how its timeout is described. **/
+	private function __phase(exchange:PHPExchange):String {
 		#if !nodejs
 		for (entry in __reading) {
 			if (entry.exchange == exchange) {
-				return entry.written < entry.payload.length;
+				if (entry.socket == null) {
+					return "connecting";
+				}
+
+				return entry.written < entry.payload.length ? "sending the request" : "reading the response";
 			}
 		}
 		#end
 
-		return false;
+		return "reading the response";
 	}
 
 	private inline function _onExit(e:Event):Void {
@@ -627,18 +907,58 @@ private class Fcgi {
 
 #if !nodejs
 /** A native exchange's socket, and how much of its request has been written. **/
-private class Outbound {
+@:access(crossbyte._internal.php.PHPBridge)
+private class Outbound implements IPollableSocket {
+	public final bridge:PHPBridge;
 	public final exchange:PHPExchange;
-	public final socket:Socket;
+	public final host:String;
+	public final port:Int;
 	public final payload:Bytes;
 	public var written:Int = 0;
 
-	public function new(exchange:PHPExchange, socket:Socket, payload:Bytes) {
+	/** Null while the connect is under way. **/
+	public var socket:Null<Socket> = null;
+
+	/** The runtime whose poll set holds the socket, while one does. **/
+	public var runtime:Null<CrossByte> = null;
+
+	/** Set once the bridge has let the socket go. **/
+	public var closed:Bool = false;
+
+	public var registryClosed(get, never):Bool;
+
+	public function new(bridge:PHPBridge, exchange:PHPExchange, host:String, port:Int, payload:Bytes) {
+		this.bridge = bridge;
 		this.exchange = exchange;
-		this.socket = socket;
+		this.host = host;
+		this.port = port;
 		this.payload = payload;
 	}
+
+	public function registryOnReadable():Void {
+		bridge.__onReadable(this);
+	}
+
+	public function registryOnWritable():Void {
+		bridge.__onWritable(this);
+	}
+
+	public function registryHasBufferedInput():Bool {
+		return false;
+	}
+
+	private function get_registryClosed():Bool {
+		return closed || exchange.settled;
+	}
 }
+
+#if target.threaded
+/** What the connector thread is handed. An enum, since the jvm's queue refuses null. **/
+private enum ConnectorJob {
+	Connect(outbound:Outbound);
+	Stop;
+}
+#end
 #end
 
 // The include is metadata on the class, so it lands in the generated .cpp

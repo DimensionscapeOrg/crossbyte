@@ -1,6 +1,8 @@
 package crossbyte.metrics;
 
-#if (cpp || neko || hl || java || jvm)
+#if cpp
+import crossbyte.metrics._internal.AtomicFloats;
+#elseif (neko || hl || java || jvm)
 import sys.thread.Mutex;
 #end
 
@@ -13,7 +15,8 @@ import sys.thread.Mutex;
  * read time. Binding is usually better for values another component
  * already tracks, since it cannot drift out of sync with the source.
  *
- * Safe to update from any thread.
+ * Safe to update from any thread. On hxcpp an update is an atomic store or
+ * compare-and-swap rather than a lock.
  */
 class Gauge {
 	/**
@@ -31,10 +34,15 @@ class Gauge {
 	 */
 	public var help(default, null):String;
 
+	#if cpp
+	// The value, as the one element of an array; see Counter.
+	@:noCompletion private var __cells:Array<Float> = [0.0];
+	#else
 	@:noCompletion private var __value:Float = 0;
+	#end
 	@:noCompletion private var __provider:Void->Float;
 
-	#if (cpp || neko || hl || java || jvm)
+	#if (neko || hl || java || jvm)
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -45,7 +53,7 @@ class Gauge {
 		this.help = help;
 		this.__provider = provider;
 
-		#if (cpp || neko || hl || java || jvm)
+		#if (neko || hl || java || jvm)
 		__lock = new Mutex();
 		#end
 	}
@@ -68,7 +76,9 @@ class Gauge {
 			return;
 		}
 
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		AtomicFloats.store(__cells, 0, value);
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
 		__value = value;
 		__lock.release();
@@ -85,7 +95,9 @@ class Gauge {
 			return;
 		}
 
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		AtomicFloats.add(__cells, 0, amount);
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
 		__value += amount;
 		__lock.release();
@@ -117,7 +129,9 @@ class Gauge {
 			}
 		}
 
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		return AtomicFloats.load(__cells, 0);
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
 		var snapshot:Float = __value;
 		__lock.release();
