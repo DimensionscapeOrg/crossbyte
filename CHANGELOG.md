@@ -5,6 +5,9 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `ServerSocket.acceptFailures` and `ServerSocket.handshakeFailures` count
+  the connections a server could not take from its listen queue and the
+  TLS handshakes that failed or timed out, which left no trace before.
 - A WebSocket server sees the request a session was opened by, and decides
   on it. `ServerWebSocket.upgrade(request)` is asked before the `101` goes
   out and can refuse the session -- answered with `request.status`, 403
@@ -771,6 +774,25 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerSocket` that cannot take a waiting connection -- the process
+  out of descriptors -- says so, once for a run of failures, as an
+  `ioError`, and goes on listening. Natively the failure was swallowed,
+  so a server out of descriptors looked idle; on the jvm it closed the
+  server.
+- Removing one `connect` listener from a `ServerSocket` no longer stops it
+  accepting while others are still listening.
+- A `DatagramSocket` reads everything waiting, up to 1,024 datagrams, each
+  time it is found readable. It read 64, and it is asked once a pass, so it
+  could take in 3,840 datagrams a second at 60 passes whatever was
+  arriving. Each datagram also cost a system call for the socket's own
+  address and a formatted copy of the sender's; both are now kept. Reading
+  2,000 waiting datagrams over loopback took 2.9 us each and 32 passes; it
+  takes 1.7 us and 2.
+- Writing to a `Socket` before its connect has finished is no longer an
+  error natively: the bytes wait and go once it has. The flush wrote to the
+  socket anyway, which Windows refuses, so it threw, and the tick reported
+  the same refusal as an `ioError` on every tick until the connect
+  finished.
 - A backlog drains in time proportional to its size. Every write the
   socket took only part of copied everything still waiting into a new
   buffer -- the output side of the fix the input side already had -- so

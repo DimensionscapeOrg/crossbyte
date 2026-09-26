@@ -111,6 +111,107 @@ class SocketOutputTest extends utest.Test {
 
 	#if (cpp || java || jvm)
 	/**
+		Written and flushed straight after `connect()`, before the connection
+		is up: the bytes wait and go once it is.
+
+		The flush wrote to a socket not yet connected, which Windows refuses
+		("not connected"), so it threw -- and the tick's own flush reported the
+		same refusal as an `ioError` on every tick until the connect finished.
+	**/
+	@:timeout(15000)
+	public function testWritingBeforeTheConnectFinishesIsNotAnError(async:Async):Void {
+		var server = new ServerSocket();
+		var got:String = "";
+		var accepted:Socket = null;
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) {
+			accepted = e.socket;
+			accepted.addEventListener(crossbyte.events.ProgressEvent.SOCKET_DATA, function(_) got += accepted.readUTFBytes(accepted.bytesAvailable));
+		});
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var client = new Socket();
+			var errors:Array<String> = [];
+			var thrown:Dynamic = null;
+			client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) errors.push(e.text));
+			client.connect("127.0.0.1", server.localPort);
+			try {
+				client.writeUTFBytes("early");
+				client.flush();
+			} catch (e:Dynamic) {
+				thrown = e;
+			}
+
+			NetPump.until(() -> got == "early", 5.0, function(_) {
+				Assert.isNull(thrown, "a flush before the connect finished threw: " + thrown);
+				Assert.same([], errors, "writing before the connect finished was reported as an error");
+				Assert.equals("early", got, "what was written before the connect finished never arrived");
+				try client.close() catch (_:Dynamic) {}
+				if (accepted != null) {
+					try accepted.close() catch (_:Dynamic) {}
+				}
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+
+	/**
+		The same, against a connect that stays pending: a listener whose queue
+		is full and never accepted from, so the kernel drops the connect's
+		SYN and retries it. Over plain loopback the connect finishes before
+		anything is written, and the old flush got away with it.
+	**/
+	@:timeout(15000)
+	public function testWritingWhileTheConnectIsPendingIsNotAnError(async:Async):Void {
+		var host = new sys.net.Host("127.0.0.1");
+		var listener = new sys.net.Socket();
+		listener.bind(host, 0);
+		listener.listen(1);
+		var port:Int = listener.host().port;
+
+		// Nobody accepts, so these fill its queue.
+		var fillers:Array<sys.net.Socket> = [];
+		for (_ in 0...4) {
+			var filler = new sys.net.Socket();
+			filler.setBlocking(false);
+			try {
+				filler.connect(host, port);
+			} catch (_:Dynamic) {}
+			fillers.push(filler);
+		}
+
+		var client = new Socket();
+		var writeErrors:Array<String> = [];
+		var thrown:Dynamic = null;
+		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
+			// A connect the queue refused outright is not what this is about.
+			if (e.text.indexOf("write") >= 0) {
+				writeErrors.push(e.text);
+			}
+		});
+		client.connect("127.0.0.1", port);
+		try {
+			client.writeUTFBytes("early");
+			client.flush();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		NetPump.wait(0.3, function() {
+			Assert.isNull(thrown, "a flush while the connect was pending threw: " + thrown);
+			Assert.same([], writeErrors, "writing while the connect was pending was reported as an error");
+			try client.close() catch (_:Dynamic) {}
+			for (filler in fillers) {
+				try filler.close() catch (_:Dynamic) {}
+			}
+			try listener.close() catch (_:Dynamic) {}
+			async.done();
+		});
+	}
+
+	/**
 		Four megabytes sent by a WebSocket session through a socket that takes
 		16 KB a write and 64 KB a pass, as a TLS socket does against a slow
 		reader.

@@ -211,7 +211,13 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	public var sendBufferSize(get, set):Int;
 
 	@:noCompletion private static inline var DEFAULT_BUFFER_SIZE:Int = 65535;
-	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 64;
+	// Most datagrams read in one go before the other sockets get their turn.
+	// It was 64, and the registry asks once a pass, so a socket could take in
+	// no more than 64 datagrams a pass -- at 60 passes a second, 3,840 a
+	// second, whatever was arriving, with the rest left to overflow the
+	// kernel's buffer. Reading one costs a microsecond or two, so this still
+	// bounds a flood's hold on the loop to a few milliseconds.
+	@:noCompletion private static inline var MAX_DATAGRAMS_PER_TICK:Int = 1024;
 
 	// How long a name's answer is used before it is looked up again, how soon
 	// a lookup that failed to refresh one is tried again, and how many
@@ -267,6 +273,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	#else
 	@:noCompletion private var __socket:UdpSocket;
 	@:noCompletion private var __tempAddress:Address;
+
+	// What the last datagram's source host read as, so a run of datagrams
+	// from one peer names it once; and this socket's own address as a
+	// datagram reports it, asked once rather than for every datagram. Each
+	// datagram used to cost a Host, its formatting, and a getsockname() call.
+	@:noCompletion private var __sourceHost:Int = 0;
+	@:noCompletion private var __sourceText:String = null;
+	@:noCompletion private var __localText:String = null;
+	@:noCompletion private var __localNumber:Int = 0;
 
 	// Where the last datagram went, so a run of them to one peer builds the
 	// address once rather than once each. A name's answer is good until
@@ -329,6 +344,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#else
 			__socket.bind(new Host(localAddress), localPort);
 			__bound = true;
+			__localText = null;
 			#end
 		} catch (e:Dynamic) {
 			switch (Std.string(e)) {
@@ -373,6 +389,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		__names = null;
 		__sendTarget = null;
 		__sendAddress = null;
+		__localText = null;
+		__sourceText = null;
 		#end
 		__socket = null;
 		__bound = false;
@@ -423,6 +441,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			#else
 			var remote:Host = new Host(host);
 			__socket.connect(remote, port);
+			// Connecting can narrow the local address to one interface.
+			__localText = null;
 			__connected = true;
 			__remoteAddress = IPv6.compress(remote.toString());
 			__remotePort = port;
@@ -818,17 +838,31 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			var packetBytes:Bytes = Bytes.alloc(bytesReady);
 			packetBytes.blit(0, __readBuffer, 0, bytesReady);
 
-			var local = __getLocalEndpoint();
-			var srcHost:Host = __tempAddress.getHost();
+			if (__localText == null) {
+				var local = __getLocalEndpoint();
+				if (local != null) {
+					__localText = IPv6.compress(local.host.toString());
+					__localNumber = local.port;
+				}
+			}
+
+			// An IPv4 source is its number; an IPv6 one is named afresh.
+			var source:String = __sourceText;
+			if (source == null || __tempAddress.host != __sourceHost || @:privateAccess __tempAddress.ipv6 != null) {
+				source = IPv6.compress(__tempAddress.getHost().toString());
+				__sourceText = @:privateAccess __tempAddress.ipv6 == null ? source : null;
+				__sourceHost = __tempAddress.host;
+			}
+
 			var payload:ByteArray = ByteArray.fromBytes(packetBytes);
 			payload.endian = __endian;
 
 			dispatchEvent(new DatagramSocketDataEvent(
 				DatagramSocketDataEvent.DATA,
-				IPv6.compress(srcHost.toString()),
+				source,
 				__tempAddress.port,
-				local != null ? IPv6.compress(local.host.toString()) : "",
-				local != null ? local.port : 0,
+				__localText != null ? __localText : "",
+				__localText != null ? __localNumber : 0,
 				payload
 			));
 

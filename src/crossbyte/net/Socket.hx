@@ -758,6 +758,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
+		#if !js
+		if (!__connected) {
+			// Still connecting, or still looking the name up: what was
+			// written waits, and goes from the tick that announces CONNECT.
+			// Written now it failed -- "not connected", on Windows -- and the
+			// tick's own flush reported that as an ioError on every tick
+			// until the connect finished.
+			__enforceOutputLimit();
+			return;
+		}
+		#end
+
 		if (__output.length > __outputSent) {
 			#if (js && !nodejs)
 			// A page's WebSocket sends only once open. Until then -- and it is

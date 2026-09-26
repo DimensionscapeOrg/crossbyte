@@ -144,6 +144,29 @@ class ServerSocket extends EventDispatcher {
 	public var maxPendingHandshakes:Int = 256;
 
 	/**
+		Connections this server failed to take from the listen queue, for a
+		reason other than there being none to take: the process out of
+		descriptors (`EMFILE`), the system out of memory. The server goes on
+		listening and trying; the connection waits in the kernel's queue
+		meanwhile.
+
+		The first failure after a success is also dispatched as an `ioError`
+		event, so a run of them is reported once rather than every tick. Each
+		used to be swallowed natively -- no event, no count, and a server out
+		of descriptors looked idle -- or, on the jvm, closed the server.
+	**/
+	public var acceptFailures(default, null):Int = 0;
+
+	/**
+		TLS handshakes that failed, or were given up on at `handshakeTimeout`,
+		and so never became a `connect` event. Counted rather than reported one
+		by one: an open port sees a steady trickle of them from scanners and
+		broken clients, and each used to be dropped without a trace. Always 0
+		on a plain server.
+	**/
+	public var handshakeFailures(default, null):Int = 0;
+
+	/**
 		Decides, from the peer's address alone, whether a connection is taken
 		at all. Called as soon as it is accepted -- before any TLS handshake,
 		before a `Socket` is built for it, before a `connect` event -- so a
@@ -166,6 +189,14 @@ class ServerSocket extends EventDispatcher {
 	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __cbInstance:CrossByte;
 	@:noCompletion private var __hasListener:Bool = false;
+	#if !nodejs
+	// The accept tick, as one closure kept: on eval two reads of
+	// `this_onTick` do not compare equal, so removing a fresh one removed
+	// nothing.
+	@:noCompletion private var __acceptTick:TickEvent->Void = null;
+	// Whether the last accept failed, so a run of failures is reported once.
+	@:noCompletion private var __acceptFailing:Bool = false;
+	#end
 	@:noCompletion private var __hasCertificate:Bool = false;
 	#if !nodejs
 	@:noCompletion private var __pendingHandshakes:Array<PendingHandshake>;
@@ -541,6 +572,15 @@ class ServerSocket extends EventDispatcher {
 					raw.destroy();
 				}
 			});
+
+			// A handshake that failed, which Node reports here and nowhere
+			// else. Counted, as natively, and the connection let go.
+			__serverSocket.on("tlsClientError", function(_:Dynamic, raw:NodeSocket):Void {
+				handshakeFailures++;
+				try {
+					raw.destroy();
+				} catch (_:Dynamic) {}
+			});
 		} else {
 			__serverSocket = Net.createServer({allowHalfOpen: true}, accept);
 		}
@@ -590,7 +630,7 @@ class ServerSocket extends EventDispatcher {
 		__closed = true;
 		#if !nodejs
 		if (__cbInstance != null) {
-			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+			__cbInstance.removeEventListener(TickEvent.TICK, __onAcceptTick());
 		}
 		#end
 		__cbInstance = null;
@@ -659,7 +699,7 @@ class ServerSocket extends EventDispatcher {
 				__cbInstance.registerSocket(__serverSocket); */
 			listening = true;
 			if (__hasListener) {
-				__cbInstance.addEventListener(Event.TICK, this_onTick);
+				__cbInstance.addEventListener(Event.TICK, __onAcceptTick());
 			}
 			#end
 		}
@@ -747,7 +787,16 @@ class ServerSocket extends EventDispatcher {
 				return false;
 			}
 
-			var sysSocket:Socket = __serverSocket.accept();
+			var sysSocket:Socket = null;
+			try {
+				sysSocket = __takeConnection();
+			} catch (e:Dynamic) {
+				if (!__isBlockedError(e)) {
+					__onAcceptFailed(e);
+				}
+				return false;
+			}
+			__acceptFailing = false;
 
 			if (!__admits(sysSocket)) {
 				return true;
@@ -773,6 +822,35 @@ class ServerSocket extends EventDispatcher {
 			// Do nothing.
 		}
 		return false;
+	}
+
+	/** Takes one connection from the listen queue. **/
+	@:noCompletion private function __takeConnection():Socket {
+		return __serverSocket.accept();
+	}
+
+	/**
+		A connection the system would not hand over, though one was waiting:
+		counted, and reported once for a run of them. The server stays up. The
+		connection stays in the kernel's queue and is asked for again next
+		tick, which is all there is to do about a process out of descriptors.
+
+		hxcpp raises this as a bare string, which the catch-all here swallowed
+		without a word; the jvm raises it as an I/O error, which closed the
+		server -- over a condition that passes as soon as a descriptor frees.
+	**/
+	@:noCompletion private function __onAcceptFailed(error:Dynamic):Void {
+		acceptFailures++;
+
+		if (__acceptFailing) {
+			return;
+		}
+		__acceptFailing = true;
+
+		var message:String = "Could not accept a connection waiting on port " + localPort + ": " + Std.string(error)
+			+ ". The server is still listening, and takes it once the system will hand it over.";
+		crossbyte.utils.Logger.warn(message);
+		dispatchEvent(new crossbyte.events.IOErrorEvent(crossbyte.events.IOErrorEvent.IO_ERROR, message));
 	}
 
 	/**
@@ -805,7 +883,7 @@ class ServerSocket extends EventDispatcher {
 			__hasListener = true;
 			#if !nodejs
 			if (listening) {
-				__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+				__cbInstance.addEventListener(TickEvent.TICK, __onAcceptTick());
 			}
 			#end
 		}
@@ -814,15 +892,29 @@ class ServerSocket extends EventDispatcher {
 	override public function removeEventListener(type:String, listener:Dynamic->Void):Void {
 		super.removeEventListener(type, listener);
 
-		if (type == Event.CONNECT) {
+		// Only once the last one goes. Removing any one used to stop the
+		// server accepting, though others were still listening for what it
+		// accepted -- one part of an application unsubscribing silenced it
+		// for the rest.
+		if (type == Event.CONNECT && !hasEventListener(Event.CONNECT)) {
 			__hasListener = false;
 			#if !nodejs
 			if (__cbInstance != null) {
-				__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+				__cbInstance.removeEventListener(TickEvent.TICK, __onAcceptTick());
 			}
 			#end
 		}
 	}
+
+	#if !nodejs
+	/** The accept tick, the same closure every time; see __acceptTick. **/
+	@:noCompletion private inline function __onAcceptTick():TickEvent->Void {
+		if (__acceptTick == null) {
+			__acceptTick = this_onTick;
+		}
+		return __acceptTick;
+	}
+	#end
 
 	private function get_isSupported():Bool {
 		return true;
@@ -865,7 +957,7 @@ class ServerSocket extends EventDispatcher {
 		__dropPendingHandshakes();
 
 		if (__cbInstance != null) {
-			__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+			__cbInstance.removeEventListener(TickEvent.TICK, __onAcceptTick());
 		}
 		#end
 
@@ -920,6 +1012,7 @@ class ServerSocket extends EventDispatcher {
 			if (done) {
 				completed.push(pending.socket);
 			} else if (failed || now >= pending.deadline) {
+				handshakeFailures++;
 				try {
 					pending.socket.close();
 				} catch (_:Dynamic) {}
