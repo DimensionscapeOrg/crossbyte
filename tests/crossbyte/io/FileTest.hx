@@ -543,6 +543,53 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testASizeAnIntCannotStateThrowsRatherThanAnsweringWrong():Void {
+		// File.size is an Int. On Windows native a 3 GB file and a 5 GB one
+		// both read as 0, indistinguishable from an empty file; elsewhere the
+		// size wrapped or clamped. It throws instead now.
+		if (System.isWindows) {
+			// NTFS writes out the gap of a file extended past its end, three
+			// gigabytes of zeros, unless the file is marked sparse, which
+			// nothing here can do. Checked there by hand with a file sized by
+			// SetEndOfFile, which allocates without writing.
+			Assert.pass();
+			return;
+		}
+
+		var file = File.createTempFile();
+		var output = HaxeFile.write(file.nativePath, true);
+
+		// To 3 GB in two steps, because seek takes an Int. A sparse file on
+		// the filesystems that have them, so this costs no disk.
+		output.seek(0x7FFFFFFF, sys.io.FileSeek.SeekBegin);
+		output.seek(0x40000000, sys.io.FileSeek.SeekCur);
+		output.writeByte(1);
+		output.close();
+
+		var probe = new File(file.nativePath);
+		var raised:Dynamic = null;
+
+		try {
+			Assert.fail("a 3 GB file reported a size of " + probe.size);
+		} catch (e:Dynamic) {
+			raised = e;
+		}
+
+		try file.deleteFile() catch (_:Dynamic) {}
+
+		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "not refused with an IOError: " + Std.string(raised));
+	}
+
+	public function testAnOrdinarySizeIsStillReported():Void {
+		var file = File.createTempFile();
+		HaxeFile.saveBytes(file.nativePath, Bytes.alloc(1234));
+
+		var probe = new File(file.nativePath);
+		Assert.equals(1234, probe.size);
+
+		try file.deleteFile() catch (_:Dynamic) {}
+	}
+
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float):Void {
 		var runtime = CrossByte.current();
 		var deadline = Sys.time() + timeoutSeconds;

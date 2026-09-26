@@ -546,6 +546,11 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A synchronous `FileStream.readBytes` asking for more than the file holds
+  throws `EOFError`, as its documentation says, and reads nothing; it used
+  to pad the rest with zeros and return. Code that read "up to" a length
+  should ask `bytesAvailable` first. `File.size` throws an `IOError` for a
+  file larger than 2 GB rather than answering with a number that is wrong.
 - `PostgresConnection` and `MySQLConnection` `begin`, `commit`, `rollback`
   and the savepoint methods throw an `SQLError` when the server refuses,
   after dispatching the `SQLErrorEvent` as before. They dispatched and
@@ -721,6 +726,28 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A chunked `FileStream` copy is exact. A synchronous `readBytes` past the
+  end of the file padded the missing bytes with zeros and returned as
+  though it had read them, so the usual loop, read a chunk until
+  `EOFError`: never saw one, and a 1 MB file copied in 64 KB chunks came
+  out 65,436 bytes longer, the tail all zeros. A short read now throws
+  `EOFError` and leaves the position where it was, so what is left can
+  still be read (see Changed).
+- `writeUTF` refuses a string of more than 65,535 bytes with a
+  `RangeError`, as documented, in `ByteArray`, and so in the sockets that
+  write through it, `ByteArrayOutput` and `FileStream`. The 16-bit length
+  in front of the string wrapped, so the reader stopped short and every
+  read after it landed inside the string: a `readInt` after a 70,000-byte
+  string returned 2021161080 for 42. A synchronous `FileStream.writeUTF`
+  also threw `Overflow` from 32,768 bytes, a string `ByteArray` accepted,
+  because it wrote the length as a signed short.
+- `File.size` no longer reports a file larger than 2 GB as some other size.
+  It is an `Int`, and what the standard library's `stat` made of a larger
+  file differed by target and was right on none: on Windows native a 3 GB
+  file read as 0. It now throws an `IOError`, as the HTTP server already
+  refuses such a file, checked against a 64-bit size where the target has
+  one and otherwise by asking the file whether it goes on past the
+  reported end.
 - A `Store` key survives a crash while it is being overwritten. The file
   backend replaced a value by deleting it and then renaming the new one into
   place, because the standard library's rename refuses to replace a file on

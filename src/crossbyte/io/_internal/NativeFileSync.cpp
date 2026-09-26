@@ -20,9 +20,9 @@
 #endif
 
 // The file operations Haxe's standard library has no call for: replacing a
-// file atomically, and flushing one to stable storage. Each blocks on the
-// disk, so each runs in a GC-free zone, with its paths copied out of the Haxe
-// heap first.
+// file atomically, flushing one to stable storage, and measuring one past
+// 2 GB. Each blocks on the disk, so each runs in a GC-free zone, with its
+// paths copied out of the Haxe heap first.
 namespace {
 #if defined(_WIN32)
 	std::wstring toWide(const ::String& value) {
@@ -151,6 +151,36 @@ namespace {
 	}
 
 	return error == 0 ? ::String("") : describe("fsync", error);
+#endif
+}
+
+double crossbyte_file_size(::String path) {
+#if defined(_WIN32)
+	std::wstring file = toWide(path);
+	WIN32_FILE_ATTRIBUTE_DATA data;
+	BOOL ok = FALSE;
+
+	{
+		hx::AutoGCFreeZone zone;
+		ok = GetFileAttributesExW(file.c_str(), GetFileExInfoStandard, &data);
+	}
+
+	if (!ok) {
+		return -1;
+	}
+
+	return static_cast<double>((static_cast<unsigned long long>(data.nFileSizeHigh) << 32) | data.nFileSizeLow);
+#else
+	std::string file = toNarrow(path);
+	struct stat info;
+	int status = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+		status = stat(file.c_str(), &info);
+	}
+
+	return status != 0 ? -1 : static_cast<double>(info.st_size);
 #endif
 }
 
