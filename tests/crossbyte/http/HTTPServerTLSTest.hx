@@ -3,6 +3,13 @@ package crossbyte.http;
 import crossbyte.io.File;
 import crossbyte.io.ByteArray;
 import crossbyte.net.TLSTestFixture;
+#if (cpp || hl || neko || java || jvm)
+import crossbyte._internal.http.Http;
+import crossbyte._internal.http.HttpConnectionPool;
+import crossbyte._internal.http.h2.H2ConnectionPool;
+import crossbyte._internal.socket.FlexSocket;
+import haxe.io.Bytes;
+#end
 import utest.Assert;
 import crossbyte.test.Require;
 
@@ -138,6 +145,85 @@ class HTTPServerTLSTest extends utest.Test {
 		Require.notNull(response, "no response came back");
 		Assert.isTrue(response.indexOf("200") >= 0, "the server did not answer 200: " + response.substr(0, 120));
 		Assert.isTrue(response.indexOf("over tls") >= 0, "the body did not come back: " + response.substr(0, 200));
+	}
+	#end
+
+	#if (cpp || hl || neko || java || jvm)
+	/**
+		A request body larger than one TLS record arrives whole, over both
+		versions.
+
+		The client wrote the body with `Output.writeBytes`, which writes what it
+		can and says how much, and over TLS that is one record, 16 KB, at most:
+		the rest of a larger body was dropped, and the server waited for it
+		until the request timed out. HTTP/2 wrote each frame the same way, so
+		a DATA frame of the largest default size lost its last nine bytes.
+	**/
+	public function testALargeUploadOverTlsArrivesWhole():Void {
+		// Names 127.0.0.1, so the client can verify it once told to trust it.
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			// No certificate toolchain on this machine.
+			Assert.pass();
+			return;
+		}
+
+		var router = new Router();
+		router.post("/upload", ctx -> ctx.handler.respond(200, "text/plain", "got " + ctx.handler.requestBody.length));
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.tlsCertificatePath = fixture.certificatePath;
+		config.tlsKeyPath = fixture.keyPath;
+		config.http2Enabled = FlexSocket.alpnSupported;
+		config.middleware.push(router.middleware());
+		var server = new HTTPServer(config);
+		var port:Int = server.localPort;
+
+		var versions:Array<HTTPVersion> = [HTTPVersion.HTTP_1_1];
+		if (FlexSocket.alpnSupported) {
+			versions.push(HTTPVersion.HTTP_2);
+		}
+
+		var body = Bytes.alloc(64 * 1024);
+		body.fill(0, body.length, "x".code);
+		var outcomes:Array<String> = [];
+		// Trusted as the client's CA for the length of the case.
+		var trusted = FlexSocket.DEFAULT_CA;
+		FlexSocket.DEFAULT_CA = @:privateAccess fixture.certificate.__native;
+
+		for (version in versions) {
+			var outcome:String = null;
+			var handoff = new sys.thread.Lock();
+			sys.thread.Thread.create(() -> {
+				try {
+					var http = new Http('https://127.0.0.1:$port/upload', "POST", null, null, "application/octet-stream", body, version, 5000);
+					http.onComplete = data -> outcome = "COMPLETED " + data.toString();
+					http.onError = (message, ?data) -> outcome = message;
+					http.load();
+				} catch (e:Dynamic) {
+					outcome = "threw " + Std.string(e);
+				}
+				handoff.release();
+			});
+
+			var finished:Bool = false;
+			var deadline:Float = haxe.Timer.stamp() + 20;
+			while (!finished && haxe.Timer.stamp() < deadline) {
+				crossbyte.core.CrossByte.current().pump(1 / 60, 0);
+				finished = handoff.wait(0.002);
+			}
+			outcomes.push(version + ": " + (finished ? outcome : "never returned"));
+		}
+
+		FlexSocket.DEFAULT_CA = trusted;
+		HttpConnectionPool.clear();
+		H2ConnectionPool.closeAll();
+		try {
+			server.close();
+		} catch (_:Dynamic) {}
+
+		for (i in 0...versions.length) {
+			Assert.equals(versions[i] + ": COMPLETED got 65536", outcomes[i]);
+		}
 	}
 	#end
 
