@@ -107,6 +107,16 @@ class WirePeer {
 		#end
 	}
 
+	/**
+		Stops reading, so what is sent here backs up. Natively nothing is read
+		except by `poll()` anyway; Node reads on its own until told not to.
+	**/
+	public function pause():Void {
+		#if nodejs
+		__socket.pause();
+		#end
+	}
+
 	/** Takes in whatever has arrived, where arriving is not Node's doing. **/
 	public function poll():Void {
 		#if !nodejs

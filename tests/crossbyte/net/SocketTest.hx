@@ -196,6 +196,63 @@ class SocketTest extends utest.Test {
 		Assert.isFalse(socket.__isDirty);
 	}
 
+	/**
+		A megabyte flushed through a socket that takes 16 KB a write and 64 KB
+		a pass, as a TLS socket does against a slow reader.
+
+		Each flush wrote once and then copied everything still waiting into a
+		new buffer: a pass sent one 16 KB record whatever room there was, and
+		draining a backlog cost a copy of it per write -- quadratic in its
+		size. A flush now writes until the socket takes no more, and what went
+		is stepped over; the buffer is compacted only when what went is at
+		least what remains.
+	**/
+	public function testAFlushStepsThroughItsBacklogWithoutCopyingIt():Void {
+		var size:Int = 1024 * 1024;
+		var socket = new Socket();
+		socket.__output = new ByteArray();
+		socket.__output.endian = socket.__endian;
+		for (i in 0...size) {
+			socket.__output.writeByte(i & 0xFF);
+		}
+
+		var raw = new SysSocket();
+		var original = raw.output;
+		var throttled = new ThrottledOutput(16 * 1024, 0);
+		@:privateAccess raw.output = throttled;
+		socket.__socket = raw;
+
+		var buffer:ByteArray = socket.__output;
+		var copies:Int = 0;
+		var flushes:Int = 0;
+		while (socket.bytesPending > 0 && flushes < 1000) {
+			throttled.room = 64 * 1024;
+			socket.flushFull = false;
+			socket.flush();
+			flushes++;
+			if (socket.__output != buffer) {
+				copies++;
+				buffer = socket.__output;
+			}
+		}
+
+		socket.__socket = null;
+		@:privateAccess raw.output = original;
+		try raw.close() catch (_:Dynamic) {}
+
+		var sent = throttled.taken.getBytes();
+		var wrong:Int = 0;
+		for (i in 0...sent.length) {
+			if (sent.get(i) != (i & 0xFF)) {
+				wrong++;
+			}
+		}
+		Assert.equals(size, sent.length, "not everything was written");
+		Assert.equals(0, wrong, '$wrong bytes went out as something other than what was written in their place');
+		Assert.equals(16, flushes, 'a megabyte took $flushes flushes with 64 KB of room each: a flush wrote once where there was room for more');
+		Assert.isTrue(copies <= 5, 'the backlog was copied into a new buffer $copies times in $flushes flushes');
+	}
+
 	public function testZeroByteFlushRetainsAllBytes():Void {
 		var socket = socketWithOutput("abcdef");
 
@@ -829,9 +886,11 @@ class SocketTest extends utest.Test {
 		return socket;
 	}
 
+	/** What is still waiting to be written, which is the end of the buffer. **/
 	private static function readOutput(socket:Socket):String {
-		socket.__output.position = 0;
-		return socket.__output.readUTFBytes(socket.__output.length);
+		var pending:Int = socket.bytesPending;
+		socket.__output.position = socket.__output.length - pending;
+		return socket.__output.readUTFBytes(pending);
 	}
 }
 

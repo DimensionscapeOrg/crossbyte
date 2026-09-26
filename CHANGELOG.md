@@ -771,6 +771,25 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A backlog drains in time proportional to its size. Every write the
+  socket took only part of copied everything still waiting into a new
+  buffer -- the output side of the fix the input side already had -- so
+  draining a backlog cost a copy of it per write, and a TLS socket makes
+  one every 16 KB record: through a socket taking 16 KB a write and 64 KB
+  a pass, flushing a 16 MB backlog spent 2,395 ms copying, 4 MB 144 ms.
+  What has gone is now stepped over, and the buffer compacted only when
+  that is at least what remains: 1.5 ms and 0.3 ms. A flush also writes
+  until the socket takes no more, where it wrote once, so a TLS socket
+  sent one record a pass whatever room the kernel had: the 16 MB went in
+  256 passes rather than 1,024. `Socket` and WebSocket sessions both, and
+  a WebSocket frame with nothing queued ahead of it goes to the socket
+  without first being copied into the queue.
+- On Node a WebSocket session counts what Node has queued for it. Its
+  `outputBufferLength` read 0 however much was waiting, so
+  `ServerWebSocket.drain()` waited on nothing, and `maxOutputBufferSize`
+  was checked after a return that path always took: a session to a peer
+  that had stopped reading grew without bound. It now closes with 1011 at
+  the limit, as it does natively.
 - `DatagramSocket.send()` is a fifth quicker natively: 5.3 us a datagram
   where it took 6.9, to one destination over loopback. Every send asked
   the system for the socket's local address, to learn whether it was bound
