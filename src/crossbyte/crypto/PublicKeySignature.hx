@@ -1,12 +1,9 @@
 package crossbyte.crypto;
 
 import crossbyte.errors.ArgumentError;
-import haxe.crypto.Sha256;
 import haxe.io.Bytes;
 #if cpp
-import cpp.Pointer;
 import crossbyte.crypto._internal.NativePk;
-import crossbyte.crypto._internal.SodiumGlue;
 #end
 
 /**
@@ -47,15 +44,18 @@ enum abstract SignatureFormat(Int) from Int to Int {
  * OpenID Connect provider, and `ES256` tokens from providers and
  * WebAuthn authenticators.
  *
- * Keys are PEM text — the form providers publish and tools emit. They are
- * parsed on every call rather than held as handles, so there is no
- * lifetime to manage; a service verifying at high rates should cache
- * results at a higher level, such as by token or key id.
+ * Keys are PEM text -- the form providers publish and tools emit. These
+ * functions parse the key, use it once and wipe it again, which suits a key
+ * used once. For a key used repeatedly, parse it once into a `SignatureKey`:
+ * that is faster, and leaves no copy of a private key behind per call.
  *
  * Available on native `cpp` targets. mbedTLS ships with hxcpp and is
  * already linked for TLS, so no extra dependency is introduced.
  */
 class PublicKeySignature {
+	@:noCompletion @:allow(crossbyte.crypto.SignatureKey)
+	private static inline final UNAVAILABLE:String = "Public-key signing is only available on supported native cpp targets.";
+
 	/**
 	 * Returns `true` when the native backend is available.
 	 */
@@ -74,36 +74,31 @@ class PublicKeySignature {
 	 * @param isPrivate Whether `keyPem` is a private key.
 	 */
 	public static function keyType(keyPem:String, isPrivate:Bool = false):PublicKeyType {
-		#if cpp
-		if (keyPem == null || keyPem == "" || !NativePk.isAvailable()) {
+		var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(keyPem, isPrivate, false);
+		if (key == null) {
 			return UNKNOWN;
 		}
 
-		var pem:Bytes = Bytes.ofString(keyPem);
-		return NativePk.keyType(SodiumGlue.cptr(pem), pem.length, isPrivate);
-		#else
-		return UNKNOWN;
-		#end
+		var type:PublicKeyType = key.type;
+		key.dispose();
+		return type;
 	}
 
 	/**
-	 * Length in bytes of a JOSE-format ECDSA signature for this key —
+	 * Length in bytes of a JOSE-format ECDSA signature for this key --
 	 * twice the curve's coordinate size, so 64 for P-256.
 	 *
 	 * @return The length, or `-1` when the key is not an EC key.
 	 */
 	public static function joseSignatureLength(keyPem:String, isPrivate:Bool = false):Int {
-		#if cpp
-		if (keyPem == null || keyPem == "" || !NativePk.isAvailable()) {
+		var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(keyPem, isPrivate, false);
+		if (key == null) {
 			return -1;
 		}
 
-		var pem:Bytes = Bytes.ofString(keyPem);
-		var coordinate:Int = NativePk.ecCoordinateSize(SodiumGlue.cptr(pem), pem.length, isPrivate);
-		return coordinate < 0 ? -1 : coordinate * 2;
-		#else
-		return -1;
-		#end
+		var length:Int = key.joseSignatureLength();
+		key.dispose();
+		return length;
 	}
 
 	/**
@@ -119,23 +114,18 @@ class PublicKeySignature {
 	 *         raise out of a verification path.
 	 */
 	public static function verify(publicKeyPem:String, message:Bytes, signature:Bytes, format:SignatureFormat = NATIVE):Bool {
-		if (publicKeyPem == null || publicKeyPem == "" || message == null || signature == null || signature.length == 0) {
+		if (message == null || signature == null || signature.length == 0) {
 			return false;
 		}
 
-		#if cpp
-		if (!NativePk.isAvailable()) {
+		var key:Null<SignatureKey> = @:privateAccess SignatureKey.__load(publicKeyPem, false, false);
+		if (key == null) {
 			return false;
 		}
 
-		var pem:Bytes = Bytes.ofString(publicKeyPem);
-		var hash:Bytes = Sha256.make(message);
-
-		return NativePk.verifySha256(SodiumGlue.cptr(pem), pem.length, SodiumGlue.cptr(hash), SodiumGlue.cptr(signature), signature.length,
-			format) == 0;
-		#else
-		return false;
-		#end
+		var valid:Bool = key.verify(message, signature, format);
+		key.dispose();
+		return valid;
 	}
 
 	/**
@@ -155,33 +145,16 @@ class PublicKeySignature {
 			throw new ArgumentError("A message is required to sign.");
 		}
 
-		#if cpp
-		if (!NativePk.isAvailable()) {
-			throw "Public-key signing is only available on supported native cpp targets.";
+		var key:SignatureKey = SignatureKey.fromPrivatePem(privateKeyPem);
+		var signature:Bytes;
+		try {
+			signature = key.sign(message, format);
+		} catch (error:Dynamic) {
+			key.dispose();
+			throw error;
 		}
-
-		var pem:Bytes = Bytes.ofString(privateKeyPem);
-		var hash:Bytes = Sha256.make(message);
-		// Comfortably above the largest signature mbedTLS will emit for
-		// the key sizes this API handles.
-		var scratch:Bytes = Bytes.alloc(1024);
-		var producedLength:Array<Int> = [0];
-
-		var rc:Int = NativePk.signSha256(SodiumGlue.cptr(pem), pem.length, SodiumGlue.cptr(hash), SodiumGlue.ptr(scratch), scratch.length,
-			Pointer.arrayElem(producedLength, 0).raw, format);
-
-		if (rc != 0) {
-			throw 'Signing failed: ' + NativePk.errorMessage(rc) + ' (code $rc)';
-		}
-
-		var produced:Int = producedLength[0];
-		if (produced <= 0) {
-			throw "mbedTLS signing produced an empty signature.";
-		}
-
-		return scratch.sub(0, produced);
-		#else
-		throw "Public-key signing is only available on supported native cpp targets.";
-		#end
+		// Wiped now rather than whenever the collector gets to it.
+		key.dispose();
+		return signature;
 	}
 }

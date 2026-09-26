@@ -22,6 +22,8 @@ class PkKeyFixture {
 	private static var __ec:PkKeyPair;
 	private static var __rsaAttempted:Bool = false;
 	private static var __ecAttempted:Bool = false;
+	private static var __rsa4096:PkKeyPair;
+	private static var __rsa4096Attempted:Bool = false;
 
 	public static function rsa():PkKeyPair {
 		if (__rsaAttempted) {
@@ -49,6 +51,39 @@ class PkKeyFixture {
 		}
 
 		return __rsa;
+	}
+
+	/**
+	 * A 4096-bit RSA keypair, for cases that need a signature slow enough to
+	 * time things against: mbedTLS takes tens of milliseconds to make one.
+	 * Generated once, like the others; generating it takes a few seconds.
+	 */
+	public static function rsa4096():PkKeyPair {
+		if (__rsa4096Attempted) {
+			return __rsa4096;
+		}
+		__rsa4096Attempted = true;
+
+		var directory:String = __directory();
+		var privatePath:String = haxe.io.Path.join([directory, "rsa4096-key.pem"]);
+		var publicPath:String = haxe.io.Path.join([directory, "rsa4096-pub.pem"]);
+
+		try {
+			if (!sys.FileSystem.exists(privatePath) || !sys.FileSystem.exists(publicPath)) {
+				if (Sys.command("openssl", ["genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:4096", "-out", privatePath]) != 0) {
+					return null;
+				}
+				if (Sys.command("openssl", ["pkey", "-in", privatePath, "-pubout", "-out", publicPath]) != 0) {
+					return null;
+				}
+			}
+
+			__rsa4096 = {publicPem: sys.io.File.getContent(publicPath), privatePem: sys.io.File.getContent(privatePath)};
+		} catch (_:Dynamic) {
+			__rsa4096 = null;
+		}
+
+		return __rsa4096;
 	}
 
 	public static function ec():PkKeyPair {
