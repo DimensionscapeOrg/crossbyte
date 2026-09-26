@@ -56,6 +56,32 @@ class HTTPStaticPathTest extends utest.Test {
 		});
 	}
 
+	/**
+		A file created a moment after its directory was listed is served.
+
+		On Windows and macOS the resolver checks a path's spelling against its
+		directory's listing, and keeps listings for a second. A name missing
+		from a kept listing must send the resolver back to the directory, not
+		to a 404, or every newly deployed file would be refused for a second.
+	**/
+	public function testAFileCreatedAfterAListingIsServed(async:Async):Void {
+		var server:HTTPServer = __serve(null);
+		var root:File = __roots[__roots.length - 1];
+
+		HTTPTestSupport.exchangeEach(server, ["GET /public.txt HTTP/1.1\r\nHost: x\r\n\r\n"], function(first):Void {
+			__write(root, "fresh.txt", "just deployed");
+
+			HTTPTestSupport.exchangeEach(server, ["GET /fresh.txt HTTP/1.1\r\nHost: x\r\n\r\n"], function(second):Void {
+				try server.close() catch (_:Dynamic) {}
+
+				Assert.equals(200, first[0].status);
+				Assert.equals(200, second[0].status, "a file created after its directory was listed was refused");
+				Assert.equals("just deployed", second[0].body);
+				async.done();
+			});
+		});
+	}
+
 	/** RFC 8615's directory is for files a site means to publish. **/
 	public function testWellKnownIsServed(async:Async):Void {
 		var server:HTTPServer = __serve(null);
@@ -103,6 +129,149 @@ class HTTPStaticPathTest extends utest.Test {
 		});
 	}
 
+	/**
+		A guard on `/private/` sees every spelling that would be served from
+		`private/`.
+
+		The path was only percent-decoded for middleware, while the resolver
+		collapsed slashes and applied dot steps on its own, so the auditor's
+		guard let `//private/report.txt` and `/./private/report.txt` through
+		and the resolver served the file for both. On Windows and macOS
+		`/PRIVATE/report.txt` went the same way, since the filesystem answers
+		to any case: now a file is served only under its own spelling there,
+		as on Linux.
+	**/
+	public function testAGuardSeesThePathThatIsServed(async:Async):Void {
+		var server:HTTPServer = __serve(config -> config.middleware.push(__guard));
+
+		var guarded:Array<String> = [
+			"/private/report.txt", "//private/report.txt", "/./private/report.txt", "/x/../private/report.txt", "/private//report.txt",
+			"/private/./report.txt", "/private%2freport.txt", "/%2Fprivate/report.txt", "/private%5Creport.txt", "/private/REPORT.TXT",
+			"/private/report.txt.", "/private/report.txt::$DATA"
+		];
+		// Spellings the guard does not match, which must then find nothing:
+		// other cases, a trailing dot or space, and Windows short names --
+		// including the ones Windows gives dotfiles, which have no dot.
+		var unguarded:Array<String> = [
+			"/PRIVATE/report.txt", "/Private/report.txt", "/private./report.txt", "/private%20/report.txt", "/PRIVAT~1/report.txt",
+			"/ENV~1", "/GIT~1/config"
+		];
+
+		var requests:Array<String> = [for (path in guarded.concat(unguarded)) "GET " + path + " HTTP/1.1\r\nHost: x\r\n\r\n"];
+		HTTPTestSupport.exchangeEach(server, requests, function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			for (i in 0...guarded.length) {
+				Assert.equals(401, responses[i].status, guarded[i] + " was not seen by the guard");
+			}
+			for (i in 0...unguarded.length) {
+				var response:HTTPTestResponse = responses[guarded.length + i];
+				Assert.equals(404, response.status, unguarded[i] + " was served past the guard");
+			}
+			for (response in responses) {
+				Assert.isTrue(response.raw.indexOf("TOP-SECRET") < 0, "the guarded file was served: " + response.raw.substr(0, 60));
+				Assert.isTrue(response.raw.indexOf("SECRET=1") < 0, "a dotfile was served by its short name");
+				Assert.isTrue(response.raw.indexOf("repositoryformatversion") < 0, "the git config was served by its short name");
+			}
+			async.done();
+		});
+	}
+
+	/**
+		A `..` inside a segment is part of a name. Any `..` anywhere used to
+		throw out of the resolver, which ran before the router, so a route
+		whose parameter held one answered 500.
+	**/
+	public function testDotsInsideANameReachTheRouter(async:Async):Void {
+		var router:Router = new Router();
+		router.get("/api/compare/:range", ctx -> ctx.handler.respond(200, "text/plain", ctx.params.get("range")));
+		var server:HTTPServer = __serve(config -> config.middleware.push(router.middleware()));
+
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /api/compare/v1.2..v1.3 HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /api/compare/backup..old HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /api/compare/... HTTP/1.1\r\nHost: x\r\n\r\n"
+		], function(responses):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals(200, responses[0].status);
+			Assert.equals("v1.2..v1.3", responses[0].body);
+			Assert.equals(200, responses[1].status);
+			Assert.equals("backup..old", responses[1].body);
+			Assert.equals(200, responses[2].status);
+			Assert.equals("...", responses[2].body);
+			async.done();
+		});
+	}
+
+	/** Climbing above the root is refused as malformed, before middleware sees it. **/
+	public function testAPathClimbingAboveTheRootIsRefused(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(config -> config.middleware.push(function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			seen.push(handler.requestPath);
+			next();
+		}));
+
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /../public.txt HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /sub/../../public.txt HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /%2e%2e/public.txt HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /..%5Cpublic.txt HTTP/1.1\r\nHost: x\r\n\r\n",
+			// Steps that stay inside are applied, not refused.
+			"GET /sub/../public.txt HTTP/1.1\r\nHost: x\r\n\r\n"
+		], function(responses):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			for (i in 0...4) {
+				Assert.equals(400, responses[i].status, "escape " + i + " was not refused");
+			}
+			Assert.equals(200, responses[4].status);
+			Assert.equals("public", responses[4].body);
+			Assert.equals(1, seen.length, "middleware saw an escaping path: " + seen.join(", "));
+			Assert.equals("/public.txt", seen[0]);
+			async.done();
+		});
+	}
+
+	#if nodejs
+	/**
+		A request a route answers never reaches the filesystem.
+
+		The resolver ran before middleware, so every routed request paid for
+		three lookups -- the auditor counted 297 for 99 requests -- on the
+		runtime's own thread. Counted here by wrapping Node's `fs`, which is
+		the one target where the calls can be seen from inside.
+	**/
+	public function testARoutedRequestDoesNotTouchTheFilesystem(async:Async):Void {
+		var router:Router = new Router();
+		router.get("/api/users/:id", ctx -> ctx.handler.respond(200, "application/json", '{"id":"' + ctx.params.get("id") + '"}'));
+		var server:HTTPServer = __serve(config -> config.middleware.push(router.middleware()));
+
+		js.Syntax.code("var fs = require('fs'); globalThis.__cbFsCalls = 0; globalThis.__cbFsOriginal = {}; for (const k of ['existsSync', 'statSync', 'lstatSync', 'accessSync', 'readdirSync', 'openSync']) { const orig = fs[k]; globalThis.__cbFsOriginal[k] = orig; fs[k] = function() { globalThis.__cbFsCalls++; return orig.apply(fs, arguments); }; }");
+
+		var calls:Int = -1;
+		HTTPTestSupport.exchangeEach(server, [for (i in 0...20) "GET /api/users/" + i + " HTTP/1.1\r\nHost: x\r\n\r\n"], function(responses):Void {
+			calls = js.Syntax.code("globalThis.__cbFsCalls");
+			js.Syntax.code("var fs = require('fs'); for (const k in globalThis.__cbFsOriginal) { fs[k] = globalThis.__cbFsOriginal[k]; }");
+			try server.close() catch (_:Dynamic) {}
+
+			for (response in responses) {
+				Assert.equals(200, response.status);
+			}
+			Assert.equals(0, calls, "routed requests reached the filesystem " + calls + " times");
+			async.done();
+		});
+	}
+	#end
+
+	private static function __guard(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+		if (StringTools.startsWith(handler.requestPath, "/private/") && handler.getHeader("authorization") != "Bearer letmein") {
+			handler.respond(401, "application/json", '{"error":"unauthorized"}');
+			return;
+		}
+		next();
+	}
+
 	private function __serve(configure:Null<HTTPServerConfig->Void>):HTTPServer {
 		var root:File = File.createTempDirectory();
 		__roots.push(root);
@@ -116,6 +285,8 @@ class HTTPStaticPathTest extends utest.Test {
 		root.resolvePath(".well-known").createDirectory();
 		root.resolvePath(".well-known/acme-challenge").createDirectory();
 		__write(root, ".well-known/acme-challenge/token123", "acme-proof");
+		root.resolvePath("private").createDirectory();
+		__write(root, "private/report.txt", "TOP-SECRET-REPORT");
 
 		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
 		if (configure != null) {

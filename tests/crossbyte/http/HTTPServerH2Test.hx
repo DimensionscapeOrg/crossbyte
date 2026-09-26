@@ -86,7 +86,29 @@ class HTTPServerH2Test extends utest.Test {
 		// was being wired: the injection path set the file path straight from
 		// the request target, and the dispatch fallback serves that as-is.
 		exchange(async, "GET", "/../../../../../../etc/passwd", null, null, function(status, headers, body) {
-			Assert.equals(403, status);
+			// 400: a path climbing above the root is malformed, and refused
+			// before middleware, as over HTTP/1.1.
+			Assert.equals(400, status);
+			async.done();
+		});
+	}
+
+	public function testAGuardSeesTheSettledPathOverHttp2(async:Async):Void {
+		// The path settles the same way on both protocols, so a guard written
+		// once holds on both.
+		exchange(async, "GET", "/./private//report.txt", null, config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (StringTools.startsWith(handler.requestPath, "/private/")) {
+						handler.respond(401, "text/plain", "guarded " + handler.requestPath);
+						return;
+					}
+					next();
+				}
+			];
+		}, function(status, headers, body) {
+			Assert.equals(401, status);
+			Assert.equals("guarded /private/report.txt", body.toString());
 			async.done();
 		});
 	}

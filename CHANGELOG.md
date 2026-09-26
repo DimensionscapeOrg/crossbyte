@@ -712,6 +712,23 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A middleware guard sees the path the server would serve. The request
+  path was only percent-decoded for middleware, while the static resolver
+  collapsed slashes and applied `.` and `..` on its own, so a guard refusing
+  `/private/` let `//private/report.txt` and `/./private/report.txt` through
+  and the file was served for both; on Windows and macOS `/PRIVATE/report.txt`
+  went the same way, and on Windows so did a trailing dot and an 8.3 short
+  name -- `/ENV~1` served `.env`. `requestPath` is now settled once, before
+  middleware, over HTTP/1.1 and HTTP/2 alike: repeated slashes collapsed,
+  dot steps applied, a backslash read as `/`, and a path climbing above the
+  root answered `400`. On Windows and macOS a file is served only under the
+  spelling its directory lists, as on Linux. A `..` inside a name is part of
+  it: any `..` used to throw before the router ran, so
+  `/api/compare/v1.2..v1.3` answered 500. Files and rewrites are resolved only
+  once the middleware chain lets a request through, so a request a route
+  answers never touches the filesystem, where it paid three lookups and a
+  regular expression compile: natively on Windows, a routed request went from
+  79 to 31 microseconds end to end, and a static file from 265 to 200.
 - The HTTP server and clients read every other number a peer sends the same
   way on every target, through `IntParse`: a byte range, a chunk size, the
   port in a `Host` header or a URL, a cookie's `Max-Age`, a response's status
