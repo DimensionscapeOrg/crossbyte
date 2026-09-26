@@ -527,6 +527,10 @@ class ServerSocket extends EventDispatcher {
 				};
 			}
 
+			// Half-open, so a peer's FIN is the accepted socket's to act on,
+			// by its peerShutdownPolicy, rather than Node's to answer with its
+			// own.
+			options.allowHalfOpen = true;
 			__serverSocket = Tls.createServer(options, accept);
 
 			// The raw TCP connection, before TLS starts on it: the point where
@@ -537,7 +541,7 @@ class ServerSocket extends EventDispatcher {
 				}
 			});
 		} else {
-			__serverSocket = Net.createServer(accept);
+			__serverSocket = Net.createServer({allowHalfOpen: true}, accept);
 		}
 
 		// A port already in use, or an address that is not local, reaches a
@@ -691,11 +695,12 @@ class ServerSocket extends EventDispatcher {
 
 		cbSocket.__cbInstance = __cbInstance;
 
-		Timer.delay(() -> {
-			if (!cbSocket.__connected) {
-				cbSocket.dispatchEvent(new Event(Event.CLOSE));
-			}
-		}, 0);
+		// No CLOSE is scheduled from here. One was, a tick on, for a socket no
+		// longer connected by then -- and every way a socket stops being
+		// connected announces CLOSE itself, so a peer that connected and hung
+		// up within a tick, a load balancer's health check, was announced
+		// closed twice: onDisconnect ran twice, and a live-connection count
+		// fell by two for every one that went.
 
 		socket.custom = cbSocket;
 

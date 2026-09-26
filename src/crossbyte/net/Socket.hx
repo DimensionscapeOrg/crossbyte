@@ -398,6 +398,22 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// sending it first: set when the output limit closes a peer that is not
 	// reading, which is the case the limit exists to reclaim memory from.
 	@:noCompletion private var __discardOnClose:Bool = false;
+
+	// Whether CLOSE has been dispatched for the connection this socket holds.
+	// A connection ends once, and is announced once: several paths can see
+	// the end of the same one -- the read that met its FIN, a close() from a
+	// listener, Node's close event after its end event -- and two of them
+	// firing turned one hang-up into two, so an application counting live
+	// connections drifted by one each time.
+	@:noCompletion private var __closeAnnounced:Bool = false;
+
+	@:noCompletion private function __announceClose():Void {
+		if (__closeAnnounced) {
+			return;
+		}
+		__closeAnnounced = true;
+		__dispatchPooledSimpleEvent(Event.CLOSE);
+	}
 	// Hot socket events are reused to reduce steady-state allocation churn.
 	// These events are ephemeral during dispatch and must not be retained.
 	@:noCompletion private var __pooledConnectEvent:Event;
@@ -469,7 +485,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			var wasConnected:Bool = __connected;
 			__cleanSocket();
 			if (wasConnected) {
-				__dispatchPooledSimpleEvent(Event.CLOSE);
+				__announceClose();
 			}
 		} else {
 			throw new IOError("Operation attempted on invalid socket.");
@@ -529,6 +545,11 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__isDirty = false;
 		flushFull = false;
 		__discardOnClose = false;
+		// A new connection, which has neither ended nor been announced as
+		// ending; a socket reused after a half-close otherwise never read
+		// again.
+		__closeAnnounced = false;
+		__peerShutdown = false;
 
 		__output = new ByteArray();
 		__output.endian = __endian;
@@ -560,7 +581,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// WebSocket path above already has: events feed __input and the tick
 		// only drains what has arrived. There is no descriptor to poll and
 		// nothing to register with the runtime.
-		var node = new NodeSocket();
+		// Half-open, so the peer's FIN is this socket's to act on; see
+		// socket_onEnd.
+		var node = new NodeSocket({allowHalfOpen: true});
 		__socket = node;
 		node.on(SocketEvent.Connect, function() {
 			try {
@@ -1405,10 +1428,25 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__cleanSocket();
 		}
 		if (wasConnected) {
-			__dispatchPooledSimpleEvent(Event.CLOSE);
+			__announceClose();
+		}
+		#elseif nodejs
+		// Node's handle is gone, from either end. This dispatched CLOSE and
+		// left the rest as it was: still connected, still holding the handle,
+		// and still flushed from the tick -- one tick listener left behind per
+		// connection, 200 of them after 200 HTTP clients had come and gone.
+		// Released now as a native socket is, and announced once, and only
+		// for a connection that came up: a connect that failed has had its
+		// ioError.
+		var wasConnected:Bool = __connected;
+		if (__socket != null) {
+			__releaseNode();
+		}
+		if (wasConnected) {
+			__announceClose();
 		}
 		#else
-		__dispatchPooledSimpleEvent(Event.CLOSE);
+		__announceClose();
 		#end
 	}
 
@@ -1478,6 +1516,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				__contain(e, ProgressEvent.SOCKET_DATA);
 			}
 		});
+		node.on(SocketEvent.End, function() {
+			try {
+				socket_onEnd();
+			} catch (e:Dynamic) {
+				__contain(e, Event.PEER_CLOSE);
+			}
+		});
 		node.on(SocketEvent.Error, function(_) {
 			try {
 				socket_onError(null);
@@ -1492,6 +1537,50 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				__contain(e, Event.CLOSE);
 			}
 		});
+	}
+
+	/**
+		The peer's FIN: it will send nothing more. What happens next is
+		`peerShutdownPolicy`'s, as it is at the Eof a native read meets.
+
+		Node made the choice itself: a socket without `allowHalfOpen` ends its
+		own side as soon as the peer does, so `HALF_OPEN` was ignored and a
+		peer that half-closed to say "that is my request" never got its answer.
+		Every socket is made half-open now, and this decides.
+	**/
+	@:noCompletion private function socket_onEnd():Void {
+		if (__socket == null) {
+			return;
+		}
+
+		__peerShutdown = true;
+
+		if (peerShutdownPolicy == HALF_OPEN) {
+			__dispatchPooledSimpleEvent(Event.PEER_CLOSE);
+			return;
+		}
+
+		// CLOSE: the end of the connection, as natively. end() sends what is
+		// still queued, then this side's FIN.
+		var wasConnected:Bool = __connected;
+		__cleanSocket();
+		if (wasConnected) {
+			__announceClose();
+		}
+	}
+
+	/**
+		Lets go of a socket Node has already closed: the bookkeeping of
+		`__cleanSocket`, without asking Node to close it again.
+	**/
+	@:noCompletion private function __releaseNode():Void {
+		__stopConnecting();
+		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
+		__cbInstance = null;
+		__socket = null;
+		__connected = false;
+		__isDirty = false;
+		flushFull = false;
 	}
 
 	/**
@@ -1728,7 +1817,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (doClose) {
 			__cleanSocket();
 			if (closeWasConnected) {
-				__dispatchPooledSimpleEvent(Event.CLOSE);
+				__announceClose();
 			} else {
 				__dispatchPooledIOError("Connection failed");
 			}
