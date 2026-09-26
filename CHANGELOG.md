@@ -712,6 +712,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- CORS no longer grants every site a signed-in user's data. With
+  `corsAllowCredentials` on and `corsAllowedOrigins` left at its default of
+  `["*"]`, the server echoed whatever `Origin` arrived with
+  `Access-Control-Allow-Credentials: true`, so any page could read `/me` with
+  the user's cookies. `validate()` now refuses credentials with `"*"`; name
+  the origins instead. `"*"` is always answered as `*`, and
+  `Allow-Credentials` goes only beside an origin that was named. A preflight
+  is answered with `corsAllowedMethods` and `corsAllowedHeaders` rather than
+  by echoing what it asked for, which approved any method and header; a
+  page sending `Authorization` or a custom header now needs it listed.
 - A conditional request dated after January 2038 is answered `304` on
   native builds. The server compared seconds with `Math.floor`, which
   returns an `Int`, and seconds since 1970 no longer fit one then: on hxcpp

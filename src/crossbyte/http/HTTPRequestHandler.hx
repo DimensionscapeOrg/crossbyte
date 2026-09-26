@@ -842,11 +842,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __handleOptionsRequest():Void {
 		var headers:Array<URLRequestHeader> = [];
 
-		var reqMethod:String = __headers.exists("access-control-request-method") ? __headers.get("access-control-request-method") : null;
-		headers.push(new URLRequestHeader("Access-Control-Allow-Methods", reqMethod != null ? reqMethod : __config.corsAllowedMethods.join(", ")));
-
-		var reqHdrs:String = __headers.exists("access-control-request-headers") ? __headers.get("access-control-request-headers") : null;
-		headers.push(new URLRequestHeader("Access-Control-Allow-Headers", reqHdrs != null ? reqHdrs : __config.corsAllowedHeaders.join(", ")));
+		// The configured lists, whatever the preflight asked for. This echoed
+		// Access-Control-Request-Method and -Headers back, approving any method
+		// and any header a page cared to name, so the lists meant nothing. The
+		// browser compares its request against these and refuses what is not
+		// on them, which is the whole of what a preflight is for.
+		headers.push(new URLRequestHeader("Access-Control-Allow-Methods", __config.corsAllowedMethods.join(", ")));
+		headers.push(new URLRequestHeader("Access-Control-Allow-Headers", __config.corsAllowedHeaders.join(", ")));
 
 		if (__config.corsMaxAge > 0) {
 			headers.push(new URLRequestHeader("Access-Control-Max-Age", Std.string(__config.corsMaxAge)));
@@ -1429,7 +1431,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (allowOrigin != null) {
 				fields.push(new URLRequestHeader("Access-Control-Allow-Origin", allowOrigin));
 			}
-			if (__config.corsAllowCredentials && allowOrigin != "*") {
+			// Only beside an origin that was named. It went out to origins that
+			// were refused as well, which granted nothing but said otherwise.
+			if (__config.corsAllowCredentials && allowOrigin != null && allowOrigin != "*") {
 				fields.push(new URLRequestHeader("Access-Control-Allow-Credentials", "true"));
 			}
 			fields.push(new URLRequestHeader("Vary", "Origin"));
@@ -2909,14 +2913,22 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__servePhp(file.nativePath, false, __requestBody);
 	}
 
+	/**
+	 * The `Access-Control-Allow-Origin` to answer with, or null for none.
+	 *
+	 * `*` is answered as `*` and never by echoing the request's `Origin`.
+	 * With credentials allowed the echo was a grant to every site of what a
+	 * signed-in user can read, the auditor read `/me` from
+	 * `https://evil.example`. `validate` refuses that pairing; answering `*`
+	 * here keeps it harmless for a configuration changed after the server
+	 * started, since a browser will not pair `*` with credentials.
+	 */
 	@:noCompletion private inline function __computeAllowOrigin():Null<String> {
-		var origin:String = __headers.exists("origin") ? __headers.get("origin") : null;
 		if (__config.corsAllowedOrigins.indexOf("*") != -1) {
-			if (__config.corsAllowCredentials && origin != null) {
-				return origin;
-			}
 			return "*";
 		}
+
+		var origin:String = __headers.exists("origin") ? __headers.get("origin") : null;
 		if (origin != null && __config.corsAllowedOrigins.indexOf(origin) != -1) {
 			return origin;
 		}
