@@ -103,6 +103,8 @@ class PortableSuite {
 		// HS256 is pure Haxe, so tokens verify alike on every target.
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
+		// Times past 2038 and a 32-bit Int are where the targets disagreed.
+		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());
