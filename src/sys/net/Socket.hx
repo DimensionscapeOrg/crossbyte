@@ -513,14 +513,67 @@ import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 
+@:access(sys.net.Socket)
 private class SocketInput extends haxe.io.Input {
 	var channel:SocketChannel;
+
+	/** Seconds a blocking read waits for data before giving up; 0 waits for ever. **/
+	public var timeout:Float = 0.0;
 
 	public function new(channel:SocketChannel) {
 		this.channel = channel;
 	}
 
+	/**
+		A blocking NIO channel has no read timeout -- SO_TIMEOUT reaches only
+		the stream API, never `channel.read` -- so `setTimeout` was stored and
+		never read, and a read with nothing coming waited for ever: the HTTP
+		client's idle limit did nothing here. Waiting for readability on the
+		thread's selector first gives the timeout the other targets honour.
+	**/
+	function __awaitReadable():Void {
+		if (timeout <= 0 || !channel.isBlocking()) {
+			return;
+		}
+
+		var selector = Socket.__threadSelector();
+		var ready:Int = 0;
+		var failure:Dynamic = null;
+		try {
+			channel.configureBlocking(false);
+			channel.register(selector, SelectionKey.OP_READ);
+			// 0 would mean no limit to select; the shortest real wait is 1 ms.
+			var millis:Float = Math.ceil(timeout * 1000);
+			ready = selector.select(haxe.Int64.fromFloat(millis < 1 ? 1 : millis));
+		} catch (e:Dynamic) {
+			failure = e;
+		}
+		try {
+			var keys = selector.keys().iterator();
+			while (keys.hasNext()) {
+				var k:SelectionKey = keys.next();
+				k.cancel();
+			}
+			selector.selectNow();
+		} catch (_:Dynamic) {}
+		try {
+			channel.configureBlocking(true);
+		} catch (e:Dynamic) {
+			if (failure == null) {
+				failure = e;
+			}
+		}
+
+		if (failure != null) {
+			throw Custom(failure);
+		}
+		if (ready == 0) {
+			throw Custom("Timeout");
+		}
+	}
+
 	public override function readByte():Int {
+		__awaitReadable();
 		var buf = ByteBuffer.allocate(1);
 		var n:Int = try {
 			channel.read(buf);
@@ -544,6 +597,7 @@ private class SocketInput extends haxe.io.Input {
 		// read -- sixty-four kilobytes of each per chunk on the framework's own
 		// read path. The write side beside this has always wrapped; the two are
 		// now the same shape.
+		__awaitReadable();
 		var bb = ByteBuffer.wrap(buf.getData(), pos, len);
 		var n:Int = try {
 			channel.read(bb);
@@ -647,7 +701,9 @@ class Socket {
 
 	private function __init(channel:SocketChannel):Void {
 		this.channel = channel;
-		this.input = new SocketInput(channel);
+		var input = new SocketInput(channel);
+		input.timeout = __timeout;
+		this.input = input;
 		this.output = new SocketOutput(channel);
 	}
 
@@ -683,7 +739,9 @@ class Socket {
 			while (!sc.finishConnect()) {
 				// busy-wait until the connection is established
 			}
-			this.input = new SocketInput(sc);
+			var input = new SocketInput(sc);
+			input.timeout = __timeout;
+			this.input = input;
 			this.output = new SocketOutput(sc);
 		} catch (e:Dynamic)
 			throw e;
@@ -776,8 +834,13 @@ class Socket {
 	}
 
 	public function setTimeout(timeout:Float):Void {
-		// java.nio channels have no per-socket SO_TIMEOUT; store best-effort.
+		// A blocking channel read ignores SO_TIMEOUT; the input waits on a
+		// selector for this long before each blocking read instead.
 		__timeout = timeout;
+		var reader:Null<SocketInput> = Std.downcast(input, SocketInput);
+		if (reader != null) {
+			reader.timeout = timeout;
+		}
 	}
 
 	public function waitForRead():Void {
