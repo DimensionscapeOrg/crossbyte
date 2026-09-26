@@ -117,6 +117,160 @@ class SessionDescriptionTest extends utest.Test {
 	}
 
 	/**
+		A document listing several fingerprints is read for the one this checks.
+
+		Each line overwrote the one before, and a hash this cannot check wrote
+		nothing over it, so a sha-1 line after the sha-256 one erased it, and
+		the document was refused as carrying no fingerprint at all.
+	**/
+	public function testAFingerprintUnderAnotherHashDoesNotEraseTheOne():Void {
+		var fingerprint = "41:FE:38:80:C1:6C:0C:E2:5E:B1:5F:AF:41:4C:E5:3D:4C:1E:0C:1E:5D:2E:38:63:AA:35:0F:69:82:1A:1E:8C";
+		var line = "a=fingerprint:sha-256 " + fingerprint + "\r\n";
+
+		for (others in [
+			["a=fingerprint:sha-1 00:11:22\r\n"],
+			["a=fingerprint:sha-384 00:11:22\r\n"],
+			["a=fingerprint:sha-1 00:11:22\r\n", "a=fingerprint:sha-512 33:44\r\n"]
+		]) {
+			// The one this checks first, and then after the others.
+			var after = StringTools.replace(CHROME_OFFER, line, line + others.join(""));
+			var before = StringTools.replace(CHROME_OFFER, line, others.join("") + line);
+
+			Assert.equals(fingerprint, SessionDescription.fromSdp(after).fingerprint, "a later " + others.join("") + " erased the sha-256 line");
+			Assert.equals(fingerprint, SessionDescription.fromSdp(before).fingerprint);
+		}
+	}
+
+	/**
+		An answer carries the offer's section id.
+
+		It was always "0". A browser whose offer said `a=mid:data` could not
+		match an answer saying `a=mid:0` to it.
+	**/
+	public function testTheOffersSectionIdIsCarriedIntoTheAnswer():Void {
+		var offer = SessionDescription.fromSdp(StringTools.replace(CHROME_OFFER, "a=mid:0", "a=mid:data"));
+		Assert.equals("data", offer.mid);
+
+		var answer = SessionDescription.toSdp({
+			usernameFragment: "abcd",
+			password: "a-password-of-adequate-length",
+			fingerprint: "AA:BB",
+			candidates: [],
+			mid: offer.mid
+		});
+
+		Assert.isTrue(answer.indexOf("a=mid:data\r\n") >= 0, "the answer does not repeat the offer's mid");
+		Assert.isTrue(answer.indexOf("a=group:BUNDLE data\r\n") >= 0, "the answer's bundle does not name the offer's mid");
+		Assert.isTrue(answer.indexOf("a=mid:0") < 0, "the answer still says mid 0");
+
+		// Without one, "0", as before.
+		Assert.equals("0", SessionDescription.fromSdp(SessionDescription.toSdp({
+			usernameFragment: "abcd",
+			password: "a-password-of-adequate-length",
+			fingerprint: "AA:BB",
+			candidates: []
+		})).mid);
+
+		// And a section id that is not a token cannot write lines of its own.
+		Assert.raises(() -> SessionDescription.toSdp({
+			usernameFragment: "abcd",
+			password: "a-password-of-adequate-length",
+			fingerprint: "AA:BB",
+			candidates: [],
+			mid: "data\r\na=fingerprint:sha-256 00"
+		}), ArgumentError);
+	}
+
+	/**
+		A document claims the end of candidates only when told to.
+
+		Every one did, so an answer written before a reflexive candidate had
+		come back told the peer to stop waiting for the candidate that would
+		have reached it.
+	**/
+	public function testTheEndOfCandidatesIsClaimedOnlyWhenTrue():Void {
+		var base:PeerDescription = {
+			usernameFragment: "abcd",
+			password: "a-password-of-adequate-length",
+			fingerprint: "AA:BB",
+			candidates: []
+		};
+
+		Assert.isTrue(SessionDescription.toSdp(base).indexOf("a=end-of-candidates") < 0,
+			"a description that did not say gathering was over claimed it was");
+
+		var complete = SessionDescription.toSdp({
+			usernameFragment: "abcd",
+			password: "a-password-of-adequate-length",
+			fingerprint: "AA:BB",
+			candidates: [],
+			endOfCandidates: true
+		});
+		Assert.isTrue(complete.indexOf("a=end-of-candidates\r\n") >= 0);
+		Assert.isTrue(SessionDescription.fromSdp(complete).endOfCandidates == true, "a=end-of-candidates was not read");
+		Assert.isFalse(SessionDescription.fromSdp(CHROME_OFFER).endOfCandidates == true);
+	}
+
+	/**
+		A trickled candidate line reads the way a description's does, and a
+		candidate writes out as one.
+
+		The reader was private, so an application passing a browser's
+		`onicecandidate` lines on wrote its own parser, and the writer would not
+		put `raddr`/`rport` on a reflexive candidate.
+	**/
+	public function testATrickledCandidateLineIsReadAndWritten():Void {
+		var trickled = SessionDescription.readCandidate("candidate:842163049 1 udp 1677729535 203.0.113.7 46154 typ srflx raddr 10.0.0.2 rport 51000 generation 0 network-cost 999");
+
+		Assert.notNull(trickled, "a browser's trickled line was not understood");
+
+		if (trickled != null) {
+			Assert.equals("203.0.113.7", trickled.address);
+			Assert.equals(46154, trickled.port);
+			Assert.equals("srflx", trickled.type);
+			Assert.equals(1677729535, trickled.priority);
+			Assert.equals("10.0.0.2", trickled.relatedAddress);
+			Assert.equals(51000, trickled.relatedPort);
+		}
+
+		// With the a= a description line has.
+		Assert.notNull(SessionDescription.readCandidate("a=candidate:1 1 udp 2130706431 10.0.0.2 5000 typ host"));
+
+		// What this stack cannot use.
+		Assert.isNull(SessionDescription.readCandidate("candidate:1 2 udp 2130706430 10.0.0.2 5001 typ host"), "an RTCP component was taken");
+		Assert.isNull(SessionDescription.readCandidate("candidate:1 1 tcp 2130706431 10.0.0.2 9 typ host tcptype active"), "a TCP candidate was taken");
+		Assert.isNull(SessionDescription.readCandidate("candidate:1 1 udp 99999999999 10.0.0.2 5000 typ host"), "a priority past 2^31 was taken");
+		Assert.isNull(SessionDescription.readCandidate("candidate:1 1 udp 2130706431 10.0.0.2 70000 typ host"), "a port past 65535 was taken");
+		Assert.isNull(SessionDescription.readCandidate("candidate:1 1 udp -5 10.0.0.2 5000 typ host"), "a negative priority was taken");
+		Assert.isNull(SessionDescription.readCandidate("candidate:1 1 udp 2130706431 10.0.0.2 5000 host"), "a line without typ was taken");
+		Assert.isNull(SessionDescription.readCandidate("not a candidate"));
+		Assert.isNull(SessionDescription.readCandidate(null));
+
+		// Written and read back, related address included.
+		var line = SessionDescription.writeCandidate({
+			address: "203.0.113.7",
+			port: 46154,
+			type: "srflx",
+			priority: 1677729535,
+			relatedAddress: "10.0.0.2",
+			relatedPort: 51000
+		}, 7);
+
+		Assert.equals("candidate:7 1 udp 1677729535 203.0.113.7 46154 typ srflx raddr 10.0.0.2 rport 51000", line);
+
+		// A reflexive one with no related address still has the fields the
+		// grammar asks for, without this machine's inside address.
+		Assert.equals("candidate:1 1 udp 1677729535 203.0.113.7 46154 typ srflx raddr 0.0.0.0 rport 0",
+			SessionDescription.writeCandidate({address: "203.0.113.7", port: 46154, type: "srflx", priority: 1677729535}));
+
+		// And a host one, none.
+		Assert.equals("candidate:1 1 udp 2130706431 10.0.0.2 5000 typ host",
+			SessionDescription.writeCandidate({address: "10.0.0.2", port: 5000, type: "host", priority: 2130706431}));
+
+		Assert.raises(() -> SessionDescription.writeCandidate({address: "10.0.0.2\r\na=x", port: 5000, type: "host", priority: 1}), ArgumentError);
+	}
+
+	/**
 		A TCP candidate is left out rather than tried.
 
 		Chrome offers one and this stack has no transport for it. Accepting it

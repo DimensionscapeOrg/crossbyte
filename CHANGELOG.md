@@ -691,6 +691,23 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- WebRTC SDP and trickle ICE. An offer listing a second fingerprint under
+  another hash was refused, because each `a=fingerprint` line overwrote the
+  last and a hash this cannot check wrote nothing; the first sha-256 one is
+  now kept. An answer always said `a=mid:0`, which a browser whose offer said
+  `a=mid:data` cannot match; `PeerDescription.mid` carries the offer's into
+  the answer `PeerConnection.description()` writes. Every document claimed
+  `a=end-of-candidates`, telling the peer to stop listening for candidates
+  still being gathered; it is now written only when
+  `PeerDescription.endOfCandidates` is true, and read back. Trickle ICE was
+  the application's to build: `SessionDescription.readCandidate` and
+  `writeCandidate` are public (with or without `a=`, `raddr`/`rport`
+  included, `0.0.0.0` port 0 for a reflexive one with none given, and a
+  second component or an out-of-range priority or port skipped, parsed with
+  `IntParse`), `PeerConnection.onLocalCandidate` reports each candidate as it
+  is gained, and `PeerConnection.addRemoteCandidate` takes one the peer
+  trickled, before or after `connect`, saying whether it was usable.
+  `PeerConnection` also has a `userData` slot, as `DataChannel` does.
 - A data channel message larger than the peer takes is refused instead of
   vanishing. The SDP promised `a=max-message-size:2097152`, the receive
   window, while the receiver gives up on any message past 1 MB, so a

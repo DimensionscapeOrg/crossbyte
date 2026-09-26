@@ -287,6 +287,97 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		Candidates trickle both ways, with none in either description.
+
+		Trickle ICE was left to the application: nothing announced a candidate
+		as the connection gained one, the reader for a trickled line was
+		private, and the only way to hand a peer's candidate in was through
+		`agent`, documented as being for inspection. Here each peer's
+		description goes out empty, the way a trickling application sends it,
+		and every candidate crosses as a line afterwards, so the connection
+		comes up on trickled candidates or not at all.
+	**/
+	public function testCandidatesTrickleBothWays():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var fromAlice:Array<String> = [];
+		var fromBob:Array<String> = [];
+
+		try {
+			alice.userData = "alice's session";
+
+			// Before bind, which is where the host candidate is gained.
+			alice.onLocalCandidate = candidate -> fromAlice.push(SessionDescription.writeCandidate(candidate));
+			bob.onLocalCandidate = candidate -> fromBob.push(SessionDescription.writeCandidate(candidate));
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+
+			Assert.isTrue(fromAlice.length > 0, "binding to an address gained a candidate and said nothing");
+
+			var aliceDescription = alice.description();
+			var bobDescription = bob.description();
+			aliceDescription.candidates = [];
+			bobDescription.candidates = [];
+
+			alice.connect(bobDescription);
+			bob.connect(aliceDescription);
+
+			// The lines cross afterwards, as they would over signalling.
+			for (line in fromBob) {
+				Assert.isTrue(alice.addRemoteCandidate(SessionDescription.readCandidate(line)), "a trickled candidate was refused: " + line);
+			}
+
+			for (line in fromAlice) {
+				Assert.isTrue(bob.addRemoteCandidate(SessionDescription.readCandidate(line)), "a trickled candidate was refused: " + line);
+			}
+
+			// A name is not something this stack dials, and is said to be skipped.
+			Assert.isFalse(alice.addRemoteCandidate({address: "4a7c1d93.local", port: 5000, type: "host", priority: 2130706431}));
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			Assert.isTrue(alice.connected && bob.connected, "the two never connected on trickled candidates");
+			Assert.equals("alice's session", alice.userData, "the framework touched userData");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		An answer repeats the section id of the offer it answers.
+	**/
+	public function testAnAnswerRepeatsTheOffersSectionId():Void {
+		if (unsupported()) return;
+
+		var answerer = new PeerConnection(false);
+
+		try {
+			answerer.bind(0, "127.0.0.1");
+			answerer.connect({
+				usernameFragment: "OfFr",
+				password: "an-offerers-password-long-enough",
+				fingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99",
+				candidates: [],
+				setup: "actpass",
+				mid: "data"
+			});
+
+			Assert.equals("data", answerer.description().mid, "the answer does not carry the offer's mid");
+			Assert.isTrue(SessionDescription.toSdp(answerer.description()).indexOf("a=mid:data\r\n") >= 0);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		answerer.close();
+	}
+
+	/**
 		A channel refuses a message larger than the peer said it takes.
 
 		RFC 8841's max-message-size was written into every description and
