@@ -3,7 +3,9 @@ package crossbyte.rpc;
 // Built for every target, JavaScript included: the portable suite runs RPC on
 // Node and in a browser.
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArrayInput;
+import crossbyte.io.ByteArrayOutput;
 import crossbyte.net.NetConnection;
 import crossbyte.rpc._internal.RPCWire;
 import haxe.ds.IntMap;
@@ -89,6 +91,36 @@ abstract class RPCCommands {
 		to a call for `op`, if that call was for `op`. A response is matched
 		by its id and checked by its op: see `RPCSession.__answeredForAnotherOp`.
 	**/
+	/**
+		Sends a one-way call's frame, as its stub built it.
+
+		@throws ArgumentError When the call is over its session's
+		`RPCSession.maxFrameLength`: it went out without complaint and ended
+		the connection on the other side.
+	**/
+	@:noCompletion private function __sendCall(framed:ByteArrayOutput):Void {
+		final session = __session;
+		if (session != null && session.__oversized(framed)) {
+			throw new ArgumentError(session.__oversizedMessage("RPC call", framed));
+		}
+		__nc.send(framed);
+	}
+
+	/**
+		Sends a request's frame, as its stub built it. One over its session's
+		`RPCSession.maxFrameLength` is not sent: `response` fails at once, with
+		an `ArgumentError` as its cause.
+	**/
+	@:noCompletion private function __sendRequest<T>(response:RPCResponse<T>, framed:ByteArrayOutput):Void {
+		final session = __session;
+		if (session != null && session.__oversized(framed)) {
+			final message:String = session.__oversizedMessage("RPC call", framed);
+			__failResponse(response.requestId, message, new ArgumentError(message));
+			return;
+		}
+		__nc.send(framed);
+	}
+
 	@:noCompletion private function __resolveResponse<T>(op:Int, requestId:Int, value:T):Void {
 		final response = __takeResponse(requestId);
 		if (response == null) {
