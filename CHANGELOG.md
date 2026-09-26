@@ -691,6 +691,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebRTC peer that changes network is followed. When the controlling
+  peer -- a browser whose Wi-Fi went, say -- nominated the pair from its new
+  address, this end answered and kept the pair it had, sending to an address
+  that no longer answered until consent failed 35 seconds later; and a
+  candidate trickled after connecting was never paired or checked. Now a
+  later nomination switches `IceAgent.selectedPair` (reported by the new
+  `onSelectedPairChanged`, with consent restarting on the new pair) and
+  `PeerConnection` sends the session there; pairs created or triggered once
+  connected are checked at the pacing interval, and not at all when there
+  are none; and a peer asking from a pair that failed earlier has that pair
+  checked afresh (RFC 8445 section 7.3.1.4).
 - An idle WebRTC peer no longer makes native calls every tick. Its DTLS
   session was stepped on every tick -- step, pending and available, three
   native calls finding nothing -- although nothing in an established session

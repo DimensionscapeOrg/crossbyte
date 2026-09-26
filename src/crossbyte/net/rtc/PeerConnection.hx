@@ -312,6 +312,30 @@ class PeerConnection {
 		agent.onRoleChanged = function(nowControlling:Bool):Void {
 			iceControlling = nowControlling;
 		};
+
+		// The controlling peer nominated another pair -- a browser whose
+		// network changed nominates the pair from its new address -- and the
+		// session goes where the agent now points. It used to stay on the
+		// first pair for good, sending into an address that had gone until
+		// consent to it ran out.
+		agent.onSelectedPairChanged = function(pair:IceCandidatePair):Void {
+			if (__closed || __dtls == null) {
+				return;
+			}
+
+			__route(pair);
+		};
+	}
+
+	/** Where the session's records go: the selected pair's remote end, by the route it was proved on. **/
+	@:noCompletion private function __route(pair:IceCandidatePair):Void {
+		__peerAddress = pair.remote.address;
+		__peerPort = pair.remote.port;
+
+		// Which of this peer's addresses the path was proved on. It matters only
+		// when it is the relayed one, and then it matters entirely: the session's
+		// records have to travel the same way its connectivity checks did.
+		__peerRelayed = __relayedCandidate != null && pair.local.sameAs(__relayedCandidate);
 	}
 
 	/**
@@ -1155,13 +1179,7 @@ class PeerConnection {
 			return;
 		}
 
-		__peerAddress = pair.remote.address;
-		__peerPort = pair.remote.port;
-
-		// Which of this peer's addresses the path was proved on. It matters only
-		// when it is the relayed one, and then it matters entirely: the session's
-		// records have to travel the same way its connectivity checks did.
-		__peerRelayed = __relayedCandidate != null && pair.local.sameAs(__relayedCandidate);
+		__route(pair);
 
 		// The DTLS role, not the ICE one. A peer answering a browser is
 		// ICE-controlled and the DTLS client at once, and using the ICE role
