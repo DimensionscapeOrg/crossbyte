@@ -639,6 +639,50 @@ class NameLookupTest extends utest.Test {
 	}
 
 	/**
+		A session dialled to an IPv6 address is filed under the address the
+		way replies arrive from it. It was filed as `Host.toString()` spells
+		it, which on the jvm is expanded -- `0:0:0:0:0:0:0:1` -- while datagrams
+		arrive from `::1`, so the peer's replies reached no session and the dial
+		never connected. Dials by name compressed the address already.
+	**/
+	#if (cpp || java || jvm)
+	@:timeout(15000)
+	public function testAServerDialsAnIPv6Address(async:Async):Void {
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+		var acceptedByBob:Int = 0;
+		bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(_) acceptedByBob++);
+		try {
+			alice.bind(0, "::1");
+			alice.listen();
+			bob.bind(0, "::1");
+			bob.listen();
+		} catch (e:Dynamic) {
+			// No IPv6 loopback on this machine: nothing to test.
+			Assert.pass();
+			async.done();
+			return;
+		}
+
+		NetPump.until(() -> alice.localPort > 0 && bob.localPort > 0, 5.0, function(_) {
+			var toBob = alice.connect("::1", bob.localPort);
+			var connected:Bool = false;
+			var failure:String = null;
+			toBob.addEventListener(Event.CONNECT, function(_) connected = true);
+			toBob.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) failure = e.text);
+
+			NetPump.until(() -> (connected && acceptedByBob > 0) || failure != null, 10.0, function(_) {
+				Assert.isTrue(connected, "a session dialled to ::1 never connected: " + failure);
+				Assert.equals(1, acceptedByBob);
+				try alice.close() catch (_:Dynamic) {}
+				try bob.close() catch (_:Dynamic) {}
+				NetPump.wait(0.1, () -> async.done());
+			});
+		});
+	}
+	#end
+
+	/**
 		Closing a server while a session it is dialling by name is looked up
 		closes that session with the rest, and the answer, when it comes,
 		dials nobody.

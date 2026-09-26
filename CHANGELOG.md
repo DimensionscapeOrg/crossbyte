@@ -1196,6 +1196,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, a reliable datagram session a server dialled to an IPv6
+  address never connected. It was filed under the address as the jvm spells
+  it, `0:0:0:0:0:0:0:1`, while datagrams arrive from `::1`, so the peer's
+  replies found no session. A dialled address is filed compressed now, as
+  arriving ones and dials by name already were.
 - `ReliableDatagramServerSocket.discoverPublicAddress` -- and so a
   reliable-UDP `NetHost`'s -- with a STUN server name that does not
   resolve fails at once instead of at its deadline. The send it asks with
