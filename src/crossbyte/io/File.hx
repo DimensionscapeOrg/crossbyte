@@ -1388,9 +1388,7 @@ final class File extends EventDispatcher {
 		Each time you run this code, a new (unique) file is created.
 	**/
 	public static function createTempDirectory():File {
-		var tempPath:String = __getTempPath(true);
-		FileSystem.createDirectory(tempPath);
-		return new File(tempPath);
+		return new File(Path.addTrailingSlash(__createTemp(true)));
 	}
 
 	/**
@@ -1415,11 +1413,7 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public static function createTempFile():File {
-		var tempPath:String = __getTempPath(false);
-		var directory:String = Path.directory(tempPath);
-		FileSystem.createDirectory(directory);
-		File.saveBytes(tempPath, haxe.io.Bytes.alloc(0));
-		return new File(tempPath);
+		return new File(__createTemp(false));
 	}
 
 	/**
@@ -1548,33 +1542,134 @@ final class File extends EventDispatcher {
 		return Path.removeTrailingSlashes(path);
 	}
 
-	@:noCompletion private static function __getTempPath(dir:Bool):String {
+	/**
+		Creates a temporary file or directory under a name nobody could have
+		guessed, and only if nothing is there already.
+
+		The name came from `Math.random`, 24 bits of it, and the file was
+		created after checking the name was free, through a call that follows
+		symbolic links. On a shared temporary directory another local user
+		could plant links at the names ahead of time, and the next temporary
+		file this created was written wherever the link pointed. The name is
+		now 64 bits from the platform's secure source, and the file is created
+		exclusively -- `O_CREAT | O_EXCL | O_NOFOLLOW`, readable by its owner
+		only, or `CREATE_NEW` -- so a name that is taken, by a link or anything
+		else, is passed over for another.
+
+		The interpreter and neko have neither a secure source nor an exclusive
+		create, and fall back to an unguessable-in-practice name and a check;
+		neither is a deployment target.
+	**/
+	@:noCompletion private static function __createTemp(directory:Bool):String {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("There is no temporary directory in a browser, and no environment to name one.");
 		#else
-		var path:String;
+		var root:String = __tempRoot();
 
-		if (System.isWindows) {
-			path = Sys.getEnv("TEMP");
-		} else {
-			path = Sys.getEnv("TMPDIR");
+		if (!FileSystem.exists(root)) {
+			FileSystem.createDirectory(root);
+		}
 
-			if (path == null) {
-				path = "/tmp";
+		for (_ in 0...100) {
+			var path:String = Path.join([root, "ofl" + __tempNonce() + (directory ? "" : ".tmp")]);
+
+			switch (__createExclusive(path, directory)) {
+				case 0:
+					return path;
+				case 1:
+					continue;
+				default:
+					throw new crossbyte.errors.IOError('Could not create a temporary ${directory ? "directory" : "file"} at $path.');
 			}
 		}
 
-		var tempPath = "";
+		throw new crossbyte.errors.IOError("Could not find an unused temporary name in " + root + ".");
+		#end
+	}
 
-		while (FileSystem.exists(tempPath = Path.join([path, "ofl" + Math.round(0xFFFFFF * Math.random())]))) {
-			// repeat
+	@:noCompletion private static function __tempRoot():String {
+		#if (js && !nodejs)
+		return "";
+		#else
+		if (System.isWindows) {
+			return Sys.getEnv("TEMP");
 		}
 
-		if (dir) {
-			return Path.addTrailingSlash(tempPath);
+		var path:String = Sys.getEnv("TMPDIR");
+		return path == null || path == "" ? "/tmp" : path;
+		#end
+	}
+
+	/** Sixteen hex digits from the secure source where there is one. **/
+	@:noCompletion private static function __tempNonce():String {
+		if (crossbyte.crypto.SecureRandom.isSupported) {
+			var bytes:haxe.io.Bytes = crossbyte.crypto.SecureRandom.getSecureRandomBytes(8);
+			return bytes.sub(0, 8).toHex();
 		}
 
-		return tempPath + ".tmp";
+		return StringTools.hex(Std.random(0x7FFFFFFF), 8).toLowerCase() + StringTools.hex(Std.random(0x7FFFFFFF), 8).toLowerCase();
+	}
+
+	/**
+		Creates `path` only if nothing is there: `0` when it did, `1` when
+		something was, `-1` on any other failure.
+	**/
+	@:noCompletion private static function __createExclusive(path:String, directory:Bool):Int {
+		#if (js && !nodejs)
+		return -1;
+		#elseif cpp
+		return crossbyte.io._internal.NativeFileSync.createExclusive(path, directory);
+		#elseif jvm
+		try {
+			var target = java.nio.file.Paths.get(path);
+
+			if (directory) {
+				java.nio.file.Files.createDirectory(target);
+			} else {
+				java.nio.file.Files.createFile(target);
+			}
+
+			if (!System.isWindows) {
+				// Owner only, as the other targets make them.
+				var permissions = java.nio.file.attribute.PosixFilePermissions.fromString(directory ? "rwx------" : "rw-------");
+				java.nio.file.Files.setPosixFilePermissions(target, permissions);
+			}
+
+			return 0;
+		} catch (_:java.nio.file.FileAlreadyExistsException) {
+			return 1;
+		} catch (_:Dynamic) {
+			return -1;
+		}
+		#elseif nodejs
+		try {
+			if (directory) {
+				js.node.Fs.mkdirSync(path, cast 0x1C0);
+			} else {
+				// "wx" is O_CREAT | O_EXCL, which does not follow a link.
+				js.node.Fs.closeSync(js.node.Fs.openSync(path, "wx", 0x180));
+			}
+
+			return 0;
+		} catch (e:Dynamic) {
+			return Reflect.field(e, "code") == "EEXIST" ? 1 : -1;
+		}
+		#else
+		if (FileSystem.exists(path)) {
+			return 1;
+		}
+
+		try {
+			if (directory) {
+				FileSystem.createDirectory(path);
+			} else {
+				HaxeFile.saveBytes(path, Bytes.alloc(0));
+			}
+
+			return 0;
+		} catch (_:Dynamic) {
+			return -1;
+		}
 		#end
 	}
 
