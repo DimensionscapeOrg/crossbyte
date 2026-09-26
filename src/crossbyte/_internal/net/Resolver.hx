@@ -36,14 +36,29 @@ class Resolver {
 	}
 
 	/**
+		The runtime on this thread, or null where there is none: somewhere to
+		hand an answer back to. Asked without throwing, where
+		`CrossByte.current()` throws on a thread no runtime is attached to.
+	**/
+	public static function runtimeHere():Null<CrossByte> {
+		try {
+			return CrossByte.current();
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
+	/**
 		Looks `host` up on a thread of its own, and calls `then` on the current
 		runtime's thread with the answer -- or with `null` and why not. Always
 		later, never inside this call.
 
 		The caller must be on a runtime's thread; the answer goes back to it.
+		The runtime is taken here, on that thread, before the lookup's own
+		thread exists.
 	**/
 	public static function resolve(host:String, then:(Null<Host>, Null<String>) -> Void):Void {
-		var runtime:CrossByte = CrossByte.current();
+		var runtime:Null<CrossByte> = runtimeHere();
 		if (runtime == null) {
 			throw "A name can only be looked up from a CrossByte runtime's thread, which the answer is handed back to.";
 		}
