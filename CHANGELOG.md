@@ -750,6 +750,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A response body too large for the connection's output buffer is sent
+  whole. It was written at once: what the peer had not taken by the first
+  flush stayed buffered, the socket closed at `maxOutputBufferSize`, and a
+  12 MB `respond()` went out as a `200` with its full `Content-Length` and
+  part of its body, logged and counted as a success. Such a body now goes
+  out as a large file does, in bursts on the socket's drain, and the
+  connection is kept alive after it.
 - A PHP script is given every request header as `HTTP_*`, and the client
   every response header the script sets. The bridge passed on eight request
   headers and brought back three, `Cache-Control`, `Location` and
