@@ -537,8 +537,12 @@ class FileStreamTest extends utest.Test {
 	public function testReadAheadBoundsWhatAnAsyncReadHolds():Void {
 		// readAhead is how much to load beyond the reader. The whole file was
 		// loaded, and kept, whatever it said.
-		var size:Int = 4 * 1024 * 1024;
-		var readAhead:Int = 256 * 1024;
+		//
+		// A quarter the size on eval, where checking every byte below is
+		// interpreted: four megabytes took the whole deadline there under load.
+		// The bound shows the same at any size a few pages past readAhead.
+		var size:Int = #if eval 1024 * 1024 #else 4 * 1024 * 1024 #end;
+		var readAhead:Int = #if eval 64 * 1024 #else 256 * 1024 #end;
 		var file = __fileOf(size);
 		var input = new FileStream();
 		var completeSeen:Bool = false;
