@@ -544,6 +544,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `SlotHandle` has 20 index bits and 11 generation bits, where it had 24 and
+  8, so a `SlotMap` or `PackedSlotMap` holds at most 1,048,576 entries
+  rather than 16,777,216. A map created with a larger `maxCapacity` now
+  throws, as one past the old limit did.
 - Log timestamps are UTC with milliseconds, `2026-09-25T09:00:00.123Z`,
   where they were local time to the second with no zone, and a control
   character in a message or field is written as an escape. Anything parsing
@@ -731,6 +735,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `SlotMap` or `PackedSlotMap` handle kept after its entry died no longer
+  comes to name whatever takes its slot 256 reuses later. The generation
+  was eight bits, and the free list hands the most recently freed slot back
+  first, so a missile's target or a last attacker resolved to an unrelated
+  entity within seconds of churn. It is eleven bits now, as `TimerHandle`'s
+  was widened for the same reason. The sign bit is no longer part of it, so
+  a handle is never negative -- past 128 reuses every handle was, and a
+  live one at the highest index was `SlotHandle.INVALID` itself.
+  `SlotMap.clear()` counted the generation without keeping it in range,
+  bringing back the leak `remove()` was fixed for: a slot at the top of its
+  range held a value no handle could carry, and an entry put there after the
+  clear could never be read back.
 - `Config.getInt` refuses a value too big for an `Int` on every target, and
   `Version` reads an oversized segment the same everywhere. Both used
   `Std.parseInt`, whose answer past 32 bits depends on the target:
