@@ -5,6 +5,7 @@ import utest.Runner;
 class TestSuites {
 	public static function addAuth(runner:Runner):Void {
 		runner.addCase(new crossbyte.auth.AuthSupportTest());
+		runner.addCase(new crossbyte.auth.OAuthExchangeTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());

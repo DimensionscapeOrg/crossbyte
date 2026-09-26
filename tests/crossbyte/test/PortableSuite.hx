@@ -105,6 +105,10 @@ class PortableSuite {
 		runner.addCase(new crossbyte.auth.jwt.JWTVerifyTest());
 		// Times past 2038 and a 32-bit Int are where the targets disagreed.
 		runner.addCase(new crossbyte.auth.jwt.JWTClaimsTest());
+		// PKCE everywhere; the token exchange itself against Node's own http
+		// server, since a stalled provider never answering was a Node failure.
+		// The browser has no server to run it against and skips that part.
+		runner.addCase(new crossbyte.auth.OAuthExchangeTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());
