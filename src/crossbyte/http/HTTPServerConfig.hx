@@ -90,6 +90,22 @@ class HTTPServerConfig {
 	public var blacklist:Array<String>;
 	public var customHeaders:Array<URLRequestHeader>;
 	public var middleware:Array<Middleware>;
+
+	/**
+		Called when a middleware or route throws, or passes an error to
+		`next()`, with the request and what was thrown or passed.
+
+		The hook may answer the request itself -- a JSON error body, say --
+		with `handler.respond()`, and must do so before it returns. If it does
+		not, the server answers `500`, or the status an `Int` error names; the
+		client is told the status and never the error's text.
+
+		Whatever it does, an error that is not an `Int` is first logged at
+		ERROR with the method, the path and, where the target keeps one, the
+		stack. It used not to be logged at all: a route that threw a database
+		error left only an INFO line saying `Status: 500`.
+	**/
+	public var onError:(handler:HTTPRequestHandler, error:Dynamic) -> Void = null;
 	/**
 		Refuses a request with `429` once its client has spent its budget.
 
