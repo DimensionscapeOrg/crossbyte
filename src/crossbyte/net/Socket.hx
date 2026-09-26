@@ -254,7 +254,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var outputBufferLength(get, never):Int;
 
 	@:noCompletion private function get_outputBufferLength():Int {
-		var buffered:Int = __output == null ? 0 : __output.length;
+		var buffered:Int = __output == null ? 0 : __output.length - __outputSent;
 
 		#if nodejs
 		// Node takes every write whole and queues what the kernel will not,
@@ -311,6 +311,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	 * quadratic in the number of arrivals.
 	 */
 	@:noCompletion private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
+	@:noCompletion private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 
 	/**
 	 * One read buffer per thread rather than one per socket.
@@ -386,6 +387,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __host:String;
 	@:noCompletion private var __input:ByteArray;
 	@:noCompletion private var __output:ByteArray;
+	// How much of the front of __output the system has already taken; see
+	// __retainPendingOutput.
+	@:noCompletion private var __outputSent:Int = 0;
 	@:noCompletion private var __port:Int;
 	@:noCompletion private var __socket:#if sys SysSocket #else Dynamic #end;
 	@:noCompletion private var __timestamp:Float;
@@ -568,6 +572,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		__output = new ByteArray();
 		__output.endian = __endian;
+		__outputSent = 0;
 
 		__input = new ByteArray();
 		__input.endian = __endian;
@@ -732,7 +737,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			throw new IOError("Operation attempted on invalid socket.");
 		}
 
-		if (__output.length > 0) {
+		if (__output.length > __outputSent) {
 			#if (js && !nodejs)
 			// A page's WebSocket sends only once open. Until then, and it is
 			// what connect() leaves it as, the bytes wait here: send() on a
@@ -777,8 +782,32 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				}
 				__retainPendingOutput(pending, pending);
 				#else
-				var pendingLength = __output.length;
-				var bytesWritten = __socket.output.writeBytes(__output, 0, pendingLength);
+				// From where the last partial write stopped; the JavaScript
+				// branches above take everything, so there it is always 0.
+				//
+				// And written until the socket will take no more, not once. A
+				// TLS socket takes one record a write, 16 KB, so a single
+				// write a flush sent 16 KB a pass whatever room the kernel had,
+				// and left the rest to wait for the next.
+				var pendingLength:Int = __output.length - __outputSent;
+				var bytesWritten:Int = 0;
+				try {
+					while (bytesWritten < pendingLength) {
+						var took:Int = __socket.output.writeBytes(__output, __outputSent + bytesWritten, pendingLength - bytesWritten);
+						if (took <= 0) {
+							break;
+						}
+						bytesWritten += took;
+					}
+				} catch (e:Dynamic) {
+					// A block after some was taken is the kernel filling up:
+					// what was taken is kept and the rest waits. Anything else,
+					// or a block before anything was taken, is the flush's to
+					// handle below, as it always was.
+					if (bytesWritten == 0 || !(Std.isOfType(e, Error) && __isBlockedError(cast e))) {
+						throw e;
+					}
+				}
 				__retainPendingOutput(bytesWritten, pendingLength);
 				#end
 			} catch (e:Dynamic) {
@@ -1425,18 +1454,42 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 	}
 
+	/**
+		Accounts for a write that took `bytesWritten` of the `pendingLength`
+		bytes waiting, from `__outputSent` on.
+
+		What the system took is stepped over rather than cut off. This used to
+		copy everything still waiting into a new buffer on every partial write,
+		so a peer reading slowly behind a large backlog cost a copy of the
+		whole backlog per write the kernel only partly took, quadratic in
+		the backlog, where the input side had already been fixed. The buffer
+		is compacted only once what has gone is past the threshold and at
+		least as large as what remains, so moving the rest down costs no more
+		than the writes that emptied the front.
+	**/
 	@:noCompletion private function __retainPendingOutput(bytesWritten:Int, pendingLength:Int):Void {
 		if (bytesWritten >= pendingLength) {
 			__isDirty = false;
 			__output.clear();
+			__outputSent = 0;
 			return;
 		}
 
-		var offset = bytesWritten > 0 ? bytesWritten : 0;
-		var remaining = new ByteArray();
-		remaining.endian = __endian;
-		remaining.writeBytes(__output, offset, pendingLength - offset);
-		__output = remaining;
+		if (bytesWritten > 0) {
+			__outputSent += bytesWritten;
+
+			var remaining:Int = pendingLength - bytesWritten;
+			if (__outputSent >= OUTPUT_COMPACT_THRESHOLD && __outputSent >= remaining) {
+				// Allocated and swapped rather than moved within the buffer,
+				// as __compactInput does: an overlapping blit has no defined
+				// behaviour across targets.
+				var carried = new ByteArray();
+				carried.endian = __endian;
+				carried.writeBytes(__output, __outputSent, remaining);
+				__output = carried;
+				__outputSent = 0;
+			}
+		}
 		__isDirty = false;
 		__queueWrite();
 	}

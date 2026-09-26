@@ -89,6 +89,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 * do.
 	 */
 	private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
+	private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 
 	public var binaryType:BinaryType = ARRAYBUFFER;
 	public var bufferdAmount(default, null):Int = 0;
@@ -158,8 +159,22 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	public var outputBufferLength(get, never):Int;
 
 	private function get_outputBufferLength():Int {
-		return __pendingOutput == null ? 0 : __pendingOutput.length;
+		var buffered:Int = __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
+		#if nodejs
+		// Node takes every frame whole and queues what the kernel will not,
+		// so the backlog is Node's: counting only this side's buffer read 0
+		// for a peer that had stopped reading, and a server's drain() waited
+		// on nothing.
+		if (__socket != null) {
+			buffered += __socket.writableLength;
+		}
+		#end
+		return buffered;
 	}
+
+	// How much of the front of __pendingOutput the socket has already taken;
+	// see __flushPendingOutput.
+	private var __pendingSent:Int = 0;
 
 	private static inline var CONNECT_TIMEOUT_MS:Int = 10000;
 
@@ -800,6 +815,29 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 * instead of losing it.
 	 */
 	private function __queueOutput(data:ByteArray, length:Int):Void {
+		#if !nodejs
+		// Nothing queued ahead of it, so it is offered to the socket straight
+		// from where it was built, and only what the socket does not take is
+		// copied into the pending buffer, the ordinary case, a socket with
+		// room, costs no copy at all.
+		if (data != null && length > 0 && __socket != null && __pendingSent >= __pendingOutput.length) {
+			var accepted:Int = __offer(data, 0, length);
+			if (accepted < 0) {
+				__close(1006, null);
+				return;
+			}
+			if (accepted >= length) {
+				return;
+			}
+
+			__pendingOutput.clear();
+			__pendingSent = 0;
+			__pendingOutput.writeBytes(data, accepted, length - accepted);
+			__afterPartialWrite();
+			return;
+		}
+		#end
+
 		if (data != null && length > 0) {
 			__pendingOutput.position = __pendingOutput.length;
 			__pendingOutput.writeBytes(data, 0, length);
@@ -807,6 +845,39 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 
 		__flushPendingOutput();
 	}
+
+	#if !nodejs
+	/**
+		Offers `length` bytes of `buffer` from `offset` to the socket. Answers
+		how many it took, 0 when it had no room, or -1 if the write failed.
+
+		Written until the socket will take no more, not once: a TLS socket
+		takes one record a write, so a single write sent 16 KB a pass whatever
+		room the kernel had.
+	**/
+	private function __offer(buffer:ByteArray, offset:Int, length:Int):Int {
+		var accepted:Int = 0;
+		try {
+			while (accepted < length) {
+				var took:Int = __socket.output.writeBytes(buffer, offset + accepted, length - accepted);
+				if (took <= 0) {
+					break;
+				}
+				accepted += took;
+			}
+			__socket.output.flush();
+		} catch (e:Dynamic) {
+			// One predicate for every spelling: the typed error, the
+			// debugger's Custom wrapper, and the bare string the TLS layer
+			// raises before anything maps it. A block keeps whatever the
+			// write had already taken.
+			if (!BlockedError.isBlocked(e)) {
+				return -1;
+			}
+		}
+		return accepted;
+	}
+	#end
 
 	/**
 	 * Pushes as much of the pending buffer as the socket will accept.
@@ -816,48 +887,57 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 * and neither may discard data: the unsent remainder is kept and
 	 * retried from the registry's writable queue. Only a genuine I/O failure
 	 * closes the session.
+	 *
+	 * What the socket took is stepped over rather than cut off. Every partial
+	 * write used to copy all that was still waiting into a new buffer, so a
+	 * peer reading slowly behind a large backlog cost a copy of the whole
+	 * backlog per write, quadratic in the backlog. The buffer is compacted
+	 * only once what has gone is past the threshold and at least as large as
+	 * what remains, so moving the rest down costs no more than the writes
+	 * that emptied the front.
 	 */
 	private function __flushPendingOutput():Void {
-		if (__socket == null || __pendingOutput.length == 0) {
+		var pending:Int = __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
+		if (__socket == null || pending <= 0) {
 			return;
 		}
 
-		// A blocked write leaves `accepted` at zero, so the buffer below is
-		// retained whole and retried.
-		var accepted:Int = 0;
-
+		#if nodejs
+		// Node takes everything and buffers what it cannot send yet, so there
+		// is no partial accept to carry over.
+		//
+		// Copied into a buffer of its own first. `Buffer.hxFromBytes` wraps
+		// the storage it is given rather than copying it, and `__pendingOutput`
+		// is cleared and refilled by the very next frame, `clear()` resets
+		// the length and keeps the array, so handing Node a window onto it
+		// would let the next frame overwrite the one still queued for sending.
+		var frame:ByteArray = new ByteArray();
+		frame.writeBytes(__pendingOutput, __pendingSent, pending);
 		try {
-			#if nodejs
-			// Node takes everything and buffers what it cannot send yet, so
-			// there is no partial accept to carry over, which is why the
-			// remainder handling below never runs here.
-			//
-			// Copied into a buffer of its own first. `Buffer.hxFromBytes`
-			// wraps the storage it is given rather than copying it, and
-			// `__pendingOutput` is cleared and refilled by the very next
-			// frame, `clear()` resets the length and keeps the array, so
-			// handing Node a window onto it would let the next frame overwrite
-			// the one still queued for sending.
-			var frame:ByteArray = new ByteArray();
-			frame.writeBytes(__pendingOutput, 0, __pendingOutput.length);
 			__socket.write(Buffer.hxFromBytes(frame));
-			accepted = __pendingOutput.length;
-			#else
-			accepted = __socket.output.writeBytes(__pendingOutput, 0, __pendingOutput.length);
-			__socket.output.flush();
-			#end
 		} catch (e:Dynamic) {
-			// One predicate for every spelling: the typed error, the
-			// debugger's Custom wrapper, and the bare string the TLS layer
-			// raises before anything maps it.
-			if (!BlockedError.isBlocked(e)) {
-				__close(1006, null);
-				return;
-			}
+			__close(1006, null);
+			return;
+		}
+		__pendingOutput.clear();
+		__pendingSent = 0;
+
+		// So a peer that is not reading shows in Node's own queue, and the
+		// limit is measured there. It was measured after a return this path
+		// always took, and so never.
+		if (maxOutputBufferSize > 0 && __socket != null && __socket.writableLength > maxOutputBufferSize) {
+			__close(1011, "output buffer limit exceeded");
+		}
+		#else
+		var accepted:Int = __offer(__pendingOutput, __pendingSent, pending);
+		if (accepted < 0) {
+			__close(1006, null);
+			return;
 		}
 
-		if (accepted >= __pendingOutput.length) {
+		if (accepted >= pending) {
 			__pendingOutput.clear();
+			__pendingSent = 0;
 
 			// A close that was waiting for this to go.
 			if (__closeWhenDrained) {
@@ -866,32 +946,39 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			return;
 		}
 
-		if (accepted > 0) {
-			var remaining:ByteArray = new ByteArray();
-			remaining.endian = BIG_ENDIAN;
-			remaining.writeBytes(__pendingOutput, accepted, __pendingOutput.length - accepted);
-			__pendingOutput = remaining;
+		__pendingSent += accepted;
+		var remaining:Int = pending - accepted;
+		if (__pendingSent >= OUTPUT_COMPACT_THRESHOLD && __pendingSent >= remaining) {
+			// Allocated and swapped rather than moved within the buffer: an
+			// overlapping blit has no defined behaviour across targets.
+			var carried:ByteArray = new ByteArray();
+			carried.endian = BIG_ENDIAN;
+			carried.writeBytes(__pendingOutput, __pendingSent, remaining);
+			__pendingOutput = carried;
+			__pendingSent = 0;
 		}
+		__afterPartialWrite();
+		#end
+	}
 
-		#if nodejs
-		// The pending buffer is always empty by this point, Node accepted
-		// all of it, so the limit has to be measured against Node's own
-		// queue instead.
-		if (maxOutputBufferSize > 0 && __socket != null && __socket.writableLength > maxOutputBufferSize) {
-			__close(1011, "output buffer limit exceeded");
-		}
-		#else
+	#if !nodejs
+	/**
+	 * What is left once the socket has taken only part of what it was
+	 * offered: bounded, and retried when the socket can take more.
+	 */
+	private function __afterPartialWrite():Void {
 		// Only a peer that is not draining can push the buffer past its
 		// limit, and it will not recover on its own.
-		if (maxOutputBufferSize > 0 && __pendingOutput.length > maxOutputBufferSize) {
+		if (maxOutputBufferSize > 0 && __pendingOutput.length - __pendingSent > maxOutputBufferSize) {
 			__pendingOutput.clear();
+			__pendingSent = 0;
 			__close(1011, "output buffer limit exceeded");
 			return;
 		}
 
 		__queueWritable();
-		#end
 	}
+	#end
 
 	private function __handleControlFrame(opcode:WebSocketOpcode, payload:ByteArray):Void {
 		switch (opcode) {
@@ -1820,7 +1907,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 * or when the deadline passes with something still stuck.
 	 */
 	private function __finishClose(code:Int, ?reason:String):Void {
-		if (__socket == null || __pendingOutput == null || __pendingOutput.length == 0) {
+		if (__socket == null || __pendingOutput == null || __pendingOutput.length <= __pendingSent) {
 			__close(code, reason);
 			return;
 		}

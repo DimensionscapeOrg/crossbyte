@@ -528,6 +528,68 @@ class WebSocketSessionTest extends utest.Test {
 		}, async);
 	}
 
+	// ---- Output -----------------------------------------------------------
+
+	/**
+		A session whose peer has stopped reading is closed at its output
+		limit, and counts what is waiting on the way there.
+
+		On Node what waits is in Node's own queue, which the session never
+		looked at: its backlog read 0 however much was waiting, and the limit
+		was checked after a return that path always took, so a session to a
+		peer that had stopped reading grew without bound.
+	**/
+	@:timeout(60000)
+	public function testASessionPastItsOutputLimitIsClosed(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			peer.upgrade();
+
+			NetPump.until(() -> {
+				peer.poll();
+				return sessions.length > 0 && peer.head() != null;
+			}, 5.0, function(_) {
+				peer.pause();
+
+				var session = sessions[0];
+				var limit:Int = 256 * 1024;
+				// Far past what the kernel holds for a stalled loopback peer.
+				var ceiling:Int = 64 * 1024 * 1024;
+				var code:Int = -1;
+				var written:Int = 0;
+				var largest:Int = 0;
+				var chunk = new ByteArray();
+				chunk.length = 64 * 1024;
+
+				session.maxOutputBufferSize = limit;
+				session.addEventListener(Event.CLOSE, function(e:Event) {
+					var close = Std.downcast(e, WebSocketCloseEvent);
+					code = close == null ? 0 : close.code;
+				});
+
+				NetPump.until(() -> {
+					if (code == -1 && written < ceiling) {
+						try {
+							session.sendBinary(chunk);
+							written += chunk.length;
+							if (session.outputBufferLength > largest) {
+								largest = session.outputBufferLength;
+							}
+						} catch (_:Dynamic) {
+							// Sent after the limit closed it.
+						}
+					}
+					return code != -1 || written >= ceiling;
+				}, 40.0, function(_) {
+					Assert.equals(1011, code, 'wrote $written bytes to a peer that reads nothing and the $limit byte limit never closed the session');
+					Assert.isTrue(largest > 0, "outputBufferLength never counted anything waiting to be sent");
+					peer.close();
+					finish();
+				});
+			});
+		}, async);
+	}
+
 	// ---- Scaffolding ----------------------------------------------------
 
 	/**
