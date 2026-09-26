@@ -1164,6 +1164,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.clone()` gave the clone the original's listeners, where its
+  documentation says registrations are not copied. It copied every instance
+  field by reflection, `EventDispatcher`'s listener map included, so once the
+  original had a listener, one added to either reached both; on the dynamic
+  targets it also copied the original's bound methods, so the clone's
+  `addEventListener` registered on the original. It copies the file's own
+  state now, and the clone starts with no listeners.
 - On eval, `sys.net.Socket`'s `input.readByte()` answered 0 at the end of a
   connection instead of throwing `Eof` as every other target does, so a
   reader waiting for a delimiter there, a line reader, read zeros for

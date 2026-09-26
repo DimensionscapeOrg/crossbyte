@@ -12,6 +12,31 @@ import utest.Assert;
 import crossbyte.test.Require;
 
 class FileTest extends utest.Test {
+	public function testACloneHasListenersOfItsOwn():Void {
+		// The documentation says registrations are not copied. The clone shared
+		// the original's listener map instead, so a listener on either reached
+		// both.
+		var original = File.applicationDirectory;
+		var heardOnOriginal = 0;
+		var heardOnCopy = 0;
+		// Before cloning, so the original has a listener map for a clone to
+		// share: one is made on the first registration.
+		original.addEventListener(Event.COMPLETE, _ -> heardOnOriginal++);
+		var copy = original.clone();
+		copy.addEventListener(Event.COMPLETE, _ -> heardOnCopy++);
+
+		original.dispatchEvent(new Event(Event.COMPLETE));
+		Assert.equals(1, heardOnOriginal);
+		Assert.equals(0, heardOnCopy, "the clone heard the original's event");
+
+		copy.dispatchEvent(new Event(Event.COMPLETE));
+		Assert.equals(1, heardOnOriginal, "the clone carried the original's listener");
+		Assert.equals(1, heardOnCopy);
+
+		// And the clone is still the same place.
+		Assert.equals(original.nativePath, copy.nativePath);
+	}
+
 	public function testSpaceAvailableReportsFreeBytes():Void {
 		// Nothing ever called this, which is how it came to be wrong on every
 		// target at once: it reported a Windows volume's total capacity rather
