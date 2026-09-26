@@ -133,8 +133,10 @@ class LocalConnection implements INetConnection implements CloseObservable {
 	@:noCompletion private var __session:Int = 0;
 	@:noCompletion private var __pendingPayloads:Array<ByteArray> = [];
 	@:noCompletion private var __dispatchFailed:Bool = false;
-	// Told as the connection ends, before onClose; see CloseObservable.
+	// Told as the connection ends, before onClose, and as it becomes ready,
+	// before onReady; see CloseObservable.
 	@:noCompletion private var __closeObserver:Null<Reason->Void> = null;
+	@:noCompletion private var __readyObserver:Null<Void->Void> = null;
 
 	public function new() {
 		__captureRuntime();
@@ -341,11 +343,23 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		__closeObserver = observer;
 	}
 
+	@:noCompletion public function __observeReady(observer:Null<Void->Void>):Void {
+		__readyObserver = observer;
+	}
+
 	/** Before `onClose`, wherever that is called; see CloseObservable. **/
 	@:noCompletion private inline function __notifyClose(reason:Reason):Void {
 		final observer = __closeObserver;
 		if (observer != null) {
 			observer(reason);
+		}
+	}
+
+	/** Before `onReady`, each time this becomes ready: a listener does again for each peer it takes. **/
+	@:noCompletion private inline function __notifyReady():Void {
+		final observer = __readyObserver;
+		if (observer != null) {
+			observer();
 		}
 	}
 
@@ -613,6 +627,7 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		try {
 			switch (message) {
 				case Ready:
+					__notifyReady();
 					__onReady();
 				case Close(reason):
 					__notifyClose(reason);
