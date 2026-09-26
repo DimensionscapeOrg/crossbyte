@@ -15,6 +15,7 @@ import crossbyte.io.ByteArray;
 import crossbyte.io.File;
 import crossbyte.io.FileMode;
 import crossbyte.io.FileStream;
+import crossbyte.net.RateLimiter;
 import crossbyte.net.Socket;
 import crossbyte.http.HTTPContentCoding;
 import crossbyte.url.URL;
@@ -203,6 +204,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 	public var requestText(get, null):String;
 
 	/**
+	 * The address the request came from, as the connection's socket reports
+	 * it: the client's, or a proxy's when one sits in front. What the rate
+	 * limiter keys on unless `HTTPServerConfig.rateLimitKey` says otherwise.
+	 * The socket was private, so a route limiting logins per client needed
+	 * `@:privateAccess` to learn who was logging in.
+	 */
+	public var remoteAddress(get, never):String;
+
+	/**
 	 * Creates a request handler for one accepted client socket.
 	 *
 	 * @param socket Connected client socket supplying request bytes.
@@ -264,6 +274,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	/** Returns `true` when a request header exists. */
 	public function hasHeader(name:String):Bool {
 		return getHeader(name) != null;
+	}
+
+	@:noCompletion private function get_remoteAddress():String {
+		return __origin.remoteAddress;
 	}
 
 	public function get_method():String {
@@ -523,11 +537,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		if (__config.rateLimiter != null && __config.rateLimiter.isRateLimited(__origin.remoteAddress)) {
-			__sendErrorResponse(429, "Too Many Requests");
-			return;
-		}
-
 		var headerStart:Int = __incomingBuffer.position;
 		var requestLine:Null<String> = __readLine(__incomingBuffer);
 		if (requestLine == null) {
@@ -650,6 +659,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
+		// Once the headers are read, so the key can come from them, and before
+		// any of the body is: a refused request closes, and what is left of it
+		// goes with the connection.
+		if (__refusedByLimiter()) {
+			return;
+		}
+
 		__requestContentEncodings = __parseContentEncodingHeader();
 		if (__requestContentEncodings == null) {
 			return;
@@ -681,9 +697,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// The one place consumption is recorded, because reaching here
 		// is the one guarantee the request's framing -- headers and
 		// body both -- has been read out of the buffer. Every response
-		// sent earlier (parse errors, the pre-request-line 429, a body
-		// cut short) must close, or the leftover bytes would be parsed
-		// as the next request -- for the 429, the same request forever.
+		// sent earlier (parse errors, the 429 sent before the body is
+		// read, a body cut short) must close, or the leftover bytes would
+		// be parsed as the next request.
 		__requestConsumed = true;
 
 		// Files and rewrites are resolved only once the chain lets the request
@@ -747,8 +763,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// to one that arrived as frames. HTTP/2 used to skip all of it: six
 		// requests on one connection were all answered 200 where HTTP/1.1
 		// refused the fourth, and a gzip body reached middleware compressed.
-		if (__config.rateLimiter != null && __config.rateLimiter.isRateLimited(__origin.remoteAddress)) {
-			__sendErrorResponse(429, "Too Many Requests");
+		if (__refusedByLimiter()) {
 			return;
 		}
 
@@ -1804,6 +1819,36 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __sendErrorResponse(statusCode:Int, message:String):Void {
 		__dispatchResponse(statusCode, message, null, "text/plain", message);
+	}
+
+	/**
+	 * Asks the rate limiter about this request, and answers `429` when it
+	 * says no, with a `Retry-After` giving the seconds until the key could
+	 * try again. The 429 used to say nothing about when, so a client could
+	 * only guess, and a polite one had nothing to be polite with.
+	 */
+	@:noCompletion private function __refusedByLimiter():Bool {
+		var limiter:RateLimiter = __config.rateLimiter;
+		if (limiter == null) {
+			return false;
+		}
+
+		var key:Null<String> = __config.rateLimitKey != null ? __config.rateLimitKey(this) : RateLimiter.addressKey(remoteAddress);
+		if (key == null || !limiter.isRateLimited(key)) {
+			return false;
+		}
+
+		// Whole seconds, rounded up, and at least one: a client told 0 comes
+		// straight back. A day at most, which also covers a cost the bucket
+		// could never hold.
+		var wait:Float = limiter.secondsUntil(key);
+		var seconds:Int = wait < 86400 ? Math.ceil(wait) : 86400;
+		if (seconds < 1) {
+			seconds = 1;
+		}
+
+		__dispatchResponse(429, "Too Many Requests", [new URLRequestHeader("Retry-After", Std.string(seconds))], "text/plain", "Too Many Requests");
+		return true;
 	}
 
 	@:noCompletion private function __parseContentEncodingHeader():Array<CompressionAlgorithm> {

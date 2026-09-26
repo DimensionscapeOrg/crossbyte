@@ -137,23 +137,46 @@ class HTTPServerConfig {
 	**/
 	public var onError:(handler:HTTPRequestHandler, error:Dynamic) -> Void = null;
 	/**
-		Refuses a request with `429` once its client has spent its budget.
+		Refuses a request with `429` once its client has spent its budget,
+		saying in `Retry-After` how many seconds until it may try again.
 
-		Keyed on the remote address and consulted for **every** request, not
-		every connection. Leaving it out of the constructor does not leave the
-		server unlimited: one is fitted, with `RateLimiter`'s own defaults of ten
-		requests a minute per client.
+		Keyed by `rateLimitKey` -- the client's address unless that says
+		otherwise -- and consulted for **every** request, not every connection.
+		Leaving it out of the constructor does not leave the server unlimited:
+		one is fitted, allowing `DEFAULT_REQUESTS_PER_MINUTE`, which is a
+		visitor's page load with room to spare rather than `RateLimiter`'s own
+		default of ten -- ten is smaller than one page, and a document with
+		eleven assets used to come back as ten served and two refused.
 
-		The fitted budget is `DEFAULT_REQUESTS_PER_MINUTE`, which is a visitor's
-		page load with room to spare rather than `RateLimiter`'s own default of
-		ten -- ten is smaller than one page, and a document with eleven assets
-		used to come back as ten served and two refused.
-
-		Pass a limiter of your own to say something different. A server behind a
-		proxy wants one sized to the proxy rather than to a visitor, since every
-		request then arrives from one address.
+		Pass a limiter of your own to say something different.
 	**/
 	public var rateLimiter:RateLimiter;
+
+	/**
+		The key `rateLimiter` counts a request under, or null to leave the
+		request unlimited. Asked once the request's headers are read, so it can
+		look at them as well as at `handler.remoteAddress`.
+
+		Unset, a request is keyed by `RateLimiter.addressKey(remoteAddress)`: an
+		IPv4 address as it is and an IPv6 one by its /64, which is what one
+		subscriber is given. Keyed on the whole address, a client stepping
+		through its own /64 had a fresh budget for every request.
+
+		Behind a proxy every request arrives from the proxy's address, so key on
+		the address it forwards -- but only when the request did come through
+		it, since anyone can send the header:
+
+		```haxe
+		config.rateLimitKey = handler -> {
+			var forwarded = handler.remoteAddress == "10.0.0.2" ? handler.getHeader("x-real-ip") : null;
+			RateLimiter.addressKey(forwarded != null ? forwarded : handler.remoteAddress);
+		};
+		```
+
+		A login route limiting attempts per account rather than per client can
+		use the same limiter, or one of its own, from middleware.
+	**/
+	public var rateLimitKey:(handler:HTTPRequestHandler) -> Null<String> = null;
 	public var corsEnabled:Bool;
 
 	/**

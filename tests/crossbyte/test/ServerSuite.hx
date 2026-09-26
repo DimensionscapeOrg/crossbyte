@@ -49,6 +49,7 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPServerH2Test());
 		runner.addCase(new crossbyte.http.HTTPStaticPathTest());
 		runner.addCase(new crossbyte.http.HTTPRequestFramingTest());
+		runner.addCase(new crossbyte.http.HTTPRateLimitTest());
 		// What a listener takes and what it refuses, on every target that can
 		// listen -- Node included, whose TLS server asks on a different event.
 		runner.addCase(new crossbyte.net.ServerSocketAdmissionTest());
