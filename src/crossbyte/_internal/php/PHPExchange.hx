@@ -163,8 +163,12 @@ class PHPExchange {
 	/**
 	 * Splits the CGI header block from the body.
 	 *
-	 * The split is unchanged from the blocking implementation, including its
-	 * use of the whole payload as text to find the separator.
+	 * On the bytes. Only the header block is text; the body is whatever the
+	 * script sent -- an image, a PDF, a zip, gzip output, a Latin-1 page -- and
+	 * is handed on untouched. The whole payload used to be decoded as UTF-8 to
+	 * find the separator and the body re-encoded from the string, which
+	 * mangled every byte sequence that was not valid UTF-8, truncated the body
+	 * at its first NUL on Node, and threw from inside the tick on eval.
 	 *
 	 * A repeated field is joined rather than overwritten, by the rule
 	 * `HTTPRequestContext.onHeaders` documents: `", "` between values, except
@@ -174,17 +178,16 @@ class PHPExchange {
 	 */
 	private function __toResponse():PHPResponse {
 		var raw:Bytes = stdout;
-		var text:String = raw.toString();
-		var separator:Int = text.indexOf("\r\n\r\n");
+		var total:Int = stdout.length;
+		var separator:Int = __headerEnd(raw, total);
 		var headers:Map<String, String> = new Map();
 		var status:Int = 200;
-		var body:Bytes = Bytes.alloc(0);
 
 		if (separator < 0) {
 			return {status: status, headers: headers, body: raw};
 		}
 
-		for (line in text.substr(0, separator).split("\r\n")) {
+		for (line in __headerText(raw, separator).split("\r\n")) {
 			var colon:Int = line.indexOf(":");
 
 			if (colon <= 0) {
@@ -205,17 +208,118 @@ class PHPExchange {
 				var parts:Array<String> = value.split(" ");
 
 				if (parts.length > 0) {
-					var parsed = Std.parseInt(parts[0]);
+					// Three digits or nothing: the backend is a peer, and
+					// Std.parseInt reads an overlong number differently on
+					// every target.
+					var parsed:Int = crossbyte.utils.IntParse.decimal(parts[0], 999);
 
-					if (parsed != null) {
+					if (parsed >= 100) {
 						status = parsed;
 					}
 				}
 			}
 		}
 
-		body = Bytes.ofString(text.substr(separator + 4));
-		return {status: status, headers: headers, body: body};
+		var bodyStart:Int = separator + 4;
+		return {status: status, headers: headers, body: raw.sub(bodyStart, total - bodyStart)};
+	}
+
+	/** Where the blank line ending the header block starts, or `-1`. **/
+	private static function __headerEnd(data:Bytes, length:Int):Int {
+		var last:Int = length - 4;
+		var i:Int = 0;
+
+		while (i <= last) {
+			if (data.get(i + 3) != 10) {
+				// Not the end of a CRLF CRLF anywhere this could start, so skip
+				// ahead by as much as that rules out.
+				i += data.get(i + 3) == 13 ? 1 : 4;
+				continue;
+			}
+
+			if (data.get(i) == 13 && data.get(i + 1) == 10 && data.get(i + 2) == 13) {
+				return i;
+			}
+
+			i++;
+		}
+
+		return -1;
+	}
+
+	/**
+	 * The header block as text: UTF-8 where it is valid UTF-8, which is how a
+	 * script writes a non-ASCII filename into Content-Disposition, and a byte
+	 * per character otherwise, which cannot fail. Decoding invalid UTF-8
+	 * throws on eval, and a backend should not be able to throw from inside
+	 * the tick.
+	 */
+	private static function __headerText(data:Bytes, length:Int):String {
+		if (__isUtf8(data, length)) {
+			return data.getString(0, length);
+		}
+
+		var out = new StringBuf();
+
+		for (i in 0...length) {
+			out.addChar(data.get(i));
+		}
+
+		return out.toString();
+	}
+
+	private static function __isUtf8(data:Bytes, length:Int):Bool {
+		var i:Int = 0;
+
+		while (i < length) {
+			var c:Int = data.get(i);
+
+			if (c < 0x80) {
+				i++;
+				continue;
+			}
+
+			var extra:Int;
+			var min:Int;
+
+			if (c >= 0xC2 && c <= 0xDF) {
+				extra = 1;
+				min = 0x80;
+			} else if (c >= 0xE0 && c <= 0xEF) {
+				extra = 2;
+				min = 0x800;
+			} else if (c >= 0xF0 && c <= 0xF4) {
+				extra = 3;
+				min = 0x10000;
+			} else {
+				return false;
+			}
+
+			if (i + extra >= length) {
+				return false;
+			}
+
+			var code:Int = c & (0x3F >> extra);
+
+			for (k in 1...extra + 1) {
+				var next:Int = data.get(i + k);
+
+				if ((next & 0xC0) != 0x80) {
+					return false;
+				}
+
+				code = (code << 6) | (next & 0x3F);
+			}
+
+			// Overlong forms, surrogates and past U+10FFFF.
+			if (code < min || (code >= 0xD800 && code <= 0xDFFF) || code > 0x10FFFF) {
+				return false;
+			}
+
+			i += extra + 1;
+		}
+
+		return true;
 	}
 
 	private static inline var HEADER_LENGTH:Int = 8;

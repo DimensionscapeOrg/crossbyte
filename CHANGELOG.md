@@ -53,6 +53,43 @@ All notable changes to CrossByte will be documented in this file.
 - Argon2id on Node 24.7 and later, through Node's own `crypto.argon2`,
   checked for rather than assumed. Its hashes and libsodium's verify in
   each other, and on Node `hashAsync` runs on libuv's thread pool.
+- `AsyncDatabase.maxQueued` and `queueTimeout`, and backlog metrics. With a
+  worker per pooled connection -- what `AsyncDatabase.of` builds -- a job
+  never waits for a connection, so the pool's acquire timeout and wait
+  metrics never fire: all the waiting happens in the worker pool's queue,
+  which had no bound, no deadline and nothing measuring it, so a database
+  slower than the traffic showed up only as memory and latency growing
+  together. `maxQueued` makes `submit` throw once that many jobs are
+  waiting; `queueTimeout` fails a job that waited longer than that for a
+  worker, without running it or taking a connection. Both are off by
+  default, since a batch submitting thousands of statements at once is a
+  legitimate use of the queue; a server should set them. Given a
+  `Metrics` registry, `AsyncDatabase` publishes `db_async_queued`,
+  `db_async_running`, `db_async_queue_wait_seconds`, and the
+  `db_async_rejected_total` and `db_async_expired_total` it turned away.
+- `ConnectionPoolOptions.reset`, run on every connection as it is released
+  -- including by `withConnection` after its body threw -- before anyone
+  else can take it; a reset that throws retires the connection. A body that
+  began a transaction and then failed returned its connection still inside
+  it, so the next borrower's writes joined that transaction and its locks
+  stayed held, and `validate` could not tell, since an open transaction
+  answers a ping. With PostgreSQL, `reset: c -> if (c.inTransaction)
+  c.rollback()`. The pool knows nothing of what a connection is, so this is
+  configured rather than assumed; retirements through it are counted with
+  the reason `failed_reset`.
+- `PostgresConfig.statementTimeout`, `keepAliveIdle`, `keepAliveInterval`,
+  `keepAliveCount`, `tcpUserTimeout` and `connectionParameters`, and
+  `PostgresConnection.cancel()`. Nothing could bound a PostgreSQL statement:
+  no timeout, no way to cancel one, and no way to hand libpq a setting the
+  config did not name, so a database host that vanished mid-query was
+  noticed only when TCP gave up, about two hours later. `statementTimeout` is
+  sent as `statement_timeout` when the session starts, so it costs no round
+  trip; the keepalive settings and `tcpUserTimeout` let a dead peer be
+  noticed in seconds; `connectionParameters` passes any other libpq keyword
+  through, quoted. `cancel()` asks the server to stop the statement a
+  connection is running, and is safe from any thread -- which is where it is
+  needed, since the thread that sent the statement is waiting for its
+  answer. Defaults are unchanged. Native driver only.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -598,6 +635,18 @@ All notable changes to CrossByte will be documented in this file.
   instead of one. `$2b$` is what OpenBSD, Node, Python and Rust produce, and
   current PHP verifies it; a `$2y$` hash from PHP is replaced the same way,
   harmlessly.
+- A synchronous `FileStream.readBytes` asking for more than the file holds
+  throws `EOFError`, as its documentation says, and reads nothing; it used
+  to pad the rest with zeros and return. Code that read "up to" a length
+  should ask `bytesAvailable` first. `File.size` throws an `IOError` for a
+  file larger than 2 GB rather than answering with a number that is wrong.
+- `PostgresConnection` and `MySQLConnection` `begin`, `commit`, `rollback`
+  and the savepoint methods throw an `SQLError` when the server refuses,
+  after dispatching the `SQLErrorEvent` as before. They dispatched and
+  returned, so a caller that did not listen could not tell a failed COMMIT
+  from a committed one; `SQLiteConnection` has always thrown. Code that
+  handled the event and called these without a `try` now sees the error
+  thrown as well, and should catch it where it handled the event.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -828,6 +877,125 @@ All notable changes to CrossByte will be documented in this file.
   crypt_blowfish's sign-extension bug and `$2a$` with its countermeasure, as
   PHP checks them. A cost of 31 ran no rounds at all, since `1 << 31` is
   negative in an `Int`; it runs 2^31.
+- `File.createTempFile` and `createTempDirectory` can no longer be steered
+  by another user of a shared temporary directory. The name was "ofl" and a
+  `Math.random` number below 2^24, and the file was made after checking the
+  name was free, by a write that follows symbolic links, so a user who
+  planted links at likely names had the next temporary file written
+  wherever they pointed. A name now carries 64 bits from the platform's
+  secure random source, and the file or directory is created only if
+  nothing is at the name -- `O_CREAT | O_EXCL | O_NOFOLLOW`, readable by its
+  owner only, on POSIX; `CREATE_NEW` on Windows; their equivalents on the jvm
+  and Node -- with a taken name passed over for another. The interpreter,
+  which has neither, still checks first.
+- An asynchronous `FileStream` read hands out only bytes it has read. The
+  read buffer was allocated at the file's full size before anything was
+  loaded, so `bytesAvailable` counted the whole file from the first
+  progress event, and reading that much -- which the class documentation
+  says to do -- returned zeros for everything not loaded yet: 6.4 MB of them
+  from a 10 MB file on Node. The buffer now grows as data arrives. Where the
+  stream's worker has a thread of its own, `readAhead` is honoured as well:
+  loading pauses while that much is waiting to be read, and with a finite
+  `readAhead` consumed bytes are let go, so a stream holds about that much
+  rather than the whole file. Setting `position` outside what is held
+  starts loading again from there.
+- A chunked `FileStream` copy is exact. A synchronous `readBytes` past the
+  end of the file padded the missing bytes with zeros and returned as
+  though it had read them, so the usual loop -- read a chunk until
+  `EOFError` -- never saw one, and a 1 MB file copied in 64 KB chunks came
+  out 65,436 bytes longer, the tail all zeros. A short read now throws
+  `EOFError` and leaves the position where it was, so what is left can
+  still be read (see Changed).
+- `writeUTF` refuses a string of more than 65,535 bytes with a
+  `RangeError`, as documented, in `ByteArray` -- and so in the sockets that
+  write through it -- `ByteArrayOutput` and `FileStream`. The 16-bit length
+  in front of the string wrapped, so the reader stopped short and every
+  read after it landed inside the string: a `readInt` after a 70,000-byte
+  string returned 2021161080 for 42. A synchronous `FileStream.writeUTF`
+  also threw `Overflow` from 32,768 bytes, a string `ByteArray` accepted,
+  because it wrote the length as a signed short.
+- `File.size` no longer reports a file larger than 2 GB as some other size.
+  It is an `Int`, and what the standard library's `stat` made of a larger
+  file differed by target and was right on none: on Windows native a 3 GB
+  file read as 0. It now throws an `IOError`, as the HTTP server already
+  refuses such a file, checked against a 64-bit size where the target has
+  one and otherwise by asking the file whether it goes on past the
+  reported end.
+- A `Store` key survives a crash while it is being overwritten. The file
+  backend replaced a value by deleting it and then renaming the new one into
+  place, because the standard library's rename refuses to replace a file on
+  Windows; a process that died between the two left no value, and the next
+  open deleted the complete new one as debris. Between the two steps a
+  reader saw the key as absent, too: two runtimes on one store, one
+  overwriting and one reading, read it as missing in about half of 4,000
+  reads, and on Windows a reader holding the file failed the writer's
+  delete. The new value is now renamed over the old one in one step
+  (`MoveFileExW` on Windows, `Files.move` on the jvm), so the key is never
+  absent; each write uses a temporary file of its own rather than one name
+  shared by every writer; and the temporary file is flushed to disk before
+  the rename, as the store's design promised, with the directory flushed
+  after it on POSIX. The interpreter has no fsync to call. A temporary file
+  the old writer left as the only copy of a key is promoted on open rather
+  than deleted.
+- A PHP request body over 65,535 bytes reaches php-fpm intact. The bridge
+  put the whole body in one FastCGI STDIN record, whose length field is 16
+  bits, so a 100,000-byte POST declared 34,464 bytes and php-fpm read the
+  rest of the body as record headers; the parameters went in one record the
+  same way. Both are now split across records the way php-fpm reads them --
+  parameters only between pairs, since it parses each PARAMS record on its
+  own -- and a single header too large for any record is refused with an
+  error rather than sent broken. On native the request was also written in
+  one burst on a non-blocking socket, so on Linux an upload larger than the
+  kernel would take at once (about 2.6 MB to a backend not yet reading)
+  failed as "Could not reach the PHP backend", a 502. The rest is now
+  written on the ticks that follow, as the backend reads it.
+- PHP responses reach the client byte for byte. The whole FastCGI output
+  was decoded as UTF-8 to find the end of the headers and the body
+  re-encoded from that string, which mangled images, PDFs, archives, gzip
+  output and Latin-1 pages; Node cut a body off at its first NUL, and eval
+  threw from inside the tick. The header block is now found on the bytes
+  and only it is decoded -- as UTF-8 where it is valid, a byte per character
+  where it is not -- and the body is passed on untouched. A `Status` header
+  that is not a three-digit code is ignored: `99999999999` became status
+  2147483647 on Windows and 1215752191 on Linux.
+- A failed PostgreSQL or MySQL transaction is no longer reported as
+  committed. `commit()` caught the server's refusal and dispatched an event
+  instead of throwing, so the documented `AsyncDatabase.transaction(c ->
+  c.begin(), c -> c.commit(), ...)` completed as success, `SchemaMigrator`
+  recorded a migration that had been rolled back, and the connection went
+  back to the pool still marked as inside a transaction. A COMMIT that
+  PostgreSQL answers with the tag ROLLBACK -- which is what it does after a
+  statement in the transaction failed, discarding all of it -- also read as
+  success, since only the tag says otherwise. Both now throw an `SQLError`
+  (see Changed), the tag is read on the native driver, and
+  `AsyncDatabase.transaction` rolls back when the commit throws, closing a
+  transaction an engine keeps open after a failed COMMIT before the
+  connection is pooled again. A savepoint the server refused is no longer
+  remembered as the innermost one.
+- Native PostgreSQL connections no longer share one result buffer. Every
+  connection and thread in the process wrote the bridge's single buffer --
+  results, escaped strings, and the reason an open failed -- and
+  `requestParams` read its result back through a second call, a byte at a
+  time. With `AsyncDatabase`'s default of a worker per pooled connection, a
+  query could come back with another query's rows, an open could report
+  another connection's failure, and a thread could read a buffer another
+  had just grown and freed. Against a stand-in libpq, 8 workers running 400
+  bound queries each got an answer that belonged to another query and 7 of
+  them threw; another run crashed the process. Each connection now keeps
+  its own state, and each call returns its own result in one call, copied
+  from libpq's memory straight into the block the caller receives. Loading
+  libpq is locked. A connection configured with its own `libraryPath` now
+  gets that library even after another has been loaded; the first library
+  loaded used to serve every connection after it.
+- A PostgreSQL query or connect no longer holds up garbage collection on
+  every thread. The bridge called libpq with the thread still counted as
+  running Haxe code, so the next collection anywhere waited for the query
+  to finish: a slow report, a lock wait or an unreachable database host
+  stopped the runtime thread and every socket it served. Against a
+  stand-in libpq, a collection waited 2.3 seconds for a query and 1.25 for
+  a connect. Connecting, executing, cancelling and closing now run in a
+  GC-free zone, with the statement and its parameters copied out of the
+  Haxe heap first.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the

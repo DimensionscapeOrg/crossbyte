@@ -14,9 +14,11 @@ import crossbyte.db.postgres._internal.PostgresWire;
 import haxe.io.Bytes;
 #if cpp
 import crossbyte.db.postgres._internal.NativePostgres;
+import crossbyte.db.postgres._internal.PostgresConnInfo;
 import crossbyte.ipc._internal.VoidPointer;
 import haxe.io.Path;
 import sys.FileSystem;
+import sys.thread.Mutex;
 #end
 #if php
 import php.Global;
@@ -38,6 +40,10 @@ class PostgresConnection extends EventDispatcher {
 	@:noCompletion private var __connection:Dynamic;
 	#if cpp
 	@:noCompletion private var __nativeHandle:VoidPointer;
+	// Held by cancel(), which may run on any thread, and by close(), so the
+	// handle a cancel is using cannot be freed under it. Nothing on the query
+	// path takes it.
+	@:noCompletion private var __handleLock:Mutex = new Mutex();
 	#end
 	@:noCompletion private var __inTransaction:Bool = false;
 	@:noCompletion private var __autocommit:Bool = true;
@@ -46,6 +52,8 @@ class PostgresConnection extends EventDispatcher {
 	@:noCompletion private var __lastAffectedRows:Int = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
+	// The command tag of the last request(), where the driver reports one.
+	@:noCompletion private var __lastCommand:String = null;
 
 	public function new() {
 		super();
@@ -58,21 +66,23 @@ class PostgresConnection extends EventDispatcher {
 		}
 
 		#if cpp
-		try {
-			var host:String = cfg.host != null ? cfg.host : "127.0.0.1";
-			var port:Int = cfg.port != null ? cfg.port : 5432;
-			var database:String = cfg.database != null ? cfg.database : "postgres";
-			var user:String = cfg.user != null ? cfg.user : "";
-			var pass:String = cfg.password != null ? cfg.password : "";
-			var sslMode:String = cfg.sslMode != null ? cfg.sslMode : "";
-			var connectTimeout:Int = cfg.connectTimeout != null ? cfg.connectTimeout : 5;
-			var libraryPaths = __libraryCandidates(cfg);
+		// Outside the try: a setting that cannot be expressed is a mistake in
+		// the config, not a failure to connect, and should read as one.
+		var conninfo:String = PostgresConnInfo.build(cfg);
 
-			__nativeHandle = NativePostgres.open(host, port, user, pass, database, sslMode, connectTimeout, libraryPaths);
-			if (__nativeHandle == null) {
-				throw new IOError(NativePostgres.lastError());
+		try {
+			var handle:VoidPointer = NativePostgres.open(conninfo, __libraryCandidates(cfg));
+			// Read from the handle rather than from anything shared: the reason
+			// used to be one process-wide string, so connections opening on
+			// several pool workers at once could each report another's failure.
+			var failure:String = NativePostgres.error(handle);
+
+			if (failure != null && failure != "") {
+				NativePostgres.close(handle);
+				throw new IOError(failure);
 			}
 
+			__nativeHandle = handle;
 			__dispatchEvent(new SQLEvent(SQLEvent.OPEN));
 		} catch (e:Dynamic) {
 			throw new IOError(e);
@@ -118,8 +128,15 @@ class PostgresConnection extends EventDispatcher {
 	public function close():Void {
 		#if cpp
 		if (__nativeHandle != null) {
-			NativePostgres.close(__nativeHandle);
+			// Taken out under the lock, so a cancel() already running finishes
+			// with the handle before it is freed, and one arriving later finds
+			// nothing to cancel.
+			__handleLock.acquire();
+			var handle:VoidPointer = __nativeHandle;
 			__nativeHandle = null;
+			__handleLock.release();
+
+			NativePostgres.close(handle);
 			__inTransaction = false;
 			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
@@ -146,37 +163,85 @@ class PostgresConnection extends EventDispatcher {
 		}
 	}
 
+	/**
+		Starts a transaction.
+
+		Throws an `SQLError` when the server refuses, after dispatching it as
+		an `SQLErrorEvent` too. So do `commit`, `rollback` and the savepoint
+		methods. They used to dispatch the event and return, which made a
+		failed transaction indistinguishable from a successful one to any
+		caller that did not listen for it: `AsyncDatabase.transaction` completed
+		as success and `SchemaMigrator` recorded a migration that had been
+		rolled back.
+	**/
 	public function begin():Void {
 		try {
 			request("BEGIN;");
-			__inTransaction = true;
-			__savepoints = [];
-			__dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.BEGIN, "Begin failed", e);
+			__fail(SQLEvent.BEGIN, "Begin failed", e);
 		}
+
+		__inTransaction = true;
+		__savepoints = [];
+		__dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
 	}
 
+	/**
+		Commits the transaction, or throws an `SQLError` saying why it did not.
+
+		That includes a COMMIT the server accepted without committing: one sent
+		after a statement in the transaction failed succeeds, with the command
+		tag ROLLBACK, and everything in the transaction is discarded. That
+		reads as success everywhere but in the tag, so it is reported as the
+		failure it is. The tag is read on the native driver; PDO does not
+		expose it.
+
+		Either way the transaction is over afterwards -- PostgreSQL ends it on
+		a failed COMMIT as surely as on a successful one -- so `inTransaction`
+		is `false` whichever way this returns.
+	**/
 	public function commit():Void {
+		var failure:Dynamic = null;
+
 		try {
 			request("COMMIT;");
-			__inTransaction = false;
-			__savepoints = [];
-			__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
+
+			if (__lastCommand == "ROLLBACK") {
+				failure = "a statement in the transaction had failed, so the server rolled it back instead of committing it";
+			}
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.COMMIT, "Commit failed", e);
+			failure = e;
 		}
+
+		__inTransaction = false;
+		__savepoints = [];
+
+		if (failure != null) {
+			__fail(SQLEvent.COMMIT, "Commit failed", failure);
+		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
 	}
 
 	public function rollback():Void {
+		var failure:Dynamic = null;
+
 		try {
 			request("ROLLBACK;");
-			__inTransaction = false;
-			__savepoints = [];
-			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.ROLLBACK, "Rollback failed", e);
+			failure = e;
 		}
+
+		// A ROLLBACK that fails has lost the connection, and the server ends
+		// the transaction with it.
+		__inTransaction = false;
+		__savepoints = [];
+
+		if (failure != null) {
+			__fail(SQLEvent.ROLLBACK, "Rollback failed", failure);
+		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 	}
 
 	/**
@@ -188,15 +253,17 @@ class PostgresConnection extends EventDispatcher {
 	**/
 	public function setSavepoint(name:String = null):String {
 		var sp:String = __sanitizeSavePoint(name);
-		__savepoints.push(sp);
 
 		try {
 			request('SAVEPOINT ' + sp + ';');
-			__dispatchEvent(new SQLEvent(SQLEvent.SET_SAVEPOINT));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
+			__fail(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
 		}
 
+		// Recorded only once the server has it, so a savepoint that failed is
+		// not the one a nameless release or rollback reaches for next.
+		__savepoints.push(sp);
+		__dispatchEvent(new SQLEvent(SQLEvent.SET_SAVEPOINT));
 		return sp;
 	}
 
@@ -216,10 +283,11 @@ class PostgresConnection extends EventDispatcher {
 		var sp:String = __takeSavepoint(name, true);
 		try {
 			request('ROLLBACK TO SAVEPOINT ' + sp + ';');
-			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
+			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT));
 	}
 
 	/**
@@ -233,10 +301,11 @@ class PostgresConnection extends EventDispatcher {
 
 		try {
 			request('RELEASE SAVEPOINT ' + sp + ';');
-			__dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
+			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
 	}
 
 	public inline function request(sql:String):Dynamic {
@@ -253,11 +322,13 @@ class PostgresConnection extends EventDispatcher {
 		var rows:Array<Dynamic> = __toRows(Reflect.field(parsed, "rows"));
 		__lastAffectedRows = __toInt(Reflect.field(parsed, "affectedRows"));
 		__lastInsertRowID = __toInt(Reflect.field(parsed, "lastInsertRowID"));
+		__lastCommand = Reflect.field(parsed, "command");
 		return new PostgresResultSet(rows);
 		#else
 		var statement:Dynamic = null;
 		var rows:Array<Dynamic> = [];
 		__lastAffectedRows = 0;
+		__lastCommand = null;
 
 		try {
 			statement = __connection.query(sql);
@@ -315,28 +386,61 @@ class PostgresConnection extends EventDispatcher {
 
 		#if cpp
 		var encoded:Bytes = PostgresWire.encodeParameters(params == null ? [] : params);
-		var data = cpp.NativeArray.address(encoded.getData(), 0);
-		var length:Int = NativePostgres.requestParams(__nativeHandle, sql == null ? "" : sql, cast data, encoded.length);
+		// One call, and the block it returns is this call's own. It used to be
+		// a length from one call and then the bytes from a second, read a byte
+		// at a time out of a buffer every connection in the process shared --
+		// so between the two another thread's query could replace it.
+		var data:haxe.io.BytesData = NativePostgres.requestParams(__nativeHandle, sql == null ? "" : sql, encoded.getData(), encoded.length);
 
-		if (length < 0) {
+		if (data == null) {
 			throw new IOError("Postgres bridge returned no result block.");
-		}
-
-		var block:Bytes = Bytes.alloc(length);
-		var source = NativePostgres.resultData();
-
-		for (i in 0...length) {
-			block.set(i, source.at(i));
 		}
 
 		// Raises the server message for an error block, so a failed statement
 		// cannot read as a statement that matched nothing.
-		var result:PostgresRawResult = PostgresWire.decodeResult(block);
+		var result:PostgresRawResult = PostgresWire.decodeResult(Bytes.ofData(data));
 		__lastAffectedRows = result.affectedRows;
 		__lastInsertRowID = result.lastInsertRowID;
 		return result;
 		#else
 		throw new IOError("Bound parameters need the native libpq bridge, which this target does not have.");
+		#end
+	}
+
+	/**
+		Asks the server to abandon the statement this connection is running.
+
+		Safe to call from any thread, which is the point: the thread that sent
+		the statement is blocked waiting for its answer, so it is another one
+		-- a watchdog, a request that was abandoned, a shutdown -- that decides
+		to stop it. The statement then fails on its own thread with the
+		server's "canceling statement due to user request".
+
+		Returns whether the request reached the server. That is not a promise
+		the statement was stopped: one that finished in the meantime simply
+		completes, and a cancel with nothing running does nothing. For a limit
+		on every statement rather than an intervention in one, set
+		`PostgresConfig.statementTimeout`.
+
+		Needs the native driver; elsewhere it returns `false`.
+	**/
+	public function cancel():Bool {
+		#if cpp
+		__handleLock.acquire();
+
+		var sent:Bool = false;
+
+		try {
+			sent = __nativeHandle != null && NativePostgres.cancel(__nativeHandle);
+		} catch (e:Dynamic) {
+			__handleLock.release();
+			throw e;
+		}
+
+		__handleLock.release();
+		return sent;
+		#else
+		return false;
 		#end
 	}
 
@@ -547,8 +651,16 @@ class PostgresConnection extends EventDispatcher {
 		return [raw];
 	}
 
-	@:noCompletion private inline function __dispatchError(op:String, msg:String, e:Dynamic):Void {
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(op, e, msg)));
+	/**
+		Reports a failed transaction step both ways: as the `SQLErrorEvent` it
+		always was, for listeners, and as the `SQLError` it now throws, so a
+		caller that does not listen cannot mistake it for success.
+	**/
+	@:noCompletion private function __fail(op:String, msg:String, e:Dynamic):Void {
+		var detail:String = Std.string(e);
+		var error:SQLError = new SQLError(op, detail, msg + ": " + detail);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
 	}
 
 	@:noCompletion private static function __checkSupport():Bool {
