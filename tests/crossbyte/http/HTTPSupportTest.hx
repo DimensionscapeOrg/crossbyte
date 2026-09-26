@@ -47,7 +47,10 @@ class HTTPSupportTest extends utest.Test {
 		// /api path to /index.php with the PHP flag while phpEnabled defaults
 		// to false, so a stock server crashed on a path many services use.
 		Assert.equals(0, first.rewrites.length);
-		Assert.isTrue(first.rootDirectory != null);
+		// No root by default, and so no static files. The default was the
+		// account's home directory, served on every interface.
+		Assert.isNull(first.rootDirectory);
+		Assert.equals("127.0.0.1", first.address);
 		// Keep-alive defaults on: it is what HTTP/1.1 specifies and what
 		// removes the per-request handshake without client changes.
 		Assert.isTrue(first.keepAlive);

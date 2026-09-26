@@ -528,12 +528,16 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		var resolvedFile:File = __resolveSafePath(__config.rootDirectory, pathOnly);
-		if (resolvedFile == null) {
-			__sendErrorResponse(403, "Forbidden");
-			return;
+		// No root, no static files: nothing to contain and nothing to look up.
+		__filePath = null;
+		if (__config.rootDirectory != null) {
+			var resolvedFile:File = __resolveSafePath(__config.rootDirectory, pathOnly);
+			if (resolvedFile == null) {
+				__sendErrorResponse(403, "Forbidden");
+				return;
+			}
+			__filePath = resolvedFile.nativePath;
 		}
-		__filePath = resolvedFile.nativePath;
 		while (true) {
 			var headerLine:Null<String> = __readLine(__incomingBuffer);
 			if (headerLine == null) {
@@ -630,7 +634,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// cut short) must close, or the leftover bytes would be parsed
 		// as the next request, for the 429, the same request forever.
 		__requestConsumed = true;
-		var decision:Decision = RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
+		var decision:Decision = __config.rootDirectory == null ? null : RewriteEngine.decide(__config, __requestPath, __queryString, __method, __headers);
 		if (__config.middleware != null && __config.middleware.length > 0) {
 			__runMiddleware(0, function() {
 				__continueRequestDispatch(decision);
@@ -672,12 +676,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// root. Reaching dispatch without it would leave the traversal check
 		// on one protocol's path only, and the dispatch fallback below
 		// serves __filePath directly, so an unresolved one is served as-is.
-		var resolvedFile:File = __resolveSafePath(__config.rootDirectory, pathOnly);
-		if (resolvedFile == null) {
-			__sendErrorResponse(403, "Forbidden");
-			return;
+		__filePath = null;
+		if (__config.rootDirectory != null) {
+			var resolvedFile:File = __resolveSafePath(__config.rootDirectory, pathOnly);
+			if (resolvedFile == null) {
+				__sendErrorResponse(403, "Forbidden");
+				return;
+			}
+			__filePath = resolvedFile.nativePath;
 		}
-		__filePath = resolvedFile.nativePath;
 
 		__dispatchParsedRequest();
 	}
@@ -725,6 +732,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __continueRequestDispatch(decision:Decision):Void {
+		// Static files, from here down, and a path the configuration does not
+		// serve files for is answered as one that is not there. Asked of the
+		// path a file would be served under, so a rewrite onto a dotfile is
+		// refused as well as a request naming one.
+		if (__method != "OPTIONS" && !__servesStaticPath(decision != null ? decision.finalPath : __requestPath)) {
+			if (__method == "GET" || __method == "HEAD" || __method == "POST") {
+				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+			} else {
+				__sendMethodNotAllowed();
+			}
+			return;
+		}
+
 		if (decision != null) {
 			var targetAbs:File = __config.rootDirectory.resolvePath("." + decision.finalPath);
 
@@ -2213,6 +2233,71 @@ final class HTTPRequestHandler extends EventDispatcher {
 			+ d.getFullYear() + " " + StringTools.lpad(Std.string(d.getHours()), "0", 2) + ":" + StringTools.lpad(Std.string(d.getMinutes()), "0", 2)
 			+ ":" + StringTools.lpad(Std.string(d.getSeconds()), "0", 2) + " GMT";
 	}
+	/**
+	 * Whether a static file may be served under the web path `path`: there
+	 * is a document root to serve it from, and the path names nothing the
+	 * configuration keeps back (see `HTTPServerConfig.serveDotFiles`).
+	 */
+	@:noCompletion private function __servesStaticPath(path:String):Bool {
+		if (__config.rootDirectory == null) {
+			return false;
+		}
+
+		return __config.serveDotFiles || !__hasHiddenSegment(path);
+	}
+
+	/**
+	 * Whether any segment of `path` starts with a dot, other than a leading
+	 * `/.well-known`, which RFC 8615 reserves for files meant to be public.
+	 *
+	 * `.` and `..` are not names but steps, and are not counted. Backslash
+	 * separates segments too, because it does on the filesystem the file
+	 * would be read from on Windows: `/a\.env` names `a/.env` there.
+	 */
+	@:noCompletion private static function __hasHiddenSegment(path:String):Bool {
+		if (path == null) {
+			return false;
+		}
+
+		var length:Int = path.length;
+		var start:Int = 0;
+		var first:Bool = true;
+
+		while (start < length) {
+			var code:Int = StringTools.fastCodeAt(path, start);
+			if (code == "/".code || code == "\\".code) {
+				start++;
+				continue;
+			}
+
+			var end:Int = start + 1;
+			while (end < length) {
+				var next:Int = StringTools.fastCodeAt(path, end);
+				if (next == "/".code || next == "\\".code) {
+					break;
+				}
+				end++;
+			}
+
+			if (code == ".".code) {
+				var size:Int = end - start;
+				var step:Bool = size == 1 || (size == 2 && StringTools.fastCodeAt(path, start + 1) == ".".code);
+				if (!step) {
+					if (!(first && size == WELL_KNOWN.length && path.substr(start, size) == WELL_KNOWN)) {
+						return true;
+					}
+				}
+			}
+
+			first = false;
+			start = end;
+		}
+
+		return false;
+	}
+
+	@:noCompletion private static inline var WELL_KNOWN:String = ".well-known";
+
 	@:noCompletion private inline function __isPhp(path:String):Bool {
 		var dot:Int = path.lastIndexOf(".");
 		return (dot >= 0) && (path.substr(dot + 1).toLowerCase() == "php");
