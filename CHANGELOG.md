@@ -540,6 +540,26 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A host name is looked up off the runtime's thread. `Socket`, `WebSocket`
+  and `ReliableDatagramSocket` looked the name given to `connect()` up in
+  the call, and `DatagramSocket` looked one up in every `send()`, so every
+  socket and timer on the runtime waited on the resolver: a name that does
+  not exist held the loop for a second on the interpreter, two natively,
+  and a client reconnecting in a loop did it again exactly while the
+  resolver was failing. Now the name is looked up on a thread of its own
+  and the connect finished on the runtime's thread when the answer comes;
+  the attempt's timeout counts the lookup. A `DatagramSocket` looks a name
+  up once and uses the answer for a minute, refreshing it in the
+  background, and datagrams sent while the first answer is awaited wait
+  for it (up to 64 per name). What to change: a name that does not resolve
+  is reported by an `ioError` event after the call returns,
+  `ReliableDatagramSocket.connect()` and `DatagramSocket.send()` used to
+  throw `ArgumentError` for one, and no longer do, so listen for `ioError`;
+  the reliable session then closes, as a timed-out attempt does. A
+  malformed address is still thrown at once. On Node, a `DatagramSocket`
+  send that fails, a name that does not resolve, a datagram too large,
+  is reported as `ioError` and leaves the socket receiving, as natively;
+  it stopped the socket receiving.
 - A WebSocket session pings a peer it has heard nothing from for 30
   seconds, and closes with 1006 one it has heard nothing from for 60. The
   heartbeat was dead code on both ends and there was no idle timeout, so a
@@ -751,6 +771,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `DatagramSocket.send()` is a fifth quicker natively: 5.3 us a datagram
+  where it took 6.9, to one destination over loopback. Every send asked
+  the system for the socket's local address, to learn whether it was bound
+  yet, and built a `Host` and an `Address` for its destination; it now asks
+  until the socket is bound, and keeps the last destination's address.
 - A connection's end is announced once, and the same way everywhere.
   Natively a peer that connected and hung up within a tick, a load
   balancer's health check, was announced closed twice, a tick after the

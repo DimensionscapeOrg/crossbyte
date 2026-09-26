@@ -49,7 +49,26 @@ class IPv6 {
 			return true;
 		}
 
-		return ~/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.match(address);
+		// Four runs of digits between three dots, checked by hand: a pattern
+		// literal is compiled afresh on every call, and this is now asked on
+		// the way to every connect and every datagram sent somewhere new.
+		var dots:Int = 0;
+		var digits:Int = 0;
+		for (i in 0...address.length) {
+			var c:Int = StringTools.fastCodeAt(address, i);
+			if (c == ".".code) {
+				if (digits == 0) {
+					return false;
+				}
+				dots++;
+				digits = 0;
+			} else if (c >= "0".code && c <= "9".code) {
+				digits++;
+			} else {
+				return false;
+			}
+		}
+		return dots == 3 && digits > 0;
 	}
 
 	public static function compress(address:String):String {
