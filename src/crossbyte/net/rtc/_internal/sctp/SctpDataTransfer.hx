@@ -393,11 +393,19 @@ class SctpDataTransfer {
 					__onData(chunk);
 				case SctpPacket.CHUNK_SACK:
 					__onSack(chunk);
+				case SctpPacket.CHUNK_SHUTDOWN:
+					__onShutdown(chunk);
 				default:
 			}
 		};
 
 		association.onPacketEnd = __afterPacket;
+
+		// A shutdown the peer asks for waits on this: everything queued sent,
+		// and everything sent acknowledged.
+		association.drained = function():Bool {
+			return __pendingAt == __pending.length && __outstandingAt == __unacknowledged.length;
+		};
 	}
 
 	/**
@@ -409,6 +417,11 @@ class SctpDataTransfer {
 	**/
 	public function send(streamId:Int, payload:ByteArray, protocolId:Int, ordered:Bool = true, now:Float = 0):Void {
 		if (association.state != SctpAssociationState.ESTABLISHED) {
+			if (association.state == SctpAssociationState.SHUTDOWN_RECEIVED
+				|| association.state == SctpAssociationState.SHUTDOWN_ACK_SENT) {
+				throw new ArgumentError("The peer is shutting the association down, so nothing new can be sent over it.");
+			}
+
 			throw new ArgumentError("The association is not open, so there is nothing to send over.");
 		}
 
@@ -545,7 +558,10 @@ class SctpDataTransfer {
 		carry it.
 	**/
 	@:noCompletion private function __flush(now:Float, sackAlone:Bool = false):Void {
-		if (association.state != SctpAssociationState.ESTABLISHED) {
+		// And while a shutdown the peer asked for is waiting on what this end
+		// still has to deliver: RFC 4960 section 9.2 has it retransmitted as
+		// usual, and what was queued before the SHUTDOWN still goes.
+		if (association.state != SctpAssociationState.ESTABLISHED && association.state != SctpAssociationState.SHUTDOWN_RECEIVED) {
 			return;
 		}
 
@@ -812,7 +828,6 @@ class SctpDataTransfer {
 			return;
 		}
 
-		var now:Float = association.clock;
 		var value = chunk.value;
 		value.endian = Endian.BIG_ENDIAN;
 		value.position = 0;
@@ -821,6 +836,32 @@ class SctpDataTransfer {
 		var window:Int = value.readInt();
 		var gaps:Int = value.readUnsignedShort();
 		value.readUnsignedShort();
+
+		__acknowledge(cumulative, window, value, gaps);
+	}
+
+	/**
+		A SHUTDOWN carries the peer's cumulative acknowledgement and nothing
+		else (RFC 4960 section 9.2), and is read like a SACK with no gaps whose
+		window is the one already known.
+	**/
+	@:noCompletion private function __onShutdown(chunk:SctpChunk):Void {
+		if (chunk.value.length < 4) {
+			return;
+		}
+
+		chunk.value.endian = Endian.BIG_ENDIAN;
+		chunk.value.position = 0;
+
+		__acknowledge(chunk.value.readInt(), __peerWindow, null, 0);
+	}
+
+	/**
+		What an acknowledgement says: everything up to `cumulative`, the gap
+		blocks after it, and the room the peer has.
+	**/
+	@:noCompletion private function __acknowledge(cumulative:Int, window:Int, value:Null<ByteArray>, gaps:Int):Void {
+		var now:Float = association.clock;
 
 		// Older than one already read, which reordering produces: what it
 		// says has been superseded (RFC 4960 section 6.2.1).
@@ -873,7 +914,7 @@ class SctpDataTransfer {
 
 		// The gap blocks, read once and matched against what is outstanding
 		// in a single walk forward.
-		var blocks:Int = __readGapBlocks(value, gaps);
+		var blocks:Int = value == null ? 0 : __readGapBlocks(value, gaps);
 		var highestNewlyAcked:Int = -1;
 
 		if (blocks > 0) {
