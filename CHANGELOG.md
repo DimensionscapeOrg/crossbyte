@@ -5,6 +5,10 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
+  `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
+  built-in client's rules and say where its response came from. The bundled
+  HTTP/2 backend uses them.
 - PKCE for OAuth (RFC 7636): `OAuth.createCodeVerifier()`,
   `OAuth.codeChallenge(verifier)`, a `codeChallenge` argument to
   `getAuthorizationUrl`, sent with `code_challenge_method=S256`, and a
@@ -817,6 +821,19 @@ All notable changes to CrossByte will be documented in this file.
   An address is still connected to in the call, and on Node a name is
   still refused. `connect()` on a closed socket throws `IOError` before
   anything else.
+- `URLLoader` runs its loads on a shared pool of threads kept between loads,
+  rather than on a thread started and ended for each. At most
+  `URLLoader.maxConcurrentLoads` -- 16 by default -- run at once across the
+  process, and more wait their turn in the order they were made; a program
+  holding many slow requests open at once, long polls say, should raise it
+  to at least that many. A thread with nothing to do ends after 30 seconds.
+  Against a local keep-alive server natively, 4,100 sequential loads a
+  second became 6,400, and 10,200 with eight in flight became 18,600 to
+  22,300. On hxcpp a host that drives the runtime with `pump()` in a loop
+  that neither blocks nor allocates must sleep or call
+  `cpp.vm.Gc.safePoint()` in it: the load threads allocate, a collection
+  one of them starts waits for every thread, and such a loop is never
+  stopped for it.
 - The HTTP server's access log -- one `INFO` line per response -- logs under
   the category `http.access`. `Logger.setLevel("http.access", WARN)` quiets
   it and leaves everything else at `INFO`; it used to share the one global
@@ -1243,6 +1260,60 @@ All notable changes to CrossByte will be documented in this file.
   they were read separately, and an observation between the two reads made
   them differ. On hxcpp a histogram's `_sum` can count an observation its
   buckets do not show yet, or the reverse, while observations arrive.
+- A request body over 16 KB reaches the server whole over `https`, natively
+  and on the jvm. The client wrote it with `Output.writeBytes`, which writes
+  what it can and says how much, and a TLS socket takes one record, 16 KB,
+  at a time: the rest was dropped, and the server waited for it until the
+  request timed out. HTTP/2 wrote every frame the same way, so a full-sized
+  DATA frame lost its last nine bytes and the server closed the connection.
+- On the jvm, every `URLLoader` load left two sockets open until the process
+  ended: the thread it ran on opened a selector for its reads, and nothing
+  closed it when the thread ended. With eight loads in flight at a time,
+  9,000 of 15,000 failed with "Address already in use". Loads run on
+  long-lived threads now, so there are as many selectors as threads, not as
+  loads, and none of them fail.
+- A `URLLoader`'s `COMPLETE` or `IO_ERROR` listener can start its next load.
+  The loader was still busy while they ran, so the new load was refused with
+  "URLLoader is already loading".
+- Over HTTP/2 a redirect is followed, as it is over HTTP/1.1, on Node and in
+  the browser; a 3xx completed the load with its `Location` unread. The
+  HTTP/1.1 client's rules apply, through the same code: at most
+  `Http.MAX_REDIRECTS`, a relative `Location` resolved against the request,
+  a 301, 302 or 303 made a bodiless GET, `https` to `http` only with
+  `followInsecureRedirects`, `Authorization`, `Proxy-Authorization` and a
+  hand-set `Cookie` dropped once a hop leaves the origin, and, with
+  `manageCookies`, a cookie a hop sets sent back on the next. A hop to an
+  origin already connected rides that connection, and `HTTP_RESPONSE_STATUS`
+  names the URL the response came from. A HEAD stays a HEAD through a 301,
+  302 or 303 on both versions: over HTTP/1.1 it became a GET, and downloaded
+  the body it had asked not to be sent.
+- `idleTimeout` over HTTP/2 is an idle limit, as it is over HTTP/1.1 and on
+  Node: the longest a response may go with nothing arriving for it. It was a
+  deadline on the whole response, so a download still arriving steadily was
+  cut off when the timeout ran out, where HTTP/1.1 let it finish.
+- An HTTP/2 request cancelled before it started no longer closes the
+  connection it would have used. The session refused it before sending
+  anything, and the backend took that for a failed connection and closed
+  it, failing every other request in flight on it. It reports `Request
+  cancelled` now, as a cancel at any other point does.
+- Cancelling an HTTP/1.1 load -- `URLLoader.close()` with a load in flight,
+  or its `cancelToken` -- ends it on every target, and at once. A cancel that
+  landed after the load had looked at its token and before its socket
+  existed -- while the connection pool was searched, while the socket was
+  made, or between two redirects -- found nothing to close and was lost: the
+  request went out anyway, and its thread waited out the idle timeout for an
+  answer nobody wanted. And the cancel closed the socket from the cancelling
+  thread. On Linux that does not wake a read already waiting on the socket,
+  so the server heard nothing until the read gave up; on eval it killed the
+  loading thread with an error no catch sees, and the reset it caused killed
+  the server's reader too; and closing a TLS socket frees its mbedTLS
+  context under a read that may still be using it. Now the socket is
+  published under a lock the cancel also takes, so one always finds the
+  other, and it is shut down rather than closed, which ends the read and
+  tells the server at once; the loading thread closes it itself. A cancelled
+  load reports `Request cancelled` whichever step failed under it, and a
+  body that ends with the connection is no longer delivered as complete when
+  a cancel is what ended it.
 - `File.clone()` gave the clone the original's listeners, where its
   documentation says registrations are not copied. It copied every instance
   field by reflection, `EventDispatcher`'s listener map included, so once the

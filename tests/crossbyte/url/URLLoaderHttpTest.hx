@@ -5,9 +5,15 @@ import crossbyte.events.Event;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
+import crossbyte.http.HTTPBackend;
+import crossbyte.http.HTTPBackendRegistry;
+import crossbyte.http.HTTPRequestContext;
+import crossbyte.http.HTTPVersion;
+import haxe.io.Bytes;
 import sys.net.Host;
 import sys.net.Socket as SysSocket;
 import sys.thread.Lock;
+import sys.thread.Mutex;
 import sys.thread.Thread;
 import utest.Assert;
 import crossbyte.test.Require;
@@ -342,14 +348,84 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.equals(-1, result.progress[0].total);
 	}
 
-	#if (cpp || neko || hl)
+	public function testTheNextLoadCanStartFromComplete():Void {
+		// The loader was still busy while COMPLETE was dispatched -- it was
+		// freed after the listeners ran -- so a listener starting the next
+		// load on it was refused with "URLLoader is already loading".
+		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 2"], "ok"), 2);
+		var loader = new URLLoader();
+		var events:Array<String> = [];
+		var loads:Int = 0;
+		loader.addEventListener(Event.COMPLETE, _ -> {
+			events.push("complete " + loader.data);
+			if (++loads == 1) {
+				var next = new URLRequest('http://127.0.0.1:${fixture.port}/second');
+				next.idleTimeout = 2000;
+				loader.load(next);
+			}
+		});
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> events.push("error " + event.text));
+		var first = new URLRequest('http://127.0.0.1:${fixture.port}/first');
+		first.idleTimeout = 2000;
+		loader.load(first);
+
+		pumpUntil(() -> events.length >= 2);
+		fixture.waitDone();
+		Assert.same(["complete ok", "complete ok"], events);
+	}
+
+	#if target.threaded
+	public function testLoadsReuseTheirThreadsAndStayOffTheRuntime():Void {
+		// Every load started a thread of its own and let it end: a hundred
+		// loads a second were a hundred thread starts, and on the jvm each
+		// thread's selector, never closed, left two sockets open per load.
+		// A backend of the test's own, on HTTP/3, which nothing else serves,
+		// says which thread each load ran on.
+		var backend = new ThreadRecordingBackend();
+		HTTPBackendRegistry.register(backend);
+		var loader = new URLLoader();
+		var completed:Int = 0;
+		var failures:Array<String> = [];
+		loader.addEventListener(Event.COMPLETE, _ -> completed++);
+		loader.addEventListener(IOErrorEvent.IO_ERROR, (event:IOErrorEvent) -> failures.push(event.text));
+		try {
+			for (i in 0...12) {
+				var request = new URLRequest('http://127.0.0.1/n$i');
+				request.httpVersion = HTTPVersion.HTTP_3;
+				var before:Int = completed + failures.length;
+				loader.load(request);
+				pumpUntil(() -> completed + failures.length > before);
+			}
+		} catch (e:Dynamic) {
+			HTTPBackendRegistry.unregister(backend);
+			throw e;
+		}
+		HTTPBackendRegistry.unregister(backend);
+
+		Assert.equals(12, completed, failures.join("; "));
+		// And off the runtime's thread, where a blocking request -- or the
+		// name lookup at its start -- would stop every socket and timer.
+		Assert.equals(0, backend.onRuntime(), "a load ran on the runtime's thread");
+		// One thread, or two when the next load is queued in the moment
+		// before the thread that finished the last one is waiting again.
+		var threads:Int = backend.distinctThreads();
+		Assert.isTrue(threads <= 2, '12 loads, one after another, ran on $threads threads');
+	}
+
 	// Only where the loader's worker is a thread: elsewhere it runs the load
 	// inside load(), so nothing can close it while it is in flight.
 	public function testClosingALoadInFlightEndsItQuietly():Void {
-		// A server that takes the request and holds it, answering nothing.
+		// A server that takes the request and holds it, answering nothing,
+		// and notes how its wait for the client ended.
 		var ready = new Lock();
 		var finished = new Lock();
-		var arrived = new sys.thread.Deque<Bool>();
+		// Strings, not Bools. On the jvm a Deque of a basic type answers
+		// `pop(false)` on an empty queue with false or 0 rather than null, so
+		// a Deque<Bool> here said the request had arrived before it was sent:
+		// the loader was closed before its load began, and the server waited
+		// in accept() for a client that never came.
+		var arrived = new sys.thread.Deque<String>();
+		var ended:String = null;
 		var port = 0;
 		Thread.create(() -> {
 			var server = new SysSocket();
@@ -360,11 +436,19 @@ class URLLoaderHttpTest extends utest.Test {
 				port = server.host().port;
 				ready.release();
 				peer = server.accept();
-				peer.setTimeout(3.0);
+				// Longer than the test waits for this thread below, so only the
+				// client going ends the wait in time.
+				peer.setTimeout(5.0);
 				readRequest(peer);
-				arrived.add(true);
-				// Until the client goes.
-				peer.input.readByte();
+				arrived.add("arrived");
+				try {
+					peer.input.readByte();
+					ended = "a byte arrived";
+				} catch (_:haxe.io.Eof) {
+					ended = "the client went";
+				} catch (e:Dynamic) {
+					ended = Std.string(e);
+				}
 			} catch (_:Dynamic) {
 				ready.release();
 			}
@@ -402,7 +486,13 @@ class URLLoaderHttpTest extends utest.Test {
 		pumpUntil(() -> haxe.Timer.stamp() >= settle);
 
 		Assert.same([], events);
-		Assert.isTrue(finished.wait(3.0));
+		// And the server hears of it now, not when its own wait runs out. The
+		// client used to close its socket from the closing thread: on eval
+		// that killed the worker with an error nothing could catch, and the
+		// reset it caused killed the server's reader too; on Linux a close
+		// does not wake the read, so the server waited out the idle timeout.
+		Assert.isTrue(finished.wait(2.0), "the server never saw the client go");
+		Assert.equals("the client went", ended);
 
 		// And the loader is free for the next load.
 		var fixture = serveRequests(_ -> response(200, "OK", ["Content-Length: 2"], "ok"), 1);
@@ -536,8 +626,8 @@ class URLLoaderHttpTest extends utest.Test {
 
 	private static function pumpUntil(done:Void->Bool, timeoutSeconds:Float = 2.0):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeoutSeconds;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeoutSeconds;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
@@ -551,6 +641,62 @@ class URLLoaderHttpTest extends utest.Test {
 		} catch (_:Dynamic) {}
 	}
 }
+
+#if target.threaded
+/** Answers every HTTP/3 request at once, noting the thread each came on. */
+private class ThreadRecordingBackend implements HTTPBackend {
+	private final __lock:Mutex = new Mutex();
+	private final __threads:Array<Thread> = [];
+	private var __onRuntime:Int = 0;
+
+	public function new() {}
+
+	public function supports(version:HTTPVersion):Bool {
+		return version == HTTPVersion.HTTP_3;
+	}
+
+	public function load(context:HTTPRequestContext):Void {
+		var thread:Thread = Thread.current();
+		var runtime:Null<CrossByte> = CrossByte.__currentOrNull();
+		__lock.acquire();
+		__threads.push(thread);
+		if (runtime != null) {
+			__onRuntime++;
+		}
+		__lock.release();
+
+		context.onStatus(200);
+		context.onHeaders(new Map());
+		context.onComplete(Bytes.ofString("ok"));
+	}
+
+	public function onRuntime():Int {
+		__lock.acquire();
+		var count:Int = __onRuntime;
+		__lock.release();
+		return count;
+	}
+
+	public function distinctThreads():Int {
+		__lock.acquire();
+		var distinct:Array<Thread> = [];
+		for (thread in __threads) {
+			var seen:Bool = false;
+			for (other in distinct) {
+				if (other == thread) {
+					seen = true;
+					break;
+				}
+			}
+			if (!seen) {
+				distinct.push(thread);
+			}
+		}
+		__lock.release();
+		return distinct.length;
+	}
+}
+#end
 
 typedef URLLoaderHttpResult = {
 	var complete:Bool;
