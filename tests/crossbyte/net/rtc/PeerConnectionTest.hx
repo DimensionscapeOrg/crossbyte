@@ -350,6 +350,74 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		The session goes where the agent's selected pair goes.
+
+		When the controlling peer nominates another pair the agent follows it,
+		and the DTLS records carrying every channel have to follow too: they
+		were sent to the address the path was first found on, for as long as
+		the connection lasted. The agent's decision is made directly here,
+		`IceAgentTest` covers how it gets there, and what is watched is where
+		the next record lands.
+	**/
+	public function testTheSessionFollowsTheSelectedPair():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+		var probe = new DatagramSocket();
+		var records:Int = 0;
+
+		try {
+			bob.onChannel = channel -> accepted = channel;
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			var chat = alice.connected ? alice.createDataChannel("chat") : null;
+			pumpUntil(() -> chat != null && chat.open && accepted != null, 5.0);
+
+			if (accepted == null || bob.agent.selectedPair == null) {
+				Assert.fail("the two never connected with a channel open");
+				alice.close();
+				bob.close();
+				probe.close();
+				return;
+			}
+
+			// Somewhere new for Alice to be: a socket of the test's own.
+			probe.bind(0, "127.0.0.1");
+			probe.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
+				e.data.position = 0;
+				var first:Int = e.data.readUnsignedByte();
+
+				if (first >= 20 && first <= 63) {
+					records++;
+				}
+			});
+			probe.receive();
+
+			var moved = new crossbyte.net.ice.IceCandidatePair(bob.agent.selectedPair.local, IceCandidate.host("127.0.0.1", probe.localPort), false);
+			@:privateAccess bob.agent.__select(moved, haxe.Timer.stamp());
+
+			accepted.send("after the move");
+			pumpUntil(() -> records > 0, 5.0);
+
+			Assert.isTrue(records > 0, "the session kept sending to the pair it was found on after the agent chose another");
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		probe.close();
+	}
+
+	/**
 		An answer repeats the section id of the offer it answers.
 	**/
 	public function testAnAnswerRepeatsTheOffersSectionId():Void {

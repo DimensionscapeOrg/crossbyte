@@ -151,8 +151,21 @@ class IceAgent {
 
 	public var state(default, null):IceAgentState = NEW;
 
-	/** The pair traffic should use, once there is one. **/
+	/**
+		The pair traffic should use, once there is one.
+
+		It can change after `connected` resolves: the controlling peer may
+		nominate another pair, and this agent follows. `onSelectedPairChanged`
+		says when.
+	**/
 	public var selectedPair(default, null):Null<IceCandidatePair>;
+
+	/**
+		Called when the selected pair changes after the first: the controlling
+		peer nominated another, which traffic should now use. The first is
+		reported by `connected`.
+	**/
+	public dynamic function onSelectedPairChanged(pair:IceCandidatePair):Void {}
 
 	/**
 		Resolves with the nominated pair, or fails when every pair has.
@@ -194,6 +207,9 @@ class IceAgent {
 	@:noCompletion private var __valid:Array<IceCandidatePair> = [];
 	@:noCompletion private var __nextCheckAt:Float = 0;
 	@:noCompletion private var __nominating:Bool = false;
+
+	/** Whether any pair created or triggered since connecting may still need checking. **/
+	@:noCompletion private var __lateChecks:Bool = false;
 
 	/**
 		@param controlling Whether this peer nominates. The two peers must pass
@@ -332,6 +348,16 @@ class IceAgent {
 	public function poll(now:Float):Void {
 		if (state == CONNECTED) {
 			__pollConsent(now);
+
+			// Pairs the peer has given this agent reason to check since the
+			// path was chosen: a candidate it trickled late, or an address it
+			// asked from. A connected agent used to check nothing at all, so a
+			// peer that moved was answered and never followed. Only those
+			// pairs, at the pacing interval, and nothing while there are none.
+			if (state == CONNECTED && __lateChecks && now >= __nextCheckAt) {
+				__pollLateChecks(now);
+			}
+
 			return;
 		}
 
@@ -544,8 +570,21 @@ class IceAgent {
 
 		// A triggered check. The peer has proved it is there and is asking; the
 		// mapping in this direction is open now and may not be later, so this
-		// pair goes to the front rather than waiting its turn.
-		if (check.state == WAITING || check.state == FROZEN) {
+		// pair goes to the front rather than waiting its turn. A pair that
+		// failed before is tried afresh (RFC 8445 section 7.3.1.4): the peer
+		// asking from it is new evidence, a network that came back, or a
+		// NAT that has opened.
+		if (check.state == WAITING || check.state == FROZEN || check.state == FAILED) {
+			if (check.state == FAILED) {
+				check.transaction = __freshTransaction();
+				check.attempts = 0;
+			}
+
+			if (state == CONNECTED) {
+				check.late = true;
+				__lateChecks = true;
+			}
+
 			__transmit(check, now);
 		}
 
@@ -778,7 +817,11 @@ class IceAgent {
 	// ------------------------------------------------------------------
 
 	@:noCompletion private function __rebuild():Void {
-		if (state != CHECKING) {
+		// And once connected: a candidate trickled after the path was found is
+		// somewhere the peer may yet be reached, and pairing it is what lets a
+		// nomination from there be followed. It was dropped into the list and
+		// never paired.
+		if (state != CHECKING && state != CONNECTED) {
 			return;
 		}
 
@@ -798,7 +841,53 @@ class IceAgent {
 	@:noCompletion private function __add(pair:IceCandidatePair):IceCheck {
 		var check = new IceCheck(pair, __freshTransaction());
 		__checks.push(check);
+
+		if (state == CONNECTED) {
+			check.late = true;
+			__lateChecks = true;
+		}
+
 		return check;
+	}
+
+	/**
+		Checks the pairs that arrived once the path was chosen: retransmits
+		those in progress, gives up on those that have run out, and starts one
+		that is waiting, one per pacing interval, as while checking.
+	**/
+	@:noCompletion private function __pollLateChecks(now:Float):Void {
+		var active:Bool = false;
+		var started:Bool = false;
+
+		for (check in __checks) {
+			if (!check.late) {
+				continue;
+			}
+
+			switch (check.state) {
+				case IN_PROGRESS:
+					active = true;
+
+					if (now >= check.nextAttemptAt) {
+						if (check.attempts >= MAX_ATTEMPTS) {
+							check.state = FAILED;
+						} else {
+							__transmit(check, now);
+						}
+					}
+				case WAITING, FROZEN:
+					active = true;
+
+					if (!started) {
+						started = true;
+						__transmit(check, now);
+					}
+				default:
+			}
+		}
+
+		__nextCheckAt = now + PACING;
+		__lateChecks = active;
 	}
 
 	@:noCompletion private function __nextWaiting():Null<IceCheck> {
@@ -982,7 +1071,29 @@ class IceAgent {
 	}
 
 	@:noCompletion private function __select(pair:IceCandidatePair, now:Float):Void {
-		if (state == CONNECTED || state == CLOSED) {
+		if (state == CLOSED) {
+			return;
+		}
+
+		// A later nomination. The controlling peer has moved to another pair,
+		// its old address died, a better path appeared, and this agent
+		// follows it. It used to answer the new nomination and go on sending
+		// to the pair it had, until consent to that pair ran out.
+		if (state == CONNECTED) {
+			if (selectedPair != null && selectedPair.sameAs(pair)) {
+				return;
+			}
+
+			selectedPair = pair;
+
+			// The nomination was checked, which is the question consent asks;
+			// one still in flight to the old pair answers for a path no
+			// longer used.
+			__consentedAt = now;
+			__consentDueAt = now + CONSENT_INTERVAL;
+			__consentTransaction = null;
+
+			onSelectedPairChanged(pair);
 			return;
 		}
 
@@ -1062,6 +1173,13 @@ private class IceCheck {
 
 	/** Whether the other peer asked for it before this side had confirmed it. **/
 	public var nominatedByPeer:Bool = false;
+
+	/**
+		Created, or triggered, once a path was already chosen. Only these are
+		checked in the connected state; the rest of the original list is left
+		where it stood.
+	**/
+	public var late:Bool = false;
 
 	public function new(pair:IceCandidatePair, transaction:ByteArray) {
 		this.pair = pair;

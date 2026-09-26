@@ -218,6 +218,111 @@ class IceAgentTest extends utest.Test {
 			"the peer stopped answering and the agent went on treating the path as usable");
 	}
 
+	/**
+		A peer that moves and nominates the pair from its new address is followed.
+
+		What a browser does when its network changes: the controlling agent
+		checks from where it now is and nominates that pair. The controlled
+		agent answered the nomination and kept the pair it had, so it went on
+		sending to an address that no longer answered until consent to it ran
+		out half a minute later. Here Bob is the controlled end, CrossByte
+		answering a browser, and Alice moves.
+	**/
+	public function testAPeerThatMovesAndNominatesAgainIsFollowed():Void {
+		if (unsupported()) return;
+
+		var wire = __connected();
+
+		if (__bob.state != CONNECTED) {
+			Assert.fail("the two never connected, so there is no path to move");
+			return;
+		}
+
+		var changes:Array<IceCandidatePair> = [];
+		__bob.onSelectedPairChanged = pair -> changes.push(pair);
+
+		// Alice's old address is gone; she is at a new one now.
+		wire.unreachable.push(ALICE_ADDRESS + ":" + PORT);
+		wire.rewriteSourceOf(__alice, "10.0.0.3", PORT);
+
+		// And nominates from there, as libwebrtc does when it switches.
+		var now = 10.0;
+		var nomination = new StunMessage(StunMessage.BINDING_REQUEST, crossbyte.crypto.SecureRandom.getSecureRandomBytes(12), [
+			StunMessage.username(IceCredentials.username(__bob.localCredentials, __alice.localCredentials)),
+			StunMessage.priority(IceCandidate.computePriority(PEER_REFLEXIVE)),
+			StunMessage.iceRole(true, __alice.tiebreaker),
+			StunMessage.useCandidate()
+		]);
+
+		__bob.receive(nomination.encodeSigned(__bob.localCredentials.password), "10.0.0.3", PORT, now);
+
+		// Past the consent timeout, with Alice answering from her new address.
+		now = wire.advance(now, IceAgent.CONSENT_TIMEOUT + 5.0);
+
+		Assert.notNull(__bob.selectedPair);
+
+		if (__bob.selectedPair != null) {
+			Assert.equals("10.0.0.3", __bob.selectedPair.remote.address, "the agent kept the pair to an address that had gone");
+		}
+
+		Assert.equals(1, changes.length, "the change of pair was reported " + changes.length + " times");
+		Assert.isTrue(__bob.state == CONNECTED, "the agent lost a peer that had moved and said where to");
+	}
+
+	/**
+		A candidate trickled after the path was found is still checked.
+
+		`__rebuild` returned unless the agent was checking, so a candidate that
+		arrived once it had connected went into the list and was never paired
+		or tried, and a peer reachable only there could never be followed.
+	**/
+	public function testACandidateTrickledAfterConnectingIsChecked():Void {
+		if (unsupported()) return;
+
+		var wire = __connected();
+
+		if (__bob.state != CONNECTED) {
+			Assert.fail("the two never connected");
+			return;
+		}
+
+		// Somewhere nothing answers, so the check is sent and simply fails.
+		wire.unreachable.push("10.0.0.9:" + PORT);
+		Assert.isTrue(__bob.addRemoteCandidate(IceCandidate.host("10.0.0.9", PORT)), "the late candidate was not taken");
+
+		wire.advance(20.0, 2.0, 0.05);
+
+		Assert.isTrue(wire.sentTo.exists("10.0.0.9:" + PORT), "a candidate trickled after connecting was never checked");
+		Assert.isTrue(__bob.state == CONNECTED, "checking a late candidate disturbed the path in use");
+		Assert.equals(BOB_ADDRESS, __alice.selectedPair.remote.address);
+	}
+
+	/**
+		A connected agent with nothing late to check scans nothing.
+
+		What it costs to be connected is consent, every few seconds, not a walk
+		of the check list on every poll.
+	**/
+	public function testAConnectedAgentWithNothingLateSendsOnlyConsent():Void {
+		if (unsupported()) return;
+
+		var wire = __connected();
+
+		if (__bob.state != CONNECTED) {
+			Assert.fail("the two never connected");
+			return;
+		}
+
+		var before = wire.sentTo.exists(ALICE_ADDRESS + ":" + PORT) ? wire.sentTo.get(ALICE_ADDRESS + ":" + PORT) : 0;
+		wire.advance(20.0, 10.0, 0.05);
+		var after = wire.sentTo.get(ALICE_ADDRESS + ":" + PORT);
+
+		// Consent every 4 to 6 seconds: two or three in ten seconds, plus the
+		// answers to Alice's.
+		Assert.isTrue(after - before <= 8, "a connected agent sent " + (after - before) + " datagrams in ten quiet seconds");
+		Assert.isFalse(@:privateAccess __bob.__lateChecks, "a connected agent with nothing late still looks for checks to send");
+	}
+
 	private var __alice:IceAgent;
 	private var __bob:IceAgent;
 
@@ -651,9 +756,22 @@ private class Wire {
 				nominations.set(index, (nominations.exists(index) ? nominations.get(index) : 0) + 1);
 			}
 
+			var key = toAddress + ":" + toPort;
+			sentTo.set(key, (sentTo.exists(key) ? sentTo.get(key) : 0) + 1);
+
+			if (unreachable.indexOf(key) >= 0) {
+				return;
+			}
+
 			queue.push(new Packet(endpoint, payload, toAddress, toPort));
 		};
 	}
+
+	/** "address:port" of anywhere that no longer answers: what is sent there is lost. **/
+	public var unreachable:Array<String> = [];
+
+	/** How many datagrams were sent to each "address:port", lost or not. **/
+	public var sentTo:Map<String, Int> = new Map();
 
 	/** Makes one endpoint appear to come from somewhere it never advertised. **/
 	public function rewriteSourceOf(agent:IceAgent, address:String, port:Int):Void {
