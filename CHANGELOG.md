@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `BCrypt.hashAsync` and `verifyAsync`, and `Argon2id.hashAsync` and
+  `verifyAsync`, which hash on a `TaskPool` worker and answer with a
+  `Future`, completed on the calling runtime's thread at its next tick. A
+  hash at the recommended cost holds its thread for 50 to 300 ms, so a
+  runtime verifying sign-ins itself served nobody else meanwhile, and about
+  eight a second filled it. They use a pool of two workers the hashers
+  share, started on first use, or the pool passed in. `BCrypt.dummyHash`
+  and `Argon2id.dummyHash` give a hash to verify against when a sign-in
+  names a user that does not exist, so it takes as long to refuse as a
+  real user's wrong password and the timing does not say which names are
+  registered.
+- Argon2id on Node 24.7 and later, through Node's own `crypto.argon2`,
+  checked for rather than assumed. Its hashes and libsodium's verify in
+  each other, and on Node `hashAsync` runs on libuv's thread pool.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -523,6 +537,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `Argon2id.verify` throws where no Argon2id backend exists, as `hash`
+  does, rather than returning `false`: that refused every password on the
+  jvm, the interpreter and the browser while looking like a working check.
+  Call `Argon2id.isAvailable()` first where a target may lack one.
 - `BCrypt.hash` makes `$2b$` hashes rather than `$2y$`, and
   `BCrypt.needsRehash` reports a hash of any other revision, `$2y$`
   included. That is how the `$2y$` hashes earlier versions stored, which
@@ -700,6 +718,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Password hashing on a worker thread no longer stalls every collection
+  in a native process. hxcpp collects only once every thread reaches a
+  safe point, and neither libsodium's Argon2id nor BCrypt's inner loop
+  ever reached one, so moving a hash off the runtime's thread moved the
+  stall onto all of them: a collection on the main thread waited 286 ms
+  of a 317 ms Argon2id hash on a worker, and 302 ms of a 332 ms BCrypt
+  hash. libsodium's password hashes now run in a GC-free zone, with the
+  password copied to native memory first and wiped after, and BCrypt
+  reaches a safe point every two rounds. The same collections take about
+  a millisecond.
+- `SecureRandom` on Linux and macOS made its lock on first use, so two
+  threads drawing their first bytes at once could each make one and read
+  `/dev/urandom` together. It is made up front.
 - BCrypt adds the key's terminating NUL for every revision. It was added for
   `$2a$` alone, and `$2y$`, the default, was computed without it, so no hash
   CrossByte made verified anywhere else, no hash migrated from PHP, Laravel,

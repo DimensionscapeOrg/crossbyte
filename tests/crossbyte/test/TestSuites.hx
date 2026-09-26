@@ -17,6 +17,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
+		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
 	}
 
 	public static function addCore(runner:Runner):Void {

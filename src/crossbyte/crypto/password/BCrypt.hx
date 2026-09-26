@@ -3,7 +3,10 @@ package crossbyte.crypto.password;
 import haxe.crypto.BaseCode;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
+import crossbyte.Future;
 import crossbyte.crypto.SecureRandom;
+import crossbyte.crypto.password._internal.PasswordWork;
+import crossbyte.sys.TaskPool;
 import crossbyte.utils.IntParse;
 #if php
 import php.NativeAssocArray;
@@ -39,6 +42,12 @@ import crossbyte.crypto.password._internal.PHPGlobalExt;
  * the one revision CrossByte ever produced. `needsRehash` reports every `$2y$` hash,
  * so rehashing on a successful login, as in the example above, retires them. Until a
  * user's hash is retired, a wrong password against it costs two hashes instead of one.
+ *
+ * ## Keeping the runtime responsive
+ *
+ * A hash at the default cost takes on the order of 100 ms, and during that time the
+ * thread does nothing else. On a server, use `hashAsync` and `verifyAsync`, which run on
+ * a worker, and `dummyHash` for sign-ins naming a user that does not exist.
  *
  * @see https://en.wikipedia.org/wiki/Bcrypt
  */
@@ -153,6 +162,11 @@ class BCrypt {
 	@:noCompletion private var __sBox:Vector<Int>;
 	@:noCompletion private var __workBlock:Vector<Int>;
 
+	// The last dummy hash made, replaced when another cost is asked for. One
+	// reference, written and read whole, so two threads filling it at once each
+	// leave a valid hash behind rather than a torn one.
+	@:noCompletion private static var __dummy:Null<String> = null;
+
 	@:noCompletion private function new() {
 		__workBlock = Vector.fromArrayCopy([0, 0]);
 	}
@@ -255,6 +269,67 @@ class BCrypt {
 		key.fill(0, key.length, 0);
 		return matched;
 		#end
+	}
+
+	/**
+	 * `hash`, run on a worker thread so the calling thread keeps serving while it works.
+	 *
+	 * The future's callbacks run on the calling runtime's thread, at its next tick. Called
+	 * from a thread with no runtime, they run on the worker. On targets without threads
+	 * (JavaScript) the hash runs before this returns and the future is already complete.
+	 *
+	 * @param password The plain text password to hash. Must be non-empty.
+	 * @param cost The cost factor, as for `hash`.
+	 * @param pool The pool to run on. Defaults to a small pool the password hashers share,
+	 *        started on first use.
+	 * @return The hash, or a failure carrying what `hash` threw.
+	 */
+	public static function hashAsync(password:String, cost:Int = 12, ?pool:TaskPool):Future<String> {
+		return PasswordWork.run(() -> hash(password, cost), pool);
+	}
+
+	/**
+	 * `verify`, run on a worker thread; see `hashAsync` for where the callbacks run.
+	 *
+	 * @param password The plain text password to verify.
+	 * @param hash The bcrypt hash to verify against.
+	 * @param pool The pool to run on. Defaults to the shared password pool.
+	 * @return Whether the password matches. Never a failure for a malformed hash, which
+	 *         is `false`, as it is for `verify`.
+	 */
+	public static function verifyAsync(password:String, hash:String, ?pool:TaskPool):Future<Bool> {
+		return PasswordWork.run(() -> verify(password, hash), pool);
+	}
+
+	/**
+	 * A hash of a random password, to verify against when a sign-in names a user that
+	 * does not exist.
+	 *
+	 * Answering such a sign-in at once, while a real user's wrong password takes a whole
+	 * hash to refuse, tells anyone timing the responses which names are registered.
+	 * Verifying against this spends the same time:
+	 *
+	 * ```haxe
+	 * var stored:String = user != null ? user.passwordHash : BCrypt.dummyHash(12);
+	 * var ok:Bool = BCrypt.verify(password, stored) && user != null;
+	 * ```
+	 *
+	 * Made once per cost and kept, so only the first call pays for a hash. Use the cost
+	 * real hashes use, or the timing differs again.
+	 *
+	 * @param cost The cost factor real hashes are made with. Defaults to 12.
+	 */
+	public static function dummyHash(cost:Int = 12):String {
+		var cached:Null<String> = __dummy;
+		if (cached != null && IntParse.decimal(cached.substr(4, 2), 31) == cost) {
+			return cached;
+		}
+
+		// Random, so no password matches it: 16 bytes as bcrypt base64, which
+		// is 22 characters of the alphabet and well under the 72-byte limit.
+		var made:String = hash(encode_base64(SecureRandom.getSecureRandomBytes(SALT_LENGTH)), cost);
+		__dummy = made;
+		return made;
 	}
 
 	@:noCompletion private static function __generateSalt(rounds:Int = 12):String {
@@ -414,6 +489,13 @@ class BCrypt {
 		for (i in 0...pairs) {
 			__roundWith(expanded, saltWords);
 			__roundWith(expanded, saltWords);
+			#if cpp
+			// Nothing in these loops allocates, and hxcpp only stops a thread for
+			// a collection when it allocates or reaches a safe point. Without one,
+			// a hash on a worker thread holds every other thread's collection
+			// until it finishes.
+			cpp.vm.Gc.safePoint();
+			#end
 		}
 
 		for (i in 0...PSIZE) {
