@@ -717,6 +717,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A pending `Task` or running `Worker` no longer holds a tick listener of
+  its own. Each attached one to its runtime and polled its queue every tick,
+  and adding or removing a listener copies the runtime's whole list, so
+  submitting a burst of tasks cost time in proportion to the square of its
+  size, 8000 pending took 2.3 seconds to submit and 2.2ms of every idle
+  tick. Results now reach the runtime through its post queue, one post per
+  task and one per batch of a worker's messages, and so arrive without
+  waiting for the next tick. `Task.onComplete` and `onError` read a task's
+  state and its result together, under the task's lock: read apart, a task
+  completing on another thread could be seen as complete with its result
+  not yet there, and the handler given null.
 - Work handed to a runtime from another thread runs as soon as the runtime
   is free, not at its next tick. A callback posted mid-frame waited out the
   rest of the frame, 38ms on average and up to a whole frame at the
