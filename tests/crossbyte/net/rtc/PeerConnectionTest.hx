@@ -97,6 +97,191 @@ class PeerConnectionTest extends utest.Test {
 	}
 
 	/**
+		A peer that closes its connection is heard at once, and so are the
+		channels on it.
+
+		`close()` sent nothing, and an ABORT or close_notify arriving from the
+		peer was swallowed below this class -- there was no event to deliver
+		it to. So a departed peer was noticed, if at all, by ICE consent thirty
+		seconds later, with channels reporting themselves open the whole time.
+		The five seconds allowed here are a sixth of that.
+	**/
+	public function testAPeerThatClosesIsReportedAtOnce():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var accepted:DataChannel = null;
+
+		try {
+			bob.onChannel = channel -> accepted = channel;
+
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected, so there is no departure to report");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open && accepted != null, 5.0);
+
+			if (!chat.open || accepted == null) {
+				Assert.fail("the channel never opened");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var reasons:Array<String> = [];
+			var settled:String = null;
+			var channelCloses:Int = 0;
+
+			alice.onClose = reason -> reasons.push(reason);
+			alice.closed.then(reason -> settled = reason);
+			chat.onClose = () -> channelCloses++;
+
+			bob.close();
+			pumpUntil(() -> reasons.length > 0, 5.0);
+
+			Assert.equals(1, reasons.length, "a peer that closed its connection was reported " + reasons.length + " times");
+			Assert.isFalse(alice.connected, "the connection still reports itself up after the peer closed it");
+			Assert.isFalse(chat.open, "a channel on a connection the peer closed still reports itself open");
+			Assert.equals(1, channelCloses, "the channel's onClose ran " + channelCloses + " times");
+
+			if (reasons.length > 0) {
+				// The ABORT is inside the session and goes first, so it is what
+				// is heard; the close_notify behind it finds the door shut.
+				Assert.isTrue(reasons[0].indexOf("aborted") >= 0, "the reason does not say the peer left: " + reasons[0]);
+				Assert.equals(reasons[0], settled, "`closed` and `onClose` disagree about why");
+				Assert.equals(reasons[0], alice.closeReason);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		A peer whose DTLS session ends is heard even with no ABORT before it.
+
+		The close_notify on its own, as a peer that tears down the session
+		without the association inside it sends it -- and a fatal alert takes
+		the same path.
+	**/
+	public function testAPeerThatEndsOnlyItsDtlsSessionIsReported():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var reasons:Array<String> = [];
+			alice.onClose = reason -> reasons.push(reason);
+
+			// Just the session, and nothing inside it.
+			@:privateAccess bob.__dtls.close();
+			pumpUntil(() -> reasons.length > 0, 5.0);
+
+			Assert.equals(1, reasons.length, "a close_notify on its own was not reported");
+			Assert.isFalse(alice.connected);
+
+			if (reasons.length > 0) {
+				Assert.isTrue(reasons[0].indexOf("DTLS") >= 0, "the reason does not name the layer that ended: " + reasons[0]);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
+		Closing closes the channels, settles what was waiting, and says why.
+
+		`close()` left every channel open with `onClose` never run, and a
+		channel still waiting for its acknowledgement left `opened` pending --
+		an application had to walk its own list of channels and close each by
+		hand to find out it was finished with them.
+	**/
+	public function testClosingClosesEveryChannel():Void {
+		if (unsupported()) return;
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			alice.bind(0, "127.0.0.1");
+			bob.bind(0, "127.0.0.1");
+			alice.connect(bob.description());
+			bob.connect(alice.description());
+
+			pumpUntil(() -> alice.connected && bob.connected, 15.0);
+
+			if (!alice.connected || !bob.connected) {
+				Assert.fail("the two never connected");
+				alice.close();
+				bob.close();
+				return;
+			}
+
+			var chat = alice.createDataChannel("chat");
+			pumpUntil(() -> chat.open, 5.0);
+
+			// Created and closed before the peer can have answered.
+			var late = alice.createDataChannel("late");
+			var lateSettled:Bool = false;
+			late.opened.then(_ -> lateSettled = true, _ -> lateSettled = true);
+
+			var closes:Int = 0;
+			var reasons:Array<String> = [];
+			chat.onClose = () -> closes++;
+			late.onClose = () -> closes++;
+			alice.onClose = reason -> reasons.push(reason);
+
+			alice.close();
+
+			Assert.equals(2, closes, "closing the connection ran onClose for " + closes + " of its two channels");
+			Assert.isFalse(chat.open);
+			Assert.isTrue(lateSettled, "a channel still waiting for its acknowledgement left `opened` pending");
+			Assert.equals(1, reasons.length, "closing was reported " + reasons.length + " times");
+
+			// Once, whatever happens next.
+			alice.close();
+			Assert.equals(1, reasons.length);
+		} catch (e:Dynamic) {
+			Assert.fail("unexpected: " + Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+	}
+
+	/**
 		A peer that stops answering takes the connection down with it.
 
 		The agent runs the consent timer (RFC 7675) and IceAgentTest covers it
@@ -125,7 +310,12 @@ class PeerConnectionTest extends utest.Test {
 				return;
 			}
 
-			// Gone without saying so, which is the case consent exists for.
+			var reasons:Array<String> = [];
+			alice.onClose = reason -> reasons.push(reason);
+
+			// Gone without saying so, which is the case consent exists for:
+			// closed with the goodbyes kept from reaching alice.
+			@:privateAccess bob.__socket.close();
 			bob.close();
 
 			// The same clock the runtime tick uses, moved past the thirty
@@ -135,6 +325,13 @@ class PeerConnectionTest extends utest.Test {
 
 			Assert.isFalse(alice.connected,
 				"the peer stopped answering and this connection went on reporting itself up");
+
+			// And said so, rather than leaving `connected` to be polled.
+			Assert.equals(1, reasons.length, "losing consent was reported " + reasons.length + " times");
+
+			if (reasons.length > 0) {
+				Assert.isTrue(reasons[0].indexOf("consent") >= 0, "the reason does not say consent was lost: " + reasons[0]);
+			}
 		} catch (e:Dynamic) {
 			Assert.fail("unexpected: " + Std.string(e));
 		}

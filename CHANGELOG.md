@@ -691,6 +691,25 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebRTC peer that goes away is reported, and closing tells the peer.
+  `PeerConnection` had no close event: a peer's SCTP ABORT closed the
+  association below it without a word, a DTLS close_notify or fatal alert
+  was never read, and the one thing that noticed was ICE consent, thirty
+  seconds later, without an event either -- so channels on a connection
+  the peer had closed went on reporting `open`, and the first sign was a
+  `send` that threw. `close()` sent nothing, so a browser's channels stayed
+  open until its own consent ran out, and it left this end's channels open
+  with `onClose` never run. `PeerConnection` now has `onClose(reason)`, a
+  `closed` future and `closeReason`, fed by an ABORT, a close_notify or
+  fatal alert, lost consent, the loss of the relay a path ran through, and
+  `close()` itself. Every channel is closed first and reports `onClose`,
+  and one still waiting for its acknowledgement settles `opened`.
+  `close()` sends the peer an ABORT and then a close_notify; a path whose
+  consent expired, or whose relay went, is closed without them. An ABORT
+  is now accepted only with this association's tag, or the peer's with the
+  T bit set, and a reason the peer gives is passed on.
+  `DtlsTransport.onClose`, `DtlsTransport.close(notifyPeer)` and
+  `TurnClient.onLost` are the pieces underneath.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the

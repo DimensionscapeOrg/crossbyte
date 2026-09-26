@@ -266,6 +266,75 @@ class TurnClientTest extends utest.Test {
 	}
 
 	/**
+		An allocation that stops being renewed is reported as lost.
+
+		`allocated` resolved when the relay granted it and cannot be settled
+		again, so a refresh the relay never answered only set `active` to
+		false -- a flag nothing is obliged to read. A connection whose path ran
+		through the relay went quiet with no reason given.
+	**/
+	public function testAnAllocationThatCannotBeRenewedIsReportedLost():Void {
+		if (unsupported()) return;
+
+		var relay = new Relay();
+		var client = relay.client();
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(0);
+		relay.run(client, () -> client.active);
+
+		Assert.isTrue(client.active, "the relay never granted an allocation");
+
+		// The refresh goes unanswered through every retransmission.
+		relay.holdRefresh = true;
+		var now = 400.0;
+
+		for (_ in 0...200) {
+			client.poll(now);
+			relay.pump(client, now);
+			now += 1.0;
+		}
+
+		Assert.isFalse(client.active);
+		Assert.equals(1, lost.length, "an allocation that could not be renewed was reported lost " + lost.length + " times");
+	}
+
+	/**
+		A lifetime of zero is the relay ending the allocation, and is reported.
+	**/
+	public function testARelayEndingTheAllocationIsReportedLost():Void {
+		if (unsupported()) return;
+
+		var relay = new Relay();
+		var client = relay.client();
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(0);
+		relay.run(client, () -> client.active);
+
+		relay.endOnRefresh = true;
+		client.poll(400.0);
+		relay.pump(client, 400.0);
+
+		Assert.isFalse(client.active, "a refresh granting no lifetime left the allocation active");
+		Assert.equals(1, lost.length, "the relay ending the allocation was reported " + lost.length + " times");
+
+		// And closing is not a loss: the caller already knows.
+		var other = relay.client();
+		var otherLost:Int = 0;
+		other.onLost = _ -> otherLost++;
+		other.allocated.then(_ -> {}, _ -> {});
+		relay.endOnRefresh = false;
+		other.allocate(0);
+		relay.run(other, () -> other.active);
+		other.close();
+
+		Assert.equals(0, otherLost, "closing a client reported its allocation lost");
+	}
+
+	/**
 		Closing before it completes tells whoever was waiting.
 
 		Every path that settled this future ran from the handshake, and closing
@@ -337,6 +406,9 @@ private class Relay {
 	public var staleOnce:Bool = false;
 	public var alwaysUnauthorized:Bool = false;
 	public var holdRefresh:Bool = false;
+
+	/** Answer a refresh with a lifetime of zero, which ends the allocation. **/
+	public var endOnRefresh:Bool = false;
 
 	private var nonce:String = "nonce-one";
 	private var staleSent:Bool = false;
@@ -475,7 +547,7 @@ private class Relay {
 					held = request;
 					null;
 				} else {
-					sign(new StunMessage(StunMessage.REFRESH_SUCCESS, request.transactionId, [StunMessage.lifetime(600)]));
+					sign(new StunMessage(StunMessage.REFRESH_SUCCESS, request.transactionId, [StunMessage.lifetime(endOnRefresh ? 0 : 600)]));
 				}
 			case StunMessage.CREATE_PERMISSION_REQUEST:
 				sign(new StunMessage(StunMessage.CREATE_PERMISSION_SUCCESS, request.transactionId, []));

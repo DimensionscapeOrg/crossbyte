@@ -185,6 +185,33 @@ class PeerConnection {
 	**/
 	public var ready(default, null):Future<PeerConnection>;
 
+	/**
+		Resolves once, when the connection has closed, with the reason.
+
+		Whichever end closed it and however: `close()` here, the peer closing
+		its own connection (an SCTP ABORT or SHUTDOWN, or a DTLS close_notify),
+		a fatal alert, the peer no longer answering consent checks, the relay
+		carrying the path going away, or a connection that never came up. By
+		the time it resolves every channel has been closed and has reported
+		`onClose`.
+	**/
+	public var closed(default, null):Future<String>;
+
+	/**
+		Called once when the connection closes, with the same reason `closed`
+		resolves with.
+
+		A peer that went away used to be reported by nothing at all. An
+		application had to poll `connected` on every connection every tick to
+		notice, and even then learned of a browser's `pc.close()` only when ICE
+		consent ran out half a minute later, because the ABORT and close_notify
+		that said so on the wire were swallowed below this class.
+	**/
+	public dynamic function onClose(reason:String):Void {}
+
+	/** Why the connection closed, once it has; null until then. **/
+	public var closeReason(default, null):Null<String> = null;
+
 	/** Called when the peer opens a channel rather than answering one. **/
 	public dynamic function onChannel(channel:DataChannel):Void {}
 
@@ -228,6 +255,7 @@ class PeerConnection {
 		this.certificate = certificate != null ? certificate : DtlsCertificate.generate();
 		this.credentials = credentials != null ? credentials : IceCredentials.generate();
 		this.ready = new Future<PeerConnection>();
+		this.closed = new Future<String>();
 
 		agent = new IceAgent(isOfferer, this.credentials);
 		agent.connected.then(pair -> __onPathFound(pair), error -> __fail("No path to the peer was found: " + error));
@@ -411,6 +439,11 @@ class PeerConnection {
 		// asking and a granted one keeps being refreshed whatever else is happening.
 		if (__turn != null) {
 			__turn.poll(now);
+
+			// A relay that went away may have taken the connection with it.
+			if (__closed) {
+				return;
+			}
 		}
 
 		agent.poll(now);
@@ -419,8 +452,9 @@ class PeerConnection {
 		// `ready` future resolved when the path came up, so a path that stops
 		// being one has no other way to be reported -- and RFC 7675 asks the
 		// sender to stop, which is something only the layer that sends can do.
+		// Stopping includes the goodbyes: nothing is sent on the way out.
 		if (connected && agent.state == IceAgentState.FAILED) {
-			__fail("The peer stopped answering consent checks, so the path to it is no longer usable.");
+			__shutdown("The peer stopped answering consent checks, so the path to it is no longer usable.", false, false);
 			return;
 		}
 
@@ -428,16 +462,47 @@ class PeerConnection {
 			__dtls.poll(now);
 		}
 
+		// Each layer below can end the connection -- a close_notify read, an
+		// association the peer stopped answering -- and the rest are then
+		// closed and have nothing to do.
+		if (__closed) {
+			return;
+		}
+
 		if (__association != null) {
 			__association.poll(now);
 		}
 
-		if (__transfer != null) {
+		if (__transfer != null && !__closed) {
 			__transfer.poll(now);
 		}
 	}
 
+	/**
+		Closes the connection, its channels, and the peer's end of it.
+
+		Every open channel is closed and reports `onClose`. The peer is told in
+		both of the ways it listens for, an SCTP ABORT inside the session and
+		then a DTLS close_notify, so a browser's channels close now rather than
+		when its own consent checks run out. Then `closed` resolves and
+		`onClose` runs.
+	**/
 	public function close():Void {
+		__shutdown("The connection was closed.", true, true);
+	}
+
+	/**
+		The one way this connection ends, whoever ends it.
+
+		@param notifyPeer Whether the peer is sent an ABORT and a close_notify
+		on the way out. Not when the path is already known to be dead: RFC 7675
+		asks a sender whose consent has expired to stop sending, and the relay
+		a path ran through cannot carry a goodbye once it has gone.
+		@param local Whether this end asked. It decides only how a `ready` still
+		waiting is settled -- a close the caller asked for is a cancellation,
+		anything else a failure with its reason.
+	**/
+	@:noCompletion private function __shutdown(reason:String, notifyPeer:Bool, local:Bool):Void {
 		if (__closed) {
 			return;
 		}
@@ -446,20 +511,49 @@ class PeerConnection {
 
 		__closed = true;
 		connected = false;
+		closeReason = reason;
+
+		// The channels first, so an application tearing down what it keeps per
+		// channel hears about each before it hears the connection has gone.
+		if (__channels != null) {
+			__channels.closeAll();
+		}
+
+		// Then the peer, while the session is still there to carry it: the
+		// ABORT inside DTLS, and the close_notify after it. Either can fail on
+		// a session the peer already ended, which is not worth an exception on
+		// the way out.
+		if (__association != null) {
+			if (notifyPeer) {
+				try {
+					__association.abort(local ? null : reason);
+				} catch (_:Dynamic) {}
+			}
+
+			__association.close();
+		}
+
+		if (__dtls != null) {
+			try {
+				__dtls.close(notifyPeer);
+			} catch (_:Dynamic) {}
+		}
 
 		// Closing before the server answered: the caller is holding a future,
 		// and leaving it forever pending is worse than saying what happened.
 		__settleReflexive(null, "The connection closed before the STUN server replied.");
 		__settleRelayed(null, "The connection closed before the relay answered.");
 
-		// And `ready`, which this did not settle. Those two above only exist
-		// when the caller asked for them, so the omission was invisible unless
-		// someone awaited the connection itself and then closed it -- after
-		// which neither handler could ever run. __fail settles it first with a
-		// reason that says what went wrong; Future.__fail is idempotent, so by
-		// the time it reaches here there is nothing left to do.
+		// And `ready`. Those two above only exist when the caller asked for
+		// them, so leaving this one out was invisible unless someone awaited
+		// the connection itself and then closed it -- after which neither
+		// handler could ever run.
 		if (!wasConnected) {
-			@:privateAccess ready.__cancel("The connection was closed before it was ready.");
+			if (local) {
+				@:privateAccess ready.__cancel("The connection was closed before it was ready.");
+			} else {
+				@:privateAccess ready.__fail(reason, null);
+			}
 		}
 
 		if (__turn != null) {
@@ -476,19 +570,16 @@ class PeerConnection {
 
 		agent.close();
 
-		if (__dtls != null) {
-			__dtls.close();
-		}
-
-		if (__association != null) {
-			__association.close();
-		}
-
 		if (__socket != null) {
 			try {
 				__socket.close();
 			} catch (_:Dynamic) {}
+
+			__socket = null;
 		}
+
+		@:privateAccess closed.__resolve(reason);
+		onClose(reason);
 	}
 
 	// ------------------------------------------------------------------
@@ -621,6 +712,15 @@ class PeerConnection {
 
 		relay.onData = function(payload:ByteArray, fromAddress:String, fromPort:Int):Void {
 			__onRelayed(payload, fromAddress, fromPort);
+		};
+
+		// A path through the relay ends with the relay. One that found its way
+		// round it loses a candidate it no longer needs, and nothing else. No
+		// goodbye either way: what would carry it is what just went.
+		relay.onLost = function(reason:String):Void {
+			if (__peerRelayed) {
+				__shutdown("The relay carrying this connection went away: " + reason, false, false);
+			}
 		};
 
 		relay.allocated.then(function(relayed:ReflexiveAddress):Void {
@@ -955,6 +1055,10 @@ class PeerConnection {
 
 		__dtls.established.then(_ -> __onSecured(), error -> __fail(error));
 
+		// The peer's close_notify or a fatal alert. The association inside
+		// cannot outlive the session carrying it.
+		__dtls.onClose = reason -> __fail(reason);
+
 		// A first poll straight away, so the client's ClientHello leaves now
 		// rather than on the next tick.
 		__dtls.poll(haxe.Timer.stamp());
@@ -978,6 +1082,9 @@ class PeerConnection {
 		};
 
 		__association.established.then(_ -> __onAssociated(), error -> __fail(error));
+
+		// The peer's ABORT, or data it stopped acknowledging.
+		__association.onClose = reason -> __fail(reason);
 
 		// RFC 8831: the DTLS client opens the association. Following the ICE
 		// role here would have both peers listen, or both associate, whenever
@@ -1006,7 +1113,10 @@ class PeerConnection {
 	}
 
 	@:noCompletion private function __send(payload:ByteArray, address:String, port:Int):Void {
-		if (__closed || __socket == null) {
+		// Not refused once closing has begun: the ABORT and the close_notify
+		// are sent from inside __shutdown, after the flag is up. The socket
+		// is dropped as the last step, and that is what ends sending.
+		if (__socket == null) {
 			return;
 		}
 
@@ -1020,18 +1130,10 @@ class PeerConnection {
 	}
 
 	@:noCompletion private function __fail(reason:String):Void {
-		if (__closed) {
-			return;
-		}
-
-		// Before close(), which settles `ready` too but only knows that the
-		// connection was closed. Whichever runs first wins, and this one knows
+		// With the reason rather than through close(), which only knows that
+		// the connection was closed: `ready`, `closed` and `onClose` all carry
 		// what actually went wrong.
-		if (!connected) {
-			@:privateAccess ready.__fail(reason, null);
-		}
-
-		close();
+		__shutdown(reason, true, false);
 	}
 }
 #end

@@ -150,6 +150,17 @@ class TurnClient {
 	/** Called with a datagram bound for the relay. **/
 	public dynamic function onSend(payload:ByteArray, address:String, port:Int):Void {}
 
+	/**
+		Called once when an allocation that was granted is gone: a refresh or a
+		permission the relay refused or never answered, or a refresh it answered
+		with a lifetime of zero. Not called for `close()`.
+
+		`allocated` resolved long before, so it cannot say this, and `active`
+		going false is a flag nothing is obliged to read. A connection whose
+		path ran through the relay otherwise went silent with no reason given.
+	**/
+	public dynamic function onLost(reason:String):Void {}
+
 	@:noCompletion private var __username:String;
 	@:noCompletion private var __password:String;
 	@:noCompletion private var __realm:String;
@@ -672,8 +683,16 @@ class TurnClient {
 		__lifetime = message.uintOf(StunMessage.ATTR_LIFETIME, __lifetime);
 
 		if (__lifetime <= 0) {
-			// A zero lifetime is how a relay says the allocation is gone.
+			// A zero lifetime is how a relay says the allocation is gone. This
+			// client never asks for one -- close() simply stops -- so it is the
+			// relay's decision, and the caller has to hear it.
+			var wasActive:Bool = active;
 			active = false;
+
+			if (wasActive) {
+				onLost("The relay at " + serverAddress + ":" + serverPort + " ended the allocation.");
+			}
+
 			return;
 		}
 
@@ -694,6 +713,8 @@ class TurnClient {
 	}
 
 	@:noCompletion private function __fail(reason:String):Void {
+		var wasActive:Bool = active;
+
 		__pending = null;
 		active = false;
 
@@ -702,6 +723,12 @@ class TurnClient {
 		}
 
 		__closed = true;
+
+		// An allocation that was working and now is not. Before one was
+		// granted, `allocated` failing is the report.
+		if (wasActive) {
+			onLost(reason);
+		}
 	}
 
 	@:noCompletion private static function __transaction():ByteArray {

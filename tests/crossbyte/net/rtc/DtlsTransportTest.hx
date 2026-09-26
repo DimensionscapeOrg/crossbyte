@@ -95,6 +95,97 @@ class DtlsTransportTest extends utest.Test {
 	}
 
 	/**
+		A peer that closes its session is heard, and its last words are not lost.
+
+		mbedtls reported the peer's close_notify and this transport went on as
+		though nothing had happened: `connected` stayed true, `send` kept
+		encrypting into a session nobody was reading, and nothing above it
+		could tell a peer that said goodbye from one that had merely gone
+		quiet. The one sign it gave was an internal state nothing read.
+	**/
+	public function testThePeerClosingTheSessionIsReported():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+		var heard:Array<String> = [];
+		var reasons:Array<String> = [];
+
+		pair.server.onMessage = function(payload) {
+			payload.position = 0;
+			heard.push(payload.readUTFBytes(payload.length));
+		};
+
+		pair.server.onClose = reason -> reasons.push(reason);
+
+		if (!pair.run(() -> pair.client.connected && pair.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			return;
+		}
+
+		// A message and then the goodbye, in one flight: both are meant.
+		pair.client.send(text("last words"));
+		pair.client.close();
+
+		pair.run(() -> reasons.length > 0);
+
+		Assert.equals(1, reasons.length, "the peer's close_notify was reported " + reasons.length + " times rather than once");
+		Assert.isFalse(pair.server.connected, "a session the peer closed still reports itself connected");
+		Assert.equals("last words", heard.length > 0 ? heard[0] : null, "the message sent before the close_notify was lost");
+
+		if (reasons.length > 0) {
+			Assert.isTrue(reasons[0].indexOf("closed") >= 0, "the reason does not say the peer closed the session: " + reasons[0]);
+		}
+
+		Assert.raises(() -> pair.server.send(text("into the void")), ArgumentError);
+
+		pair.close();
+	}
+
+	/**
+		Closing without telling the peer sends nothing.
+
+		For a path already known to be dead -- consent expired -- where RFC
+		7675 asks the sender to stop transmitting, goodbyes included.
+	**/
+	public function testClosingQuietlySendsNothing():Void {
+		if (unsupported()) return;
+
+		var pair = Pair.make();
+
+		if (!pair.run(() -> pair.client.connected && pair.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			return;
+		}
+
+		var sent:Int = 0;
+		pair.client.onSend = _ -> sent++;
+		pair.client.close(false);
+
+		Assert.equals(0, sent, "a close that was not to notify the peer sent " + sent + " datagrams");
+
+		// And the default does send one, or the case above proves nothing.
+		var other = Pair.make();
+
+		if (!other.run(() -> other.client.connected && other.server.connected)) {
+			Assert.fail("the DTLS handshake never completed");
+			pair.close();
+			other.close();
+			return;
+		}
+
+		var notified:Int = 0;
+		other.client.onSend = _ -> notified++;
+		other.client.close();
+
+		Assert.isTrue(notified > 0, "closing sent the peer no close_notify");
+
+		pair.close();
+		other.close();
+	}
+
+	/**
 		The case the fingerprint exists for.
 
 		An attacker who can answer gets a perfectly good DTLS handshake -- the
