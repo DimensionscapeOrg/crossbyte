@@ -254,7 +254,20 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	public var outputBufferLength(get, never):Int;
 
 	@:noCompletion private function get_outputBufferLength():Int {
-		return __output == null ? 0 : __output.length;
+		var buffered:Int = __output == null ? 0 : __output.length;
+
+		#if nodejs
+		// Node takes every write whole and queues what the kernel will not,
+		// so this side's buffer is empty after each flush and the backlog is
+		// Node's. Counting only ours read 0 for a peer that had stopped
+		// reading with megabytes queued -- and so maxOutputBufferSize, which
+		// is measured against this, could never be reached on Node.
+		if (__socket != null) {
+			buffered += __socket.writableLength;
+		}
+		#end
+
+		return buffered;
 	}
 
 	/**
@@ -375,6 +388,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __isConnecting:Bool;
 	@:noCompletion private var __isDirty = false;
 	@:noCompletion private var flushFull:Bool = false;
+	// Whether the close underway throws unsent output away rather than
+	// sending it first: set when the output limit closes a peer that is not
+	// reading, which is the case the limit exists to reclaim memory from.
+	@:noCompletion private var __discardOnClose:Bool = false;
 	// Hot socket events are reused to reduce steady-state allocation churn.
 	// These events are ephemeral during dispatch and must not be retained.
 	@:noCompletion private var __pooledConnectEvent:Event;
@@ -505,6 +522,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__closed = false;
 		__isDirty = false;
 		flushFull = false;
+		__discardOnClose = false;
 
 		__output = new ByteArray();
 		__output.endian = __endian;
@@ -639,11 +657,29 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					buffer = buffer.slice(0, __output.length);
 				__socket.send(buffer);
 		#elseif nodejs
-				// A view over the pending bytes rather than a copy of them; Node
-				// accepts a Uint8Array directly and takes its own reference.
+				// Copied, not viewed. Node holds what it is handed until the
+				// kernel takes it, and __output is cleared and refilled by the
+				// very next write -- clear() resets the length and keeps the
+				// storage -- so a view let later writes overwrite bytes still
+				// queued. A reader slower than the writer got the wrong data:
+				// ten 1 MB messages to a paused client arrived as the first
+				// five and then 5 MB of the last. __output keeps its capacity
+				// for the next write.
+				//
+				// Two ways to copy, by size, from measuring the write-and-flush
+				// loop over loopback: a small copy from Node's own pool costs
+				// half what a fresh one does, and from a kilobyte up a native
+				// slice was the quicker. Handing over __output's storage and
+				// starting a new one was slower than either.
 				var pending:Int = __output.length;
 				var view = new Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending);
-				__socket.write(view);
+				if (pending < 1024) {
+					var copy:js.node.Buffer = js.node.Buffer.allocUnsafe(pending);
+					copy.set(view);
+					__socket.write(copy);
+				} else {
+					__socket.write(view.slice());
+				}
 				__retainPendingOutput(pending, pending);
 				#else
 				var pendingLength = __output.length;
@@ -691,11 +727,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// redirect it to a buffer of its own.
 		var limit:Int = maxOutputBufferSize;
 
-		if (limit <= 0 || __output == null || __output.length <= limit) {
+		if (limit <= 0 || __output == null) {
 			return;
 		}
 
-		var buffered:Int = __output.length;
+		// Everything not yet taken by the kernel, which on Node is mostly in
+		// Node's queue rather than in __output.
+		var buffered:Int = outputBufferLength;
+
+		if (buffered <= limit) {
+			return;
+		}
+
 		var message:String = 'Socket output buffer reached $buffered bytes, exceeding the $limit byte limit; the peer is not reading.';
 
 		switch (outputOverflowPolicy) {
@@ -703,6 +746,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
 					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
 				}
+				// Dropped, not flushed: the point is to reclaim the memory a
+				// peer that is not reading is holding. Ending a Node socket
+				// instead would keep its whole queue waiting for that peer.
+				__discardOnClose = true;
 				close();
 
 			case THROW:
@@ -1188,8 +1235,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// Node did nothing at all: the peer was never sent a FIN and the
 			// handle went on holding the event loop open. end() flushes what
 			// Node still has queued, sends the FIN, and releases the handle
-			// once the peer answers.
-			__socket.end();
+			// once the peer answers -- unless the queue is what is being
+			// reclaimed, when it goes at once.
+			if (__discardOnClose) {
+				__socket.destroy();
+			} else {
+				__socket.end();
+			}
 			#else
 			__socket.close();
 			#end
@@ -1780,7 +1832,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function get_bytesPending():Int {
-		return __output.length;
+		return outputBufferLength;
 	}
 
 	@:noCompletion private function get_connected():Bool {

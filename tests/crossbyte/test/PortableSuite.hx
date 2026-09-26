@@ -72,6 +72,7 @@ class PortableSuite {
 		#if nodejs
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
+		runner.addCase(new crossbyte.net.SocketOutputTest());
 		#end
 		// Also in `addUtils`, the way HpackTest is in two places: twelve cases
 		// registered here call `Require.notNull`, so the mechanism they depend
