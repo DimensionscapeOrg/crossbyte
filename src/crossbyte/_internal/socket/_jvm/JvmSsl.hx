@@ -186,6 +186,14 @@ class JvmSslSocket extends sys.net.Socket {
 
 		`verifyCert = false` turns both off, for the self-signed development
 		server the setting exists for. It has to be asked for: unset verifies.
+
+		A socket made non-blocking before it connects is left to finish the
+		handshake the way every other target does, through `handshake()`
+		calls that report `Blocked` until it is done. Completing it here
+		instead held the calling thread for the whole exchange, and when
+		that thread was a runtime's, and the server on the far side ran on the
+		same runtime, the server could never answer: the client waited twenty
+		seconds for a reply its own wait was preventing.
 	**/
 	override public function connect(host:sys.net.Host, port:Int):Void {
 		super.connect(host, port);
@@ -195,6 +203,10 @@ class JvmSslSocket extends sys.net.Socket {
 		}
 
 		__startEngine(true);
+
+		if (!__blocking) {
+			return;
+		}
 
 		// A blocking channel never reports "would block", so this settles; the
 		// count is a guard against a peer that answers with nothing at all.

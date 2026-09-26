@@ -523,6 +523,19 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A `wss://` client checks the server's certificate: that it chains to an
+  authority the client trusts, and that it names the host being connected
+  to. Every secure `WebSocket`, and so every `NetConnection` to a
+  `wss://` address, was built with verification off natively, and
+  accepted any certificate for any host, so whoever could sit in the path
+  could present one of their own and read the session. There was no way to
+  turn it on. `WebSocket.verifyCert` (on by default) and
+  `WebSocket.certAuthority` now say what to trust, on every target,
+  including Node, which verified already but could be told neither.
+  `secure` is a documented public setting. A client of a development server
+  with a self-signed certificate must now either trust it,
+  `certAuthority = Certificate.fromFile("server.pem")`: or set
+  `verifyCert = false`.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -691,6 +704,21 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebSocket session whose TLS handshake fails, or whose connect times
+  out, closes its socket. Only a session that had opened was closed, so a
+  server held the descriptor of every connection that failed its handshake,
+  and its peer waited on it, for as long as the process ran. A client
+  now reports why a connection failed, a refused certificate included, as
+  an `IOErrorEvent` with the reason in its text, where it dispatched a bare
+  event of that type with none; a connect that fails at once is reported
+  rather than waited out; and the answer to its upgrade is waited for no
+  longer than `timeout`, where a server that accepted and never answered
+  held it in CONNECTING for good. On jvm a WebSocket client could not be
+  made at all: it set a byte order on an output the socket does not have
+  until it connects. And a jvm TLS client made non-blocking no longer
+  completes its handshake inside `connect()`, which held the runtime's
+  thread and, against a server on the same runtime, waited twenty seconds
+  for an answer its own wait was preventing.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the

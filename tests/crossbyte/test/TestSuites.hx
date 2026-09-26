@@ -225,6 +225,9 @@ class TestSuites {
 		// someone named, and this covers the ones nobody did. Same hand-written
 		// client, same gate, both drive the server through a real socket.
 		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
+		// Not on eval, whose TLS handshake cannot be made non-blocking.
+		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
