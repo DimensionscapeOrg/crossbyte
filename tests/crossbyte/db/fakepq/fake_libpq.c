@@ -12,6 +12,9 @@
  *   fake:sleep <ms>     blocks for that long, or until PQcancel, the way a slow
  *                       query or a lock wait blocks inside PQexec
  *   fake:fail           fails, aborting any open transaction
+ *   fake:fail-next-commit
+ *                       makes the next COMMIT fail outright, as a serialization
+ *                       failure or a deferred constraint does
  *   BEGIN / COMMIT / ROLLBACK
  *                       tracked the way the server tracks them: a COMMIT in an
  *                       aborted transaction succeeds with the tag ROLLBACK
@@ -68,6 +71,7 @@ enum {
 typedef struct FakeConn {
 	int status;
 	int transaction;
+	int failNextCommit;
 	/* Written by PQcancel on another thread, read by the sleeping statement. */
 	volatile int cancelled;
 	char* conninfo;
@@ -187,6 +191,13 @@ static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const c
 		   error, it is a successful ROLLBACK, and only the tag says so. */
 		int aborted = conn->transaction == TX_ABORTED;
 		conn->transaction = TX_IDLE;
+
+		if (conn->failNextCommit) {
+			/* A COMMIT that fails ends the transaction all the same. */
+			conn->failNextCommit = 0;
+			return fakeError(conn, "could not serialize access due to read/write dependencies among transactions");
+		}
+
 		return fakeResult(PGRES_COMMAND_OK, aborted ? "ROLLBACK" : "COMMIT");
 	}
 
@@ -219,6 +230,11 @@ static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const c
 
 	if (strcmp(sql, "fake:fail") == 0) {
 		return fakeError(conn, "fake failure");
+	}
+
+	if (strcmp(sql, "fake:fail-next-commit") == 0) {
+		conn->failNextCommit = 1;
+		return fakeResult(PGRES_COMMAND_OK, "OK");
 	}
 
 	if (startsWith(sql, "fake:sleep ")) {

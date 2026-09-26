@@ -357,6 +357,54 @@ class PostgresIntegrationTest extends utest.Test {
 		#end
 	}
 
+	public function testCommitOfAFailedTransactionThrows():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// PostgreSQL answers this COMMIT with success and the tag ROLLBACK.
+		// Only the tag says the insert was thrown away.
+		connection.begin();
+		connection.request('INSERT INTO $table (id, label, amount) VALUES (1, \'lost\', 1)');
+
+		try {
+			connection.request("SELECT * FROM a_table_that_does_not_exist");
+		} catch (_:Dynamic) {}
+
+		Assert.raises(() -> connection.commit(), crossbyte.errors.SQLError);
+		Assert.isFalse(connection.inTransaction);
+		Assert.equals(0, __count());
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testCommitRefusedByADeferredConstraintThrows():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// The COMMIT itself fails here: a deferred foreign key is checked only
+		// then.
+		connection.request('CREATE TABLE ${table}_child (id INTEGER, parent INTEGER REFERENCES $table (id) DEFERRABLE INITIALLY DEFERRED)');
+
+		connection.begin();
+		connection.request('INSERT INTO ${table}_child (id, parent) VALUES (1, 999)');
+
+		Assert.raises(() -> connection.commit(), crossbyte.errors.SQLError);
+		Assert.isFalse(connection.inTransaction);
+		Assert.isTrue(connection.ping());
+
+		try {
+			connection.request('DROP TABLE ${table}_child');
+		} catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testConcurrentQueriesThroughAsyncDatabaseEachGetTheirOwnRows():Void {
 		#if cpp
 		if (__skip()) {

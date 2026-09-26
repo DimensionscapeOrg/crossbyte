@@ -52,6 +52,8 @@ class PostgresConnection extends EventDispatcher {
 	@:noCompletion private var __lastAffectedRows:Int = 0;
 	@:noCompletion private var __savepoints:Array<String> = [];
 	@:noCompletion private var __savepointSeq:Int = 0;
+	// The command tag of the last request(), where the driver reports one.
+	@:noCompletion private var __lastCommand:String = null;
 
 	public function new() {
 		super();
@@ -161,37 +163,85 @@ class PostgresConnection extends EventDispatcher {
 		}
 	}
 
+	/**
+		Starts a transaction.
+
+		Throws an `SQLError` when the server refuses, after dispatching it as
+		an `SQLErrorEvent` too. So do `commit`, `rollback` and the savepoint
+		methods. They used to dispatch the event and return, which made a
+		failed transaction indistinguishable from a successful one to any
+		caller that did not listen for it: `AsyncDatabase.transaction` completed
+		as success and `SchemaMigrator` recorded a migration that had been
+		rolled back.
+	**/
 	public function begin():Void {
 		try {
 			request("BEGIN;");
-			__inTransaction = true;
-			__savepoints = [];
-			__dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.BEGIN, "Begin failed", e);
+			__fail(SQLEvent.BEGIN, "Begin failed", e);
 		}
+
+		__inTransaction = true;
+		__savepoints = [];
+		__dispatchEvent(new SQLEvent(SQLEvent.BEGIN));
 	}
 
+	/**
+		Commits the transaction, or throws an `SQLError` saying why it did not.
+
+		That includes a COMMIT the server accepted without committing: one sent
+		after a statement in the transaction failed succeeds, with the command
+		tag ROLLBACK, and everything in the transaction is discarded. That
+		reads as success everywhere but in the tag, so it is reported as the
+		failure it is. The tag is read on the native driver; PDO does not
+		expose it.
+
+		Either way the transaction is over afterwards, PostgreSQL ends it on
+		a failed COMMIT as surely as on a successful one, so `inTransaction`
+		is `false` whichever way this returns.
+	**/
 	public function commit():Void {
+		var failure:Dynamic = null;
+
 		try {
 			request("COMMIT;");
-			__inTransaction = false;
-			__savepoints = [];
-			__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
+
+			if (__lastCommand == "ROLLBACK") {
+				failure = "a statement in the transaction had failed, so the server rolled it back instead of committing it";
+			}
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.COMMIT, "Commit failed", e);
+			failure = e;
 		}
+
+		__inTransaction = false;
+		__savepoints = [];
+
+		if (failure != null) {
+			__fail(SQLEvent.COMMIT, "Commit failed", failure);
+		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.COMMIT));
 	}
 
 	public function rollback():Void {
+		var failure:Dynamic = null;
+
 		try {
 			request("ROLLBACK;");
-			__inTransaction = false;
-			__savepoints = [];
-			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.ROLLBACK, "Rollback failed", e);
+			failure = e;
 		}
+
+		// A ROLLBACK that fails has lost the connection, and the server ends
+		// the transaction with it.
+		__inTransaction = false;
+		__savepoints = [];
+
+		if (failure != null) {
+			__fail(SQLEvent.ROLLBACK, "Rollback failed", failure);
+		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK));
 	}
 
 	/**
@@ -203,15 +253,17 @@ class PostgresConnection extends EventDispatcher {
 	**/
 	public function setSavepoint(name:String = null):String {
 		var sp:String = __sanitizeSavePoint(name);
-		__savepoints.push(sp);
 
 		try {
 			request('SAVEPOINT ' + sp + ';');
-			__dispatchEvent(new SQLEvent(SQLEvent.SET_SAVEPOINT));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
+			__fail(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
 		}
 
+		// Recorded only once the server has it, so a savepoint that failed is
+		// not the one a nameless release or rollback reaches for next.
+		__savepoints.push(sp);
+		__dispatchEvent(new SQLEvent(SQLEvent.SET_SAVEPOINT));
 		return sp;
 	}
 
@@ -231,10 +283,11 @@ class PostgresConnection extends EventDispatcher {
 		var sp:String = __takeSavepoint(name, true);
 		try {
 			request('ROLLBACK TO SAVEPOINT ' + sp + ';');
-			__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
+			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT));
 	}
 
 	/**
@@ -248,10 +301,11 @@ class PostgresConnection extends EventDispatcher {
 
 		try {
 			request('RELEASE SAVEPOINT ' + sp + ';');
-			__dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
 		} catch (e:Dynamic) {
-			__dispatchError(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
+			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.RELEASE_SAVEPOINT));
 	}
 
 	public inline function request(sql:String):Dynamic {
@@ -268,11 +322,13 @@ class PostgresConnection extends EventDispatcher {
 		var rows:Array<Dynamic> = __toRows(Reflect.field(parsed, "rows"));
 		__lastAffectedRows = __toInt(Reflect.field(parsed, "affectedRows"));
 		__lastInsertRowID = __toInt(Reflect.field(parsed, "lastInsertRowID"));
+		__lastCommand = Reflect.field(parsed, "command");
 		return new PostgresResultSet(rows);
 		#else
 		var statement:Dynamic = null;
 		var rows:Array<Dynamic> = [];
 		__lastAffectedRows = 0;
+		__lastCommand = null;
 
 		try {
 			statement = __connection.query(sql);
@@ -595,8 +651,16 @@ class PostgresConnection extends EventDispatcher {
 		return [raw];
 	}
 
-	@:noCompletion private inline function __dispatchError(op:String, msg:String, e:Dynamic):Void {
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(op, e, msg)));
+	/**
+		Reports a failed transaction step both ways: as the `SQLErrorEvent` it
+		always was, for listeners, and as the `SQLError` it now throws, so a
+		caller that does not listen cannot mistake it for success.
+	**/
+	@:noCompletion private function __fail(op:String, msg:String, e:Dynamic):Void {
+		var detail:String = Std.string(e);
+		var error:SQLError = new SQLError(op, detail, msg + ": " + detail);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
 	}
 
 	@:noCompletion private static function __checkSupport():Bool {
