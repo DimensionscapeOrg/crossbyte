@@ -110,6 +110,10 @@ class PortableSuite {
 		// What post promises that needs no second thread: order, and a refusal
 		// once the runtime has exited rather than silence.
 		runner.addCase(new crossbyte.core.PostTest());
+		// ServerApplication on Node, whose POLL loop threw at its first frame.
+		runner.addCase(new crossbyte.core.ApplicationTest());
+		// SIGTERM and SIGINT on Node, which exited without the drain.
+		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
 		// The rest of the ByteArray cases, which this file listed one of. None
 		// of them touches sys, so nothing kept them off js except not being
 		// written down -- and js is the target where, as the note in
