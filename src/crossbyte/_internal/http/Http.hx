@@ -15,6 +15,7 @@ import crossbyte.http.HTTPRequestContext;
 import crossbyte.http.HTTPVersion;
 import crossbyte.io.ByteArray;
 import crossbyte.utils.CompressionAlgorithm;
+import crossbyte.utils.IntParse;
 import crossbyte.url.URL;
 import haxe.ds.StringMap;
 import haxe.io.Bytes;
@@ -33,6 +34,18 @@ class Http {
 	 * exhausting memory. Defaults to 64 MB; set to `<= 0` to disable the cap.
 	 */
 	public static var MAX_CHUNKED_BODY_SIZE:Int = 64 * 1024 * 1024;
+
+	/**
+	 * Maximum number of bytes a response body framed by `Content-Length`, or by
+	 * the connection closing, may declare or deliver. Defaults to 64 MB; set to
+	 * `<= 0` to disable. `MAX_CHUNKED_BODY_SIZE` is the same bound for a
+	 * chunked body.
+	 *
+	 * A declared length is checked before anything is allocated for it. The
+	 * body used to be allocated whole from the header, so one response saying
+	 * `Content-Length: 2000000000` cost two gigabytes before a byte arrived.
+	 */
+	public static var MAX_BODY_SIZE:Int = 64 * 1024 * 1024;
 
 	/**
 	 * Maximum number of bytes a decoded response body may reach before the
@@ -101,10 +114,24 @@ class Http {
 	private var __followRedirects:Bool;
 	private var __cookies:Null<CookieJar>;
 	private var __redirect:Bool = false;
+	private var __followInsecureRedirects:Bool;
+
+	// Whether this request went out on a kept connection, whether that one
+	// turned out to be closed, and whether the response was HTTP/1.1.
+	private var __reusedSocket:Bool = false;
+	private var __staleRetry:Bool = false;
+	private var __responseHttp11:Bool = false;
+
+	/**
+	 * Whether HTTP/1.1 connections are kept and reused between requests to one
+	 * origin. On by default; see HttpConnectionPool.
+	 */
+	@:noCompletion public static var poolConnections:Bool = true;
 
 	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData:Dynamic = null, contentType:Null<String> = null,
 			data:Dynamic = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true,
-			manageCookies:Bool = true) {
+			manageCookies:Bool = true, followInsecureRedirects:Bool = false) {
+		__followInsecureRedirects = followInsecureRedirects;
 		__url = new URL(url);
 		__headers = headers;
 		__requestData = requestData;
@@ -123,6 +150,20 @@ class Http {
 		} else {
 			throw new NotImplementedException(__unsupportedVersionMessage(version));
 		}
+	}
+
+	/** The URL the response came from: the request's, or the last redirect's. */
+	public var url(get, never):String;
+
+	private function get_url():String {
+		return Std.string(__url);
+	}
+
+	/** Whether a redirect was followed to reach the response. */
+	public var redirected(get, never):Bool;
+
+	private inline function get_redirected():Bool {
+		return __redirect;
 	}
 
 	public function advance():Void {}
@@ -153,25 +194,51 @@ class Http {
 		}
 
 		var redirects:Array<String> = [__url];
+		var origin:String = __originOf(__url);
+		var credentialsDropped:Bool = false;
 
 		__tryRequest();
 
 		if (__followRedirects) {
-			while (__connected
-				&& (__status == 301 || __status == 302 || __status == 303 || __status == 307 || __status == 308)
-				&& (redirects.length - 1) < MAX_REDIRECTS) {
+			while (__connected && __isRedirect(__status) && (redirects.length - 1) < MAX_REDIRECTS) {
 				if (__responseHeaders.exists(HEADER_LOCATION)) {
 					var location:String = __responseHeaders.get(HEADER_LOCATION);
 
 					if (location.length > 0) {
 						__redirect = true;
 
-						var url:URL = new URL(__resolveLocation(__url, location));
+						var url:URL;
+						try {
+							url = new URL(__resolveLocation(__url, location));
+						} catch (_:Dynamic) {
+							__close();
+							onError("Could not complete redirect: malformed Location " + location);
+							return;
+						}
 
 						if (redirects.indexOf(url) > -1) {
 							__close();
 							onError("Redirect loop detected");
 							return;
+						}
+
+						var refusal:Null<String> = __redirectRefusal(__url, url, __followInsecureRedirects);
+						if (refusal != null) {
+							__close();
+							onError(refusal);
+							return;
+						}
+
+						// The caller's credentials were written for the origin it
+						// asked, and the response naming another is not the caller
+						// agreeing to hand them over: a 302 to another host
+						// delivered Authorization: Bearer ... to it. Dropped for
+						// the rest of the exchange, as browsers, curl and Go drop
+						// them, even should a later hop come back. Cookies the jar
+						// holds go only to the host that set them already.
+						if (!credentialsDropped && __originOf(url) != origin) {
+							credentialsDropped = true;
+							__headers = __withoutCredentials(__headers);
 						}
 
 						if (__status == 301 || __status == 302 || __status == 303) {
@@ -198,13 +265,60 @@ class Http {
 				__tryRequest();
 			}
 
-			if ((redirects.length - 1) == MAX_REDIRECTS) {
+			// Only when the budget ran out on a redirect. This tested the count
+			// alone, so ten redirects ending in a 200 -- a full budget, spent
+			// and done with -- were reported as too many.
+			if (__connected && __isRedirect(__status) && (redirects.length - 1) >= MAX_REDIRECTS) {
 				__close();
 				onError("Exceeded the number of allowed redirects");
+				return;
 			}
 		}
 
 		__parseResponse();
+	}
+
+	private static inline function __isRedirect(status:Int):Bool {
+		return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+	}
+
+	/** `scheme://host:port`, which is what two URLs share when they share an origin. */
+	private static function __originOf(url:URL):String {
+		return url.scheme + "://" + url.host.toLowerCase() + ":" + url.port;
+	}
+
+	/**
+	 * Why a redirect from `from` to `to` may not be followed, or null when it
+	 * may: only to `http` or `https`, and from `https` to `http` only when
+	 * the caller said so.
+	 */
+	private static function __redirectRefusal(from:URL, to:URL, followInsecure:Bool):Null<String> {
+		if (to.scheme != "http" && to.scheme != "https") {
+			return "Refused a redirect to " + to.scheme + ": only http and https are followed";
+		}
+
+		if (from.ssl && !to.ssl && !followInsecure) {
+			return "Refused a redirect from https to http; set URLRequest.followInsecureRedirects to allow it";
+		}
+
+		return null;
+	}
+
+	/** The caller's header lines, less those that carry credentials. */
+	private static function __withoutCredentials(headers:Array<String>):Array<String> {
+		if (headers == null) {
+			return null;
+		}
+
+		var kept:Array<String> = [];
+		for (header in headers) {
+			var colon:Int = header.indexOf(":");
+			var name:String = StringTools.trim(colon < 0 ? header : header.substr(0, colon)).toLowerCase();
+			if (name != "authorization" && name != "proxy-authorization" && name != "cookie") {
+				kept.push(header);
+			}
+		}
+		return kept;
 	}
 
 	/**
@@ -361,6 +475,9 @@ class Http {
 
 				case "fixed":
 					var total:Int = contentLength;
+					if (MAX_BODY_SIZE > 0 && total > MAX_BODY_SIZE) {
+						throw "Response declared " + total + " bytes, more than the " + MAX_BODY_SIZE + " allowed";
+					}
 					data = Bytes.alloc(total);
 					var offset:Int = 0;
 
@@ -384,7 +501,7 @@ class Http {
 				case "chunked":
 					var buffer:BytesBuffer = new BytesBuffer();
 					while (true) {
-						var sizeLine:String = __socket.input.readLine();
+						var sizeLine:String = __readLine();
 						if (sizeLine == null) {
 							throw "Unexpected EOF while reading chunk size";
 						}
@@ -396,42 +513,22 @@ class Http {
 
 						var hexStr:String = StringTools.trim(sizeLine);
 
-						// Checked as hex before it is parsed, the way the
-						// Content-Length parser below checks its own field.
-						// Std.parseInt stops at the first character it cannot use,
-						// so "10junk" and "10 20" both came back as 16 -- a size
-						// line this client read differently from whatever wrote it,
-						// and nothing said so.
-						if (hexStr.length == 0 || !~/^[0-9a-fA-F]+$/.match(hexStr)) {
-							throw "Invalid chunk size: " + hexStr;
-						}
-
-						// Seven significant digits at most, leading zeros not
-						// counted. Past that Std.parseInt answers differently on
-						// every target: -1 on eval and cpp, a thrown
-						// NumberFormatException on jvm, and on node a number too
-						// large for Int, which is neither null nor negative and so
-						// walked straight past the test below. 0xFFFFFFF is already
+						// Hex digits only, and no more than seven significant
+						// ones, the same on every target. Std.parseInt stopped at
+						// the first character it could not use, so "10junk" read
+						// as 16, and past seven digits it answered differently on
+						// each target -- on Node with a number too large for an
+						// Int, which walked past every check. 0xFFFFFFF is already
 						// far beyond MAX_CHUNKED_BODY_SIZE.
-						var firstSignificant:Int = 0;
-						while (firstSignificant < hexStr.length - 1 && hexStr.charCodeAt(firstSignificant) == 48) {
-							firstSignificant++;
-						}
-						if (hexStr.length - firstSignificant > 7) {
+						var chunkSize:Int = IntParse.hex(hexStr, 0xFFFFFFF);
+						if (chunkSize < 0) {
 							throw "Invalid chunk size: " + hexStr;
 						}
-
-						var parsed:Null<Int> = Std.parseInt('0x' + hexStr);
-						if (parsed == null || parsed < 0) {
-							throw "Invalid chunk size: " + hexStr;
-						}
-
-						var chunkSize:Int = parsed;
 
 						if (chunkSize == 0) {
 							var trailer:String = "";
 							do {
-								trailer = __socket.input.readLine();
+								trailer = __readLine();
 								if (trailer == null) {
 									throw "Unexpected EOF while reading trailers";
 								}
@@ -467,11 +564,20 @@ class Http {
 						var n:Int;
 						try {
 							n = __socket.input.readBytes(b, 0, b.length);
-						} catch (e:Dynamic) {
+						} catch (_:haxe.io.Eof) {
+							// The connection closing is how this body ends.
 							n = 0;
+						} catch (e:Dynamic) {
+							// Anything else is the body being cut off: a reset, a
+							// timeout. Every error was read as the end and the
+							// response reported complete with part of its body.
+							throw "Connection lost before the body ended: " + Std.string(e);
 						}
 						if (n <= 0)
 							break;
+						if (MAX_BODY_SIZE > 0 && buffer.length + n > MAX_BODY_SIZE) {
+							throw "Response body exceeded " + MAX_BODY_SIZE + " bytes";
+						}
 						buffer.addBytes(b, 0, n);
 						bytesLoaded += n;
 						onProgress(bytesLoaded, bytesTotalForProgress);
@@ -513,26 +619,41 @@ class Http {
 			}
 		}
 
+		// Read to its framed end, so the connection can serve another request;
+		// a body that ended with the connection has none left to give.
+		var framed:Bool = mode != "unknown";
+
 		if (isHttpError) {
 			var status:Int = __status;
-			__close();
+			__release(framed);
 			onError('HTTP error ' + status, data);
 			return;
 		}
 
+		// Released before the callback: what it does next -- another request
+		// to the same origin, say -- can then have the connection.
+		__release(framed);
+
 		if (data != null) {
 			onComplete(data);
 		}
-
-		__close();
 	}
 
 	@:noCompletion private function __decodeResponseBody(data:Bytes):Bytes {
+		return decodeResponseBody(data, __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null);
+	}
+
+	/**
+	 * Undoes a response's content codings, within `MAX_CONTENT_CODINGS` and
+	 * `MAX_DECOMPRESSED_BODY_SIZE`. Throws the coding's name, a `String`, for
+	 * one this build cannot decode, and an exception for a body past the
+	 * limits. Shared with the HTTP/2 backend, which did not decode at all.
+	 */
+	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>):Bytes {
 		if (data == null || data.length == 0) {
 			return data;
 		}
 
-		var header = __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null;
 		if (header == null || StringTools.trim(header) == "") {
 			return data;
 		}
@@ -583,10 +704,45 @@ class Http {
 	private function __tryRequest():Void {
 		__status = 0;
 		__responseHeaders = new StringMap();
+		__responseHttp11 = false;
+		__staleRetry = false;
+		__reusedSocket = false;
+
+		// A kept connection, for a request that may be sent twice: one the
+		// server closed while it sat idle is only found out by using it, and
+		// then the request goes again on a new connection. A POST is never
+		// sent on one, since whether the server acted on it cannot be known.
+		var kept:Null<FlexSocket> = null;
+		#if (sys && !eval)
+		if (__pooling() && __repeatable()) {
+			kept = HttpConnectionPool.take(__originOf(__url));
+		}
+		#end
+
+		if (kept != null) {
+			__socket = kept;
+			__socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			__connected = true;
+			__reusedSocket = true;
+			__handleRequest();
+			if (!__staleRetry) {
+				__handleResponse();
+			}
+			if (!__staleRetry) {
+				return;
+			}
+			__staleRetry = false;
+			__reusedSocket = false;
+			__status = 0;
+			__responseHeaders = new StringMap();
+		}
 
 		try {
 			__socket = new FlexSocket(__url.ssl);
-			__socket.setTimeout(__timeout);
+			// Seconds, where `timeout` is milliseconds: it was passed as it came,
+			// so a 30 second idle timeout waited 30,000 seconds. The same
+			// conversion, and the same 30 second fallback, as the HTTP/2 backend.
+			__socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
 			__socket.connect(__url.host, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
@@ -602,20 +758,68 @@ class Http {
 		__handleResponse();
 	}
 
+	/** Whether connections are kept for reuse: everywhere with threads but eval. */
+	private static inline function __pooling():Bool {
+		#if (sys && !eval)
+		return poolConnections;
+		#else
+		return false;
+		#end
+	}
+
+	/** A request that may be sent again if a kept connection fails under it. */
+	private inline function __repeatable():Bool {
+		return __method == "GET" || __method == "HEAD" || __method == "OPTIONS" || __method == "PUT" || __method == "DELETE";
+	}
+
+	/**
+	 * Ends this request's use of its connection: back to the pool when the
+	 * response was read to its framed end and neither side asked to close,
+	 * closed otherwise.
+	 */
+	private function __release(framed:Bool):Void {
+		#if (sys && !eval)
+		var connection:Null<String> = __responseHeaders.get("connection");
+		var closing:Bool = connection != null && connection.toLowerCase().indexOf("close") >= 0;
+		if (framed && __pooling() && __responseHttp11 && !closing && __socket != null && __version == HttpVersion.HTTP_1_1) {
+			var socket:FlexSocket = __socket;
+			__socket = null;
+			__connected = false;
+			HttpConnectionPool.put(__originOf(__url), socket);
+			return;
+		}
+		#end
+		__close();
+	}
+
 	private function __handleResponse():Void {
 		if (!__connected) {
 			return;
 		}
 
 		var line:String = '';
+		var first:Bool = true;
 		while (true) {
 			try {
-				line = __socket.input.readLine();
+				line = __readLine();
 			} catch (e:Dynamic) {
+				if (first && __reusedSocket) {
+					// A kept connection the server had already closed. Nothing
+					// of a response arrived, so the request goes again on a new
+					// one; see __tryRequest.
+					__close();
+					__staleRetry = true;
+					return;
+				}
 				__close();
-				onError("Failed to read response");
+				if (Std.isOfType(e, haxe.io.Eof)) {
+					onError(__status == 0 ? "Connection closed without a response" : "Connection closed while reading headers");
+				} else {
+					onError("Failed to read response");
+				}
 				return;
 			}
+			first = false;
 
 			if (line == null) {
 				__close();
@@ -642,13 +846,15 @@ class Http {
 			}
 
 			if (__status == 0) {
-				var regex:EReg = ~/^HTTP\/\d+\.\d+\s+(\d+)/;
-				if (!regex.match(line)) {
+				var code:Int = __parseStatusLine(line);
+				if (code < 0) {
 					__close();
 					onError('Malformed status line: ' + line);
 					return;
 				}
-				__status = Std.parseInt(regex.matched(1));
+				__status = code;
+				// Only an HTTP/1.1 response keeps its connection by default.
+				__responseHttp11 = StringTools.startsWith(line, "HTTP/1.1");
 				onStatus(__status);
 			} else {
 				var i:Int = line.indexOf(":");
@@ -685,6 +891,101 @@ class Http {
 		onHeaders(__responseHeaders);
 	}
 
+	/**
+	 * One line of the response without its line ending, or `Eof` when the
+	 * stream ends before any of it.
+	 *
+	 * `Input.readLine`, except on eval, where a socket's `readByte` answers 0
+	 * at the end of the stream rather than throwing. A server closing without
+	 * an answer read there as endless NUL bytes, so the line never ended and
+	 * `load()` never returned. `readBytes` does report the end, so eval reads
+	 * through it, a byte at a time so nothing past the line is taken from the
+	 * body.
+	 */
+	private function __readLine():String {
+		#if eval
+		var input:haxe.io.Input = __socket.input;
+		var one:Bytes = Bytes.alloc(1);
+		var line:BytesBuffer = new BytesBuffer();
+		var read:Bool = false;
+		while (true) {
+			try {
+				input.readBytes(one, 0, 1);
+			} catch (e:haxe.io.Eof) {
+				if (!read) {
+					throw e;
+				}
+				break;
+			}
+			read = true;
+			var byte:Int = one.get(0);
+			if (byte == "\n".code) {
+				break;
+			}
+			line.addByte(byte);
+		}
+		var text:String = line.getBytes().toString();
+		if (text.length > 0 && StringTools.fastCodeAt(text, text.length - 1) == "\r".code) {
+			text = text.substr(0, text.length - 1);
+		}
+		return text;
+		#else
+		return __socket.input.readLine();
+		#end
+	}
+
+	/**
+	 * The status code of an HTTP/1.x status line, or -1 when it is not one.
+	 *
+	 * `HTTP/` DIGITs `.` DIGITs, whitespace, then exactly three digits, as RFC
+	 * 9112 4 has it. This was `(\d+)` through Std.parseInt, compiled per
+	 * response, and a status of any length was read however the target read
+	 * it: "HTTP/1.1 4294967496 OK" was 200 on Linux native.
+	 */
+	private static function __parseStatusLine(line:String):Int {
+		if (!StringTools.startsWith(line, "HTTP/")) {
+			return -1;
+		}
+
+		var length:Int = line.length;
+		var i:Int = __skipDigits(line, 5);
+		if (i == 5 || i >= length || StringTools.fastCodeAt(line, i) != ".".code) {
+			return -1;
+		}
+
+		var minor:Int = i + 1;
+		i = __skipDigits(line, minor);
+		if (i == minor) {
+			return -1;
+		}
+
+		var gap:Int = i;
+		while (i < length && (StringTools.fastCodeAt(line, i) == " ".code || StringTools.fastCodeAt(line, i) == "\t".code)) {
+			i++;
+		}
+		if (i == gap || i + 3 > length) {
+			return -1;
+		}
+		if (i + 3 < length && StringTools.fastCodeAt(line, i + 3) != " ".code && StringTools.fastCodeAt(line, i + 3) != "\t".code) {
+			return -1;
+		}
+
+		var code:Int = IntParse.decimal(line.substr(i, 3));
+		return code < 100 ? -1 : code;
+	}
+
+	private static function __skipDigits(text:String, from:Int):Int {
+		var i:Int = from;
+		while (i < text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			if (code < "0".code || code > "9".code) {
+				break;
+			}
+			i++;
+		}
+		return i;
+	}
+
 	/** Whether the caller supplied a header starting with `prefix` (lowercase, with its colon). **/
 	private function __hasHeader(prefix:String):Bool {
 		if (__headers == null) {
@@ -717,7 +1018,11 @@ class Http {
 			__socket.output.writeString('User-Agent: ${__userAgent}${CRLF}');
 			var hostHeader:String = (__url.port != 80 && __url.port != 443) ? '${__url.host}:${__url.port}' : __url.host;
 			__socket.output.writeString('Host: ${hostHeader}${CRLF}');
-			if (__version == HttpVersion.HTTP_1_1 || __version == HttpVersion.HTTP_1) {
+			if (__version == HttpVersion.HTTP_1_1 && __pooling()) {
+				// Kept for the next request to this origin if the response
+				// allows it: see HttpConnectionPool.
+				__socket.output.writeString('Connection: ${Connection.KEEP_ALIVE}${CRLF}');
+			} else if (__version == HttpVersion.HTTP_1_1 || __version == HttpVersion.HTTP_1) {
 				__socket.output.writeString('Connection: ${Connection.CLOSE}${CRLF}');
 			}
 
@@ -793,6 +1098,12 @@ class Http {
 			__socket.output.flush();
 		} catch (e:Dynamic) {
 			__close();
+			// A kept connection the server had closed refuses the write; the
+			// one String thrown above is the caller's data, not the socket.
+			if (__reusedSocket && !Std.isOfType(e, String)) {
+				__staleRetry = true;
+				return;
+			}
 			onError("URL Request failed");
 		}
 	}
@@ -809,10 +1120,26 @@ class Http {
 	}
 
 	private function __writeHeaders():Void {
-		if (__headers != null) {
-			for (header in __headers) {
-				__socket.output.writeString('${header}${CRLF}');
+		if (__headers == null) {
+			return;
+		}
+
+		for (header in __headers) {
+			// Through the sanitisers the server's response writer uses. These
+			// lines were written as given, so a CR or LF in a value -- one
+			// forwarded from someone else, say -- ended the header and began
+			// another, or a second request, on every hop of the exchange.
+			var colon:Int = header.indexOf(":");
+			if (colon <= 0) {
+				continue;
 			}
+
+			var name:String = HttpSyntax.sanitizeHeaderName(header.substr(0, colon));
+			if (name.length == 0) {
+				continue;
+			}
+
+			__socket.output.writeString(name + ": " + StringTools.trim(HttpSyntax.sanitizeHeaderValue(header.substr(colon + 1))) + CRLF);
 		}
 	}
 
@@ -820,33 +1147,39 @@ class Http {
 		return StringTools.urlEncode(k) + "=" + StringTools.urlEncode(v);
 	}
 
+	/**
+	 * Reads a `Content-Length` field, or answers null when it is not one.
+	 *
+	 * Through `IntParse`, as the server reads the same field. `Std.parseInt`
+	 * is `strtol` cast to an `int` on Linux and macOS native, so a response
+	 * declaring 4294967296 bytes read as 0 there -- an empty body, reported as
+	 * a complete download -- and on the jvm the same header threw.
+	 */
 	private function __parseContentLength(header:String):Null<Int> {
 		if (header == null) {
 			return null;
 		}
 
-		var values = header.split(",");
-		var parsed:Null<Int> = null;
-		for (raw in values) {
-			var value = StringTools.trim(raw);
-			if (value.length == 0 || !~/^[0-9]+$/.match(value)) {
+		var parsed:Int = -1;
+		for (raw in header.split(",")) {
+			var value:Int = IntParse.decimal(StringTools.trim(raw));
+			if (value < 0 || (parsed >= 0 && parsed != value)) {
 				return null;
 			}
-
-			var n:Null<Int> = Std.parseInt(value);
-			if (n == null || n < 0) {
-				return null;
-			}
-			if (parsed != null && parsed != n) {
-				return null;
-			}
-			parsed = n;
+			parsed = value;
 		}
 
 		return parsed;
 	}
 
 	private function __buildQuery(obj:Dynamic):String {
+		// A URLVariables is a StringMap at run time, and its fields are the
+		// map's, not the caller's: a POST of one went out with an empty body.
+		var form:Null<String> = crossbyte.url.URLVariables.encodeData(obj);
+		if (form != null) {
+			return form;
+		}
+
 		var parts:Array<String> = [];
 
 		var fields = Reflect.fields(obj);

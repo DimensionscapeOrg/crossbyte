@@ -137,6 +137,88 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, false, null, null, root);
 	}
 
+	public function testAThrowingRouteIsLoggedAndNotShownToTheClient(async:Async):Void {
+		// A route that threw left one INFO line, "Status: 500", and nothing
+		// saying why. The error goes to the log now, at ERROR, with the method
+		// and path; the client still sees only the status.
+		var lines:Array<String> = [];
+		var previous = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = line -> lines.push(line);
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				throw "database connection refused: host=db.internal:5432";
+			}
+		], "GET /api/boom HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			crossbyte.utils.Logger.sink = previous;
+
+			Assert.equals(500, response.status);
+			Assert.isTrue(response.raw.indexOf("db.internal") < 0, "the error's text reached the client");
+			var logged:Array<String> = lines.filter(l -> l.indexOf("database connection refused") >= 0);
+			Assert.equals(1, logged.length, "the error was not logged: " + lines.join(" || "));
+			if (logged.length > 0) {
+				Assert.isTrue(logged[0].indexOf("[ERROR]") >= 0, logged[0]);
+				Assert.isTrue(logged[0].indexOf("/api/boom") >= 0, logged[0]);
+				Assert.isTrue(logged[0].indexOf("GET") >= 0, logged[0]);
+			}
+			async.done();
+		});
+	}
+
+	public function testOnErrorCanAnswerTheRequest(async:Async):Void {
+		var seen:Dynamic = null;
+		var previous = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = _ -> {};
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				throw "upstream unavailable";
+			}
+		], "GET /api/boom HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			crossbyte.utils.Logger.sink = previous;
+
+			Assert.equals("upstream unavailable", seen);
+			Assert.equals(503, response.status);
+			Assert.equals('{"error":"try again"}', response.body);
+			Assert.equals("application/json", response.headers.get("content-type"));
+			async.done();
+		}, null, false, null, config -> config.onError = (handler, error) -> {
+			seen = error;
+			handler.respond(503, "application/json", '{"error":"try again"}');
+		});
+	}
+
+	public function testAnIntPassedToNextIsAStatusNotAFailure(async:Async):Void {
+		var lines:Array<String> = [];
+		var previous = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = line -> lines.push(line);
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				next(404);
+			}
+		], "GET /missing HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			crossbyte.utils.Logger.sink = previous;
+
+			Assert.equals(404, response.status);
+			Assert.equals(0, lines.filter(l -> l.indexOf("[ERROR]") >= 0).length, "a deliberate status was logged as an error");
+			async.done();
+		});
+	}
+
+	public function testAValidatorPast2038StillAnswers304(async:Async):Void {
+		// Seconds since 1970 leave an Int in January 2038. The comparison
+		// floored both sides with Math.floor, which returns an Int, and on
+		// hxcpp the wrap made a 2100 date compare as long ago -- a 200 with
+		// the whole file where a 304 was due.
+		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nIf-Modified-Since: Fri, 01 Jan 2100 00:00:00 GMT\r\n\r\n",
+			function(response):Void {
+				Assert.equals(304, response.status);
+				Assert.equals("", response.body);
+				async.done();
+			});
+	}
+
 	public function testMiddlewareHelpersAreAvailableAndCaseInsensitive(async:Async):Void {
 		var method:String = null;
 		var requestPath:String = null;
@@ -251,6 +333,61 @@ class HTTPRequestHandlerTest extends utest.Test {
 
 			Assert.equals("hello world", bodyText);
 			Assert.equals(405, response.status);
+			async.done();
+		}, null, false, body);
+	}
+
+	public function testAnInflatedBodyPastTheCeilingIsRefused(async:Async):Void {
+		// Two megabytes of zeros gzip to about two kilobytes, well inside the
+		// wire limit. The limit counted wire bytes and inflation had no ceiling,
+		// so a 32 KB body became 32 MB at the route.
+		var zeros:ByteArray = new ByteArray();
+		zeros.length = 2 * 1024 * 1024;
+		zeros.compress(CompressionAlgorithm.GZIP);
+		var reached:Bool = false;
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				reached = true;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: ${zeros.length}\r\n\r\n', function(response):Void {
+			Assert.equals(413, response.status);
+			Assert.isFalse(reached, "an inflated body past the ceiling reached middleware");
+			async.done();
+		}, null, false, zeros);
+	}
+
+	public function testMoreThanTwoStackedCodingsAreRefused(async:Async):Void {
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello");
+		body.compress(CompressionAlgorithm.GZIP);
+		body.compress(CompressionAlgorithm.GZIP);
+		body.compress(CompressionAlgorithm.GZIP);
+
+		__sendRequest(async, [], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip, gzip, gzip\r\nContent-Length: ${body.length}\r\n\r\n',
+			function(response):Void {
+				Assert.equals(415, response.status);
+				Assert.equals("Too many content codings", response.body);
+				async.done();
+			}, null, false, body);
+	}
+
+	public function testTwoStackedCodingsStillDecode(async:Async):Void {
+		var bodyText:String = null;
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello twice");
+		body.compress(CompressionAlgorithm.GZIP);
+		body.compress(CompressionAlgorithm.DEFLATE);
+
+		__sendRequest(async, [
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				handler.respond(200, "text/plain", "ok");
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip, deflate\r\nContent-Length: ${body.length}\r\n\r\n', function(response):Void {
+			Assert.equals(200, response.status);
+			Assert.equals("hello twice", bodyText);
 			async.done();
 		}, null, false, body);
 	}
@@ -449,16 +586,56 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testCorsPreflightReturnsConfiguredHeaders(async:Async):Void {
-		__sendRequest(async, [], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: X-Test\r\n\r\n", function(response):Void {
+		// The configured lists, not the request's: this used to echo DELETE and
+		// X-Evil back, approving whatever a page named.
+		__sendRequest(async, [], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\nAccess-Control-Request-Headers: X-Evil, Authorization\r\n\r\n", function(response):Void {
 
 			Assert.equals(204, response.status);
 			Assert.equals("", response.body);
 			Assert.equals("*", response.headers.get("access-control-allow-origin"));
-			Assert.equals("POST", response.headers.get("access-control-allow-methods"));
-			Assert.equals("X-Test", response.headers.get("access-control-allow-headers"));
+			Assert.equals("GET, POST, OPTIONS", response.headers.get("access-control-allow-methods"));
+			Assert.equals("Content-Type", response.headers.get("access-control-allow-headers"));
 			Assert.equals("GET, HEAD, OPTIONS, POST", response.headers.get("allow"));
 			async.done();
 		}, null, true);
+	}
+
+	public function testCorsWithCredentialsNamesOnlyTheOriginsItTrusts(async:Async):Void {
+		__sendRequests(async, [], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\n\r\n"
+		], function(result):Void {
+			var trusted = result.responses[0];
+			var other = result.responses[1];
+
+			Assert.equals("https://app.example", trusted.headers.get("access-control-allow-origin"));
+			Assert.equals("true", trusted.headers.get("access-control-allow-credentials"));
+			Assert.isFalse(other.headers.exists("access-control-allow-origin"), "an untrusted origin was named");
+			Assert.isFalse(other.headers.exists("access-control-allow-credentials"), "credentials were offered to an untrusted origin");
+			async.done();
+		}, config -> {
+			config.corsEnabled = true;
+			config.corsAllowCredentials = true;
+			config.corsAllowedOrigins = ["https://app.example"];
+		});
+	}
+
+	public function testCorsNeverEchoesAnOriginForTheWildcard(async:Async):Void {
+		// The auditor read a signed-in user's /me from https://evil.example:
+		// with credentials on and the origins left at "*", any Origin came
+		// back with Allow-Credentials. validate() now refuses that pairing,
+		// and a config changed after the server started still answers "*",
+		// which a browser will not pair with credentials.
+		var refused:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		refused.corsEnabled = true;
+		refused.corsAllowCredentials = true;
+		Assert.raises(() -> refused.validate(), ArgumentError);
+
+		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nCookie: sid=1\r\n\r\n", function(response):Void {
+			Assert.equals("*", response.headers.get("access-control-allow-origin"));
+			Assert.isFalse(response.headers.exists("access-control-allow-credentials"), "credentials were granted to every origin");
+			async.done();
+		}, null, true, null, null, null, server -> @:privateAccess server.__config.corsAllowCredentials = true);
 	}
 
 
@@ -1314,46 +1491,6 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 	}
 
-	public function testReportedFileSizeIsVerifiedAgainstTheFileItself():Void {
-		// `FileSystem.stat` gives an Int, so a file past 2 GB wraps: between 2
-		// and 4 GB it goes negative and is caught on sight, but at 4 GB and up
-		// it comes back round positive and reads as a perfectly ordinary size.
-		// Such a file used to be served truncated to the wrapped number, under
-		// a Content-Length asserting that truncation was the whole file.
-		//
-		// Reproducing the wrap needs a file over 4 GB, which a test suite has
-		// no business creating. What the guard actually decides is narrower --
-		// whether any bytes exist past a stated length -- and a wrapped size is
-		// just one way to arrive at a length that is too small. That question
-		// is testable at any size, so it is tested at 100 bytes.
-		var root = File.createTempDirectory();
-		var payload = new ByteArray();
-		for (i in 0...100) {
-			payload.writeByte(i % 256);
-		}
-		var target = root.resolvePath("payload.bin");
-		target.save(payload);
-
-		// The truth: nothing lies beyond byte 100.
-		Assert.isTrue(HTTPRequestHandler.__sizeIsComplete(target, 100));
-
-		// A stated length short of the file, which is the shape a wrap
-		// produces. There is data at offset 50, so the length is not the
-		// file's own.
-		Assert.isFalse(HTTPRequestHandler.__sizeIsComplete(target, 50));
-		Assert.isFalse(HTTPRequestHandler.__sizeIsComplete(target, 0));
-
-		// A genuinely empty file reports zero and means it -- the case that
-		// must not be mistaken for a 4 GB file, which also reports zero.
-		var empty = root.resolvePath("empty.bin");
-		empty.save(new ByteArray());
-		Assert.isTrue(HTTPRequestHandler.__sizeIsComplete(empty, 0));
-
-		try {
-			root.deleteDirectory(true);
-		} catch (_:Dynamic) {}
-	}
-
 	/**
 		Runs a case's own check of what came back, reporting what it throws.
 
@@ -1375,7 +1512,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	private function __sendRequest(async:Async, middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, done:HTTPTestResponse->Void,
-			?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void, ?sharedRoot:File):Void {
+			?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void, ?sharedRoot:File,
+			?started:HTTPServer->Void):Void {
 		// A caller can hand in a root so two requests hit the same file. A
 		// conditional request needs that: Last-Modified is the file's mtime at
 		// second granularity, and two temp files created a moment apart can fall
@@ -1394,6 +1532,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 			configure(config);
 		}
 		var server = new HTTPServer(config);
+		// After construction, for a case about a configuration changed once
+		// the server is running, which validate() never sees.
+		if (started != null) {
+			started(server);
+		}
 		var client = new Socket();
 		var rawResponse = "";
 		var closeSeen = false;

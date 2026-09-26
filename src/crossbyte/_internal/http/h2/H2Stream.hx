@@ -38,6 +38,19 @@ class H2Stream {
 	public var endOfStream:Bool = false;
 
 	/**
+	 * True once the request body outgrew what the server will hold: the
+	 * request has been answered, and its remaining DATA is counted for the
+	 * connection's window and otherwise dropped.
+	 */
+	public var overflowed:Bool = false;
+
+	/**
+	 * True once the whole request has been handed to the application, so the
+	 * stream is waiting on its answer rather than on the peer.
+	 */
+	public var delivered:Bool = false;
+
+	/**
 	 * Response bytes accepted from the application but not yet permitted onto
 	 * the wire by flow control.
 	 *

@@ -17,8 +17,20 @@ import sys.thread.Tls;
 using StringTools;
 
 class RewriteEngine {
+	/**
+	 * Resolves a request path to a file, a directory index, a rewrite or
+	 * nothing.
+	 *
+	 * The handler calls this only once middleware has let a request through,
+	 * and each call costs filesystem lookups, so a request a route answered
+	 * never pays for them. A path or rewrite target whose `..` steps climb
+	 * above the root resolves to nothing, rather than throwing.
+	 */
 	public static function decide(cfg:HTTPServerConfig, reqPath:String, reqQuery:String, method:String, headers:StringMap<String>):Decision {
-		var orig:String = normalize(reqPath);
+		var orig:Null<String> = normalize(reqPath);
+		if (orig == null) {
+			return null;
+		}
 		var q:String = reqQuery;
 
 		if (isFile(cfg, orig)) {
@@ -42,7 +54,13 @@ class RewriteEngine {
 
 			var needsBackrefs:Bool = (r.target.indexOf("$") >= 0);
 			var expanded:String = needsBackrefs ? backrefs(r.pattern, working, r.target, has(r, RewriteFlag.NC)) : r.target;
-			var tPath:String = stripQuery(expanded);
+			// Settled like the request path, so a target is contained and
+			// spelled the way the rest of the server reads paths; a capture
+			// can carry the request's own text into it.
+			var tPath:Null<String> = normalize(stripQuery(expanded));
+			if (tPath == null) {
+				continue;
+			}
 			var tQ:String = extractQuery(expanded);
 			q = has(r, RewriteFlag.QSA) ? merge(q, tQ) : tQ;
 
@@ -116,6 +134,9 @@ class RewriteEngine {
 		};
 
 	/**
+	 * `HttpSyntax.normalizePath`: the request path's spelling settled, or
+	 * null when its `..` steps climb above the root.
+	 *
 	 * `p` arrives percent-decoded exactly once by the request handler.
 	 * Decoding it again here is not hygiene but corruption: a path whose
 	 * single decode legitimately contains `+` or `%` — `/a+b.html`, or
@@ -123,44 +144,42 @@ class RewriteEngine {
 	 * time and made to name a different file. Double-encoded traversal
 	 * needs no second decode to stay caught: `%252e` decodes once to the
 	 * literal text `%2e`, which no filesystem reads as a dot.
+	 *
+	 * This used to refuse any path containing `..` anywhere by throwing
+	 * "403", which reached the client as a 500 before the router ran -- so
+	 * `/compare/v1.2..v1.3` could not be routed at all -- and it collapsed
+	 * slashes with a regular expression compiled on every request.
 	 */
-	@:noCompletion public static function normalize(p:String):String {
-		var u:String = (p == null || p == "") ? "/" : p;
-		u = ~/(\/+)/g.replace(u.replace("\\", "/"), "/");
-
-		if (!u.startsWith("/")) {
-			u = "/" + u;
-		}
-
-		if (u.indexOf("..") >= 0) {
-			throw "403";
-		}
-
-		return u;
+	@:noCompletion public static inline function normalize(p:String):Null<String> {
+		return HttpSyntax.normalizePath(p);
 	}
 
-	@:noCompletion public static function abs(cfg:HTTPServerConfig, web:String):String {
+	/**
+	 * The filesystem path of the web path `web` under the root, or null when
+	 * it would leave the root.
+	 */
+	@:noCompletion public static function abs(cfg:HTTPServerConfig, web:String):Null<String> {
 		var root:String = Path.normalize(cfg.rootDirectory.nativePath);
 		var rootSlash:String = root.endsWith("/") ? root : root + "/";
 		var rel:String = web.startsWith("/") ? web.substr(1) : web;
 		var a:String = Path.normalize(rootSlash + rel);
 
 		if (!(a == root || a.startsWith(rootSlash))) {
-			throw "403";
+			return null;
 		}
 
 		return a;
 	}
 
 	@:noCompletion public static inline function isFile(cfg:HTTPServerConfig, web:String):Bool {
-		var a:String = abs(cfg, web);
+		var a:Null<String> = abs(cfg, web);
 
-		return sys.FileSystem.exists(a) && !sys.FileSystem.isDirectory(a);
+		return a != null && sys.FileSystem.exists(a) && !sys.FileSystem.isDirectory(a);
 	}
 
 	@:noCompletion public static function dirIndex(cfg:HTTPServerConfig, dirWeb:String):Null<String> {
-		var a:String = abs(cfg, dirWeb);
-		if (!sys.FileSystem.exists(a) || !sys.FileSystem.isDirectory(a)) {
+		var a:Null<String> = abs(cfg, dirWeb);
+		if (a == null || !sys.FileSystem.exists(a) || !sys.FileSystem.isDirectory(a)) {
 			return null;
 		}
 
@@ -283,7 +302,7 @@ class RewriteEngine {
 			var ok:Bool = switch (c.type) {
 				case RewriteConditionType.FileExists:
 					isFile(cfg, working);
-				case RewriteConditionType.DirExists: final a = abs(cfg, working); sys.FileSystem.exists(a) && sys.FileSystem.isDirectory(a);
+				case RewriteConditionType.DirExists: final a = abs(cfg, working); a != null && sys.FileSystem.exists(a) && sys.FileSystem.isDirectory(a);
 				case RewriteConditionType.Method:
 					var re:EReg = __compile(c.pattern, true);
 					re.match(method);

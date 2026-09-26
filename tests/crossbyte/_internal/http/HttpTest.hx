@@ -364,7 +364,8 @@ class HttpTest extends utest.Test {
 		Assert.equals(5, progress[progress.length - 1].total);
 		Assert.isTrue(fixture.request.indexOf("GET /fixed?existing=1 HTTP/1.1") == 0);
 		Assert.isTrue(fixture.request.indexOf("Host: 127.0.0.1:" + fixture.port) >= 0);
-		Assert.isTrue(fixture.request.indexOf("Connection: close") >= 0);
+		// Kept for the next request, except on eval, which keeps none.
+		Assert.isTrue(fixture.request.indexOf(#if eval "Connection: close" #else "Connection: keep-alive" #end) >= 0);
 		Assert.isTrue(fixture.request.indexOf("Accept-Encoding: identity") >= 0);
 	}
 
@@ -425,6 +426,57 @@ class HttpTest extends utest.Test {
 
 		Assert.isNull(completed);
 		Require.notNull(failure, "an unrepresentable chunk size was accepted");
+	}
+
+	public function testContentLengthPastAnIntIsNotALength():Void {
+		// The client reads the field the way the server does. Std.parseInt
+		// took 4294967296 as 0 on Linux and macOS native -- an empty body,
+		// reported as a complete download -- as 2147483647 on Windows, and
+		// threw on the jvm.
+		var http = new Http("http://127.0.0.1/");
+		Assert.isNull(http.__parseContentLength("4294967296"));
+		Assert.isNull(http.__parseContentLength("4294967301"));
+		Assert.isNull(http.__parseContentLength("2147483648"));
+		Assert.isNull(http.__parseContentLength("+5"));
+		Assert.isNull(http.__parseContentLength("5, 6"));
+		Assert.equals(5, http.__parseContentLength("5, 5"));
+		Assert.equals(2147483647, http.__parseContentLength("2147483647"));
+	}
+
+	public function testAStatusLineCarriesExactlyThreeDigits():Void {
+		// Was (\d+) through Std.parseInt: "HTTP/1.1 4294967496 OK" read as
+		// 200 on Linux native.
+		Assert.equals(200, Http.__parseStatusLine("HTTP/1.1 200 OK"));
+		Assert.equals(200, Http.__parseStatusLine("HTTP/1.1 200"));
+		Assert.equals(404, Http.__parseStatusLine("HTTP/1.0 404 Not Found"));
+		Assert.equals(503, Http.__parseStatusLine("HTTP/1.1  503\tBusy"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 4294967496 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 2000 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 20 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 099 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 +20 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1 200OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1.1"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTP/1 200 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("HTTX/1.1 200 OK"));
+		Assert.equals(-1, Http.__parseStatusLine("ICY 200 OK"));
+	}
+
+	public function testAResponseDeclaringMoreThanAnIntIsAnError():Void {
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 4294967301\r\n\r\nhello");
+		var http = new Http('http://127.0.0.1:${fixture.port}/huge');
+		var completed:Bytes = null;
+		var failure:String = null;
+
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed, "a response with an impossible length completed");
+		Require.notNull(failure, "an impossible Content-Length was accepted");
+		Assert.isTrue(failure.indexOf("Content-Length") >= 0, failure);
 	}
 
 	public function testChunkedThatIsNotTheFinalCodingIsNotChunkDecoded():Void {
@@ -749,6 +801,438 @@ class HttpTest extends utest.Test {
 			"a cookie went out with manageCookies off:\n" + fixture.requests[1]);
 	}
 
+	public function testCredentialsDoNotFollowARedirectToAnotherOrigin():Void {
+		// A 302 to another origin used to be followed with every header the
+		// caller wrote: the auditor's server received Authorization: Bearer
+		// sk-live-secret. The next origin gets the request without them.
+		var elsewhere = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var origin = serveOnce('HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:${elsewhere.port}/landing\r\nContent-Length: 0\r\n\r\n');
+
+		var http = new Http('http://127.0.0.1:${origin.port}/start', "GET",
+			["Authorization: Bearer sk-live-secret", "Proxy-Authorization: Basic cHJveHk=", "Cookie: sid=caller-set", "X-Trace: t-1"]);
+		var completed:Bytes = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		origin.waitDone();
+		elsewhere.waitDone();
+
+		Require.notNull(completed, "the redirect was not followed");
+		Assert.isTrue(origin.request.indexOf("sk-live-secret") >= 0, "the origin itself did not get the credentials");
+		Assert.isTrue(elsewhere.request.indexOf("sk-live-secret") < 0, "Authorization reached another origin:\n" + elsewhere.request);
+		Assert.isTrue(elsewhere.request.indexOf("cHJveHk=") < 0, "Proxy-Authorization reached another origin");
+		Assert.isTrue(elsewhere.request.indexOf("sid=caller-set") < 0, "a caller's Cookie reached another origin");
+		Assert.isTrue(elsewhere.request.indexOf("X-Trace: t-1") >= 0, "an ordinary header was dropped as well:\n" + elsewhere.request);
+	}
+
+	public function testCredentialsFollowARedirectWithinTheOrigin():Void {
+		var fixture = serveTwice("HTTP/1.1 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\n\r\n", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/start', "GET", ["Authorization: Bearer same-origin"]);
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		Assert.equals(2, fixture.requests.length, "the redirect was not followed");
+		Assert.isTrue(fixture.requests[1].indexOf("Bearer same-origin") >= 0, "credentials were dropped within one origin");
+	}
+
+	public function testRedirectsOnlyGoWhereTheyAreAllowedTo():Void {
+		// https to http gives the rest of the exchange away in the clear, so it
+		// takes the caller's say-so; and only http and https are followed.
+		Assert.notNull(Http.__redirectRefusal(new URL("https://example.com/"), new URL("http://example.com/"), false));
+		Assert.isNull(Http.__redirectRefusal(new URL("https://example.com/"), new URL("http://example.com/"), true));
+		Assert.isNull(Http.__redirectRefusal(new URL("http://example.com/"), new URL("https://example.com/"), false));
+		Assert.isNull(Http.__redirectRefusal(new URL("https://example.com/"), new URL("https://other.example/"), false));
+		Assert.notNull(Http.__redirectRefusal(new URL("http://example.com/"), new URL("ftp://example.com/"), true));
+
+		Assert.equals("https://example.com:443", Http.__originOf(new URL("https://EXAMPLE.com/a")));
+		Assert.isTrue(Http.__originOf(new URL("http://example.com/")) != Http.__originOf(new URL("http://example.com:8080/")));
+		Assert.isTrue(Http.__originOf(new URL("http://example.com/")) != Http.__originOf(new URL("https://example.com/")));
+	}
+
+	public function testTenRedirectsEndingInAResponseSucceed():Void {
+		// MAX_REDIRECTS is ten; ten followed and then answered is within it.
+		// The old check read the count alone and reported this as too many.
+		var responses:Array<String> = [for (i in 0...10) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
+		responses.push("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndone");
+		var fixture = serveMany(responses);
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/hop0');
+		var completed:Bytes = null;
+		var failure:String = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(failure, "ten redirects were reported as too many: " + failure);
+		Require.notNull(completed);
+		Assert.equals("done", completed.toString());
+	}
+
+	public function testElevenRedirectsAreTooMany():Void {
+		var responses:Array<String> = [for (i in 0...11) 'HTTP/1.1 302 Found\r\nLocation: /hop${i + 1}\r\nContent-Length: 0\r\n\r\n'];
+		var fixture = serveMany(responses);
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/hop0');
+		var failure:String = null;
+		http.onComplete = data -> Assert.fail("an eleventh redirect was followed to completion");
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf("redirects") >= 0, failure);
+	}
+
+	public function testURLVariablesAreSentAsAForm():Void {
+		// A URLVariables is a StringMap at run time, and Reflect.fields read
+		// the map's own fields: a POST of one went out with an empty body.
+		var posted = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var post = new Http('http://127.0.0.1:${posted.port}/form', "POST", null, new crossbyte.url.URLVariables("name=Ada%20L&tag=a&tag=b"));
+		post.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		post.load();
+		posted.waitDone();
+
+		var body:String = posted.request.substr(posted.request.indexOf("\n\n") + 2);
+		var form:Array<String> = body.split("&");
+		form.sort(Reflect.compare);
+		Assert.same(["name=Ada%20L", "tag=a", "tag=b"], form);
+		Assert.isTrue(posted.request.indexOf("application/x-www-form-urlencoded") >= 0, posted.request);
+
+		var queried = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var get = new Http('http://127.0.0.1:${queried.port}/form', "GET", null, new crossbyte.url.URLVariables("q=x%20y"));
+		get.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		get.load();
+		queried.waitDone();
+
+		Assert.isTrue(StringTools.startsWith(queried.request, "GET /form?q=x%20y HTTP/1.1"), queried.request);
+	}
+
+	public function testACallerHeaderCannotAddALine():Void {
+		// Written as given, a CR or LF in a caller's value ended the header and
+		// began one of the caller's choosing.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var http = new Http('http://127.0.0.1:${fixture.port}/', "GET", ["X-Forwarded: a\r\nInjected: yes", "Bad\r\nName: v"]);
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		for (line in fixture.request.split("\n")) {
+			Assert.isFalse(StringTools.startsWith(line, "Injected:"), "a caller's value added a header line:\n" + fixture.request);
+			Assert.isFalse(StringTools.startsWith(line, "Name:"), "a caller's name added a header line:\n" + fixture.request);
+		}
+		Assert.isTrue(fixture.request.indexOf("X-Forwarded: aInjected: yes") >= 0, fixture.request);
+	}
+
+	public function testADeclaredLengthPastTheCapIsRefusedBeforeReading():Void {
+		// The body was allocated whole from the header, before a byte arrived:
+		// one response declaring 2000000000 bytes cost two gigabytes.
+		var saved:Int = Http.MAX_BODY_SIZE;
+		Http.MAX_BODY_SIZE = 1024;
+		try {
+			var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n" + StringTools.rpad("", "x", 5000));
+			var http = new Http('http://127.0.0.1:${fixture.port}/big');
+			var completed:Bytes = null;
+			var failure:String = null;
+			http.onComplete = data -> completed = data;
+			http.onError = (message, ?data) -> failure = message;
+			http.load();
+			fixture.waitDone();
+
+			Assert.isNull(completed, "a body past the cap was delivered");
+			Require.notNull(failure);
+			Assert.isTrue(failure.indexOf("declared") >= 0, failure);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		Http.MAX_BODY_SIZE = saved;
+	}
+
+	public function testACloseDelimitedBodyPastTheCapIsRefused():Void {
+		var saved:Int = Http.MAX_BODY_SIZE;
+		Http.MAX_BODY_SIZE = 1024;
+		try {
+			var fixture = serveOnce("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + StringTools.rpad("", "x", 5000));
+			var http = new Http('http://127.0.0.1:${fixture.port}/endless');
+			var completed:Bytes = null;
+			var failure:String = null;
+			http.onComplete = data -> completed = data;
+			http.onError = (message, ?data) -> failure = message;
+			http.load();
+			fixture.waitDone();
+
+			Assert.isNull(completed, "a close-delimited body past the cap was delivered");
+			Require.notNull(failure);
+			Assert.isTrue(failure.indexOf("exceeded") >= 0, failure);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		Http.MAX_BODY_SIZE = saved;
+	}
+
+	#if !eval
+	// Not on eval, where a peer reset is a native Unix_error that no Haxe catch
+	// can see: it ends the process, before or after this fix alike.
+	public function testAResetInACloseDelimitedBodyIsAnError():Void {
+		// Only the connection closing ends such a body, so every read error
+		// used to be taken for that ending, and a reset partway through was
+		// reported complete with half a body.
+		var fixture = new OneShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				peer = server.accept();
+				peer.setTimeout(2.0);
+				// Time for the request to arrive, and none of it read: closing
+				// with it unread makes the close below a reset rather than an
+				// ending. Reading even a byte lets a buffered input take the
+				// rest, and the close becomes an ordinary one.
+				Sys.sleep(0.2);
+				peer.output.writeString("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npartial");
+				peer.output.flush();
+				Sys.sleep(0.3);
+				#if (java || jvm)
+				// The JDK closes gracefully even over unread data; a zero linger
+				// is how a Java socket is made to reset.
+				var channel:java.nio.channels.SocketChannel = cast @:privateAccess peer.channel;
+				channel.socket().setSoLinger(true, 0);
+				#end
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+			return;
+		}
+
+		var http = new Http('http://127.0.0.1:${fixture.port}/cut');
+		var completed:Bytes = null;
+		var failure:String = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed, "a body cut off by a reset was reported complete: " + (completed == null ? "" : completed.toString()));
+		Assert.notNull(failure);
+	}
+	#end
+
+	#if !(eval || java || jvm)
+	// Not on eval, where a read that times out raises a native Unix_error no
+	// Haxe catch can see, and so ends the process. Not on the jvm, where
+	// sys.net.Socket.setTimeout stores the value and nothing reads it, so no
+	// read there times out at all, this client's or the fixture's.
+	public function testTheIdleTimeoutIsInMilliseconds():Void {
+		// The socket was handed the milliseconds as seconds, so this waited
+		// until the server gave up, three seconds on, rather than 300 ms.
+		var fixture = holdRequest(false);
+		var http = new Http('http://127.0.0.1:${fixture.port}/slow', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 300);
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		fixture.waitDone();
+
+		Assert.isFalse(completed);
+		Require.notNull(failure);
+		Assert.isTrue(took < 2.0, 'a 300 ms idle timeout took ${took} s');
+	}
+	#end
+
+	public function testAServerClosingWithoutAnAnswerIsAnError():Void {
+		// On eval the end of the stream read as endless NUL bytes, so the
+		// status line never ended and load() never returned.
+		var fixture = holdRequest(true);
+		var http = new Http('http://127.0.0.1:${fixture.port}/gone');
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isFalse(completed);
+		Require.notNull(failure);
+	}
+
+	public function testAChunkedBodyEndingBeforeItsSizeLineIsAnError():Void {
+		// The size line read the end of the stream the same way on eval.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+		var http = new Http('http://127.0.0.1:${fixture.port}/cut');
+		var completed:Bool = false;
+		var failure:String = null;
+		http.onComplete = _ -> completed = true;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isFalse(completed);
+		Require.notNull(failure);
+	}
+
+	#if !eval
+	// Kept connections are not used on eval, where a reset is uncatchable.
+	public function testAConnectionIsKeptForTheNextRequest():Void {
+		// Every request asked for Connection: close, so each was a new
+		// connection, and over https a new handshake.
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		for (i in 0...3) {
+			Assert.equals("ok", __get('http://127.0.0.1:${server.port}/n$i'));
+		}
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(1, server.connections, "each request opened a connection of its own");
+		Assert.equals(3, server.requestCount());
+		Assert.isTrue(server.request(0).indexOf("Connection: keep-alive") >= 0);
+	}
+
+	public function testAKeptConnectionTheServerClosedIsReplaced():Void {
+		// The server reads the second request on the connection and closes it
+		// unanswered, as one timing out an idle connection does while the
+		// request is on its way. The request goes again, on a new one.
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> request == 0 ? "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok" : null);
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/first'));
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/second'));
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(2, server.connections);
+	}
+
+	public function testAPostIsNotSentOnAKeptConnection():Void {
+		// Whether a server acted on a request its connection died under cannot
+		// be known, so only a request that may be sent twice uses one.
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/read'));
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/write', "POST", "body"));
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(2, server.connections);
+	}
+
+	public function testAResponseThatClosesIsNotKept():Void {
+		HttpConnectionPool.clear();
+		var server = new KeptAliveServer((connection, request) -> "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok");
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/a'));
+		Assert.equals("ok", __get('http://127.0.0.1:${server.port}/b'));
+		HttpConnectionPool.clear();
+		server.close();
+
+		Assert.equals(2, server.connections);
+	}
+
+	private static function __get(url:String, method:String = "GET", ?data:String):Null<String> {
+		var http = new Http(url, method, null, null, null, data);
+		var result:Null<String> = null;
+		http.onComplete = bytes -> result = bytes.toString();
+		http.onError = (message, ?body) -> result = "error: " + message;
+		http.load();
+		return result;
+	}
+	#end
+
+	/**
+	 * Takes one request and answers nothing: closes at once, or holds the
+	 * connection until the client goes, three seconds at most.
+	 */
+	private static function holdRequest(closeAtOnce:Bool):OneShotHttpServer {
+		var fixture = new OneShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				peer = server.accept();
+				peer.setTimeout(3.0);
+				fixture.request = readRequest(peer);
+				if (!closeAtOnce) {
+					try {
+						peer.input.readBytes(Bytes.alloc(1), 0, 1);
+					} catch (_:Dynamic) {}
+				}
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		return fixture;
+	}
+
+	private static function serveMany(responses:Array<String>):TwoShotHttpServer {
+		var fixture = new TwoShotHttpServer();
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(responses.length);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+
+				for (response in responses) {
+					peer = server.accept();
+					peer.setTimeout(2.0);
+					fixture.requests.push(readRequest(peer));
+					peer.output.writeString(response);
+					peer.output.flush();
+					closeQuietly(peer);
+					peer = null;
+				}
+			} catch (e:Dynamic) {
+				fixture.error = e;
+				fixture.ready.release();
+			}
+
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		if (fixture.error != null) {
+			Assert.fail("HTTP fixture server failed to start: " + fixture.error);
+		}
+
+		return fixture;
+	}
+
 	private static function serveTwice(first:String, second:String):TwoShotHttpServer {
 		var fixture = new TwoShotHttpServer();
 		Thread.create(() -> {
@@ -858,6 +1342,120 @@ class HttpTest extends utest.Test {
 		} catch (_:Dynamic) {}
 	}
 }
+
+#if !eval
+/**
+ * A server that keeps connections: each on a thread of its own, answering
+ * every request on it as `respond(connection, request)` says -- the indexes
+ * count from zero -- until that answers null, when it closes unanswered.
+ */
+private class KeptAliveServer {
+	public var port(default, null):Int = 0;
+	public var connections(get, never):Int;
+
+	private final __lock:sys.thread.Mutex = new sys.thread.Mutex();
+	private final __requests:Array<String> = [];
+	private final __server:SysSocket = new SysSocket();
+	private final __respond:(Int, Int) -> Null<String>;
+	private var __connections:Int = 0;
+
+	public function new(respond:(Int, Int) -> Null<String>) {
+		__respond = respond;
+		__server.bind(new Host("127.0.0.1"), 0);
+		__server.listen(8);
+		port = __server.host().port;
+		Thread.create(__accept);
+	}
+
+	private function get_connections():Int {
+		__lock.acquire();
+		var count:Int = __connections;
+		__lock.release();
+		return count;
+	}
+
+	public function requestCount():Int {
+		__lock.acquire();
+		var count:Int = __requests.length;
+		__lock.release();
+		return count;
+	}
+
+	public function request(index:Int):String {
+		__lock.acquire();
+		var text:String = index < __requests.length ? __requests[index] : "";
+		__lock.release();
+		return text;
+	}
+
+	public function close():Void {
+		try {
+			__server.close();
+		} catch (_:Dynamic) {}
+	}
+
+	private function __accept():Void {
+		while (true) {
+			var peer:SysSocket;
+			try {
+				peer = __server.accept();
+			} catch (_:Dynamic) {
+				return;
+			}
+			__lock.acquire();
+			var index:Int = __connections++;
+			__lock.release();
+			Thread.create(() -> __serve(peer, index));
+		}
+	}
+
+	private function __serve(peer:SysSocket, connection:Int):Void {
+		var request:Int = 0;
+		try {
+			peer.setTimeout(5.0);
+			while (true) {
+				var text:String = __readRequest(peer);
+				__lock.acquire();
+				__requests.push(text);
+				__lock.release();
+
+				var answer:Null<String> = __respond(connection, request++);
+				if (answer == null) {
+					break;
+				}
+				peer.output.writeString(answer);
+				peer.output.flush();
+				if (answer.indexOf("Connection: close") >= 0) {
+					break;
+				}
+			}
+		} catch (_:Dynamic) {}
+		try {
+			peer.close();
+		} catch (_:Dynamic) {}
+	}
+
+	private static function __readRequest(peer:SysSocket):String {
+		var lines:Array<String> = [];
+		var length:Int = 0;
+		while (true) {
+			var line:String = peer.input.readLine();
+			if (line == "") {
+				break;
+			}
+			lines.push(line);
+			var colon:Int = line.indexOf(":");
+			if (colon > 0 && line.substr(0, colon).toLowerCase() == "content-length") {
+				length = Std.parseInt(StringTools.trim(line.substr(colon + 1)));
+			}
+		}
+		if (length > 0) {
+			lines.push(peer.input.read(length).toString());
+		}
+		return lines.join("\n");
+	}
+}
+#end
 
 private class TwoShotHttpServer {
 	public var port:Int = 0;

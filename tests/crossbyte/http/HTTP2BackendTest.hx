@@ -79,6 +79,59 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.isFalse(headers.exists(":status"));
 	}
 
+	public function testAnErrorStatusOverHttp2IsAnErrorWithItsBody():Void {
+		// The HTTP/1.1 client reports a 4xx or 5xx through onError with the
+		// body; this completed, so one status meant two outcomes by version.
+		var server = new H2cServer();
+		server.respond([new HpackHeader(":status", "404"), new HpackHeader("content-type", "text/plain")], "no such thing");
+		server.start();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var completed:Bytes = null;
+		var error:String = null;
+		var errorBody:Bytes = null;
+		var http = new Http('http://127.0.0.1:${server.port}/missing', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> {
+			error = message;
+			errorBody = data;
+		};
+
+		http.load();
+		server.waitDone();
+
+		Assert.isNull(completed, "a 404 over HTTP/2 completed");
+		Assert.equals("HTTP error 404", error);
+		Require.notNull(errorBody);
+		Assert.equals("no such thing", errorBody.toString());
+	}
+
+	public function testAGzipResponseOverHttp2IsDecoded():Void {
+		var body = new crossbyte.io.ByteArray();
+		body.writeUTFBytes("hello compressed h2");
+		body.compress(crossbyte.utils.CompressionAlgorithm.GZIP);
+		var compressed = Bytes.alloc(body.length);
+		compressed.blit(0, body, 0, body.length);
+
+		var server = new H2cServer();
+		server.respondBytes([new HpackHeader(":status", "200"), new HpackHeader("content-encoding", "gzip")], compressed);
+		server.start();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var completed:Bytes = null;
+		var error:String = null;
+		var http = new Http('http://127.0.0.1:${server.port}/zipped', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> error = message;
+
+		http.load();
+		server.waitDone();
+
+		Assert.isNull(error);
+		Require.notNull(completed);
+		Assert.equals("hello compressed h2", completed.toString());
+	}
+
 	public function testRequestCarriesLowercasePseudoHeadersAndDropsHopByHopFields():Void {
 		var server = new H2cServer();
 		server.respond([new HpackHeader(":status", "204")], "");
@@ -1145,6 +1198,14 @@ private class H2cServer {
 		__responseBody = body;
 	}
 
+	/** As `respond`, with a body that is not text. */
+	public function respondBytes(headers:Array<HpackHeader>, body:Bytes):Void {
+		__responseHeaders = headers;
+		__responseBytes = body;
+	}
+
+	private var __responseBytes:Bytes = null;
+
 	public function reset(code:Int):Void {
 		__resetCode = code;
 	}
@@ -1300,11 +1361,12 @@ private class H2cServer {
 		}
 
 		var block:Bytes = encoder.encode(__responseHeaders);
-		var hasBody:Bool = __responseBody.length > 0;
+		var payload:Bytes = __responseBytes != null ? __responseBytes : Bytes.ofString(__responseBody);
+		var hasBody:Bool = payload.length > 0;
 		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS | (hasBody ? 0 : H2Flags.END_STREAM), streamId, block);
 
 		if (hasBody) {
-			__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, streamId, Bytes.ofString(__responseBody));
+			__writeFrame(peer, H2FrameType.DATA, H2Flags.END_STREAM, streamId, payload);
 		}
 
 		__drain(peer);

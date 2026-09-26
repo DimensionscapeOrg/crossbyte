@@ -1,5 +1,6 @@
 package crossbyte._internal.http;
 
+import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2ServerConnection;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte.io.ByteArray;
@@ -28,6 +29,7 @@ class H2ResponseWriter implements HTTPResponseWriter {
 	public var bufferedBytes(get, never):Int;
 	public var maxBufferedBytes(get, never):Int;
 	public var onDrain(get, set):Null<Void->Void>;
+	public var onAbandoned(get, set):Null<Void->Void>;
 
 	private final __connection:H2ServerConnection;
 	private final __socket:Socket;
@@ -35,6 +37,7 @@ class H2ResponseWriter implements HTTPResponseWriter {
 
 	private var __headSent:Bool = false;
 	private var __onDrain:Null<Void->Void> = null;
+	private var __onAbandoned:Null<Void->Void> = null;
 	private var __ended:Bool = false;
 
 	public function new(connection:H2ServerConnection, socket:Socket, streamId:Int) {
@@ -43,8 +46,10 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		__streamId = streamId;
 	}
 
+	// The stream as well as the connection: a stream the client has reset
+	// takes nothing more, though the connection carries on.
 	private inline function get_connected():Bool {
-		return __socket.connected && !__connection.closed;
+		return __socket.connected && !__connection.closed && (__ended || __connection.hasStream(__streamId));
 	}
 
 	// The frame layer owns the socket and many streams share it.
@@ -88,6 +93,17 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		return value;
 	}
 
+	private inline function get_onAbandoned():Null<Void->Void> {
+		return __onAbandoned;
+	}
+
+	/** Called on a peer's reset of this stream; see HTTPResponseWriter. */
+	private function set_onAbandoned(value:Null<Void->Void>):Null<Void->Void> {
+		__onAbandoned = value;
+		__connection.setAbandonedCallback(__streamId, value);
+		return value;
+	}
+
 	public function writeHead(head:HTTPResponseHead):Void {
 		if (__headSent) {
 			return;
@@ -112,13 +128,15 @@ class H2ResponseWriter implements HTTPResponseWriter {
 
 		// content-length is legal on a response and worth sending when known,
 		// but it is not what frames the body -- END_STREAM is.
-		if (head.contentLength != null) {
+		var chunked:Bool = head.chunked == true;
+		if (head.contentLength != null && !chunked) {
 			fields.push(new HpackHeader("content-length", Std.string(head.contentLength)));
 		}
 
 		// A head with no body ends the stream now. Anything else waits for
-		// endResponse, because the body may arrive in slices.
-		var empty:Bool = head.contentLength == null || head.contentLength == 0;
+		// endResponse, because the body may arrive in slices -- a chunked one
+		// of a length nobody knows yet.
+		var empty:Bool = !chunked && (head.contentLength == null || head.contentLength == 0);
 		__connection.sendHeaders(__streamId, head.statusCode, fields, empty);
 		__ended = empty;
 	}
@@ -146,6 +164,15 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		// An empty DATA with END_STREAM. Needed whenever the head went out
 		// without the flag, which is every response that had a body.
 		__connection.sendData(__streamId, null, true);
+		__socket.flush();
+	}
+
+	public function abort():Void {
+		if (__ended) {
+			return;
+		}
+		__ended = true;
+		__connection.resetStream(__streamId, H2ErrorCode.INTERNAL_ERROR);
 		__socket.flush();
 	}
 }

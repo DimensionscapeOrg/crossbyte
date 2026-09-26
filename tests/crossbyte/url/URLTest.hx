@@ -70,6 +70,16 @@ class URLTest extends utest.Test {
 		Assert.isTrue(throws(() -> new URL("http://host:000080/")));
 	}
 
+	public function testPortBoundsAndSpelling():Void {
+		Assert.equals(65535, new URL("http://host:65535/").port);
+		Assert.equals(1, new URL("http://host:1/").port);
+		Assert.isTrue(throws(() -> new URL("http://host:65536/")), "a port past 65535 was accepted");
+		Assert.isTrue(throws(() -> new URL("http://host:4294967376/")), "a port that wraps to 80 was accepted");
+		Assert.isTrue(throws(() -> new URL("http://host:080/")), "a leading zero was accepted");
+		Assert.isTrue(throws(() -> new URL("http://host:+80/")), "a signed port was accepted");
+		Assert.isTrue(throws(() -> new URL("http://host:8 0/")), "a port with a space was accepted");
+	}
+
 	@:noCompletion private static function throws(fn:Void->Void):Bool {
 		try {
 			fn();

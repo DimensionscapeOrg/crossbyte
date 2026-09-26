@@ -43,11 +43,16 @@ class URLLoader extends EventDispatcher {
 
 	#if !js
 	@:noCompletion private function __createURLLoaderWorker():Void {
-		__loaderWorker = new Worker();
-		__loaderWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__loaderWorker.addEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
-		__loaderWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-		__loaderWorker.doWork = __work;
+		var worker:Worker = new Worker();
+		worker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
+		worker.addEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
+		worker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
+		// The thread reports through its own worker, never through
+		// `__loaderWorker`: close() clears that field while the thread is
+		// still running, and a report through it was a call on null -- an
+		// access violation on native. A cancelled worker drops what it is sent.
+		worker.doWork = message -> __work(worker, message);
+		__loaderWorker = worker;
 	}
 
 	@:noCompletion private function __onWorkerComplete(e:ThreadEvent):Void {
@@ -58,6 +63,18 @@ class URLLoader extends EventDispatcher {
 		__disposeWorker();
 	}
 	#end
+
+	/**
+	 * `HTTP_RESPONSE_STATUS`, with what the response said: its headers, the URL
+	 * it came from, and whether a redirect led there. It was never dispatched,
+	 * so `Retry-After`, `ETag` and `Location` could not be read on any target.
+	 */
+	@:noCompletion private function __dispatchResponse(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool):Void {
+		var event:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, status, redirected);
+		event.responseHeaders = headers;
+		event.responseURL = url;
+		dispatchEvent(event);
+	}
 
 	@:noCompletion private inline function __parseData(dataBytes:Bytes):Void {
 		switch (dataFormat) {
@@ -98,7 +115,30 @@ class URLLoader extends EventDispatcher {
 				dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, bytesLoaded, bytesTotal));
 			case "status":
 				dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, obj.value));
+			case "response":
+				__dispatchResponse(obj.value.status, __headerList(obj.value.headers), obj.value.url, obj.value.redirected);
 		}
+	}
+
+	/** Header fields as the client joined them, one field per value again. */
+	@:noCompletion private static function __headerList(fields:Map<String, String>):Array<URLRequestHeader> {
+		var list:Array<URLRequestHeader> = [];
+		if (fields == null) {
+			return list;
+		}
+		for (name => value in fields) {
+			// Set-Cookie is joined with a newline, since a cookie's own
+			// Expires holds commas; every other repeat with a comma, which
+			// RFC 9110 5.3 makes equivalent.
+			if (name == "set-cookie") {
+				for (cookie in value.split("\n")) {
+					list.push(new URLRequestHeader(name, cookie));
+				}
+			} else {
+				list.push(new URLRequestHeader(name, value));
+			}
+		}
+		return list;
 	}
 
 	@:noCompletion private function __onWorkerError(e:ThreadEvent):Void {
@@ -123,7 +163,12 @@ class URLLoader extends EventDispatcher {
 		__disposeWorker();
 	}
 
-	private function __work(message:Dynamic):Void {
+	private function __work(worker:Worker, message:Dynamic):Void {
+		if (message == null) {
+			// Cancelled before the thread started: the worker let go of it.
+			return;
+		}
+
 		try {
 			var request:URLRequest = message.request;
 
@@ -152,7 +197,7 @@ class URLLoader extends EventDispatcher {
 			}
 
 			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, request.httpVersion, request.idleTimeout,
-				request.userAgent, request.followRedirects, request.manageCookies);
+				request.userAgent, request.followRedirects, request.manageCookies, request.followInsecureRedirects);
 
 			// The token was created on the calling thread and travels with the
 			// message, so close() can reach a request that has already started.
@@ -160,33 +205,55 @@ class URLLoader extends EventDispatcher {
 				http.cancelToken = message.cancelToken;
 			}
 
+			// The last response's status and headers, reported once, ahead of
+			// the outcome: a redirect's own block is not the answer.
+			var finalStatus:Int = 0;
+			var finalHeaders:Map<String, String> = null;
+			function reportResponse():Void {
+				if (finalHeaders != null) {
+					worker.sendProgress({
+						type: "response",
+						value: {
+							status: finalStatus,
+							headers: finalHeaders,
+							url: http.url,
+							redirected: http.redirected
+						}
+					});
+				}
+			}
+
 			function onComplete(dataBytes:Bytes):Void {
-				__loaderWorker.sendComplete(dataBytes);
+				reportResponse();
+				worker.sendComplete(dataBytes);
 			}
 			function onProgress(loaded:Int, total:Int):Void {
 				var obj = {type: "progress", value: {bytesLoaded: loaded, bytesTotal: total}};
-				__loaderWorker.sendProgress(obj);
+				worker.sendProgress(obj);
 			}
 			function onError(msg:String, ?dataBytes:Bytes):Void {
+				reportResponse();
 				var errorMessage = {
 					"msg":msg,
 					"dataBytes":dataBytes
 				};
-				__loaderWorker.sendError(errorMessage);
+				worker.sendError(errorMessage);
 			}
 			function onStatus(code:Int):Void {
+				finalStatus = code;
 				var obj = {type: "status", value: code};
-				__loaderWorker.sendProgress(obj);
+				worker.sendProgress(obj);
 			}
 
 			http.onComplete = onComplete;
 			http.onProgress = onProgress;
 			http.onError = onError;
 			http.onStatus = onStatus;
+			http.onHeaders = headers -> finalHeaders = headers;
 
 			http.load();
 		} catch (e:Dynamic) {
-			__loaderWorker.sendError(e);
+			worker.sendError(e);
 		}
 	}
 	#end
@@ -202,6 +269,7 @@ class URLLoader extends EventDispatcher {
 
 		// No worker: the runtime's own client is asynchronous, so there is no
 		// blocking call here for one to keep off the loop.
+		var finalStatus:Int = 0;
 		crossbyte.url._internal.JsHttpClient.send(request, function(status:Int):Void {
 			dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, status));
 		}, function(loaded:Int, total:Int):Void {
@@ -211,10 +279,20 @@ class URLLoader extends EventDispatcher {
 		}, function(dataBytes:Bytes):Void {
 			__busy = false;
 			__parseData(dataBytes);
+			// The native client's contract, and AS3's: a 4xx or 5xx is an
+			// IO_ERROR, with its body in `data`. This completed, so one status
+			// meant two outcomes depending on the target.
+			if (finalStatus >= 400) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "HTTP error " + finalStatus));
+				return;
+			}
 			dispatchEvent(new Event(Event.COMPLETE));
 		}, function(message:String):Void {
 			__busy = false;
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+		}, function(status:Int, headers:Array<URLRequestHeader>, url:String, redirected:Bool):Void {
+			finalStatus = status;
+			__dispatchResponse(status, headers, url, redirected);
 		});
 		#else
 		if (__busy) {
