@@ -774,6 +774,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A port in a URL that is too big for an `Int` is refused the same way on
+  every target, as any port past 65535 is. `parseURL` and a WebSocket URL
+  read it with `Std.parseInt`, which answers such a number differently on
+  each: on Linux native its low 32 bits, so `tcp://host:4294967296` was port
+  0; on Windows the largest `Int`; on eval nothing, so a WebSocket took its
+  default port; on the jvm a `NumberFormatException` instead of the parse
+  error the caller was told to expect.
 - A `ServerSocket` that cannot take a waiting connection -- the process
   out of descriptors -- says so, once for a run of failures, as an
   `ioError`, and goes on listening. Natively the failure was swallowed,

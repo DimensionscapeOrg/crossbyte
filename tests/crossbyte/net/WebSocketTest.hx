@@ -376,6 +376,32 @@ class WebSocketTest extends utest.Test {
 		child.exit();
 	}
 
+	/**
+		A URL whose port is too big for an `Int` is refused, on every target.
+		`Std.parseInt` made it the largest Int on Windows, its low 32 bits on
+		Linux -- port 80, for this one -- nothing at all on eval, so the
+		default port, and an exception of its own on the jvm. Not on eval,
+		which has no secure random to key a client's handshake with, so no
+		client to build.
+	**/
+	#if !eval
+	public function testAUrlPortTooBigForAnIntIsRefused():Void {
+		var thrown:Dynamic = null;
+		var session:InternalWebSocket = null;
+		try {
+			session = new InternalWebSocket("ws://127.0.0.1:4294967376/chat");
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+		if (session != null) {
+			try session.abort() catch (_:Dynamic) {}
+		}
+
+		Assert.notNull(thrown, "a port too big for an Int was taken as some other port");
+		Assert.isTrue(thrown != null && Std.string(thrown).indexOf("port") >= 0, "the refusal did not say it was the port: " + thrown);
+	}
+	#end
+
 	private static function emptyWebSocket():InternalWebSocket {
 		return Type.createEmptyInstance(InternalWebSocket);
 	}

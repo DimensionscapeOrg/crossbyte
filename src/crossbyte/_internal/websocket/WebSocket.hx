@@ -319,8 +319,21 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 					throw "Uri does not include a valid Web Socket Scheme";
 				}
 
-				var port:Null<Int> = Std.parseInt(regex.matched(3));
-				__port = port == null ? (__secure ? 443 : 80) : port;
+				// Bounded as it is read. Std.parseInt answers a number too big
+				// for an Int differently on every target -- its low 32 bits on
+				// Linux native, the largest Int on Windows, an exception on the
+				// jvm, nothing at all on eval -- so a port past 65535 became
+				// some other port, or the default, depending where it ran.
+				var portText:Null<String> = regex.matched(3);
+				if (portText == null || portText.length == 0) {
+					__port = __secure ? 443 : 80;
+				} else {
+					var port:Int = crossbyte.utils.IntParse.decimal(portText, 65535);
+					if (port < 0) {
+						throw "Uri port is out of range: " + portText;
+					}
+					__port = port;
+				}
 				var path:Null<String> = regex.matched(4);
 				__path = path == "" ? "/" : "/" + path;
 			} else {
