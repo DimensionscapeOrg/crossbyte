@@ -5,6 +5,24 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `PeerConnectionHost`: many WebRTC peer connections on one UDP port, driven
+  by one tick. A `PeerConnection` binds a socket of its own, and with it a
+  port, that socket's buffers and a tick listener, so a server holding ten
+  thousand browser peers held ten thousand of each and had to open a port
+  range as wide as its peak. `host.createConnection(isOfferer)` makes a
+  connection that shares the host's socket instead and is otherwise used
+  the same way. The host routes a browser's checks by the ufrag they name,
+  the answers to a connection's own checks by their transaction, and DTLS
+  by the address that connection proved a path to, never by one it only
+  sent to, so a peer listing another's address as its own cannot take that
+  peer's traffic. `addLocalCandidate` gives every connection the host's
+  public address. A hosted connection gathers no reflexive or relayed
+  address of its own, that socket's mapping being every connection's. An
+  idle tick measured natively went from about 120 ns a connection to about
+  8, with 300 connections. Checked against Chrome in both directions. The
+  socket reads at most 64 datagrams each time the runtime services it,
+  which the DEFAULT main loop does once a tick, so a busy host wants the
+  POLL main loop.
 - Partially reliable WebRTC data channels, RFC 3758 with RFC 8832's channel
   types: what a game's state channel is, since a position that arrives late
   is worth less than the next one. `PeerConnection.createDataChannel` takes
