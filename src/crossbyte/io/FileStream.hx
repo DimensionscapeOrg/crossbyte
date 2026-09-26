@@ -15,6 +15,8 @@ import haxe.io.Bytes;
 import haxe.io.Path;
 import crossbyte.sys.Worker;
 import crossbyte.errors.Error;
+import crossbyte.errors.EOFError;
+import crossbyte.errors.RangeError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.io.FileMode;
@@ -556,16 +558,37 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		// `Bytes` per call and copy it across, which at a 64 KB slice is
 		// roughly sixteen thousand transient allocations and a second copy
 		// of every byte for each gigabyte streamed.
-		//
-		// The allocation was doing one thing besides holding bytes: it came
-		// zeroed, so a short read left the unread tail zero-filled rather
-		// than showing whatever the buffer previously held, which for a
-		// reused destination is real data from an earlier offset. The read
-		// count is honoured explicitly to keep that, since the destination
-		// is not freshly zeroed.
-		var read:Int = __input.readBytes(byteArrayData, offset, length);
+		var read:Int = 0;
+
+		while (read < length) {
+			var got:Int = 0;
+
+			try {
+				got = __input.readBytes(byteArrayData, offset + read, length - read);
+			} catch (_:haxe.io.Eof) {
+				break;
+			}
+
+			if (got <= 0) {
+				break;
+			}
+
+			read += got;
+		}
+
 		if (read < length) {
-			byteArrayData.fill(offset + read, length - read, 0);
+			// The contract above: not enough data is an EOFError. A short read
+			// used to be padded out with zeros and reported as success, so a
+			// chunked copy of a 1 MB file came out 65,436 bytes longer, the
+			// tail of it zeros, with nothing to say where the data ended.
+			// Nothing is consumed, so the caller can ask again for what is
+			// there.
+			if (read > 0) {
+				__input.seek(-read, FileSeek.SeekCur);
+			}
+
+			__positionDirty = true;
+			throw new EOFError('Asked for $length bytes with ${read} left in the file.');
 		}
 
 		__positionDirty = true;
@@ -1254,7 +1277,14 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 		if (__isAsync) {
 			__fileStreamMutex.acquire();
-			__buffer.writeUTF(value);
+
+			try {
+				__buffer.writeUTF(value);
+			} catch (e:Dynamic) {
+				__fileStreamMutex.release();
+				throw e;
+			}
+
 			isWriting = true;
 			__fileStreamMutex.release();
 
@@ -1262,7 +1292,15 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 
 		var bytes = Bytes.ofString(value);
-		__output.writeInt16(bytes.length);
+
+		if (bytes.length > 0xFFFF) {
+			throw new RangeError('writeUTF takes at most 65535 bytes, and this string is ${bytes.length}. Use writeUTFBytes with a length of your own.');
+		}
+
+		// Unsigned: the prefix is a 16-bit length, and writeInt16 refused
+		// anything from 32768 up with an Overflow the documentation does not
+		// mention, where ByteArray took the same string.
+		__output.writeUInt16(bytes.length);
 		__output.writeBytes(bytes, 0, bytes.length);
 		__file.__fileStatsDirty = true;
 		__positionDirty = true;
