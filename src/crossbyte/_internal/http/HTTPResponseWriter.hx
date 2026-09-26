@@ -47,6 +47,13 @@ interface HTTPResponseWriter {
 	 * mid-transfer. Set to `null` to stop.
 	 */
 	var onDrain(get, set):Null<Void->Void>;
+	/**
+	 * Invoked if the peer abandons this response without the connection
+	 * closing: under HTTP/2, a reset of its stream. A closed connection is
+	 * the socket's own `Event.CLOSE`, and under HTTP/1.1 that is the only way
+	 * a response is abandoned, so this is never called there.
+	 */
+	var onAbandoned(get, set):Null<Void->Void>;
 
 	/** Writes the status and header fields. Called once per response. */
 	function writeHead(head:HTTPResponseHead):Void;
@@ -65,4 +72,12 @@ interface HTTPResponseWriter {
 	 * is a request the client is still waiting on.
 	 */
 	function endResponse():Void;
+
+	/**
+	 * Gives up on a response partway through its body, where no status can
+	 * say so any more: HTTP/1.1 closes the connection, the only way left to
+	 * tell the peer the body is short, and HTTP/2 resets the stream, leaving
+	 * the connection's other streams alone.
+	 */
+	function abort():Void;
 }

@@ -140,6 +140,7 @@ class H2ServerConnection {
 	private final __frames:H2FrameDecoder;
 	private final __streams:Map<Int, H2Stream>;
 	private final __writable:Map<Int, Void->Void>;
+	private final __abandoned:Map<Int, Void->Void>;
 
 	private var __prefaceRemaining:Int;
 	private var __settingsSent:Bool = false;
@@ -184,6 +185,7 @@ class H2ServerConnection {
 		__frames = new H2FrameDecoder(localSettings.maxFrameSize);
 		__streams = new Map();
 		__writable = new Map();
+		__abandoned = new Map();
 
 		__prefaceRemaining = H2Connection.PREFACE.length;
 		__connectionSendWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
@@ -361,6 +363,24 @@ class H2ServerConnection {
 	}
 
 	/**
+	 * Calls `callback` if the peer resets `streamId` before it ends: the
+	 * client abandoning a response, which a producer writing one as it goes
+	 * has to hear about. Dropped, uncalled, when the stream ends normally.
+	 */
+	public function setAbandonedCallback(streamId:Int, callback:Null<Void->Void>):Void {
+		if (callback == null) {
+			__abandoned.remove(streamId);
+		} else if (__streams.exists(streamId)) {
+			__abandoned.set(streamId, callback);
+		}
+	}
+
+	/** Whether `streamId` is still open, neither ended nor reset. */
+	public inline function hasStream(streamId:Int):Bool {
+		return __streams.exists(streamId);
+	}
+
+	/**
 	 * Re-offers every blocked stream, then tells each it may write more.
 	 *
 	 * Called when the socket drains as well as when a window opens: the two
@@ -454,6 +474,7 @@ class H2ServerConnection {
 			if (target.delivered) {
 				__answering--;
 			}
+			__abandoned.remove(streamId);
 		}
 	}
 
@@ -821,9 +842,15 @@ class H2ServerConnection {
 			return;
 		}
 
+		var abandoned:Null<Void->Void> = __abandoned.get(frame.streamId);
+
 		target.close();
 		__forget(frame.streamId);
 		__writable.remove(frame.streamId);
+
+		if (abandoned != null) {
+			abandoned();
+		}
 
 		__noteAbandonedStream();
 	}

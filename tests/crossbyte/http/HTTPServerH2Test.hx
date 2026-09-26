@@ -662,6 +662,81 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAnHttp2ResponseIsWrittenAsItGoes(async:Async):Void {
+		// The body goes out as DATA while the stream stays open; only
+		// endResponse ends it.
+		var held:HTTPResponseStream = null;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					held = handler.beginResponse(200, "text/event-stream");
+					held.writeText("one ");
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/events", true);
+			session.until(() -> session.body(1) == "one " || session.ended, () -> {
+				var openAfterFirst:Bool = !session.finished(1);
+				held.writeText("two");
+				held.end();
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					session.close();
+					Assert.equals(200, session.status(1));
+					Assert.isTrue(openAfterFirst, "the stream ended with the first write");
+					Assert.equals("one two", session.body(1));
+					Assert.isNull(session.header(1, "content-length"));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAnHttp2ProducerHearsItsStreamReset(async:Async):Void {
+		// A client that cancels one stream leaves the connection up, so the
+		// connection closing is not how a producer on that stream would ever
+		// find out. It hears Event.CLOSE, and can write no more.
+		var held:HTTPRequestHandler = null;
+		var events:HTTPResponseStream = null;
+		var heardClose:Bool = false;
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath == "/events") {
+						held = handler;
+						handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> heardClose = true);
+						events = handler.beginResponse(200, "text/event-stream");
+						events.writeText("first");
+						return;
+					}
+					next();
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/events", true);
+			session.until(() -> session.body(1) == "first" || session.ended, () -> {
+				session.reset(1);
+				session.until(() -> heardClose || session.ended, () -> {
+					var accepted:Bool = events.writeText("after");
+					var connected:Bool = held.connected || events.connected;
+					// The connection carries on for everything else.
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.isTrue(heardClose, "the producer was not told its stream was reset");
+						Assert.isFalse(accepted);
+						Assert.isFalse(connected);
+						Assert.equals(200, session.status(3));
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	// ---------------------------------------------------------------- driver
 
 	/**
@@ -1054,6 +1129,18 @@ private class H2Session {
 	/** The error code of an RST_STREAM the server sent for `streamId`, or -1. */
 	public function resetCode(streamId:Int):Int {
 		return __resets.exists(streamId) ? __resets.get(streamId) : -1;
+	}
+
+	/** Resets `streamId` from this side, CANCEL by default: a client giving up. */
+	public function reset(streamId:Int, code:Int = 8):Void {
+		var payload:Bytes = Bytes.alloc(4);
+		payload.set(0, (code >> 24) & 0xFF);
+		payload.set(1, (code >> 16) & 0xFF);
+		payload.set(2, (code >> 8) & 0xFF);
+		payload.set(3, code & 0xFF);
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.RST_STREAM, 0, streamId, payload);
+		__send(out);
 	}
 
 	/** Sends the rest of a request's body and ends its stream. */
