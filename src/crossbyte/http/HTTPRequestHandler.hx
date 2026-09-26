@@ -758,17 +758,47 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			__config.middleware[index](this, next);
 		} catch (error:Dynamic) {
-			__dispatchMiddlewareError(error);
+			__dispatchMiddlewareError(error, haxe.CallStack.exceptionStack());
 		}
 	}
 
-	@:noCompletion private function __dispatchMiddlewareError(error:Dynamic):Void {
+	/**
+	 * Answers a request whose middleware or route failed: through
+	 * `HTTPServerConfig.onError` if it answers, and otherwise with the status
+	 * an `Int` error names, or `500`.
+	 *
+	 * An error that is not an `Int` is logged first, at ERROR, with the method,
+	 * the path and the stack. It was not logged at all, so a route that threw
+	 * "database connection refused" left only an INFO line reading
+	 * `Status: 500`, and nothing said why. The client still hears only the
+	 * status: the error's text is the operator's, not the caller's.
+	 */
+	@:noCompletion private function __dispatchMiddlewareError(error:Dynamic, ?stack:Array<haxe.CallStack.StackItem>):Void {
 		var status:Int = 500;
 		if (Std.isOfType(error, Int)) {
 			status = cast error;
+		} else {
+			var fields:Map<String, String> = ["method" => __method, "path" => __requestPath];
+			if (stack != null && stack.length > 0) {
+				// One line, so a text log keeps one record per line.
+				fields.set("stack", StringTools.trim(haxe.CallStack.toString(stack)).split("\n").join(" | "));
+			}
+			Logger.error("Request failed: " + Std.string(error), fields);
 		}
-		var statusText:String = __statusMessage(status);
-		__sendErrorResponse(status, statusText);
+
+		if (__config.onError != null && !__responded) {
+			try {
+				__config.onError(this, error);
+			} catch (hookError:Dynamic) {
+				Logger.error("HTTPServerConfig.onError threw: " + Std.string(hookError), ["method" => __method, "path" => __requestPath]);
+			}
+
+			if (__responded) {
+				return;
+			}
+		}
+
+		__sendErrorResponse(status, __statusMessage(status));
 	}
 
 	/**
