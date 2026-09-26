@@ -462,16 +462,56 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	public function testCorsPreflightReturnsConfiguredHeaders(async:Async):Void {
-		__sendRequest(async, [], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: X-Test\r\n\r\n", function(response):Void {
+		// The configured lists, not the request's: this used to echo DELETE and
+		// X-Evil back, approving whatever a page named.
+		__sendRequest(async, [], "OPTIONS /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\nAccess-Control-Request-Headers: X-Evil, Authorization\r\n\r\n", function(response):Void {
 
 			Assert.equals(204, response.status);
 			Assert.equals("", response.body);
 			Assert.equals("*", response.headers.get("access-control-allow-origin"));
-			Assert.equals("POST", response.headers.get("access-control-allow-methods"));
-			Assert.equals("X-Test", response.headers.get("access-control-allow-headers"));
+			Assert.equals("GET, POST, OPTIONS", response.headers.get("access-control-allow-methods"));
+			Assert.equals("Content-Type", response.headers.get("access-control-allow-headers"));
 			Assert.equals("GET, HEAD, OPTIONS, POST", response.headers.get("allow"));
 			async.done();
 		}, null, true);
+	}
+
+	public function testCorsWithCredentialsNamesOnlyTheOriginsItTrusts(async:Async):Void {
+		__sendRequests(async, [], [
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example\r\n\r\n",
+			"GET /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\n\r\n"
+		], function(result):Void {
+			var trusted = result.responses[0];
+			var other = result.responses[1];
+
+			Assert.equals("https://app.example", trusted.headers.get("access-control-allow-origin"));
+			Assert.equals("true", trusted.headers.get("access-control-allow-credentials"));
+			Assert.isFalse(other.headers.exists("access-control-allow-origin"), "an untrusted origin was named");
+			Assert.isFalse(other.headers.exists("access-control-allow-credentials"), "credentials were offered to an untrusted origin");
+			async.done();
+		}, config -> {
+			config.corsEnabled = true;
+			config.corsAllowCredentials = true;
+			config.corsAllowedOrigins = ["https://app.example"];
+		});
+	}
+
+	public function testCorsNeverEchoesAnOriginForTheWildcard(async:Async):Void {
+		// The auditor read a signed-in user's /me from https://evil.example:
+		// with credentials on and the origins left at "*", any Origin came
+		// back with Allow-Credentials. validate() now refuses that pairing,
+		// and a config changed after the server started still answers "*",
+		// which a browser will not pair with credentials.
+		var refused:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		refused.corsEnabled = true;
+		refused.corsAllowCredentials = true;
+		Assert.raises(() -> refused.validate(), ArgumentError);
+
+		__sendRequest(async, [], "GET /index.html HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\nCookie: sid=1\r\n\r\n", function(response):Void {
+			Assert.equals("*", response.headers.get("access-control-allow-origin"));
+			Assert.isFalse(response.headers.exists("access-control-allow-credentials"), "credentials were granted to every origin");
+			async.done();
+		}, null, true, null, null, null, server -> @:privateAccess server.__config.corsAllowCredentials = true);
 	}
 
 
@@ -1388,7 +1428,8 @@ class HTTPRequestHandlerTest extends utest.Test {
 	}
 
 	private function __sendRequest(async:Async, middleware:Array<(HTTPRequestHandler, ?Dynamic->Void) -> Void>, requestText:String, done:HTTPTestResponse->Void,
-			?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void, ?sharedRoot:File):Void {
+			?secondChunk:String, corsEnabled:Bool = false, ?requestBody:ByteArray, ?configure:HTTPServerConfig->Void, ?sharedRoot:File,
+			?started:HTTPServer->Void):Void {
 		// A caller can hand in a root so two requests hit the same file. A
 		// conditional request needs that: Last-Modified is the file's mtime at
 		// second granularity, and two temp files created a moment apart can fall
@@ -1407,6 +1448,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 			configure(config);
 		}
 		var server = new HTTPServer(config);
+		// After construction, for a case about a configuration changed once
+		// the server is running, which validate() never sees.
+		if (started != null) {
+			started(server);
+		}
 		var client = new Socket();
 		var rawResponse = "";
 		var closeSeen = false;
