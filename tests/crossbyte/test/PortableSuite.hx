@@ -97,6 +97,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptVectorsTest());
 		runner.addCase(new crossbyte.crypto.password.BCryptByteVectorsTest());
+		// Argon2id runs on Node through its own crypto.argon2; the browser has
+		// none and has to say so.
+		runner.addCase(new crossbyte.crypto.password.PasswordOffloadTest());
 		// Pure rules, no socket: the host, Secure and deletion checks that
 		// decide whether a session cookie reaches someone else's server.
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());
