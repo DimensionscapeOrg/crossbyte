@@ -408,8 +408,14 @@ class Future<T> implements IEventDispatcher {
 			__safely(() -> handler(value), "result");
 		}
 
+		// Contained as a handler is. A listener that threw escaped into
+		// whoever completed this, for an RPC response, the session reading
+		// its connection, which took the throw for a frame it could not read,
+		// closed the connection and failed every other call waiting on it.
 		if (hasEventListener(RESULT)) {
-			dispatchEvent(new Event(RESULT));
+			__safely(() -> {
+				dispatchEvent(new Event(RESULT));
+			}, "result event");
 		}
 		return true;
 	}
@@ -459,7 +465,9 @@ class Future<T> implements IEventDispatcher {
 		}
 
 		if (hasEventListener(ERROR)) {
-			dispatchEvent(new Event(ERROR));
+			__safely(() -> {
+				dispatchEvent(new Event(ERROR));
+			}, "error event");
 		}
 
 		if (!observed) {
