@@ -299,6 +299,15 @@ class IceAgent {
 			return false;
 		}
 
+		// And an IPv4 address only as one the socket reads the way this does.
+		// Four runs of digits passed as numeric, so 1.2.3.999 did: hxcpp's
+		// resolver finds no literal in it and looks it up as a name, the same
+		// block on this loop as above, per check; and a relay was asked to
+		// permit whatever the octets wrapped to.
+		if (!candidate.isIPv6() && StunMessage.ipv4Octets(candidate.address) == null) {
+			return false;
+		}
+
 		if (__known(__remotes, candidate)) {
 			return false;
 		}
@@ -548,11 +557,14 @@ class IceAgent {
 			return;
 		}
 
-		var response = new StunMessage(StunMessage.BINDING_SUCCESS, request.transactionId, [
-			// Where this peer sees the sender, which is how the sender learns
-			// about a mapping its own NAT made and it could not have known.
-			StunMessage.xorMappedAddress(fromAddress, fromPort)
-		]);
+		// Where this peer sees the sender, which is how the sender learns about
+		// a mapping its own NAT made and it could not have known. IPv4 alone:
+		// an IPv6 source was split on dots and read as numbers, so the answer
+		// named an IPv4 address that does not exist and the sender learned it
+		// as a reflexive view of itself. Without the attribute the check still
+		// succeeds at both ends, and nothing is learned that is not so.
+		var response = new StunMessage(StunMessage.BINDING_SUCCESS, request.transactionId,
+			StunMessage.ipv4Octets(fromAddress) != null ? [StunMessage.xorMappedAddress(fromAddress, fromPort)] : []);
 
 		__sendVia(__arrivedVia, response.encodeSigned(localCredentials.password), fromAddress, fromPort);
 

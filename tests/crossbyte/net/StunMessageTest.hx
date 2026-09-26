@@ -165,6 +165,44 @@ class StunMessageTest extends utest.Test {
 		Assert.equals(54321, address.port);
 	}
 
+	/**
+		An address is written only when it is an IPv4 one, and then exactly as
+		written.
+
+		The octets were read with `Std.parseInt` and written modulo 256, so
+		1.2.3.999 went out as 1.2.3.231; an IPv6 address as whatever its first
+		group read as, which on the jvm is an exception rather than a number;
+		and 010 as ten, where `inet_addr` reads it as octal eight.
+	**/
+	public function testOnlyAnIPv4AddressIsWrittenAsOne():Void {
+		for (address in ["1.2.3.999", "256.0.0.1", "1.2.3.4294967296", "010.1.1.1", "1.2.3.00", "1.2.3", "1.2.3.4.5", "1.2.3.-4",
+			" 1.2.3.4", "1.2.3.4 ", "1..3.4", "fe80::1", "::ffff:1.2.3.4", "", null]) {
+			Assert.equals("null", octets(address), "\"" + address + "\" was read as an IPv4 address");
+			Assert.raises(() -> StunMessage.xorMappedAddress(address, 1), crossbyte.errors.ArgumentError,
+				"\"" + address + "\" was written as an IPv4 address");
+		}
+
+		Assert.equals("0,0,0,0", octets("0.0.0.0"));
+		Assert.equals("255,255,255,255", octets("255.255.255.255"));
+		Assert.equals("10,0,0,1", octets("10.0.0.1"));
+
+		for (address in ["0.0.0.0", "255.255.255.255", "10.0.0.1"]) {
+			var response = new StunMessage(StunMessage.BINDING_SUCCESS, transaction(), [StunMessage.xorMappedAddress(address, 65535)]);
+			var decoded = StunMessage.decode(response.encode());
+			Require.notNull(decoded);
+
+			var mapped = decoded.mappedAddress();
+			Require.notNull(mapped);
+			Assert.equals(address, mapped.address);
+			Assert.equals(65535, mapped.port);
+		}
+	}
+
+	private static function octets(address:String):String {
+		var read = StunMessage.ipv4Octets(address);
+		return read == null ? "null" : read.join(",");
+	}
+
 	public function testTheAddressIsActuallyObscuredOnTheWire():Void {
 		// Computed from RFC 5389 rather than from the encoder: X-Port is the
 		// port XOR the top half of the cookie, and each address octet is XORed

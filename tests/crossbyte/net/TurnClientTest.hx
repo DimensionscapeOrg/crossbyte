@@ -192,6 +192,45 @@ class TurnClientTest extends utest.Test {
 	}
 
 	/**
+		A peer that is not an IPv4 address is refused, and nothing is kept.
+
+		XOR-PEER-ADDRESS is written as IPv4 here, as the allocation is, and its
+		octets were read with `Std.parseInt` and written modulo 256: a peer
+		named 1.2.3.999 was permitted as 1.2.3.231, and an IPv6 one as whatever
+		its first group read as, so the relay forwarded to a host nobody named.
+		A refused permission is not kept either, or every renewal would throw
+		from `poll`.
+	**/
+	public function testOnlyAnIPv4PeerIsPermitted():Void {
+		if (unsupported()) return;
+
+		var relay = new Relay();
+		var client = relay.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(0);
+		relay.run(client, () -> client.active);
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("to nobody");
+
+		for (address in ["1.2.3.999", "2001:db8::1", "010.1.1.1"]) {
+			Assert.raises(() -> client.permit(address, 1), crossbyte.errors.ArgumentError, address + " was permitted");
+			Assert.raises(() -> client.bindChannel(address, 40000, 1), crossbyte.errors.ArgumentError, address + " was bound");
+			Assert.raises(() -> client.sendTo(payload, address, 40000), crossbyte.errors.ArgumentError, address + " was sent to");
+		}
+
+		relay.pump(client, 1);
+		Assert.equals(0, relay.permissionRequests, "the relay was asked to let through a peer nobody named");
+		Assert.isNull(relay.lastIndication, "the relay was asked to forward to a peer nobody named");
+
+		// Past when a kept permission would be renewed.
+		client.poll(1 + TurnClient.PERMISSION_REFRESH + 1);
+		relay.pump(client, 1 + TurnClient.PERMISSION_REFRESH + 1);
+		Assert.equals(0, relay.permissionRequests, "a refused permission was kept and renewed");
+	}
+
+	/**
 		A permission asked for while a refresh is outstanding does not lose it.
 
 		Only one request is tracked at a time, so a second started underneath
