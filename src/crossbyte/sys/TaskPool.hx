@@ -1,7 +1,7 @@
 package crossbyte.sys;
 
 import crossbyte.errors.IllegalOperationError;
-#if (cpp || neko || hl)
+#if target.threaded
 import sys.thread.Deque;
 import sys.thread.Lock;
 import sys.thread.Mutex;
@@ -23,7 +23,7 @@ class TaskPool {
 	@:noCompletion private var __workerCount:Int;
 	@:noCompletion private var __isShutdown:Bool;
 	@:noCompletion private var __retainedTasks:Array<Task<Dynamic>>;
-	#if (cpp || neko || hl)
+	#if target.threaded
 	@:noCompletion private var __queued:Int;
 	@:noCompletion private var __running:Int;
 	@:noCompletion private var __activeWorkers:Int;
@@ -46,7 +46,7 @@ class TaskPool {
 		__isShutdown = false;
 		__retainedTasks = [];
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__queued = 0;
 		__running = 0;
 		__activeWorkers = workerCount;
@@ -73,7 +73,7 @@ class TaskPool {
 		}
 
 		var task = new Task<T>();
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__retainTask(cast task);
 		task.__registerReleaseHook(() -> {
 			__releaseTask(cast task);
@@ -84,7 +84,7 @@ class TaskPool {
 			job: () -> job()
 		};
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		// No cancel hook is registered: a task cancelled while queued is left in
 		// place and discarded by whichever worker pops it, because `__start()`
 		// refuses to start anything that is no longer PENDING.
@@ -111,7 +111,7 @@ class TaskPool {
 	}
 
 	public function shutdown(?drain:Bool = true):Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__stateLock.acquire();
 		var alreadyShutdown:Bool = __isShutdown;
 		__isShutdown = true;
@@ -131,7 +131,7 @@ class TaskPool {
 	}
 
 	public function shutdownNow():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__stateLock.acquire();
 		var alreadyShutdown:Bool = __isShutdown;
 		__isShutdown = true;
@@ -161,7 +161,7 @@ class TaskPool {
 	}
 
 	@:noCompletion private function get_queuedCount():Int {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__stateLock.acquire();
 		var value = __queued;
 		__stateLock.release();
@@ -172,7 +172,7 @@ class TaskPool {
 	}
 
 	@:noCompletion private function get_activeCount():Int {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__stateLock.acquire();
 		var value = __running;
 		__stateLock.release();
@@ -182,7 +182,7 @@ class TaskPool {
 		#end
 	}
 
-	#if (cpp || neko || hl)
+	#if target.threaded
 	@:noCompletion private function __retainTask(task:Task<Dynamic>):Void {
 		__stateLock.acquire();
 		__retainedTasks.push(task);

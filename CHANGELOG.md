@@ -90,6 +90,34 @@ All notable changes to CrossByte will be documented in this file.
   connection is running, and is safe from any thread, which is where it is
   needed, since the thread that sent the statement is waiting for its
   answer. Defaults are unchanged. Native driver only.
+- `CrossByte.loopLag`, `frameOverruns`, `droppedScheduleDebt` and
+  `postQueueDepth`: how far past its deadline the last frame ended, how many
+  frames have outrun their tick, how many seconds of schedule the loop has
+  given up after stalls too long to repay, and how many posted callbacks
+  are waiting to run. With `timerBacklog`, `timerLag` and `timerOverruns`
+  they say whether a runtime is keeping up; nothing did before. Each costs
+  the loop a clock read a frame at most.
+- `Logger` categories and a record sink. `Logger.category("http.access")`
+  returns a logger whose level `Logger.setLevel("http.access", level)` sets
+  apart from the global one, inherited along the dots (`http` covers
+  `http.access`), and `Logger.log` takes a category too. A categorised
+  record names it, `[INFO] [http.access] ...`, or `"category"` in JSON.
+  `Logger.recordSink` receives each record whole: level, category, message,
+  fields, time and the formatted line, where `sink` only ever saw the line
+  and could not tell an error from a debug record. A category's level is
+  cached, so a record below it costs a comparison. The runtime logs the
+  failures it contains under `runtime`.
+- `CrossByte.post(callback)`: runs `callback` on the runtime's own thread,
+  safe to call from any thread, and wakes the runtime for it. It was
+  `__post`, marked internal although it is the one way to hand a runtime
+  work from another thread; `__post` still works. Returns `false` once the
+  runtime has exited, when the callback would never run.
+- `CrossByte.make(loopType, timers, configure)`: a callback run with the new
+  child runtime, on the calling thread, before the child's thread starts,
+  the place to set `tps` and add `INIT` and `EXIT` listeners. The thread
+  used to start inside `make()`, so anything done to the returned runtime
+  raced its first frame, and an INIT listener added afterwards could miss
+  INIT.
 - `crossbyte.utils.IntParse.decimal` and `hex`: read an integer from text
   the same way on every target, within a bound, answering `-1` for anything
   that is not a plain non-negative number that fits. `Std.parseInt` has four
@@ -647,6 +675,36 @@ All notable changes to CrossByte will be documented in this file.
   from a committed one; `SQLiteConnection` has always thrown. Code that
   handled the event and called these without a `try` now sees the error
   thrown as well, and should catch it where it handled the event.
+- `System.memoryUsage()` returns a `Float` rather than an `Int`, since a
+  heap outgrows an `Int`. It is still 0 on the interpreter, hl, neko and in
+  a browser, which report no figure.
+- On Node and the jvm, `ProcessLifecycle.installDefaultHandlers()` takes
+  over SIGINT and SIGTERM, as it already did natively, and returns `true`:
+  the process no longer exits on them by itself, and the shutdown callbacks
+  and `exitOnShutdown` decide when it ends.
+- `SlotHandle` has 20 index bits and 11 generation bits, where it had 24 and
+  8, so a `SlotMap` or `PackedSlotMap` holds at most 1,048,576 entries
+  rather than 16,777,216. A map created with a larger `maxCapacity` now
+  throws, as one past the old limit did.
+- Log timestamps are UTC with milliseconds, `2026-09-25T09:00:00.123Z`,
+  where they were local time to the second with no zone, and a control
+  character in a message or field is written as an escape. Anything parsing
+  the text format should expect both.
+- On the jvm, the interpreter, hl and neko, `CrossByte.current()` called
+  from a thread no runtime belongs to throws `IllegalOperationError` rather
+  than returning the primordial runtime, as it already did natively. Code on
+  a worker thread that needs a runtime should capture it on the runtime's
+  own thread and hand work back through its post queue.
+- A timer armed from inside a timer callback for a time already reached,
+  `setTimeout(0)`, or a reschedule into the past, fires on the next frame
+  rather than in the pass that armed it. Recurring timers still catch up
+  within a pass as before.
+- `HostApplication.advance` and `CrossByte.pump` no longer rethrow what a
+  handler threw during the step, and neither does a `PassFlush` holder's
+  failure escape the pass: both are contained and reported through
+  `UncaughtErrorEvent.UNCAUGHT_ERROR`, as they are under the runtime's own
+  loop. A host that caught failures around `advance` should listen for that
+  event instead.
 - A handler's `@:rpc` method is no longer held to eight arguments. Nothing
   else was: a commands stub or a contract with more built, and a handler
   written without a contract could not answer it. Nothing in the encoding
@@ -996,6 +1054,206 @@ All notable changes to CrossByte will be documented in this file.
   a connect. Connecting, executing, cancelling and closing now run in a
   GC-free zone, with the statement and its parameters copied out of the
   Haxe heap first.
+- Adding or removing an event listener copies the listener list only while
+  a dispatch is walking it. It copied on every call, so n listeners on one
+  type, a connection or a task each attaching its own, cost n^2 to
+  attach and again to detach: a thousand added and removed took 5.6ms
+  natively, and takes 75us now (removed newest first, 20ms and 3ms, where
+  finding each one is the cost left). A listener added after the others of
+  its priority, the usual case, no longer walks the list to find its place.
+  What a dispatch sees is unchanged: a listener added during it does not
+  run for that event, and one removed during it still does.
+- `CrossByte.cpuLoad` counts a POLL loop's socket handlers, and the posted
+  callbacks any loop runs while it waits out a frame. It was measured before
+  the poll, so a POLL server busy with its sockets half of every frame
+  reported 0%. Time spent blocked in poll, waiting for a socket, still does
+  not count as load.
+- `System.memoryUsage()` reports the heap in use on the jvm and Node, and
+  natively takes the collector's 64-bit figure. It was the 32-bit one, which
+  wrapped negative past 2 GiB, and 0 on every other target.
+- Timer handles are never negative. The id took 20 bits and the 12-bit
+  generation above it reached the sign bit, so from a slot's 2,048th reuse
+  every handle for it was negative, against what `TimerHandle` said of
+  itself, and a live handle at the top id could equal `TimerHandle.INVALID`.
+  The id has 19 bits now: a runtime's scheduler holds up to 524,288 timers at
+  once and throws when asked for more, where ids past 1,048,576 used to wrap
+  onto other timers without a word.
+- A shutdown callback that throws is logged with `Logger.error` (category
+  `runtime`). It was swallowed silently; the callbacks after it and the exit
+  path still run.
+- A `ServerApplication` runs on Node, an `Application` can be made on the
+  interpreter, and `docker stop` or Ctrl+C on a jvm or Node service runs the
+  shutdown callbacks. `ServerApplication`'s POLL loop threw on JavaScript at
+  its first frame, since there is no socket set to poll there, which took
+  down the web-server sample; POLL runs the DEFAULT loop on JavaScript now.
+  On the interpreter `Thread.current() != mainThread` was true on the main
+  thread itself, only `==` compares threads there, so every
+  `Application` subclass threw "must only be instantiated in the main
+  thread". And `ProcessLifecycle.installDefaultHandlers()` armed nothing off
+  native: Node exits on SIGTERM and SIGINT unless something listens, and the
+  JVM's default halts after its shutdown hooks, so neither drained. It now
+  listens for both on Node and sets the JVM's own signal hook for INT and
+  TERM, latching the request as the native handlers do and waking the
+  runtime to run the callbacks.
+- A `SlotMap` or `PackedSlotMap` handle kept after its entry died no longer
+  comes to name whatever takes its slot 256 reuses later. The generation
+  was eight bits, and the free list hands the most recently freed slot back
+  first, so a missile's target or a last attacker resolved to an unrelated
+  entity within seconds of churn. It is eleven bits now, as `TimerHandle`'s
+  was widened for the same reason. The sign bit is no longer part of it, so
+  a handle is never negative, past 128 reuses every handle was, and a
+  live one at the highest index was `SlotHandle.INVALID` itself.
+  `SlotMap.clear()` counted the generation without keeping it in range,
+  bringing back the leak `remove()` was fixed for: a slot at the top of its
+  range held a value no handle could carry, and an entry put there after the
+  clear could never be read back.
+- `Config.getInt` refuses a value too big for an `Int` on every target, and
+  `Version` reads an oversized segment the same everywhere. Both used
+  `Std.parseInt`, whose answer past 32 bits depends on the target:
+  4294967296 read as 0 on Linux native and 2147483647 on Windows native,
+  threw a `NumberFormatException` on the jvm and came back wider than an
+  `Int` on JavaScript, so a configured connection limit could quietly become
+  0. `getInt` now throws `ArgumentError` for it as for any other malformed
+  value, and a version segment past three digits reads as 999, the most
+  `hash` has room for. A suffix such as `-beta` still reads as the digits
+  before it.
+- `haxe.Timer` and `GlobalTimer.setInterval` run at the rate they are asked
+  for. CrossByte's `haxe.Timer` counted tick deltas down itself and reset
+  to the full interval after each run, dropping whatever the tick had
+  overshot by, so every period rounded up to a whole number of ticks: at
+  the default twelve ticks a second a 100ms timer ran 12 times in two
+  seconds instead of 20. Libraries written against the standard API ran
+  slow without knowing it. It also kept every timer in one map under a
+  counter that wrapped after 2^32 timers, where a new timer taking a live
+  one's id evicted it and it never ran again, and copied every live timer
+  into a new array on every tick. A `haxe.Timer` is now a timer on the
+  runtime's own scheduler, each run due one interval after the last was
+  due; a timer that has fallen behind runs once a frame until it catches
+  up rather than in a burst; and it runs on the runtime of the thread that
+  made it. `GlobalTimer` skips ids still in use when its own counter wraps.
+  The heap scheduler now counts a timer due within a nanosecond of the
+  clock as due: two 50ms frames could land a rounding error short of a
+  100ms timer, which then waited a frame more.
+- A client can no longer forge records in the log. In text mode a message
+  or field value was written exactly as given, so a request path carrying
+  `%0A`, percent-decoded and logged at INFO, the default level, produced
+  a standalone `[ERROR]` line of the client's choosing. Line feeds, carriage
+  returns, the Unicode line and paragraph separators and the other control
+  characters are now written as escapes, in the message and in field keys
+  and values, and a quoted field value escapes its quotes and backslashes
+  too. `Logger.timestamps` gave local time to the second with no zone while
+  documented as UTC; it is now UTC with milliseconds and a `Z`, worked out
+  from the epoch rather than through `Date`.
+- A pending `Task` or running `Worker` no longer holds a tick listener of
+  its own. Each attached one to its runtime and polled its queue every tick,
+  and adding or removing a listener copies the runtime's whole list, so
+  submitting a burst of tasks cost time in proportion to the square of its
+  size, 8000 pending took 2.3 seconds to submit and 2.2ms of every idle
+  tick. Results now reach the runtime through its post queue, one post per
+  task and one per batch of a worker's messages, and so arrive without
+  waiting for the next tick. `Task.onComplete` and `onError` read a task's
+  state and its result together, under the task's lock: read apart, a task
+  completing on another thread could be seen as complete with its result
+  not yet there, and the handler given null.
+- Work handed to a runtime from another thread runs as soon as the runtime
+  is free, not at its next tick. A callback posted mid-frame waited out the
+  rest of the frame, 38ms on average and up to a whole frame at the
+  default twelve ticks a second, and every RPC answer finished on another
+  thread, every query result and every task completion paid it, a chain of
+  them once per step. A runtime now waits out its frame on a lock that a
+  post releases (DEFAULT), or inside a poll that a post ends by writing to a
+  loopback wake socket in the poll set (POLL). Measured natively at twelve
+  ticks a second, the mean wait fell from 39.7ms to under 0.1ms (DEFAULT)
+  and from 37.3ms to 0.1ms (POLL), the worst from 82ms to 0.1ms. It wakes
+  once per batch, when the queue goes from empty to not, and an idle
+  runtime costs what it did: 0.16% of a core at sixty ticks a second,
+  against 0.31% before. `exit()` called from another thread stops the loop
+  at once rather than after it has slept out its frame, what was posted
+  before a runtime exits still runs, and a post after that is refused
+  rather than dropped without a word.
+- `CrossByte.make()` no longer takes over the calling thread's timers, and
+  a child runtime exits with the runtime that made it. `make()` bound the
+  new runtime's timer scheduler to the thread that called it, so once a
+  server had started a simulation thread from its INIT handler, a
+  `crossbyte.Timer` armed on the main thread, an RPC heartbeat, a
+  retransmit clock, ran on the child's thread. Off native the binding was
+  one field for the whole process, so whichever runtime ran last owned
+  every thread's timers. And once the primordial runtime had exited, the
+  process went on waiting for children nothing would ever stop. A child now
+  binds its timers on its own thread, the binding is per thread on every
+  threaded target, a runtime that exits exits the ones it made, all of
+  them, from the primordial one, and a host-driven runtime that exits
+  hands its thread's timers back along with the thread.
+- `Worker`, `TaskPool` and `Task` run their work on other threads on the
+  jvm and the interpreter, as they already did natively. They were written
+  for native, hl and neko only, and everywhere else ran the work inline on
+  the thread that asked for it: a `TaskPool(4)` given four 200ms jobs held
+  its caller for 800ms, `Worker.run()` did the whole job before returning,
+  and so `AsyncDatabase`, `URLLoader` and `File`'s async calls stalled the
+  loop they exist to keep free. `System.processorCount` also answered 0 off
+  native, so `new TaskPool(System.processorCount)` threw. It now asks the
+  JVM, Node's list of CPUs or a browser's `hardwareConcurrency`, falls back
+  to the environment and `/proc/cpuinfo` on the interpreter, hl and neko,
+  and is never below 1.
+- `CrossByte.current()` answers the calling thread's own runtime on every
+  threaded target, not only natively. On the jvm, the interpreter, hl and
+  neko it returned the primordial runtime on every thread, although its
+  documentation said it resolved the thread's runtime first: a child
+  runtime's thread, or a worker thread, registered its sockets and timers
+  with the main runtime and then touched them from the wrong thread, the
+  race behind the LocalConnection failures, and `ThreadUtil.isPrimordial`
+  was true on every thread. The list of runtimes the process keeps is no
+  longer a map keyed by thread, which on the interpreter could never find an
+  entry again.
+- Every timer due in a frame now fires in that frame. The runtime fired at
+  most 256 a frame, about three thousand a second at the default twelve
+  ticks, and past that every timer ran late, and later every frame,
+  without bound: beside 400 reliable-UDP sessions each keeping a 50ms
+  retransmit clock, a 30 second idle timeout fired at 78 seconds. A frame's
+  timers are now bounded by time rather than by count. They may use one tick
+  interval, so only a burst that would hold the frame past its end, and keep
+  the sockets waiting, is spread over the frames after it; the new
+  `timerBacklog`, `timerLag` and `timerOverruns` on `CrossByte` say when that
+  happens. A timer armed during a pass waits for the next one, so a callback
+  that polls by re-arming itself for "now" runs once a frame rather than
+  filling the budget. A one-shot timer rescheduled or delayed from its own
+  callback now runs at its new time instead of being freed, and a timer that
+  pauses itself from its callback can be resumed instead of being destroyed.
+- The timing wheel (`TimerStrategy.WHEEL`) fires timers when they are due.
+  It placed a timer by the scheduler's clock, which a pass has already moved
+  to the end of the frame, instead of by where its cursor was: at sixty
+  frames a second `setTimeout(0)` fired after 517ms, a 5ms timer armed from
+  a callback fired in the same frame, early, and a 5ms `setInterval` fired
+  twice a second instead of 200 times. A timer due at once went into the
+  bucket the cursor had just left and waited a whole revolution. Timers are
+  now placed from the cursor's own time and never in a bucket already
+  walked, a pass stopped partway through a bucket finishes it on the next
+  pass instead of leaving the rest a revolution behind, and a timer more
+  than 24 days away no longer overflows its tick count and fires at once.
+  `new ServerApplication(WHEEL)` ran on the heap, because it built its
+  runtime without the strategy it was given; it now uses it.
+- An exception from a timer, a tick listener or a socket's handler no
+  longer ends the process. The loop had no catch of its own, so one
+  handler's bug, a null dereference in one session's idle timeout, one
+  malformed message, left it: EXIT was never dispatched, output held for
+  the end of the pass was never sent, every other connection went down with
+  the one that failed, and a recurring timer that threw was dequeued for
+  good while its handle still read as live. On JavaScript the runtime's
+  frame chain carried the throw out to the platform, which ended the process
+  on Node. Each callback the runtime runs is now contained where it runs. A
+  timer is settled as if it had returned, so a recurring one stays armed;
+  every tick, INIT and EXIT listener runs whether or not one before it
+  threw; a stream socket whose handler threw is closed, dispatching `CLOSE`,
+  and the others carry on; held output is flushed past a holder that
+  throws; and the loop carries on past anything that fails between
+  callbacks, waiting out the frame so a failure that repeats every pass
+  cannot spin. A datagram socket is left open, since it is usually the one
+  socket a whole UDP service answers on and each datagram arrives whole.
+  Every failure is logged with `Logger.error`, with where it was caught and
+  its stack where the target keeps one, and dispatched on the runtime as the
+  new `UncaughtErrorEvent.UNCAUGHT_ERROR`, to report it elsewhere or to
+  decide it is fatal. Callbacks posted to the runtime were already contained
+  and are now reported the same way.
 - An HTTP/2 request cancelled before its response arrived no longer
   completes. `cancel()` reset the stream and woke the request, but the
   stream stayed in the connection's map, so a response arriving after the

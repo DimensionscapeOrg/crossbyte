@@ -119,14 +119,40 @@ class System {
 		return 0.0;
 	}
 
-	public static inline function memoryUsage():Int {
+	/**
+		Bytes of heap the process is using: natively the collector's figure,
+		uncollected garbage included; on the jvm the heap in use; on Node the
+		V8 heap in use. Zero where nothing reports it (the interpreter, hl,
+		neko, a browser).
+
+		A `Float`, since a heap outgrows an `Int`: this was the collector's
+		32-bit figure, which wrapped negative past 2GiB, and 0 on every target
+		but native.
+	**/
+	public static function memoryUsage():Float {
 		#if cpp
-		return Gc.memInfo(Gc.MEM_INFO_CURRENT);
+		return Gc.memInfo64(Gc.MEM_INFO_CURRENT);
+		#elseif (java || jvm)
+		var runtime = java.lang.Runtime.getRuntime();
+		return __longToFloat(runtime.totalMemory()) - __longToFloat(runtime.freeMemory());
+		#elseif nodejs
+		return js.Node.process.memoryUsage().heapUsed;
 		#else
-		// no-op for now
 		return 0;
 		#end
 	}
+
+	#if (java || jvm)
+	// Haxe 4 has no Int64 to Float; the halves are joined as doubles, as
+	// Timer.stamp does with nanoTime.
+	@:noCompletion private static function __longToFloat(value:haxe.Int64):Float {
+		var low:Float = haxe.Int64.getLow(value);
+		if (low < 0) {
+			low += 4294967296.0;
+		}
+		return haxe.Int64.getHigh(value) * 4294967296.0 + low;
+	}
+	#end
 
 	private static inline var APPLICATION_DIR:String = "Crossbyte";
 	@:noCompletion private static var __appDirPath:String;
@@ -331,11 +357,63 @@ class System {
 		#end
 	}
 
-	@:noCompletion private static inline function get_processorCount():Int {
+	/**
+		Asked of the platform wherever it will say: the native call, the JVM's
+		own count, Node's list of CPUs, a browser's `hardwareConcurrency`.
+		This returned 0 everywhere but native, so `new TaskPool(processorCount)`,
+		the obvious way to size a pool, threw on the jvm, Node and the
+		interpreter. Where nothing reports it, the environment and
+		`/proc/cpuinfo` are asked, and the answer is never below 1: a process
+		running this code has at least one processor to run it on.
+	**/
+	@:noCompletion private static function get_processorCount():Int {
 		#if cpp
-		return NativeSystem.getProcessorCount();
+		var count:Int = NativeSystem.getProcessorCount();
+		#elseif (java || jvm)
+		var count:Int = java.lang.Runtime.getRuntime().availableProcessors();
+		#elseif nodejs
+		var count:Int = js.node.Os.cpus().length;
+		#elseif js
+		var reported:Null<Int> = js.Syntax.code("(typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 0");
+		var count:Int = reported == null ? 0 : reported;
 		#else
-		return 0;
+		if (__probedProcessorCount < 1) {
+			__probedProcessorCount = __probeProcessorCount();
+		}
+		var count:Int = __probedProcessorCount;
 		#end
+		return count > 0 ? count : 1;
 	}
+
+	#if !(cpp || java || jvm || js)
+	@:noCompletion private static var __probedProcessorCount:Int = 0;
+
+	// For targets with no call of their own for it: the interpreter, hl and
+	// neko. Read once; a count that changes under a running process is rare
+	// enough not to be worth a file read per question.
+	@:noCompletion private static function __probeProcessorCount():Int {
+		// Windows sets this for every process.
+		var fromEnvironment:Int = crossbyte.utils.IntParse.decimal(StringTools.trim(Sys.getEnv("NUMBER_OF_PROCESSORS") ?? ""), 65536);
+		if (fromEnvironment > 0) {
+			return fromEnvironment;
+		}
+
+		// Linux lists one "processor" entry per logical processor.
+		try {
+			if (sys.FileSystem.exists("/proc/cpuinfo")) {
+				var count:Int = 0;
+				for (line in sys.io.File.getContent("/proc/cpuinfo").split("\n")) {
+					if (StringTools.startsWith(line, "processor")) {
+						count++;
+					}
+				}
+				if (count > 0) {
+					return count;
+				}
+			}
+		} catch (_:Dynamic) {}
+
+		return 1;
+	}
+	#end
 }

@@ -24,6 +24,15 @@ final class SocketRegistry {
 	public var size(get, null):Int;
 	public var isEmpty(get, null):Bool;
 
+	/**
+		Given what a socket's handler threw, and that socket; see
+		`NativeSocketRegistry.onHandlerError`. Null rethrows.
+	**/
+	public var onHandlerError:(error:Dynamic, socket:IPollableSocket) -> Void = null;
+
+	/** Seconds spent blocked in select since last taken; see NativeSocketRegistry. **/
+	@:noCompletion public var __waited:Float = 0.0;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -159,16 +168,31 @@ final class SocketRegistry {
 			}
 
 			wait = 0;
-			cb.registryOnReadable();
+			try {
+				cb.registryOnReadable();
+			} catch (error:Dynamic) {
+				__handlerThrew(error, cb);
+			}
 		}
 		#end
 
-		var res = Socket.select(__selectBuffer, [], [], wait);
+		var res;
+		if (wait > 0) {
+			var waitStart:Float = haxe.Timer.stamp();
+			res = Socket.select(__selectBuffer, [], [], wait);
+			__waited += haxe.Timer.stamp() - waitStart;
+		} else {
+			res = Socket.select(__selectBuffer, [], [], wait);
+		}
 
 		for (s in res.read) {
 			var cb:IPollableSocket = cast s.custom;
 			if (cb != null && !cb.registryClosed) {
-				cb.registryOnReadable();
+				try {
+					cb.registryOnReadable();
+				} catch (error:Dynamic) {
+					__handlerThrew(error, cb);
+				}
 			}
 		}
 	}
@@ -181,8 +205,21 @@ final class SocketRegistry {
 	@:noCompletion private inline function __onFlushSocket(sock:Socket):Void {
 		var cb:IPollableSocket = cast sock.custom;
 		if (cb != null && !cb.registryClosed) {
-			cb.registryOnWritable();
+			try {
+				cb.registryOnWritable();
+			} catch (error:Dynamic) {
+				__handlerThrew(error, cb);
+			}
 		}
+	}
+
+	@:noCompletion private function __handlerThrew(error:Dynamic, socket:IPollableSocket):Void {
+		if (onHandlerError != null) {
+			onHandlerError(error, socket);
+			return;
+		}
+
+		throw error;
 	}
 }
 #end

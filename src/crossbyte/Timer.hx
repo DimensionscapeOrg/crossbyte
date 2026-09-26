@@ -2,7 +2,7 @@ package crossbyte;
 
 import crossbyte.core.CrossByte;
 import crossbyte._internal.system.timer.TimerScheduler;
-#if cpp
+#if target.threaded
 import sys.thread.Tls;
 #end
 
@@ -27,14 +27,18 @@ import sys.thread.Tls;
 @:allow(crossbyte.core.CrossByte)
 @:allow(crossbyte.rpc.RPCHandler)
 class Timer {
-	#if cpp
+	// Per thread on every threaded target. It was one process-wide field off
+	// native, so on the jvm and the interpreter whichever runtime ran last
+	// owned every thread's timers: after CrossByte.make(), a timer the main
+	// thread armed ran on the child's thread.
+	#if target.threaded
 	@:noCompletion private static final __tls:Tls<TimerScheduler> = new Tls();
 	#else
 	@:noCompletion private static var __nonThreadedTimer:TimerScheduler;
 	#end
 
 	@:noCompletion private static inline function bindCurrentThread(timer:TimerScheduler):Void {
-		#if cpp
+		#if target.threaded
 		__tls.value = timer;
 		#else
 		__nonThreadedTimer = timer;
@@ -42,7 +46,7 @@ class Timer {
 	}
 
 	@:noCompletion private static inline function current():TimerScheduler {
-		#if cpp
+		#if target.threaded
 		final scheduler:TimerScheduler = __tls.value;
 		if (scheduler == null) {
 			throw "TimerScheduler not attached to this thread";
@@ -57,7 +61,7 @@ class Timer {
 	}
 
 	@:noCompletion private static inline function currentOrNull():Null<TimerScheduler> {
-		#if cpp
+		#if target.threaded
 		return __tls.value;
 		#else
 		return __nonThreadedTimer;

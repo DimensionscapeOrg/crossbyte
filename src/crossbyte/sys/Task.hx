@@ -1,13 +1,10 @@
 package crossbyte.sys;
 
 import crossbyte.core.CrossByte;
-import crossbyte.errors.IllegalOperationError;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.TaskEvent;
-import crossbyte.events.TickEvent;
 
-#if (cpp || neko || hl)
-import sys.thread.Deque;
+#if target.threaded
 import sys.thread.Lock;
 import sys.thread.Mutex;
 #end
@@ -19,7 +16,17 @@ private enum TaskDispatch<T> {
 	Cancel;
 }
 
-/** Promise-like unit of work scheduled and completed through `TaskPool`. */
+/**
+	Promise-like unit of work scheduled and completed through `TaskPool`.
+
+	Its events, `TaskEvent.COMPLETE`, `ERROR`, `CANCEL`, are dispatched on
+	the runtime of the thread that made it. A task finished on a pool thread
+	hands them to that runtime's post queue, which wakes the runtime for them;
+	each pending task used to hold a tick listener of its own instead, polled
+	every tick, and adding and removing one copied the runtime's whole list of
+	them, so submitting a burst of tasks took time in proportion to the square
+	of its size and every idle tick paid for every task still waiting.
+**/
 class Task<T> extends EventDispatcher {
 	public var state(default, null):TaskState;
 	public var result(default, null):Null<T>;
@@ -33,14 +40,10 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private var __releaseHook:Void->Void;
 	@:noCompletion private var __released:Bool;
 
-	#if (cpp || neko || hl)
+	#if target.threaded
 	@:noCompletion private var __lock:Mutex;
 	@:noCompletion private var __completion:Lock;
 	@:noCompletion private var __awaiters:Int;
-	@:noCompletion private var __dispatchQueue:Deque<TaskDispatch<T>>;
-	@:noCompletion private var __dispatchListener:TickEvent->Void;
-	@:noCompletion private var __dispatchAttached:Bool;
-	@:noCompletion private var __dispatchPending:Bool;
 	#end
 	@:noCompletion private var __runtime:CrossByte;
 
@@ -53,54 +56,37 @@ class Task<T> extends EventDispatcher {
 		__releaseHook = null;
 		__released = false;
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock = new Mutex();
 		__completion = new Lock();
 		__awaiters = 0;
-		__dispatchQueue = new Deque();
-		__dispatchListener = function(event:TickEvent):Void {
-			__flushDispatchQueue(event);
-		};
-		__dispatchAttached = false;
-		__dispatchPending = false;
 		#end
-		try {
-			__runtime = CrossByte.current();
-		} catch (_:IllegalOperationError) {
-			__runtime = null;
-		} catch (_:Dynamic) {
-			__runtime = null;
-		}
-		#if (cpp || neko || hl)
-		if (__runtime != null) {
-			__dispatchAttached = true;
-			__runtime.addEventListener(TickEvent.TICK, __dispatchListener);
-		}
-		#end
+		// Where its events go. A task made off any runtime's thread has
+		// nowhere to send them, and dispatches wherever it finishes.
+		__runtime = CrossByte.__currentOrNull();
 	}
 
 	public function cancel():Bool {
 		var didCancel = false;
 		var cancelHook:Void->Void = null;
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		#end
 
 		if (state == PENDING) {
-			state = CANCELLED;
 			result = null;
 			error = null;
+			state = CANCELLED;
 			cancelHook = __cancelHook;
 			__cancelHook = null;
 			didCancel = true;
-			#if (cpp || neko || hl)
-			__dispatchPending = true;
+			#if target.threaded
 			__notifyWaiters();
 			#end
 		}
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.release();
 		#end
 
@@ -115,7 +101,7 @@ class Task<T> extends EventDispatcher {
 	}
 
 	public function await():T {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		while (!isDone) {
 			__awaiters++;
@@ -141,9 +127,25 @@ class Task<T> extends EventDispatcher {
 		return value;
 	}
 
+	/**
+		Calls `handler` with the result once the task completes, or at once if
+		it already has. The state and the result are read together, under the
+		task's lock: read apart, a task completing on another thread could be
+		seen as complete with its result not yet there, and the handler given
+		null.
+	**/
 	public function onComplete(handler:T->Void):Task<T> {
-		if (state == COMPLETED) {
-			handler(result);
+		#if target.threaded
+		__lock.acquire();
+		#end
+		var done:Bool = state == COMPLETED;
+		var value:Null<T> = result;
+		#if target.threaded
+		__lock.release();
+		#end
+
+		if (done) {
+			handler(value);
 			return this;
 		}
 
@@ -152,8 +154,17 @@ class Task<T> extends EventDispatcher {
 	}
 
 	public function onError(handler:Dynamic->Void):Task<T> {
-		if (state == FAILED) {
-			handler(error);
+		#if target.threaded
+		__lock.acquire();
+		#end
+		var failed:Bool = state == FAILED;
+		var failure:Dynamic = error;
+		#if target.threaded
+		__lock.release();
+		#end
+
+		if (failed) {
+			handler(failure);
 			return this;
 		}
 
@@ -200,7 +211,7 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private function __start():Bool {
 		var didStart = false;
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		#end
 		if (state == PENDING) {
@@ -208,7 +219,7 @@ class Task<T> extends EventDispatcher {
 			__cancelHook = null;
 			didStart = true;
 		}
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.release();
 		#end
 
@@ -219,21 +230,22 @@ class Task<T> extends EventDispatcher {
 	@:noCompletion private function __complete(value:Null<T>):Void {
 		var shouldDispatch = false;
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		#end
 		if (state == RUNNING) {
-			state = COMPLETED;
+			// The result before the state, so that nothing reading the state
+			// as complete can find the result still missing.
 			result = value;
 			error = null;
+			state = COMPLETED;
 			__cancelHook = null;
 			shouldDispatch = true;
-			#if (cpp || neko || hl)
-			__dispatchPending = true;
+			#if target.threaded
 			__notifyWaiters();
 			#end
 		}
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.release();
 		#end
 
@@ -247,21 +259,20 @@ class Task<T> extends EventDispatcher {
 		var shouldDispatch = false;
 		var finalError:Dynamic = errorValue;
 
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.acquire();
 		#end
 		if (state == RUNNING) {
-			state = FAILED;
 			error = finalError;
 			result = null;
+			state = FAILED;
 			__cancelHook = null;
 			shouldDispatch = true;
-			#if (cpp || neko || hl)
-			__dispatchPending = true;
+			#if target.threaded
 			__notifyWaiters();
 			#end
 		}
-		#if (cpp || neko || hl)
+		#if target.threaded
 		__lock.release();
 		#end
 
@@ -272,7 +283,7 @@ class Task<T> extends EventDispatcher {
 
 	@:allow(crossbyte.sys.TaskPool)
 	@:noCompletion private function __notifyWaiters():Void {
-	#if (cpp || neko || hl)
+	#if target.threaded
 		while (__awaiters > 0) {
 			__completion.release();
 			__awaiters--;
@@ -280,59 +291,22 @@ class Task<T> extends EventDispatcher {
 	#end
 	}
 
-	@:noCompletion private inline function __dispatchTerminalEvent(event:TaskDispatch<T>):Void {
-		#if (cpp || neko || hl)
-		// `__dispatchPending` is raised while the terminal state is published, not
-		// here. Setting it here leaves a window in which the task already reads as
-		// done but not pending, and a tick landing in that window detaches the
-		// listener for good before this event is ever queued.
-		if (!__canDispatchInline()) {
-			__dispatchQueue.add(event);
-			return;
-		}
-
-		__lock.acquire();
-		__dispatchPending = false;
-		__lock.release();
-		#end
-		__dispatchNow(event);
-		__finalizeDispatchLifecycle();
-	}
-
-	#if (cpp || neko || hl)
-	@:noCompletion private inline function __canDispatchInline():Bool {
-		if (__runtime == null) {
-			return true;
-		}
-
-		try {
-			return CrossByte.current() == __runtime;
-		} catch (_:Dynamic) {
-			return false;
-		}
-	}
-
-	@:noCompletion private function __flushDispatchQueue(event:TickEvent):Void {
-		var dispatched = false;
-		while (true) {
-			var pending = __dispatchQueue.pop(false);
-			if (pending == null) {
-				break;
+	@:noCompletion private function __dispatchTerminalEvent(event:TaskDispatch<T>):Void {
+		#if target.threaded
+		var runtime:CrossByte = __runtime;
+		if (runtime != null && !runtime.__isOwnThread()) {
+			// Finished on another thread: delivered on the task's own runtime,
+			// which is woken for it. Refused only by a runtime that has exited,
+			// whose thread will never touch these listeners again.
+			if (runtime.post(() -> __deliver(event))) {
+				return;
 			}
-			dispatched = true;
-			__dispatchNow(pending);
 		}
-
-		if (dispatched) {
-			__lock.acquire();
-			__dispatchPending = false;
-			__lock.release();
-		}
-		__finalizeDispatchLifecycle();
+		#end
+		__deliver(event);
 	}
-	#end
 
-	@:noCompletion private inline function __dispatchNow(event:TaskDispatch<T>):Void {
+	@:noCompletion private function __deliver(event:TaskDispatch<T>):Void {
 		switch (event) {
 			case Complete(value):
 				dispatchEvent(new TaskEvent(TaskEvent.COMPLETE, this, value));
@@ -341,18 +315,6 @@ class Task<T> extends EventDispatcher {
 			case Cancel:
 				dispatchEvent(new TaskEvent(TaskEvent.CANCEL, this));
 		}
-	}
-
-	@:noCompletion private inline function __finalizeDispatchLifecycle():Void {
-		#if (cpp || neko || hl)
-		__lock.acquire();
-		var shouldDetach = __dispatchAttached && __runtime != null && isDone && !__dispatchPending;
-		__lock.release();
-		if (shouldDetach) {
-			__dispatchAttached = false;
-			__runtime.removeEventListener(TickEvent.TICK, __dispatchListener);
-		}
-		#end
 		__maybeRelease();
 	}
 

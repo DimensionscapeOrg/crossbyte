@@ -3,8 +3,9 @@ package crossbyte.core;
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.utils.ThreadUtil;
 import utest.Assert;
-#if (cpp || neko || hl)
+#if target.threaded
 import sys.thread.Deque;
+import sys.thread.Lock;
 import sys.thread.Thread;
 #end
 
@@ -21,7 +22,7 @@ class CrossByteTest extends utest.Test {
 	}
 
 	public function testCurrentRestoresPrimordialAfterHostDrivenChildExit():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var primordial = CrossByte.current();
 		var child = new CrossByte(false, DEFAULT, true);
 
@@ -36,7 +37,11 @@ class CrossByteTest extends utest.Test {
 	}
 
 	public function testCurrentThrowsOnForeignThreadWithoutRuntime():Void {
-		#if (cpp || neko || hl)
+		// Every threaded target, not only native. Elsewhere current() handed
+		// back the primordial runtime on any thread, so whatever a worker
+		// thread registered there was touched from two threads, and
+		// ThreadUtil.isPrimordial was true on every thread.
+		#if target.threaded
 		var queue:Deque<String> = new Deque();
 		Thread.create(() -> {
 			try {
@@ -47,10 +52,35 @@ class CrossByteTest extends utest.Test {
 			} catch (_:Dynamic) {
 				queue.add("wrong-error");
 			}
+			queue.add(ThreadUtil.isPrimordial ? "primordial" : "not-primordial");
 		});
 
 		Assert.equals("illegal-operation", queue.pop(true));
+		Assert.equals("not-primordial", queue.pop(true));
 		Assert.isTrue(ThreadUtil.isPrimordial);
+		#else
+		Assert.pass();
+		#end
+	}
+
+	public function testAChildRuntimeIsCurrentOnItsOwnThread():Void {
+		#if target.threaded
+		var primordial = CrossByte.current();
+		var arrived = new Lock();
+		var seen:Array<String> = [];
+		var child = CrossByte.make();
+
+		child.__post(() -> {
+			seen.push(CrossByte.current() == child ? "child" : "other");
+			seen.push(ThreadUtil.isPrimordial ? "primordial" : "not-primordial");
+			arrived.release();
+		});
+		var ran = arrived.wait(5.0);
+		child.exit();
+
+		Assert.isTrue(ran, "the child never ran what was posted to it");
+		Assert.same(["child", "not-primordial"], seen);
+		Assert.equals(primordial, CrossByte.current());
 		#else
 		Assert.pass();
 		#end
@@ -61,7 +91,7 @@ class CrossByteTest extends utest.Test {
 	}
 
 	public function testTickEventIsReusedAcrossPumps():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var runtime = new CrossByte(false, DEFAULT, true);
 		var first = null;
 		var second = null;
@@ -88,7 +118,7 @@ class CrossByteTest extends utest.Test {
 	}
 
 	public function testTpsIsClampedToAtLeastOne():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		var runtime = new CrossByte(false, DEFAULT, true);
 
 		// tps == 0 would make __tickInterval +Infinity and hang the wait loop.
@@ -106,7 +136,7 @@ class CrossByteTest extends utest.Test {
 	}
 
 	public function testLoopReportsRealElapsedTimeAfterALongFrame():Void {
-		#if (cpp || neko || hl)
+		#if target.threaded
 		// A frame that ran long is reported as it ran. The runtime used to cap
 		// this at a quarter second, which cost more than it bought: the capped
 		// figure was also what haxe.Timer and the HTTP connection sweep

@@ -56,16 +56,34 @@ class Timer {
 }
 #else
 import crossbyte.core.CrossByte;
-import crossbyte.events.TickEvent;
-import haxe.ds.IntMap;
+import crossbyte.utils.ThreadUtil;
 import haxe.Log;
 import haxe.PosInfos;
-#if cpp
+#if target.threaded
 import sys.thread.Mutex;
 #end
 
 /**
-	A `haxe.Timer` implementation backed by CrossByte's tick-driven runtime.
+	A `haxe.Timer` implementation backed by CrossByte's runtime.
+
+	A timer is a timer on the runtime's own scheduler, the one
+	`crossbyte.Timer` uses. It used to count tick deltas down itself and reset
+	to the full interval after each run, dropping whatever the tick had
+	overshot by, so every period rounded up to a whole number of ticks: at the
+	default twelve ticks a second a 100ms timer ran every 167ms, 60% of the
+	rate it asked for, and `GlobalTimer.setInterval` with it. It also kept
+	every timer in a map by a counter that wrapped after 2^32 timers and let a
+	new one evict a live one, and copied every live timer into a new array on
+	every tick. Now each run is due one interval after the last one was due,
+	so the rate is the one asked for; a timer that has fallen behind, a
+	stall, an interval shorter than a frame, runs once a frame until it
+	catches up rather than in a burst.
+
+	It runs on the runtime of the thread that made it: the primordial one on
+	the primordial thread, a child runtime on that child's thread. A timer
+	made on a thread no runtime belongs to runs on the primordial runtime,
+	handed over through its post queue, and so does stopping one from a thread
+	other than its runtime's.
 
 	A timer made before any runtime exists waits for one: it joins the
 	primordial runtime when that is set up, and counts from then. That is the
@@ -98,128 +116,157 @@ static double crossbyte_monotonic_seconds() {
 }
 ")
 #end
+@:access(crossbyte.core.CrossByte)
 class Timer {
-	private static var timerCount:Int = 0;
-	private static var timers:IntMap<Timer> = new IntMap<Timer>();
-	private static var __currentId:Int = 0;
-	// The runtime the tick listener is on, or null while it is on none:
-	// before any runtime exists, and whenever no timer is running.
-	private static var __listening:CrossByte = null;
-	#if cpp
+	// Made before any runtime existed, waiting for the primordial one.
+	private static var __waiting:Array<Timer> = [];
+	#if target.threaded
+	// Guards __waiting and each timer's __home, which another thread can
+	// read while the primordial runtime is being set up.
 	private static final __mutex:Mutex = new Mutex();
 	#end
 
-	private var delayCount:Float;
-	private var timeRemaining:Float;
-	private var running:Bool;
-	private var stopped:Bool;
-	private var id:Int;
+	private var __interval:Float;
+
+	// The runtime this timer runs on, once it has one.
+	private var __home:CrossByte = null;
+
+	// Only touched on __home's thread: the scheduler's handle, when the next
+	// run is due there, and whether it is armed.
+	private var __handle:Int = 0;
+	private var __due:Float = 0.0;
+	private var __armed:Bool = false;
+	private var __stopped:Bool = false;
 
 	public function new(time_ms:Int) {
-		delayCount = time_ms / 1000;
-		timeRemaining = delayCount;
-		running = true;
-		stopped = false;
-		__withLock(() -> {
-			// Allocated inside the lock: an unsynchronized increment lets two
-			// threads take the same id, and the second timers.set() then
-			// evicts the first timer, which silently never fires.
-			id = ++__currentId;
-			timerCount++;
-			timers.set(id, this);
-			if (__listening == null) {
-				// None yet, before any runtime: `__primordialReady` attaches
-				// the listener when the first one is set up.
-				@:privateAccess __listen(CrossByte.__primordial);
+		__interval = time_ms > 0 ? time_ms / 1000 : 0.0;
+
+		var home:CrossByte = __homeForThisThread();
+		if (home == null) {
+			// None yet, before any runtime: `__primordialReady` arms it when
+			// the first one is set up.
+			__withLock(() -> {
+				home = CrossByte.__primordial;
+				if (home == null) {
+					__waiting.push(this);
+				} else {
+					__home = home;
+				}
+			});
+			if (home == null) {
+				return;
 			}
-		});
+		} else {
+			__withLock(() -> __home = home);
+		}
+
+		if (home.__isOwnThread()) {
+			__arm();
+		} else {
+			home.post(__arm);
+		}
 	}
 
-	// Moves the tick listener onto `runtime`, if there is one. Called with
-	// the lock held.
-	private static function __listen(runtime:CrossByte):Void {
-		if (runtime == null || runtime == __listening) {
+	// The primordial runtime on the primordial thread, even while a runtime
+	// pumped on that thread is current there; a child runtime on its own
+	// loop's thread; the primordial runtime from a thread with none.
+	private static function __homeForThisThread():Null<CrossByte> {
+		var primordial:CrossByte = @:privateAccess CrossByte.__primordial;
+		if (primordial != null && ThreadUtil.isPrimordial) {
+			return primordial;
+		}
+		var own:CrossByte = CrossByte.__currentOrNull();
+		return own != null ? own : primordial;
+	}
+
+	// On __home's thread.
+	private function __arm():Void {
+		if (__stopped || __armed) {
 			return;
 		}
-		if (__listening != null) {
-			__listening.removeEventListener(TickEvent.TICK, onTick);
+		var scheduler = @:privateAccess __home.__timer;
+		__due = scheduler.time + __interval;
+		__handle = scheduler.setTimeout(__interval, __fire);
+		__armed = true;
+	}
+
+	// On __home's thread, as the scheduler runs it.
+	private function __fire(handle:Int):Void {
+		if (__stopped) {
+			return;
 		}
-		runtime.addEventListener(TickEvent.TICK, onTick);
-		__listening = runtime;
+
+		// Re-armed before running, from the time this run was due rather than
+		// from now, so no fraction of a tick is lost and the rate is the one
+		// asked for; and before running so a run that throws leaves the timer
+		// armed, as the runtime keeps any timer armed through a failure. Due
+		// by now already, it waits for the next pass rather than firing again
+		// in this one.
+		__due += __interval;
+		@:privateAccess __home.__timer.reschedule(handle, __due);
+		run();
+	}
+
+	// On __home's thread.
+	private function __disarm():Void {
+		if (__armed) {
+			__armed = false;
+			@:privateAccess __home.__timer.clear(__handle);
+		}
 	}
 
 	/**
-		Called as a primordial runtime is set up, so the timers made before it,
-		while the program's statics were initialized, before `main`, start
-		counting on its ticks.
+		Called as a primordial runtime is set up, on its thread, so the timers
+		made before it, while the program's statics were initialized, before
+		`main`: start counting on its scheduler.
 	**/
 	@:noCompletion private static function __primordialReady(runtime:CrossByte):Void {
+		var waiting:Array<Timer> = null;
 		__withLock(() -> {
-			if (timerCount > 0) {
-				__listen(runtime);
-			}
-		});
-	}
-
-	private static function onTick(event:TickEvent):Void {
-		var snapshot = new Array<Timer>();
-		__withLock(() -> {
-			for (timer in timers) {
-				snapshot.push(timer);
+			waiting = __waiting;
+			__waiting = [];
+			for (timer in waiting) {
+				timer.__home = runtime;
 			}
 		});
 
-		for (timer in snapshot) {
-			timer.__update(event.delta);
+		for (timer in waiting) {
+			timer.__arm();
 		}
-	}
-
-	private function __update(dt:Float):Void {
-		if (running) {
-			timeRemaining -= dt;
-			if (timeRemaining <= 0) {
-				run();
-				if (!running) {
-					return;
-				}
-				timeRemaining = delayCount;
-			}
-		}
-	}
-
-	private function cleanup():Void {
-		if (stopped) {
-			return;
-		}
-
-		stopped = true;
-		__withLock(() -> {
-			timers.remove(id);
-			// The runtime listened to, not the primordial now: the two differ
-			// once that runtime has exited, and stopping a timer then threw.
-			if (--timerCount == 0 && __listening != null) {
-				__listening.removeEventListener(TickEvent.TICK, onTick);
-				__listening = null;
-			}
-		});
 	}
 
 	public function stop():Void {
-		if (stopped) {
+		if (__stopped) {
+			return;
+		}
+		__stopped = true;
+
+		var home:CrossByte = null;
+		__withLock(() -> {
+			home = __home;
+			if (home == null) {
+				__waiting.remove(this);
+			}
+		});
+		if (home == null) {
 			return;
 		}
 
-		running = false;
-		cleanup();
-	}
-
-	public function start():Void {
-		if (stopped) {
-			return;
+		if (home.__isOwnThread()) {
+			__disarm();
+		} else {
+			// After the arming, if that was posted too: the queue keeps order.
+			home.post(__disarm);
 		}
-
-		running = true;
 	}
+
+	/**
+		Does nothing. A timer runs from construction until `stop()`, as the
+		standard library's does, and cannot be restarted once stopped; this is
+		kept for code written against CrossByte's earlier version, where it
+		was equally without effect.
+	**/
+	public function start():Void {}
 
 	public dynamic function run():Void {}
 
@@ -310,7 +357,7 @@ class Timer {
 	#end
 
 	private static inline function __withLock(fn:Void->Void):Void {
-		#if cpp
+		#if target.threaded
 		__mutex.acquire();
 		try {
 			fn();

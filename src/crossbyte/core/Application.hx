@@ -135,15 +135,28 @@ class Application extends EventDispatcher {
 
 		// Ensure we're in the main thread
 		#if !js
-		if (Thread.current() != __mainThread) {
+		// Written as a negated ==. On the interpreter Thread overloads == to
+		// compare threads, but != falls back to comparing the wrappers, and
+		// Thread.current() hands out a new one on every call, so != was true
+		// on the main thread itself, and every Application threw there.
+		if (!(Thread.current() == __mainThread)) {
 			throw "Application must only be instantiated in the main thread!";
 		}
 		#end
 
 		__application = this;
-		__crossByte = new CrossByte(true, __crossByteLoopType, __crossByteHostDriven, __crossByteTimers);
+		__crossByte = __createRuntime();
 		__crossByte.addEventListener(Event.INIT, __onInit);
 		__crossByte.addEventListener(Event.EXIT, __onExit);
+	}
+
+	/**
+	 * Builds the primordial runtime from what the constructor was given: the
+	 * loop, whether a host drives it, and the timer strategy. One place, so a
+	 * subclass cannot build it from anything else.
+	 */
+	@:noCompletion private function __createRuntime():CrossByte {
+		return new CrossByte(true, __crossByteLoopType, __crossByteHostDriven, __crossByteTimers);
 	}
 
 	/**

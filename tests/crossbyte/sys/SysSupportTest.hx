@@ -133,15 +133,23 @@ class SysSupportTest extends utest.Test {
 	}
 
 	public function testSystemFallbackPropertiesStaySafeOnNonCppTargets():Void {
+		// Every target reports at least one processor. It was 0 everywhere but
+		// native, and a TaskPool sized by it threw.
+		Assert.isTrue(System.processorCount >= 1, "processorCount is " + System.processorCount);
 		#if cpp
-		Assert.isTrue(System.processorCount >= 0);
 		Assert.notNull(System.processAffinity);
 		Assert.isTrue(System.processAffinity.length >= 0);
+		// The collector's 64-bit figure: the 32-bit one wrapped past 2GiB.
+		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
 		#else
-		Assert.equals(0, System.processorCount);
 		Assert.same([false], System.processAffinity);
 		Assert.equals("", System.getDeviceId());
-		Assert.equals(0, System.memoryUsage());
+		#if (java || jvm || nodejs)
+		// It was 0 everywhere but native.
+		Assert.isTrue(System.memoryUsage() > 0, "memoryUsage is " + System.memoryUsage());
+		#else
+		Assert.equals(0.0, System.memoryUsage());
+		#end
 		Assert.isFalse(System.hasProcessAffinity(0));
 		Assert.isFalse(System.setProcessAffinity(0, true));
 		#end

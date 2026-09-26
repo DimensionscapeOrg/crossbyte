@@ -146,6 +146,141 @@ class TimerWheelTest extends utest.Test {
 		Assert.isTrue(wheel.isEmpty);
 	}
 
+	public function testARecurringTimerThatThrowsStaysArmed():Void {
+		var wheel = new TimerWheel();
+		var failures:Array<Dynamic> = [];
+		wheel.onError = error -> failures.push(error);
+		var fired = 0;
+		var handle = wheel.setInterval(0.010, 0.010, _ -> {
+			fired++;
+			throw "timer bug";
+		});
+
+		for (_ in 0...5) {
+			wheel.advanceTime(0.010, 1 << 28);
+		}
+
+		Assert.isTrue(fired >= 3, "the timer that threw was not re-armed: fired " + fired);
+		Assert.equals(fired, failures.length);
+		Assert.isTrue(wheel.isActive(handle));
+	}
+
+	public function testEveryDueTimerFiresInOnePass():Void {
+		var wheel = new TimerWheel();
+		var fired = 0;
+		for (_ in 0...1000) {
+			wheel.setTimeoutVoid(0.1, () -> fired++);
+		}
+
+		Assert.equals(1000, wheel.advanceTime(0.1));
+		Assert.equals(1000, fired);
+		Assert.isFalse(wheel.cutShort);
+	}
+
+	public function testAPassStoppedPartwayThroughABucketFinishesItNext():Void {
+		// A cap that ran out inside a bucket left the rest of it behind the
+		// cursor, where they waited a whole revolution: half a second.
+		var wheel = new TimerWheel();
+		var fired = 0;
+		for (_ in 0...100) {
+			wheel.setTimeoutVoid(0.05, () -> fired++);
+		}
+
+		Assert.equals(10, wheel.advanceTime(0.1, 10));
+		Assert.equals(10, wheel.advanceTime(0, 10), "the rest of the bucket was stranded behind the cursor");
+		for (_ in 0...10) {
+			wheel.advanceTime(0, 10);
+		}
+		Assert.equals(100, fired);
+	}
+
+	public function testABudgetCountsWhatItLeaves():Void {
+		var wheel = new TimerWheel();
+		var fired = 0;
+		for (_ in 0...100) {
+			wheel.setTimeoutVoid(0.05, () -> {
+				fired++;
+				var end = haxe.Timer.stamp() + 0.0005;
+				while (haxe.Timer.stamp() < end) {}
+			});
+		}
+
+		var first = wheel.advanceTime(0.1, 0x7FFFFFFF, 0.002);
+		Assert.isTrue(wheel.cutShort);
+		Assert.equals(100 - first, wheel.overdue());
+
+		var passes = 0;
+		while (fired < 100 && passes++ < 100) {
+			wheel.advanceTime(0, 0x7FFFFFFF, 0.002);
+		}
+		Assert.equals(100, fired);
+		Assert.equals(0, wheel.overdue());
+	}
+
+	public function testASetTimeoutOfZeroFiresOnTheNextFrame():Void {
+		// It was placed in the bucket the cursor had just left and fired a
+		// revolution later: 517ms at sixty frames a second.
+		var wheel = new TimerWheel();
+		var frame = 1 / 60;
+		wheel.advanceTime(frame);
+		wheel.advanceTime(frame);
+
+		var fired = -1;
+		var frames = 0;
+		wheel.setTimeoutVoid(0, () -> fired = frames);
+		while (fired < 0 && frames < 200) {
+			frames++;
+			wheel.advanceTime(frame);
+		}
+		Assert.equals(1, fired);
+	}
+
+	public function testATimerArmedInACallbackIsNotEarly():Void {
+		// Its bucket was counted from the end of the frame and reached from
+		// the start of it: a 5ms timer fired in the same frame it was armed.
+		var wheel = new TimerWheel();
+		var frame = 1 / 60;
+		var armedAt = -1.0;
+		var firedAt = -1.0;
+		wheel.setTimeoutVoid(0.010, () -> {
+			armedAt = wheel.time;
+			wheel.setTimeoutVoid(0.005, () -> firedAt = wheel.time);
+		});
+
+		for (_ in 0...120) {
+			wheel.advanceTime(frame);
+		}
+		Assert.isTrue(armedAt >= 0 && firedAt >= 0, "never fired");
+		Assert.isTrue(firedAt - armedAt >= 0.005 - 1e-9, 'armed at $armedAt, fired at $firedAt');
+	}
+
+	public function testAnIntervalShorterThanAFrameKeepsItsRate():Void {
+		// Re-armed behind the cursor, a 5ms interval fired twice a second at
+		// sixty frames a second rather than 200 times.
+		var wheel = new TimerWheel();
+		var frame = 1 / 60;
+		var fired = 0;
+		wheel.setIntervalVoid(0.005, 0.005, () -> fired++);
+
+		for (_ in 0...60) {
+			wheel.advanceTime(frame);
+		}
+		Assert.isTrue(fired >= 199 && fired <= 200, "a 5ms interval over one second fired " + fired + " times");
+	}
+
+	public function testATimerDaysAwayDoesNotFireAtOnce():Void {
+		// Its distance in ticks overflowed an Int.
+		var wheel = new TimerWheel();
+		var fired = false;
+		wheel.setTimeoutVoid(30 * 24 * 3600, () -> fired = true);
+
+		for (_ in 0...10) {
+			wheel.advanceTime(0.1);
+		}
+		Assert.isFalse(fired);
+		Assert.equals(1, wheel.size);
+	}
+
 	public function testSizeTracksLiveTimers():Void {
 		var wheel = new TimerWheel();
 		Assert.isTrue(wheel.isEmpty);

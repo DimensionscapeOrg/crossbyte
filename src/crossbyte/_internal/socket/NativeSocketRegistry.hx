@@ -25,6 +25,22 @@ final class NativeSocketRegistry {
 	public var size(get, null):Int;
 	public var isEmpty(get, null):Bool;
 
+	/**
+		Given what a socket's handler threw, and that socket. Each handler is
+		contained on its own, so one connection's bug is not the rest's:
+		letting it propagate from inside the dispatch skipped every other
+		ready socket this pass and took the runtime's loop down with it. Null
+		rethrows instead, for a registry nothing is driving; a runtime sets
+		this, and decides what becomes of the socket.
+	**/
+	public var onHandlerError:(error:Dynamic, socket:IPollableSocket) -> Void = null;
+
+	/**
+		Seconds spent blocked inside poll since the runtime last took it, so
+		the POLL loop can tell the time it waited from the time it worked.
+	**/
+	@:noCompletion public var __waited:Float = 0.0;
+
 	private inline function get_capacity():Int {
 		return __capacity;
 	}
@@ -119,7 +135,15 @@ final class NativeSocketRegistry {
 			__isDirty = false;
 		}
 
-		__poll.events(timeout);
+		if (timeout > 0) {
+			// Timed only when it can block, which is the POLL loop's case;
+			// the DEFAULT loop's per-frame poll pays nothing for it.
+			var waitStart:Float = haxe.Timer.stamp();
+			__poll.events(timeout);
+			__waited += haxe.Timer.stamp() - waitStart;
+		} else {
+			__poll.events(timeout);
+		}
 		for (i in __poll.readIndexes) {
 			if (i == -1) {
 				break;
@@ -138,15 +162,36 @@ final class NativeSocketRegistry {
 	@:noCompletion private inline function __dispatchReadable(socket:Socket):Void {
 		var cb:IPollableSocket = cast socket.custom;
 		if (cb != null && !cb.registryClosed) {
-			cb.registryOnReadable();
+			try {
+				cb.registryOnReadable();
+			} catch (error:Dynamic) {
+				__handlerThrew(error, cb);
+			}
 		}
 	}
 
 	@:noCompletion private inline function __onFlushSocket(socket:Socket):Void {
 		var cb:IPollableSocket = cast socket.custom;
 		if (cb != null && !cb.registryClosed) {
-			cb.registryOnWritable();
+			try {
+				cb.registryOnWritable();
+			} catch (error:Dynamic) {
+				__handlerThrew(error, cb);
+			}
 		}
+	}
+
+	@:noCompletion private function __handlerThrew(error:Dynamic, socket:IPollableSocket):Void {
+		if (onHandlerError != null) {
+			onHandlerError(error, socket);
+			return;
+		}
+
+		#if cpp
+		cpp.Lib.rethrow(error);
+		#else
+		throw error;
+		#end
 	}
 }
 #end
