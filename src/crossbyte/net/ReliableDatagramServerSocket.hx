@@ -404,7 +404,10 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 
 		try {
-			resolved = new Host(address).toString();
+			// Compressed, as the address arrives from the socket and as a dial
+			// by name files it: the jvm spells ::1 as 0:0:0:0:0:0:0:1, and a
+			// session filed that way was never found by the peer's replies.
+			resolved = IPv6.compress(new Host(address).toString());
 		} catch (_:Dynamic) {
 			throw new ArgumentError("One of the parameters is invalid");
 		}
