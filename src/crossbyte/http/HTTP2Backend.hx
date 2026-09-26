@@ -4,6 +4,8 @@ package crossbyte.http;
 // neither a browser nor Node exposes one through `FlexSocket`; a page reaches
 // HTTP/2 through fetch, which negotiates it below the API surface.
 #if !js
+import crossbyte._internal.http.CookieJar;
+import crossbyte._internal.http.Http;
 import crossbyte._internal.http.h2.H2ClientSession;
 import crossbyte._internal.http.h2.H2Connection;
 import crossbyte._internal.http.h2.H2ConnectionPool;
@@ -49,6 +51,18 @@ import haxe.io.Bytes;
  * before the end of its response reports `"Request cancelled"` and never
  * completes, however much of the response then arrives; one whose response
  * had already ended when the cancel came completes as usual.
+ *
+ * Redirects are followed as the HTTP/1.1 client follows them, through the
+ * same code: `Http.MAX_REDIRECTS` at most, a relative `Location` resolved
+ * against the request's URL, a 301, 302 or 303 turned into a bodiless GET,
+ * `https` to `http` only with `followInsecureRedirects`, and the caller's
+ * `Authorization`, `Proxy-Authorization` and `Cookie` dropped once a hop
+ * leaves the origin the request started at. A hop to an origin already
+ * connected to rides that connection.
+ *
+ * The request's `timeout` is an idle limit on its stream, as it is on the
+ * HTTP/1.1 client's socket: the longest the response may go with nothing
+ * arriving for it.
  */
 class HTTP2Backend implements HTTPBackend {
 	/**
@@ -85,7 +99,108 @@ class HTTP2Backend implements HTTPBackend {
 			return;
 		}
 
+		// What a redirect may change about the request, hop to hop.
 		var url:URL = new URL(context.url);
+		var method:String = context.method;
+		var headers:Array<String> = context.headers;
+		var data:Dynamic = context.data;
+		var contentType:Null<String> = context.contentType;
+		var cookies:Null<CookieJar> = context.manageCookies == true ? new CookieJar() : null;
+
+		// The HTTP/1.1 client's redirect policy, through the same functions:
+		// a 3xx completed here with its Location unfollowed, where the
+		// HTTP/1.1 client, Node and the browser all followed it.
+		var visited:Array<String> = [url];
+		var origin:String = Http.__originOf(url);
+		var credentialsDropped:Bool = false;
+
+		while (true) {
+			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, data, contentType, cookies);
+			if (exchange == null) {
+				// Reported already.
+				return;
+			}
+
+			var stream:H2Stream = exchange.stream;
+			if (!context.followRedirects || !Http.__isRedirect(stream.status) || !stream.endOfStream || __cancelled(context)) {
+				__report(context, stream, exchange.connection);
+				return;
+			}
+
+			// Each hop is reported as it goes, as the HTTP/1.1 client reports
+			// them: a caller watching onStatus sees the chain, and only the
+			// final response reaches onComplete.
+			var fields:Map<String, String> = __fields(stream);
+			context.onStatus(stream.status);
+			context.onHeaders(fields);
+			if (cookies != null) {
+				// While `url` is still the host that set them.
+				cookies.store(fields.get("set-cookie"), url.host);
+			}
+
+			var location:Null<String> = fields.get("location");
+			if (location == null || location.length == 0) {
+				context.onError("Could not complete redirect");
+				return;
+			}
+			if (visited.length - 1 >= Http.MAX_REDIRECTS) {
+				context.onError("Exceeded the number of allowed redirects");
+				return;
+			}
+
+			var next:URL;
+			try {
+				next = new URL(Http.__resolveLocation(url, location));
+			} catch (_:Dynamic) {
+				context.onError("Could not complete redirect: malformed Location " + location);
+				return;
+			}
+			if (visited.indexOf(next) > -1) {
+				context.onError("Redirect loop detected");
+				return;
+			}
+			var refusal:Null<String> = Http.__redirectRefusal(url, next, context.followInsecureRedirects == true);
+			if (refusal != null) {
+				context.onError(refusal);
+				return;
+			}
+
+			// Written for the origin the caller asked, and not handed to
+			// another because a response names it, for the rest of the
+			// exchange, even should a later hop come back.
+			if (!credentialsDropped && Http.__originOf(next) != origin) {
+				credentialsDropped = true;
+				headers = Http.__withoutCredentials(headers);
+			}
+
+			var nextMethod:String = Http.__methodAfterRedirect(stream.status, method);
+			if (nextMethod != method) {
+				method = nextMethod;
+				data = null;
+				contentType = null;
+			}
+
+			if (context.onRedirect != null) {
+				context.onRedirect(next);
+			}
+			visited.push(next);
+			url = next;
+		}
+	}
+
+	/**
+	 * Sends one request and waits for its response, or reports why it could
+	 * not and answers null.
+	 */
+	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, data:Dynamic, contentType:Null<String>,
+			cookies:Null<CookieJar>):Null<H2Exchange> {
+		if (__cancelled(context)) {
+			// Between two hops, or before the first. Nothing is opened for it,
+			// and nothing already open is disturbed.
+			context.onError("Request cancelled");
+			return null;
+		}
+
 		var secure:Bool = url.scheme == "https";
 		var port:Int = url.port != null ? url.port : (secure ? 443 : 80);
 		var scheme:String = secure ? "https" : "http";
@@ -93,15 +208,17 @@ class HTTP2Backend implements HTTPBackend {
 
 		if (secure && !FlexSocket.alpnSupported) {
 			context.onError("HTTP/2 over TLS needs ALPN, which this target does not support");
-			return;
+			return null;
 		}
 
 		var session:H2ClientSession = null;
 
 		try {
 			var authority:String = (port == (secure ? 443 : 80)) ? url.host : '${url.host}:$port';
-			var body:Null<Bytes> = __body(context);
+			var body:Null<Bytes> = __body(method, data);
 			var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
+			var cookie:Null<String> = cookies != null ? cookies.headerFor(url.host, secure) : null;
+			var fields:Array<HpackHeader> = __headers(headers, context.userAgent, contentType, body, cookie);
 
 			// Sent once more, on whatever session the pool hands over next,
 			// when the first refuses the stream before anything goes out: it
@@ -113,9 +230,14 @@ class HTTP2Backend implements HTTPBackend {
 			while (stream == null) {
 				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context));
 				try {
-					stream = session.execute(context.method, scheme, authority, __target(url), __headers(context, body), body, timeout,
-						context.cancelToken);
+					stream = session.execute(method, scheme, authority, __target(url), fields, body, timeout, context.cancelToken);
 				} catch (e:H2ConnectionError) {
+					if (e.code == H2ErrorCode.CANCEL && __cancelled(context)) {
+						// Cancelled as it was about to start: refused before
+						// the session was touched, which stays for the rest.
+						context.onError("Request cancelled");
+						return null;
+					}
 					if (e.code != H2ErrorCode.REFUSED_STREAM || refused > 0) {
 						throw e;
 					}
@@ -124,7 +246,6 @@ class HTTP2Backend implements HTTPBackend {
 					session = null;
 				}
 			}
-			__report(context, stream, session.connection);
 
 			// A session that died mid-request must not be handed to the next
 			// caller; one that merely finished a stream stays pooled, which is
@@ -132,6 +253,7 @@ class HTTP2Backend implements HTTPBackend {
 			if (session.dead) {
 				H2ConnectionPool.discard(session);
 			}
+			return {stream: stream, connection: session.connection};
 		} catch (e:H2StreamError) {
 			// One stream failed, a timeout, and has been reset. The
 			// connection is left pooled for the requests still on it and the
@@ -151,6 +273,28 @@ class HTTP2Backend implements HTTPBackend {
 			}
 			context.onError("HTTP/2 request failed: " + Std.string(e));
 		}
+		return null;
+	}
+
+	private static inline function __cancelled(context:HTTPRequestContext):Bool {
+		return context.cancelToken != null && context.cancelToken.cancelled;
+	}
+
+	/**
+	 * A response's header fields by name, repeats joined as the HTTP/1 client
+	 * joins them, so a caller sees one shape whichever version served it.
+	 */
+	private static function __fields(stream:H2Stream):Map<String, String> {
+		var fields:Map<String, String> = new Map();
+		for (header in stream.headers) {
+			if (fields.exists(header.name)) {
+				var joiner:String = header.name == "set-cookie" ? "\n" : ", ";
+				fields.set(header.name, fields.get(header.name) + joiner + header.value);
+			} else {
+				fields.set(header.name, header.value);
+			}
+		}
+		return fields;
 	}
 
 	/**
@@ -170,6 +314,11 @@ class HTTP2Backend implements HTTPBackend {
 			socket.setALPN(["h2"]);
 		}
 
+		// The name is looked up here, on the calling thread. That is the
+		// load's own thread, URLLoader runs every load on one of its pool
+		// threads, never on a runtime's, so a slow resolver holds up this
+		// request and no one else's sockets or timers. Resolver, which hands
+		// its answer back to a runtime's thread, is for code on one.
 		socket.connect(host, port);
 
 		if (secure && socket.getALPN() != "h2") {
@@ -228,17 +377,7 @@ class HTTP2Backend implements HTTPBackend {
 
 		context.onStatus(stream.status);
 
-		var headers:Map<String, String> = new Map();
-		for (header in stream.headers) {
-			if (headers.exists(header.name)) {
-				// The same joining rule the HTTP/1 client uses, so a caller
-				// sees one shape regardless of which version served it.
-				var joiner:String = header.name == "set-cookie" ? "\n" : ", ";
-				headers.set(header.name, headers.get(header.name) + joiner + header.value);
-			} else {
-				headers.set(header.name, header.value);
-			}
-		}
+		var headers:Map<String, String> = __fields(stream);
 		context.onHeaders(headers);
 
 		var body:Bytes = stream.takeBody();
@@ -277,18 +416,18 @@ class HTTP2Backend implements HTTPBackend {
 		return (query != null && query.length > 0) ? '$path?$query' : path;
 	}
 
-	private function __body(context:HTTPRequestContext):Null<Bytes> {
-		if (context.method == "HEAD" || context.method == "GET") {
+	private function __body(method:String, data:Dynamic):Null<Bytes> {
+		if (method == "HEAD" || method == "GET") {
 			return null;
 		}
-		if (context.data == null) {
+		if (data == null) {
 			return null;
 		}
-		if (Std.isOfType(context.data, String)) {
-			return Bytes.ofString((context.data : String));
+		if (Std.isOfType(data, String)) {
+			return Bytes.ofString((data : String));
 		}
-		if (Std.isOfType(context.data, Bytes)) {
-			return (context.data : Bytes);
+		if (Std.isOfType(data, Bytes)) {
+			return (data : Bytes);
 		}
 		return null;
 	}
@@ -303,13 +442,15 @@ class HTTP2Backend implements HTTPBackend {
 	 * `Proxy-Connection` malformed. `Host` is dropped because `:authority`
 	 * already carries it.
 	 */
-	private function __headers(context:HTTPRequestContext, body:Null<Bytes>):Array<HpackHeader> {
+	private function __headers(lines:Array<String>, userAgent:Null<String>, contentType:Null<String>, body:Null<Bytes>,
+			jarCookie:Null<String>):Array<HpackHeader> {
 		var out:Array<HpackHeader> = [];
 		var seenContentType:Bool = false;
 		var seenUserAgent:Bool = false;
+		var seenCookie:Bool = false;
 
-		if (context.headers != null) {
-			for (raw in context.headers) {
+		if (lines != null) {
+			for (raw in lines) {
 				var split:Int = raw.indexOf(":");
 				if (split <= 0) {
 					continue;
@@ -325,6 +466,8 @@ class HTTP2Backend implements HTTPBackend {
 						seenContentType = true;
 					case "user-agent":
 						seenUserAgent = true;
+					case "cookie":
+						seenCookie = true;
 					case _:
 				}
 
@@ -335,11 +478,16 @@ class HTTP2Backend implements HTTPBackend {
 			}
 		}
 
-		if (!seenUserAgent && context.userAgent != null) {
-			out.push(new HpackHeader("user-agent", context.userAgent));
+		// What an earlier hop of this request was handed, unless the caller
+		// wrote a Cookie of its own: the HTTP/1.1 client's rule.
+		if (jarCookie != null && !seenCookie) {
+			out.push(new HpackHeader("cookie", jarCookie, true));
 		}
-		if (!seenContentType && context.contentType != null && body != null) {
-			out.push(new HpackHeader("content-type", context.contentType));
+		if (!seenUserAgent && userAgent != null) {
+			out.push(new HpackHeader("user-agent", userAgent));
+		}
+		if (!seenContentType && contentType != null && body != null) {
+			out.push(new HpackHeader("content-type", contentType));
 		}
 		if (body != null) {
 			out.push(new HpackHeader("content-length", Std.string(body.length)));
@@ -355,5 +503,11 @@ class HTTP2Backend implements HTTPBackend {
 		settings.enablePush = false;
 		return settings;
 	}
+}
+
+/** One request's stream, answered, and the connection it came on. */
+private typedef H2Exchange = {
+	var stream:H2Stream;
+	var connection:H2Connection;
 }
 #end
