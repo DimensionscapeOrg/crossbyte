@@ -91,6 +91,32 @@ class HTTPServerMetricsTest extends utest.Test {
 		});
 	}
 
+	public function testAStatusClassIsLookedUpOnce(async:Async):Void {
+		// Every response looked its counter up in the registry: a label map
+		// built, sorted into a key, and the registry's lock taken, on top of
+		// the counter's own.
+		var registry = new CountingMetrics();
+		var root = File.createTempDirectory();
+		var fixture = new ByteArray();
+		fixture.writeUTFBytes("Hello metrics");
+		root.resolvePath("index.html").save(fixture);
+
+		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.html"]);
+		config.metrics = registry;
+		var server = new HTTPServer(config);
+		var get:String = "GET /index.html HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+		HTTPTestSupport.exchangeEach(server, [get, get, get], function(responses):Void {
+			try server.close() catch (_:Dynamic) {}
+			try root.deleteDirectory(true) catch (_:Dynamic) {}
+
+			Assert.equals(200, responses[2].status);
+			Assert.isTrue(registry.toPrometheus().indexOf('http_requests_total{status="2xx"} 3') >= 0);
+			Assert.equals(1, registry.statusLookups, "the 2xx counter was looked up per response");
+			async.done();
+		});
+	}
+
 	private function __request(registry:Metrics, requestText:String, done:String->Void, withEndpoint:Bool = false):Void {
 		__requestRaw(registry, requestText, function(raw):Void {
 			var split = raw.indexOf("\r\n\r\n");
@@ -160,5 +186,17 @@ class HTTPServerMetricsTest extends utest.Test {
 			// connection gauge) runs before the caller inspects metrics.
 			HTTPTestSupport.pumpMoreAsync(1, then, 0.008);
 		}, 0.008);
+	}
+}
+
+/** A registry that counts how often a status-labelled counter is looked up. */
+private class CountingMetrics extends Metrics {
+	public var statusLookups:Int = 0;
+
+	override public function counter(name:String, ?labels:Map<String, String>, ?help:String):crossbyte.metrics.Counter {
+		if (labels != null && labels.exists("status")) {
+			statusLookups++;
+		}
+		return super.counter(name, labels, help);
 	}
 }

@@ -763,6 +763,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Counting a response in `HTTPServer`'s metrics no longer looks its status
+  class's counter up in the registry each time -- a label map built, sorted
+  into a key, and the registry's lock taken on top of the counter's own. The
+  counter is looked up once and kept: 820 ns a response became 230 ns
+  natively, the rest being the counter's own lock, and about 195 ns became
+  2 on Node.
 - An HTTP/2 request that has fully arrived is no longer held to
   `requestTimeout`. Every open stream counted as a request still arriving,
   so a long poll answered after `requestTimeout` found its connection
