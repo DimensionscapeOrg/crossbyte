@@ -19,6 +19,8 @@ import sys.FileSystem;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 #if !nodejs
+import crossbyte._internal.socket.BlockedError;
+import crossbyte._internal.socket.IPollableSocket;
 import sys.net.Host;
 import sys.net.Socket;
 import sys.io.Process;
@@ -261,10 +263,11 @@ class PHPBridge {
 	/**
 	 * Opens the transport and starts the exchange.
 	 *
-	 * The two targets differ only in how bytes come back. Node is told and a
-	 * native build has to ask, so a native build reads from the tick it is
-	 * already being given; everything else -- the parser, the deadline, the
-	 * table -- is shared, and that is the point of the split.
+	 * The two targets differ only in how they learn that bytes have come
+	 * back: Node by an event, a native build from the runtime's poll set,
+	 * which its socket joins the way `crossbyte.net.Socket`'s do. Everything
+	 * else -- the parser, the deadline, the table -- is shared, and that is
+	 * the point of the split.
 	 */
 	private function __begin(exchange:PHPExchange, host:String, port:Int, payload:Bytes):Void {
 		#if nodejs
@@ -322,13 +325,13 @@ class PHPBridge {
 		var socket:Socket = new Socket();
 		socket.setFastSend(true);
 
-		var outbound = new Outbound(exchange, socket, payload);
+		var outbound = new Outbound(this, exchange, socket, payload);
 
 		try {
 			socket.connect(new Host(host), port);
 			socket.setBlocking(false);
 			// Most requests fit the socket's send buffer and leave in this
-			// call. A larger body goes out over the ticks that follow, as the
+			// call. A larger body goes out over the passes that follow, as the
 			// backend reads it. It used to be written in one burst, and a
 			// non-blocking socket with a full send buffer refuses the rest:
 			// the upload failed as though the backend were down.
@@ -350,10 +353,9 @@ class PHPBridge {
 		__reading.push(outbound);
 
 		__track(exchange, function():Void {
-			try {
-				socket.close();
-			} catch (_:Dynamic) {}
+			__release(outbound);
 		});
+		__watch(outbound);
 		#end
 	}
 
@@ -387,6 +389,156 @@ class PHPBridge {
 		}
 
 		return true;
+	}
+
+	/**
+	 * Puts the exchange's socket in the runtime's poll set, so the reply is
+	 * read the moment it arrives.
+	 *
+	 * It was read from the tick instead, which the runtime dispatches twelve
+	 * times a second by default: every PHP response waited for the next one,
+	 * up to 84ms and 42ms on average, whatever the backend took. A server's
+	 * loop spends the time between ticks waiting in poll, and a socket in its
+	 * set ends that wait when data arrives.
+	 */
+	private function __watch(outbound:Outbound):Void {
+		var runtime:CrossByte = __runtime;
+
+		if (runtime == null) {
+			return;
+		}
+
+		outbound.socket.custom = outbound;
+		@:privateAccess runtime.registerSocket(outbound.socket);
+		outbound.runtime = runtime;
+
+		// What did not fit the send buffer goes when the registry next asks,
+		// and again after that for as long as the buffer stays full.
+		if (outbound.written < outbound.payload.length) {
+			@:privateAccess runtime.queueWritable(outbound.socket);
+		}
+	}
+
+	/** Takes the socket out of the poll set and closes it. **/
+	private function __release(outbound:Outbound):Void {
+		outbound.closed = true;
+
+		if (outbound.runtime != null) {
+			@:privateAccess outbound.runtime.deregisterSocket(outbound.socket);
+			outbound.runtime = null;
+		}
+
+		try {
+			outbound.socket.close();
+		} catch (_:Dynamic) {}
+	}
+
+	/**
+	 * The backend sent something, or hung up: reads what is there, and
+	 * settles the exchange once the response is whole or cannot be.
+	 */
+	private function __onReadable(entry:Outbound):Void {
+		if (entry.exchange.settled) {
+			return;
+		}
+
+		try {
+			if (__drain(entry) && !entry.exchange.settled) {
+				entry.exchange.fail("PHP backend closed the connection before finishing the response.");
+				__finish(entry.exchange);
+			}
+		} catch (e:Dynamic) {
+			__abandon(entry, e);
+		}
+	}
+
+	/** The socket may take more of a request too large for one write. **/
+	private function __onWritable(entry:Outbound):Void {
+		if (entry.exchange.settled || entry.written >= entry.payload.length) {
+			return;
+		}
+
+		var failure:Dynamic = null;
+
+		try {
+			if (!__send(entry) && entry.runtime != null) {
+				@:privateAccess entry.runtime.queueWritable(entry.socket);
+			}
+			return;
+		} catch (e:Dynamic) {
+			failure = e;
+		}
+
+		try {
+			// Read first, so a backend that answered before taking the whole
+			// body -- a missing script, say -- is still heard.
+			__drain(entry);
+		} catch (e:Dynamic) {
+			__abandon(entry, e);
+			return;
+		}
+
+		if (!entry.exchange.settled) {
+			entry.exchange.fail("PHP backend stopped taking the request after " + entry.written + " of " + entry.payload.length + " bytes: "
+				+ Std.string(failure));
+			__finish(entry.exchange);
+		}
+	}
+
+	/**
+	 * Fails an exchange whose handling threw. Settled here rather than left to
+	 * the registry, which reports a throw and keeps the socket: still
+	 * readable, so handled, and thrown, again on every pass until the
+	 * deadline.
+	 */
+	private function __abandon(entry:Outbound, error:Dynamic):Void {
+		if (!entry.exchange.settled) {
+			entry.exchange.fail("Reading the PHP backend's response failed: " + Std.string(error), error);
+		}
+
+		__finish(entry.exchange);
+	}
+
+	/**
+	 * Reads what has arrived into the exchange, and succeeds it once
+	 * END_REQUEST is in. Returns whether the backend hung up first.
+	 */
+	private function __drain(entry:Outbound):Bool {
+		while (true) {
+			#if eval
+			// A socket cannot be made non-blocking on eval, and a read with
+			// nothing there would stop the runtime until the backend sent more.
+			if (Socket.select([entry.socket], [], [], 0).read.length == 0) {
+				return false;
+			}
+			#end
+
+			var read:Int = 0;
+
+			try {
+				read = entry.socket.input.readBytes(__scratch, 0, __scratch.length);
+			} catch (e:Dynamic) {
+				// Blocked is the end of what has arrived; anything else is the
+				// end of the connection.
+				return !BlockedError.isBlocked(e);
+			}
+
+			if (read <= 0) {
+				return false;
+			}
+
+			if (entry.exchange.receive(__scratch, read)) {
+				entry.exchange.succeed();
+				__finish(entry.exchange);
+				return false;
+			}
+
+			// Short of the buffer: that was everything there was, and the
+			// registry will say when there is more.
+			if (read < __scratch.length) {
+				return false;
+			}
+		}
 	}
 	#end
 
@@ -436,79 +588,14 @@ class PHPBridge {
 	}
 
 	/**
-	 * One frame's worth of work: read whatever has arrived, then fail whatever
-	 * has run out of time.
+	 * Fails whatever has run out of time. The sockets are not read here: the
+	 * runtime reads them when they are ready.
 	 *
 	 * The deadline is swept here rather than left to a socket timeout because
 	 * a socket timeout bounds one read. A backend sending a byte a second
 	 * resets it forever and never trips it, while this notices.
 	 */
 	private function __onTick(_:TickEvent):Void {
-		#if !nodejs
-		var reading = __reading.copy();
-
-		for (entry in reading) {
-			if (entry.exchange.settled) {
-				continue;
-			}
-
-			var closed:Bool = false;
-			var writeFailure:String = null;
-
-			// The rest of a request too large to leave in one write, before
-			// reading: a backend answers only once it has the whole body.
-			if (entry.written < entry.payload.length) {
-				try {
-					__send(entry);
-				} catch (e:Dynamic) {
-					writeFailure = Std.string(e);
-				}
-			}
-
-			// Drains what is there and stops on the blocked error a
-			// non-blocking socket raises when it is empty, which is the normal
-			// end of a frame's reading rather than a failure.
-			while (true) {
-				var read:Int = 0;
-
-				try {
-					read = entry.socket.input.readBytes(__scratch, 0, __scratch.length);
-				} catch (e:Dynamic) {
-					if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
-						closed = true;
-					}
-
-					break;
-				}
-
-				if (read <= 0) {
-					break;
-				}
-
-				if (entry.exchange.receive(__scratch, read)) {
-					entry.exchange.succeed();
-					__finish(entry.exchange);
-					closed = false;
-					break;
-				}
-			}
-
-			if (entry.exchange.settled) {
-				continue;
-			}
-
-			// Read first, so a backend that answered before taking the whole
-			// body -- a missing script, say -- is still heard.
-			if (writeFailure != null) {
-				entry.exchange.fail("PHP backend stopped taking the request after " + entry.written + " of " + entry.payload.length + " bytes: " + writeFailure);
-				__finish(entry.exchange);
-			} else if (closed) {
-				entry.exchange.fail("PHP backend closed the connection before finishing the response.");
-				__finish(entry.exchange);
-			}
-		}
-		#end
-
 		var waiting = __pending.copy();
 
 		for (entry in waiting) {
@@ -627,16 +714,43 @@ private class Fcgi {
 
 #if !nodejs
 /** A native exchange's socket, and how much of its request has been written. **/
-private class Outbound {
+@:access(crossbyte._internal.php.PHPBridge)
+private class Outbound implements IPollableSocket {
+	public final bridge:PHPBridge;
 	public final exchange:PHPExchange;
 	public final socket:Socket;
 	public final payload:Bytes;
 	public var written:Int = 0;
 
-	public function new(exchange:PHPExchange, socket:Socket, payload:Bytes) {
+	/** The runtime whose poll set holds the socket, while one does. **/
+	public var runtime:Null<CrossByte> = null;
+
+	/** Set once the bridge has let the socket go. **/
+	public var closed:Bool = false;
+
+	public var registryClosed(get, never):Bool;
+
+	public function new(bridge:PHPBridge, exchange:PHPExchange, socket:Socket, payload:Bytes) {
+		this.bridge = bridge;
 		this.exchange = exchange;
 		this.socket = socket;
 		this.payload = payload;
+	}
+
+	public function registryOnReadable():Void {
+		bridge.__onReadable(this);
+	}
+
+	public function registryOnWritable():Void {
+		bridge.__onWritable(this);
+	}
+
+	public function registryHasBufferedInput():Bool {
+		return false;
+	}
+
+	private function get_registryClosed():Bool {
+		return closed || exchange.settled;
 	}
 }
 #end

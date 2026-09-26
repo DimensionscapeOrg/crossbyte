@@ -17,9 +17,11 @@ private typedef FpmRequest = {
 /**
  * The CGI header block, as `PHPExchange` hands it to the handler.
  *
- * Fed FastCGI records directly, so it needs no backend and no socket. That is
- * what lets it run on eval, where `HTTPPhpTest` cannot: a socket there cannot
- * be made non-blocking, so the bridge's read would stall the tick it runs in.
+ * Mostly fed FastCGI records directly, needing no backend and no socket. The
+ * two cases about when a reply is read drive the bridge against a plain
+ * blocking backend, and run on eval as well: the bridge reads only what the
+ * runtime's poll set reports, so a socket eval cannot make non-blocking no
+ * longer stalls it.
  */
 class PHPExchangeTest extends utest.Test {
 	#if !(js && !nodejs)
@@ -290,6 +292,105 @@ class PHPExchangeTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp || jvm || eval)
+	public function testAReplyIsReadWhenItArrivesRatherThanAtTheNextTick():Void {
+		// Answered at once, and then the runtime's sockets polled without a
+		// single tick -- which is how a server's loop spends the time between
+		// ticks. The reply was read from a tick listener, so it waited there
+		// for the next tick: up to 84ms, 42ms on average, at the default
+		// twelve a second, however quickly PHP had answered.
+		var backend = new BlockingBackend();
+		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 10);
+		var future = bridge.execute(__request());
+
+		var request:FpmRequest = __readRequest(backend.accept());
+		Assert.isTrue(request.stdinEnded, "the request never arrived whole");
+		backend.reply(__cgi("Status: 200 OK\r\nContent-Type: text/plain\r\n\r\n", Bytes.ofString("from php")));
+
+		__pollWithoutTicking(() -> future.completed, 5.0);
+		backend.close();
+
+		Assert.isTrue(future.completed, "the reply sat unread until a tick came round");
+		Assert.isTrue(future.succeeded, "the exchange failed: " + future.error);
+
+		if (future.succeeded) {
+			Assert.equals("from php", future.result.body.toString());
+		}
+	}
+
+	public function testABackendThatHangsUpMidResponseIsHeardWhenItHangsUp():Void {
+		// Part of a response and no END_REQUEST, and then the connection gone.
+		// The hang-up is readiness too, so it is heard as it happens rather
+		// than at a tick -- and the half a page is not served as a page.
+		var backend = new BlockingBackend();
+		var bridge = new PHPBridge(PHPMode.Connect("127.0.0.1", backend.port), "", ["index.php"], 10);
+		var future = bridge.execute(__request());
+
+		__readRequest(backend.accept());
+		var partial = new BytesBuffer();
+		var cgi:Bytes = Bytes.ofString("Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nhalf a pa");
+		__header(partial, 6, cgi.length);
+		partial.add(cgi);
+		backend.reply(partial.getBytes());
+		backend.close();
+
+		__pollWithoutTicking(() -> future.completed, 5.0);
+
+		Assert.isTrue(future.completed, "the hang-up was not heard until a tick came round");
+		Assert.isFalse(future.succeeded, "half a response was served as a whole one");
+		Assert.isTrue(future.error != null && future.error.indexOf("closed the connection before finishing") >= 0, "not reported as a hang-up: " + future.error);
+	}
+
+	/**
+		Polls the runtime's sockets the way its loop does between ticks, and
+		never ticks: what arrives here is read on readiness or not at all.
+	**/
+	private static function __pollWithoutTicking(done:Void->Bool, seconds:Float):Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+
+		while (!done() && haxe.Timer.stamp() < deadline) {
+			@:privateAccess runtime.__socketRegistry.update(0.1);
+
+			if (!done()) {
+				Sys.sleep(0.001);
+			}
+		}
+	}
+
+	/** Reads what the bridge sent until its request has ended, as php-fpm would. **/
+	private static function __readRequest(peer:sys.net.Socket):FpmRequest {
+		var received = new BytesBuffer();
+		var chunk:Bytes = Bytes.alloc(65536);
+
+		while (true) {
+			var n:Int = peer.input.readBytes(chunk, 0, chunk.length);
+			received.addBytes(chunk, 0, n);
+
+			var snapshot:Bytes = received.getBytes();
+			var parsed:FpmRequest = __parseAsPhpFpm(snapshot);
+
+			if (parsed.stdinEnded || parsed.errors.length > 0) {
+				return parsed;
+			}
+
+			received = new BytesBuffer();
+			received.add(snapshot);
+		}
+	}
+
+	private static function __request():PHPRequest {
+		return {
+			requestMethod: "GET",
+			scriptFilename: "/srv/index.php",
+			scriptName: "/index.php",
+			requestUri: "/index.php",
+			extraHeaders: new haxe.ds.StringMap<String>(),
+			body: Bytes.alloc(0)
+		};
+	}
+	#end
+
 	private static function __respond(records:Bytes):PHPResponse {
 		var exchange = new PHPExchange(0);
 		Assert.isTrue(exchange.receive(records, records.length), "END_REQUEST was not recognised");
@@ -441,3 +542,44 @@ class PHPExchangeTest extends utest.Test {
 	}
 	#end
 }
+
+#if (cpp || jvm || eval)
+/**
+	A FastCGI backend on a plain blocking socket, driven step by step by the
+	test: it takes the bridge's connection, and answers when told to.
+**/
+private class BlockingBackend {
+	public var port(default, null):Int;
+
+	private var listener:sys.net.Socket;
+	private var peer:sys.net.Socket;
+
+	public function new() {
+		listener = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(1);
+		port = listener.host().port;
+	}
+
+	/** The bridge's connection, which it made before `execute` returned. **/
+	public function accept():sys.net.Socket {
+		peer = listener.accept();
+		return peer;
+	}
+
+	public function reply(bytes:Bytes):Void {
+		peer.output.write(bytes);
+		peer.output.flush();
+	}
+
+	public function close():Void {
+		for (socket in [peer, listener]) {
+			if (socket != null) {
+				try {
+					socket.close();
+				} catch (_:Dynamic) {}
+			}
+		}
+	}
+}
+#end

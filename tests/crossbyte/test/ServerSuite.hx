@@ -59,10 +59,11 @@ class ServerSuite {
 		runner.addCase(new crossbyte.net.ServerWebSocketAdmissionTest());
 		#end
 
-		// PHP end to end runs on native and jvm, where the bridge drains a
-		// non-blocking socket from the tick. Not eval: a socket there cannot be
-		// made non-blocking, so that drain would stall the runtime. Not Node
-		// either, and not for a reason the bridge shares: the test drives a
+		// PHP end to end runs on native and jvm. Not eval, where none of the
+		// server cases above run; the bridge itself is driven on eval by
+		// PHPExchangeTest, now that it reads only what the poll set reports
+		// rather than draining a socket that cannot be made non-blocking. Not
+		// Node either, and not for a reason the bridge shares: the test drives a
 		// FastCGI backend over `crossbyte.net.ServerSocket` and holds the
 		// accepted peer, which is fine on Node -- what it also does is
 		// construct `PHPMode.Launch` paths through `sys.io.Process` in the
