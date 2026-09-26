@@ -1,5 +1,7 @@
 package crossbyte._internal.macro;
 
+// Macro-only: run from extraParams.hxml. Guarded so a build that includes every module, `--macro include('crossbyte')`, does not try to compile it for the target.
+#if macro
 import haxe.macro.Compiler;
 import haxe.macro.Context;
 
@@ -39,3 +41,4 @@ class HostPlatform {
 		}
 	}
 }
+#end
