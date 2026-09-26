@@ -22,6 +22,7 @@ import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.utils.IntParse;
+import crossbyte.utils.LogCategory;
 import crossbyte.utils.Logger;
 import crossbyte.utils.LogLevel;
 import crossbyte._internal.http.headers.AcceptEncoding;
@@ -55,6 +56,13 @@ import crossbyte._internal.http.HTTPResponseWriter;
  * closes and the handler collapses back to one-shot behavior.
  */
 final class HTTPRequestHandler extends EventDispatcher {
+	/**
+	 * The access log's own category, one line per response at `INFO`. An
+	 * operator quiets it with `Logger.setLevel("http.access", WARN)` and keeps
+	 * everything else at `INFO`, where it used to share the one global level.
+	 */
+	@:noCompletion private static final ACCESS_LOG:LogCategory = Logger.category("http.access");
+
 	/**
 	 * Bytes a request's header block may take before it is answered `431`.
 	 * The body has its own limit, `HTTPServerConfig.maxRequestBodySize`; the
@@ -1575,8 +1583,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// argument is built before the call regardless of whether the level
 		// admits it, five concatenations per request, on a server whose
 		// operator has every reason to run above INFO.
-		if (Logger.isEnabled(LogLevel.INFO)) {
-			Logger.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
+		if (ACCESS_LOG.isEnabled(LogLevel.INFO)) {
+			ACCESS_LOG.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 		}
 		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
 		statusEvent.responseURL = __origin.remoteAddress;

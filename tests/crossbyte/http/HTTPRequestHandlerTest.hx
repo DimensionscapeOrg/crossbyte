@@ -165,6 +165,30 @@ class HTTPRequestHandlerTest extends utest.Test {
 		});
 	}
 
+	public function testTheAccessLogCanBeQuietedOnItsOwn(async:Async):Void {
+		// The access log shared the one global level, so quieting it meant
+		// quieting everything at INFO. It has the category http.access now.
+		var lines:Array<String> = [];
+		var previous = crossbyte.utils.Logger.sink;
+		crossbyte.utils.Logger.sink = line -> lines.push(line);
+		crossbyte.utils.Logger.setLevel("http.access", crossbyte.utils.LogLevel.WARN);
+
+		__sendRequest(async, [
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				handler.respond(200, "text/plain", "quiet");
+			}
+		], "GET /quiet HTTP/1.1\r\nHost: localhost\r\n\r\n", function(response):Void {
+			crossbyte.utils.Logger.setLevel("http.access", null);
+			crossbyte.utils.Logger.info("still at INFO");
+			crossbyte.utils.Logger.sink = previous;
+
+			Assert.equals(200, response.status);
+			Assert.equals(0, lines.filter(l -> l.indexOf("/quiet") >= 0).length, "the access log ignored its own level: " + lines.join(" || "));
+			Assert.equals(1, lines.filter(l -> l.indexOf("still at INFO") >= 0).length, "the global INFO level was quieted too");
+			async.done();
+		});
+	}
+
 	public function testOnErrorCanAnswerTheRequest(async:Async):Void {
 		var seen:Dynamic = null;
 		var previous = crossbyte.utils.Logger.sink;
