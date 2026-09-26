@@ -5,6 +5,14 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- PKCE for OAuth (RFC 7636): `OAuth.createCodeVerifier()`,
+  `OAuth.codeChallenge(verifier)`, a `codeChallenge` argument to
+  `getAuthorizationUrl`, sent with `code_challenge_method=S256`, and a
+  `codeVerifier` argument to `getAccessToken`. There was nowhere to put
+  either, and PKCE is what keeps an intercepted authorization code from
+  being exchanged by someone else. A client with no secret no longer sends
+  an empty `client_secret`, which some providers refuse. `OAuth.timeout`
+  (30 seconds) bounds each exchange and refresh.
 - JWT payloads carry claims of an application's own. A literal can hold
   them beside the registered claims -- `{sub: id, exp: now + 3600, role:
   "admin"}` -- and `JWTPayload.claim(name)`, `hasClaim` and `setClaim`
@@ -563,6 +571,12 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `OAuth.getAccessToken` and `refreshAccessToken` go through `URLLoader`
+  and need a CrossByte runtime on the calling thread; the callbacks run on
+  that thread. On native targets and Node they return before the token
+  endpoint answers, where native used to run the callbacks before the call
+  returned. On the jvm and the interpreter `URLLoader` still runs its
+  request inline, so there they return after it, as before.
 - `JWTPayload.issuedAt`, `expiresAt` and `notBeforeTime` are
   `Null<Float>`, not `Null<Int>`, and `JWTPayloadData`'s `iat`, `exp` and
   `nbf` take an `Int` or a `Float`. Code that read one into an `Int` has to
@@ -752,6 +766,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- OAuth's token exchange no longer blocks the runtime, and a provider
+  that never answers no longer leaves it waiting forever. Native targets
+  used the blocking `haxe.Http`, so a token endpoint taking 400 ms held
+  every connection the server had for 400 ms per sign-in; on Node a
+  stalled endpoint left both callbacks unfired. The exchange and refresh
+  now go through `URLLoader`, off the runtime's thread on native and
+  asynchronously on Node, answering on the calling runtime's thread, and
+  fail after `OAuth.timeout` seconds. A rejected grant reports the
+  provider's `error` and `error_description` whatever the status it came
+  with, and a failing status is never taken for a token. `expires_in` is
+  read with `IntParse`, so one too large for an `Int` is 0 on every target
+  rather than whatever `Std.parseInt` made of it on each.
 - A JWT expiring after January 2038, or at 2147483647 (a common "never"),
   is judged the same on every target. Times were `Int`: 2147483647 plus the
   leeway wrapped negative on the interpreter and the jvm, so the token was
