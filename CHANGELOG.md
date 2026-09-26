@@ -721,6 +721,22 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Store` key survives a crash while it is being overwritten. The file
+  backend replaced a value by deleting it and then renaming the new one into
+  place, because the standard library's rename refuses to replace a file on
+  Windows; a process that died between the two left no value, and the next
+  open deleted the complete new one as debris. Between the two steps a
+  reader saw the key as absent, too: two runtimes on one store, one
+  overwriting and one reading, read it as missing in about half of 4,000
+  reads, and on Windows a reader holding the file failed the writer's
+  delete. The new value is now renamed over the old one in one step
+  (`MoveFileExW` on Windows, `Files.move` on the jvm), so the key is never
+  absent; each write uses a temporary file of its own rather than one name
+  shared by every writer; and the temporary file is flushed to disk before
+  the rename, as the store's design promised, with the directory flushed
+  after it on POSIX. The interpreter has no fsync to call. A temporary file
+  the old writer left as the only copy of a key is promoted on open rather
+  than deleted.
 - A PHP request body over 65,535 bytes reaches php-fpm intact. The bridge
   put the whole body in one FastCGI STDIN record, whose length field is 16
   bits, so a 100,000-byte POST declared 34,464 bytes and php-fpm read the
