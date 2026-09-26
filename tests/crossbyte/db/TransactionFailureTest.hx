@@ -90,6 +90,33 @@ class TransactionFailureTest extends utest.Test {
 		Assert.equals("ROLLBACK;", __sent[__sent.length - 1]);
 	}
 
+	public function testAPoolResetRollsBackWhatAFailedBodyLeftOpen():Void {
+		// A body that begins, writes and throws. The pool's validate() passes
+		// the connection, because an open transaction answers a ping, and the
+		// next borrower's "autocommit" insert joined the abandoned
+		// transaction.
+		var connection = __postgres("never");
+		var pool = new ConnectionPool<PostgresConnection>({
+			factory: () -> connection,
+			validate: c -> c.ping(),
+			reset: c -> if (c.inTransaction) c.rollback(),
+			maxSize: 1
+		});
+		var db = AsyncDatabase.of(pool);
+
+		db.submit(function(c:PostgresConnection):Bool {
+			c.begin();
+			c.request("UPDATE accounts SET balance = 0 WHERE id = 7;");
+			throw "application bug after the UPDATE";
+		});
+
+		var nextSees:Null<Bool> = null;
+		db.submit(c -> c.inTransaction).onComplete(v -> nextSees = v);
+
+		Assert.equals(false, nextSees, "the next borrower was handed the abandoned transaction");
+		Assert.isTrue(__sent.indexOf("ROLLBACK;") > __sent.indexOf("UPDATE accounts SET balance = 0 WHERE id = 7;"));
+	}
+
 	public function testTheMigratorDoesNotReportAMigrationWhoseCommitFailed():Void {
 		var connection = __postgres("COMMIT;");
 		var migrator = new SchemaMigrator<PostgresConnection>({

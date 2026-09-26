@@ -34,6 +34,27 @@ typedef ConnectionPoolOptions<T> = {
 	@:optional var validate:T->Bool;
 
 	/**
+	 * Returns a connection to a clean state as it comes back, before any
+	 * other caller can take it: on every `release()`, including the one
+	 * `withConnection()` makes after its body threw. A reset that throws
+	 * retires the connection instead.
+	 *
+	 * The case it exists for is a body that opened a transaction and failed
+	 * before closing it. Without a reset the next borrower is handed that
+	 * transaction -- its writes join it, and the locks it holds stay held --
+	 * and `validate` does not notice, because an open transaction answers a
+	 * ping like any other. With `PostgresConnection`:
+	 *
+	 * ```haxe
+	 * reset: c -> if (c.inTransaction) c.rollback()
+	 * ```
+	 *
+	 * The pool cannot do this itself: it knows nothing of what a connection
+	 * is.
+	 */
+	@:optional var reset:T->Void;
+
+	/**
 	 * Maximum connections held at once. Defaults to 8.
 	 */
 	@:optional var maxSize:Int;
@@ -100,6 +121,7 @@ class ConnectionPool<T> {
 	@:noCompletion private var __factory:Void->T;
 	@:noCompletion private var __close:T->Void;
 	@:noCompletion private var __validate:T->Bool;
+	@:noCompletion private var __reset:T->Void;
 	@:noCompletion private var __idle:Array<T>;
 	@:noCompletion private var __created:Int = 0;
 	// The connections actually checked out, rather than a count of them.
@@ -146,6 +168,7 @@ class ConnectionPool<T> {
 		__factory = options.factory;
 		__close = options.close;
 		__validate = options.validate;
+		__reset = options.reset;
 		__idle = [];
 		__out = [];
 
@@ -267,7 +290,8 @@ class ConnectionPool<T> {
 	}
 
 	/**
-	 * Returns a connection to the pool for reuse.
+	 * Returns a connection to the pool for reuse, running the `reset` hook
+	 * on it first when one is configured.
 	 *
 	 * Releasing a connection the pool did not issue, or releasing the same
 	 * connection twice, is ignored rather than corrupting the accounting.
@@ -289,12 +313,34 @@ class ConnectionPool<T> {
 			return;
 		}
 
+		var reusable:Bool = true;
+
+		if (__reset != null && !closed) {
+			// Unlocked, since a reset may talk to the server. The connection
+			// stays checked out meanwhile, so nobody can take it half reset.
+			__releaseLock();
+
+			try {
+				__reset(connection);
+			} catch (_:Dynamic) {
+				reusable = false;
+			}
+
+			__acquireLock();
+			index = __indexOf(__out, connection);
+
+			if (index < 0) {
+				__releaseLock();
+				return;
+			}
+		}
+
 		__out.splice(index, 1);
 
-		if (closed) {
+		if (closed || !reusable) {
 			__created--;
 			__releaseLock();
-			__closeConnection(connection, "pool_closed");
+			__closeConnection(connection, closed ? "pool_closed" : "failed_reset");
 			return;
 		}
 
@@ -353,8 +399,9 @@ class ConnectionPool<T> {
 			result = body(connection);
 		} catch (e:Dynamic) {
 			// The connection may be mid-transaction or otherwise unusable,
-			// but only the caller knows; return it and let validation catch
-			// a genuinely broken one on the next acquire.
+			// and only the caller knows how to tell: release() runs the
+			// `reset` hook, which is where that knowledge goes, and
+			// validation catches a genuinely broken one on the next acquire.
 			release(connection);
 			__rethrow(e);
 			return null;
@@ -485,11 +532,12 @@ class ConnectionPool<T> {
 	 * what keeps the total honest.
 	 *
 	 * `reason` is labelled rather than split into separate metrics because
-	 * the set is fixed and small — four values — and the distinction
+	 * the set is fixed and small — five values — and the distinction
 	 * matters operationally: connections retiring through
 	 * `failed_validation` mean the database is dropping them underneath
 	 * the pool, which is a different problem from an application calling
-	 * `discard()`.
+	 * `discard()`, and `failed_reset` is a connection that could not be
+	 * put back in a clean state.
 	 */
 	@:noCompletion private function __closeConnection(connection:T, reason:String = "released"):Void {
 		if (__metrics != null) {
