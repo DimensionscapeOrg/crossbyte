@@ -629,7 +629,7 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		var expires:Float = 0;
 		// Without a runtime on this thread there is nothing to hand an answer
 		// back to, so a name is looked up here, as it always was.
-		var byName:Bool = Resolver.needsLookup(address) && CrossByte.current() != null;
+		var byName:Bool = Resolver.needsLookup(address) && Resolver.runtimeHere() != null;
 
 		if (byName) {
 			if (__names == null) {
