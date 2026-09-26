@@ -712,6 +712,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` no longer hands a caller's credentials to whatever host a
+  redirect names. Every hop was written with every header the caller set,
+  so a `302` to another origin received `Authorization: Bearer ...`. Once a
+  redirect leaves the origin the request started at, `Authorization`,
+  `Proxy-Authorization` and a `Cookie` set in `requestHeaders` are dropped
+  for the rest of the exchange, as browsers, curl and Go drop them; cookies
+  the client manages already went only to the host that set them. A
+  redirect from `https` to `http` is refused unless
+  `URLRequest.followInsecureRedirects` is set, and one to any scheme but
+  those two is refused, where a malformed `Location` used to throw out of
+  the request. Ten redirects ending in a response are no longer reported
+  as too many. A caller's header line is written through the same
+  sanitiser as the server's, so a CR or LF in a value -- one forwarded from
+  a client, say -- can no longer add a header or a request of its own.
 - A middleware guard sees the path the server would serve. The request
   path was only percent-decoded for middleware, while the static resolver
   collapsed slashes and applied `.` and `..` on its own, so a guard refusing

@@ -102,10 +102,12 @@ class Http {
 	private var __followRedirects:Bool;
 	private var __cookies:Null<CookieJar>;
 	private var __redirect:Bool = false;
+	private var __followInsecureRedirects:Bool;
 
 	public function new(url:String, method:String = "GET", headers:Array<String> = null, requestData:Dynamic = null, contentType:Null<String> = null,
 			data:Dynamic = null, version:HttpVersion = HttpVersion.HTTP_1_1, timeout:Int = 10000, userAgent:String = "CrossByte", followRedirects:Bool = true,
-			manageCookies:Bool = true) {
+			manageCookies:Bool = true, followInsecureRedirects:Bool = false) {
+		__followInsecureRedirects = followInsecureRedirects;
 		__url = new URL(url);
 		__headers = headers;
 		__requestData = requestData;
@@ -154,25 +156,51 @@ class Http {
 		}
 
 		var redirects:Array<String> = [__url];
+		var origin:String = __originOf(__url);
+		var credentialsDropped:Bool = false;
 
 		__tryRequest();
 
 		if (__followRedirects) {
-			while (__connected
-				&& (__status == 301 || __status == 302 || __status == 303 || __status == 307 || __status == 308)
-				&& (redirects.length - 1) < MAX_REDIRECTS) {
+			while (__connected && __isRedirect(__status) && (redirects.length - 1) < MAX_REDIRECTS) {
 				if (__responseHeaders.exists(HEADER_LOCATION)) {
 					var location:String = __responseHeaders.get(HEADER_LOCATION);
 
 					if (location.length > 0) {
 						__redirect = true;
 
-						var url:URL = new URL(__resolveLocation(__url, location));
+						var url:URL;
+						try {
+							url = new URL(__resolveLocation(__url, location));
+						} catch (_:Dynamic) {
+							__close();
+							onError("Could not complete redirect: malformed Location " + location);
+							return;
+						}
 
 						if (redirects.indexOf(url) > -1) {
 							__close();
 							onError("Redirect loop detected");
 							return;
+						}
+
+						var refusal:Null<String> = __redirectRefusal(__url, url, __followInsecureRedirects);
+						if (refusal != null) {
+							__close();
+							onError(refusal);
+							return;
+						}
+
+						// The caller's credentials were written for the origin it
+						// asked, and the response naming another is not the caller
+						// agreeing to hand them over: a 302 to another host
+						// delivered Authorization: Bearer ... to it. Dropped for
+						// the rest of the exchange, as browsers, curl and Go drop
+						// them, even should a later hop come back. Cookies the jar
+						// holds go only to the host that set them already.
+						if (!credentialsDropped && __originOf(url) != origin) {
+							credentialsDropped = true;
+							__headers = __withoutCredentials(__headers);
 						}
 
 						if (__status == 301 || __status == 302 || __status == 303) {
@@ -199,13 +227,60 @@ class Http {
 				__tryRequest();
 			}
 
-			if ((redirects.length - 1) == MAX_REDIRECTS) {
+			// Only when the budget ran out on a redirect. This tested the count
+			// alone, so ten redirects ending in a 200 -- a full budget, spent
+			// and done with -- were reported as too many.
+			if (__connected && __isRedirect(__status) && (redirects.length - 1) >= MAX_REDIRECTS) {
 				__close();
 				onError("Exceeded the number of allowed redirects");
+				return;
 			}
 		}
 
 		__parseResponse();
+	}
+
+	private static inline function __isRedirect(status:Int):Bool {
+		return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+	}
+
+	/** `scheme://host:port`, which is what two URLs share when they share an origin. */
+	private static function __originOf(url:URL):String {
+		return url.scheme + "://" + url.host.toLowerCase() + ":" + url.port;
+	}
+
+	/**
+	 * Why a redirect from `from` to `to` may not be followed, or null when it
+	 * may: only to `http` or `https`, and from `https` to `http` only when
+	 * the caller said so.
+	 */
+	private static function __redirectRefusal(from:URL, to:URL, followInsecure:Bool):Null<String> {
+		if (to.scheme != "http" && to.scheme != "https") {
+			return "Refused a redirect to " + to.scheme + ": only http and https are followed";
+		}
+
+		if (from.ssl && !to.ssl && !followInsecure) {
+			return "Refused a redirect from https to http; set URLRequest.followInsecureRedirects to allow it";
+		}
+
+		return null;
+	}
+
+	/** The caller's header lines, less those that carry credentials. */
+	private static function __withoutCredentials(headers:Array<String>):Array<String> {
+		if (headers == null) {
+			return null;
+		}
+
+		var kept:Array<String> = [];
+		for (header in headers) {
+			var colon:Int = header.indexOf(":");
+			var name:String = StringTools.trim(colon < 0 ? header : header.substr(0, colon)).toLowerCase();
+			if (name != "authorization" && name != "proxy-authorization" && name != "cookie") {
+				kept.push(header);
+			}
+		}
+		return kept;
 	}
 
 	/**
@@ -842,10 +917,26 @@ class Http {
 	}
 
 	private function __writeHeaders():Void {
-		if (__headers != null) {
-			for (header in __headers) {
-				__socket.output.writeString('${header}${CRLF}');
+		if (__headers == null) {
+			return;
+		}
+
+		for (header in __headers) {
+			// Through the sanitisers the server's response writer uses. These
+			// lines were written as given, so a CR or LF in a value -- one
+			// forwarded from someone else, say -- ended the header and began
+			// another, or a second request, on every hop of the exchange.
+			var colon:Int = header.indexOf(":");
+			if (colon <= 0) {
+				continue;
 			}
+
+			var name:String = HttpSyntax.sanitizeHeaderName(header.substr(0, colon));
+			if (name.length == 0) {
+				continue;
+			}
+
+			__socket.output.writeString(name + ": " + StringTools.trim(HttpSyntax.sanitizeHeaderValue(header.substr(colon + 1))) + CRLF);
 		}
 	}
 
