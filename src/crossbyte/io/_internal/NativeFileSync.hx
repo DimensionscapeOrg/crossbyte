@@ -6,7 +6,7 @@ package crossbyte.io._internal;
  *
  * `sys.FileSystem.rename` is `_wrename` on Windows, which refuses to replace
  * an existing file; `sys.FileSystem.stat` reports a size that is an Int; and
- * there is no fsync at all.
+ * there is no fsync, and no way to create a file only if it is not there.
  */
 @:buildXml('<include name="${haxelib:crossbyte}/src/crossbyte/io/_internal/NativeFileSyncBuild.xml"/>')
 @:include("./NativeFileSync.h")
@@ -26,5 +26,9 @@ extern class NativeFileSync {
 	/** Flushes a directory's entries on POSIX; nothing on Windows. **/
 	@:native("crossbyte_file_sync_directory")
 	public static function syncDirectory(path:String):Void;
+
+	/** `0` created, `1` something was already there, `-1` any other failure. **/
+	@:native("crossbyte_file_create_exclusive")
+	public static function createExclusive(path:String, directory:Bool):Int;
 }
 #end

@@ -580,6 +580,80 @@ class FileTest extends utest.Test {
 		Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), "not refused with an IOError: " + Std.string(raised));
 	}
 
+	public function testTemporaryNamesAreLongAndDoNotRepeat():Void {
+		// They were "ofl" and a Math.random number under 2^24, created after
+		// checking the name was free, so on a shared /tmp another user could
+		// plant links at the names ahead of time.
+		var seen = new Map<String, Bool>();
+		var files:Array<File> = [];
+
+		for (_ in 0...40) {
+			var file = File.createTempFile();
+			files.push(file);
+
+			var name:String = haxe.io.Path.withoutDirectory(file.nativePath);
+			Assert.isTrue(~/^ofl[0-9a-f]{16}\.tmp$/.match(name), name);
+			Assert.isFalse(seen.exists(name), "a temporary name repeated: " + name);
+			Assert.isTrue(file.exists);
+			seen.set(name, true);
+		}
+
+		for (file in files) {
+			try file.deleteFile() catch (_:Dynamic) {}
+		}
+
+		var directory = File.createTempDirectory();
+		var directoryName:String = haxe.io.Path.withoutDirectory(haxe.io.Path.removeTrailingSlashes(directory.nativePath));
+
+		Assert.isTrue(~/^ofl[0-9a-f]{16}$/.match(directoryName), directoryName);
+		Assert.isTrue(sys.FileSystem.isDirectory(directory.nativePath));
+
+		try directory.deleteDirectory() catch (_:Dynamic) {}
+	}
+
+	public function testATemporaryNameThatIsTakenIsLeftAlone():Void {
+		// Created only where nothing is, so whatever holds the name, a file,
+		// a directory, a link, is reported and left as it was.
+		var existing = File.createTempFile();
+		HaxeFile.saveContent(existing.nativePath, "someone else's");
+
+		Assert.equals(1, @:privateAccess File.__createExclusive(existing.nativePath, false));
+		Assert.equals("someone else's", HaxeFile.getContent(existing.nativePath));
+
+		var directory = File.createTempDirectory();
+		var directoryPath:String = haxe.io.Path.removeTrailingSlashes(directory.nativePath);
+
+		Assert.equals(1, @:privateAccess File.__createExclusive(directoryPath, true));
+
+		try existing.deleteFile() catch (_:Dynamic) {}
+		try directory.deleteDirectory() catch (_:Dynamic) {}
+	}
+
+	#if (cpp || jvm)
+	public function testATemporaryFileIsNotCreatedThroughAPlantedLink():Void {
+		if (System.isWindows) {
+			// A symbolic link needs a privilege there that a test run does
+			// not have; CREATE_NEW refuses one all the same.
+			Assert.pass();
+			return;
+		}
+
+		var root:String = @:privateAccess File.__tempRoot();
+		var stamp:String = StringTools.hex(Std.random(0x7FFFFFFF), 8);
+		var target:String = haxe.io.Path.join([root, "cb-planted-target-" + stamp]);
+		var link:String = haxe.io.Path.join([root, "cb-planted-" + stamp + ".tmp"]);
+
+		Assert.equals(0, Sys.command("ln", ["-s", target, link]));
+
+		// The old check-then-write saw no file at a dangling link, exists()
+		// follows it, and wrote through it, creating the target.
+		Assert.equals(1, @:privateAccess File.__createExclusive(link, false));
+		Assert.isFalse(sys.FileSystem.exists(target), "the file was created through the link");
+
+		Sys.command("rm", ["-f", link, target]);
+	}
+	#end
+
 	public function testAnOrdinarySizeIsStillReported():Void {
 		var file = File.createTempFile();
 		HaxeFile.saveBytes(file.nativePath, Bytes.alloc(1234));

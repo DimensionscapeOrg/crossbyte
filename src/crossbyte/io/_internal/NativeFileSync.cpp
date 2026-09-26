@@ -20,9 +20,9 @@
 #endif
 
 // The file operations Haxe's standard library has no call for: replacing a
-// file atomically, flushing one to stable storage, and measuring one past
-// 2 GB. Each blocks on the disk, so each runs in a GC-free zone, with its
-// paths copied out of the Haxe heap first.
+// file atomically, flushing one to stable storage, measuring one past 2 GB,
+// and creating one only where nothing is. Each blocks on the disk, so each
+// runs in a GC-free zone, with its paths copied out of the Haxe heap first.
 namespace {
 #if defined(_WIN32)
 	std::wstring toWide(const ::String& value) {
@@ -205,5 +205,68 @@ void crossbyte_file_sync_directory(::String path) {
 	// NTFS journals the rename with the MOVEFILE_WRITE_THROUGH it was made
 	// with; there is no directory handle to flush.
 	(void)path;
+#endif
+}
+
+int crossbyte_file_create_exclusive(::String path, bool directory) {
+#if defined(_WIN32)
+	std::wstring target = toWide(path);
+	DWORD error = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+
+		if (directory) {
+			if (!CreateDirectoryW(target.c_str(), nullptr)) {
+				error = GetLastError();
+			}
+		} else {
+			// CREATE_NEW fails if anything is at the path, a link included, so
+			// nothing planted there ahead of time is ever opened.
+			HANDLE handle = CreateFileW(target.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+
+			if (handle == INVALID_HANDLE_VALUE) {
+				error = GetLastError();
+			} else {
+				CloseHandle(handle);
+			}
+		}
+	}
+
+	if (error == 0) {
+		return 0;
+	}
+
+	return (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) ? 1 : -1;
+#else
+	std::string target = toNarrow(path);
+	int error = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+
+		if (directory) {
+			if (mkdir(target.c_str(), 0700) != 0) {
+				error = errno;
+			}
+		} else {
+			// O_EXCL with O_CREAT fails on anything at the path, a symbolic
+			// link included, and O_NOFOLLOW says so twice. Readable by the
+			// owner only, as mkstemp makes them.
+			int fd = open(target.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+
+			if (fd < 0) {
+				error = errno;
+			} else {
+				close(fd);
+			}
+		}
+	}
+
+	if (error == 0) {
+		return 0;
+	}
+
+	return error == EEXIST ? 1 : -1;
 #endif
 }
