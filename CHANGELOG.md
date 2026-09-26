@@ -789,6 +789,19 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `URLLoader` runs its loads on a shared pool of threads kept between loads,
+  rather than on a thread started and ended for each. At most
+  `URLLoader.maxConcurrentLoads` -- 16 by default -- run at once across the
+  process, and more wait their turn in the order they were made; a program
+  holding many slow requests open at once, long polls say, should raise it
+  to at least that many. A thread with nothing to do ends after 30 seconds.
+  Against a local keep-alive server natively, 4,100 sequential loads a
+  second became 6,400, and 10,200 with eight in flight became 18,600 to
+  22,300. On hxcpp a host that drives the runtime with `pump()` in a loop
+  that neither blocks nor allocates must sleep or call
+  `cpp.vm.Gc.safePoint()` in it: the load threads allocate, a collection
+  one of them starts waits for every thread, and such a loop is never
+  stopped for it.
 - The HTTP server's access log -- one `INFO` line per response -- logs under
   the category `http.access`. `Logger.setLevel("http.access", WARN)` quiets
   it and leaves everything else at `INFO`; it used to share the one global
@@ -1168,6 +1181,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, every `URLLoader` load left two sockets open until the process
+  ended: the thread it ran on opened a selector for its reads, and nothing
+  closed it when the thread ended. With eight loads in flight at a time,
+  9,000 of 15,000 failed with "Address already in use". Loads run on
+  long-lived threads now, so there are as many selectors as threads, not as
+  loads, and none of them fail.
+- A `URLLoader`'s `COMPLETE` or `IO_ERROR` listener can start its next load.
+  The loader was still busy while they ran, so the new load was refused with
+  "URLLoader is already loading".
 - Over HTTP/2 a redirect is followed, as it is over HTTP/1.1, on Node and in
   the browser; a 3xx completed the load with its `Location` unread. The
   HTTP/1.1 client's rules apply, through the same code: at most

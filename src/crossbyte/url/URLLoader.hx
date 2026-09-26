@@ -2,67 +2,71 @@ package crossbyte.url;
 
 // Not built for the browser. It loads over CrossByte's own raw-socket HTTP; a page issues requests through fetch or XMLHttpRequest, which is a separate implementation rather than a gate.
 
-import crossbyte._internal.http.Http;
 import crossbyte.http.HTTPCancelToken;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.HTTPStatusEvent;
-import crossbyte.events.ThreadEvent;
 #if !js
-import crossbyte.sys.Worker;
+import crossbyte._internal.http.LoadPool;
+import crossbyte.core.CrossByte;
+import crossbyte.url._internal.LoaderRun;
 #end
 import haxe.io.Bytes;
 
 /** Background-loading request helper with progress and status events. */
 class URLLoader extends EventDispatcher {
+	#if !js
+	/**
+	 * How many loads run at once, at most, across every `URLLoader` in the
+	 * process. More wait their turn, in the order they were made. Defaults to
+	 * 16.
+	 *
+	 * A load blocks a thread for as long as its server takes to answer, and
+	 * the threads are shared and kept between loads rather than started for
+	 * each. A program that holds many slow requests open at once -- long
+	 * polls, say -- should raise this to at least that many, or later loads
+	 * wait behind them.
+	 */
+	public static var maxConcurrentLoads(get, set):Int;
+
+	private static inline function get_maxConcurrentLoads():Int {
+		return LoadPool.maxThreads;
+	}
+
+	private static function set_maxConcurrentLoads(value:Int):Int {
+		return LoadPool.maxThreads = value < 1 ? 1 : value;
+	}
+	#end
+
 	public var dataFormat:URLLoaderDataFormat = URLLoaderDataFormat.TEXT;
 	public var bytesTotal:Int;
 	public var bytesLoaded:Int;
 	public var data:Dynamic;
 
 	#if !js
-	@:noCompletion private var __loaderWorker:Worker;
+	// The load in progress, which what arrives from its thread is checked
+	// against: one that close() or a later load() has replaced is over, and
+	// what it still sends is dropped.
+	@:noCompletion private var __load:Null<LoaderRun> = null;
 	#end
 	@:noCompletion private var __busy:Bool = false;
 
 	/**
 	 * Cancels the load in progress.
 	 *
-	 * Created per `load()` and handed to the worker, because the request runs
-	 * on a thread this one does not: by the time `load()` could return a
-	 * handle the request would be over. `close()` is the ordinary way to reach
-	 * it; this is here for code that wants to cancel from somewhere else.
+	 * Created per `load()` and handed to the thread running it, because the
+	 * request runs on a thread this one does not: by the time `load()` could
+	 * return a handle the request would be over. `close()` is the ordinary way
+	 * to reach it; this is here for code that wants to cancel from somewhere
+	 * else.
 	 */
 	public var cancelToken(default, null):HTTPCancelToken;
 
 	public function new() {
 		super();
 	}
-
-	#if !js
-	@:noCompletion private function __createURLLoaderWorker():Void {
-		var worker:Worker = new Worker();
-		worker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		worker.addEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
-		worker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-		// The thread reports through its own worker, never through
-		// `__loaderWorker`: close() clears that field while the thread is
-		// still running, and a report through it was a call on null -- an
-		// access violation on native. A cancelled worker drops what it is sent.
-		worker.doWork = message -> __work(worker, message);
-		__loaderWorker = worker;
-	}
-
-	@:noCompletion private function __onWorkerComplete(e:ThreadEvent):Void {
-		var dataBytes:Bytes = e.message;
-		__parseData(e.message);		
-
-		dispatchEvent(new Event(Event.COMPLETE));
-		__disposeWorker();
-	}
-	#end
 
 	/**
 	 * `HTTP_RESPONSE_STATUS`, with what the response said: its headers, the URL
@@ -89,35 +93,43 @@ class URLLoader extends EventDispatcher {
 	}
 
 	#if !js
-	@:noCompletion private function __disposeWorker():Void {
-		if (__loaderWorker == null) {
-			__busy = false;
-			return;
+	/**
+	 * Delivers one message from `run`'s thread, on this loader's runtime.
+	 * Answers whether `run` is still the load in progress.
+	 */
+	@:noCompletion private function __deliver(run:LoaderRun, message:LoaderMessage):Bool {
+		if (run != __load) {
+			return false;
 		}
-		__loaderWorker.removeEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__loaderWorker.removeEventListener(ThreadEvent.PROGRESS, __onWorkerProgress);
-		__loaderWorker.removeEventListener(ThreadEvent.ERROR, __onWorkerError);
-		__loaderWorker.cancel();
-		__loaderWorker = null;
-		__busy = false;
+
+		switch (message) {
+			case Progress(loaded, total):
+				bytesTotal = total;
+				bytesLoaded = loaded;
+				dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, bytesLoaded, bytesTotal));
+			case Status(code):
+				dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, code));
+			case Response(status, headers, url, redirected):
+				__dispatchResponse(status, __headerList(headers), url, redirected);
+			case Complete(bytes):
+				// Free before the event, not after: a COMPLETE listener that
+				// starts the next load on this loader was refused as busy.
+				__finish();
+				__parseData(bytes);
+				dispatchEvent(new Event(Event.COMPLETE));
+			case Failure(text, bytes):
+				__finish();
+				if (bytes != null) {
+					__parseData(bytes);
+				}
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, text));
+		}
+		return true;
 	}
 
-	@:noCompletion private function __onWorkerProgress(e:ThreadEvent):Void {
-		var obj:Dynamic = e.message;
-		if (obj == null || !Reflect.hasField(obj, "type")) {
-			return;
-		}
-
-		switch (obj.type) {
-			case "progress":
-				bytesTotal = obj.value.bytesTotal;
-				bytesLoaded = obj.value.bytesLoaded;
-				dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, bytesLoaded, bytesTotal));
-			case "status":
-				dispatchEvent(new HTTPStatusEvent(HTTPStatusEvent.HTTP_STATUS, obj.value));
-			case "response":
-				__dispatchResponse(obj.value.status, __headerList(obj.value.headers), obj.value.url, obj.value.redirected);
-		}
+	@:noCompletion private function __finish():Void {
+		__load = null;
+		__busy = false;
 	}
 
 	/** Header fields as the client joined them, one field per value again. */
@@ -139,122 +151,6 @@ class URLLoader extends EventDispatcher {
 			}
 		}
 		return list;
-	}
-
-	@:noCompletion private function __onWorkerError(e:ThreadEvent):Void {
-		var errorMessage:Dynamic = e.message;
-		var dataBytes:Bytes = null;
-		var message:String = Std.string(errorMessage);
-
-		if (errorMessage != null && Reflect.isObject(errorMessage)) {
-			if (Reflect.hasField(errorMessage, "dataBytes")) {
-				dataBytes = Reflect.field(errorMessage, "dataBytes");
-			}
-			if (Reflect.hasField(errorMessage, "msg")) {
-				message = Std.string(Reflect.field(errorMessage, "msg"));
-			}
-		}
-
-		if (dataBytes != null) {
-			__parseData(dataBytes);
-		}
-
-		dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
-		__disposeWorker();
-	}
-
-	private function __work(worker:Worker, message:Dynamic):Void {
-		if (message == null) {
-			// Cancelled before the thread started: the worker let go of it.
-			return;
-		}
-
-		try {
-			var request:URLRequest = message.request;
-
-			var requestHeaders:Array<String> = [];
-			for (header in request.requestHeaders) {
-				requestHeaders.push(header.toString());
-			}
-
-			var requestData:Dynamic = null;
-			var contentType:Null<String> = null;
-			var bodyData:Dynamic = null;
-
-			if (request.data != null) {
-				if (Std.isOfType(request.data, haxe.io.Bytes) || Std.isOfType(request.data, String)) {
-					bodyData = request.data;
-					contentType = (request.contentType != null) ? request.contentType : "application/octet-stream";
-				} else if (Reflect.isObject(request.data)) {
-					requestData = request.data;
-					if (request.contentType != null) {
-						contentType = request.contentType;
-					}
-				} else {
-					bodyData = Std.string(request.data);
-					contentType = (request.contentType != null) ? request.contentType : "text/plain; charset=utf-8";
-				}
-			}
-
-			var http:Http = new Http(request.url, request.method, requestHeaders, requestData, contentType, bodyData, request.httpVersion, request.idleTimeout,
-				request.userAgent, request.followRedirects, request.manageCookies, request.followInsecureRedirects);
-
-			// The token was created on the calling thread and travels with the
-			// message, so close() can reach a request that has already started.
-			if (message.cancelToken != null) {
-				http.cancelToken = message.cancelToken;
-			}
-
-			// The last response's status and headers, reported once, ahead of
-			// the outcome: a redirect's own block is not the answer.
-			var finalStatus:Int = 0;
-			var finalHeaders:Map<String, String> = null;
-			function reportResponse():Void {
-				if (finalHeaders != null) {
-					worker.sendProgress({
-						type: "response",
-						value: {
-							status: finalStatus,
-							headers: finalHeaders,
-							url: http.url,
-							redirected: http.redirected
-						}
-					});
-				}
-			}
-
-			function onComplete(dataBytes:Bytes):Void {
-				reportResponse();
-				worker.sendComplete(dataBytes);
-			}
-			function onProgress(loaded:Int, total:Int):Void {
-				var obj = {type: "progress", value: {bytesLoaded: loaded, bytesTotal: total}};
-				worker.sendProgress(obj);
-			}
-			function onError(msg:String, ?dataBytes:Bytes):Void {
-				reportResponse();
-				var errorMessage = {
-					"msg":msg,
-					"dataBytes":dataBytes
-				};
-				worker.sendError(errorMessage);
-			}
-			function onStatus(code:Int):Void {
-				finalStatus = code;
-				var obj = {type: "status", value: code};
-				worker.sendProgress(obj);
-			}
-
-			http.onComplete = onComplete;
-			http.onProgress = onProgress;
-			http.onError = onError;
-			http.onStatus = onStatus;
-			http.onHeaders = headers -> finalHeaders = headers;
-
-			http.load();
-		} catch (e:Dynamic) {
-			worker.sendError(e);
-		}
 	}
 	#end
 
@@ -299,16 +195,16 @@ class URLLoader extends EventDispatcher {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "URLLoader is already loading"));
 			return;
 		}
+		// Taken here, on the thread whose runtime the events belong to, before
+		// anything else can go wrong.
+		var runtime:CrossByte = CrossByte.current();
 		__busy = true;
 		// A fresh token per load: cancelling one request must not poison the
 		// next one this loader makes.
 		cancelToken = new HTTPCancelToken();
-		__createURLLoaderWorker();
-		__loaderWorker.run({
-			"request": request,
-			"dataFormat": dataFormat,
-			"cancelToken": cancelToken
-		});
+		var run:LoaderRun = new LoaderRun(this, runtime, request, cancelToken);
+		__load = run;
+		LoadPool.run(run.execute);
 		#end
 	}
 
@@ -319,18 +215,18 @@ class URLLoader extends EventDispatcher {
 		// response still in flight is discarded when it arrives.
 		__busy = false;
 		#else
-		// Cancelled before the worker is torn down. The token reaches the
-		// request itself -- an HTTP/2 stream is reset, freeing the slot it held
-		// on a shared connection, and an HTTP/1.1 socket is closed out from
-		// under its blocking read. Killing the worker alone left the peer
-		// holding a request nobody was coming back for.
+		// Cancelled before it is let go of. The token reaches the request
+		// itself -- an HTTP/2 stream is reset, freeing the slot it held on a
+		// shared connection, and an HTTP/1.1 socket is shut down under its
+		// blocking read. Abandoning the thread alone left the peer holding a
+		// request nobody was coming back for.
 		if (cancelToken != null) {
 			cancelToken.cancel();
 		}
-
-		if (__loaderWorker != null) {
-			__loaderWorker.cancel(true);
-			__disposeWorker();
+		var run:Null<LoaderRun> = __load;
+		__finish();
+		if (run != null) {
+			run.abandon();
 		}
 		#end
 	}
