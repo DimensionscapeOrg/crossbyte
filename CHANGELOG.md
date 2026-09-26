@@ -1160,6 +1160,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `FileStream.openAsync` for writing throws `IllegalOperationError` on a
+  target without threads -- Node, in practice -- instead of never returning.
+  Its writer is a worker that waits for writes, and with no thread of its own
+  it waited inside the call. Where there are threads, async reads now honour
+  `readAhead` on the jvm and eval as well, which run workers on threads now.
 - `StunClient.discover` with a server name that does not resolve fails at
   once instead of at its deadline. Names are looked up off the runtime's
   thread now, so the failure arrives as the socket's `ioError` after the

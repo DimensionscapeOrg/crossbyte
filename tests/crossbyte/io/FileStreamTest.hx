@@ -212,7 +212,7 @@ class FileStreamTest extends utest.Test {
 	}
 
 	public function testOpenAsyncReadDispatchesProgressAndCompleteWithReadableBuffer():Void {
-		#if !(cpp || neko || hl)
+		#if !target.threaded
 		Assert.pass();
 		return;
 		#end
@@ -259,7 +259,7 @@ class FileStreamTest extends utest.Test {
 	}
 
 	public function testOpenAsyncWriteFlushesOnCloseAndDispatchesClose():Void {
-		#if !(cpp || neko || hl)
+		#if !target.threaded
 		Assert.pass();
 		return;
 		#end
@@ -533,7 +533,7 @@ class FileStreamTest extends utest.Test {
 		}
 	}
 
-	#if (cpp || neko || hl)
+	#if target.threaded
 	public function testReadAheadBoundsWhatAnAsyncReadHolds():Void {
 		// readAhead is how much to load beyond the reader. The whole file was
 		// loaded, and kept, whatever it said.
