@@ -62,6 +62,9 @@ class SessionDescription {
 	**/
 	public static inline var DEFAULT_MAX_MESSAGE_SIZE:Int = 65536;
 
+	/** The media section id written when a description has none of its own. **/
+	public static inline var DEFAULT_MID:String = "0";
+
 	/**
 		Renders a description as an offer or an answer.
 
@@ -82,6 +85,16 @@ class SessionDescription {
 
 		var role:String = setup != null ? setup : (description.setup != null ? description.setup : SETUP_ACTPASS);
 
+		// The offer's own identification for the section, which an answer has
+		// to repeat: a browser matches the answer's m= section to its offer's
+		// by it, and an answer saying "0" to an offer that said "data" is one
+		// it cannot place.
+		var mid:String = description.mid != null ? description.mid : DEFAULT_MID;
+
+		if (!isToken(mid)) {
+			throw new ArgumentError("A media section id must be an SDP token, not \"" + mid + "\".");
+		}
+
 		var lines:Array<String> = [
 			"v=0",
 			// The origin's session id and version are required and, for a data
@@ -90,10 +103,10 @@ class SessionDescription {
 			"o=- 0 0 IN IP4 127.0.0.1",
 			"s=-",
 			"t=0 0",
-			"a=group:BUNDLE 0",
+			"a=group:BUNDLE " + mid,
 			"m=application " + UNUSED_PORT + " UDP/DTLS/SCTP webrtc-datachannel",
 			"c=IN IP4 0.0.0.0",
-			"a=mid:0",
+			"a=mid:" + mid,
 			"a=ice-ufrag:" + description.usernameFragment,
 			"a=ice-pwd:" + description.password,
 			"a=fingerprint:sha-256 " + description.fingerprint,
@@ -104,13 +117,17 @@ class SessionDescription {
 
 		if (description.candidates != null) {
 			for (i in 0...description.candidates.length) {
-				lines.push(candidateLine(description.candidates[i], i + 1));
+				lines.push("a=" + writeCandidate(description.candidates[i], i + 1));
 			}
 		}
 
-		// Gathering is complete by the time this is rendered, so the peer is
-		// told not to wait for candidates that will never trickle in.
-		lines.push("a=end-of-candidates");
+		// Only when the description says gathering is over. It was written into
+		// every document, so an answer sent before its reflexive candidate had
+		// come back told the peer to stop listening for the very candidate that
+		// would have reached it.
+		if (description.endOfCandidates == true) {
+			lines.push("a=end-of-candidates");
+		}
 
 		return lines.join(EOL) + EOL;
 	}
@@ -136,6 +153,8 @@ class SessionDescription {
 		var password:String = null;
 		var fingerprint:String = null;
 		var setup:String = null;
+		var mid:String = null;
+		var endOfCandidates:Bool = false;
 		var maxMessageSize:Int = DEFAULT_MAX_MESSAGE_SIZE;
 		var candidates:Array<CandidateDescription> = [];
 
@@ -158,7 +177,24 @@ class SessionDescription {
 			} else if (StringTools.startsWith(line, "a=max-message-size:")) {
 				maxMessageSize = readMaxMessageSize(line.substr("a=max-message-size:".length));
 			} else if (StringTools.startsWith(line, "a=fingerprint:")) {
-				fingerprint = readFingerprint(line);
+				// The first one this can check, however many follow. A peer may
+				// list several, under several hashes, and a later sha-1 line used
+				// to overwrite the sha-256 before it with nothing, refusing the
+				// whole document for lacking what it had.
+				var read = readFingerprint(line);
+
+				if (fingerprint == null && read != null) {
+					fingerprint = read;
+				}
+			} else if (StringTools.startsWith(line, "a=mid:")) {
+				// A data channel is one section, so the first is the one.
+				var value = StringTools.trim(line.substr("a=mid:".length));
+
+				if (mid == null && isToken(value)) {
+					mid = value;
+				}
+			} else if (line == "a=end-of-candidates") {
+				endOfCandidates = true;
 			} else if (StringTools.startsWith(line, "a=candidate:")) {
 				var candidate = readCandidate(line);
 
@@ -182,6 +218,8 @@ class SessionDescription {
 			fingerprint: fingerprint,
 			candidates: candidates,
 			setup: setup,
+			mid: mid,
+			endOfCandidates: endOfCandidates,
 			maxMessageSize: maxMessageSize
 		};
 	}
@@ -203,6 +241,46 @@ class SessionDescription {
 		}
 
 		return allDigits(text) ? 0 : DEFAULT_MAX_MESSAGE_SIZE;
+	}
+
+	/**
+		Whether a media section id is an SDP token (RFC 4566): printable, and
+		free of the spaces and separators that would let it spill into the rest
+		of the line, or, with a line break, into a line of its own.
+	**/
+	private static function isToken(text:String):Bool {
+		if (text == null || text.length == 0 || text.length > 256) {
+			return false;
+		}
+
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			var token:Bool = (code >= "0".code && code <= "9".code) || (code >= "a".code && code <= "z".code)
+				|| (code >= "A".code && code <= "Z".code) || "!#$%&'*+-.^_`{|}~".indexOf(String.fromCharCode(code)) >= 0;
+
+			if (!token) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/** Printable, and one word: nothing at or below a space, nothing past `~`. **/
+	private static function isField(text:String):Bool {
+		if (text == null || text.length == 0) {
+			return false;
+		}
+
+		for (i in 0...text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+
+			if (code <= " ".code || code > "~".code) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private static function allDigits(text:String):Bool {
@@ -253,28 +331,87 @@ class SessionDescription {
 		return setup == SETUP_ACTIVE;
 	}
 
-	// ------------------------------------------------------------------
-
 	/**
-		`a=candidate:foundation component transport priority address port typ
-		type`.
+		One candidate as a line: `candidate:foundation component transport
+		priority address port typ type`, and `raddr`/`rport` after it for
+		anything that is not a host candidate.
+
+		Without the `a=`, which is how a trickled candidate travels, what a
+		browser's `RTCIceCandidate.candidate` holds and `addIceCandidate` takes.
+		A description written as SDP puts `a=` in front of each.
 
 		The foundation groups candidates that share a base and a path, and is
 		used to freeze redundant checks. Nothing here freezes anything, so each
 		candidate gets its own, which is the conservative answer: candidates
 		that share a foundation may be skipped together, and getting that wrong
 		loses paths, while giving each its own only forgoes an optimisation.
+
+		A reflexive or relayed candidate's related address is the private one
+		it was found from, so one the description does not give is written as
+		`0.0.0.0` port 0, as browsers do: the grammar asks for the field, and
+		the peer has no use for this machine's inside address.
+
+		@param foundation Distinct per candidate within one description.
 	**/
-	private static function candidateLine(candidate:CandidateDescription, foundation:Int):String {
-		return "a=candidate:" + foundation + " 1 udp " + candidate.priority + " " + candidate.address + " " + candidate.port + " typ "
+	public static function writeCandidate(candidate:CandidateDescription, foundation:Int = 1):String {
+		// Fields are separated by spaces and lines by line breaks, so a value
+		// holding either would write lines of its own into the document.
+		if (!isField(candidate.address) || !isField(candidate.type)
+			|| (candidate.relatedAddress != null && !isField(candidate.relatedAddress))) {
+			throw new ArgumentError("A candidate's address and type must be single words, with no spaces or line breaks.");
+		}
+
+		var line = "candidate:" + foundation + " 1 udp " + candidate.priority + " " + candidate.address + " " + candidate.port + " typ "
 			+ candidate.type;
+
+		if (candidate.relatedAddress != null && candidate.relatedPort != null) {
+			line += " raddr " + candidate.relatedAddress + " rport " + candidate.relatedPort;
+		} else if (candidate.type != "host") {
+			line += " raddr 0.0.0.0 rport 0";
+		}
+
+		return line;
 	}
 
-	private static function readCandidate(line:String):Null<CandidateDescription> {
-		var parts = line.substr("a=candidate:".length).split(" ");
+	/**
+		Reads one candidate line, with or without its `a=`: a line from a
+		description, or one the peer trickled.
+
+		Public so trickled candidates can be read the way a description's are.
+		It was private, and an application passing a browser's candidates on had
+		to write its own parser, and get the field order right itself.
+
+		@return The candidate, or null for one this stack cannot use: TCP, a
+		component other than the one a data channel has, or a priority or port
+		that is not a number in range. Skipped rather than refused, since the
+		candidates are the peer's to choose and one unusable one is not a
+		reason to fail the rest.
+	**/
+	public static function readCandidate(line:String):Null<CandidateDescription> {
+		if (line == null) {
+			return null;
+		}
+
+		var text = StringTools.trim(line);
+
+		if (StringTools.startsWith(text, "a=")) {
+			text = text.substr(2);
+		}
+
+		if (!StringTools.startsWith(text, "candidate:")) {
+			return null;
+		}
+
+		var parts = [for (part in text.substr("candidate:".length).split(" ")) if (part.length > 0) part];
 
 		// foundation, component, transport, priority, address, port, "typ", type
-		if (parts.length < 8) {
+		if (parts.length < 8 || parts[6] != "typ") {
+			return null;
+		}
+
+		// A data channel has one component. RTP's second would be a different
+		// flow, and pairing it as the first would check a path nothing uses.
+		if (parts[1] != "1") {
 			return null;
 		}
 
@@ -285,19 +422,43 @@ class SessionDescription {
 			return null;
 		}
 
-		var priority = Std.parseInt(parts[3]);
-		var port = Std.parseInt(parts[5]);
+		// RFC 8445: a priority from 1 to 2^31 - 1, and a port that can be
+		// dialled. IntParse answers the same for text a peer wrote on every
+		// target, where Std.parseInt does not.
+		var priority:Int = IntParse.decimal(parts[3]);
+		var port:Int = IntParse.decimal(parts[5], 65535);
 
-		if (priority == null || port == null) {
+		if (priority < 1 || port < 1) {
 			return null;
 		}
 
-		return {
+		var candidate:CandidateDescription = {
 			address: parts[4],
 			port: port,
 			type: parts[7],
 			priority: priority
 		};
+
+		// What follows the type is name and value in pairs, in no fixed order.
+		var at:Int = 8;
+
+		while (at + 1 < parts.length) {
+			switch (parts[at]) {
+				case "raddr":
+					candidate.relatedAddress = parts[at + 1];
+				case "rport":
+					var related:Int = IntParse.decimal(parts[at + 1], 65535);
+
+					if (related >= 0) {
+						candidate.relatedPort = related;
+					}
+				default:
+			}
+
+			at += 2;
+		}
+
+		return candidate;
 	}
 
 	/**

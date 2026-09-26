@@ -13,6 +13,16 @@ typedef CandidateDescription = {
 	var port:Int;
 	var type:String;
 	var priority:Int;
+
+	/**
+		For a reflexive or relayed candidate, the address it was found from,
+		SDP's `raddr`. Carried for the peer's diagnostics; nothing here pairs
+		by it.
+	**/
+	@:optional var relatedAddress:String;
+
+	/** SDP's `rport`, beside `relatedAddress`. **/
+	@:optional var relatedPort:Int;
 }
 
 /**
@@ -63,4 +73,16 @@ typedef PeerDescription = {
 		`SctpDataTransfer.MAX_REASSEMBLY`.
 	**/
 	@:optional var maxMessageSize:Int;
+
+	/**
+		The media section's id, SDP's `a=mid`. An answer repeats the offer's,
+		which is how a browser matches the one to the other. `"0"` when absent.
+	**/
+	@:optional var mid:String;
+
+	/**
+		Whether the peer has finished gathering: no more candidates will be
+		trickled. SDP's `a=end-of-candidates`, written only when this is true.
+	**/
+	@:optional var endOfCandidates:Bool;
 }

@@ -232,6 +232,28 @@ class PeerConnection {
 	/** Called when the peer opens a channel rather than answering one. **/
 	public dynamic function onChannel(channel:DataChannel):Void {}
 
+	/**
+		Called with each candidate this connection gains: its own address when
+		`bind` names one, a reflexive or relayed one as a server grants it, and
+		any passed to `addLocalCandidate`.
+
+		For trickle ICE: send each to the peer as it arrives, written with
+		`SessionDescription.writeCandidate` for a browser, instead of waiting
+		to put them all in a description. A candidate already in a description
+		the peer has is harmless to send again.
+	**/
+	public dynamic function onLocalCandidate(candidate:CandidateDescription):Void {}
+
+	/**
+		A slot for whatever the application wants this connection to carry.
+
+		Untouched by the framework, and it goes when the connection does. The
+		same as `DataChannel.userData`: without one, per-peer state, a
+		session, a player, lives in a map beside the connection that has to be
+		cleaned up by hand when it closes.
+	**/
+	public var userData:Any = null;
+
 	@:noCompletion private var __socket:DatagramSocket;
 	@:noCompletion private var __dtls:DtlsTransport;
 	@:noCompletion private var __association:SctpAssociation;
@@ -347,8 +369,47 @@ class PeerConnection {
 		candidates arrive here from whatever gathered them.
 	**/
 	public function addLocalCandidate(candidate:IceCandidate):Void {
-		__localCandidates.push(candidate);
 		agent.addLocalCandidate(candidate);
+		__gained(candidate);
+	}
+
+	/**
+		Adds a candidate the peer trickled, before or after `connect`.
+
+		What arrives from a browser's `onicecandidate` is a line; read it with
+		`SessionDescription.readCandidate` first. The agent had to be reached
+		directly for this, through a field documented as being for inspection.
+
+		@return Whether it was taken. One that cannot be used, a name rather
+		than an address, which is what a browser hiding its addresses sends,
+		or a port that cannot be dialled, is skipped, the way a
+		description's are, since the candidates are the peer's to choose.
+	**/
+	public function addRemoteCandidate(candidate:CandidateDescription):Bool {
+		if (__closed || candidate == null) {
+			return false;
+		}
+
+		try {
+			return agent.addRemoteCandidate(new IceCandidate((candidate.type : String), candidate.address, candidate.port, 1, candidate.priority));
+		} catch (_:Dynamic) {
+			return false;
+		}
+	}
+
+	/** A candidate this connection now has, recorded for `description` and announced for trickling. **/
+	@:noCompletion private function __gained(candidate:IceCandidate):Void {
+		__localCandidates.push(candidate);
+		onLocalCandidate(__describe(candidate));
+	}
+
+	@:noCompletion private static function __describe(candidate:IceCandidate):CandidateDescription {
+		return {
+			address: candidate.address,
+			port: candidate.port,
+			type: (candidate.type : String),
+			priority: candidate.priority
+		};
 	}
 
 	/**
@@ -361,12 +422,7 @@ class PeerConnection {
 		var candidates:Array<CandidateDescription> = [];
 
 		for (candidate in __localCandidates) {
-			candidates.push({
-				address: candidate.address,
-				port: candidate.port,
-				type: (candidate.type : String),
-				priority: candidate.priority
-			});
+			candidates.push(__describe(candidate));
 		}
 
 		return {
@@ -379,7 +435,11 @@ class PeerConnection {
 			// offer arrived first.
 			setup: __isOfferer ? SessionDescription.SETUP_ACTPASS : (dtlsClient ? SessionDescription.SETUP_ACTIVE : SessionDescription.SETUP_PASSIVE),
 			// What the receiver here reassembles, which is what a peer may send.
-			maxMessageSize: SctpDataTransfer.MAX_REASSEMBLY
+			maxMessageSize: SctpDataTransfer.MAX_REASSEMBLY,
+			// An answer repeats the offer's section id, which a browser matches
+			// the two by; it was always "0", so an offer that said "data" got
+			// an answer it could not place.
+			mid: __remote != null ? __remote.mid : null
 		};
 	}
 
@@ -806,7 +866,7 @@ class PeerConnection {
 				__relayTo(payload, address, peerPort);
 			});
 
-			__localCandidates.push(candidate);
+			__gained(candidate);
 			__settleRelayed(candidate, null);
 		}, function(error:String):Void {
 			__settleRelayed(null, error);

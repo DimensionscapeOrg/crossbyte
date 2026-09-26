@@ -243,8 +243,13 @@ class IceAgent {
 		}
 	}
 
-	/** Adds an address the other peer says it can be reached at. **/
-	public function addRemoteCandidate(candidate:IceCandidate):Void {
+	/**
+		Adds an address the other peer says it can be reached at.
+
+		@return Whether it was taken. A name rather than a numeric address, one
+		already known, and one past `MAX_REMOTE_CANDIDATES` are dropped.
+	**/
+	public function addRemoteCandidate(candidate:IceCandidate):Bool {
 		if (candidate == null) {
 			throw new ArgumentError("A candidate is required.");
 		}
@@ -275,22 +280,23 @@ class IceAgent {
 		// when a peer supplies one on purpose: blocking DNS on this loop,
 		// chosen by someone no certificate has authenticated yet.
 		if (!IPv6.isNumericAddress(candidate.address)) {
-			return;
+			return false;
 		}
 
 		if (__known(__remotes, candidate)) {
-			return;
+			return false;
 		}
 
 		// Dropped rather than refused: these arrive from the peer's
 		// description, and one over-generous peer is not a reason to throw
 		// into the application that relayed it.
 		if (__remotes.length >= MAX_REMOTE_CANDIDATES) {
-			return;
+			return false;
 		}
 
 		__remotes.push(candidate);
 		__rebuild();
+		return true;
 	}
 
 	/**
