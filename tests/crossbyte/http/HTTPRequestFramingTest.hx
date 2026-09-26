@@ -164,6 +164,82 @@ class HTTPRequestFramingTest extends utest.Test {
 		});
 	}
 
+	#if nodejs
+	/**
+		Node's client frames a body on any method.
+
+		Node frames a body only for the methods it expects one on, so a body on
+		a DELETE went out bare: this server read it as the start of the next
+		request, and the next call on the pooled socket got a 400.
+	**/
+	public function testTheNodeClientFramesABodyOnAnyMethod(async:Async):Void {
+		var router:Router = new Router();
+		router.delete("/item", ctx -> ctx.handler.respond(200, "text/plain", "deleted " + ctx.handler.requestText));
+		router.get("/item", ctx -> ctx.handler.respond(200, "text/plain", "still here"));
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(router.middleware());
+		var server:HTTPServer = new HTTPServer(config);
+
+		HTTPTestSupport.pumpUntilAsync(() -> server.localPort != 0, 2.0, function(_):Void {
+			var base:String = 'http://127.0.0.1:${server.localPort}/item';
+			var delete = new crossbyte.url.URLRequest(base);
+			delete.method = "DELETE";
+			delete.data = "payload";
+
+			__send(delete, function(first:String):Void {
+				__send(new crossbyte.url.URLRequest(base), function(second:String):Void {
+					try server.close() catch (_:Dynamic) {}
+
+					Assert.equals("200 deleted payload", first, "a DELETE's body did not arrive framed");
+					Assert.equals("200 still here", second, "the next request on the socket was corrupted");
+					async.done();
+				});
+			});
+		});
+	}
+
+	/** A `URLVariables` is a form: the query of a GET, the body of a POST. **/
+	public function testTheNodeClientSendsURLVariablesAsAForm(async:Async):Void {
+		var router:Router = new Router();
+		router.post("/form", ctx -> ctx.handler.respond(200, "text/plain", ctx.handler.getHeader("content-type") + "|" + ctx.handler.requestText));
+		router.get("/form", ctx -> ctx.handler.respond(200, "text/plain", ctx.handler.queryString));
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(router.middleware());
+		var server:HTTPServer = new HTTPServer(config);
+
+		HTTPTestSupport.pumpUntilAsync(() -> server.localPort != 0, 2.0, function(_):Void {
+			var url:String = 'http://127.0.0.1:${server.localPort}/form';
+			var post = new crossbyte.url.URLRequest(url);
+			post.method = "POST";
+			post.data = new crossbyte.url.URLVariables("name=Ada%20L&tag=a&tag=b");
+			var get = new crossbyte.url.URLRequest(url);
+			get.data = new crossbyte.url.URLVariables("q=x%20y");
+
+			__send(post, function(posted:String):Void {
+				__send(get, function(queried:String):Void {
+					try server.close() catch (_:Dynamic) {}
+
+					Assert.isTrue(StringTools.startsWith(posted, "200 application/x-www-form-urlencoded|"), posted);
+					var form:Array<String> = posted.substr(posted.indexOf("|") + 1).split("&");
+					form.sort(Reflect.compare);
+					Assert.same(["name=Ada%20L", "tag=a", "tag=b"], form);
+					Assert.equals("200 q=x%20y", queried);
+					async.done();
+				});
+			});
+		});
+	}
+
+	/** Sends through the Node client and hands back "status body". **/
+	private static function __send(request:crossbyte.url.URLRequest, done:String->Void):Void {
+		var status:Int = 0;
+		var answer:String = null;
+		crossbyte.url._internal.JsHttpClient.send(request, code -> status = code, (_, _) -> {}, bytes -> answer = status + " " + bytes.toString(),
+			message -> answer = "error " + message);
+		HTTPTestSupport.pumpUntilAsync(() -> answer != null, 5.0, _ -> done(answer));
+	}
+	#end
+
 	private function __serve(seen:Array<String>, ?configure:HTTPServerConfig->Void):HTTPServer {
 		var router:Router = new Router();
 		router.post("/upload", ctx -> ctx.handler.respond(200, "text/plain", "got " + ctx.handler.requestBody.length));

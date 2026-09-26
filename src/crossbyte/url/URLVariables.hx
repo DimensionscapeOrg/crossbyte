@@ -100,6 +100,41 @@ abstract URLVariables(FieldStruct<Array<String>>) from FieldStruct<Array<String>
 	}
 
 	/**
+		The form encoding of `data` if it is a `URLVariables`, or `null` if it
+		is anything else.
+
+		`URLRequest.data` is `Dynamic`, and at run time a `URLVariables` is the
+		`StringMap` beneath it. `toString()` above belongs to the abstract, so
+		`Std.string` never reaches it -- Node sent a debug dump of the map -- and
+		`Reflect.fields` sees the map's own fields, so the native client sent an
+		empty body. Every client asks this first instead.
+	**/
+	@:noCompletion public static function encodeData(data:Dynamic):Null<String> {
+		if (data == null || !Std.isOfType(data, haxe.ds.StringMap)) {
+			return null;
+		}
+
+		var map:haxe.ds.StringMap<Dynamic> = cast data;
+		var out:Array<String> = [];
+		for (key in map.keys()) {
+			var k:String = StringTools.urlEncode(key);
+			var value:Dynamic = map.get(key);
+			if (Std.isOfType(value, Array)) {
+				var values:Array<Dynamic> = cast value;
+				if (values.length == 0) {
+					out.push(k + "=");
+				}
+				for (v in values) {
+					out.push(k + "=" + StringTools.urlEncode(v == null ? "" : Std.string(v)));
+				}
+			} else {
+				out.push(k + "=" + StringTools.urlEncode(value == null ? "" : Std.string(value)));
+			}
+		}
+		return out.join("&");
+	}
+
+	/**
 		Append a value to a key without overwriting existing values.
 
 		@param key   Parameter name.
