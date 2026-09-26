@@ -168,6 +168,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// once rather than waiting out its requestTimeout.
 	@:noCompletion private var __receivedAny:Bool = false;
 	@:noCompletion private var __streamSource:FileStream;
+	// A body already in memory, fed by the same pump as a file: one too large
+	// for the socket's output buffer, which writing whole overflowed.
+	@:noCompletion private var __streamBytes:ByteArray;
+	@:noCompletion private var __streamOffset:Int = 0;
 	@:noCompletion private var __streamRemaining:Int = 0;
 	@:noCompletion private var __streamSlice:ByteArray;
 	@:noCompletion private var __streamLastBuffered:Int = 0;
@@ -339,7 +343,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// transfer finishes and the connection settles, through the same
 			// surplus path a pipelined request takes after a buffered
 			// response.
-			if (__streamSource != null) {
+			if (__streaming) {
 				if (__incomingBuffer.length > __bufferLimit()) {
 					// No status can be sent to explain this: the status line
 					// left with the head and the body is mid-flight. Dropping
@@ -492,7 +496,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// they ride it together rather than arming a second timer. When
 		// keep-alive lands and responses end at a single __finishResponse
 		// funnel (keep-alive integration), this dispatch belongs there.
-		if (__streamSource != null) {
+		if (__streaming) {
 			__checkStreamStall(now);
 			return;
 		}
@@ -1214,8 +1218,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		__streamSource = stream;
-		__streamRemaining = length;
 		__streamSlice = new ByteArray();
+		__beginStreamedBody(length);
+	}
+
+	/** Whether a response body is being fed out by the pump. */
+	@:noCompletion private var __streaming(get, never):Bool;
+
+	@:noCompletion private inline function get___streaming():Bool {
+		return __streamSource != null || __streamBytes != null;
+	}
+
+	/**
+	 * Starts the pump on a body the head has promised `length` bytes of, from
+	 * whichever source was set: a file, or bytes already in memory.
+	 */
+	@:noCompletion private function __beginStreamedBody(length:Int):Void {
+		__streamRemaining = length;
 		__streamPeakBuffered = 0;
 		__streamLastBuffered = 0;
 		__streamStallDeadline = haxe.Timer.stamp() + STREAM_STALL_SECONDS;
@@ -1259,7 +1278,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * and this path exists not to repeat.
 	 */
 	@:noCompletion private function __pumpStream():Void {
-		if (__streamSource == null) {
+		if (!__streaming) {
 			return;
 		}
 
@@ -1305,26 +1324,32 @@ final class HTTPRequestHandler extends EventDispatcher {
 					take = limit - buffered;
 				}
 
-				var before:Int = __streamSource.position;
-				__streamSource.readBytes(__streamSlice, 0, take);
-				var read:Int = __streamSource.position - before;
-				if (read < take) {
-					// The file shrank under a Content-Length already sent.
-					// FileStream discards short-read counts and leaves the
-					// destination's tail as it found it, so continuing here
-					// would put fabricated bytes on the wire as though they
-					// were file content. A truncated body the client can
-					// detect against the promised length beats a complete
-					// one that is quietly wrong.
-					Logger.error('Streamed file ${__requestPath} ended early; closing rather than sending fabricated bytes.');
-					__stopStream();
-					if (__origin.connected) {
-						__origin.close();
+				if (__streamBytes != null) {
+					// Straight from the body's own bytes: no slice, no copy.
+					__writer.writeBody(__streamBytes, __streamOffset, take);
+					__streamOffset += take;
+				} else {
+					var before:Int = __streamSource.position;
+					__streamSource.readBytes(__streamSlice, 0, take);
+					var read:Int = __streamSource.position - before;
+					if (read < take) {
+						// The file shrank under a Content-Length already sent.
+						// FileStream discards short-read counts and leaves the
+						// destination's tail as it found it, so continuing here
+						// would put fabricated bytes on the wire as though they
+						// were file content. A truncated body the client can
+						// detect against the promised length beats a complete
+						// one that is quietly wrong.
+						Logger.error('Streamed file ${__requestPath} ended early; closing rather than sending fabricated bytes.');
+						__stopStream();
+						if (__origin.connected) {
+							__origin.close();
+						}
+						return;
 					}
-					return;
-				}
 
-				__writer.writeBody(__streamSlice, 0, take);
+					__writer.writeBody(__streamSlice, 0, take);
+				}
 				__streamRemaining -= take;
 				budget -= take;
 				wrote = true;
@@ -1405,12 +1430,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * pass must not touch a stream that is already gone.
 	 */
 	@:noCompletion private function __stopStream():Void {
-		if (__streamSource == null) {
+		if (!__streaming) {
 			return;
 		}
 
-		var stream:FileStream = __streamSource;
+		var stream:Null<FileStream> = __streamSource;
 		__streamSource = null;
+		__streamBytes = null;
+		__streamOffset = 0;
 		__streamSlice = null;
 		__streamRemaining = 0;
 		__streamStallDeadline = 0;
@@ -1422,9 +1449,11 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__origin.removeEventListener(Event.CLOSE, __onStreamSocketGone);
 		__origin.removeEventListener(IOErrorEvent.IO_ERROR, __onStreamSocketGone);
 
-		try {
-			stream.close();
-		} catch (_:Dynamic) {}
+		if (stream != null) {
+			try {
+				stream.close();
+			} catch (_:Dynamic) {}
+		}
 	}
 
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
@@ -1524,6 +1553,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 		statusEvent.responseHeaders = headers;
 		dispatchEvent(statusEvent);
 
+		// A body the output buffer cannot hold goes out as a file does, in
+		// bounded bursts on the socket's drain. Written whole, whatever the
+		// peer had not taken by the first flush stayed buffered, past the cap
+		// the socket closed, and a 12 MB response went out as a 200 with its
+		// full Content-Length, then 65,346 bytes, logged and counted as a
+		// success.
+		var bodyLength:Int = (!headOnly && responseData != null) ? responseData.length : 0;
+		var cap:Int = __writer.maxBufferedBytes;
+		var fromMemory:Bool = bodyLength > 0 && cap > 0 && __writer.bufferedBytes + bodyLength > cap;
+		if (fromMemory) {
+			__streamPending = true;
+		}
+
 		__writer.writeHead({
 			statusCode: statusCode,
 			statusMessage: statusMessage,
@@ -1532,8 +1574,21 @@ final class HTTPRequestHandler extends EventDispatcher {
 			keepAlive: __responseKeepAlive
 		});
 
-		if (!headOnly && responseData != null && responseData.length > 0) {
-			__writer.writeBody(responseData, 0, responseData.length);
+		if (fromMemory) {
+			__writer.flush();
+			__finishResponse();
+			__streamPending = false;
+			if (!__origin.connected) {
+				return;
+			}
+			__streamBytes = responseData;
+			__streamOffset = 0;
+			__beginStreamedBody(bodyLength);
+			return;
+		}
+
+		if (bodyLength > 0) {
+			__writer.writeBody(responseData, 0, bodyLength);
 		}
 
 		__writer.flush();

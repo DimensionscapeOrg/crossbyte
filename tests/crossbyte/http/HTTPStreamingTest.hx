@@ -175,6 +175,72 @@ class HTTPStreamingTest extends utest.Test {
 		}
 	}
 
+	public function testABodyPastTheOutputBufferIsSentWhole(async:Async):Void {
+		// A body larger than maxOutputBufferSize was written whole: what the
+		// peer had not taken by the first flush stayed buffered, the socket
+		// closed at the cap, and the client got the full Content-Length and a
+		// fraction of the body, a 200, logged and counted as one. The size
+		// and the default cap are the audit's: 65,346 bytes of 12 MB arrived.
+		var size:Int = 12 * 1024 * 1024 + 7;
+		var text:StringBuf = new StringBuf();
+		for (i in 0...size) {
+			text.addChar(__textAt(i));
+		}
+		var body:String = text.toString();
+
+		var handler:HTTPRequestHandler = null;
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push(function(h:HTTPRequestHandler, next:?Dynamic->Void):Void {
+			handler = h;
+			h.respond(200, "text/plain", body);
+		});
+		var server = new HTTPServer(config);
+		var client = new Socket();
+		var received = new ByteArray();
+		var closeSeen = false;
+		client.addEventListener(Event.CONNECT, _ -> {
+			client.writeUTFBytes("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n");
+			client.flush();
+		});
+		client.addEventListener(ProgressEvent.SOCKET_DATA, _ -> {
+			if (client.bytesAvailable > 0) {
+				client.readBytes(received, received.length);
+			}
+		});
+		client.addEventListener(Event.CLOSE, _ -> closeSeen = true);
+
+		HTTPTestSupport.connectThen(client, server, function():Void {
+			HTTPTestSupport.pumpUntilAsync(() -> closeSeen || __responseComplete(received, false), 15.0, function(_):Void {
+				var result = __parseResponse(received, handler != null ? handler.__streamPeakBuffered : -1);
+				// Read before closing: a local close dispatches CLOSE too.
+				var closedByServer:Bool = closeSeen;
+				try client.close() catch (_:Dynamic) {}
+				try server.close() catch (_:Dynamic) {}
+
+				Assert.equals(200, result.status);
+				Assert.equals(Std.string(size), result.headers.get("content-length"));
+				Assert.equals(size, result.body.length, "the body was cut off");
+				var mismatches:Int = 0;
+				for (i in 0...result.body.length) {
+					if (result.body[i] != __textAt(i)) {
+						mismatches++;
+					}
+				}
+				Assert.equals(0, mismatches);
+				// Fed in bursts, as a file is, not written whole.
+				Assert.isTrue(result.peak > 0 && result.peak <= HTTPRequestHandler.STREAM_WATERMARK + HTTPRequestHandler.STREAM_SLICE, "peak buffered " + result.peak);
+				Assert.equals("keep-alive", result.headers.get("connection"));
+				Assert.isFalse(closedByServer, "a kept-alive response closed the connection");
+				async.done();
+			});
+		});
+	}
+
+	/** Printable, with a long period: a misplaced slice cannot alias back. */
+	private static inline function __textAt(i:Int):Int {
+		return 0x30 + ((i ^ (i >> 8) ^ (i >> 16)) & 0x3F);
+	}
+
 	/**
 	 * The received bytes as text, for the framing helpers. Only the header
 	 * blocks are read out of it; body assertions stay on the ByteArray.
