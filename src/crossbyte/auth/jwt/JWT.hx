@@ -92,12 +92,19 @@ class JWT {
 		__signer = __signerFor(spec);
 	}
 
-	/** Serializes and signs a payload into a compact JWT string. */
+	/**
+	 * Serializes and signs a payload into a compact JWT string.
+	 *
+	 * The payload may carry claims beyond the registered ones; see `JWTPayload`.
+	 *
+	 * @throws ArgumentError When `iat`, `exp` or `nbf` is present and not a
+	 *         finite number of seconds.
+	 */
 	public function generateToken(payload:JWTPayload):String {
 		var signer:IJWTSigner = __signer;
 		var header:JWTHeader = JWTHeader.make(signer.algorithm, signer.signKeyId, "JWT");
 		var headerStr:String = base64UrlEncodeString(Json.stringify(header.toData()));
-		var payloadStr:String = base64UrlEncodeString(Json.stringify(payload.toData()));
+		var payloadStr:String = base64UrlEncodeString(Json.stringify(__claimsToWrite(payload.toData())));
 		var signature:String = signer.sign(headerStr + "." + payloadStr, header.keyId);
 		return headerStr + "." + payloadStr + "." + signature;
 	}
@@ -179,22 +186,27 @@ class JWT {
 		}
 
 		var claims:Null<Dynamic> = __decodeObject(parts[1]);
-		if (claims == null) {
+		if (claims == null || !__registeredClaimsWellTyped(claims)) {
 			return JWTVerification.refused(MALFORMED);
 		}
 		var payload:JWTPayload = JWTPayload.ofData(claims);
 
+		// Float throughout: a time past 2038 does not fit an Int, and one near
+		// the limit plus the leeway wrapped where an Int is 32 bits.
 		var nowSec:Float = now != null ? now : Date.now().getTime() / 1000;
-		if (payload.expiresAt == null) {
+		var expiresAt:Null<Float> = payload.expiresAt;
+		if (expiresAt == null) {
 			return JWTVerification.refused(MISSING_EXPIRY);
 		}
-		if (nowSec > payload.expiresAt + leeway) {
+		if (nowSec > expiresAt + leeway) {
 			return JWTVerification.refused(EXPIRED);
 		}
-		if (payload.issuedAt != null && (nowSec + leeway) < payload.issuedAt) {
+		var issuedAt:Null<Float> = payload.issuedAt;
+		if (issuedAt != null && (nowSec + leeway) < issuedAt) {
 			return JWTVerification.refused(ISSUED_IN_FUTURE);
 		}
-		if (payload.notBeforeTime != null && (nowSec + leeway) < payload.notBeforeTime) {
+		var notBefore:Null<Float> = payload.notBeforeTime;
+		if (notBefore != null && (nowSec + leeway) < notBefore) {
 			return JWTVerification.refused(NOT_YET_VALID);
 		}
 
@@ -257,6 +269,58 @@ class JWT {
 	@:noCompletion private static function __mediaType(value:String):String {
 		var lower:String = value.toLowerCase();
 		return lower.startsWith("application/") ? lower.substr("application/".length) : lower;
+	}
+
+	/**
+	 * The registered claims with the JSON types RFC 7519 gives them, where
+	 * present: strings for `sub`, `name`, `iss` and `jti`, numbers for `iat`
+	 * and `nbf`. A missing or non-numeric `exp` is `MISSING_EXPIRY` instead.
+	 * Checked so the typed properties of the payload cannot hand back, say, an
+	 * `Int` as a `String`, which the jvm answers with a cast exception.
+	 */
+	@:noCompletion private static function __registeredClaimsWellTyped(claims:Dynamic):Bool {
+		for (field in ["sub", "name", "iss", "jti"]) {
+			var value:Dynamic = Reflect.field(claims, field);
+			if (value != null && !Std.isOfType(value, String)) {
+				return false;
+			}
+		}
+		for (field in ["iat", "nbf"]) {
+			var value:Dynamic = Reflect.field(claims, field);
+			if (value != null && JWTPayload.seconds(value) == null) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * The claims as they go on the wire: times checked, and a time that is a
+	 * whole number of seconds within Int range written as an integer. The jvm
+	 * prints any Float in exponent form, `1.7E9`, which is valid JSON but not
+	 * what other targets write for the same token.
+	 */
+	@:noCompletion private static function __claimsToWrite(claims:Dynamic):Dynamic {
+		var copy:Null<Dynamic> = null;
+		for (field in ["iat", "exp", "nbf"]) {
+			var value:Dynamic = Reflect.field(claims, field);
+			if (value == null || Std.isOfType(value, Int)) {
+				continue;
+			}
+
+			var seconds:Null<Float> = JWTPayload.seconds(value);
+			if (seconds == null) {
+				throw new crossbyte.errors.ArgumentError('The $field claim must be a finite number of seconds since the epoch.');
+			}
+			if (seconds == Math.ffloor(seconds) && seconds >= -2147483648.0 && seconds <= 2147483647.0) {
+				// A copy, so the caller's object keeps the value it was given.
+				if (copy == null) {
+					copy = Reflect.copy(claims);
+				}
+				Reflect.setField(copy, field, Std.int(seconds));
+			}
+		}
+		return copy != null ? copy : claims;
 	}
 
 	/** Decodes one segment into a JSON object, or null for anything else. */
