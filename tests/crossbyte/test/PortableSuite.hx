@@ -137,6 +137,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.rpc.RPCUnhandledCallTest());
 		runner.addCase(new crossbyte.rpc.RPCUnsendableCallTest());
 		runner.addCase(new crossbyte.rpc.RPCReadyAgainTest());
+		// Int64 arithmetic on an injected clock, which JavaScript does with
+		// two Ints of its own.
+		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
 		// Where a Haxe Int does not wrap at 32 bits by itself.
 		runner.addCase(new crossbyte.foundation.Seq32Test());
 	}
