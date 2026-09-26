@@ -20,6 +20,15 @@ import utest.Assert;
 **/
 @:access(crossbyte.rpc.RPCResponse)
 class RPCDeadlineTest extends utest.Test {
+	/**
+		Pumped once so its timers are the harness runtime's: a test elsewhere
+		makes a runtime of its own and exits it, and until this one pumps, a
+		timer set on this thread goes to that one and never fires.
+	**/
+	public function setup():Void {
+		CrossByte.current().pump(0, 0);
+	}
+
 	public function testACallPastItsDeadlineFailsAndTheConnectionStaysUp():Void {
 		var fixture = new Fixture();
 		var waiting = fixture.commands.slow("a").timeout(1000);

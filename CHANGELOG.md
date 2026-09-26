@@ -716,6 +716,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC session on a listening `LocalConnection` answers every client it
+  takes, not just the first. The listener takes its next client on the
+  same object, and the session stayed ended once the first had gone: for
+  each client after it, every error answer and every answer given later
+  was dropped -- a second worker's refused call never heard it was
+  refused -- and the heartbeat stayed off. A session is now answered on
+  again when its connection becomes ready again, and a heartbeat started
+  with `start()` resumes. A call from the last client still waiting then
+  answers nobody: it is kept to the life of the connection it came in on,
+  so the next client, numbering its calls from 1 too, cannot be handed its
+  answer.
 - An RPC call that cannot go fails as it is made, and nothing is left
   waiting on an answer that cannot come. A request made after its
   connection had ended waited for good over local IPC, whose send reports
