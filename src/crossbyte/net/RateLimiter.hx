@@ -16,38 +16,71 @@ package crossbyte.net;
  * fits one by default; anything else can share that instance or own one per
  * concern.
  *
- * Buckets idle for a full refill period are evicted opportunistically, so
- * per-key state stays bounded under churn. An optional injectable clock
- * makes behavior deterministic in tests.
+ * Buckets are kept in two generations. Every `perSeconds` the older is
+ * dropped whole and the newer becomes the older, and a key used from either
+ * is carried into the newer. So what is dropped is only ever a bucket left
+ * alone for a full period: one refilled to capacity, which a fresh bucket
+ * cannot be told apart from. A generation nobody has used for a period goes
+ * too, without waiting its turn. Retiring one is an assignment. It was a sweep
+ * of every bucket, run inside whichever call found it due; keys are whatever
+ * a client sends, and on Node two million of them held 294 MB and put an
+ * 815 ms sweep inside one `tryAcquire`.
+ *
+ * `maxKeys` caps the keys held, across both generations. A key arriving
+ * when the table is full shares one overflow bucket with every other such key,
+ * so a flood of new keys is throttled as if it were one client while the keys
+ * already held keep their own buckets. An optional injectable clock makes
+ * behavior deterministic in tests.
  */
 class RateLimiter {
+	/** Keys held at most by default: 8 to 13 MB of buckets, by target. */
+	public static inline var DEFAULT_MAX_KEYS:Int = 100000;
+
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __refillPerSecond:Float;
-	@:noCompletion private var __idleEvictSeconds:Float;
+	@:noCompletion private var __period:Float;
 	@:noCompletion private var __clock:() -> Float;
-	@:noCompletion private var __buckets:Map<String, Bucket>;
-	@:noCompletion private var __lastSweep:Float;
+	@:noCompletion private var __maxKeys:Int;
+	@:noCompletion private var __current:Map<String, Bucket>;
+	@:noCompletion private var __previous:Map<String, Bucket>;
+	@:noCompletion private var __currentSize:Int = 0;
+	@:noCompletion private var __previousSize:Int = 0;
+	// When a bucket in each generation last had tokens asked of it.
+	@:noCompletion private var __currentUsedAt:Float;
+	@:noCompletion private var __previousUsedAt:Float;
+	@:noCompletion private var __rotateAt:Float;
+	@:noCompletion private var __overflow:Bucket = null;
 
 	/**
 	 * @param maxRequests Bucket capacity and sustained request budget.
 	 * @param perSeconds The period over which `maxRequests` refills.
 	 * @param clock Optional monotonic time source in seconds; defaults to
 	 * `haxe.Timer.stamp`. Intended for tests.
+	 * @param maxKeys Most keys held at once; a key arriving past it shares the
+	 * overflow bucket. See the class notes.
 	 */
-	public function new(maxRequests:Int = 10, perSeconds:Float = 60.0, ?clock:() -> Float) {
+	public function new(maxRequests:Int = 10, perSeconds:Float = 60.0, ?clock:() -> Float, maxKeys:Int = DEFAULT_MAX_KEYS) {
 		if (maxRequests < 1) {
 			throw "maxRequests must be at least 1";
 		}
 		if (perSeconds <= 0 || !Math.isFinite(perSeconds)) {
 			throw "perSeconds must be a positive finite number";
 		}
+		if (maxKeys < 1) {
+			throw "maxKeys must be at least 1";
+		}
 
 		__capacity = maxRequests;
 		__refillPerSecond = maxRequests / perSeconds;
-		__idleEvictSeconds = perSeconds;
+		__period = perSeconds;
 		__clock = (clock != null) ? clock : haxe.Timer.stamp;
-		__buckets = new Map();
-		__lastSweep = __clock();
+		__maxKeys = maxKeys;
+		__current = new Map();
+		__previous = new Map();
+		var now:Float = __clock();
+		__currentUsedAt = now;
+		__previousUsedAt = now;
+		__rotateAt = now + perSeconds;
 	}
 
 	/**
@@ -77,15 +110,17 @@ class RateLimiter {
 		}
 
 		var now:Float = __clock();
-		__sweepIfDue(now);
-
-		var bucket:Bucket = __buckets.get(key);
-		if (bucket == null) {
-			bucket = {tokens: __capacity, updatedAt: now};
-			__buckets.set(key, bucket);
-		} else {
-			__refill(bucket, now);
+		if (now >= __rotateAt) {
+			__rotate(now);
 		}
+
+		var bucket:Null<Bucket> = __current.get(key);
+		if (bucket == null) {
+			bucket = __admit(key, now);
+		} else if (now > __currentUsedAt) {
+			__currentUsedAt = now;
+		}
+		__refill(bucket, now);
 
 		if (bucket.tokens >= cost) {
 			bucket.tokens -= cost;
@@ -104,7 +139,7 @@ class RateLimiter {
 			key = "";
 		}
 
-		var bucket:Bucket = __buckets.get(key);
+		var bucket:Null<Bucket> = __peek(key);
 		if (bucket == null) {
 			return __capacity;
 		}
@@ -117,21 +152,88 @@ class RateLimiter {
 	 * Forgets `key`, restoring its full burst capacity.
 	 */
 	public function reset(key:String):Void {
-		if (key != null) {
-			__buckets.remove(key);
+		if (key == null) {
+			return;
+		}
+		if (__current.remove(key)) {
+			__currentSize--;
+		}
+		if (__previous.remove(key)) {
+			__previousSize--;
 		}
 	}
 
 	/**
-	 * Number of keys currently holding bucket state. Useful for monitoring
-	 * and for verifying idle eviction.
+	 * Number of keys currently holding bucket state, never more than
+	 * `maxKeys`. Useful for monitoring and for verifying idle eviction.
 	 */
 	public function activeKeyCount():Int {
-		var count = 0;
-		for (_ in __buckets.keys()) {
-			count++;
+		return __currentSize + __previousSize;
+	}
+
+	@:noCompletion private function __rotate(now:Float):Void {
+		if (now - __currentUsedAt >= __period) {
+			// Nothing asked for tokens for a period: every bucket in either
+			// generation is full.
+			__previous = new Map();
+			__previousSize = 0;
+		} else {
+			__previous = __current;
+			__previousSize = __currentSize;
+			__previousUsedAt = __currentUsedAt;
 		}
-		return count;
+
+		__current = new Map();
+		__currentSize = 0;
+		__rotateAt = now + __period;
+	}
+
+	/**
+	 * The bucket a key the newer generation does not hold spends from: its
+	 * own carried forward, a new one, or past the cap the overflow bucket.
+	 */
+	@:noCompletion private function __admit(key:String, now:Float):Bucket {
+		var bucket:Null<Bucket> = __previous.get(key);
+		if (bucket != null) {
+			// Moved, not added: carrying a key forward leaves the count as it
+			// was.
+			__previous.remove(key);
+			__previousSize--;
+		} else {
+			if (__currentSize + __previousSize >= __maxKeys && __previousSize > 0 && now - __previousUsedAt >= __period) {
+				// Full, but partly of keys a period idle: room, without
+				// waiting for that generation's turn.
+				__previous = new Map();
+				__previousSize = 0;
+			}
+			if (__currentSize + __previousSize >= __maxKeys) {
+				if (__overflow == null) {
+					__overflow = new Bucket(__capacity, now);
+				}
+				return __overflow;
+			}
+			bucket = new Bucket(__capacity, now);
+		}
+
+		__current.set(key, bucket);
+		__currentSize++;
+		// The latest, so a clock that steps back cannot age a generation early.
+		if (now > __currentUsedAt) {
+			__currentUsedAt = now;
+		}
+		return bucket;
+	}
+
+	/** What `key` would spend from, without carrying it forward. */
+	@:noCompletion private function __peek(key:String):Null<Bucket> {
+		var bucket:Null<Bucket> = __current.get(key);
+		if (bucket == null) {
+			bucket = __previous.get(key);
+		}
+		if (bucket == null && __currentSize + __previousSize >= __maxKeys) {
+			bucket = __overflow;
+		}
+		return bucket;
 	}
 
 	@:noCompletion private function __refill(bucket:Bucket, now:Float):Void {
@@ -144,28 +246,19 @@ class RateLimiter {
 		bucket.tokens = Math.min(__capacity, bucket.tokens + elapsed * __refillPerSecond);
 		bucket.updatedAt = now;
 	}
-
-	@:noCompletion private function __sweepIfDue(now:Float):Void {
-		if (now - __lastSweep < __idleEvictSeconds) {
-			return;
-		}
-		__lastSweep = now;
-
-		// A bucket idle for a full refill period is indistinguishable from a
-		// fresh one, so dropping it cannot change limiting decisions.
-		var stale:Array<String> = [];
-		for (key => bucket in __buckets) {
-			if (now - bucket.updatedAt >= __idleEvictSeconds) {
-				stale.push(key);
-			}
-		}
-		for (key in stale) {
-			__buckets.remove(key);
-		}
-	}
 }
 
-@:noCompletion private typedef Bucket = {
-	var tokens:Float;
-	var updatedAt:Float;
+/**
+ * One key's tokens. A class rather than an anonymous structure: on hxcpp an
+ * anonymous structure's fields are looked up by name, and a Float stored in
+ * one is boxed.
+ */
+@:noCompletion private class Bucket {
+	public var tokens:Float;
+	public var updatedAt:Float;
+
+	public function new(tokens:Float, updatedAt:Float) {
+		this.tokens = tokens;
+		this.updatedAt = updatedAt;
+	}
 }
