@@ -544,6 +544,10 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- On Node and the jvm, `ProcessLifecycle.installDefaultHandlers()` takes
+  over SIGINT and SIGTERM, as it already did natively, and returns `true`:
+  the process no longer exits on them by itself, and the shutdown callbacks
+  and `exitOnShutdown` decide when it ends.
 - `SlotHandle` has 20 index bits and 11 generation bits, where it had 24 and
   8, so a `SlotMap` or `PackedSlotMap` holds at most 1,048,576 entries
   rather than 16,777,216. A map created with a larger `maxCapacity` now
@@ -735,6 +739,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerApplication` runs on Node, an `Application` can be made on the
+  interpreter, and `docker stop` or Ctrl+C on a jvm or Node service runs the
+  shutdown callbacks. `ServerApplication`'s POLL loop threw on JavaScript at
+  its first frame, since there is no socket set to poll there, which took
+  down the web-server sample; POLL runs the DEFAULT loop on JavaScript now.
+  On the interpreter `Thread.current() != mainThread` was true on the main
+  thread itself, only `==` compares threads there, so every
+  `Application` subclass threw "must only be instantiated in the main
+  thread". And `ProcessLifecycle.installDefaultHandlers()` armed nothing off
+  native: Node exits on SIGTERM and SIGINT unless something listens, and the
+  JVM's default halts after its shutdown hooks, so neither drained. It now
+  listens for both on Node and sets the JVM's own signal hook for INT and
+  TERM, latching the request as the native handlers do and waking the
+  runtime to run the callbacks.
 - A `SlotMap` or `PackedSlotMap` handle kept after its entry died no longer
   comes to name whatever takes its slot 256 reuses later. The generation
   was eight bits, and the free list hands the most recently freed slot back

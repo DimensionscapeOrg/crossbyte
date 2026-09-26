@@ -1037,7 +1037,11 @@ final class CrossByte extends EventDispatcher {
 		}
 		tps = DEFAULT_TICKS_PER_SECOND;
 		mainLoop = switch (__loopType) {
-			case POLL: __pollBasedMainLoop;
+			// JavaScript has no socket set to poll, sockets there are
+			// delivered by the platform's own loop, so POLL is the DEFAULT
+			// loop there. It threw at the first frame, which took down every
+			// ServerApplication on Node, the web-server sample among them.
+			case POLL: #if js __defaultMainLoop #else __pollBasedMainLoop #end;
 			case CUSTOM(loop): loop;
 			default: __defaultMainLoop;
 		}
