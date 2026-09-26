@@ -691,6 +691,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A data channel fragment the peer never acknowledges ends the SCTP
+  association instead of wedging it. After its tenth attempt the fragment
+  was dropped with nothing sent to say so, which left an ordered stream a
+  hole no retransmission would fill: everything after it on that stream
+  stalled for good, later fragments were resent up to eleven times, and
+  the association went on reporting itself open. Past the limit the peer
+  is unreachable, as RFC 4960 section 8.1 has it, so the association now
+  ends with an ABORT, and `PeerConnection` closes with a reason through
+  `onClose` and `closed`.
 - A WebRTC peer that goes away is reported, and closing tells the peer.
   `PeerConnection` had no close event: a peer's SCTP ABORT closed the
   association below it without a word, a DTLS close_notify or fatal alert
