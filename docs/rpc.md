@@ -569,6 +569,38 @@ with an `IllegalOperationError`. A one-way call on a connection that has ended
 is dropped, as a one-way call's fate always is; one through commands with no
 session throws.
 
+A call failed by its connection ending has the `Reason` it ended with as its
+`cause`, and a call refused by the other side has an `RPCError`, so a caller
+can tell a peer that has gone from a peer that said no.
+
+## A client that comes back
+
+A client that must survive its server restarting -- a gateway in front of a
+backend -- dials with `RPCSession.dial` rather than making a connection itself.
+The session dials again whenever its connection ends: at once, and then after
+a wait that doubles from `MIN_REDIAL` to `MAX_REDIAL` while the server stays
+away. Its commands, handler, `data` and heartbeat stay with it from one
+connection to the next.
+
+```haxe
+// Given commands:ChatCommands.
+var backend = RPCSession.dial("tcp://127.0.0.1:4000", commands);
+backend.onUp = () -> trace("backend up");
+backend.onDown = reason -> trace('backend down: $reason');
+
+commands.join("lobby").then(count -> trace('$count in the room'), message -> {
+	// While the backend is away a call fails at once, and its cause is the
+	// Reason the backend went.
+	trace('not now: $message');
+});
+```
+
+While it is down -- before its first connection, and between one and the next
+-- a call fails as it is made, with a `Reason` as its `cause`. `up` says whether
+it is up now, `onUp` and `onDown` when it comes and goes, and `close()` ends it:
+it dials no more. It makes its first attempt at the next tick, so callbacks set
+after `dial` returns hear it.
+
 ## Deadlines
 
 A peer that is still there can still leave a call unanswered. A call can be

@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `RPCSession.dial(uri, ?commands, ?handler)`: a client session that dials
+  its server, and dials again whenever its connection ends -- at once, then
+  after a wait doubling from `MIN_REDIAL` (0.25 s) to `MAX_REDIAL` (30 s)
+  while the server stays away -- until `close()`. While it is down a call
+  through it fails as it is made, with the `Reason` the last connection
+  ended with, or the last attempt failed with, as its `cause`. Its
+  commands, handler, `data` and heartbeat stay with it across connections.
+  A gateway surviving a backend restart built this itself -- dial, back
+  off, rebind, and check the backend was up before each call, since a call
+  on a closed TCP connection threw out of its stub. Every session also has
+  `onUp` and `onDown`, told as its connection becomes ready and as one that
+  was usable ends, `up`, and `close()`. `NetConnection`'s constructor takes
+  a `connectTimeout` for `local://`, whose connect waits on the calling
+  thread; a dial makes a single try.
 - Deadlines for RPC calls. `RPCResponse.timeout(ms)` gives a call until
   then to be answered, and `RPCSession.callTimeout` gives every call a
   session makes, on either lane, a deadline unless it has its own. Past
@@ -727,6 +741,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An RPC call that fails because its connection ended has the `Reason` it
+  ended with as its `cause` -- `Timeout` for a heartbeat that gave up -- so
+  a caller, a gateway above all, can tell a peer gone from a peer refusing,
+  whose failure has an `RPCError`. It had a message and nothing else.
+- A `LocalConnection` tells `onReady` at the next tick after `connect()`,
+  not from inside it. `new NetConnection("local://...")` connects as it is
+  made, so an `onReady` set once it had returned -- as the RPC guide sets
+  one -- never ran.
 - A `Future`'s `RESULT` or `ERROR` listener that throws is contained, as a
   `then` callback that throws already was: logged, and nothing else
   affected. It escaped into whatever completed the future. For an

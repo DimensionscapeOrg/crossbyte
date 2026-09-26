@@ -220,7 +220,18 @@ class LocalConnection implements INetConnection implements CloseObservable {
 		__connected = true;
 		__running = true;
 		__attachDispatchListener();
+		// Told at the next tick, not from inside connect(): a callback set
+		// once connect() has returned -- as `new NetConnection("local://...")`
+		// leaves one to be -- missed a Ready it had already been sent.
+		#if (cpp || neko || hl)
+		if (__runtime != null) {
+			__queueDispatch(Ready, __session);
+		} else {
+			__dispatchLifecycle(Ready);
+		}
+		#else
 		__dispatchLifecycle(Ready);
+		#end
 
 		var session = __session;
 		#if (cpp || neko || hl)
