@@ -48,6 +48,7 @@ class BenchMain {
 		eventsAndFutures();
 		BenchRuntime.run();
 		BenchRpc.run();
+		BenchMetrics.run();
 
 		Sys.println("");
 		Sys.println("done. Numbers compare shapes of code on this machine today;");

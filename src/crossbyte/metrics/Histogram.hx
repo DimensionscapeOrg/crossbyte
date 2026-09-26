@@ -1,12 +1,10 @@
 package crossbyte.metrics;
 
 import crossbyte.errors.ArgumentError;
-#if (cpp || neko || hl || java || jvm)
-#if (js && !nodejs)
-import crossbyte._internal.js.NoMutex as Mutex;
-#else
+#if cpp
+import crossbyte.metrics._internal.AtomicFloats;
+#elseif (neko || hl || java || jvm)
 import sys.thread.Mutex;
-#end
 #end
 
 /**
@@ -18,7 +16,13 @@ import sys.thread.Mutex;
  * an average would hide. Buckets are chosen up front and fixed, so cost
  * stays constant regardless of how many observations arrive.
  *
- * Safe to observe from any thread.
+ * Safe to observe from any thread. On hxcpp an observation is two atomic
+ * additions rather than a lock, one to the bucket it falls in, one to the
+ * sum, so a read taken while observations arrive can find the sum
+ * counting one that the buckets do not yet, or the other way round. The
+ * buckets and the count always agree with each other: the count is the
+ * total of the buckets, and the buckets never decrease from one bound to
+ * the next.
  */
 class Histogram {
 	/**
@@ -49,11 +53,20 @@ class Histogram {
 	 */
 	public var bounds(default, null):Array<Float>;
 
-	@:noCompletion private var __counts:Array<Float>;
-	@:noCompletion private var __sum:Float = 0;
-	@:noCompletion private var __count:Float = 0;
+	// One count per bound, of the observations that fell in that bucket and
+	// no lower one; then the count of those above every bound; then the sum.
+	//
+	// Each observation adds to one bucket here rather than to every bucket
+	// at or above it, and the cumulative counts and the total are added up
+	// when read. That makes an observation two updates however many buckets
+	// there are, where it was one per bucket it fell under: eleven for a
+	// fast response under the default buckets. And it makes the count the
+	// total of the buckets, so the two cannot disagree, they were separate,
+	// and a read between the updates saw a count the buckets did not add up
+	// to.
+	@:noCompletion private var __cells:Array<Float>;
 
-	#if (cpp || neko || hl || java || jvm)
+	#if (neko || hl || java || jvm)
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -73,9 +86,9 @@ class Histogram {
 		}
 
 		this.bounds = chosen;
-		__counts = [for (_ in 0...chosen.length) 0.0];
+		__cells = [for (_ in 0...chosen.length + 2) 0.0];
 
-		#if (cpp || neko || hl || java || jvm)
+		#if (neko || hl || java || jvm)
 		__lock = new Mutex();
 		#end
 	}
@@ -84,20 +97,30 @@ class Histogram {
 	 * Records one observation.
 	 */
 	public function observe(value:Float):Void {
-		#if (cpp || neko || hl || java || jvm)
-		__lock.acquire();
-		#end
-
-		__count++;
-		__sum += value;
-		for (i in 0...bounds.length) {
-			if (value <= bounds[i]) {
-				__counts[i]++;
-			}
+		// The first bucket whose bound it does not exceed, or the one past the
+		// last. NaN is at or below no bound, so it lands there as well: in the
+		// count and +Inf only, as it always was.
+		//
+		// Counted off the cells rather than off `bounds`, which is a public
+		// array a caller can grow: on hxcpp the update below writes to memory
+		// directly, and an index from `bounds` could then land past the end.
+		var bucket:Int = 0;
+		var last:Int = __cells.length - 2;
+		while (bucket < last && !(value <= bounds[bucket])) {
+			bucket++;
 		}
 
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		AtomicFloats.add(__cells, bucket, 1);
+		AtomicFloats.add(__cells, last + 1, value);
+		#elseif (neko || hl || java || jvm)
+		__lock.acquire();
+		__cells[bucket] += 1;
+		__cells[last + 1] += value;
 		__lock.release();
+		#else
+		__cells[bucket] += 1;
+		__cells[last + 1] += value;
 		#end
 	}
 
@@ -128,27 +151,40 @@ class Histogram {
 	 * Total number of observations.
 	 */
 	public function count():Float {
-		#if (cpp || neko || hl || java || jvm)
+		// Every bucket, and the one past the last bound: all but the sum.
+		var buckets:Int = __cells.length - 1;
+		var total:Float = 0;
+		#if cpp
+		for (i in 0...buckets) {
+			total += AtomicFloats.load(__cells, i);
+		}
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
-		var snapshot:Float = __count;
+		for (i in 0...buckets) {
+			total += __cells[i];
+		}
 		__lock.release();
-		return snapshot;
 		#else
-		return __count;
+		for (i in 0...buckets) {
+			total += __cells[i];
+		}
 		#end
+		return total;
 	}
 
 	/**
 	 * Sum of all observed values.
 	 */
 	public function sum():Float {
-		#if (cpp || neko || hl || java || jvm)
+		#if cpp
+		return AtomicFloats.load(__cells, __cells.length - 1);
+		#elseif (neko || hl || java || jvm)
 		__lock.acquire();
-		var snapshot:Float = __sum;
+		var snapshot:Float = __cells[__cells.length - 1];
 		__lock.release();
 		return snapshot;
 		#else
-		return __sum;
+		return __cells[__cells.length - 1];
 		#end
 	}
 
@@ -157,13 +193,40 @@ class Histogram {
 	 * observations at or below that bound.
 	 */
 	public function bucketCounts():Array<Float> {
-		#if (cpp || neko || hl || java || jvm)
-		__lock.acquire();
-		var snapshot:Array<Float> = __counts.copy();
-		__lock.release();
+		var snapshot:Array<Float> = __snapshot();
+		snapshot.resize(snapshot.length - 2);
 		return snapshot;
+	}
+
+	/**
+	 * Everything the exposition writes, read in one pass: the cumulative
+	 * count at each bound, then the total, which is the `+Inf` bucket and
+	 * `_count` both, then the sum.
+	 *
+	 * One pass so that a scrape agrees with itself. The exposition used to
+	 * read the buckets, the count and the sum separately, and an observation
+	 * landing between two of those reads made `+Inf` and `_count` differ.
+	 */
+	@:allow(crossbyte.metrics.Metrics)
+	@:noCompletion private function __snapshot():Array<Float> {
+		#if cpp
+		var cells:Array<Float> = [for (i in 0...__cells.length) AtomicFloats.load(__cells, i)];
+		#elseif (neko || hl || java || jvm)
+		__lock.acquire();
+		var cells:Array<Float> = __cells.copy();
+		__lock.release();
 		#else
-		return __counts.copy();
+		var cells:Array<Float> = __cells.copy();
 		#end
+
+		// In place: each bucket's count becomes the running total up to it,
+		// and the slot after the last bound, the ones above every bound,
+		// becomes the total of all of them. The sum, last, stays as it is.
+		var running:Float = 0;
+		for (i in 0...cells.length - 1) {
+			running += cells[i];
+			cells[i] = running;
+		}
+		return cells;
 	}
 }
