@@ -26,10 +26,19 @@ import php.Syntax;
 #end
 
 /** PostgreSQL connection wrapper currently backed by PHP PDO on supported targets. */
-class PostgresConnection extends EventDispatcher {
+class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	public static final isSupported:Bool = #if php __checkSupport() #elseif cpp true #else false #end;
 
 	public var connected(get, null):Bool;
+
+	/**
+		Whether a transaction is open, including one a failed statement has
+		left waiting for a rollback. On the native driver this is the server's
+		own account, taken after every statement, so a transaction begun or
+		ended as SQL text -- `request("BEGIN;")` -- counts as surely as one
+		begun with `begin()`. `ConnectionPool` reads it to roll back what a
+		borrower left open.
+	**/
 	public var inTransaction(get, null):Bool;
 	public var lastInsertRowID(get, null):Int;
 	public var affectedRows(get, null):Int;
@@ -313,6 +322,7 @@ class PostgresConnection extends EventDispatcher {
 
 		#if cpp
 		var rawJson = NativePostgres.requestJson(__nativeHandle, sql);
+		__syncTransaction();
 		var parsed:Dynamic = Json.parse(rawJson == null || rawJson == "" ? "{\"rows\":[],\"affectedRows\":0,\"lastInsertRowID\":0}" : rawJson);
 		var errorMessage:Dynamic = Reflect.field(parsed, "error");
 		if (errorMessage != null) {
@@ -391,6 +401,7 @@ class PostgresConnection extends EventDispatcher {
 		// at a time out of a buffer every connection in the process shared --
 		// so between the two another thread's query could replace it.
 		var data:haxe.io.BytesData = NativePostgres.requestParams(__nativeHandle, sql == null ? "" : sql, encoded.getData(), encoded.length);
+		__syncTransaction();
 
 		if (data == null) {
 			throw new IOError("Postgres bridge returned no result block.");
@@ -473,6 +484,34 @@ class PostgresConnection extends EventDispatcher {
 	private function get_inTransaction():Bool {
 		return __inTransaction;
 	}
+
+	#if cpp
+	/**
+		Takes the transaction state from the server after a statement. The
+		server reports it at the end of every one, and libpq keeps it, so
+		asking costs no round trip. The flag used to change only in `begin()`,
+		`commit()` and `rollback()`, and a transaction opened with
+		`request("BEGIN;")` read as none -- so a pool returning the connection
+		saw nothing to roll back, and handed the transaction to the next
+		borrower.
+	**/
+	@:noCompletion private function __syncTransaction():Void {
+		switch (NativePostgres.transactionStatus(__nativeHandle)) {
+			case 2 | 3:
+				// In a transaction, or in one a failed statement has aborted,
+				// which still has to be rolled back.
+				__inTransaction = true;
+			case 0:
+				if (__inTransaction) {
+					__inTransaction = false;
+					__savepoints = [];
+				}
+			default:
+				// Mid-statement, a broken connection, or a libpq without the
+				// call: nothing better than what is already known.
+		}
+	}
+	#end
 
 	private function get_lastInsertRowID():Int {
 		return __lastInsertRowID;

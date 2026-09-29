@@ -71,15 +71,22 @@ All notable changes to CrossByte will be documented in this file.
   `Metrics` registry, `AsyncDatabase` publishes `db_async_queued`,
   `db_async_running`, `db_async_queue_wait_seconds`, and the
   `db_async_rejected_total` and `db_async_expired_total` it turned away.
-- `ConnectionPoolOptions.reset`, run on every connection as it is released
-  -- including by `withConnection` after its body threw -- before anyone
-  else can take it; a reset that throws retires the connection. A body that
-  began a transaction and then failed returned its connection still inside
-  it, so the next borrower's writes joined that transaction and its locks
-  stayed held, and `validate` could not tell, since an open transaction
-  answers a ping. With PostgreSQL, `reset: c -> if (c.inTransaction)
-  c.rollback()`. The pool knows nothing of what a connection is, so this is
-  configured rather than assumed; retirements through it are counted with
+- `ConnectionPool` rolls back a transaction left open on a connection as it
+  is released -- including by `withConnection` after its body threw --
+  before anyone else can take it. A body that began a transaction and then
+  failed returned its connection still inside it, so the next borrower's
+  writes joined that transaction and its locks stayed held, and `validate`
+  could not tell, since an open transaction answers a ping. It applies to a
+  connection implementing the new `crossbyte.db.ITransactionalConnection`,
+  as `PostgresConnection`, `MySQLConnection` and `SQLiteConnection` now do,
+  and needs no configuration; a rollback that fails retires the connection.
+  A connection released with its transaction open is also logged as a
+  warning under `db.pool`, since that is a bug in the caller -- unless
+  `withConnection` is returning it after its body threw, which has its own
+  error -- and each such rollback is counted in
+  `db_pool_rollbacks_on_release_total`. `ConnectionPoolOptions.reset` runs
+  after it on every release, for the rest of a session's state (`DISCARD
+  ALL`, say); a reset that throws retires the connection too, counted with
   the reason `failed_reset`.
 - `PostgresConfig.statementTimeout`, `keepAliveIdle`, `keepAliveInterval`,
   `keepAliveCount`, `tcpUserTimeout` and `connectionParameters`, and
@@ -1213,6 +1220,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PostgresConnection.inTransaction` on the native driver is the server's
+  own account, taken from libpq after every statement. Only `begin()`,
+  `commit()` and `rollback()` changed it, so a transaction begun or ended
+  as SQL text -- `request("BEGIN;")` -- read as none, and a pool returning
+  the connection saw nothing to roll back.
 - Natively, a host loop that only calls `pump()` -- no sleep, nothing
   allocated, as a benchmark or an embedder's busy loop does -- stalled every
   other thread at its next garbage collection for good: the collector waits

@@ -372,6 +372,57 @@ class NativePostgresBridgeTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testATransactionBegunAsTextIsReported():Void {
+		// inTransaction changed only in begin(), commit() and rollback(), so a
+		// transaction opened with request("BEGIN;") read as none, and a pool
+		// returning the connection had nothing to roll back.
+		var connection = __open(__config("localhost"));
+
+		connection.request("BEGIN;");
+		Assert.isTrue(connection.inTransaction, "BEGIN sent as text");
+
+		// A statement that fails leaves the transaction open, and aborted,
+		// until it is rolled back.
+		try {
+			connection.request("fake:fail");
+		} catch (_:Dynamic) {}
+		Assert.isTrue(connection.inTransaction, "aborted by a failed statement");
+
+		connection.request("ROLLBACK;");
+		Assert.isFalse(connection.inTransaction, "ROLLBACK sent as text");
+
+		// Bound statements are the other native path.
+		connection.requestParams("BEGIN");
+		Assert.isTrue(connection.inTransaction, "BEGIN through requestParams");
+		connection.requestParams("COMMIT");
+		Assert.isFalse(connection.inTransaction, "COMMIT through requestParams");
+
+		connection.close();
+	}
+
+	public function testThePoolRollsBackATransactionABorrowerLeftOpen():Void {
+		// Aborted by a failed statement and returned that way, it went to the
+		// next borrower, whose every statement then failed with "current
+		// transaction is aborted" -- and no reset had been configured to stop
+		// it, because the pool offered no rollback of its own.
+		var config = __config("localhost");
+		var pool = new ConnectionPool<PostgresConnection>({factory: () -> __open(config), close: c -> c.close(), maxSize: 1});
+
+		crossbyte.utils.Logger.recordSink = _ -> {};
+		pool.withConnection(function(c:PostgresConnection):Void {
+			c.request("BEGIN;");
+
+			try {
+				c.request("fake:fail");
+			} catch (_:Dynamic) {}
+		});
+		crossbyte.utils.Logger.recordSink = null;
+
+		Assert.isTrue(pool.withConnection(c -> c.ping()), "the next borrower inherited the aborted transaction");
+		Assert.equals(1, pool.size(), "rolled back and reused, not retired");
+		pool.close();
+	}
+
 	/**
 	 * Gives the other thread time to enter its native call, then times one
 	 * full collection from this one.

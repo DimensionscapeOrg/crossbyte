@@ -34,5 +34,13 @@ extern class NativePostgres {
 
 	@:native("crossbyte_postgres_cancel")
 	public static function cancel(handle:VoidPointer):Bool;
+
+	/**
+		libpq's `PQtransactionStatus`: 0 idle, 1 running a statement, 2 in a
+		transaction, 3 in a failed transaction, 4 unknown (a bad connection).
+		-1 without a connection, or from a libpq that lacks the call.
+	**/
+	@:native("crossbyte_postgres_transaction_status")
+	public static function transactionStatus(handle:VoidPointer):Int;
 }
 #end

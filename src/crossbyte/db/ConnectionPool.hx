@@ -39,18 +39,16 @@ typedef ConnectionPoolOptions<T> = {
 	 * `withConnection()` makes after its body threw. A reset that throws
 	 * retires the connection instead.
 	 *
-	 * The case it exists for is a body that opened a transaction and failed
-	 * before closing it. Without a reset the next borrower is handed that
-	 * transaction -- its writes join it, and the locks it holds stay held --
-	 * and `validate` does not notice, because an open transaction answers a
-	 * ping like any other. With `PostgresConnection`:
+	 * An open transaction needs no reset. A connection that implements
+	 * `ITransactionalConnection` -- `PostgresConnection`, `MySQLConnection`
+	 * and `SQLiteConnection` do -- has any transaction it comes back with
+	 * rolled back by the pool itself, before this runs. A reset is for the
+	 * rest of a session's state: settings changed with `SET`, temporary
+	 * tables, a role assumed with `SET ROLE`. With `PostgresConnection`:
 	 *
 	 * ```haxe
-	 * reset: c -> if (c.inTransaction) c.rollback()
+	 * reset: c -> c.request("DISCARD ALL;")
 	 * ```
-	 *
-	 * The pool cannot do this itself: it knows nothing of what a connection
-	 * is.
 	 */
 	@:optional var reset:T->Void;
 
@@ -101,6 +99,16 @@ typedef ConnectionPoolOptions<T> = {
  * Prefer `withConnection()` over manual acquire/release: it returns the
  * connection even when the body throws, which is what keeps a pool from
  * bleeding capacity on error paths.
+ *
+ * **Transactions.** A connection that comes back with a transaction still
+ * open is rolled back before the next caller can take it, when it
+ * implements `ITransactionalConnection`, as every driver here does. The
+ * next borrower was otherwise handed that transaction: its writes joined it,
+ * and the locks it held stayed held, and `validate` could not tell, since an
+ * open transaction answers a ping like any other. A rollback that fails
+ * retires the connection. A connection released with its transaction open
+ * is also logged as a warning under `db.pool`, since that is a bug in the
+ * caller; one returned by `withConnection()` after its body threw is not.
  */
 class ConnectionPool<T> {
 	/**
@@ -143,8 +151,11 @@ class ConnectionPool<T> {
 	@:noCompletion private var __timeoutsTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __openedTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __retiredTotal:crossbyte.metrics.Counter;
+	@:noCompletion private var __rolledBackTotal:crossbyte.metrics.Counter;
 	@:noCompletion private var __waitSeconds:crossbyte.metrics.Histogram;
 	@:noCompletion private var __retiredName:String;
+
+	@:noCompletion private static final LOG:crossbyte.utils.LogCategory = crossbyte.utils.Logger.category("db.pool");
 
 	#if (cpp || neko || hl || java || jvm)
 	@:noCompletion private var __lock:Mutex;
@@ -210,6 +221,7 @@ class ConnectionPool<T> {
 
 		__retiredName = name + "_retired_total";
 		__retiredTotal = registry.counter(__retiredName, null, "Connections closed and removed from the pool.");
+		__rolledBackTotal = registry.counter(name + "_rollbacks_on_release_total", null, "Transactions still open on a released connection, rolled back by the pool.");
 
 		// Wait time is the measurement that distinguishes a saturated pool
 		// from a slow database; both show up as slow queries otherwise.
@@ -290,13 +302,18 @@ class ConnectionPool<T> {
 	}
 
 	/**
-	 * Returns a connection to the pool for reuse, running the `reset` hook
-	 * on it first when one is configured.
+	 * Returns a connection to the pool for reuse. A transaction left open on
+	 * it is rolled back first, and then the `reset` hook runs, when one is
+	 * configured; if either fails the connection is retired instead.
 	 *
 	 * Releasing a connection the pool did not issue, or releasing the same
 	 * connection twice, is ignored rather than corrupting the accounting.
 	 */
 	public function release(connection:T):Void {
+		__release(connection, false);
+	}
+
+	@:noCompletion private function __release(connection:T, bodyThrew:Bool):Void {
 		if (connection == null) {
 			return;
 		}
@@ -314,14 +331,34 @@ class ConnectionPool<T> {
 		}
 
 		var reusable:Bool = true;
+		// Not into a closed pool: the connection is closed on the way in, and
+		// closing it ends the transaction on the server.
+		var open:ITransactionalConnection = closed ? null : __openTransaction(connection);
 
-		if (__reset != null && !closed) {
-			// Unlocked, since a reset may talk to the server. The connection
+		if ((open != null || __reset != null) && !closed) {
+			// Unlocked, since both may talk to the server. The connection
 			// stays checked out meanwhile, so nobody can take it half reset.
 			__releaseLock();
 
 			try {
-				__reset(connection);
+				if (open != null) {
+					if (__rolledBackTotal != null) {
+						__rolledBackTotal.inc();
+					}
+
+					// A body that threw has its own error on the way to the
+					// caller; one that returned left the transaction open
+					// without a word, and this is the only one it gets.
+					if (!bodyThrew) {
+						LOG.warn("A connection came back to the pool with its transaction still open; it was rolled back. Commit or roll back before releasing it.");
+					}
+
+					open.rollback();
+				}
+
+				if (__reset != null) {
+					__reset(connection);
+				}
 			} catch (_:Dynamic) {
 				reusable = false;
 			}
@@ -398,11 +435,11 @@ class ConnectionPool<T> {
 		try {
 			result = body(connection);
 		} catch (e:Dynamic) {
-			// The connection may be mid-transaction or otherwise unusable,
-			// and only the caller knows how to tell: release() runs the
-			// `reset` hook, which is where that knowledge goes, and
-			// validation catches a genuinely broken one on the next acquire.
-			release(connection);
+			// The connection may be mid-transaction or otherwise unusable.
+			// Releasing it rolls back a transaction it can report and runs the
+			// `reset` hook for anything else, and validation catches a
+			// genuinely broken one on the next acquire.
+			__release(connection, true);
 			__rethrow(e);
 			return null;
 		}
@@ -554,6 +591,16 @@ class ConnectionPool<T> {
 			// A connection being discarded cannot be salvaged by reporting
 			// its close failure.
 		}
+	}
+
+	/** The connection, when it can report a transaction and has one open. **/
+	@:noCompletion private static function __openTransaction<T>(connection:T):ITransactionalConnection {
+		if (!Std.isOfType(connection, ITransactionalConnection)) {
+			return null;
+		}
+
+		var transactional:ITransactionalConnection = cast connection;
+		return transactional.inTransaction ? transactional : null;
 	}
 
 	@:noCompletion private static function __indexOf<T>(items:Array<T>, value:T):Int {

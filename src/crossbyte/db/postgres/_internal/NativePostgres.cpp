@@ -45,6 +45,14 @@ enum ExecStatusType {
 	PGRES_PIPELINE_ABORTED = 11
 };
 
+enum PGTransactionStatusType {
+	PQTRANS_IDLE = 0,
+	PQTRANS_ACTIVE = 1,
+	PQTRANS_INTRANS = 2,
+	PQTRANS_INERROR = 3,
+	PQTRANS_UNKNOWN = 4
+};
+
 // Threading. Nothing in this file is shared between connections except the
 // table of loaded libraries, which is written under a lock and never changes
 // once an entry is in it. Everything a call produces is returned to the caller
@@ -88,6 +96,10 @@ namespace {
 		PGcancel* (*PQgetCancel)(PGconn* conn) = nullptr;
 		int (*PQcancel)(PGcancel* cancel, char* errbuf, int errbufsize) = nullptr;
 		void (*PQfreeCancel)(PGcancel* cancel) = nullptr;
+		// Optional, and the only one that is: every libpq since 7.4 has it,
+		// but a library without it should still connect, losing only the
+		// server's view of whether a transaction is open.
+		PGTransactionStatusType (*PQtransactionStatus)(const PGconn* conn) = nullptr;
 	};
 
 	// Keyed by the path each was loaded from, so a connection configured with
@@ -240,6 +252,7 @@ namespace {
 			return nullptr;
 		}
 
+		loadSymbol(*api, api->PQtransactionStatus, "PQtransactionStatus");
 		return api;
 	}
 
@@ -727,4 +740,16 @@ bool crossbyte_postgres_cancel(void* handle) {
 	}
 
 	return sent == 1;
+}
+
+int crossbyte_postgres_transaction_status(void* handle) {
+	Handle* h = static_cast<Handle*>(handle);
+
+	if (h == nullptr || h->conn == nullptr || h->api->PQtransactionStatus == nullptr) {
+		return -1;
+	}
+
+	// Reads what the server said at the end of the last statement; no I/O,
+	// so no GC-free zone.
+	return static_cast<int>(h->api->PQtransactionStatus(h->conn));
 }

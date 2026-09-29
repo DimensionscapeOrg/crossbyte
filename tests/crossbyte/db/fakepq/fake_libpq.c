@@ -17,7 +17,8 @@
  *                       failure or a deferred constraint does
  *   BEGIN / COMMIT / ROLLBACK
  *                       tracked the way the server tracks them: a COMMIT in an
- *                       aborted transaction succeeds with the tag ROLLBACK
+ *                       aborted transaction succeeds with the tag ROLLBACK, and
+ *                       PQtransactionStatus reports the state
  *
  * A host named "fail-<anything>" refuses the connection with a message naming
  * it, and one named "slow-connect" takes 1.5 seconds to connect.
@@ -66,6 +67,14 @@ enum {
 	TX_IDLE = 0,
 	TX_OPEN = 1,
 	TX_ABORTED = 2
+};
+
+enum {
+	PQTRANS_IDLE = 0,
+	PQTRANS_ACTIVE = 1,
+	PQTRANS_INTRANS = 2,
+	PQTRANS_INERROR = 3,
+	PQTRANS_UNKNOWN = 4
 };
 
 typedef struct FakeConn {
@@ -424,4 +433,21 @@ FAKEPQ_EXPORT int PQcancel(void* cancel, char* errbuf, int errbufsize) {
 
 FAKEPQ_EXPORT void PQfreeCancel(void* cancel) {
 	free(cancel);
+}
+
+FAKEPQ_EXPORT int PQtransactionStatus(const void* conn) {
+	const FakeConn* c = (const FakeConn*)conn;
+
+	if (c == NULL || c->status != CONNECTION_OK) {
+		return PQTRANS_UNKNOWN;
+	}
+
+	switch (c->transaction) {
+		case TX_OPEN:
+			return PQTRANS_INTRANS;
+		case TX_ABORTED:
+			return PQTRANS_INERROR;
+		default:
+			return PQTRANS_IDLE;
+	}
 }
