@@ -21,3 +21,7 @@ Array<unsigned char> crossbyte_postgres_request_params(void* handle, ::String sq
 // thread while another runs a query on the connection; the caller keeps the
 // handle alive for the duration.
 bool crossbyte_postgres_cancel(void* handle);
+// The server's transaction state as libpq last heard it (PQtransactionStatus):
+// no round trip, so it does not block. -1 without a connection, or when the
+// loaded libpq lacks the call.
+int crossbyte_postgres_transaction_status(void* handle);

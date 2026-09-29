@@ -30,7 +30,7 @@ import haxe.Int64;
  * around common PRAGMAs and maintenance operations.
  */
 @:access(crossbyte.db.sql.sqlite.SQLiteStatement)
-class SQLiteConnection extends EventDispatcher {
+class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	public static inline var isSupported:Bool = #if cpp true; #else false; #end
 
 	@:noCompletion private static inline var DEFAULT_CACHE_SIZE:UInt = 2000;
