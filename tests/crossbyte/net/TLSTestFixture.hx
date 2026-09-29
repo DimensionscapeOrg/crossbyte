@@ -152,6 +152,12 @@ class TLSTestFixture {
 
 				var altNames:Array<String> = [];
 				for (name in names) {
+					// An IPv6 address only as an IP entry: it is no DNS name,
+					// and nothing compares it as one.
+					if (name.indexOf(":") >= 0) {
+						altNames.push("IP:" + name);
+						continue;
+					}
 					altNames.push("DNS:" + name);
 					if (~/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.match(name)) {
 						altNames.push("IP:" + name);
