@@ -52,6 +52,8 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private var __key:JvmSslKey;
 	@:noCompletion private var __ca:JvmSslCertificate;
 	@:noCompletion private var __hostname:String;
+	// The port connect() dialled; the engine is told it with the host.
+	@:noCompletion private var __peerPort:Int = -1;
 	@:noCompletion private var __alpn:Array<String>;
 	@:noCompletion private var __sni:Array<crossbyte._internal.socket._jvm.JvmSniKeyManager.SniEntry>;
 
@@ -211,6 +213,7 @@ class JvmSslSocket extends sys.net.Socket {
 		if (__hostname == null) {
 			__hostname = host.host;
 		}
+		__peerPort = port;
 
 		__startEngine(true);
 
@@ -292,7 +295,16 @@ class JvmSslSocket extends sys.net.Socket {
 	// --------------------------------------------------------------- engine
 
 	@:noCompletion private function __startEngine(clientMode:Bool):Void {
-		__engine = __buildContext().createSSLEngine();
+		// A client's engine is told whom it is talking to. The JDK checks the
+		// certificate against the SNI name first and falls back to the peer's
+		// host, and an engine made without one has none: a certificate that
+		// did not name the SNI host, or a connection by IP address, which
+		// sends no SNI, was refused as "Hostname or IP address is undefined"
+		// on the JDKs that fall back, the right connection refused along
+		// with the wrong one, for a reason naming neither.
+		__engine = clientMode && __hostname != null
+			? __buildContext().createSSLEngine(__hostname, __peerPort)
+			: __buildContext().createSSLEngine();
 		__engine.setUseClientMode(clientMode);
 
 		// A trust store on its own only says which authorities are acceptable;
@@ -309,9 +321,14 @@ class JvmSslSocket extends sys.net.Socket {
 			// The name goes out as SNI so the server knows which of its hosts
 			// is being asked for, and the same name is then checked against the
 			// certificate that comes back.
-			var names = new JArrayList<JvmSslExterns.SNIServerName>();
-			names.add(cast new JvmSslExterns.SNIHostName(__hostname));
-			parameters.setServerNames(cast names);
+			// Not for an address, which RFC 6066 forbids in SNI: the JDK
+			// refuses an IPv6 literal as a host name outright, so connecting to
+			// one threw before a byte was sent.
+			if (!crossbyte._internal.net.IPv6.isNumericAddress(__hostname)) {
+				var names = new JArrayList<JvmSslExterns.SNIServerName>();
+				names.add(cast new JvmSslExterns.SNIHostName(__hostname));
+				parameters.setServerNames(cast names);
+			}
 
 			// Only the check is optional. Sending the name is how a virtual
 			// host picks a certificate at all, so a client that is not

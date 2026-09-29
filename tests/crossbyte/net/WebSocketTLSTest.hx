@@ -68,6 +68,74 @@ class WebSocketTLSTest extends utest.Test {
 		}, async);
 	}
 
+	#if (java || jvm)
+	@:timeout(30000)
+	public function testAServerAtAnIPv6AddressIsVerified(async:Async):Void {
+		// The jvm sent the address as the SNI name, which the JDK refuses for
+		// an IPv6 literal before a byte is sent: no verified connection to one
+		// could be made at all. An address is checked against the
+		// certificate's IP entries instead. Below the WebSocket, whose client
+		// does not take an IPv6 literal yet.
+		var fixture = TLSTestFixture.trusted(["::1"]);
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		var server = new ServerSocket(true);
+		server.setCertificate(fixture.certificate, fixture.key);
+		var accepted:Array<Socket> = [];
+		server.addEventListener(ServerSocketConnectEvent.CONNECT, function(e:ServerSocketConnectEvent) accepted.push(e.socket));
+
+		try {
+			server.bind(0, "::1");
+			server.listen();
+		} catch (e:Dynamic) {
+			// Nothing to test on a machine without an IPv6 loopback.
+			Assert.warn("no IPv6 loopback here: " + e);
+			async.done();
+			return;
+		}
+
+		var failure:String = null;
+		var finished:Bool = false;
+		// Released by the client thread once it has written `failure`, so the
+		// write is published to this thread rather than raced for.
+		var handoff = new sys.thread.Lock();
+
+		NetPump.until(() -> server.localPort != 0, 5.0, function(_) {
+			var port:Int = server.localPort;
+
+			sys.thread.Thread.create(() -> {
+				var client = new crossbyte._internal.socket.FlexSocket(true);
+
+				try {
+					client.setTimeout(10);
+					client.verifyCert = true;
+					client.setCA(@:privateAccess fixture.certificate.__native);
+					client.connect("::1", port);
+				} catch (e:Dynamic) {
+					failure = Std.string(e);
+				}
+
+				try client.close() catch (_:Dynamic) {}
+				handoff.release();
+			});
+
+			NetPump.until(() -> finished || (finished = handoff.wait(0.002)), 20.0, function(_) {
+				Assert.isTrue(finished, "the client neither connected nor failed");
+				Assert.isNull(failure, "a verified connection to ::1 failed: " + failure);
+				for (socket in accepted) {
+					try socket.close() catch (_:Dynamic) {}
+				}
+				try server.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+	#end
+
 	/**
 		Whether `failure` is a TLS layer refusing a certificate, in any of the
 		three ways the targets word it: mbedTLS reports an X509 verification
@@ -117,7 +185,7 @@ class WebSocketTLSTest extends utest.Test {
 		again. The server is closed on every path, since a listener left
 		behind strands its port for the cases after it.
 	**/
-	private function __against(fixture:TLSTestFixture.TLSFixtureData, configure:WebSocket->Void, check:TLSOutcome->Void, async:Async):Void {
+	private function __against(fixture:TLSTestFixture.TLSFixtureData, configure:WebSocket->Void, check:TLSOutcome->Void, async:Async, host:String = "127.0.0.1"):Void {
 		if (fixture == null) {
 			// No openssl on this machine to make a certificate with.
 			Assert.warn("no certificate toolchain on this machine; the wss cases did not run");
@@ -138,7 +206,7 @@ class WebSocketTLSTest extends utest.Test {
 			sessions.push(cast e.socket);
 		});
 
-		server.bind(0, "127.0.0.1");
+		server.bind(0, host);
 		server.listen();
 
 		var client = new WebSocket();
@@ -179,7 +247,7 @@ class WebSocketTLSTest extends utest.Test {
 			client.secure = true;
 			configure(client);
 			started = haxe.Timer.stamp();
-			client.connect("127.0.0.1", server.localPort);
+			client.connect(host, server.localPort);
 
 			NetPump.until(() -> (outcome.connected && outcome.sessions > 0) || outcome.ended, 10.0, function(_) {
 				// A little longer, so a session the client was about to refuse

@@ -249,6 +249,7 @@ extern class SSLEngine {
 extern class SSLContext {
 	static function getInstance(protocol:String):SSLContext;
 	function init(km:Null<java.NativeArray<KeyManager>>, tm:Null<java.NativeArray<TrustManager>>, sr:Null<SecureRandom>):Void;
+	@:overload(function(peerHost:String, peerPort:Int):SSLEngine {})
 	function createSSLEngine():SSLEngine;
 	function getSocketFactory():SSLSocketFactory;
 }

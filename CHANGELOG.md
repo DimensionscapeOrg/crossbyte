@@ -1220,6 +1220,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A jvm TLS client's engine is told the host and port it dialled. Made
+  without them, a certificate check the SNI name could not settle fell back
+  to a host of null: on Temurin's Java 8 a certificate for another host was
+  refused as "Hostname or IP address is undefined" rather than for its name.
+  And a connection to an IPv6 address threw before a byte was sent, since
+  the address went out as an SNI name, which the JDK refuses for an IPv6
+  literal. An address is no longer sent as SNI at all, which RFC 6066
+  forbids; it is checked against the certificate's IP entries.
 - `PostgresConnection.inTransaction` on the native driver is the server's
   own account, taken from libpq after every statement. Only `begin()`,
   `commit()` and `rollback()` changed it, so a transaction begun or ended
