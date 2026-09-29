@@ -96,16 +96,29 @@ class PasswordOffloadTest extends utest.Test {
 	}
 
 	public function testArgon2idIsAvailableOnNativeAndNodeAndThrowsElsewhere():Void {
-		#if (cpp || nodejs)
+		#if cpp
 		Assert.isTrue(Argon2id.isAvailable());
+		#elseif nodejs
+		// Node has had crypto.argon2 only since 24.7, and an older one has to
+		// say so rather than claim it: the answer is checked against Node's
+		// own module, not assumed. CI's Windows image runs an older Node.
+		var present:Bool = js.Syntax.code("typeof require('crypto').argon2 === 'function'");
+		Assert.equals(present, Argon2id.isAvailable());
+		if (!present) {
+			__assertArgon2idThrows();
+		}
 		#else
 		Assert.isFalse(Argon2id.isAvailable());
-		// It returned false for every password here, which looked like a
-		// working check refusing everyone.
+		__assertArgon2idThrows();
+		#end
+	}
+
+	private function __assertArgon2idThrows():Void {
+		// It returned false for every password where it could not run, which
+		// looked like a working check refusing everyone.
 		Assert.raises(() -> Argon2id.verify(ARGON_REFERENCE, "password"));
 		Assert.raises(() -> Argon2id.hash("password"));
 		Assert.raises(() -> Argon2id.needsRehash(ARGON_REFERENCE, 2, Argon2id.MEMLIMIT_INTERACTIVE));
-		#end
 	}
 
 	public function testArgon2idVerifiesHashesFromEveryImplementation():Void {
