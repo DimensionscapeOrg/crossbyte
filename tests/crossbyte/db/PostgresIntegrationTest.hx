@@ -142,6 +142,51 @@ class PostgresIntegrationTest extends utest.Test {
 		#end
 	}
 
+	public function testAPooledConnectionComesBackWithoutTheTransactionItWasLeftIn():Void {
+		#if cpp
+		if (__skip()) {
+			return;
+		}
+
+		// The server's account, not a flag only begin() set.
+		connection.request("BEGIN;");
+		Assert.isTrue(connection.inTransaction, "BEGIN sent as text");
+		connection.request("ROLLBACK;");
+		Assert.isFalse(connection.inTransaction, "ROLLBACK sent as text");
+
+		var config = __config();
+		var pool = new ConnectionPool<PostgresConnection>({
+			factory: function() {
+				var pooled = new PostgresConnection();
+				pooled.open(config);
+				return pooled;
+			},
+			close: c -> c.close(),
+			maxSize: 1
+		});
+
+		// A borrower that leaves its transaction open. The next one was handed
+		// it, and its COMMIT committed the leaked insert along with its own.
+		crossbyte.utils.Logger.recordSink = _ -> {};
+		pool.withConnection(function(c:PostgresConnection):Void {
+			c.request("BEGIN;");
+			c.request('INSERT INTO $table (id, label, amount) VALUES (1, \'left open\', 1)');
+		});
+		crossbyte.utils.Logger.recordSink = null;
+
+		pool.withConnection(function(c:PostgresConnection):Void {
+			c.begin();
+			c.request('INSERT INTO $table (id, label, amount) VALUES (2, \'committed\', 2)');
+			c.commit();
+		});
+		pool.close();
+
+		Assert.equals(1, __count(), "the leaked insert was committed by the next borrower");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testEscapeSurvivesAQuotedValue():Void {
 		#if cpp
 		if (__skip()) {

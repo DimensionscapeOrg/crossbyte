@@ -2,6 +2,8 @@ package crossbyte.db;
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
+import crossbyte.utils.LogLevel;
+import crossbyte.utils.Logger;
 import utest.Assert;
 
 /**
@@ -20,6 +22,50 @@ private class FakeConnection {
 
 	public function close():Void {
 		closed = true;
+	}
+}
+
+/**
+ * A connection that reports its transaction, as the drivers do, so the
+ * pool's own rollback is tested without a server.
+ */
+private class FakeTransactionalConnection implements ITransactionalConnection {
+	public var id(default, null):Int;
+	public var closed(default, null):Bool = false;
+	public var inTransaction(get, null):Bool;
+	public var rollbacks:Int = 0;
+	public var failRollback:Bool = false;
+
+	@:noCompletion private var __open:Bool = false;
+
+	public function new(id:Int) {
+		this.id = id;
+	}
+
+	public function begin():Void {
+		__open = true;
+	}
+
+	public function commit():Void {
+		__open = false;
+	}
+
+	public function rollback():Void {
+		rollbacks++;
+
+		if (failRollback) {
+			throw "the server went away";
+		}
+
+		__open = false;
+	}
+
+	public function close():Void {
+		closed = true;
+	}
+
+	private function get_inTransaction():Bool {
+		return __open;
 	}
 }
 
@@ -389,5 +435,150 @@ class ConnectionPoolTest extends utest.Test {
 		Assert.raises(() -> pool.acquire(), IllegalOperationError);
 		// The slot is released, not leaked.
 		Assert.equals(0, pool.size());
+	}
+
+	private function __transactionalPool(?reset:FakeTransactionalConnection->Void):ConnectionPool<FakeTransactionalConnection> {
+		return new ConnectionPool({
+			factory: () -> new FakeTransactionalConnection(nextId++),
+			close: connection -> connection.close(),
+			reset: reset,
+			maxSize: 1,
+			acquireTimeout: 0.05
+		});
+	}
+
+	public function testAnOpenTransactionIsRolledBackOnReleaseWithNoResetSet():Void {
+		// Rolling back took a reset the application had to know to write, and
+		// without one the next borrower was handed the transaction: its writes
+		// joined it, and the locks it held stayed held.
+		var pool = __transactionalPool();
+		var warnings:Array<String> = [];
+		Logger.recordSink = record -> {
+			if (record.category == "db.pool" && record.level == LogLevel.WARN) {
+				warnings.push(record.message);
+			}
+		};
+
+		var first = pool.acquire();
+		first.begin();
+		pool.release(first);
+
+		Logger.recordSink = null;
+
+		Assert.equals(1, first.rollbacks);
+		var next = pool.acquire();
+		Assert.equals(first, next, "a connection rolled back cleanly is reused, not retired");
+		Assert.isFalse(next.inTransaction, "the next borrower was handed an open transaction");
+		pool.release(next);
+		Assert.equals(1, next.rollbacks, "a connection with nothing open is not rolled back");
+
+		// Said, since it is a bug in whoever released it, and said once.
+		Assert.equals(1, warnings.length);
+		pool.close();
+	}
+
+	public function testATransactionTheBodyThrewOutOfIsRolledBackQuietly():Void {
+		var pool = __transactionalPool();
+		var logged:Int = 0;
+		Logger.recordSink = record -> if (record.category == "db.pool") logged++;
+
+		var borrowed:FakeTransactionalConnection = null;
+		var threw:Bool = false;
+
+		try {
+			pool.withConnection(function(c:FakeTransactionalConnection):Void {
+				borrowed = c;
+				c.begin();
+				throw "a bug after BEGIN";
+			});
+		} catch (_:Dynamic) {
+			threw = true;
+		}
+
+		Logger.recordSink = null;
+
+		Assert.isTrue(threw, "the body's error was swallowed");
+		Assert.equals(1, borrowed.rollbacks);
+		Assert.isFalse(pool.withConnection(c -> c.inTransaction));
+		// The body's own error is on its way to the caller; a warning as well
+		// would report the one failure twice.
+		Assert.equals(0, logged);
+		pool.close();
+	}
+
+	public function testACommittedTransactionIsLeftAlone():Void {
+		var pool = __transactionalPool();
+
+		pool.withConnection(function(c:FakeTransactionalConnection):Void {
+			c.begin();
+			c.commit();
+		});
+
+		Assert.equals(0, pool.withConnection(c -> c.rollbacks));
+		pool.close();
+	}
+
+	public function testARollbackThatFailsRetiresTheConnection():Void {
+		var pool = __transactionalPool();
+		var first = pool.acquire();
+		first.failRollback = true;
+		first.begin();
+
+		Logger.recordSink = _ -> {};
+		pool.release(first);
+		Logger.recordSink = null;
+
+		// Its state is unknown, so nobody else gets it.
+		Assert.isTrue(first.closed);
+		Assert.equals(0, pool.size());
+		Assert.equals(0, pool.inUse());
+
+		var second = pool.acquire();
+		Assert.notEquals(first.id, second.id);
+		pool.release(second);
+		pool.close();
+	}
+
+	public function testTheRollbackRunsBeforeTheReset():Void {
+		var openWhenReset:Array<Bool> = [];
+		var pool = __transactionalPool(c -> openWhenReset.push(c.inTransaction));
+
+		Logger.recordSink = _ -> {};
+		pool.withConnection(c -> c.begin());
+		Logger.recordSink = null;
+
+		// And the reset still runs: it is for the rest of the session's state.
+		Assert.same([false], openWhenReset);
+		pool.close();
+	}
+
+	public function testNothingIsRolledBackIntoAClosedPool():Void {
+		// The connection is closed on the way in, which ends the transaction
+		// on the server; a rollback first would be a round trip for nothing.
+		var pool = __transactionalPool();
+		var connection = pool.acquire();
+		connection.begin();
+
+		pool.close();
+		pool.release(connection);
+
+		Assert.equals(0, connection.rollbacks);
+		Assert.isTrue(connection.closed);
+	}
+
+	public function testEveryDriverCanReportItsTransaction():Void {
+		// What the pool's rollback depends on; a driver that stopped
+		// implementing it would lose the rollback without a compile error
+		// anywhere else.
+		var drivers:Array<Class<Dynamic>> = [
+			crossbyte.db.postgres.PostgresConnection,
+			crossbyte.db.mysql.MySQLConnection,
+			crossbyte.db.sql.sqlite.SQLiteConnection
+		];
+
+		for (driver in drivers) {
+			var instance:Dynamic = Type.createEmptyInstance(driver);
+			Assert.isTrue(Std.isOfType(instance, ITransactionalConnection), Type.getClassName(driver));
+		}
 	}
 }

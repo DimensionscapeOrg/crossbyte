@@ -13,6 +13,22 @@ private class FakeConnection {
 	}
 }
 
+/** One that can report a transaction, so the pool rolls back what it leaves open. */
+private class FakeTransactionalConnection implements ITransactionalConnection {
+	public var inTransaction(get, null):Bool;
+	public var open:Bool = false;
+
+	public function new() {}
+
+	public function rollback():Void {
+		open = false;
+	}
+
+	private function get_inTransaction():Bool {
+		return open;
+	}
+}
+
 /**
  * Metrics published by `ConnectionPool`.
  *
@@ -191,5 +207,30 @@ class ConnectionPoolMetricsTest extends utest.Test {
 		// reason, which is drawn from a fixed set of four.
 		Assert.isTrue(registry.size() <= afterFirst + 1,
 			'series grew from $afterFirst to ${registry.size()} under 500 acquisitions; a per-connection label would do this');
+	}
+
+	/**
+	 * A transaction left open on a released connection is a bug in the
+	 * caller that the pool now repairs, and a repair nobody can see hides the
+	 * bug for good: the count is how an operator finds out it is happening.
+	 */
+	public function testTransactionsRolledBackOnReleaseAreCounted():Void {
+		var pool = new ConnectionPool({
+			factory: () -> new FakeTransactionalConnection(),
+			maxSize: 1,
+			acquireTimeout: 0.05,
+			metrics: registry,
+			metricsPrefix: "testpool"
+		});
+
+		Assert.equals(0.0, value("testpool_rollbacks_on_release_total"));
+
+		crossbyte.utils.Logger.recordSink = _ -> {};
+		pool.withConnection(c -> c.open = true);
+		crossbyte.utils.Logger.recordSink = null;
+		pool.withConnection(c -> c.open);
+
+		Assert.equals(1.0, value("testpool_rollbacks_on_release_total"), "one leaked transaction, and one clean return");
+		pool.close();
 	}
 }
