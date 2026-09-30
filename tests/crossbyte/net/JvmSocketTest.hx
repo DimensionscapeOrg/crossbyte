@@ -81,6 +81,164 @@ class JvmSocketTest extends utest.Test {
 	}
 
 	/**
+		`select` answers only for the sockets it is asked about. A socket stays
+		registered from one call to the next now, so one asked about earlier
+		and ready since must neither be reported by a later call that did not
+		ask about it nor cut that call's wait short.
+	**/
+	public function testSelectAnswersOnlyForTheSocketsItIsAskedAbout():Void {
+		var pairs = __pairs(2);
+		var a = pairs.servers[0];
+		var b = pairs.servers[1];
+		pairs.clients[0].output.writeByte(1);
+
+		var first = sys.net.Socket.select([a, b], null, null, 2.0);
+		var started = haxe.Timer.stamp();
+		var second = sys.net.Socket.select([b], null, null, 0.3);
+		var waited = haxe.Timer.stamp() - started;
+		var third = sys.net.Socket.select([a, b], null, null, 2.0);
+		pairs.close();
+
+		Assert.isTrue(first.read.length == 1 && first.read[0] == a, "the readable socket was not the one reported: " + first.read.length);
+		Assert.equals(0, second.read.length, "a socket not asked about was reported");
+		Assert.isTrue(waited >= 0.2, 'a socket not asked about ended the wait after ${Math.round(waited * 1000)} ms of 300');
+		Assert.isTrue(third.read.length == 1 && third.read[0] == a, "a socket asked about again was not reported");
+	}
+
+	/**
+		A socket `select` keeps registered lets go of its address when closed.
+		On Windows a registered channel's socket is only closed once the
+		selector lets it go, at its next select, so kept registered between
+		calls a closed datagram socket kept its address until the runtime's
+		next pump, and binding it again straight away, as a restarted peer
+		does, was refused.
+	**/
+	public function testASocketSelectKeepsLetsGoOfItsAddressWhenClosed():Void {
+		var first = new sys.net.UdpSocket();
+		first.bind(new sys.net.Host("127.0.0.1"), 0);
+		first.setBlocking(false);
+		var port = first.host().port;
+		var other = new sys.net.UdpSocket();
+		other.bind(new sys.net.Host("127.0.0.1"), 0);
+		other.setBlocking(false);
+
+		// Watched, and so kept registered after the call.
+		sys.net.Socket.select([first, other], null, null, 0.05);
+		first.close();
+
+		var again = new sys.net.UdpSocket();
+		var failure:String = null;
+		try {
+			again.bind(new sys.net.Host("127.0.0.1"), port);
+		} catch (e:Dynamic) {
+			failure = Std.string(e);
+		}
+		again.close();
+		other.close();
+
+		Assert.isNull(failure, "a closed datagram socket's address could not be bound again: " + failure);
+	}
+
+	/**
+		`select` leaves a blocking socket blocking, as it is natively. It made
+		the channel non-blocking to register it and left it so, and a blocking
+		reader then met a read that answered "would block" at once rather
+		than waiting for the data on its way.
+	**/
+	public function testSelectLeavesABlockingSocketBlocking():Void {
+		var pairs = __pairs(1);
+		var reader = pairs.servers[0];
+		reader.setBlocking(true);
+		reader.setTimeout(5);
+
+		sys.net.Socket.select([reader], null, null, 0);
+
+		var writer = pairs.clients[0];
+		sys.thread.Thread.create(() -> {
+			Sys.sleep(0.1);
+			try {
+				writer.output.writeByte(7);
+			} catch (_:Dynamic) {}
+		});
+
+		var got:Int = -1;
+		var failure:String = null;
+		try {
+			got = reader.input.readByte();
+		} catch (e:Dynamic) {
+			failure = Std.string(e);
+		}
+		pairs.close();
+
+		Assert.isNull(failure, "a blocking read after select did not wait for its data: " + failure);
+		Assert.equals(7, got);
+	}
+
+	/**
+		On Windows, past 1,023 sockets, `select` starts no thread per call.
+		The selector hands each further 1,024 sockets to a helper thread, and
+		registering every socket and cancelling every key on every call
+		started one and stopped it again each time: at 2,000 sockets, one
+		thread per select, and the registry selects on every pump.
+	**/
+	public function testSelectOverManySocketsStartsNoThreadPerCall():Void {
+		if (Sys.systemName() != "Windows") {
+			// Only the Windows selector works through helper threads.
+			Assert.pass();
+			return;
+		}
+
+		var pairs = __pairs(1050);
+		var threads = java.lang.management.ManagementFactory.getThreadMXBean();
+
+		// The first call registers them all and may start what it needs.
+		sys.net.Socket.select(pairs.servers, null, null, 0);
+		var before = threads.getTotalStartedThreadCount();
+		for (i in 0...10) {
+			sys.net.Socket.select(pairs.servers, null, null, 0);
+		}
+		var started:Int = haxe.Int64.toInt(threads.getTotalStartedThreadCount() - before);
+		pairs.close();
+
+		Assert.isTrue(started < 5, '$started threads were started by 10 selects over 1,050 sockets');
+	}
+
+	/**
+		`count` connected pairs over loopback: the accepted ends, made
+		non-blocking as a runtime's are, and the blocking clients.
+	**/
+	private static function __pairs(count:Int):{servers:Array<sys.net.Socket>, clients:Array<sys.net.Socket>, close:Void->Void} {
+		var listener = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(16);
+		var port = listener.host().port;
+
+		var servers:Array<sys.net.Socket> = [];
+		var clients:Array<sys.net.Socket> = [];
+		for (i in 0...count) {
+			var client = new sys.net.Socket();
+			client.connect(new sys.net.Host("127.0.0.1"), port);
+			clients.push(client);
+			var server = listener.accept();
+			server.setBlocking(false);
+			servers.push(server);
+		}
+		listener.close();
+
+		return {
+			servers: servers,
+			clients: clients,
+			close: function() {
+				for (socket in servers.concat(clients)) {
+					try {
+						socket.close();
+					} catch (_:Dynamic) {}
+				}
+			}
+		};
+	}
+
+	/**
 		A listener whose queue is full, so the next connection's SYN goes
 		unanswered until there is room: the shape of a server too busy to
 		accept, made without depending on a host that does not answer.
