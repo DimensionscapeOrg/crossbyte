@@ -337,6 +337,14 @@ extern class SSLServerSocketFactory {
 	@:overload function createServerSocket(port:Int, backlog:Int, address:java.net.InetAddress):JNetServerSocket;
 }
 
+/** Haxe ships no extern for it; the buffer pool keeps one per thread. **/
+@:native("java.lang.ThreadLocal")
+extern class JThreadLocal {
+	function new();
+	function get():Dynamic;
+	function set(value:Dynamic):Void;
+}
+
 @:native("java.util.Base64")
 extern class Base64 {
 	static function getMimeDecoder():Base64Decoder;
