@@ -48,6 +48,9 @@ class WebSocket extends Socket {
 		if (server != null) {
 			webSocket.__webSocket.pingInterval = server.pingInterval;
 			webSocket.__webSocket.idleTimeout = server.idleTimeout;
+			// Before the upgrade request can arrive, which is what it answers.
+			webSocket.__webSocket.perMessageDeflate = server.perMessageDeflate;
+			webSocket.__webSocket.compressionThreshold = server.compressionThreshold;
 		}
 		webSocket.__init();
 
@@ -103,6 +106,41 @@ class WebSocket extends Socket {
 	// in until there is a session to hand it to.
 	@:noCompletion private var __pingInterval:Float = -1;
 	@:noCompletion private var __idleTimeout:Float = -1;
+
+	/**
+		Whether `connect()` asks the server for permessage-deflate (RFC 7692):
+		each message of `compressionThreshold` bytes or more sent compressed,
+		and compressed messages accepted. Off by default; read when
+		`connect()` is called. The server may decline, and the session then
+		goes on without -- see `compressed`. A session a `ServerWebSocket`
+		accepted takes the server's setting instead.
+
+		Each message is compressed on its own, in both directions: a message
+		costs a compressor's setup, and saves most on the larger, repetitive
+		ones -- an 18 KB JSON snapshot goes as about 3 KB. A server that
+		agrees but does not also say `client_no_context_takeover` may inflate
+		this side's messages as one stream, which a message compressed on its
+		own ends; this side then sends uncompressed, and still inflates what
+		the server compresses.
+	**/
+	public var perMessageDeflate:Bool = false;
+
+	/**
+		Messages shorter than this many bytes go uncompressed even where
+		compression was agreed: below about a kilobyte the framing costs about
+		what it saves. Read when `connect()` is called.
+	**/
+	public var compressionThreshold:Int = InternalWS.DEFAULT_COMPRESSION_THRESHOLD;
+
+	/**
+		Whether this session agreed to permessage-deflate with its peer. False
+		until the session opens.
+	**/
+	public var compressed(get, never):Bool;
+
+	@:noCompletion private function get_compressed():Bool {
+		return __webSocket != null && __webSocket.compressed;
+	}
 
 	/**
 		Whether a `wss://` connection checks the server's certificate: that it
@@ -368,6 +406,9 @@ class WebSocket extends Socket {
 		// seconds of its own and never waited on the upgrade at all.
 		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
+		// Before the upgrade request goes, which is where it is asked for.
+		__webSocket.perMessageDeflate = perMessageDeflate;
+		__webSocket.compressionThreshold = compressionThreshold;
 		if (__pingInterval >= 0) {
 			__webSocket.pingInterval = __pingInterval;
 		}

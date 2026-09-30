@@ -306,6 +306,8 @@ class TestSuites {
 		// Also in PortableSuite: the host a page's Socket dials is read the
 		// same way.
 		runner.addCase(new crossbyte.net.WebSocketIPv6Test());
+		// Also in PortableSuite, for Node's sessions.
+		runner.addCase(new crossbyte.net.WebSocketDeflateTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
 		runner.addCase(new crossbyte.net.RUDPHardeningTest());
 		// Real sockets whose frames go through memory, so reordering, loss and

@@ -95,6 +95,27 @@ class ServerWebSocket extends ServerSocket {
 	public var idleTimeout:Float = crossbyte._internal.websocket.WebSocket.DEFAULT_IDLE_TIMEOUT;
 
 	/**
+		Whether sessions agree to permessage-deflate (RFC 7692) when a client
+		offers it -- as every browser does -- sending each message of
+		`compressionThreshold` bytes or more compressed and accepting
+		compressed messages.
+		Off by default. Set before the sessions it is for arrive.
+
+		Each message is compressed on its own, in both directions: this side
+		keeps no compressor between messages, and asks the client to keep
+		none. An offer that would narrow this side's window is declined, and
+		that session goes on uncompressed. `WebSocket.compressed` says which a
+		session got.
+	**/
+	public var perMessageDeflate:Bool = false;
+
+	/**
+		`WebSocket.compressionThreshold` for each session this server accepts:
+		messages shorter than this many bytes go uncompressed.
+	**/
+	public var compressionThreshold:Int = crossbyte._internal.websocket.WebSocket.DEFAULT_COMPRESSION_THRESHOLD;
+
+	/**
 		Decides, once a client's upgrade request has arrived and before the
 		`101` answers it, whether the session is opened -- and with which
 		subprotocol.

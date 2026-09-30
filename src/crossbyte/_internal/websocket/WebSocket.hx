@@ -91,9 +91,61 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	private static inline var INPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 	private static inline var OUTPUT_COMPACT_THRESHOLD:Int = 64 * 1024;
 
+	/** The extension named in the handshake, as RFC 7692 names it. **/
+	public static inline var PERMESSAGE_DEFLATE:String = "permessage-deflate";
+
+	/**
+	 * What a session offers, or answers an offer with: each message
+	 * compressed on its own, in both directions, since neither end keeps a
+	 * compressor's window from one message to the next.
+	 */
+	private static inline var DEFLATE_PARAMETERS:String = "server_no_context_takeover; client_no_context_takeover";
+
+	/**
+	 * The smallest message sent compressed when `compressionThreshold` is
+	 * not set: below about a kilobyte the DEFLATE framing costs about as much
+	 * as it saves, and the time is spent for nothing.
+	 */
+	public static inline var DEFAULT_COMPRESSION_THRESHOLD:Int = 1024;
+
 	public var binaryType:BinaryType = ARRAYBUFFER;
 	public var bufferdAmount(default, null):Int = 0;
+
+	/**
+	 * The extensions this session agreed to in its handshake, as the
+	 * `Sec-WebSocket-Extensions` it answered or was answered with; empty for
+	 * none.
+	 */
 	public var extensions(default, null):String = "";
+
+	/**
+	 * Whether to ask for, or agree to, permessage-deflate (RFC 7692): each
+	 * message compressed on its own. Off unless set -- before `connect`, or
+	 * before a server's sessions arrive. Whether a session uses it is its
+	 * peer's say too; see `compressed`.
+	 */
+	public var perMessageDeflate:Bool = false;
+
+	/**
+	 * Messages shorter than this many bytes are sent as they are, even where
+	 * compression was agreed.
+	 */
+	public var compressionThreshold:Int = DEFAULT_COMPRESSION_THRESHOLD;
+
+	/** Whether this session agreed to permessage-deflate. **/
+	public var compressed(get, never):Bool;
+
+	private inline function get_compressed():Bool {
+		return __deflate;
+	}
+
+	// Agreed in the handshake; and whether the message arriving is compressed.
+	private var __deflate:Bool = false;
+	private var __incomingCompressed:Bool = false;
+
+	// Whether what this side sends may go compressed: only where its peer
+	// agreed to inflate each message on its own; see __takeDeflateAnswer.
+	private var __deflateSend:Bool = false;
 	public var onclose:Function = (e:WebsocketEvent) -> {};
 	public var onerror:Function = (e:WebsocketEvent) -> {};
 	public var onmessage:Function = (e:WebsocketEvent) -> {};
@@ -866,6 +918,12 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			headers.insert(5, 'Sec-WebSocket-Protocol: ' + __protocols.join(', '));
 		}
 
+		if (perMessageDeflate) {
+			// Without context takeover either way, which a server must
+			// agree to or refuse: this side inflates each message on its own.
+			headers.push('Sec-WebSocket-Extensions: $PERMESSAGE_DEFLATE; $DEFLATE_PARAMETERS');
+		}
+
 		var handshakeBytes:Bytes = Bytes.ofString(headers.join(CRLF) + CRLFCRLF);
 
 		__writeBytes(handshakeBytes);
@@ -1116,7 +1174,15 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 				var isMasked:Bool = (secondByte & 0x80) != 0;
 				var payloadLength:Int = secondByte & 0x7F;
 
-				if ((firstByte & (WebSocketHeaderMask.RSV1 | WebSocketHeaderMask.RSV2 | WebSocketHeaderMask.RSV3)) != 0) {
+				// RSV1 marks a compressed message: only where permessage-deflate
+				// was agreed, and only on the first frame of a data message --
+				// never a continuation, never a control frame (RFC 7692 6).
+				var reserved:Int = firstByte & (WebSocketHeaderMask.RSV1 | WebSocketHeaderMask.RSV2 | WebSocketHeaderMask.RSV3);
+				if (reserved != 0
+					&& (reserved != WebSocketHeaderMask.RSV1
+						|| !__deflate
+						|| opCode == WebSocketOpcode.CONTINUATION
+						|| opCode >= WebSocketOpcode.CLOSE)) {
 					__fail(1002);
 					return;
 				}
@@ -1218,6 +1284,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 					// always valid even when the parser is constructed without
 					// running field initializers.
 					__incomingMessageSize = 0;
+					__incomingCompressed = reserved != 0;
 				}
 
 				// Cap the cumulative reassembled message size across fragments.
@@ -1231,6 +1298,13 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 				__incomingMessageBuffer.writeBytes(payload);
 
 				if (isFinal) {
+					// Inflated whole, once the last frame is in: the size cap
+					// above is on what arrived, and the inflation has a cap
+					// of its own on what it may become.
+					if (__incomingCompressed && !__inflateIncoming()) {
+						return;
+					}
+
 					// Validate completed TEXT messages as UTF-8.
 					if (__incomingOpcode == WebSocketOpcode.TEXT
 						&& !__isValidUTF8(__incomingMessageBuffer, 0, __incomingMessageBuffer.length)) {
@@ -1354,6 +1428,16 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		}
 
 		protocol = request.protocol;
+
+		// Compression, where this server allows it and the client offered it
+		// on terms this side can keep. Refused, the session goes on without.
+		if (perMessageDeflate) {
+			var offered:Null<String> = headers.get("sec-websocket-extensions");
+			if (offered != null) {
+				__acceptDeflateOffer(offered);
+			}
+		}
+
 		var response:Bytes = __generateResponseHandshake(headers);
 		__writeBytes(response);
 
@@ -1610,6 +1694,10 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			lines.push("Sec-WebSocket-Protocol: " + protocol);
 		}
 
+		if (__deflate) {
+			lines.push("Sec-WebSocket-Extensions: " + extensions);
+		}
+
 		return Bytes.ofString(lines.join(CRLF) + CRLFCRLF);
 	}
 
@@ -1711,7 +1799,213 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			protocol = chosen;
 		}
 
+		// Compression, where this side asked for it and the server agreed --
+		// on terms this side can keep, or the connection fails (RFC 7692 5).
+		var agreed:Null<String> = headers.get("sec-websocket-extensions");
+		if (perMessageDeflate && agreed != null && StringTools.trim(agreed) != "") {
+			if (!__takeDeflateAnswer(agreed)) {
+				return false;
+			}
+		}
+
 		return true;
+	}
+
+	// ---- permessage-deflate (RFC 7692) -----------------------------------
+
+	/**
+		The extensions a `Sec-WebSocket-Extensions` value lists, each with its
+		parameters, in order; null when the value does not parse, or names a
+		parameter twice.
+	**/
+	private static function __parseExtensions(value:String):Null<Array<{name:String, params:StringMap<Null<String>>}>> {
+		var parsed:Array<{name:String, params:StringMap<Null<String>>}> = [];
+		for (item in value.split(",")) {
+			var parts:Array<String> = item.split(";");
+			var name:String = StringTools.trim(parts[0]).toLowerCase();
+			if (name == "") {
+				return null;
+			}
+
+			var params:StringMap<Null<String>> = new StringMap();
+			for (i in 1...parts.length) {
+				var part:String = StringTools.trim(parts[i]);
+				if (part == "") {
+					return null;
+				}
+				var equals:Int = part.indexOf("=");
+				var key:String = StringTools.trim(equals < 0 ? part : part.substr(0, equals)).toLowerCase();
+				var setting:Null<String> = equals < 0 ? null : StringTools.trim(part.substr(equals + 1));
+				if (setting != null && setting.length >= 2 && StringTools.startsWith(setting, "\"") && StringTools.endsWith(setting, "\"")) {
+					setting = setting.substr(1, setting.length - 2);
+				}
+				if (key == "" || params.exists(key)) {
+					return null;
+				}
+				params.set(key, setting);
+			}
+			parsed.push({name: name, params: params});
+		}
+		return parsed;
+	}
+
+	/** Whether `setting` is a window size RFC 7692 allows: 8 to 15 bits. **/
+	private static function __isWindowBits(setting:Null<String>):Bool {
+		if (setting == null) {
+			return false;
+		}
+		var bits:Int = crossbyte.utils.IntParse.decimal(setting, 15);
+		return bits >= 8;
+	}
+
+	/**
+		A server's answer to this client's offer, taken if this side can keep
+		it: permessage-deflate alone, without context takeover on the
+		server's side -- this side inflates each message on its own -- and
+		with nothing asked of this side's compressor but its full window.
+
+		What this side sends goes compressed only where the server said
+		`client_no_context_takeover` too. Each message compressed here ends
+		its DEFLATE stream (RFC 7692 7.2.3.4): a server inflating every
+		message on its own reads that like any other, but one keeping a
+		single stream across messages, as it may without that parameter,
+		would lose every message after the first. Without it this side sends
+		uncompressed, which RFC 7692 allows of any message, and still
+		inflates what arrives.
+	**/
+	private function __takeDeflateAnswer(value:String):Bool {
+		var answered = __parseExtensions(value);
+		if (answered == null || answered.length != 1 || answered[0].name != PERMESSAGE_DEFLATE) {
+			return false;
+		}
+
+		var params:StringMap<Null<String>> = answered[0].params;
+		if (!params.exists("server_no_context_takeover")) {
+			return false;
+		}
+		for (key in params.keys()) {
+			var setting:Null<String> = params.get(key);
+			switch (key) {
+				case "server_no_context_takeover", "client_no_context_takeover":
+					if (setting != null) {
+						return false;
+					}
+				case "server_max_window_bits":
+					// Any window: this side keeps a whole one to inflate into.
+					if (!__isWindowBits(setting)) {
+						return false;
+					}
+				case "client_max_window_bits":
+					// This side's compressor looks back the whole 32 KB.
+					if (setting != "15") {
+						return false;
+					}
+				default:
+					return false;
+			}
+		}
+
+		__deflate = true;
+		__deflateSend = params.exists("client_no_context_takeover");
+		extensions = StringTools.trim(value);
+		return true;
+	}
+
+	/**
+		A client's offers, in its order of preference: the first
+		permessage-deflate offer this side can keep is taken, and the answer
+		for it becomes `extensions`. An offer that would narrow this side's
+		window is passed over -- its compressor looks back the whole 32 KB --
+		and so is one naming a parameter this side does not know.
+	**/
+	private function __acceptDeflateOffer(value:String):Bool {
+		var offers = __parseExtensions(value);
+		if (offers == null) {
+			return false;
+		}
+
+		for (offer in offers) {
+			if (offer.name != PERMESSAGE_DEFLATE) {
+				continue;
+			}
+
+			var keepable:Bool = true;
+			var windowAsked:Bool = false;
+			for (key in offer.params.keys()) {
+				var setting:Null<String> = offer.params.get(key);
+				switch (key) {
+					case "server_no_context_takeover", "client_no_context_takeover":
+						keepable = keepable && setting == null;
+					case "server_max_window_bits":
+						windowAsked = true;
+						keepable = keepable && setting == "15";
+					case "client_max_window_bits":
+						// A client that may be told to narrow its window; this
+						// side inflates any, and tells it nothing.
+						keepable = keepable && (setting == null || __isWindowBits(setting));
+					default:
+						keepable = false;
+				}
+			}
+
+			if (keepable) {
+				extensions = '$PERMESSAGE_DEFLATE; $DEFLATE_PARAMETERS' + (windowAsked ? "; server_max_window_bits=15" : "");
+				__deflate = true;
+				// The answer says server_no_context_takeover: the client
+				// inflates each message on its own.
+				__deflateSend = true;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+		A whole compressed message, inflated in place of what arrived. Fails
+		the connection -- 1009 past `MAX_MESSAGE_SIZE`, which bounds what a
+		small message can inflate into, 1007 for data that is not DEFLATE --
+		and answers false.
+	**/
+	private function __inflateIncoming():Bool {
+		// What the sender took off the end, put back (RFC 7692 7.2.2), and
+		// then an empty final block: a sender flushing as zlib does never
+		// finishes its stream, and the decoder here reads to a final block.
+		var stream:ByteArray = new ByteArray();
+		stream.writeBytes(__incomingMessageBuffer, 0, __incomingMessageBuffer.length);
+		for (octet in [0x00, 0x00, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0xFF, 0xFF]) {
+			stream.writeByte(octet);
+		}
+
+		try {
+			stream.uncompress(crossbyte.utils.CompressionAlgorithm.DEFLATE, MAX_MESSAGE_SIZE);
+		} catch (e:Dynamic) {
+			__fail(Std.string(e).indexOf("exceeded") >= 0 ? 1009 : 1007);
+			return false;
+		}
+
+		stream.endian = BIG_ENDIAN;
+		__incomingMessageBuffer = stream;
+		__incomingCompressed = false;
+		return true;
+	}
+
+	/**
+		`data` compressed for a message of its own (RFC 7692 7.2.1): DEFLATE,
+		then the empty block that ends a flush, less the four octets a
+		receiver puts back. This compressor finishes its stream with a final
+		block, so what that leaves is a single octet of the empty block's
+		header -- the form RFC 7692 7.2.3.4 gives for a final block.
+	**/
+	private static function __deflateOutgoing(data:ByteArray):ByteArray {
+		var deflated:ByteArray = new ByteArray();
+		if (data.length > 0) {
+			deflated.writeBytes(data, 0, data.length);
+		}
+		deflated.compress(crossbyte.utils.CompressionAlgorithm.DEFLATE);
+		deflated.position = deflated.length;
+		deflated.writeByte(0x00);
+		deflated.position = 0;
+		return deflated;
 	}
 
 	#if !nodejs
@@ -2243,6 +2537,19 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		}
 		data.position = 0;
 
+		// Compressed where that was agreed and the message is worth it -- and
+		// sent as it is when compressing did not make it smaller, which RFC
+		// 7692 leaves to each message.
+		var compressed:Bool = false;
+		if (__deflateSend && data.length >= compressionThreshold) {
+			var deflated:ByteArray = __deflateOutgoing(data);
+			if (deflated.length < data.length) {
+				data = deflated;
+				compressed = true;
+			}
+			data.position = 0;
+		}
+
 		// handles fragmentation of message into multiple frames
 		if (data.length > MAX_PAYLOAD) {
 			var firstFrame:Bool = true;
@@ -2262,6 +2569,8 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 					length = remaining;
 					fragmentOpcode = firstFrame ? opcode : WebSocketOpcode.CONTINUATION;
 				}
+				// RSV1 on the first frame alone.
+				var marked:Bool = compressed && firstFrame;
 				firstFrame = false;
 
 				__outgoingMessageBuffer.length = length;
@@ -2269,10 +2578,10 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 
 				data.readBytes(__outgoingMessageBuffer, 0, length);
 
-				__sendFrame(__outgoingMessageBuffer, fragmentOpcode, fin);
+				__sendFrame(__outgoingMessageBuffer, fragmentOpcode, fin, marked);
 			}
 		} else {
-			__sendFrame(data, opcode, true);
+			__sendFrame(data, opcode, true, compressed);
 		}
 	}
 
@@ -2280,7 +2589,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		return SecureRandom.getSecureRandomBytes(4);
 	}
 
-	private inline function __sendFrame(payload:ByteArray, opcode:Int, isFinal:Bool):Void {
+	private inline function __sendFrame(payload:ByteArray, opcode:Int, isFinal:Bool, compressed:Bool = false):Void {
 		if (__socket == null) {
 			return;
 		}
@@ -2288,7 +2597,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		// Write the frame header
 		var fin:Int = isFinal ? WebSocketHeaderMask.FIN : 0;
 		__output.clear();
-		__output.writeByte(fin | opcode);
+		__output.writeByte(fin | (compressed ? WebSocketHeaderMask.RSV1 : 0) | opcode);
 		var length:Int = payload.length;
 
 		if (__isClient == false) {
