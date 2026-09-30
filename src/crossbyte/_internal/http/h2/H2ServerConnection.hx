@@ -763,6 +763,11 @@ class H2ServerConnection {
 			return;
 		}
 
+		if (target.headerSectionReceived) {
+			__completeTrailers(target, decoded, endStream);
+			return;
+		}
+		target.headerSectionReceived = true;
 		target.headers = decoded;
 
 		if (tooLarge) {
@@ -773,6 +778,41 @@ class H2ServerConnection {
 		if (endStream) {
 			target.endOfStream = true;
 			__deliver(streamId, target);
+		}
+	}
+
+	/**
+		A second header block on a stream: its trailer section (RFC 9113 8.1),
+		checked and dropped, as the HTTP/1.1 server drops a chunked body's.
+
+		It used to replace the request's header section. The request was then
+		read from the trailers, found to have no `:method`, and reset, so a
+		request sent with trailers never reached a handler. A trailer section
+		must end the stream and carry no pseudo-header, and its fields are held
+		to 8.2.1 as any are; one that fails is malformed, a stream error. One
+		after the stream has ended is on a stream half-closed to the peer
+		(5.1).
+	**/
+	private function __completeTrailers(target:H2Stream, decoded:Array<HpackHeader>, endStream:Bool):Void {
+		if (target.endOfStream) {
+			resetStream(target.id, H2ErrorCode.STREAM_CLOSED);
+			return;
+		}
+		var malformed:Bool = !endStream;
+		for (field in decoded) {
+			if (malformed) {
+				break;
+			}
+			malformed = StringTools.startsWith(field.name, ":") || H2FieldRules.violation(field.name, field.value) != null;
+		}
+		if (malformed) {
+			resetStream(target.id, H2ErrorCode.PROTOCOL_ERROR);
+			return;
+		}
+
+		target.endOfStream = true;
+		if (!target.overflowed && !target.delivered) {
+			__deliver(target.id, target);
 		}
 	}
 
