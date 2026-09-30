@@ -3,6 +3,7 @@ package crossbyte.http;
 import crossbyte._internal.http.Http;
 import crossbyte._internal.http.HttpVersion;
 import crossbyte._internal.http.h2.H2Connection;
+import crossbyte._internal.http.h2.H2ConnectionError;
 import crossbyte._internal.http.h2.H2ConnectionPool;
 import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2Flags;
@@ -195,6 +196,224 @@ class HTTP2BackendTest extends utest.Test {
 		Require.notNull(error);
 		Assert.isTrue(error.indexOf("exceeded") >= 0, error);
 		Assert.equals(64 * 1024, server.clientSetting(0x6), "SETTINGS_MAX_HEADER_LIST_SIZE was not advertised");
+	}
+
+	#if cpp
+	public function testATlsHandshakeThatNeverAnswersHasADeadline():Void {
+		// A server that accepts TCP and then says nothing. The connect had no
+		// deadline and the per-origin gate was held across it, so three
+		// requests to it had no outcome in 15 s, one TCP connection between
+		// them, and a cancel did nothing. Each is held to its own timeout now,
+		// and the waiters to theirs; they share the one connection attempt.
+		// Native only: the jvm's handshake loop retries a timeout 10,000
+		// times, which is its own finding (J2).
+		if (!crossbyte._internal.socket.FlexSocket.alpnSupported) {
+			Assert.pass("this build has no ALPN, so no HTTP/2 over TLS");
+			return;
+		}
+
+		var server = new SilentServer();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var outcomes:Array<String> = [];
+		var guard:Mutex = new Mutex();
+		var done:Lock = new Lock();
+		var started:Float = haxe.Timer.stamp();
+		for (i in 0...3) {
+			Thread.create(() -> {
+				var http = new Http('https://127.0.0.1:${server.port}/silent/$i', "GET", null, null, null, null, HttpVersion.HTTP_2, 1000);
+				http.onComplete = _ -> {
+					guard.acquire();
+					outcomes.push("completed");
+					guard.release();
+				};
+				http.onError = (message, ?data) -> {
+					guard.acquire();
+					outcomes.push(message);
+					guard.release();
+				};
+				http.load();
+				done.release();
+			});
+		}
+
+		var all:Bool = true;
+		for (_ in 0...3) {
+			if (!done.wait(10.0)) {
+				all = false;
+				break;
+			}
+		}
+		var elapsed:Float = haxe.Timer.stamp() - started;
+		// Frees anything still stuck, whichever way this went.
+		server.close();
+		if (!all) {
+			for (_ in 0...3) {
+				done.wait(5.0);
+			}
+		}
+
+		Assert.isTrue(all, "a request to a server that never finished TLS had no outcome in 10 s");
+		Assert.isTrue(elapsed < 6.0, "took " + elapsed + " s for a 1 s timeout");
+		guard.acquire();
+		var seen:Array<String> = outcomes.copy();
+		guard.release();
+		Assert.equals(3, seen.length);
+		for (outcome in seen) {
+			Assert.isTrue(outcome.indexOf("timed out") >= 0 || outcome.indexOf("Timed out") >= 0, outcome);
+		}
+		Assert.equals(1, server.accepted, "the requests each connected rather than waiting on one connect");
+	}
+	#end
+
+	public function testAWaiterForAConnectLeavesAtItsOwnDeadline():Void {
+		// Waiters queued on a per-origin mutex for as long as the connect in
+		// front of them took, with no deadline of their own.
+		var origin:String = "https://pool.example:1";
+		var release:Lock = new Lock();
+		var connecting:Lock = new Lock();
+		var connector:Lock = new Lock();
+		Thread.create(() -> {
+			try {
+				H2ConnectionPool.acquire(origin, () -> {
+					connecting.release();
+					release.wait(10.0);
+					throw "the server never answered";
+				}, 30);
+			} catch (_:Dynamic) {}
+			connector.release();
+		});
+		Assert.isTrue(connecting.wait(5.0));
+
+		var started:Float = haxe.Timer.stamp();
+		var failure:Null<String> = null;
+		var connected:Bool = false;
+		try {
+			H2ConnectionPool.acquire(origin, () -> {
+				connected = true;
+				throw "a waiter connected on its own";
+			}, 0.3);
+		} catch (e:H2ConnectionError) {
+			failure = e.message;
+		}
+		var waited:Float = haxe.Timer.stamp() - started;
+		release.release();
+		connector.wait(5.0);
+
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf("Timed out waiting") >= 0, failure);
+		Assert.isFalse(connected);
+		Assert.isTrue(waited < 3.0, "waited " + waited + " s on a 0.3 s deadline");
+	}
+
+	public function testAWaiterForAConnectLeavesOnItsCancel():Void {
+		var origin:String = "https://pool.example:2";
+		var release:Lock = new Lock();
+		var connecting:Lock = new Lock();
+		var connector:Lock = new Lock();
+		Thread.create(() -> {
+			try {
+				H2ConnectionPool.acquire(origin, () -> {
+					connecting.release();
+					release.wait(10.0);
+					throw "the server never answered";
+				});
+			} catch (_:Dynamic) {}
+			connector.release();
+		});
+		Assert.isTrue(connecting.wait(5.0));
+
+		var token = new HTTPCancelToken();
+		Thread.create(() -> {
+			Sys.sleep(0.2);
+			token.cancel();
+		});
+
+		var started:Float = haxe.Timer.stamp();
+		var failure:Null<String> = null;
+		try {
+			H2ConnectionPool.acquire(origin, () -> throw "a waiter connected on its own", 0, token);
+		} catch (e:H2ConnectionError) {
+			failure = e.message;
+		}
+		var waited:Float = haxe.Timer.stamp() - started;
+		release.release();
+		connector.wait(5.0);
+
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf("cancelled") >= 0, failure);
+		Assert.isTrue(waited < 3.0, "a cancel took " + waited + " s to reach a waiter");
+	}
+
+	public function testWaitersShareTheConnectorsFailureUnlessItWasCancelled():Void {
+		// The next waiter took the gate and made the same connect again, and
+		// the one after it again: three requests, three timeouts in a row.
+		var origin:String = "https://pool.example:3";
+		var release:Lock = new Lock();
+		var connecting:Lock = new Lock();
+		var connector:Lock = new Lock();
+		Thread.create(() -> {
+			try {
+				H2ConnectionPool.acquire(origin, () -> {
+					connecting.release();
+					release.wait(10.0);
+					throw "refused by the server";
+				});
+			} catch (_:Dynamic) {}
+			connector.release();
+		});
+		Assert.isTrue(connecting.wait(5.0));
+
+		var connected:Bool = false;
+		var failure:Dynamic = null;
+		Thread.create(() -> {
+			Sys.sleep(0.2);
+			release.release();
+		});
+		try {
+			H2ConnectionPool.acquire(origin, () -> {
+				connected = true;
+				throw "a waiter connected on its own";
+			}, 5);
+		} catch (e:Dynamic) {
+			failure = e;
+		}
+		connector.wait(5.0);
+
+		Assert.equals("refused by the server", Std.string(failure));
+		Assert.isFalse(connected, "a waiter made the failed connect again");
+
+		// A connector that was cancelled says nothing about the server: the
+		// waiter behind it connects for itself.
+		var cancelOrigin:String = "https://pool.example:4";
+		var token = new HTTPCancelToken();
+		connecting = new Lock();
+		var ownConnect:Bool = false;
+		var cancelled:Lock = new Lock();
+		Thread.create(() -> {
+			try {
+				H2ConnectionPool.acquire(cancelOrigin, () -> {
+					connecting.release();
+					cancelled.wait(10.0);
+					throw "cancelled under the connect";
+				}, 0, token);
+			} catch (_:Dynamic) {}
+			connector.release();
+		});
+		Assert.isTrue(connecting.wait(5.0));
+		Thread.create(() -> {
+			Sys.sleep(0.2);
+			token.cancel();
+			cancelled.release();
+		});
+		try {
+			H2ConnectionPool.acquire(cancelOrigin, () -> {
+				ownConnect = true;
+				throw "its own attempt";
+			}, 5);
+		} catch (_:Dynamic) {}
+		connector.wait(5.0);
+		Assert.isTrue(ownConnect, "a cancelled connect's waiter did not try for itself");
 	}
 
 	public function testAnIpv6AuthorityKeepsItsBrackets():Void {
@@ -1491,6 +1710,79 @@ private class H2TruncatedResponseServer {
  * against what actually went over the socket rather than what the client
  * believes it sent.
  */
+/**
+ * Accepts every connection and never says a word on any of them, until
+ * closed: a server stalled after TCP, as far as a client can tell.
+ */
+private class SilentServer {
+	public var port(default, null):Int = 0;
+	public var accepted(get, never):Int;
+
+	private final __listener:SysSocket = new SysSocket();
+	private final __held:Array<SysSocket> = [];
+	private final __lock:Mutex = new Mutex();
+	private final __stopped:Lock = new Lock();
+	private var __accepted:Int = 0;
+	private var __closing:Bool = false;
+
+	public function new() {
+		__listener.bind(new Host("127.0.0.1"), 0);
+		__listener.listen(8);
+		port = __listener.host().port;
+		Thread.create(__accept);
+	}
+
+	private function get_accepted():Int {
+		__lock.acquire();
+		var count:Int = __accepted;
+		__lock.release();
+		return count;
+	}
+
+	/** Closes the listener and everything it accepted, which ends any wait on them. */
+	public function close():Void {
+		__lock.acquire();
+		__closing = true;
+		__lock.release();
+		__stopped.wait(2.0);
+		__lock.acquire();
+		var held:Array<SysSocket> = __held.copy();
+		__lock.release();
+		for (socket in held) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		}
+		try {
+			__listener.close();
+		} catch (_:Dynamic) {}
+	}
+
+	private function __accept():Void {
+		while (true) {
+			__lock.acquire();
+			var closing:Bool = __closing;
+			__lock.release();
+			if (closing) {
+				break;
+			}
+			try {
+				if (SysSocket.select([__listener], null, null, 0.05).read.length == 0) {
+					continue;
+				}
+				var peer:SysSocket = __listener.accept();
+				__lock.acquire();
+				__held.push(peer);
+				__accepted++;
+				__lock.release();
+			} catch (_:Dynamic) {
+				break;
+			}
+		}
+		__stopped.release();
+	}
+}
+
 private class H2cServer {
 	public var port:Int = 0;
 	public var error:Dynamic = null;
