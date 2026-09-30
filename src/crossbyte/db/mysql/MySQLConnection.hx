@@ -75,6 +75,10 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	// The same for NO_BACKSLASH_ESCAPES, which a session starts without
 	// unless the server's default sql_mode has it.
 	@:noCompletion private var __noBackslashEscapes:Bool = false;
+	// Savepoints this connection holds, innermost last, for the nameless
+	// forms of rollbackToSavepoint() and releaseSavepoint().
+	@:noCompletion private var __savepoints:Array<String> = [];
+	@:noCompletion private var __savepointSeq:Int = 0;
 	// For cancel(), which runs on another thread and opens a connection of
 	// its own: what to connect with, and the id to KILL. Both are set once,
 	// when the connection opens, and read-only after.
@@ -219,6 +223,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			__inTransaction = false;
 			__autocommitOff = false;
 			__noBackslashEscapes = false;
+			__savepoints = [];
 			__config = null;
 			__threadId = 0;
 		}
@@ -322,6 +327,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 
 		__inTransaction = true;
+		__savepoints = [];
 		__dispatch(SQLEvent.BEGIN);
 	}
 
@@ -343,6 +349,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		}
 
 		__inTransaction = false;
+		__savepoints = [];
 		__dispatch(SQLEvent.COMMIT);
 	}
 
@@ -358,6 +365,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		// A ROLLBACK that fails has lost the connection, and the server ends
 		// the transaction with it.
 		__inTransaction = false;
+		__savepoints = [];
 
 		if (failure != null) {
 			__fail(SQLEvent.ROLLBACK, "Rollback failed", failure);
@@ -366,27 +374,45 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		__dispatch(SQLEvent.ROLLBACK);
 	}
 
-	public function setSavepoint(name:String = null):Void {
+	/**
+		Creates a savepoint and returns its name, so one created without a
+		name can still be released or rolled back to. It returned nothing, and
+		the name it made came from the clock -- identical for two made within
+		a microsecond, and past `Int` about 36 minutes into a process.
+	**/
+	public function setSavepoint(name:String = null):String {
 		var sp:String = __sanitizeSavePoint(name);
+
 		try {
-			__connection.request('SAVEPOINT ' + sp + ';');
+			request('SAVEPOINT ' + sp + ';');
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
 		}
 
+		// Recorded only once the server has it, so a savepoint that failed is
+		// not the one a nameless release or rollback reaches for next.
+		__savepoints.push(sp);
 		__dispatch(SQLEvent.SET_SAVEPOINT);
+		return sp;
 	}
 
-	public function rollbackToSavepoint(name:String):Void {
-		if (name == null || name == "") {
+	/**
+		Rolls back to a savepoint, which stays active afterwards as MySQL
+		leaves it. With no name, rolls back to the innermost savepoint this
+		connection holds -- and only to a full `rollback()` when it holds none.
+		Omitting the name rolled the whole transaction back, so a caller asking
+		to return to a savepoint lost everything before it instead.
+	**/
+	public function rollbackToSavepoint(name:String = null):Void {
+		if ((name == null || name == "") && __savepoints.length == 0) {
 			rollback();
 			return;
 		}
 
-		var sp:String = __sanitizeSavePoint(name);
+		var sp:String = __takeSavepoint(name, true);
 
 		try {
-			__connection.request('ROLLBACK TO SAVEPOINT ' + sp + ';');
+			request('ROLLBACK TO SAVEPOINT ' + sp + ';');
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
@@ -394,16 +420,61 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		__dispatch(SQLEvent.ROLLBACK_TO_SAVEPOINT);
 	}
 
-	public function releaseSavepoint(name:String):Void {
-		var sp:String = __sanitizeSavePoint(name);
+	/**
+		Releases a savepoint, discarding it and any nested inside it. With no
+		name, releases the innermost this connection holds; it used to invent a
+		fresh name and ask the server to release a savepoint that had never
+		existed.
+	**/
+	public function releaseSavepoint(name:String = null):Void {
+		var sp:String = __takeSavepoint(name, false);
 
 		try {
-			__connection.request('RELEASE SAVEPOINT ' + sp + ';');
+			request('RELEASE SAVEPOINT ' + sp + ';');
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
 
 		__dispatch(SQLEvent.RELEASE_SAVEPOINT);
+	}
+
+	/**
+		Resolves the savepoint a release or rollback refers to, and updates the
+		stack to match what the statement will do to it.
+
+		RELEASE discards the savepoint and everything nested inside it;
+		ROLLBACK TO discards what is nested but leaves the savepoint itself
+		active. `keep` picks between the two.
+	**/
+	@:noCompletion private function __takeSavepoint(name:String, keep:Bool):String {
+		if (name == null || name == "") {
+			if (__savepoints.length == 0) {
+				throw new ArgumentError("No savepoint is open on this connection; name one, or use rollback() to undo the transaction.");
+			}
+
+			var innermost:String = __savepoints[__savepoints.length - 1];
+
+			if (!keep) {
+				__savepoints.pop();
+			}
+
+			return innermost;
+		}
+
+		var resolved:String = __sanitizeSavePoint(name);
+		var index:Int = -1;
+
+		for (i in 0...__savepoints.length) {
+			if (__savepoints[i] == resolved) {
+				index = i;
+			}
+		}
+
+		if (index >= 0) {
+			__savepoints.splice(keep ? index + 1 : index, __savepoints.length);
+		}
+
+		return resolved;
 	}
 
 	/**
@@ -500,7 +571,14 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		try {
 			#if cpp
 			if (__native != null) {
-				return __native.request(sql);
+				var answer:ResultSet = __native.request(sql);
+
+				// A transaction ended by SQL text takes its savepoints with it.
+				if (__savepoints.length > 0 && !get_inTransaction()) {
+					__savepoints = [];
+				}
+
+				return answer;
 			}
 			#end
 
@@ -592,9 +670,11 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				}
 			case "COMMIT":
 				__inTransaction = false;
+				__savepoints = [];
 			case "ROLLBACK":
 				if (words.length == 1 || words[1] == "WORK") {
 					__inTransaction = false;
+					__savepoints = [];
 				}
 			case "SET":
 				for (word in words) {
@@ -723,8 +803,12 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return v;
 	}
 
-	@:noCompletion private inline function __sanitizeSavePoint(name:String):String {
-		var n:String = (name != null && name != "") ? name : ('sp_' + Std.int(haxe.Timer.stamp() * 1e6));
+	@:noCompletion private function __sanitizeSavePoint(name:String):String {
+		// A counter, not a timestamp: haxe.Timer.stamp() in microseconds
+		// through Std.int collided for names made back to back, and passed
+		// Int about 36 minutes into a process. Two savepoints sharing a name
+		// make RELEASE and ROLLBACK TO act on the wrong one.
+		var n:String = (name != null && name != "") ? name : ("sp_" + (++__savepointSeq));
 		return ~/[^\w]/g.replace(n, "_");
 	}
 
