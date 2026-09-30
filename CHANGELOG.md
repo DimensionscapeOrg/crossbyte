@@ -931,6 +931,15 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Setting `receiveBufferSize` or `sendBufferSize` on a `DatagramSocket`,
+  or on a reliable datagram session or server, which pass it on, throws
+  `IllegalOperationError` on HashLink and Neko, and the new
+  `DatagramSocket.bufferSizeSupported` says whether it can be set. Neither
+  target has a native for either socket option: the size read 0 and a size
+  set there was dropped without a word, so a socket sized for a burst had no
+  way to find out it was not. Both still read 0, which means not known. What
+  to change: check `bufferSizeSupported` before sizing a socket's buffers,
+  as reliable datagram sessions now do before asking for their window.
 - `INetHost` declares `allocateRelay`, `dialRelayed` and `permitRelayedPeer`.
   They were on the `NetHost` abstract alone, which found a relay by
   downcasting to the reliable datagram host it makes itself, so a host of an
