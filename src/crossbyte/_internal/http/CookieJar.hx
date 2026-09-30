@@ -78,6 +78,17 @@ class CookieJar {
 	}
 
 	private function __storeOne(line:String, host:String):Void {
+		// RFC 6265bis 5.6: a line holding a control character other than a
+		// tab is ignored whole. What is stored goes back out in a Cookie
+		// header, where a lone CR is a line break to some servers, so a cookie
+		// could have added a header to every later request.
+		for (i in 0...line.length) {
+			var code:Int = StringTools.fastCodeAt(line, i);
+			if ((code < 0x20 && code != 0x09) || code == 0x7F) {
+				return;
+			}
+		}
+
 		var attributes:Array<String> = line.split(";");
 		if (attributes.length == 0) {
 			return;

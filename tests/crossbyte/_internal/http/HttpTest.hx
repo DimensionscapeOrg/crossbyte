@@ -993,6 +993,82 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(fixture.request.indexOf("X-Forwarded: aInjected: yes") >= 0, fixture.request);
 	}
 
+	public function testAUrlCannotAddAHeaderLine():Void {
+		// The request target and Host went out as the URL spelled them, and a
+		// URL kept its CR and LF: this sent "X-Injected: evil" as a header of
+		// its own, and a longer one could smuggle a second request.
+		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
+		var failed:Bool = false;
+		try {
+			var http = new Http('http://127.0.0.1:${fixture.port}/a' + String.fromCharCode(13) + String.fromCharCode(10) + "X-Injected: evil");
+			http.onError = (message, ?data) -> failed = true;
+			http.load();
+		} catch (_:Dynamic) {
+			failed = true;
+		}
+		fixture.waitDone();
+
+		Assert.isTrue(failed, "a URL carrying CR LF was requested");
+		Assert.equals(0, fixture.requests.length, "the request reached the server: " + fixture.requests.join(" | "));
+	}
+
+	public function testTheRequestTargetCarriesNoSpaceOrRawNonAscii():Void {
+		// A space ended the target early, "GET /a b HTTP/1.1" is three words
+		// and a version of "b" to a server, and a path past ASCII went out as
+		// raw bytes. Both are percent-encoded, as a browser sends them.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var http = new Http('http://127.0.0.1:${fixture.port}/a b/caf' + String.fromCharCode(0xE9) + "?q=c d&r=%41");
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		var line:String = fixture.request.split("\n")[0];
+		Assert.equals("GET /a%20b/caf%C3%A9?q=c%20d&r=%41 HTTP/1.1", StringTools.trim(line));
+	}
+
+	public function testAMethodThatIsNotATokenIsRefused():Void {
+		// URLRequest.method is any string, and it was written first on the
+		// request line as given: a "method" carrying a line break and a
+		// request of its own smuggled that request onto the connection.
+		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
+		var failure:Null<String> = null;
+		var method:String = "GET / HTTP/1.1" + String.fromCharCode(13) + String.fromCharCode(10) + "Host: x" + String.fromCharCode(13)
+			+ String.fromCharCode(10) + String.fromCharCode(13) + String.fromCharCode(10) + "DELETE";
+		var http = new Http('http://127.0.0.1:${fixture.port}/', method);
+		http.onError = (message, ?data) -> failure = message;
+		http.onComplete = data -> Assert.fail("a request with a smuggled method completed");
+		http.load();
+		fixture.waitDone();
+
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf("method") >= 0, failure);
+		Assert.equals(0, fixture.requests.length, "the request reached the server: " + fixture.requests.join(" | "));
+
+		// And a method that is a token, however unusual, still goes.
+		var custom = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var http = new Http('http://127.0.0.1:${custom.port}/', "PROPFIND");
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		custom.waitDone();
+		Assert.isTrue(StringTools.startsWith(custom.request, "PROPFIND / HTTP/1.1"), custom.request);
+	}
+
+	public function testUserAgentAndContentTypeCannotAddALine():Void {
+		// Both were written into their header lines as given.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var crlf:String = String.fromCharCode(13) + String.fromCharCode(10);
+		var http = new Http('http://127.0.0.1:${fixture.port}/', "POST", null, null, "text/plain" + crlf + "Injected-Type: yes", "body", HttpVersion.HTTP_1_1,
+			10000, "Agent" + crlf + "Injected-Agent: yes");
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		for (line in fixture.request.split("\n")) {
+			Assert.isFalse(StringTools.startsWith(line, "Injected-Agent:"), "the user agent added a header line:\n" + fixture.request);
+			Assert.isFalse(StringTools.startsWith(line, "Injected-Type:"), "the content type added a header line:\n" + fixture.request);
+		}
+	}
+
 	public function testADeclaredLengthPastTheCapIsRefusedBeforeReading():Void {
 		// The body was allocated whole from the header, before a byte arrived:
 		// one response declaring 2000000000 bytes cost two gigabytes.

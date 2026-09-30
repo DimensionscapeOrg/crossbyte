@@ -119,19 +119,28 @@ class JsHttpClient {
 			}
 		}
 
-		xhr.open(method, url, true);
-		xhr.responseType = ARRAYBUFFER;
+		// The browser refuses a method that is not a token, and a header name
+		// or value it will not send, by throwing, out of URLLoader.load()
+		// rather than as the IO_ERROR every other failure is.
+		try {
+			xhr.open(method, url, true);
+			xhr.responseType = ARRAYBUFFER;
 
-		if (request.requestHeaders != null) {
-			for (header in request.requestHeaders) {
-				if (header != null && header.name != null) {
-					xhr.setRequestHeader(header.name, header.value);
+			if (request.requestHeaders != null) {
+				for (header in request.requestHeaders) {
+					if (header != null && header.name != null) {
+						xhr.setRequestHeader(header.name, header.value);
+					}
 				}
 			}
-		}
 
-		if (contentType != null && contentType != "") {
-			xhr.setRequestHeader("Content-Type", contentType);
+			if (contentType != null && contentType != "") {
+				xhr.setRequestHeader("Content-Type", contentType);
+			}
+		} catch (e:Dynamic) {
+			settled = true;
+			onError("HTTP request failed: " + Std.string(e));
+			return;
 		}
 
 		xhr.onreadystatechange = function() {
@@ -382,7 +391,17 @@ class JsHttpClient {
 				});
 			};
 
-			var clientRequest = secure ? js.node.Https.request(options, handler) : js.node.Http.request(options, handler);
+			// Node refuses a method that is not a token, or a header value
+			// holding a line break, by throwing here, synchronously, out of
+			// URLLoader.load() and into whoever called it, where every other
+			// failure arrives as an IO_ERROR.
+			var clientRequest:js.node.http.ClientRequest;
+			try {
+				clientRequest = secure ? js.node.Https.request(options, handler) : js.node.Http.request(options, handler);
+			} catch (e:Dynamic) {
+				fail("HTTP request failed: " + Std.string(e));
+				return;
+			}
 
 			clientRequest.on("error", function(e) {
 				fail("HTTP request failed: " + Std.string(e));
