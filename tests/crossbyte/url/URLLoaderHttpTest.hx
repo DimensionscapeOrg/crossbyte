@@ -101,6 +101,69 @@ class URLLoaderHttpTest extends utest.Test {
 		return null;
 	}
 
+	public function testTheDecodedSizeLimitIsTheRequests():Void {
+		// 100 KB of one letter is a few hundred bytes of gzip. The client's
+		// ceiling on what a body may decode to was an internal static of the
+		// native client, the same 64 MB for every request, and could not be
+		// set per request at all.
+		var plain:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
+		for (_ in 0...100 * 1024) {
+			plain.writeByte("a".code);
+		}
+		plain.compress(crossbyte.utils.CompressionAlgorithm.GZIP);
+		var gzip:Bytes = Bytes.alloc(plain.length);
+		gzip.blit(0, plain, 0, plain.length);
+
+		var head:String = 'HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: ${gzip.length}\r\n\r\n';
+		var limited = serveBytes(head, gzip);
+		var request = new URLRequest('http://127.0.0.1:${limited.port}/zeros');
+		request.maxDecompressedSize = 10 * 1024;
+		var refused = load(request);
+		limited.waitDone();
+
+		Assert.isFalse(refused.complete, "a body past the request's decode limit completed");
+		Require.notNull(refused.error);
+		Assert.isTrue(refused.error.indexOf("decode") >= 0, refused.error);
+
+		// The default still takes it.
+		var open = serveBytes(head, gzip);
+		var taken = load(new URLRequest('http://127.0.0.1:${open.port}/zeros'));
+		open.waitDone();
+		Assert.isTrue(taken.complete, taken.error);
+		Assert.equals(100 * 1024, taken.data == null ? -1 : taken.data.length);
+	}
+
+	/** Answers one request with `head` and then `body`, byte for byte. */
+	private static function serveBytes(head:String, body:Bytes):URLLoaderHttpFixture {
+		var fixture = new URLLoaderHttpFixture(1);
+		Thread.create(() -> {
+			var server = new SysSocket();
+			var peer:SysSocket = null;
+			try {
+				server.bind(new Host("127.0.0.1"), 0);
+				server.listen(1);
+				fixture.port = server.host().port;
+				fixture.ready.release();
+				peer = server.accept();
+				peer.setTimeout(2.0);
+				fixture.requests.push(readRequest(peer));
+				peer.output.writeString(head);
+				peer.output.writeFullBytes(body, 0, body.length);
+				peer.output.flush();
+			} catch (error:Dynamic) {
+				fixture.error = error;
+				fixture.ready.release();
+			}
+			closeQuietly(peer);
+			closeQuietly(server);
+			fixture.done.release();
+		});
+		if (!fixture.ready.wait(2.0)) {
+			Assert.fail("Timed out waiting for HTTP fixture server");
+		}
+		return fixture;
+	}
+
 	public function testLoadsChunkedTextWithUnknownTotal():Void {
 		var fixture = serveRequests(_ -> "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\n\r\n", 1);
 		var result = loadText('http://127.0.0.1:${fixture.port}/chunked');

@@ -5,6 +5,12 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `URLRequest.maxDecompressedSize`: the most a compressed response may
+  decode to before the load fails, 64 MB unless set, per request. The
+  ceiling was an internal static of the native client, one number for every
+  request, while what a response sends and what it decodes to have no fixed
+  ratio. `HTTPRequestContext.maxDecompressedSize` hands it to a backend,
+  and the HTTP/2 backend holds to it.
 - `HTTPServerConfig.compression`, an `HTTPCompression`: whether the server
   compresses (`enabled`), from what size (`minimumSize`, 1 KB), which
   `Content-Type`s (`types`), and how hard (`level`, Brotli's 0 to 11). A
