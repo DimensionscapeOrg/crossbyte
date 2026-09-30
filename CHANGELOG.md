@@ -1220,6 +1220,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 server sends `Set-Cookie`, `WWW-Authenticate`,
+  `Proxy-Authenticate` and any `Authorization` or `Cookie` a response
+  carries never-indexed. Every response field went into the HPACK dynamic
+  table, session tokens included, where RFC 7541 7.1.3 says an entry's
+  presence can be inferred from the compressed size of a later response an
+  attacker can influence, and one-off tokens evict the entries worth
+  keeping. The client already sent its own credentials this way.
 - HTTP/2 on hl sends the headers it was given. HPACK found a static-table
   pair by its name and value joined with a NUL, and a HashLink string ends
   at its first NUL, so every pair of one name looked the same and the last
