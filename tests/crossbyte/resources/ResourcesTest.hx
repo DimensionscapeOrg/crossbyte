@@ -81,8 +81,10 @@ class ResourcesTest extends utest.Test {
 
 	/** Absolute paths, drive letters and stream names never name a resource. **/
 	public function testAbsolutePathsAndDriveLettersAreRefused():Void {
+		// The NUL is made at run time: HashLink reads a string constant only
+		// up to its first NUL, so on hl the ".png" after it was never there.
 		for (path in ["/etc/passwd", "\\Windows\\win.ini", "\\\\server\\share\\x", "C:/Windows/win.ini", "C:secret.txt",
-			"testsuite/sample.txt::$DATA", "file:testsuite/sample.txt", "testsuite/sample.txt\x00.png"]) {
+			"testsuite/sample.txt::$DATA", "file:testsuite/sample.txt", "testsuite/sample.txt" + String.fromCharCode(0) + ".png"]) {
 			Assert.isFalse(Resources.exists(path), path + " was found");
 			Assert.equals(-1, Resources.resourceSize(path), path + " was sized");
 			Assert.raises(() -> Resources.getText(path), crossbyte.errors.SecurityError, path + " was read");

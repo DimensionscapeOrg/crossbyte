@@ -148,7 +148,12 @@ class HTTPHardeningTest extends utest.Test {
 
 	public function testSanitizeHeaderValueStripsControlCharsButKeepsTab():Void {
 		// NUL and other C0 controls removed, horizontal tab preserved.
-		Assert.equals("ab", HttpSyntax.sanitizeHeaderValue("a\x00b"));
+		//
+		// The NUL is made at run time. HashLink reads a string constant up to
+		// its first NUL and no further, so on hl "a\x00b" was an "a" with two
+		// characters of whatever lay past HashLink's copy of it, NULs, here,
+		// and the case failed with the "b" never having been there.
+		Assert.equals("ab", HttpSyntax.sanitizeHeaderValue("a" + String.fromCharCode(0) + "b"));
 		Assert.equals("a\tb", HttpSyntax.sanitizeHeaderValue("a\tb"));
 		Assert.equals("plain value", HttpSyntax.sanitizeHeaderValue("plain value"));
 	}

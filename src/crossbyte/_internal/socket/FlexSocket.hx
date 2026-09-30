@@ -88,6 +88,12 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 			// exactly like SSLSocket until setALPN is called.
 			#if cpp
 			this = new AlpnSocket();
+			#elseif hl
+			// The standard library's TLS socket reads the network without
+			// telling HashLink's collector it is waiting, so a thread waiting
+			// on a slow server stopped every other thread at the next
+			// collection; see HlTlsSocket.
+			this = new crossbyte._internal.socket.HlTlsSocket();
 			#else
 			this = new SSLSocket();
 			#end
