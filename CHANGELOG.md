@@ -37,7 +37,10 @@ All notable changes to CrossByte will be documented in this file.
   with the server's RSA key -- given as `MySQLConfig.serverPublicKey`, or
   asked of the server with `allowPublicKeyRetrieval`, off by default since
   whoever answers in the server's place could supply their own. Also
-  `sha256_password`, and `mysql_clear_password` over TLS only. From the
+  `sha256_password`, and `mysql_clear_password` over TLS only. A mode that
+  insists on TLS fails `open()` with 2026 where it cannot be had: against a
+  server offering none, and on every target but cpp, where the driver
+  CrossByte connects through has none, before anything is sent. From the
   hxcpp fork (`fix/mysql-client`), on the mbedTLS hxcpp bundles.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the

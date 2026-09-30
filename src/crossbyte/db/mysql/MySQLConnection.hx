@@ -117,6 +117,15 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			}
 		}
 
+		#if !cpp
+		// The client here has no TLS. A mode that insists on it fails as the
+		// native client fails against a server offering none, before anything
+		// is sent -- where it used to connect in the clear, password and all.
+		if (cfg.sslMode != null && cfg.sslMode.toCode() >= MySQLSSLMode.REQUIRED.toCode()) {
+			throw new MySQLConnectionError("sslMode " + cfg.sslMode + " needs TLS, and only the native client has it", 2026);
+		}
+		#end
+
 		if (__connection != null) {
 			// Opened again: the connection it had would otherwise stay open,
 			// unreachable.
