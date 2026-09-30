@@ -677,10 +677,15 @@ class JvmTlsTest extends utest.Test {
 		} catch (e:Dynamic) {
 			failure = Std.string(e);
 		}
+		// Closed only once the server is done with it. Closed at once, with the
+		// rest of the server's flight still arriving, the client's kernel
+		// answers that with a reset, and under load the server met it writing
+		// -- "Software caused connection abort" -- before reading the alert
+		// that had already gone. That race is TCP's, not the alert's.
+		done.wait(10);
 		try {
 			client.close();
 		} catch (_:Dynamic) {}
-		done.wait(10);
 		server.close();
 
 		Assert.notNull(failure, "a client given no authority for the server accepted it");
