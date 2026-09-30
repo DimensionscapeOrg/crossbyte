@@ -1492,8 +1492,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// registry drain, where an escape costs every other connection
 			// in the loop rather than this one. The IO error is dispatched
 			// so the owner can react; the connection is left for the read
-			// side to reap, exactly as before.
-			__dispatchPooledIOError(Std.string(e));
+			// side to reap, unless it has none, see __flushFailed.
+			__flushFailed(Std.string(e));
 			return;
 		}
 
@@ -2057,6 +2057,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// last bytes and its FIN routinely arrive in one tick, and a listener
 		// that tears down here must have seen them first.
 		if (doPeerClose && !doClose) {
+			__dropReadInterest();
 			__dispatchPooledSimpleEvent(Event.PEER_CLOSE);
 		}
 
@@ -2073,10 +2074,53 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			try {
 				flush();
 			} catch (e:IOError) {
-				__dispatchPooledIOError(e.message);
+				__flushFailed(e.message);
 			}
 		}
 		#end
+	}
+
+	#if !js
+	/**
+		Takes the socket out of the poll set's reads, once nothing more will
+		be read from it. It stays open, and what is written to it still goes:
+		the writable queue does not ask the poll set.
+
+		A peer's end of stream is readable for good, so a half-open socket
+		left in the set was reported on every poll, a POLL loop spun a whole
+		core per connection held that way, re-entering a handler that had
+		nothing to read, and each report flushed again, so a write that
+		failed was reported again every time: 25,566 ioErrors in half a second
+		on a TLS 1.2 connection.
+	**/
+	@:noCompletion private function __dropReadInterest():Void {
+		if (__cbInstance != null && __socket != null) {
+			@:privateAccess
+			__cbInstance.deregisterSocket(__socket);
+		}
+	}
+	#end
+
+	/**
+		A flush that failed for a reason other than a full send buffer, from
+		inside the runtime's own dispatch: the owner is told. A socket still
+		reading is left for its read side to reap, as it always was, that
+		side sees the same end and reads whatever arrived before it. One that
+		reads nothing more is closed here, since nothing else ever would: it
+		was reported again at every chance, and held for good.
+	**/
+	@:noCompletion private function __flushFailed(message:String):Void {
+		__dispatchPooledIOError(message);
+
+		if (__socket == null || !__peerShutdown) {
+			return;
+		}
+
+		var wasConnected:Bool = __connected;
+		__cleanSocket();
+		if (wasConnected) {
+			__announceClose();
+		}
 	}
 
 	#if eval
@@ -2442,8 +2486,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (read) {
 			// Nothing more will be read, and the read loop must stop trying:
 			// on some targets a shut read direction reports Eof forever, which
-			// would otherwise re-enter the policy branch every tick.
+			// would otherwise re-enter the policy branch every tick, and
+			// readable for good, so it leaves the poll set's reads too.
 			__peerShutdown = true;
+			#if !js
+			__dropReadInterest();
+			#end
 		}
 
 		#if (js && !nodejs)
