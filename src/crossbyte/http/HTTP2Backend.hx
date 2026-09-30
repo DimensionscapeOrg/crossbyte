@@ -6,6 +6,7 @@ package crossbyte.http;
 #if !js
 import crossbyte._internal.http.CookieJar;
 import crossbyte._internal.http.Http;
+import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.http.h2.H2ClientSession;
 import crossbyte._internal.http.h2.H2Connection;
 import crossbyte._internal.http.h2.H2ConnectionPool;
@@ -409,11 +410,15 @@ class HTTP2Backend implements HTTPBackend {
 		context.onComplete(body);
 	}
 
-	/** `:path` is the path and query together, and is never empty (§8.3.1). */
+	/**
+	 * `:path` is the path and query together, and is never empty (§8.3.1).
+	 * Encoded as the HTTP/1.1 client encodes its request target: a space or a
+	 * byte past ASCII left raw is a malformed `:path` to a strict server.
+	 */
 	private function __target(url:URL):String {
 		var path:String = (url.path != null && url.path.length > 0) ? url.path : "/";
 		var query:String = url.query;
-		return (query != null && query.length > 0) ? '$path?$query' : path;
+		return HttpSyntax.encodeRequestTarget((query != null && query.length > 0) ? '$path?$query' : path);
 	}
 
 	private function __body(method:String, data:Dynamic):Null<Bytes> {
@@ -456,8 +461,14 @@ class HTTP2Backend implements HTTPBackend {
 					continue;
 				}
 
-				var name:String = StringTools.trim(raw.substr(0, split)).toLowerCase();
-				var value:String = StringTools.trim(raw.substr(split + 1));
+				var name:String = HttpSyntax.sanitizeHeaderName(raw.substr(0, split)).toLowerCase();
+				// RFC 9113 8.2.1 makes a CR, LF or NUL in a value a malformed
+				// request, which a strict server answers by resetting the stream;
+				// stripped here as the HTTP/1.1 client strips them.
+				var value:String = StringTools.trim(HttpSyntax.sanitizeHeaderValue(raw.substr(split + 1)));
+				if (name.length == 0) {
+					continue;
+				}
 
 				switch (name) {
 					case "connection" | "keep-alive" | "transfer-encoding" | "upgrade" | "proxy-connection" | "host":
@@ -484,10 +495,10 @@ class HTTP2Backend implements HTTPBackend {
 			out.push(new HpackHeader("cookie", jarCookie, true));
 		}
 		if (!seenUserAgent && userAgent != null) {
-			out.push(new HpackHeader("user-agent", userAgent));
+			out.push(new HpackHeader("user-agent", HttpSyntax.sanitizeHeaderValue(userAgent)));
 		}
 		if (!seenContentType && contentType != null && body != null) {
-			out.push(new HpackHeader("content-type", contentType));
+			out.push(new HpackHeader("content-type", HttpSyntax.sanitizeHeaderValue(contentType)));
 		}
 		if (body != null) {
 			out.push(new HpackHeader("content-length", Std.string(body.length)));

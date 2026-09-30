@@ -1220,6 +1220,21 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A URL can no longer add a header to the request made from it. `URL` kept
+  control characters, and the HTTP/1.1 client wrote the path, query and host
+  into the request line and `Host` as they were, so
+  `http://host/a\r\nX-Injected: evil` put that header on the wire, and a
+  longer URL could smuggle a second request. `URL` now refuses a control
+  character anywhere, and a space in the host. The request target is
+  percent-encoded where it holds a space or anything past ASCII (a space ended
+  it early), `User-Agent`, `Host` and `Content-Type` are sanitised as the
+  caller's own header lines already were, and a method that is not an HTTP
+  token -- `URLRequest.method` takes any string -- is refused before anything
+  is sent. The HTTP/2 client encodes `:path` and sanitises its header values
+  the same way, the Node and browser clients report a method or header their
+  runtime refuses as an `IO_ERROR` rather than throwing out of `load()`, and
+  a `Set-Cookie` holding a control character other than a tab is ignored, as
+  RFC 6265bis says, instead of going back out in `Cookie`.
 - Concurrent first HTTP/2 requests all find the bundled backend. It marked
   itself registered and was only added once the registry's lock was let go,
   so a request arriving in between found the mark, no backend, and failed
