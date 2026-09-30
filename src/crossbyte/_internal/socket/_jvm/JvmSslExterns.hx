@@ -74,6 +74,20 @@ extern class JArrayList<T> implements JList<T> {
 	function get(index:Int):T;
 }
 
+/** An interface in Java. **/
+@:native("java.util.Collection")
+extern interface JCollection<T> {
+	function size():Int;
+	function iterator():JIterator<T>;
+}
+
+/** An interface in Java. **/
+@:native("java.util.Iterator")
+extern interface JIterator<T> {
+	function hasNext():Bool;
+	function next():T;
+}
+
 /** The session mid-handshake, which is where the requested names live. **/
 @:native("javax.net.ssl.ExtendedSSLSession")
 extern class ExtendedSSLSession {
@@ -154,6 +168,9 @@ extern class ByteArrayInputStream extends JInputStream {
 extern class CertificateFactory {
 	static function getInstance(type:String):CertificateFactory;
 	function generateCertificate(stream:JInputStream):Certificate;
+
+	/** Every certificate in the stream, in order: a chain, or a bundle. **/
+	function generateCertificates(stream:JInputStream):JCollection<Certificate>;
 }
 
 @:native("java.security.KeyStore")
@@ -193,6 +210,8 @@ extern interface SSLSession {
 	function getApplicationBufferSize():Int;
 	function getPacketBufferSize():Int;
 	function getPeerCertificates():java.NativeArray<Certificate>;
+	function getProtocol():String;
+	function getId():java.NativeArray<java.types.Int8>;
 }
 
 /** Nested: the `$` is required. **/
@@ -252,6 +271,7 @@ extern class SSLContext {
 	@:overload(function(peerHost:String, peerPort:Int):SSLEngine {})
 	function createSSLEngine():SSLEngine;
 	function getSocketFactory():SSLSocketFactory;
+	function getServerSocketFactory():SSLServerSocketFactory;
 }
 
 /**
@@ -281,7 +301,40 @@ extern class SSLSocket extends JNetSocket {
 	function setSSLParameters(params:SSLParameters):Void;
 	function getApplicationProtocol():String;
 	function getSession():SSLSession;
+	function setEnabledProtocols(protocols:java.NativeArray<String>):Void;
+	function addHandshakeCompletedListener(listener:HandshakeCompletedListener):Void;
 	function close():Void;
+}
+
+/** An interface in Java; a test's peer counts handshakes with one. **/
+@:native("javax.net.ssl.HandshakeCompletedListener")
+extern interface HandshakeCompletedListener {
+	function handshakeCompleted(event:HandshakeCompletedEvent):Void;
+}
+
+@:native("javax.net.ssl.HandshakeCompletedEvent")
+extern class HandshakeCompletedEvent {}
+
+/** The blocking listener, for the same reason as the socket above: a peer in a test. **/
+@:native("java.net.ServerSocket")
+extern class JNetServerSocket {
+	function accept():JNetSocket;
+	function getLocalPort():Int;
+	function setSoTimeout(milliseconds:Int):Void;
+	function close():Void;
+}
+
+@:native("javax.net.ssl.SSLServerSocket")
+extern class SSLServerSocket extends JNetServerSocket {
+	function setNeedClientAuth(need:Bool):Void;
+	function setEnabledProtocols(protocols:java.NativeArray<String>):Void;
+}
+
+@:native("javax.net.ssl.SSLServerSocketFactory")
+extern class SSLServerSocketFactory {
+	// Returns java.net.ServerSocket, not SSLServerSocket, for the reason
+	// SSLSocketFactory.createSocket does.
+	@:overload function createServerSocket(port:Int, backlog:Int, address:java.net.InetAddress):JNetServerSocket;
 }
 
 @:native("java.util.Base64")
