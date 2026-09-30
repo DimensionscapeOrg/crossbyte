@@ -1220,6 +1220,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `TurnClient` believes only its relay. Relayed data was taken from any
+  sender -- a Data indication naming a peer, or ChannelData on a bound
+  channel's number, from anyone who could reach the socket, was delivered as
+  that peer -- and a success answering a signed request was accepted without
+  its MESSAGE-INTEGRITY being checked, so whoever saw a request go by could
+  answer it with a relayed address of their own. Now only datagrams from
+  the relay's address and port are TURN traffic, a Data indication is
+  delivered only for a peer this client permitted, and an answer to a
+  signed request must be signed with the same key (a 401 or 438 excepted),
+  or carry a matching FINGERPRINT when it has one, or it is dropped as
+  though it never came, as RFC 8489 has it; a request answered only by such
+  messages fails saying so. A success carrying a comprehension-required
+  attribute the client does not understand fails its request rather than
+  being acted on.
 - A TURN relay named by hostname is looked up once per allocation. Every
   request went to the name, which natively was looked up again every minute
   and on Node for every datagram; against a round-robin pool the requests

@@ -148,6 +148,10 @@ class TurnClientTest extends utest.Test {
 		client.allocate(0);
 		relay.run(client, () -> client.active);
 
+		// Permitted first: a relay forwards nothing from anyone else.
+		client.permit("198.51.100.4", 1);
+		relay.pump(client, 1);
+
 		relay.deliver(client, "198.51.100.4", 40000, "through the relay");
 
 		Assert.equals("through the relay", received);
@@ -925,6 +929,172 @@ class TurnClientTest extends utest.Test {
 	}
 
 	// ------------------------------------------------------------------
+	// Who is believed
+	// ------------------------------------------------------------------
+
+	/**
+		Relayed data comes from the relay, and nothing else is taken for it.
+
+		Any sender's Data indication, and ChannelData on a bound channel's
+		number, was delivered as the peer: anyone who could reach the socket
+		could put words in the peer's mouth.
+	**/
+	public function testRelayedDataFromAnyoneButTheRelayIsIgnored():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		var heard:Array<String> = [];
+		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
+			payload.position = 0;
+			heard.push(payload.readUTFBytes(payload.length));
+		};
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+		network.advance(0.1);
+
+		// From a stranger: a Data indication naming the permitted peer, and
+		// ChannelData on the number the relay bound.
+		network.inject(client, dataIndication(PEER, PEER_PORT, "from a stranger, as the peer"), "192.0.2.99", network.relayPort);
+		network.inject(client, channelData(TurnClient.FIRST_CHANNEL, "from a stranger, on the channel"), "192.0.2.99", network.relayPort);
+
+		// And from the relay's address but another port, which is not the relay either.
+		network.inject(client, dataIndication(PEER, PEER_PORT, "from the relay's host"), network.relayAddress, 9999);
+
+		Assert.equals(0, heard.length, "relayed data was taken from somebody who is not the relay: " + heard);
+
+		// The relay itself is still heard.
+		network.peerSends(network.relay.allAllocations()[0].relayPort, "from the peer", PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(1, heard.length, "the relay's own forwarding was not delivered");
+	}
+
+	/**
+		A Data indication naming a peer this client never let through is not
+		delivered, whoever it seems to come from. A relay forwards nothing from
+		a peer without a permission, so one that claims to have was not
+		forwarded by it.
+	**/
+	public function testDataFromAPeerWithoutAPermissionIsDropped():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		var heard:Int = 0;
+		client.onData = (_, _, _) -> heard++;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		network.inject(client, dataIndication("198.51.100.77", 5000, "never permitted"), network.relayAddress, network.relayPort);
+		Assert.equals(0, heard, "data from a peer that was never permitted was delivered");
+
+		network.inject(client, dataIndication(PEER, PEER_PORT, "permitted"), network.relayAddress, network.relayPort);
+		Assert.equals(1, heard, "data from the permitted peer was not delivered");
+	}
+
+	/**
+		An answer that fails its integrity check is not believed.
+
+		A signed request's answer was taken without its MESSAGE-INTEGRITY being
+		looked at, so anyone who saw the request go by could answer it -- here
+		with a relayed address of the forger's own, which peers would then be
+		told to send to. RFC 8489 has such an answer dropped as though it never
+		came, and the request goes on until a real one does.
+	**/
+	public function testAnAnswerThatFailsItsIntegrityCheckIsNotBelieved():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.3;
+
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> network.sentOfType(StunMessage.ALLOCATE_REQUEST).length >= 2, 5);
+
+		var requests = network.sentOfType(StunMessage.ALLOCATE_REQUEST);
+		var signed = StunMessage.decode(requests[requests.length - 1].bytes);
+		Require.notNull(signed);
+
+		// The right transaction, and a key that is not the credential's.
+		var forged = new StunMessage(StunMessage.ALLOCATE_SUCCESS, signed.transactionId, [
+			StunMessage.xorRelayed("192.0.2.66", 9999),
+			StunMessage.lifetime(600)
+		]).encodeSignedWithKey(StunMessage.longTermKey("user", network.relay.realm, "a guess"), false);
+		network.inject(client, forged, network.relayAddress, network.relayPort);
+
+		Assert.isFalse(client.active, "an answer signed with the wrong key granted an allocation");
+
+		network.run(() -> client.active, 5);
+
+		Assert.isTrue(client.active, "the relay's own answer was not taken after the forged one");
+
+		if (client.relayedAddress != null) {
+			Assert.notEquals("192.0.2.66", client.relayedAddress.address, "the forged relayed address was believed");
+		}
+	}
+
+	/**
+		A relay whose every answer fails its integrity check is reported as
+		that, not as silence and not as a success.
+	**/
+	public function testARelayWhoseAnswersNeverVerifyFailsSayingSo():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.badIntegrity = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 60, 0.25);
+
+		Assert.isFalse(client.active, "answers with a wrong MESSAGE-INTEGRITY granted an allocation");
+		Assert.notNull(failure, "the allocation neither succeeded nor failed");
+
+		if (failure != null) {
+			Assert.isTrue(failure.indexOf("integrity") >= 0, "the failure should say the answers did not verify: " + failure);
+		}
+	}
+
+	/**
+		A success carrying an attribute the relay requires understood, and this
+		client does not understand, is not an answer to act on (RFC 8489
+		section 7.3.3). It was taken as one.
+	**/
+	public function testASuccessCarryingARequiredAttributeNobodyUnderstandsIsRefused():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.unknownAttribute = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isFalse(client.active, "an answer the client could not fully read granted an allocation");
+		Assert.notNull(failure);
+
+		if (failure != null) {
+			Assert.isTrue(failure.indexOf("0x7FAA") >= 0, "the failure should name the attribute: " + failure);
+		}
+	}
+
+	// ------------------------------------------------------------------
 
 	private static inline var RELAY_NAME:String = "relay.example.test";
 
@@ -944,6 +1114,33 @@ class TurnClientTest extends utest.Test {
 
 		bytes.position = 0;
 		return bytes;
+	}
+
+	/** A Data indication, as a relay forwards a peer's datagram. **/
+	private static function dataIndication(peer:String, port:Int, text:String):ByteArray {
+		var payload = new ByteArray();
+		payload.writeUTFBytes(text);
+		payload.position = 0;
+
+		return new StunMessage(StunMessage.DATA_INDICATION, transaction(9), [
+			StunMessage.xorPeerAddress(peer, port),
+			StunMessage.data(payload)
+		]).encode();
+	}
+
+	/** A ChannelData message on `number`. **/
+	private static function channelData(number:Int, text:String):ByteArray {
+		var payload = new ByteArray();
+		payload.writeUTFBytes(text);
+
+		var framed = new ByteArray();
+		framed.writeByte((number >> 8) & 0xFF);
+		framed.writeByte(number & 0xFF);
+		framed.writeByte((payload.length >> 8) & 0xFF);
+		framed.writeByte(payload.length & 0xFF);
+		framed.writeBytes(payload, 0, payload.length);
+		framed.position = 0;
+		return framed;
 	}
 
 	/** Whether the client's next datagram to the peer goes over a channel rather than as a Send indication. **/
@@ -1050,7 +1247,7 @@ private class Relay {
 
 		var reply = new StunMessage(StunMessage.REFRESH_SUCCESS, held.transactionId, [StunMessage.lifetime(600)]);
 		held = null;
-		client.receive(reply.encode(), "203.0.113.10", 3478, now);
+		client.receive(sign(reply), "203.0.113.10", 3478, now);
 	}
 
 	/** Hands the client a datagram as though a peer had sent it. **/
