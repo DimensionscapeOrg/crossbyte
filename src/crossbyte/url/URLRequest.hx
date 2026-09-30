@@ -66,11 +66,25 @@ class URLRequest {
 		request finishing. There is no `Domain` attribute, no path matching and
 		no persistence, if you need a session that outlives one call, hold the
 		cookie yourself and set it through `requestHeaders`, which also takes
-		precedence over this when you do.
+		precedence over this when you do. A host keeps 180 cookies at most, the
+		oldest going first, as a browser's do, and one longer than 4,096
+		characters is ignored.
 
 		The default comes from `URLRequestDefaults.manageCookies`.
 	**/
 	public var manageCookies:Bool;
+
+	/**
+		The most bytes a compressed response may decode to before the load is
+		abandoned with an `IO_ERROR`. Defaults to 64 MB; `0` or less removes
+		the limit.
+
+		What a response sends and what it decodes to are different numbers:
+		compression ratios have no ceiling, and a few hundred bytes of gzip or
+		Brotli can name gigabytes. The limit used to be an internal setting of
+		the native client only.
+	**/
+	public var maxDecompressedSize:Int = 64 * 1024 * 1024;
 
 	/**
 		The HTTP method. Any of `URLRequestMethod`, `GET`, `POST`, `PUT`,
@@ -108,6 +122,62 @@ class URLRequest {
 		`"http://[2001:db8:ccc3:ffff:0:444d:555e:666f]:8080/test"`.
 	**/
 	public var url:String;
+
+	/**
+		For `https`: whether the server's certificate is checked, that it
+		chains to an authority this request trusts, and that it names the host.
+		On by default.
+
+		Turn it off only for a development server presenting a self-signed
+		certificate, and prefer `certAuthority` even then: with it off the
+		traffic is still encrypted, but anyone able to sit between the two ends
+		can present a certificate of their own and read all of it. In a browser
+		the browser decides, and this is not consulted; on neko, whose TLS
+		checks the server whatever it is told, it cannot be turned off, and a
+		request with it off is checked all the same.
+	**/
+	public var verifyCert:Bool = true;
+
+	#if !(js && !nodejs)
+	/**
+		For `https`: the authority this request trusts, in place of the
+		system's, a private CA's certificate, or a server's own self-signed
+		one, to check a server the system does not know without turning
+		`verifyCert` off. `null`, the default, trusts the system's store.
+
+		It used to be reachable only as a process-wide static, through
+		`@:privateAccess`, for every request at once.
+	**/
+	public var certAuthority:crossbyte.net.Certificate = null;
+
+	/**
+		For `https`: the certificate this request presents to a server that
+		asks for one, mutual TLS, with `clientKey`. Presented only to the
+		origin the request was made to: a redirect that leaves it leaves the
+		certificate behind, as it leaves `Authorization`.
+	**/
+	public var clientCertificate:crossbyte.net.Certificate = null;
+
+	/** The private key belonging to `clientCertificate`. **/
+	public var clientKey:crossbyte.net.Key = null;
+	#end
+
+	/**
+		For `https`: the public keys the server's certificate may carry, each
+		the base64 SHA-256 of its SubjectPublicKeyInfo, RFC 7469's
+		`pin-sha256`: with or without a `sha256/` in front. When set, a
+		server whose key is not one of these fails the request, on every hop,
+		after the handshake and before anything is sent. `null` or empty pins
+		nothing.
+
+		A pin names the key, so it survives a certificate renewed over the same
+		key; list the next key too before rotating to it. `openssl x509 -pubkey
+		-noout -in cert.pem | openssl pkey -pubin -outform der | openssl dgst
+		-sha256 -binary | openssl base64` gives one. Natively, on the jvm and
+		on Node; elsewhere a pinned request is refused rather than sent
+		unchecked.
+	**/
+	public var pinnedPublicKeys:Array<String> = null;
 
 	/**
 		The `User-Agent` string to send.

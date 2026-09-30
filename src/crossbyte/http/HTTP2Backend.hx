@@ -6,6 +6,7 @@ package crossbyte.http;
 #if !js
 import crossbyte._internal.http.CookieJar;
 import crossbyte._internal.http.Http;
+import crossbyte._internal.http.HttpSyntax;
 import crossbyte._internal.http.h2.H2ClientSession;
 import crossbyte._internal.http.h2.H2Connection;
 import crossbyte._internal.http.h2.H2ConnectionPool;
@@ -115,7 +116,7 @@ class HTTP2Backend implements HTTPBackend {
 		var credentialsDropped:Bool = false;
 
 		while (true) {
-			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, data, contentType, cookies);
+			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, data, contentType, cookies, credentialsDropped);
 			if (exchange == null) {
 				// Reported already.
 				return;
@@ -193,7 +194,7 @@ class HTTP2Backend implements HTTPBackend {
 	 * not and answers null.
 	 */
 	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, data:Dynamic, contentType:Null<String>,
-			cookies:Null<CookieJar>):Null<H2Exchange> {
+			cookies:Null<CookieJar>, leftOrigin:Bool):Null<H2Exchange> {
 		if (__cancelled(context)) {
 			// Between two hops, or before the first. Nothing is opened for it,
 			// and nothing already open is disturbed.
@@ -204,7 +205,7 @@ class HTTP2Backend implements HTTPBackend {
 		var secure:Bool = url.scheme == "https";
 		var port:Int = url.port != null ? url.port : (secure ? 443 : 80);
 		var scheme:String = secure ? "https" : "http";
-		var origin:String = '$scheme://${url.host}:$port';
+		var origin:String = scheme + "://" + HttpSyntax.authority(url.host.toLowerCase(), port, -1);
 
 		if (secure && !FlexSocket.alpnSupported) {
 			context.onError("HTTP/2 over TLS needs ALPN, which this target does not support");
@@ -212,9 +213,16 @@ class HTTP2Backend implements HTTPBackend {
 		}
 
 		var session:H2ClientSession = null;
+		// The request's TLS, as the HTTP/1.1 client applies it: less its client
+		// certificate once a redirect has left the origin it was made to.
+		var tls:Null<HTTPTLSOptions> = null;
+		if (secure && context.tls != null && !context.tls.isDefault()) {
+			tls = leftOrigin ? context.tls.withoutClientCertificate() : context.tls;
+		}
 
 		try {
-			var authority:String = (port == (secure ? 443 : 80)) ? url.host : '${url.host}:$port';
+			// Bracketed for an IPv6 host: 2001:db8::1:8080 cannot be split.
+			var authority:String = HttpSyntax.authority(url.host, port, secure ? 443 : 80);
 			var body:Null<Bytes> = __body(method, data);
 			var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
 			var cookie:Null<String> = cookies != null ? cookies.headerFor(url.host, secure) : null;
@@ -228,7 +236,7 @@ class HTTP2Backend implements HTTPBackend {
 			var stream:H2Stream = null;
 			var refused:Int = 0;
 			while (stream == null) {
-				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context));
+				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context, tls), timeout, context.cancelToken, tls);
 				try {
 					stream = session.execute(method, scheme, authority, __target(url), fields, body, timeout, context.cancelToken);
 				} catch (e:H2ConnectionError) {
@@ -266,12 +274,14 @@ class HTTP2Backend implements HTTPBackend {
 			if (session != null) {
 				H2ConnectionPool.discard(session);
 			}
-			context.onError("HTTP/2 connection error: " + e.message);
+			// A cancel that ended the connect, or the wait on another
+			// request's, is reported as the cancel it was.
+			context.onError(__cancelled(context) ? "Request cancelled" : "HTTP/2 connection error: " + e.message);
 		} catch (e:Dynamic) {
 			if (session != null) {
 				H2ConnectionPool.discard(session);
 			}
-			context.onError("HTTP/2 request failed: " + Std.string(e));
+			context.onError(__cancelled(context) ? "Request cancelled" : "HTTP/2 request failed: " + Std.string(e));
 		}
 		return null;
 	}
@@ -283,15 +293,33 @@ class HTTP2Backend implements HTTPBackend {
 	/**
 	 * A response's header fields by name, repeats joined as the HTTP/1 client
 	 * joins them, so a caller sees one shape whichever version served it.
+	 *
+	 * Collected, then joined once per name: each repeat was appended to the
+	 * whole value so far, which is quadratic in the repeats, and the server
+	 * chooses how many there are.
 	 */
 	private static function __fields(stream:H2Stream):Map<String, String> {
 		var fields:Map<String, String> = new Map();
+		var repeats:Null<Map<String, Array<String>>> = null;
 		for (header in stream.headers) {
-			if (fields.exists(header.name)) {
-				var joiner:String = header.name == "set-cookie" ? "\n" : ", ";
-				fields.set(header.name, fields.get(header.name) + joiner + header.value);
-			} else {
+			var first:Null<String> = fields.get(header.name);
+			if (first == null) {
 				fields.set(header.name, header.value);
+				continue;
+			}
+			if (repeats == null) {
+				repeats = new Map();
+			}
+			var values:Null<Array<String>> = repeats.get(header.name);
+			if (values == null) {
+				values = [first];
+				repeats.set(header.name, values);
+			}
+			values.push(header.value);
+		}
+		if (repeats != null) {
+			for (name => values in repeats) {
+				fields.set(name, values.join(name == "set-cookie" ? "\n" : ", "));
 			}
 		}
 		return fields;
@@ -300,35 +328,98 @@ class HTTP2Backend implements HTTPBackend {
 	/**
 	 * Opens a connection for the pool.
 	 *
-	 * The socket deliberately has no read timeout. A pooled connection is idle
+	 * The connect and the TLS handshake are held to the request's timeout,
+	 * and its cancel token reaches the socket while they run. They had
+	 * neither: a server that accepted TCP and then said nothing held this
+	 * request, and every other request to its origin waiting on this connect,
+	 * for good, and a cancel did nothing.
+	 *
+	 * Once open, the socket has no read timeout. A pooled connection is idle
 	 * between requests by design, and a deadline on the reader would tear down
 	 * a perfectly good connection for the crime of waiting; per-request
 	 * deadlines live on the stream instead.
 	 */
-	private function __open(origin:String, host:String, port:Int, secure:Bool, context:HTTPRequestContext):H2ClientSession {
+	private function __open(origin:String, host:String, port:Int, secure:Bool, context:HTTPRequestContext, ?tls:HTTPTLSOptions):H2ClientSession {
 		var socket:FlexSocket = new FlexSocket(secure);
 
 		if (secure) {
 			// Only h2 is offered. Accepting http/1.1 here would hand back a
 			// connection this backend cannot speak.
 			socket.setALPN(["h2"]);
+			if (tls != null) {
+				tls.configure(socket);
+			}
 		}
 
-		// The name is looked up here, on the calling thread. That is the
-		// load's own thread, URLLoader runs every load on one of its pool
-		// threads, never on a runtime's, so a slow resolver holds up this
-		// request and no one else's sockets or timers. Resolver, which hands
-		// its answer back to a runtime's thread, is for code on one.
-		socket.connect(host, port);
+		// An idle limit, as the HTTP/1.1 client sets on its socket: the
+		// handshake's reads give up after it, however many there are.
+		var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
+		socket.setTimeout(timeout);
+
+		// Published to the token for as long as the connect runs, which is
+		// how a cancel from another thread reaches a blocking call: by ending
+		// it under the thread, as the HTTP/1.1 client does.
+		var token:Null<HTTPCancelToken> = context.cancelToken;
+		var interrupt:Void->Void = () -> Http.__interrupt(socket);
+		if (token != null) {
+			token.onCancel(interrupt);
+		}
+
+		try {
+			// The name is looked up here, on the calling thread. That is the
+			// load's own thread, URLLoader runs every load on one of its pool
+			// threads, never on a runtime's, so a slow resolver holds up this
+			// request and no one else's sockets or timers. Resolver, which
+			// hands its answer back to a runtime's thread, is for code on one.
+			socket.connect(host, port);
+		} catch (e:Dynamic) {
+			if (token != null) {
+				token.removeHandler(interrupt);
+			}
+			__closeQuietly(socket);
+			if (token != null && token.cancelled) {
+				throw new H2ConnectionError(H2ErrorCode.CANCEL, "Request was cancelled while connecting to " + origin);
+			}
+			// Said as the timeout it was, the same way on every target.
+			if (Http.__isTimeout(e)) {
+				throw new H2ConnectionError(H2ErrorCode.CANCEL, 'Connecting to $origin timed out after ${timeout}s');
+			}
+			throw e;
+		}
+
+		if (token != null) {
+			token.removeHandler(interrupt);
+			if (token.cancelled) {
+				// Cancelled as the connect finished: the socket may have been
+				// shut down under it, so it is no connection to keep.
+				__closeQuietly(socket);
+				throw new H2ConnectionError(H2ErrorCode.CANCEL, "Request was cancelled while connecting to " + origin);
+			}
+		}
 
 		if (secure && socket.getALPN() != "h2") {
-			try {
-				socket.close();
-			} catch (_:Dynamic) {}
+			__closeQuietly(socket);
 			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, "Server did not negotiate h2 over ALPN");
 		}
 
-		return new H2ClientSession(origin, socket, new H2Connection(socket.input, socket.output, settings));
+		// Once the handshake is done and before the preface: a server whose
+		// key is not pinned is sent nothing.
+		if (tls != null) {
+			var refusal:Null<String> = tls.checkPins(socket);
+			if (refusal != null) {
+				__closeQuietly(socket);
+				throw new H2ConnectionError(H2ErrorCode.CONNECT_ERROR, refusal);
+			}
+		}
+
+		socket.setTimeout(0);
+		return new H2ClientSession(origin, socket, new H2Connection(socket.input, socket.output, settings), tls);
+	}
+
+	private static function __closeQuietly(socket:FlexSocket):Void {
+		try {
+			socket.close();
+		} catch (_:Dynamic) {}
 	}
 
 	private function __report(context:HTTPRequestContext, stream:H2Stream, connection:H2Connection):Void {
@@ -350,6 +441,13 @@ class HTTP2Backend implements HTTPBackend {
 		// tested for a missing status, so a reset or a hang-up after the
 		// headers reported the response complete with a truncated body.
 		if (!stream.endOfStream) {
+			if (stream.failure != null) {
+				// Given up on here, for a reason of this side's own: a header
+				// section past the limit.
+				context.onError(stream.failure);
+				return;
+			}
+
 			if (stream.resetCode != null) {
 				var code:H2ErrorCode = stream.resetCode;
 				context.onError('Stream reset by peer: ${code.toString()}');
@@ -386,7 +484,7 @@ class HTTP2Backend implements HTTPBackend {
 		// request sent with no Accept-Encoding accepts any coding (RFC 9110
 		// 12.5.3), and a gzip body reached the caller still compressed.
 		try {
-			body = crossbyte._internal.http.Http.decodeResponseBody(body, headers.get("content-encoding"));
+			body = Http.decodeResponseBody(body, headers.get("content-encoding"), context.maxDecompressedSize);
 		} catch (error:Dynamic) {
 			if (Std.isOfType(error, String)) {
 				context.onError('Unsupported content encoding: ${error}', body);
@@ -409,11 +507,15 @@ class HTTP2Backend implements HTTPBackend {
 		context.onComplete(body);
 	}
 
-	/** `:path` is the path and query together, and is never empty (§8.3.1). */
+	/**
+	 * `:path` is the path and query together, and is never empty (§8.3.1).
+	 * Encoded as the HTTP/1.1 client encodes its request target: a space or a
+	 * byte past ASCII left raw is a malformed `:path` to a strict server.
+	 */
 	private function __target(url:URL):String {
 		var path:String = (url.path != null && url.path.length > 0) ? url.path : "/";
 		var query:String = url.query;
-		return (query != null && query.length > 0) ? '$path?$query' : path;
+		return HttpSyntax.encodeRequestTarget((query != null && query.length > 0) ? '$path?$query' : path);
 	}
 
 	private function __body(method:String, data:Dynamic):Null<Bytes> {
@@ -456,8 +558,14 @@ class HTTP2Backend implements HTTPBackend {
 					continue;
 				}
 
-				var name:String = StringTools.trim(raw.substr(0, split)).toLowerCase();
-				var value:String = StringTools.trim(raw.substr(split + 1));
+				var name:String = HttpSyntax.sanitizeHeaderName(raw.substr(0, split)).toLowerCase();
+				// RFC 9113 8.2.1 makes a CR, LF or NUL in a value a malformed
+				// request, which a strict server answers by resetting the stream;
+				// stripped here as the HTTP/1.1 client strips them.
+				var value:String = StringTools.trim(HttpSyntax.sanitizeHeaderValue(raw.substr(split + 1)));
+				if (name.length == 0) {
+					continue;
+				}
 
 				switch (name) {
 					case "connection" | "keep-alive" | "transfer-encoding" | "upgrade" | "proxy-connection" | "host":
@@ -484,10 +592,10 @@ class HTTP2Backend implements HTTPBackend {
 			out.push(new HpackHeader("cookie", jarCookie, true));
 		}
 		if (!seenUserAgent && userAgent != null) {
-			out.push(new HpackHeader("user-agent", userAgent));
+			out.push(new HpackHeader("user-agent", HttpSyntax.sanitizeHeaderValue(userAgent)));
 		}
 		if (!seenContentType && contentType != null && body != null) {
-			out.push(new HpackHeader("content-type", contentType));
+			out.push(new HpackHeader("content-type", HttpSyntax.sanitizeHeaderValue(contentType)));
 		}
 		if (body != null) {
 			out.push(new HpackHeader("content-length", Std.string(body.length)));
@@ -501,6 +609,9 @@ class HTTP2Backend implements HTTPBackend {
 		// Nothing here can consume a promised stream, and §8.4 lets us make
 		// one a connection error by saying so up front.
 		settings.enablePush = false;
+		// Said as well as enforced, so a server knows to keep under it rather
+		// than have its response refused.
+		settings.maxHeaderListSize = H2Connection.DEFAULT_MAX_HEADER_LIST_SIZE;
 		return settings;
 	}
 }

@@ -47,16 +47,30 @@ class HttpConnectionPool {
 	@:noCompletion private static var __idle:Map<String, Array<IdleConnection>> = new Map();
 	@:noCompletion private static var __count:Int = 0;
 
-	/** A live idle connection to `origin`, taken out of the pool, or null. */
-	public static function take(origin:String):Null<FlexSocket> {
+	/**
+		A live idle connection to `origin` opened under `tls`, taken out of the
+		pool, or null. `tls` is compared with `HTTPTLSOptions.same`, null
+		being the defaults: a connection that did not check its server, or that
+		presented a client certificate, is never handed to a request that asked
+		for something else.
+	**/
+	public static function take(origin:String, ?tls:crossbyte.http.HTTPTLSOptions):Null<FlexSocket> {
 		var now:Float = haxe.Timer.stamp();
 		while (true) {
 			var candidate:Null<IdleConnection> = null;
 			__lock.acquire();
 			var list:Null<Array<IdleConnection>> = __idle.get(origin);
-			if (list != null && list.length > 0) {
-				candidate = list.pop();
-				__count--;
+			if (list != null) {
+				// The newest first, as before.
+				var i:Int = list.length;
+				while (i-- > 0) {
+					if (crossbyte.http.HTTPTLSOptions.same(list[i].tls, tls)) {
+						candidate = list[i];
+						list.splice(i, 1);
+						__count--;
+						break;
+					}
+				}
 			}
 			__lock.release();
 
@@ -70,8 +84,11 @@ class HttpConnectionPool {
 		}
 	}
 
-	/** Keeps `socket` for the next request to `origin`, or closes it if the pool is full. */
-	public static function put(origin:String, socket:FlexSocket):Void {
+	/**
+		Keeps `socket`, opened under `tls`, for the next request to `origin`
+		under the same, or closes it if the pool is full.
+	**/
+	public static function put(origin:String, socket:FlexSocket, ?tls:crossbyte.http.HTTPTLSOptions):Void {
 		var kept:Bool = false;
 		var expired:Array<FlexSocket> = [];
 		__lock.acquire();
@@ -87,7 +104,7 @@ class HttpConnectionPool {
 				__idle.set(origin, list);
 			}
 			if (list.length < maxIdlePerOrigin) {
-				list.push(new IdleConnection(socket, haxe.Timer.stamp()));
+				list.push(new IdleConnection(socket, haxe.Timer.stamp(), tls));
 				__count++;
 				kept = true;
 			}
@@ -173,9 +190,13 @@ class HttpConnectionPool {
 	public final socket:FlexSocket;
 	public final since:Float;
 
-	public function new(socket:FlexSocket, since:Float) {
+	/** What the connection was opened under, null being the defaults. */
+	public final tls:Null<crossbyte.http.HTTPTLSOptions>;
+
+	public function new(socket:FlexSocket, since:Float, tls:Null<crossbyte.http.HTTPTLSOptions>) {
 		this.socket = socket;
 		this.since = since;
+		this.tls = tls;
 	}
 }
 #end

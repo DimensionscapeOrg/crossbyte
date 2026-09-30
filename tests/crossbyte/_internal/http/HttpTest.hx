@@ -7,11 +7,13 @@ import crossbyte.http.HTTPRequestContext;
 import crossbyte.io.ByteArray;
 import crossbyte.utils.CompressionAlgorithm;
 import crossbyte.url.URL;
+import crossbyte.sys.System;
 import haxe.io.Bytes;
 import haxe.exceptions.NotImplementedException;
 import sys.net.Host;
 import sys.net.Socket as SysSocket;
 import sys.thread.Lock;
+import sys.thread.Mutex;
 import sys.thread.Thread;
 import utest.Assert;
 import crossbyte.test.Require;
@@ -245,6 +247,55 @@ class HttpTest extends utest.Test {
 		HTTPBackendRegistry.clear();
 	}
 
+	public function testConcurrentFirstRequestsAllFindTheBundledBackend():Void {
+		// The bundled backend's flag was set under the lock and the backend
+		// added only after the lock was let go: a thread arriving in between
+		// found the flag set and no backend, and its request failed with "HTTP/2
+		// has no registered HTTPBackend". Concurrent first HTTP/2 requests
+		// failed 5 of 6 that way on the jvm, and the http2 sample 3 of 3.
+		var workers:Int = 8;
+		var rounds:Int = 150;
+		var misses:Int = 0;
+		var count:Mutex = new Mutex();
+		var go:Array<Lock> = [for (_ in 0...workers) new Lock()];
+		var done:Lock = new Lock();
+
+		for (w in 0...workers) {
+			var mine:Lock = go[w];
+			Thread.create(() -> {
+				for (_ in 0...rounds) {
+					mine.wait();
+					if (HTTPBackendRegistry.resolve(HttpVersion.HTTP_2) == null) {
+						count.acquire();
+						misses++;
+						count.release();
+					}
+					done.release();
+				}
+			});
+		}
+
+		var finished:Bool = true;
+		for (_ in 0...rounds) {
+			HTTPBackendRegistry.clear();
+			for (lock in go) {
+				lock.release();
+			}
+			for (_ in 0...workers) {
+				if (!done.wait(10.0)) {
+					finished = false;
+				}
+			}
+			if (!finished) {
+				break;
+			}
+		}
+
+		Assert.isTrue(finished, "a worker never came back");
+		Assert.equals(0, misses, misses + " of " + (workers * rounds) + " first lookups found no HTTP/2 backend");
+		HTTPBackendRegistry.clear();
+	}
+
 	public function testLoadReportsResponseHeadersAndJoinsRepeatedFields():Void {
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\n"
 			+ "Content-Length: 2\r\n"
@@ -278,6 +329,73 @@ class HttpTest extends utest.Test {
 		Assert.equals("one=1" + String.fromCharCode(10) + "two=2", headers.get("set-cookie"));
 	}
 
+	public function testAResponseHeaderSectionPastTheLimitIsRefused():Void {
+		// The client read header lines for as long as the server sent them;
+		// the server holds a request's block to 64 KB, and a response is
+		// held to the same now. About 70 KB of lines here: a little past the
+		// limit, and small enough to sit in the socket's buffers whole, so the
+		// fixture's write finishes whatever the client does next.
+		var fill:StringBuf = new StringBuf();
+		for (i in 0...1400) {
+			fill.add("X-Fill-" + i + ": 0123456789012345678901234567890123456789\r\n");
+		}
+		__expectRefusal("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n" + fill.toString() + "\r\nok", "exceeded");
+	}
+
+	public function testAHeaderLineThatNeverEndsIsRefused():Void {
+		// One line, read into memory for as long as it went on. A line with no
+		// colon was then ignored, so the response completed as though nothing
+		// had happened.
+		__expectRefusal("HTTP/1.1 200 OK\r\n" + __repeat("a".code, 70 * 1024) + "\r\nContent-Length: 2\r\n\r\nok", "exceeded");
+	}
+
+	public function testEndlessInterimResponsesAreRefused():Void {
+		// Each 1xx block was thrown away and the next read, for as long as they
+		// came, and while they kept coming the idle timeout never fired.
+		var interim:StringBuf = new StringBuf();
+		for (_ in 0...3000) {
+			interim.add("HTTP/1.1 100 Continue\r\n\r\n");
+		}
+		__expectRefusal(interim.toString() + "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "exceeded");
+	}
+
+	public function testAChunkLineThatNeverEndsIsRefused():Void {
+		// A chunk extension is ignored, so one that went on for ever was read
+		// into memory and then dropped, and the body completed.
+		__expectRefusal("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;" + __repeat("e".code, 8 * 1024) + "\r\nhello\r\n0\r\n\r\n", "limit");
+	}
+
+	public function testEndlessTrailersAreRefused():Void {
+		var trailers:StringBuf = new StringBuf();
+		for (i in 0...1400) {
+			trailers.add("X-Trailer-" + i + ": 012345678901234567890123456789012345678\r\n");
+		}
+		__expectRefusal("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n" + trailers.toString() + "\r\n", "limit");
+	}
+
+	/** Serves `response` and expects the load to fail with a message holding `expected`. */
+	private static function __expectRefusal(response:String, expected:String):Void {
+		var fixture = serveOnce(response);
+		var http = new Http('http://127.0.0.1:${fixture.port}/bounded');
+		var completed:Null<Bytes> = null;
+		var failure:Null<String> = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed, "the response was taken whole");
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf(expected) >= 0, failure);
+	}
+
+	/** `count` copies of one ASCII character, in linear time. */
+	private static function __repeat(code:Int, count:Int):String {
+		var bytes:Bytes = Bytes.alloc(count);
+		bytes.fill(0, count, code);
+		return bytes.toString();
+	}
+
 	public function testLoadReportsOnlyTheFinalHeaderBlockAfterAnInformationalResponse():Void {
 		var fixture = serveOnce("HTTP/1.1 100 Continue\r\n\r\n" + "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Final: yes\r\n\r\nhi");
 		var reported:Array<Map<String, String>> = [];
@@ -309,6 +427,53 @@ class HttpTest extends utest.Test {
 
 		Assert.equals("http://example.com:8080/dir/next", Http.__resolveLocation(base, "next"));
 		Assert.equals("http://example.com:8080/dir/sub/next?x=1", Http.__resolveLocation(base, "sub/next?x=1"));
+	}
+
+	public function testResolveLocationBracketsAnIpv6HostAndKeepsASchemesOtherPort():Void {
+		// The host went in bare, so a relative redirect from [::1]:8080 named
+		// http://::1:8080/..., which is not a URL, and the redirect failed.
+		var v6 = new URL("http://[::1]:8080/dir/page");
+		Assert.equals("http://[::1]:8080/dir/next", Http.__resolveLocation(v6, "next"));
+		Assert.equals("http://[::1]:8080/root", Http.__resolveLocation(v6, "/root"));
+		Assert.equals("https://[2001:db8::1]/x", Http.__resolveLocation(new URL("https://[2001:db8::1]/a"), "/x"));
+
+		// The port was dropped for 80 and 443 whatever the scheme, so a
+		// redirect from http://host:443/ went to port 80.
+		Assert.equals("http://example.com:443/b", Http.__resolveLocation(new URL("http://example.com:443/a"), "b"));
+		Assert.equals("https://example.com:80/b", Http.__resolveLocation(new URL("https://example.com:80/a"), "b"));
+	}
+
+	public function testTheHostHeaderBracketsAnIpv6Literal():Void {
+		// URL takes the brackets off, and the client put the host back as it
+		// was: Host: ::1:port, which no server can split.
+		if (!__ipv6Loopback()) {
+			Assert.pass("no IPv6 loopback on this machine");
+			return;
+		}
+
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "::1");
+		var http = new Http('http://[::1]:${fixture.port}/v6');
+		var completed:Null<Bytes> = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		Require.notNull(completed);
+		Assert.isTrue(fixture.request.indexOf('Host: [::1]:${fixture.port}') >= 0, fixture.request);
+	}
+
+	/** Whether a socket can listen on the IPv6 loopback here. */
+	private static function __ipv6Loopback():Bool {
+		var probe = new SysSocket();
+		try {
+			probe.bind(new Host("::1"), 0);
+			probe.close();
+			return true;
+		} catch (_:Dynamic) {
+			closeQuietly(probe);
+			return false;
+		}
 	}
 
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
@@ -729,13 +894,13 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(fixture.request.indexOf("ok=false") >= 0);
 	}
 
-	private static function serveOnce(response:String):OneShotHttpServer {
+	private static function serveOnce(response:String, address:String = "127.0.0.1"):OneShotHttpServer {
 		var fixture = new OneShotHttpServer();
 		Thread.create(() -> {
 			var server = new SysSocket();
 			var peer:SysSocket = null;
 			try {
-				server.bind(new Host("127.0.0.1"), 0);
+				server.bind(new Host(address), 0);
 				server.listen(1);
 				fixture.port = server.host().port;
 				fixture.ready.release();
@@ -943,6 +1108,87 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(fixture.request.indexOf("X-Forwarded: aInjected: yes") >= 0, fixture.request);
 	}
 
+	public function testAUrlCannotAddAHeaderLine():Void {
+		// The request target and Host went out as the URL spelled them, and a
+		// URL kept its CR and LF: this sent "X-Injected: evil" as a header of
+		// its own, and a longer one could smuggle a second request.
+		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
+		var failed:Bool = false;
+		try {
+			var http = new Http('http://127.0.0.1:${fixture.port}/a' + String.fromCharCode(13) + String.fromCharCode(10) + "X-Injected: evil");
+			http.onError = (message, ?data) -> failed = true;
+			http.load();
+		} catch (_:Dynamic) {
+			failed = true;
+		}
+		fixture.waitDone();
+
+		Assert.isTrue(failed, "a URL carrying CR LF was requested");
+		Assert.equals(0, fixture.requests.length, "the request reached the server: " + fixture.requests.join(" | "));
+	}
+
+	public function testTheRequestTargetCarriesNoSpaceOrRawNonAscii():Void {
+		// A space ended the target early, "GET /a b HTTP/1.1" is three words
+		// and a version of "b" to a server, and a path past ASCII went out as
+		// raw bytes. Both are percent-encoded, as a browser sends them.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		// The e-acute as its UTF-8 bytes read back as text: one character
+		// where strings are Unicode, and those two bytes on neko, whose
+		// strings are bytes, where String.fromCharCode(0xE9) is one byte,
+		// Latin-1, and no URL a user types.
+		var eAcute:String = Bytes.ofHex("c3a9").toString();
+		var http = new Http('http://127.0.0.1:${fixture.port}/a b/caf' + eAcute + "?q=c d&r=%41");
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		var line:String = fixture.request.split("\n")[0];
+		Assert.equals("GET /a%20b/caf%C3%A9?q=c%20d&r=%41 HTTP/1.1", StringTools.trim(line));
+	}
+
+	public function testAMethodThatIsNotATokenIsRefused():Void {
+		// URLRequest.method is any string, and it was written first on the
+		// request line as given: a "method" carrying a line break and a
+		// request of its own smuggled that request onto the connection.
+		var fixture = serveWithin(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"], 0.5);
+		var failure:Null<String> = null;
+		var method:String = "GET / HTTP/1.1" + String.fromCharCode(13) + String.fromCharCode(10) + "Host: x" + String.fromCharCode(13)
+			+ String.fromCharCode(10) + String.fromCharCode(13) + String.fromCharCode(10) + "DELETE";
+		var http = new Http('http://127.0.0.1:${fixture.port}/', method);
+		http.onError = (message, ?data) -> failure = message;
+		http.onComplete = data -> Assert.fail("a request with a smuggled method completed");
+		http.load();
+		fixture.waitDone();
+
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf("method") >= 0, failure);
+		Assert.equals(0, fixture.requests.length, "the request reached the server: " + fixture.requests.join(" | "));
+
+		// And a method that is a token, however unusual, still goes.
+		var custom = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var http = new Http('http://127.0.0.1:${custom.port}/', "PROPFIND");
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		custom.waitDone();
+		Assert.isTrue(StringTools.startsWith(custom.request, "PROPFIND / HTTP/1.1"), custom.request);
+	}
+
+	public function testUserAgentAndContentTypeCannotAddALine():Void {
+		// Both were written into their header lines as given.
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+		var crlf:String = String.fromCharCode(13) + String.fromCharCode(10);
+		var http = new Http('http://127.0.0.1:${fixture.port}/', "POST", null, null, "text/plain" + crlf + "Injected-Type: yes", "body", HttpVersion.HTTP_1_1,
+			10000, "Agent" + crlf + "Injected-Agent: yes");
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		for (line in fixture.request.split("\n")) {
+			Assert.isFalse(StringTools.startsWith(line, "Injected-Agent:"), "the user agent added a header line:\n" + fixture.request);
+			Assert.isFalse(StringTools.startsWith(line, "Injected-Type:"), "the content type added a header line:\n" + fixture.request);
+		}
+	}
+
 	public function testADeclaredLengthPastTheCapIsRefusedBeforeReading():Void {
 		// The body was allocated whole from the header, before a byte arrived:
 		// one response declaring 2000000000 bytes cost two gigabytes.
@@ -1012,10 +1258,10 @@ class HttpTest extends utest.Test {
 				// with it unread makes the close below a reset rather than an
 				// ending. Reading even a byte lets a buffered input take the
 				// rest, and the close becomes an ordinary one.
-				crossbyte.sys.System.sleep(0.2);
+				System.sleep(0.2);
 				peer.output.writeString("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npartial");
 				peer.output.flush();
-				crossbyte.sys.System.sleep(0.3);
+				System.sleep(0.3);
 				#if (java || jvm)
 				// The JDK closes gracefully even over unread data; a zero linger
 				// is how a Java socket is made to reset.
@@ -1046,6 +1292,49 @@ class HttpTest extends utest.Test {
 
 		Assert.isNull(completed, "a body cut off by a reset was reported complete: " + (completed == null ? "" : completed.toString()));
 		Assert.notNull(failure);
+	}
+	#end
+
+	#if (cpp || java || jvm)
+	/**
+		A TLS handshake the server never answers fails at the request's
+		timeout, and says that is what happened. Natively the failure's
+		reason was "Blocked", the read the handshake waited on had timed
+		out, and on the jvm it came wrapped, as `Custom(Timeout: ...)`.
+	**/
+	public function testAnUnansweredHandshakeSaysItTimedOut():Void {
+		var listener = new SysSocket();
+		listener.bind(new Host("127.0.0.1"), 0);
+		listener.listen(1);
+		var port:Int = listener.host().port;
+		var finished = new Lock();
+		var gone = new Lock();
+		Thread.create(() -> {
+			var peer:SysSocket = null;
+			try {
+				peer = listener.accept();
+			} catch (_:Dynamic) {}
+			// Held and silent until the request has given up.
+			finished.wait(15.0);
+			closeQuietly(peer);
+			closeQuietly(listener);
+			gone.release();
+		});
+
+		var failure:Null<String> = null;
+		var http = new Http('https://127.0.0.1:$port/silent', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 1000);
+		http.onComplete = _ -> failure = "completed";
+		http.onError = (message, ?_) -> failure = message;
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		finished.release();
+		gone.wait(5.0);
+
+		Require.notNull(failure);
+		Assert.isTrue(StringTools.startsWith(failure, "Connection Failed: "), failure);
+		Assert.isTrue(failure.indexOf("did not answer within 1") >= 0, failure);
+		Assert.isTrue(took < 5.0, 'took $took s for a 1 s timeout');
 	}
 	#end
 

@@ -25,6 +25,13 @@ class H2Stream {
 	/** Set when the peer reset this stream, so the caller can report why. */
 	public var resetCode:Null<H2ErrorCode> = null;
 
+	/**
+	 * Set when this side gave up on the stream for a reason of its own, a
+	 * response whose header section went past the limit, so the caller can
+	 * report that rather than a reset or a hang-up.
+	 */
+	public var failure:Null<String> = null;
+
 	/** How much the peer will still accept from us (§6.9). */
 	public var sendWindow:Int;
 
@@ -36,6 +43,12 @@ class H2Stream {
 
 	/** True once the peer's END_STREAM has been seen. */
 	public var endOfStream:Bool = false;
+
+	/**
+		True once the request's header section has arrived, on the server: a
+		header block after it is the trailer section (RFC 9113 8.1).
+	**/
+	public var headerSectionReceived:Bool = false;
 
 	/**
 	 * Frames the peer has sent this stream: one per header block and one per

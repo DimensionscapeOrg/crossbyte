@@ -81,6 +81,7 @@ class TestSuites {
 		// included. Also in PortableSuite, which is how js reaches it.
 		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());
 		runner.addCase(new crossbyte._internal.http.CookieJarTest());
+		runner.addCase(new crossbyte._internal.http.PublicKeyPinsTest());
 		runner.addCase(new crossbyte._internal.http.h2.hpack.HpackTest());
 		runner.addCase(new crossbyte._internal.http.h2.H2Test());
 		runner.addCase(new crossbyte._internal.http.h2.H2ServerTest());
@@ -134,6 +135,11 @@ class TestSuites {
 		runner.addCase(new crossbyte.url.URLLoaderHttpTest());
 		runner.addCase(new crossbyte.url.URLLoaderTest());
 		runner.addCase(new crossbyte.url.URLVariablesTest());
+		// Registered for the browser, which reaches it through PortableSuite;
+		// written here too so the one list describes everything that runs.
+		#if (js && !nodejs)
+		runner.addCase(new crossbyte.url.URLLoaderBrowserTest());
+		#end
 	}
 
 	public static function addMath(runner:Runner):Void {

@@ -105,6 +105,12 @@ class LoaderRun {
 			// Created on the loader's thread before the load was queued, so
 			// close() can reach a request that has already started.
 			http.cancelToken = __token;
+			http.maxDecompressedSize = request.maxDecompressedSize;
+			// Only when the request asks for something other than the defaults,
+			// so the pool shares connections between requests that do not.
+			var tls:crossbyte.http.HTTPTLSOptions = new crossbyte.http.HTTPTLSOptions(request.verifyCert, request.certAuthority,
+				request.clientCertificate, request.clientKey, request.pinnedPublicKeys);
+			http.tls = tls.isDefault() ? null : tls;
 
 			// The last response's status and headers, reported once, ahead of
 			// the outcome: a redirect's own block is not the answer.

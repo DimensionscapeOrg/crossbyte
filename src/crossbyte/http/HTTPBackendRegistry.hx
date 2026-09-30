@@ -26,6 +26,12 @@ class HTTPBackendRegistry {
 		}
 
 		__acquire();
+		__add(backend);
+		__release();
+	}
+
+	/** Adds `backend` unless it is there already. Under the lock. */
+	private static function __add(backend:HTTPBackend):Void {
 		if (__backends.indexOf(backend) < 0) {
 			// Replace rather than push so a concurrent resolve() keeps
 			// iterating the snapshot it already holds.
@@ -33,7 +39,6 @@ class HTTPBackendRegistry {
 			updated.push(backend);
 			__backends = updated;
 		}
-		__release();
 	}
 
 	public static function unregister(backend:HTTPBackend):Bool {
@@ -91,27 +96,33 @@ class HTTPBackendRegistry {
 
 	/**
 	 * Registers the bundled HTTP/2 backend, once, if that is what was asked
-	 * for. Returns whether anything was added.
+	 * for. Returns whether it has been registered, by this call or by any
+	 * other, so the caller searches again.
 	 *
 	 * Registered rather than returned directly so an explicitly registered
 	 * backend still wins: `__search` walks newest first, so anything the
 	 * caller adds afterwards takes precedence over this.
+	 *
+	 * The flag and the backend change under one hold of the lock. The flag
+	 * was set under it and the backend added only after it was let go, so a
+	 * thread arriving in between found the flag set, took that to mean there
+	 * was nothing to do, and had no backend: concurrent first HTTP/2 requests
+	 * failed 5 of 6 on the jvm with "HTTP/2 has no registered HTTPBackend".
+	 * Answering false when another thread had done the registering was the
+	 * same mistake one step later, since this caller's search ran before it.
 	 */
 	private static function __registerBundled(version:HTTPVersion):Bool {
 		#if (!js && !crossbyte_no_http2)
-		if (!autoRegisterBundled || __bundledRegistered || version != HTTPVersion.HTTP_2) {
+		if (!autoRegisterBundled || version != HTTPVersion.HTTP_2) {
 			return false;
 		}
 
 		__acquire();
-		if (__bundledRegistered) {
-			__release();
-			return false;
+		if (!__bundledRegistered) {
+			__bundledRegistered = true;
+			__add(new HTTP2Backend());
 		}
-		__bundledRegistered = true;
 		__release();
-
-		register(new HTTP2Backend());
 		return true;
 		#else
 		return false;

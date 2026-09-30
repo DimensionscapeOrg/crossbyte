@@ -80,6 +80,29 @@ class URLTest extends utest.Test {
 		Assert.isTrue(throws(() -> new URL("http://host:8 0/")), "a port with a space was accepted");
 	}
 
+	public function testControlCharactersAreRefused():Void {
+		// The client writes the path, query and host into the request as they
+		// are, so a CR or LF here ended the request line and started a header
+		// of the URL's choosing: "http://host/a\r\nX-Injected: evil" did just
+		// that on the wire. Built from char codes so the test does not depend
+		// on how this file's line endings were checked out.
+		var cr:String = String.fromCharCode(13);
+		var lf:String = String.fromCharCode(10);
+		for (control in [cr, lf, cr + lf, String.fromCharCode(0), String.fromCharCode(9), String.fromCharCode(31), String.fromCharCode(127)]) {
+			var shown:String = StringTools.hex(StringTools.fastCodeAt(control, 0), 2);
+			Assert.isTrue(throws(() -> new URL("http://host/a" + control + "X-Injected: evil")), "a control character (" + shown + ") in the path was kept");
+			Assert.isTrue(throws(() -> new URL("http://host/p?x=1" + control + "Evil: 1")), "a control character (" + shown + ") in the query was kept");
+			Assert.isTrue(throws(() -> new URL("http://ho" + control + "st.com/a")), "a control character (" + shown + ") in the host was kept");
+			Assert.isTrue(throws(() -> new URL("http://host/a#frag" + control)), "a control character (" + shown + ") in the fragment was kept");
+		}
+		Assert.isTrue(throws(() -> new URL("http://ho st/a")), "a space in the host was kept");
+		Assert.isTrue(throws(() -> new URL("http://host :80/a")), "a space in the authority was kept");
+
+		// A space in the path is not the URL's to refuse: the client encodes
+		// it on the way out, as a browser would.
+		Assert.equals("/a b", new URL("http://host/a b").path);
+	}
+
 	@:noCompletion private static function throws(fn:Void->Void):Bool {
 		try {
 			fn();
