@@ -17,6 +17,12 @@ final class SocketRegistry {
 	@:noCompletion private var __writableQueue:Stack<Socket>;
 	@:noCompletion private var __writableSwap:Stack<Socket>;
 
+	// Sockets watched for becoming writable: a connect in flight, which is
+	// finished the moment the system says so rather than at the next tick.
+	@:noCompletion private var __writeSet:DenseSet<Socket>;
+	@:noCompletion private var __writeSnapshot:Array<Socket>;
+	@:noCompletion private var __writeDirty:Bool = false;
+
 	@:noCompletion private var __readSnapshot:Array<Socket>;
 	@:noCompletion private var __selectBuffer:Array<Socket>;
 
@@ -38,7 +44,7 @@ final class SocketRegistry {
 	}
 
 	public inline function get_isEmpty():Bool {
-		return __set.isEmpty;
+		return __set.isEmpty && __writeSet.isEmpty;
 	}
 
 	private inline function get_size():Int {
@@ -52,6 +58,8 @@ final class SocketRegistry {
 		__deregisterPending = new DenseSet();
 		__writableQueue = new Stack();
 		__writableSwap = new Stack();
+		__writeSet = new DenseSet();
+		__writeSnapshot = [];
 		__readSnapshot = [];
 		__selectBuffer = [];
 	}
@@ -62,6 +70,8 @@ final class SocketRegistry {
 		__deregisterPending.clear();
 		__writableQueue.clear();
 		__writableSwap.clear();
+		__writeSet.clear();
+		__writeSnapshot.resize(0);
 		__readSnapshot.resize(0);
 		__selectBuffer.resize(0);
 		__isDirty = true;
@@ -74,16 +84,34 @@ final class SocketRegistry {
 
 		if (__set.add(socket)) {
 			__isDirty = true;
-
-			if (__set.length > capacity) {
-				__grow();
-			}
+			__ensureCapacity();
 		}
 	}
 
 	public inline function deregister(socket:Socket):Void {
 		if (__set.contains(socket) && __deregisterPending.add(socket)) {
 			__deregisterQueue.push(socket);
+		}
+		unwatchWritable(socket);
+	}
+
+	/**
+		Reports `socket` to its `registryOnWritable` once it can be written
+		to, until `unwatchWritable`: how a connect in flight is finished as
+		soon as the system finishes it. A socket whose failure the system
+		reports only as an exception -- a refused connect, on Windows -- is
+		reported the same way, so the handler asks which it was.
+	**/
+	public inline function watchWritable(socket:Socket):Void {
+		if (__writeSet.add(socket)) {
+			__writeDirty = true;
+			__ensureCapacity();
+		}
+	}
+
+	public inline function unwatchWritable(socket:Socket):Void {
+		if (__writeSet.remove(socket)) {
+			__writeDirty = true;
 		}
 	}
 
@@ -116,7 +144,7 @@ final class SocketRegistry {
 			__isDirty = true;
 		}
 
-		if (__set.isEmpty) {
+		if (__set.isEmpty && __writeSet.isEmpty) {
 			// The last sockets polled are let go of here. The buffer is only
 			// resized when the set's size changes, and an empty set returns
 			// before that, so the last connections a server held stayed
@@ -124,6 +152,9 @@ final class SocketRegistry {
 			// with its buffers and userData -- for as long as it sat idle.
 			if (__selectBuffer.length > 0) {
 				__selectBuffer.resize(0);
+			}
+			if (__writeSnapshot.length > 0) {
+				__writeSnapshot.resize(0);
 			}
 			return;
 		}
@@ -133,10 +164,21 @@ final class SocketRegistry {
 			__isDirty = false;
 		}
 
-		if (__readSnapshot == null || __readSnapshot.length == 0) {
-			return;
+		// A copy, unlike the read snapshot: a connect that finishes leaves the
+		// set from inside the dispatch below, which would reorder the set's
+		// own array under the loop reading it.
+		if (__writeDirty) {
+			__writeSnapshot.resize(0);
+			for (socket in __writeSet.keys) {
+				__writeSnapshot.push(socket);
+			}
+			__writeDirty = false;
 		}
 
+		__select(timeout);
+	}
+
+	@:noCompletion private function __select(wait:Float):Void {
 		// Refilled into a buffer this registry keeps rather than a fresh array
 		// per pump. The list handed to select cannot be the snapshot itself:
 		// that is the DenseSet's own backing array, and select is free to
@@ -161,8 +203,7 @@ final class SocketRegistry {
 		// the bug: a pump blocking for `timeout` before looking at data it
 		// already has. So they go first, and finding any drops the select to a
 		// poll.
-		var wait:Float = timeout;
-
+		//
 		// Only the jvm backend can answer yes -- it is the one that decrypts in
 		// front of the channel. Gating the sweep keeps every other target's
 		// pump exactly as it was rather than paying a call per socket per pump
@@ -184,24 +225,70 @@ final class SocketRegistry {
 		}
 		#end
 
+		// Watched for writing, and for an exception too: a refused connect
+		// is reported in the exception set on Windows and never becomes
+		// writable.
+		var watching:Bool = __writeSnapshot.length > 0;
+		var write:Array<Socket> = watching ? __writeSnapshot.copy() : [];
+		var others:Array<Socket> = watching ? __writeSnapshot.copy() : [];
+
 		var res;
 		if (wait > 0) {
 			var waitStart:Float = haxe.Timer.stamp();
-			res = Socket.select(__selectBuffer, [], [], wait);
+			res = Socket.select(__selectBuffer, write, others, wait);
 			__waited += haxe.Timer.stamp() - waitStart;
 		} else {
-			res = Socket.select(__selectBuffer, [], [], wait);
+			res = Socket.select(__selectBuffer, write, others, wait);
 		}
 
 		for (s in res.read) {
+			__dispatchReadable(s);
+		}
+
+		if (watching) {
+			for (s in res.write) {
+				__dispatchWritable(s);
+			}
+			if (res.others != null) {
+				for (s in res.others) {
+					// Once, when it is in both.
+					if (res.write.indexOf(s) < 0) {
+						__dispatchWritable(s);
+					}
+				}
+			}
+		}
+	}
+
+	@:noCompletion private inline function __dispatchReadable(s:Socket):Void {
+		var cb:IPollableSocket = cast s.custom;
+		if (cb != null && !cb.registryClosed) {
+			try {
+				cb.registryOnReadable();
+			} catch (error:Dynamic) {
+				__handlerThrew(error, cb);
+			}
+		}
+	}
+
+	@:noCompletion private inline function __dispatchWritable(s:Socket):Void {
+		// Only while it is still watched: a connect finished by the readable
+		// dispatch above has already been announced.
+		if (__writeSet.contains(s)) {
 			var cb:IPollableSocket = cast s.custom;
 			if (cb != null && !cb.registryClosed) {
 				try {
-					cb.registryOnReadable();
+					cb.registryOnWritable();
 				} catch (error:Dynamic) {
 					__handlerThrew(error, cb);
 				}
 			}
+		}
+	}
+
+	@:noCompletion private inline function __ensureCapacity():Void {
+		if (__set.length + __writeSet.length > __capacity) {
+			__grow();
 		}
 	}
 

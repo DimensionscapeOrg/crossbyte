@@ -1220,6 +1220,23 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Connections are taken, dialled and secured as the system reports them,
+  not at the next tick. A POLL loop spends each frame blocked in poll,
+  which only a socket in the poll set can end, and listeners were never in
+  it: accepts ran from the tick, a connect in flight was watched from the
+  tick, and every TLS handshake -- a `ServerSocket`'s, and both ends of a
+  `wss://` session -- was stepped from the tick, a round trip a frame. So
+  connect to accept took 41 ms on eval and 52-57 ms on the jvm at the
+  default twelve ticks a second, a connect started from a data handler
+  waited 80 ms, and a jvm TLS client waited a median 132 ms to
+  secureConnect. Listeners are in the poll set now, and read when
+  connections are waiting, `maxAcceptsPerTick` at a time; a connect in
+  flight is watched for writing; and a handshake is stepped as its socket
+  turns readable. Measured at twelve ticks a second, connect to accept is
+  0.5 ms on eval and 0.9 ms on the jvm, and a connect from a data handler
+  1.2 ms. The tick stays for deadlines: a plain `ServerSocket` has none
+  now. A listener at `maxPendingHandshakes` leaves the poll set until one
+  finishes, so a full server does not spin.
 - A WebSocket client dials an IPv6 literal. The host it was given had to be
   a run of letters, digits, dots and hyphens, so
   `WebSocket.connect("::1", port)` threw "Invalid host" before a socket

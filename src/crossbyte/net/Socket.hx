@@ -736,6 +736,16 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// event, instead of re-entering user code from inside connect() on a
 		// socket that has never been pumped.
 		__startConnecting();
+
+		// And watched in the poll set, so the connect is announced as soon as
+		// the system finishes it: the tick alone left every connect waiting
+		// for the next frame, 41 to 57 ms on average at twelve ticks a second.
+		// For reading too, which is where a refused connect is reported on
+		// Windows: in the exception set, which the native poll folds into
+		// the read results. The tick stays, for the deadline and as the
+		// check of last resort.
+		@:privateAccess __cbInstance.registerSocket(__socket);
+		@:privateAccess __cbInstance.watchWritable(__socket);
 		#end
 	}
 	#end
@@ -1565,6 +1575,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// already pending — and its buffered data is stranded silently.
 		__isDirty = false;
 
+		#if !js
+		if (__isConnecting && !__resolving && !__connected) {
+			// The poll reporting a connect that has finished, one way or the
+			// other: the tick's own check decides which, as it would have
+			// at the next frame. Whatever was written meanwhile goes from
+			// there too.
+			this_onTick();
+			return;
+		}
+		#end
+
 		// __tryFlush rather than flush: flush() returns early while
 		// `flushFull` is set, so calling it here could never recover a
 		// fully blocked socket; only clearing that flag first does. That
@@ -2014,6 +2035,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__stopConnecting();
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
+			// Connected: from here it is watched for reading only.
+			@:privateAccess
+			__cbInstance.unwatchWritable(__socket);
 			__dispatchPooledSimpleEvent(Event.CONNECT);
 		}
 

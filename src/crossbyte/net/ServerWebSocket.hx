@@ -381,6 +381,10 @@ class ServerWebSocket extends ServerSocket {
 		// It arrived, so it is no longer owed a deadline. CONNECT is dispatched
 		// once the upgrade completes, which is the only moment that is true.
 		__clearPendingUpgrade(client);
+		#if !nodejs
+		// And a listener set aside at the limit can take the next.
+		__syncListenerWatch();
+		#end
 
 		if (maxOutputBufferSize > 0) {
 			client.maxOutputBufferSize = maxOutputBufferSize;
@@ -610,6 +614,9 @@ class ServerWebSocket extends ServerSocket {
 			return;
 		}
 
+		// Out of the poll set before the listener is closed; see
+		// Socket.__cleanSocket.
+		__detachTick();
 		try {
 			__webServerSocket.close();
 		} catch (e:Dynamic) {
@@ -618,7 +625,6 @@ class ServerWebSocket extends ServerSocket {
 		listening = false;
 		bound = false;
 		__closed = true;
-		__detachTick();
 		__cbInstance = null;
 	}
 
@@ -711,8 +717,14 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	#if !nodejs
+	/**
+		The tick reaps sessions whose upgrade has stalled, and puts the
+		listener back in the poll set once enough of them have gone. It no
+		longer accepts: the listener is in the poll set, and is read as soon
+		as connections are waiting.
+	**/
 	@:noCompletion override private function this_onTick(e:TickEvent):Void {
-		// A tick that outlived its server has nothing to accept from, and its
+		// A tick that outlived its server has nothing to do, and its
 		// listener's descriptor number may be another server's by now.
 		if (__closed || !listening) {
 			return;
@@ -721,6 +733,13 @@ class ServerWebSocket extends ServerSocket {
 		// Extracted from a single method with a local assigned inside try/catch and
 		// used afterwards: that shape mis-compiles (VerifyError) on the jvm target.
 		__reapStalledUpgrades();
+		__syncListenerWatch();
+	}
+
+	@:noCompletion override private function __onListenerReadable():Void {
+		if (__closed || !listening) {
+			return;
+		}
 
 		// As many as maxAcceptsPerTick, not one: this loop used to take one
 		// connection a tick and never asked `admit`, which the class inherits
@@ -728,13 +747,13 @@ class ServerWebSocket extends ServerSocket {
 		var limit:Int = maxAcceptsPerTick < 1 ? 1 : maxAcceptsPerTick;
 		for (_ in 0...limit) {
 			// Full: the rest wait in the kernel's queue until upgrades finish.
-			if (maxPendingHandshakes >= 0 && __pendingUpgrades.length >= maxPendingHandshakes) {
-				return;
+			if (__handshakesFull()) {
+				break;
 			}
 
 			var socket:FlexSocket = __acceptPending();
 			if (socket == null) {
-				return;
+				break;
 			}
 
 			if (!__askAdmit(socket)) {
@@ -750,6 +769,21 @@ class ServerWebSocket extends ServerSocket {
 				__pendingUpgrades.push({session: accepted, deadline: haxe.Timer.stamp() + handshakeTimeout});
 			}
 		}
+		__syncListenerWatch();
+	}
+
+	/** It reaps stalled upgrades from the tick, plain or secure. **/
+	@:noCompletion override private function __needsAcceptTick():Bool {
+		return true;
+	}
+
+	/** Its limit counts sessions still upgrading, TLS and HTTP together. **/
+	@:noCompletion override private function __handshakesFull():Bool {
+		return maxPendingHandshakes >= 0 && __pendingUpgrades.length >= maxPendingHandshakes;
+	}
+
+	@:noCompletion override private function __listenerSocket():sys.net.Socket {
+		return __webServerSocket;
 	}
 
 	/**
