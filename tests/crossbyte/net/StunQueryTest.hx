@@ -2,6 +2,7 @@ package crossbyte.net;
 
 import crossbyte.io.ByteArray;
 import crossbyte.net._internal.stun.StunMessage;
+import crossbyte.net._internal.stun.StunMessage.StunAttribute;
 import crossbyte.net._internal.stun.StunQuery;
 import utest.Assert;
 
@@ -171,5 +172,146 @@ class StunQueryTest extends utest.Test {
 
 		Assert.isFalse(query.expired(12.999));
 		Assert.isTrue(query.expired(13.0));
+	}
+
+	/**
+		An answer whose FINGERPRINT does not match is not an answer.
+
+		RFC 8489 section 7.3 has such a message dropped: damaged on the way, or
+		not STUN at all however it looks. It was believed, transaction and
+		all, so a mangled datagram could settle the question with whatever
+		address it now carried. Dropped, it leaves the question open for the
+		sound answer behind it.
+	**/
+	public function testAnAnswerWithABadFingerprintIsNotBelieved():Void {
+		if (unsupported()) return;
+
+		var query = new StunQuery(0, 3000);
+		var damaged = fingerprinted(new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
+			[StunMessage.xorMappedAddress("192.0.2.66", 9999)]), true);
+
+		Assert.equals(NOT_OURS, query.interpret(damaged), "an answer with a bad FINGERPRINT was taken");
+		Assert.isNull(query.answer, "an answer with a bad FINGERPRINT was kept");
+
+		// And counted, so a deadline passing can say the answers came damaged
+		// rather than that none came.
+		Assert.equals(1, query.damaged);
+		var damage = query.damage();
+		Assert.isTrue(damage != null && damage.indexOf("FINGERPRINT") >= 0, "the damage should be named: " + damage);
+
+		var sound = fingerprinted(new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
+			[StunMessage.xorMappedAddress("198.51.100.42", 51234)]), false);
+
+		switch (query.interpret(sound)) {
+			case ANSWERED(address):
+				Assert.equals("198.51.100.42", address.address);
+				Assert.notNull(query.answer, "the answer taken was not kept for its other attributes");
+			case other:
+				Assert.fail("a sound answer after a damaged one was not taken: " + other);
+		}
+	}
+
+	/**
+		An answer carrying an attribute the server requires understood, and
+		this client does not, cannot be used: whatever it changes about the
+		answer is exactly what cannot be seen. RFC 8489 section 7.3.3. It was
+		used, address and all.
+
+		One the server marks optional is ignored, as the same section says, so
+		the check is on the range and not on strangeness.
+	**/
+	public function testAnAnswerRequiringAnUnknownAttributeCannotBeUsed():Void {
+		if (unsupported()) return;
+
+		var query = new StunQuery(0, 3000);
+		var reply = new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
+			[StunMessage.xorMappedAddress("198.51.100.42", 51234), unknownAttribute(0x7FAA)]);
+
+		switch (query.interpret(reply.encode())) {
+			case UNUSABLE(reason):
+				Assert.isTrue(reason.indexOf("7FAA") >= 0, "the reason should name the attribute: " + reason);
+			case other:
+				Assert.fail("an answer requiring an attribute nobody here understands was taken: " + other);
+		}
+
+		var optional = new StunQuery(0, 3000);
+		var tolerable = new StunMessage(StunMessage.BINDING_SUCCESS, optional.request.transactionId,
+			[StunMessage.xorMappedAddress("198.51.100.42", 51234), unknownAttribute(0xFFAA)]);
+
+		switch (optional.interpret(tolerable.encode())) {
+			case ANSWERED(address):
+				Assert.equals(51234, address.port);
+			case other:
+				Assert.fail("an answer with an optional attribute nobody here understands was refused: " + other);
+		}
+	}
+
+	/**
+		An IPv6 answer is an answer. The address is XORed with the
+		transaction as well as the cookie, and it used to read as no address
+		at all -- a server that answered promptly reported as one that had
+		answered without answering.
+	**/
+	public function testAnIPv6AnswerIsAnAnswer():Void {
+		if (unsupported()) return;
+
+		var query = new StunQuery(0, 3000);
+		var reply = new StunMessage(StunMessage.BINDING_SUCCESS, query.request.transactionId,
+			[StunMessage.xorMappedAddress("2001:db8::42", 51234, query.request.transactionId)]);
+
+		switch (query.interpret(reply.encode())) {
+			case ANSWERED(address):
+				Assert.equals("2001:db8::42", address.address);
+				Assert.equals(51234, address.port);
+			case other:
+				Assert.fail("an IPv6 answer was not read: " + other);
+		}
+	}
+
+	/** A request can carry more: a CHANGE-REQUEST, for RFC 5780's questions. **/
+	public function testARequestCarriesWhatItIsGiven():Void {
+		if (unsupported()) return;
+
+		var query = new StunQuery(0, 3000, [StunMessage.changeRequest(true, false)]);
+		var sent = StunMessage.decode(query.request.encode());
+
+		Assert.notNull(sent);
+		if (sent == null) {
+			return;
+		}
+
+		var change = sent.attribute(StunMessage.ATTR_CHANGE_REQUEST);
+		Assert.notNull(change, "the CHANGE-REQUEST given was not sent");
+		if (change != null) {
+			Assert.equals(4, change.length);
+			change.position = 3;
+			Assert.equals(0x04, change.readUnsignedByte(), "asked to change the address and not the port");
+		}
+	}
+
+	// ------------------------------------------------------------------
+
+	/** `message` with a FINGERPRINT, or with one a bit off when `damage` is set. **/
+	private static function fingerprinted(message:StunMessage, damage:Bool):ByteArray {
+		var bytes = message.encode();
+		@:privateAccess message.__appendFingerprint(bytes);
+
+		if (damage) {
+			bytes[bytes.length - 1] = bytes[bytes.length - 1] ^ 0x01;
+		}
+
+		bytes.position = 0;
+		return bytes;
+	}
+
+	private static function unknownAttribute(type:Int):StunAttribute {
+		var value = new ByteArray();
+
+		for (_ in 0...4) {
+			value.writeByte(0);
+		}
+
+		value.position = 0;
+		return new StunAttribute(type, value);
 	}
 }

@@ -1571,8 +1571,10 @@ class PeerConnection {
 		}
 
 		if (__reflexiveQuery.expired(now)) {
-			__settleReflexive(null, "No reply from the STUN server at " + __reflexiveServer + ":" + __reflexivePort
-				+ " within the time allowed, so this connection still has no address to advertise beyond its own network.");
+			var damage:Null<String> = __reflexiveQuery.damage();
+			__settleReflexive(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + __reflexiveServer + ":"
+				+ __reflexivePort + " within the time allowed" + (damage != null ? " -- " + damage + " --" : "")
+				+ ", so this connection still has no address to advertise beyond its own network.");
 			return;
 		}
 
@@ -1604,6 +1606,8 @@ class PeerConnection {
 				__settleReflexive(null, "The STUN server refused the request" + (reason != null ? ": " + reason : "."));
 			case ANSWERED_WITHOUT_ADDRESS:
 				__settleReflexive(null, "The STUN server replied without a mapped address, so this connection's public address is still unknown.");
+			case UNUSABLE(reason):
+				__settleReflexive(null, "The STUN server's answer could not be used: " + reason + ".");
 		}
 
 		return true;

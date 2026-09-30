@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `StunClient` asks through a socket it is given, and classifies the NAT in
+  front of it. `discover` takes the `DatagramSocket` to ask through --
+  bound, and left open and as it was found -- so the answer describes the
+  mapping of the socket an application actually uses. Each question used
+  to bind a socket of its own, so it answered for a port nothing used, and
+  comparing what two servers saw compared two mappings: every NAT, and
+  loopback too, read as symmetric. `classifyMapping` and
+  `classifyFiltering` run RFC 5780's tests through one socket against a
+  server with a second address, answering with a `NatBehavior`, and
+  `probe` asks one RFC 5780 question -- a CHANGE-REQUEST in, OTHER-ADDRESS,
+  RESPONSE-ORIGIN and where the answer came from out, as a `StunProbe` --
+  for the tests those two do not run. A server that gives no OTHER-ADDRESS,
+  or ignores CHANGE-REQUEST, is reported as unable to classify rather than
+  read as a NAT that lets everything in.
 - TURN over TCP, IPv6 relays, and RFC 8489's credentials. `TurnClient`
   takes a `TurnTransport`: over TCP or TLS it frames every message for a
   stream (RFC 8656 section 3.1) -- `receiveStream` takes what arrives,
@@ -848,6 +862,11 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `ReflexiveAddress.toString()` brackets an IPv6 address,
+  `[2001:db8::7]:3478`; unbracketed, the port reads as the address's last
+  group. And `preservesPort` no longer claims a kept port shows an
+  endpoint-independent mapping: it shows neither that nor the opposite,
+  and `StunClient.classifyMapping` finds the mapping itself.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -1272,6 +1291,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A STUN answer whose FINGERPRINT does not match is dropped, and one
+  carrying a comprehension-required attribute this client does not
+  understand is not used (RFC 8489 sections 7.3 and 7.3.3). Both were
+  believed -- a damaged datagram settled the question with whatever
+  address it now carried, and an attribute that changed what the answer
+  meant was ignored -- by `StunClient`,
+  `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `PeerConnection`'s gathering alike, which share `StunQuery`. A deadline
+  that passes after damaged answers says they came damaged, rather than
+  that nothing answered.
 - An IPv6 address in a STUN or TURN message is read. The family byte for
   IPv6 was taken for no address at all, so a STUN server answering over
   IPv6 reported no mapped address and a relay granting an IPv6 allocation
