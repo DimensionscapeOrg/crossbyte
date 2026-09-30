@@ -6,7 +6,7 @@ import crossbyte.events.EventType;
 import crossbyte.events.IEventDispatcher;
 import crossbyte.events.TickEvent;
 import crossbyte.utils.Logger;
-#if (neko || hl || java || jvm)
+#if (target.threaded && !cpp)
 import sys.thread.Mutex;
 #end
 
@@ -126,7 +126,7 @@ class Future<T> implements IEventDispatcher {
 	**/
 	#if cpp
 	@:noCompletion private var __lockWord:Int = 0;
-	#elseif (neko || hl || java || jvm)
+	#elseif target.threaded
 	@:noCompletion private final __lock:Mutex = new Mutex();
 	#end
 
@@ -587,7 +587,7 @@ class Future<T> implements IEventDispatcher {
 		if ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __lockWord) : Int) != 0) {
 			__contend();
 		}
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		#end
 	}
@@ -596,7 +596,7 @@ class Future<T> implements IEventDispatcher {
 	@:noCompletion private inline function __release():Void {
 		#if cpp
 		untyped __cpp__("_hx_atomic_store(&{0}, 0)", __lockWord);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.release();
 		#end
 	}

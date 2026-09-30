@@ -17,6 +17,14 @@ import haxe.ds.Map;
  * This structure is useful when maintaining a **dynamic** set of key-value pairs where iteration 
  * performance is crucial, and ordering is not a requirement.
  *
+ * **Removing while iterating.** Removing the entry a loop is on is safe:
+ * the entry moved into its place is visited next, and every other entry
+ * once. The iterators counted the entries when they were made, so a
+ * removal left them reading past the end, `iterator()` threw on every
+ * target, or, re-reading the count, skipped the entry moved into the
+ * removed one's place. Removing an entry the loop has already passed moves
+ * one it has not yet reached behind it, which is then skipped.
+ *
  * @param K The type of keys stored in the map.
  * @param V The type of values associated with the keys.
  */
@@ -187,19 +195,8 @@ final class ListedMap<K:Dynamic, V> {
 	 *
 	 * @return An `Iterator<V>` over the values.
 	 */
-	public function iterator():Iterator<V> {
-		var i:Int = 0;
-		var a:Array<KeyValuePair<K,V>> = __keyValuePairs;
-		var n:Int = a.length;
-		
-		return {
-			hasNext: function():Bool {
-				return i < n;
-			},
-			next: function():V {
-				return a[i++].value;
-			}
-		};
+	public inline function iterator():ListedMapValueIterator<K, V> {
+		return new ListedMapValueIterator<K, V>(this);
 	}
 
 	/**
@@ -209,16 +206,71 @@ final class ListedMap<K:Dynamic, V> {
 	 *
 	 * @return An `Iterator<KeyValuePair<K, V>>` over the stored entries.
 	 */
-	public function keyValueIterator():Iterator<KeyValuePair<K, V>> {
-		var i = 0;
-		return {
-			hasNext: function():Bool {
-				return i < __keyValuePairs.length;
-			},
-			next: function():KeyValuePair<K, V> {
-				return __keyValuePairs[i++];
+	public inline function keyValueIterator():ListedMapPairIterator<K, V> {
+		return new ListedMapPairIterator<K, V>(this);
+	}
+}
+
+/**
+ * Walks a `ListedMap`'s entries in their current order, with the entry just
+ * returned free to be removed: if another was swapped into its place, that
+ * place is visited again.
+ */
+@:generic
+@:noCompletion
+@:access(crossbyte.ds.ListedMap)
+class ListedMapPairIterator<K:Dynamic, V> {
+	private var __map:ListedMap<K, V>;
+	private var __next:Int = 0;
+	private var __returned:KeyValuePair<K, V> = null;
+	private var __returnedAt:Int = -1;
+
+	public inline function new(map:ListedMap<K, V>) {
+		__map = map;
+	}
+
+	public inline function hasNext():Bool {
+		__settle();
+		return __next < __map.__keyValuePairs.length;
+	}
+
+	public inline function next():KeyValuePair<K, V> {
+		__settle();
+		var pair:KeyValuePair<K, V> = __map.__keyValuePairs[__next];
+		__returned = pair;
+		__returnedAt = __next++;
+		return pair;
+	}
+
+	// The entry returned last is no longer where it was: whatever is there
+	// now was swapped in from the end and has not been visited.
+	private inline function __settle():Void {
+		if (__returned != null) {
+			var pairs:Array<KeyValuePair<K, V>> = __map.__keyValuePairs;
+			if (__returnedAt >= pairs.length || pairs[__returnedAt] != __returned) {
+				__next = __returnedAt;
 			}
-		};
+			__returned = null;
+		}
+	}
+}
+
+/** `ListedMapPairIterator`, answering the values. **/
+@:generic
+@:noCompletion
+class ListedMapValueIterator<K:Dynamic, V> {
+	private var __pairs:ListedMapPairIterator<K, V>;
+
+	public inline function new(map:ListedMap<K, V>) {
+		__pairs = new ListedMapPairIterator<K, V>(map);
+	}
+
+	public inline function hasNext():Bool {
+		return __pairs.hasNext();
+	}
+
+	public inline function next():V {
+		return __pairs.next().value;
 	}
 }
 

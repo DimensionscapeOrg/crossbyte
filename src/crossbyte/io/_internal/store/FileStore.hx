@@ -303,10 +303,16 @@ class FileStore implements IStoreBackend {
 
 	private static var __writes:Int = 0;
 
-	/** Distinct per write, in this process and against any other. **/
+	/**
+	 * Distinct per write, in this process and against any other.
+	 *
+	 * The random half is two draws of sixteen bits rather than one below
+	 * 0x7FFFFFFF, a bound neko's 31-bit Int cannot hold: its `Std.random`
+	 * refused it, and every `put` there threw before writing anything.
+	 */
 	private static function __writerTag():String {
 		__writes = (__writes + 1) & 0x7FFFFFFF;
-		return StringTools.hex(Std.random(0x7FFFFFFF), 8) + StringTools.hex(__writes, 8);
+		return StringTools.hex(Std.random(0x10000), 4) + StringTools.hex(Std.random(0x10000), 4) + StringTools.hex(__writes, 8);
 	}
 
 	/**

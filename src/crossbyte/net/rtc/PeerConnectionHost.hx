@@ -420,6 +420,7 @@ class PeerConnectionHost {
 		data.position = 0;
 
 		var target:PeerConnection = null;
+		__routedMessage = null;
 
 		// RFC 7983's first-byte ranges, as a connection with its own socket
 		// reads them: under 4 is STUN, 20 to 63 DTLS. Nothing else is carried
@@ -432,9 +433,17 @@ class PeerConnectionHost {
 
 		if (target != null) {
 			data.position = 0;
-			@:privateAccess target.__receiveDatagram(data, e.srcAddress, e.srcPort);
+
+			// With the check as decoded for routing, so the connection does not
+			// decode it again.
+			var decoded = __routedMessage;
+			__routedMessage = null;
+			@:privateAccess target.__receiveDatagram(data, e.srcAddress, e.srcPort, decoded);
 		}
 	}
+
+	/** The check `__stunTarget` decoded to route, handed on with it; null for anything routed without decoding. **/
+	@:noCompletion private var __routedMessage:Null<StunMessage> = null;
 
 	/** A check by the ufrag it is addressed to; an answer by the transaction it answers. **/
 	@:noCompletion private function __stunTarget(data:ByteArray):Null<PeerConnection> {
@@ -449,6 +458,7 @@ class PeerConnectionHost {
 				return null;
 			}
 
+			__routedMessage = message;
 			var fragment = IceCredentials.receiverFragment(message.textOf(StunMessage.ATTR_USERNAME));
 			return fragment != null ? __byFragment.get(fragment) : null;
 		}

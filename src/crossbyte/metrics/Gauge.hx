@@ -2,7 +2,7 @@ package crossbyte.metrics;
 
 #if cpp
 import crossbyte.metrics._internal.AtomicFloats;
-#elseif (neko || hl || java || jvm)
+#elseif target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -42,7 +42,7 @@ class Gauge {
 	#end
 	@:noCompletion private var __provider:Void->Float;
 
-	#if (neko || hl || java || jvm)
+	#if (target.threaded && !cpp)
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -53,7 +53,7 @@ class Gauge {
 		this.help = help;
 		this.__provider = provider;
 
-		#if (neko || hl || java || jvm)
+		#if (target.threaded && !cpp)
 		__lock = new Mutex();
 		#end
 	}
@@ -78,7 +78,7 @@ class Gauge {
 
 		#if cpp
 		AtomicFloats.store(__cells, 0, value);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		__value = value;
 		__lock.release();
@@ -97,7 +97,7 @@ class Gauge {
 
 		#if cpp
 		AtomicFloats.add(__cells, 0, amount);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		__value += amount;
 		__lock.release();
@@ -131,7 +131,7 @@ class Gauge {
 
 		#if cpp
 		return AtomicFloats.load(__cells, 0);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		var snapshot:Float = __value;
 		__lock.release();

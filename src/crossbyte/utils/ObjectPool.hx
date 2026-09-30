@@ -6,6 +6,18 @@ import crossbyte.ds.Stack;
  * ObjectPool is a generic object pool class.
  * It helps in reusing objects efficiently by managing a pool of reusable instances.
  *
+ * **Releasing twice.** A debug build tracks every object it lends and throws
+ * when one comes back twice or was never lent. A release build cannot afford
+ * that tracking on every call, but it still refuses the two mistakes that
+ * cost nothing to see: an object released twice in a row, and a release
+ * when every object the pool made is already free. It kept both, so the
+ * next two `acquire`s handed one object to two owners. `release` answers
+ * `false` for what it refused.
+ *
+ * **Bursts.** Every object released is kept for the next `acquire`, so a
+ * burst of a hundred thousand leaves a hundred thousand behind for good.
+ * `maxFree` bounds what is kept; past it, a released object is let go.
+ *
  * @param T The type of objects to be pooled.
  */
 @:generic
@@ -27,6 +39,13 @@ final class ObjectPool<T:{}> {
 	 * This function can be used to clear or initialize the state of objects.
 	 */
 	public var resetFunction:T->Void;
+
+	/**
+	 * The most free objects the pool keeps. A release past it is let go
+	 * rather than kept, and no longer counts toward `capacity`. Unbounded
+	 * unless set.
+	 */
+	public var maxFree:Int = 0x7FFFFFFF;
 
 	/** 
 	 * Objects currently free. 
@@ -100,20 +119,32 @@ final class ObjectPool<T:{}> {
 	 * Releases an object back to the pool.
 	 *
 	 * @param obj The object to release.
+	 * @return Whether it was taken back: `false` for an object released twice
+	 *         in a row, or when everything the pool made is already free. A
+	 *         debug build throws for those, and for any foreign or repeated
+	 *         release, instead.
 	 */
-	public inline function release(obj:T):Void {
+	public inline function release(obj:T):Bool {
 		#if debug
 		if (obj == null)
 			throw "Released object cant be null";
 		if (!__inUse.remove(obj))
 			throw "ObjectPool: foreign or already-released object";
 		#end
-		var func:T->Void = resetFunction;
-		if (func != null) {
-			func(obj);
-		}
+		var taken:Bool = __free.length < __created && (__free.length == 0 || __free.last() != obj);
+		if (taken) {
+			var func:T->Void = resetFunction;
+			if (func != null) {
+				func(obj);
+			}
 
-		__free.push(obj);
+			if (__free.length < maxFree) {
+				__free.push(obj);
+			} else {
+				__created--;
+			}
+		}
+		return taken;
 	}
 
 	/**

@@ -554,6 +554,81 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		STUN that is not a connectivity check is left for whatever else shares
+		the socket.
+
+		The agent took every STUN message there was. On a socket it shares
+		with a TURN client, a reliable datagram server with an agent attached
+		and a relay allocated, that swallowed the relay's answers, so the
+		allocation could never complete.
+	**/
+	public function testStunThatIsNotACheckIsLeftForOthers():Void {
+		if (unsupported()) return;
+
+		var agent = new IceAgent(true, credentials("alice"));
+		agent.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		agent.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		agent.start(credentials("bob"), 0);
+
+		var relayAnswer = new StunMessage(StunMessage.ALLOCATE_ERROR, StunMessage.bindingRequest().transactionId, [
+			StunMessage.errorCode(401, "Unauthorized"),
+			StunMessage.text(StunMessage.ATTR_REALM, "example.org"),
+			StunMessage.text(StunMessage.ATTR_NONCE, "nonce")
+		]);
+
+		Assert.isFalse(agent.receive(relayAnswer.encode(), "203.0.113.10", 3478, 0), "the agent took a relay's answer");
+
+		var indication = new StunMessage(StunMessage.DATA_INDICATION, StunMessage.bindingRequest().transactionId, [
+			StunMessage.xorPeerAddress(BOB_ADDRESS, PORT)
+		]);
+
+		Assert.isFalse(agent.receive(indication.encode(), "203.0.113.10", 3478, 0), "the agent took a relay's Data indication");
+	}
+
+	/**
+		Pairs a relay refused to carry fail when it says so, not half a minute
+		later.
+
+		A relay drops what it has no permission for without a word, so a check
+		it refused to forward looked like one still in flight: seven of them
+		over thirty seconds, and an agent whose every other pair had failed
+		waited that long to say so.
+	**/
+	public function testPairsARelayRefusedFailWhenItSaysSo():Void {
+		if (unsupported()) return;
+
+		var agent = new IceAgent(true, credentials("alice"));
+		var failure:String = null;
+		agent.connected.then(_ -> {}, error -> failure = error);
+
+		var relayed = new IceCandidate(RELAYED, "203.0.113.10", 49152);
+		var sent:Int = 0;
+		agent.addLocalCandidate(relayed, (_, _, _) -> sent++);
+		agent.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		agent.addRemoteCandidate(IceCandidate.host("198.51.100.7", PORT));
+		agent.start(credentials("bob"), 0);
+		agent.poll(0);
+		agent.poll(IceAgent.PACING);
+
+		// One peer address refused: the pair to the other is still worth trying.
+		agent.refusePairs(relayed, BOB_ADDRESS);
+		Assert.equals(IceAgentState.CHECKING, agent.state, "refusing one address gave up on a pair to another");
+
+		agent.refusePairs(relayed, "198.51.100.7");
+		Assert.equals(IceAgentState.FAILED, agent.state, "every pair was refused and the agent was still checking");
+		Assert.notNull(failure, "every pair was refused and nothing said so");
+
+		// And nothing more goes to either.
+		var before:Int = sent;
+
+		for (i in 0...80) {
+			agent.poll(0.1 + i * 0.5);
+		}
+
+		Assert.equals(before, sent, "checks went on being sent on pairs the relay had refused");
+	}
+
+	/**
 		A mapping neither peer could have known about.
 
 		When a NAT gives a peer a different address for this destination than

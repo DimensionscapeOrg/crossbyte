@@ -92,18 +92,18 @@ final class ProcessLifecycle {
 	// onShutdown() may be called from a worker thread while poll() runs on
 	// the runtime thread; without this, a registration racing the dispatch
 	// sweep can be silently dropped or double-run.
-	#if (cpp || neko || hl || java || jvm)
+	#if target.threaded
 	@:noCompletion private static final __lock:sys.thread.Mutex = new sys.thread.Mutex();
 	#end
 
 	@:noCompletion private static inline function __acquire():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.acquire();
 		#end
 	}
 
 	@:noCompletion private static inline function __release():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.release();
 		#end
 	}
