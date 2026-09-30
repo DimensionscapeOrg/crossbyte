@@ -5,6 +5,10 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `SwitchTable.make` takes any expression as a key -- `Opcode.PING`, a
+  variable -- where it took only literals, refuses two literal keys that are
+  the same, and takes a fallback, `(key, args) -> ...`, for a key no case
+  matches. Without one it still throws, now naming the key.
 - `RadixTree.longestPrefix` and `longestPrefixLength`: the longest key held
   that a string starts with, and its length -- the route that serves
   "/api/v1/users/123" when "/api/v1/users" is held. The tree could only
