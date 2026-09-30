@@ -122,14 +122,26 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.take();
 		sender.__acceptFrame(ack(1000, [0, 1, 2, 3]));
 		Assert.same(["PACKET 1000 resend"], described(sender.take()));
+		var resentAt:Float = Timer.stamp();
 
 		// The same map again, later: nothing the peer holds was sent after
 		// the resend, so nothing says the resend was lost. It was sent once
 		// per acknowledgement before, which a burst of them made a flood.
 		waitFor(0.005);
+		var resends:Int = sender.__fastResends;
 		sender.__acceptFrame(ack(1000, [0, 1, 2, 3]));
 		sender.__checkRetransmits();
-		Assert.same([], described(sender.take()), "a resend went again with nothing to say it was lost");
+		var sent:Array<String> = described(sender.take());
+		Assert.equals(resends, sender.__fastResends, "a resend went again with nothing to say it was lost");
+		// And nothing else -- unless the wait ran past the floor on a tail
+		// probe, which a loaded machine can make of 5 ms, and so can a clock
+		// that moves a system tick at a time, as neko's does on Windows. A
+		// silence that long is what the probe is for.
+		if (Timer.stamp() - resentAt < ReliableDatagramSocket.MIN_PROBE_TIMEOUT) {
+			Assert.same([], sent, "a frame went out with nothing to say it was lost");
+		} else {
+			Assert.isTrue(sent.length == 0 || (sent.length == 1 && sender.__probes == 1), 'past the probe floor, sent $sent');
+		}
 
 		// A frame sent after it arrives, and it still has not: now it was.
 		sendMessages(sender, 1);
