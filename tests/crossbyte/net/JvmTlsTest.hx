@@ -381,6 +381,91 @@ class JvmTlsTest extends utest.Test {
 		Assert.isTrue(perConnection < 28 * 1024, 'an idle TLS connection holds ${Math.round(perConnection / 1024)} KB');
 	}
 
+	// ------------------------------------------------------------- sessions
+
+	/**
+		A listener resumes the sessions it issued. Every connection it accepted
+		was given a context of its own, and a context is where a server keeps
+		its sessions, so a client offering one back was never recognised: 0 of
+		900 resumed, each paying a full handshake. One context per listener now.
+	**/
+	public function testAListenerResumesTheSessionsItIssued():Void {
+		var chain = TLSChainFixture.get();
+		if (chain == null) {
+			Assert.pass();
+			return;
+		}
+
+		var ids:Array<String> = [];
+		var outcome = __serve(function(server) server.setCertificate(chain.direct, chain.directKey), function(port) {
+			// One client context for both: it is where the client keeps the
+			// session it offers back.
+			var context = JdkTlsPeer.context({trust: [__path(chain, "root.pem")]});
+			for (i in 0...2) {
+				var peer = JdkTlsPeer.connect(port, {context: context, protocols: ["TLSv1.2"]});
+				ids.push(JdkTlsPeer.hex(peer.getSession().getId()));
+				peer.close();
+			}
+		});
+
+		Assert.isNull(outcome.failure, outcome.failure);
+		Assert.equals(2, ids.length);
+		Assert.equals(ids[0], ids[1], "the second connection was given a new session rather than resuming the first");
+	}
+
+	/**
+		A client resumes its session with a server it has connected to before.
+		Each connection built a context of its own, which is where a client
+		keeps the sessions it can offer back, so every one paid a full
+		handshake -- and read the JDK's trust store again to make it.
+	**/
+	public function testAClientResumesItsSessionWithAServer():Void {
+		var chain = TLSChainFixture.get();
+		if (chain == null) {
+			Assert.pass();
+			return;
+		}
+
+		var server = JdkTlsPeer.listen({present: {chain: __path(chain, "direct.pem"), key: chain.directKey}, protocols: ["TLSv1.2"], timeout: 5000});
+		var sessions = __sessionsOf(server, 2);
+		var root = @:privateAccess chain.root.__native;
+		var first = __dial(server.getLocalPort(), function(client) client.setCA(root));
+		var second = __dial(server.getLocalPort(), function(client) client.setCA(root));
+		var ids = sessions();
+		server.close();
+
+		Assert.isNull(first, first);
+		Assert.isNull(second, second);
+		Assert.equals(2, ids.length);
+		Assert.equals(ids[0], ids[1], "the client's second connection did not resume the session of its first");
+	}
+
+	/**
+		And a session is only offered back by a connection made the same way.
+		One made without verifying the server is never resumed by one that
+		verifies: resuming skips the certificate, so it would take the first
+		connection's word for a server the second never checked.
+	**/
+	public function testASessionMadeWithoutVerificationIsNotResumedByOneThatVerifies():Void {
+		var chain = TLSChainFixture.get();
+		if (chain == null) {
+			Assert.pass();
+			return;
+		}
+
+		var server = JdkTlsPeer.listen({present: {chain: __path(chain, "direct.pem"), key: chain.directKey}, protocols: ["TLSv1.2"], timeout: 5000});
+		var sessions = __sessionsOf(server, 2);
+		var unverified = __dial(server.getLocalPort(), function(client) client.verifyCert = false);
+		var verified = __dial(server.getLocalPort(), function(client) client.setCA(@:privateAccess chain.root.__native));
+		var ids = sessions();
+		server.close();
+
+		Assert.isNull(unverified, unverified);
+		Assert.isNull(verified, verified);
+		Assert.equals(2, ids.length);
+		Assert.notEquals(ids[0], ids[1], "a connection that verifies resumed a session made without verification");
+	}
+
 	// ----------------------------------------------- after the first handshake
 
 	/**
@@ -663,6 +748,35 @@ class JvmTlsTest extends utest.Test {
 				throw "nothing arrived";
 			}
 		}
+	}
+
+	/**
+		Accepts `count` connections on a JDK listener, on a thread of its own,
+		and hands back each one's session id once they are all done.
+	**/
+	private static function __sessionsOf(server:SSLServerSocket, count:Int):Void->Array<String> {
+		var ids:Array<String> = [];
+		var done = new sys.thread.Lock();
+
+		sys.thread.Thread.create(() -> {
+			for (i in 0...count) {
+				try {
+					var accepted:SSLSocket = cast server.accept();
+					accepted.setSoTimeout(5000);
+					accepted.startHandshake();
+					ids.push(JdkTlsPeer.hex(accepted.getSession().getId()));
+					accepted.close();
+				} catch (e:Dynamic) {
+					ids.push("failed: " + Std.string(e));
+				}
+			}
+			done.release();
+		});
+
+		return function() {
+			done.wait(20);
+			return ids;
+		};
 	}
 
 	/** Bytes in use on the heap once what can be collected has been. **/
