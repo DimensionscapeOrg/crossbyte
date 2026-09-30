@@ -96,6 +96,52 @@ class ServerSocketAcceptTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp || java || jvm || eval)
+	/**
+		A server whose `connect` listener arrives after `listen()` -- the order
+		NetHost uses -- and then closes. It held the accept tick twice, since
+		each path that wanted it ran added it again, and close() took one
+		away: the other called `accept()` on the closed listener every frame
+		for good. Once a new listener took over its descriptor number that was
+		the new server's socket -- its connections taken, or on eval, where a
+		socket cannot be made non-blocking, the runtime stopped for good,
+		waiting on a connection nobody made. That was the interpreter suite
+		hanging on Linux.
+	**/
+	@:timeout(15000)
+	public function testAClosedServerStopsAccepting(async:Async):Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var before:Int = __tickListeners(runtime);
+		var plain = new ClosingCountServerSocket();
+		var web = new ClosingCountServerWebSocket();
+		var extra = function(_:ServerSocketConnectEvent) {};
+		var another = function(_:ServerSocketConnectEvent) {};
+
+		for (server in [(plain : ServerSocket), (web : ServerSocket)]) {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, extra);
+			server.addEventListener(ServerSocketConnectEvent.CONNECT, another);
+			server.removeEventListener(ServerSocketConnectEvent.CONNECT, extra);
+			server.close();
+		}
+
+		// Some frames, for a tick left behind to show itself in.
+		NetPump.wait(0.3, function() {
+			Assert.equals(0, plain.ticksAfterClose, "a closed server's accept tick still ran");
+			Assert.equals(0, web.acceptsAfterClose, "a closed WebSocket server still called accept()");
+			Assert.equals(before, __tickListeners(runtime), "a closed server left its tick on the runtime");
+			async.done();
+		});
+	}
+
+	@:access(crossbyte.events.EventDispatcher)
+	private static function __tickListeners(runtime:crossbyte.core.CrossByte):Int {
+		var list:Array<Dynamic> = runtime.__eventMap == null ? null : runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		return list == null ? 0 : list.length;
+	}
+	#end
+
 	#if (cpp || java || jvm || nodejs)
 	/**
 		A client that is not speaking TLS at all, and -- natively, where the
@@ -145,6 +191,38 @@ class ServerSocketAcceptTest extends utest.Test {
 }
 
 #if (cpp || java || jvm || eval)
+/** Counts the accept ticks a server still runs once it is closed. **/
+private class ClosingCountServerSocket extends ServerSocket {
+	public var ticksAfterClose:Int = 0;
+
+	public function new() {
+		super();
+	}
+
+	override private function this_onTick(e:crossbyte.events.TickEvent):Void {
+		if (__closed) {
+			ticksAfterClose++;
+		}
+		super.this_onTick(e);
+	}
+}
+
+/** Counts the accepts a WebSocket server still attempts once it is closed. **/
+private class ClosingCountServerWebSocket extends ServerWebSocket {
+	public var acceptsAfterClose:Int = 0;
+
+	public function new() {
+		super();
+	}
+
+	override private function __acceptPending():crossbyte._internal.websocket.FlexSocket {
+		if (__closed) {
+			acceptsAfterClose++;
+		}
+		return super.__acceptPending();
+	}
+}
+
 /**
 	A server whose system refuses the first `refusals` connections it is
 	asked for, the way one out of descriptors does -- hxcpp raises that as a

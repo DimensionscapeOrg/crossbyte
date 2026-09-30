@@ -185,6 +185,11 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	@:noCompletion private var __webServerSocket:#if nodejs NodeServer #else FlexSocket #end;
+	#if nodejs
+	// The runtime the upgrade reaper is attached to, or null while it is not;
+	// see __attachTick.
+	@:noCompletion private var __reapRuntime:CrossByte = null;
+	#end
 
 	// Sessions accepted whose upgrade has not completed, and when to give up
 	// on each.
@@ -281,26 +286,34 @@ class ServerWebSocket extends ServerSocket {
 		TCP connection and then says nothing is holding a descriptor either way.
 	**/
 	@:noCompletion private function __attachTick():Void {
-		if (__cbInstance == null) {
+		#if nodejs
+		if (__reapRuntime != null || __cbInstance == null) {
 			return;
 		}
 
-		#if nodejs
-		__cbInstance.addEventListener(TickEvent.TICK, __reapOnTick);
+		__reapRuntime = __cbInstance;
+		__reapRuntime.addEventListener(TickEvent.TICK, __reapOnTick);
 		#else
-		__cbInstance.addEventListener(TickEvent.TICK, this_onTick);
+		// The one attachment ServerSocket keeps for the accept tick, which is
+		// this class's this_onTick. This added a second of its own, beside the
+		// one a connect listener added while listening puts there, and the
+		// one close() took away left the other running; see
+		// ServerSocket.__attachAcceptTick.
+		__attachAcceptTick();
 		#end
 	}
 
 	@:noCompletion private function __detachTick():Void {
-		if (__cbInstance == null) {
+		#if nodejs
+		if (__reapRuntime == null) {
 			return;
 		}
 
-		#if nodejs
-		__cbInstance.removeEventListener(TickEvent.TICK, __reapOnTick);
+		var runtime = __reapRuntime;
+		__reapRuntime = null;
+		runtime.removeEventListener(TickEvent.TICK, __reapOnTick);
 		#else
-		__cbInstance.removeEventListener(TickEvent.TICK, this_onTick);
+		__detachAcceptTick();
 		#end
 	}
 
@@ -699,6 +712,12 @@ class ServerWebSocket extends ServerSocket {
 
 	#if !nodejs
 	@:noCompletion override private function this_onTick(e:TickEvent):Void {
+		// A tick that outlived its server has nothing to accept from, and its
+		// listener's descriptor number may be another server's by now.
+		if (__closed || !listening) {
+			return;
+		}
+
 		// Extracted from a single method with a local assigned inside try/catch and
 		// used afterwards: that shape mis-compiles (VerifyError) on the jvm target.
 		__reapStalledUpgrades();
@@ -759,6 +778,14 @@ class ServerWebSocket extends ServerSocket {
 	**/
 	@:noCompletion private function __acceptPending():FlexSocket {
 		try {
+			#if eval
+			// eval cannot make a socket non-blocking -- its setBlocking does
+			// nothing -- so an accept with no connection waiting would hold
+			// the runtime until one came. Asked first, as ServerSocket does.
+			if (sys.net.Socket.select([__webServerSocket], [], [], 0).read.length == 0) {
+				return null;
+			}
+			#end
 			return __webServerSocket.accept();
 		} catch (e:Error) {
 			// One predicate, and no per-target branch: the enum switch that
