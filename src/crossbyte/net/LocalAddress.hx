@@ -13,7 +13,7 @@ import crossbyte.errors.ArgumentError;
 import crossbyte._internal.net.IPv6;
 #if nodejs
 import js.node.Dgram;
-#elseif (sys && !eval && !neko)
+#elseif (sys && !eval)
 import sys.net.Host;
 import sys.net.UdpSocket;
 #end
@@ -196,7 +196,7 @@ class LocalAddress {
 		} catch (e:Dynamic) {
 			finish(null, "A socket to ask with could not be opened: " + Std.string(e));
 		}
-		#elseif (sys && !eval && !neko)
+		#elseif (sys && !eval)
 		var socket:UdpSocket = null;
 		var chosen:String = null;
 		var failure:String = null;
