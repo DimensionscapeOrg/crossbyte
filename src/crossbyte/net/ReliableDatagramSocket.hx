@@ -370,6 +370,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		refuses, leaves the socket as it was.
 	**/
 	@:noCompletion private static function __reserveWindow(socket:DatagramSocket):Void {
+		if (!DatagramSocket.bufferSizeSupported) {
+			return;
+		}
 		try {
 			if (socket.receiveBufferSize < WINDOW_BUFFER_SIZE) {
 				socket.receiveBufferSize = WINDOW_BUFFER_SIZE;

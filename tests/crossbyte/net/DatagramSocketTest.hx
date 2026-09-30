@@ -169,19 +169,42 @@ class DatagramSocketTest extends utest.Test {
 		try sender.close() catch (_:Dynamic) {}
 	}
 
+	/**
+		Where buffers cannot be sized, the socket says so rather than taking
+		the size and dropping it.
+
+		HashLink and Neko have UDP and no native for either socket option.
+		Setting a size there did nothing, silently, and it read 0, so a caller
+		sizing its buffers for a burst could not tell that it had not. It
+		throws now, and `bufferSizeSupported` is how a caller asks first.
+	**/
+	public function testBufferSizesThatCannotBeSetSaySo():Void {
+		if (!requireDatagramSupport()) return;
+		if (DatagramSocket.bufferSizeSupported) {
+			Assert.pass();
+			return;
+		}
+
+		var socket = new DatagramSocket();
+		try {
+			socket.bind(0, "127.0.0.1");
+			Assert.equals(0, socket.receiveBufferSize, "an unknown size read as a size");
+			Assert.equals(0, socket.sendBufferSize, "an unknown size read as a size");
+			Assert.raises(() -> socket.receiveBufferSize = 96 * 1024, IllegalOperationError);
+			Assert.raises(() -> socket.sendBufferSize = 96 * 1024, IllegalOperationError);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		socket.close();
+	}
+
 	public function testBufferSizesCanBeReadAndAskedFor():Void {
 		if (!requireDatagramSupport()) return;
-
-		#if hl
-		// HashLink has no native to read or size a socket's buffers, so they
-		// read 0 there, as documented, and there is no size to check.
-		var unsized = new DatagramSocket();
-		unsized.bind(0, "127.0.0.1");
-		Assert.equals(0, unsized.receiveBufferSize);
-		Assert.equals(0, unsized.sendBufferSize);
-		unsized.close();
-		return;
-		#end
+		if (!DatagramSocket.bufferSizeSupported) {
+			// testBufferSizesThatCannotBeSetSaySo is this target's case.
+			Assert.isFalse(DatagramSocket.bufferSizeSupported);
+			return;
+		}
 
 		var socket = new DatagramSocket();
 		try {
@@ -470,7 +493,11 @@ class DatagramSocketTest extends utest.Test {
 		var count:Int = 150;
 
 		try {
-			receiver.receiveBufferSize = 1024 * 1024;
+			// Where it can be asked for: 150 small datagrams fit a default
+			// buffer too, which is all HashLink and Neko have.
+			if (DatagramSocket.bufferSizeSupported) {
+				receiver.receiveBufferSize = 1024 * 1024;
+			}
 			receiver.bind(0, "127.0.0.1");
 			receiver.addEventListener(DatagramSocketDataEvent.DATA, function(_) received++);
 			receiver.receive();
