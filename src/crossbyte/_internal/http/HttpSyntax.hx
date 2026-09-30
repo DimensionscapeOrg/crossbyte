@@ -173,6 +173,22 @@ class HttpSyntax {
 	}
 
 	/**
+	 * What `Host` and `:authority` carry: `host`, in brackets when it is an
+	 * IPv6 literal, then `:port` unless `port` is `defaultPort`, the
+	 * scheme's own, or `-1` to always name it.
+	 *
+	 * `URL` takes the brackets off an IPv6 literal, and both clients put the
+	 * host back as it was: `[2001:db8::1]:8080` went out as
+	 * `2001:db8::1:8080`, which no server can split. And the port was left
+	 * out for 80 and 443 whatever the scheme, so `http://host:443/` was sent
+	 * as `Host: host`, which means port 80.
+	 */
+	public static function authority(host:String, port:Int, defaultPort:Int):String {
+		var name:String = host.indexOf(":") >= 0 ? "[" + host + "]" : host;
+		return port == defaultPort ? name : name + ":" + port;
+	}
+
+	/**
 	 * Whether `text` is an RFC 9110 5.6.2 token: one or more of the letters,
 	 * digits and ``!#$%&'*+-.^_`|~``. A method has to be one, and so does a
 	 * field name.

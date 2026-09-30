@@ -1220,6 +1220,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Requests to an IPv6 literal carry its brackets. `URL` takes them off
+  `[2001:db8::1]:8080`, and both clients put the host back bare, so `Host`
+  and `:authority` read `2001:db8::1:8080`, which no server can split, and
+  a relative redirect from such a host named `http://::1:8080/...`, which is
+  not a URL. And `Host`, and a relative redirect, dropped the port for 80
+  and 443 whatever the scheme: `http://host:443/` was sent as `Host: host`,
+  which means port 80.
 - A URL can no longer add a header to the request made from it. `URL` kept
   control characters, and the HTTP/1.1 client wrote the path, query and host
   into the request line and `Host` as they were, so
