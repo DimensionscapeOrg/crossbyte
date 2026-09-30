@@ -61,6 +61,40 @@ class NativeMySQLConnection implements Connection {
 		return new NativeMySQLResultSet(NativeMySQL.request(__handle, sql));
 	}
 
+	/**
+		A statement whose rows are read from the server as they are asked for,
+		rather than all of them before the first is returned. Another command
+		on this connection before the last row reads the rest aside for this
+		result to take back.
+	**/
+	public function requestStream(sql:String):ResultSet {
+		return new NativeMySQLResultSet(NativeMySQL.requestStream(__handle, sql));
+	}
+
+	/**
+		The AUTO_INCREMENT id the last statement generated, `0` when it
+		generated none: an `Int`, or an `Int64` past 2^31.
+	**/
+	public var insertId(get, never):Dynamic;
+
+	/** The rows the last statement changed: an `Int`, or an `Int64` past 2^31. **/
+	public var affectedRows(get, never):Dynamic;
+
+	/** The version the server gave in its greeting. **/
+	public var serverVersion(get, never):String;
+
+	private function get_insertId():Dynamic {
+		return NativeMySQL.insertId(__handle);
+	}
+
+	private function get_affectedRows():Dynamic {
+		return NativeMySQL.affectedRows(__handle);
+	}
+
+	private function get_serverVersion():String {
+		return NativeMySQL.serverVersion(__handle);
+	}
+
 	public function close():Void {
 		NativeMySQL.close(__handle);
 	}
@@ -90,8 +124,14 @@ class NativeMySQLConnection implements Connection {
 		}
 	}
 
+	/**
+		From the OK packet the last statement was answered with, where it
+		came free: this was a `SELECT LAST_INSERT_ID()`, a round trip each
+		time it was read.
+	**/
 	public function lastInsertId():Int {
-		return request("SELECT LAST_INSERT_ID()").getIntResult(0);
+		var id:Dynamic = insertId;
+		return Std.isOfType(id, Int) ? id : 0x7FFFFFFF;
 	}
 
 	public function dbName():String {

@@ -107,7 +107,9 @@ class MySQLStatement extends EventDispatcher {
 		__prefetch = prefetch;
 
 		try {
-			__resultSet = __sqlConnection != null ? __sqlConnection.request(sql) : __connection.request(sql);
+			// Read as the rows are asked for: a page of a million-row result
+			// no longer waits for, and holds, all million.
+			__resultSet = __sqlConnection != null ? __sqlConnection.__requestStream(sql) : __connection.request(sql);
 			__queueResult();
 		} catch (e:Dynamic) {
 			__executing = false;
@@ -232,14 +234,29 @@ class MySQLStatement extends EventDispatcher {
 		}
 		__prefetch = prefetch;
 
-		if (__resultSet.hasNext()) {
-			__queueResult();
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
-		} else {
+		var more:Bool;
+
+		// The rows come from the server as they are asked for, so reading
+		// them can fail as a statement does, the connection lost part way.
+		try {
+			more = __resultSet.hasNext();
+
+			if (more) {
+				__queueResult();
+			}
+		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT)); // final empty tick
+			__fail(e);
+			return;
 		}
+
+		if (!more) {
+			__executing = false;
+			__prefetch = 0;
+		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT)); // the final one empty
 	}
 
 	public function getResult():SQLResult { // re-use your SQLiteResult container
@@ -253,7 +270,10 @@ class MySQLStatement extends EventDispatcher {
 
 		if (results != null) {
 			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
-			var lastId:Int = (__connection != null) ? __connection.lastInsertId() : 0;
+			// From the statement's answer. This was a SELECT LAST_INSERT_ID()
+			// on every call, a round trip per page, after which the
+			// connection's affectedRows read as that SELECT's.
+			var lastId:Float = __sqlConnection != null ? __sqlConnection.__insertIdFloat() : (__connection != null ? __connection.lastInsertId() : 0);
 
 			return new SQLResult(results, len, complete, lastId);
 		}

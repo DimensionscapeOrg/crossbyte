@@ -193,6 +193,126 @@ class MySQLNativeResultTest extends utest.Test {
 		Assert.equals(-149040000000.0, DateTools.makeUtc(1965, 3, 12, 0, 0, 0));
 	}
 
+	public function testResultsCostNoExtraRoundTrips():Void {
+		// Every getResult() sent SELECT LAST_INSERT_ID(), 20 pages, 21
+		// extra statements, after which affectedRows, itself a SELECT
+		// ROW_COUNT(), read -1. Both numbers are in the statement's own
+		// answer.
+		__server.onQuery = function(session, sql) {
+			if (StringTools.startsWith(sql, "INSERT")) {
+				session.ok(1, 3000000001.0);
+				return true;
+			}
+
+			if (sql == "SELECT PAGES") {
+				session.resultSet([{name: "n", type: FakeMySQLServer.TYPE_LONG, charset: FakeMySQLServer.CHARSET_BINARY}],
+					[for (i in 0...20) [Std.string(i)]]);
+				return true;
+			}
+
+			return false;
+		};
+		__server.start();
+		var connection:MySQLConnection = __open();
+		var statement:MySQLStatement = new MySQLStatement();
+		statement.sqlConnection = connection;
+
+		statement.text = "INSERT INTO users (email) VALUES ('a@example.com')";
+		statement.execute();
+		var inserted = Require.notNull(statement.getResult());
+		// Past 2^31, where lastInsertId(), an Int, ran out.
+		Assert.equals(3000000001.0, inserted.lastInsertRowID);
+		Assert.equals(1.0, inserted.rowsAffected);
+		Assert.equals(1, connection.affectedRows);
+
+		statement.text = "SELECT PAGES";
+		statement.execute(5);
+		var rows:Int = Require.notNull(statement.getResult()).data.length;
+
+		while (statement.executing) {
+			statement.next(5);
+			var page = statement.getResult();
+			rows += page == null ? 0 : page.data.length;
+		}
+
+		Assert.equals(20, rows);
+		var extra = __server.queries().filter(q -> q.indexOf("LAST_INSERT_ID") >= 0 || q.indexOf("ROW_COUNT") >= 0 || q.indexOf("VERSION()") >= 0);
+		Assert.equals(0, extra.length, extra.join(" | "));
+		Assert.equals(__server.serverVersion, connection.serverVersion);
+		connection.close();
+	}
+
+	public function testTheFirstPageArrivesBeforeTheRestOfTheResult():Void {
+		// The whole result was read before the first page was returned: a
+		// million rows reached 190 MB first. Here the server pauses after ten
+		// rows, and the first five must not wait for it.
+		__server.onQuery = function(session, sql) {
+			if (sql == "SELECT SLOW PAGES") {
+				session.resultSet([{name: "n", type: FakeMySQLServer.TYPE_LONG, charset: FakeMySQLServer.CHARSET_BINARY}],
+					[for (i in 0...30) [Std.string(i)]], 10, 2.0);
+				return true;
+			}
+
+			return false;
+		};
+		__server.start();
+		var connection:MySQLConnection = __open();
+		var statement:MySQLStatement = new MySQLStatement();
+		statement.sqlConnection = connection;
+		statement.text = "SELECT SLOW PAGES";
+
+		var started:Float = haxe.Timer.stamp();
+		statement.execute(5);
+		var first = Require.notNull(statement.getResult());
+		Assert.equals(5, first.data.length);
+		Assert.isTrue(haxe.Timer.stamp() - started < 1.5, "the first page waited for the whole result");
+		Assert.isTrue(statement.executing);
+
+		statement.next(-1);
+		var rest = Require.notNull(statement.getResult());
+		Assert.equals(25, rest.data.length);
+		Assert.isFalse(statement.executing);
+		Assert.equals("29", Std.string(Reflect.field(rest.data[24], "n")));
+		connection.close();
+	}
+
+	public function testAPagedStatementSurvivesAnotherStatementOnItsConnection():Void {
+		// The rest of a result read part way is read aside when the
+		// connection is needed for something else, so the page after still
+		// comes, as it did when results were read whole first.
+		__server.onQuery = function(session, sql) {
+			if (sql == "SELECT TWENTY") {
+				session.resultSet([{name: "n", type: FakeMySQLServer.TYPE_LONG, charset: FakeMySQLServer.CHARSET_BINARY}],
+					[for (i in 0...20) [Std.string(i)]]);
+				return true;
+			}
+
+			return false;
+		};
+		__server.start();
+		var connection:MySQLConnection = __open();
+		var statement:MySQLStatement = new MySQLStatement();
+		statement.sqlConnection = connection;
+		statement.text = "SELECT TWENTY";
+		statement.execute(5);
+		Assert.equals(5, Require.notNull(statement.getResult()).data.length);
+
+		connection.request("UPDATE users SET seen = 1 WHERE id = 3");
+		Assert.equals(1, connection.affectedRows);
+
+		statement.next(-1);
+		var rest = Require.notNull(statement.getResult());
+		Assert.equals(15, rest.data.length);
+		Assert.equals("19", Std.string(Reflect.field(rest.data[14], "n")));
+
+		// And one abandoned part way does not hold the connection up.
+		statement.execute(5);
+		statement = null;
+		Assert.isTrue(connection.ping());
+		Assert.equals(1, Require.notNull(connection.request("SELECT 1")).length);
+		connection.close();
+	}
+
 	private function __open():MySQLConnection {
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.open(__config());
