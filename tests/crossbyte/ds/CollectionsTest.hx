@@ -229,6 +229,64 @@ class CollectionsTest extends utest.Test {
 		Assert.isNull(tree.search(null));
 	}
 
+	/**
+		The longest held key a path starts with: the route that serves it. A
+		radix tree could only answer exact keys.
+	**/
+	public function testRadixTreeFindsTheLongestPrefix():Void {
+		var routes = new RadixTree<String>();
+		routes.insert("/", "root");
+		routes.insert("/api/v1/users", "users");
+		routes.insert("/api/v1/users/list", "list");
+		routes.insert("/api/v2", "v2");
+		routes.insert("/api/v1/rooms", "rooms");
+
+		Assert.equals("users", routes.longestPrefix("/api/v1/users/123"));
+		Assert.equals("users", routes.longestPrefix("/api/v1/users"));
+		Assert.equals("list", routes.longestPrefix("/api/v1/users/list/7"));
+		Assert.equals("rooms", routes.longestPrefix("/api/v1/rooms?x=1"));
+		Assert.equals("root", routes.longestPrefix("/api/v1/userz"));
+		Assert.equals("v2", routes.longestPrefix("/api/v2x"));
+		Assert.isNull(routes.longestPrefix("api"));
+		Assert.isNull(routes.longestPrefix(""));
+		Assert.isNull(routes.longestPrefix(null));
+
+		Assert.equals(13, routes.longestPrefixLength("/api/v1/users/123"));
+		Assert.equals(1, routes.longestPrefixLength("/nothing"));
+		Assert.equals(-1, routes.longestPrefixLength("nothing"));
+
+		// Exact lookups are unchanged by the split nodes between keys.
+		Assert.equals("users", routes.search("/api/v1/users"));
+		Assert.isNull(routes.search("/api/v1"));
+		Assert.isNull(routes.search("/api/v1/users/"));
+	}
+
+	#if jvm
+	/**
+		A lookup allocates nothing. It built the common prefix of each label
+		and the key a character at a time, and a substring at every level:
+		7.6 KB per lookup on the jvm.
+	**/
+	public function testRadixTreeLookupsAllocateNothing():Void {
+		var tree = new RadixTree<Int>();
+		var keys = [for (i in 0...1000) '/api/v1/item$i/detail'];
+		for (i in 0...keys.length) {
+			tree.insert(keys[i], i);
+		}
+		for (key in keys) {
+			tree.search(key);
+		}
+		var perLookup:Float = JvmAllocation.bytesBy(() -> {
+			for (key in keys) {
+				tree.search(key);
+				tree.longestPrefixLength(key);
+			}
+		}) / (keys.length * 2);
+		Assert.isTrue(perLookup < 1, perLookup + " bytes allocated per lookup");
+		Assert.equals(500, tree.search(keys[500]));
+	}
+	#end
+
 	public function testVectorSpliceReturnsRemovedAndKeepsInsertOrder():Void {
 		var vector = new Vector<String>();
 		vector.push("a");
