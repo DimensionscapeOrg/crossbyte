@@ -117,6 +117,14 @@ final class SocketRegistry {
 		}
 
 		if (__set.isEmpty) {
+			// The last sockets polled are let go of here. The buffer is only
+			// resized when the set's size changes, and an empty set returns
+			// before that, so the last connections a server held stayed
+			// reachable from it -- through their `custom`, each whole Socket
+			// with its buffers and userData -- for as long as it sat idle.
+			if (__selectBuffer.length > 0) {
+				__selectBuffer.resize(0);
+			}
 			return;
 		}
 
