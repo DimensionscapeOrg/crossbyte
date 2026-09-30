@@ -42,10 +42,14 @@ class Brotli {
 		       limit. Brotli ratios have no ceiling, so anything decoding a
 		       stream it did not author wants to name one.
 
-		The pure decoder stops partway, inside the function every decoded byte
-		passes through. The native one cannot: it returns a finished buffer, so
-		its result is measured after the fact and the allocation has already
-		happened. That path is opt-in and off by default.
+		The pure decoder refuses a meta-block that announces more than that as
+		its header is read, and otherwise stops partway, where every decoded
+		byte passes through. Its memory follows its output: the ring buffer
+		grows with what has been decoded rather than being allocated at the
+		window size the stream asks for. The native one cannot stop partway: it
+		returns a finished buffer, so its result is measured after the fact and
+		the allocation has already happened. That path is opt-in and off by
+		default.
 	**/
 	public static function decompress(bytes:Bytes, maxOutputSize:UInt = 0):Bytes {
 		#if crossbyte_brotli_native
