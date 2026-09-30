@@ -3,6 +3,7 @@ package crossbyte._internal.http.h2;
 // Needs threads, so not any JavaScript target. `HTTP2Backend` is gated the same
 // way, for the socket rather than the threads.
 #if !js
+import crossbyte._internal.http.Http;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte.http.HTTPCancelToken;
 import crossbyte._internal.socket.FlexSocket;
@@ -73,6 +74,9 @@ class H2ClientSession {
 	// on, which is what lets the pool close it without racing a request.
 	private var __retired:Bool = false;
 	private var __failure:String = null;
+	// Set, under the lock, once the reader thread has left its loop. Until
+	// then only the reader may close the socket: see close().
+	private var __readerDone:Bool = false;
 
 	public function new(origin:String, socket:FlexSocket, connection:H2Connection, ?tls:crossbyte.http.HTTPTLSOptions) {
 		this.origin = origin;
@@ -382,6 +386,21 @@ class H2ClientSession {
 		}
 	}
 
+	/**
+		Ends the session: a GOAWAY, then the socket shut down, which ends the
+		reader's read; the reader closes the socket on its way out, or this
+		does when the reader has gone already.
+
+		The socket was closed here, from whichever thread closed the session,
+		the pool's sweep, a request discarding it, `closeAll`, while the
+		reader sat in a read on it. For TLS that freed the socket's mbedTLS
+		context under the read, and when the read returned, with the peer
+		answering the GOAWAY, mbedTLS carried on with the freed context: a
+		SIGSEGV in `mbedtls_ssl_read`, on Linux, reached from any pool close
+		with a session open. `Http.__interrupt` is what the HTTP/1.1 client
+		does for the same reason. On Windows a TLS socket's read is ended by
+		the peer answering the shutdown, as it is there for a cancelled load.
+	**/
 	public function close():Void {
 		__lock.acquire();
 		if (__stopped) {
@@ -393,18 +412,44 @@ class H2ClientSession {
 		try {
 			connection.goAway(H2ErrorCode.NO_ERROR);
 		} catch (_:Dynamic) {}
+
+		// Decided under the lock the reader takes on its way out, so exactly
+		// one of the two closes the socket; and closed under it, which a
+		// writer holds while it writes.
+		var readerGone:Bool = __readerDone;
+		if (readerGone) {
+			__closeSocket();
+		}
 		__lock.release();
 
+		if (!readerGone) {
+			Http.__interrupt(__socket);
+		}
+
+		__wakeEveryone();
+	}
+
+	private function __closeSocket():Void {
 		try {
 			__socket.close();
 		} catch (_:Dynamic) {}
-
-		__wakeEveryone();
 	}
 
 	// ----------------------------------------------------------- reader
 
 	private function __read():Void {
+		__readFrames();
+
+		__lock.acquire();
+		__readerDone = true;
+		if (__stopped) {
+			// close() left the socket to this thread, which was in a read on it.
+			__closeSocket();
+		}
+		__lock.release();
+	}
+
+	private function __readFrames():Void {
 		while (true) {
 			var frame:Null<H2Frame>;
 

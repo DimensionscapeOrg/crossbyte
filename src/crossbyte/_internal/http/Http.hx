@@ -493,6 +493,7 @@ class Http {
 	 * shut down, and the read ends when the peer closes in answer.
 	 */
 	@:allow(crossbyte.http.HTTP2Backend)
+	@:allow(crossbyte._internal.http.h2.H2ClientSession)
 	private static function __interrupt(socket:FlexSocket):Void {
 		try {
 			socket.shutdown(__shutDownReads, true);

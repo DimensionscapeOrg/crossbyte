@@ -1267,6 +1267,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Closing an HTTP/2 client connection, the pool's idle sweep,
+  `H2ConnectionPool.closeAll`, a request discarding a failed one, no
+  longer closes its socket under the thread reading it. For TLS that
+  freed the socket's mbedTLS context mid-read, and when the read returned,
+  with the server answering the GOAWAY, mbedTLS went on with the freed
+  context: a segmentation fault in `mbedtls_ssl_read`, seen natively on
+  Linux. The connection is shut down instead, and the reading thread
+  closes the socket once its read has ended, as the HTTP/1.1 client
+  already did for a cancelled load.
 - The HTTP/2 server takes a request sent with trailers. The trailer
   section, a second header block on the stream, replaced the request's
   header section, so the request was read from the trailers, found to
