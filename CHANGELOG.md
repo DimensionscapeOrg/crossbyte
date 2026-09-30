@@ -1245,6 +1245,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A client `Socket` turns Nagle's algorithm off before it connects rather
+  than once the connect is under way. Windows refuses TCP_NODELAY on a
+  socket whose connect is in progress and hxcpp does not report it, so
+  natively on Windows a client kept Nagle's algorithm on every connect that
+  took any time, every one over a network, and a small write waited for
+  the acknowledgement of the last.
 - A jvm runtime holding many TLS connections pumps faster: the registry asks
   every TLS socket on every pump whether its TLS layer holds decrypted
   bytes, and asked through a dynamic call, 150 to 245 us of each pump at
