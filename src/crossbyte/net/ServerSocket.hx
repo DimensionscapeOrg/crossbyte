@@ -923,10 +923,11 @@ class ServerSocket extends EventDispatcher {
 		dispatcher keeps every add and each remove takes out one, so a server
 		given its listener after `listen()` held two and closing it removed
 		one: the other ran on for good, calling `accept()` on the closed
-		listener every frame. Once its descriptor number went to a new
-		listener, that accept was on the new server's socket -- taking its
-		connections, or on eval, whose sockets cannot be made non-blocking,
-		waiting forever for one and stopping the runtime.
+		listener every frame and keeping the server alive. Natively each of
+		those accepts fails on the closed socket. eval keeps a closed socket's
+		descriptor number and cannot make a socket non-blocking, so there the
+		accept landed on whichever socket took that number next, and waited
+		for a connection on it, stopping the runtime.
 	**/
 	@:noCompletion private function __attachAcceptTick():Void {
 		if (__tickRuntime != null || __cbInstance == null) {
