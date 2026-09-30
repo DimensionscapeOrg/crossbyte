@@ -1,0 +1,6 @@
+-cp src
+-cp tests
+-lib utest
+-main MySQLIntegrationMain
+--cpp export/ci-mysql-tests
+--macro crossbyte.test.SuiteCoverage.check()

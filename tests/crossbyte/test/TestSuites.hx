@@ -173,6 +173,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.mongodb.MongoWireTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoCrudTest());
 		runner.addCase(new crossbyte.db.mongodb.MongoTransactionTest());
+		runner.addCase(new crossbyte.db.MySQLDriverTest());
+		runner.addCase(new crossbyte.db.SQLiteDriverTest());
 		#if !cpp
 		// The same failures on cpp go through libpq, and are covered against
 		// its stand-in by NativePostgresBridgeTest below.
@@ -185,6 +187,14 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.NativePostgresBridgeTest());
 		// Where the worker pool has threads, and so a queue to bound.
 		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
+		// The native MySQL client against a server that logs every byte it
+		// is sent (fakemysql/FakeMySQLServer), so no database is needed.
+		runner.addCase(new crossbyte.db.MySQLNativeWireTest());
+		runner.addCase(new crossbyte.db.MySQLNativeResultTest());
+		runner.addCase(new crossbyte.db.MySQLNativeSessionTest());
+		runner.addCase(new crossbyte.db.MySQLNativeAuthTest());
+		// SQLite opens only natively.
+		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		#end
 	}
 
