@@ -174,6 +174,31 @@ class HpackTest extends utest.Test {
 		assertHeaders(fields, new HpackDecoder(4096).decode(block));
 	}
 
+	/**
+		A NUL inside a string literal is decoded with the rest, plain or
+		Huffman-coded. JavaScript's `Bytes.toString` stops at a NUL, so the
+		field arrived as the part before it, the NUL that makes it malformed
+		never reached the rules that refuse it.
+	**/
+	public function testANulInAStringIsDecodedWithTheRest():Void {
+		var nul:String = String.fromCharCode(0);
+		// Long and repetitive enough that the encoder Huffman-codes it.
+		var coded:String = "aaaaaaaaaaaaaaaa" + nul + "eeeeeeeeeeeeeeee";
+		// Short and unusual enough that it does not.
+		var plain:String = "~" + nul + "~";
+		var block:Bytes = new HpackEncoder(4096).encode([new HpackHeader("x-coded", coded), new HpackHeader("x-" + nul, plain)]);
+		var fields:Array<HpackHeader> = new HpackDecoder(4096).decode(block);
+		if (fields.length != 2) {
+			Assert.fail("decoded " + fields.length + " fields, not 2");
+			return;
+		}
+		// Compared without printing either: a NUL in an assertion message
+		// hides every failure reported after it on cpp.
+		Assert.isTrue(fields[0].value == coded, "a Huffman-coded value lost its NUL or what followed it: " + fields[0].value.length + " of 33 characters");
+		Assert.isTrue(fields[1].value == plain, "a plain value lost its NUL or what followed it: " + fields[1].value.length + " of 3 characters");
+		Assert.isTrue(fields[1].name == "x-" + nul, "a name lost its NUL: " + fields[1].name.length + " of 3 characters");
+	}
+
 	// ------------------------------------------------------- decoder limits
 
 	public function testDecoderRejectsAnIndexPastTheTable():Void {

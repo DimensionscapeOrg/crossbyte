@@ -1253,6 +1253,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- HTTP/2 on Node and in the browser refuses a NUL in a field, as it does
+  on the other targets. The HPACK decoder read each string with
+  `Bytes.toString`, which on JavaScript stops at the first NUL, so a field
+  holding one arrived as the part before it: the NUL that RFC 9113 makes
+  it malformed for never reached the check, and the rest of the value was
+  dropped without a word.
 - `URLLoader` on Node decodes a compressed response, with Node's zlib and
   within `maxDecompressedSize`, as the other targets' clients do: gzip, br,
   deflate (zlib-wrapped or raw) and lz4, two stacked at most. It handed the
