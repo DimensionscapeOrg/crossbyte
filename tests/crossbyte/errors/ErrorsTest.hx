@@ -33,7 +33,7 @@ class ErrorsTest extends utest.Test {
 		// the value came from CallStack.exceptionStack(), global state, and
 		// not from the error at all.
 		Assert.equals(atConstruction, never.getCallStack());
-		Assert.isTrue(never.getCallStack().indexOf("__throwFromHere") < 0,
+		Assert.isFalse(__names(never.getCallStack(), "__throwFromHere", __throwLine),
 			"an unrelated exception leaked into this error's stack");
 
 		// How much stack a build records is the build's business: a release cpp
@@ -41,21 +41,41 @@ class ErrorsTest extends utest.Test {
 		// here is legitimately empty. Where there are frames at all, check that
 		// each error names its own site.
 		if (atThrow.length > 0) {
-			Assert.isTrue(atThrow.indexOf("__throwFromHere") >= 0,
+			Assert.isTrue(__names(atThrow, "__throwFromHere", __throwLine),
 				"expected the throw site in the stack, got: " + atThrow);
 			// Never thrown, and it still knows where it was made. This was
 			// empty before, for every error, until one was thrown and caught.
-			Assert.isTrue(atConstruction.indexOf("__makeUnthrownError") >= 0,
+			Assert.isTrue(__names(atConstruction, "__makeUnthrownError", __constructionLine),
 				"expected the construction site in the stack, got: " + atConstruction);
 		}
 	}
 
+	// The lines the two errors below are made on, as the frames of a target
+	// that records no method names give them.
+	private var __constructionLine:Int = -1;
+	private var __throwLine:Int = -1;
+
 	private function __makeUnthrownError():Error {
+		__constructionLine = __nextLine();
 		return new Error("never thrown", 1);
 	}
 
 	private function __throwFromHere():Void {
+		__throwLine = __nextLine();
 		throw new Error("thrown", 2);
+	}
+
+	private static function __nextLine(?pos:haxe.PosInfos):Int {
+		return pos.lineNumber + 1;
+	}
+
+	/**
+		Whether `stack` names a site: by its method, or where frames carry no
+		method name, neko's are a file and a line, since its bytecode keeps
+		no more, by its line in this file.
+	**/
+	private static function __names(stack:String, method:String, line:Int):Bool {
+		return stack.indexOf(method) >= 0 || new EReg("ErrorsTest\\.hx line " + line + "\\b", "").match(stack);
 	}
 
 	public function testNamedErrorSubclassesPreserveIdentity():Void {
