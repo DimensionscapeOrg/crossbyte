@@ -1220,6 +1220,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, TLS sessions are resumed. Every connection built a TLS
+  context of its own, key store, key and trust managers, a random source,
+  and a context is where sessions are kept, so none was ever resumed and
+  each connection paid a full handshake. A listener now builds one for
+  everything it accepts, and client connections share one per way of
+  verifying, trusting and presenting a certificate, so a session made
+  without verification is never resumed by a connection that verifies.
+  Node's TLS 1.2 client now resumes 99 of 100 connections to a jvm server
+  (0 before), in half the handshake time; a jvm client resumes TLS 1.2
+  with a server that caches sessions (239 of 240, at 40% of the CPU) and
+  TLS 1.3 with one that issues tickets. The JDK 8 server does not resume
+  the TLS 1.3 sessions Node offers back, its own `SSLServerSocket`
+  included.
 - On the jvm, a TLS read takes every record that has already arrived, as
   far as the caller's buffer goes, where it stopped after one: a large
   upload was read 16 KB a pump, each pump paying a select over every
