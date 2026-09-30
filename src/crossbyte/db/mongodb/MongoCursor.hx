@@ -14,6 +14,7 @@ import haxe.Int64;
 	be looped over:
 
 	```haxe
+	// Given connection:MongoConnection, audit:Dynamic->Void.
 	var cursor = connection.find("events", {kind: "login"}, {batchSize: 500});
 	for (event in cursor) {
 		audit(event);

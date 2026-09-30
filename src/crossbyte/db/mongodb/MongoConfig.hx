@@ -8,6 +8,7 @@ package crossbyte.db.mongodb;
 	its password from somewhere else.
 
 	```haxe
+	// Given connection:MongoConnection, secret:String.
 	connection.open({uri: "mongodb://app@db1.example.com:27017/app?tls=true&authSource=admin", password: secret});
 	connection.open({host: "127.0.0.1", database: "app", username: "app", password: secret});
 	```

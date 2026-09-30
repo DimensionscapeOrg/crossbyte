@@ -19,9 +19,11 @@ import sys.thread.Deque;
 	statements run SQL: `execute`, then `getResult` a page at a time.
 
 	```haxe
+	// Given connection:MongoConnection.
 	var statement = new MongoStatement();
 	statement.sqlConnection = connection;
-	statement.text = '{"find": "sessions", "filter": {"userId": :user, "expiresAt": {"$gt": :now}}}';
+	// In a single-quoted Haxe string $ interpolates, so $gt is written $$gt.
+	statement.text = '{"find": "sessions", "filter": {"userId": :user, "expiresAt": {"$$gt": :now}}}';
 	statement.parameters.user = 42;
 	statement.parameters.now = Date.now();
 	statement.execute(100);
