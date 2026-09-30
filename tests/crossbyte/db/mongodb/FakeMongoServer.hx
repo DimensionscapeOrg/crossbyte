@@ -97,6 +97,9 @@ class FakeMongoServer {
 	@:noCompletion private var __received:Array<ReceivedCommand> = [];
 	@:noCompletion private var __collections:Map<String, Array<BsonDocument>> = new Map();
 	@:noCompletion private var __uniqueIndexes:Map<String, Array<String>> = new Map();
+	// Kept for inserts; dropped for a namespace whenever its documents change
+	// any other way, and made again from them when next needed.
+	@:noCompletion private var __idKeys:Map<String, Map<String, Bool>> = new Map();
 	@:noCompletion private var __indexes:Map<String, Array<BsonDocument>> = new Map();
 	@:noCompletion private var __users:Map<String, {password:String, mechanisms:Array<String>}> = new Map();
 	@:noCompletion private var __cursors:Map<String, {namespace:String, documents:Array<BsonDocument>, position:Int, batchSize:Int}> = new Map();
@@ -271,6 +274,8 @@ class FakeMongoServer {
 		for (document in documents) {
 			stored.push(document);
 		}
+
+		__idKeys.remove(namespace);
 
 		__lock.release();
 	}
@@ -821,11 +826,22 @@ class FakeMongoServer {
 		var stored:Array<BsonDocument> = __collection(namespace);
 		var unique:Array<String> = __uniqueIndexes.exists(namespace) ? __uniqueIndexes.get(namespace) : [];
 
+		var ids:Map<String, Bool> = __idSet(namespace);
+
 		for (i in 0...documents.length) {
 			var document:BsonDocument = documents[i];
 			var clash:String = null;
+			// No key for a document without one: nothing it could clash with.
+			var key:String = document.exists("_id") ? __idKey(document.get("_id")) : null;
 
-			for (field in ["_id"].concat(unique)) {
+			// _id through the index, so an insert costs the same into a
+			// collection of a thousand as into an empty one; the unique
+			// indexes a test makes are small, and scanned.
+			if (key != null && ids.exists(key)) {
+				clash = "_id";
+			}
+
+			for (field in unique) {
 				for (existing in stored) {
 					if (existing.exists(field) && __same(existing.get(field), document.get(field))) {
 						clash = field;
@@ -848,6 +864,11 @@ class FakeMongoServer {
 			}
 
 			stored.push(document);
+
+			if (key != null) {
+				ids.set(key, true);
+			}
+
 			n++;
 		}
 
@@ -919,6 +940,7 @@ class FakeMongoServer {
 
 				__apply(made, statement.get("u"));
 				stored.push(made);
+				__idKeys.remove(namespace);
 				n++;
 				upserted.push(new BsonDocument().add("index", s).add("_id", made.get("_id")));
 			}
@@ -948,6 +970,7 @@ class FakeMongoServer {
 			while (i < stored.length) {
 				if (__matches(stored[i], statement.get("q"))) {
 					stored.splice(i, 1);
+					__idKeys.remove(namespace);
 					n++;
 
 					if (one) {
@@ -1041,6 +1064,7 @@ class FakeMongoServer {
 		var namespace:String = database + "." + Std.string(body.get("drop"));
 		__lock.acquire();
 		var existed:Bool = __collections.remove(namespace);
+		__idKeys.remove(namespace);
 		__indexes.remove(namespace);
 		__uniqueIndexes.remove(namespace);
 		__lock.release();
@@ -1121,6 +1145,7 @@ class FakeMongoServer {
 
 		if (!commit) {
 			__collections = current.snapshot;
+			__idKeys = new Map();
 		}
 
 		__lock.release();
@@ -1135,6 +1160,7 @@ class FakeMongoServer {
 		if (current != null && current.active) {
 			current.active = false;
 			__collections = current.snapshot;
+			__idKeys = new Map();
 		}
 
 		__lock.release();
@@ -1152,6 +1178,30 @@ class FakeMongoServer {
 	}
 
 	// ------------------------------------------------------------ matching
+
+	/** The `_id`s stored in `namespace`, made from the documents when not held. **/
+	@:noCompletion private function __idSet(namespace:String):Map<String, Bool> {
+		var ids:Map<String, Bool> = __idKeys.get(namespace);
+
+		if (ids == null) {
+			ids = new Map();
+
+			for (document in __collection(namespace)) {
+				if (document.exists("_id")) {
+					ids.set(__idKey(document.get("_id")), true);
+				}
+			}
+
+			__idKeys.set(namespace, ids);
+		}
+
+		return ids;
+	}
+
+	/** An `_id` as a key, numbers by value, as MongoDB compares them. **/
+	@:noCompletion private static function __idKey(id:Dynamic):String {
+		return __isNumber(id) ? "n:" + Std.string(__asFloat(id)) : ExtendedJson.stringify(id, false);
+	}
 
 	@:noCompletion private function __collection(namespace:String):Array<BsonDocument> {
 		var stored:Array<BsonDocument> = __collections.get(namespace);
