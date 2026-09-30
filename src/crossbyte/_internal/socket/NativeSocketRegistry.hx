@@ -13,6 +13,10 @@ import crossbyte.ds.DenseSet;
 final class NativeSocketRegistry {
 	@:noCompletion private var __set:DenseSet<Socket>;
 	@:noCompletion private var __poll:PollBackend;
+	// The factory this registry makes its backends with, taken once, so
+	// growing makes more of the same backend rather than whatever was
+	// installed since.
+	@:noCompletion private var __factory:Null<Int->PollBackend>;
 	@:noCompletion private var __isDirty:Bool = true;
 	@:noCompletion private var __capacity:Int;
 	@:noCompletion private var __deregisterQueue:Stack<Socket>;
@@ -63,7 +67,8 @@ final class NativeSocketRegistry {
 	public inline function new(capacity:Int) {
 		__capacity = capacity;
 		__set = new DenseSet();
-		__poll = PollBackendRegistry.create(__capacity);
+		__factory = PollBackendRegistry.current();
+		__poll = PollBackendRegistry.createWith(__factory, __capacity);
 		__deregisterQueue = new Stack();
 		__deregisterPending = new DenseSet();
 		__writableQueue = new Stack();
@@ -88,6 +93,9 @@ final class NativeSocketRegistry {
 
 	public inline function register(socket:Socket):Void {
 		if (__deregisterPending.remove(socket)) {
+			// Still in the set, but the backend was told it had gone: it
+			// learns of it again from the next prepare.
+			__isDirty = true;
 			return;
 		}
 
@@ -97,12 +105,24 @@ final class NativeSocketRegistry {
 		}
 	}
 
+	/**
+		Stops watching `socket`. Every owner calls this before it closes the
+		socket, and the backend is told at once, while the descriptor is still
+		open; the set itself changes at the start of the next pass, since this
+		may be called from inside the dispatch that walks it.
+	**/
 	public inline function deregister(socket:Socket):Void {
+		var watched:Bool = false;
 		if (__set.contains(socket) && __deregisterPending.add(socket)) {
 			__deregisterQueue.push(socket);
+			watched = true;
 		}
 		if (__writeSet.remove(socket)) {
 			__isDirty = true;
+			watched = true;
+		}
+		if (watched) {
+			__poll.remove(socket);
 		}
 	}
 
@@ -121,6 +141,10 @@ final class NativeSocketRegistry {
 	public inline function unwatchWritable(socket:Socket):Void {
 		if (__writeSet.remove(socket)) {
 			__isDirty = true;
+			// Watched for nothing now, rather than for reading alone.
+			if (!__set.contains(socket) || __deregisterPending.contains(socket)) {
+				__poll.remove(socket);
+			}
 		}
 	}
 
@@ -159,21 +183,35 @@ final class NativeSocketRegistry {
 		}
 
 		if (__isDirty) {
+			// Cleared first: a backend that throws here is replaced below, and
+			// the replacement is prepared from these same lists.
+			__isDirty = false;
 			__readSnapshot = __set.keys;
 			__writeSnapshot = __writeSet.isEmpty ? null : __writeSet.toArray();
-			__poll.prepare(__readSnapshot, __writeSnapshot);
-			__isDirty = false;
+			try {
+				__poll.prepare(__readSnapshot, __writeSnapshot);
+			} catch (error:Dynamic) {
+				__fallBack(error);
+			}
 		}
 
-		if (timeout > 0) {
-			// Timed only when it can block, which is the POLL loop's case;
-			// the DEFAULT loop's per-frame poll pays nothing for it.
-			var waitStart:Float = haxe.Timer.stamp();
-			__poll.events(timeout);
-			__waited += haxe.Timer.stamp() - waitStart;
-		} else {
-			__poll.events(timeout);
+		try {
+			if (timeout > 0) {
+				// Timed only when it can block, which is the POLL loop's case;
+				// the DEFAULT loop's per-frame poll pays nothing for it.
+				var waitStart:Float = haxe.Timer.stamp();
+				__poll.events(timeout);
+				__waited += haxe.Timer.stamp() - waitStart;
+			} else {
+				__poll.events(timeout);
+			}
+		} catch (error:Dynamic) {
+			// Nothing is dispatched from a poll that failed; the next pass
+			// polls with the replacement.
+			__fallBack(error);
+			return;
 		}
+
 		for (i in __poll.readIndexes) {
 			if (i == -1) {
 				break;
@@ -192,6 +230,24 @@ final class NativeSocketRegistry {
 		}
 	}
 
+	/**
+		A backend that failed to prepare or to poll is replaced by the built-in
+		one, prepared from the lists it was given, and the failure logged: left
+		in place, it failed the same way every pass and nothing was polled
+		again, however long the runtime ran. The registry keeps the built-in
+		one from then on, growing included.
+	**/
+	@:noCompletion private function __fallBack(error:Dynamic):Void {
+		crossbyte.utils.Logger.warn("The poll backend failed and was replaced by the built-in one: " + Std.string(error));
+		var failed:PollBackend = __poll;
+		__poll = new HaxePollBackend(__capacity);
+		__factory = null;
+		try {
+			failed.dispose();
+		} catch (_:Dynamic) {}
+		__poll.prepare(__readSnapshot, __writeSnapshot);
+	}
+
 	@:noCompletion private inline function __ensureCapacity():Void {
 		// Both lists count: a backend is prepared with the two together, and
 		// refuses more than it was made for.
@@ -200,11 +256,25 @@ final class NativeSocketRegistry {
 		}
 	}
 
-	@:noCompletion private inline function __grow():Void {
+	@:noCompletion private function __grow():Void {
 		__capacity = Math.ceil(__capacity * 1.5);
-		__poll.dispose();
-		__poll = PollBackendRegistry.create(__capacity);
 		__isDirty = true;
+
+		// A backend that can grow in place keeps what it holds per descriptor.
+		if (Std.isOfType(__poll, PollBackendGrowable)) {
+			var growable:PollBackendGrowable = cast __poll;
+			if (growable.grow(__capacity)) {
+				return;
+			}
+		}
+
+		// The new one made before the old one goes, and by the factory this
+		// registry was made with, so a runtime is never left without a
+		// backend, nor moved onto another partway through its run.
+		var next:PollBackend = PollBackendRegistry.createWith(__factory, __capacity);
+		var old:PollBackend = __poll;
+		__poll = next;
+		old.dispose();
 	}
 
 	@:noCompletion private inline function __dispatchReadable(socket:Socket):Void {

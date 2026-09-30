@@ -196,6 +196,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
+		runner.addCase(new crossbyte._internal.socket.poll.PollBackendSeamTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
