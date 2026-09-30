@@ -1307,6 +1307,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- After a failed SQLite statement the connection's next one works, and the
+  failure names its cause. The native binding left the failed statement to
+  be finalized by the next request or `close()`, and SQLite answered that
+  with the old error again, thrown as "Could not finalize request": one
+  constraint violation failed the next, unrelated statement too. The error
+  said only "SQL logic error"; it is now SQLite's own, "UNIQUE constraint
+  failed: users.email". And `SQLiteConnection.begin("IMMEDIATE")` on an
+  asynchronous connection begins immediate, as the synchronous one did: it
+  began deferred, taking no lock until its first write, where it could
+  then fail with SQLITE_BUSY part way through. From the hxcpp fork
+  (`fix/mysql-client`) and the driver.
 - MySQL `FLOAT` and `DOUBLE` columns read the same whatever the process's
   locale. The native client parsed them with `atof`, which follows
   `LC_NUMERIC`, so under a locale with a decimal comma 1.5 came back as 1.
