@@ -1253,9 +1253,11 @@ All notable changes to CrossByte will be documented in this file.
   process 500 MB higher, and LZ4, which cannot tell what a block holds,
   guessed and doubled its guess on every failure up to 256 MB -- 200 MB to
   learn that 100 bytes were garbage. Brotli is now given room for the
-  limit and stopped when it asks for more; LZ4 adds up what the block's
-  sequence headers say before allocating anything, then decodes into
-  exactly that, which also holds a block to the format's end rules. Both
+  limit and stopped when it asks for more, and its own allocations are
+  held to what the limit could need, so four bytes announcing a 16 MB
+  meta-block no longer cost 16 MB; LZ4 adds up what the block's sequence
+  headers say before allocating anything, then decodes into exactly that,
+  which also holds a block to the format's end rules. Both
   run in a GC-free zone, so compressing 2 MB at quality 11 on a worker no
   longer holds every other thread's allocations for its 1.8 s, and native
   Brotli compresses with the smallest window that holds its input. Their
