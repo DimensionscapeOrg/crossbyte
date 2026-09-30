@@ -272,6 +272,54 @@ class NetHostTest extends utest.Test {
 		}
 	}
 
+	/**
+		A host of the application's own reaches its relay through `NetHost`.
+
+		`NetHost` wraps any `INetHost`, but it found a relay only by
+		downcasting to the reliable datagram host it makes itself, so a host
+		written elsewhere was refused whatever it could do, and code holding
+		an `INetHost` could not ask at all, the relay being on the abstract
+		alone.
+	**/
+	public function testAHostOfItsOwnReachesItsRelay():Void {
+		var own = new RelayingHost();
+		var host:NetHost = own;
+
+		host.allocateRelay("198.51.100.1", 3478, "user", "secret");
+		host.permitRelayedPeer("203.0.113.9");
+		host.dialRelayed("203.0.113.9", 4000, 250);
+
+		Assert.equals("allocateRelay 198.51.100.1:3478 user|permitRelayedPeer 203.0.113.9|dialRelayed 203.0.113.9:4000 250",
+			own.calls.join("|"));
+
+		// And through the interface, for code that holds one.
+		var asInterface:INetHost = own;
+		asInterface.permitRelayedPeer("203.0.113.10");
+		Assert.equals("permitRelayedPeer 203.0.113.10", own.calls[own.calls.length - 1]);
+	}
+
+	/** A stream host has no relay: each of the three refuses, as `dial` does. **/
+	public function testAStreamHostRefusesEveryRelayCall():Void {
+		var hosts:Array<NetHost> = [NetHost.fromServerSocket(new ServerSocket()), NetHost.fromServerWebSocket(new ServerWebSocket())];
+
+		// Named, not numbered: joined to a string, the protocol was its Int,
+		// and this read "A 0 host has no relay".
+		var message:String = null;
+		try {
+			hosts[0].permitRelayedPeer("127.0.0.1");
+		} catch (e:crossbyte.errors.IllegalOperationError) {
+			message = e.message;
+		}
+		Assert.isTrue(message != null && StringTools.startsWith(message, "A TCP host has no relay"), "the refusal reads: " + message);
+
+		for (host in hosts) {
+			Assert.raises(() -> host.allocateRelay("127.0.0.1", 3478, "user", "secret"), crossbyte.errors.IllegalOperationError);
+			Assert.raises(() -> host.dialRelayed("127.0.0.1", 3478), crossbyte.errors.IllegalOperationError);
+			Assert.raises(() -> host.permitRelayedPeer("127.0.0.1"), crossbyte.errors.IllegalOperationError);
+			closeHostQuietly(host);
+		}
+	}
+
 	private static function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
 		var deadline = Sys.time() + timeout;
@@ -303,5 +351,95 @@ class NetHostTest extends utest.Test {
 				socket.close();
 			}
 		} catch (_:Dynamic) {}
+	}
+}
+
+/** A host of an application's own, which records what it is asked. **/
+private class RelayingHost implements INetHost {
+	public var calls:Array<String> = [];
+
+	public var localAddress(get, never):String;
+	public var localPort(get, never):Int;
+	public var isRunning(get, never):Bool;
+	public var protocol(default, null):Protocol = RUDP;
+	public var maxConnections:Int = 0;
+	public var onAccept(get, set):INetConnection->Void;
+	public var onDisconnect(get, set):(INetConnection, Reason) -> Void;
+	public var onError(get, set):Reason->Void;
+	public var canDial(get, never):Bool;
+
+	public function new() {}
+
+	public function bind(address:String, port:Int):Void {}
+
+	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+		return null;
+	}
+
+	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):crossbyte.Future<ReflexiveAddress> {
+		return null;
+	}
+
+	public function localAddressFor(destination:String):crossbyte.Future<String> {
+		return null;
+	}
+
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
+			?transport:TurnTransport):crossbyte.Future<ReflexiveAddress> {
+		calls.push("allocateRelay " + server + ":" + port + " " + username);
+		return null;
+	}
+
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+		calls.push("dialRelayed " + address + ":" + port + " " + timeoutMs);
+		return null;
+	}
+
+	public function permitRelayedPeer(address:String):Void {
+		calls.push("permitRelayedPeer " + address);
+	}
+
+	public function listen():Void {}
+
+	public function close():Void {}
+
+	private function get_localAddress():String {
+		return "127.0.0.1";
+	}
+
+	private function get_localPort():Int {
+		return 0;
+	}
+
+	private function get_isRunning():Bool {
+		return false;
+	}
+
+	private function get_canDial():Bool {
+		return true;
+	}
+
+	private function get_onAccept():INetConnection->Void {
+		return null;
+	}
+
+	private function set_onAccept(value:INetConnection->Void):INetConnection->Void {
+		return value;
+	}
+
+	private function get_onDisconnect():(INetConnection, Reason) -> Void {
+		return null;
+	}
+
+	private function set_onDisconnect(value:(INetConnection, Reason) -> Void):(INetConnection, Reason) -> Void {
+		return value;
+	}
+
+	private function get_onError():Reason->Void {
+		return null;
+	}
+
+	private function set_onError(value:Reason->Void):Reason->Void {
+		return value;
 	}
 }

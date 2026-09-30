@@ -76,50 +76,6 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 		return host;
 	}
 
-	/**
-		Asks a TURN relay for an address through the port this host listens on,
-		for the peers hole punching cannot reach. A reliable datagram host
-		only: its one socket both listens and dials, which is what a relay has
-		to be reached through. See `ReliableDatagramServerSocket.allocateRelay`.
-
-		@throws IllegalOperationError On a TCP or WebSocket host.
-	**/
-	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
-			?transport:TurnTransport):Future<ReflexiveAddress> {
-		return __relayHost("allocateRelay").allocateRelay(server, port, username, password, useChannels, transport);
-	}
-
-	/**
-		Opens a session to a peer through the relay `allocateRelay` was granted.
-		See `ReliableDatagramServerSocket.connectRelayed`.
-
-		@throws IllegalOperationError On a TCP or WebSocket host.
-	**/
-	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
-		return __relayHost("dialRelayed").dialRelayed(address, port, timeoutMs);
-	}
-
-	/**
-		Lets a peer reach this host through the relay before this host has sent
-		it anything. See `ReliableDatagramServerSocket.permitRelayedPeer`.
-
-		@throws IllegalOperationError On a TCP or WebSocket host.
-	**/
-	public function permitRelayedPeer(address:String):Void {
-		__relayHost("permitRelayedPeer").permitRelayedPeer(address);
-	}
-
-	@:noCompletion private function __relayHost(what:String):RUDPHost {
-		var host = Std.downcast(this, RUDPHost);
-
-		if (host == null) {
-			throw new crossbyte.errors.IllegalOperationError("A " + this.protocol + " host has no relay: " + what
-				+ " is for a reliable datagram host, whose one socket both listens and dials.");
-		}
-
-		return host;
-	}
-
 	private static inline function __isSecureWebSocketUri(uri:String):Bool {
 		if (uri == null) {
 			return false;
@@ -144,7 +100,7 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	 * transport, so there is no listening endpoint here to leave from.
 	 */
 	public function dial(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
-		throw new crossbyte.errors.IllegalOperationError("A " + protocol
+		throw new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
 			+ " host cannot dial from its listening endpoint: accepting and connecting are separate sockets on a stream transport. Use NetConnection for an outgoing session.");
 	}
 
@@ -153,8 +109,32 @@ private class BaseNetHost<TServer:ServerSocket> implements INetHost {
 	 * endpoint here whose outside appearance would mean anything.
 	 */
 	public function discoverPublicAddress(server:String, port:Int = 3478, timeoutMs:Int = 3000):Future<ReflexiveAddress> {
-		throw new crossbyte.errors.IllegalOperationError("A " + protocol
+		throw new crossbyte.errors.IllegalOperationError("A " + protocol.toString()
 			+ " host has no listening endpoint to discover: accepting and connecting are separate sockets on a stream transport.");
+	}
+
+	/**
+	 * Always refuses, as `dial` does: a relay is reached through one socket
+	 * that both listens and dials, and a stream host has two.
+	 */
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
+			?transport:TurnTransport):Future<ReflexiveAddress> {
+		throw __noRelay("allocateRelay");
+	}
+
+	/** Always refuses; see `allocateRelay`. **/
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+		throw __noRelay("dialRelayed");
+	}
+
+	/** Always refuses; see `allocateRelay`. **/
+	public function permitRelayedPeer(address:String):Void {
+		throw __noRelay("permitRelayedPeer");
+	}
+
+	@:noCompletion private function __noRelay(what:String):crossbyte.errors.IllegalOperationError {
+		return new crossbyte.errors.IllegalOperationError("A " + protocol.toString() + " host has no relay: " + what
+			+ " needs one socket that both listens and dials, and accepting and connecting are separate sockets on a stream transport.");
 	}
 
 	/**
@@ -364,8 +344,8 @@ private class RUDPHost implements INetHost {
 	 * Through the socket this host listens on, so the relay's permissions
 	 * describe the traffic its sessions send.
 	 */
-	public function allocateRelay(server:String, port:Int, username:String, password:String, useChannels:Bool,
-			transport:Null<TurnTransport>):Future<ReflexiveAddress> {
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
+			?transport:TurnTransport):Future<ReflexiveAddress> {
 		return __server.allocateRelay(server, port, username, password, useChannels, transport);
 	}
 

@@ -96,6 +96,37 @@ interface INetHost {
 	 * running, because `localPort` has nothing to pair the answer with.
 	 */
 	public function localAddressFor(destination:String):Future<String>;
+
+	/**
+	 * Asks a TURN relay for an address, through this host's listening
+	 * endpoint, for the peers hole punching cannot reach.
+	 *
+	 * Available exactly where `dial` is: a relay is reached through the one
+	 * socket that both listens and dials, and the permissions it grants
+	 * describe the traffic that socket sends.
+	 *
+	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
+	 */
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
+		?transport:TurnTransport):Future<ReflexiveAddress>;
+
+	/**
+	 * Opens an outgoing session to a peer through the relay `allocateRelay`
+	 * was granted. Like one from `dial`, it does not surface through
+	 * `onAccept`: the caller already holds it.
+	 *
+	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
+	 */
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection;
+
+	/**
+	 * Lets a peer reach this host through the relay before this host has sent
+	 * it anything.
+	 *
+	 * @throws crossbyte.errors.IllegalOperationError when `canDial` is false.
+	 */
+	public function permitRelayedPeer(address:String):Void;
+
 	/** Starts accepting incoming connections. */
 	public function listen():Void;
 	/** Stops the listener and closes the host. */

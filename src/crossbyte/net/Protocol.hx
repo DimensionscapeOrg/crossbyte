@@ -12,4 +12,20 @@ enum abstract Protocol(Int) from Int to Int {
 	var RUDP:Int = 3;
 	/** Local named-pipe / Unix-domain transport. */
 	var LOCAL:Int = 4;
+
+	/**
+		The protocol's name. Call it where one is written into text: joined to
+		a string, an abstract over `Int` is its number, and a refusal read "A 0
+		host cannot dial".
+	**/
+	public function toString():String {
+		return switch (abstract) {
+			case TCP: "TCP";
+			case UDP: "UDP";
+			case WEBSOCKET: "WebSocket";
+			case RUDP: "reliable datagram";
+			case LOCAL: "local";
+			default: "protocol " + this;
+		}
+	}
 }
