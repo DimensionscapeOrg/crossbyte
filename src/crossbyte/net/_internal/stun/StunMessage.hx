@@ -50,6 +50,13 @@ class StunMessage {
 	public static inline var BINDING_ERROR:Int = 0x0111;
 
 	public static inline var ATTR_MAPPED_ADDRESS:Int = 0x0001;
+
+	// RFC 5780, NAT behaviour discovery: ask a server to answer from its
+	// other address or port, and learn what those are.
+	public static inline var ATTR_CHANGE_REQUEST:Int = 0x0003;
+	public static inline var ATTR_RESPONSE_ORIGIN:Int = 0x802B;
+	public static inline var ATTR_OTHER_ADDRESS:Int = 0x802C;
+
 	public static inline var ATTR_USERNAME:Int = 0x0006;
 	public static inline var ATTR_MESSAGE_INTEGRITY:Int = 0x0008;
 	public static inline var ATTR_ERROR_CODE:Int = 0x0009;
@@ -395,6 +402,64 @@ class StunMessage {
 	public function alternateServerAddress():Null<ReflexiveAddress> {
 		var value = attribute(ATTR_ALTERNATE_SERVER);
 		return value != null ? __readAddress(value, false) : null;
+	}
+
+	/**
+		`OTHER-ADDRESS`: the server's other address and port, which RFC 5780
+		has a server that can answer from two say, so a client can ask it
+		there. Plain, not XORed. Null from a server that cannot.
+	**/
+	public function otherAddress():Null<ReflexiveAddress> {
+		var value = attribute(ATTR_OTHER_ADDRESS);
+		return value != null ? __readAddress(value, false) : null;
+	}
+
+	/** `RESPONSE-ORIGIN`: where the server says it answered from. Plain, not XORed. **/
+	public function responseOrigin():Null<ReflexiveAddress> {
+		var value = attribute(ATTR_RESPONSE_ORIGIN);
+		return value != null ? __readAddress(value, false) : null;
+	}
+
+	/**
+		`CHANGE-REQUEST`: asks a server to answer from its other address, its
+		other port, or both, how RFC 5780 tells what a NAT lets back in.
+	**/
+	public static function changeRequest(changeAddress:Bool, changePort:Bool):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.writeByte(0);
+		bytes.writeByte(0);
+		bytes.writeByte(0);
+		bytes.writeByte((changeAddress ? 0x04 : 0) | (changePort ? 0x02 : 0));
+		bytes.position = 0;
+		return new StunAttribute(ATTR_CHANGE_REQUEST, bytes);
+	}
+
+	/**
+		An address attribute in the MAPPED-ADDRESS format, not XORed: what
+		`OTHER-ADDRESS`, `RESPONSE-ORIGIN` and `ALTERNATE-SERVER` are written
+		as. IPv4 only, which is what the servers here are given.
+
+		@throws ArgumentError When `address` is not an IPv4 address.
+	**/
+	public static function plainAddress(type:Int, address:String, port:Int):StunAttribute {
+		var octets = ipv4Octets(address);
+
+		if (octets == null) {
+			throw new ArgumentError("\"" + address + "\" is not an IPv4 address.");
+		}
+
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeByte(0);
+		value.writeByte(FAMILY_IPV4);
+		value.writeShort(port);
+
+		for (octet in octets) {
+			value.writeByte(octet);
+		}
+
+		value.position = 0;
+		return new StunAttribute(type, value);
 	}
 
 	/** The value of a text attribute such as `REALM` or `NONCE`, or null. **/
