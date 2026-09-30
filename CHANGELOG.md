@@ -1220,6 +1220,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerSocket`, and so an `HTTPServer`, listens on neko. With no
+  backlog given, `listen()` asked for one of `0x7FFFFFFF`, which neko's
+  31-bit integers cannot carry, so its natives threw and no server could
+  start. The default is `0x7FFFFFF` on every target now, as
+  `ServerWebSocket`'s already was, and `FlexSocket.listen()`'s too; any
+  backlog past the system's maximum is granted as that maximum, so what a
+  server gets is unchanged, 200 connections on a client edition of
+  Windows, measured for each value.
 - A `ServerWebSocket` accepts sessions on eval, hl and neko. Each session
   it accepted drew a client's handshake key from `SecureRandom` before
   asking whether it was a client, and `SecureRandom` refuses on those
