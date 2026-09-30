@@ -6,8 +6,8 @@ package crossbyte._internal.brotli.codec.encode;
  */
 class Dictionary_hash
 {
-	public static var kStaticDictionaryHash:Array<UInt> = [
-];/*
+	// Built by BrotliCodec on first use; null until then.
+	public static var kStaticDictionaryHash:Array<UInt> = null;/*
 	public static var kStaticDictionaryHash:Array<UInt> = [
   0x7d48, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
   0x0000, 0x5564, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,

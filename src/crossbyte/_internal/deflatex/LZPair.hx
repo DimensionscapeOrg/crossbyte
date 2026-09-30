@@ -71,7 +71,12 @@ class LZPair {
 	}
 }
 
-private class Symbols {
+/**
+ * The length and distance ranges of RFC 1951 section 3.2.5. Built from
+ * nothing but constants, so a class can make its own during its static
+ * initialisation without depending on LZPair's having run first.
+ */
+class Symbols {
 	public var lenLower:Vector<Int>;
 	public var lenUpper:Vector<Int>;
 	public var lenNBits:Vector<Int>;
