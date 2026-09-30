@@ -105,6 +105,7 @@ class LoaderRun {
 			// Created on the loader's thread before the load was queued, so
 			// close() can reach a request that has already started.
 			http.cancelToken = __token;
+			http.maxDecompressedSize = request.maxDecompressedSize;
 
 			// The last response's status and headers, reported once, ahead of
 			// the outcome: a redirect's own block is not the answer.

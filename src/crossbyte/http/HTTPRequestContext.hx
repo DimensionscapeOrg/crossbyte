@@ -87,6 +87,13 @@ typedef HTTPRequestContext = {
 	@:optional var onRedirect:(url:String) -> Void;
 
 	/**
+	 * The most bytes a compressed response may decode to before the request
+	 * fails; `<= 0` removes the limit. Absent means the built-in client's own
+	 * default, 64 MB. See `URLRequest.maxDecompressedSize`.
+	 */
+	@:optional var maxDecompressedSize:Int;
+
+	/**
 	 * Signals that the caller has abandoned this request.
 	 *
 	 * A backend should register through `onCancel` and stop whatever it can:

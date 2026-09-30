@@ -467,7 +467,7 @@ class HTTP2Backend implements HTTPBackend {
 		// request sent with no Accept-Encoding accepts any coding (RFC 9110
 		// 12.5.3), and a gzip body reached the caller still compressed.
 		try {
-			body = crossbyte._internal.http.Http.decodeResponseBody(body, headers.get("content-encoding"));
+			body = Http.decodeResponseBody(body, headers.get("content-encoding"), context.maxDecompressedSize);
 		} catch (error:Dynamic) {
 			if (Std.isOfType(error, String)) {
 				context.onError('Unsupported content encoding: ${error}', body);

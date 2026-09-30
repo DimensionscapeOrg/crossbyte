@@ -122,6 +122,13 @@ class Http {
 	 */
 	public var cancelToken:HTTPCancelToken = new HTTPCancelToken();
 
+	/**
+		The most bytes this response may decode to; `<= 0` removes the limit.
+		`MAX_DECOMPRESSED_BODY_SIZE` unless the request says otherwise:
+		`URLRequest.maxDecompressedSize` sets it, per load.
+	**/
+	public var maxDecompressedSize:Int = MAX_DECOMPRESSED_BODY_SIZE;
+
 	private var __socket:FlexSocket;
 	private var __url:URL;
 	private var __headers:Array<String>;
@@ -647,6 +654,7 @@ class Http {
 				__url = new URL(location);
 				__redirect = true;
 			},
+			maxDecompressedSize: maxDecompressedSize,
 			onProgress: onProgress,
 			onError: onError,
 			onComplete: onComplete,
@@ -897,16 +905,21 @@ class Http {
 	}
 
 	@:noCompletion private function __decodeResponseBody(data:Bytes):Bytes {
-		return decodeResponseBody(data, __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null);
+		return decodeResponseBody(data, __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null,
+			maxDecompressedSize);
 	}
 
 	/**
 	 * Undoes a response's content codings, within `MAX_CONTENT_CODINGS` and
-	 * `MAX_DECOMPRESSED_BODY_SIZE`. Throws the coding's name, a `String`, for
-	 * one this build cannot decode, and an exception for a body past the
-	 * limits. Shared with the HTTP/2 backend, which did not decode at all.
+	 * `limit`: `MAX_DECOMPRESSED_BODY_SIZE` unless given. Throws the
+	 * coding's name, a `String`, for one this build cannot decode, and an
+	 * exception for a body past the limits. Shared with the HTTP/2 backend,
+	 * which did not decode at all.
 	 */
-	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>):Bytes {
+	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>, ?limit:Int):Bytes {
+		if (limit == null) {
+			limit = MAX_DECOMPRESSED_BODY_SIZE;
+		}
 		if (data == null || data.length == 0) {
 			return data;
 		}
@@ -952,7 +965,7 @@ class Http {
 
 		var payload:ByteArray = data;
 		for (i in 0...encodings.length) {
-			payload.uncompress(encodings[encodings.length - 1 - i], MAX_DECOMPRESSED_BODY_SIZE);
+			payload.uncompress(encodings[encodings.length - 1 - i], limit > 0 ? limit : 0);
 		}
 
 		return payload;
