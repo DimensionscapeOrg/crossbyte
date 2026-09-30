@@ -1220,6 +1220,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Four bytes of Brotli no longer hang the decoder for good. A stream that
+  declared a metadata block and ended before it did kept the decoder asking
+  for input that was never coming, in a loop that allocated nothing, so no
+  output ceiling tripped: one request body sent with `Content-Encoding: br`
+  stopped a server answering anyone, and as a client response it froze a
+  native process at its next collection. It now fails at once, as the C
+  decoder it was ported from does, and the parser fuzz suite covers Brotli
+  too.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of

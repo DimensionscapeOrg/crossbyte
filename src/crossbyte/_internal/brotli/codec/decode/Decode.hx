@@ -1140,14 +1140,24 @@ static function BrotliDecompressedSize(encoded_size:Int,
 		  if(s.state== BROTLI_STATE_METADATA){
 			while (s.meta_block_remaining_len > 0) {
 			  if (!BrotliReadMoreInput(s.br)) {
+				// `break`, as in the C this was ported from. It was
+				// `continue`, which re-tested the same unchanged length and
+				// asked for input that was never coming again: four bytes
+				// declaring a metadata block and then ending held the thread
+				// in this loop for good, allocating nothing, so no output
+				// ceiling ever tripped.
 				result = BROTLI_RESULT_NEEDS_MORE_INPUT;
-				continue;
+				break;
 			  }
 			  /* Read one byte and ignore it. */
 			  BrotliReadBits( s.br, 8);
 			  --s.meta_block_remaining_len;
 			}
-			s.state = BROTLI_STATE_METABLOCK_DONE;
+			// Advance only once the whole block has been skipped; the check at
+			// the top of the loop turns running out of input into a failure.
+			if (result == BROTLI_RESULT_SUCCESS) {
+			  s.state = BROTLI_STATE_METABLOCK_DONE;
+			}
 			continue;
 		  }
 		  if(s.state== BROTLI_STATE_HUFFMAN_CODE_0){
