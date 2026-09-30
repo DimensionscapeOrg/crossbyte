@@ -137,6 +137,53 @@ class MySQLNativeSessionTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testTimeZoneAndSqlModeAreSent():Void {
+		// Both were escaped into a buffer that was then dropped, and the
+		// server was sent "SET time_zone = :tz;" -- a syntax error -- so any
+		// config naming either failed to open, every time.
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.timeZone = "+00:00";
+		config.sqlMode = "STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES";
+		config.charset = "utf8mb4";
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.open(config);
+
+		var queries:Array<String> = __server.queries();
+		Assert.isTrue(queries.indexOf("SET NAMES utf8mb4;") >= 0, queries.join(" | "));
+		Assert.isTrue(queries.indexOf("SET time_zone = '+00:00';") >= 0, queries.join(" | "));
+		Assert.isTrue(queries.indexOf("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES';") >= 0, queries.join(" | "));
+		connection.close();
+	}
+
+	public function testASessionThatFailsToSetUpIsClosed():Void {
+		// The connection was left open when a setting failed after connecting,
+		// so a pool factory retrying piled up server connections.
+		__server.onQuery = function(session, sql) {
+			if (StringTools.startsWith(sql, "SET time_zone")) {
+				session.error(1298, "HY000", "Unknown or incorrect time zone: 'Mars/Olympus'");
+				return true;
+			}
+			return false;
+		};
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.timeZone = "Mars/Olympus";
+
+		Assert.raises(() -> new MySQLConnection().open(config), crossbyte.errors.IOError);
+		Assert.isTrue(__server.waitFor(events -> events.filter(e -> e.kind == "quit").length == 1),
+			"the connection whose setup failed was left open");
+	}
+
+	public function testAnUnsupportedCharsetIsRefusedBeforeConnecting():Void {
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.charset = "klingon";
+
+		Assert.raises(() -> new MySQLConnection().open(config), crossbyte.errors.ArgumentError);
+		Assert.equals(0, __server.eventsOf("handshake").length);
+	}
+
 	private function __pool():ConnectionPool<MySQLConnection> {
 		var config:MySQLConfig = __config();
 		return new ConnectionPool<MySQLConnection>({
