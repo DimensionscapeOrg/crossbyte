@@ -1,5 +1,6 @@
 package crossbyte._internal.deflatex;
 
+import crossbyte._internal.deflatex.LZPair.Symbols;
 import crossbyte._internal.deflatex.utils.BitsOutput;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
@@ -53,21 +54,26 @@ class Deflater {
 	private static final NIL:Int = -1;
 
 	/*
-	 * Symbol lookups, derived once from the tables in LZPair so those stay the
-	 * single description of the format.
+	 * Symbol lookups, derived from LZPair's description of the format.
 	 *
-	 * Built on first use rather than in a static initialiser: that would depend
-	 * on LZPair's own initialiser having already run, which Haxe does not
-	 * promise across modules. Each vector is published only once it is fully
-	 * populated, so a concurrent builder never reads a half-filled one, two
-	 * threads may both build, and the loser's copy is simply dropped.
+	 * Built as the class is initialised, which happens before any other thread
+	 * can call in: at startup natively, and under the class-initialisation
+	 * lock on the jvm. They were built on first use and published by setting
+	 * `lengthSymbol` last, but nothing orders six plain stores as another
+	 * thread sees them, a compiler may reorder them, and so may a weakly
+	 * ordered CPU, so a thread that saw `lengthSymbol` set could still read
+	 * a null `lengthBase`. There are about nine hundred entries.
+	 *
+	 * From a Symbols of their own rather than LZPair.SYMBOLS, so nothing here
+	 * depends on which class Haxe initialises first.
 	 */
-	private static var lengthSymbol:Vector<Int>;
-	private static var lengthBase:Vector<Int>;
-	private static var lengthExtra:Vector<Int>;
-	private static var distanceSymbol:Vector<Int>;
-	private static var distanceBase:Vector<Int>;
-	private static var distanceExtra:Vector<Int>;
+	private static final __tables:SymbolTables = new SymbolTables(new Symbols(), MIN_MATCH, MAX_MATCH);
+	private static final lengthSymbol:Vector<Int> = __tables.lengthSymbol;
+	private static final lengthBase:Vector<Int> = __tables.lengthBase;
+	private static final lengthExtra:Vector<Int> = __tables.lengthExtra;
+	private static final distanceSymbol:Vector<Int> = __tables.distanceSymbol;
+	private static final distanceBase:Vector<Int> = __tables.distanceBase;
+	private static final distanceExtra:Vector<Int> = __tables.distanceExtra;
 
 	private var crc:CRC32;
 
@@ -102,8 +108,6 @@ class Deflater {
 	public function compress(stream:Bytes):Bytes {
 		crc = new CRC32();
 		crc.updateBytes(stream, 0, stream.length);
-
-		buildTables();
 
 		var compressed:Bytes = deflateFixed(stream);
 		if (compressed.length < storedLength(stream.length)) {
@@ -383,68 +387,65 @@ class Deflater {
 	}
 
 	/**
-	 * Derive the symbol lookups from the ranges in LZPair.
-	 */
-	private static function buildTables():Void {
-		if (lengthSymbol != null) {
-			return;
-		}
-
-		var symbols = LZPair.SYMBOLS;
-
-		var lSymbol:Vector<Int> = new Vector<Int>(MAX_MATCH + 1);
-		for (i in 0...MAX_MATCH + 1) {
-			lSymbol[i] = 0;
-		}
-		for (length in MIN_MATCH...MAX_MATCH + 1) {
-			for (i in 0...29) {
-				if (length <= symbols.lenUpper[i]) {
-					lSymbol[length] = 257 + i;
-					break;
-				}
-			}
-		}
-
-		var lBase:Vector<Int> = new Vector<Int>(29);
-		var lExtra:Vector<Int> = new Vector<Int>(29);
-		for (i in 0...29) {
-			lBase[i] = symbols.lenLower[i];
-			lExtra[i] = symbols.lenNBits[i];
-		}
-
-		// 0..255 index distance-1 directly, 256..511 index it in blocks of 128.
-		var dSymbol:Vector<Int> = new Vector<Int>(512);
-		for (i in 0...512) {
-			var distance:Int = i < 256 ? i + 1 : ((i - 256) << 7) + 1;
-			dSymbol[i] = 0;
-			for (j in 0...30) {
-				if (distance <= symbols.distUpper[j]) {
-					dSymbol[i] = j;
-					break;
-				}
-			}
-		}
-
-		var dBase:Vector<Int> = new Vector<Int>(30);
-		var dExtra:Vector<Int> = new Vector<Int>(30);
-		for (i in 0...30) {
-			dBase[i] = symbols.distLower[i];
-			dExtra[i] = symbols.distNBits[i];
-		}
-
-		lengthBase = lBase;
-		lengthExtra = lExtra;
-		distanceSymbol = dSymbol;
-		distanceBase = dBase;
-		distanceExtra = dExtra;
-		lengthSymbol = lSymbol;
-	}
-
-	/**
 	 * Applies the deflate compression on the supplied bytes.
 	 * @return Compressed output
 	 */
 	public static function apply(stream:Bytes):Bytes {
 		return new Deflater().compress(stream);
+	}
+}
+
+/**
+ * The symbol lookups `Deflater` writes matches with, derived from the ranges
+ * in LZPair.
+ */
+private class SymbolTables {
+	public final lengthSymbol:Vector<Int>;
+	public final lengthBase:Vector<Int>;
+	public final lengthExtra:Vector<Int>;
+	public final distanceSymbol:Vector<Int>;
+	public final distanceBase:Vector<Int>;
+	public final distanceExtra:Vector<Int>;
+
+	public function new(symbols:Symbols, minMatch:Int, maxMatch:Int) {
+		lengthSymbol = new Vector<Int>(maxMatch + 1);
+		for (i in 0...maxMatch + 1) {
+			lengthSymbol[i] = 0;
+		}
+		for (length in minMatch...maxMatch + 1) {
+			for (i in 0...29) {
+				if (length <= symbols.lenUpper[i]) {
+					lengthSymbol[length] = 257 + i;
+					break;
+				}
+			}
+		}
+
+		lengthBase = new Vector<Int>(29);
+		lengthExtra = new Vector<Int>(29);
+		for (i in 0...29) {
+			lengthBase[i] = symbols.lenLower[i];
+			lengthExtra[i] = symbols.lenNBits[i];
+		}
+
+		// 0..255 index distance-1 directly, 256..511 index it in blocks of 128.
+		distanceSymbol = new Vector<Int>(512);
+		for (i in 0...512) {
+			var distance:Int = i < 256 ? i + 1 : ((i - 256) << 7) + 1;
+			distanceSymbol[i] = 0;
+			for (j in 0...30) {
+				if (distance <= symbols.distUpper[j]) {
+					distanceSymbol[i] = j;
+					break;
+				}
+			}
+		}
+
+		distanceBase = new Vector<Int>(30);
+		distanceExtra = new Vector<Int>(30);
+		for (i in 0...30) {
+			distanceBase[i] = symbols.distLower[i];
+			distanceExtra[i] = symbols.distNBits[i];
+		}
 	}
 }

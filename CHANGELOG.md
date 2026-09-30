@@ -1220,6 +1220,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Several threads meeting the Brotli codec for the first time at once no
+  longer crash. Its dictionary tables were marked built before they were
+  built, so a thread arriving while another built them read a dictionary
+  that was null or half filled: natively a segfault, on the jvm a
+  NullPointerException. URLLoader decodes on up to sixteen pool threads,
+  so a burst of loads at startup was exactly that. The tables are now built
+  once, under a lock, and published only when complete, and no longer
+  decoded at startup by programs that never use Brotli. Deflate's symbol
+  tables are built as its class initialises, since their first-use build
+  could be seen half done on a weakly ordered CPU.
 - A Brotli stream that ends where its literal context map should begin is
   refused rather than crashing a native process. The decoder scanned the
   map before checking it had been read, so it walked one that was never
