@@ -405,6 +405,12 @@ class WebSocketSessionTest extends utest.Test {
 			client.connect("127.0.0.1", server.localPort);
 
 			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+
 				var serverClose:WebSocketCloseEvent = null;
 				var session = sessions[0];
 				session.addEventListener(Event.CLOSE, function(e:Event) serverClose = Std.downcast(e, WebSocketCloseEvent));
@@ -445,6 +451,12 @@ class WebSocketSessionTest extends utest.Test {
 			client.connect("127.0.0.1", server.localPort);
 
 			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+
 				var session = sessions[0];
 				var chunk = new ByteArray();
 				chunk.length = 64 * 1024;
@@ -507,6 +519,12 @@ class WebSocketSessionTest extends utest.Test {
 				peer.poll();
 				return sessions.length > 0;
 			}, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+
 				var code:Int = -1;
 				sessions[0].addEventListener(Event.CLOSE, function(e:Event) {
 					var close = Std.downcast(e, WebSocketCloseEvent);
