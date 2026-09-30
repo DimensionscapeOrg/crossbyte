@@ -1960,7 +1960,14 @@ class Socket {
 				selector.selectNow();
 				selected.clear();
 			} catch (_:Dynamic) {}
+			transients.resize(0);
 		}
+
+		// Emptied as the call ends, not only as the next begins. A runtime
+		// whose last connections close stops calling, and these went on
+		// holding every socket of its last call -- each with its buffers and
+		// userData: 40 closed connections of 64 KB survived five collections.
+		asked.resize(0);
 
 		return {read: resRead, write: resWrite, others: resOthers};
 	}
