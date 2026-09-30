@@ -1244,6 +1244,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `crossbyte.ds.Vector` works off hxcpp. `v[i]` threw on eval and the jvm
+  and on JavaScript set a property of that name, losing the write: it was a
+  class implementing `ArrayAccess`, which only hxcpp honours, and is now an
+  abstract with array access over it. As in ActionScript, reading at or past
+  the length throws `RangeError` and writing at it appends. Callbacks are
+  called once each with as many of `(item, index, vector)` as they take;
+  they were tried with two arguments and, on a throw, with one and none, so
+  a callback that threw ran again without its index. `fixed` is enforced:
+  what would change the length of a fixed Vector throws `RangeError`.
+- `BitmapData.threshold` returns the pixels that passed and recolours all of
+  them. Each case of the operation ended in `break`, which in Haxe leaves
+  the loop the switch is in, so every call returned 0. It compares unsigned,
+  as ActionScript's `uint`s do, so an alpha of 0xFF is above 0x7F.
 - Removing entries while iterating works in `ListedMap`, `DenseSet` and
   `OrderedMap`. `ListedMap`'s value iterator counted the entries when it was
   made and read past the end after a removal, throwing on every target; its
