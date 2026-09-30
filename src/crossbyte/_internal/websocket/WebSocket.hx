@@ -310,12 +310,19 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			// benchmark the two for the fastest regular expression
 			// var regex:EReg = ~/^(\w+):\/\/([^\/:]+)(?::(\d+))?([^#]*)(?:#.*)?$/;
 
-			var regex:EReg = ~/^(\w+):\/\/([^:\/]+)(?::(\d+))?\/?(.*)$/;
+			// The host is a bracketed IPv6 literal or a run without colons: a
+			// URL writes an IPv6 address in brackets, and without the first
+			// alternative its colons read as the start of a port.
+			var regex:EReg = ~/^(\w+):\/\/(\[[^\]\/]*\]|[^:\/]+)(?::(\d+))?\/?(.*)$/;
 
 			if (regex.match(url)) {
 				// the URI is well-formed
 				__scheme = regex.matched(1).toLowerCase();
 				__host = regex.matched(2);
+				if (StringTools.startsWith(__host, "[")) {
+					// Dialled, looked up and named to TLS without the brackets.
+					__host = __host.substring(1, __host.length - 1);
+				}
 				if (__scheme == WSS) {
 					__secure = true;
 				} else if (__scheme == WS) {
@@ -796,7 +803,8 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	private function __doHandshake():Void {
 		var headers:Array<String> = [
 			'GET ${__path} HTTP/1.1',
-			'Host: ${__host}:${__port}',
+			// Bracketed when it is an IPv6 literal, as RFC 3986 writes one.
+			'Host: ${WebSocketHost.forUrl(__host)}:${__port}',
 			'Pragma: no-cache',
 			'Cache-Control: no-cache',
 			'Upgrade: websocket',

@@ -347,19 +347,22 @@ class WebSocket extends Socket {
 		__input.endian = __endian;
 
 		var schema = secure ? "wss" : "ws";
-		var urlReg = ~/^(.*:\/\/)?([A-Za-z0-9\-\.]+)\/?(.*)/g;
-		if (!urlReg.match(__host)) {
+		// An IPv6 literal, bracketed or bare, as well as a name or an IPv4
+		// address: the pattern this used took only the last two, and refused
+		// `::1` as an invalid host before a socket existed.
+		var target = crossbyte._internal.websocket.WebSocketHost.split(__host);
+		if (target == null) {
 			throw new IOError("Invalid host");
 		}
-		var __webHost = urlReg.matched(2);
-		var __webPath = urlReg.matched(3);
+		var __webHost = target.host;
+		var __webPath = target.path;
 
 		// The host alone, for remoteAddress: what was passed may carry a path.
 		__host = __webHost;
 		__cbInstance = CrossByte.current();
 
-		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath, protocols, null,
-			verifyCert, certAuthority);
+		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(__webHost) + ":"
+			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority);
 		// `timeout` bounds the connection and the upgrade after it, as it
 		// bounds a plain socket's connect. The session used a fixed ten
 		// seconds of its own and never waited on the upgrade at all.
