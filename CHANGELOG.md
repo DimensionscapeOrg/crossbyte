@@ -17,8 +17,9 @@ All notable changes to CrossByte will be documented in this file.
   after the handshake and before anything is sent, whether or not the
   chain is, natively, on the jvm and on Node; hl, neko and a browser
   cannot see the server's key, and refuse a pinned request rather than
-  send it unchecked. `HTTPTLSOptions` carries the settings, and
-  `HTTPRequestContext.tls` hands them to an `HTTPBackend`.
+  send it unchecked. neko's TLS checks the server whatever it is told, so
+  `verifyCert = false` changes nothing there. `HTTPTLSOptions` carries the
+  settings, and `HTTPRequestContext.tls` hands them to an `HTTPBackend`.
 - `URLRequest.maxDecompressedSize`: the most a compressed response may
   decode to before the load fails, 64 MB unless set, per request. The
   ceiling was an internal static of the native client, one number for every
