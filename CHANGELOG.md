@@ -1220,6 +1220,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `NativeProcess` runs on hl and neko, and its `pid` is the child's
+  everywhere. It asked for an OS define before it would start anything,
+  and nothing gives one to hl or neko, their bytecode runs unchanged on
+  any OS, so both refused, though their `sys.io.Process` works wherever
+  they do. On hl a child's output is read, and its exit waited for, inside
+  a blocking section: HashLink's natives for both wait without telling its
+  collector, which stops every thread until each reaches a safe point, so a
+  child quiet for five seconds held the whole runtime for five. And the id
+  was looked up as a `pid` field, by reflection, which no target's
+  `sys.io.Process` has, so `pid` and every event's `pid` read -1 natively
+  too. It comes from `getPid()`, which they all have.
 - On neko, `File.createTempFile` and `createTempDirectory` work, and so
   does every `Store.put`. Where there is no secure random source, both drew
   names from `Std.random(0x7FFFFFFF)`, and neko's Int is 31 bits: that

@@ -15,6 +15,13 @@ import haxe.macro.Context;
 	said why. A native build that names no OS is taken to be for the machine
 	building it. Run from `extraParams.hxml`; a build that names its OS, or is
 	not native, is left as it is.
+
+	hl and neko are left alone on purpose. Their bytecode runs unchanged on
+	any OS, so the machine that builds it says nothing about the one that
+	will run it, and a define taken from it would compile one OS's branch
+	into a file another runs. `NativeProcess`, which refused to start
+	anything there for want of one, runs on both without it, and what
+	differs by OS is asked while running (`System.isWindows`).
 **/
 class HostPlatform {
 	private static final __platforms:Array<String> = ["windows", "linux", "mac", "macos", "android", "ios", "iphoneos", "iphonesim", "tvos", "emscripten"];
