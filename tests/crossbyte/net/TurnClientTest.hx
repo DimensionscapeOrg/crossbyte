@@ -1057,6 +1057,280 @@ class TurnClientTest extends utest.Test {
 	}
 
 	// ------------------------------------------------------------------
+	// IPv6, RFC 8489's credentials, and streams
+	// ------------------------------------------------------------------
+
+	/**
+		An IPv6 relayed address is an allocation, not "nothing".
+
+		The decoder read only the IPv4 family, so a relay granting an IPv6
+		address, XORed with the transaction as RFC 8489 has it, was
+		reported as having allocated nothing, and the allocation it held was
+		never used.
+	**/
+	public function testAnIPv6RelayedAddressIsTaken():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.relayIPv6Address = "2001:db8::10";
+		network.relay.ipv6Relayed = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isNull(failure, failure);
+		var relayed = Require.notNull(client.relayedAddress, "an IPv6 relayed address was read as none");
+		Assert.equals("2001:db8::10", relayed.address);
+	}
+
+	/**
+		An IPv6 allocation is asked for, and relays to IPv6 peers: permitted,
+		sent to however their address was spelled, and heard from.
+	**/
+	public function testAnIPv6AllocationRelaysToIPv6Peers():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.relayIPv6Address = "2001:db8::10";
+
+		var client = network.client();
+		client.requestIPv6 = true;
+		var heard:Array<String> = [];
+		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
+			payload.position = 0;
+			heard.push(address + " " + port + " " + payload.readUTFBytes(payload.length));
+		};
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		Require.notNull(client.relayedAddress);
+		Assert.equals("2001:db8::10", client.relayedAddress.address);
+
+		client.permit("2001:DB8:0:0::7", network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("to a v6 peer");
+		payload.position = 0;
+		client.sendTo(payload, "2001:db8::7", 5000);
+		network.advance(0.1);
+
+		Assert.equals(1, network.toPeers.length, "nothing was relayed to the IPv6 peer");
+
+		if (network.toPeers.length > 0) {
+			Assert.equals("2001:db8::7", network.toPeers[0].address);
+			Assert.equals(5000, network.toPeers[0].port);
+		}
+
+		network.peerSends(network.relay.allAllocations()[0].relayPort, "from a v6 peer", "2001:db8::7", 5000);
+		network.advance(0.1);
+		Assert.equals("2001:db8::7 5000 from a v6 peer", heard[0]);
+
+		// And its peers are its own family.
+		Assert.raises(() -> client.permit(PEER, network.now), crossbyte.errors.ArgumentError);
+	}
+
+	/** A relay that has no IPv6 address to give says so, with a code to decide on. **/
+	public function testARelayWithoutIPv6RefusesWithItsCode():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.requestIPv6 = true;
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 5);
+
+		var cause:TurnError = Require.notNull(Std.downcast(client.allocated.cause, TurnError));
+		Assert.equals(440, cause.code);
+	}
+
+	/**
+		A relay offering RFC 8489's password algorithms is answered with the
+		SHA-256 key it offered first and MESSAGE-INTEGRITY-SHA256 alone.
+
+		Only MD5 and SHA-1 were known, so a relay that required what it offered
+		refused every request.
+	**/
+	public function testOfferedPasswordAlgorithmsAreUsed():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.passwordAlgorithms = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isNull(failure, failure);
+		Assert.isTrue(client.active, "a relay offering SHA-256 would not allocate");
+
+		var requests = network.sentOfType(StunMessage.ALLOCATE_REQUEST);
+		var signed = Require.notNull(StunMessage.decode(requests[requests.length - 1].bytes));
+		Assert.notNull(signed.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY_SHA256), "the request was not signed with SHA-256");
+		Assert.isNull(signed.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY), "the request carried SHA-1 integrity as well");
+		Assert.equals(StunMessage.PASSWORD_ALGORITHM_SHA256, signed.attribute(StunMessage.ATTR_PASSWORD_ALGORITHM)[1]);
+
+		// The first the relay lists is the one taken, and the integrity is
+		// SHA-256 whichever it is.
+		var other = new TurnNetwork();
+		other.relay.passwordAlgorithms = true;
+		other.relay.offeredAlgorithms = [StunMessage.PASSWORD_ALGORITHM_MD5, StunMessage.PASSWORD_ALGORITHM_SHA256];
+		var md5 = other.client();
+		md5.allocated.then(_ -> {}, _ -> {});
+		md5.allocate(other.now);
+		other.run(() -> md5.active, 5);
+
+		Assert.isTrue(md5.active, "a relay offering MD5 first would not allocate");
+	}
+
+	/**
+		A nonce offering password algorithms on an answer that lists none is a
+		downgrade, and is not answered (RFC 8489 section 9.2.5). The client
+		retried with MD5, which is what whoever stripped the list wanted.
+	**/
+	public function testAStrippedAlgorithmListIsNotAnswered():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.passwordAlgorithms = true;
+		network.relay.stripPasswordAlgorithms = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 5);
+
+		Assert.notNull(failure, "a stripped list neither failed nor succeeded");
+		Assert.equals(1, network.relay.requestsOf("allocate"), "a request was signed for a relay whose list of algorithms had been stripped");
+	}
+
+	/**
+		A relay offering username anonymity is sent USERHASH and never the name.
+	**/
+	public function testUsernameAnonymityIsHonoured():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.usernameAnonymity = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isNull(failure, failure);
+		Assert.isTrue(client.active, "a relay offering username anonymity would not allocate");
+
+		for (sent in network.sent) {
+			var message = StunMessage.decode(sent.bytes);
+
+			if (message != null) {
+				Assert.isNull(message.attribute(StunMessage.ATTR_USERNAME), "the username crossed the network in the clear");
+			}
+		}
+	}
+
+	/**
+		Over a stream, messages are read however the bytes arrive, split
+		across reads, several run together, ChannelData is padded both ways,
+		and nothing is retransmitted.
+
+		The client framed whole datagrams only, so a relay reached over TCP,
+		the one way out of a network that allows nothing else, could not be
+		used at all.
+	**/
+	public function testAStreamIsReadHoweverItArrives():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.streamChunk = 7;
+		network.relay.padChannelData = true;
+		network.relay.delay = 1.0;
+
+		var client = network.client(null, "user", "secret", "192.0.2.10", 0, null, TCP);
+		client.useChannels = true;
+		var heard:Array<String> = [];
+		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
+			payload.position = 0;
+			heard.push(payload.readUTFBytes(payload.length));
+		};
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 10);
+
+		Assert.isTrue(client.active, "the allocation never completed over a stream");
+		Assert.equals(2, network.relay.requestsOf("allocate"), "a request over a stream was retransmitted");
+
+		network.relay.delay = 0;
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+		network.advance(0.1);
+
+		// Three lengths, so the padding is one, two and three bytes.
+		var relayPort:Int = network.relay.allAllocations()[0].relayPort;
+		for (text in ["a", "ab", "abc", "a longer one"]) {
+			network.peerSends(relayPort, text, PEER, PEER_PORT);
+		}
+
+		network.advance(0.1);
+		Assert.equals("a,ab,abc,a longer one", heard.join(","), "what arrived over the stream was not read message by message");
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("odd");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(1, network.relay.count("channeldata-relayed"), "padded ChannelData from the client was not relayed");
+	}
+
+	/** A stream that stops making sense ends the allocation, rather than being guessed at. **/
+	public function testAStreamOfNonsenseEndsTheAllocation():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client(null, "user", "secret", "192.0.2.10", 0, null, TCP);
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		var nonsense = new ByteArray();
+		for (_ in 0...8) {
+			nonsense.writeByte(0xFF);
+		}
+		nonsense.position = 0;
+		client.receiveStream(nonsense, network.now);
+
+		Assert.isFalse(client.active);
+		Assert.equals(1, lost.length);
+
+		// And a connection that closes is a loss too.
+		var other = network.client(null, "user", "secret", "192.0.2.11", 0, null, TCP);
+		var otherLost:Int = 0;
+		other.onLost = _ -> otherLost++;
+		other.allocated.then(_ -> {}, _ -> {});
+		other.allocate(network.now);
+		network.run(() -> other.active, 5);
+		other.streamClosed("reset by peer");
+
+		Assert.isFalse(other.active);
+		Assert.equals(1, otherLost);
+	}
+
+	// ------------------------------------------------------------------
 	// Closing
 	// ------------------------------------------------------------------
 

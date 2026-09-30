@@ -19,5 +19,11 @@ typedef TurnServer = {
 	?port:Int,
 
 	username:String,
-	password:String
+	password:String,
+
+	/**
+		How the relay is reached: UDP when left out, or TCP for a network that
+		lets only TCP out. See `TurnTransport`.
+	**/
+	?transport:TurnTransport
 }

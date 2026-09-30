@@ -49,8 +49,15 @@ class TurnNetwork {
 	/** Called every tick once the clients are polled: an application's own traffic, say. **/
 	public dynamic function onTick():Void {}
 
+	/**
+		How many bytes at a time a stream client is handed what arrived for it,
+		so a message split across reads, and several run together in one, both
+		happen; 0 for all of it at once.
+	**/
+	public var streamChunk:Int = 0;
+
 	@:noCompletion private var __relays:Map<String, FakeTurnRelay> = new Map();
-	@:noCompletion private var __clients:Array<{client:TurnClient, address:String, port:Int}> = [];
+	@:noCompletion private var __clients:Array<NetworkClient> = [];
 	@:noCompletion private var __queue:Array<InFlight> = [];
 	@:noCompletion private var __nextPort:Int = 50000;
 
@@ -94,8 +101,8 @@ class TurnNetwork {
 		over its socket; a new port when 0.
 	**/
 	public function client(?server:String, username:String = "user", password:String = "secret", clientAddress:String = "192.0.2.10",
-			sharePort:Int = 0, ?serverPort:Int):TurnClient {
-		var made = new TurnClient(server != null ? server : relayAddress, serverPort != null ? serverPort : relayPort, username, password);
+			sharePort:Int = 0, ?serverPort:Int, ?transport:TurnTransport):TurnClient {
+		var made = new TurnClient(server != null ? server : relayAddress, serverPort != null ? serverPort : relayPort, username, password, transport);
 		var port:Int = sharePort > 0 ? sharePort : __nextPort++;
 
 		// A socket delivers to whoever holds it now.
@@ -107,7 +114,7 @@ class TurnNetwork {
 			}
 		}
 
-		__clients.push({client: made, address: clientAddress, port: port});
+		__clients.push(new NetworkClient(made, clientAddress, port, transport != null && transport != UDP));
 
 		made.onSend = function(payload:ByteArray, address:String, toPort:Int):Void {
 			sent.push({at: now, bytes: __copy(payload), address: address, port: toPort, fromPort: port});
@@ -228,7 +235,7 @@ class TurnNetwork {
 			}
 
 			if (index < 0) {
-				return;
+				break;
 			}
 
 			var item = __queue[index];
@@ -242,8 +249,34 @@ class TurnNetwork {
 
 			for (entry in __clients) {
 				if (entry.address == item.address && entry.port == item.port) {
-					entry.client.receive(item.bytes, item.fromAddress, item.fromPort, now);
+					if (entry.stream) {
+						entry.pending.position = entry.pending.length;
+						entry.pending.writeBytes(item.bytes, 0, item.bytes.length);
+					} else {
+						entry.client.receive(item.bytes, item.fromAddress, item.fromPort, now);
+					}
 				}
+			}
+		}
+
+		// What arrived for a stream client, as a stream: run together, then
+		// read in pieces that need not line up with the messages.
+		for (entry in __clients) {
+			if (!entry.stream || entry.pending.length == 0) {
+				continue;
+			}
+
+			var bytes = entry.pending;
+			entry.pending = new ByteArray();
+			var at:Int = 0;
+
+			while (at < bytes.length) {
+				var size:Int = streamChunk > 0 && bytes.length - at > streamChunk ? streamChunk : bytes.length - at;
+				var piece = new ByteArray();
+				piece.writeBytes(bytes, at, size);
+				piece.position = 0;
+				at += size;
+				entry.client.receiveStream(piece, now);
 			}
 		}
 	}
@@ -274,6 +307,22 @@ typedef PeerDatagram = {
 	address:String,
 	port:Int,
 	at:Float
+}
+
+/** A client on the network: where it sends from, and for one on a stream, what has arrived and not been read. **/
+private class NetworkClient {
+	public var client(default, null):TurnClient;
+	public var address(default, null):String;
+	public var port(default, null):Int;
+	public var stream(default, null):Bool;
+	public var pending:ByteArray = new ByteArray();
+
+	public function new(client:TurnClient, address:String, port:Int, stream:Bool) {
+		this.client = client;
+		this.address = address;
+		this.port = port;
+		this.stream = stream;
+	}
 }
 
 private typedef InFlight = {
