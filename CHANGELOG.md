@@ -1267,6 +1267,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/2 server takes a request sent with trailers. The trailer
+  section, a second header block on the stream, replaced the request's
+  header section, so the request was read from the trailers, found to
+  have no `:method`, and reset: it never reached a handler. Trailers are
+  now checked and dropped, as the HTTP/1.1 server drops a chunked body's,
+  and a trailer section that does not end the stream, or that carries a
+  pseudo-header or a line break, resets the stream as RFC 9113 8.1 says.
 - The interpreter suite no longer hangs, now and then, in
   `URLLoaderHttpTest`. The HTTP tests' pump loops slept a millisecond
   between pumps with `Sys.sleep`, which on eval (Haxe 4.3.7 on Windows)

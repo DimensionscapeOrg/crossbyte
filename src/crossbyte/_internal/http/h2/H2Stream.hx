@@ -45,6 +45,12 @@ class H2Stream {
 	public var endOfStream:Bool = false;
 
 	/**
+		True once the request's header section has arrived, on the server: a
+		header block after it is the trailer section (RFC 9113 8.1).
+	**/
+	public var headerSectionReceived:Bool = false;
+
+	/**
 	 * Frames the peer has sent this stream: one per header block and one per
 	 * DATA frame. Counted rather than timed, so the frame path pays an
 	 * increment and not a clock read; a client waiting on the stream reads it
