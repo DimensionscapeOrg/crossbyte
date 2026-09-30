@@ -163,14 +163,23 @@ class RuntimeHealthTest extends utest.Test {
 		});
 		runtime.__runEventLoop();
 
-		js.Syntax.code("setTimeout({0}, 300)", () -> {
+		// Checked until the loop has come round twice after the long frame,
+		// not after a fixed 300ms: on a loaded machine the platform's timers
+		// come back late, and it once ticked only three times in that.
+		var deadline = Timer.stamp() + 4.0;
+		function check():Void {
+			if (ticks <= 4 && Timer.stamp() < deadline) {
+				js.Syntax.code("setTimeout({0}, 20)", check);
+				return;
+			}
 			var overruns = runtime.frameOverruns;
 			runtime.exit();
 			Assert.isTrue(ticks > 4, "the loop ticked " + ticks + " times");
 			Assert.isTrue(overruns >= 1, "a 45ms frame at 20ms a tick was not an overrun");
 			Assert.isTrue(worstLag >= 0.015, "the frame after a 45ms one reported a lag of " + worstLag + "s");
 			async.done();
-		});
+		}
+		js.Syntax.code("setTimeout({0}, 20)", check);
 	}
 	#end
 
