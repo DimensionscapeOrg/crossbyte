@@ -689,22 +689,21 @@ import crossbyte._internal.net.NativeSocketAddress;
 
 private class SocketInput extends haxe.io.Input {
 	var __s:Dynamic;
+	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
 
 	public function new(s:Dynamic) {
 		__s = s;
 	}
 
+	/**
+		Through `readBytes`, which knows the end of the stream -- a read of
+		nothing -- from a failure. The native `socket_recv_char` throws for
+		both, and every error but "Blocking" was taken for the end, so a
+		connection reset partway through read as one that ended cleanly.
+	**/
 	public override function readByte() {
-		return try {
-			NativeSocket.socket_recv_char(__s);
-		} catch (e:Dynamic) {
-			if (e == "Blocking")
-				throw Blocked;
-			else if (__s == null)
-				throw Custom(e);
-			else
-				throw new haxe.io.Eof();
-		}
+		readBytes(one, 0, 1);
+		return one.get(0);
 	}
 
 	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
