@@ -1244,6 +1244,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ExpiringMap` holds one object per entry, whatever it is touched. Every
+  `set` and `touch` left a queue position behind, collected only once
+  everything ahead of it had expired, so one idle session in front of 1,000
+  busy ones touched 20 times a second held 2.4 million positions, 72 MB
+  on the jvm after two minutes, however small `maxSize` was. Entries now
+  sit on a list in deadline order and a touch moves one to the end: the
+  same run retains 196 KB, and a touch allocates nothing. `length` leaves
+  out entries that have expired unswept, as it always said it did, and
+  `keys()` lists the one due soonest first.
 - `InterestSet` and `BitSet` allocate nothing per round on the jvm and
   Node. Their lists and words were `Array<Int>`s: the jvm boxed every id
   above 127 as it was added and every word as it changed, and emptying a
