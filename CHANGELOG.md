@@ -1267,6 +1267,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the interpreter, each thread serving HTTP keeps its own compiled
+  rewrite patterns and directory listings, as it does on every other
+  threaded target. They were held per thread only on cpp, neko, hl and the
+  jvm, so runtimes on two eval threads shared one map and one `EReg`,
+  which carries its last match: one could read the other's captures.
 - Closing an HTTP/2 client connection, the pool's idle sweep,
   `H2ConnectionPool.closeAll`, a request discarding a failed one, no
   longer closes its socket under the thread reading it. For TLS that

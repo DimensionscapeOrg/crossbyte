@@ -3,7 +3,7 @@ package crossbyte._internal.http;
 // Server-side, like the resolver it serves: a page has no filesystem.
 #if !(js && !nodejs)
 import haxe.ds.StringMap;
-#if (cpp || neko || hl || java || jvm)
+#if target.threaded
 import sys.thread.Tls;
 #end
 
@@ -34,7 +34,7 @@ class DirectoryListings {
 	/** Directories remembered at once; the cache starts over past this. **/
 	public static inline var LIMIT:Int = 256;
 
-	#if (cpp || neko || hl || java || jvm)
+	#if target.threaded
 	private static final __perThread:Tls<DirectoryListings> = new Tls();
 	#else
 	private static var __shared:DirectoryListings;
@@ -47,7 +47,7 @@ class DirectoryListings {
 
 	/** This thread's listings. **/
 	public static function current():DirectoryListings {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		var listings:DirectoryListings = __perThread.value;
 		if (listings == null) {
 			listings = new DirectoryListings();
