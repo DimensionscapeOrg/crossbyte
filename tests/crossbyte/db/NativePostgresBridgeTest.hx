@@ -436,6 +436,34 @@ class NativePostgresBridgeTest extends utest.Test {
 	}
 
 	/**
+		A statement the server refuses throws as well as dispatching, as
+		MySQL's does. It dispatched an `SQLErrorEvent` and returned, so to a
+		caller not listening -- an `AsyncDatabase` task among them -- a failed
+		statement read as one that had run.
+	**/
+	public function testAFailedStatementThrowsAsWellAsDispatching():Void {
+		var connection = __open(__config("localhost"));
+		var statement = new crossbyte.db.postgres.PostgresStatement();
+		statement.sqlConnection = connection;
+		statement.text = "fake:fail";
+		var heard:SQLError = null;
+		statement.addEventListener(SQLErrorEvent.ERROR, event -> heard = event.error);
+
+		var thrown:Dynamic = null;
+		try {
+			statement.execute();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, SQLError), "a refused statement did not throw an SQLError: " + thrown);
+		Assert.notNull(heard, "a refused statement was not dispatched either");
+		Assert.equals(heard, thrown, "what was thrown and what was dispatched differ");
+		Assert.isFalse(statement.executing);
+		connection.close();
+	}
+
+	/**
 		A result paged ahead of `getResult()` comes back in the order it was
 		read, and only its last page says it is complete -- the last page of a
 		result that divides evenly into pages as well.

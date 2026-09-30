@@ -514,7 +514,9 @@ class MongoCrudTest extends utest.Test {
 		var caught:crossbyte.errors.SQLError = null;
 		statement.addEventListener(SQLErrorEvent.ERROR, event -> caught = event.error);
 
-		statement.execute();
+		// Thrown as well as dispatched, as MySQL's statements do: a caller
+		// not listening read a refused command as one that had run.
+		Assert.raises(() -> statement.execute(), MongoError);
 
 		Require.notNull(caught);
 		Assert.isTrue(Std.isOfType(caught, MongoError));
@@ -525,9 +527,35 @@ class MongoCrudTest extends utest.Test {
 		// Malformed text reaches the listener too, as text.
 		statement.text = '{"find": ';
 		caught = null;
-		statement.execute();
+		Assert.raises(() -> statement.execute(), crossbyte.errors.SQLError);
 		Require.notNull(caught);
 		Assert.isTrue(Std.isOfType(caught.details(), String));
+	}
+
+	/**
+		Pages read ahead of `getResult()` say complete only for the last. Each
+		said `!executing` as it was taken, so once the last page had been read
+		every page still waiting said it was the last.
+	**/
+	public function testOnlyTheLastPageReadAheadIsComplete():Void {
+		__start();
+		server.seed("app.counted", [for (i in 1...6) new BsonDocument().add("_id", i)]);
+
+		var statement = new MongoStatement();
+		statement.sqlConnection = connection;
+		statement.text = '{"find": "counted", "sort": {"_id": 1}}';
+		statement.execute(2);
+		while (statement.executing) {
+			statement.next(2);
+		}
+
+		var pages:Array<String> = [];
+		var page = statement.getResult();
+		while (page != null) {
+			pages.push([for (row in page.data) Std.string(Reflect.field(row, "_id"))].join(",") + (page.complete ? "+" : ""));
+			page = statement.getResult();
+		}
+		Assert.equals("1,2 3,4 5+", pages.join(" "));
 	}
 
 	private function __start(?config:MongoConfig):Void {
