@@ -205,7 +205,7 @@ class HTTP2Backend implements HTTPBackend {
 		var secure:Bool = url.scheme == "https";
 		var port:Int = url.port != null ? url.port : (secure ? 443 : 80);
 		var scheme:String = secure ? "https" : "http";
-		var origin:String = '$scheme://${url.host}:$port';
+		var origin:String = scheme + "://" + HttpSyntax.authority(url.host.toLowerCase(), port, -1);
 
 		if (secure && !FlexSocket.alpnSupported) {
 			context.onError("HTTP/2 over TLS needs ALPN, which this target does not support");
@@ -215,7 +215,8 @@ class HTTP2Backend implements HTTPBackend {
 		var session:H2ClientSession = null;
 
 		try {
-			var authority:String = (port == (secure ? 443 : 80)) ? url.host : '${url.host}:$port';
+			// Bracketed for an IPv6 host: 2001:db8::1:8080 cannot be split.
+			var authority:String = HttpSyntax.authority(url.host, port, secure ? 443 : 80);
 			var body:Null<Bytes> = __body(method, data);
 			var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
 			var cookie:Null<String> = cookies != null ? cookies.headerFor(url.host, secure) : null;

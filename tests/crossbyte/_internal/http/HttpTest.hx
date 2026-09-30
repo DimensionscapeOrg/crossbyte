@@ -361,6 +361,53 @@ class HttpTest extends utest.Test {
 		Assert.equals("http://example.com:8080/dir/sub/next?x=1", Http.__resolveLocation(base, "sub/next?x=1"));
 	}
 
+	public function testResolveLocationBracketsAnIpv6HostAndKeepsASchemesOtherPort():Void {
+		// The host went in bare, so a relative redirect from [::1]:8080 named
+		// http://::1:8080/..., which is not a URL, and the redirect failed.
+		var v6 = new URL("http://[::1]:8080/dir/page");
+		Assert.equals("http://[::1]:8080/dir/next", Http.__resolveLocation(v6, "next"));
+		Assert.equals("http://[::1]:8080/root", Http.__resolveLocation(v6, "/root"));
+		Assert.equals("https://[2001:db8::1]/x", Http.__resolveLocation(new URL("https://[2001:db8::1]/a"), "/x"));
+
+		// The port was dropped for 80 and 443 whatever the scheme, so a
+		// redirect from http://host:443/ went to port 80.
+		Assert.equals("http://example.com:443/b", Http.__resolveLocation(new URL("http://example.com:443/a"), "b"));
+		Assert.equals("https://example.com:80/b", Http.__resolveLocation(new URL("https://example.com:80/a"), "b"));
+	}
+
+	public function testTheHostHeaderBracketsAnIpv6Literal():Void {
+		// URL takes the brackets off, and the client put the host back as it
+		// was: Host: ::1:port, which no server can split.
+		if (!__ipv6Loopback()) {
+			Assert.pass("no IPv6 loopback on this machine");
+			return;
+		}
+
+		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "::1");
+		var http = new Http('http://[::1]:${fixture.port}/v6');
+		var completed:Null<Bytes> = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		fixture.waitDone();
+
+		Require.notNull(completed);
+		Assert.isTrue(fixture.request.indexOf('Host: [::1]:${fixture.port}') >= 0, fixture.request);
+	}
+
+	/** Whether a socket can listen on the IPv6 loopback here. */
+	private static function __ipv6Loopback():Bool {
+		var probe = new SysSocket();
+		try {
+			probe.bind(new Host("::1"), 0);
+			probe.close();
+			return true;
+		} catch (_:Dynamic) {
+			closeQuietly(probe);
+			return false;
+		}
+	}
+
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
 		var http = new Http("http://example.com/");
 		var query = http.__buildQuery({
@@ -779,13 +826,13 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(fixture.request.indexOf("ok=false") >= 0);
 	}
 
-	private static function serveOnce(response:String):OneShotHttpServer {
+	private static function serveOnce(response:String, address:String = "127.0.0.1"):OneShotHttpServer {
 		var fixture = new OneShotHttpServer();
 		Thread.create(() -> {
 			var server = new SysSocket();
 			var peer:SysSocket = null;
 			try {
-				server.bind(new Host("127.0.0.1"), 0);
+				server.bind(new Host(address), 0);
 				server.listen(1);
 				fixture.port = server.host().port;
 				fixture.ready.release();

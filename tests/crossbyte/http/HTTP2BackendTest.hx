@@ -167,6 +167,38 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals("CrossByteTest", sent.get("user-agent"));
 	}
 
+	public function testAnIpv6AuthorityKeepsItsBrackets():Void {
+		// URL takes the brackets off an IPv6 literal, and :authority put the
+		// host back bare: ::1:port, which no server can split.
+		var probe = new SysSocket();
+		try {
+			probe.bind(new Host("::1"), 0);
+			probe.close();
+		} catch (_:Dynamic) {
+			try {
+				probe.close();
+			} catch (_:Dynamic) {}
+			Assert.pass("no IPv6 loopback on this machine");
+			return;
+		}
+
+		var server = new H2cServer();
+		server.bindAddress = "::1";
+		server.respond([new HpackHeader(":status", "200")], "v6");
+		server.start();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var body:Bytes = null;
+		var http = new Http('http://[::1]:${server.port}/v6', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> body = data;
+		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
+		http.load();
+		server.waitDone();
+
+		Require.notNull(body);
+		Assert.equals('[::1]:${server.port}', server.requestHeaders.get(":authority"));
+	}
+
 	public function testPostSendsABodyAndContentLength():Void {
 		var server = new H2cServer();
 		server.respond([new HpackHeader(":status", "201")], "created");
@@ -1432,6 +1464,9 @@ private class H2TruncatedResponseServer {
 private class H2cServer {
 	public var port:Int = 0;
 	public var error:Dynamic = null;
+
+	/** Where the fixture listens; set before `start`. */
+	public var bindAddress:String = "127.0.0.1";
 	public var requestHeaders:Map<String, String> = new Map();
 	public var requestBody:String = "";
 	public var decoderTableNames:Array<String> = [];
@@ -1471,7 +1506,7 @@ private class H2cServer {
 			var listener = new SysSocket();
 			var peer:SysSocket = null;
 			try {
-				listener.bind(new Host("127.0.0.1"), 0);
+				listener.bind(new Host(bindAddress), 0);
 				listener.listen(1);
 				port = listener.host().port;
 				__ready.release();
