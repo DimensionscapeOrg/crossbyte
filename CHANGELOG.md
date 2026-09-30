@@ -5,6 +5,31 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `SwitchTable.make` takes any expression as a key -- `Opcode.PING`, a
+  variable -- where it took only literals, refuses two literal keys that are
+  the same, and takes a fallback, `(key, args) -> ...`, for a key no case
+  matches. Without one it still throws, now naming the key.
+- `RadixTree.longestPrefix` and `longestPrefixLength`: the longest key held
+  that a string starts with, and its length -- the route that serves
+  "/api/v1/users/123" when "/api/v1/users" is held. The tree could only
+  answer exact keys.
+- `crossbyte.ds.IdList`, a list of `Int` ids that holds them unboxed and
+  keeps its storage when emptied, and the queries that fill one:
+  `SpatialGrid.queryCircleIds` and `queryRectIds`, `SpatialGrid3D.
+  querySphereIds` and `queryBoxIds`. `InterestSet.addAll` takes one. A query
+  into an `Array<Int>` boxes every id above 127 on the jvm, and an array
+  emptied with `resize(0)` hands V8 its storage back, so the interest loop
+  the documentation showed allocated 2.2 MB a tick for 1,000 views of 50 on
+  either; through an `IdList` it allocates nothing on the jvm and Node, and
+  natively it went from 1.28 to about 1.0 ms a tick.
+- `crossbyte.ds.IntPriorityQueue`: a priority queue of `Int` ids, each held
+  with a priority given when it is enqueued -- lowest first, equals in the
+  order they came. `PriorityQueue<Int>` does not compile, its elements being
+  objects, so a matchmaker keyed on player ids had no queue to use. It calls
+  no comparator and looks nothing up while sifting, so it allocates nothing
+  per operation on any target, and it keeps its own id table: the jvm's
+  `IntMap` visits every bucket to find a missing key, which made 50,000 ids
+  take a second there rather than 10 ms.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -796,6 +821,13 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `SlotHandle` no longer converts to `Int` by itself. A handle passed where
+  an id belongs -- `grid.set(entity.handle, x, y)` for `entity.slot` --
+  compiled, and worked until the slot's first reuse made the handle
+  1,048,576 or more, when `SpatialGrid` and `InterestSet` grew their arrays
+  to fit it: 117 MB by the third reuse. What to change: use `handle.index()`
+  for the slot, and `handle.toInt()` for the whole handle where it is
+  written down; an `Int` assigned to a `SlotHandle` still reads one back.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -1280,6 +1312,150 @@ All notable changes to CrossByte will be documented in this file.
   `Address.getHost` wrote an `ipv6` field hl's `Host` does not have: UDP,
   RUDP, STUN and ICE received nothing there. Its `host` text is the sender's
   address now wherever it is not converted natively, rather than `0.0.0.0`.
+- `IndexedMap` and `PackedSlotMap` can have the entry a loop is on removed,
+  as `ListedMap` and `DenseSet` now can. Both move their last entry into a
+  removed one's place, and iterated with the value array's own iterator, so
+  the entry moved in was skipped; `PackedSlotMap.forEach` counted its
+  entries before it began and read past the end after a removal.
+- `Array2D.clear()` empties the grid for every reference to it; it replaced
+  the rows, so the same grid held elsewhere kept them. `fill(value)` sets
+  every cell -- the way to give an `Array2D` of `Int`, `Float` or `Bool`
+  the same cells everywhere, since made without a value they are 0 on
+  static targets and null on eval and JavaScript, which the documentation
+  now says.
+- A `RadixTree` lookup reads the key in place and allocates nothing. It
+  built the common prefix of each label and the key a character at a time,
+  and a substring of the key at every level: 2.3 microseconds and 6.4 KB a
+  lookup on the jvm, now 0.1 microseconds.
+- `WeightedGraph` finds a node by hashing rather than a pass over every
+  node, so building a graph of n nodes no longer costs n^2 comparisons:
+  20,000 edges in a chain took 15 s on eval and now take tens of
+  milliseconds. Strings and integers are found by value and objects by
+  identity, as `==` finds them.
+- `Deque` keeps its items in a ring rather than a linked list, so adding
+  one allocates nothing once the ring has grown: it made a 24-byte node
+  for every item added on the jvm. It has `iterator()`, front to back, and
+  `clear()`, and takes a starting capacity.
+- `ObjectPool` no longer lends one object to two owners after a double
+  release in a release build. It kept both releases, so the next two
+  `acquire`s returned the same object; it now refuses an object released
+  twice in a row, and any release while everything it made is already free,
+  and `release` answers whether it took the object back. Debug builds
+  still check every release. `maxFree` bounds how many free objects it
+  keeps, where a burst of a hundred thousand used to stay for good.
+- `MathUtil.nextPow2` answers the same on every target above 2^30: 2^31's
+  bit pattern, `1 << 31`. JavaScript's Int does not wrap by itself, so it
+  answered 2147483648 there and -2147483648 elsewhere.
+- `Seq32` prints and divides as the unsigned number it is on the jvm. It
+  printed through a Float, which the jvm writes in scientific notation --
+  "4.294967295E9" -- and in hex saturated to 7FFFFFFF; and `%` passed a
+  remainder of 2^31 or more through `Std.int`, which saturated it at
+  2147483647. The documentation's example, `0xFFFF_FFFF`, did not compile.
+- `PrimitiveValue.toInt` reads a number the same way on every target, or
+  throws. It went through `Std.parseInt`, which read "4294967396" as null on
+  eval, as that number on Node and as a thrown `NumberFormatException` on
+  the jvm, and `Std.int`, which made the Float 3e9 2147483647 on the jvm
+  and -1294967296 elsewhere. A string is now spaces, an optional sign and
+  decimal or `0x` hex digits, within the range of `Int` -- "12abc" throws
+  rather than reading 12 -- and a Float outside that range throws. The
+  documentation's example named a type, `Primitive`, that does not exist.
+- `BloomFilter` packs its bits 32 to an `Int` and allocates nothing per
+  check. It held an array element per bit -- a 10-million-bit filter took 40
+  MB on the jvm and 76 MB on Node for 1.25 MB of bits -- and hashed a UTF-8
+  copy of each item and a second, concatenated copy, 336 bytes per check on
+  the jvm. It hashes the characters in place, mixes the second hash out of
+  the first, and steps through the positions without multiplying, so every
+  target sets the same bits. `clear()`, and `addInt`/`containsInt` and
+  `addBytes`/`containsBytes` for items that are not strings, are new.
+- `crossbyte.ds.Vector` works off hxcpp. `v[i]` threw on eval and the jvm
+  and on JavaScript set a property of that name, losing the write: it was a
+  class implementing `ArrayAccess`, which only hxcpp honours, and is now an
+  abstract with array access over it. As in ActionScript, reading at or past
+  the length throws `RangeError` and writing at it appends. Callbacks are
+  called once each with as many of `(item, index, vector)` as they take;
+  they were tried with two arguments and, on a throw, with one and none, so
+  a callback that threw ran again without its index. `fixed` is enforced:
+  what would change the length of a fixed Vector throws `RangeError`.
+- `BitmapData.threshold` returns the pixels that passed and recolours all of
+  them. Each case of the operation ended in `break`, which in Haxe leaves
+  the loop the switch is in, so every call returned 0. It compares unsigned,
+  as ActionScript's `uint`s do, so an alpha of 0xFF is above 0x7F.
+- Removing entries while iterating works in `ListedMap`, `DenseSet` and
+  `OrderedMap`. `ListedMap`'s value iterator counted the entries when it was
+  made and read past the end after a removal, throwing on every target; its
+  pair iterator and `DenseSet`'s skipped the entry swapped into the removed
+  one's place (4 of 6 visited); `OrderedMap`'s walked an array of keys that
+  a removal shifted under it (3 of 6). Removing the entry a loop is on now
+  visits every other entry once in all three, and `OrderedMap` allows any
+  removal. `OrderedMap` keeps its entries on a linked list, so `remove` is
+  constant time -- 20,000 removals took 332 ms on the jvm and 802 ms on
+  Node, now 3 ms -- and iterating reads no map; `ofIndex` walks to its
+  position.
+- `ExpiringMap` holds one object per entry, whatever it is touched. Every
+  `set` and `touch` left a queue position behind, collected only once
+  everything ahead of it had expired, so one idle session in front of 1,000
+  busy ones touched 20 times a second held 2.4 million positions -- 72 MB
+  on the jvm after two minutes -- however small `maxSize` was. Entries now
+  sit on a list in deadline order and a touch moves one to the end: the
+  same run retains 196 KB, and a touch allocates nothing. `length` leaves
+  out entries that have expired unswept, as it always said it did, and
+  `keys()` lists the one due soonest first.
+- `InterestSet` and `BitSet` allocate nothing per round on the jvm and
+  Node. Their lists and words were `Array<Int>`s: the jvm boxed every id
+  above 127 as it was added and every word as it changed, and emptying a
+  list with `resize(0)` gave V8 its store back each round -- 2,952 bytes a
+  round for a view of 50 on the jvm, and with the query's own array 2.2 MB
+  a tick for 1,000 views. They are unboxed vectors with counts now, and
+  iterating an `InterestSet` no longer copies its view.
+- `SlotMap` and `PackedSlotMap` reuse the slot freed longest ago. They
+  handed back the slot freed last, so one entity despawned and another
+  spawned each tick reused one slot every time and brought its 11-bit
+  generation round in 2048 ticks -- 34 seconds at 60 Hz -- after which a
+  handle kept to the first entity resolved to a newcomer. Now a slot's
+  generation comes round only after 2048 times as many inserts as there are
+  free slots. `SlotMap` also tracks whether a slot is held apart from its
+  value: an entry inserted as `null` was skipped by `forEach` and kept its
+  generation through `clear()`, so its old handle could still write, and a
+  handle made up for a free slot could `remove` it -- `length` went to -1
+  and the slot was handed to two inserts. Its generations and free list no
+  longer box on the jvm.
+- `Random.int` and `inti` draw from all of a range wider than 2^31 values.
+  Its size was counted in 32 bits and overflowed, so `Random.int(0,
+  0x7FFFFFFF)` was 0 every time on eval and the jvm, half of Node's answers
+  fell outside the range, and the full `Int` range gave only negative
+  numbers. Narrower ranges draw exactly what they drew before, so seeded
+  sequences are unchanged. The shared generator's unseeded start no longer
+  repeats between runs on the jvm, hl and neko: `Std.int(stamp * 1e6)`
+  saturated there -- on the jvm once the machine had been up 36 minutes --
+  so every run drew one sequence. And `Random` compiles on hl again, whose
+  default version has no atomics; hl before 1.13, neko and eval take a lock.
+- `GlobalTimer` locks its ids and its map wherever there are threads. It
+  locked them only on hxcpp, so on the jvm four threads setting and
+  clearing timers at once were issued 1,051 ids twice in 16,000 and left
+  entries behind, and a `clearTimeout` could stop another thread's timer;
+  hl, neko and eval were as exposed. An id is now reserved in the same
+  lock that picks it. The lock no longer allocates a closure per call, and
+  whether an id is in use is asked only once the counter has wrapped --
+  the jvm's `IntMap` answers that for a missing id by visiting every
+  bucket, so each `setTimeout` cost a pass over every live timer.
+- `Resources` reads only inside `resourcesDir`. Paths were joined to the
+  directory as given, so a server loading a map by a name a client sent --
+  `getText("maps/" + name)` -- read whatever `"../../config.json"` named,
+  and on Windows `"sample.txt::$DATA"` read through an NTFS stream name. A
+  path with a `..` segment, a leading `/` or `\`, or a `:` (a drive letter,
+  a stream name) is refused: `exists` answers `false`, `resourceSize` `-1`,
+  and the loaders, the listings and `getAbsolutePath` throw
+  `SecurityError`. `\` separates on every target, and empty and `.`
+  segments are dropped.
+- `PriorityQueue` serves equal priorities first come, first served. Each
+  dequeue moved the newest element to the root and a strict comparison
+  never sank it past an equal, so the newest was served next: a matchmaker
+  holding one priority left 29 of its first 30 tickets queued at tick
+  20,000, and 5,969 of 5,970 tickets were served out of turn. Ties now go
+  by the order elements were enqueued; `update` keeps an element's place.
+  The heap also sifts slot numbers rather than rewriting its element map at
+  every level an element moves, which makes it about two and a half times
+  faster on the jvm and seven on eval.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of

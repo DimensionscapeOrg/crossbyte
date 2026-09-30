@@ -57,9 +57,11 @@ class TestSuites {
 	public static function addDataStructures(runner:Runner):Void {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		runner.addCase(new crossbyte.ds.PriorityQueueTest());
 		runner.addCase(new crossbyte.ds.BitSetTest());
 		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		runner.addCase(new crossbyte.ds.InterestSetTest());
+		runner.addCase(new crossbyte.ds.IdListTest());
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
 		runner.addCase(new crossbyte.ds.SpatialGrid3DTest());

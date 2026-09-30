@@ -156,7 +156,35 @@ class CollectionsTest extends utest.Test {
 
 		Assert.equals(12345, handle.index());
 		Assert.equals(37, handle.gen());
-		Assert.equals(-1, SlotHandle.INVALID);
+		Assert.equals(-1, SlotHandle.INVALID.toInt());
+	}
+
+	/**
+		A handle is not an id. It converted to an `Int` silently, so
+		`grid.set(entity.handle, x, y)` compiled where `entity.slot` was meant,
+		and worked until the slot's first reuse made the handle 1,048,576 or
+		more, when the grid grew five arrays of that length to fit it -- 117
+		MB by the third reuse. Now it has to be asked for.
+	**/
+	public function testAHandleIsNotAnIdOfItsOwnAccord():Void {
+		var map = new SlotMap<String>(4);
+		var grid = new SpatialGrid(0, 0, 100, 100, 10);
+		var interest = new InterestSet();
+		var handle:SlotHandle = map.insert("entity");
+
+		Assert.notNull(TypeCheck.errorOf(grid.set(handle, 1, 1)), "a handle was taken as a grid id");
+		Assert.notNull(TypeCheck.errorOf(interest.add(handle)), "a handle was taken as an interest id");
+		Assert.notNull(TypeCheck.errorOf({
+			var id:Int = handle;
+		}), "a handle became an Int by assignment");
+
+		// Asked for, both ways.
+		grid.set(handle.index(), 1, 1);
+		Assert.isTrue(grid.has(handle.index()));
+		var written:Int = handle.toInt();
+		var read:SlotHandle = written;
+		Assert.equals("entity", map.get(read));
+		Assert.isTrue(read == handle);
 	}
 
 	public function testSwitchTableDispatchesMixedKeysAndArguments():Void {
@@ -176,6 +204,34 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(10, total);
 		Assert.equals("pong,7", seen.join(","));
 		Assert.raises(() -> dispatch("MISSING"));
+	}
+
+	/**
+		Keys can be named constants, and a key no case matches can be handled.
+		Only literals were accepted -- a table keyed on opcodes repeated their
+		numbers -- and an unmatched key threw "Case not found".
+	**/
+	public function testSwitchTableTakesNamedKeysAndAFallback():Void {
+		Assert.isNull(TypeCheck.errorOf(SwitchTable.make([{key: SwitchTableOpcodes.PING, handler: () -> {}}])), "a named constant was refused as a key");
+		Assert.notNull(TypeCheck.errorOf(SwitchTable.make([{key: "A", handler: () -> {}}, {key: "A", handler: () -> {}}])), "a duplicate key was accepted");
+
+		var seen:Array<String> = [];
+		var custom:String = "CUSTOM";
+		var dispatch = SwitchTable.make([
+			{key: SwitchTableOpcodes.PING, handler: () -> seen.push("pong")},
+			{key: SwitchTableOpcodes.LOGIN, handler: (name:String) -> seen.push("login " + name)},
+			{key: custom, handler: () -> seen.push("custom")}
+		], (key:Dynamic, args:Array<Dynamic>) -> seen.push("unknown " + key + " with " + args.length));
+
+		dispatch(1);
+		dispatch(2, "ada");
+		dispatch("CUSTOM");
+		dispatch(99, "x", "y");
+		dispatch("nope");
+		Assert.equals("pong,login ada,custom,unknown 99 with 2,unknown nope with 0", seen.join(","));
+
+		var strict = SwitchTable.make([{key: 1, handler: () -> {}}]);
+		Assert.raises(() -> strict(2));
 	}
 
 	public function testRadixTreeSupportsExactKeysPrefixesAndUpdates():Void {
@@ -200,6 +256,64 @@ class CollectionsTest extends utest.Test {
 		Assert.isNull(tree.search(""));
 		Assert.isNull(tree.search(null));
 	}
+
+	/**
+		The longest held key a path starts with: the route that serves it. A
+		radix tree could only answer exact keys.
+	**/
+	public function testRadixTreeFindsTheLongestPrefix():Void {
+		var routes = new RadixTree<String>();
+		routes.insert("/", "root");
+		routes.insert("/api/v1/users", "users");
+		routes.insert("/api/v1/users/list", "list");
+		routes.insert("/api/v2", "v2");
+		routes.insert("/api/v1/rooms", "rooms");
+
+		Assert.equals("users", routes.longestPrefix("/api/v1/users/123"));
+		Assert.equals("users", routes.longestPrefix("/api/v1/users"));
+		Assert.equals("list", routes.longestPrefix("/api/v1/users/list/7"));
+		Assert.equals("rooms", routes.longestPrefix("/api/v1/rooms?x=1"));
+		Assert.equals("root", routes.longestPrefix("/api/v1/userz"));
+		Assert.equals("v2", routes.longestPrefix("/api/v2x"));
+		Assert.isNull(routes.longestPrefix("api"));
+		Assert.isNull(routes.longestPrefix(""));
+		Assert.isNull(routes.longestPrefix(null));
+
+		Assert.equals(13, routes.longestPrefixLength("/api/v1/users/123"));
+		Assert.equals(1, routes.longestPrefixLength("/nothing"));
+		Assert.equals(-1, routes.longestPrefixLength("nothing"));
+
+		// Exact lookups are unchanged by the split nodes between keys.
+		Assert.equals("users", routes.search("/api/v1/users"));
+		Assert.isNull(routes.search("/api/v1"));
+		Assert.isNull(routes.search("/api/v1/users/"));
+	}
+
+	#if jvm
+	/**
+		A lookup allocates nothing. It built the common prefix of each label
+		and the key a character at a time, and a substring at every level:
+		7.6 KB per lookup on the jvm.
+	**/
+	public function testRadixTreeLookupsAllocateNothing():Void {
+		var tree = new RadixTree<Int>();
+		var keys = [for (i in 0...1000) '/api/v1/item$i/detail'];
+		for (i in 0...keys.length) {
+			tree.insert(keys[i], i);
+		}
+		for (key in keys) {
+			tree.search(key);
+		}
+		var perLookup:Float = JvmAllocation.bytesBy(() -> {
+			for (key in keys) {
+				tree.search(key);
+				tree.longestPrefixLength(key);
+			}
+		}) / (keys.length * 2);
+		Assert.isTrue(perLookup < 1, perLookup + " bytes allocated per lookup");
+		Assert.equals(500, tree.search(keys[500]));
+	}
+	#end
 
 	public function testVectorSpliceReturnsRemovedAndKeepsInsertOrder():Void {
 		var vector = new Vector<String>();
@@ -232,6 +346,104 @@ class CollectionsTest extends utest.Test {
 
 		Assert.equals("1,3,5", mapped.join(","));
 		Assert.equals("1,3", filtered.join(","));
+	}
+
+	/**
+		`v[i]` reads and writes on every target. It was a class implementing
+		`ArrayAccess`, which only hxcpp honours: it threw on eval and the jvm,
+		and on JavaScript a write set a property and was lost.
+	**/
+	public function testVectorIndexesOnEveryTarget():Void {
+		var vector = new Vector<Int>();
+		vector.push(10);
+		vector.push(20);
+		vector[1] = 25;
+		Assert.equals(25, vector[1]);
+		Assert.equals("10,25", vector.join(","));
+
+		// As in ActionScript: writing at the length appends, and anything
+		// further out, read or written, is out of range.
+		vector[2] = 30;
+		Assert.equals(3, vector.length);
+		Assert.equals(30, vector[2]);
+		Assert.raises(() -> vector[3], crossbyte.errors.RangeError);
+		Assert.raises(() -> vector[-1], crossbyte.errors.RangeError);
+		Assert.raises(() -> vector[5] = 1, crossbyte.errors.RangeError);
+
+		var sum:Int = 0;
+		for (i in 0...vector.length) {
+			sum += vector[i];
+		}
+		Assert.equals(65, sum);
+	}
+
+	/**
+		A callback is called once per element with as many of (item, index,
+		vector) as it takes. They were tried with two and, on a throw, with
+		one and then none, so a callback that threw ran again without its
+		index -- three times on eval.
+	**/
+	public function testVectorCallbacksRunOnceWithTheArgumentsTheyTake():Void {
+		var vector = new Vector<Int>();
+		vector.push(1);
+		vector.push(2);
+
+		var calls:Int = 0;
+		Assert.raises(() -> vector.forEach(function(x:Int, i:Int) {
+			calls++;
+			throw "fail";
+		}));
+		Assert.equals(1, calls, "a throwing callback ran " + calls + " times");
+
+		calls = 0;
+		Assert.raises(() -> vector.every(function(x:Int) {
+			calls++;
+			throw "fail";
+		}));
+		Assert.equals(1, calls, "a throwing one-argument callback ran " + calls + " times");
+
+		var seen:Array<String> = [];
+		vector.forEach(function() seen.push("none"));
+		vector.forEach(function(x:Int) seen.push("item " + x));
+		vector.forEach(function(x:Int, i:Int) seen.push("item " + x + " at " + i));
+		vector.forEach(function(x:Int, i:Int, v:Vector<Int>) seen.push("of " + v.length));
+		Assert.equals("none,none,item 1,item 2,item 1 at 0,item 2 at 1,of 2,of 2", seen.join(","));
+
+		Assert.equals("2,3", vector.map((x:Int) -> x + 1).join(","));
+		Assert.equals("1", vector.filter((x:Int, i:Int) -> i == 0).join(","));
+		Assert.isTrue(vector.some((x:Int, i:Int, v:Vector<Int>) -> v[i] == 2));
+	}
+
+	/**
+		A fixed Vector keeps its length: whatever would change it throws
+		`RangeError`, as in ActionScript. `fixed` was stored and ignored.
+	**/
+	public function testAFixedVectorKeepsItsLength():Void {
+		var vector = new Vector<Int>(2, true);
+		Assert.isTrue(vector.fixed);
+		Assert.equals(2, vector.length);
+		vector[0] = 7;
+		vector[1] = 8;
+		Assert.equals("7,8", vector.join(","));
+
+		Assert.raises(() -> vector.push(5), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.pop(), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.shift(), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.unshift(1), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.insertAt(0, 1), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.removeAt(0), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.length = 3, crossbyte.errors.RangeError);
+		Assert.raises(() -> vector[2] = 9, crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.splice(0, 1), crossbyte.errors.RangeError);
+		Assert.equals("7,8", vector.join(","));
+
+		// A splice that puts back as many as it takes out leaves the length.
+		Assert.equals("7", vector.splice(0, 1, 70).join(","));
+		Assert.equals("70,8", vector.join(","));
+
+		vector.fixed = false;
+		vector.push(9);
+		Assert.equals(3, vector.length);
 	}
 
 	public function testVectorConcatAndSortBehaveLikeArrayHelpers():Void {
@@ -275,6 +487,67 @@ class CollectionsTest extends utest.Test {
 		Assert.raises(() -> deque.first());
 		Assert.raises(() -> deque.last());
 	}
+
+	/**
+		A deque walks front to back, grows through a wrapped ring without
+		losing order, and can be cleared and used again. It had no iterator
+		and no clear.
+	**/
+	public function testDequeIteratesGrowsAndClears():Void {
+		var deque = new Deque<Int>(4);
+		// Wrap the ring before it grows: take from the front, add at the back.
+		for (i in 0...3) {
+			deque.push(i);
+		}
+		Assert.equals(0, deque.pop());
+		Assert.equals(1, deque.pop());
+		for (i in 3...40) {
+			deque.push(i);
+		}
+		for (i in 0...5) {
+			deque.add(-1 - i);
+		}
+		var walked:Array<Int> = [for (x in deque) x];
+		var expected:Array<Int> = [for (i in 0...5) -5 + i].concat([for (i in 2...40) i]);
+		Assert.equals(expected.join(","), walked.join(","));
+		Assert.equals(expected.length, deque.size());
+		Assert.equals(-5, deque.first());
+		Assert.equals(39, deque.last());
+		Assert.equals(39, deque.remove());
+
+		deque.clear();
+		Assert.isTrue(deque.isEmpty());
+		Assert.equals(0, [for (x in deque) x].length);
+		Assert.raises(() -> deque.pop());
+		deque.push(7);
+		deque.add(6);
+		Assert.equals("6,7", [for (x in deque) x].join(","));
+	}
+
+	#if jvm
+	/**
+		Adding and taking allocates nothing once the ring has grown. It was a
+		linked list, which made a node for every item added.
+	**/
+	public function testADequeInSteadyStateAllocatesNothing():Void {
+		var deque = new Deque<String>();
+		var items = [for (i in 0...64) "item " + i];
+		for (item in items) {
+			deque.push(item);
+		}
+		for (_ in 0...64) {
+			deque.push(deque.pop());
+		}
+		var perItem:Float = JvmAllocation.bytesBy(() -> {
+			for (_ in 0...10000) {
+				deque.push(deque.pop());
+				deque.add(deque.remove());
+			}
+		}) / 20000;
+		Assert.isTrue(perItem < 1, perItem + " bytes allocated per item added");
+		Assert.equals(64, deque.size());
+	}
+	#end
 
 	public function testPriorityQueueSupportsUpdateRemoveAndClear():Void {
 		var low = {priority: 5, name: "low"};
@@ -369,6 +642,81 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, map.keys().length);
 	}
 
+	/**
+		`IndexedMap` swaps its last entry into a removed one's place too, and
+		its iterator was the array's: removing the entry a loop was on skipped
+		the one swapped in. Two keys hold the same value here, so the loop has
+		to tell entries apart by key.
+	**/
+	public function testIndexedMapRemovingWhileIteratingVisitsEachOnce():Void {
+		var map = new IndexedMap<String>();
+		for (i in 0...6) {
+			map.set(i, "same");
+		}
+		// The entry the loop is on is always first here: each removal swaps
+		// the last into its place, and the loop has to visit that one next.
+		var visits:Int = 0;
+		for (_ in map) {
+			visits++;
+			map.remove(map.keys()[0]);
+		}
+		Assert.equals(6, visits);
+		Assert.equals(0, map.length());
+
+		var distinct = new IndexedMap<String>();
+		for (i in 0...6) {
+			distinct.set(i, "v" + i);
+		}
+		var seen:Array<String> = [];
+		for (value in distinct) {
+			seen.push(value);
+			var key:Int = Std.parseInt(value.substr(1));
+			if (key % 2 == 0) {
+				distinct.remove(key);
+			}
+		}
+		seen.sort(Reflect.compare);
+		Assert.equals("v0,v1,v2,v3,v4,v5", seen.join(","));
+		Assert.equals(3, distinct.length());
+	}
+
+	/**
+		`PackedSlotMap` moves its last entry into a removed one's place. Its
+		iterator was the value array's, which skipped the entry moved in, and
+		`forEach` counted the entries before it began and read past the end
+		once one was removed.
+	**/
+	public function testPackedSlotMapRemovingWhileIteratingVisitsEachOnce():Void {
+		var map = new PackedSlotMap<String>(8);
+		for (_ in 0...6) {
+			map.insert("same");
+		}
+		// The entry the loop is on is always the first dense one here.
+		var visits:Int = 0;
+		for (_ in map) {
+			visits++;
+			var slot:Int = map.slotAtDense(0);
+			map.remove(SlotHandle.make(slot, map.currentGen(slot)));
+		}
+		Assert.equals(6, visits);
+		Assert.equals(0, map.length);
+
+		var numbers = new PackedSlotMap<Int>(8);
+		for (i in 0...6) {
+			numbers.insert(i);
+		}
+		var seen:Array<Int> = [];
+		numbers.forEach((handle, value) -> {
+			seen.push(value);
+			if (value % 2 == 0) {
+				numbers.remove(handle);
+			}
+		});
+		seen.sort((a, b) -> a - b);
+		Assert.equals("0,1,2,3,4,5", seen.join(","));
+		Assert.equals(3, numbers.length);
+	}
+
 	public function testDenseSetSupportsPackedRemovalAndLookup():Void {
 		var set = new DenseSet<String>();
 
@@ -422,6 +770,85 @@ class CollectionsTest extends utest.Test {
 		map.clear();
 		Assert.equals(0, map.length);
 		Assert.isFalse(map.exists("b"));
+	}
+
+	/**
+		Removing the entry a loop is on visits the one swapped into its place
+		next. The value iterator counted the entries when it was made, so it
+		read past the end and threw on every target; the pair iterator
+		re-read the count and skipped the entry moved into the gap.
+	**/
+	public function testListedMapRemovingWhileIteratingVisitsEachOnce():Void {
+		var map = new ListedMap<String, Int>();
+		for (i in 0...6) {
+			map.set('k$i', i);
+		}
+		var seen:Array<Int> = [];
+		for (v in map) {
+			seen.push(v);
+			if (v % 2 == 0) {
+				map.remove('k$v');
+			}
+		}
+		seen.sort((a, b) -> a - b);
+		Assert.same([0, 1, 2, 3, 4, 5], seen);
+		Assert.equals(3, map.length);
+
+		for (i in 0...6) {
+			map.set('k$i', i);
+		}
+		var pairs:Array<Int> = [];
+		for (pair in map.keyValueIterator()) {
+			pairs.push(pair.value);
+			if (pair.value % 2 == 1) {
+				map.remove(pair.key);
+			}
+		}
+		pairs.sort((a, b) -> a - b);
+		Assert.same([0, 1, 2, 3, 4, 5], pairs);
+		Assert.equals(3, map.length);
+		// Without removals the order is insertion order, as before.
+		var fresh = new ListedMap<String, Int>();
+		for (i in 0...4) {
+			fresh.set('f$i', i);
+		}
+		Assert.same([0, 1, 2, 3], [for (v in fresh) v]);
+	}
+
+	/**
+		The same for `DenseSet`, which walked its array directly: removing
+		every even element visited 4 of 6.
+	**/
+	public function testDenseSetRemovingWhileIteratingVisitsEachOnce():Void {
+		var set = new DenseSet<Int>();
+		for (i in 0...6) {
+			set.add(i);
+		}
+		var seen:Array<Int> = [];
+		for (x in set) {
+			seen.push(x);
+			if (x % 2 == 0) {
+				set.remove(x);
+			}
+		}
+		seen.sort((a, b) -> a - b);
+		Assert.same([0, 1, 2, 3, 4, 5], seen);
+		var left = set.toArray();
+		left.sort((a, b) -> a - b);
+		Assert.same([1, 3, 5], left);
+
+		// Removing everything, one at a time, from inside the loop.
+		var all = new DenseSet<String>();
+		for (i in 0...50) {
+			all.add("s" + i);
+		}
+		var visited:Int = 0;
+		for (x in all) {
+			visited++;
+			all.remove(x);
+		}
+		Assert.equals(50, visited);
+		Assert.isTrue(all.isEmpty);
 	}
 
 	public function testSlotMapInvalidatesStaleHandlesAndReusesSlots():Void {
@@ -516,6 +943,121 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(-1, packedAliasedAt, "a dead entity's handle resolved to a new one after " + packedAliasedAt + " reuses");
 	}
 
+	/**
+		One entity despawned and another spawned every tick does not bring a
+		slot's generation round in 2048 ticks.
+
+		The free list handed back the slot freed last, so that churn reused
+		one slot every tick, and a handle kept to the first entity -- a
+		missile's target -- resolved to the 2048th newcomer 34 seconds later at
+		60 Hz. Freed slots now wait behind every other free one.
+	**/
+	public function testAChurnedSlotWaitsBehindTheOtherFreeOnes():Void {
+		var entities = new SlotMap<String>(16);
+		var packed = new PackedSlotMap<String>(16);
+		for (i in 0...8) {
+			entities.insert("resident " + i);
+			packed.insert("resident " + i);
+		}
+		var victim = entities.insert("goblin");
+		var packedVictim = packed.insert("goblin");
+		entities.remove(victim);
+		packed.remove(packedVictim);
+
+		var aliasedAt:Int = -1;
+		var packedAliasedAt:Int = -1;
+		var spawned = entities.insert("tick 0");
+		var packedSpawned = packed.insert("tick 0");
+		for (tick in 1...6000) {
+			entities.remove(spawned);
+			spawned = entities.insert("tick " + tick);
+			if (aliasedAt < 0 && entities.get(victim) != null) {
+				aliasedAt = tick;
+			}
+			packed.remove(packedSpawned);
+			packedSpawned = packed.insert("tick " + tick);
+			if (packedAliasedAt < 0 && packed.get(packedVictim) != null) {
+				packedAliasedAt = tick;
+			}
+		}
+
+		Assert.equals(-1, aliasedAt, "a dead entity's handle resolved to a newcomer at tick " + aliasedAt);
+		Assert.equals(-1, packedAliasedAt, "a dead entity's handle resolved to a newcomer at tick " + packedAliasedAt);
+		Assert.equals(9, entities.length);
+		Assert.equals(9, packed.length);
+	}
+
+	/**
+		An entry inserted as null is held like any other. Whether a slot was
+		held was read from its value, so a null entry was skipped by forEach,
+		kept its generation through clear() and could still be written
+		through its old handle afterwards.
+	**/
+	public function testANullEntryIsHeldLikeAnyOther():Void {
+		var map = new SlotMap<String>(4);
+		var handle = map.insert(null);
+		Assert.equals(1, map.length);
+
+		var visits:Int = 0;
+		map.forEach((h, v) -> {
+			visits++;
+			Assert.isTrue(h == handle);
+			Assert.isNull(v);
+		});
+		Assert.equals(1, visits, "forEach skipped a held null entry");
+
+		map.clear();
+		Assert.equals(0, map.length);
+		Assert.isFalse(map.set(handle, "written after clear"), "a handle survived clear()");
+		Assert.isNull(map.get(handle));
+		Assert.isFalse(map.remove(handle));
+	}
+
+	/**
+		A handle made up for a slot nobody holds cannot free it. It matched the
+		free slot's generation, so remove() freed it a second time: length went
+		to -1 and the slot was handed to two inserts.
+	**/
+	public function testAHandleToAFreeSlotFreesNothing():Void {
+		var map = new SlotMap<String>(4);
+		Assert.isFalse(map.remove(SlotHandle.make(2, 0)), "a slot nobody held was removed");
+		Assert.isFalse(map.set(SlotHandle.make(1, 0), "stray"), "a slot nobody held was written");
+		Assert.equals(0, map.length);
+
+		var handles = [for (i in 0...4) map.insert("e" + i)];
+		var slots = new Map<Int, Bool>();
+		for (h in handles) {
+			Assert.isFalse(slots.exists(h.index()), "slot " + h.index() + " was handed out twice");
+			slots.set(h.index(), true);
+		}
+		for (i in 0...4) {
+			Assert.equals("e" + i, map.get(handles[i]));
+		}
+
+		var packed = new PackedSlotMap<String>(4);
+		Assert.isFalse(packed.remove(SlotHandle.make(2, 0)));
+		Assert.equals(0, packed.length);
+	}
+
+	/** Growth and clear keep every slot reachable, in the order they queue. **/
+	public function testSlotsQueueInOrderThroughGrowthAndClear():Void {
+		var map = new SlotMap<Int>(2, null, 3);
+		var first = [for (i in 0...7) map.insert(i)];
+		Assert.equals(8, map.capacity);
+		Assert.equals("0,1,2,3,4,5,6", [for (h in first) h.index()].join(","));
+		map.remove(first[3]);
+		map.remove(first[1]);
+		// The slot never used goes first, then the freed ones in the order freed.
+		Assert.equals("7,3,1", [for (_ in 0...3) map.insert(0).index()].join(","));
+
+		map.clear();
+		Assert.equals("0,1,2,3,4,5,6,7", [for (_ in 0...8) map.insert(1).index()].join(","));
+		var grown = map.insert(2);
+		Assert.equals(8, grown.index());
+		Assert.equals(11, map.capacity);
+		Assert.equals(9, map.length);
+	}
+
 	public function testAHandleIsNeverNegative():Void {
 		// The sign bit was part of the generation, so past its halfway point
 		// every handle was negative, and at the top index a live handle was
@@ -524,13 +1066,13 @@ class CollectionsTest extends utest.Test {
 		var negative = 0;
 		for (_ in 0...(1 << SlotHandle.GEN_BITS)) {
 			var handle = map.insert("e");
-			if ((handle : Int) < 0) {
+			if (handle.toInt() < 0) {
 				negative++;
 			}
 			map.remove(handle);
 		}
 		Assert.equals(0, negative);
-		Assert.isTrue((SlotHandle.make(SlotHandle.INDEX_MASK, SlotHandle.GEN_MASK) : Int) != (SlotHandle.INVALID : Int));
+		Assert.isTrue(SlotHandle.make(SlotHandle.INDEX_MASK, SlotHandle.GEN_MASK).toInt() != SlotHandle.INVALID.toInt());
 	}
 
 	public function testClearKeepsTheGenerationInRange():Void {
@@ -654,6 +1196,104 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(39, map.get("k39"), "the newest entry was the one dropped");
 	}
 
+	/**
+		`length` leaves out what has expired and not been swept, as its
+		documentation says. It counted them until a read or a sweep dropped
+		them.
+	**/
+	public function testLengthLeavesOutWhatHasExpiredUnswept():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(10, 0, function():Float return now);
+		map.set("a", 1);
+		now = 5;
+		map.set("b", 2);
+		Assert.equals(2, map.length);
+
+		now = 12;
+		Assert.equals(1, map.length, "an expired, unswept entry was counted");
+		now = 20;
+		Assert.equals(0, map.length);
+		Assert.equals(2, map.sweep());
+		Assert.equals(0, map.length);
+	}
+
+	/**
+		An entry touched goes to the back of the line: a sweep takes what is
+		due and stops, and `maxSize` evicts what is closest to expiring, even
+		when an idle entry sat ahead of a busy one for a long time.
+	**/
+	public function testTouchedEntriesExpireInTheOrderTheirDeadlinesFall():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(10, 3, function():Float return now);
+		var expired:Array<String> = [];
+		map.onExpire = (key, _) -> expired.push(key);
+
+		map.set("idle", 0);
+		now = 1;
+		map.set("a", 1);
+		now = 2;
+		map.set("b", 2);
+		// "a" is used for a long while; "idle" never is.
+		var t:Float = 2;
+		while (t < 9) {
+			t += 0.25;
+			now = t;
+			map.touch("a");
+		}
+		Assert.equals(1, map.sweep(10.5), "only the idle entry was due");
+		Assert.equals("idle", expired.join(","));
+		Assert.equals("b,a", [for (k in map.keys()) k].join(","));
+
+		now = 11;
+		map.set("c", 3);
+		map.set("d", 4);
+		// Over the bound of 3: "b" was the one closest to expiring.
+		Assert.equals("idle,b", expired.join(","));
+		Assert.equals("a,c,d", [for (k in map.keys()) k].join(","));
+
+		map.set("a", 10);
+		Assert.equals("c,d,a", [for (k in map.keys()) k].join(","));
+		Assert.equals(10, map.get("a"));
+		Assert.isTrue(map.remove("c"));
+		Assert.isFalse(map.remove("c"));
+		Assert.equals("d,a", [for (k in map.keys()) k].join(","));
+		map.clear();
+		Assert.equals(0, map.length);
+		Assert.equals(0, map.sweep(1000));
+	}
+
+	#if jvm
+	/**
+		Touching an entry costs nothing to hold. Every `set` and `touch` left
+		a queue position behind, collected only once everything ahead of it
+		had expired, so memory went with the touches times the ttl rather
+		than the entries: 1,000 sessions touched 20 times a second with a
+		120 s ttl held 2.4 million positions, 70 MB on the jvm.
+	**/
+	public function testTouchingAnEntryAllocatesNothing():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(120, 50000, function():Float return now);
+		var keys = [for (i in 0...1000) "tok" + i];
+		map.set("idle", 0);
+		for (k in keys) {
+			map.set(k, 1);
+		}
+		for (k in keys) {
+			map.touch(k);
+		}
+		var perTouch:Float = JvmAllocation.bytesBy(() -> {
+			for (step in 0...20) {
+				now += 0.05;
+				for (k in keys) {
+					map.touch(k);
+				}
+			}
+		}) / 20000;
+		Assert.isTrue(perTouch < 1, perTouch + " bytes allocated per touch");
+		Assert.equals(1001, map.length);
+	}
+	#end
+
 	public function testPackedSlotMapKeepsDenseIterationAndHonorsMaxCapacity():Void {
 		var map = new PackedSlotMap<String>(2, 3, 2);
 		var first = map.insert("alpha");
@@ -743,6 +1383,51 @@ class CollectionsTest extends utest.Test {
 		Assert.isNull(graph.getNeighbors({id: 1}));
 	}
 
+	/**
+		Every kind of node is found as `==` finds it: strings and integers by
+		value, objects and enum values by identity, the rest by comparison.
+	**/
+	public function testWeightedGraphFindsEveryKindOfNode():Void {
+		var ints = new WeightedGraph<Int>();
+		ints.addEdge(1, 2, 0.5);
+		ints.addEdge(1, 1000000, 2);
+		ints.addEdge(-7, 1, 1);
+		Assert.equals(2, ints.getNeighbors(1).length);
+		Assert.notNull(ints.getNeighbors(1000000));
+		Assert.equals(1, ints.getNeighbors(-7).length);
+		Assert.isNull(ints.getNeighbors(3));
+
+		var enums = new WeightedGraph<haxe.io.Error>();
+		enums.addEdge(haxe.io.Error.Blocked, haxe.io.Error.Overflow, 1);
+		Assert.equals(1, enums.getNeighbors(haxe.io.Error.Blocked).length);
+
+		var floats = new WeightedGraph<Float>();
+		floats.addEdge(0.5, 1.5, 3);
+		floats.addNode(0.5);
+		Assert.equals(1, floats.getNeighbors(0.5).length);
+		Assert.notNull(floats.getNeighbors(1.5));
+
+		var strings = new WeightedGraph<String>();
+		strings.addEdge("a", "b", 1);
+		Assert.equals(1, strings.getNeighbors("a" + "").length);
+	}
+
+	/**
+		Building a graph costs what its nodes do, not their square: each
+		lookup was a pass over every node, so 20,000 edges in a chain took
+		about ten seconds on eval.
+	**/
+	public function testWeightedGraphLookupIsNotAPassOverTheNodes():Void {
+		var graph = new WeightedGraph<Int>();
+		var started:Float = haxe.Timer.stamp();
+		for (i in 0...20000) {
+			graph.addEdge(i, i + 1, 1.0);
+		}
+		var took:Float = haxe.Timer.stamp() - started;
+		Assert.equals(1, graph.getNeighbors(19999).length);
+		Assert.isTrue(took < 1.0, "20,000 edges took " + took + " s");
+	}
+
 	public function testWeightedGraphMaintainsDirectedNeighborsAndExplicitNodes():Void {
 		var graph = new WeightedGraph<String>();
 		graph.addNode("start");
@@ -761,4 +1446,9 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, graph.getNeighbors("mid").length);
 		Assert.equals(0, graph.getNeighbors("end").length);
 	}
+}
+
+private class SwitchTableOpcodes {
+	public static inline var PING:Int = 1;
+	public static inline var LOGIN:Int = 2;
 }
