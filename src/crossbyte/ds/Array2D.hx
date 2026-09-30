@@ -1,6 +1,15 @@
 package crossbyte.ds;
 
-/** Simple row-major two-dimensional array wrapper. */
+/**
+ * Simple row-major two-dimensional array wrapper.
+ *
+ * **Cells start as `value`.** Leave it out and they start as `null`, which
+ * a static target, holding an `Int` or a `Float` or a `Bool`, stores as `0` or
+ * `false`, and eval and JavaScript keep as `null`: an `Array2D<Int>` made
+ * without a value reads 0 on hxcpp and the jvm and null elsewhere. The
+ * constructor cannot tell what `T` is to do better, so pass a value for a
+ * basic type, or `fill` one.
+ */
 abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 	public inline function new(rows:Int = 0, cols:Int = 0, value:T = null) {
 		this = [];
@@ -22,8 +31,22 @@ abstract Array2D<T>(Array<Array<T>>) from Array<Array<T>> to Array<Array<T>> {
 		this[row][col] = value;
 	}
 
+	/** Sets every cell to `value`. **/
+	public inline function fill(value:T):Void {
+		for (row in this) {
+			for (c in 0...row.length) {
+				row[c] = value;
+			}
+		}
+	}
+
+	/**
+	 * Removes every row. The rows are emptied in place, so every reference
+	 * to this grid sees it cleared; it was replaced, which left another
+	 * reference to it holding the old rows.
+	 */
 	public inline function clear():Void {
-		this = [];
+		this.resize(0);
 	}
 
 	public inline function isEmpty():Bool {
