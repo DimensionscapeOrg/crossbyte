@@ -213,5 +213,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
 		// Where a Haxe Int does not wrap at 32 bits by itself.
 		runner.addCase(new crossbyte.foundation.Seq32Test());
+		// PrimitiveValue's numbers, which Std.parseInt and Std.int read
+		// differently on each target.
+		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
 	}
 }

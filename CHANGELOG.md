@@ -1244,6 +1244,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PrimitiveValue.toInt` reads a number the same way on every target, or
+  throws. It went through `Std.parseInt`, which read "4294967396" as null on
+  eval, as that number on Node and as a thrown `NumberFormatException` on
+  the jvm, and `Std.int`, which made the Float 3e9 2147483647 on the jvm
+  and -1294967296 elsewhere. A string is now spaces, an optional sign and
+  decimal or `0x` hex digits, within the range of `Int` -- "12abc" throws
+  rather than reading 12 -- and a Float outside that range throws. The
+  documentation's example named a type, `Primitive`, that does not exist.
 - `BloomFilter` packs its bits 32 to an `Int` and allocates nothing per
   check. It held an array element per bit -- a 10-million-bit filter took 40
   MB on the jvm and 76 MB on Node for 1.25 MB of bits -- and hashed a UTF-8
