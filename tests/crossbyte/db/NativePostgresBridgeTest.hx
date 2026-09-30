@@ -435,6 +435,52 @@ class NativePostgresBridgeTest extends utest.Test {
 		return haxe.Timer.stamp() - started;
 	}
 
+	/**
+		A result paged ahead of `getResult()` comes back in the order it was
+		read, and only its last page says it is complete, the last page of a
+		result that divides evenly into pages as well.
+
+		Off cpp the pages waited in an Array read with `pop()`, newest first.
+		On every target a page's `complete` was `!executing` when it was taken,
+		so once the last page had been read every page still waiting said it
+		was the last; and the statement noticed the rows had run out only when
+		a page came up short, so four rows in pages of two left no page that
+		was complete.
+	**/
+	public function testPagesComeBackInOrderAndOnlyTheLastIsComplete():Void {
+		var connection = __open(__config("localhost"));
+
+		try {
+			Assert.equals("1,2 3,4 5+", __pages(connection, 5));
+			Assert.equals("1,2 3,4+", __pages(connection, 4));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+	}
+
+	// Pages `rows` rows two at a time, reading ahead of getResult(), and
+	// writes each page as its values, "+" marking one called complete.
+	@:noCompletion private static function __pages(connection:PostgresConnection, rows:Int):String {
+		var statement = new crossbyte.db.postgres.PostgresStatement();
+		statement.sqlConnection = connection;
+		statement.text = "fake:count " + rows;
+		statement.execute(2);
+		while (statement.executing) {
+			statement.next(2);
+		}
+
+		var pages:Array<String> = [];
+		var page = statement.getResult();
+		while (page != null) {
+			pages.push([for (row in page.data) Std.string(Reflect.field(row, "n"))].join(",") + (page.complete ? "+" : ""));
+			page = statement.getResult();
+		}
+
+		return pages.join(" ");
+	}
+
 	@:noCompletion private static function __open(config:PostgresConfig):PostgresConnection {
 		var connection = new PostgresConnection();
 		connection.open(config);

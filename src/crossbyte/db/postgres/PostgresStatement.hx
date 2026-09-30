@@ -11,9 +11,6 @@ import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.errors.SQLError;
 import crossbyte.FieldStruct;
-#if cpp
-import sys.thread.Deque;
-#end
 
 /** Statement helper for executing PostgreSQL queries and paging result rows. */
 typedef PostgresResultSet = Dynamic;
@@ -41,11 +38,11 @@ class PostgresStatement extends EventDispatcher {
 	@:noCompletion private var __prefetch:Int = 0;
 	@:noCompletion private var __executing:Bool = false;
 
-	#if cpp
-	@:noCompletion private var __resultQueue:Deque<Array<Dynamic>>;
-	#else
-	@:noCompletion private var __resultQueue:Array<Array<Dynamic>>;
-	#end
+	// Pages read and not yet taken by getResult(), oldest first. A statement
+	// runs on the thread that calls it, so a plain Array serves every
+	// target. It was a Deque on cpp and, elsewhere, an Array read with pop(),
+	// which hands back the newest page first.
+	@:noCompletion private var __resultQueue:Array<Array<Dynamic>> = [];
 
 	public function new() {
 		super();
@@ -60,11 +57,7 @@ class PostgresStatement extends EventDispatcher {
 		if (__executing) {
 			__executing = false;
 			__prefetch = 0;
-			#if cpp
-			__resultQueue = new Deque();
-			#else
 			__resultQueue = [];
-			#end
 			__resultSet = null;
 			text = "";
 			clearParameters();
@@ -76,11 +69,7 @@ class PostgresStatement extends EventDispatcher {
 			throw "PostgresStatement: no connection set.";
 		}
 		__executing = true;
-		#if cpp
-		__resultQueue = new Deque();
-		#else
 		__resultQueue = [];
-		#end
 
 		var query = __applyParameters(text);
 		__prefetch = prefetch;
@@ -120,11 +109,7 @@ class PostgresStatement extends EventDispatcher {
 		}
 
 		__executing = true;
-		#if cpp
-		__resultQueue = new Deque();
-		#else
 		__resultQueue = [];
-		#end
 
 		__prefetch = prefetch;
 
@@ -175,14 +160,17 @@ class PostgresStatement extends EventDispatcher {
 		}
 	}
 
+	/**
+		The oldest page not yet taken, or `null` when none is waiting. Pages
+		come back in the order they were read, and only the last is
+		`complete`.
+	**/
 	public function getResult():SQLResult {
-		#if cpp
-		var results = __resultQueue.pop(false);
-		#else
-		var results = __resultQueue.pop();
-		#end
-
-		var complete:Bool = !__executing;
+		var results:Array<Dynamic> = __resultQueue.shift();
+		// The last page is the one read as the rows ran out, with none behind
+		// it. This was !__executing alone, which called every page still
+		// waiting complete once the last had been read.
+		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
 			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
@@ -229,9 +217,15 @@ class PostgresStatement extends EventDispatcher {
 				if (__resultSet.hasNext()) {
 					rows.push(__resultSet.next());
 				} else {
-					__executing = false;
 					break;
 				}
+			}
+			// Asked after the page as well as during it. The rows are all in
+			// hand, so the page that takes the last of them can say so; asked
+			// only when a page came up short, a result that divided evenly
+			// into pages had none that was complete.
+			if (!__resultSet.hasNext()) {
+				__executing = false;
 			}
 			__push(rows);
 		}
@@ -256,12 +250,8 @@ class PostgresStatement extends EventDispatcher {
 		return __sqlConnection;
 	}
 
-	@:noCompletion private inline function __push<T>(a:Array<T>):Void {
-		#if cpp
-		__resultQueue.add(a);
-		#else
-		__resultQueue.push(a);
-		#end
+	@:noCompletion private inline function __push(rows:Array<Dynamic>):Void {
+		__resultQueue.push(rows);
 	}
 }
 
