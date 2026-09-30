@@ -841,6 +841,63 @@ class PeerConnectionRelayTest extends utest.Test {
 		server.close();
 	}
 
+	/**
+		A datagram in the STUN range is decoded once, however many things on
+		the socket might want it.
+
+		The reflexive query, the relay client, the agent and a restart's agent
+		each decoded it for themselves -- four decodes of every datagram, all
+		before any of them checked its integrity, which multiplied what one
+		datagram of junk attributes cost by four.
+	**/
+	public function testADatagramIsDecodedOnce():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var silent = relayServer();
+		silent.relay.dropAll = true;
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			silent.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> gathered = c, _ -> {});
+			pumpUntil(() -> gathered != null, 8.0);
+			Require.notNull(gathered, "the relay never allocated");
+
+			// All four listening: a reflexive question nobody answers, the relay,
+			// an agent checking, and a restart's agent.
+			connection.gatherReflexive("127.0.0.1", silent.port, 30000).then(_ -> {}, _ -> {});
+			connection.connect({
+				usernameFragment: "remoteufrag",
+				password: "remotepasswordlongenough",
+				fingerprint: connection.description().fingerprint,
+				candidates: [{address: "127.0.0.9", port: 40404, type: "host", priority: 2130706431}]
+			});
+			connection.restartIce();
+
+			// An answer to nothing anyone asked, from the relay's own address so
+			// even the relay client looks at it.
+			var stray = new crossbyte.net._internal.stun.StunMessage(crossbyte.net._internal.stun.StunMessage.BINDING_SUCCESS,
+				crossbyte.net._internal.stun.StunMessage.bindingRequest().transactionId, []).encode();
+
+			var before:Int = crossbyte.net._internal.stun.StunMessage.__decoded;
+			@:privateAccess connection.__receiveDatagram(stray, "127.0.0.1", server.port);
+			var decodes:Int = crossbyte.net._internal.stun.StunMessage.__decoded - before;
+
+			Assert.equals(1, decodes, "one datagram was decoded " + decodes + " times");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+		silent.close();
+	}
+
 	/** There is no socket to allocate through before `bind`. **/
 	public function testRelayingBeforeBindingIsRefused():Void {
 		if (unsupported()) return;

@@ -405,17 +405,23 @@ class IceAgent {
 	/**
 		Offers an arriving datagram to the agent.
 
+		@param message The datagram already decoded, when the caller has done
+		that: a socket this agent shares with a relay client or a reflexive
+		query decodes each datagram once and shows the message to each, rather
+		than having each decode it again.
 		@return Whether this was a STUN message the agent took. False means the
 		datagram belongs to whatever else shares the socket, which is the normal
 		case once a session is carrying data -- so a caller should pass it on
 		rather than dropping it.
 	**/
-	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate):Bool {
+	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate, ?message:StunMessage):Bool {
 		if (state == CLOSED || payload == null) {
 			return false;
 		}
 
-		var message = StunMessage.decode(payload);
+		if (message == null) {
+			message = StunMessage.decode(payload);
+		}
 
 		if (message == null) {
 			return false;

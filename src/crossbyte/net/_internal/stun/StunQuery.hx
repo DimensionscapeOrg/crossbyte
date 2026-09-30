@@ -87,8 +87,15 @@ class StunQuery {
 		advertise to peers as its own.
 	**/
 	public function interpret(payload:ByteArray):StunQueryOutcome {
-		var response = StunMessage.decode(payload);
+		return interpretMessage(StunMessage.decode(payload));
+	}
 
+	/**
+		The same, for a datagram the caller has already decoded -- or null, for
+		one that was not STUN. A socket carrying ICE and TURN as well decodes
+		each datagram once and shows the message to each of them.
+	**/
+	public function interpretMessage(response:Null<StunMessage>):StunQueryOutcome {
 		if (response == null || !request.matches(response)) {
 			return NOT_OURS;
 		}

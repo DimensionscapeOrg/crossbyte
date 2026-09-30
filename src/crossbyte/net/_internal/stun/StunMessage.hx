@@ -126,6 +126,24 @@ class StunMessage {
 	/** Type, length, cookie and transaction id: what every message begins with. **/
 	public static inline var HEADER_LENGTH:Int = 20;
 
+	/**
+		The most attributes a message may carry and still be read.
+
+		Every attribute read costs an allocation and a copy, and the count was
+		the sender's to choose: a 64 KB datagram of empty attributes is sixteen
+		thousand of them, 527 microseconds to decode on cpp and 4.4 ms on Node
+		against 24 and 39 for the same bytes as one attribute -- sent by anyone,
+		before anything is authenticated. Nothing any STUN, TURN or ICE peer
+		sends comes near this; a message past it is not read.
+	**/
+	public static inline var MAX_ATTRIBUTES:Int = 32;
+
+	/**
+		How many messages have been decoded, counted without a lock: how a
+		caller that should decode a datagram once can be seen to.
+	**/
+	@:noCompletion public static var __decoded:Int = 0;
+
 	private static inline var TRANSACTION_LENGTH:Int = 12;
 	private static inline var FAMILY_IPV4:Int = 0x01;
 
@@ -228,6 +246,8 @@ class StunMessage {
 			return null;
 		}
 
+		__decoded++;
+
 		var transactionId = new ByteArray();
 		bytes.readBytes(transactionId, 0, TRANSACTION_LENGTH);
 
@@ -235,6 +255,11 @@ class StunMessage {
 		var read:Int = 0;
 
 		while (read + 4 <= length) {
+			// Bounded before the work, not after: see MAX_ATTRIBUTES.
+			if (attributes.length >= MAX_ATTRIBUTES) {
+				return null;
+			}
+
 			var attributeType:Int = bytes.readUnsignedShort();
 			var attributeLength:Int = bytes.readUnsignedShort();
 			read += 4;

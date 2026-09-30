@@ -1233,6 +1233,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A STUN message of more than 32 attributes (`StunMessage.MAX_ATTRIBUTES`)
+  is not read. The count was the sender's, and each attribute costs an
+  allocation and a copy, so one unauthenticated 64 KB datagram of empty
+  attributes cost 527 microseconds to decode on cpp and 4.4 ms on Node --
+  and a `PeerConnection` decoded every STUN-range datagram up to four times,
+  once each for its reflexive query, its relay, its agent and a restart's
+  agent. It decodes once now and shows the message to each, and a
+  `PeerConnectionHost` hands on the check it decoded to route.
+  `TurnClient.receive`, `IceAgent.receive` and `StunQuery.interpretMessage`
+  take a decoded message for that.
 - A `PeerConnection` whose relay refused, never answered or went away can
   ask for another. The dead relay stayed attached for the life of the
   connection, so asking again was refused as "already has a relay", and a

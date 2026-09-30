@@ -654,10 +654,13 @@ class TurnClient {
 	/**
 		Offers an arriving datagram to the relay client.
 
+		@param message The datagram already decoded, when the caller has done
+		that: a socket that TURN shares with ICE decodes each datagram once and
+		offers the message to both, rather than having each decode it again.
 		@return Whether it was TURN traffic. Anything else belongs to whatever
 		shares the socket -- an ICE check, or a session already running.
 	**/
-	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float):Bool {
+	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?message:StunMessage):Bool {
 		if (__closed || payload == null) {
 			return false;
 		}
@@ -678,11 +681,13 @@ class TurnClient {
 		// Before decoding: a ChannelData message is not STUN, and its first two
 		// bytes are a channel number that would read as a message type nothing
 		// here has.
-		if (__deliverChannelData(payload)) {
+		if (message == null && __deliverChannelData(payload)) {
 			return true;
 		}
 
-		var message = StunMessage.decode(payload);
+		if (message == null) {
+			message = StunMessage.decode(payload);
+		}
 
 		if (message == null) {
 			return false;
