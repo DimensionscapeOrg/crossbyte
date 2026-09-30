@@ -1220,6 +1220,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Brotli compression costs in proportion to what it compresses. Every call
+  built a ring buffer for a 4 MB window, 2^23 entries for a two-byte body,
+  and allocated and cleared a 2^17-entry hash table, so a server
+  answering browsers, which all ask for br, managed 45 two-byte responses a
+  second on Node and every error page paid the same. The window is now the
+  least that covers the input, the ring buffer is the input's size when it
+  fits one block, the hash tables for qualities 1 to 4 are kept per thread
+  and only the buckets an input uses are cleared, and input and output go
+  through `Bytes` rather than `Array<UInt>` copies. Output is byte for byte
+  what it was, bar a smaller window header. Node, served through
+  `HTTPServer` with br: 45 to 3,091 requests a second for a 2-byte body,
+  46 to 2,020 for 2.9 KB of JSON; compressing 700 KB of JSON takes 54 ms
+  rather than 81.
 - Decoding Brotli takes memory in proportion to what it produces. The
   decoder allocated the whole window a stream's header named, 16 MB for
   an eighteen-byte request body, which cost a Node server 33 ms a request,
