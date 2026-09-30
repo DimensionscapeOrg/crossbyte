@@ -102,6 +102,21 @@ class IceCandidatePair {
 	}
 
 	/**
+		How a sort that tries the higher priority first orders two of them:
+		negative when `a` goes first, positive when `b` does, and never more
+		than one either way.
+
+		`Int64.compare` answers with a difference -- of two high words here,
+		which run to 2^31 -- and neko's `Array.sort` is a native merge sort that
+		takes any answer too large for neko's 31-bit Int as "less". Every sort
+		by priority there put a relay first and a host last.
+	**/
+	@:noCompletion @:allow(crossbyte.net.ice.IceAgent) private static function __higherFirst(a:Int64, b:Int64):Int {
+		var order:Int = Int64.compare(b, a);
+		return order < 0 ? -1 : (order > 0 ? 1 : 0);
+	}
+
+	/**
 		Every pair worth trying, best first.
 
 		Candidates that cannot reach each other are left out rather than
@@ -165,10 +180,10 @@ class IceCandidatePair {
 			}
 		}
 
-		// Descending: the highest priority is tried first. Int64.compare rather
-		// than a subtraction, which would overflow the Int the sort wants back.
+		// Descending: the highest priority is tried first. Compared rather than
+		// subtracted, which would overflow the Int the sort wants back.
 		pairs.sort(function(a:IceCandidatePair, b:IceCandidatePair):Int {
-			return Int64.compare(b.priority, a.priority);
+			return __higherFirst(a.priority, b.priority);
 		});
 
 		return __pruned(pairs);
