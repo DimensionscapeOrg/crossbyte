@@ -472,6 +472,45 @@ class IceAgent {
 		return __valid.copy();
 	}
 
+	/**
+		Gives up on every pair from `local` to a peer at `remoteAddress` that
+		has not answered yet.
+
+		For a relay that will not forward there. RFC 8656 has a relay refuse a
+		permission it will not grant, with 403 most often, and a hardened one
+		refuses every private address, which is what a peer's host candidates
+		usually are, and ICE pairs a relayed candidate with all of them. A relay
+		drops what it has no permission for without a word, so each of those
+		checks would otherwise be sent seven times over half a minute into
+		nothing, and an agent whose other pairs had all failed would wait that
+		long to say so.
+
+		A pair that has answered is left alone: it is a path that demonstrably
+		worked, whatever was said about it since.
+	**/
+	public function refusePairs(local:IceCandidate, remoteAddress:String):Void {
+		if (local == null || remoteAddress == null) {
+			return;
+		}
+
+		var changed:Bool = false;
+
+		for (check in __checks) {
+			if (check.state == SUCCEEDED || check.state == FAILED) {
+				continue;
+			}
+
+			if (check.pair.local.sameAs(local) && check.pair.remote.address == remoteAddress) {
+				check.state = FAILED;
+				changed = true;
+			}
+		}
+
+		if (changed) {
+			__settleIfFinished();
+		}
+	}
+
 	// ------------------------------------------------------------------
 	// Sending
 	// ------------------------------------------------------------------

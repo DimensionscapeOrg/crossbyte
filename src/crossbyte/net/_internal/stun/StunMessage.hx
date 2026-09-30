@@ -98,6 +98,13 @@ class StunMessage {
 	public static inline var STALE_NONCE:Int = 438;
 
 	/**
+		A relay's answer for an allocation it does not hold: the 5-tuple has
+		none, or has another. Whatever the request was, the allocation it was
+		about is gone.
+	**/
+	public static inline var ALLOCATION_MISMATCH:Int = 437;
+
+	/**
 		XORed into the CRC so a STUN fingerprint cannot be mistaken for the
 		start of some other protocol that also begins with a checksum. RFC 5389
 		section 15.5 picks the ASCII of "STUN" for it.
@@ -551,6 +558,23 @@ class StunMessage {
 
 		bytes.position = 0;
 		return new StunAttribute(ATTR_ERROR_CODE, bytes);
+	}
+
+	/**
+		The reason phrase of an error response alone, without its code: empty
+		when the server gave none, null when there is no ERROR-CODE at all.
+	**/
+	public function errorReason():Null<String> {
+		for (attribute in attributes) {
+			if (attribute.type != ATTR_ERROR_CODE || attribute.value.length < 4) {
+				continue;
+			}
+
+			attribute.value.position = 4;
+			return attribute.value.length > 4 ? attribute.value.readUTFBytes(attribute.value.length - 4) : "";
+		}
+
+		return null;
 	}
 
 	/**

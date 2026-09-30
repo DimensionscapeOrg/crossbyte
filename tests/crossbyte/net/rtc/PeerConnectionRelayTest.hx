@@ -4,6 +4,7 @@ import crossbyte.core.CrossByte;
 import crossbyte.events.DatagramSocketDataEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.net.DatagramSocket;
+import crossbyte.net.FakeTurnRelaySocket;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunMessage.StunAttribute;
 import crossbyte.net.ice.IceCandidate;
@@ -560,6 +561,70 @@ class PeerConnectionRelayTest extends utest.Test {
 
 			Assert.equals(0, server.channels, "a refused bind was recorded as one");
 			Assert.equals(0, server.overChannel, "traffic went over a channel that was refused");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
+	/**
+		A relay that refuses one of the peer's addresses still carries the
+		connection.
+
+		The auditor's case, end to end. Alice binds a wildcard, so she records
+		no host candidate and her only way out is her relay. Bob offers his host
+		address and his relayed one, and the relay refuses to forward to the
+		host address, the way a hardened relay refuses a private or loopback one.
+		ICE pairs Alice's relayed candidate with Bob's host address first, and
+		the relay's 403 for it closed her whole allocation, so the relayed pair
+		that would have worked was never tried, and neither peer connected.
+	**/
+	public function testARelayRefusingOneOfThePeersAddressesStillConnects():Void {
+		if (unsupported()) return;
+
+		var server = new FakeTurnRelaySocket();
+		server.relay.realm = REALM;
+		server.relay.users = [USERNAME => PASSWORD];
+		server.relay.denyPeers = ["127.0.0.3"];
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			server.start();
+			alice.bind(0, "0.0.0.0");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			var failure:String = null;
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			pumpUntil(() -> relays == 2 || failure != null, 10.0);
+
+			if (relays != 2) {
+				Assert.fail("the relay never allocated: " + failure);
+				alice.close();
+				bob.close();
+				server.close();
+				return;
+			}
+
+			// Bob's host address as well as his relayed one.
+			alice.connect(bob.description());
+			bob.connect(relayOnly(alice));
+			pumpUntil(() -> (alice.connected && bob.connected) || alice.closeReason != null || bob.closeReason != null, 20.0);
+
+			Assert.isTrue(server.relay.count("permission-403") > 0, "the relay never refused Bob's host address, so this proved nothing");
+			Assert.isTrue(alice.connected, "one refused address took Alice's relay down with it: " + alice.closeReason);
+			Assert.isTrue(bob.connected, "Bob never connected: " + bob.closeReason);
+
+			if (alice.connected) {
+				Assert.equals("relay", (alice.agent.selectedPair.local.type : String));
+				Assert.equals("relay", (alice.agent.selectedPair.remote.type : String));
+			}
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}

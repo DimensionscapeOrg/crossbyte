@@ -601,9 +601,74 @@ class TurnClientTest extends utest.Test {
 	}
 
 	// ------------------------------------------------------------------
+	// Permissions
+	// ------------------------------------------------------------------
+
+	/**
+		A relay refusing one peer refuses that peer, and nothing else.
+
+		Any CreatePermission error but 401 and 438 closed the client, so one
+		address the relay would not forward to took every other peer down with
+		it. That is the ordinary case, not an edge: a hardened relay refuses
+		private and loopback addresses, and ICE asks for the peer's host
+		addresses first.
+	**/
+	public function testARefusedPermissionRefusesOnlyThatPeer():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.denyPeers = [PRIVATE_PEER];
+
+		var client = network.client();
+		var lost:Array<String> = [];
+		var refused:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.onPermissionRefused = (peer, code, reason) -> refused.push(peer + " " + code + " " + reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PRIVATE_PEER, network.now);
+		network.run(() -> network.relay.count("permission-403") > 0, 5);
+		network.advance(0.1);
+
+		Assert.equals(1, network.relay.count("permission-403"), "the relay never refused the peer, so this proved nothing");
+		Assert.isTrue(client.active, "one refused permission ended the whole allocation");
+		Assert.equals(0, lost.length, "one refused peer was reported as the allocation lost: " + lost);
+		Assert.equals(1, refused.length, "the refusal was not reported for the peer it was about");
+
+		if (refused.length > 0) {
+			Assert.equals(PRIVATE_PEER + " 403 Forbidden IP", refused[0]);
+		}
+
+		// Every other peer still gets through.
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("still relaying");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(1, network.toPeers.length, "the relay forwarded nothing for a peer it had permitted");
+
+		// And the refused one is asked about once, however often it is
+		// permitted and however long the allocation lasts.
+		client.permit(PRIVATE_PEER, network.now);
+		network.advance(TurnClient.PERMISSION_REFRESH + 10, 0.25);
+
+		Assert.equals(1, network.relay.count("permission-403"), "a peer the relay refused was asked about again");
+		Assert.isTrue(client.active);
+	}
+
+	// ------------------------------------------------------------------
 
 	private static inline var PEER:String = "198.51.100.4";
 	private static inline var PEER_PORT:Int = 40000;
+
+	/** A private address, of the kind a hardened relay refuses to forward to. **/
+	private static inline var PRIVATE_PEER:String = "10.0.0.5";
 
 	/** A transaction id no request of the client's has. **/
 	private static function transaction(seed:Int):ByteArray {
