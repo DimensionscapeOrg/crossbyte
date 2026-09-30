@@ -22,8 +22,16 @@ typedef TurnServer = {
 	password:String,
 
 	/**
-		How the relay is reached: UDP when left out, or TCP for a network that
-		lets only TCP out. See `TurnTransport`.
+		How the relay is reached: UDP when left out, or TCP or TLS for a
+		network that lets only TCP out. See `TurnTransport`.
 	**/
 	?transport:TurnTransport
+	#if !(macro || (js && !nodejs)),
+	/**
+		For a relay reached over TLS whose certificate chains to an authority
+		the system does not trust, a private relay's own. See
+		`TurnClient.certAuthority`.
+	**/
+	?certAuthority:Certificate
+	#end
 }

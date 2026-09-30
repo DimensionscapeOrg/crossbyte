@@ -1210,6 +1210,9 @@ class PeerConnection {
 					username: server.username,
 					password: server.password,
 					transport: server.transport != null ? server.transport : UDP
+					#if !(macro || (js && !nodejs)),
+					certAuthority: server.certAuthority
+					#end
 				}
 		];
 		__relayUseChannels = useChannels;
@@ -1312,6 +1315,9 @@ class PeerConnection {
 		var server = __relayServers[index];
 		var relay = new TurnClient(server.address, server.port, server.username, server.password, server.transport);
 		relay.useChannels = __relayUseChannels;
+		#if !(macro || (js && !nodejs))
+		relay.certAuthority = server.certAuthority;
+		#end
 		__turn = relay;
 		__turnServer = server;
 

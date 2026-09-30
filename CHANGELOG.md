@@ -5,6 +5,14 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- A TURN relay reached over TLS (`TurnTransport.TLS`), natively, on the jvm
+  and on Node, for `ReliableDatagramServerSocket.allocateRelay` and
+  `PeerConnection.gatherRelayedFrom` alike. It was refused, saying a plain
+  `Socket` could not start TLS; a client `Socket` can now. The relay's
+  certificate is checked against the name it was given, trusting the
+  system's authorities or one named in `TurnClient.certAuthority`,
+  `TurnServer.certAuthority` or `ReliableDatagramServerSocket.
+  relayCertAuthority`; `TurnClient.verifyCert` turns the check off.
 - `crossbyte.sys.System.sleep(seconds)`, a sleep that comes back on the
   interpreter on Windows, where `Sys.sleep` can sleep for 49 days: eval
   times a `Thread.yield()` in the process's CPU time, which Windows counts
