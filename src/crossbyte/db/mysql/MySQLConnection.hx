@@ -105,6 +105,12 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		connections. And `timeZone` and `sqlMode` could never succeed: their
 		values were escaped into a buffer that was then thrown away, and the
 		server was sent `SET time_zone = :tz;`.
+
+		On hl the server is first tried with a plain connection of the
+		client's own, closed at once, and one that cannot be reached is
+		refused without HashLink's mysql library: that library frees a
+		connection that failed to open twice, and corrupts the process heap
+		doing it. A login the server refuses still reaches it.
 	**/
 	public function open(cfg:MySQLConfig):Void {
 		var charset:String = null;
@@ -131,6 +137,10 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			// unreachable.
 			close();
 		}
+
+		#if hl
+		__reach(cfg);
+		#end
 
 		try {
 			#if cpp
@@ -220,6 +230,52 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		__config = null;
 		__threadId = 0;
 	}
+
+	#if hl
+	/**
+		Refuses, before HashLink's mysql library is asked to connect, what
+		that library would fail to connect to. When its connect fails it
+		frees the connection it made and leaves the collector a finalizer
+		that frees it again: a double free, often into memory the heap has
+		since given to someone else, and the process dies of heap corruption
+		at some later allocation. So a server that cannot be reached, what
+		a pool retrying against a restarting database meets again and again,
+		is found here with a connection of its own, which is closed
+		before the library opens one, and a Unix socket, which the library
+		refuses outright, is refused here.
+
+		A login the server refuses still reaches the library; only a fix
+		there spares that one.
+	**/
+	@:noCompletion private static function __reach(cfg:MySQLConfig):Void {
+		if (cfg.socket != null && cfg.socket != "") {
+			throw new MySQLConnectionError("Unix Socket connections are not supported");
+		}
+
+		var port:Int = cfg.port == null ? 3306 : cfg.port;
+		var host:sys.net.Host;
+
+		try {
+			host = new sys.net.Host(cfg.host);
+		} catch (e:Dynamic) {
+			throw new MySQLConnectionError("Unknown MySQL server host '" + cfg.host + "': " + Std.string(e), 2005);
+		}
+
+		var probe:sys.net.Socket = new sys.net.Socket();
+
+		try {
+			probe.connect(host, port);
+		} catch (e:Dynamic) {
+			try {
+				probe.close();
+			} catch (_:Dynamic) {}
+
+			throw new MySQLConnectionError("Can't connect to MySQL server on '" + cfg.host + ":" + port + "': " + Std.string(e), 2003);
+		}
+
+		probe.close();
+	}
+	#end
 
 	public function close():Void {
 		if (__connection != null) {

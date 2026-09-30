@@ -1661,6 +1661,32 @@ All notable changes to CrossByte will be documented in this file.
   not, since servers commonly send raw. A request body that is not what its
   coding says is answered 400; one that inflates past the ceiling is still
   413, where both were 413.
+- HTTP/2 on hl refuses a NUL in a field as well. `Bytes.toString` stops at
+  the first NUL there, as it does on JavaScript, and the HPACK decoder's
+  fix for JavaScript below left hl out: an hl server took `a`, NUL, `b` as
+  the value `a` and served a request RFC 9113 calls malformed, where it
+  now resets the stream.
+- On hl, a `MySQLConnection.open` that cannot reach its server no longer
+  corrupts the process heap. When HashLink's mysql library fails to
+  connect, it frees the connection it made and leaves the collector a
+  finalizer that frees it again; the next major collection did, into memory
+  the heap had by then given to someone else, and the process died at some
+  later allocation, the hl suite, of heap corruption, four hundred cases
+  after the MySQL case that failed to connect. `open` now tries the server
+  with a connection of its own first, and refuses a server it cannot reach
+  (2003), a host it cannot resolve (2005) and a Unix socket, which the
+  library does not support, without asking the library. That covers what a
+  pool retrying against a restarting database meets again and again; a
+  login the server refuses still reaches the library, and only a fix there
+  spares it. The check costs a connection per open, which the server sees
+  close before it logs in.
+- On hl, an HTTPS request waiting for a slow server no longer stops every
+  other thread: `FlexSocket`, the TLS client `URLLoader`, `Http` and the
+  HTTP/2 backend read through, makes an `HlTlsSocket` there, as the entry
+  about it below describes, where it made the standard library's socket. A
+  client waiting 1.5 s for a TLS server's answer held the rest of the
+  process for the whole of its 10 s timeout, the server included; it holds
+  it for a few milliseconds now.
 - A record `Logger` writes to stdout reaches a pipe or a file within a
   frame, and a warning or an error at once. The hxcpp fork's develop line
   flushes `Sys.println` only to a console, a flush per line being a syscall
