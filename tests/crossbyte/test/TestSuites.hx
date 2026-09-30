@@ -155,6 +155,10 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
+		// MongoDB's BSON codec and Extended JSON need nothing but bytes, and are
+		// in PortableSuite too.
+		runner.addCase(new crossbyte.db.mongodb.BsonTest());
+		runner.addCase(new crossbyte.db.mongodb.ExtendedJsonTest());
 		#if !cpp
 		// The same failures on cpp go through libpq, and are covered against
 		// its stand-in by NativePostgresBridgeTest below.
