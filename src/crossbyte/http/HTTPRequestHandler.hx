@@ -552,9 +552,17 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * one request's header block and body at their limits. The body and the
 	 * headers are each held to their own limit as they are read; this is the
 	 * backstop for bytes arriving faster than they can be.
+	 *
+	 * Held at `Int` max rather than wrapped past it. A body limit raised that
+	 * far made the sum negative, which HashLink compares with the buffer's
+	 * UInt length as a signed number: every request was refused there.
 	 */
 	@:noCompletion private inline function __bufferLimit():Int {
-		return __config.maxRequestBodySize + MAX_HEADER_BYTES;
+		var body:Int = __config.maxRequestBodySize;
+		if (body < 0) {
+			body = 0;
+		}
+		return body > 0x7FFFFFFF - MAX_HEADER_BYTES ? 0x7FFFFFFF : body + MAX_HEADER_BYTES;
 	}
 
 	@:noCompletion private function __parseRequest():Void {

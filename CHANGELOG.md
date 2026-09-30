@@ -1663,6 +1663,11 @@ All notable changes to CrossByte will be documented in this file.
   target compares them unsigned. The first positions reached into the
   empty end of the ring buffer and matched its zeros. hl output is now
   byte for byte what eval writes, and Node's own Brotli reads all of it.
+- On hl, a server whose `maxRequestBodySize` is raised to `Int` max, or
+  within 64 KB of it, serves requests again. What a connection may buffer
+  is that limit plus the headers', the sum wrapped negative, and HashLink
+  compared the buffer's length with it as signed numbers and answered
+  every request `413`. The sum now stops at `Int` max.
 - HTTP's `deflate` coding is zlib, as RFC 9110 has it, on both sides. The
   server sent raw DEFLATE under the name, which a client following the
   standard cannot read, and refused a standard `deflate` request body; the

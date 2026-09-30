@@ -120,6 +120,33 @@ class HTTPRequestFramingTest extends utest.Test {
 	}
 
 	/**
+		The largest limit an `Int` holds still serves.
+
+		What a connection may buffer is the body's limit plus the headers',
+		and that sum wrapped past `Int` max. HashLink compared the buffer's
+		length with the negative result as signed numbers and answered every
+		request `413`; the other targets compared it unsigned and got away
+		with it.
+	**/
+	public function testTheLargestBodyLimitStillServes(async:Async):Void {
+		var seen:Array<String> = [];
+		var server:HTTPServer = __serve(seen, config -> config.maxRequestBodySize = 0x7FFFFFFF);
+
+		HTTPTestSupport.exchangeEach(server, [
+			"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello",
+			"POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals(200, responses[0].status, "a request was refused under the largest limit");
+			Assert.equals("got 5", responses[0].body);
+			Assert.equals(200, responses[1].status, "a chunked request was refused under the largest limit");
+			Assert.equals(2, seen.length, "a request did not reach the application");
+			async.done();
+		});
+	}
+
+	/**
 		`Expect: 100-continue` waits for the application.
 
 		The server told every such client to send before any middleware had
