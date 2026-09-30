@@ -5,6 +5,16 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.db.mongodb.bson`: BSON, encoded and decoded on every target,
+  the browser included -- double, string, document, array, binary with its
+  subtype, ObjectId, bool, UTC datetime, null, regex, JavaScript, int32,
+  timestamp, int64 and Decimal128, the last two exactly, and MinKey and
+  MaxKey. A `Date` goes out as a BSON date, which is what a TTL index acts
+  on; `BsonDateTime` holds one exactly on hl and neko too, where `Date`
+  keeps whole seconds between 1901 and 2038. `BsonDocument` keeps its
+  field order, which a command, a sort and an index key depend on and an
+  anonymous object does not keep on most targets. `ExtendedJson` reads and
+  writes MongoDB Extended JSON v2, binding `:name` placeholders as values.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
