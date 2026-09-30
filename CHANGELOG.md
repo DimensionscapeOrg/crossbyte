@@ -1420,6 +1420,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the interpreter, a socket's second `close()` does nothing, where it
+  threw "not a socket", and `peer()` and `host()` name their `Host` by its
+  address as a resolved one is named; `host.host` was null, and
+  `ServerWebSocket` names a client by it.
 - Natively, a connection reset is a failure when read a byte at a time, not
   the end of the stream. `readByte` took every error but a blocked read for
   the end, so a line reader, or anything reading to the connection's end,
