@@ -1668,6 +1668,12 @@ All notable changes to CrossByte will be documented in this file.
   is that limit plus the headers', the sum wrapped negative, and HashLink
   compared the buffer's length with it as signed numbers and answered
   every request `413`. The sum now stops at `Int` max.
+- Lowering a `ReliableDatagramSocket`'s `maxMessageSize` below what a
+  message in progress already holds now closes the session at its next
+  fragment, as the limit says. The frame's length was compared with the
+  limit less what was held, a negative number by then, and every target
+  but hl compares a `UInt` with a negative `Int` as unsigned: four billion,
+  so nothing more of that message was refused.
 - HTTP's `deflate` coding is zlib, as RFC 9110 has it, on both sides. The
   server sent raw DEFLATE under the name, which a client following the
   standard cannot read, and refused a standard `deflate` request body; the
