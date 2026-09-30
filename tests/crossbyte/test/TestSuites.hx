@@ -172,6 +172,9 @@ class TestSuites {
 		// is sent (fakemysql/FakeMySQLServer), so no database is needed.
 		runner.addCase(new crossbyte.db.MySQLNativeWireTest());
 		runner.addCase(new crossbyte.db.MySQLNativeResultTest());
+		runner.addCase(new crossbyte.db.MySQLNativeSessionTest());
+		// SQLite opens only natively.
+		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		#end
 	}
 

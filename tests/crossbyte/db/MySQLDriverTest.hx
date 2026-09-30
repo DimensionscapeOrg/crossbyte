@@ -54,6 +54,45 @@ class MySQLDriverTest extends utest.Test {
 		Assert.isTrue(result != null && result.data.length == 0);
 	}
 
+	public function testTransactionsSentAsSqlAreFollowedWithoutTheServerFlags():Void {
+		// Natively the server's status flags say whether a transaction is
+		// open. A connection that cannot read them, a target other than cpp,
+		// follows the statements that open and close one instead, so a
+		// pool still rolls back a START TRANSACTION sent as text.
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.__connection = new ScriptedConnection();
+
+		connection.request("START TRANSACTION");
+		Assert.isTrue(connection.inTransaction);
+		connection.request("ROLLBACK TO SAVEPOINT sp_1");
+		Assert.isTrue(connection.inTransaction, "a rollback to a savepoint ended the transaction");
+		connection.request("commit;");
+		Assert.isFalse(connection.inTransaction);
+
+		connection.request("  begin");
+		Assert.isTrue(connection.inTransaction);
+		connection.request("ROLLBACK");
+		Assert.isFalse(connection.inTransaction);
+
+		// A session with autocommit off always has a transaction open.
+		connection.autocommit = false;
+		Assert.isTrue(connection.inTransaction);
+		connection.request("SET autocommit=1");
+		Assert.isFalse(connection.inTransaction);
+		connection.request("SET @@autocommit = OFF");
+		Assert.isTrue(connection.inTransaction);
+	}
+
+	public function testARefusedBeginChangesNothing():Void {
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.failures.set("START TRANSACTION", "Lost connection to MySQL server during query");
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.__connection = wire;
+
+		Assert.raises(() -> connection.request("START TRANSACTION"));
+		Assert.isFalse(connection.inTransaction);
+	}
+
 	private function __statement(wire:ScriptedConnection):MySQLStatement {
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = wire;
