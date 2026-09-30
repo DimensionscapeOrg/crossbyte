@@ -250,6 +250,11 @@ class TestSuites {
 		// jvm and ran on nothing. A case that executes nowhere reads as
 		// protection while providing none.
 		runner.addCase(new crossbyte.net.ServerSocketTLSTest());
+		// The jvm's own TLS backend and socket shim, against the JDK's TLS
+		// stack and raw NIO: chains, failures and what connections cost.
+		#if (java || jvm)
+		runner.addCase(new crossbyte.net.JvmTlsTest());
+		#end
 
 		// jvm as well as cpp. These were cpp-only, and running them on jvm was
 		// how two faults there were found: a listener that ignored

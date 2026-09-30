@@ -1220,6 +1220,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, a certificate file is read whole. Only its first certificate
+  was, so a server given the `fullchain.pem` an authority issues presented
+  its certificate without the intermediate, and curl, Node, browsers and
+  the JDK all refused it; and a CA bundle -- `setCA`, `DEFAULT_CA`,
+  `requireClientCertificate`, `certAuthority` -- trusted its first
+  authority alone. Native and Node read every certificate, and now so does
+  the jvm, for a server's own chain, an SNI entry's and every trust store.
+  A key in the same PEM file as the certificates no longer stops it being
+  read either.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
