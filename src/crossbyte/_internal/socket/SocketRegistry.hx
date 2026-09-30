@@ -26,6 +26,10 @@ final class SocketRegistry {
 	@:noCompletion private var __readSnapshot:Array<Socket>;
 	@:noCompletion private var __selectBuffer:Array<Socket>;
 
+	#if neko
+	@:noCompletion private var __poll:NekoPoll;
+	#end
+
 	public var capacity(get, null):Int;
 	public var size(get, null):Int;
 	public var isEmpty(get, null):Bool;
@@ -62,6 +66,9 @@ final class SocketRegistry {
 		__writeSnapshot = [];
 		__readSnapshot = [];
 		__selectBuffer = [];
+		#if neko
+		__poll = new NekoPoll(__capacity);
+		#end
 	}
 
 	public inline function clear():Void {
@@ -159,6 +166,12 @@ final class SocketRegistry {
 			return;
 		}
 
+		#if neko
+		// Taken before anything is dispatched, so a change a handler makes
+		// below is seen by the next pass rather than cleared by this one.
+		var changed:Bool = __isDirty || __writeDirty;
+		#end
+
 		if (__isDirty) {
 			__readSnapshot = __set.keys;
 			__isDirty = false;
@@ -175,9 +188,51 @@ final class SocketRegistry {
 			__writeDirty = false;
 		}
 
+		#if neko
+		__pollNeko(timeout, changed);
+		#else
 		__select(timeout);
+		#end
 	}
 
+	#if neko
+	/**
+		neko polls through its poll natives rather than `select`, which there
+		takes at most 64 sockets on Windows and throws past them; see `NekoPoll`.
+		Dispatched by position, as `NativeSocketRegistry` does: the read set
+		only loses members between passes, so a position still names the
+		socket it named when the poll was prepared.
+	**/
+	@:noCompletion private function __pollNeko(wait:Float, changed:Bool):Void {
+		if (changed) {
+			__poll.prepare(__readSnapshot, __writeSnapshot);
+		}
+
+		if (wait > 0) {
+			var waitStart:Float = haxe.Timer.stamp();
+			__poll.events(wait);
+			__waited += haxe.Timer.stamp() - waitStart;
+		} else {
+			__poll.events(wait);
+		}
+
+		var n:Int = 0;
+		var i:Int = __poll.readIndex(n);
+		while (i != -1) {
+			__dispatchReadable(__readSnapshot[i]);
+			i = __poll.readIndex(++n);
+		}
+
+		if (__writeSnapshot.length > 0) {
+			n = 0;
+			i = __poll.writeIndex(n);
+			while (i != -1) {
+				__dispatchWritable(__writeSnapshot[i]);
+				i = __poll.writeIndex(++n);
+			}
+		}
+	}
+	#else
 	@:noCompletion private function __select(wait:Float):Void {
 		// Refilled into a buffer this registry keeps rather than a fresh array
 		// per pump. The list handed to select cannot be the snapshot itself:
@@ -259,6 +314,7 @@ final class SocketRegistry {
 			}
 		}
 	}
+	#end
 
 	@:noCompletion private inline function __dispatchReadable(s:Socket):Void {
 		var cb:IPollableSocket = cast s.custom;
@@ -295,6 +351,10 @@ final class SocketRegistry {
 	@:noCompletion private inline function __grow():Void {
 		__capacity = Math.ceil(__capacity * 1.5);
 		__isDirty = true;
+		#if neko
+		__poll = new NekoPoll(__capacity);
+		__writeDirty = true;
+		#end
 	}
 
 	@:noCompletion private inline function __onFlushSocket(sock:Socket):Void {
