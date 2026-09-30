@@ -342,6 +342,51 @@ class HTTPRequestHandlerTest extends utest.Test {
 		}, null, false, body);
 	}
 
+	/**
+		`deflate` is zlib (RFC 9110 8.4.1.2), and what a client that follows
+		the standard sends. It was inflated as raw DEFLATE, so a correct body
+		failed and was refused as too large.
+	**/
+	public function testMiddlewareCanReadAZlibDeflateRequestBody(async:Async):Void {
+		var bodyText:String = null;
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("hello world");
+		body.compress(CompressionAlgorithm.ZLIB);
+
+		__sendRequest(async, [
+			function(handler:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				bodyText = handler.requestText;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: deflate\r\nContent-Length: ${body.length}\r\n\r\n', function(response):Void {
+
+			Assert.equals("hello world", bodyText);
+			Assert.equals(405, response.status);
+			async.done();
+		}, null, false, body);
+	}
+
+	/**
+		A body that is not what its coding says is a bad request, 400; only
+		one that grows past the ceiling is 413. Both were 413.
+	**/
+	public function testAMalformedCodedBodyIsABadRequest(async:Async):Void {
+		var body:ByteArray = new ByteArray();
+		body.writeUTFBytes("this was never gzip");
+		var reached:Bool = false;
+
+		__sendRequest(async, [
+			function(_:HTTPRequestHandler, next:?Dynamic->Void):Void {
+				reached = true;
+				next();
+			}
+		], 'POST /index.html HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: ${body.length}\r\n\r\n', function(response):Void {
+			Assert.equals(400, response.status);
+			Assert.isFalse(reached, "a malformed body reached middleware");
+			async.done();
+		}, null, false, body);
+	}
+
 	public function testMiddlewareCanReadBrotliRequestBody(async:Async):Void {
 		var bodyText:String = null;
 		var body:ByteArray = new ByteArray();
@@ -464,9 +509,11 @@ class HTTPRequestHandlerTest extends utest.Test {
 			Assert.equals(200, response.status);
 			Assert.equals("deflate", response.headers.get("content-encoding"));
 
+			// zlib, which is what `deflate` names; it was raw DEFLATE, which
+			// a client following the standard cannot read.
 			var decompressed = new ByteArray();
 			decompressed.writeBytes(response.bodyBytes, 0, response.bodyBytes.length);
-			decompressed.uncompress(CompressionAlgorithm.DEFLATE);
+			decompressed.uncompress(CompressionAlgorithm.ZLIB);
 			Assert.equals("Hello from middleware test", decompressed.toString());
 			async.done();
 		}, null, true, null, __compressEverything);

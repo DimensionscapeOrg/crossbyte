@@ -1644,6 +1644,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- HTTP's `deflate` coding is zlib, as RFC 9110 has it, on both sides. The
+  server sent raw DEFLATE under the name, which a client following the
+  standard cannot read, and refused a standard `deflate` request body; the
+  URLLoader client failed on a standard `deflate` response. Bodies are
+  read as zlib when they start with a zlib header and as raw DEFLATE when
+  not, since servers commonly send raw. A request body that is not what its
+  coding says is answered 400; one that inflates past the ceiling is still
+  413, where both were 413.
 - A record `Logger` writes to stdout reaches a pipe or a file within a
   frame, and a warning or an error at once. The hxcpp fork's develop line
   flushes `Sys.println` only to a console, a flush per line being a syscall

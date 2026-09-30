@@ -981,7 +981,7 @@ class Http {
 
 		var payload:ByteArray = data;
 		for (i in 0...encodings.length) {
-			payload.uncompress(encodings[encodings.length - 1 - i], limit > 0 ? limit : 0);
+			payload.uncompress(crossbyte.http.HTTPContentCoding.codecFor(encodings[encodings.length - 1 - i], payload), limit > 0 ? limit : 0);
 		}
 
 		return payload;
