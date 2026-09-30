@@ -402,6 +402,67 @@ class CollectionsTest extends utest.Test {
 		Assert.raises(() -> deque.last());
 	}
 
+	/**
+		A deque walks front to back, grows through a wrapped ring without
+		losing order, and can be cleared and used again. It had no iterator
+		and no clear.
+	**/
+	public function testDequeIteratesGrowsAndClears():Void {
+		var deque = new Deque<Int>(4);
+		// Wrap the ring before it grows: take from the front, add at the back.
+		for (i in 0...3) {
+			deque.push(i);
+		}
+		Assert.equals(0, deque.pop());
+		Assert.equals(1, deque.pop());
+		for (i in 3...40) {
+			deque.push(i);
+		}
+		for (i in 0...5) {
+			deque.add(-1 - i);
+		}
+		var walked:Array<Int> = [for (x in deque) x];
+		var expected:Array<Int> = [for (i in 0...5) -5 + i].concat([for (i in 2...40) i]);
+		Assert.equals(expected.join(","), walked.join(","));
+		Assert.equals(expected.length, deque.size());
+		Assert.equals(-5, deque.first());
+		Assert.equals(39, deque.last());
+		Assert.equals(39, deque.remove());
+
+		deque.clear();
+		Assert.isTrue(deque.isEmpty());
+		Assert.equals(0, [for (x in deque) x].length);
+		Assert.raises(() -> deque.pop());
+		deque.push(7);
+		deque.add(6);
+		Assert.equals("6,7", [for (x in deque) x].join(","));
+	}
+
+	#if jvm
+	/**
+		Adding and taking allocates nothing once the ring has grown. It was a
+		linked list, which made a node for every item added.
+	**/
+	public function testADequeInSteadyStateAllocatesNothing():Void {
+		var deque = new Deque<String>();
+		var items = [for (i in 0...64) "item " + i];
+		for (item in items) {
+			deque.push(item);
+		}
+		for (_ in 0...64) {
+			deque.push(deque.pop());
+		}
+		var perItem:Float = JvmAllocation.bytesBy(() -> {
+			for (_ in 0...10000) {
+				deque.push(deque.pop());
+				deque.add(deque.remove());
+			}
+		}) / 20000;
+		Assert.isTrue(perItem < 1, perItem + " bytes allocated per item added");
+		Assert.equals(64, deque.size());
+	}
+	#end
+
 	public function testPriorityQueueSupportsUpdateRemoveAndClear():Void {
 		var low = {priority: 5, name: "low"};
 		var mid = {priority: 3, name: "mid"};
