@@ -10,9 +10,6 @@ import crossbyte.errors.SQLError;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
-#if cpp
-import sys.thread.Deque;
-#end
 
 /**
 	A MongoDB command written as Extended JSON, run the way the other drivers'
@@ -38,7 +35,8 @@ import sys.thread.Deque;
 	Any other command's result is its reply, as a single row.
 
 	A failure is dispatched as an `SQLErrorEvent`, whose error is the
-	`MongoError` with the server's code.
+	`MongoError` with the server's code, and then thrown, as MySQL's and
+	Postgres's statements do.
 **/
 @:access(crossbyte.db.mongodb.MongoConnection)
 class MongoStatement extends EventDispatcher {
@@ -59,11 +57,10 @@ class MongoStatement extends EventDispatcher {
 	@:noCompletion private var __executing:Bool = false;
 	@:noCompletion private var __affected:Int = 0;
 
-	#if cpp
-	@:noCompletion private var __resultQueue:Deque<Array<Dynamic>>;
-	#else
+	// Pages read and not yet taken, oldest first. A statement runs on the
+	// thread that calls it, so a plain Array serves every target, as the SQL
+	// drivers' do; a Deque cannot say whether a page is the last one waiting.
 	@:noCompletion private var __resultQueue:Array<Array<Dynamic>>;
-	#end
 
 	public function new() {
 		super();
@@ -119,12 +116,15 @@ class MongoStatement extends EventDispatcher {
 			__affected = __affectedOf(reply);
 			__cursor = __sqlConnection.__cursorOf(reply, (command : BsonDocument).keyAt(0));
 			__queueResult();
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, __asSQLError(e)));
+			__fail(e);
 		}
+
+		// Outside the try: a RESULT listener that throws has not made the
+		// command fail, and must not be reported as though it had.
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	/** Fetches the next `prefetch` documents, or all that remain with -1. **/
@@ -142,13 +142,25 @@ class MongoStatement extends EventDispatcher {
 				__executing = false;
 				__prefetch = 0;
 			}
-
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, __asSQLError(e)));
+			__fail(e);
 		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+	}
+
+	/**
+		Reports a failure both ways: as the `SQLErrorEvent` it always was, and
+		as the error it now throws. It dispatched the event and returned, so to
+		a caller not listening, an `AsyncDatabase` task among them, a
+		refused command read as one that had run.
+	**/
+	@:noCompletion private function __fail(e:Dynamic):Void {
+		var error:SQLError = __asSQLError(e);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
 	}
 
 	/**
@@ -157,14 +169,13 @@ class MongoStatement extends EventDispatcher {
 		`complete` whether the documents have all been taken.
 	**/
 	public function getResult():SQLResult {
-		#if cpp
-		var results = __resultQueue.pop(false);
-		#else
-		var results = __resultQueue.shift();
-		#end
+		var results:Array<Dynamic> = __resultQueue.shift();
 
 		if (results != null) {
-			return new SQLResult(results, __affected, !__executing, 0);
+			// The last page is the one read as the documents ran out, with none
+			// behind it. This was !__executing alone, which called every page
+			// still waiting complete once the last had been read.
+			return new SQLResult(results, __affected, !__executing && __resultQueue.length == 0, 0);
 		}
 
 		return null;
@@ -246,19 +257,11 @@ class MongoStatement extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __resetQueue():Void {
-		#if cpp
-		__resultQueue = new Deque();
-		#else
 		__resultQueue = [];
-		#end
 	}
 
 	@:noCompletion private inline function __push(a:Array<Dynamic>):Void {
-		#if cpp
-		__resultQueue.add(a);
-		#else
 		__resultQueue.push(a);
-		#end
 	}
 }
 #end

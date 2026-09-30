@@ -64,6 +64,12 @@ class PostgresStatement extends EventDispatcher {
 		}
 	}
 
+	/**
+		Runs `text`, with `parameters` substituted, and queues the first
+		`prefetch` rows (all of them for `-1`) for `getResult()`, then
+		dispatches `SQLEvent.RESULT`. A statement the server refuses is
+		dispatched as an `SQLErrorEvent` and then thrown as its `SQLError`.
+	**/
 	public function execute(prefetch:Int = -1):Void {
 		if (__connection == null) {
 			throw "PostgresStatement: no connection set.";
@@ -77,12 +83,36 @@ class PostgresStatement extends EventDispatcher {
 		try {
 			__resultSet = __connection.request(query);
 			__queueResult();
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, e, "Execution failed")));
+			__resultSet = null;
+			__fail(e);
 		}
+
+		// Outside the try: a RESULT listener that throws has not made the
+		// statement fail, and must not be reported as though it had.
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+	}
+
+	/**
+		Reports a failed statement both ways, as MySQL's does: as the
+		`SQLErrorEvent` it always was, and as the `SQLError` it now throws. It
+		dispatched the event and returned, so to a caller not listening, an
+		`AsyncDatabase` task among them, a failed statement read as one that
+		had run. The detail is made a string here, where it is whatever the
+		driver threw.
+	**/
+	@:noCompletion private function __fail(e:Dynamic):Void {
+		var error:SQLError;
+		if (Std.isOfType(e, SQLError)) {
+			error = e;
+		} else {
+			var detail:String = Std.string(e);
+			error = new SQLError(SQLEvent.RESULT, detail, "Execution failed: " + detail);
+		}
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
 	}
 
 	/**
@@ -116,12 +146,14 @@ class PostgresStatement extends EventDispatcher {
 		try {
 			__resultSet = __toResultSet(__sqlConnection.requestParams(text, params));
 			__queueResult();
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, e, "Execution failed")));
+			__resultSet = null;
+			__fail(e);
 		}
+
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 	}
 
 	// Bound results arrive as fields and rows of bytes; the statement API hands

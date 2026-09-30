@@ -81,10 +81,18 @@ class MongoConnectionTest extends utest.Test {
 			var caught:SQLError = null;
 			statement.addEventListener(SQLErrorEvent.ERROR, event -> caught = event.error);
 
-			// Nothing escapes execute: the failure is the listener's.
-			statement.execute();
+			// Reported both ways, as every statement does now: to the
+			// listener, and thrown, as the same error, and as text, never as
+			// the native exception it began as.
+			var thrown:Dynamic = null;
+			try {
+				statement.execute();
+			} catch (e:Dynamic) {
+				thrown = e;
+			}
 
 			Require.notNull(caught);
+			Assert.equals(caught, thrown, "what was thrown and what was dispatched differ");
 			Assert.isTrue(Std.isOfType(caught.details(), String));
 			Assert.isTrue(caught.details().indexOf("closed the connection") >= 0, caught.details());
 			Assert.isFalse(connection.connected);
