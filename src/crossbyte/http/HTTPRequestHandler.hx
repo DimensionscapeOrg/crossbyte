@@ -1109,12 +1109,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var ims:String = __headers.exists("if-modified-since") ? __headers.get("if-modified-since") : null;
 		if (ims != null) {
 			try {
-				var since:Date = __parseHttpDate(ims);
+				var since:Null<Float> = __parseHttpDate(ims);
 				// Math.ffloor, not Math.floor: floor returns an Int, and seconds
 				// since 1970 leave an Int in January 2038. On hxcpp the cast
 				// wrapped, so a validator dated after that compared as long ago
 				// and every such revalidation was answered with the whole file.
-				if (since != null && Math.ffloor(lastModifiedTime / 1000) <= Math.ffloor(since.getTime() / 1000)) {
+				if (since != null && Math.ffloor(lastModifiedTime / 1000) <= Math.ffloor(since / 1000)) {
 					var h:Array<URLRequestHeader> = [new URLRequestHeader("Accept-Ranges", "bytes"), lastModHeader];
 					__dispatchResponse(304, "Not Modified", h, "text/plain", "", true);
 					return;
@@ -2939,13 +2939,36 @@ final class HTTPRequestHandler extends EventDispatcher {
 		return 0x7FFFFFFF;
 	}
 
-	@:noCompletion private static inline function __toHttpDate(t:Float):String {
-		var d:Date = Date.fromTime(t);
-		var utc:Float = d.getTime() + d.getTimezoneOffset() * 60000;
-		d = Date.fromTime(utc);
-		return HTTP_DATE_DAYS[d.getDay()] + ", " + StringTools.lpad(Std.string(d.getDate()), "0", 2) + " " + HTTP_DATE_MONTHS[d.getMonth()] + " "
-			+ d.getFullYear() + " " + StringTools.lpad(Std.string(d.getHours()), "0", 2) + ":" + StringTools.lpad(Std.string(d.getMinutes()), "0", 2)
-			+ ":" + StringTools.lpad(Std.string(d.getSeconds()), "0", 2) + " GMT";
+	/**
+	 * `t`, milliseconds since 1970, as an IMF-fixdate in UTC.
+	 *
+	 * Worked out by arithmetic, as `__parseHttpDate` reads one back. Through
+	 * `Date` it took the local offset at one instant and applied it at
+	 * another, so it was an hour out around a daylight-saving change, and a
+	 * `Date` on neko keeps its time in 32 bits.
+	 */
+	@:noCompletion private static function __toHttpDate(t:Float):String {
+		var days:Float = Math.ffloor(t / 86400000);
+		var secondOfDay:Int = Std.int(Math.ffloor((t - days * 86400000) / 1000));
+		var z:Int = Std.int(days);
+		// 1 January 1970 was a Thursday, and HTTP_DATE_DAYS starts on Sunday.
+		var weekday:Int = ((z % 7) + 11) % 7;
+
+		// Howard Hinnant's civil_from_days: the proleptic Gregorian date of
+		// day `z`, in eras of 400 years that each repeat exactly.
+		z += 719468;
+		var era:Int = Std.int((z >= 0 ? z : z - 146096) / 146097);
+		var dayOfEra:Int = z - era * 146097;
+		var yearOfEra:Int = Std.int((dayOfEra - Std.int(dayOfEra / 1460) + Std.int(dayOfEra / 36524) - Std.int(dayOfEra / 146096)) / 365);
+		var dayOfYear:Int = dayOfEra - (365 * yearOfEra + Std.int(yearOfEra / 4) - Std.int(yearOfEra / 100));
+		var shiftedMonth:Int = Std.int((5 * dayOfYear + 2) / 153);
+		var day:Int = dayOfYear - Std.int((153 * shiftedMonth + 2) / 5) + 1;
+		var month:Int = shiftedMonth < 10 ? shiftedMonth + 3 : shiftedMonth - 9;
+		var year:Int = yearOfEra + era * 400 + (month <= 2 ? 1 : 0);
+
+		return HTTP_DATE_DAYS[weekday] + ", " + StringTools.lpad(Std.string(day), "0", 2) + " " + HTTP_DATE_MONTHS[month - 1] + " "
+			+ StringTools.lpad(Std.string(year), "0", 4) + " " + StringTools.lpad(Std.string(Std.int(secondOfDay / 3600)), "0", 2) + ":"
+			+ StringTools.lpad(Std.string(Std.int(secondOfDay / 60) % 60), "0", 2) + ":" + StringTools.lpad(Std.string(secondOfDay % 60), "0", 2) + " GMT";
 	}
 	/**
 	 * Whether a static file may be served under the settled web path `path`:
@@ -3703,14 +3726,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/**
-	 * Reads an IMF-fixdate, `Sun, 06 Nov 1994 08:49:37 GMT`, or answers null.
+	 * Reads an IMF-fixdate, `Sun, 06 Nov 1994 08:49:37 GMT`, as milliseconds
+	 * since 1970, or answers null.
 	 *
 	 * The format is fixed width, so it is read by position. A regular
 	 * expression did this, and a literal one is compiled each time the
 	 * function runs, on every conditional request, which is what a browser
 	 * revalidating its cache sends for every asset.
+	 *
+	 * The time is worked out by arithmetic, in UTC as the date is written,
+	 * not through a local `Date`: neko keeps a `Date`'s time in 32 bits, so a
+	 * validator past January 2038 came back as a date long gone there, and
+	 * the revalidation it asked for was answered with the whole file.
 	 */
-	@:noCompletion private static function __parseHttpDate(s:String):Date {
+	@:noCompletion private static function __parseHttpDate(s:String):Null<Float> {
 		var t:String = StringTools.trim(s);
 		if (t.length != 29 || t.charCodeAt(3) != ",".code || t.charCodeAt(4) != " ".code || t.charCodeAt(7) != " ".code || t.charCodeAt(11) != " ".code
 			|| t.charCodeAt(16) != " ".code || t.charCodeAt(19) != ":".code || t.charCodeAt(22) != ":".code || t.substr(25) != " GMT") {
@@ -3742,12 +3771,22 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var hh:Int = IntParse.decimal(t.substr(17, 2));
 		var mm:Int = IntParse.decimal(t.substr(20, 2));
 		var ss:Int = IntParse.decimal(t.substr(23, 2));
-		if (year < 0 || day < 0 || hh < 0 || mm < 0 || ss < 0) {
+		// Second 60 is a leap second, which the format allows.
+		if (year < 0 || day < 1 || day > 31 || hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 60) {
 			return null;
 		}
 
-		var localDate:Date = new Date(year, mon, day, hh, mm, ss);
-		return Date.fromTime(localDate.getTime() - localDate.getTimezoneOffset() * 60000);
+		// Howard Hinnant's days_from_civil, the inverse of the one in
+		// __toHttpDate. Floats past the day count: seconds since 1970 leave
+		// neko's 31-bit Int in 2004 and everyone's in 2038.
+		var month:Int = mon + 1;
+		var y:Int = month <= 2 ? year - 1 : year;
+		var era:Int = Std.int((y >= 0 ? y : y - 399) / 400);
+		var yearOfEra:Int = y - era * 400;
+		var dayOfYear:Int = Std.int((153 * (month > 2 ? month - 3 : month + 9) + 2) / 5) + day - 1;
+		var dayOfEra:Int = yearOfEra * 365 + Std.int(yearOfEra / 4) - Std.int(yearOfEra / 100) + dayOfYear;
+		var days:Float = era * 146097.0 + dayOfEra - 719468;
+		return ((days * 24 + hh) * 60 + mm) * 60000.0 + ss * 1000.0;
 	}
 
 	@:noCompletion private inline function __sanitizeHeaderValue(v:String):String {
