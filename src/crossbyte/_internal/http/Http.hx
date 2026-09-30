@@ -1061,8 +1061,10 @@ class Http {
 			__close();
 			// With the reason. Every failure read "Connection Failed" alone,
 			// an untrusted, expired or misnamed certificate, a refused port,
-			// where the WebSocket client beside this one said which.
-			__fail("Connection Failed: " + __describe(e));
+			// where the WebSocket client beside this one said which. A timeout
+			// is said as one: natively it would read "Blocked".
+			__fail("Connection Failed: "
+				+ (__isTimeout(e) ? '${__url.host}:${__url.port} did not answer within ${__timeout > 0 ? __timeout / 1000 : 30} s' : __describe(e)));
 			return;
 		}
 
@@ -1102,10 +1104,40 @@ class Http {
 		return __leftOrigin ? tls.withoutClientCertificate() : tls;
 	}
 
-	/** What an error says, for a message: a haxe.Exception's text, or the value. */
+	/**
+		Whether `error`, out of a connect, is the socket's timeout running
+		out: `Blocked` natively, the read the TLS handshake was waiting on
+		having timed out, and on the jvm a `Custom` naming the timeout, its
+		handshake holding to the deadline and saying so. Neither says what
+		happened to a caller as it stands.
+	**/
+	@:allow(crossbyte.http.HTTP2Backend)
+	private static function __isTimeout(error:Dynamic):Bool {
+		if (!Std.isOfType(error, haxe.io.Error)) {
+			return false;
+		}
+		return switch ((error : haxe.io.Error)) {
+			case Blocked: true;
+			case Custom(detail): StringTools.startsWith(Std.string(detail), "Timeout");
+			default: false;
+		}
+	}
+
+	/**
+		What an error says, for a message: a haxe.Exception's text, what a
+		`haxe.io.Error.Custom` carries rather than the wrapper around it, or
+		the value.
+	**/
 	private static function __describe(error:Dynamic):String {
 		if (Std.isOfType(error, haxe.Exception)) {
 			return (error : haxe.Exception).message;
+		}
+		if (Std.isOfType(error, haxe.io.Error)) {
+			switch ((error : haxe.io.Error)) {
+				case Custom(detail):
+					return Std.string(detail);
+				default:
+			}
 		}
 		return Std.string(error);
 	}
