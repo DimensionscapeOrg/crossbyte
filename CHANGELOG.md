@@ -1244,6 +1244,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ObjectPool` no longer lends one object to two owners after a double
+  release in a release build. It kept both releases, so the next two
+  `acquire`s returned the same object; it now refuses an object released
+  twice in a row, and any release while everything it made is already free,
+  and `release` answers whether it took the object back. Debug builds
+  still check every release. `maxFree` bounds how many free objects it
+  keeps, where a burst of a hundred thousand used to stay for good.
 - `MathUtil.nextPow2` answers the same on every target above 2^30: 2^31's
   bit pattern, `1 << 31`. JavaScript's Int does not wrap by itself, so it
   answered 2147483648 there and -2147483648 elsewhere.

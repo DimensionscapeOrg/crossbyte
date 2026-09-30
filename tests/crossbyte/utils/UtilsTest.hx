@@ -332,6 +332,52 @@ class UtilsTest extends utest.Test {
 		Assert.equals(1, pool.inUse);
 	}
 
+	/**
+		An object released twice is not lent to two owners. A release build
+		kept both releases, so the next two acquires returned one object.
+		Debug builds check every release and throw.
+	**/
+	public function testADoubleReleaseDoesNotLendOneObjectTwice():Void {
+		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
+		var a = pool.acquire();
+		pool.release(a);
+		#if debug
+		Assert.raises(() -> pool.release(a));
+		#else
+		pool.release(a);
+		#end
+		var x = pool.acquire();
+		var y = pool.acquire();
+		Assert.isFalse(x == y, "one object was lent twice");
+		Assert.equals(2, pool.inUse);
+
+		#if !debug
+		// A release when everything the pool made is free is refused too.
+		pool.release(x);
+		pool.release(y);
+		Assert.isFalse(pool.release({id: 99}), "a release past everything the pool made was kept");
+		Assert.equals(2, pool.freeCount);
+		#end
+	}
+
+	/** A burst leaves behind no more free objects than `maxFree`. **/
+	public function testMaxFreeBoundsWhatABurstLeavesBehind():Void {
+		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
+		var burst = [for (_ in 0...1000) pool.acquire()];
+		Assert.equals(1000, pool.capacity);
+		pool.maxFree = 16;
+		for (o in burst) {
+			Assert.isTrue(pool.release(o));
+		}
+		Assert.equals(16, pool.freeCount);
+		Assert.equals(16, pool.capacity, "objects let go still counted as made");
+		Assert.equals(0, pool.inUse);
+		var again = [for (_ in 0...20) pool.acquire()];
+		Assert.equals(20, pool.capacity);
+		Assert.equals(0, pool.freeCount);
+		Assert.equals(20, again.length);
+	}
+
 	public function testObjectRecyclerCachesLocallyAndDrainsToPool():Void {
 		var pool:ObjectPool<PooledState> = new ObjectPool<PooledState>(
 			() -> {id: 1, state: "fresh"},
