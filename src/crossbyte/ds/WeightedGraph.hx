@@ -1,5 +1,9 @@
 package crossbyte.ds;
 
+import haxe.ds.IntMap;
+import haxe.ds.ObjectMap;
+import haxe.ds.StringMap;
+
 /**
  * ...
  * @author Christopher Speciale
@@ -7,16 +11,31 @@ package crossbyte.ds;
 /**
  * A weighted graph implementation in Haxe.
  *
+ * Nodes are found by hashing, as `==` tells them apart: strings and
+ * integers by value, objects by identity. Each lookup was a pass over every
+ * node, so building a graph of n nodes cost n^2 comparisons. Floats,
+ * booleans and null, which few graphs use as nodes, are still found by a
+ * pass over the nodes of that kind.
+ *
  * @param T The type of values stored in the graph nodes.
  */
 class WeightedGraph<T> {
 	private var adjacencyList:Array<Adjacency<T>>;
+
+	private var __byString:StringMap<Adjacency<T>>;
+	private var __byInt:IntMap<Adjacency<T>>;
+	private var __byObject:ObjectMap<Dynamic, Adjacency<T>>;
+	private var __others:Array<Adjacency<T>>;
 
 	/**
 	 * Constructs a new WeightedGraph.
 	 */
 	public function new() {
 		adjacencyList = [];
+		__byString = new StringMap();
+		__byInt = new IntMap();
+		__byObject = new ObjectMap();
+		__others = [];
 	}
 
 	/**
@@ -26,7 +45,7 @@ class WeightedGraph<T> {
 	 */
 	public function addNode(node:T):Void {
 		if (__find(node) == null) {
-			adjacencyList.push(new Adjacency<T>(node));
+			__add(node);
 		}
 	}
 
@@ -40,12 +59,11 @@ class WeightedGraph<T> {
 	public function addEdge(from:T, to:T, weight:Float):Void {
 		var entry = __find(from);
 		if (entry == null) {
-			entry = new Adjacency<T>(from);
-			adjacencyList.push(entry);
+			entry = __add(from);
 		}
 
 		if (__find(to) == null)
-			adjacencyList.push(new Adjacency<T>(to));
+			__add(to);
 
 		entry.edges.push(new Edge<T>(to, weight));
 	}
@@ -61,13 +79,60 @@ class WeightedGraph<T> {
 		return entry == null ? null : entry.edges;
 	}
 
-	private function __find(node:T):Adjacency<T> {
-		for (entry in adjacencyList) {
-			if (entry.node == node)
-				return entry;
+	private function __add(node:T):Adjacency<T> {
+		var entry = new Adjacency<T>(node);
+		adjacencyList.push(entry);
+		var key:Dynamic = node;
+		switch (__kind(key)) {
+			case 0:
+				__byString.set(key, entry);
+			case 1:
+				__byInt.set(key, entry);
+			case 2:
+				__byObject.set(key, entry);
+			default:
+				__others.push(entry);
 		}
+		return entry;
+	}
 
-		return null;
+	private function __find(node:T):Adjacency<T> {
+		var key:Dynamic = node;
+		switch (__kind(key)) {
+			case 0:
+				return __byString.get(key);
+			case 1:
+				return __byInt.get(key);
+			case 2:
+				return __byObject.get(key);
+			default:
+				for (entry in __others) {
+					if (entry.node == node)
+						return entry;
+				}
+				return null;
+		}
+	}
+
+	// 0 a string, 1 an integer, 2 an object (an instance, a structure, an
+	// enum value, a function), 3 anything else.
+	private static function __kind(key:Dynamic):Int {
+		if (key == null) {
+			return 3;
+		}
+		if (Std.isOfType(key, String)) {
+			return 0;
+		}
+		if (Std.isOfType(key, Int)) {
+			// The jvm's IntMap visits every bucket to find a missing key, and
+			// every new node is one; its ObjectMap compares a boxed Integer by
+			// value, and stops at the first empty bucket.
+			return #if (java || jvm) 2 #else 1 #end;
+		}
+		if (Std.isOfType(key, Float) || Std.isOfType(key, Bool)) {
+			return 3;
+		}
+		return 2;
 	}
 }
 

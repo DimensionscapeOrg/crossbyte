@@ -1244,6 +1244,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `WeightedGraph` finds a node by hashing rather than a pass over every
+  node, so building a graph of n nodes no longer costs n^2 comparisons:
+  20,000 edges in a chain took 15 s on eval and now take tens of
+  milliseconds. Strings and integers are found by value and objects by
+  identity, as `==` finds them.
 - `Deque` keeps its items in a ring rather than a linked list, so adding
   one allocates nothing once the ring has grown: it made a 24-byte node
   for every item added on the jvm. It has `iterator()`, front to back, and

@@ -1222,6 +1222,51 @@ class CollectionsTest extends utest.Test {
 		Assert.isNull(graph.getNeighbors({id: 1}));
 	}
 
+	/**
+		Every kind of node is found as `==` finds it: strings and integers by
+		value, objects and enum values by identity, the rest by comparison.
+	**/
+	public function testWeightedGraphFindsEveryKindOfNode():Void {
+		var ints = new WeightedGraph<Int>();
+		ints.addEdge(1, 2, 0.5);
+		ints.addEdge(1, 1000000, 2);
+		ints.addEdge(-7, 1, 1);
+		Assert.equals(2, ints.getNeighbors(1).length);
+		Assert.notNull(ints.getNeighbors(1000000));
+		Assert.equals(1, ints.getNeighbors(-7).length);
+		Assert.isNull(ints.getNeighbors(3));
+
+		var enums = new WeightedGraph<haxe.io.Error>();
+		enums.addEdge(haxe.io.Error.Blocked, haxe.io.Error.Overflow, 1);
+		Assert.equals(1, enums.getNeighbors(haxe.io.Error.Blocked).length);
+
+		var floats = new WeightedGraph<Float>();
+		floats.addEdge(0.5, 1.5, 3);
+		floats.addNode(0.5);
+		Assert.equals(1, floats.getNeighbors(0.5).length);
+		Assert.notNull(floats.getNeighbors(1.5));
+
+		var strings = new WeightedGraph<String>();
+		strings.addEdge("a", "b", 1);
+		Assert.equals(1, strings.getNeighbors("a" + "").length);
+	}
+
+	/**
+		Building a graph costs what its nodes do, not their square: each
+		lookup was a pass over every node, so 20,000 edges in a chain took
+		about ten seconds on eval.
+	**/
+	public function testWeightedGraphLookupIsNotAPassOverTheNodes():Void {
+		var graph = new WeightedGraph<Int>();
+		var started:Float = haxe.Timer.stamp();
+		for (i in 0...20000) {
+			graph.addEdge(i, i + 1, 1.0);
+		}
+		var took:Float = haxe.Timer.stamp() - started;
+		Assert.equals(1, graph.getNeighbors(19999).length);
+		Assert.isTrue(took < 1.0, "20,000 edges took " + took + " s");
+	}
+
 	public function testWeightedGraphMaintainsDirectedNeighborsAndExplicitNodes():Void {
 		var graph = new WeightedGraph<String>();
 		graph.addNode("start");
