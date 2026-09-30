@@ -5,6 +5,15 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- A streamed response -- `HTTPRequestHandler.beginResponse`, server-sent
+  events, a download made as it goes -- is compressed as it goes, for a
+  client that takes gzip or deflate and a type the compression policy
+  covers. Each write is flushed as compressed bytes of its own, which the
+  client inflates as they arrive, and matches reach back 32 KB into what
+  was written before, so two hundred short events that repeat their fields
+  compress to less than half of what they would one at a time. br and lz4
+  cannot be flushed a chunk at a time here and are not used for a stream.
+  It went out as it was, whatever the client took.
 - A TURN relay reached over TLS (`TurnTransport.TLS`), natively, on the jvm
   and on Node, for `ReliableDatagramServerSocket.allocateRelay` and
   `PeerConnection.gatherRelayedFrom` alike. It was refused, saying a plain

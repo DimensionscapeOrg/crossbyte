@@ -191,6 +191,8 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// producer still writing after its response ended must reach nothing, not
 	// the next request's.
 	@:noCompletion private var __openStream:Null<HTTPResponseStream> = null;
+	// What the open stream's body is compressed through, when it is.
+	@:noCompletion private var __openEncoder:Null<crossbyte._internal.deflatex.StreamEncoder> = null;
 	@:noCompletion private var __watchingClient:Bool = false;
 	// Set once this handler has heard its client go. On Node a socket the
 	// peer has closed can still read as connected.
@@ -1890,7 +1892,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 *
 	 * No `Content-Length` is sent. Under HTTP/1.1 the body is chunked --
 	 * ended by closing the connection for an HTTP/1.0 client -- and under
-	 * HTTP/2 it is DATA on a stream held open. It is not compressed. For a
+	 * HTTP/2 it is DATA on a stream held open. It is compressed as it goes
+	 * where the compression policy covers its type and the client takes gzip
+	 * or deflate, each write flushed so the client can inflate it at once;
+	 * br and lz4 cannot be streamed here, and are not used. For a
 	 * `HEAD`, or a status that carries no body, the head is the response and
 	 * the stream drops what it is given.
 	 *
@@ -1919,6 +1924,23 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var bodiless:Bool = __method == "HEAD" || __statusOmitsBody(statusCode);
+
+		// Compressed as it goes, for a client that takes gzip or deflate: the
+		// codings that can be flushed a chunk at a time here. br and lz4 are
+		// not, so a client asking only for those gets the body as it is.
+		var encoder:Null<crossbyte._internal.deflatex.StreamEncoder> = null;
+		if (__mayStreamCompress(statusCode, fields, contentType)) {
+			fields.push(new URLRequestHeader("Vary", "Accept-Encoding"));
+			var decision = __resolveResponseEncoding(statusCode, fields, true);
+			if (decision.encoding != null) {
+				fields.push(new URLRequestHeader("Content-Encoding", __encodingToHeaderValue(decision.encoding)));
+				__weakenETags(fields);
+				if (!bodiless) {
+					encoder = new crossbyte._internal.deflatex.StreamEncoder(decision.encoding == CompressionAlgorithm.GZIP);
+				}
+			}
+		}
+
 		__dispatchResponseBytes(statusCode, reason, fields, contentType, null, bodiless, null, true);
 		if (!__responded) {
 			// Never went out: the client had already gone.
@@ -1932,6 +1954,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var stream:HTTPResponseStream = @:privateAccess new HTTPResponseStream(this, false);
 		__openStream = stream;
+		__openEncoder = encoder;
 		__watchClient();
 		__writer.onDrain = __onOpenStreamDrain;
 		return stream;
@@ -1945,6 +1968,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (!__writer.connected) {
 			__clientGone();
 			return false;
+		}
+
+		var encoder:Null<crossbyte._internal.deflatex.StreamEncoder> = __openEncoder;
+		if (encoder != null) {
+			// Compressed and flushed, so the client can inflate it now.
+			data = ByteArray.fromBytes(encoder.write(data, offset, length));
+			offset = 0;
+			length = data.length;
 		}
 
 		var cap:Int = __writer.maxBufferedBytes;
@@ -1971,7 +2002,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (stream != __openStream) {
 			return;
 		}
+		var encoder:Null<crossbyte._internal.deflatex.StreamEncoder> = __openEncoder;
 		__detachOpenStream();
+
+		if (encoder != null && __writer.connected) {
+			// The last block and the trailer.
+			var tail:ByteArray = ByteArray.fromBytes(encoder.finish());
+			__writer.writeBody(tail, 0, tail.length);
+		}
 
 		if (__writer.connected) {
 			__writer.endResponse();
@@ -1983,6 +2021,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __detachOpenStream():Void {
 		var stream:Null<HTTPResponseStream> = __openStream;
 		__openStream = null;
+		__openEncoder = null;
 		__writer.onDrain = null;
 		if (stream != null) {
 			@:privateAccess stream.__handler = null;
@@ -2382,6 +2421,24 @@ final class HTTPRequestHandler extends EventDispatcher {
 		when the client listed `br`, which every browser does: 18.8 ms a
 		refusal on Node rather than 0.57.
 	**/
+	/**
+		Whether a streamed body may be compressed: as `__mayCompress` judges a
+		whole one, less the size, which a stream does not know.
+	**/
+	@:noCompletion private function __mayStreamCompress(statusCode:Int, headers:Array<URLRequestHeader>, contentType:Null<String>):Bool {
+		var policy:Null<HTTPCompression> = __config.compression;
+		if (policy == null || !policy.enabled) {
+			return false;
+		}
+		if (statusCode < 200 || statusCode >= 400 || statusCode == 204 || statusCode == 206 || statusCode == 304) {
+			return false;
+		}
+		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
+			return false;
+		}
+		return policy.compresses(contentType);
+	}
+
 	@:noCompletion private function __mayCompress(statusCode:Int, headers:Array<URLRequestHeader>, contentType:Null<String>, length:Int, open:Bool):Bool {
 		var policy:Null<HTTPCompression> = __config.compression;
 		if (policy == null || !policy.enabled || open) {
@@ -2444,7 +2501,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>):ResponseEncodingDecision {
+	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>, streamable:Bool = false):ResponseEncodingDecision {
 		// A body that is already encoded -- a PHP script's under
 		// zlib.output_compression, a route's own gzip -- is not encoded again.
 		if (statusCode == 206 || __hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
@@ -2509,7 +2566,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		var wildcardQ:Float = explicitQ.exists(AcceptEncoding.DEFAULT) ? explicitQ.get(AcceptEncoding.DEFAULT) : -1;
 		var bestQ:Float = -1;
-		var supported = [
+		// For a streamed body, only the codings that can be flushed a chunk at
+		// a time.
+		var supported = streamable ? [
+			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
+			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB}
+		] : [
 			{name: HTTPContentCoding.BR, algorithm: CompressionAlgorithm.BROTLI},
 			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
 			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB},

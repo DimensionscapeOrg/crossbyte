@@ -62,6 +62,80 @@ class HTTPResponseStreamTest extends utest.Test {
 		});
 	}
 
+	/**
+		A streamed response is compressed as it goes for a client that
+		accepts gzip or deflate: each chunk carries compressed bytes of its
+		own, sent before the response ends, and the body inflates to all that
+		was written. It went out as it was, whatever the client accepted. br,
+		which cannot be streamed here, gets the body as it is, and both say
+		they vary on Accept-Encoding.
+	**/
+	public function testAStreamedResponseIsCompressedAsItGoes(async:Async):Void {
+		var held:HTTPResponseStream = null;
+		var server = __serve(handler -> {
+			held = handler.beginResponse(200, "text/event-stream");
+			held.writeText("data: one\n\n");
+		});
+		var client = new RawClient(server);
+
+		client.request("GET /events HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip\r\n\r\n", () -> {
+			client.until(() -> __hasFirstChunk(client.text), () -> {
+				held.writeText("data: two\n\n");
+				held.end();
+
+				client.until(() -> __dechunked(client.text) != null, () -> {
+					var head = HTTPTestSupport.parseResponse(client.text);
+					Assert.equals("gzip", head.headers.get("content-encoding"));
+					Assert.equals("Accept-Encoding", head.headers.get("vary"));
+					var body:ByteArray = __bytesOf(__dechunked(client.text));
+					body.uncompress(crossbyte.utils.CompressionAlgorithm.GZIP);
+					Assert.equals("data: one\n\ndata: two\n\n", body.toString());
+					client.close();
+
+					var plain = new RawClient(server);
+					plain.request("GET /events HTTP/1.1\r\nHost: x\r\nAccept-Encoding: br\r\n\r\n", () -> {
+						plain.until(() -> plain.text.indexOf("data: one") >= 0, () -> {
+							held.end();
+							plain.until(() -> __dechunked(plain.text) != null, () -> {
+								var plainHead = HTTPTestSupport.parseResponse(plain.text);
+								Assert.isNull(plainHead.headers.get("content-encoding"));
+								Assert.equals("Accept-Encoding", plainHead.headers.get("vary"));
+								Assert.equals("data: one\n\n", __dechunked(plain.text));
+								plain.close();
+								server.close();
+								async.done();
+							});
+						});
+					});
+				});
+			});
+		});
+	}
+
+	// The head and a whole first chunk have arrived.
+	private static function __hasFirstChunk(raw:String):Bool {
+		var at:Int = raw.indexOf("\r\n\r\n");
+		if (at < 0) {
+			return false;
+		}
+		at += 4;
+		var lineEnd:Int = raw.indexOf("\r\n", at);
+		if (lineEnd < 0) {
+			return false;
+		}
+		var size:Int = crossbyte.utils.IntParse.hex(raw.substring(at, lineEnd));
+		return size > 0 && raw.length >= lineEnd + 2 + size;
+	}
+
+	// The body RawClient kept as one character a byte, as bytes again.
+	private static function __bytesOf(text:String):ByteArray {
+		var bytes:ByteArray = new ByteArray();
+		for (i in 0...text.length) {
+			bytes.writeByte(StringTools.fastCodeAt(text, i));
+		}
+		return bytes;
+	}
+
 	public function testAnHttp10ClientReadsUntilTheClose(async:Async):Void {
 		// HTTP/1.0 has no chunked coding, so the body ends with the connection.
 		var server = __serve(handler -> {
