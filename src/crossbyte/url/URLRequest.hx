@@ -75,6 +75,18 @@ class URLRequest {
 	public var manageCookies:Bool;
 
 	/**
+		The most bytes a compressed response may decode to before the load is
+		abandoned with an `IO_ERROR`. Defaults to 64 MB; `0` or less removes
+		the limit.
+
+		What a response sends and what it decodes to are different numbers:
+		compression ratios have no ceiling, and a few hundred bytes of gzip or
+		Brotli can name gigabytes. The limit used to be an internal setting of
+		the native client only.
+	**/
+	public var maxDecompressedSize:Int = 64 * 1024 * 1024;
+
+	/**
 		The HTTP method. Any of `URLRequestMethod` -- `GET`, `POST`, `PUT`,
 		`DELETE`, `HEAD`, `OPTIONS` -- or any other token a server understands,
 		since this is a plain string and is not validated here.
