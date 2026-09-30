@@ -105,6 +105,12 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		connections. And `timeZone` and `sqlMode` could never succeed: their
 		values were escaped into a buffer that was then thrown away, and the
 		server was sent `SET time_zone = :tz;`.
+
+		On hl the server is first tried with a plain connection of the
+		client's own, closed at once, and one that cannot be reached is
+		refused without HashLink's mysql library: that library frees a
+		connection that failed to open twice, and corrupts the process heap
+		doing it. A login the server refuses still reaches it.
 	**/
 	public function open(cfg:MySQLConfig):Void {
 		var charset:String = null;
