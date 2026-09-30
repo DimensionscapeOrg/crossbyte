@@ -164,15 +164,33 @@ class TurnClient {
 	public dynamic function onSend(payload:ByteArray, address:String, port:Int):Void {}
 
 	/**
-		Called once when an allocation that was granted is gone: a refresh or a
-		permission the relay refused or never answered, or a refresh it answered
-		with a lifetime of zero. Not called for `close()`.
+		Called once when an allocation that was granted is gone: a refresh the
+		relay refused or never answered, a permission it never answered or
+		answered by saying it holds no such allocation, or a refresh answered
+		with a lifetime of zero. Not called for `close()`, nor for one peer the
+		relay would not let through, see `onPermissionRefused`.
 
 		`allocated` resolved long before, so it cannot say this, and `active`
 		going false is a flag nothing is obliged to read. A connection whose
 		path ran through the relay otherwise went silent with no reason given.
 	**/
 	public dynamic function onLost(reason:String):Void {}
+
+	/**
+		Called when the relay refuses to let one peer through: a CreatePermission
+		answered with an error, 403 most often. The allocation carries on for
+		every other peer, and that one is not asked for again.
+
+		A refusal is ordinary, and it used to end the whole allocation. A
+		hardened relay refuses private and loopback addresses, coturn's
+		`denied-peer-ip`: and ICE pairs a relayed candidate with every one of
+		the peer's candidates, host addresses first, so the permission asked for
+		first was often one the relay would never grant: the relay was torn
+		down before the relayed pair that would have worked was tried.
+
+		@param code The relay's error code, such as 403, or 0 when it gave none.
+	**/
+	public dynamic function onPermissionRefused(peerAddress:String, code:Int, reason:String):Void {}
 
 	@:noCompletion private var __username:String;
 	@:noCompletion private var __password:String;
@@ -287,6 +305,9 @@ class TurnClient {
 			__requireIPv4(peerAddress);
 			permission = new TurnPermission(peerAddress);
 			__permitted.push(permission);
+		} else if (permission.refused) {
+			// The relay said no, and asking again changes nothing.
+			return;
 		}
 
 		permission.askedAt = now;
@@ -474,7 +495,7 @@ class TurnClient {
 		// without saying so.
 		if (active) {
 			for (permission in __permitted.copy()) {
-				if (now - permission.askedAt >= PERMISSION_REFRESH) {
+				if (!permission.refused && now - permission.askedAt >= PERMISSION_REFRESH) {
 					permit(permission.address, now);
 				}
 			}
@@ -761,7 +782,40 @@ class TurnClient {
 			return;
 		}
 
+		// A peer the relay will not forward to, which is that peer's problem and
+		// nobody else's. Unless the relay says it holds no such allocation,
+		// 437, which is everyone's.
+		if (__pendingType == StunMessage.CREATE_PERMISSION_REQUEST && code != StunMessage.ALLOCATION_MISMATCH) {
+			var peer = __pending.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
+			__pending = null;
+
+			if (peer != null) {
+				__refusePermission(peer.address, code, __reasonOf(message, code));
+			}
+
+			__drain(now);
+			return;
+		}
+
 		__fail("The relay refused the request: " + (message.errorMessage() != null ? message.errorMessage() : Std.string(code)));
+	}
+
+	/** The reason phrase of an error, or its code when it gave none. **/
+	@:noCompletion private static function __reasonOf(message:StunMessage, code:Int):String {
+		var text = message.errorReason();
+		return text != null && text.length > 0 ? text : Std.string(code);
+	}
+
+	/** Marks a peer refused, so it is neither asked for again nor renewed, and says so. **/
+	@:noCompletion private function __refusePermission(address:String, code:Int, reason:String):Void {
+		var permission = __permissionFor(address);
+
+		if (permission == null || permission.refused) {
+			return;
+		}
+
+		permission.refused = true;
+		onPermissionRefused(address, code, reason);
 	}
 
 	@:noCompletion private function __allocated(message:StunMessage, now:Float):Void {
@@ -860,6 +914,9 @@ private class TurnPermission {
 	public var address(default, null):String;
 
 	public var askedAt:Float = 0;
+
+	/** Whether the relay refused it, which it is not asked twice about. **/
+	public var refused:Bool = false;
 
 	public function new(address:String) {
 		this.address = address;

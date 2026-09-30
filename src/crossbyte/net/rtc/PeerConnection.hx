@@ -1152,6 +1152,22 @@ class PeerConnection {
 			}
 		};
 
+		// One peer address the relay will not forward to, a hardened relay
+		// refuses private ones, and ICE pairs the relayed candidate with the
+		// peer's host addresses first. Those pairs are dead, and the rest of the
+		// relay is fine; said to the agents so they stop checking into nothing.
+		relay.onPermissionRefused = function(peerAddress:String, code:Int, reason:String):Void {
+			if (__closed || __relayedCandidate == null) {
+				return;
+			}
+
+			agent.refusePairs(__relayedCandidate, peerAddress);
+
+			if (__restartAgent != null) {
+				__restartAgent.refusePairs(__relayedCandidate, peerAddress);
+			}
+		};
+
 		relay.allocated.then(function(relayed:ReflexiveAddress):Void {
 			if (__closed) {
 				return;
