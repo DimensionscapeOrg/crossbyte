@@ -90,5 +90,11 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.RouterTest());
 		runner.addCase(new crossbyte._internal.php.PHPTimeoutTest());
 		runner.addCase(new crossbyte._internal.php.PHPExchangeTest());
+
+		#if nodejs
+		// URLLoader over Node's own http client, against Node's http server:
+		// the one client that did not decode a content coding.
+		runner.addCase(new crossbyte.url.URLLoaderNodeTest());
+		#end
 	}
 }

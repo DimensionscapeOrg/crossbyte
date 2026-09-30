@@ -1253,6 +1253,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` on Node decodes a compressed response, with Node's zlib and
+  within `maxDecompressedSize`, as the other targets' clients do: gzip, br,
+  deflate (zlib-wrapped or raw) and lz4, two stacked at most. It handed the
+  body on as it came, so a gzip JSON answer arrived as garbage, and it
+  sends `Accept-Encoding: identity` unless told otherwise, as the native
+  client does. A body that cannot be read as the loader's `dataFormat`,
+  text that is not UTF-8, is an `IO_ERROR` on every target, with the bytes
+  in `data`: on Node it threw a RangeError out of the completion, which
+  ended the process.
 - An HTTP/2 request's connect and TLS handshake are held to its timeout,
   and its cancel reaches them. A server that accepted TCP and never
   answered the handshake held the request for good, and every other
