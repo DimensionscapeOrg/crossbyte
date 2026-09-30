@@ -155,6 +155,62 @@ class JvmTlsTest extends utest.Test {
 		Assert.equals("ping", answer, "the server did not answer a client whose certificate it should trust");
 	}
 
+	/**
+		A client presents its certificate to a server that asks for one, the
+		whole chain from its file, from a context of its own. What an HTTPS or
+		wss client needs to reach a server requiring mutual TLS.
+	**/
+	public function testAClientPresentsItsCertificateToAServerThatAsks():Void {
+		var chain = TLSChainFixture.get();
+		if (chain == null) {
+			Assert.pass();
+			return;
+		}
+
+		var server = JdkTlsPeer.listen({
+			present: {chain: __path(chain, "direct.pem"), key: chain.directKey},
+			trust: [__path(chain, "root.pem")],
+			timeout: 5000
+		});
+		server.setNeedClientAuth(true);
+		var port = server.getLocalPort();
+		var presented:String = null;
+		var done = new sys.thread.Lock();
+
+		sys.thread.Thread.create(() -> {
+			try {
+				var accepted:SSLSocket = cast server.accept();
+				accepted.setSoTimeout(5000);
+				accepted.startHandshake();
+				var chainSeen = accepted.getSession().getPeerCertificates();
+				presented = chainSeen.length > 0 ? JdkTlsPeer.hex(chainSeen[0].getEncoded()) : "none";
+				// Answers, so the client knows it was let in whatever the version.
+				JdkTlsPeer.send(accepted, "ok");
+				accepted.close();
+			} catch (e:Dynamic) {
+				presented = "refused: " + Std.string(e);
+			}
+			done.release();
+		});
+
+		var answer:String = null;
+		var failure = __dial(port, function(client) {
+			client.setCA(@:privateAccess chain.root.__native);
+			client.setCertificate(@:privateAccess chain.client.__native, @:privateAccess chain.clientKey.__native);
+		}, function(client) {
+			var buffer = haxe.io.Bytes.alloc(2);
+			client.input.readFullBytes(buffer, 0, 2);
+			answer = buffer.toString();
+		});
+		done.wait(10);
+		server.close();
+
+		var expected = JdkTlsPeer.hex(JdkTlsPeer.certificates(__path(chain, "client.pem"))[0].getEncoded());
+		Assert.isNull(failure, "a client presenting a trusted certificate was refused: " + failure);
+		Assert.equals(expected, presented, "the server did not see the client's certificate");
+		Assert.equals("ok", answer);
+	}
+
 	// ------------------------------------------------ a handshake that fails
 
 	/**
@@ -842,9 +898,10 @@ class JvmTlsTest extends utest.Test {
 
 	/**
 		Connects a CrossByte TLS client that verifies, configured by
-		`configure`. Null when it connected; the failure when it did not.
+		`configure`, and runs `connected` on it once it is. Null when all of
+		that worked; the failure when it did not.
 	**/
-	private static function __dial(port:Int, configure:Null<FlexSocket->Void>):Null<String> {
+	private static function __dial(port:Int, configure:Null<FlexSocket->Void>, ?connected:FlexSocket->Void):Null<String> {
 		var client = new FlexSocket(true);
 		try {
 			client.setTimeout(10);
@@ -852,6 +909,9 @@ class JvmTlsTest extends utest.Test {
 				configure(client);
 			}
 			client.connect("127.0.0.1", port);
+			if (connected != null) {
+				connected(client);
+			}
 		} catch (e:Dynamic) {
 			try {
 				client.close();
