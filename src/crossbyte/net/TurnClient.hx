@@ -152,6 +152,9 @@ class TurnClient {
 	/** Superseded transactions remembered, so their late answers are known for what they are. **/
 	private static inline var RETIRED_KEPT:Int = 16;
 
+	/** Try Alternate redirections followed for one allocation before it is given up on. **/
+	private static inline var MAX_REDIRECTS:Int = 4;
+
 	/**
 		The range RFC 8656 reserves for channels.
 
@@ -212,6 +215,13 @@ class TurnClient {
 	/** Whether an allocation is currently held. **/
 	public var active(default, null):Bool = false;
 
+	/**
+		Why the allocation failed or was lost, once it has: the relay's code and
+		reason where it gave them. The same object `allocated` fails with as
+		its `cause`; null while all is well.
+	**/
+	public var failure(default, null):Null<TurnError> = null;
+
 	/** Datagrams a peer sent through the relay. **/
 	public dynamic function onData(payload:ByteArray, fromAddress:String, fromPort:Int):Void {}
 
@@ -266,6 +276,12 @@ class TurnClient {
 
 	/** Whether the relay has answered, and `serverAddress` is the address it answered from. **/
 	@:noCompletion private var __pinned:Bool = false;
+
+	/** Every server this allocation has been asked of, as "address:port", so a redirection back to one is caught. **/
+	@:noCompletion private var __asked:Array<String> = [];
+
+	/** Counts `setCredentials`, so a 401 to a request signed with the old ones can be retried with the new. **/
+	@:noCompletion private var __generation:Int = 0;
 
 	/** Requests sent and not yet answered, given up on, or superseded. **/
 	@:noCompletion private var __inFlight:Array<TurnTransaction> = [];
@@ -322,6 +338,57 @@ class TurnClient {
 			this.serverAddress = IPv6.compress(serverAddress);
 			__pinned = true;
 		}
+
+		__asked.push(this.serverAddress + ":" + serverPort);
+	}
+
+	/**
+		Replaces the credentials requests are signed with from now on.
+
+		For a credential that expires -- the TURN REST convention, where a
+		relay's operator hands out a password good for an hour -- or one that
+		is rotated. A request already signed with the old ones and refused with
+		401 is retried with these, which RFC 8489 allows a client to do only
+		when something about its credentials has changed.
+
+		A relay ties an allocation to the username that made it and refuses a
+		request on it signed with another (441), so a new username is for the
+		next allocation; a new password for the same username applies to this
+		one.
+
+		@throws ArgumentError When either is null.
+	**/
+	public function setCredentials(username:String, password:String):Void {
+		if (username == null || password == null) {
+			throw new ArgumentError("A relay needs credentials: it forwards traffic on somebody's behalf and has to know whose.");
+		}
+
+		__username = username;
+		__password = password;
+		__generation++;
+
+		if (__realm != null) {
+			__key = StunMessage.longTermKey(username, __realm, password);
+		}
+	}
+
+	/**
+		Renews the allocation now, rather than when half its lifetime is up.
+
+		For after something that may have cost it: a network change, which
+		moves the 5-tuple the relay knows this client by, answers the next
+		refresh with 437 -- and waiting up to five minutes to hear that is
+		five minutes of advertising a relayed address nothing reaches. A lost
+		allocation is reported through `onLost` as ever.
+	**/
+	public function refresh(now:Float):Void {
+		if (__closed || !active || __refreshing) {
+			return;
+		}
+
+		__clock = now;
+		__refreshing = true;
+		__start(new TurnTransaction(StunMessage.REFRESH_REQUEST, [StunMessage.lifetime(__lifetime)]), now);
 	}
 
 	/**
@@ -658,6 +725,7 @@ class TurnClient {
 		if (!__pinned) {
 			__pinned = true;
 			serverAddress = fromAddress;
+			__asked.push(fromAddress + ":" + serverPort);
 		}
 
 		// One the relay requires understood and this client does not, which
@@ -846,6 +914,7 @@ class TurnClient {
 			request.signed = true;
 			request.nonce = __nonce;
 			request.key = __key;
+			request.generation = __generation;
 
 			var signed = new StunMessage(request.type, request.message.transactionId, request.attributes.concat([
 				StunMessage.text(StunMessage.ATTR_USERNAME, __username),
@@ -923,12 +992,16 @@ class TurnClient {
 		// Answered, but never by anything that could sign for the relay: RFC
 		// 8489 has that said as what it is rather than as a timeout.
 		if (request.discarded > 0) {
-			__fail("The relay at " + serverAddress + ":" + serverPort
-				+ " answered only with messages that failed their integrity check, so none of them could be believed.");
+			__fail("The relay at " + __serverName() + " answered only with messages that failed their integrity check, so none of them could be believed.");
 			return;
 		}
 
-		__fail("The relay at " + serverAddress + ":" + serverPort + " did not answer.");
+		__fail("The relay at " + __serverName() + " did not answer.");
+	}
+
+	/** Where requests go, as "address:port", with an IPv6 address bracketed. **/
+	@:noCompletion private function __serverName():String {
+		return (serverAddress.indexOf(":") >= 0 ? "[" + serverAddress + "]" : serverAddress) + ":" + serverPort;
 	}
 
 	// ------------------------------------------------------------------
@@ -976,8 +1049,10 @@ class TurnClient {
 			}
 
 			// Only once for 401, so a relay that keeps refusing cannot hold
-			// this in a loop: a signed request refused is refused credentials.
-			if (code == StunMessage.UNAUTHORIZED && request.signed) {
+			// this in a loop: a signed request refused is refused credentials
+			// -- unless they have been replaced since it was signed, which is
+			// the one change RFC 8489 lets a client retry a 401 for.
+			if (code == StunMessage.UNAUTHORIZED && request.signed && request.generation == __generation) {
 				__requestFailed(request, code, "The relay rejected these credentials.", true, now);
 				return;
 			}
@@ -1001,10 +1076,58 @@ class TurnClient {
 			return;
 		}
 
+		var phrase = message.errorReason();
+
+		// 300: this relay would rather another did it. Followed for the
+		// Allocate, and the relay it names asked afresh, since its realm and
+		// nonce are its own.
+		if (code == StunMessage.TRY_ALTERNATE && request.type == StunMessage.ALLOCATE_REQUEST) {
+			var alternate = message.alternateServerAddress();
+
+			if (alternate != null) {
+				__redirect(request, alternate, phrase != null ? phrase : "", now);
+				return;
+			}
+		}
+
 		// 437: the relay holds no such allocation. Whatever the request was
 		// about, the allocation it was about is gone.
-		var phrase = message.errorReason();
 		__requestFailed(request, code, phrase != null ? phrase : "", code == StunMessage.ALLOCATION_MISMATCH, now);
+	}
+
+	/**
+		Follows a 300 Try Alternate: the Allocate goes to the server it names,
+		as a new transaction, with the same credentials (RFC 8489 section 10).
+
+		It was a failure like any other, so a relay deployment that balanced
+		its load by redirecting turned every client away from all of it. A
+		server already asked is not asked again -- RFC 8489 has a redirection
+		back to one ignored and the transaction failed, which is what stops two
+		relays sending a client back and forth for good -- and neither is a
+		fifth, however many different ones are named.
+	**/
+	@:noCompletion private function __redirect(request:TurnTransaction, alternate:ReflexiveAddress, phrase:String, now:Float):Void {
+		var address:String = IPv6.compress(alternate.address);
+		var target:String = address + ":" + alternate.port;
+
+		if (__asked.indexOf(target) >= 0 || __asked.length > MAX_REDIRECTS) {
+			__finish(request);
+			__fail("The relay at " + __serverName() + " redirected to " + target + ", which had already been asked.",
+				new TurnError(StunMessage.TRY_ALTERNATE, phrase.length > 0 ? phrase : "Try Alternate", __serverName(), alternate));
+			return;
+		}
+
+		__asked.push(target);
+		serverAddress = address;
+		serverPort = alternate.port;
+		__pinned = true;
+
+		// Another server's realm and nonce, which it will state.
+		__realm = null;
+		__nonce = null;
+		__key = null;
+
+		__retry(request, now);
 	}
 
 	/**
@@ -1045,7 +1168,8 @@ class TurnClient {
 		// Credentials and nonces are this client's own words for what went
 		// wrong; anything else is the relay's code and phrase.
 		var credentials:Bool = fatal && code != StunMessage.ALLOCATION_MISMATCH;
-		__fail(credentials ? reason : "The relay refused the request: " + code + (reason.length > 0 ? " " + reason : ""));
+		__fail(credentials ? reason : "The relay refused the request: " + code + (reason.length > 0 ? " " + reason : ""),
+			new TurnError(code, reason.length > 0 ? reason : Std.string(code), __serverName()));
 	}
 
 	/** Marks a peer refused, so it is neither asked for again nor renewed, and says so. **/
@@ -1083,13 +1207,7 @@ class TurnClient {
 			// client asks for one only from close(), which is not listening by
 			// the time the answer comes -- so one arriving here is the relay's
 			// decision, and the caller has to hear it.
-			var wasActive:Bool = active;
-			active = false;
-
-			if (wasActive) {
-				onLost("The relay at " + serverAddress + ":" + serverPort + " ended the allocation.");
-			}
-
+			__fail("The relay at " + __serverName() + " ended the allocation.");
 			return;
 		}
 
@@ -1167,7 +1285,13 @@ class TurnClient {
 		onData(payload, peer.address, peer.port);
 	}
 
-	@:noCompletion private function __fail(reason:String):Void {
+	/**
+		Ends the allocation, or the attempt at one, saying why.
+
+		@param error The relay's code and reason, when it gave them; one with a
+		code of 0 is made from `reason` when it did not.
+	**/
+	@:noCompletion private function __fail(reason:String, ?error:TurnError):Void {
 		var wasActive:Bool = active;
 
 		__inFlight = [];
@@ -1176,8 +1300,12 @@ class TurnClient {
 		__refreshing = false;
 		active = false;
 
+		if (failure == null) {
+			failure = error != null ? error : new TurnError(0, reason, __serverName());
+		}
+
 		if (!__closed) {
-			@:privateAccess allocated.__fail(reason, null);
+			@:privateAccess allocated.__fail(reason, failure);
 		}
 
 		__closed = true;
@@ -1217,6 +1345,9 @@ private class TurnTransaction {
 	public var nonce:Null<String> = null;
 
 	public var key:Null<Bytes> = null;
+
+	/** Which credentials it was signed with, counted by `TurnClient.setCredentials`. **/
+	public var generation:Int = 0;
 
 	/** Answers dropped for failing their checks: what a request that then times out is reported as. **/
 	public var discarded:Int = 0;

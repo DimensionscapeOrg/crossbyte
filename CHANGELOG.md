@@ -5,6 +5,19 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `PeerConnection.gatherRelayedFrom(servers)`, which asks each TURN relay in
+  a list in turn until one lends an address, and keeps one for as long as
+  the connection lasts: a relay that loses the allocation is replaced from
+  the list and the new relayed candidate announced through
+  `onLocalCandidate`, and `restartIce` asks the relay whether it is still
+  there -- a network change costs the allocation -- and replaces one that is
+  not. `setRelayCredentials` renews the credentials relays are asked with,
+  for the TURN REST convention's expiring ones. A failed gather's `cause` is
+  a `TurnError` -- the relay's code, its reason, and where a 300 pointed --
+  where it was a sentence with no code in it. Underneath: `TurnClient`
+  follows 300 Try Alternate to the server it names (once per server, so two
+  relays redirecting to each other cannot hold it), and gains
+  `setCredentials`, `refresh` and `failure`.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -1220,6 +1233,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `PeerConnection` whose relay refused, never answered or went away can
+  ask for another. The dead relay stayed attached for the life of the
+  connection, so asking again was refused as "already has a relay", and a
+  relay lost after a network change was never replaced.
 - Closing a `TurnClient`, or the `PeerConnection` holding one, frees the
   allocation on the relay. No Refresh with a lifetime of zero was sent, so
   the relay held the allocation and its port for as long as it had been

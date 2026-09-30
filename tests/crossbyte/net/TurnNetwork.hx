@@ -3,7 +3,7 @@ package crossbyte.net;
 import crossbyte.io.ByteArray;
 
 /**
-	A network standing in memory between `TurnClient`s, a `FakeTurnRelay` and
+	A network standing in memory between `TurnClient`s, `FakeTurnRelay`s and
 	whatever peers a test invents, on a clock the test owns.
 
 	Every datagram takes `latency` seconds each way, and time moves in ticks
@@ -13,21 +13,22 @@ import crossbyte.io.ByteArray;
 	rotation all run in a few milliseconds and the same way every time.
 **/
 class TurnNetwork {
+	/** The relay clients are pointed at unless a test says otherwise. **/
 	public var relay(default, null):FakeTurnRelay;
 
-	/** The clock every client and the relay are given. **/
+	/** The clock every client and relay is given. **/
 	public var now:Float = 0;
 
 	/** Seconds each datagram spends in flight, each way. **/
 	public var latency:Float = 0.01;
 
-	/** The address the relay answers from. **/
+	/** The address the first relay answers from. **/
 	public var relayAddress:String = "203.0.113.10";
 
 	public var relayPort:Int = 3478;
 
 	/**
-		Names that reach the relay, as a resolver would answer them. A client
+		Names that reach a relay, as a resolver would answer them. A client
 		given one sends to it; nothing here answers from it.
 	**/
 	public var names:Map<String, String> = new Map();
@@ -42,39 +43,59 @@ class TurnNetwork {
 	/** Everything the clients sent, in order. **/
 	public var sent(default, null):Array<SentDatagram> = [];
 
-	/** What the relay sent on to peers, in order. **/
+	/** What the relays sent on to peers, in order. **/
 	public var toPeers(default, null):Array<PeerDatagram> = [];
 
 	/** Called every tick once the clients are polled: an application's own traffic, say. **/
 	public dynamic function onTick():Void {}
 
+	@:noCompletion private var __relays:Map<String, FakeTurnRelay> = new Map();
 	@:noCompletion private var __clients:Array<{client:TurnClient, address:String, port:Int}> = [];
 	@:noCompletion private var __queue:Array<InFlight> = [];
 	@:noCompletion private var __nextPort:Int = 50000;
 
 	public function new(?relay:FakeTurnRelay) {
-		this.relay = relay != null ? relay : new FakeTurnRelay();
+		this.relay = addRelay(relayAddress, relayPort, relay);
+	}
 
-		this.relay.onToClient = function(bytes:ByteArray, address:String, port:Int):Void {
-			__queue.push({at: now + latency, toRelay: false, bytes: __copy(bytes), address: address, port: port, fromAddress: relayAddress, fromPort: relayPort});
+	/**
+		Another relay, answering from `address`:`port`: somewhere a Try
+		Alternate can send a client, or a second relay to fail over to.
+	**/
+	public function addRelay(address:String, port:Int, ?relay:FakeTurnRelay):FakeTurnRelay {
+		var added = relay != null ? relay : new FakeTurnRelay();
+
+		added.onToClient = function(bytes:ByteArray, to:String, toPort:Int):Void {
+			__queue.push({
+				at: now + latency,
+				relay: null,
+				bytes: __copy(bytes),
+				address: to,
+				port: toPort,
+				fromAddress: address,
+				fromPort: port
+			});
 		};
 
-		this.relay.onToPeer = function(relayPort:Int, bytes:ByteArray, address:String, port:Int):Void {
-			toPeers.push({relayPort: relayPort, bytes: __copy(bytes), address: address, port: port, at: now});
+		added.onToPeer = function(relayPort:Int, bytes:ByteArray, to:String, toPort:Int):Void {
+			toPeers.push({relayPort: relayPort, bytes: __copy(bytes), address: to, port: toPort, at: now});
 		};
+
+		__relays.set(address + ":" + port, added);
+		return added;
 	}
 
 	/**
 		A client whose datagrams leave from `clientAddress` and a port of its
-		own, pointed at `server` -- the relay's address unless a test names
-		something else.
+		own, pointed at `server` -- the first relay's address unless a test
+		names something else.
 
 		@param sharePort The port an earlier client used, for one that takes
 		over its socket; a new port when 0.
 	**/
 	public function client(?server:String, username:String = "user", password:String = "secret", clientAddress:String = "192.0.2.10",
-			sharePort:Int = 0):TurnClient {
-		var made = new TurnClient(server != null ? server : relayAddress, relayPort, username, password);
+			sharePort:Int = 0, ?serverPort:Int):TurnClient {
+		var made = new TurnClient(server != null ? server : relayAddress, serverPort != null ? serverPort : relayPort, username, password);
 		var port:Int = sharePort > 0 ? sharePort : __nextPort++;
 
 		// A socket delivers to whoever holds it now.
@@ -85,19 +106,29 @@ class TurnNetwork {
 				}
 			}
 		}
+
 		__clients.push({client: made, address: clientAddress, port: port});
 
 		made.onSend = function(payload:ByteArray, address:String, toPort:Int):Void {
 			sent.push({at: now, bytes: __copy(payload), address: address, port: toPort, fromPort: port});
 
 			var target:String = names.exists(address) ? names.get(address) : address;
+			var reached = __relays.get(target + ":" + toPort);
 
-			if (target != relayAddress || toPort != relayPort) {
+			if (reached == null) {
 				return;
 			}
 
 			var leaves:Float = now < holdUntil ? holdUntil : now;
-			__queue.push({at: leaves + latency, toRelay: true, bytes: __copy(payload), address: clientAddress, port: port, fromAddress: clientAddress, fromPort: port});
+			__queue.push({
+				at: leaves + latency,
+				relay: reached,
+				bytes: __copy(payload),
+				address: clientAddress,
+				port: port,
+				fromAddress: clientAddress,
+				fromPort: port
+			});
 		};
 
 		return made;
@@ -135,7 +166,11 @@ class TurnNetwork {
 			}
 
 			now += tick;
-			relay.flush(now);
+
+			for (each in __relays) {
+				each.flush(now);
+			}
+
 			__deliverDue();
 
 			for (entry in __clients) {
@@ -156,7 +191,7 @@ class TurnNetwork {
 		return client.receive(__copy(bytes), fromAddress, fromPort, now);
 	}
 
-	/** A peer sends to a relayed address; the relay handles it at once. **/
+	/** A peer sends to a relayed address of the first relay; it handles it at once. **/
 	public function peerSends(relayPort:Int, text:String, fromAddress:String, fromPort:Int):Void {
 		var payload = new ByteArray();
 		payload.writeUTFBytes(text);
@@ -199,9 +234,9 @@ class TurnNetwork {
 			var item = __queue[index];
 			__queue.splice(index, 1);
 
-			if (item.toRelay) {
-				relay.receive(item.bytes, item.fromAddress, item.fromPort, now);
-				relay.flush(now);
+			if (item.relay != null) {
+				item.relay.receive(item.bytes, item.fromAddress, item.fromPort, now);
+				item.relay.flush(now);
 				continue;
 			}
 
@@ -243,7 +278,10 @@ typedef PeerDatagram = {
 
 private typedef InFlight = {
 	at:Float,
-	toRelay:Bool,
+
+	/** The relay it is for, or null for a datagram to a client. **/
+	relay:Null<FakeTurnRelay>,
+
 	bytes:ByteArray,
 	address:String,
 	port:Int,

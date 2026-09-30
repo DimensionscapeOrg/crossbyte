@@ -929,6 +929,134 @@ class TurnClientTest extends utest.Test {
 	}
 
 	// ------------------------------------------------------------------
+	// Redirections, reasons and credentials
+	// ------------------------------------------------------------------
+
+	/**
+		A relay that answers 300 Try Alternate is followed to the one it names.
+
+		It was a refusal like any other, so a deployment that balanced load by
+		redirecting turned every client away from all of its relays.
+	**/
+	public function testATryAlternateIsFollowed():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var second = network.addRelay(ALTERNATE, 3478);
+		network.relay.allocateError = {code: 300, reason: "Try Alternate", alternate: {address: ALTERNATE, port: 3478}};
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 10);
+
+		Assert.isNull(failure, "a redirection was taken for a refusal: " + failure);
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(ALTERNATE, client.serverAddress, "requests did not move to the relay named");
+		Assert.equals(1, second.allocations, "the relay redirected to holds no allocation");
+		Assert.equals(0, network.relay.allocations);
+	}
+
+	/**
+		A redirection back to a relay already asked ends the attempt, and says
+		where it pointed; two relays redirecting to each other would otherwise
+		hold a client between them for good (RFC 8489 section 10).
+	**/
+	public function testARedirectionBackIsNotFollowed():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var second = network.addRelay(ALTERNATE, 3478);
+		network.relay.allocateError = {code: 300, reason: "Try Alternate", alternate: {address: ALTERNATE, port: 3478}};
+		second.allocateError = {code: 300, reason: "Try Alternate", alternate: {address: network.relayAddress, port: 3478}};
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 10);
+
+		Assert.notNull(failure, "two relays redirecting to each other were followed for ever");
+
+		var cause:TurnError = Std.downcast(client.allocated.cause, TurnError);
+		Require.notNull(cause, "the failure carried no TurnError");
+		Assert.equals(300, cause.code);
+		Require.notNull(cause.alternate, "the failure did not say where the relay pointed");
+		Assert.equals(network.relayAddress, cause.alternate.address);
+	}
+
+	/**
+		A failure carries the relay's code and reason as well as a sentence.
+
+		Only the sentence was there, so deciding what to do next -- another
+		relay for a 486 or a 508, new credentials for a 401 -- meant matching on
+		its wording.
+	**/
+	public function testAFailureCarriesTheRelaysCode():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.allocateError = {code: 486, reason: "Allocation Quota Reached"};
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 10);
+
+		Assert.notNull(failure, "a refused allocation neither failed nor succeeded");
+
+		var cause:TurnError = Std.downcast(client.allocated.cause, TurnError);
+		Require.notNull(cause, "the failure carried no TurnError");
+		Assert.equals(486, cause.code);
+		Assert.equals("Allocation Quota Reached", cause.reason);
+		Assert.isTrue(client.failure == cause, "failure and the future's cause should be the same");
+	}
+
+	/**
+		Credentials renewed while an allocation is held are used from then on.
+
+		A credential that expires -- the TURN REST convention's hour-long
+		password -- or one that is rotated had no way in: every refresh was
+		signed with the credentials the client was made with until the relay
+		refused them and the allocation was lost.
+	**/
+	public function testRenewedCredentialsAreUsedFromThenOn():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		// The relay's operator rotates the password, and the application is
+		// handed the new one before the refresh at five minutes.
+		network.relay.users.set("user", "rotated");
+		client.setCredentials("user", "rotated");
+		network.advance(TurnClient.DEFAULT_LIFETIME / 2 + 5, 0.25);
+
+		Assert.isTrue(client.active, "the allocation was lost: " + lost);
+		Assert.isTrue(network.relay.count("refreshed") >= 1, "the refresh never succeeded");
+
+		// And again, with the new password arriving only after a refresh signed
+		// with the old one was refused: RFC 8489 lets a client retry a 401 when
+		// its credentials changed, which is exactly this.
+		network.relay.users.set("user", "rotated-again");
+		network.relay.delay = 0.4;
+		network.run(() -> network.sentOfType(StunMessage.REFRESH_REQUEST).length >= 2, TurnClient.DEFAULT_LIFETIME, 0.05);
+		Assert.equals(2, network.sentOfType(StunMessage.REFRESH_REQUEST).length, "the second refresh was never sent");
+		client.setCredentials("user", "rotated-again");
+		network.advance(3, 0.05);
+
+		Assert.isTrue(client.active, "a 401 to a request signed with the old credentials was taken as final: " + lost);
+		Assert.isTrue(network.relay.count("refreshed") >= 2, "the second refresh never succeeded");
+	}
+
+	// ------------------------------------------------------------------
 	// Closing
 	// ------------------------------------------------------------------
 
@@ -1160,6 +1288,9 @@ class TurnClientTest extends utest.Test {
 	// ------------------------------------------------------------------
 
 	private static inline var RELAY_NAME:String = "relay.example.test";
+
+	/** A second relay, for redirections. **/
+	private static inline var ALTERNATE:String = "203.0.113.20";
 
 	private static inline var PEER:String = "198.51.100.4";
 	private static inline var PEER_PORT:Int = 40000;

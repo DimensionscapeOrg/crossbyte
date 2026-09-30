@@ -104,6 +104,15 @@ class StunMessage {
 	**/
 	public static inline var ALLOCATION_MISMATCH:Int = 437;
 
+	/** Ask the server named in ALTERNATE-SERVER instead. RFC 8489 section 10. **/
+	public static inline var TRY_ALTERNATE:Int = 300;
+
+	/**
+		`ALTERNATE-SERVER`: where a 300 points. An address in the MAPPED-ADDRESS
+		format, not XORed -- RFC 8489 section 14.15.
+	**/
+	public static inline var ATTR_ALTERNATE_SERVER:Int = 0x8023;
+
 	/**
 		XORed into the CRC so a STUN fingerprint cannot be mistaken for the
 		start of some other protocol that also begins with a checksum. RFC 5389
@@ -323,6 +332,12 @@ class StunMessage {
 		}
 
 		return null;
+	}
+
+	/** The server a 300 Try Alternate names, or null. Plain, not XORed. **/
+	public function alternateServerAddress():Null<ReflexiveAddress> {
+		var value = attribute(ATTR_ALTERNATE_SERVER);
+		return value != null ? __readAddress(value, false) : null;
 	}
 
 	/** The value of a text attribute such as `REALM` or `NONCE`, or null. **/

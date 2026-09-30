@@ -1,8 +1,10 @@
 package crossbyte.net.rtc;
 
+import crossbyte.Future;
 import crossbyte.core.CrossByte;
 import crossbyte.net.FakeTurnRelaySocket;
 import crossbyte.net.ice.IceCandidate;
+import crossbyte.test.Require;
 import crossbyte.net.rtc.PeerDescription;
 import utest.Assert;
 
@@ -653,6 +655,184 @@ class PeerConnectionRelayTest extends utest.Test {
 
 			Assert.equals(1, server.relay.count("deallocated"), "closing the connection left its allocation on the relay");
 			Assert.equals(0, server.relay.allocations);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
+	/**
+		A relay that refuses is followed by the next in the list, and the one
+		that allocates lends the candidate.
+	**/
+	public function testTheNextRelayIsAskedWhenOneRefuses():Void {
+		if (unsupported()) return;
+
+		var full = relayServer();
+		full.relay.allocateError = {code: 486, reason: "Allocation Quota Reached"};
+		var good = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			full.start();
+			good.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			var failure:String = null;
+			connection.gatherRelayedFrom([
+				{address: "127.0.0.1", port: full.port, username: USERNAME, password: PASSWORD},
+				{address: "127.0.0.1", port: good.port, username: USERNAME, password: PASSWORD}
+			]).then(c -> gathered = c, e -> failure = e);
+			pumpUntil(() -> gathered != null || failure != null, 10.0);
+
+			Assert.isNull(failure, failure);
+			Assert.notNull(gathered, "neither relay lent an address");
+			Assert.equals(1, full.relay.count("allocate-error"), "the first relay was never asked");
+			Assert.equals(1, good.relay.allocations, "the second relay holds no allocation");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		full.close();
+		good.close();
+	}
+
+	/**
+		A relay that refused is not in the way of asking another, and its
+		refusal says why in a form code can read.
+
+		The auditor's case. The first relay's 486 left the connection holding
+		a dead relay for good -- asking a second was refused as "already has a
+		relay" -- and the failure was a sentence with no code in it.
+	**/
+	public function testARelayThatRefusedIsNotInTheWayOfAnother():Void {
+		if (unsupported()) return;
+
+		var full = relayServer();
+		full.relay.allocateError = {code: 486, reason: "Allocation Quota Reached"};
+		var good = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			full.start();
+			good.start();
+			connection.bind(0, "127.0.0.1");
+
+			var refused:Future<IceCandidate> = connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, full.port);
+			pumpUntil(() -> refused.completed, 10.0);
+
+			Assert.isTrue(refused.completed && !refused.succeeded, "the full relay did not refuse");
+
+			var cause:crossbyte.net.TurnError = Std.downcast(refused.cause, crossbyte.net.TurnError);
+			Require.notNull(cause, "the refusal carried no TurnError");
+			Assert.equals(486, cause.code);
+
+			var gathered:IceCandidate = null;
+			var failure:String = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, good.port).then(c -> gathered = c, e -> failure = e);
+			pumpUntil(() -> gathered != null || failure != null, 10.0);
+
+			Assert.isNull(failure, "a relay that had refused was still in the way: " + failure);
+			Assert.notNull(gathered);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		full.close();
+		good.close();
+	}
+
+	/**
+		A relay that loses the allocation is asked for another, and the new
+		address announced for the peer to be told of.
+
+		A relay restarting, or a network change moving the 5-tuple it knew the
+		connection by, cost the connection its relayed candidate for good.
+	**/
+	public function testALostRelayIsReplaced():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.1");
+
+			var first:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> first = c, _ -> {});
+			pumpUntil(() -> first != null, 8.0);
+			Require.notNull(first, "the relay never allocated");
+
+			var announced:Array<CandidateDescription> = [];
+			connection.onLocalCandidate = candidate -> announced.push(candidate);
+
+			// The relay restarts and forgets every allocation; the next refresh
+			// finds out, brought forward from five minutes to now.
+			server.relay.forgetEverything();
+			@:privateAccess connection.__turn.refresh(haxe.Timer.stamp());
+			pumpUntil(() -> announced.length > 0, 8.0);
+
+			Assert.equals(1, announced.length, "no replacement relayed candidate was announced");
+
+			if (announced.length > 0) {
+				Assert.equals("relay", announced[0].type);
+				Assert.notEquals(first.port, announced[0].port, "the candidate announced is the lost one");
+			}
+
+			Require.notNull(connection.relayedCandidate, "the connection has no relayed candidate after the replacement");
+			Assert.equals(1, server.relay.allocations);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
+	/**
+		An ICE restart asks the relay whether it is still there, and replaces
+		one that is not, so the restart has a relayed candidate to offer.
+	**/
+	public function testAnIceRestartReplacesARelayThatWent():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.2");
+
+			var first:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> first = c, _ -> {});
+			pumpUntil(() -> first != null, 8.0);
+			Require.notNull(first, "the relay never allocated");
+
+			// A peer that exists nowhere: what matters is what the restart asks
+			// of the relay, not whether anybody answers.
+			connection.connect({
+				usernameFragment: "remoteufrag",
+				password: "remotepasswordlongenough",
+				fingerprint: connection.description().fingerprint,
+				candidates: [{address: "127.0.0.9", port: 40404, type: "host", priority: 2130706431}]
+			});
+
+			var announced:Array<CandidateDescription> = [];
+			connection.onLocalCandidate = candidate -> announced.push(candidate);
+
+			// The relay lost the allocation, and nothing here knows yet.
+			server.relay.forgetEverything();
+			connection.restartIce();
+			pumpUntil(() -> announced.length > 0, 8.0);
+
+			Assert.equals(1, announced.length, "the restart has no replacement relayed candidate");
+			Assert.isTrue(server.relay.count("refused-437") > 0, "the relay was never asked whether it still held the allocation");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
