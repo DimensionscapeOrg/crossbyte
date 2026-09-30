@@ -173,6 +173,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.MySQLNativeWireTest());
 		runner.addCase(new crossbyte.db.MySQLNativeResultTest());
 		runner.addCase(new crossbyte.db.MySQLNativeSessionTest());
+		runner.addCase(new crossbyte.db.MySQLNativeAuthTest());
 		// SQLite opens only natively.
 		runner.addCase(new crossbyte.db.SQLiteNativeTest());
 		#end

@@ -21,6 +21,8 @@ package crossbyte.db.mysql._internal;
 @:buildXml('<include name="${HXCPP}/src/hx/libs/mysql/Build.xml"/>')
 @:cppFileCode('
 HXCPP_EXTERN_CLASS_ATTRIBUTES int _hx_mysql_server_status(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES bool _hx_mysql_is_tls(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES String _hx_mysql_auth_plugin(Dynamic handle);
 ')
 class NativeMySQL {
 	public static inline var STATUS_IN_TRANS:Int = 0x0001;
@@ -59,6 +61,14 @@ class NativeMySQL {
 
 	public static function serverStatus(handle:Dynamic):Int {
 		return __serverStatus(handle);
+	}
+
+	public static function isTls(handle:Dynamic):Bool {
+		return __isTls(handle);
+	}
+
+	public static function authPlugin(handle:Dynamic):String {
+		return __authPlugin(handle);
 	}
 
 	public static function resultLength(result:Dynamic):Int {
@@ -114,6 +124,12 @@ class NativeMySQL {
 
 	@:native("_hx_mysql_server_status")
 	extern private static function __serverStatus(handle:Dynamic):Int;
+
+	@:native("_hx_mysql_is_tls")
+	extern private static function __isTls(handle:Dynamic):Bool;
+
+	@:native("_hx_mysql_auth_plugin")
+	extern private static function __authPlugin(handle:Dynamic):String;
 
 	@:native("_hx_mysql_result_get_length")
 	extern private static function __resultGetLength(handle:Dynamic):Int;
