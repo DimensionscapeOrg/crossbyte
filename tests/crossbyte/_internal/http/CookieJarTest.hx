@@ -30,6 +30,38 @@ class CookieJarTest extends utest.Test {
 		Assert.isNull(jar.headerFor("example.com.evil.test", false), "a suffix match is not a host match");
 	}
 
+	public function testHostsMatchWhateverTheirCase():Void {
+		// Host names are case-insensitive, and the jar compared them exactly:
+		// a redirect that changed only the host's case kept the caller's
+		// credentials, Http compares origins lowercased, and dropped the
+		// session cookie.
+		var jar = new CookieJar();
+		jar.store("session=abc123", "Example.COM");
+
+		Assert.equals("session=abc123", jar.headerFor("example.com", false));
+		Assert.equals("session=abc123", jar.headerFor("EXAMPLE.com", false));
+	}
+
+	public function testOneNameFromTwoHostsIsKeptForEach():Void {
+		// Keyed by name alone, the second host's cookie replaced the first's,
+		// so going back to the first host sent nothing.
+		var jar = new CookieJar();
+		jar.store("session=from-a", "a.example");
+		jar.store("session=from-b", "b.example");
+
+		Assert.equals("session=from-a", jar.headerFor("a.example", false));
+		Assert.equals("session=from-b", jar.headerFor("b.example", false));
+	}
+
+	public function testCookiesGoBackInTheOrderTheyWereSet():Void {
+		// They came back in a map's iteration order, which differs by target.
+		var jar = new CookieJar();
+		for (name in ["zeta", "alpha", "mid", "beta"]) {
+			jar.store(name + "=1", "example.com");
+		}
+		Assert.equals("zeta=1; alpha=1; mid=1; beta=1", jar.headerFor("example.com", false));
+	}
+
 	public function testASecureCookieIsWithheldFromAPlaintextHop():Void {
 		var jar = new CookieJar();
 		jar.store("session=abc123; Secure", "example.com");
