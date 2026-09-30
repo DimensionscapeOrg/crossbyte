@@ -34,6 +34,43 @@ class H2ServerRequest {
 	 */
 	public var tooLarge:Bool = false;
 
+	/**
+	 * Set when the request's header section decoded past the limit, so only
+	 * its pseudo-header fields are here and it is to be answered `431`. See
+	 * `withHeadersTooLarge`.
+	 */
+	public var headersTooLarge:Bool = false;
+
+	/**
+	 * A request whose header section went past the limit: what arrived of its
+	 * pseudo-header fields, the rest left out as not all there, and
+	 * `headersTooLarge` set. Nothing here is validated, since nothing about it
+	 * is served but the refusal.
+	 */
+	public static function withHeadersTooLarge(streamId:Int, decoded:Array<HpackHeader>):H2ServerRequest {
+		var method:String = "GET";
+		var scheme:String = "http";
+		var authority:String = "";
+		var path:String = "/";
+		for (field in decoded) {
+			switch (field.name) {
+				case ":method":
+					method = field.value;
+				case ":scheme":
+					scheme = field.value;
+				case ":authority":
+					authority = field.value;
+				case ":path":
+					path = field.value;
+				case _:
+			}
+		}
+
+		var request:H2ServerRequest = new H2ServerRequest(streamId, method, scheme, authority, path, [], Bytes.alloc(0));
+		request.headersTooLarge = true;
+		return request;
+	}
+
 	public function new(streamId:Int, method:String, scheme:String, authority:String, path:String, headers:Array<HpackHeader>, body:Bytes) {
 		this.streamId = streamId;
 		this.method = method;

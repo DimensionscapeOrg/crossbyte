@@ -307,6 +307,37 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAHeaderSectionPastTheLimitIsAnswered431(async:Async):Void {
+		// 3,000 one-byte references to a single cookie crumb: about three
+		// kilobytes on the wire, 117 KB by HPACK's accounting. It was taken
+		// whole, under an eight megabyte limit nobody advertised, and the
+		// crumbs joined one by one, at 200,000 of them that held the
+		// runtime's thread for 23.5 seconds. HTTP/1.1 answers the same section
+		// 431 at 64 KB, and so does HTTP/2 now, on that stream alone.
+		var session = new H2Session(config -> {
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "cookie=" + (handler.getCookie("a") != null))];
+		});
+
+		var crumbs:Array<HpackHeader> = [];
+		for (i in 0...3000) {
+			crumbs.push(new HpackHeader("cookie", "a=1"));
+		}
+
+		session.start(() -> {
+			session.request(1, "GET", "/big", true, crumbs);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/next", true, [new HpackHeader("cookie", "a=2")]);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(431, session.status(1));
+					Assert.equals(200, session.status(3), "the connection did not carry on past the refusal");
+					Assert.equals("cookie=true", session.body(3));
+					async.done();
+				});
+			});
+		});
+	}
+
 	public function testAGuardSeesTheSettledPathOverHttp2(async:Async):Void {
 		// The path settles the same way on both protocols, so a guard written
 		// once holds on both.

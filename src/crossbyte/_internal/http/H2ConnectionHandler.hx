@@ -206,18 +206,37 @@ class H2ConnectionHandler {
 			target = target.substr(0, mark);
 		}
 
+		// Folded the way the HTTP/1.1 parser folds repeats, so a middleware
+		// sees one shape regardless of protocol, and cookie with "; ", which
+		// is how §8.2.3 says its split crumbs join. A comma made
+		// getCookie("sid") answer "abc123, theme=dark" for the cookies
+		// browsers send as separate fields.
+		//
+		// Collected, then joined once per name. Each repeat was appended to
+		// the whole value so far, which is quadratic in the repeats: 200,000
+		// one-byte cookie crumbs, a block of about 200 KB, held the runtime's
+		// thread for 23.5 seconds.
 		var headers:Map<String, String> = new Map();
+		var repeats:Null<Map<String, Array<String>>> = null;
 		for (field in request.headers) {
-			if (headers.exists(field.name)) {
-				// Folded the way the HTTP/1.1 parser folds repeats, so a
-				// middleware sees one shape regardless of protocol, and cookie
-				// with "; ", which is how §8.2.3 says its split crumbs join. A
-				// comma made getCookie("sid") answer "abc123, theme=dark" for
-				// the cookies browsers send as separate fields.
-				var separator:String = field.name == "cookie" ? "; " : ", ";
-				headers.set(field.name, headers.get(field.name) + separator + field.value);
-			} else {
+			var first:Null<String> = headers.get(field.name);
+			if (first == null) {
 				headers.set(field.name, field.value);
+				continue;
+			}
+			if (repeats == null) {
+				repeats = new Map();
+			}
+			var values:Null<Array<String>> = repeats.get(field.name);
+			if (values == null) {
+				values = [first];
+				repeats.set(field.name, values);
+			}
+			values.push(field.value);
+		}
+		if (repeats != null) {
+			for (name => values in repeats) {
+				headers.set(name, values.join(name == "cookie" ? "; " : ", "));
 			}
 		}
 
@@ -241,7 +260,7 @@ class H2ConnectionHandler {
 		}
 
 		try {
-			handler.__serveDecodedRequest(request.method, target, query, headers, body, request.tooLarge);
+			handler.__serveDecodedRequest(request.method, target, query, headers, body, request.tooLarge, request.headersTooLarge);
 		} catch (error:Dynamic) {
 			Logger.error("HTTP/2 request handling failed: " + error);
 			__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);

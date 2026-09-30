@@ -1220,6 +1220,21 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- One HTTP/2 request can no longer hold the server for tens of seconds. A
+  header section could decode to eight megabytes, a limit never advertised,
+  and repeated fields were joined by appending each to everything before
+  it: 200,000 one-byte references to one cookie crumb, about 200 KB on the
+  wire, held the runtime's thread for 23.5 seconds, and every other client
+  with it. The server now advertises `SETTINGS_MAX_HEADER_LIST_SIZE` of 64
+  KB, the limit an HTTP/1.1 request's header block already had, and answers
+  a section past it `431` on that stream alone: the block is still decoded
+  to its end, so the connection and its other requests carry on (the same
+  request now takes 54 ms on the jvm, the 431 included). Repeated fields
+  are collected and joined once, on both versions. The HTTP/2 client holds
+  a response to the same 64 KB, advertised, and refuses one past it without
+  losing the connection, joins repeats once, and ends a connection whose
+  header block runs on through CONTINUATION frames past 256 KB, as the
+  server already did.
 - Requests to an IPv6 literal carry its brackets. `URL` takes them off
   `[2001:db8::1]:8080`, and both clients put the host back bare, so `Host`
   and `:authority` read `2001:db8::1:8080`, which no server can split, and

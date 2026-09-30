@@ -150,6 +150,37 @@ class HTTPRequestFramingTest extends utest.Test {
 		});
 	}
 
+	/**
+		Repeats of one field are joined in the order they came, cookies with
+		`; ` and the rest with `, `, however many there are.
+
+		They are collected and joined once the block ends. Each used to be
+		appended to the whole value so far, which is quadratic in the repeats:
+		the 64 KB a block may take holds some thirteen thousand of them.
+	**/
+	public function testRepeatedFieldsAreJoinedInOrder(async:Async):Void {
+		var config:HTTPServerConfig = new HTTPServerConfig("127.0.0.1", 0);
+		config.middleware.push((handler, next) -> handler.respond(200, "text/plain", handler.getHeader("x-tag") + "|" + handler.getHeader("cookie")));
+		var server:HTTPServer = new HTTPServer(config);
+
+		var request:StringBuf = new StringBuf();
+		request.add("GET /tags HTTP/1.1\r\nHost: x\r\n");
+		var expected:Array<String> = [];
+		for (i in 0...2000) {
+			request.add("X-Tag: " + i + "\r\n");
+			expected.push(Std.string(i));
+		}
+		request.add("Cookie: a=1\r\nCookie: b=2\r\nCookie: c=3\r\n\r\n");
+
+		HTTPTestSupport.exchangeEach(server, [request.toString()], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals(200, responses[0].status);
+			Assert.equals(expected.join(", ") + "|a=1; b=2; c=3", responses[0].body);
+			async.done();
+		});
+	}
+
 	/** Headers have a limit of their own, rather than a share of the body's. **/
 	public function testAnOversizedHeaderBlockIs431(async:Async):Void {
 		var seen:Array<String> = [];

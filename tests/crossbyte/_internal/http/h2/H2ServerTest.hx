@@ -676,6 +676,61 @@ class H2ServerTest extends utest.Test {
 		Assert.isTrue(server.closed);
 	}
 
+	public function testTheHeaderListLimitIsAdvertised():Void {
+		// SETTINGS_MAX_HEADER_LIST_SIZE was never sent, which tells a client
+		// the list is unlimited; the decoder quietly allowed eight megabytes.
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		var frames = Collector.parse(out.bytes());
+		Require.notNull(frames[0]);
+		var advertised:Int = -1;
+		var payload:Bytes = frames[0].payload;
+		var offset:Int = 0;
+		while (offset + 6 <= payload.length) {
+			var id:Int = (payload.get(offset) << 8) | payload.get(offset + 1);
+			var value:Int = (payload.get(offset + 2) << 24) | (payload.get(offset + 3) << 16) | (payload.get(offset + 4) << 8) | payload.get(offset + 5);
+			if (id == 0x6) {
+				advertised = value;
+			}
+			offset += 6;
+		}
+		Assert.equals(64 * 1024, advertised);
+	}
+
+	public function testAHeaderSectionPastTheLimitReachesNoHandlerAndTheConnectionCarriesOn():Void {
+		// 3,000 one-byte references to one cookie crumb: a block of about three
+		// kilobytes that decodes to 117 KB by the table's accounting. It was
+		// accepted, all of it, and joined; the HTTP/1.1 path refuses the same
+		// section at 64 KB. Refused now, and decoded to its end first, so the
+		// request after it on the same connection still decodes as sent.
+		var link = new Loopback();
+		var fieldsSeen:Array<Int> = [];
+		var probe:Null<String> = null;
+		link.serveWith((request, server) -> {
+			fieldsSeen.push(request.headers.length);
+			if (request.path == "/next") {
+				probe = request.header("x-ok");
+			}
+			server.respond(request.streamId, request.path == "/next" ? 200 : 431, []);
+		});
+
+		var crumbs:Array<HpackHeader> = [];
+		for (_ in 0...3000) {
+			crumbs.push(new HpackHeader("cookie", "a"));
+		}
+		var first = link.request("GET", "/big", crumbs);
+		var second = link.request("GET", "/next", [new HpackHeader("x-ok", "yes")]);
+
+		Assert.equals(2, fieldsSeen.length);
+		Assert.equals(0, fieldsSeen[0], fieldsSeen[0] + " fields of a section past the limit reached the handler");
+		Assert.equals(431, first.status);
+		Assert.equals("yes", probe);
+		Assert.equals(200, second.status);
+		Assert.isFalse(link.connection.closed);
+	}
+
 	public function testAHeaderBlockUnderTheLimitStillAssembles():Void {
 		var link = new Loopback();
 		var seen:String = null;
@@ -926,6 +981,13 @@ private class Loopback {
 
 	public function serveWith(handler:(H2ServerRequest, H2ServerConnection) -> Void):Void {
 		__handler = handler;
+	}
+
+	/** The server half. */
+	public var connection(get, never):H2ServerConnection;
+
+	private inline function get_connection():H2ServerConnection {
+		return __server;
 	}
 
 	/** Lowers the client's view of the server frame limit, forcing CONTINUATION. */

@@ -31,6 +31,24 @@ class H2Connection {
 	/** RFC 9113 §3.4. Sent by a client before anything else. */
 	public static inline var PREFACE:String = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+	/**
+	 * What a response's header section may decode to, by RFC 7541 4.1's
+	 * accounting, before it is refused, when the settings name no limit of
+	 * their own. The HTTP/1.1 client's limit on a response's header block.
+	 */
+	public static inline var DEFAULT_MAX_HEADER_LIST_SIZE:Int = 64 * 1024;
+
+	/**
+	 * Compressed bytes one header block may span across its CONTINUATION
+	 * frames, past which the connection is ended with ENHANCE_YOUR_CALM.
+	 * Negative disables the check.
+	 *
+	 * The server has held a client to this since it was shown that a HEADERS
+	 * with no END_HEADERS, and CONTINUATION frames after it for ever, grew a
+	 * buffer without end; a server could do the same to this client.
+	 */
+	public var maxHeaderBlockSize:Int = 256 * 1024;
+
 	/** Our settings, sent at startup. */
 	public final localSettings:H2Settings;
 
@@ -90,6 +108,7 @@ class H2Connection {
 	private var __continuationStreamId:Int = -1;
 	private var __continuationEndsStream:Bool = false;
 	private var __continuationBuffer:BytesBuffer = null;
+	private var __continuationLength:Int = 0;
 
 	public function new(input:Input, output:Output, ?settings:H2Settings) {
 		__input = input;
@@ -100,8 +119,11 @@ class H2Connection {
 		__streams = new Map();
 
 		__encoder = new HpackEncoder(remoteSettings.headerTableSize);
+		// Settings that name no limit get the HTTP/1.1 client's: the decoder
+		// used to allow eight megabytes, under which a server could send a
+		// header section that took seconds to join.
 		__decoder = new HpackDecoder(localSettings.headerTableSize,
-			localSettings.maxHeaderListSize >= 0 ? localSettings.maxHeaderListSize : 8 * 1024 * 1024);
+			localSettings.maxHeaderListSize >= 0 ? localSettings.maxHeaderListSize : DEFAULT_MAX_HEADER_LIST_SIZE);
 
 		// The connection window is not affected by SETTINGS_INITIAL_WINDOW_SIZE
 		// (§6.9.2); it starts at the fixed default and only WINDOW_UPDATE
@@ -430,11 +452,12 @@ class H2Connection {
 		__continuationStreamId = frame.streamId;
 		__continuationEndsStream = frame.has(H2Flags.END_STREAM);
 		__continuationBuffer = new BytesBuffer();
-		__continuationBuffer.addBytes(payload, 0, payload.length);
+		__continuationLength = 0;
+		__appendHeaderFragment(payload);
 	}
 
 	private function __continueHeaders(frame:H2Frame):Void {
-		__continuationBuffer.addBytes(frame.payload, 0, frame.payload.length);
+		__appendHeaderFragment(frame.payload);
 
 		if (!frame.has(H2Flags.END_HEADERS)) {
 			return;
@@ -446,8 +469,22 @@ class H2Connection {
 
 		__continuationStreamId = -1;
 		__continuationBuffer = null;
+		__continuationLength = 0;
 
 		__completeHeaders(streamId, block, endsStream);
+	}
+
+	/**
+	 * Adds a fragment to the open header block, refusing a block grown past
+	 * `maxHeaderBlockSize`. A connection error, as on the server: the block
+	 * cannot be decoded, and HPACK is connection state.
+	 */
+	private function __appendHeaderFragment(payload:Bytes):Void {
+		if (maxHeaderBlockSize >= 0 && __continuationLength + payload.length > maxHeaderBlockSize) {
+			throw new H2ConnectionError(H2ErrorCode.ENHANCE_YOUR_CALM, 'Header block exceeded $maxHeaderBlockSize bytes across its CONTINUATION frames');
+		}
+		__continuationBuffer.addBytes(payload, 0, payload.length);
+		__continuationLength += payload.length;
 	}
 
 	private function __completeHeaders(streamId:Int, block:Bytes, endStream:Bool):Void {
@@ -473,6 +510,16 @@ class H2Connection {
 			return;
 		}
 		target.framesIn++;
+
+		if (__decoder.truncated) {
+			// Decoded to its end, so the table is still the peer's, but past
+			// the limit. RFC 9113 10.5.1 lets a client discard a response it
+			// cannot process; the stream is given up, and the connection and
+			// every other request on it carry on.
+			target.failure = 'Response header section exceeded the ${__decoder.maxHeaderListSize} byte limit';
+			resetStream(target.id, H2ErrorCode.CANCEL);
+			return;
+		}
 
 		for (header in decoded) {
 			if (header.name == ":status") {
