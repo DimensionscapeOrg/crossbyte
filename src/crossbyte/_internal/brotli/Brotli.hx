@@ -50,9 +50,10 @@ class Brotli {
 
 		The native one, from `crossbyte-brotli` with `-D crossbyte_brotli_native`,
 		is handed the limit as well: it is given room for that much output and
-		stopped when it asks for more, by which time it may have decoded up to
-		one window ahead into its ring buffer, 16 MB at most. It used to decode
-		the whole stream and leave the measuring to this function, afterwards.
+		stopped when it asks for more, and its own allocations are held to what
+		output within the limit could need, so a meta-block announcing far more
+		is refused at its header there too. It used to decode the whole stream
+		and leave the measuring to this function, afterwards.
 
 		@throws crossbyte.errors.IOError The data is not a valid Brotli stream.
 		@throws crossbyte.errors.RangeError It decodes past `maxOutputSize`.
