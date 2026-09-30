@@ -200,12 +200,18 @@ class MySQLDriverTest extends utest.Test {
 		statement.parameters.yes = true;
 		statement.parameters.big = haxe.Int64.parseString("9007199254740993");
 		statement.parameters.blob = haxe.io.Bytes.ofHex("0001ff");
-		statement.parameters.when = Date.fromTime(1790685296250.0);
+		var when:Date = Date.fromTime(1790685296250.0);
+		statement.parameters.when = when;
 		statement.parameters.text = "it's";
 		statement.parameters.limit = 50;
 		statement.execute();
 
-		Assert.equals("INSERT INTO t VALUES (NULL, 42, 1.5, TRUE, 9007199254740993, X'0001ff', '2026-09-29 12:34:56.250', 'it\\'s', :missing) LIMIT 50",
+		// hl's and neko's Date keep whole seconds, so the .250 is gone before
+		// the statement sees it; the milliseconds are written where the Date
+		// has them.
+		var fraction:String = when.getTime() % 1000 == 250 ? ".250" : "";
+		Assert.equals("INSERT INTO t VALUES (NULL, 42, 1.5, TRUE, 9007199254740993, X'0001ff', '2026-09-29 12:34:56" + fraction
+			+ "', 'it\\'s', :missing) LIMIT 50",
 			wire.sent[wire.sent.length - 1]);
 
 		statement.parameters.ratio = Math.NaN;
