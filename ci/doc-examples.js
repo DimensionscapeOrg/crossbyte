@@ -52,24 +52,54 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 
-const STANDALONE = ['src/crossbyte/io/File.hx', 'src/crossbyte/rpc/RPCCommands.hx'];
+const STANDALONE = [
+  'src/crossbyte/Completer.hx',
+  'src/crossbyte/PrimitiveValue.hx',
+  'src/crossbyte/core/Config.hx',
+  'src/crossbyte/core/HostApplication.hx',
+  'src/crossbyte/db/mongodb/MongoConfig.hx',
+  'src/crossbyte/db/mongodb/MongoConnection.hx',
+  'src/crossbyte/db/mongodb/MongoCursor.hx',
+  'src/crossbyte/db/mongodb/MongoStatement.hx',
+  'src/crossbyte/db/mongodb/bson/BsonDocument.hx',
+  'src/crossbyte/db/mongodb/bson/Decimal128.hx',
+  'src/crossbyte/db/mongodb/bson/ExtendedJson.hx',
+  'src/crossbyte/db/mongodb/bson/ObjectId.hx',
+  'src/crossbyte/http/HTTP2Backend.hx',
+  'src/crossbyte/io/File.hx',
+  'src/crossbyte/io/Store.hx',
+  'src/crossbyte/math/Rectangle.hx',
+  'src/crossbyte/net/NetConnection.hx',
+  'src/crossbyte/net/StunClient.hx',
+  'src/crossbyte/net/rtc/DtlsCertificate.hx',
+  'src/crossbyte/rpc/RPCCommands.hx',
+  'src/crossbyte/url/URLVariables.hx',
+  'src/crossbyte/utils/LogCategory.hx',
+  'src/crossbyte/utils/Logger.hx',
+];
 const GUIDES = ['docs/rpc.md'];
 
 // Every fenced block of one of `languages`, with the 1-based line its body
 // opens on.
+// A doc comment written with a ` * ` down its left side: the star is
+// decoration, and comes off the fence and every line inside it.
+const STAR = /^\s*\*(?: |$)/;
+
 function blocksIn(file, rel, languages) {
   const lines = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n').split('\n');
   const found = [];
   for (let i = 0; i < lines.length; i++) {
-    const fence = lines[i].trim();
+    const starred = STAR.test(lines[i]);
+    const plain = (line) => (starred ? line.replace(STAR, '') : line);
+    const fence = plain(lines[i]).trim();
     if (!languages.includes(fence)) continue;
     let j = i + 1;
-    while (j < lines.length && lines[j].trim() !== '```') j++;
+    while (j < lines.length && plain(lines[j]).trim() !== '```') j++;
     if (j >= lines.length) {
       console.error(`${rel}:${i + 1}: unterminated code fence`);
       process.exit(2);
     }
-    found.push({ startLine: i + 2, body: lines.slice(i + 1, j) });
+    found.push({ startLine: i + 2, body: lines.slice(i + 1, j).map(plain) });
     i = j;
   }
   return found;
