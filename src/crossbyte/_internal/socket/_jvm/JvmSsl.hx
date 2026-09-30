@@ -57,16 +57,56 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private var __alpn:Array<String>;
 	@:noCompletion private var __sni:Array<crossbyte._internal.socket._jvm.JvmSniKeyManager.SniEntry>;
 
+	/**
+		How many handshakes after the first a server connection carries through
+		for its peer before refusing the next. Each is a full handshake -- a
+		private-key operation -- on a connection already admitted, so a peer
+		free to ask without limit has the server's CPU for the price of a
+		record. Node allows three.
+	**/
+	@:noCompletion private static inline var RENEGOTIATIONS:Int = 3;
+
+	// What __unwrapRecord answers besides a count of plaintext bytes.
+	@:noCompletion private static inline var NOTHING:Int = -1;
+	@:noCompletion private static inline var TOO_SMALL:Int = -2;
+	@:noCompletion private static inline var CLOSED:Int = -3;
+	@:noCompletion private static inline var UNDERFLOW:Int = -4;
+
 	// Per-connection engine state.
 	@:noCompletion private var __engine:SSLEngine;
+
+	// The engine's buffers, each held only while it holds something (see
+	// JvmSslBuffers), and null otherwise: ciphertext read and not yet
+	// decrypted -- a record that has arrived in part, or what a full caller's
+	// buffer left -- in write mode; plaintext decrypted and not yet taken, in
+	// read mode; ciphertext made and not yet sent, in read mode.
 	@:noCompletion private var __netIn:ByteBuffer;
-	@:noCompletion private var __netOut:ByteBuffer;
 	@:noCompletion private var __appIn:ByteBuffer;
+	@:noCompletion private var __netOut:ByteBuffer;
+
+	// Making records and sending them is one step: they have to reach the
+	// wire in the order the engine made them, and a read that answers the
+	// peer's handshake makes records too -- on another thread than the
+	// writer's, for the HTTP/2 client's reader.
+	@:noCompletion private var __outbound:sys.thread.Mutex;
+
+	// What a pooled buffer holds: room for a whole record, either way.
+	@:noCompletion private var __bufferSize:Int = 0;
+
 	@:noCompletion private var __handshaken:Bool = false;
-	@:noCompletion private var __pendingOut:Bool = false;
+	// The peer has closed its side, by close_notify or by closing the
+	// connection; and whether a read has reported that yet.
+	@:noCompletion private var __inboundDone:Bool = false;
+	@:noCompletion private var __eofTold:Bool = false;
+	// A failure met after plaintext was already on its way to the caller:
+	// thrown by the next read, once that plaintext has been handed over.
+	@:noCompletion private var __deferred:Dynamic = null;
 	// When a blocking handshake has to be done by, from haxe.Timer.stamp();
 	// 0 when none is running or the socket has no timeout.
 	@:noCompletion private var __deadline:Float = 0.0;
+	// A handshake after the first is under way; how many the peer has begun.
+	@:noCompletion private var __renegotiating:Bool = false;
+	@:noCompletion private var __renegotiations:Int = 0;
 
 	@:noCompletion private static var __EMPTY:ByteBuffer = ByteBuffer.allocate(0);
 
@@ -289,33 +329,64 @@ class JvmSslSocket extends sys.net.Socket {
 			__onConnected();
 		}
 
-		// Anything a previous pass wrapped but could not send goes first. The
-		// peer is waiting on it, and wrapping more before it lands would put
-		// the records on the wire out of order.
-		if (__pendingOut && !__drain()) {
+		try {
+			__advance();
+		} catch (e:Dynamic) {
+			// A handshake that failed says why before the connection goes: the
+			// engine has an alert waiting for exactly that. Closed without
+			// it, the peer reported a network fault -- "Remote host terminated
+			// the handshake" -- in place of the certificate it was refused for.
+			if (!crossbyte._internal.socket.BlockedError.isBlocked(e) && !Std.isOfType(e, haxe.io.Eof)) {
+				__alert();
+			}
+			throw e;
+		}
+
+		__handshaken = true;
+	}
+
+	/**
+		Steps the handshake as far as it goes without waiting on the peer or on
+		the socket.
+
+		@throws haxe.io.Error.Blocked It needs more from the peer, or the socket
+		would not take what it had to send.
+	**/
+	@:noCompletion private function __advance():Void {
+		// Anything a previous pass made but could not send goes first: the
+		// peer is waiting on it, and records made after it would reach the
+		// wire before it.
+		if (!__flush()) {
 			throw haxe.io.Error.Blocked;
 		}
 
 		while (true) {
 			switch (__engine.getHandshakeStatus().name()) {
 				case "NEED_TASK":
-					var task = __engine.getDelegatedTask();
-					while (task != null) {
-						task.run();
-						task = __engine.getDelegatedTask();
-					}
+					__runTasks();
 
 				case "NEED_WRAP":
-					__wrap();
-					if (__pendingOut) {
+					if (!__wrapHandshake()) {
 						throw haxe.io.Error.Blocked;
 					}
 
 				case "NEED_UNWRAP", "NEED_UNWRAP_AGAIN":
-					__unwrap();
+					// Into the held plaintext: a handshake record decrypts to
+					// nothing, and application data arriving with the last
+					// flight is kept for the first read.
+					var produced:Int = __unwrapRecord(null, true, true);
+					if (produced == NOTHING) {
+						throw haxe.io.Error.Blocked;
+					}
+					if (produced == CLOSED) {
+						throw new haxe.io.Eof();
+					}
 
 				case "FINISHED", "NOT_HANDSHAKING":
-					__handshaken = true;
+					// An engine that has closed is not handshaking either.
+					if (__engine.isOutboundDone() || __engine.isInboundDone()) {
+						throw new haxe.io.Eof();
+					}
 					return;
 
 				case other:
@@ -384,11 +455,13 @@ class JvmSslSocket extends sys.net.Socket {
 			__engine.setSSLParameters(parameters);
 		}
 
+		// Nothing is allocated for the engine here: its buffers come from the
+		// thread's pool as reads and writes need them (see JvmSslBuffers).
 		var session = __engine.getSession();
-		__netIn = ByteBuffer.allocate(session.getPacketBufferSize());
-		__netOut = ByteBuffer.allocate(session.getPacketBufferSize());
-		__appIn = ByteBuffer.allocate(session.getApplicationBufferSize());
-		__appIn.flip();
+		var packet:Int = session.getPacketBufferSize();
+		var application:Int = session.getApplicationBufferSize();
+		__bufferSize = packet > application ? packet : application;
+		__outbound = new sys.thread.Mutex();
 
 		this.input = new JvmSslInput(this);
 		this.output = new JvmSslOutput(this);
@@ -458,58 +531,373 @@ class JvmSslSocket extends sys.net.Socket {
 		return context;
 	}
 
-	/** Wraps whatever the engine wants to send and tries to put it on the wire. **/
-	@:noCompletion private function __wrap():Void {
-		__netOut.clear();
-		var result = __engine.wrap(__EMPTY, __netOut);
+	// -------------------------------------------------------------- records
 
-		switch (result.getStatus().name()) {
-			case "BUFFER_OVERFLOW":
-				// A record larger than the size the session advertised.
-				__netOut = ByteBuffer.allocate(__netOut.capacity() * 2);
-				return;
-			case "CLOSED":
-				throw new haxe.io.Eof();
-			default:
+	@:noCompletion private function __runTasks():Void {
+		var task = __engine.getDelegatedTask();
+		while (task != null) {
+			task.run();
+			task = __engine.getDelegatedTask();
 		}
-
-		__netOut.flip();
-		__pendingOut = true;
-		__drain();
 	}
 
-	/** @return Whether everything pending reached the wire. **/
-	@:noCompletion private function __drain():Bool {
-		var socket:java.nio.channels.SocketChannel = cast this.channel;
+	/**
+		Sends what was made and not yet sent.
 
-		while (__netOut.hasRemaining()) {
-			var written = try {
-				socket.write(__netOut);
+		@return Whether nothing is left waiting for the socket.
+	**/
+	@:noCompletion private function __flush():Bool {
+		if (__netOut == null) {
+			return true;
+		}
+
+		__outbound.acquire();
+		var sent:Bool = try {
+			__flushLocked();
+		} catch (e:Dynamic) {
+			__outbound.release();
+			throw e;
+		}
+		__outbound.release();
+		return sent;
+	}
+
+	/** `__flush`, for a caller holding `__outbound`. **/
+	@:noCompletion private function __flushLocked():Bool {
+		var out = __netOut;
+		if (out == null) {
+			return true;
+		}
+
+		var socket:java.nio.channels.SocketChannel = cast this.channel;
+		while (out.hasRemaining()) {
+			var written:Int = try {
+				socket.write(out);
 			} catch (e:Dynamic) {
 				throw haxe.io.Error.Custom(e);
 			}
-
 			if (written <= 0) {
 				return false;
 			}
 		}
 
-		__pendingOut = false;
+		__netOut = null;
+		JvmSslBuffers.give(out, __bufferSize);
 		return true;
 	}
 
 	/**
-		Decrypts one record out of what is already buffered.
-
-		@return Whether it got anywhere. False means the buffer holds less than a
-		whole record and more has to come off the wire first.
+		Makes records from `source` and sends them, for a caller holding
+		`__outbound` with nothing left over from before. What the socket will
+		not take yet stays in `__netOut`, to go first next time.
 	**/
-	@:noCompletion private function __consume():Bool {
-		__netIn.flip();
-		__appIn.compact();
-		var result = __engine.unwrap(__netIn, __appIn);
-		__appIn.flip();
-		__netIn.compact();
+	@:noCompletion private function __wrapLocked(source:ByteBuffer):SSLEngineResult {
+		var out = JvmSslBuffers.take(__bufferSize);
+		var result:SSLEngineResult = null;
+
+		while (true) {
+			result = try {
+				__engine.wrap(source, out);
+			} catch (e:Dynamic) {
+				JvmSslBuffers.give(out, __bufferSize);
+				throw e;
+			}
+			if (result.getStatus().name() != "BUFFER_OVERFLOW") {
+				break;
+			}
+			// A record larger than the session said: made again with room.
+			JvmSslBuffers.give(out, __bufferSize);
+			out = ByteBuffer.allocate(out.capacity() * 2);
+		}
+
+		out.flip();
+		if (out.hasRemaining()) {
+			__netOut = out;
+			__flushLocked();
+		} else {
+			JvmSslBuffers.give(out, __bufferSize);
+		}
+		return result;
+	}
+
+	/**
+		Makes and sends what the handshake has to say.
+
+		@return Whether all of it reached the socket.
+	**/
+	@:noCompletion private function __wrapHandshake():Bool {
+		__outbound.acquire();
+		var sent:Bool = try {
+			if (!__flushLocked()) {
+				false;
+			} else {
+				var result = __wrapLocked(__EMPTY);
+				if (result.getStatus().name() == "CLOSED" && result.bytesProduced() == 0) {
+					throw new haxe.io.Eof();
+				}
+				__netOut == null;
+			}
+		} catch (e:Dynamic) {
+			__outbound.release();
+			throw e;
+		}
+		__outbound.release();
+		return sent;
+	}
+
+	/**
+		Sends what the engine has to say about a failure -- the alert naming it
+		-- ahead of the close. Best effort: it goes if the socket takes it now.
+	**/
+	@:noCompletion private function __alert():Void {
+		if (__engine == null || __outbound == null) {
+			return;
+		}
+
+		__outbound.acquire();
+		try {
+			if (__flushLocked()) {
+				var rounds:Int = 0;
+				while (rounds++ < 4) {
+					var result = __wrapLocked(__EMPTY);
+					if (result.bytesProduced() == 0 || __netOut != null) {
+						break;
+					}
+				}
+			}
+		} catch (_:Dynamic) {}
+		__outbound.release();
+	}
+
+	/**
+		Does what the engine asks for once a record is through: runs its tasks
+		and sends what it has to say. After the first handshake that is a
+		handshake the peer has begun again, or a TLS 1.3 key update to answer.
+
+		Nothing did, once the first handshake was over, so a TLS 1.2
+		renegotiation -- a server asking for a client certificate part way
+		through, a client asking for new keys -- waited for ever on a reply
+		that was never made, and neither side was told.
+	**/
+	@:noCompletion private function __service(result:SSLEngineResult):Void {
+		var status:String = result.getHandshakeStatus().name();
+
+		if (!__renegotiating && (status == "NOT_HANDSHAKING" || status == "FINISHED")) {
+			// The steady state: nothing to do, and nothing asked of the engine.
+			return;
+		}
+
+		if (__handshaken && !__renegotiating && status != "NOT_HANDSHAKING" && status != "FINISHED") {
+			__renegotiating = true;
+			__begunAgain();
+		}
+
+		while (true) {
+			switch (__engine.getHandshakeStatus().name()) {
+				case "NEED_TASK":
+					__runTasks();
+
+				case "NEED_WRAP":
+					if (!__wrapHandshake()) {
+						// The rest goes with the next read or write.
+						return;
+					}
+
+				case "NOT_HANDSHAKING":
+					__renegotiating = false;
+					return;
+
+				default:
+					// Waiting on the peer, whose next records carry it on.
+					return;
+			}
+		}
+	}
+
+	/**
+		A handshake after the first has begun. Carried through for a client,
+		whose server asked; for a server, only `RENEGOTIATIONS` times. A TLS 1.3
+		key update is not a handshake and is never counted.
+	**/
+	@:noCompletion private function __begunAgain():Void {
+		if (__engine.getUseClientMode()) {
+			return;
+		}
+
+		var protocol:String = try {
+			__engine.getSession().getProtocol();
+		} catch (_:Dynamic) {
+			null;
+		}
+		if (protocol == "TLSv1.3") {
+			return;
+		}
+
+		if (++__renegotiations > RENEGOTIATIONS) {
+			// Told rather than left waiting: the engine closes, and its
+			// close_notify goes if the socket takes it.
+			try {
+				__engine.closeOutbound();
+				__wrapHandshake();
+			} catch (_:Dynamic) {}
+			throw haxe.io.Error.Custom("TLS renegotiation refused: the peer asked for more than " + RENEGOTIATIONS);
+		}
+	}
+
+	/**
+		Decrypts one record, into `into` -- the caller's own buffer -- or, when
+		that is null, into the held plaintext.
+
+		What is held is tried before the socket is read. A single read
+		routinely carries several records -- a TLS 1.3 server sends its whole
+		flight in one go -- and going back to the socket before those are
+		decoded waits for bytes the peer has already sent, or for bytes it will
+		only send once answered: a client handshake used to sit exactly there
+		until the peer gave up.
+
+		@param mayWait For a blocking socket, whether to wait for the peer, up
+		to its timeout. A non-blocking socket never waits.
+		@param mayRead Whether to read the socket at all, rather than only
+		decode what is held.
+		@return Plaintext bytes produced -- 0 for a record that carried none,
+		as a handshake message or a session ticket does -- or `NOTHING` when no
+		whole record can be had without waiting, `TOO_SMALL` when `into` has
+		no room for this record's plaintext, or `CLOSED` when the peer has
+		closed.
+	**/
+	@:noCompletion private function __unwrapRecord(into:Null<ByteBuffer>, mayWait:Bool, mayRead:Bool):Int {
+		var answer:Int = NOTHING;
+
+		while (true) {
+			if (__inboundDone) {
+				answer = CLOSED;
+				break;
+			}
+
+			if (__netIn != null && __netIn.position() > 0) {
+				var produced:Int = try {
+					__unwrapHeld(into);
+				} catch (e:Dynamic) {
+					__settleIn();
+					throw e;
+				}
+				if (produced != UNDERFLOW) {
+					answer = produced;
+					break;
+				}
+			}
+
+			if (!mayRead) {
+				break;
+			}
+
+			var read:Int = try {
+				__fill(mayWait);
+			} catch (e:Dynamic) {
+				__settleIn();
+				throw e;
+			}
+			if (read < 0) {
+				// Closed under the stream, without close_notify: reported the
+				// same way, as the end of it.
+				__inboundDone = true;
+				answer = CLOSED;
+				break;
+			}
+			if (read == 0) {
+				break;
+			}
+		}
+
+		__settleIn();
+		return answer;
+	}
+
+	/** Gives back the ciphertext buffer once it holds nothing. **/
+	@:noCompletion private inline function __settleIn():Void {
+		var input = __netIn;
+		if (input != null && input.position() == 0) {
+			__netIn = null;
+			JvmSslBuffers.give(input, __bufferSize);
+		}
+	}
+
+	/**
+		Reads more ciphertext onto what is held.
+
+		@return Bytes read; 0 when none could be had without waiting; -1 at the
+		end of the stream.
+	**/
+	@:noCompletion private function __fill(mayWait:Bool):Int {
+		var socket:java.nio.channels.SocketChannel = cast this.channel;
+
+		if (socket.isBlocking()) {
+			if (!mayWait) {
+				return 0;
+			}
+
+			// A blocking read on the channel has no timeout of its own, so an
+			// https response that stopped arriving was waited for for ever. In
+			// a handshake the wait is what is left of the whole, so a peer that
+			// answers a byte at a time cannot stretch it.
+			var wait:Float = __timeout;
+			if (__deadline > 0) {
+				var left:Float = __deadline - haxe.Timer.stamp();
+				if (left <= 0) {
+					throw haxe.io.Error.Custom("Timeout");
+				}
+				if (left < wait) {
+					wait = left;
+				}
+			}
+			sys.net.Socket.__awaitReadable(socket, wait);
+		}
+
+		if (__netIn == null) {
+			__netIn = JvmSslBuffers.take(__bufferSize);
+		}
+
+		return try {
+			socket.read(__netIn);
+		} catch (e:Dynamic) {
+			throw haxe.io.Error.Custom(e);
+		}
+	}
+
+	/** One engine unwrap of what is held; see `__unwrapRecord`. **/
+	@:noCompletion private function __unwrapHeld(into:Null<ByteBuffer>):Int {
+		var held:Bool = into == null;
+		var dst:ByteBuffer = into;
+
+		if (held) {
+			if (__appIn == null) {
+				__appIn = JvmSslBuffers.take(__bufferSize);
+			} else {
+				// Read mode to write mode, what is unread kept at the front.
+				__appIn.compact();
+			}
+			dst = __appIn;
+		}
+
+		var input = __netIn;
+		input.flip();
+		var result:SSLEngineResult = null;
+		var failure:Dynamic = null;
+		try {
+			result = __engine.unwrap(input, dst);
+		} catch (e:Dynamic) {
+			failure = e;
+		}
+		input.compact();
+		if (held) {
+			__settleHeld();
+		}
+
+		if (failure != null) {
+			// The engine has an alert to send about it.
+			__alert();
+			throw failure;
+		}
 
 		switch (result.getStatus().name()) {
 			case "BUFFER_UNDERFLOW":
@@ -518,80 +906,80 @@ class JvmSslSocket extends sys.net.Socket {
 				// the read takes nothing, reports would-block, and the record
 				// never completes. Grown to what the session now says a record
 				// can be, or double, so the next read has room for the rest.
-				if (__netIn.position() == __netIn.capacity()) {
+				if (input.position() == input.capacity()) {
 					var wanted:Int = __engine.getSession().getPacketBufferSize();
-					var grown = ByteBuffer.allocate(wanted > __netIn.capacity() ? wanted : __netIn.capacity() * 2);
-					__netIn.flip();
-					grown.put(__netIn);
+					var grown = ByteBuffer.allocate(wanted > input.capacity() ? wanted : input.capacity() * 2);
+					input.flip();
+					grown.put(input);
 					__netIn = grown;
 				}
-				return false;
+				return UNDERFLOW;
 
 			case "BUFFER_OVERFLOW":
-				var grown = ByteBuffer.allocate(__appIn.capacity() * 2);
-				grown.put(__appIn);
+				if (!held) {
+					return TOO_SMALL;
+				}
+				// No room in the held plaintext for this record: made larger,
+				// with what it holds kept, and the record tried again.
+				var wanted:Int = __engine.getSession().getApplicationBufferSize();
+				var size:Int = dst.capacity() * 2;
+				var grown = ByteBuffer.allocate(wanted > size ? wanted : size);
+				if (__appIn != null) {
+					grown.put(__appIn);
+				}
 				grown.flip();
 				__appIn = grown;
-				return true;
+				return 0;
 
 			case "CLOSED":
-				throw new haxe.io.Eof();
+				__inboundDone = true;
+				// Its own close_notify in answer, if the socket takes it.
+				__service(result);
+				return CLOSED;
 
 			default:
-				return result.bytesConsumed() > 0 || result.bytesProduced() > 0;
+				__service(result);
+				return result.bytesProduced();
 		}
 	}
 
-	/**
-		Reads from the wire and decrypts whatever arrived complete.
+	/** The held plaintext back to read mode, and given back if empty. **/
+	@:noCompletion private inline function __settleHeld():Void {
+		var held = __appIn;
+		held.flip();
+		if (!held.hasRemaining()) {
+			__appIn = null;
+			JvmSslBuffers.give(held, __bufferSize);
+		}
+	}
 
-		What is already buffered is tried before the channel is touched. A single
-		read routinely carries several records -- a TLS 1.3 server sends its
-		whole flight, four thousand bytes of it, in one go -- and going back to
-		the channel before those are consumed blocks waiting for bytes the peer
-		has already sent, or worse, for bytes it is waiting on an answer from us
-		before it will send. That deadlock is what a client handshake looked
-		like: the flight arrived, one record of it was read, and the connection
-		then sat until the peer gave up and closed.
-	**/
-	@:noCompletion private function __unwrap():Void {
-		var socket:java.nio.channels.SocketChannel = cast this.channel;
-
-		if (__netIn.position() > 0 && __consume()) {
-			return;
+	/** Hands over held plaintext, as much as fits; gives the buffer back once empty. **/
+	@:noCompletion private function __takeHeld(buffer:haxe.io.Bytes, position:Int, length:Int):Int {
+		var held = __appIn;
+		if (held == null) {
+			return 0;
 		}
 
-		// A blocking read on the channel has no timeout of its own, so an
-		// https response that stopped arriving was waited for for ever. In a
-		// handshake the wait is what is left of the whole, so a peer that
-		// answers a byte at a time cannot stretch it.
-		var wait:Float = __timeout;
-		if (__deadline > 0) {
-			var left:Float = __deadline - haxe.Timer.stamp();
-			if (left <= 0) {
-				throw haxe.io.Error.Custom("Timeout");
-			}
-			if (left < wait) {
-				wait = left;
-			}
+		var take:Int = held.remaining();
+		if (take > length) {
+			take = length;
 		}
-		sys.net.Socket.__awaitReadable(socket, wait);
+		held.get(buffer.getData(), position, take);
 
-		var read = try {
-			socket.read(__netIn);
-		} catch (e:Dynamic) {
-			throw haxe.io.Error.Custom(e);
+		if (!held.hasRemaining()) {
+			__appIn = null;
+			JvmSslBuffers.give(held, __bufferSize);
 		}
+		return take;
+	}
 
-		if (read < 0) {
-			throw new haxe.io.Eof();
-		}
-
-		// Nothing arrived, or what arrived is still less than a whole record.
-		// Either way there is nothing to do until the peer sends more.
-		if (read == 0 || !__consume()) {
-			throw haxe.io.Error.Blocked;
-		}
+	override public function close():Void {
+		super.close();
+		// Whatever it still held goes with it rather than with the socket
+		// object, which a caller may keep.
+		__netIn = null;
+		__appIn = null;
+		__netOut = null;
 	}
 
 	/**
@@ -618,99 +1006,257 @@ class JvmSslSocket extends sys.net.Socket {
 			return true;
 		}
 
+		// The peer's close, decoded ahead of the read that reports it -- once,
+		// so that a socket nobody reads after its close is not reported
+		// readable on every pump, holding the select at zero and spinning the
+		// runtime.
+		if (__inboundDone) {
+			return !__eofTold;
+		}
+
+		if (__deferred != null) {
+			return true;
+		}
+
 		if (__netIn == null || __netIn.position() == 0) {
 			return false;
 		}
 
 		// Bytes present is not the same as bytes readable, and answering the
-		// first question got this wrong once already: a partial record sits in
-		// __netIn until the rest of it arrives, and reporting that as readable
+		// first question got this wrong once already: a partial record sits
+		// held until the rest of it arrives, and reporting that as readable
 		// pinned the registry's select to a zero timeout and span the pump.
-		// __consume decodes what is whole and says so, and only plaintext it
-		// actually produced counts -- a record can be consumed and yield none,
+		// What is whole is decoded, touching no socket, and only plaintext it
+		// actually produced counts -- a record can be decoded and yield none,
 		// which is what a TLS 1.3 session ticket is.
 		return try {
-			__consume() && __appIn.hasRemaining();
+			__unwrapRecord(null, false, false);
+			(__appIn != null && __appIn.hasRemaining()) || (__inboundDone && !__eofTold);
 		} catch (e:Dynamic) {
-			// A close arrived mid-record. False rather than true: a closed
-			// connection is readable to the kernel anyway, so select reports it
-			// on this same pass and the read path sees it either way. Answering
-			// true instead makes a socket nobody has deregistered yet claim to
-			// be readable on every pump, which holds the select at a zero
-			// timeout and spins the runtime for the rest of its life.
-			false;
+			// For the read the registry makes next, which reports it and
+			// closes; the read clears it, so it is answered once.
+			__deferred = e;
+			true;
 		}
 	}
 
-	/** Hands back decrypted bytes, filling from the wire when none are held. **/
+	/**
+		Hands back decrypted bytes: what is held, then every record that has
+		already arrived, for as much as the caller's buffer takes.
+
+		It stopped after one record, 16 KB, so the runtime read a large
+		upload a record per pump, and paid a select over every connection it
+		held for each: a 10 MB upload took 2.4 s beside 2,000 idle connections.
+
+		Records are decrypted straight into the caller's buffer where they fit,
+		with no copy and no buffer held for them. Only when nothing has been
+		read yet does a blocking socket wait for the peer.
+	**/
 	@:noCompletion private function __readApp(buffer:haxe.io.Bytes, position:Int, length:Int):Int {
 		if (!__handshaken) {
 			handshake();
 		}
 
-		// Until there is plaintext, or until __unwrap says there is nothing
-		// further to be had. A record is not always application data: after a
-		// TLS 1.3 handshake the peer sends session tickets, and consuming one
-		// advances the stream while producing nothing to hand back. Answering
-		// "would block" for those would report an idle connection on a socket
-		// with a response already arriving.
-		while (!__appIn.hasRemaining()) {
-			__unwrap();
+		if (__deferred != null) {
+			var failure:Dynamic = __deferred;
+			__deferred = null;
+			throw failure;
 		}
 
-		var take = __appIn.remaining();
-		if (take > length) {
-			take = length;
+		if (length <= 0) {
+			return 0;
 		}
 
-		__appIn.get(buffer.getData(), position, take);
-		return take;
+		// A reply the handshake still owes the peer goes first: it may be
+		// what the peer is waiting on before it sends anything more.
+		if (__netOut != null) {
+			__flush();
+		}
+
+		var total:Int = __takeHeld(buffer, position, length);
+		var direct:ByteBuffer = null;
+
+		try {
+			while (total < length) {
+				var mayWait:Bool = total == 0;
+				var produced:Int;
+
+				if (__appIn == null) {
+					if (direct == null) {
+						direct = ByteBuffer.wrap(buffer.getData(), position, length);
+					}
+					direct.position(position + total);
+					produced = __unwrapRecord(direct, mayWait, true);
+					if (produced > 0) {
+						total += produced;
+						continue;
+					}
+					if (produced == TOO_SMALL) {
+						// Too little room left for this record: it is held,
+						// and handed over as far as the room goes.
+						produced = __unwrapRecord(null, mayWait, true);
+					}
+				} else {
+					produced = __unwrapRecord(null, mayWait, true);
+				}
+
+				if (produced < 0) {
+					break;
+				}
+				total += __takeHeld(buffer, position + total, length - total);
+			}
+		} catch (e:Dynamic) {
+			if (total > 0) {
+				// What arrived before the failure is handed over first.
+				__deferred = e;
+				return total;
+			}
+			throw e;
+		}
+
+		if (total > 0) {
+			return total;
+		}
+		if (__inboundDone) {
+			__eofTold = true;
+			throw new haxe.io.Eof();
+		}
+		throw haxe.io.Error.Blocked;
 	}
 
-	/** Encrypts application bytes and sends them. **/
+	/** Encrypts application bytes and sends them: one record's worth a call. **/
 	@:noCompletion private function __writeApp(buffer:haxe.io.Bytes, position:Int, length:Int):Int {
 		if (!__handshaken) {
 			handshake();
 		}
 
-		if (__pendingOut && !__drain()) {
-			throw haxe.io.Error.Blocked;
+		if (length <= 0) {
+			return 0;
 		}
 
 		var source = ByteBuffer.wrap(buffer.getData(), position, length);
-		__netOut.clear();
-		var result = __engine.wrap(source, __netOut);
+		var consumed:Int = 0;
 
-		switch (result.getStatus().name()) {
-			case "BUFFER_OVERFLOW":
-				__netOut = ByteBuffer.allocate(__netOut.capacity() * 2);
-				throw haxe.io.Error.Blocked;
-			case "CLOSED":
-				throw new haxe.io.Eof();
-			default:
+		__outbound.acquire();
+		try {
+			// What was made before goes first, or the records would reach the
+			// wire out of order.
+			if (__flushLocked()) {
+				var rounds:Int = 0;
+				while (consumed == 0 && rounds++ < 8) {
+					var result = __wrapLocked(source);
+					consumed += result.bytesConsumed();
+
+					if (result.getStatus().name() == "CLOSED") {
+						throw new haxe.io.Eof();
+					}
+					if (__netOut != null) {
+						// The socket took less than was made.
+						break;
+					}
+
+					switch (result.getHandshakeStatus().name()) {
+						case "NEED_TASK":
+							__runTasks();
+						case "NEED_WRAP":
+						// Handshake records went ahead of the data; round
+						// again for the data.
+						default:
+							if (result.bytesProduced() == 0) {
+								// The engine is waiting on the peer.
+								break;
+							}
+					}
+				}
+			}
+		} catch (e:Dynamic) {
+			__outbound.release();
+			throw e;
 		}
+		__outbound.release();
 
-		__netOut.flip();
-		__pendingOut = true;
-
-		if (!__drain() && result.bytesConsumed() == 0) {
+		if (consumed == 0) {
 			throw haxe.io.Error.Blocked;
 		}
+		return consumed;
+	}
+}
 
-		return result.bytesConsumed();
+/**
+	A thread's spare engine buffers.
+
+	A connection takes one when a read or a write needs it and gives it back
+	once it empties, so a connection that is idle -- nearly every one, on a
+	busy server -- holds none. Each used to hold three for its whole life,
+	some 50 KB a connection: half a gigabyte for 10,000 idle HTTPS
+	connections. A runtime reads and writes all its connections on its own
+	thread, so the pool is kept per thread and needs no lock; it keeps a few,
+	as many as one call takes at once. Buffers of another size -- grown for a
+	record larger than the session said -- are not kept.
+**/
+@:noCompletion private class JvmSslBuffers {
+	private static inline var KEEP:Int = 4;
+	private static var __local:JThreadLocal = new JThreadLocal();
+
+	private var __size:Int = 0;
+	private var __count:Int = 0;
+	private var __spare:Array<ByteBuffer> = [];
+
+	private function new() {}
+
+	private static function __mine():JvmSslBuffers {
+		var existing:Dynamic = __local.get();
+		if (existing == null) {
+			existing = new JvmSslBuffers();
+			__local.set(existing);
+		}
+		return cast existing;
+	}
+
+	/** An empty buffer of `size` bytes, in write mode. **/
+	public static function take(size:Int):ByteBuffer {
+		var mine = __mine();
+		if (size == mine.__size && mine.__count > 0) {
+			var buffer = mine.__spare[--mine.__count];
+			mine.__spare[mine.__count] = null;
+			return buffer;
+		}
+		return ByteBuffer.allocate(size);
+	}
+
+	/** `buffer`, finished with; kept if it is `size` bytes and there is room. **/
+	public static function give(buffer:ByteBuffer, size:Int):Void {
+		if (buffer.capacity() != size) {
+			return;
+		}
+
+		var mine = __mine();
+		if (size != mine.__size) {
+			if (mine.__count > 0) {
+				return;
+			}
+			mine.__size = size;
+		}
+
+		if (mine.__count < KEEP) {
+			buffer.clear();
+			mine.__spare[mine.__count++] = buffer;
+		}
 	}
 }
 
 /** Plaintext in; ciphertext off the wire. **/
 private class JvmSslInput extends haxe.io.Input {
 	private var socket:JvmSslSocket;
+	// Kept: a reader taking a line a byte at a time, as the HTTP client
+	// does, allocated one for every byte.
+	private var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
 
 	public function new(socket:JvmSslSocket) {
 		this.socket = socket;
 	}
 
 	override public function readByte():Int {
-		var one = haxe.io.Bytes.alloc(1);
 		if (@:privateAccess socket.__readApp(one, 0, 1) < 1) {
 			throw haxe.io.Error.Blocked;
 		}
@@ -725,13 +1271,13 @@ private class JvmSslInput extends haxe.io.Input {
 /** Plaintext out; ciphertext onto the wire. **/
 private class JvmSslOutput extends haxe.io.Output {
 	private var socket:JvmSslSocket;
+	private var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
 
 	public function new(socket:JvmSslSocket) {
 		this.socket = socket;
 	}
 
 	override public function writeByte(value:Int):Void {
-		var one = haxe.io.Bytes.alloc(1);
 		one.set(0, value & 0xFF);
 		@:privateAccess socket.__writeApp(one, 0, 1);
 	}
