@@ -42,6 +42,11 @@ import haxe.io.Bytes;
 	the usual way -- never on a runtime's own thread.
 
 	```haxe
+	import crossbyte.db.AsyncDatabase;
+	import crossbyte.db.ConnectionPool;
+	import crossbyte.db.mongodb.bson.ObjectId;
+
+	// Given secret:String, id:ObjectId.
 	var pool = new ConnectionPool<MongoConnection>({
 		factory: () -> {
 			var c = new MongoConnection();
@@ -318,6 +323,7 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		text, so a date stays a date and a value cannot change the command.
 
 		```haxe
+		// Given connection:MongoConnection, sid:String.
 		for (doc in connection.request('{"find": "sessions", "filter": {"_id": :sid}}', ["sid" => sid]))
 			trace(doc);
 		```

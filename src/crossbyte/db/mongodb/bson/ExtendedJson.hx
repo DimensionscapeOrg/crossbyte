@@ -25,6 +25,7 @@ import haxe.io.Bytes;
 	of the command it is bound into.
 
 	```haxe
+	// Given params:Map<String, Dynamic>.
 	var command = ExtendedJson.parse('{"find": "sessions", "filter": {"_id": :sid}}', name -> params.get(name));
 	```
 **/

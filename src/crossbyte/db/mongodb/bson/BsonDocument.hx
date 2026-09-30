@@ -11,6 +11,9 @@ package crossbyte.db.mongodb.bson;
 	to put first, and so does an index made from those keys. Use this there:
 
 	```haxe
+	import crossbyte.db.mongodb.MongoConnection;
+
+	// Given connection:MongoConnection.
 	var byName = new BsonDocument().add("lastName", 1).add("firstName", 1);
 	connection.find("people", {city: "Oslo"}, {sort: byName});
 	```
