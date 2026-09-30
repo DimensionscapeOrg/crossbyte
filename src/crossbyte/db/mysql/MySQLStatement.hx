@@ -3,6 +3,7 @@ package crossbyte.db.mysql;
 // Not built for any JavaScript target (Node included, which has no threads): a database driver needs a socket or a file, and credentials do not belong in a page.
 #if !js
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.SQLError;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql._internal.ParamBinder;
@@ -22,18 +23,26 @@ class MySQLStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 	public var itemClass:Class<Dynamic>;
 	/**
-		Named values substituted into `text` by `execute()`.
+		Named values substituted into `text` by `execute()`, as `:name`, each
+		written as the MySQL literal for its type:
 
-		Substituted, not bound: the value becomes part of the statement, so it is
-		only as safe as `quote()` makes it and cannot carry a NUL byte — a blob
-		written this way is truncated at its first zero with nothing reported.
+		- `null` as `NULL`, where the placeholder used to stay in the SQL;
+		- `Int`, `Float` and `haxe.Int64` as numbers, so `LIMIT :n` works --
+		  a number went out quoted, and MySQL refuses `LIMIT '50'`; a `Float`
+		  that is NaN or infinite has no literal and throws `ArgumentError`;
+		- `Bool` as `TRUE` or `FALSE`;
+		- `haxe.io.Bytes` as a hex literal, `X'00ff...'`, which carries a NUL
+		  byte, where a string is cut at its first one;
+		- `Date` as its UTC fields, as the driver reads DATETIME columns back;
+		- anything else as a string, quoted by the connection's `quote()`,
+		  which follows the session's `NO_BACKSLASH_ESCAPES`.
 
-		Unlike `PostgresStatement`, there is no bound alternative here: this driver
-		runs on Haxe's `sys.db.Mysql`, whose `Connection` exposes `request`,
-		`escape` and `quote` and no parameter binding at all. Binding would need a
-		native libmysqlclient bridge of the kind the Postgres driver has.
+		Substituted, not bound: the text is scanned for placeholders outside
+		literals, identifiers and comments -- with backslash escapes read as
+		the session reads them -- and the value spliced in. There is no bound
+		alternative: the client speaks the text protocol only.
 	**/
-	public var parameters(default, null):FieldStruct<String>;
+	public var parameters(default, null):FieldStruct<Dynamic>;
 	public var sqlConnection(get, set):MySQLConnection;
 	public var text:String;
 
@@ -137,16 +146,84 @@ class MySQLStatement extends EventDispatcher {
 	}
 
 	@:noCompletion private function __applyParameters(query:String):String {
-		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substitute(query, function(name:String):Null<Dynamic> {
-			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
-		}, __escapeValue);
+		var params:FieldStruct<Dynamic> = parameters;
+		// MySQL's default is backslash escapes on, and the scan is safe that
+		// way round: reading an escape the server does not honour leaves a
+		// placeholder unsubstituted, a loud failure, where missing one it does
+		// honour substitutes inside what the server reads as a literal.
+		var backslashes:Bool = __sqlConnection != null ? __sqlConnection.__backslashEscapes() : true;
+
+		return ParamBinder.substituteWith(query, name -> FieldStruct.exists(params, name), name -> FieldStruct.get(params, name), __literal,
+			backslashes);
 	}
 
-	@:noCompletion private function __escapeValue(value:Dynamic):String {
-		var sb:StringBuf = new StringBuf();
-		__connection.addValue(sb, value);
-		return sb.toString();
+	/** A parameter's value as a MySQL literal; see `parameters`. **/
+	@:noCompletion private function __literal(value:Dynamic):String {
+		if (value == null) {
+			return "NULL";
+		}
+
+		if (Std.isOfType(value, Bool)) {
+			return value ? "TRUE" : "FALSE";
+		}
+
+		if (Std.isOfType(value, Int)) {
+			return Std.string(value);
+		}
+
+		// Before Float: an Int64 passes for one on cpp and the jvm, and
+		// printed as a Float it loses everything past 2^53.
+		if (haxe.Int64.isInt64(value)) {
+			var wide:haxe.Int64 = value;
+			return haxe.Int64.toStr(wide);
+		}
+
+		if (Std.isOfType(value, Float)) {
+			var number:Float = value;
+
+			if (Math.isNaN(number) || !Math.isFinite(number)) {
+				throw new ArgumentError("MySQL has no literal for " + number);
+			}
+
+			return Std.string(number);
+		}
+
+		if (Std.isOfType(value, haxe.io.Bytes)) {
+			var bytes:haxe.io.Bytes = value;
+			return "X'" + bytes.toHex() + "'";
+		}
+
+		if (Std.isOfType(value, Date)) {
+			return "'" + __utc(value) + "'";
+		}
+
+		return __quote(Std.string(value));
+	}
+
+	@:noCompletion private function __quote(text:String):String {
+		if (__sqlConnection != null) {
+			return __sqlConnection.quote(text);
+		}
+
+		return __connection.quote(text);
+	}
+
+	/** `YYYY-MM-DD hh:mm:ss[.mmm]`, in UTC. **/
+	@:noCompletion private static function __utc(date:Date):String {
+		var time:Float = date.getTime();
+		var millis:Int = Std.int(((time % 1000.0) + 1000.0) % 1000.0);
+		var text:String = date.getUTCFullYear() + "-" + __two(date.getUTCMonth() + 1) + "-" + __two(date.getUTCDate()) + " "
+			+ __two(date.getUTCHours()) + ":" + __two(date.getUTCMinutes()) + ":" + __two(date.getUTCSeconds());
+
+		if (millis != 0) {
+			text += "." + StringTools.lpad(Std.string(millis), "0", 3);
+		}
+
+		return text;
+	}
+
+	@:noCompletion private static inline function __two(n:Int):String {
+		return n < 10 ? "0" + n : Std.string(n);
 	}
 
 	public function next(prefetch:Int = -1):Void {

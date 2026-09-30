@@ -69,6 +69,30 @@ class MySQLNativeWireTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testTypedParametersReachTheServerExactly():Void {
+		// Strings only, before: no NULL, numbers quoted, bytes cut at a NUL.
+		__server.start();
+		var connection:MySQLConnection = __open();
+		var statement:MySQLStatement = new MySQLStatement();
+		statement.sqlConnection = connection;
+		statement.text = "INSERT INTO blobs (id, owner, data, at, note) VALUES (:id, :owner, :data, :at, :note)";
+		statement.parameters.id = haxe.Int64.parseString("1234567890123456789");
+		statement.parameters.owner = null;
+		statement.parameters.data = haxe.io.Bytes.ofHex("00ff0027");
+		statement.parameters.at = Date.fromTime(-149040000000.0);
+		statement.parameters.note = "Zoë's";
+		statement.execute();
+
+		Assert.equals("INSERT INTO blobs (id, owner, data, at, note) VALUES (1234567890123456789, NULL, X'00ff0027', '1965-04-12 00:00:00', 'Zoë\\'s')",
+			__server.lastQuery());
+
+		// And the connection quotes as the session escapes.
+		Assert.equals("'a\\'b'", connection.quote("a'b"));
+		connection.request("SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'");
+		Assert.equals("'a''b\\'", connection.quote("a'b\\"));
+		connection.close();
+	}
+
 	public function testAServerThatNeverGreetsTimesOut():Void {
 		// The handshake waited 50 seconds, and a TCP connect as long as the
 		// operating system cared to.

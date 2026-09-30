@@ -12,7 +12,8 @@ package crossbyte.db.sql._internal;
  * - A placeholder token is `:` followed by an identifier `[A-Za-z_][A-Za-z0-9_]*`.
  * - Tokens are matched WHOLE: `:user` must not match the `:user` prefix of `:username`.
  * - A placeholder whose name has no matching parameter (`lookup` returns `null`)
- *   is left verbatim.
+ *   is left verbatim. `substituteWith` tells a parameter that is absent from
+ *   one whose value is null, which it substitutes.
  * - Occurrences anywhere the surrounding text is not plain SQL are left
  *   untouched: single-quoted literals, double-quoted and backtick-quoted
  *   identifiers, `--` line comments and `/* *\/` block comments.
@@ -30,21 +31,19 @@ package crossbyte.db.sql._internal;
  * value containing a newline ends the comment and everything after it becomes
  * statement text, no matter how correctly the value was escaped.
  *
+ * - **Backslash escapes inside literals**, when the caller says the server
+ *   honours them: MySQL does unless `NO_BACKSLASH_ESCAPES` is set, and
+ *   Postgres does not with `standard_conforming_strings` on. `substitute`
+ *   ends a literal at the first undoubled quote, so against MySQL a literal
+ *   holding a backslash-escaped quote left the scanner and the server
+ *   disagreeing about where the string ended -- in one direction a
+ *   placeholder was left unsubstituted, in the other one was substituted at a
+ *   point the server still read as inside a literal. `substituteWith` takes
+ *   `backslashEscapes`, which the MySQL driver sets from the session's mode.
+ *
  * Still not modelled, and named here rather than left to be discovered:
  *
- * - **Backslash escapes inside literals.** MySQL honours them unless
- *   `NO_BACKSLASH_ESCAPES` is set; Postgres does not, with
- *   `standard_conforming_strings` on. This scanner ends a literal at the first
- *   undoubled quote, so against MySQL a literal containing a backslash-escaped
- *   quote leaves the scanner and the server disagreeing about where the string
- *   ends -- in one direction a placeholder is left unsubstituted, in the other
- *   one is substituted at a point the server still considers inside a literal.
  * - **Postgres dollar-quoting** (`$$ ... $$`, `$tag$ ... $tag$`).
- *
- * Both need the scanner to know which dialect it is reading, which it
- * deliberately does not -- it is shared by four drivers. Closing them means
- * giving `substitute` a dialect argument, which is a change to every caller
- * rather than to this scan.
  */
 class ParamBinder {
 	// Character codes, spelled out rather than written as escapes, because the
@@ -57,6 +56,7 @@ class ParamBinder {
 	private static inline var SLASH:Int = 47; // /
 	private static inline var STAR:Int = 42; // *
 	private static inline var NEWLINE:Int = 10;
+	private static inline var BACKSLASH:Int = 92;
 
 	/**
 	 * @param text    The source SQL/command text containing `:name` placeholders.
@@ -67,6 +67,24 @@ class ParamBinder {
 	 * @return The substituted text.
 	 */
 	public static function substitute(text:String, lookup:String->Null<Dynamic>, escape:Dynamic->String):String {
+		return substituteWith(text, name -> lookup(name) != null, lookup, escape, false);
+	}
+
+	/**
+	 * `substitute`, for a caller whose values can be null and whose dialect
+	 * escapes quotes with a backslash.
+	 *
+	 * @param has     Whether a parameter of that name exists. One that does is
+	 *                substituted even when `get` gives `null` -- as `NULL`, or
+	 *                whatever `escape` makes of null -- where `substitute`
+	 *                left it in the SQL as `:name`.
+	 * @param get     The raw value of a parameter `has` said exists.
+	 * @param escape  As for `substitute`.
+	 * @param backslashEscapes Whether a backslash inside a quoted run escapes
+	 *                the character after it, as in MySQL's default mode.
+	 */
+	public static function substituteWith(text:String, has:String->Bool, get:String->Null<Dynamic>, escape:Dynamic->String,
+			backslashEscapes:Bool):String {
 		if (text == null || text == "") {
 			return text;
 		}
@@ -125,6 +143,14 @@ class ParamBinder {
 			if (quote != 0) {
 				out.addChar(c);
 
+				if (backslashEscapes && c == BACKSLASH && i + 1 < len) {
+					// The next character is escaped, a quote included, and
+					// does not end the run.
+					out.addChar(next);
+					i += 2;
+					continue;
+				}
+
 				if (c == quote) {
 					if (next == quote) {
 						// A doubled quote stands for the character itself and
@@ -170,9 +196,8 @@ class ParamBinder {
 					j++;
 				}
 				var name:String = text.substring(i + 1, j);
-				var raw:Null<Dynamic> = lookup(name);
-				if (raw != null) {
-					out.add(escape(raw));
+				if (has(name)) {
+					out.add(escape(get(name)));
 				} else {
 					out.add(text.substring(i, j));
 				}

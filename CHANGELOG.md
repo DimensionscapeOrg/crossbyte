@@ -5,6 +5,11 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `MySQLConnection.escape()` and `quote()`, which SQLite's and Postgres's
+  connections had and MySQL's did not; they escape by the session's
+  current rules, `NO_BACKSLASH_ESCAPES` included. `ParamBinder.substituteWith`,
+  which substitutes a parameter set to `null` and can read backslash escapes
+  inside literals as MySQL does.
 - Limits and cancellation for the native MySQL client, which had neither:
   a slow statement or a server gone mid-query held the calling thread and
   its connection for five hours. `MySQLConfig.connectTimeout` (10 s when
@@ -825,6 +830,17 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `MySQLStatement.parameters` is a `FieldStruct<Dynamic>`, and each value is
+  written as the MySQL literal for its type: `null` as `NULL` (the
+  placeholder used to stay in the SQL), numbers unquoted so `LIMIT :n`
+  works (MySQL refuses `LIMIT '50'`), `haxe.Int64` exactly, `Bool` as
+  `TRUE`/`FALSE`, `haxe.io.Bytes` as a hex literal that carries NUL bytes
+  (a string was cut at its first), a `Date` as its UTC fields, and anything
+  else quoted as a string. A NaN or infinite `Float` throws
+  `ArgumentError`. What to change: code that set numbers as strings to get
+  them quoted keeps working; set them as numbers where the column is
+  numeric, and set dates as `Date` rather than formatted strings, which
+  were written in local time.
 - `MySQLConnection.request()` throws a `MySQLError` where it threw the
   driver's string, and a MySQL error's message no longer begins with the
   statement. The native client prefixed the whole SQL text, values
