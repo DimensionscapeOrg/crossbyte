@@ -164,16 +164,27 @@ class MySQLDriverTest extends utest.Test {
 	}
 
 	public function testAFailedOpenIsAnIOError():Void {
-		// Nothing listens on port 1. On the jvm there is not even a driver to
+		// A port nothing listens on. On the jvm there is not even a driver to
 		// try it with, and the ClassNotFoundException that says so became a
 		// ClassCastException on its way into IOError.
+		//
+		// Obtained rather than assumed: this was port 1, which is closed
+		// only by convention, and on a machine where something listens there
+		// the open met a server that was not MySQL -- a failure the hl client
+		// cannot see coming, so HashLink's double free below followed.
+		var vacant:sys.net.Socket = new sys.net.Socket();
+		vacant.bind(new sys.net.Host("127.0.0.1"), 0);
+		vacant.listen(1);
+		var port:Int = vacant.host().port;
+		vacant.close();
+
 		var connection:MySQLConnection = new MySQLConnection();
 		var thrown:Dynamic = null;
 
 		try {
 			connection.open({
 				host: "127.0.0.1",
-				port: 1,
+				port: port,
 				user: "app",
 				password: "secret",
 				database: "app",
@@ -185,6 +196,16 @@ class MySQLDriverTest extends utest.Test {
 
 		Assert.isTrue(Std.isOfType(thrown, IOError), "not an IOError: " + Std.string(thrown));
 		Assert.isFalse(connection.connected);
+
+		#if hl
+		// HashLink's mysql library frees a connection that failed to open,
+		// and leaves it to the collector with a finalizer that frees it
+		// again. The next major collection did, into memory the heap had
+		// since given to someone else, and the hl suite died of heap
+		// corruption some four hundred cases later. Collecting here makes a
+		// double free this case's own.
+		hl.Gc.major();
+		#end
 	}
 
 	public function testParametersAreWrittenAsTheirTypes():Void {
@@ -200,12 +221,18 @@ class MySQLDriverTest extends utest.Test {
 		statement.parameters.yes = true;
 		statement.parameters.big = haxe.Int64.parseString("9007199254740993");
 		statement.parameters.blob = haxe.io.Bytes.ofHex("0001ff");
-		statement.parameters.when = Date.fromTime(1790685296250.0);
+		var when:Date = Date.fromTime(1790685296250.0);
+		statement.parameters.when = when;
 		statement.parameters.text = "it's";
 		statement.parameters.limit = 50;
 		statement.execute();
 
-		Assert.equals("INSERT INTO t VALUES (NULL, 42, 1.5, TRUE, 9007199254740993, X'0001ff', '2026-09-29 12:34:56.250', 'it\\'s', :missing) LIMIT 50",
+		// hl's and neko's Date keep whole seconds, so the .250 is gone before
+		// the statement sees it; the milliseconds are written where the Date
+		// has them.
+		var fraction:String = when.getTime() % 1000 == 250 ? ".250" : "";
+		Assert.equals("INSERT INTO t VALUES (NULL, 42, 1.5, TRUE, 9007199254740993, X'0001ff', '2026-09-29 12:34:56" + fraction
+			+ "', 'it\\'s', :missing) LIMIT 50",
 			wire.sent[wire.sent.length - 1]);
 
 		statement.parameters.ratio = Math.NaN;

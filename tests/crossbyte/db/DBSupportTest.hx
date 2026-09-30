@@ -323,22 +323,28 @@ class DBSupportTest extends utest.Test {
 	}
 	#end
 
-	#if !cpp
 	public function testAFailedSQLiteOpenIsAnIOError():Void {
-		// Off cpp there is no SQLite to open: on the jvm the JDBC driver is
-		// missing, and the ClassNotFoundException that says so was handed to
-		// IOError where a String belongs -- a ClassCastException instead.
+		// A failed open is an IOError, whatever failed it. Where there is no
+		// SQLite -- the jvm without its JDBC driver, eval -- that is the
+		// missing driver: on the jvm the ClassNotFoundException that says so
+		// was handed to IOError where a String belongs, a ClassCastException
+		// instead. Where there is one, it is a database in a directory that
+		// does not exist. This opened `null` once, which fails only where
+		// there is no SQLite; hl and neko have one, and opened the in-memory
+		// database `null` names.
+		var directory:String = Path.join([Sys.getCwd(), "export", "db-support-absent"]);
+		Assert.isFalse(FileSystem.exists(directory), directory + " exists, so the open below may not fail");
+
 		var thrown:Dynamic = null;
 
 		try {
-			new SQLiteConnection().open(null, SQLiteMode.CREATE);
+			new SQLiteConnection().open(Path.join([directory, "absent.sqlite"]), SQLiteMode.CREATE);
 		} catch (e:Dynamic) {
 			thrown = e;
 		}
 
 		Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.IOError), "not an IOError: " + Std.string(thrown));
 	}
-	#end
 
 	private static function throwsDynamic(fn:Void->Void):Bool {
 		try {
