@@ -1234,15 +1234,19 @@ static function BrotliDecompressedSize(encoded_size:Int,
 									  num_literal_htrees, context_map, s);
 			s.num_literal_htrees = num_literal_htrees[0]; s.context_map = context_map[0];s.context_map_off = 0;
 
+			// Only a map that decoded may be scanned. The C this came from
+			// scanned first and checked after, which read a map that was
+			// never allocated whenever the input ran out before it: null,
+			// and natively a crash rather than an exception.
+			if (result != BROTLI_RESULT_SUCCESS) continue;
+
 			s.trivial_literal_context = 1;
 			for (i in 0...(s.num_block_types[0] << kLiteralContextBits)) {
 			  if (s.context_map[i] != i >> kLiteralContextBits) {
 				s.trivial_literal_context = 0;
-				continue;
+				break;
 			  }
 			}
-
-			if (result != BROTLI_RESULT_SUCCESS) continue;
 			s.state = BROTLI_STATE_CONTEXT_MAP_2;
 			/* No break, continue to next state */
 		  }
