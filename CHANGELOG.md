@@ -5,6 +5,14 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.ds.IntPriorityQueue`: a priority queue of `Int` ids, each held
+  with a priority given when it is enqueued, lowest first, equals in the
+  order they came. `PriorityQueue<Int>` does not compile, its elements being
+  objects, so a matchmaker keyed on player ids had no queue to use. It calls
+  no comparator and looks nothing up while sifting, so it allocates nothing
+  per operation on any target, and it keeps its own id table: the jvm's
+  `IntMap` visits every bucket to find a missing key, which made 50,000 ids
+  take a second there rather than 10 ms.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -1220,6 +1228,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PriorityQueue` serves equal priorities first come, first served. Each
+  dequeue moved the newest element to the root and a strict comparison
+  never sank it past an equal, so the newest was served next: a matchmaker
+  holding one priority left 29 of its first 30 tickets queued at tick
+  20,000, and 5,969 of 5,970 tickets were served out of turn. Ties now go
+  by the order elements were enqueued; `update` keeps an element's place.
+  The heap also sifts slot numbers rather than rewriting its element map at
+  every level an element moves, which makes it about two and a half times
+  faster on the jvm and seven on eval.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
