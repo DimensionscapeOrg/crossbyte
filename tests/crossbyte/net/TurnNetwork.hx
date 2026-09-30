@@ -68,10 +68,23 @@ class TurnNetwork {
 		A client whose datagrams leave from `clientAddress` and a port of its
 		own, pointed at `server`, the relay's address unless a test names
 		something else.
+
+		@param sharePort The port an earlier client used, for one that takes
+		over its socket; a new port when 0.
 	**/
-	public function client(?server:String, username:String = "user", password:String = "secret", clientAddress:String = "192.0.2.10"):TurnClient {
+	public function client(?server:String, username:String = "user", password:String = "secret", clientAddress:String = "192.0.2.10",
+			sharePort:Int = 0):TurnClient {
 		var made = new TurnClient(server != null ? server : relayAddress, relayPort, username, password);
-		var port:Int = __nextPort++;
+		var port:Int = sharePort > 0 ? sharePort : __nextPort++;
+
+		// A socket delivers to whoever holds it now.
+		if (sharePort > 0) {
+			for (entry in __clients.copy()) {
+				if (entry.port == sharePort && entry.address == clientAddress) {
+					__clients.remove(entry);
+				}
+			}
+		}
 		__clients.push({client: made, address: clientAddress, port: port});
 
 		made.onSend = function(payload:ByteArray, address:String, toPort:Int):Void {

@@ -929,6 +929,69 @@ class TurnClientTest extends utest.Test {
 	}
 
 	// ------------------------------------------------------------------
+	// Closing
+	// ------------------------------------------------------------------
+
+	/**
+		Closing a client frees its allocation on the relay.
+
+		No Refresh with a lifetime of zero was sent, so the relay held the
+		allocation and its port for as long as it had been granted, up to an
+		hour on coturn. The next client on the same socket was refused with
+		437, since the 5-tuple still had one, and an application that
+		reconnected ran into the relay's quota.
+	**/
+	public function testClosingFreesTheAllocation():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+		Assert.equals(1, network.relay.allocations);
+
+		client.close();
+		network.advance(0.1);
+
+		Assert.equals(1, network.relay.count("deallocated"), "closing left the allocation on the relay");
+		Assert.equals(0, network.relay.allocations);
+		Assert.equals(0, network.relay.refreshLifetimes[network.relay.refreshLifetimes.length - 1]);
+
+		// So the socket can be used again.
+		var again = network.client(null, "user", "secret", "192.0.2.10", network.portOf(client));
+		var failure:String = null;
+		again.allocated.then(_ -> {}, error -> failure = error);
+		again.allocate(network.now);
+		network.run(() -> again.active || failure != null, 5);
+
+		Assert.isTrue(again.active, "a new client on the same socket could not allocate: " + failure);
+	}
+
+	/**
+		Closing mid-allocation frees whatever the relay grants the request
+		already sent, which would otherwise be held until it expired.
+	**/
+	public function testClosingDuringTheAllocationFreesWhatWasGranted():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.3;
+
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+
+		// The signed Allocate is out, and not yet answered.
+		network.run(() -> network.sentOfType(StunMessage.ALLOCATE_REQUEST).length >= 2, 5);
+		network.advance(0.05);
+		client.close();
+		network.advance(2);
+
+		Assert.equals(0, network.relay.allocations, "an allocation granted to a request sent before close() was left on the relay");
+	}
+
+	// ------------------------------------------------------------------
 	// Who is believed
 	// ------------------------------------------------------------------
 
