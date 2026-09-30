@@ -25,7 +25,7 @@ class Brotli {
 
 	public static function compress(bytes:Bytes, quality:Int = 4):Bytes {
 		if (quality < 0 || quality > 11) {
-			throw "Brotli quality must be between 0 and 11";
+			throw new crossbyte.errors.ArgumentError("Brotli quality must be between 0 and 11, not " + quality);
 		}
 
 		#if crossbyte_brotli_native
@@ -42,19 +42,27 @@ class Brotli {
 		       limit. Brotli ratios have no ceiling, so anything decoding a
 		       stream it did not author wants to name one.
 
-		The pure decoder stops partway, inside the function every decoded byte
-		passes through. The native one cannot: it returns a finished buffer, so
-		its result is measured after the fact and the allocation has already
-		happened. That path is opt-in and off by default.
+		The pure decoder refuses a meta-block that announces more than that as
+		its header is read, and otherwise stops partway, where every decoded
+		byte passes through. Its memory follows its output: the ring buffer
+		grows with what has been decoded rather than being allocated at the
+		window size the stream asks for.
+
+		The native one, from `crossbyte-brotli` with `-D crossbyte_brotli_native`,
+		is handed the limit as well: it is given room for that much output and
+		stopped when it asks for more, and its own allocations are held to what
+		output within the limit could need, so a meta-block announcing far more
+		is refused at its header there too. It used to decode the whole stream
+		and leave the measuring to this function, afterwards.
+
+		@throws crossbyte.errors.IOError The data is not a valid Brotli stream.
+		@throws crossbyte.errors.RangeError It decodes past `maxOutputSize`.
 	**/
 	public static function decompress(bytes:Bytes, maxOutputSize:UInt = 0):Bytes {
 		#if crossbyte_brotli_native
 		if (NativeBrotli.isAvailable()) {
-			var native:Bytes = NativeBrotli.decompress(bytes);
-			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
-				throw new haxe.Exception("Brotli stream exceeded " + maxOutputSize + " bytes");
-			}
-			return native;
+			// It stops at the limit itself, and throws the same two errors.
+			return NativeBrotli.decompress(bytes, maxOutputSize);
 		}
 		#end
 

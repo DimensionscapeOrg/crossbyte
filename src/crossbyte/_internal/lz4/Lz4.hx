@@ -1,12 +1,18 @@
 package crossbyte._internal.lz4;
 
-import crossbyte.io.ByteArray;
+import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 import haxe.io.Bytes;
 import haxe.ds.Vector;
 #if crossbyte_lz4_native
 import crossbyte.lz4.NativeLz4;
 #end
 
+/**
+	The LZ4 block format: what `ByteArray.compress(LZ4)` writes, one block and
+	nothing around it. `Lz4Frame` is the frame format, which carries these
+	blocks with sizes and checksums.
+**/
 class Lz4 {
 	/*
 	 * LZ4 block format constants.
@@ -16,17 +22,13 @@ class Lz4 {
 	 * start within the last MF_LIMIT, which is what lets a decoder copy in
 	 * wide steps without reading past the end.
 	 */
-	private static final MIN_MATCH:Int = 4;
-	private static final LAST_LITERALS:Int = 5;
-	private static final MF_LIMIT:Int = 12;
-	private static final MAX_OFFSET:Int = 0xFFFF;
-	private static final MAX_HASH_SIZE:Int = 1 << 16;
-	private static final MIN_HASH_SIZE:Int = 256;
-	private static final NIL:Int = -1;
-
-	@:noCompletion private static inline function __byte(source:Bytes, index:Int):Int {
-		return source.get(index) & 0xFF;
-	}
+	private static inline var MIN_MATCH:Int = 4;
+	private static inline var LAST_LITERALS:Int = 5;
+	private static inline var MF_LIMIT:Int = 12;
+	private static inline var MAX_OFFSET:Int = 0xFFFF;
+	private static inline var MAX_HASH_SIZE:Int = 1 << 16;
+	private static inline var MIN_HASH_SIZE:Int = 256;
+	private static inline var NIL:Int = -1;
 
 	/**
 	 * Hash the four bytes at `at`.
@@ -50,38 +52,9 @@ class Lz4 {
 			&& source.get(earlier + 3) == source.get(at + 3);
 	}
 
-	/**
-	 * Write a length that did not fit in its token nibble, as 255s and a
-	 * remainder.
-	 */
-	private static function __writeLength(output:ByteArray, value:Int):Void {
-		while (value >= 255) {
-			output.writeByte(255);
-			value -= 255;
-		}
-		output.writeByte(value);
-	}
-
-	/**
-	 * Write one sequence: a literal run, then the match that follows it.
-	 */
-	private static function __writeSequence(output:ByteArray, source:Bytes, anchor:Int, literals:Int, offset:Int, matchLength:Int):Void {
-		var extra:Int = matchLength - MIN_MATCH;
-		output.writeByte((literals < 15 ? literals << 4 : 0xF0) | (extra < 15 ? extra : 0x0F));
-
-		if (literals >= 15) {
-			__writeLength(output, literals - 15);
-		}
-		if (literals > 0) {
-			output.writeBytes(source, anchor, literals);
-		}
-
-		output.writeByte(offset & 0xFF);
-		output.writeByte((offset >>> 8) & 0xFF);
-
-		if (extra >= 15) {
-			__writeLength(output, extra - 15);
-		}
+	/** The most a block of `n` bytes can take compressed (LZ4_compressBound). **/
+	public static inline function compressBound(n:Int):Int {
+		return n + Std.int(n / 255) + 16;
 	}
 
 	public static function compress(b:Bytes):Bytes {
@@ -91,9 +64,27 @@ class Lz4 {
 		}
 		#end
 
-		var output = new ByteArray();
-		var n:Int = b.length;
-		var anchor:Int = 0;
+		var n:Int = b == null ? 0 : b.length;
+		var out:Bytes = Bytes.alloc(compressBound(n));
+		var written:Int = compressInto(b, 0, n, out, 0);
+		return out.sub(0, written);
+	}
+
+	/**
+		Compresses `n` bytes of `source` from `offset` as one block, into `out`
+		from `outPos`, which must have `compressBound(n)` bytes of room.
+
+		@return The block's length.
+	**/
+	public static function compressInto(source:Bytes, offset:Int, n:Int, out:Bytes, outPos:Int):Int {
+		// Written straight into Bytes. It went through a ByteArray, whose
+		// writeBytes takes a ByteArray: handed a plain Bytes, each literal run
+		// made one from it, allocating and clearing a copy of the whole input
+		// per run -- 27 GB of garbage compressing 900 KB -- where a ByteArray
+		// input happened to be one already.
+		var op:Int = outPos;
+		var end:Int = offset + n;
+		var anchor:Int = offset;
 
 		// Below MF_LIMIT the format has no room for a match at all, and the
 		// whole block goes out as the trailing literal run written afterwards.
@@ -111,22 +102,38 @@ class Lz4 {
 
 			// A match may extend no further than this, leaving the tail
 			// literal as the format requires.
-			var matchLimit:Int = n - LAST_LITERALS;
-			var searchLimit:Int = n - MF_LIMIT;
+			var matchLimit:Int = end - LAST_LITERALS;
+			var searchLimit:Int = end - MF_LIMIT;
 
-			var i:Int = 0;
+			var i:Int = offset;
 			while (i <= searchLimit) {
-				var bucket:Int = __hash(b, i, mask);
+				var bucket:Int = __hash(source, i, mask);
 				var candidate:Int = head[bucket];
 				head[bucket] = i;
 
-				if (candidate != NIL && i - candidate <= MAX_OFFSET && __matches(b, candidate, i)) {
+				if (candidate != NIL && i - candidate <= MAX_OFFSET && __matches(source, candidate, i)) {
 					var length:Int = MIN_MATCH;
-					while (i + length < matchLimit && b.get(candidate + length) == b.get(i + length)) {
+					while (i + length < matchLimit && source.get(candidate + length) == source.get(i + length)) {
 						length++;
 					}
 
-					__writeSequence(output, b, anchor, i - anchor, i - candidate, length);
+					// One sequence: a literal run, then the match after it.
+					var literals:Int = i - anchor;
+					var extra:Int = length - MIN_MATCH;
+					out.set(op++, (literals < 15 ? literals << 4 : 0xF0) | (extra < 15 ? extra : 0x0F));
+					if (literals >= 15) {
+						op = __writeLength(out, op, literals - 15);
+					}
+					if (literals > 0) {
+						out.blit(op, source, anchor, literals);
+						op += literals;
+					}
+					var distance:Int = i - candidate;
+					out.set(op++, distance & 0xFF);
+					out.set(op++, (distance >>> 8) & 0xFF);
+					if (extra >= 15) {
+						op = __writeLength(out, op, extra - 15);
+					}
 
 					i += length;
 					anchor = i;
@@ -138,16 +145,30 @@ class Lz4 {
 
 		// The block always ends with literals and no offset, which is how a
 		// decoder knows it has reached the end.
-		var literals:Int = n - anchor;
-		output.writeByte(literals < 15 ? literals << 4 : 0xF0);
+		var literals:Int = end - anchor;
+		out.set(op++, literals < 15 ? literals << 4 : 0xF0);
 		if (literals >= 15) {
-			__writeLength(output, literals - 15);
+			op = __writeLength(out, op, literals - 15);
 		}
 		if (literals > 0) {
-			output.writeBytes(b, anchor, literals);
+			out.blit(op, source, anchor, literals);
+			op += literals;
 		}
 
-		return output;
+		return op - outPos;
+	}
+
+	/**
+	 * Write a length that did not fit in its token nibble, as 255s and a
+	 * remainder. Returns where the next byte goes.
+	 */
+	private static inline function __writeLength(out:Bytes, op:Int, value:Int):Int {
+		while (value >= 255) {
+			out.set(op++, 255);
+			value -= 255;
+		}
+		out.set(op++, value);
+		return op;
 	}
 
 	/**
@@ -159,119 +180,207 @@ class Lz4 {
 
 		The limit is checked before each write rather than after the decode, so
 		a stream that keeps expanding is abandoned partway and the memory is
-		never taken. The native decoder cannot do that: it returns a finished
-		buffer, so its result is measured after the fact and the allocation has
-		already happened. That path is opt-in and off by default.
+		never taken. The native decoder, from `crossbyte-lz4` with
+		`-D crossbyte_lz4_native`, is handed the limit as well: it adds up what
+		the block's sequence headers say it decodes to before allocating
+		anything, and refuses it there. It used to guess, and double its guess
+		on every failure, up to 256 MB, leaving the measuring to this function
+		afterwards.
+
+		A block has no length of its own, so one cut short at the end of a
+		literal run would read as complete. The format's end rules catch most:
+		the last five bytes of a block are literals and its last match starts
+		at least twelve bytes from the end, so a block that stops right after a
+		short run, or soon after a match, is refused. The frame format
+		(`Lz4Frame`) catches all of it, with sizes and checksums.
+
+		@throws IOError The data is not a valid block, or ends early.
+		@throws RangeError It decodes past `maxOutputSize`.
 	**/
-	public static inline function decompress(b:Bytes, maxOutputSize:Int = 0):Bytes {
+	public static function decompress(b:Bytes, maxOutputSize:Int = 0):Bytes {
 		#if crossbyte_lz4_native
 		if (NativeLz4.isAvailable()) {
-			var native:Bytes = NativeLz4.decompress(b);
-			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
-				throw "Decoded stream exceeded " + maxOutputSize + " bytes";
-			}
-			return native;
+			// It refuses at the limit itself, and throws the same two errors.
+			return NativeLz4.decompress(b, maxOutputSize);
 		}
 		#end
 
-		var iLen = b.length;
-		var oBuf = new ByteArray();
-		var iPos = 0;
-		var oPos = 0;
+		if (b == null || b.length == 0) {
+			// Even an empty block is a token: one zero byte.
+			throw new IOError("Invalid LZ4 data: no block");
+		}
+		var out = new Lz4Output(maxOutputSize, b.length * 4);
+		decodeBlock(b, 0, b.length, out);
+		return out.toBytes();
+	}
 
-		while (iPos < iLen) {
-			var token = __byte(b, iPos++);
+	/**
+		Decodes the block `source[start, end)` onto the end of `out`.
 
-			var clen = token >>> 4;
-			if (clen == 15) {
+		@param floor The earliest position in `out` a match may reach back to:
+		       the block's own start for an independent block, the frame's for
+		       a frame's linked blocks.
+	**/
+	public static function decodeBlock(source:Bytes, start:Int, end:Int, out:Lz4Output, floor:Int = -1):Void {
+		if (floor < 0) {
+			floor = out.length;
+		}
+		var iPos:Int = start;
+		var blockStart:Int = out.length;
+		// Where the last match began and ended, to hold the block to the end
+		// rules once it is done. -1: no match yet.
+		var lastMatchStart:Int = -1;
+		var lastMatchEnd:Int = -1;
+
+		while (true) {
+			if (iPos >= end) {
+				throw new IOError("Invalid LZ4 data: the block ends early");
+			}
+			var token:Int = source.get(iPos++);
+
+			var length:Int = token >>> 4;
+			if (length == 15) {
 				while (true) {
-					if (iPos >= iLen) {
-						throw "Could not perform decompression";
+					if (iPos >= end) {
+						throw new IOError("Invalid LZ4 data: a literal length runs past the end");
 					}
-					var l = __byte(b, iPos++);
-					clen += l;
+					var l:Int = source.get(iPos++);
+					length += l;
 					if (l != 255) {
 						break;
 					}
 				}
 			}
 
-			var literalEnd = iPos + clen;
-			if (literalEnd > iLen) {
-				throw "Could not perform decompression";
+			// `length > end - iPos` rather than `iPos + length > end`: the
+			// sum of two attacker-influenced Ints can wrap.
+			if (length > end - iPos) {
+				throw new IOError("Invalid LZ4 data: literals run past the end");
 			}
-			if (clen > 0) {
-				// `clen > max - oPos` rather than `oPos + clen > max`: the sum
-				// of two attacker-influenced Ints can wrap, and a wrapped sum
-				// passes the test it was meant to fail.
-				if (maxOutputSize > 0 && clen > maxOutputSize - oPos) {
-					throw "Decoded stream exceeded " + maxOutputSize + " bytes";
-				}
-				oBuf.position = oPos;
-				oBuf.writeBytes(b, iPos, clen);
-				iPos = literalEnd;
-				oPos += clen;
+			if (length > 0) {
+				out.append(source, iPos, length);
+				iPos += length;
 			}
 
-			if (iPos == iLen) {
+			if (iPos == end) {
+				// A block ends after literals, never after a match.
 				break;
 			}
 
-			if (iPos + 1 >= iLen) {
-				throw "Could not perform decompression";
+			if (end - iPos < 2) {
+				throw new IOError("Invalid LZ4 data: a match offset is cut off");
 			}
-
-			var mOffset = __byte(b, iPos + 0) | (__byte(b, iPos + 1) << 8);
-			if (mOffset == 0 || mOffset > oPos) {
-				throw "Could not perform decompression";
-			}
+			var offset:Int = source.get(iPos) | (source.get(iPos + 1) << 8);
 			iPos += 2;
+			if (offset == 0 || offset > out.length - floor) {
+				throw new IOError("Invalid LZ4 data: a match reaches before the start");
+			}
 
-			clen = (token & 0x0F) + 4;
-			if (clen == 19) {
+			length = (token & 0x0F) + MIN_MATCH;
+			if (length == 19) {
 				while (true) {
-					if (iPos >= iLen) {
-						throw "Could not perform decompression";
+					if (iPos >= end) {
+						throw new IOError("Invalid LZ4 data: a match length runs past the end");
 					}
-					var l = __byte(b, iPos++);
-					clen += l;
+					var l:Int = source.get(iPos++);
+					length += l;
 					if (l != 255) {
 						break;
 					}
 				}
 			}
 
+			lastMatchStart = out.length - blockStart;
 			// The amplifying half: a short match length replays window bytes,
-			// so this is where a bomb does its work.
-			if (maxOutputSize > 0 && clen > maxOutputSize - oPos) {
-				throw "Decoded stream exceeded " + maxOutputSize + " bytes";
-			}
-
-			var mPos = oPos - mOffset;
-			var matchEnd = oPos + clen;
-			while (oPos < matchEnd) {
-				oBuf[oPos++] = oBuf[mPos++];
-			}
+			// so this is where a bomb does its work. The output checks it
+			// against the limit before it grows.
+			out.copyBack(offset, length);
+			lastMatchEnd = out.length - blockStart;
 		}
 
-		// There was a browser branch here returning `Bytes.ofData(untyped
-		// oBuf.buffer)`. `oBuf` is a ByteArray and has no `buffer`, so that
-		// passed `undefined` to `ofData`, which reads `.hxBytes` off it and
-		// threw -- every LZ4 decode in a page, since the branch was written.
-		// Node never took it, so the js suite passed throughout.
-		//
-		// Even given a `buffer` it would have been wrong: that is the whole
-		// backing store, where only the first `oPos` bytes were written. The
-		// generic path below allocates exactly that many and is what every
-		// other target already used.
-		#if hl
-		return oBuf.getData().toBytes(oBuf.length);
-		#else
-		var bOut = Bytes.alloc(oPos);
-		if (oPos > 0) {
-			bOut.blit(0, oBuf, 0, oPos);
+		if (lastMatchStart >= 0) {
+			var total:Int = out.length - blockStart;
+			if (lastMatchEnd > total - LAST_LITERALS || lastMatchStart > total - MF_LIMIT) {
+				throw new IOError("Invalid LZ4 data: the block ends too soon after a match, as a cut-off block does");
+			}
 		}
-		return bOut;
-		#end
+	}
+}
+
+/**
+	Decoded LZ4 output: a Bytes that grows with it, never past a limit.
+**/
+@:noCompletion
+class Lz4Output {
+	public var length(default, null):Int = 0;
+
+	var __bytes:Bytes;
+	var __limit:Int;
+
+	/**
+		@param limit Bytes this may hold, or `0` for no limit.
+		@param guess What to allocate first; grown by doubling from there.
+	**/
+	public function new(limit:Int, guess:Int) {
+		__limit = limit > 0 ? limit : 0;
+		var first:Int = guess < 64 ? 64 : guess;
+		if (__limit > 0 && first > __limit) {
+			first = __limit;
+		}
+		__bytes = Bytes.alloc(first);
+	}
+
+	public inline function append(source:Bytes, offset:Int, count:Int):Void {
+		__room(count);
+		__bytes.blit(length, source, offset, count);
+		length += count;
+	}
+
+	/** Copies `count` bytes from `distance` back, overlapping as a run does. **/
+	public function copyBack(distance:Int, count:Int):Void {
+		__room(count);
+		var bytes:Bytes = __bytes;
+		var from:Int = length - distance;
+		if (distance >= count) {
+			bytes.blit(length, bytes, from, count);
+		} else {
+			for (i in 0...count) {
+				bytes.set(length + i, bytes.get(from + i));
+			}
+		}
+		length += count;
+	}
+
+	public function toBytes():Bytes {
+		return length == __bytes.length ? __bytes : __bytes.sub(0, length);
+	}
+
+	/** What has been written, in place: valid up to `length`, until the next write. **/
+	public inline function view():Bytes {
+		return __bytes;
+	}
+
+	/** Makes room for `count` more, refusing past the limit before growing. **/
+	inline function __room(count:Int):Void {
+		if (count > __bytes.length - length) {
+			__grow(count);
+		}
+	}
+
+	function __grow(count:Int):Void {
+		// A difference, not a sum: both can be attacker-sized.
+		if (__limit > 0 && count > __limit - length) {
+			throw new RangeError("Decoded stream exceeded " + __limit + " bytes");
+		}
+		var size:Int = __bytes.length * 2;
+		if (size - length < count) {
+			size = length + count;
+		}
+		if (__limit > 0 && size > __limit) {
+			size = __limit;
+		}
+		var grown:Bytes = Bytes.alloc(size);
+		grown.blit(0, __bytes, 0, length);
+		__bytes = grown;
 	}
 }

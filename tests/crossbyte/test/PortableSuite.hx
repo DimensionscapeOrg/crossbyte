@@ -129,6 +129,8 @@ class PortableSuite {
 		// neither backend grades its own homework.
 		runner.addCase(new crossbyte.io.StoreTest());
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
+		runner.addCase(new crossbyte._internal.compression.BrotliCodecTest());
+		runner.addCase(new crossbyte._internal.compression.CodecFormatsTest());
 		// Nothing here owns a socket -- every parser is handed bytes -- so it
 		// runs wherever the code it fuzzes can be compiled, which is everywhere.
 		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());

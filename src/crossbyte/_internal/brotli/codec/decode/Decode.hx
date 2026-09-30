@@ -5,7 +5,7 @@ import crossbyte._internal.brotli.codec.decode.huffman.HuffmanCode;
 import crossbyte._internal.brotli.codec.decode.huffman.HuffmanTreeGroup;
 import crossbyte._internal.brotli.codec.DefaultFunctions;
 import haxe.ds.Vector;
-import crossbyte._internal.brotli.codec.decode.streams.BrotliInput;
+import haxe.io.Bytes;
 import crossbyte._internal.brotli.codec.decode.streams.BrotliOutput;
 import crossbyte._internal.brotli.codec.decode.state.BrotliState;
 import crossbyte._internal.brotli.codec.decode.State.BrotliStateInit;
@@ -644,265 +644,112 @@ static function DecodeBlockTypeWithContext(s:BrotliState,
   s.context_lookup_offset2 = kContextLookupOffsets[s.context_mode + 1];
 }
 
-//675
+/*
+ * The slack after the ring buffer's end. A dictionary word is written whole
+ * where the output stands -- prefix, word and suffix -- and whatever of it
+ * lands past the end is copied to the start afterwards.
+ */
+static inline var kRingBufferWriteAheadSlack:Int = 128;
+
+/* The least ring buffer allocated. */
+static inline var kMinRingBufferSize:Int = 1024;
+
+/*
+ * Makes the ring buffer big enough to take this meta-block without wrapping,
+ * up to the window.
+ *
+ * The C this was ported from allocated the whole window the stream header
+ * asked for, 1 << WBITS, at the first meta-block -- 16 MB for an eighteen-byte
+ * request body -- unless the first meta-block happened to announce the total.
+ * Here it starts at what the output so far and this meta-block need, and
+ * doubles as they grow, so it is never much more than the output, which the
+ * caller's limit has already bounded by the time this runs.
+ *
+ * It grows only while it is smaller than the window, and while it is smaller
+ * than the window it has never wrapped: it is always larger than everything
+ * decoded so far, so nothing has been flushed yet and [0, pos) is copied
+ * across as it stands.
+ */
+static function BrotliEnsureRingBuffer(s:BrotliState, pos:Int):Void {
+  var window:Int = 1 << s.window_bits;
+  if (s.ringbuffer != null && s.ringbuffer_size >= window) {
+    return;
+  }
+  // One more than the bytes up to the end of this meta-block, so that its
+  // last byte does not land in the final slot, which is what flushes.
+  var needed:Int = pos + s.meta_block_remaining_len + 1;
+  var size:Int = s.ringbuffer != null ? s.ringbuffer_size : kMinRingBufferSize;
+  while (size < needed && size < window) {
+    size <<= 1;
+  }
+  if (size > window) {
+    size = window;
+  }
+  if (s.ringbuffer != null && size == s.ringbuffer_size) {
+    return;
+  }
+  var grown:Bytes = Bytes.alloc(size + kRingBufferWriteAheadSlack);
+  if (s.ringbuffer != null && pos > 0) {
+    grown.blit(0, s.ringbuffer, 0, pos);
+  }
+  s.ringbuffer = grown;
+  s.ringbuffer_size = size;
+  s.ringbuffer_mask = size - 1;
+  s.ringbuffer_end_off = size;
+}
+
+/*
+ * Copies an uncompressed meta-block from the input to the ring buffer,
+ * flushing the ring buffer to the output each time it fills.
+ *
+ * After JumpToByteBoundary the reader sits on a byte, so the block is the
+ * next meta_block_remaining_len bytes of the stream, beginning with any
+ * already loaded into val_; the reader is pointed past them afterwards.
+ *
+ * This replaced a copy through the streaming reader's buffer whose flush
+ * added the ring buffer's size back to the bytes still to copy, so a block
+ * that wrapped a small ring buffer -- incompressible data under a small
+ * window -- read on past its end and failed.
+ */
 static function CopyUncompressedBlockToOutput(output:BrotliOutput,
                                            pos:Int,
-                                           s:BrotliState) {
-  var rb_size:Int = s.ringbuffer_mask + 1;
-  var ringbuffer_end = s.ringbuffer;//uint8_t*
-  var ringbuffer_end_off = s.ringbuffer_off + rb_size;
-  var rb_pos:Int = pos & s.ringbuffer_mask;
-  var br_pos:Int = s.br.pos_ & BROTLI_IBUF_MASK;
-  var remaining_bits:UInt;
-  var num_read:Int;
-  var num_written:Int;
-
-  /* State machine */
-  while (true) {
-    //switch (s.sub_state[0]) {
-      if(s.sub_state[0]== BROTLI_STATE_SUB_NONE){
-        /* For short lengths copy byte-by-byte */
-        if (s.meta_block_remaining_len < 8 || s.br.bit_pos_ +
-            (s.meta_block_remaining_len << 3) < s.br.bit_end_pos_) {
-          s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_SHORT;
-          continue;
-        }
-        if (s.br.bit_end_pos_ < 64) {
-          return BROTLI_FAILURE();
-        }
-        /*
-         * Copy remaining 0-4 in 32-bit case or 0-8 bytes in the 64-bit case
-         * from s.br.val_ to ringbuffer.
-         */
-        remaining_bits = 32;
-        while (s.br.bit_pos_ < remaining_bits) {
-          s.ringbuffer[s.ringbuffer_off+rb_pos] = (s.br.val_ >> s.br.bit_pos_)&255;
-          s.br.bit_pos_ += 8;
-          ++rb_pos;
-          --s.meta_block_remaining_len;
-        }
-
-        /* Copy remaining bytes from s.br.buf_ to ringbuffer. */
-        s.nbytes = (s.br.bit_end_pos_ - s.br.bit_pos_) >> 3;
-        if (br_pos + s.nbytes > BROTLI_IBUF_MASK) {
-          var tail:Int = BROTLI_IBUF_MASK + 1 - br_pos;
-		  //	&						&
-          memcpy(s.ringbuffer,s.ringbuffer_off+rb_pos, s.br.buf_,s.br.buf_off+br_pos, tail);
-          s.nbytes -= tail;
-          rb_pos += tail;
-          s.meta_block_remaining_len -= tail;
-          br_pos = 0;
-        }
-		//	&						&
-        memcpy(s.ringbuffer,s.ringbuffer_off+rb_pos, s.br.buf_,s.br.buf_off+br_pos, s.nbytes);
-        rb_pos += s.nbytes;
-        s.meta_block_remaining_len -= s.nbytes;
-
-        s.partially_written = 0;
-        s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_WRITE_1;
-	  }
-        /* No break, continue to next state */
-      if(s.sub_state[0]== BROTLI_STATE_SUB_UNCOMPRESSED_WRITE_1){
-        /* If we wrote past the logical end of the ringbuffer, copy the tail of
-           the ringbuffer to its beginning and flush the ringbuffer to the
-           output. */
-        if (rb_pos >= rb_size) {
-          num_written = BrotliWrite(output,
-                                    s.ringbuffer,s.ringbuffer_off + s.partially_written,
-                                    (rb_size - s.partially_written));
-          if (num_written < 0) {
-            return BROTLI_FAILURE();
-          }
-          s.partially_written += num_written;
-          if (s.partially_written < rb_size) {
-            return BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-          }
-          rb_pos -= rb_size;
-          s.meta_block_remaining_len += rb_size;
-          memcpy(s.ringbuffer,s.ringbuffer_off, ringbuffer_end,ringbuffer_end_off, rb_pos);
-        }
-        s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_FILL;
-        continue;
-	  }
-      if(s.sub_state[0]== BROTLI_STATE_SUB_UNCOMPRESSED_SHORT){
-        while (s.meta_block_remaining_len > 0) {
-          if (!BrotliReadMoreInput(s.br)) {
-            return BROTLI_RESULT_NEEDS_MORE_INPUT;
-          }
-          s.ringbuffer[rb_pos++] = BrotliReadBits(s.br, 8);
-          if (rb_pos == rb_size) {
-            s.partially_written = 0;
-            s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_WRITE_2;
-            break;
-          }
-          s.meta_block_remaining_len--;
-        }
-        if (s.sub_state[0] == BROTLI_STATE_SUB_UNCOMPRESSED_SHORT) {
-          s.sub_state[0] = BROTLI_STATE_SUB_NONE;
-          return BROTLI_RESULT_SUCCESS;
-        }
-		s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_WRITE_2;//ADDED
-	  }
-        /* No break, if state is updated, continue to next state */
-      if(s.sub_state[0]== BROTLI_STATE_SUB_UNCOMPRESSED_WRITE_2){
-        num_written = BrotliWrite(output, s.ringbuffer,s.ringbuffer_off + s.partially_written,
-                                  (rb_size - s.partially_written));
-        if (num_written < 0) {
-          return BROTLI_FAILURE();
-        }
-        s.partially_written += num_written;
-        if (s.partially_written < rb_size) {
-          return BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-        }
-        rb_pos = 0;
-        s.meta_block_remaining_len--;
-        s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_SHORT;
-        continue;
-	  }
-      if(s.sub_state[0]== BROTLI_STATE_SUB_UNCOMPRESSED_FILL){
-        /* If we have more to copy than the remaining size of the ringbuffer,
-           then we first fill the ringbuffer from the input and then flush the
-           ringbuffer to the output */
-        if (rb_pos + s.meta_block_remaining_len >= rb_size) {
-          s.nbytes = rb_size - rb_pos;
-		  //							&
-          if (BrotliRead(s.br.input_, s.ringbuffer,s.ringbuffer_off+rb_pos,
-                         s.nbytes) < s.nbytes) {
-            return BROTLI_RESULT_NEEDS_MORE_INPUT;
-          }
-          s.partially_written = 0;
-          s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_WRITE_3;
-        } else {
-          s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_COPY;
-          continue;
-        }
-	  }
-        /* No break, continue to next state */
-      if(s.sub_state[0]== BROTLI_STATE_SUB_UNCOMPRESSED_WRITE_3){
-        num_written = BrotliWrite(output, s.ringbuffer, s.ringbuffer_off + s.partially_written,
-                                  (rb_size - s.partially_written));
-        if (num_written < 0) {
-          return BROTLI_FAILURE();
-        }
-        s.partially_written += num_written;
-        if (s.partially_written < rb_size) {
-          return BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-        }
-        s.meta_block_remaining_len -= s.nbytes;
-        rb_pos = 0;
-        s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_FILL;
-        continue;
-	  }
-      if(s.sub_state[0]== BROTLI_STATE_SUB_UNCOMPRESSED_COPY){
-        /* Copy straight from the input onto the ringbuffer. The ringbuffer will
-           be flushed to the output at a later time. */
-		   //								&
-        num_read = BrotliRead(s.br.input_, s.ringbuffer,s.ringbuffer_off+rb_pos,
-                              s.meta_block_remaining_len);
-        s.meta_block_remaining_len -= num_read;
-        if (s.meta_block_remaining_len > 0) {
-          return BROTLI_RESULT_NEEDS_MORE_INPUT;
-        }
-
-        /* Restore the state of the bit reader. */
-        BrotliInitBitReader(s.br, s.br.input_, s.br.finish_);
-        s.sub_state[0] = BROTLI_STATE_SUB_UNCOMPRESSED_WARMUP;
-	  }
-        /* No break, continue to next state */
-      if(s.sub_state[0]== BROTLI_STATE_SUB_UNCOMPRESSED_WARMUP){
-        if (!BrotliWarmupBitReader(s.br)) {
-          return BROTLI_RESULT_NEEDS_MORE_INPUT;
-        }
-        s.sub_state[0] = BROTLI_STATE_SUB_NONE;
-        return BROTLI_RESULT_SUCCESS;
-        continue;
-	  }
-      //default:
-      //  return BROTLI_FAILURE();  /* Unknown state */
-    //}
-  }
-  return BROTLI_FAILURE();
-}
-
-//844
-static function BrotliDecompressedSize(encoded_size:Int,
-                                    encoded_buffer:Vector<UInt>,//const uint8_t*
-									encoded_buffer_off:Int,
-                                    decoded_size:Array<Int>//size_t * 
-									):BrotliResult {
-  var i:Int;
-  var val:UInt = 0;
-  var bit_pos:Int = 0;
-  var is_last:Int;
-  var is_uncompressed:Int = 0;
-  var size_nibbles:Int;
-  var meta_block_len:Int = 0;
-  if (encoded_size == 0) {
+                                           s:BrotliState):BrotliResult {
+  var br:BrotliBitReader = s.br;
+  var unread:Int = cast (32 - br.bit_pos_);
+  var start:Int = br.pos_ - (unread >> 3);
+  var remaining:Int = s.meta_block_remaining_len;
+  if (remaining > br.end_ - start) {
     return BROTLI_FAILURE();
   }
-  /* Look at the first 8 bytes, it is enough to decode the length of the first
-     meta-block. */
-  for (i in 0...4) {
-	  if (i >= encoded_size) break;
-    val |= encoded_buffer[i] << (8 * i);
-  }
-  /* Skip the window bits. */
-  ++bit_pos;
-  if ((val & 1)==1) {
-    bit_pos += 3;
-    if (((val >> 1) & 7) == 0) {
-      bit_pos += 3;
+  var rb_size:Int = s.ringbuffer_size;
+  while (remaining > 0) {
+    var rb_pos:Int = pos & s.ringbuffer_mask;
+    var n:Int = rb_size - rb_pos;
+    if (n > remaining) {
+      n = remaining;
+    }
+    s.ringbuffer.blit(rb_pos, br.input_, start, n);
+    start += n;
+    pos += n;
+    remaining -= n;
+    if (rb_pos + n == rb_size) {
+      BrotliWrite(output, s.ringbuffer, 0, rb_size);
     }
   }
-  /* Decode the ISLAST bit. */
-  is_last = (val >> bit_pos) & 1;
-  ++bit_pos;
-  if (is_last==1) {
-    /* Decode the ISEMPTY bit, if it is set to 1, we are done. */
-    if (((val >> bit_pos) & 1)==1) {
-      decoded_size[0] = 0;
-      return BROTLI_RESULT_SUCCESS;
-    }
-    ++bit_pos;
-  }
-  /* Decode the length of the first meta-block. */
-  size_nibbles = ((val >> bit_pos) & 3) + 4;
-  if (size_nibbles == 7) {
-    /* First meta-block contains metadata, this case is not supported here. */
-    return BROTLI_FAILURE();
-  }
-  bit_pos += 2;
-  for (i in 0...size_nibbles) {
-    meta_block_len |= ((val >> bit_pos) & 0xf) << (4 * i);
-    bit_pos += 4;
-  }
-  ++meta_block_len;
-  if (is_last==1) {
-    /* If this meta-block is the only one, we are done. */
-    decoded_size[0] = meta_block_len;
-    return BROTLI_RESULT_SUCCESS;
-  }
-  is_uncompressed = (val >> bit_pos) & 1;
-  ++bit_pos;
-  if (is_uncompressed==1) {
-    /* If the first meta-block is uncompressed, we skip it and look at the
-       first two bits (ISLAST and ISEMPTY) of the next meta-block, and if
-       both are set to 1, we have a stream with an uncompressed meta-block
-       followed by an empty one, so the decompressed size is the size of the
-       first meta-block. */
-    var offset = ((bit_pos + 7) >> 3) + meta_block_len;
-    if (offset < encoded_size && ((encoded_buffer[offset] & 3) == 3)) {
-      decoded_size[0] = meta_block_len;
-      return BROTLI_RESULT_SUCCESS;
-    }
-  }
-  return BROTLI_FAILURE();
+  s.meta_block_remaining_len = 0;
+  BrotliResetBitReader(br, start);
+  return BROTLI_RESULT_SUCCESS;
 }
 
 
 
-	static function BrotliDecompressStreaming(input:BrotliInput, output:BrotliOutput,
-										   finish:Int, s:BrotliState):BrotliResult {
+
+	/*
+	 * Decodes the whole of `input` into `output`. The stream is always complete
+	 * here, so running out of input is a failure rather than a pause.
+	 */
+	static function BrotliDecompressStreaming(input:Bytes, output:BrotliOutput,
+										   s:BrotliState):BrotliResult {
 	  var context:UInt;//uint8_t
 	  var pos:Int = s.pos;
 	  var i = s.loop_counter;
@@ -912,20 +759,10 @@ static function BrotliDecompressedSize(encoded_size:Int,
 	  var bytes_copied:Int;
 	  var num_written:Int;
 
-	  /* We need the slack region for the following reasons:
-		   - always doing two 8-byte copies for fast backward copying
-		   - transforms
-		   - flushing the input s->ringbuffer when decoding uncompressed blocks */
-	  var kRingBufferWriteAheadSlack:Int = 128 + BROTLI_READ_SIZE;//static const
-
-	  s.br.input_ = input;
-	  s.br.finish_ = finish;
-
 	  /* State machine */
 	  while (true) {
-//untyped __php__("print memory_get_usage().\"<br>\n\";");
 		if (result != BROTLI_RESULT_SUCCESS) {
-		  if (result == BROTLI_RESULT_NEEDS_MORE_INPUT && finish==1) {
+		  if (result == BROTLI_RESULT_NEEDS_MORE_INPUT) {
 			BROTLI_LOG("Unexpected end of input. State: "+ s.state+"\n");
 			result = BROTLI_FAILURE();
 		  }
@@ -948,7 +785,7 @@ static function BrotliDecompressedSize(encoded_size:Int,
 			s.block_type_trees = null;
 			s.block_len_trees = null;
 
-			BrotliInitBitReader(br, input, finish);
+			BrotliInitBitReader(br, input, 0, input.length);
 
 			s.state = BROTLI_STATE_BITREADER_WARMUP;
 		  }
@@ -1043,56 +880,16 @@ static function BrotliDecompressedSize(encoded_size:Int,
 			s.is_metadata = is_metadata[0];
 			s.is_uncompressed = is_uncompressed[0];
 			BROTLI_LOG_UINT(s.meta_block_remaining_len);
-			/* If it is the first metablock, allocate the ringbuffer */
-			if (s.ringbuffer == null) {
-			  var known_size:Array<Int> = [0];//size_t
-			  s.ringbuffer_size = 1 << s.window_bits;
-
-			  /* If we know the data size is small, do not allocate more ringbuffer
-				 size than needed to reduce memory usage. Since this happens after
-				 the first BrotliReadMoreInput call, we can read the bitreader
-				 buffer at position 0. */							//&
-			  if (BrotliDecompressedSize(BROTLI_READ_SIZE, br.buf_, br.buf_off, known_size)
-				  == BROTLI_RESULT_SUCCESS) {
-				while (s.ringbuffer_size >= known_size[0] * 2
-					&& s.ringbuffer_size > 1) {
-				  s.ringbuffer_size = Std.int(s.ringbuffer_size/2);
-				}
+			if (s.is_metadata != 1 && s.meta_block_remaining_len > 0) {
+			  // A meta-block states its length before a byte of it is decoded,
+			  // so one that would take the output past the limit is refused
+			  // here, before the ring buffer grows to hold it. Written as a
+			  // difference because the sum could wrap.
+			  if (s.output_limit > 0 && s.meta_block_remaining_len > s.output_limit - s.produced) {
+				throw BrotliOutput.exceeded(s.output_limit);
 			  }
-
-			  /* But make it fit the custom dictionary if there is one. */
-			  while (s.ringbuffer_size < s.custom_dict_size) {
-				s.ringbuffer_size *= 2;
-			  }
-
-			  s.ringbuffer_mask = s.ringbuffer_size - 1;
-			  /* = TODO:malloc(UInt,(s.ringbuffer_size +
-													 kRingBufferWriteAheadSlack +
-													 kMaxDictionaryWordLength));
-				memset(s.ringbuffer, 0, 0, s.ringbuffer_size +
-													 kRingBufferWriteAheadSlack +
-													 kMaxDictionaryWordLength);*/	
-				s.ringbuffer = new Vector<UInt>(s.ringbuffer_size +
-													 kRingBufferWriteAheadSlack +
-													 kMaxDictionaryWordLength); 
-			  s.ringbuffer_off = 0;
-			  if (!(s.ringbuffer.length!=0)) {
-				result = BROTLI_FAILURE();
-				continue;
-			  }
-			  s.ringbuffer_end = s.ringbuffer;
-			  s.ringbuffer_end_off = s.ringbuffer_off + s.ringbuffer_size;
-
-			  if (s.custom_dict_off!=-1) {
-				memcpy(s.ringbuffer,s.ringbuffer_off+((-s.custom_dict_size) & s.ringbuffer_mask),
-									  s.custom_dict, s.custom_dict_off, s.custom_dict_size);
-				if (s.custom_dict_size > 0) {
-				  s.prev_byte1 = s.custom_dict[s.custom_dict_size - 1];
-				}
-				if (s.custom_dict_size > 1) {
-				  s.prev_byte2 = s.custom_dict[s.custom_dict_size - 2];
-				}
-			  }
+			  s.produced += s.meta_block_remaining_len;
+			  BrotliEnsureRingBuffer(s, pos);
 			}
 
 			if (s.is_metadata==1) {
@@ -1123,15 +920,12 @@ static function BrotliDecompressedSize(encoded_size:Int,
 			initial_remaining_len = s.meta_block_remaining_len;
 			/* pos is given as argument since s.pos is only updated at the end. */
 			result = CopyUncompressedBlockToOutput(output, pos, s);
-			if (result == BROTLI_RESULT_NEEDS_MORE_OUTPUT) {
-			  continue;
-			}
 			bytes_copied = initial_remaining_len - s.meta_block_remaining_len;
 			pos += bytes_copied;
 			if (bytes_copied > 0) {
 			  s.prev_byte2 = bytes_copied == 1 ? s.prev_byte1 :
-				  s.ringbuffer[(pos - 2) & s.ringbuffer_mask];
-			  s.prev_byte1 = s.ringbuffer[(pos - 1) & s.ringbuffer_mask];
+				  s.ringbuffer.get((pos - 2) & s.ringbuffer_mask);
+			  s.prev_byte1 = s.ringbuffer.get((pos - 1) & s.ringbuffer_mask);
 			}
 			if (result != BROTLI_RESULT_SUCCESS) continue;
 			s.state = BROTLI_STATE_METABLOCK_DONE;
@@ -1140,14 +934,24 @@ static function BrotliDecompressedSize(encoded_size:Int,
 		  if(s.state== BROTLI_STATE_METADATA){
 			while (s.meta_block_remaining_len > 0) {
 			  if (!BrotliReadMoreInput(s.br)) {
+				// `break`, as in the C this was ported from. It was
+				// `continue`, which re-tested the same unchanged length and
+				// asked for input that was never coming again: four bytes
+				// declaring a metadata block and then ending held the thread
+				// in this loop for good, allocating nothing, so no output
+				// ceiling ever tripped.
 				result = BROTLI_RESULT_NEEDS_MORE_INPUT;
-				continue;
+				break;
 			  }
 			  /* Read one byte and ignore it. */
 			  BrotliReadBits( s.br, 8);
 			  --s.meta_block_remaining_len;
 			}
-			s.state = BROTLI_STATE_METABLOCK_DONE;
+			// Advance only once the whole block has been skipped; the check at
+			// the top of the loop turns running out of input into a failure.
+			if (result == BROTLI_RESULT_SUCCESS) {
+			  s.state = BROTLI_STATE_METABLOCK_DONE;
+			}
 			continue;
 		  }
 		  if(s.state== BROTLI_STATE_HUFFMAN_CODE_0){
@@ -1224,15 +1028,19 @@ static function BrotliDecompressedSize(encoded_size:Int,
 									  num_literal_htrees, context_map, s);
 			s.num_literal_htrees = num_literal_htrees[0]; s.context_map = context_map[0];s.context_map_off = 0;
 
+			// Only a map that decoded may be scanned. The C this came from
+			// scanned first and checked after, which read a map that was
+			// never allocated whenever the input ran out before it: null,
+			// and natively a crash rather than an exception.
+			if (result != BROTLI_RESULT_SUCCESS) continue;
+
 			s.trivial_literal_context = 1;
 			for (i in 0...(s.num_block_types[0] << kLiteralContextBits)) {
 			  if (s.context_map[i] != i >> kLiteralContextBits) {
 				s.trivial_literal_context = 0;
-				continue;
+				break;
 			  }
 			}
-
-			if (result != BROTLI_RESULT_SUCCESS) continue;
 			s.state = BROTLI_STATE_CONTEXT_MAP_2;
 			/* No break, continue to next state */
 		  }
@@ -1324,6 +1132,15 @@ static function BrotliDecompressedSize(encoded_size:Int,
 			BROTLI_LOG_UINT(s.copy_length);
 			BROTLI_LOG_UINT(s.distance_code);
 
+			// More literals than the meta-block has left is a stream that
+			// lied about its length. The C checked only once they had been
+			// written, which here would have been past the end the ring
+			// buffer was sized for.
+			if (s.insert_length > s.meta_block_remaining_len) {
+			  result = BROTLI_FAILURE();
+			  continue;
+			}
+
 			i = 0;
 			s.state = BROTLI_STATE_BLOCK_INNER;
 			/* No break, go to next state */
@@ -1339,12 +1156,11 @@ static function BrotliDecompressedSize(encoded_size:Int,
 				  DecodeBlockTypeWithContext(s, br);
 				}
 
-				s.ringbuffer[pos & s.ringbuffer_mask] = ReadSymbol(
-					s.hgroup[0].htrees[s.literal_htree_index],s.hgroup[0].htrees_off[s.literal_htree_index], br);
+				s.ringbuffer.set(pos & s.ringbuffer_mask, ReadSymbol(
+					s.hgroup[0].htrees[s.literal_htree_index],s.hgroup[0].htrees_off[s.literal_htree_index], br));
 
 				s.block_length[0]-=1;
 				BROTLI_LOG_UINT(s.literal_htree_index);
-				BROTLI_LOG_ARRAY_INDEX(s.ringbuffer, pos & s.ringbuffer_mask);
 				if ((pos & s.ringbuffer_mask) == s.ringbuffer_mask) {
 				  s.partially_written = 0;
 				  s.state = BROTLI_STATE_BLOCK_INNER_WRITE;
@@ -1376,9 +1192,8 @@ static function BrotliDecompressedSize(encoded_size:Int,
 				p2 = p1;
 				p1 = ReadSymbol(
 					s.hgroup[0].htrees[s.literal_htree_index],s.hgroup[0].htrees_off[s.literal_htree_index], br);
-				s.ringbuffer[pos & s.ringbuffer_mask] = p1;
+				s.ringbuffer.set(pos & s.ringbuffer_mask, p1);
 				BROTLI_LOG_UINT(s.literal_htree_index);
-				BROTLI_LOG_ARRAY_INDEX(s.ringbuffer, pos & s.ringbuffer_mask);
 				if ((pos & s.ringbuffer_mask) == s.ringbuffer_mask) {
 				  s.partially_written = 0;
 				  s.state = BROTLI_STATE_BLOCK_INNER_WRITE;
@@ -1464,15 +1279,14 @@ static function BrotliDecompressedSize(encoded_size:Int,
 			}
 			BROTLI_LOG_UINT(s.distance);
 
-			if (pos + s.custom_dict_size < s.max_backward_distance &&
+			if (pos < s.max_backward_distance &&
 				s.max_distance != s.max_backward_distance) {
-			  s.max_distance = pos + s.custom_dict_size;
+			  s.max_distance = pos;
 			} else {
 			  s.max_distance = s.max_backward_distance;
 			}
 
-			s.copy_dst = s.ringbuffer;
-			s.copy_dst_off = s.ringbuffer_off+(pos & s.ringbuffer_mask);
+			s.copy_dst_off = pos & s.ringbuffer_mask;
 
 			if (s.distance > s.max_distance) {
 			  if (s.copy_length >= kMinDictionaryWordLength &&
@@ -1488,27 +1302,15 @@ static function BrotliDecompressedSize(encoded_size:Int,
 				  var word = kBrotliDictionary;//const uint8_t*
 				  var word_off = offset;
 				  var len:Int = TransformDictionaryWord(
-					  s.copy_dst, s.copy_dst_off, word, word_off, s.copy_length, transform_idx);
+					  s.ringbuffer, s.copy_dst_off, word, word_off, s.copy_length, transform_idx);
 				  s.copy_dst_off += len;
 				  pos += len;
 				  s.meta_block_remaining_len -= len;
 				  if (s.copy_dst_off >= s.ringbuffer_end_off) {
-					s.partially_written = 0;
-					num_written = BrotliWrite(output, s.ringbuffer,s.ringbuffer_off,
-											  s.ringbuffer_size);
-					if (num_written < 0) {
-					  result = BROTLI_FAILURE();
-					  continue;
-					}
-					s.partially_written += num_written;
-					if (s.partially_written < s.ringbuffer_size) {
-					  result = BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-					  s.state = BROTLI_STATE_BLOCK_POST_WRITE_1;
-					  continue;
-					}
-					/* Modifications to this code shold be reflected in
-					BROTLI_STATE_BLOCK_POST_WRITE_1 case */
-					memcpy(s.ringbuffer, s.ringbuffer_off, s.ringbuffer_end, s.ringbuffer_end_off,
+					// The word ran past the end into the slack: flush the ring
+					// buffer, then move what overhung to its start.
+					BrotliWrite(output, s.ringbuffer, 0, s.ringbuffer_size);
+					s.ringbuffer.blit(0, s.ringbuffer, s.ringbuffer_end_off,
 						   (s.copy_dst_off - s.ringbuffer_end_off));
 				  }
 				} else {
@@ -1539,38 +1341,20 @@ static function BrotliDecompressedSize(encoded_size:Int,
 				continue;
 			  }
 
-			  s.copy_src =
-				  s.ringbuffer;
-			  s.copy_src_off =
-				  s.ringbuffer_off+
-				  ((pos - s.distance) & s.ringbuffer_mask);
-
-			  /* Modifications to this loop should be reflected in
-			  BROTLI_STATE_BLOCK_POST_WRITE_2 case */
-			  for (i in 0...s.copy_length) {
-				s.ringbuffer[pos & s.ringbuffer_mask] =
-					s.ringbuffer[(pos - s.distance) & s.ringbuffer_mask];
-				if ((pos & s.ringbuffer_mask) == s.ringbuffer_mask) {
-				  s.partially_written = 0;
-				  num_written = BrotliWrite(output, s.ringbuffer,s.ringbuffer_off,
-								  s.ringbuffer_size);
-				  if (num_written < 0) {
-					result = BROTLI_FAILURE();
-					continue;
-				  }
-				  s.partially_written += num_written;
-				  if (s.partially_written < s.ringbuffer_size) {
-					result = BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-					s.state = BROTLI_STATE_BLOCK_POST_WRITE_2;
-					continue;
-				  }
+			  // Byte by byte: a copy may overlap its own output, which is how
+			  // a run is encoded. The output takes each full ring buffer
+			  // whole or throws, so there is no partial write to resume.
+			  var ring:Bytes = s.ringbuffer;
+			  var ring_mask:Int = s.ringbuffer_mask;
+			  var distance:Int = s.distance;
+			  for (k in 0...s.copy_length) {
+				ring.set(pos & ring_mask, ring.get((pos - distance) & ring_mask));
+				if ((pos & ring_mask) == ring_mask) {
+				  BrotliWrite(output, ring, 0, s.ringbuffer_size);
 				}
 				++pos;
-				--s.meta_block_remaining_len;
 			  }
-			  if (result == BROTLI_RESULT_NEEDS_MORE_OUTPUT) {
-				continue;
-			  }
+			  s.meta_block_remaining_len -= s.copy_length;
 			}
 			s.state = BROTLI_STATE_BLOCK_POST_CONTINUE;//ADDED
 		  }
@@ -1579,70 +1363,28 @@ static function BrotliDecompressedSize(encoded_size:Int,
 			/* When we get here, we must have inserted at least one literal and */
 			/* made a copy of at least length two, therefore accessing the last 2 */
 			/* bytes is valid. */
-			s.prev_byte1 = s.ringbuffer[(pos - 1) & s.ringbuffer_mask];
-			s.prev_byte2 = s.ringbuffer[(pos - 2) & s.ringbuffer_mask];
+			s.prev_byte1 = s.ringbuffer.get((pos - 1) & s.ringbuffer_mask);
+			s.prev_byte2 = s.ringbuffer.get((pos - 2) & s.ringbuffer_mask);
 			s.state = BROTLI_STATE_BLOCK_BEGIN;
 		  }
 			//goto BlockBegin;
-		  if(s.state== BROTLI_STATE_BLOCK_INNER_WRITE||
-		  s.state== BROTLI_STATE_BLOCK_POST_WRITE_1||
-		  s.state== BROTLI_STATE_BLOCK_POST_WRITE_2){
-			num_written = BrotliWrite(
-				output, s.ringbuffer,s.ringbuffer_off + s.partially_written,
-				(s.ringbuffer_size - s.partially_written));
-			if (num_written < 0) {
-			  result = BROTLI_FAILURE();
-			  continue;
-			}
-			s.partially_written += num_written;
-			if (s.partially_written < s.ringbuffer_size) {
-			  result = BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-			  continue;
-			}
-			if (s.state == BROTLI_STATE_BLOCK_POST_WRITE_1) {
-			  memcpy(s.ringbuffer, s.ringbuffer_off, s.ringbuffer_end, s.ringbuffer_end_off,
-					 (s.copy_dst_off - s.ringbuffer_end_off));
-			  s.state = BROTLI_STATE_BLOCK_POST_CONTINUE;
-			} else if (s.state == BROTLI_STATE_BLOCK_POST_WRITE_2) {
-			  /* The tail of "i < s.copy_length" loop. */
-			  ++pos;
-			  --s.meta_block_remaining_len;
-			  ++i;
-			  /* Reenter the loop. */
-			  while (i < s.copy_length) {
-				s.ringbuffer[pos & s.ringbuffer_mask] =
-					s.ringbuffer[(pos - s.distance) & s.ringbuffer_mask];
-				if ((pos & s.ringbuffer_mask) == s.ringbuffer_mask) {
-				  s.partially_written = 0;
-				  num_written = BrotliWrite(output, s.ringbuffer, s.ringbuffer_off,
-											s.ringbuffer_size);
-				  if (num_written < 0) {
-					result = BROTLI_FAILURE();
-					continue;
-				  }
-				  s.partially_written += num_written;
-				  if (s.partially_written < s.ringbuffer_size) {
-					result = BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-					continue;
-				  }
-				}
-				++pos;
-				--s.meta_block_remaining_len;
-				++i;
-			  }
-			  if (result == BROTLI_RESULT_NEEDS_MORE_OUTPUT) {
-				continue;
-			  }
-			  s.state = BROTLI_STATE_BLOCK_POST_CONTINUE;
-			} else {  /* BROTLI_STATE_BLOCK_INNER_WRITE */
-			  /* The tail of "i < s.insert_length" loop. */
-			  ++pos;
-			  ++i;
-			  s.state = BROTLI_STATE_BLOCK_INNER;
-			}
+		  if(s.state== BROTLI_STATE_BLOCK_INNER_WRITE){
+			// A literal filled the ring buffer's last slot: flush it, then
+			// finish that step of the insert loop.
+			BrotliWrite(output, s.ringbuffer, 0, s.ringbuffer_size);
+			++pos;
+			++i;
+			s.state = BROTLI_STATE_BLOCK_INNER;
 			continue;
 		  }
 		  if(s.state== BROTLI_STATE_METABLOCK_DONE){
+			// A meta-block that produced more than it declared -- an insert
+			// or a dictionary word running past its end -- is invalid, as
+			// the C decoder later decided too.
+			if (s.meta_block_remaining_len < 0) {
+			  result = BROTLI_FAILURE();
+			  continue;
+			}
 			if (s.context_modes != null) {
 			  //free(s.context_modes);
 			  s.context_modes = null;
@@ -1664,18 +1406,10 @@ static function BrotliDecompressedSize(encoded_size:Int,
 			continue;
 		  }
 		  if(s.state== BROTLI_STATE_DONE){
-			if (s.ringbuffer.length != 0) {
-			  num_written = BrotliWrite(
-				  output, s.ringbuffer,s.ringbuffer_off + s.partially_written,
-				  ((pos & s.ringbuffer_mask) - s.partially_written));
-			  if (num_written < 0) {
-				return BROTLI_FAILURE();
-			  }
-			  s.partially_written += num_written;
-			  if (s.partially_written < (pos & s.ringbuffer_mask)) {
-				result = BROTLI_RESULT_NEEDS_MORE_OUTPUT;
-				break;
-			  }
+			// Whatever the ring buffer holds past its last flush. It was never
+			// allocated for a stream that produced nothing.
+			if (s.ringbuffer != null) {
+			  BrotliWrite(output, s.ringbuffer, 0, pos & s.ringbuffer_mask);
 			}
 			if (!JumpToByteBoundary(s.br)) {
 			  result = BROTLI_FAILURE();
@@ -1692,13 +1426,20 @@ static function BrotliDecompressedSize(encoded_size:Int,
 	  s.loop_counter = i;
 	  return result;
 	}
-	
-	
-	static public function BrotliDecompress(input, output):Int {
+
+
+	/**
+		Decodes the whole of `input` into `output`: 1 on success, 0 when the
+		stream is damaged or truncated. Throws `BrotliOutput.exceeded` when the
+		output would pass `output.limit`, either as a meta-block announces it or
+		as it is written.
+	**/
+	static public function BrotliDecompress(input:Bytes, output:BrotliOutput):Int {
 		var s = new BrotliState();
 		var result:BrotliResult;
 		BrotliStateInit(s);
-		result = BrotliDecompressStreaming(input, output, 1, s);
+		s.output_limit = output.limit;
+		result = BrotliDecompressStreaming(input, output, s);
 		//return 1;
 		switch(result) {
 			case BROTLI_RESULT_ERROR: return 0;
