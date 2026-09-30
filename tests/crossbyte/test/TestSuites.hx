@@ -167,6 +167,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.NativePostgresBridgeTest());
 		// Where the worker pool has threads, and so a queue to bound.
 		runner.addCase(new crossbyte.db.AsyncDatabaseTest());
+		// The native MySQL client against a server that logs every byte it
+		// is sent (fakemysql/FakeMySQLServer), so no database is needed.
+		runner.addCase(new crossbyte.db.MySQLNativeWireTest());
 		#end
 	}
 

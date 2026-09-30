@@ -1220,6 +1220,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A MySQL statement with a non-ASCII character anywhere in it reaches the
+  server whole. The native client sent a query with its length in UTF-16
+  units instead of UTF-8 bytes, so each extra byte cut one off the end:
+  `UPDATE users SET city = 'Zürich' WHERE id = 12` ran as `... WHERE id =
+  1` and changed another row, and an escaped value lost its tail the same
+  way. Fixed in the hxcpp fork (`src/hx/libs/mysql`, branch
+  `fix/mysql-client`), which a native build needs.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
