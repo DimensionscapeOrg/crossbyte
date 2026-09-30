@@ -46,6 +46,115 @@ class CodecFormatsTest extends utest.Test {
 	 * that sends it sends zlib. ByteArray had raw deflate and nothing else, so
 	 * a CrossByte client could read none of them.
 	 */
+	/**
+		A body compressed as it is streamed, a piece at a time, inflates to
+		everything written, as gzip and as zlib, across more than two
+		windows, so the buffer the matches reach into slides, and with a
+		write of nothing among the pieces.
+	**/
+	public function testAStreamedBodyInflatesToEverythingWritten():Void {
+		var pieces:Array<Bytes> = [];
+		var all:StringBuf = new StringBuf();
+		var seed:Int = 12345;
+		for (i in 0...160) {
+			var line:StringBuf = new StringBuf();
+			for (j in 0...(i % 7 == 0 ? 900 : 40)) {
+				seed = (seed * 1103515 + 12345) & 0x7FFFFFFF;
+				line.add(String.fromCharCode(97 + (seed >> 8) % 26));
+				if (j % 9 == 0) line.add(' "state":"running" ');
+			}
+			line.add("\n");
+			var text:String = line.toString();
+			all.add(text);
+			pieces.push(Bytes.ofString(text));
+		}
+		pieces.insert(3, Bytes.alloc(0));
+		var expected:String = all.toString();
+		Assert.isTrue(expected.length > 2 * 32768, "the stream is short of two windows: " + expected.length);
+
+		for (gzip in [true, false]) {
+			var encoder = new crossbyte._internal.deflatex.StreamEncoder(gzip);
+			var body:ByteArray = new ByteArray();
+			for (piece in pieces) {
+				var out:Bytes = encoder.write(piece);
+				body.writeBytes(ByteArray.fromBytes(out), 0, out.length);
+			}
+			var tail:Bytes = encoder.finish();
+			body.writeBytes(ByteArray.fromBytes(tail), 0, tail.length);
+
+			body.uncompress(gzip ? CompressionAlgorithm.GZIP : CompressionAlgorithm.ZLIB);
+			Assert.equals(expected.length, body.length, (gzip ? "gzip" : "zlib") + " inflated to the wrong length");
+			Assert.isTrue(body.toString() == expected, (gzip ? "gzip" : "zlib") + " inflated to something else");
+		}
+
+		for (gzip in [true, false]) {
+			var empty:ByteArray = ByteArray.fromBytes(new crossbyte._internal.deflatex.StreamEncoder(gzip).finish());
+			empty.uncompress(gzip ? CompressionAlgorithm.GZIP : CompressionAlgorithm.ZLIB);
+			Assert.equals(0, empty.length, "an empty stream did not inflate to nothing");
+		}
+	}
+
+	/**
+		Later pieces reach back into earlier ones: two hundred short messages
+		that repeat their fields compress, streamed, to far less than the same
+		messages compressed one at a time, which is what compressing each
+		chunk of a stream alone would have cost.
+	**/
+	public function testAStreamReachesBackIntoWhatWasWritten():Void {
+		var streamed:Int = 0;
+		var alone:Int = 0;
+		var raw:Int = 0;
+		var encoder = new crossbyte._internal.deflatex.StreamEncoder(false);
+		for (i in 0...200) {
+			var message:Bytes = Bytes.ofString('data: {"type":"tick","seq":$i,"state":"running","players":[1,2,3]}\n\n');
+			raw += message.length;
+			streamed += encoder.write(message).length;
+			var single = new crossbyte._internal.deflatex.StreamEncoder(false);
+			alone += single.write(message).length + single.finish().length;
+		}
+		streamed += encoder.finish().length;
+		Assert.isTrue(streamed * 2 < alone, 'streamed $streamed bytes against $alone compressed one at a time');
+		Assert.isTrue(streamed < raw, 'streamed $streamed bytes against $raw raw');
+	}
+
+	#if (java || jvm || nodejs)
+	/**
+		What each write returns can be inflated before the stream ends: the
+		sync flush is what lets a client show a streamed response as it
+		arrives rather than when it is done.
+	**/
+	public function testEachWriteCanBeInflatedAsItArrives():Void {
+		var encoder = new crossbyte._internal.deflatex.StreamEncoder(false);
+		var sent:ByteArray = new ByteArray();
+		var so_far:String = "";
+		for (i in 0...3) {
+			var text:String = 'event $i: {"type":"tick","seq":$i}\n';
+			so_far += text;
+			var out:Bytes = encoder.write(Bytes.ofString(text));
+			sent.writeBytes(ByteArray.fromBytes(out), 0, out.length);
+			Assert.equals(so_far, __inflateSoFar(sent), "the stream so far did not inflate to what was written after write " + i);
+		}
+	}
+
+	private static function __inflateSoFar(zlib:ByteArray):String {
+		var data:Bytes = Bytes.alloc(zlib.length);
+		data.blit(0, zlib, 0, zlib.length);
+		#if (java || jvm)
+		var inflater = new java.util.zip.Inflater();
+		inflater.setInput(data.getData(), 0, data.length);
+		var out:Bytes = Bytes.alloc(65536);
+		var n:Int = inflater.inflate(out.getData(), 0, out.length);
+		inflater.end();
+		return out.getString(0, n);
+		#else
+		var zlibModule:Dynamic = js.Lib.require("zlib");
+		var buffer:Dynamic = js.node.Buffer.from(data.getData());
+		var result:Dynamic = zlibModule.inflateSync(buffer, {finishFlush: zlibModule.constants.Z_SYNC_FLUSH});
+		return result.toString("utf8");
+		#end
+	}
+	#end
+
 	public function testZlibIsReadAsZlibWritesIt():Void {
 		for (hex in NODE_ZLIB) {
 			Assert.equals(TEXT, uncompressed(hex, CompressionAlgorithm.ZLIB), hex.substr(0, 4));
