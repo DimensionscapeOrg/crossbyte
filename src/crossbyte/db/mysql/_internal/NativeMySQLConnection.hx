@@ -105,6 +105,20 @@ class NativeMySQLConnection implements Connection {
 	private function get_serverStatus():Int {
 		return NativeMySQL.serverStatus(__handle);
 	}
+
+	/** Whether the session runs over TLS. **/
+	public var encrypted(get, never):Bool;
+
+	/** The authentication plugin the account logged in with. **/
+	public var authPlugin(get, never):String;
+
+	private function get_encrypted():Bool {
+		return NativeMySQL.isTls(__handle);
+	}
+
+	private function get_authPlugin():String {
+		return NativeMySQL.authPlugin(__handle);
+	}
 }
 
 @:noCompletion

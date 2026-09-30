@@ -54,6 +54,13 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	public var autocommit(get, set):Bool;
 	public var isolationLevel(get, set):IsolationLevel;
 
+	/**
+		Whether the session runs over TLS -- which, with `sslMode` left at
+		`PREFERRED`, is up to the server. Native client only; `false`
+		elsewhere.
+	**/
+	public var encrypted(get, never):Bool;
+
 	@:noCompletion private var __connection:Connection;
 	#if cpp
 	// The same object as __connection when the native client is in use, and
@@ -72,12 +79,17 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	public function open(cfg:MySQLConfig):Void {
 		try {
 			#if cpp
+			var sslMode:MySQLSSLMode = cfg.sslMode == null ? MySQLSSLMode.PREFERRED : cfg.sslMode;
 			__native = NativeMySQLConnection.connect({
 				host: cfg.host,
 				port: cfg.port == null ? 3306 : cfg.port,
 				user: cfg.user,
 				pass: cfg.password,
-				socket: cfg.socket
+				socket: cfg.socket,
+				sslMode: sslMode.toCode(),
+				sslCa: cfg.sslCa,
+				serverPublicKey: cfg.serverPublicKey,
+				allowPublicKeyRetrieval: cfg.allowPublicKeyRetrieval == true
 			}, cfg.database);
 			__connection = __native;
 			#else
@@ -326,6 +338,16 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				}
 			default:
 		}
+	}
+
+	private function get_encrypted():Bool {
+		#if cpp
+		if (__native != null) {
+			return __native.encrypted;
+		}
+		#end
+
+		return false;
 	}
 
 	private function get_connected():Bool {
