@@ -5,6 +5,16 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `CompressionAlgorithm.LZ4_FRAME` (`"lz4-frame"`): the LZ4 frame format,
+  what the `lz4` tool writes and `.lz4` files hold, read and written by
+  `ByteArray.compress` and `uncompress` beside the bare block `LZ4` has
+  always meant. A frame carries its blocks' sizes, an end mark, its content
+  size and an xxHash32 of the content, so one cut short or damaged is
+  always refused, which a bare block cannot promise. Reading takes linked
+  or independent blocks of any size, block and content checksums,
+  concatenated and skippable frames; writing uses independent 4 MB blocks
+  with the content size and checksum. A frame whose stated size passes the
+  limit is refused before a block is decoded.
 - `CompressionAlgorithm.ZLIB` (`"zlib"`): the zlib format of RFC 1950, a
   deflate stream behind a two-byte header with an Adler-32 of the data,
   written and read by `ByteArray.compress` and `uncompress` under the same

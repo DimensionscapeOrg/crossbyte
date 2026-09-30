@@ -221,10 +221,14 @@ class Lz4 {
 	/**
 		Decodes the block `source[start, end)` onto the end of `out`.
 
-		A match may reach back into what `out` held before the block, as a
-		frame's linked blocks do; the first block's reach stops at its start.
+		@param floor The earliest position in `out` a match may reach back to:
+		       the block's own start for an independent block, the frame's for
+		       a frame's linked blocks.
 	**/
-	public static function decodeBlock(source:Bytes, start:Int, end:Int, out:Lz4Output):Void {
+	public static function decodeBlock(source:Bytes, start:Int, end:Int, out:Lz4Output, floor:Int = -1):Void {
+		if (floor < 0) {
+			floor = out.length;
+		}
 		var iPos:Int = start;
 		var blockStart:Int = out.length;
 		// Where the last match began and ended, to hold the block to the end
@@ -272,7 +276,7 @@ class Lz4 {
 			}
 			var offset:Int = source.get(iPos) | (source.get(iPos + 1) << 8);
 			iPos += 2;
-			if (offset == 0 || offset > out.length) {
+			if (offset == 0 || offset > out.length - floor) {
 				throw new IOError("Invalid LZ4 data: a match reaches before the start");
 			}
 
@@ -353,6 +357,11 @@ class Lz4Output {
 
 	public function toBytes():Bytes {
 		return length == __bytes.length ? __bytes : __bytes.sub(0, length);
+	}
+
+	/** What has been written, in place: valid up to `length`, until the next write. **/
+	public inline function view():Bytes {
+		return __bytes;
 	}
 
 	/** Makes room for `count` more, refusing past the limit before growing. **/

@@ -5,6 +5,7 @@ package crossbyte.io;
 import haxe.Int64;
 import crossbyte._internal.brotli.Brotli;
 import crossbyte._internal.lz4.Lz4;
+import crossbyte._internal.lz4.Lz4Frame;
 import crossbyte._internal.deflatex.Deflater;
 import crossbyte._internal.deflatex.GZCompressor;
 import crossbyte._internal.deflatex.Inflater;
@@ -57,7 +58,8 @@ import format.amf3.Writer as AMF3Writer;
 	}
 	```
 	Compression support is limited to the algorithms available in
-	`CompressionAlgorithm`: `br`, `deflate`, `gzip`, `lz4` and `zlib`.
+	`CompressionAlgorithm`: `br`, `deflate`, `gzip`, `lz4`, `lz4-frame` and
+	`zlib`.
 	Possible uses of the ByteArray class include the following:
 	* Creating a custom protocol to connect to a server.
 	* Writing your own URLEncoder/URLDecoder.
@@ -189,6 +191,10 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		wrapping of the same stream: a two-byte header and an Adler-32. It is
 		what HTTP's `deflate` content coding means, and what zlib, Node's
 		`zlib.deflateSync` and Java's `Deflater` produce and expect.
+
+		`LZ4` is the same split: a bare block, which carries no length, and
+		`LZ4_FRAME`, what the `lz4` tool writes, which wraps blocks in sizes and
+		checksums. A block cut short can pass for a whole one; a frame cannot.
 	**/
 	public inline function compress(algorithm:CompressionAlgorithm = LZ4):Void {
 		this.compress(algorithm);
@@ -827,6 +833,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			case CompressionAlgorithm.GZIP: GZCompressor.compress(null, this);
 			case CompressionAlgorithm.LZ4: Lz4.compress(this);
 			case CompressionAlgorithm.ZLIB: ZlibCompressor.compress(this);
+			case CompressionAlgorithm.LZ4_FRAME: Lz4Frame.compress(this);
 			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 
@@ -1194,6 +1201,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this, maxOutputSize);
 			case CompressionAlgorithm.LZ4: Lz4.decompress(this, maxOutputSize);
 			case CompressionAlgorithm.ZLIB: ZlibCompressor.decompress(this, maxOutputSize);
+			case CompressionAlgorithm.LZ4_FRAME: Lz4Frame.decompress(this, maxOutputSize);
 			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 
