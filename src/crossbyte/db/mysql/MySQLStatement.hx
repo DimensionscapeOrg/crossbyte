@@ -73,6 +73,15 @@ class MySQLStatement extends EventDispatcher {
 		}
 	}
 
+	/**
+		Runs `text` and queues the first `prefetch` rows (all of them for
+		`-1`) for `getResult()`, then dispatches `SQLEvent.RESULT`.
+
+		A statement the server refuses throws an `SQLError`, after dispatching
+		it as an `SQLErrorEvent` too. It used to dispatch the event and return,
+		so to a caller not listening -- an `AsyncDatabase` task among them -- a
+		failed INSERT read as one that had run.
+	**/
 	public function execute(prefetch:Int = -1):Void {
 		if (__connection == null) {
 			throw "MySQLStatement: no connection set.";
@@ -91,12 +100,30 @@ class MySQLStatement extends EventDispatcher {
 		try {
 			__resultSet = __connection.request(sql);
 			__queueResult();
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, e, "Execution failed")));
+			__resultSet = null;
+			__fail(e);
 		}
+
+		// Outside the try: a RESULT listener that throws has not made the
+		// statement fail, and must not be reported as though it had.
+		__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+	}
+
+	/**
+		Reports a failed statement both ways: as the `SQLErrorEvent` it always
+		was, and as the `SQLError` it now throws. The detail is made a string
+		here, where it is known to be whatever the driver threw -- on the jvm a
+		`java.sql.SQLException`, which `SQLError` took where it expects a
+		`String` and turned into a `ClassCastException`.
+	**/
+	@:noCompletion private function __fail(e:Dynamic):Void {
+		var detail:String = Std.string(e);
+		var error:SQLError = new SQLError(SQLEvent.RESULT, detail, "Execution failed: " + detail);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
+		throw error;
 	}
 
 	@:noCompletion private function __applyParameters(query:String):String {
@@ -148,7 +175,12 @@ class MySQLStatement extends EventDispatcher {
 
 	private function __queueResult():Void {
 		var rows:Array<Dynamic> = [];
-		if (__prefetch == -1) {
+		if (__resultSet == null) {
+			// Nothing to read: a driver that answers a write with no result
+			// set at all rather than an empty one.
+			__push(rows);
+			__executing = false;
+		} else if (__prefetch == -1) {
 			while (__resultSet.hasNext()) {
 				rows.push(__resultSet.next());
 			}

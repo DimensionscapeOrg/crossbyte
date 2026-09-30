@@ -581,13 +581,43 @@ class FakeMySQLSession {
 			return;
 		}
 
-		if (StringTools.startsWith(compact, "INSERT") || StringTools.startsWith(compact, "UPDATE") || StringTools.startsWith(compact, "DELETE")) {
-			ok(1, 42);
+		if (StringTools.startsWith(compact, "SELECT LAST_INSERT_ID()")) {
+			resultSet([{name: "LAST_INSERT_ID()", type: FakeMySQLServer.TYPE_LONGLONG, flags: FakeMySQLServer.FLAG_UNSIGNED,
+				charset: FakeMySQLServer.CHARSET_BINARY}], [[Std.string(lastInsertId)]]);
 			return;
 		}
 
+		if (StringTools.startsWith(compact, "SELECT ROW_COUNT()")) {
+			resultSet([{name: "n", type: FakeMySQLServer.TYPE_LONGLONG, charset: FakeMySQLServer.CHARSET_BINARY}], [[Std.string(lastAffectedRows)]]);
+			return;
+		}
+
+		if (StringTools.startsWith(compact, "SELECT VERSION()")) {
+			resultSet([{name: "v", type: FakeMySQLServer.TYPE_VAR_STRING}], [[server.serverVersion]]);
+			return;
+		}
+
+		if (StringTools.startsWith(compact, "SELECT @@AUTOCOMMIT")) {
+			resultSet([{name: "ac", type: FakeMySQLServer.TYPE_LONGLONG, charset: FakeMySQLServer.CHARSET_BINARY}],
+				[[(status & FakeMySQLServer.STATUS_AUTOCOMMIT) != 0 ? "1" : "0"]]);
+			return;
+		}
+
+		if (StringTools.startsWith(compact, "INSERT") || StringTools.startsWith(compact, "UPDATE") || StringTools.startsWith(compact, "DELETE")) {
+			lastAffectedRows = 1;
+			lastInsertId = StringTools.startsWith(compact, "INSERT") ? 42 : 0;
+			ok(lastAffectedRows, lastInsertId);
+			return;
+		}
+
+		lastAffectedRows = 0;
 		ok();
 	}
+
+	/** What `LAST_INSERT_ID()` and `ROW_COUNT()` answer, as the server keeps them per session. **/
+	public var lastInsertId:Float = 0;
+
+	public var lastAffectedRows:Float = 0;
 
 	// --------------------------------------------------------------- answers
 

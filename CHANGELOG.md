@@ -796,6 +796,12 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `MySQLStatement.execute()` throws an `SQLError` when the server refuses
+  the statement, after dispatching the `SQLErrorEvent` it always did. It
+  returned normally, so a failed write read as a successful one to any
+  caller not listening: an `AsyncDatabase` task completed, with `null`. What
+  to change: code that listens for `SQLErrorEvent.ERROR` and counts on
+  `execute()` returning should catch the `SQLError` as well.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -1220,6 +1226,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `MySQLStatement` reports an INSERT, UPDATE or DELETE as the success it
+  was. The native client threw "Invalid result" when the result of a write
+  was iterated, as the statement does with every result, so each write
+  dispatched `SQLErrorEvent` "Execution failed" after the server had
+  applied it, and code that retried on error wrote twice. Fixed in the
+  hxcpp fork (`fix/mysql-client`).
 - A MySQL statement with a non-ASCII character anywhere in it reaches the
   server whole. The native client sent a query with its length in UTF-16
   units instead of UTF-8 bytes, so each extra byte cut one off the end:
