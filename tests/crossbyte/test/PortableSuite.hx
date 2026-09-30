@@ -76,6 +76,9 @@ class PortableSuite {
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
+		// permessage-deflate on Node's sessions, and zlib, what a browser
+		// inflates with, reading what a server compressed.
+		runner.addCase(new crossbyte.net.WebSocketDeflateTest());
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());

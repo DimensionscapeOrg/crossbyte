@@ -67,11 +67,15 @@ class WirePeer {
 		send(Bytes.ofString(lines.join("\r\n") + "\r\n\r\n"));
 	}
 
-	/** Sends one frame, masked as a client's must be. **/
-	public function sendFrame(opcode:Int, payload:Bytes):Void {
+	/**
+		Sends one frame, masked as a client's must be. `rsv1` marks it
+		compressed, as permessage-deflate does; `fin` false leaves the
+		message open for a continuation.
+	**/
+	public function sendFrame(opcode:Int, payload:Bytes, rsv1:Bool = false, fin:Bool = true):Void {
 		var out = new BytesBuffer();
 		var length:Int = payload == null ? 0 : payload.length;
-		out.addByte(0x80 | opcode);
+		out.addByte((fin ? 0x80 : 0x00) | (rsv1 ? 0x40 : 0x00) | opcode);
 		if (length < 126) {
 			out.addByte(0x80 | length);
 		} else {
@@ -182,7 +186,7 @@ class WirePeer {
 			if (start + length > bytes.length) {
 				break;
 			}
-			out.push({opcode: opcode, payload: bytes.sub(start, length)});
+			out.push({opcode: opcode, payload: bytes.sub(start, length), rsv1: (bytes.get(at) & 0x40) != 0});
 			at = start + length;
 		}
 
@@ -259,4 +263,6 @@ class WirePeer {
 typedef WireFrame = {
 	var opcode:Int;
 	var payload:Bytes;
+	/** Set on the first frame of a compressed message. **/
+	var rsv1:Bool;
 }
