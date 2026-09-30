@@ -804,6 +804,13 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `SlotHandle` no longer converts to `Int` by itself. A handle passed where
+  an id belongs, `grid.set(entity.handle, x, y)` for `entity.slot`,
+  compiled, and worked until the slot's first reuse made the handle
+  1,048,576 or more, when `SpatialGrid` and `InterestSet` grew their arrays
+  to fit it: 117 MB by the third reuse. What to change: use `handle.index()`
+  for the slot, and `handle.toInt()` for the whole handle where it is
+  written down; an `Int` assigned to a `SlotHandle` still reads one back.
 - `ReliableDatagramServerSocket.connect()` to a name, and so
   `NetHost.dial()` on a reliable-UDP host, looks it up off the runtime's
   thread. It was looked up in the call, so every session the server

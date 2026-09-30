@@ -156,7 +156,35 @@ class CollectionsTest extends utest.Test {
 
 		Assert.equals(12345, handle.index());
 		Assert.equals(37, handle.gen());
-		Assert.equals(-1, SlotHandle.INVALID);
+		Assert.equals(-1, SlotHandle.INVALID.toInt());
+	}
+
+	/**
+		A handle is not an id. It converted to an `Int` silently, so
+		`grid.set(entity.handle, x, y)` compiled where `entity.slot` was meant,
+		and worked until the slot's first reuse made the handle 1,048,576 or
+		more, when the grid grew five arrays of that length to fit it, 117
+		MB by the third reuse. Now it has to be asked for.
+	**/
+	public function testAHandleIsNotAnIdOfItsOwnAccord():Void {
+		var map = new SlotMap<String>(4);
+		var grid = new SpatialGrid(0, 0, 100, 100, 10);
+		var interest = new InterestSet();
+		var handle:SlotHandle = map.insert("entity");
+
+		Assert.notNull(TypeCheck.errorOf(grid.set(handle, 1, 1)), "a handle was taken as a grid id");
+		Assert.notNull(TypeCheck.errorOf(interest.add(handle)), "a handle was taken as an interest id");
+		Assert.notNull(TypeCheck.errorOf({
+			var id:Int = handle;
+		}), "a handle became an Int by assignment");
+
+		// Asked for, both ways.
+		grid.set(handle.index(), 1, 1);
+		Assert.isTrue(grid.has(handle.index()));
+		var written:Int = handle.toInt();
+		var read:SlotHandle = written;
+		Assert.equals("entity", map.get(read));
+		Assert.isTrue(read == handle);
 	}
 
 	public function testSwitchTableDispatchesMixedKeysAndArguments():Void {
@@ -524,13 +552,13 @@ class CollectionsTest extends utest.Test {
 		var negative = 0;
 		for (_ in 0...(1 << SlotHandle.GEN_BITS)) {
 			var handle = map.insert("e");
-			if ((handle : Int) < 0) {
+			if (handle.toInt() < 0) {
 				negative++;
 			}
 			map.remove(handle);
 		}
 		Assert.equals(0, negative);
-		Assert.isTrue((SlotHandle.make(SlotHandle.INDEX_MASK, SlotHandle.GEN_MASK) : Int) != (SlotHandle.INVALID : Int));
+		Assert.isTrue(SlotHandle.make(SlotHandle.INDEX_MASK, SlotHandle.GEN_MASK).toInt() != SlotHandle.INVALID.toInt());
 	}
 
 	public function testClearKeepsTheGenerationInRange():Void {
