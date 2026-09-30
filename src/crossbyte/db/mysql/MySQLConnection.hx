@@ -733,14 +733,38 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		return __inTransaction || __autocommitOff;
 	}
 
+	/**
+		The AUTO_INCREMENT id the last statement generated. Natively it comes
+		with the statement's answer; each read used to be a `SELECT
+		LAST_INSERT_ID()`. An id past 2^31 reads as 2147483647 here;
+		`SQLResult.lastInsertRowID` holds it exactly to 2^53.
+	**/
 	private function get_lastInsertRowID():Int {
+		#if cpp
+		if (__native != null) {
+			return __native.lastInsertId();
+		}
+		#end
+
 		return (__connection != null) ? __connection.lastInsertId() : 0;
 	}
 
+	/**
+		The rows the last statement changed. Natively from its answer, where a
+		`SELECT ROW_COUNT()` used to be sent for each read -- and read after
+		`getResult()`, which sent a statement of its own, it answered -1.
+	**/
 	private function get_affectedRows():Int {
 		if (__connection == null) {
 			return 0;
 		}
+
+		#if cpp
+		if (__native != null) {
+			var rows:Dynamic = __native.affectedRows;
+			return Std.isOfType(rows, Int) ? rows : 0x7FFFFFFF;
+		}
+		#end
 
 		var rs = __connection.request("SELECT ROW_COUNT() AS n;");
 
@@ -751,9 +775,55 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		if (__connection == null) {
 			return "";
 		}
+
+		#if cpp
+		if (__native != null) {
+			// From the greeting, so there is nothing to ask.
+			return __native.serverVersion;
+		}
+		#end
+
 		var rs:ResultSet = __connection.request("SELECT VERSION() AS v;");
 
 		return (rs != null && rs.hasNext()) ? Std.string(Reflect.field(rs.next(), "v")) : "";
+	}
+
+	/** The last generated id, exact to 2^53, for `SQLResult`. **/
+	@:noCompletion private function __insertIdFloat():Float {
+		#if cpp
+		if (__native != null) {
+			var id:Dynamic = __native.insertId;
+			var exact:Float = id;
+			return exact;
+		}
+		#end
+
+		return (__connection != null) ? __connection.lastInsertId() : 0;
+	}
+
+	/**
+		`request()`, with the rows read as they are asked for where the driver
+		can: natively a result is no longer read whole before its first row
+		is returned. Used by `MySQLStatement`.
+	**/
+	@:noCompletion private function __requestStream(sql:String):ResultSet {
+		#if cpp
+		if (__native != null) {
+			try {
+				var answer:ResultSet = __native.requestStream(sql);
+
+				if (__savepoints.length > 0 && !get_inTransaction()) {
+					__savepoints = [];
+				}
+
+				return answer;
+			} catch (e:Dynamic) {
+				throw __error("request", e);
+			}
+		}
+		#end
+
+		return request(sql);
 	}
 
 	private function get_autocommit():Bool {

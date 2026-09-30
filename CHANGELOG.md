@@ -1307,6 +1307,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A native `MySQLStatement` reads its rows as they are asked for, and costs
+  no statements of its own. A result was read whole before its first page
+  was returned -- a million-row SELECT held 190 MB before `execute(1000)`
+  returned, 470 MB with `execute()` -- where a page now holds its page.
+  Every `getResult()` sent `SELECT LAST_INSERT_ID()`, a round trip per
+  page, after which `affectedRows` -- itself a `SELECT ROW_COUNT()` -- read
+  -1; the insert id and affected rows now come from the statement's own
+  answer, as does `serverVersion`, from the greeting. `lastInsertRowID` in
+  `SQLResult` is exact past 2^31. Another statement on the connection
+  before the last page reads the rest of the result aside, so the page
+  after still comes. From the hxcpp fork (`fix/mysql-client`).
 - MySQL savepoints behave as SQLite's and Postgres's were fixed to.
   `setSavepoint()` returns the savepoint's name, where it returned nothing;
   names come from a counter, where they came from the clock, which gave
