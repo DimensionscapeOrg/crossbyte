@@ -72,6 +72,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	// What the driver knows of autocommit where the server cannot be asked
 	// for its flags; MySQL starts every session with it on.
 	@:noCompletion private var __autocommitOff:Bool = false;
+	// The same for NO_BACKSLASH_ESCAPES, which a session starts without
+	// unless the server's default sql_mode has it.
+	@:noCompletion private var __noBackslashEscapes:Bool = false;
 	// For cancel(), which runs on another thread and opens a connection of
 	// its own: what to connect with, and the id to KILL. Both are set once,
 	// when the connection opens, and read-only after.
@@ -195,6 +198,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		#end
 		__inTransaction = false;
 		__autocommitOff = false;
+		__noBackslashEscapes = false;
 		__config = null;
 		__threadId = 0;
 	}
@@ -214,6 +218,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			#end
 			__inTransaction = false;
 			__autocommitOff = false;
+			__noBackslashEscapes = false;
 			__config = null;
 			__threadId = 0;
 		}
@@ -402,6 +407,87 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	/**
+		Escapes `value` for use inside a single-quoted literal, by the rules
+		the session is using: a quote doubled once the server has reported
+		`NO_BACKSLASH_ESCAPES`, backslash-escaped otherwise, with NUL, newline,
+		carriage return, backslash, both quotes and Ctrl-Z escaped as MySQL's
+		own client escapes them. Natively the session's mode comes from the
+		server with every reply; elsewhere from the `sql_mode` statements this
+		connection has sent.
+
+		Prefer `MySQLStatement.parameters`, which quote for you and carry
+		`null`, numbers and bytes as well as strings.
+	**/
+	public function escape(value:String):String {
+		var text:String = value == null ? "" : value;
+
+		#if cpp
+		if (__native != null) {
+			return __native.escape(text);
+		}
+		#end
+
+		return __escapeText(text, __backslashEscapes());
+	}
+
+	/** `value`, escaped by `escape()` and quoted. **/
+	public function quote(value:String):String {
+		return "'" + escape(value) + "'";
+	}
+
+	/**
+		Whether the session reads a backslash inside a literal as an escape:
+		MySQL's default, and not under `NO_BACKSLASH_ESCAPES`.
+	**/
+	@:noCompletion private function __backslashEscapes():Bool {
+		#if cpp
+		if (__native != null) {
+			try {
+				return (__native.serverStatus & NativeMySQL.STATUS_NO_BACKSLASH_ESCAPES) == 0;
+			} catch (_:Dynamic) {}
+		}
+		#end
+
+		return !__noBackslashEscapes;
+	}
+
+	@:noCompletion private static function __escapeText(text:String, backslashes:Bool):String {
+		var out:StringBuf = new StringBuf();
+
+		for (i in 0...text.length) {
+			var c:Int = StringTools.fastCodeAt(text, i);
+
+			if (!backslashes) {
+				out.addChar(c);
+
+				if (c == "'".code) {
+					out.addChar(c);
+				}
+
+				continue;
+			}
+
+			switch (c) {
+				case 0:
+					out.add("\\0");
+				case 10:
+					out.add("\\n");
+				case 13:
+					out.add("\\r");
+				case 26:
+					out.add("\\Z");
+				case 34, 39, 92:
+					out.addChar(92);
+					out.addChar(c);
+				default:
+					out.addChar(c);
+			}
+		}
+
+		return out.toString();
+	}
+
+	/**
 		Runs `sql` and returns its result. Throws a `MySQLError`, with the
 		error number and SQLSTATE where the driver reports them, when the
 		server refuses it or the connection fails.
@@ -511,6 +597,16 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 					__inTransaction = false;
 				}
 			case "SET":
+				for (word in words) {
+					if (word.indexOf("SQL_MODE") >= 0) {
+						// The whole new mode is in the statement; whether it
+						// names the one flag the escaping depends on is all
+						// that is needed of it.
+						__noBackslashEscapes = sql.toUpperCase().indexOf("NO_BACKSLASH_ESCAPES") >= 0;
+						break;
+					}
+				}
+
 				var at:Int = words.indexOf("AUTOCOMMIT");
 
 				if (at < 0) {
