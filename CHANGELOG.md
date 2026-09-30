@@ -1220,6 +1220,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 request's connect and TLS handshake are held to its timeout,
+  and its cancel reaches them. A server that accepted TCP and never
+  answered the handshake held the request for good -- and every other
+  request to its origin, which waited behind the connect on a lock with no
+  deadline: three requests had no outcome in 15 seconds, and a cancel did
+  nothing. A request waiting on another's connect now leaves at its own
+  timeout, or at once when cancelled, and is told how that connect failed
+  rather than making it again in turn. A timed-out handshake says so,
+  where natively it read as "Blocked".
 - The HTTP/1.1 client holds a response's header section to 64 KB,
   `Http.MAX_RESPONSE_HEADER_BYTES`, the limit the server holds a request's
   to. It read header lines for as long as a server sent them, one line for

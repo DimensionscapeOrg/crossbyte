@@ -42,7 +42,8 @@ class H2ConnectionPool {
 	public static var idleTimeoutSeconds:Float = 90;
 
 	private static final __sessions:Map<String, Array<H2ClientSession>> = new Map();
-	private static final __gates:Map<String, Mutex> = new Map();
+	// Connections being opened, by origin, and who waits on each.
+	private static final __connecting:Map<String, PendingConnect> = new Map();
 	private static final __lock:Mutex = new Mutex();
 
 	/**
@@ -52,70 +53,161 @@ class H2ConnectionPool {
 	 * Connecting is serialized per origin. Without that, concurrent first
 	 * requests to the same host each find no session, each open their own, and
 	 * the multiplexing never happens -- the very case it exists for is the one
-	 * that races. The gate is per origin rather than global so a slow host
-	 * cannot hold up connections to every other one.
+	 * that races. So one request connects and the others wait for it, per
+	 * origin, so a slow host cannot hold up connections to every other one.
 	 *
-	 * `connect` still runs outside the global lock: it performs a TCP connect
-	 * and possibly a TLS handshake, and holding a shared lock across that
-	 * would serialize every origin behind the slowest.
+	 * The waiting has limits. The others waited on a per-origin mutex, as long
+	 * as the connect took and without a deadline or a cancel reaching them, so
+	 * a server that accepted TCP and never finished TLS held every request to
+	 * its origin for good: three requests, no outcome in 15 seconds, a cancel
+	 * doing nothing. A waiter now gives up at `timeoutSeconds`, leaves at once
+	 * on its `cancelToken`, and is told the connector's failure rather than
+	 * trying the same connect again in turn -- unless the connector was only
+	 * cancelled, when the next one tries.
+	 *
+	 * `connect` runs outside the pool's lock: it performs a TCP connect and
+	 * possibly a TLS handshake, and holding a shared lock across that would
+	 * serialize every origin behind the slowest.
+	 *
+	 * @param timeoutSeconds The longest this call waits on another request's
+	 *        connect; `<= 0` waits for it however long it takes.
 	 */
-	public static function acquire(origin:String, connect:Void->H2ClientSession):H2ClientSession {
-		var reusable:Null<H2ClientSession> = __findUsable(origin);
-		if (reusable != null) {
-			return reusable;
+	public static function acquire(origin:String, connect:Void->H2ClientSession, timeoutSeconds:Float = 0,
+			?cancelToken:crossbyte.http.HTTPCancelToken):H2ClientSession {
+		var deadline:Float = timeoutSeconds > 0 ? haxe.Timer.stamp() + timeoutSeconds : -1;
+
+		while (true) {
+			var expired:Array<H2ClientSession> = [];
+			__lock.acquire();
+			// Looked for and, failing that, claimed under one hold, so a
+			// session opened the moment before is found rather than duplicated.
+			var usable:Null<H2ClientSession> = __findUsableLocked(origin, expired);
+			var pending:Null<PendingConnect> = usable == null ? __connecting.get(origin) : null;
+			var mine:Bool = usable == null && pending == null;
+			if (mine) {
+				pending = new PendingConnect();
+				__connecting.set(origin, pending);
+			}
+			var wake:Null<sys.thread.Lock> = null;
+			if (usable == null && !mine) {
+				wake = new sys.thread.Lock();
+				pending.waiters.push(wake);
+			}
+			__lock.release();
+			__closeAll(expired);
+
+			if (usable != null) {
+				return usable;
+			}
+
+			if (mine) {
+				return __connectFor(origin, pending, connect, cancelToken);
+			}
+
+			__awaitConnect(origin, pending, wake, deadline, cancelToken);
+			// Woken by the connect finishing, well or badly: look again.
 		}
+	}
 
-		var gate:Mutex = __gateFor(origin);
-		gate.acquire();
-
-		// Re-checked behind the gate: whoever held it before us may have
-		// opened exactly the session we were about to duplicate.
-		var opened:Null<H2ClientSession> = __findUsable(origin);
-		if (opened != null) {
-			gate.release();
-			return opened;
-		}
-
+	/** Opens a connection for `origin` as the one request its waiters wait on. */
+	private static function __connectFor(origin:String, pending:PendingConnect, connect:Void->H2ClientSession,
+			cancelToken:Null<crossbyte.http.HTTPCancelToken>):H2ClientSession {
 		var session:H2ClientSession;
 		try {
 			session = connect();
 		} catch (e:Dynamic) {
-			gate.release();
+			// Passed on to the waiters, who would only meet it again one after
+			// another -- unless it was this request's own cancel, which says
+			// nothing about the server, so the next of them tries.
+			__finishConnect(origin, pending, null, (cancelToken != null && cancelToken.cancelled) ? null : e);
 			throw e;
 		}
-
-		__lock.acquire();
-		var list:Null<Array<H2ClientSession>> = __sessions.get(origin);
-		if (list == null) {
-			list = [];
-			__sessions.set(origin, list);
-		}
-		list.push(session);
-		__lock.release();
-
-		gate.release();
+		__finishConnect(origin, pending, session, null);
 		return session;
 	}
 
+	/** Records how `pending` ended, and wakes everyone waiting on it. */
+	private static function __finishConnect(origin:String, pending:PendingConnect, session:Null<H2ClientSession>, failure:Dynamic):Void {
+		__lock.acquire();
+		if (session != null) {
+			var list:Null<Array<H2ClientSession>> = __sessions.get(origin);
+			if (list == null) {
+				list = [];
+				__sessions.set(origin, list);
+			}
+			list.push(session);
+		}
+		pending.failure = failure;
+		pending.finished = true;
+		if (__connecting.get(origin) == pending) {
+			__connecting.remove(origin);
+		}
+		var waiters:Array<sys.thread.Lock> = pending.waiters;
+		pending.waiters = [];
+		__lock.release();
+
+		for (waiter in waiters) {
+			waiter.release();
+		}
+	}
+
 	/**
-	 * A live session with stream capacity, reaping dead ones on the way past.
+	 * Waits on another request's connect to `origin`, until it finishes, the
+	 * deadline passes or the token cancels, and throws for the last two and
+	 * for a failure the connect passed on.
+	 */
+	private static function __awaitConnect(origin:String, pending:PendingConnect, wake:sys.thread.Lock, deadline:Float,
+			cancelToken:Null<crossbyte.http.HTTPCancelToken>):Void {
+		var onCancel:Void->Void = () -> wake.release();
+		if (cancelToken != null) {
+			cancelToken.onCancel(onCancel);
+		}
+
+		var woken:Bool;
+		if (deadline < 0) {
+			woken = wake.wait();
+		} else {
+			var remaining:Float = deadline - haxe.Timer.stamp();
+			woken = remaining > 0 && wake.wait(remaining);
+		}
+
+		if (cancelToken != null) {
+			cancelToken.removeHandler(onCancel);
+		}
+
+		__lock.acquire();
+		pending.waiters.remove(wake);
+		var finished:Bool = pending.finished;
+		var failure:Dynamic = pending.failure;
+		__lock.release();
+
+		if (cancelToken != null && cancelToken.cancelled) {
+			throw new H2ConnectionError(H2ErrorCode.CANCEL, "Request was cancelled while waiting for a connection to " + origin);
+		}
+		if (!finished) {
+			throw new H2ConnectionError(H2ErrorCode.CANCEL, "Timed out waiting for a connection to " + origin);
+		}
+		if (failure != null) {
+			throw failure;
+		}
+	}
+
+	/**
+	 * A live session for `origin` with stream capacity, reaping dead and
+	 * expired ones on the way past -- expired ones into `expired`, for the
+	 * caller to close once the lock is let go. Under the lock.
 	 *
 	 * Returns `null` when a new connection is needed -- except at the ceiling,
 	 * where the busiest session comes back instead: the peer refuses a stream
 	 * it cannot take, which is a better answer than refusing to try.
 	 */
-	private static function __findUsable(origin:String):Null<H2ClientSession> {
-		__lock.acquire();
+	private static function __findUsableLocked(origin:String, expired:Array<H2ClientSession>):Null<H2ClientSession> {
 		var list:Null<Array<H2ClientSession>> = __sessions.get(origin);
-
 		if (list == null) {
-			__lock.release();
 			return null;
 		}
 
 		var index:Int = list.length - 1;
-		var expired:Array<H2ClientSession> = [];
-
 		while (index >= 0) {
 			var candidate:H2ClientSession = list[index];
 			if (candidate.dead) {
@@ -123,14 +215,12 @@ class H2ConnectionPool {
 				// session is only interesting to whoever next wants one.
 				list.splice(index, 1);
 			} else if (__isExpired(candidate)) {
-				// Closed outside the lock below: close() wakes waiters and
-				// touches the socket, which is more than should happen with a
-				// pool-wide lock held.
+				// Closed by the caller, outside the lock: close() wakes
+				// waiters and touches the socket, which is more than should
+				// happen with a pool-wide lock held.
 				list.splice(index, 1);
 				expired.push(candidate);
 			} else if (candidate.hasCapacity()) {
-				__lock.release();
-				__closeAll(expired);
 				return candidate;
 			}
 			index--;
@@ -138,20 +228,13 @@ class H2ConnectionPool {
 
 		if (list.length == 0) {
 			__sessions.remove(origin);
-			__lock.release();
-			__closeAll(expired);
 			return null;
 		}
 
 		if (list.length >= maxSessionsPerOrigin) {
-			var fallback:H2ClientSession = list[list.length - 1];
-			__lock.release();
-			__closeAll(expired);
-			return fallback;
+			return list[list.length - 1];
 		}
 
-		__lock.release();
-		__closeAll(expired);
 		return null;
 	}
 
@@ -217,17 +300,6 @@ class H2ConnectionPool {
 		return expired.length;
 	}
 
-	private static function __gateFor(origin:String):Mutex {
-		__lock.acquire();
-		var gate:Null<Mutex> = __gates.get(origin);
-		if (gate == null) {
-			gate = new Mutex();
-			__gates.set(origin, gate);
-		}
-		__lock.release();
-		return gate;
-	}
-
 	/** Drops a session, closing it if it is still alive. */
 	public static function discard(session:H2ClientSession):Void {
 		__lock.acquire();
@@ -272,5 +344,22 @@ class H2ConnectionPool {
 			} catch (_:Dynamic) {}
 		}
 	}
+}
+
+/**
+ * A connection one request is opening, and the requests waiting for it.
+ * Changed only under the pool's lock.
+ */
+private class PendingConnect {
+	/** One wake-up per waiter, so each can also be woken on its own. */
+	public var waiters:Array<sys.thread.Lock> = [];
+
+	/** Set once the connect has ended, well or badly. */
+	public var finished:Bool = false;
+
+	/** What the connect failed with, for its waiters, or null. */
+	public var failure:Dynamic = null;
+
+	public function new() {}
 }
 #end

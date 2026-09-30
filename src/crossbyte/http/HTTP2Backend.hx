@@ -230,7 +230,7 @@ class HTTP2Backend implements HTTPBackend {
 			var stream:H2Stream = null;
 			var refused:Int = 0;
 			while (stream == null) {
-				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context));
+				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context), timeout, context.cancelToken);
 				try {
 					stream = session.execute(method, scheme, authority, __target(url), fields, body, timeout, context.cancelToken);
 				} catch (e:H2ConnectionError) {
@@ -268,12 +268,14 @@ class HTTP2Backend implements HTTPBackend {
 			if (session != null) {
 				H2ConnectionPool.discard(session);
 			}
-			context.onError("HTTP/2 connection error: " + e.message);
+			// A cancel that ended the connect, or the wait on another
+			// request's, is reported as the cancel it was.
+			context.onError(__cancelled(context) ? "Request cancelled" : "HTTP/2 connection error: " + e.message);
 		} catch (e:Dynamic) {
 			if (session != null) {
 				H2ConnectionPool.discard(session);
 			}
-			context.onError("HTTP/2 request failed: " + Std.string(e));
+			context.onError(__cancelled(context) ? "Request cancelled" : "HTTP/2 request failed: " + Std.string(e));
 		}
 		return null;
 	}
@@ -320,7 +322,13 @@ class HTTP2Backend implements HTTPBackend {
 	/**
 	 * Opens a connection for the pool.
 	 *
-	 * The socket deliberately has no read timeout. A pooled connection is idle
+	 * The connect and the TLS handshake are held to the request's timeout,
+	 * and its cancel token reaches the socket while they run. They had
+	 * neither: a server that accepted TCP and then said nothing held this
+	 * request, and every other request to its origin waiting on this connect,
+	 * for good, and a cancel did nothing.
+	 *
+	 * Once open, the socket has no read timeout. A pooled connection is idle
 	 * between requests by design, and a deadline on the reader would tear down
 	 * a perfectly good connection for the crime of waiting; per-request
 	 * deadlines live on the stream instead.
@@ -334,21 +342,67 @@ class HTTP2Backend implements HTTPBackend {
 			socket.setALPN(["h2"]);
 		}
 
-		// The name is looked up here, on the calling thread. That is the
-		// load's own thread -- URLLoader runs every load on one of its pool
-		// threads, never on a runtime's -- so a slow resolver holds up this
-		// request and no one else's sockets or timers. Resolver, which hands
-		// its answer back to a runtime's thread, is for code on one.
-		socket.connect(host, port);
+		// An idle limit, as the HTTP/1.1 client sets on its socket: the
+		// handshake's reads give up after it, however many there are.
+		var timeout:Float = context.timeout > 0 ? context.timeout / 1000 : 30;
+		socket.setTimeout(timeout);
+
+		// Published to the token for as long as the connect runs, which is
+		// how a cancel from another thread reaches a blocking call: by ending
+		// it under the thread, as the HTTP/1.1 client does.
+		var token:Null<HTTPCancelToken> = context.cancelToken;
+		var interrupt:Void->Void = () -> Http.__interrupt(socket);
+		if (token != null) {
+			token.onCancel(interrupt);
+		}
+
+		try {
+			// The name is looked up here, on the calling thread. That is the
+			// load's own thread -- URLLoader runs every load on one of its pool
+			// threads, never on a runtime's -- so a slow resolver holds up this
+			// request and no one else's sockets or timers. Resolver, which
+			// hands its answer back to a runtime's thread, is for code on one.
+			socket.connect(host, port);
+		} catch (e:Dynamic) {
+			if (token != null) {
+				token.removeHandler(interrupt);
+			}
+			__closeQuietly(socket);
+			if (token != null && token.cancelled) {
+				throw new H2ConnectionError(H2ErrorCode.CANCEL, "Request was cancelled while connecting to " + origin);
+			}
+			// A blocking socket's timeout surfaces as Blocked natively -- the
+			// read the handshake was waiting on would have blocked on -- which
+			// says nothing to a caller about what happened.
+			if (Std.isOfType(e, haxe.io.Error) && (e : haxe.io.Error).match(Blocked)) {
+				throw new H2ConnectionError(H2ErrorCode.CANCEL, 'Connecting to $origin timed out after ${timeout}s');
+			}
+			throw e;
+		}
+
+		if (token != null) {
+			token.removeHandler(interrupt);
+			if (token.cancelled) {
+				// Cancelled as the connect finished: the socket may have been
+				// shut down under it, so it is no connection to keep.
+				__closeQuietly(socket);
+				throw new H2ConnectionError(H2ErrorCode.CANCEL, "Request was cancelled while connecting to " + origin);
+			}
+		}
 
 		if (secure && socket.getALPN() != "h2") {
-			try {
-				socket.close();
-			} catch (_:Dynamic) {}
+			__closeQuietly(socket);
 			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, "Server did not negotiate h2 over ALPN");
 		}
 
+		socket.setTimeout(0);
 		return new H2ClientSession(origin, socket, new H2Connection(socket.input, socket.output, settings));
+	}
+
+	private static function __closeQuietly(socket:FlexSocket):Void {
+		try {
+			socket.close();
+		} catch (_:Dynamic) {}
 	}
 
 	private function __report(context:HTTPRequestContext, stream:H2Stream, connection:H2Connection):Void {
