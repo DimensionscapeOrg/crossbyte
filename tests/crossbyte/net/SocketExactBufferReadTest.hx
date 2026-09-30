@@ -71,13 +71,10 @@ class SocketExactBufferReadTest extends utest.Test {
 		var received = new ByteArray();
 		var closed = false;
 		var bytesWhenClosed = -1;
+		var payload:ByteArray = __payload(Socket.READ_CHUNK);
 
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
 			serverPeer = event.socket;
-			var payload = new ByteArray();
-			for (i in 0...Socket.READ_CHUNK) {
-				payload.writeByte(__expectedByte(i));
-			}
 			serverPeer.writeBytes(payload);
 			serverPeer.flush();
 			// Closed straight after the write so the FIN follows the payload
@@ -129,13 +126,10 @@ class SocketExactBufferReadTest extends utest.Test {
 		var client = new Socket();
 		var serverPeer:Socket = null;
 		var received = new ByteArray();
+		var payload:ByteArray = __payload(size);
 
 		server.addEventListener(ServerSocketConnectEvent.CONNECT, event -> {
 			serverPeer = event.socket;
-			var payload = new ByteArray();
-			for (i in 0...size) {
-				payload.writeByte(__expectedByte(i));
-			}
 			serverPeer.writeBytes(payload);
 			serverPeer.flush();
 		});
@@ -179,6 +173,22 @@ class SocketExactBufferReadTest extends utest.Test {
 	}
 
 	/**
+	 * `size` patterned bytes, built before anything is pumped. Built inside
+	 * the server's connect handler, as it was, the payload cost its pump 5.5
+	 * seconds on eval for 128 KB, a ByteArray grown a byte at a time copies
+	 * itself there a byte at a time, which is more than the deadline the
+	 * wait below gives the whole exchange. The case passed only while the
+	 * accept and the client's read fell in the same pump.
+	 */
+	private static function __payload(size:Int):ByteArray {
+		var bytes:haxe.io.Bytes = haxe.io.Bytes.alloc(size);
+		for (i in 0...size) {
+			bytes.set(i, __expectedByte(i));
+		}
+		return ByteArray.fromBytes(bytes);
+	}
+
+	/**
 	 * Index of the first byte that differs from the generator pattern, or -1
 	 * when all `size` bytes match. An index rather than a Bool so a failure
 	 * says where the stream diverged, not merely that it did.
@@ -200,8 +210,8 @@ class SocketExactBufferReadTest extends utest.Test {
 
 	private static function __pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
-		while (!done() && Sys.time() < deadline) {
+		var deadline = haxe.Timer.stamp() + timeout;
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			Sys.sleep(0.001);
 		}
