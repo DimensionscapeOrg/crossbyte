@@ -5,6 +5,18 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- TLS and MySQL 8 logins for the native MySQL client. `MySQLConfig.sslMode`
+  (`MySQLSSLMode`: `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`,
+  `VERIFY_IDENTITY`, as libmysqlclient's `--ssl-mode`), `sslCa` for the
+  certificate authorities to verify against, and
+  `MySQLConnection.encrypted`. The client speaks `caching_sha2_password`,
+  MySQL 8's default, in both its fast path and its full authentication,
+  where the server needs the password itself: sent over TLS, or encrypted
+  with the server's RSA key, given as `MySQLConfig.serverPublicKey`, or
+  asked of the server with `allowPublicKeyRetrieval`, off by default since
+  whoever answers in the server's place could supply their own. Also
+  `sha256_password`, and `mysql_clear_password` over TLS only. From the
+  hxcpp fork (`fix/mysql-client`), on the mbedTLS hxcpp bundles.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -796,6 +808,13 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- A native MySQL connection uses TLS whenever the server offers it:
+  `MySQLConfig.sslMode` defaults to `PREFERRED`, as MySQL's own clients do,
+  which encrypts without checking the certificate, MySQL generates a
+  self-signed one by default. The session and the password were sent in
+  the clear. What to change: nothing to keep working; set `sslMode:
+  VERIFY_IDENTITY` and `sslCa` to know which server you reached, or
+  `DISABLED` for the old behaviour.
 - MySQL and SQLite column values come back exact on the native targets,
   which changes their types. MySQL `BIGINT` and `INT UNSIGNED`, and every
   SQLite `INTEGER`, are an `Int` when the value fits in 32 bits and a
@@ -1247,6 +1266,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The native MySQL client logs in to a default MySQL 8 server. It spoke
+  only `mysql_native_password`, which MySQL 8 does not use by default, 8.4
+  disables and 9.0 removes; it took the server's switch to another auth
+  plugin for a broken packet ("Invalid packet error"); and against a
+  server whose collation is `utf8mb4_0900_ai_ci`, MySQL 8's default, every
+  escape threw "Unsupported charset : #255". The utf8mb4 collations 224 to
+  247 were missing too. From the hxcpp fork (`fix/mysql-client`).
 - On Windows, a `Date` before 1970 can be printed without ending the
   process, and made from local fields. hxcpp's `Date` turned the CRT's
   refusal of a time before 1970 into an all-zero date, which `strftime`

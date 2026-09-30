@@ -936,6 +936,11 @@ class FakeMySQLSession {
 						server.__log({connection: id, kind: "full auth", text: "rsa", authResponse: encrypted.payload});
 						var decrypted:Null<Bytes> = server.__decryptWithKey(encrypted.payload);
 						clear = decrypted == null ? null : FakeMySQLServer.xor(decrypted, __nonce);
+					} else if (next.payload.length > 1) {
+						// Encrypted with a key the client already had.
+						server.__log({connection: id, kind: "full auth", text: "rsa", authResponse: next.payload});
+						var decrypted:Null<Bytes> = server.__decryptWithKey(next.payload);
+						clear = decrypted == null ? null : FakeMySQLServer.xor(decrypted, __nonce);
 					} else {
 						server.__log({connection: id, kind: "full auth", text: "unexpected", authResponse: next.payload});
 					}
