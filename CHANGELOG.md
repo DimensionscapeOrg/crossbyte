@@ -1220,6 +1220,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Concurrent first HTTP/2 requests all find the bundled backend. It marked
+  itself registered and was only added once the registry's lock was let go,
+  so a request arriving in between found the mark, no backend, and failed
+  with "HTTP/2 has no registered HTTPBackend": 5 of 6 concurrent first
+  requests on the jvm, and the http2 sample every time.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
