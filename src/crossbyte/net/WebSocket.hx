@@ -48,6 +48,9 @@ class WebSocket extends Socket {
 		if (server != null) {
 			webSocket.__webSocket.pingInterval = server.pingInterval;
 			webSocket.__webSocket.idleTimeout = server.idleTimeout;
+			// Before the upgrade request can arrive, which is what it answers.
+			webSocket.__webSocket.perMessageDeflate = server.perMessageDeflate;
+			webSocket.__webSocket.compressionThreshold = server.compressionThreshold;
 		}
 		webSocket.__init();
 
@@ -105,32 +108,42 @@ class WebSocket extends Socket {
 	@:noCompletion private var __idleTimeout:Float = -1;
 
 	/**
-		Whether a `wss://` connection checks the server's certificate: that it
-		chains to an authority this client trusts, and that it names the host
-		being connected to.
+		Whether `connect()` asks the server for permessage-deflate (RFC 7692):
+		each message of `compressionThreshold` bytes or more sent compressed,
+		and compressed messages accepted. Off by default; read when
+		`connect()` is called. The server may decline, and the session then
+		goes on without -- see `compressed`. A session a `ServerWebSocket`
+		accepted takes the server's setting instead.
 
-		On by default. Turn it off only for a development server presenting a
-		self-signed certificate -- and prefer `certAuthority` even then. With
-		verification off the traffic is still encrypted, but anyone able to
-		sit between the two ends can present a certificate of their own and
-		read all of it.
-
-		Read when `connect()` is called.
+		Each message is compressed on its own, in both directions: a message
+		costs a compressor's setup, and saves most on the larger, repetitive
+		ones -- an 18 KB JSON snapshot goes as about 3 KB. A server that
+		agrees but does not also say `client_no_context_takeover` may inflate
+		this side's messages as one stream, which a message compressed on its
+		own ends; this side then sends uncompressed, and still inflates what
+		the server compresses.
 	**/
-	public var verifyCert:Bool = true;
+	public var perMessageDeflate:Bool = false;
 
 	/**
-		The authority this client trusts, in place of the system's, for a
-		`wss://` connection.
-
-		Set it to a private CA's certificate, or to a server's own self-signed
-		certificate, to verify a server the system's trust store does not know
-		without turning verification off. `null`, the default, trusts the
-		system's store.
-
-		Read when `connect()` is called.
+		Messages shorter than this many bytes go uncompressed even where
+		compression was agreed: below about a kilobyte the framing costs about
+		what it saves. Read when `connect()` is called.
 	**/
-	public var certAuthority:Certificate = null;
+	public var compressionThreshold:Int = InternalWS.DEFAULT_COMPRESSION_THRESHOLD;
+
+	/**
+		Whether this session agreed to permessage-deflate with its peer. False
+		until the session opens.
+	**/
+	public var compressed(get, never):Bool;
+
+	@:noCompletion private function get_compressed():Bool {
+		return __webSocket != null && __webSocket.compressed;
+	}
+
+	// `verifyCert` and `certAuthority`, which a `wss://` client reads, are
+	// Socket's: a secure Socket checks its server the same way.
 
 	/**
 		Bytes of unsent frame data allowed to accumulate for this session
@@ -347,24 +360,30 @@ class WebSocket extends Socket {
 		__input.endian = __endian;
 
 		var schema = secure ? "wss" : "ws";
-		var urlReg = ~/^(.*:\/\/)?([A-Za-z0-9\-\.]+)\/?(.*)/g;
-		if (!urlReg.match(__host)) {
+		// An IPv6 literal, bracketed or bare, as well as a name or an IPv4
+		// address: the pattern this used took only the last two, and refused
+		// `::1` as an invalid host before a socket existed.
+		var target = crossbyte._internal.websocket.WebSocketHost.split(__host);
+		if (target == null) {
 			throw new IOError("Invalid host");
 		}
-		var __webHost = urlReg.matched(2);
-		var __webPath = urlReg.matched(3);
+		var __webHost = target.host;
+		var __webPath = target.path;
 
 		// The host alone, for remoteAddress: what was passed may carry a path.
 		__host = __webHost;
 		__cbInstance = CrossByte.current();
 
-		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath, protocols, null,
-			verifyCert, certAuthority);
+		__webSocket = new crossbyte._internal.websocket.WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(__webHost) + ":"
+			+ port + "/" + __webPath, protocols, null, verifyCert, certAuthority);
 		// `timeout` bounds the connection and the upgrade after it, as it
 		// bounds a plain socket's connect. The session used a fixed ten
 		// seconds of its own and never waited on the upgrade at all.
 		__webSocket.connectTimeout = timeout;
 		__webSocket.maxOutputBufferSize = __maxOutputBufferSize;
+		// Before the upgrade request goes, which is where it is asked for.
+		__webSocket.perMessageDeflate = perMessageDeflate;
+		__webSocket.compressionThreshold = compressionThreshold;
 		if (__pingInterval >= 0) {
 			__webSocket.pingInterval = __pingInterval;
 		}

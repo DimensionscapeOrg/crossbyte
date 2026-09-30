@@ -230,8 +230,30 @@ class RawWebSocketClient {
 		} catch (_:Dynamic) {}
 	}
 
+	/**
+		One pass of the server's runtime, advanced by the time that really
+		passed since the last. It was advanced a fixed 1/240 s a pass in a
+		loop that never sleeps, so the runtime's clock ran as fast as passes
+		could be made -- 60 s of it in the 50 ms of a `pumpFor(0.05)` once
+		passes got quicker -- and a session was closed as idle while its
+		peer was still in the middle of a frame.
+	**/
 	private function __pump():Void {
-		__runtime.pump(1 / 240, 0);
+		pumpRuntime(__runtime);
+	}
+
+	private static var __lastPump:Float = -1;
+
+	/** A pass of `runtime`, advanced by the time since the last one. **/
+	public static function pumpRuntime(runtime:CrossByte):Void {
+		var now:Float = haxe.Timer.stamp();
+		var step:Float = __lastPump < 0 || now < __lastPump ? 1 / 240 : now - __lastPump;
+		// Bounded, so a pass after a long pause does not jump the clock.
+		if (step > 1 / 60) {
+			step = 1 / 60;
+		}
+		__lastPump = now;
+		runtime.pump(step, 0);
 	}
 
 	private function __writeAll(bytes:Bytes):Void {

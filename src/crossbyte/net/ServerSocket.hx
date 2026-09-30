@@ -22,6 +22,7 @@ import js.node.Tls;
 import js.node.net.Server as NodeServer;
 import js.node.net.Socket as NodeSocket;
 #else
+import crossbyte._internal.socket.IPollableSocket;
 import sys.net.Host;
 import sys.net.Socket;
 #if (java || jvm)
@@ -115,15 +116,19 @@ class ServerSocket extends EventDispatcher {
 	public var handshakeTimeout:Float = 10.0;
 
 	/**
-		Most connections taken from the listen queue in one tick.
+		Most connections taken from the listen queue each time the listener is
+		found to have some waiting.
 
-		The operating system holds connections that have finished their TCP
-		handshake in the listen queue until they are accepted -- 200 of them on
-		a client edition of Windows, 128 to 4096 on Linux -- and refuses any
-		that arrive while it is full. Taking one a tick, as this server used to,
-		spent 190 ticks clearing 190 waiting connections, and a login burst
-		larger than the queue was refused by the kernel before the server saw
-		it. The cap keeps a single tick from being spent entirely on arrivals.
+		The listener sits in the runtime's poll set, so connections are taken
+		as they arrive rather than at the next tick. The operating system holds
+		connections that have finished their TCP handshake in the listen queue
+		until they are accepted -- 200 of them on a client edition of Windows,
+		128 to 4096 on Linux -- and refuses any that arrive while it is full.
+		Taking one a tick, as this server used to, spent 190 ticks clearing 190
+		waiting connections, and a login burst larger than the queue was
+		refused by the kernel before the server saw it. The cap keeps one wake
+		from being spent entirely on arrivals: what is left is taken at the
+		next.
 
 		Node accepts as connections arrive, so it has no use for this.
 	**/
@@ -185,6 +190,15 @@ class ServerSocket extends EventDispatcher {
 		return true;
 	}
 
+	/**
+		The backlog `listen()` asks for when given none: more than any system
+		grants, so the system's own maximum is what applies -- 200 on a client
+		edition of Windows, `somaxconn` on Linux, whichever value is asked.
+		`0x7FFFFFF` rather than the largest Int, which neko's 31-bit integers
+		cannot carry: `listen()` threw there, so no server could start.
+	**/
+	@:noCompletion private static inline var DEFAULT_BACKLOG:Int = 0x7FFFFFF;
+
 	@:noCompletion private var __serverSocket:#if nodejs NodeServer #else Socket #end;
 	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __cbInstance:CrossByte;
@@ -198,6 +212,13 @@ class ServerSocket extends EventDispatcher {
 	// One attachment however many paths ask: the runtime's dispatcher keeps
 	// every add, and each remove takes one away.
 	@:noCompletion private var __tickRuntime:CrossByte = null;
+	// The runtime this server is accepting on, or null while it is not.
+	@:noCompletion private var __acceptRuntime:CrossByte = null;
+	// The runtime whose poll set the listener is in, or null while it is
+	// not: guarded the same way, so it is registered once and removed once.
+	@:noCompletion private var __pollRuntime:CrossByte = null;
+	// What the poll set calls when the listener has connections waiting.
+	@:noCompletion private var __listenerPoll:ListenerPoll = null;
 	// Whether the last accept failed, so a run of failures is reported once.
 	@:noCompletion private var __acceptFailing:Bool = false;
 	#end
@@ -520,6 +541,9 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
+			// Said, as a native server's accepted socket says it: on Node one
+			// a TLS listener accepted reported false.
+			socket.secure = secure;
 
 			// Contained: this runs from Node's event loop, and a connect
 			// listener that threw ended the process -- every connection the
@@ -625,6 +649,9 @@ class ServerSocket extends EventDispatcher {
 	public function close():Void {
 		#if !nodejs
 		__dropPendingHandshakes();
+		// Out of the poll set before the listener is closed; see
+		// Socket.__cleanSocket.
+		__detachAcceptTick();
 		#end
 
 		// stopAccepting() may already have released the listening socket as
@@ -640,9 +667,6 @@ class ServerSocket extends EventDispatcher {
 		listening = false;
 		bound = false;
 		__closed = true;
-		#if !nodejs
-		__detachAcceptTick();
-		#end
 		__cbInstance = null;
 	}
 
@@ -680,7 +704,7 @@ class ServerSocket extends EventDispatcher {
 			if (backlog < 0) {
 				throw new RangeError("The supplied index is out of bounds.");
 			} else if (backlog == 0) {
-				backlog = 0x7FFFFFFF;
+				backlog = DEFAULT_BACKLOG;
 			}
 
 			#if nodejs
@@ -761,9 +785,27 @@ class ServerSocket extends EventDispatcher {
 		return cbSocket;
 	}
 
+	/**
+		The tick a TLS server keeps: every handshake in flight is stepped once
+		a tick, which ends one that has run past `handshakeTimeout` and
+		finishes one whose next step the poll set cannot report -- a flight
+		this side could not write all at once.
+
+		Connections are not taken here. They were, and only here, so a server
+		accepted once a tick however it was polled: 41 to 57 ms from connect
+		to accept at twelve ticks a second, whatever the backend. The listener
+		is in the poll set now and is read when connections are waiting, and a
+		plain server has no tick at all.
+	**/
 	@:noCompletion private function this_onTick(e:TickEvent):Void {
 		__pumpHandshakes();
+	}
 
+	/**
+		The listener has connections waiting: as many as `maxAcceptsPerTick`
+		are taken, and the handshakes of those that need one begin at once.
+	**/
+	@:noCompletion private function __onListenerReadable():Void {
 		var started:Int = __pendingHandshakes == null ? 0 : __pendingHandshakes.length;
 		var limit:Int = maxAcceptsPerTick < 1 ? 1 : maxAcceptsPerTick;
 		for (_ in 0...limit) {
@@ -777,6 +819,7 @@ class ServerSocket extends EventDispatcher {
 		if (__pendingHandshakes != null && __pendingHandshakes.length > started) {
 			__pumpHandshakes();
 		}
+		__syncListenerWatch();
 	}
 
 	/**
@@ -789,9 +832,12 @@ class ServerSocket extends EventDispatcher {
 				return false;
 			}
 			// Full: the rest wait in the kernel's queue, costing nothing here.
-			if (secure && maxPendingHandshakes >= 0 && __pendingHandshakes.length >= maxPendingHandshakes) {
+			if (__handshakesFull()) {
 				return false;
 			}
+			// Asked even though the poll said so: this is called again for
+			// the next connection until none is left, and on eval, whose
+			// sockets block, an accept with none waiting would wait for one.
 			var ready = Socket.select([__serverSocket], [], [], 0);
 			if (ready.read.length == 0 || ready.read[0] != __serverSocket) {
 				return false;
@@ -816,7 +862,19 @@ class ServerSocket extends EventDispatcher {
 				// Defer the connect event: the peer is not authenticated (and
 				// no application bytes are readable) until TLS completes.
 				sysSocket.setBlocking(false);
-				__pendingHandshakes.push({socket: sysSocket, deadline: haxe.Timer.stamp() + handshakeTimeout});
+				var pending:PendingHandshake = new PendingHandshake(this, sysSocket, haxe.Timer.stamp() + handshakeTimeout);
+				__pendingHandshakes.push(pending);
+
+				// In the poll set, so each flight the peer sends steps the
+				// handshake as it lands. Stepped only by the tick, a handshake
+				// waited up to a tick per round trip: a median of 132 ms to
+				// secureConnect on the jvm at twelve ticks a second.
+				sysSocket.custom = pending;
+				if (__cbInstance != null) {
+					pending.runtime = __cbInstance;
+					@:privateAccess
+					__cbInstance.registerSocket(sysSocket);
+				}
 				return true;
 			}
 
@@ -924,11 +982,13 @@ class ServerSocket extends EventDispatcher {
 	}
 
 	/**
-		Puts the accept tick on the runtime, unless it is there already.
+		Starts accepting, unless it has started already: the listener joins
+		the runtime's poll set, and the accept tick goes on the runtime where
+		this server needs one.
 
 		Every path that wants it running comes here -- `listen()` with a
 		`connect` listener, a `connect` listener added while listening, and
-		`ServerWebSocket` -- and each used to add it again. The runtime's
+		`ServerWebSocket` -- and each used to add the tick again. The runtime's
 		dispatcher keeps every add and each remove takes out one, so a server
 		given its listener after `listen()` held two and closing it removed
 		one: the other ran on for good, calling `accept()` on the closed
@@ -939,23 +999,104 @@ class ServerSocket extends EventDispatcher {
 		for a connection on it, stopping the runtime.
 	**/
 	@:noCompletion private function __attachAcceptTick():Void {
-		if (__tickRuntime != null || __cbInstance == null) {
+		if (__acceptRuntime != null || __cbInstance == null) {
 			return;
 		}
 
-		__tickRuntime = __cbInstance;
-		__tickRuntime.addEventListener(TickEvent.TICK, __onAcceptTick());
+		__acceptRuntime = __cbInstance;
+		if (__needsAcceptTick()) {
+			__tickRuntime = __acceptRuntime;
+			__tickRuntime.addEventListener(TickEvent.TICK, __onAcceptTick());
+		}
+		__syncListenerWatch();
 	}
 
-	/** Takes the accept tick off the runtime it was put on, if it is there. **/
+	/**
+		Stops accepting: the accept tick comes off the runtime it was put on
+		and the listener leaves its poll set -- before the listener is closed,
+		which every caller does after this.
+	**/
 	@:noCompletion private function __detachAcceptTick():Void {
-		if (__tickRuntime == null) {
+		if (__acceptRuntime == null) {
+			return;
+		}
+		__acceptRuntime = null;
+
+		if (__tickRuntime != null) {
+			var runtime:CrossByte = __tickRuntime;
+			__tickRuntime = null;
+			runtime.removeEventListener(TickEvent.TICK, __onAcceptTick());
+		}
+		__unwatchListener();
+	}
+
+	/**
+		Whether this server needs the accept tick: for the deadlines of the
+		TLS handshakes it has in flight. A plain server needs none, since the
+		poll set reports its connections.
+	**/
+	@:noCompletion private function __needsAcceptTick():Bool {
+		return secure;
+	}
+
+	/**
+		Whether as many connections are still arriving as `maxPendingHandshakes`
+		allows, so the rest are left in the kernel's queue.
+	**/
+	@:noCompletion private function __handshakesFull():Bool {
+		return secure && maxPendingHandshakes >= 0 && __pendingHandshakes.length >= maxPendingHandshakes;
+	}
+
+	/** The socket connections are accepted from. **/
+	@:noCompletion private function __listenerSocket():Socket {
+		return __serverSocket;
+	}
+
+	/**
+		Keeps the listener in the poll set while this server is accepting and
+		has room, and out of it otherwise: at the handshake limit the listener
+		stays readable with nothing taken from it, and a poll would report it
+		on every pass -- a POLL loop spinning until a handshake finished.
+	**/
+	@:noCompletion private function __syncListenerWatch():Void {
+		if (__acceptRuntime != null && !__closed && listening && !__handshakesFull()) {
+			__watchListener(__acceptRuntime);
+		} else {
+			__unwatchListener();
+		}
+	}
+
+	@:noCompletion private function __watchListener(runtime:CrossByte):Void {
+		if (__pollRuntime != null) {
 			return;
 		}
 
-		var runtime:CrossByte = __tickRuntime;
-		__tickRuntime = null;
-		runtime.removeEventListener(TickEvent.TICK, __onAcceptTick());
+		var listener:Socket = __listenerSocket();
+		if (listener == null) {
+			return;
+		}
+
+		if (__listenerPoll == null) {
+			__listenerPoll = new ListenerPoll(this);
+		}
+		listener.custom = __listenerPoll;
+		__pollRuntime = runtime;
+		@:privateAccess
+		runtime.registerSocket(listener);
+	}
+
+	@:noCompletion private function __unwatchListener():Void {
+		if (__pollRuntime == null) {
+			return;
+		}
+
+		var runtime:CrossByte = __pollRuntime;
+		__pollRuntime = null;
+		var listener:Socket = __listenerSocket();
+		if (listener != null) {
+			@:privateAccess
+			runtime.deregisterSocket(listener);
+		}
 	}
 	#end
 
@@ -1016,10 +1157,12 @@ class ServerSocket extends EventDispatcher {
 		Advances every in-flight TLS handshake by one non-blocking step.
 
 		`handshake()` on a non-blocking socket raises a blocked error until
-		enough of the peer's flight has arrived, so each connection may need
-		several ticks. Connections that complete are promoted to ordinary
-		`connect` events; those that fail or exceed `handshakeTimeout` are
-		closed without ever reaching application code.
+		enough of the peer's flight has arrived. Each handshake is stepped as
+		its socket turns readable; this, from the tick, is what ends one that
+		has run past `handshakeTimeout`, and finishes one waiting on a flight
+		of its own it could not write whole. Connections that complete are
+		promoted to ordinary `connect` events; those that fail or run out of
+		time are closed without ever reaching application code.
 	**/
 	@:noCompletion private function __pumpHandshakes():Void {
 		// Node terminates its own handshakes -- tls.createServer does not hand
@@ -1032,30 +1175,15 @@ class ServerSocket extends EventDispatcher {
 
 		var now:Float = haxe.Timer.stamp();
 		var stillPending:Array<PendingHandshake> = [];
-		var completed:Array<Socket> = [];
+		var completed:Array<PendingHandshake> = [];
+		var failed:Array<PendingHandshake> = [];
 
 		for (pending in __pendingHandshakes) {
-			var done:Bool = false;
-			var failed:Bool = false;
-
-			try {
-				(cast pending.socket : SSLSocket).handshake();
-				done = true;
-			} catch (e:Error) {
-				if (!__isBlockedError(e)) {
-					failed = true;
-				}
-			} catch (_:Dynamic) {
-				failed = true;
-			}
-
-			if (done) {
-				completed.push(pending.socket);
-			} else if (failed || now >= pending.deadline) {
-				handshakeFailures++;
-				try {
-					pending.socket.close();
-				} catch (_:Dynamic) {}
+			var outcome:Int = __stepOnce(pending);
+			if (outcome > 0) {
+				completed.push(pending);
+			} else if (outcome < 0 || now >= pending.deadline) {
+				failed.push(pending);
 			} else {
 				stillPending.push(pending);
 			}
@@ -1063,33 +1191,97 @@ class ServerSocket extends EventDispatcher {
 
 		__pendingHandshakes = stillPending;
 
+		for (pending in failed) {
+			__abandonHandshake(pending);
+		}
+
 		// Dispatch only after the pending list is settled: a listener may
 		// close this server, and must not observe a half-updated queue.
-		for (socket in completed) {
-			try {
-				var cbSocket:CBSocket = __fromSocket(socket);
-				dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
-			} catch (_:Dynamic) {
-				try {
-					socket.close();
-				} catch (_:Dynamic) {}
-			}
+		for (pending in completed) {
+			__promoteHandshake(pending);
 		}
+		__syncListenerWatch();
 		#end
 	}
 
 	#if !nodejs
+	/**
+		One handshake's socket is readable: its step is taken now, rather than
+		at the next tick.
+	**/
+	@:noCompletion private function __stepHandshake(pending:PendingHandshake):Void {
+		var outcome:Int = __stepOnce(pending);
+		if (outcome == 0) {
+			return;
+		}
+
+		__pendingHandshakes.remove(pending);
+		if (outcome > 0) {
+			__promoteHandshake(pending);
+		} else {
+			__abandonHandshake(pending);
+		}
+		__syncListenerWatch();
+	}
+
+	/**
+		Takes one non-blocking step of `pending`'s handshake: 1 when it has
+		completed, 0 when it waits on the peer, -1 when it has failed.
+	**/
+	@:noCompletion private function __stepOnce(pending:PendingHandshake):Int {
+		try {
+			(cast pending.socket : SSLSocket).handshake();
+			return 1;
+		} catch (e:Dynamic) {
+			// One predicate for every spelling of "come back later": the
+			// typed error and the bare string the TLS layer raises before
+			// anything maps it.
+			return __isBlockedError(e) ? 0 : -1;
+		}
+	}
+
+	/** A completed handshake becomes a connection, and is announced. **/
+	@:noCompletion private function __promoteHandshake(pending:PendingHandshake):Void {
+		pending.settled = true;
+		try {
+			// Its socket stays in the poll set, answering to the connection
+			// from here on.
+			var cbSocket:CBSocket = __fromSocket(pending.socket);
+			dispatchEvent(new ServerSocketConnectEvent(ServerSocketConnectEvent.CONNECT, cbSocket));
+		} catch (_:Dynamic) {
+			__closeHandshake(pending);
+		}
+	}
+
+	/** A handshake that failed or ran out of time is counted and closed. **/
+	@:noCompletion private function __abandonHandshake(pending:PendingHandshake):Void {
+		pending.settled = true;
+		handshakeFailures++;
+		__closeHandshake(pending);
+	}
+
+	/** Out of the poll set, and then closed. **/
+	@:noCompletion private function __closeHandshake(pending:PendingHandshake):Void {
+		if (pending.runtime != null) {
+			@:privateAccess
+			pending.runtime.deregisterSocket(pending.socket);
+		}
+		try {
+			pending.socket.close();
+		} catch (_:Dynamic) {}
+	}
+
 	@:noCompletion private function __dropPendingHandshakes():Void {
 		if (__pendingHandshakes == null) {
 			return;
 		}
 
-		for (pending in __pendingHandshakes) {
-			try {
-				pending.socket.close();
-			} catch (_:Dynamic) {}
-		}
+		var dropped:Array<PendingHandshake> = __pendingHandshakes;
 		__pendingHandshakes = [];
+		for (pending in dropped) {
+			pending.settled = true;
+			__closeHandshake(pending);
+		}
 	}
 
 	@:noCompletion private inline function __isBlockedError(error:Dynamic):Bool {
@@ -1099,9 +1291,76 @@ class ServerSocket extends EventDispatcher {
 }
 
 #if !nodejs
-typedef PendingHandshake = {
-	var socket:Socket;
-	var deadline:Float;
+/**
+	A connection a TLS listener has accepted and is still handshaking with.
+	It sits in the poll set as its own socket's handler, so each flight the
+	peer sends steps the handshake the moment it lands.
+**/
+@:noCompletion
+@:access(crossbyte.net.ServerSocket)
+final class PendingHandshake implements IPollableSocket {
+	public var socket(default, null):Socket;
+	public var deadline(default, null):Float;
+
+	// The runtime whose poll set it is in, if it is in one.
+	public var runtime:CrossByte = null;
+
+	// Promoted, failed or dropped: nothing more for the poll set to do.
+	public var settled:Bool = false;
+
+	public var registryClosed(get, never):Bool;
+
+	@:noCompletion private var __server:ServerSocket;
+
+	public function new(server:ServerSocket, socket:Socket, deadline:Float) {
+		__server = server;
+		this.socket = socket;
+		this.deadline = deadline;
+	}
+
+	@:noCompletion private inline function get_registryClosed():Bool {
+		return settled;
+	}
+
+	public function registryOnReadable():Void {
+		__server.__stepHandshake(this);
+	}
+
+	public function registryOnWritable():Void {}
+
+	public function registryHasBufferedInput():Bool {
+		return false;
+	}
+}
+
+/**
+	What the poll set calls for a listening socket: readable means there are
+	connections waiting to be taken.
+**/
+@:noCompletion
+@:access(crossbyte.net.ServerSocket)
+private final class ListenerPoll implements IPollableSocket {
+	public var registryClosed(get, never):Bool;
+
+	@:noCompletion private var __server:ServerSocket;
+
+	public function new(server:ServerSocket) {
+		__server = server;
+	}
+
+	@:noCompletion private inline function get_registryClosed():Bool {
+		return __server.__closed || !__server.listening;
+	}
+
+	public function registryOnReadable():Void {
+		__server.__onListenerReadable();
+	}
+
+	public function registryOnWritable():Void {}
+
+	public function registryHasBufferedInput():Bool {
+		return false;
+	}
 }
 #end
 #end

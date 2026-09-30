@@ -208,6 +208,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NetConnectionTest());
 		runner.addCase(new crossbyte.net.NetHostTest());
 		runner.addCase(new crossbyte._internal.socket.poll.PollBackendRegistryTest());
+		runner.addCase(new crossbyte._internal.socket.poll.PollBackendSeamTest());
 		runner.addCase(new crossbyte._internal.socket.FlexSocketTest());
 		runner.addCase(new crossbyte._internal.socket.BlockedErrorTest());
 		runner.addCase(new crossbyte._internal.net.IPv6Test());
@@ -248,8 +249,20 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramSocketTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());
+		runner.addCase(new crossbyte.net.SocketHalfOpenTest());
+		// Also in PortableSuite: Node is where the one replaced spoke up.
+		runner.addCase(new crossbyte.net.SocketReconnectTest());
+		// What a closed connection leaves in the registry: on the jvm and
+		// natively measured by what the collector can take, elsewhere by
+		// searching the registry for it.
+		runner.addCase(new crossbyte.net.SocketRetentionTest());
+		// More sockets than one select can name, which neko refused.
+		runner.addCase(new crossbyte.net.SocketRegistryScaleTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
+		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
+		// A child runtime's real POLL loop, so every threaded target.
+		runner.addCase(new crossbyte.net.SocketReadinessTest());
 		// Deliberately unguarded: the exact-buffer read-loop hang it protects
 		// against lives on the interpreter, where sockets cannot be made
 		// non-blocking. Guarding it to cpp would run it only where the bug
@@ -291,6 +304,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
 		// Not on eval, whose TLS handshake cannot be made non-blocking.
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		// A plain Socket over TLS, likewise; also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// Not on eval either: its sockets block, so a write to a peer that has
@@ -307,6 +322,14 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
+		// Unguarded here for the interpreter above all, where none of the
+		// server suite runs and every upgrade used to throw.
+		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeTest());
+		// Also in PortableSuite: the host a page's Socket dials is read the
+		// same way.
+		runner.addCase(new crossbyte.net.WebSocketIPv6Test());
+		// Also in PortableSuite, for Node's sessions.
+		runner.addCase(new crossbyte.net.WebSocketDeflateTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
 		runner.addCase(new crossbyte.net.RUDPHardeningTest());
 		// Real sockets whose frames go through memory, so reordering, loss and

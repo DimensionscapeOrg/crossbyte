@@ -66,19 +66,29 @@ class PortableSuite {
 		#if !(js && !nodejs)
 		runner.addCase(new crossbyte.net.LocalAddressTest());
 		#end
+		// The host a WebSocket client dials, IPv6 included; on Node a session
+		// over the IPv6 loopback too.
+		runner.addCase(new crossbyte.net.WebSocketIPv6Test());
 		// A TLS WebSocket server and a client that has to decide whether to
 		// trust it, over loopback. Node only: a page can neither listen nor
 		// choose what its own WebSocket trusts.
 		#if nodejs
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		// And a plain Socket over Node's TLS, checked the same way.
+		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
+		// permessage-deflate on Node's sessions, and zlib -- what a browser
+		// inflates with -- reading what a server compressed.
+		runner.addCase(new crossbyte.net.WebSocketDeflateTest());
 		runner.addCase(new crossbyte.net.SocketOutputTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLifecycleTest());
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
 		// Empty wherever there are threads; on Node, an async write refused.
 		runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 		runner.addCase(new crossbyte.net.SocketCloseTest());
+		// A connection replaced, whose socket still reports on Node.
+		runner.addCase(new crossbyte.net.SocketReconnectTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
 		#end
