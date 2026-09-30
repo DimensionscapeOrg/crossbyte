@@ -61,17 +61,19 @@ class ServerSuite {
 		runner.addCase(new crossbyte.net.ServerWebSocketAdmissionTest());
 		#end
 
-		// PHP end to end runs on native and jvm. Not eval, where none of the
-		// server cases above run; the bridge itself is driven on eval by
-		// PHPExchangeTest, now that it reads only what the poll set reports
-		// rather than draining a socket that cannot be made non-blocking. Not
-		// Node either, and not for a reason the bridge shares: the test drives a
-		// FastCGI backend over `crossbyte.net.ServerSocket` and holds the
-		// accepted peer, which is fine on Node -- what it also does is
-		// construct `PHPMode.Launch` paths through `sys.io.Process` in the
-		// cases around it. The Node PHP path has its own coverage in the
+		// PHP end to end runs natively, on the jvm, and on hl and neko, whose
+		// servers are the same code; its body compiled for all five and was
+		// registered for three, so on hl and neko it ran nowhere. Not eval,
+		// where none of the server cases above run; the bridge itself is
+		// driven on eval by PHPExchangeTest, now that it reads only what the
+		// poll set reports rather than draining a socket that cannot be made
+		// non-blocking. Not Node either, and not for a reason the bridge shares:
+		// the test drives a FastCGI backend over `crossbyte.net.ServerSocket`
+		// and holds the accepted peer, which is fine on Node -- what it also
+		// does is construct `PHPMode.Launch` paths through `sys.io.Process` in
+		// the cases around it. The Node PHP path has its own coverage in the
 		// integration program, against the same kind of fake backend.
-		#if (cpp || java || jvm)
+		#if (cpp || hl || neko || java || jvm)
 		runner.addCase(new crossbyte.http.HTTPPhpTest());
 		#end
 
