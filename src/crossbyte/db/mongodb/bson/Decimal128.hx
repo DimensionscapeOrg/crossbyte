@@ -14,6 +14,9 @@ import haxe.io.Bytes;
 	it, where the text cannot be held without rounding.
 
 	```haxe
+	import crossbyte.db.mongodb.MongoConnection;
+
+	// Given connection:MongoConnection.
 	var price = Decimal128.fromString("19.99");
 	connection.insert("orders", [{price: price}]);
 	```
