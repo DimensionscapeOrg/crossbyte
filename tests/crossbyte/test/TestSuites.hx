@@ -61,6 +61,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.ds.BitSetTest());
 		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		runner.addCase(new crossbyte.ds.InterestSetTest());
+		runner.addCase(new crossbyte.ds.IdListTest());
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
 		runner.addCase(new crossbyte.ds.SpatialGrid3DTest());

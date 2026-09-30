@@ -102,6 +102,9 @@ class PortableSuite {
 		// Sequence numbers wrapping past 2^31 - 1, likewise.
 		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		runner.addCase(new crossbyte.ds.InterestSetTest());
+		// Vectors with counts where arrays boxed on the jvm and lost their
+		// store to V8 each round.
+		runner.addCase(new crossbyte.ds.IdListTest());
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		// Float cell arithmetic and Vector storage, which differ by target.
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
