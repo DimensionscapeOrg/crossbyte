@@ -5,6 +5,23 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Limits and cancellation for the native MySQL client, which had neither:
+  a slow statement or a server gone mid-query held the calling thread and
+  its connection for five hours. `MySQLConfig.connectTimeout` (10 s when
+  unset) bounds the connect and the login; `readTimeout` and
+  `writeTimeout`, unset by default, bound each read and write after, and a
+  read that times out closes the connection, since the answer it gave up
+  on is still coming. TCP keepalive is on by default (`keepAlive`,
+  `keepAliveIdle` 60, `keepAliveInterval` 10, `keepAliveCount` 6), so a
+  connection to a vanished host is noticed in about two minutes.
+  `MySQLConnection.cancel()` stops the statement a connection is running,
+  from any thread, with `KILL QUERY` over a second connection; the
+  statement fails with `MySQLError` 1317. `ping()` is a COM_PING.
+- `MySQLError`, an `SQLError` with the MySQL error number (`code`) and
+  `SQLSTATE` (`sqlState`), so a deadlock (1213, `40001`) can be retried and
+  a duplicate key (1062, `23000`) reported, and `MySQLConnectionError`, the
+  `IOError` a failed `open()` throws, with the same (1045 for a refused
+  login, 1049 an unknown database, 2003 an unreachable server).
 - TLS and MySQL 8 logins for the native MySQL client. `MySQLConfig.sslMode`
   (`MySQLSSLMode`: `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`,
   `VERIFY_IDENTITY`, as libmysqlclient's `--ssl-mode`), `sslCa` for the
@@ -808,6 +825,14 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `MySQLConnection.request()` throws a `MySQLError` where it threw the
+  driver's string, and a MySQL error's message no longer begins with the
+  statement. The native client prefixed the whole SQL text, values
+  included, so a duplicate-key error on a row holding an API token wrote
+  the token into whatever logged the error. What to change: catch
+  `MySQLError`, or `SQLError`, instead of `String`, and read `code` and
+  `sqlState` rather than the message. `MySQLStatement` and the
+  transaction methods throw `MySQLError` too, still an `SQLError`.
 - A native MySQL connection uses TLS whenever the server offers it:
   `MySQLConfig.sslMode` defaults to `PREFERRED`, as MySQL's own clients do,
   which encrypts without checking the certificate -- MySQL generates a

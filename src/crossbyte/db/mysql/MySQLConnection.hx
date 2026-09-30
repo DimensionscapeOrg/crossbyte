@@ -72,6 +72,11 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	// What the driver knows of autocommit where the server cannot be asked
 	// for its flags; MySQL starts every session with it on.
 	@:noCompletion private var __autocommitOff:Bool = false;
+	// For cancel(), which runs on another thread and opens a connection of
+	// its own: what to connect with, and the id to KILL. Both are set once,
+	// when the connection opens, and read-only after.
+	@:noCompletion private var __config:MySQLConfig;
+	@:noCompletion private var __threadId:Float = 0;
 
 	public function new() {
 		super();
@@ -119,9 +124,17 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				sslMode: sslMode.toCode(),
 				sslCa: cfg.sslCa,
 				serverPublicKey: cfg.serverPublicKey,
-				allowPublicKeyRetrieval: cfg.allowPublicKeyRetrieval == true
+				allowPublicKeyRetrieval: cfg.allowPublicKeyRetrieval == true,
+				connectTimeout: cfg.connectTimeout == null ? 10.0 : cfg.connectTimeout,
+				readTimeout: cfg.readTimeout == null ? 0.0 : cfg.readTimeout,
+				writeTimeout: cfg.writeTimeout == null ? 0.0 : cfg.writeTimeout,
+				keepAlive: cfg.keepAlive != false,
+				keepAliveIdle: cfg.keepAliveIdle == null ? 60 : cfg.keepAliveIdle,
+				keepAliveInterval: cfg.keepAliveInterval == null ? 10 : cfg.keepAliveInterval,
+				keepAliveCount: cfg.keepAliveCount == null ? 6 : cfg.keepAliveCount
 			}, cfg.database);
 			__connection = __native;
+			__threadId = __native.threadId;
 			#else
 			__connection = Mysql.connect({
 				host: cfg.host,
@@ -133,8 +146,18 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			});
 			#end
 		} catch (e:Dynamic) {
-			throw new IOError(Std.string(e));
+			// An IOError still, with the error number and SQLSTATE: 1045 for
+			// a refused login, 1049 for an unknown database, 2003 for a server
+			// that could not be reached.
+			if (Std.isOfType(e, MySQLError)) {
+				var cause:MySQLError = e;
+				throw new MySQLConnectionError(cause.message, cause.code, cause.sqlState);
+			}
+
+			throw new MySQLConnectionError(Std.string(e));
 		}
+
+		__config = cfg;
 
 		try {
 			if (charset != null) {
@@ -149,8 +172,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				request("SET SESSION sql_mode = " + __connection.quote(cfg.sqlMode) + ";");
 			}
 		} catch (e:Dynamic) {
+			var cause:MySQLError = __error("open", e);
 			__abandon();
-			throw new IOError(Std.string(e));
+			throw new MySQLConnectionError(cause.message, cause.code, cause.sqlState);
 		}
 
 		__dispatch(SQLEvent.OPEN);
@@ -171,6 +195,8 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		#end
 		__inTransaction = false;
 		__autocommitOff = false;
+		__config = null;
+		__threadId = 0;
 	}
 
 	public function close():Void {
@@ -188,19 +214,94 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			#end
 			__inTransaction = false;
 			__autocommitOff = false;
+			__config = null;
+			__threadId = 0;
 		}
 	}
 
+	/**
+		Whether the server answers. Natively a COM_PING, a round trip with no
+		statement for the server to parse; elsewhere `SELECT 1`.
+	**/
 	public function ping():Bool {
 		try {
 			if (__connection == null) {
 				return false;
 			}
+
+			#if cpp
+			if (__native != null) {
+				return __native.ping();
+			}
+			#end
+
 			__connection.request("SELECT 1;");
 			return true;
 		} catch (_:Dynamic) {
 			return false;
 		}
+	}
+
+	/**
+		Asks the server to stop the statement this connection is running,
+		with `KILL QUERY` sent over a second connection opened for the
+		purpose.
+
+		Safe to call from any thread, which is the point: the thread that sent
+		the statement is blocked waiting for its answer, so it is another one
+		-- a watchdog, a request that was abandoned, a shutdown -- that decides
+		to stop it. The statement then fails on its own thread with a
+		`MySQLError` 1317, "Query execution was interrupted", and this
+		connection stays usable.
+
+		Returns whether the KILL was accepted, which is not a promise the
+		statement was stopped: one that finished in the meantime completes,
+		and a KILL with nothing running does nothing. It connects as the same
+		user, which MySQL lets kill its own statements. Needs the native
+		driver; elsewhere it returns `false`.
+	**/
+	public function cancel():Bool {
+		#if cpp
+		var config:MySQLConfig = __config;
+		var id:Float = __threadId;
+
+		if (config == null || id <= 0) {
+			return false;
+		}
+
+		var killer:MySQLConnection = new MySQLConnection();
+
+		try {
+			killer.open({
+				host: config.host,
+				port: config.port,
+				user: config.user,
+				password: config.password,
+				database: null,
+				socket: config.socket,
+				sslMode: config.sslMode,
+				sslCa: config.sslCa,
+				serverPublicKey: config.serverPublicKey,
+				allowPublicKeyRetrieval: config.allowPublicKeyRetrieval,
+				connectTimeout: config.connectTimeout,
+				readTimeout: 10.0,
+				writeTimeout: 10.0
+			});
+			// The id is a number the server gave, never text from anywhere
+			// else, so it is written as one.
+			killer.request("KILL QUERY " + Std.string(Std.int(id)));
+			killer.close();
+			return true;
+		} catch (_:Dynamic) {
+			try {
+				killer.close();
+			} catch (_:Dynamic) {}
+
+			return false;
+		}
+		#else
+		return false;
+		#end
 	}
 
 	// Transactions. Each throws an `SQLError` when the server refuses, after
@@ -300,16 +401,54 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		__dispatch(SQLEvent.RELEASE_SAVEPOINT);
 	}
 
+	/**
+		Runs `sql` and returns its result. Throws a `MySQLError` -- with the
+		error number and SQLSTATE where the driver reports them -- when the
+		server refuses it or the connection fails.
+	**/
 	public function request(sql:String):ResultSet {
+		if (__connection == null) {
+			throw new MySQLError("request", "MySQLConnection: not open.", "MySQLConnection: not open.", 2006, "HY000");
+		}
+
+		try {
+			#if cpp
+			if (__native != null) {
+				return __native.request(sql);
+			}
+			#end
+
+			var result:ResultSet = __connection.request(sql);
+			__noteStatement(sql);
+			return result;
+		} catch (e:Dynamic) {
+			throw __error("request", e);
+		}
+	}
+
+	/**
+		What went wrong, as a `MySQLError`: the error number and SQLSTATE the
+		native client kept of the failure, or of an error that already is one.
+	**/
+	@:noCompletion private function __error(operation:String, e:Dynamic):MySQLError {
+		if (Std.isOfType(e, MySQLError)) {
+			return e;
+		}
+
+		var detail:String = Std.string(e);
+		var code:Int = 0;
+		var state:String = "HY000";
+
 		#if cpp
 		if (__native != null) {
-			return __native.request(sql);
+			try {
+				code = __native.errorCode;
+				state = __native.sqlState;
+			} catch (_:Dynamic) {}
 		}
 		#end
 
-		var result:ResultSet = __connection.request(sql);
-		__noteStatement(sql);
-		return result;
+		return new MySQLError(operation, detail, detail, code, state);
 	}
 
 	/**
@@ -486,17 +625,20 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		__dispatchEvent(new SQLEvent(t));
 	}
 
-	@:noCompletion private inline function __dispatchError(op:String, msg:String, e:Dynamic):Void {
-		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(op, e, msg)));
+	@:noCompletion private function __dispatchError(op:String, msg:String, e:Dynamic):Void {
+		var cause:MySQLError = __error(op, e);
+		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new MySQLError(op, cause.details(), msg, cause.code, cause.sqlState)));
 	}
 
 	/**
 		Reports a failed transaction step both ways: as the `SQLErrorEvent` it
-		always was, and as the `SQLError` it now throws.
+		always was, and as the `SQLError` it now throws -- a `MySQLError`,
+		carrying the error number and SQLSTATE of what failed.
 	**/
 	@:noCompletion private function __fail(op:String, msg:String, e:Dynamic):Void {
-		var detail:String = Std.string(e);
-		var error:SQLError = new SQLError(op, detail, msg + ": " + detail);
+		var cause:MySQLError = __error(op, e);
+		var detail:String = cause.details();
+		var error:MySQLError = new MySQLError(op, detail, msg + ": " + detail, cause.code, cause.sqlState);
 		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}

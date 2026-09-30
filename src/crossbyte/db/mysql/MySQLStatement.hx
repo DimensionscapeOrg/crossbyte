@@ -98,7 +98,7 @@ class MySQLStatement extends EventDispatcher {
 		__prefetch = prefetch;
 
 		try {
-			__resultSet = __connection.request(sql);
+			__resultSet = __sqlConnection != null ? __sqlConnection.request(sql) : __connection.request(sql);
 			__queueResult();
 		} catch (e:Dynamic) {
 			__executing = false;
@@ -121,7 +121,17 @@ class MySQLStatement extends EventDispatcher {
 	**/
 	@:noCompletion private function __fail(e:Dynamic):Void {
 		var detail:String = Std.string(e);
-		var error:SQLError = new SQLError(SQLEvent.RESULT, detail, "Execution failed: " + detail);
+		var code:Int = 0;
+		var state:String = "HY000";
+
+		if (Std.isOfType(e, MySQLError)) {
+			var cause:MySQLError = e;
+			detail = cause.details();
+			code = cause.code;
+			state = cause.sqlState;
+		}
+
+		var error:MySQLError = new MySQLError(SQLEvent.RESULT, detail, "Execution failed: " + detail, code, state);
 		__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, error));
 		throw error;
 	}

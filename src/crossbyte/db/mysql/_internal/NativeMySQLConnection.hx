@@ -17,22 +17,30 @@ class NativeMySQLConnection implements Connection {
 	@:noCompletion private var __handle:Dynamic;
 
 	/**
-		Connects, and selects `database` when one is given. A connection that
-		opens and then cannot select its database is closed before the error
-		leaves, rather than left for the collector.
+		Connects, and selects `database` when one is given. Throws a
+		`MySQLError` carrying the error number and SQLSTATE -- 1045 for a
+		refused login, 1049 for an unknown database, 2003 for a server that
+		could not be reached. A connection that fails at either step is
+		closed before the error leaves, rather than left for the collector.
 	**/
 	public static function connect(params:Dynamic, database:String):NativeMySQLConnection {
-		var handle:Dynamic = NativeMySQL.connect(params);
+		var handle:Dynamic = NativeMySQL.create(params);
 
-		if (database != null && database != "") {
-			try {
+		try {
+			NativeMySQL.open(handle);
+
+			if (database != null && database != "") {
 				NativeMySQL.selectDatabase(handle, database);
-			} catch (e:Dynamic) {
-				try {
-					NativeMySQL.close(handle);
-				} catch (_:Dynamic) {}
-				cpp.Lib.rethrow(e);
 			}
+		} catch (e:Dynamic) {
+			var error:crossbyte.db.mysql.MySQLError = new crossbyte.db.mysql.MySQLError("open", Std.string(e), Std.string(e),
+				NativeMySQL.errorCode(handle), NativeMySQL.sqlState(handle));
+
+			try {
+				NativeMySQL.close(handle);
+			} catch (_:Dynamic) {}
+
+			throw error;
 		}
 
 		return new NativeMySQLConnection(handle);
@@ -108,6 +116,32 @@ class NativeMySQLConnection implements Connection {
 
 	/** Whether the session runs over TLS. **/
 	public var encrypted(get, never):Bool;
+
+	/** The error number of the last failure, `0` after a success. **/
+	public var errorCode(get, never):Int;
+
+	/** The SQLSTATE of the last failure, `00000` after a success. **/
+	public var sqlState(get, never):String;
+
+	/** The server's id for this connection, as `KILL` takes it. **/
+	public var threadId(get, never):Float;
+
+	/** COM_PING: whether the server answers. **/
+	public function ping():Bool {
+		return NativeMySQL.ping(__handle);
+	}
+
+	private function get_errorCode():Int {
+		return NativeMySQL.errorCode(__handle);
+	}
+
+	private function get_sqlState():String {
+		return NativeMySQL.sqlState(__handle);
+	}
+
+	private function get_threadId():Float {
+		return NativeMySQL.threadId(__handle);
+	}
 
 	/** The authentication plugin the account logged in with. **/
 	public var authPlugin(get, never):String;
