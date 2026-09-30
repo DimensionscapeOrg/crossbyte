@@ -1220,6 +1220,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The whole suite builds and runs on hl and neko, and CI does both
+  (`ci/hl-tests.hxml`, `ci/neko-tests.hxml`, `.github/workflows/hl-neko.yml`):
+  neither target had been built anywhere, which is how neither compiled for
+  five months unnoticed. `RPCSession` also compiles for a HashLink older than
+  1.13, which is what Haxe assumes unless told otherwise with `-D hl-ver`: its
+  session counter takes a lock there, as on neko, rather than stopping the
+  build inside the standard library with "Atomic operations require HL
+  1.13+". Cases that cannot run on these targets say why and check what
+  happens instead: socket buffer sizes, which hl cannot read, and public
+  address discovery and WebSocket clients, which need a secure random source
+  neither has.
 - On hl, a thread waiting for a slow TLS server no longer stops every other
   thread. HashLink's collector stops every thread and waits for each to
   reach a safe point or say it is blocked; its TLS layer read the network

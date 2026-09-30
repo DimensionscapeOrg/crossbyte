@@ -23,8 +23,8 @@ import sys.io.File;
  *
  * So registrations are no longer read as plain text. Each is kept with the
  * conditionals around it and replayed against every target the project builds,
- * cpp, eval, jvm, js and Node, and a case that no single target both
- * registers and compiles is an error like the rest. Guards naming a define
+ * cpp, eval, jvm, hl, neko, js and Node, and a case that no single target
+ * both registers and compiles is an error like the rest. Guards naming a define
  * this cannot decide, `windows` or `subset_io`, are treated as satisfiable
  * everywhere and never fail a build.
  *
@@ -569,16 +569,18 @@ class SuiteCoverage {
 	/**
 	 * The targets this project builds, and what each one defines.
 	 *
-	 * Five, because ci/*.hxml names exactly five: --cpp, --jvm, --js for the
-	 * browser and for Node, and --interp. A case has to be registered and
-	 * compiled by one and the same target; the ones where no single target
-	 * does both are what this list exists to find.
+	 * Seven, because ci/*.hxml names exactly seven: --cpp, --jvm, --hl,
+	 * --neko, --js for the browser and for Node, and --interp. A case has to
+	 * be registered and compiled by one and the same target; the ones where no
+	 * single target does both are what this list exists to find.
 	 */
 	private static function __worlds():Array<World> {
 		return [
 			__world("cpp", ["cpp", "hxcpp", "sys", "target.sys"]),
 			__world("eval", ["eval", "interp", "sys", "target.sys"]),
 			__world("jvm", ["java", "jvm", "sys", "target.sys"]),
+			__world("hl", ["hl", "sys", "target.sys"]),
+			__world("neko", ["neko", "sys", "target.sys"]),
 			__world("js", ["js"]),
 			__world("nodejs", ["js", "nodejs", "sys", "target.sys"])
 		];
