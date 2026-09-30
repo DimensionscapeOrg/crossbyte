@@ -148,6 +148,17 @@ class DatagramSocketTest extends utest.Test {
 	public function testBufferSizesCanBeReadAndAskedFor():Void {
 		if (!requireDatagramSupport()) return;
 
+		#if hl
+		// HashLink has no native to read or size a socket's buffers, so they
+		// read 0 there, as documented, and there is no size to check.
+		var unsized = new DatagramSocket();
+		unsized.bind(0, "127.0.0.1");
+		Assert.equals(0, unsized.receiveBufferSize);
+		Assert.equals(0, unsized.sendBufferSize);
+		unsized.close();
+		return;
+		#end
+
 		var socket = new DatagramSocket();
 		try {
 			socket.bind(0, "127.0.0.1");
