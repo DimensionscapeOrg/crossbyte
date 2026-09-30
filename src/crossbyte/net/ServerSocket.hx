@@ -269,6 +269,15 @@ class ServerSocket extends EventDispatcher {
 		// below do not care which of the two this is, the same arrangement
 		// sys.ssl.Socket gives every other sys target.
 		__serverSocket = secure ? new SSLSocket() : new sys.net.Socket();
+
+		if (secure) {
+			// As natively, below: a server asks for client certificates only
+			// once requireClientCertificate() says to. Left unset it followed
+			// DEFAULT_VERIFY_CERT, which is for the connections an application
+			// makes, so turning that on made the server refuse every client
+			// that had no certificate, which is every browser.
+			(cast __serverSocket : SSLSocket).verifyCert = false;
+		}
 		#else
 		// sys.ssl.Socket extends sys.net.Socket, so the accept/select paths
 		// below are identical for both modes.
