@@ -1220,6 +1220,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A jvm TLS server asks for client certificates only after
+  `requireClientCertificate()`, as a native one does. Once the jvm honoured
+  `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
+  its own followed it too, so turning the default on for an application's
+  outgoing connections made its servers refuse every client without a
+  certificate, every browser.
 - A closed `ServerSocket` or `ServerWebSocket` no longer keeps accepting.
   Each path that wanted the accept tick running added it to the runtime
   again, a `connect` listener added after `listen()`, as `NetHost` does,
