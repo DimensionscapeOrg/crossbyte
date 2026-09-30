@@ -22,7 +22,12 @@ import crossbyte.utils.IntParse;
 **/
 @:noCompletion
 class CookieJar {
-	private var __cookies:Map<String, StoredCookie> = new Map();
+	// By host, lowercased, and within a host in the order the cookies were
+	// set. The jar was one map by name: a host's cookies went back in a map's
+	// iteration order, which differs by target, a second host setting a name
+	// replaced the first host's cookie of that name, and hosts were compared
+	// exactly, so Example.com's session was not sent to example.com.
+	private var __hosts:Map<String, Array<StoredCookie>> = new Map();
 
 	public function new() {}
 
@@ -38,14 +43,20 @@ class CookieJar {
 			return;
 		}
 
+		var key:String = host.toLowerCase();
 		for (line in setCookie.split("\n")) {
-			__storeOne(line, host);
+			__storeOne(line, key);
 		}
 	}
 
 	/**
 		The `Cookie` header value for a request to `host`, or `null` when there
 		is nothing to send.
+
+		Same host or nothing, whatever the case each is written in. A redirect
+		that leaves the site it came from leaves the cookies behind, which is
+		the conservative direction and the only one that needs no domain rules
+		to be safe.
 
 		@param secure Whether the request travels over TLS. A cookie marked
 			   `Secure` is withheld from a plaintext request, which is the
@@ -56,22 +67,17 @@ class CookieJar {
 			return null;
 		}
 
+		var cookies:Null<Array<StoredCookie>> = __hosts.get(host.toLowerCase());
+		if (cookies == null) {
+			return null;
+		}
+
 		var parts:Array<String> = [];
-
-		for (name => cookie in __cookies) {
-			// Same host or nothing. A redirect that leaves the site it came
-			// from leaves the cookies behind, which is the conservative
-			// direction and the only one that needs no domain rules to be
-			// safe.
-			if (cookie.host != host) {
-				continue;
-			}
-
+		for (cookie in cookies) {
 			if (cookie.secure && !secure) {
 				continue;
 			}
-
-			parts.push(name + "=" + cookie.value);
+			parts.push(cookie.name + "=" + cookie.value);
 		}
 
 		return parts.length > 0 ? parts.join("; ") : null;
@@ -141,12 +147,37 @@ class CookieJar {
 			}
 		}
 
+		var cookies:Null<Array<StoredCookie>> = __hosts.get(host);
+		var existing:Int = -1;
+		if (cookies != null) {
+			for (i in 0...cookies.length) {
+				if (cookies[i].name == name) {
+					existing = i;
+					break;
+				}
+			}
+		}
+
 		if (expired) {
-			__cookies.remove(name);
+			if (existing >= 0) {
+				cookies.splice(existing, 1);
+			}
 			return;
 		}
 
-		__cookies.set(name, {value: value, host: host, secure: secure});
+		var cookie:StoredCookie = {name: name, value: value, secure: secure};
+		if (existing >= 0) {
+			// Replaced where it stood: a new value is not a new cookie, and
+			// RFC 6265 5.3 keeps the first one's creation time, which is what
+			// the order it goes back in follows.
+			cookies[existing] = cookie;
+			return;
+		}
+		if (cookies == null) {
+			cookies = [];
+			__hosts.set(host, cookies);
+		}
+		cookies.push(cookie);
 	}
 
 	private static function __isDigits(text:String):Bool {
@@ -165,7 +196,7 @@ class CookieJar {
 }
 
 private typedef StoredCookie = {
+	var name:String;
 	var value:String;
-	var host:String;
 	var secure:Bool;
 }
