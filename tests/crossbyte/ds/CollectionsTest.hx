@@ -206,6 +206,34 @@ class CollectionsTest extends utest.Test {
 		Assert.raises(() -> dispatch("MISSING"));
 	}
 
+	/**
+		Keys can be named constants, and a key no case matches can be handled.
+		Only literals were accepted, a table keyed on opcodes repeated their
+		numbers, and an unmatched key threw "Case not found".
+	**/
+	public function testSwitchTableTakesNamedKeysAndAFallback():Void {
+		Assert.isNull(TypeCheck.errorOf(SwitchTable.make([{key: SwitchTableOpcodes.PING, handler: () -> {}}])), "a named constant was refused as a key");
+		Assert.notNull(TypeCheck.errorOf(SwitchTable.make([{key: "A", handler: () -> {}}, {key: "A", handler: () -> {}}])), "a duplicate key was accepted");
+
+		var seen:Array<String> = [];
+		var custom:String = "CUSTOM";
+		var dispatch = SwitchTable.make([
+			{key: SwitchTableOpcodes.PING, handler: () -> seen.push("pong")},
+			{key: SwitchTableOpcodes.LOGIN, handler: (name:String) -> seen.push("login " + name)},
+			{key: custom, handler: () -> seen.push("custom")}
+		], (key:Dynamic, args:Array<Dynamic>) -> seen.push("unknown " + key + " with " + args.length));
+
+		dispatch(1);
+		dispatch(2, "ada");
+		dispatch("CUSTOM");
+		dispatch(99, "x", "y");
+		dispatch("nope");
+		Assert.equals("pong,login ada,custom,unknown 99 with 2,unknown nope with 0", seen.join(","));
+
+		var strict = SwitchTable.make([{key: 1, handler: () -> {}}]);
+		Assert.raises(() -> strict(2));
+	}
+
 	public function testRadixTreeSupportsExactKeysPrefixesAndUpdates():Void {
 		var tree = new RadixTree<Int>();
 
@@ -1343,4 +1371,9 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, graph.getNeighbors("mid").length);
 		Assert.equals(0, graph.getNeighbors("end").length);
 	}
+}
+
+private class SwitchTableOpcodes {
+	public static inline var PING:Int = 1;
+	public static inline var LOGIN:Int = 2;
 }
