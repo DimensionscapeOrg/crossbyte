@@ -1,5 +1,7 @@
 package crossbyte;
 
+import crossbyte.utils.IntParse;
+
 /**
  * An abstract type representing a generic primitive value.
  *
@@ -14,7 +16,7 @@ package crossbyte;
  *
  * ## Example:
  * ```haxe
- * var p:Primitive = 42;
+ * var p:PrimitiveValue = 42;
  * var s:String = p; // Automatic conversion to "42"
  * var b:Bool = p.toBool(); // true
  * ```
@@ -80,10 +82,19 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 
 	/**
 	 * Converts the primitive to an `Int`.
-	 * 
-	 * - Strings are parsed as integers.
+	 *
+	 * - Strings are parsed as integers: surrounding spaces, then an optional
+	 *   sign, then decimal digits or `0x` and hex digits, and nothing else.
+	 * - Floats are truncated toward zero.
 	 * - `true` becomes `1`, `false` becomes `0`.
 	 * - `null` converts to `0`.
+	 *
+	 * A string or a Float whose value is not an `Int`, too large, too
+	 * small, not a number, throws, as anything else that cannot be
+	 * converted does. Both went through `Std.parseInt` and `Std.int`, which
+	 * answer differently on each target: "4294967396" was null on eval, that
+	 * number on Node and a thrown `NumberFormatException` on the jvm, and the
+	 * Float 3e9 was 2147483647 on the jvm and -1294967296 elsewhere.
 	 *
 	 * @return The integer representation of the primitive.
 	 * @throws If conversion is not possible.
@@ -93,11 +104,15 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 			case TInt:
 				return this;
 			case TFloat:
-				return Std.int(this);
+				var f:Float = this;
+				if (!(f > -2147483649.0 && f < 2147483648.0)) {
+					throw "Cannot convert " + Std.string(this) + " to Int";
+				}
+				return Std.int(f);
 			case TBool:
 				return this ? 1 : 0;
 			case TClass(String):
-				return Std.parseInt(this);
+				return __parseInt(this);
 			case TNull:
 				return 0;
 			default:
@@ -172,6 +187,36 @@ abstract PrimitiveValue(Dynamic) to Dynamic {
 
 	@:from private static inline function fromBool(b:Bool):PrimitiveValue {
 		return cast b;
+	}
+
+	// Through IntParse, which reads digits only and checks the bound before
+	// each one, so every target reads the same text as the same number.
+	@:noCompletion private static function __parseInt(text:String):Int {
+		var s:String = StringTools.trim(text);
+		var at:Int = 0;
+		var negative:Bool = false;
+		if (s.length > 0 && (StringTools.fastCodeAt(s, 0) == "-".code || StringTools.fastCodeAt(s, 0) == "+".code)) {
+			negative = StringTools.fastCodeAt(s, 0) == "-".code;
+			at = 1;
+		}
+		var hex:Bool = s.length > at + 2 && StringTools.fastCodeAt(s, at) == "0".code
+			&& (StringTools.fastCodeAt(s, at + 1) == "x".code || StringTools.fastCodeAt(s, at + 1) == "X".code);
+		var digits:String = s.substr(hex ? at + 2 : at);
+		var magnitude:Int = hex ? IntParse.hex(digits) : IntParse.decimal(digits);
+		if (magnitude >= 0) {
+			return negative ? -magnitude : magnitude;
+		}
+		// The one negative number whose magnitude is not an Int.
+		if (negative) {
+			var significant:String = digits;
+			while (significant.length > 1 && StringTools.fastCodeAt(significant, 0) == "0".code) {
+				significant = significant.substr(1);
+			}
+			if (significant.toUpperCase() == (hex ? "80000000" : "2147483648")) {
+				return 0x80000000;
+			}
+		}
+		throw "Cannot convert \"" + text + "\" to Int";
 	}
 
 	private static function isValid(value:Dynamic):Bool {

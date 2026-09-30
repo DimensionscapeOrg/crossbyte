@@ -159,7 +159,7 @@ class InterestSetTest extends utest.Test {
 
 		Assert.same([], mismatches);
 		// What is held is what is in view, however many rounds came before.
-		var held:Int = @:privateAccess set.__viewIds.length;
+		var held:Int = @:privateAccess set.__viewCount;
 		Assert.equals(previous.length, held);
 	}
 

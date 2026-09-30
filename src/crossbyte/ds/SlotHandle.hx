@@ -12,14 +12,22 @@ package crossbyte.ds;
  *
  * The generation was eight bits, so a handle kept after its entry died, a
  * missile's target, a last attacker, resolved to whatever took its slot 256
- * reuses later, and with the free list handing the same slot back first, 256
- * reuses come in seconds. It is eleven now, as `TimerHandle`'s was widened
+ * reuses later, and with a free list that handed the same slot back first,
+ * 256 reuses came in seconds. It is eleven now, as `TimerHandle`'s was widened
  * for exactly this: a stale handle has to outlive 2048 reuses of its slot to
- * alias. The index gives up the bits, so a map holds at most 1,048,576
+ * alias, and the maps now reuse the slot freed longest ago. The index gives up the bits, so a map holds at most 1,048,576
  * entries.
+ *
+ * A handle is not an `Int` of its own accord. It converted to one silently,
+ * so a handle passed where an id belongs, `grid.set(entity.handle, x, y)`
+ * for `grid.set(entity.slot, ...)`, compiled, and worked until the slot's
+ * first reuse made the handle 1,048,576 or more, when `SpatialGrid` and
+ * `InterestSet` grew their arrays to fit it: 117 MB by the third reuse. The
+ * slot is `index()`; the whole handle, to write down and read back, is
+ * `toInt()`, and an `Int` still becomes a handle when assigned to one.
  */
 @:forward
-abstract SlotHandle(Int) from Int to Int {
+abstract SlotHandle(Int) from Int {
 	public static inline final INVALID:SlotHandle = new SlotHandle(-1);
 
 	/** Number of bits used for the index portion (fixed). */
@@ -48,6 +56,14 @@ abstract SlotHandle(Int) from Int to Int {
 	 */
 	public inline function new(v:Int) {
 		this = v;
+	}
+
+	/**
+	 * The handle as the `Int` it is stored as, for writing it down; assigning
+	 * that `Int` to a `SlotHandle` reads it back.
+	 */
+	public inline function toInt():Int {
+		return this;
 	}
 
 	/**

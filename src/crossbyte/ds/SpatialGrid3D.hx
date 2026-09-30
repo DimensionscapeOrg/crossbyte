@@ -21,12 +21,17 @@ import haxe.ds.Vector;
  * for (ship in ships) {
  * 	grid.set(ship.slot, ship.x, ship.y, ship.z);
  * }
- * found.resize(0);
- * grid.querySphere(observer.x, observer.y, observer.z, VIEW_RADIUS, found);
- * for (slot in found) {
- * 	observer.interest.add(slot);
- * }
+ * found.clear();
+ * grid.querySphereIds(observer.x, observer.y, observer.z, VIEW_RADIUS, found);
+ * observer.interest.addAll(found);
  * ```
+ *
+ * **What a query finds** goes into an `IdList` through `querySphereIds` and
+ * `queryBoxIds`, or into an `Array<Int>` through `querySphere` and
+ * `queryBox`. The list is the one to use every tick, for the reason
+ * `SpatialGrid` gives: it allocates nothing on any target once grown, where
+ * an array boxes ids on the jvm and loses its storage to `resize(0)` on
+ * JavaScript.
  *
  * **This or `SpatialGrid`.** Use this when things spread as far up and down
  * as they do across, space, flight, a tower of floors each a view apart. A
@@ -265,6 +270,48 @@ final class SpatialGrid3D {
 	}
 
 	/**
+	 * Adds to `found` every id within `radius` of (`x`, `y`, `z`), as
+	 * `querySphere` does, into a list that allocates nothing on any target
+	 * once it has grown.
+	 *
+	 * @return `found`.
+	 */
+	public function querySphereIds(x:Float, y:Float, z:Float, radius:Float, found:IdList):IdList {
+		if (!(radius >= 0) || Math.isNaN(x) || Math.isNaN(y) || Math.isNaN(z)) {
+			return found;
+		}
+
+		// The same walk as querySphere's, written out again rather than
+		// shared through a call per id.
+		var firstColumn:Int = __column((x - radius - __left) * __inverse - SLACK);
+		var lastColumn:Int = __column((x + radius - __left) * __inverse + SLACK);
+		var firstRow:Int = __row((y - radius - __top) * __inverse - SLACK);
+		var lastRow:Int = __row((y + radius - __top) * __inverse + SLACK);
+		var firstLayer:Int = __layer((z - radius - __front) * __inverse - SLACK);
+		var lastLayer:Int = __layer((z + radius - __front) * __inverse + SLACK);
+		var radiusSquared:Float = radius * radius;
+
+		for (layer in firstLayer...lastLayer + 1) {
+			for (row in firstRow...lastRow + 1) {
+				var base:Int = layer * __layerSize + row * columns;
+				for (column in firstColumn...lastColumn + 1) {
+					var id:Int = __heads[base + column];
+					while (id != -1) {
+						var dx:Float = __xs[id] - x;
+						var dy:Float = __ys[id] - y;
+						var dz:Float = __zs[id] - z;
+						if (dx * dx + dy * dy + dz * dz <= radiusSquared) {
+							found.push(id);
+						}
+						id = __next[id];
+					}
+				}
+			}
+		}
+		return found;
+	}
+
+	/**
 	 * Adds to `found` every id inside the box, by the rule `Rectangle.contains`
 	 * uses on each axis: its lowest faces included, its highest not.
 	 *
@@ -274,6 +321,47 @@ final class SpatialGrid3D {
 		if (found == null) {
 			found = [];
 		}
+		if (!(width > 0) || !(height > 0) || !(depth > 0) || Math.isNaN(x) || Math.isNaN(y) || Math.isNaN(z)) {
+			return found;
+		}
+
+		var right:Float = x + width;
+		var bottom:Float = y + height;
+		var back:Float = z + depth;
+		var firstColumn:Int = __column((x - __left) * __inverse - SLACK);
+		var lastColumn:Int = __column((right - __left) * __inverse + SLACK);
+		var firstRow:Int = __row((y - __top) * __inverse - SLACK);
+		var lastRow:Int = __row((bottom - __top) * __inverse + SLACK);
+		var firstLayer:Int = __layer((z - __front) * __inverse - SLACK);
+		var lastLayer:Int = __layer((back - __front) * __inverse + SLACK);
+
+		for (layer in firstLayer...lastLayer + 1) {
+			for (row in firstRow...lastRow + 1) {
+				var base:Int = layer * __layerSize + row * columns;
+				for (column in firstColumn...lastColumn + 1) {
+					var id:Int = __heads[base + column];
+					while (id != -1) {
+						var px:Float = __xs[id];
+						var py:Float = __ys[id];
+						var pz:Float = __zs[id];
+						if (px >= x && py >= y && pz >= z && px < right && py < bottom && pz < back) {
+							found.push(id);
+						}
+						id = __next[id];
+					}
+				}
+			}
+		}
+		return found;
+	}
+
+	/**
+	 * Adds to `found` every id inside the box, as `queryBox` does, into a list
+	 * that allocates nothing on any target once it has grown.
+	 *
+	 * @return `found`.
+	 */
+	public function queryBoxIds(x:Float, y:Float, z:Float, width:Float, height:Float, depth:Float, found:IdList):IdList {
 		if (!(width > 0) || !(height > 0) || !(depth > 0) || Math.isNaN(x) || Math.isNaN(y) || Math.isNaN(z)) {
 			return found;
 		}
