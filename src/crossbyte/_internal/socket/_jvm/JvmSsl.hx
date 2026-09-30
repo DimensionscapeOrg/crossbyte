@@ -64,6 +64,9 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private var __appIn:ByteBuffer;
 	@:noCompletion private var __handshaken:Bool = false;
 	@:noCompletion private var __pendingOut:Bool = false;
+	// When a blocking handshake has to be done by, from haxe.Timer.stamp();
+	// 0 when none is running or the socket has no timeout.
+	@:noCompletion private var __deadline:Float = 0.0;
 
 	@:noCompletion private static var __EMPTY:ByteBuffer = ByteBuffer.allocate(0);
 
@@ -188,8 +191,16 @@ class JvmSslSocket extends sys.net.Socket {
 
 		The channel stays blocking, as it is for any client connect, so the
 		handshake below runs to completion here rather than being driven by a
-		pump, a blocking read cannot report "would block", so the loop cannot
-		spin.
+		pump. It is bounded by the socket's timeout as a whole, not per read:
+		each read waits at most what is left of it.
+
+		Only `Blocked`, a record that has arrived in part, sends it round
+		again, and the next read then waits for the rest. Anything else is the
+		answer and is thrown as it came: a timeout, a reset, a certificate
+		refused. Every error used to be caught and retried after 2 ms, ten
+		thousand times, so a server that accepted and said nothing held an
+		https request for ten thousand times its timeout, and a reset took 25
+		seconds to report as a handshake that "did not complete".
 
 		By default the certificate is verified against the JDK's default trust
 		store and the hostname is checked against the certificate. Both matter:
@@ -221,25 +232,31 @@ class JvmSslSocket extends sys.net.Socket {
 			return;
 		}
 
-		// A blocking channel never reports "would block", so this settles; the
-		// count is a guard against a peer that answers with nothing at all.
-		var attempts = 0;
+		__deadline = __timeout > 0 ? haxe.Timer.stamp() + __timeout : 0.0;
 
-		while (!__handshaken && attempts < 10000) {
-			attempts++;
-
-			try {
-				handshake();
-			} catch (e:haxe.io.Error) {
-				// Only Blocked reaches here, and only if the channel were made
-				// non-blocking underneath us.
-				Sys.sleep(0.002);
+		try {
+			while (!__handshaken) {
+				try {
+					handshake();
+				} catch (e:haxe.io.Error) {
+					switch (e) {
+						case Blocked:
+						// A record that arrived in part; the next read waits
+						// for the rest, within what is left of the deadline.
+						case Custom(detail) if (detail == "Timeout"):
+							throw haxe.io.Error.Custom("Timeout: the TLS handshake with " + __hostname + ":" + port + " had no answer within "
+								+ __timeout + " s");
+						default:
+							throw e;
+					}
+				}
 			}
+		} catch (e:Dynamic) {
+			__deadline = 0.0;
+			throw e;
 		}
 
-		if (!__handshaken) {
-			throw "The TLS handshake with " + __hostname + " did not complete.";
-		}
+		__deadline = 0.0;
 	}
 
 	/**
@@ -481,6 +498,18 @@ class JvmSslSocket extends sys.net.Socket {
 
 		switch (result.getStatus().name()) {
 			case "BUFFER_UNDERFLOW":
+				// Less than a whole record. If the buffer is already full, the
+				// record is larger than the buffer, and reading on cannot help:
+				// the read takes nothing, reports would-block, and the record
+				// never completes. Grown to what the session now says a record
+				// can be, or double, so the next read has room for the rest.
+				if (__netIn.position() == __netIn.capacity()) {
+					var wanted:Int = __engine.getSession().getPacketBufferSize();
+					var grown = ByteBuffer.allocate(wanted > __netIn.capacity() ? wanted : __netIn.capacity() * 2);
+					__netIn.flip();
+					grown.put(__netIn);
+					__netIn = grown;
+				}
 				return false;
 
 			case "BUFFER_OVERFLOW":
@@ -518,8 +547,20 @@ class JvmSslSocket extends sys.net.Socket {
 		}
 
 		// A blocking read on the channel has no timeout of its own, so an
-		// https response that stopped arriving was waited for for ever.
-		sys.net.Socket.__awaitReadable(socket, __timeout);
+		// https response that stopped arriving was waited for for ever. In a
+		// handshake the wait is what is left of the whole, so a peer that
+		// answers a byte at a time cannot stretch it.
+		var wait:Float = __timeout;
+		if (__deadline > 0) {
+			var left:Float = __deadline - haxe.Timer.stamp();
+			if (left <= 0) {
+				throw haxe.io.Error.Custom("Timeout");
+			}
+			if (left < wait) {
+				wait = left;
+			}
+		}
+		sys.net.Socket.__awaitReadable(socket, wait);
 
 		var read = try {
 			socket.read(__netIn);
