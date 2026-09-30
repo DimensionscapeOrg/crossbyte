@@ -5,6 +5,16 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `HTTPServerConfig.compression`, an `HTTPCompression`: whether the server
+  compresses (`enabled`), from what size (`minimumSize`, 1 KB), which
+  `Content-Type`s (`types`), and how hard (`level`, Brotli's 0 to 11). A
+  static file is compressed once per coding and kept, up to `cacheSize`
+  (16 MB), while its size and modification time hold -- it was compressed
+  again for every request, and a 150 KB script served 64 requests a second
+  as Brotli natively against 863 as it was -- and a precompressed
+  `app.js.br` or `app.js.gz` beside `app.js` is sent in its place when it
+  is not older (`precompressed`), which is also how a file large enough to
+  stream goes out compressed.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -796,6 +806,23 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- The HTTP server compresses only what is worth it: a body of 1 KB or
+  more, of a text-like type, in a response that is not an error. Every
+  non-empty body was compressed -- a 429 or a 404 cost the setup of a
+  Brotli encoder whenever the client listed br, which every browser does,
+  so the rate limiter did not bound what a flood of refused requests cost
+  (18.8 ms a refusal on Node rather than 0.57); a two-byte answer came
+  out as 22 bytes of gzip, and PNGs and archives grew. A response that
+  could have been encoded now says `Vary: Accept-Encoding`, which none
+  did, so a cache replayed br bodies to clients that had not asked for
+  them; an encoded variant's `ETag` is made weak, as nginx does, since one
+  strong tag went out on every coding of a body; and a `HEAD` is
+  negotiated as its `GET` is, naming the coding and leaving out a length
+  it cannot know, where it reported the identity length beside a br
+  `GET` -- and a route's `HEAD` gives its `GET`'s length rather than 0.
+  What to change: to compress smaller bodies or other types, set
+  `HTTPServerConfig.compression.minimumSize` and `.types`; to compress
+  nothing, `compression.enabled = false`.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
