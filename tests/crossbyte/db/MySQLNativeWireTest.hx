@@ -16,6 +16,7 @@ import utest.Assert;
  * What the native MySQL client puts on the wire, against a server that logs
  * every byte it is sent (`fakemysql/FakeMySQLServer`).
  */
+@:access(crossbyte.db.mysql.MySQLConnection)
 class MySQLNativeWireTest extends utest.Test {
 	private var __server:FakeMySQLServer;
 
@@ -157,6 +158,85 @@ class MySQLNativeWireTest extends utest.Test {
 		Require.notNull(next);
 		Assert.equals(2006, next.code);
 		connection.close();
+	}
+
+	public function testAWriteTimeoutFailsTheStatementAndClosesTheConnection():Void {
+		// A server that stopped reading held a statement's send for as long
+		// as the socket waited, five hours: there was no write timeout.
+		__server.stallOnPacketsOver = 1 << 20;
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.writeTimeout = 0.3;
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.open(config);
+
+		// More than one packet carries, so the statement goes as two. Windows
+		// takes a single send() whole, however little room its buffer has,
+		// an 8 MB statement to a server not reading went out at once, and
+		// only the send after it waits; Linux waits part way through.
+		var filler:Bytes = Bytes.alloc(17 << 20);
+		filler.fill(0, filler.length, "x".code);
+		var sql:String = "SELECT '" + filler.toString() + "'";
+
+		var started:Float = haxe.Timer.stamp();
+		var error:MySQLError = null;
+
+		try {
+			connection.request(sql);
+		} catch (e:MySQLError) {
+			error = e;
+		}
+
+		Assert.isTrue(haxe.Timer.stamp() - started < 3.0, "the write timeout was not applied");
+		Assert.equals(1, __server.eventsOf("stalled").length);
+		Require.notNull(error);
+		Assert.equals(2013, error.code);
+		Assert.isTrue(error.message.indexOf("Timed out after 0.3 seconds") >= 0, error.message);
+
+		// Part of the statement went and the rest never will, so the
+		// connection is closed rather than left to send the next one after it.
+		var next:MySQLError = null;
+
+		try {
+			connection.request("SELECT 1");
+		} catch (e:MySQLError) {
+			next = e;
+		}
+
+		Require.notNull(next);
+		Assert.equals(2006, next.code);
+		connection.close();
+	}
+
+	public function testKeepAliveIsSetOnTheSocket():Void {
+		// The client set no keepalive, so a connection to a host that had
+		// vanished was noticed only when a read ran out of time. Read back
+		// from the socket, not from what was asked for.
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.keepAliveIdle = 45;
+		config.keepAliveInterval = 7;
+		config.keepAliveCount = 4;
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.open(config);
+
+		var state:Array<Int> = connection.__native.keepAlive;
+		Assert.equals(1, state[0], "keepalive is off");
+
+		// Where the system reports them, Linux, and Windows 10 1709 on,
+		// they are the ones asked for; on Windows the count as well, which
+		// SIO_KEEPALIVE_VALS cannot set.
+		if (Sys.systemName() == "Linux" || Sys.systemName() == "Windows") {
+			Assert.equals("45 7 4", state.slice(1).join(" "));
+		}
+
+		connection.close();
+
+		config.keepAlive = false;
+		var plain:MySQLConnection = new MySQLConnection();
+		plain.open(config);
+		Assert.equals(0, plain.__native.keepAlive[0], "keepalive is on when asked not to be");
+		plain.close();
 	}
 
 	public function testAnErrorCarriesItsNumberAndStateButNotTheStatement():Void {
