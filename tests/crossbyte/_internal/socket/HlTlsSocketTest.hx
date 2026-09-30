@@ -3,6 +3,8 @@ package crossbyte._internal.socket;
 #if hl
 import crossbyte.net.TLSTestFixture;
 import haxe.io.Bytes;
+import haxe.io.Input;
+import haxe.io.Output;
 import sys.net.Host;
 import sys.thread.Deque;
 import sys.thread.Thread;
@@ -23,6 +25,38 @@ class HlTlsSocketTest extends utest.Test {
 	static inline var DELAY:Float = 1.5;
 
 	public function testAWaitForTlsDataDoesNotStopTheOtherThreads():Void {
+		__assertTheOthersRunWhileAClientWaits(port -> {
+			var client = new HlTlsSocket();
+			client.verifyCert = false;
+			client.setTimeout(10);
+			client.connect(new Host("127.0.0.1"), port);
+			return {input: client.input, output: client.output, close: () -> client.close()};
+		});
+	}
+
+	/**
+		The TLS client everything in CrossByte reads HTTPS through,
+		`URLLoader`, `Http`, the HTTP/2 backend, is `FlexSocket`'s, and it made
+		the standard library's socket on hl. So the stall this class is about
+		was still every HTTPS request's, however `HlTlsSocket` behaved alone.
+	**/
+	public function testAFlexSocketsTlsWaitDoesNotStopTheOtherThreads():Void {
+		__assertTheOthersRunWhileAClientWaits(port -> {
+			var client = new FlexSocket(true);
+			client.verifyCert = false;
+			client.setTimeout(10);
+			client.connect("127.0.0.1", port);
+			return {input: client.input, output: client.output, close: () -> client.close()};
+		});
+	}
+
+	/**
+		A server answering DELAY seconds late, a client from `connect` waiting
+		for the answer on a thread of its own, and this thread allocating
+		meanwhile so the collector runs: the longest this thread then went
+		between two turns of its loop has to be well short of DELAY.
+	**/
+	static function __assertTheOthersRunWhileAClientWaits(connect:Int->ClientStreams):Void {
 		var fixture = TLSTestFixture.selfSigned();
 		if (fixture == null) {
 			// TLSTestFixture makes its certificate with the openssl CLI.
@@ -33,8 +67,8 @@ class HlTlsSocketTest extends utest.Test {
 		var events = new Deque<String>();
 		var port = new Deque<Int>();
 
-		// A server that answers the request DELAY seconds late. Its accepted
-		// socket is the standard library's; what matters here is the client.
+		// The accepted socket is the standard library's; what matters here is
+		// the client.
 		Thread.create(() -> {
 			var listener = new sys.ssl.Socket();
 			try {
@@ -67,11 +101,9 @@ class HlTlsSocketTest extends utest.Test {
 		}
 
 		Thread.create(() -> {
-			var client = new HlTlsSocket();
+			var client:Null<ClientStreams> = null;
 			try {
-				client.verifyCert = false;
-				client.setTimeout(10);
-				client.connect(new Host("127.0.0.1"), serverPort);
+				client = connect(serverPort);
 				client.output.writeString("ping");
 				client.output.flush();
 				events.add("waiting");
@@ -81,7 +113,9 @@ class HlTlsSocketTest extends utest.Test {
 			} catch (e:Dynamic) {
 				events.add("client failed: " + Std.string(e));
 			}
-			try client.close() catch (_:Dynamic) {}
+			if (client != null) {
+				try client.close() catch (_:Dynamic) {}
+			}
 		});
 
 		var first = events.pop(true);
@@ -90,8 +124,6 @@ class HlTlsSocketTest extends utest.Test {
 			return;
 		}
 
-		// Garbage enough that the collector runs while the client waits, and
-		// the longest this thread went between two turns of the loop.
 		var garbage:Array<Bytes> = [];
 		var last:Float = haxe.Timer.stamp();
 		var longest:Float = 0.0;
@@ -118,3 +150,11 @@ class HlTlsSocketTest extends utest.Test {
 	}
 	#end
 }
+
+#if hl
+private typedef ClientStreams = {
+	var input:Input;
+	var output:Output;
+	var close:Void->Void;
+}
+#end
