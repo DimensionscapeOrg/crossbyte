@@ -95,6 +95,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		// Specialised per element type, and Map keys that differ by target.
+		runner.addCase(new crossbyte.ds.PriorityQueueTest());
 		// Word arithmetic on the sign bit, which is where js differs.
 		runner.addCase(new crossbyte.ds.BitSetTest());
 		// Sequence numbers wrapping past 2^31 - 1, likewise.
