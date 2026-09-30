@@ -52,9 +52,9 @@ CrossByte currently includes:
 - TCP, WebSocket, and RUDP transport layers
 - NAT traversal and WebRTC:
   - `PeerConnection` and `DataChannel` -- the full stack, ICE to SCTP over DTLS, interoperable with a browser's `RTCPeerConnection` in either signalling direction (CI proves both against headless Chrome)
-  - `StunClient` and per-connection reflexive gathering, so a peer behind NAT can learn the address the world sees
+  - `StunClient` and per-connection reflexive gathering, so a peer behind NAT can learn the address the world sees, and RFC 5780's tests (`classifyMapping`, `classifyFiltering`) for what kind of NAT is in the way
   - `TurnClient` and relayed candidates for the peers no direct path reaches, verified in CI against an independent TURN server
-  - hole punching on the reliable datagram sockets, for the same problem without the browser
+  - hole punching on the reliable datagram sockets, for the same problem without the browser, with a TURN relay to fall back on where punching fails (`ReliableDatagramServerSocket.allocateRelay`)
 - RPC sessions, commands, handlers, and typed responses -- see the
   [RPC guide](docs/rpc.md)
 - IPC primitives such as `LocalConnection`, `SharedChannel`, and `SharedObject`
@@ -75,7 +75,7 @@ CrossByte currently includes:
   - SQLite
   - MySQL
   - PostgreSQL
-  - MongoDB
+  - MongoDB, through its wire protocol (OP_MSG, SCRAM, TLS, cursors, transactions) on hxcpp, the jvm, the interpreter, hl and neko; not on JavaScript, which cannot block
 
 ## Timers
 
@@ -154,6 +154,7 @@ All optional, all off unless you pass them.
 | --- | --- |
 | `crossbyte_brotli_native` | Route Brotli through the native backend from the `crossbyte-brotli` haxelib instead of the bundled Haxe implementation. |
 | `crossbyte_lz4_native` | Route LZ4 through the native backend from the `crossbyte-lz4` haxelib instead of the bundled Haxe implementation. |
+| `crossbyte_libuv_native` | Build the libuv poll backend from the `crossbyte-libuv` haxelib (cpp only). Needs libuv's headers and library, and `LibuvPoll.install()` called before the first runtime is created; without the define `install()` returns false and the built-in backend is used. See that repository's README. |
 | `crossbyte_no_http2` | Do not auto-register the bundled HTTP/2 backend. A backend registered explicitly through `HTTPBackendRegistry` still wins either way; this only stops the bundled one from being picked up on its own. |
 | `http_debug` | Log each response line the HTTP client reads, through `Logger`, so it honours the configured level and sink. |
 | `crossbyte_debug` | Keep `crossbyte.io.File` out of `@:noDebug`, so its frames appear in stack traces. |
