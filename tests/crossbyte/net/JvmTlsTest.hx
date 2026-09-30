@@ -155,7 +155,158 @@ class JvmTlsTest extends utest.Test {
 		Assert.equals("ping", answer, "the server did not answer a client whose certificate it should trust");
 	}
 
+	// ------------------------------------------------ a handshake that fails
+
+	/**
+		A client's handshake gives up at its timeout. Its loop caught every
+		error, a read that timed out among them, slept 2 ms and tried again,
+		ten thousand times: a server that accepted and said nothing held an
+		https request for ten thousand times its timeout, and one of the HTTP
+		client's pool threads with it.
+	**/
+	public function testAStalledHandshakeGivesUpAtItsTimeout():Void {
+		// Accepts nothing and sends nothing: the system completes each TCP
+		// handshake into the listen queue, and no TLS ever answers.
+		var silent = new sys.net.Socket();
+		silent.bind(new sys.net.Host("127.0.0.1"), 0);
+		silent.listen(4);
+		var port = silent.host().port;
+
+		var outcome = __dialOnThread(port, function(client) {
+			client.verifyCert = false;
+			client.setTimeout(0.4);
+		}, 8);
+		silent.close();
+
+		Assert.isTrue(outcome.finished, "a handshake with a silent server was still waiting after 8 s, with a 0.4 s timeout");
+		Assert.notNull(outcome.failure, "a handshake with a silent server succeeded");
+		Assert.isTrue(outcome.took < 3, 'a handshake with a 0.4 s timeout gave up after ${outcome.took} s');
+	}
+
+	/**
+		A connection reset mid-handshake fails the connect at once, with the
+		reset as its reason. It was caught and retried like a stall, for 25
+		seconds or so, and then reported as a handshake that "did not
+		complete".
+	**/
+	public function testAResetMidHandshakeFailsAtOnceWithItsCause():Void {
+		var listener = java.nio.channels.ServerSocketChannel.open();
+		listener.bind(new java.net.InetSocketAddress("127.0.0.1", 0), 4);
+		var port:Int = (cast listener.getLocalAddress() : java.net.InetSocketAddress).getPort();
+
+		// Takes the connection and resets it: a lingering close of zero
+		// sends RST rather than FIN.
+		sys.thread.Thread.create(() -> {
+			try {
+				var accepted = listener.accept();
+				accepted.socket().setSoLinger(true, 0);
+				accepted.close();
+			} catch (_:Dynamic) {}
+		});
+
+		var outcome = __dialOnThread(port, function(client) {
+			client.verifyCert = false;
+			client.setTimeout(10);
+		}, 8);
+		try {
+			listener.close();
+		} catch (_:Dynamic) {}
+
+		Assert.isTrue(outcome.finished, "a reset handshake was still being retried after 8 s");
+		Assert.notNull(outcome.failure, "a reset handshake succeeded");
+		Assert.isTrue(outcome.took < 3, 'a reset handshake took ${outcome.took} s to fail');
+		if (outcome.failure != null) {
+			Assert.isTrue(outcome.failure.indexOf("did not complete") < 0, "the reset was reported without its cause: " + outcome.failure);
+		}
+	}
+
+	/**
+		A record larger than the buffer it is read into is still read. The
+		buffer fills, the engine answers "underflow", not a whole record yet,
+		and a read into a full buffer takes nothing, so without growing it
+		the handshake waited on a record that could never complete. The engine
+		keeps records to the size its session states, so the buffer is shrunk
+		here to make one larger than it.
+	**/
+	public function testARecordLargerThanTheReadBufferIsStillRead():Void {
+		var fixture = TLSTestFixture.selfSigned();
+		if (fixture == null) {
+			Assert.pass();
+			return;
+		}
+
+		var outcome = __serve(function(server) server.setCertificate(fixture.certificate, fixture.key), function(port) {
+			var client = new FlexSocket(true);
+			client.verifyCert = false;
+			client.setBlocking(false);
+			client.connect("127.0.0.1", port);
+			// A certificate message alone is larger than this.
+			@:privateAccess (cast client : crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket).__netIn = java.nio.ByteBuffer.allocate(512);
+
+			var done = false;
+			var deadline = haxe.Timer.stamp() + 5;
+			while (!done && haxe.Timer.stamp() < deadline) {
+				try {
+					client.handshake();
+					done = true;
+				} catch (e:haxe.io.Error) {
+					switch (e) {
+						case Blocked:
+							Sys.sleep(0.001);
+						default:
+							throw e;
+					}
+				}
+			}
+			client.close();
+
+			if (!done) {
+				throw "the handshake never completed with a 512 byte read buffer";
+			}
+		});
+
+		Assert.isTrue(outcome.finished, "the client neither finished nor failed");
+		Assert.isNull(outcome.failure, outcome.failure);
+	}
+
 	// ----------------------------------------------------------- helpers
+
+	/**
+		A CrossByte TLS client connecting to `port` on a thread of its own,
+		configured by `configure`, waited on for up to `seconds`. A connect
+		still going then is closed from here, so no thread is left behind.
+	**/
+	private static function __dialOnThread(port:Int, configure:FlexSocket->Void,
+			seconds:Float):{finished:Bool, failure:Null<String>, took:Float} {
+		var client = new FlexSocket(true);
+		configure(client);
+
+		var failure:Null<String> = null;
+		var took:Float = -1;
+		var handoff = new sys.thread.Lock();
+
+		sys.thread.Thread.create(() -> {
+			var started = haxe.Timer.stamp();
+			try {
+				client.connect("127.0.0.1", port);
+			} catch (e:Dynamic) {
+				failure = Std.string(e);
+			}
+			took = haxe.Timer.stamp() - started;
+			handoff.release();
+		});
+
+		var finished = handoff.wait(seconds);
+		try {
+			client.close();
+		} catch (_:Dynamic) {}
+		if (!finished) {
+			// Closed under it, so the thread ends rather than retrying on.
+			handoff.wait(30);
+		}
+
+		return {finished: finished, failure: failure, took: took};
+	}
 
 	/** Echoes whatever a connection sends. **/
 	private static function __echo(socket:crossbyte.net.Socket):Void {
