@@ -131,6 +131,32 @@ class DBParameterBindingTest extends utest.Test {
 			ParamBinder.substitute("SELECT " + tick + "col:id" + tick + " FROM t WHERE x = :id", params, wrapEscape));
 	}
 
+	public function testANullParameterIsSubstitutedWhenItExists():Void {
+		// substitute() cannot tell a parameter set to null from one never
+		// set, so a null left :name in the SQL. substituteWith() asks.
+		var present:Map<String, Bool> = ["gone" => true];
+		var result = ParamBinder.substituteWith("a = :gone, b = :absent", name -> present.exists(name), name -> null,
+			value -> value == null ? "NULL" : "<<" + Std.string(value) + ">>", false);
+
+		Assert.equals("a = NULL, b = :absent", result);
+	}
+
+	public function testBackslashEscapesAreReadWhenTheDialectHasThem():Void {
+		var params = lookupOf(["name" => "alpha"]);
+		var sql:String = "x = 'it\\'s :name' AND y = :name";
+
+		// MySQL's default mode: the escaped quote does not end the literal, so
+		// the first :name is inside it.
+		Assert.equals("x = 'it\\'s :name' AND y = <<alpha>>",
+			ParamBinder.substituteWith(sql, name -> params(name) != null, params, wrapEscape, true));
+
+		// Standard SQL: the quote after the backslash ends the literal, and
+		// the scan is then out of step with a MySQL server for the rest of
+		// the statement, substituting inside what MySQL reads as the
+		// literal, and not where MySQL reads statement text.
+		Assert.equals("x = 'it\\'s <<alpha>>' AND y = :name", ParamBinder.substitute(sql, params, wrapEscape));
+	}
+
 	public function testDoubledQuoteInsideAnIdentifierDoesNotEndIt():Void {
 		// The same doubling rule the single-quote path already honoured; an
 		// identifier that ends early would drop the scanner into statement

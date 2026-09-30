@@ -183,6 +183,61 @@ class MySQLDriverTest extends utest.Test {
 		Assert.isFalse(connection.connected);
 	}
 
+	public function testParametersAreWrittenAsTheirTypes():Void {
+		// Parameters were strings only: an Int did not compile, "50" went out
+		// as LIMIT '50' (which MySQL refuses), a null left :name in the SQL,
+		// and bytes were cut at their first NUL.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		var statement:MySQLStatement = __statement(wire);
+		statement.text = "INSERT INTO t VALUES (:none, :count, :ratio, :yes, :big, :blob, :when, :text, :missing) LIMIT :limit";
+		statement.parameters.none = null;
+		statement.parameters.count = 42;
+		statement.parameters.ratio = 1.5;
+		statement.parameters.yes = true;
+		statement.parameters.big = haxe.Int64.parseString("9007199254740993");
+		statement.parameters.blob = haxe.io.Bytes.ofHex("0001ff");
+		statement.parameters.when = Date.fromTime(1790685296250.0);
+		statement.parameters.text = "it's";
+		statement.parameters.limit = 50;
+		statement.execute();
+
+		Assert.equals("INSERT INTO t VALUES (NULL, 42, 1.5, TRUE, 9007199254740993, X'0001ff', '2026-09-29 12:34:56.250', 'it\\'s', :missing) LIMIT 50",
+			wire.sent[wire.sent.length - 1]);
+
+		statement.parameters.ratio = Math.NaN;
+		Assert.raises(() -> statement.execute(), crossbyte.errors.ArgumentError);
+	}
+
+	public function testABackslashEscapedQuoteDoesNotEndALiteral():Void {
+		// MySQL reads \' inside a literal as a quote; the scan ended the
+		// literal there, and substituted the :name the server still read as
+		// part of it.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		var statement:MySQLStatement = __statement(wire);
+		statement.text = "SELECT 'it\\'s :name' AS label, :name AS value";
+		statement.parameters.name = "x";
+		statement.execute();
+
+		Assert.equals("SELECT 'it\\'s :name' AS label, 'x' AS value", wire.sent[wire.sent.length - 1]);
+	}
+
+	public function testTheConnectionEscapesAndQuotesByTheSessionsMode():Void {
+		// SQLite and Postgres connections had escape() and quote(); MySQL's
+		// did not.
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.__connection = new ScriptedConnection();
+
+		Assert.equals("'it\\'s \\\"x\\\"\\n\\\\'", connection.quote("it's \"x\"\n\\"));
+		Assert.equals("a\\0b", connection.escape("a" + String.fromCharCode(0) + "b"));
+
+		// Under NO_BACKSLASH_ESCAPES a backslash is a backslash, and a quote
+		// is escaped by doubling it.
+		connection.request("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES'");
+		Assert.equals("'it''s C:\\dir'", connection.quote("it's C:\\dir"));
+		connection.request("SET SESSION sql_mode = 'STRICT_TRANS_TABLES'");
+		Assert.equals("'it\\'s'", connection.quote("it's"));
+	}
+
 	private function __statement(wire:ScriptedConnection):MySQLStatement {
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = wire;
