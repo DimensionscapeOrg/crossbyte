@@ -1653,6 +1653,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Brotli on hl no longer writes broken streams for input with zero bytes
+  in its first four places, at qualities 1 to 4 -- 4 being the default, for
+  `Brotli.compress` and `ByteArray.compress`. Some came out undecodable,
+  and some decoded to different bytes with nothing to say so: eight zero
+  bytes ahead of text came back altered. The encoder's guard against
+  reaching back past the start of the input compared a `UInt` with an
+  `Int`, which HashLink compares as signed numbers where every other
+  target compares them unsigned. The first positions reached into the
+  empty end of the ring buffer and matched its zeros. hl output is now
+  byte for byte what eval writes, and Node's own Brotli reads all of it.
 - HTTP's `deflate` coding is zlib, as RFC 9110 has it, on both sides. The
   server sent raw DEFLATE under the name, which a client following the
   standard cannot read, and refused a standard `deflate` request body; the

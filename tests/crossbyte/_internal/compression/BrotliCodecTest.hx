@@ -205,6 +205,56 @@ class BrotliCodecTest extends utest.Test {
 		}
 	}
 
+	/**
+	 * Input with zero bytes in its first four places, at every quality.
+	 *
+	 * The matcher qualities 1 to 4 use -- 4 is the default -- tries the last
+	 * distance first, and its guard against reaching back past the start of
+	 * the input compared a UInt with an Int, which HashLink compares signed.
+	 * There, the first positions reached back into the empty end of the ring
+	 * buffer, matched its zeros, and the stream came out undecodable: by this
+	 * decoder and by the reference one alike.
+	 */
+	public function testInputBeginningWithZerosRoundTripsAtEveryQuality():Void {
+		var zeros:Bytes = Bytes.alloc(65536);
+		zeros.fill(0, zeros.length, 0);
+
+		// A byte, and then a run: the reach back starts at the second place.
+		var marked:Bytes = Bytes.alloc(4096);
+		marked.fill(0, marked.length, 0);
+		marked.set(0, 1);
+		for (i in 0...64) {
+			marked.set(2048 + i, i);
+		}
+
+		// A binary header's worth of zeros ahead of text.
+		var text:Bytes = Bytes.ofString(DICTIONARY_TEXT);
+		var headed:Bytes = Bytes.alloc(8 + text.length);
+		headed.fill(0, 8, 0);
+		headed.blit(8, text, 0, text.length);
+
+		var cases:Array<{name:String, input:Bytes}> = [
+			{name: "64 KB of zeros", input: zeros},
+			{name: "a byte and then zeros", input: marked},
+			{name: "eight zeros and text", input: headed}
+		];
+		for (c in cases) {
+			for (quality in 0...12) {
+				var what:String = c.name + " at quality " + quality;
+				var packed:Bytes = Brotli.compress(c.input, quality);
+				var back:Bytes = null;
+				try {
+					back = Brotli.decompress(packed, c.input.length);
+				} catch (e:haxe.Exception) {
+					Assert.fail(what + " did not decode: " + e.message);
+					continue;
+				}
+				Assert.equals(c.input.length, back.length, what);
+				Assert.isTrue(back.compare(c.input) == 0, what + " came back different");
+			}
+		}
+	}
+
 	/** 174 bytes of English as Node's zlib writes them at quality 11: 53 bytes, mostly references into the static dictionary. **/
 	private static inline var DICTIONARY_TEXT:String = "The government information about the international community was available through the university library, although the development of the environment remained controversial.";
 
