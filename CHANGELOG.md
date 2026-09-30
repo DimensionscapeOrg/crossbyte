@@ -1228,6 +1228,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Random.int` and `inti` draw from all of a range wider than 2^31 values.
+  Its size was counted in 32 bits and overflowed, so `Random.int(0,
+  0x7FFFFFFF)` was 0 every time on eval and the jvm, half of Node's answers
+  fell outside the range, and the full `Int` range gave only negative
+  numbers. Narrower ranges draw exactly what they drew before, so seeded
+  sequences are unchanged. The shared generator's unseeded start no longer
+  repeats between runs on the jvm, hl and neko: `Std.int(stamp * 1e6)`
+  saturated there, on the jvm once the machine had been up 36 minutes,
+  so every run drew one sequence. And `Random` compiles on hl again, whose
+  default version has no atomics; hl before 1.13, neko and eval take a lock.
 - `GlobalTimer` locks its ids and its map wherever there are threads. It
   locked them only on hxcpp, so on the jvm four threads setting and
   clearing timers at once were issued 1,051 ids twice in 16,000 and left
