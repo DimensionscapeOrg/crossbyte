@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- permessage-deflate (RFC 7692) for WebSocket, opt in with
+  `ServerWebSocket.perMessageDeflate` or, on a client, with
+  `WebSocket.perMessageDeflate` before `connect()`. A server declined every
+  browser's offer, so an 18 KB JSON snapshot went out at 5.7 times its
+  deflated size, and a compressed frame closed the connection with 1002.
+  Each message is compressed on its own, both ways: a server answers an
+  offer with `server_no_context_takeover; client_no_context_takeover`, and
+  a client asks for the same, refuses an answer that keeps a context it
+  cannot inflate, and sends uncompressed to a server that did not agree to
+  inflate each of its messages alone. Messages shorter than
+  `compressionThreshold` (1024 bytes by default) go as they are, and so
+  does one that compressing did not shrink; `WebSocket.compressed` says
+  whether a session agreed. What arrives compressed is inflated under
+  `MAX_MESSAGE_SIZE`, and a message inflating past it is refused with 1009.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
