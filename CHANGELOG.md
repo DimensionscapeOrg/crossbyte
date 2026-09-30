@@ -5,6 +5,10 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `RadixTree.longestPrefix` and `longestPrefixLength`: the longest key held
+  that a string starts with, and its length -- the route that serves
+  "/api/v1/users/123" when "/api/v1/users" is held. The tree could only
+  answer exact keys.
 - `crossbyte.ds.IdList`, a list of `Int` ids that holds them unboxed and
   keeps its storage when emptied, and the queries that fill one:
   `SpatialGrid.queryCircleIds` and `queryRectIds`, `SpatialGrid3D.
@@ -1244,6 +1248,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `RadixTree` lookup reads the key in place and allocates nothing. It
+  built the common prefix of each label and the key a character at a time,
+  and a substring of the key at every level: 2.3 microseconds and 6.4 KB a
+  lookup on the jvm, now 0.1 microseconds.
 - `WeightedGraph` finds a node by hashing rather than a pass over every
   node, so building a graph of n nodes no longer costs n^2 comparisons:
   20,000 edges in a chain took 15 s on eval and now take tens of
