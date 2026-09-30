@@ -284,6 +284,8 @@ class TestSuites {
 		runner.addCase(new crossbyte.fuzz.WebSocketWireFuzzTest());
 		// Not on eval, whose TLS handshake cannot be made non-blocking.
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		// A plain Socket over TLS, likewise; also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// Not on eval either: its sockets block, so a write to a peer that has
