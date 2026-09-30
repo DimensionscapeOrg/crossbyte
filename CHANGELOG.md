@@ -204,6 +204,43 @@ All notable changes to CrossByte will be documented in this file.
   does one that compressing did not shrink; `WebSocket.compressed` says
   whether a session agreed. What arrives compressed is inflated under
   `MAX_MESSAGE_SIZE`, and a message inflating past it is refused with 1009.
+- `MySQLConnection.escape()` and `quote()`, which SQLite's and Postgres's
+  connections had and MySQL's did not; they escape by the session's
+  current rules, `NO_BACKSLASH_ESCAPES` included. `ParamBinder.substituteWith`,
+  which substitutes a parameter set to `null` and can read backslash escapes
+  inside literals as MySQL does.
+- Limits and cancellation for the native MySQL client, which had neither:
+  a slow statement or a server gone mid-query held the calling thread and
+  its connection for five hours. `MySQLConfig.connectTimeout` (10 s when
+  unset) bounds the connect and the login; `readTimeout` and
+  `writeTimeout`, unset by default, bound each read and write after, and a
+  read that times out closes the connection, since the answer it gave up
+  on is still coming. TCP keepalive is on by default (`keepAlive`,
+  `keepAliveIdle` 60, `keepAliveInterval` 10, `keepAliveCount` 6), so a
+  connection to a vanished host is noticed in about two minutes.
+  `MySQLConnection.cancel()` stops the statement a connection is running,
+  from any thread, with `KILL QUERY` over a second connection; the
+  statement fails with `MySQLError` 1317. `ping()` is a COM_PING.
+- `MySQLError`, an `SQLError` with the MySQL error number (`code`) and
+  `SQLSTATE` (`sqlState`), so a deadlock (1213, `40001`) can be retried and
+  a duplicate key (1062, `23000`) reported, and `MySQLConnectionError`, the
+  `IOError` a failed `open()` throws, with the same (1045 for a refused
+  login, 1049 an unknown database, 2003 an unreachable server).
+- TLS and MySQL 8 logins for the native MySQL client. `MySQLConfig.sslMode`
+  (`MySQLSSLMode`: `DISABLED`, `PREFERRED`, `REQUIRED`, `VERIFY_CA`,
+  `VERIFY_IDENTITY`, as libmysqlclient's `--ssl-mode`), `sslCa` for the
+  certificate authorities to verify against, and
+  `MySQLConnection.encrypted`. The client speaks `caching_sha2_password`,
+  MySQL 8's default, in both its fast path and its full authentication,
+  where the server needs the password itself: sent over TLS, or encrypted
+  with the server's RSA key, given as `MySQLConfig.serverPublicKey`, or
+  asked of the server with `allowPublicKeyRetrieval`, off by default since
+  whoever answers in the server's place could supply their own. Also
+  `sha256_password`, and `mysql_clear_password` over TLS only. A mode that
+  insists on TLS fails `open()` with 2026 where it cannot be had: against a
+  server offering none, and on every target but cpp, where the driver
+  CrossByte connects through has none, before anything is sent. From the
+  hxcpp fork (`fix/mysql-client`), on the mbedTLS hxcpp bundles.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -1052,6 +1089,59 @@ All notable changes to CrossByte will be documented in this file.
   group. And `preservesPort` no longer claims a kept port shows an
   endpoint-independent mapping: it shows neither that nor the opposite,
   and `StunClient.classifyMapping` finds the mapping itself.
+- `MySQLStatement.parameters` is a `FieldStruct<Dynamic>`, and each value is
+  written as the MySQL literal for its type: `null` as `NULL` (the
+  placeholder used to stay in the SQL), numbers unquoted so `LIMIT :n`
+  works (MySQL refuses `LIMIT '50'`), `haxe.Int64` exactly, `Bool` as
+  `TRUE`/`FALSE`, `haxe.io.Bytes` as a hex literal that carries NUL bytes
+  (a string was cut at its first), a `Date` as its UTC fields, and anything
+  else quoted as a string. A NaN or infinite `Float` throws
+  `ArgumentError`. What to change: code that set numbers as strings to get
+  them quoted keeps working; set them as numbers where the column is
+  numeric, and set dates as `Date` rather than formatted strings, which
+  were written in local time.
+- `MySQLConnection.request()` throws a `MySQLError` where it threw the
+  driver's string, and a MySQL error's message no longer begins with the
+  statement. The native client prefixed the whole SQL text, values
+  included, so a duplicate-key error on a row holding an API token wrote
+  the token into whatever logged the error. What to change: catch
+  `MySQLError`, or `SQLError`, instead of `String`, and read `code` and
+  `sqlState` rather than the message. `MySQLStatement` and the
+  transaction methods throw `MySQLError` too, still an `SQLError`.
+- A native MySQL connection uses TLS whenever the server offers it:
+  `MySQLConfig.sslMode` defaults to `PREFERRED`, as MySQL's own clients do,
+  which encrypts without checking the certificate, MySQL generates a
+  self-signed one by default. The session and the password were sent in
+  the clear. What to change: nothing to keep working; set `sslMode:
+  VERIFY_IDENTITY` and `sslCa` to know which server you reached, or
+  `DISABLED` for the old behaviour.
+- MySQL and SQLite column values come back exact on the native targets,
+  which changes their types. MySQL `BIGINT` and `INT UNSIGNED`, and every
+  SQLite `INTEGER`, are an `Int` when the value fits in 32 bits and a
+  `haxe.Int64` when it does not: BIGINT was a `Float`, exact only to 2^53,
+  INT UNSIGNED stopped at 2147483647, and SQLite kept only the low 32 bits
+  (1727600000000 read as 1023147008). `DECIMAL` is a `String` holding the
+  exact value, where it was a `Float`. `DATE`, `DATETIME` and `TIMESTAMP`
+  are read as UTC, fractional seconds included: they were read in the
+  local time zone through a 32-bit `mktime`, so a DATE past 2038 read as
+  1904 and one before 1970 as -1000 ms. The zero date `0000-00-00` reads as
+  `null`. A NULL column is in the row, holding `null`, instead of missing
+  from it; a column named by an expression keeps its name (`COUNT(*)` was
+  `???`); `Bytes` is for binary columns only, where a text column with a
+  `_bin` collation was `Bytes` too; `TIME` and `YEAR` are `String`. What to
+  change: take a BIGINT or INTEGER that can pass 2^31 as `var id:haxe.Int64
+  = row.id`, which accepts an `Int` as well; parse a DECIMAL with
+  `Std.parseFloat` where a `Float` is close enough; read a date's fields
+  with `getUTCHours()` and the other UTC getters, and set
+  `MySQLConfig.timeZone` to `"+00:00"` so the server renders TIMESTAMP
+  columns and `NOW()` in UTC as well; look for NULL with `== null` rather
+  than `Reflect.hasField`. From the hxcpp fork (`fix/mysql-client`).
+- `MySQLStatement.execute()` throws an `SQLError` when the server refuses
+  the statement, after dispatching the `SQLErrorEvent` it always did. It
+  returned normally, so a failed write read as a successful one to any
+  caller not listening: an `AsyncDatabase` task completed, with `null`. What
+  to change: code that listens for `SQLErrorEvent.ERROR` and counts on
+  `execute()` returning should catch the `SQLError` as well.
 - `ReliableDatagramServerSocket.connect()` to a name, and so
   `NetHost.dial()` on a reliable-UDP host, looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -2160,6 +2250,119 @@ All notable changes to CrossByte will be documented in this file.
   connections carrying 64 KB of `userData` each all survived five
   collections on the jvm. `Stack.clear()` empties the slots it counts out,
   and the registry lets go of its select buffer when its set empties.
+- `MySQLStatement` and `SQLiteStatement` return a result's pages in the
+  order they were read on every target. Off cpp the pages waited in an
+  Array read back with `pop()`, newest first, so a result paged ahead of
+  `getResult()`: `execute(2)`, then `next(2)` twice, came back last page
+  first on the jvm and the interpreter. And only the last page is
+  `complete`: it was taken to be complete whenever the result had been read
+  to the end, so every page still waiting said so, on cpp too.
+- `MySQLConnection.isolationLevel` reads on MariaDB before 11.1 and MySQL
+  before 5.7.20, which name the variable `@@tx_isolation` and refused
+  `@@transaction_isolation`. `MySQLConfig.charset` no longer accepts
+  `ucs2`, `utf16` or `utf32`, which MySQL refuses as a client character
+  set; it takes `utf8mb4`, `utf8mb3`, `utf8`, `latin1` and `ascii`. The
+  `AsyncDatabase` examples call `request()`, where they called a `query()`
+  no driver has.
+- After a failed SQLite statement the connection's next one works, and the
+  failure names its cause. The native binding left the failed statement to
+  be finalized by the next request or `close()`, and SQLite answered that
+  with the old error again, thrown as "Could not finalize request": one
+  constraint violation failed the next, unrelated statement too. The error
+  said only "SQL logic error"; it is now SQLite's own, "UNIQUE constraint
+  failed: users.email". And `SQLiteConnection.begin("IMMEDIATE")` on an
+  asynchronous connection begins immediate, as the synchronous one did: it
+  began deferred, taking no lock until its first write, where it could
+  then fail with SQLITE_BUSY part way through. From the hxcpp fork
+  (`fix/mysql-client`) and the driver.
+- MySQL `FLOAT` and `DOUBLE` columns read the same whatever the process's
+  locale. The native client parsed them with `atof`, which follows
+  `LC_NUMERIC`, so under a locale with a decimal comma 1.5 came back as 1.
+  From the hxcpp fork (`fix/mysql-client`).
+- A native `MySQLStatement` reads its rows as they are asked for, and costs
+  no statements of its own. A result was read whole before its first page
+  was returned, a million-row SELECT held 190 MB before `execute(1000)`
+  returned, 470 MB with `execute()`, where a page now holds its page.
+  Every `getResult()` sent `SELECT LAST_INSERT_ID()`, a round trip per
+  page, after which `affectedRows`, itself a `SELECT ROW_COUNT()`, read
+  -1; the insert id and affected rows now come from the statement's own
+  answer, as does `serverVersion`, from the greeting. `lastInsertRowID` in
+  `SQLResult` is exact past 2^31. Another statement on the connection
+  before the last page reads the rest of the result aside, so the page
+  after still comes. From the hxcpp fork (`fix/mysql-client`).
+- MySQL savepoints behave as SQLite's and Postgres's were fixed to.
+  `setSavepoint()` returns the savepoint's name, where it returned nothing;
+  names come from a counter, where they came from the clock, which gave
+  two made back to back the same name (8 distinct in 2000 on the
+  interpreter) and passed `Int` 36 minutes into a process;
+  `releaseSavepoint()` and `rollbackToSavepoint()` without a name act on
+  the innermost savepoint held, where the first released a name it had
+  just made up and the second rolled back the whole transaction. A
+  savepoint the server refused is not remembered.
+- On the jvm, a MySQL or SQLite failure arrives as the `SQLError` or
+  `IOError` it is, not a `ClassCastException`. The driver's
+  `java.sql.SQLException`: or the `ClassNotFoundException` when no JDBC
+  driver is on the class path, was passed where a String belongs, so no
+  listener ran and the error number and SQLSTATE JDBC reported were lost;
+  `MySQLError` now carries both. SQLite's asynchronous operations say why
+  they failed, where every error event said only "Execution failed", and
+  `SQLiteStatement.next()` before `execute()` throws the error it used to
+  make and drop.
+- `MySQLConfig.timeZone` and `sqlMode` work. Their values were escaped into
+  a buffer that was then dropped and the server was sent `SET time_zone =
+  :tz;`, a syntax error, so every `open()` naming either failed. A
+  connection whose session setup fails is now closed before `open()`
+  throws: it was left open, so a pool factory retrying an open that could
+  not succeed piled up server connections. An unsupported `charset` is
+  refused with an `ArgumentError` before connecting, where it connected and
+  then threw an `IOError`.
+- The native MySQL client logs in to a default MySQL 8 server. It spoke
+  only `mysql_native_password`, which MySQL 8 does not use by default, 8.4
+  disables and 9.0 removes; it took the server's switch to another auth
+  plugin for a broken packet ("Invalid packet error"); and against a
+  server whose collation is `utf8mb4_0900_ai_ci`, MySQL 8's default, every
+  escape threw "Unsupported charset : #255". The utf8mb4 collations 224 to
+  247 were missing too. From the hxcpp fork (`fix/mysql-client`).
+- On Windows, a `Date` before 1970 can be printed without ending the
+  process, and made from local fields. hxcpp's `Date` turned the CRT's
+  refusal of a time before 1970 into an all-zero date, which `strftime`
+  answered through the invalid-parameter handler that ends the process
+  (0xC0000409), a MySQL DATE of 1965, printed, did it, and `new
+  Date(1965, ...)` read as one second before 1970. `DateTools.makeUtc` is
+  exact arithmetic for any year. From the hxcpp fork (`fix/mysql-client`).
+- A `ConnectionPool` rolls back a MySQL or SQLite transaction that was
+  begun as SQL text or by turning autocommit off. `inTransaction` changed
+  only in `begin()`, `commit()` and `rollback()`, so a connection released
+  after `request("START TRANSACTION")` or `autocommit = false` read as idle
+  and nothing was rolled back, and on MySQL the next borrower's `begin()`
+  committed the abandoned writes, since MySQL commits an open transaction
+  when a new one starts. Natively, `MySQLConnection.inTransaction` and
+  `autocommit` now come from the status flags of the server's last reply,
+  with no round trip, and a session with autocommit off counts as in a
+  transaction, as MySQL documents it; `SQLiteConnection.inTransaction` is
+  SQLite's own `sqlite3_get_autocommit`. Elsewhere the MySQL driver follows
+  those statements when they are sent as text. A pool retires a connection
+  that still reports a transaction after its rollback, which is what a
+  MySQL session with autocommit off does.
+- MySQL values are escaped by the session's current rules. The native
+  client read `NO_BACKSLASH_ESCAPES` from the server's greeting and never
+  again, so after `SET sql_mode = 'NO_BACKSLASH_ESCAPES'` a quote was still
+  escaped with a backslash, which that mode reads as a backslash and the
+  end of the string: the value `x' OR 1=1 -- ` ran as SQL. The client now
+  keeps the flags of every OK and EOF packet (hxcpp fork, `fix/mysql-client`).
+- `MySQLStatement` reports an INSERT, UPDATE or DELETE as the success it
+  was. The native client threw "Invalid result" when the result of a write
+  was iterated, as the statement does with every result, so each write
+  dispatched `SQLErrorEvent` "Execution failed" after the server had
+  applied it, and code that retried on error wrote twice. Fixed in the
+  hxcpp fork (`fix/mysql-client`).
+- A MySQL statement with a non-ASCII character anywhere in it reaches the
+  server whole. The native client sent a query with its length in UTF-16
+  units instead of UTF-8 bytes, so each extra byte cut one off the end:
+  `UPDATE users SET city = 'Zürich' WHERE id = 12` ran as `... WHERE id =
+  1` and changed another row, and an escaped value lost its tail the same
+  way. Fixed in the hxcpp fork (`src/hx/libs/mysql`, branch
+  `fix/mysql-client`), which a native build needs.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of

@@ -35,6 +35,9 @@ private class FakeTransactionalConnection implements ITransactionalConnection {
 	public var inTransaction(get, null):Bool;
 	public var rollbacks:Int = 0;
 	public var failRollback:Bool = false;
+	// A rollback that succeeds and leaves a transaction open, as MySQL's does
+	// in a session with autocommit off.
+	public var rollbackLeavesOpen:Bool = false;
 
 	@:noCompletion private var __open:Bool = false;
 
@@ -57,7 +60,7 @@ private class FakeTransactionalConnection implements ITransactionalConnection {
 			throw "the server went away";
 		}
 
-		__open = false;
+		__open = rollbackLeavesOpen;
 	}
 
 	public function close():Void {
@@ -532,6 +535,32 @@ class ConnectionPoolTest extends utest.Test {
 		Assert.isTrue(first.closed);
 		Assert.equals(0, pool.size());
 		Assert.equals(0, pool.inUse());
+
+		var second = pool.acquire();
+		Assert.notEquals(first.id, second.id);
+		pool.release(second);
+		pool.close();
+	}
+
+	public function testAConnectionStillInATransactionAfterTheRollbackIsRetired():Void {
+		// MySQL with autocommit turned off opens the next transaction as the
+		// last one ends, so the pool's ROLLBACK succeeded and the connection
+		// went back still inside a transaction: the next borrower's writes,
+		// made believing autocommit was on, were never committed.
+		var resets:Int = 0;
+		var pool = __transactionalPool(_ -> resets++);
+		var first = pool.acquire();
+		first.rollbackLeavesOpen = true;
+		first.begin();
+
+		Logger.recordSink = _ -> {};
+		pool.release(first);
+		Logger.recordSink = null;
+
+		Assert.equals(1, first.rollbacks);
+		Assert.isTrue(first.closed, "a session still in a transaction was put back in the pool");
+		Assert.equals(0, pool.size());
+		Assert.equals(0, resets, "the reset hook ran on a connection about to be retired");
 
 		var second = pool.acquire();
 		Assert.notEquals(first.id, second.id);
