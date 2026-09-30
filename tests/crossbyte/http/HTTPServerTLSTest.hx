@@ -48,7 +48,8 @@ class HTTPServerTLSTest extends utest.Test {
 	**/
 	#if (cpp || hl || neko || java || jvm)
 	public function testAConfiguredServerAnswersOverTls():Void {
-		var fixture = TLSTestFixture.selfSigned();
+		// Names 127.0.0.1, so the client can check it once told to trust it.
+		var fixture = TLSTestFixture.trusted();
 		if (fixture == null) {
 			// No certificate toolchain on this machine.
 			Assert.pass();
@@ -89,10 +90,12 @@ class HTTPServerTLSTest extends utest.Test {
 				try {
 					client.setTimeout(10);
 
-					// Self-signed, so the client cannot build a path to it.
-					// Verification is what ServerSocketTLSTest checks; this
-					// case is about the server presenting anything at all.
-					client.verifyCert = false;
+					// Self-signed, so trusted as its own authority: the check
+					// then proves the server presented the certificate it was
+					// configured with. It was turned off here, which neko's
+					// TLS does not honour, and which proved only that the
+					// server presented something.
+					client.setCA(@:privateAccess fixture.certificate.__native);
 					client.connect("127.0.0.1", port);
 
 					client.output.writeString("GET /index.html HTTP/1.1\r\n"
@@ -272,7 +275,14 @@ class HTTPServerTLSTest extends utest.Test {
 			Assert.isTrue(refused.indexOf(prefix) >= 0, "an untrusted server was not refused as a failed connection: " + refused);
 			Assert.isTrue(StringTools.trim(refused.substr(refused.indexOf(prefix) + prefix.length)).length > 0, "the refusal did not say why: " + refused);
 			Assert.isTrue(StringTools.startsWith(outcomes[i++], version + " trusting: COMPLETED conn "), "the authority the request named was not trusted");
+			#if neko
+			// neko's TLS checks the server whatever it is told: verifyCert =
+			// false cannot be honoured there, and the request is refused as a
+			// checked one would be rather than going out unchecked.
+			Assert.isTrue(outcomes[i++].indexOf("Connection Failed: ") >= 0, "verifyCert = false was taken on neko, whose TLS cannot skip the check");
+			#else
 			Assert.isTrue(StringTools.startsWith(outcomes[i++], version + " unchecked: COMPLETED conn "), "verifyCert = false still checked");
+			#end
 		}
 		for (outcome in outcomes) {
 			// Every line, in the report, when something above failed.
@@ -297,12 +307,19 @@ class HTTPServerTLSTest extends utest.Test {
 
 		var server = __tlsServer(fixture);
 		var url:String = 'https://127.0.0.1:${server.port}/who';
+		// A connection opened unchecked, or on neko, whose TLS cannot skip
+		// the check, one checked against an authority the defaults do not
+		// trust, which a request trusting only the system's must not ride
+		// either.
+		function opening():HTTPTLSOptions {
+			return #if neko new HTTPTLSOptions(true, fixture.certificate) #else new HTTPTLSOptions(false) #end;
+		}
 		for (version in __versions()) {
 			__clearPools();
-			var first:String = __fetch(url, new HTTPTLSOptions(false), version);
+			var first:String = __fetch(url, opening(), version);
 			var checked:String = __fetch(url, null, version);
 			// The same settings again, in a new object: kept for this one.
-			var again:String = __fetch(url, new HTTPTLSOptions(false), version);
+			var again:String = __fetch(url, opening(), version);
 
 			Assert.isTrue(StringTools.startsWith(first, "COMPLETED conn "), version + ": the unchecked request failed: " + first);
 			Assert.isFalse(StringTools.startsWith(checked, "COMPLETED"), version + ": a checking request was sent down an unchecked connection: " + checked);
