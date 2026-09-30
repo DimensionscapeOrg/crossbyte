@@ -131,7 +131,12 @@ class FakeMySQLServer {
 	@:noCompletion private var __events:Array<FakeMySQLEvent> = [];
 	@:noCompletion private var __sessions:Array<FakeMySQLSession> = [];
 	@:noCompletion private var __acceptDone:Lock = new Lock();
-	@:noCompletion private var __nextId:Int = 100;
+	/**
+	 * The connection id the next session is given, sent as the greeting's
+	 * thread id. Set negative for an id past 2^31, as the greeting's four
+	 * bytes read unsigned.
+	 */
+	public var nextConnectionId:Int = 100;
 
 	public function new() {}
 
@@ -228,13 +233,15 @@ class FakeMySQLServer {
 		return predicate(events());
 	}
 
-	/** The session with this connection id, while it is open. **/
-	public function session(id:Int):Null<FakeMySQLSession> {
+	/** The session with this connection id, read unsigned, while it is open. **/
+	public function session(id:Float):Null<FakeMySQLSession> {
 		__lock.acquire();
 		var found:Null<FakeMySQLSession> = null;
 
 		for (candidate in __sessions) {
-			if (candidate.id == id) {
+			var unsigned:Float = candidate.id < 0 ? candidate.id + 4294967296.0 : candidate.id;
+
+			if (unsigned == id) {
 				found = candidate;
 			}
 		}
@@ -272,7 +279,7 @@ class FakeMySQLServer {
 			}
 
 			__lock.acquire();
-			var id:Int = __nextId++;
+			var id:Int = nextConnectionId++;
 			var session:FakeMySQLSession = new FakeMySQLSession(this, client, id);
 			__sessions.push(session);
 			__lock.release();
@@ -595,7 +602,7 @@ class FakeMySQLSession {
 		}
 
 		if (StringTools.startsWith(compact, "KILL QUERY ")) {
-			var target:Null<FakeMySQLSession> = server.session(Std.parseInt(compact.substr(11)));
+			var target:Null<FakeMySQLSession> = server.session(Std.parseFloat(compact.substr(11)));
 
 			if (target == null) {
 				error(1094, "HY000", "Unknown thread id");
