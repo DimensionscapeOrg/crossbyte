@@ -2512,7 +2512,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var supported = [
 			{name: HTTPContentCoding.BR, algorithm: CompressionAlgorithm.BROTLI},
 			{name: HTTPContentCoding.GZIP, algorithm: CompressionAlgorithm.GZIP},
-			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.DEFLATE},
+			{name: HTTPContentCoding.DEFLATE, algorithm: CompressionAlgorithm.ZLIB},
 			{name: HTTPContentCoding.LZ4, algorithm: CompressionAlgorithm.LZ4}
 		];
 
@@ -2542,7 +2542,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 	@:noCompletion private function __encodingToHeaderValue(algorithm:CompressionAlgorithm):Null<String> {
 		return switch (algorithm) {
 			case CompressionAlgorithm.BROTLI: HTTPContentCoding.BR;
-			case CompressionAlgorithm.DEFLATE: HTTPContentCoding.DEFLATE;
+			// zlib is what `deflate` names; raw DEFLATE has no HTTP name, so a
+			// body in it is never labelled as one.
+			case CompressionAlgorithm.ZLIB: HTTPContentCoding.DEFLATE;
 			case CompressionAlgorithm.GZIP: HTTPContentCoding.GZIP;
 			case CompressionAlgorithm.LZ4: HTTPContentCoding.LZ4;
 			default: null;
@@ -3560,9 +3562,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * compression ratios have none, so a 32 KB gzip body became 32 MB at the
 	 * route; a decoder given a ceiling stops at it and never takes the rest.
 	 *
-	 * Refused with 413 whether the body grew past the ceiling or was not
-	 * valid for its coding: the decoders report both the same way, and for
-	 * every well-formed body that fails, the ceiling is why.
+	 * Refused with 413 when the body grows past the ceiling, and with 400
+	 * when it is not what its coding says: every codec throws a RangeError
+	 * for the one and an IOError for the other. A `deflate` body is read as
+	 * zlib, or as raw DEFLATE when it has no zlib header.
 	 */
 	@:noCompletion private function __decodeRequestBody():Bool {
 		if (__requestBody == null || __requestBody.length == 0 || __requestContentEncodings == null || __requestContentEncodings.length == 0) {
@@ -3572,10 +3575,15 @@ final class HTTPRequestHandler extends EventDispatcher {
 		try {
 			for (i in 0...__requestContentEncodings.length) {
 				var algorithm = __requestContentEncodings[__requestContentEncodings.length - 1 - i];
-				__requestBody.uncompress(algorithm, __config.maxRequestBodySize);
+				__requestBody.uncompress(HTTPContentCoding.codecFor(algorithm, __requestBody), __config.maxRequestBodySize);
 			}
-		} catch (_:Dynamic) {
+		} catch (_:crossbyte.errors.RangeError) {
+			// Grew past the ceiling: every codec says so with a RangeError.
 			__sendErrorResponse(413, "Payload Too Large");
+			return false;
+		} catch (_:Dynamic) {
+			// Not what its coding says it is.
+			__sendErrorResponse(400, "Malformed request body");
 			return false;
 		}
 

@@ -133,6 +133,34 @@ class URLLoaderHttpTest extends utest.Test {
 		Assert.equals(100 * 1024, taken.data == null ? -1 : taken.data.length);
 	}
 
+	/**
+		A `deflate` response is read as zlib, which is what the name means
+		(RFC 9110 8.4.1.2), and as raw DEFLATE too, which servers commonly
+		send under it. It was read as raw only, so a server following the
+		standard could not be read.
+	**/
+	public function testADeflateResponseIsReadAsZlibOrRaw():Void {
+		var text:String = "a deflate body, coded both ways";
+		for (algorithm in [crossbyte.utils.CompressionAlgorithm.ZLIB, crossbyte.utils.CompressionAlgorithm.DEFLATE]) {
+			var coded:crossbyte.io.ByteArray = new crossbyte.io.ByteArray();
+			coded.writeUTFBytes(text);
+			coded.compress(algorithm);
+			var body:Bytes = Bytes.alloc(coded.length);
+			body.blit(0, coded, 0, coded.length);
+
+			var fixture = serveBytes('HTTP/1.1 200 OK
+Content-Encoding: deflate
+Content-Length: ${body.length}
+
+', body);
+			var result = load(new URLRequest('http://127.0.0.1:${fixture.port}/coded'));
+			fixture.waitDone();
+
+			Assert.isTrue(result.complete, algorithm + ": " + result.error);
+			Assert.equals(text, result.data == null ? null : result.data.toString(), algorithm + " was not read");
+		}
+	}
+
 	/** Answers one request with `head` and then `body`, byte for byte. */
 	private static function serveBytes(head:String, body:Bytes):URLLoaderHttpFixture {
 		var fixture = new URLLoaderHttpFixture(1);
