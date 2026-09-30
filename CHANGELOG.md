@@ -1395,6 +1395,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Natively, a connection reset is a failure when read a byte at a time, not
+  the end of the stream. `readByte` took every error but a blocked read for
+  the end, so a line reader, or anything reading to the connection's end,
+  took what it had as whole when the peer was cut off. It goes through
+  `readBytes` now, as it does on hl, neko and eval.
 - A miss in a `Map<Int, T>` on the jvm costs what a hit does. Haxe 4.3.7's
   `IntMap` for the java targets never stopped probing at an empty bucket,
   so every miss read the whole table: 110us a miss at 100,000 entries,
