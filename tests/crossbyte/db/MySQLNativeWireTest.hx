@@ -4,6 +4,7 @@ package crossbyte.db;
 import crossbyte.db.fakemysql.FakeMySQLServer;
 import crossbyte.db.mysql.MySQLConfig;
 import crossbyte.db.mysql.MySQLConnection;
+import crossbyte.db.mysql.MySQLConnectionError;
 import crossbyte.db.mysql.MySQLError;
 import crossbyte.db.mysql.MySQLStatement;
 import crossbyte.errors.IOError;
@@ -112,6 +113,52 @@ class MySQLNativeWireTest extends utest.Test {
 
 		Assert.isTrue(haxe.Timer.stamp() - started < 3.0, "the connect timeout was not applied");
 		Assert.isTrue(message.indexOf("Timed out") >= 0, message);
+	}
+
+	public function testAConnectNobodyAnswersTimesOut():Void {
+		// connect() itself had no limit: to a host that drops the SYN it
+		// waited for as long as the system resent it, 21 seconds on Windows
+		// and over two minutes on Linux. Here, a listener that never accepts,
+		// with room in its queue for one connection: once that is taken the
+		// next SYN goes unanswered, on Linux for good, on Windows until it
+		// refuses the connection a couple of seconds later.
+		var listener:sys.net.Socket = new sys.net.Socket();
+		listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		listener.listen(0);
+		var port:Int = listener.host().port;
+		var filler:sys.net.Socket = new sys.net.Socket();
+		// Bounds the filler on Linux, should its connect go unanswered too.
+		filler.setTimeout(2.0);
+
+		try {
+			filler.connect(new sys.net.Host("127.0.0.1"), port);
+		} catch (_:Dynamic) {}
+
+		var config:MySQLConfig = {
+			host: "127.0.0.1",
+			port: port,
+			user: "app",
+			password: "secret",
+			database: "app",
+			connectTimeout: 0.3
+		};
+		var started:Float = haxe.Timer.stamp();
+		var error:MySQLConnectionError = null;
+
+		try {
+			new MySQLConnection().open(config);
+		} catch (e:MySQLConnectionError) {
+			error = e;
+		}
+
+		var elapsed:Float = haxe.Timer.stamp() - started;
+		filler.close();
+		listener.close();
+
+		Assert.isTrue(elapsed < 3.0, "the connect was not bounded: " + elapsed + " s");
+		Require.notNull(error);
+		Assert.equals(2003, error.code);
+		Assert.isTrue(error.message.indexOf("Timed out after 0.3 seconds connecting") >= 0, error.message);
 	}
 
 	public function testAReadTimeoutFailsTheStatementAndClosesTheConnection():Void {
