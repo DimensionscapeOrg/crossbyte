@@ -8,6 +8,7 @@ import crossbyte._internal.http.h2.hpack.HpackEncoder;
 import crossbyte._internal.http.h2.hpack.HpackHeader;
 import crossbyte._internal.http.h2.hpack.HpackHuffman;
 import crossbyte._internal.lz4.Lz4;
+import crossbyte._internal.lz4.Lz4Frame;
 import crossbyte.db.postgres._internal.PostgresWire;
 import crossbyte.io.ByteArray;
 import crossbyte.net._internal.stun.StunMessage;
@@ -138,6 +139,7 @@ class ParserFuzzTest extends utest.Test {
 			{name: "Lz4", run: b -> Lz4.decompress(b, CEILING).length},
 			{name: "Inflater", run: b -> Inflater.apply(b, CEILING).length},
 			{name: "Brotli", run: b -> Brotli.decompress(b, CEILING).length},
+			{name: "Lz4Frame", run: b -> Lz4Frame.decompress(b, CEILING).length},
 		];
 
 		var zeros:Bytes = Bytes.alloc(CEILING * 4);
@@ -147,6 +149,7 @@ class ParserFuzzTest extends utest.Test {
 			var packed:Bytes = switch (bomb.name) {
 				case "Lz4": Lz4.compress(zeros);
 				case "Brotli": Brotli.compress(zeros);
+				case "Lz4Frame": Lz4Frame.compress(zeros);
 				default: Deflater.apply(zeros);
 			}
 			Assert.raises(() -> bomb.run(packed), null, bomb.name + " decoded past its ceiling");
@@ -214,6 +217,11 @@ class ParserFuzzTest extends utest.Test {
 				name: "Brotli.decompress",
 				seed: () -> Brotli.compress(Bytes.ofString("the quick brown fox jumps over the lazy dog, then the quick brown fox jumps again")),
 				run: b -> Brotli.decompress(b, CEILING)
+			},
+			{
+				name: "Lz4Frame.decompress",
+				seed: () -> Lz4Frame.compress(Bytes.ofString("the quick brown fox jumps over the lazy dog, then the quick brown fox jumps again")),
+				run: b -> Lz4Frame.decompress(b, CEILING)
 			},
 			{
 				name: "PostgresWire.decodeResult",

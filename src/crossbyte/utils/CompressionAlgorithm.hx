@@ -35,6 +35,14 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 	public var ZLIB = 4;
 
 	/**
+		The LZ4 frame format: what the `lz4` tool writes and `.lz4` files hold.
+		`LZ4` blocks with their sizes, an end mark and checksums, so a frame
+		that is cut short or damaged is always caught, where a bare `LZ4` block
+		has no length to check against.
+	**/
+	public var LZ4_FRAME = 5;
+
+	/**
 		Converts a lowercase codec token into a supported generic compression
 		algorithm.
 	**/
@@ -49,6 +57,7 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 			case "br", "brotli": BROTLI;
 			case "lz4": LZ4;
 			case "zlib": ZLIB;
+			case "lz4-frame": LZ4_FRAME;
 			default: null;
 		}
 	}
@@ -64,6 +73,7 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 			case CompressionAlgorithm.BROTLI: "br";
 			case CompressionAlgorithm.LZ4: "lz4";
 			case CompressionAlgorithm.ZLIB: "zlib";
+			case CompressionAlgorithm.LZ4_FRAME: "lz4-frame";
 			default: null;
 		}
 	}
