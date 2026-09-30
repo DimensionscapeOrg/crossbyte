@@ -159,17 +159,60 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Whether this connection runs over TLS.
 
-		Set it before `connect()` on a `WebSocket` to dial `wss://` rather
-		than `ws://`; the server's certificate is then checked, see
-		`WebSocket.verifyCert`. In a browser a socket always uses `wss://` on
-		a page served over HTTPS, since the page may not open anything less.
-		On a socket a `ServerSocket` accepted, it says whether the listener
-		terminated TLS for it.
+		Set it before `connect()` to connect over TLS: once TCP is up the
+		client handshakes, and `connect` is dispatched when the handshake has
+		finished, within `timeout`, which counts it with the connect. The
+		server's certificate is checked against the host given to
+		`connect()`, see `verifyCert` and `certAuthority`, and a host name
+		goes to the server as SNI. A handshake that fails, a certificate
+		refused among the ways, is an `ioError`, as a refused connection is.
 
-		A plain `Socket` client on a native target does not start TLS from
-		this: it is a TCP connection, and reads the setting only to report it.
+		On a `WebSocket` it dials `wss://` rather than `ws://`. In a browser a
+		socket always uses `wss://` on a page served over HTTPS, since the
+		page may not open anything less. On a socket a `ServerSocket`
+		accepted, it says whether the listener terminated TLS for it.
+
+		On eval the handshake holds the runtime's thread until it is done,
+		as eval's connect already does: its sockets cannot be made
+		non-blocking, so a server on the same runtime cannot answer it.
 	**/
 	public var secure:Bool;
+
+	#if !(js && !nodejs)
+	/**
+		Whether a secure connection checks the server's certificate: that it
+		chains to an authority this client trusts, and that it names the host
+		being connected to. For a `Socket` with `secure` set, and for a
+		`wss://` `WebSocket`.
+
+		On by default. Turn it off only for a development server presenting a
+		self-signed certificate, and prefer `certAuthority` even then. With
+		verification off the traffic is still encrypted, but anyone able to
+		sit between the two ends can present a certificate of their own and
+		read all of it.
+
+		Read when `connect()` is called.
+	**/
+	public var verifyCert:Bool = true;
+
+	// Not in the macro context, where Socket is typed too: a Certificate is
+	// the jvm's own there, and naming it pulls in java.nio, which a macro
+	// cannot reach.
+	#if !macro
+	/**
+		The authority this client trusts, in place of the system's, for a
+		secure connection.
+
+		Set it to a private CA's certificate, or to a server's own self-signed
+		certificate, to verify a server the system's trust store does not know
+		without turning verification off. `null`, the default, trusts the
+		system's store.
+
+		Read when `connect()` is called.
+	**/
+	public var certAuthority:Certificate = null;
+	#end
+	#end
 
 	/**
 		Indicates the number of milliseconds to wait for a connection.
@@ -417,6 +460,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __isConnecting:Bool;
 	// Whether the name connect() was given is still being looked up.
 	@:noCompletion private var __resolving:Bool = false;
+	// Whether a secure connect is up to its TLS handshake: TCP is connected,
+	// and CONNECT waits for the handshake to finish.
+	@:noCompletion private var __tlsHandshaking:Bool = false;
 	// The tick listener a connect in progress is driven by; see
 	// __startConnecting.
 	@:noCompletion private var __connectingTick:TickEvent->Void = null;
@@ -583,6 +629,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__isDirty = false;
 		flushFull = false;
 		__discardOnClose = false;
+		__tlsHandshaking = false;
 		// A new connection, which has neither ended nor been announced as
 		// ending; a socket reused after a half-close otherwise never read
 		// again.
@@ -627,23 +674,37 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// nothing to register with the runtime.
 		// Half-open, so the peer's FIN is this socket's to act on; see
 		// socket_onEnd.
-		var node = new NodeSocket({allowHalfOpen: true});
-		__socket = node;
-		node.on(SocketEvent.Connect, function() {
+		var opened = function() {
 			try {
 				socket_onOpen(null);
 			} catch (e:Dynamic) {
 				__contain(e, Event.CONNECT);
 			}
-		});
-		__bindNodeSocket(node);
-		node.connect({port: port, host: host});
+		};
+		var node:NodeSocket;
+		if (secure) {
+			// Node's TLS, which starts connecting as it is made; opened once
+			// the handshake is done rather than when TCP is.
+			node = __connectNodeTls(host, port, opened);
+			__socket = node;
+			__bindNodeSocket(node);
+		} else {
+			node = new NodeSocket({allowHalfOpen: true});
+			__socket = node;
+			node.on(SocketEvent.Connect, opened);
+			__bindNodeSocket(node);
+			node.connect({port: port, host: host});
+		}
 
 		// Not ticked: a write asks for a flush at the end of the pass, and
 		// Node reports everything else as an event. See __syncNodeTick.
 		__nodeRuntime = CrossByte.current();
 		#else
+		#if macro
 		__socket = new SysSocket();
+		#else
+		__socket = secure ? __newTlsSocket(host) : new SysSocket();
+		#end
 		@:privateAccess
 		__cbInstance = CrossByte.current();
 		if (__cbInstance == null) {
@@ -701,11 +762,15 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// sockets: the connect is in flight, and the tick below waits for it to
 			// become writable. Nothing to record, both completions defer there.
 		} catch (e:Dynamic) {
-			__cleanupFailedConnect();
-			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+			// A TLS socket's connect reports the would-block as its TLS layer
+			// spells it, a string, which is as ordinary; anything else failed.
+			if (!__isBlockedError(e)) {
+				__cleanupFailedConnect();
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+				}
+				return;
 			}
-			return;
 		}
 
 		__socket.setFastSend(true);
@@ -719,6 +784,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// completion tick makes would block on a socket with nothing to say yet.
 		// Announce the connect here, which is what every target did before the
 		// deferral below and what eval still needs.
+		#if !macro
+		if (secure) {
+			// And the TLS handshake the same way, held until it is done.
+			__tlsHandshaking = true;
+			var failure:Null<String> = __stepTlsHandshake();
+			if (failure != null || __tlsHandshaking) {
+				__cleanupFailedConnect();
+				__dispatchPooledIOError("Connection failed: " + (failure != null ? failure : "the TLS handshake did not finish"));
+				return;
+			}
+		}
+		#end
 		__connected = true;
 		@:privateAccess
 		__cbInstance.registerSocket(__socket);
@@ -747,6 +824,85 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		@:privateAccess __cbInstance.registerSocket(__socket);
 		@:privateAccess __cbInstance.watchWritable(__socket);
 		#end
+	}
+
+	#if !macro
+	// Kept from the macro context: on jvm the TLS socket is the jvm's own,
+	// and naming it pulls java.nio in, which a macro cannot reach.
+
+	/**
+		A TLS client socket for `host`: the name goes to the server as SNI,
+		and is the one its certificate has to carry unless `verifyCert` is
+		off.
+	**/
+	@:noCompletion private function __newTlsSocket(host:String):SysSocket {
+		var tls:crossbyte._internal.socket.FlexSocket = new crossbyte._internal.socket.FlexSocket(true);
+		tls.verifyCert = verifyCert;
+		if (certAuthority != null) {
+			tls.setCA(certAuthority.__native);
+		}
+		tls.setHostname(host);
+		return tls;
+	}
+
+	/**
+		TCP is up on a secure connect: the TLS handshake starts, and CONNECT
+		waits for it. From here the socket is watched for reading alone. Each
+		flight the server sends is what steps the handshake, and a socket
+		watched for writing would be reported writable the whole time,
+		spinning the loop; the tick stays, for the deadline and for a flight
+		of this side's that could not all be written at once.
+	**/
+	@:noCompletion private function __beginTlsHandshake():Void {
+		__tlsHandshaking = true;
+		if (__cbInstance != null) {
+			@:privateAccess __cbInstance.unwatchWritable(__socket);
+		}
+	}
+
+	/**
+		One step of the TLS handshake: null while it waits on the server, and
+		once it is done, when `__tlsHandshaking` is clear; otherwise why it
+		failed.
+	**/
+	@:noCompletion private function __stepTlsHandshake():Null<String> {
+		try {
+			(__socket : crossbyte._internal.socket.FlexSocket).handshake();
+		} catch (e:Dynamic) {
+			if (__isBlockedError(e)) {
+				return null;
+			}
+			__tlsHandshaking = false;
+			return "TLS handshake failed: " + Std.string(e);
+		}
+		__tlsHandshaking = false;
+		return null;
+	}
+	#end
+	#end
+
+	#if nodejs
+	/**
+		A TLS connection through Node's own TLS, checked as `verifyCert` and
+		`certAuthority` say, which Node starts as it is made; `opened` runs
+		once the handshake is done.
+	**/
+	@:noCompletion private function __connectNodeTls(host:String, port:Int, opened:Void->Void):NodeSocket {
+		var options:Dynamic = {
+			port: port,
+			host: host,
+			allowHalfOpen: true,
+			rejectUnauthorized: verifyCert
+		};
+		// The SNI name, which may not be an address (RFC 6066 3); for one,
+		// Node checks the certificate against `host` itself.
+		if (js.node.Net.isIP(host) == 0) {
+			options.servername = host;
+		}
+		if (certAuthority != null) {
+			options.ca = [certAuthority.__pem];
+		}
+		return cast js.node.Tls.connect(options, opened);
 	}
 	#end
 
@@ -1442,6 +1598,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		__stopConnecting();
 		__resolving = false;
+		__tlsHandshaking = false;
 
 		__cbInstance = null;
 		__socket = null;
@@ -1637,7 +1794,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function socket_onError(e):Void {
+		#if nodejs
+		// What Node says went wrong, a refused connection, a certificate
+		// its TLS would not accept, where the ioError said nothing.
+		var message:Dynamic = e == null ? null : Reflect.field(e, "message");
+		__dispatchPooledIOError(message == null ? "" : Std.string(message));
+		#else
 		__dispatchPooledIOError();
+		#end
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
@@ -1709,9 +1873,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				__contain(e, Event.PEER_CLOSE);
 			}
 		});
-		node.on(SocketEvent.Error, function(_) {
+		node.on(SocketEvent.Error, function(error:Dynamic) {
 			try {
-				socket_onError(null);
+				socket_onError(error);
 			} catch (e:Dynamic) {
 				__contain(e, IOErrorEvent.IO_ERROR);
 			}
@@ -1929,8 +2093,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var doConnect = false;
 		var doClose = false;
 		var doPeerClose = false;
+		// Why a connect failed, where there is more to say than that it did.
+		var failure:Null<String> = null;
 
-		if (!connected) {
+		if (!connected && !__tlsHandshaking) {
 			// Asked about on both sets. A connect that fails is reported in the
 			// exception set on Windows and never becomes writable, so watching
 			// writability alone could not see it: a refused connection sat here
@@ -1944,14 +2110,42 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			var r = SysSocket.select([], [__socket], [__socket], 0);
 
 			if (r.write.length > 0 && r.write[0] == __socket) {
+				#if !macro
+				if (secure) {
+					// TCP is up, and TLS is next: CONNECT once it is done.
+					__beginTlsHandshake();
+				} else {
+					doConnect = true;
+				}
+				#else
 				doConnect = true;
+				#end
 			} else if (r.others.length > 0 && r.others[0] == __socket) {
 				// Never came up, so closeWasConnected stays false below and this
 				// leaves as an ioError rather than a CLOSE. A connection that
 				// failed is a different fact from one that hung up.
 				doClose = true;
-			} else if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+			}
+		}
+
+		#if !macro
+		if (!connected && __tlsHandshaking) {
+			// Stepped from the tick and from the poll alike; a failure is
+			// terminal, and closes the attempt now rather than at its deadline.
+			failure = __stepTlsHandshake();
+			if (failure != null) {
 				doClose = true;
+			} else if (!__tlsHandshaking) {
+				doConnect = true;
+			}
+		}
+		#end
+
+		if (!connected && !doConnect && !doClose && haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+			// The deadline counts the TLS handshake with the connect.
+			doClose = true;
+			if (__tlsHandshaking) {
+				failure = "the TLS handshake did not finish within " + timeout + " ms";
 			}
 		}
 
@@ -2072,7 +2266,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			if (closeWasConnected) {
 				__announceClose();
 			} else {
-				__dispatchPooledIOError("Connection failed");
+				__dispatchPooledIOError(failure != null ? "Connection failed: " + failure : "Connection failed");
 			}
 		}
 
@@ -2468,6 +2662,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__connected = false;
 		__isConnecting = false;
 		__resolving = false;
+		__tlsHandshaking = false;
 		__isDirty = false;
 		flushFull = false;
 		__closed = true;

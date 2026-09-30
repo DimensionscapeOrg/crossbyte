@@ -74,6 +74,8 @@ class PortableSuite {
 		// choose what its own WebSocket trusts.
 		#if nodejs
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		// And a plain Socket over Node's TLS, checked the same way.
+		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());
 		runner.addCase(new crossbyte.net.WebSocketSessionTest());
 		// permessage-deflate on Node's sessions, and zlib, what a browser

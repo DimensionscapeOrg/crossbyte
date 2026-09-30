@@ -142,33 +142,8 @@ class WebSocket extends Socket {
 		return __webSocket != null && __webSocket.compressed;
 	}
 
-	/**
-		Whether a `wss://` connection checks the server's certificate: that it
-		chains to an authority this client trusts, and that it names the host
-		being connected to.
-
-		On by default. Turn it off only for a development server presenting a
-		self-signed certificate, and prefer `certAuthority` even then. With
-		verification off the traffic is still encrypted, but anyone able to
-		sit between the two ends can present a certificate of their own and
-		read all of it.
-
-		Read when `connect()` is called.
-	**/
-	public var verifyCert:Bool = true;
-
-	/**
-		The authority this client trusts, in place of the system's, for a
-		`wss://` connection.
-
-		Set it to a private CA's certificate, or to a server's own self-signed
-		certificate, to verify a server the system's trust store does not know
-		without turning verification off. `null`, the default, trusts the
-		system's store.
-
-		Read when `connect()` is called.
-	**/
-	public var certAuthority:Certificate = null;
+	// `verifyCert` and `certAuthority`, which a `wss://` client reads, are
+	// Socket's: a secure Socket checks its server the same way.
 
 	/**
 		Bytes of unsent frame data allowed to accumulate for this session
