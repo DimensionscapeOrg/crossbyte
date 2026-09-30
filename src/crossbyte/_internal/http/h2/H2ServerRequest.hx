@@ -112,6 +112,17 @@ class H2ServerRequest {
 				throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, "Header field with an empty name");
 			}
 
+			// §8.2.1: no CR, LF or NUL in a value, no whitespace at its ends,
+			// and nothing in a name but visible, lowercase ASCII. HPACK
+			// carries any byte, so a line break reached the request middleware
+			// sees. An uppercase name is malformed rather than merely unusual:
+			// normalising it would let two spellings of one header disagree
+			// about which a router matched.
+			var problem:Null<String> = H2FieldRules.violation(name, field.value);
+			if (problem != null) {
+				throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, problem);
+			}
+
 			if (name.charAt(0) == ":") {
 				if (seenRegular) {
 					// §8.3: pseudo-headers come first. Allowing a late one
@@ -138,13 +149,6 @@ class H2ServerRequest {
 			}
 
 			seenRegular = true;
-
-			// §8.2.1: an uppercase field name is malformed, not merely
-			// unusual. Normalising it instead would let two spellings of the
-			// same header disagree about which one a router matched.
-			if (name.toLowerCase() != name) {
-				throw new H2StreamError(streamId, H2ErrorCode.PROTOCOL_ERROR, 'Header field name "$name" is not lowercase');
-			}
 
 			switch (name) {
 				case "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding" | "upgrade":

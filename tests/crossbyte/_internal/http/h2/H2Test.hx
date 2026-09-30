@@ -282,6 +282,33 @@ class H2Test extends utest.Test {
 		Assert.equals("fine", second.takeBody().toString());
 	}
 
+	public function testAControlCharacterInAResponseFieldIsRefused():Void {
+		// RFC 9113 8.2.1 applies to a response too: a CR, LF or NUL in a value
+		// is malformed. It reached the caller's headers, and a program passing
+		// them on over HTTP/1.1 wrote the line break with them.
+		var server = new ServerScript();
+		server.settings();
+		server.response(1, [
+			new HpackHeader(":status", "200"),
+			new HpackHeader("x-forward", "a" + String.fromCharCode(13) + String.fromCharCode(10) + "injected: yes")
+		], "body", true);
+		server.response(3, [new HpackHeader(":status", "200")], "fine", true);
+
+		var connection = server.connect();
+		var first = connection.request("GET", "http", "example.com", "/", []);
+		connection.pumpUntilClosed(first);
+
+		Assert.isTrue(first.isClosed());
+		Assert.isFalse(first.endOfStream, "a malformed response was taken as complete");
+		Assert.equals(0, first.headers.length, "the malformed field reached the caller");
+
+		// One stream's malformed message; the connection carries on.
+		var second = connection.request("GET", "http", "example.com", "/next", []);
+		connection.pumpUntilClosed(second);
+		Assert.equals(200, second.status);
+		Assert.equals("fine", second.takeBody().toString());
+	}
+
 	public function testOversizedFrameIsRejectedBeforeItIsAllocated():Void {
 		var server = new ServerScript();
 		server.settings();
