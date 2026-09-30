@@ -12,6 +12,7 @@ import haxe.exceptions.NotImplementedException;
 import sys.net.Host;
 import sys.net.Socket as SysSocket;
 import sys.thread.Lock;
+import sys.thread.Mutex;
 import sys.thread.Thread;
 import utest.Assert;
 import crossbyte.test.Require;
@@ -242,6 +243,55 @@ class HttpTest extends utest.Test {
 		Assert.isTrue(HTTPBackendRegistry.isRegistered(HttpVersion.HTTP_2));
 		Assert.isFalse(backend == HTTPBackendRegistry.resolve(HttpVersion.HTTP_2));
 
+		HTTPBackendRegistry.clear();
+	}
+
+	public function testConcurrentFirstRequestsAllFindTheBundledBackend():Void {
+		// The bundled backend's flag was set under the lock and the backend
+		// added only after the lock was let go: a thread arriving in between
+		// found the flag set and no backend, and its request failed with "HTTP/2
+		// has no registered HTTPBackend". Concurrent first HTTP/2 requests
+		// failed 5 of 6 that way on the jvm, and the http2 sample 3 of 3.
+		var workers:Int = 8;
+		var rounds:Int = 150;
+		var misses:Int = 0;
+		var count:Mutex = new Mutex();
+		var go:Array<Lock> = [for (_ in 0...workers) new Lock()];
+		var done:Lock = new Lock();
+
+		for (w in 0...workers) {
+			var mine:Lock = go[w];
+			Thread.create(() -> {
+				for (_ in 0...rounds) {
+					mine.wait();
+					if (HTTPBackendRegistry.resolve(HttpVersion.HTTP_2) == null) {
+						count.acquire();
+						misses++;
+						count.release();
+					}
+					done.release();
+				}
+			});
+		}
+
+		var finished:Bool = true;
+		for (_ in 0...rounds) {
+			HTTPBackendRegistry.clear();
+			for (lock in go) {
+				lock.release();
+			}
+			for (_ in 0...workers) {
+				if (!done.wait(10.0)) {
+					finished = false;
+				}
+			}
+			if (!finished) {
+				break;
+			}
+		}
+
+		Assert.isTrue(finished, "a worker never came back");
+		Assert.equals(0, misses, misses + " of " + (workers * rounds) + " first lookups found no HTTP/2 backend");
 		HTTPBackendRegistry.clear();
 	}
 
