@@ -16,8 +16,12 @@ import crossbyte.net.ice.IceCandidatePair;
 import crossbyte.net.ice.IceAgentState;
 import crossbyte.net.ice.IceCredentials;
 import crossbyte.net.TurnClient;
+import crossbyte.net.TurnError;
+import crossbyte.net.TurnServer;
+import crossbyte.net.TurnTransport;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunQuery;
+import crossbyte.net._internal.stun.TurnStream;
 import crossbyte.net.rtc.PeerDescription;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
 import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
@@ -696,7 +700,7 @@ class PeerConnection {
 
 		for (candidate in __localCandidates) {
 			if (candidate == __relayedCandidate) {
-				restarting.addLocalCandidate(candidate, (payload, address, port) -> __relayTo(payload, address, port));
+				restarting.addLocalCandidate(candidate, __relaySend);
 			} else {
 				restarting.addLocalCandidate(candidate);
 			}
@@ -707,6 +711,11 @@ class PeerConnection {
 				__fail("The ICE restart found no path to the peer: " + error);
 			}
 		});
+
+		// A restart is often a network change, which takes the allocation with
+		// it: the relay is asked now rather than at the next refresh, and one
+		// that has gone is replaced, so the restart has a relayed candidate.
+		__renewRelay();
 	}
 
 	/**
@@ -964,6 +973,9 @@ class PeerConnection {
 			__turn.close();
 		}
 
+		// A relay reached over TCP is freed by the connection's end as well.
+		__closeTurnStream();
+
 		if (__tick != null) {
 			try {
 				CrossByte.current().removeEventListener(TickEvent.TICK, __tick);
@@ -1096,16 +1108,69 @@ class PeerConnection {
 		unwrapped and handled as though it had arrived directly, so nothing
 		above ICE knows or needs to.
 
+		The same as `gatherRelayedFrom` with one server; see there for what
+		happens when the relay fails or goes away.
+
 		@param useChannels Whether to ask the relay for a channel per peer, which
 		costs four bytes a datagram where an indication costs thirty-six. Off by
 		default: a relay that agrees to a channel and then drops what it is sent
 		over it cannot say so, and the connection stops with nothing to report.
 		See `TurnClient` for the one that does exactly that.
 
-		@return The candidate that was added, or a failure naming why none was.
+		@param transport How the relay is reached: UDP when left out, or TCP,
+		for a network that lets nothing else out. What it relays is UDP either
+		way.
+		@return The candidate that was added, or a failure naming why none was,
+		whose `cause` is a `TurnError` with the relay's code.
 	**/
-	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478,
-			useChannels:Bool = false):Future<IceCandidate> {
+	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478, useChannels:Bool = false,
+			?transport:TurnTransport):Future<IceCandidate> {
+		if (server == null || server == "") {
+			var future = new Future<IceCandidate>();
+			@:privateAccess future.__fail("A TURN server address is required.", new ArgumentError("server"));
+			return future;
+		}
+
+		return gatherRelayedFrom([
+			{
+				address: server,
+				port: port,
+				username: username,
+				password: password,
+				transport: transport
+			}
+		], useChannels);
+	}
+
+	/**
+		Asks each relay in turn until one lends an address, and keeps one lent
+		for as long as the connection lasts.
+
+		A connection got one attempt at a relay, for life. A relay that was full
+		(486), out of capacity (508), silent, or refused the credentials left it
+		with no relay and no way to ask another, asking again was refused as
+		"already has a relay", and a relay that later went away, after a
+		network change or a restart of its own, was not replaced either.
+
+		- Each server is asked in order, the next when one refuses or does not
+		  answer. A relay redirecting with 300 Try Alternate is followed by
+		  `TurnClient`.
+		- The future fails only when every one has, with every reason in its
+		  message and the last relay's `TurnError`, its code, its reason, and
+		  where it redirected to, as its `cause`.
+		- A relay that goes away is replaced, from the top of the list, and the
+		  new relayed candidate announced through `onLocalCandidate` for the peer
+		  to be told of. A connection whose path ran through the lost relay
+		  still ends, since the path went with it, unless an ICE restart is
+		  under way to find another.
+		- `restartIce` checks the relay is still there, and asks for another
+		  when it is not, so a restart after a network change has one.
+		- `setRelayCredentials` replaces the credentials for what is asked from
+		  then on.
+
+		Nothing is thrown: a list that cannot be used fails the future.
+	**/
+	public function gatherRelayedFrom(servers:Array<TurnServer>, useChannels:Bool = false):Future<IceCandidate> {
 		var future = new Future<IceCandidate>();
 
 		if (__host != null) {
@@ -1118,71 +1183,75 @@ class PeerConnection {
 			return future;
 		}
 
-		if (server == null || server == "") {
-			@:privateAccess future.__fail("A TURN server address is required.", new ArgumentError("server"));
+		if (servers == null || servers.length == 0) {
+			@:privateAccess future.__fail("A TURN server address is required.", new ArgumentError("servers"));
 			return future;
 		}
 
+		for (server in servers) {
+			if (server == null || server.address == null || server.address == "" || server.username == null || server.password == null) {
+				@:privateAccess future.__fail("Every TURN server needs an address, a username and a password.", new ArgumentError("servers"));
+				return future;
+			}
+		}
+
+		// One allocation at a time: a second would leak the first. One that
+		// failed or was lost is not in the way.
 		if (__turn != null) {
 			@:privateAccess future.__fail("This connection already has a relay allocated.", null);
 			return future;
 		}
 
-		var relay = new TurnClient(server, port, username, password);
-		relay.useChannels = useChannels;
-		__turn = relay;
+		__relayServers = [
+			for (server in servers)
+				{
+					address: server.address,
+					port: server.port != null ? server.port : 3478,
+					username: server.username,
+					password: server.password,
+					transport: server.transport != null ? server.transport : UDP
+				}
+		];
+		__relayUseChannels = useChannels;
 		__relayedFuture = future;
-
-		// Out to the server directly. The relay is reached the ordinary way; it
-		// is only traffic for a peer that gets wrapped.
-		relay.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
-			__send(payload, address, sendPort);
-		};
-
-		relay.onData = function(payload:ByteArray, fromAddress:String, fromPort:Int):Void {
-			__onRelayed(payload, fromAddress, fromPort);
-		};
-
-		// A path through the relay ends with the relay. One that found its way
-		// round it loses a candidate it no longer needs, and nothing else. No
-		// goodbye either way: what would carry it is what just went.
-		relay.onLost = function(reason:String):Void {
-			if (__peerRelayed) {
-				__shutdown("The relay carrying this connection went away: " + reason, false, false);
-			}
-		};
-
-		relay.allocated.then(function(relayed:ReflexiveAddress):Void {
-			if (__closed) {
-				return;
-			}
-
-			var candidate = new IceCandidate(RELAYED, relayed.address, relayed.port);
-			__relayedCandidate = candidate;
-
-			// The candidate and the way to send from it, together: its address is
-			// the server's, so a datagram addressed there straightforwardly would
-			// arrive at the relay as ordinary traffic rather than as something to
-			// forward.
-			agent.addLocalCandidate(candidate, function(payload:ByteArray, address:String, peerPort:Int):Void {
-				__relayTo(payload, address, peerPort);
-			});
-
-			if (__restartAgent != null) {
-				__restartAgent.addLocalCandidate(candidate, (payload, address, peerPort) -> __relayTo(payload, address, peerPort));
-			}
-
-			__gained(candidate);
-			__settleRelayed(candidate, null);
-		}, function(error:String):Void {
-			__settleRelayed(null, error);
-		});
-
-		relay.allocate(__clock());
+		__allocateFrom(0, []);
 		return future;
 	}
 
-	/** The relayed candidate, once a server has granted one. **/
+	/**
+		Replaces the credentials relays are asked with from now on: those in the
+		list `gatherRelayedFrom` was given, and the one holding the allocation.
+
+		For credentials that expire, as the TURN REST convention's do: fetch new
+		ones before they lapse and pass them here, so the next relay asked, a
+		replacement, or one for an ICE restart, is not refused. A relay ties an
+		allocation to the username that made it, so the one held now takes a new
+		password for the same username and keeps its old username otherwise.
+
+		@param server The relay these are for, as its address was given; every
+		relay when omitted.
+		@throws ArgumentError When either is null.
+	**/
+	public function setRelayCredentials(username:String, password:String, ?server:String):Void {
+		if (username == null || password == null) {
+			throw new ArgumentError("A relay needs credentials: it forwards traffic on somebody's behalf and has to know whose.");
+		}
+
+		if (__relayServers != null) {
+			for (entry in __relayServers) {
+				if (server == null || entry.address == server) {
+					entry.username = username;
+					entry.password = password;
+				}
+			}
+		}
+
+		if (__turn != null && __turnServer != null && (server == null || __turnServer.address == server) && __turnServer.username == username) {
+			__turn.setCredentials(username, password);
+		}
+	}
+
+	/** The relayed candidate, once a server has granted one; null again if that relay goes. **/
 	public var relayedCandidate(get, never):Null<IceCandidate>;
 
 	@:noCompletion private function get_relayedCandidate():Null<IceCandidate> {
@@ -1192,21 +1261,198 @@ class PeerConnection {
 	/** This connection's own address, when the bind named one. **/
 	@:noCompletion private var __hostCandidate:IceCandidate;
 
+	/** The relay allocating or holding an allocation, and the server it was made for; null when there is neither. **/
 	@:noCompletion private var __turn:TurnClient;
+
+	@:noCompletion private var __turnServer:TurnServer;
+
 	@:noCompletion private var __relayedCandidate:IceCandidate;
+
+	/** How to send from `__relayedCandidate`, handed to each agent with it. **/
+	@:noCompletion private var __relaySend:(ByteArray, String, Int) -> Void;
+
+	/** The connection `__turn` reaches its relay over, when that is TCP; null over UDP. **/
+	@:noCompletion private var __turnStream:TurnStream = null;
+
+	@:noCompletion private function __closeTurnStream():Void {
+		if (__turnStream != null) {
+			var stream = __turnStream;
+			__turnStream = null;
+			stream.close();
+		}
+	}
+
 	@:noCompletion private var __relayedFuture:Future<IceCandidate>;
-	@:noCompletion private var __permitted:Map<String, Float> = new Map();
+
+	/** The relays `gatherRelayedFrom` was given, asked again to replace one that goes. **/
+	@:noCompletion private var __relayServers:Array<TurnServer>;
+
+	@:noCompletion private var __relayUseChannels:Bool = false;
 
 	/** Whether the nominated pair reaches the peer through the relay. **/
 	@:noCompletion private var __peerRelayed:Bool = false;
 
 	/**
-		How long a permission is assumed to last before it is asked for again.
+		Asks the relay at `index` in the list, and the next when it fails.
 
-		RFC 8656 gives one five minutes. Renewed well inside that, because a
-		permission that lapses does not fail loudly, the relay simply drops what
-		it is asked to forward, and the connection goes quiet for no stated reason.
+		@param failures What each relay asked so far said, for the message the
+		future fails with when none will.
 	**/
+	@:noCompletion private function __allocateFrom(index:Int, failures:Array<TurnError>):Void {
+		if (__closed) {
+			return;
+		}
+
+		if (index >= __relayServers.length) {
+			__settleRelayed(null, "No relay would allocate: " + [for (failure in failures) failure.toString()].join("; ") + ".",
+				failures.length > 0 ? failures[failures.length - 1] : null);
+			return;
+		}
+
+		var server = __relayServers[index];
+		var relay = new TurnClient(server.address, server.port, server.username, server.password, server.transport);
+		relay.useChannels = __relayUseChannels;
+		__turn = relay;
+		__turnServer = server;
+
+		if (relay.transport != UDP) {
+			// Over a connection of its own, which carries everything to and
+			// from the relay; only what it relays is UDP.
+			__turnStream = new TurnStream(relay);
+		} else {
+			// Out to the server directly. The relay is reached the ordinary way;
+			// it is only traffic for a peer that gets wrapped.
+			relay.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
+				__send(payload, address, sendPort);
+			};
+		}
+
+		relay.onData = function(payload:ByteArray, fromAddress:String, fromPort:Int):Void {
+			if (relay == __turn) {
+				__onRelayed(payload, fromAddress, fromPort);
+			}
+		};
+
+		relay.onLost = function(reason:String):Void {
+			__relayLost(relay, reason);
+		};
+
+		// One peer address the relay will not forward to, a hardened relay
+		// refuses private ones, and ICE pairs the relayed candidate with the
+		// peer's host addresses first. Those pairs are dead, and the rest of the
+		// relay is fine; said to the agents so they stop checking into nothing.
+		relay.onPermissionRefused = function(peerAddress:String, code:Int, reason:String):Void {
+			if (__closed || relay != __turn || __relayedCandidate == null) {
+				return;
+			}
+
+			agent.refusePairs(__relayedCandidate, peerAddress);
+
+			if (__restartAgent != null) {
+				__restartAgent.refusePairs(__relayedCandidate, peerAddress);
+			}
+		};
+
+		relay.allocated.then(function(relayed:ReflexiveAddress):Void {
+			__relayGranted(relay, relayed);
+		}, function(error:String):Void {
+			// Replaced, or closed with the connection: nothing to go on to.
+			if (relay != __turn || __closed) {
+				return;
+			}
+
+			__turn = null;
+			__turnServer = null;
+			__closeTurnStream();
+			failures.push(relay.failure != null ? relay.failure : new TurnError(0, error, server.address + ":" + server.port));
+			__allocateFrom(index + 1, failures);
+		});
+
+		relay.allocate(__clock());
+	}
+
+	/** A relay lent an address: it becomes a candidate, with the way to send from it. **/
+	@:noCompletion private function __relayGranted(relay:TurnClient, relayed:ReflexiveAddress):Void {
+		if (__closed || relay != __turn) {
+			return;
+		}
+
+		var candidate = new IceCandidate(RELAYED, relayed.address, relayed.port);
+		__relayedCandidate = candidate;
+
+		// The candidate and the way to send from it, together: its address is
+		// the server's, so a datagram addressed there straightforwardly would
+		// arrive at the relay as ordinary traffic rather than as something to
+		// forward. Bound to this relay, so a check on the candidate of one that
+		// has since gone is dropped rather than sent through its replacement.
+		__relaySend = function(payload:ByteArray, address:String, peerPort:Int):Void {
+			if (relay == __turn) {
+				__relayTo(payload, address, peerPort);
+			}
+		};
+
+		agent.addLocalCandidate(candidate, __relaySend);
+
+		if (__restartAgent != null) {
+			__restartAgent.addLocalCandidate(candidate, __relaySend);
+		}
+
+		__gained(candidate);
+		__settleRelayed(candidate, null, null);
+	}
+
+	/**
+		A relay that was carrying an allocation lost it.
+
+		A path through the relay ends with the relay, with no goodbye: what
+		would carry it is what just went. Unless an ICE restart is under way,
+		which is often why the relay went, a network change moves the 5-tuple
+		it knew this connection by, and the restart decides. Otherwise the
+		connection loses a candidate it no longer needs and asks for another,
+		so a later restart, or checking still under way, has one.
+	**/
+	@:noCompletion private function __relayLost(relay:TurnClient, reason:String):Void {
+		if (__closed || relay != __turn) {
+			return;
+		}
+
+		__turn = null;
+		__turnServer = null;
+		__closeTurnStream();
+
+		if (__relayedCandidate != null) {
+			__localCandidates.remove(__relayedCandidate);
+		}
+
+		__relayedCandidate = null;
+		__relaySend = null;
+
+		if (__peerRelayed && __restartAgent == null) {
+			__shutdown("The relay carrying this connection went away: " + reason, false, false);
+			return;
+		}
+
+		if (__relayServers != null) {
+			__allocateFrom(0, []);
+		}
+	}
+
+	/**
+		For an ICE restart: a relay that is there is asked whether it still is,
+		and one that is not is replaced.
+	**/
+	@:noCompletion private function __renewRelay():Void {
+		if (__closed || __relayServers == null) {
+			return;
+		}
+
+		if (__turn == null) {
+			__allocateFrom(0, []);
+			return;
+		}
+
+		__turn.refresh(__clock());
+	}
 
 	/**
 		Wraps one datagram for the relay to forward, permitting the peer first.
@@ -1222,16 +1468,13 @@ class PeerConnection {
 
 		var now = __clock();
 
-		// Once per address. Renewing it used to happen here too, on the same
-		// four minutes, which only renewed a permission while traffic was
-		// flowing, an idle-but-receiving connection lapsed and the relay
-		// began dropping the peer inbound. TurnClient renews on its own tick
-		// now, so keeping a second copy of that policy here would just send
-		// the relay a redundant request every cycle.
-		if (!__permitted.exists(address)) {
-			__permitted.set(address, now);
-			__turn.permit(address, now);
-		}
+		// Every time, which costs a lookup: TurnClient sends nothing for a
+		// permission already in place, already being asked for, or refused.
+		// It was asked once per address here, so a request the relay never
+		// answered, or one dropped from a full queue, was never asked again.
+		// Renewal is TurnClient's too, on its own tick, so that a connection
+		// that only receives keeps its peer permitted.
+		__turn.permit(address, now);
 
 		// And a channel, which costs four bytes a datagram where an indication
 		// costs thirty-six. Asked for every time and ignored when one is
@@ -1264,11 +1507,16 @@ class PeerConnection {
 		payload.position = 0;
 
 		if (first < 4) {
-			agent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+			var message = StunMessage.decode(payload);
+
+			if (message == null) {
+				return;
+			}
+
+			agent.receive(payload, fromAddress, fromPort, now, __relayedCandidate, message);
 
 			if (__restartAgent != null) {
-				payload.position = 0;
-				__restartAgent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+				__restartAgent.receive(payload, fromAddress, fromPort, now, __relayedCandidate, message);
 			}
 
 			return;
@@ -1279,7 +1527,7 @@ class PeerConnection {
 		}
 	}
 
-	@:noCompletion private function __settleRelayed(candidate:Null<IceCandidate>, error:String):Void {
+	@:noCompletion private function __settleRelayed(candidate:Null<IceCandidate>, error:String, ?cause:TurnError):Void {
 		var future = __relayedFuture;
 		__relayedFuture = null;
 
@@ -1288,7 +1536,7 @@ class PeerConnection {
 		}
 
 		if (candidate == null) {
-			@:privateAccess future.__fail(error, null);
+			@:privateAccess future.__fail(error, cause);
 			return;
 		}
 
@@ -1323,8 +1571,10 @@ class PeerConnection {
 		}
 
 		if (__reflexiveQuery.expired(now)) {
-			__settleReflexive(null, "No reply from the STUN server at " + __reflexiveServer + ":" + __reflexivePort
-				+ " within the time allowed, so this connection still has no address to advertise beyond its own network.");
+			var damage:Null<String> = __reflexiveQuery.damage();
+			__settleReflexive(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + __reflexiveServer + ":"
+				+ __reflexivePort + " within the time allowed" + (damage != null ? ", " + damage + ", " : "")
+				+ ", so this connection still has no address to advertise beyond its own network.");
 			return;
 		}
 
@@ -1342,12 +1592,12 @@ class PeerConnection {
 		ninety-six bits chosen at random per request, which is what RFC 5389
 		gives an implementation to recognise its own replies by.
 	**/
-	@:noCompletion private function __receiveReflexive(payload:ByteArray, now:Float):Bool {
+	@:noCompletion private function __receiveReflexive(message:StunMessage, now:Float):Bool {
 		if (__reflexiveFuture == null || __reflexiveQuery == null) {
 			return false;
 		}
 
-		switch (__reflexiveQuery.interpret(payload)) {
+		switch (__reflexiveQuery.interpretMessage(message)) {
 			case NOT_OURS:
 				return false;
 			case ANSWERED(mapped):
@@ -1356,6 +1606,8 @@ class PeerConnection {
 				__settleReflexive(null, "The STUN server refused the request" + (reason != null ? ": " + reason : "."));
 			case ANSWERED_WITHOUT_ADDRESS:
 				__settleReflexive(null, "The STUN server replied without a mapped address, so this connection's public address is still unknown.");
+			case UNUSABLE(reason):
+				__settleReflexive(null, "The STUN server's answer could not be used: " + reason + ".");
 		}
 
 		return true;
@@ -1391,8 +1643,13 @@ class PeerConnection {
 		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
 	}
 
-	/** A datagram from this connection's own socket, or routed here by its host. **/
-	@:noCompletion private function __receiveDatagram(data:ByteArray, srcAddress:String, srcPort:Int):Void {
+	/**
+		A datagram from this connection's own socket, or routed here by its host.
+
+		@param decoded The datagram as STUN, when the host already decoded it
+		to route it.
+	**/
+	@:noCompletion private function __receiveDatagram(data:ByteArray, srcAddress:String, srcPort:Int, ?decoded:StunMessage):Void {
 		if (__closed || data == null || data.length == 0) {
 			return;
 		}
@@ -1404,33 +1661,37 @@ class PeerConnection {
 		data.position = 0;
 
 		if (first < 4) {
+			// Decoded once, here, and the message shown to each of the three
+			// that might want it. Each used to decode it again for itself, up
+			// to four times a datagram, every one before any integrity check.
+			var message = decoded != null ? decoded : StunMessage.decode(data);
+
+			if (message == null) {
+				return;
+			}
+
 			// The answer to this connection's own question about its address,
 			// if that is what it is. Offered here first because it shares the
 			// socket and the byte range with everything ICE sends; the
 			// transaction says which, and the agent would only refuse it.
-			if (__receiveReflexive(data, now)) {
+			if (__receiveReflexive(message, now)) {
 				return;
 			}
 
-			// Then the relay, which recognises its own by message type and hands
-			// back anything else. Its replies and the traffic it forwards share the
-			// STUN byte range with every connectivity check on this socket, and
-			// where they came from cannot decide it, the server may have been
-			// named as a hostname, and it answers from whatever that resolved to.
-			data.position = 0;
-
-			if (__turn != null && __turn.receive(data, srcAddress, srcPort, now)) {
+			// Then the relay, which recognises its own by message type and where
+			// it came from, and hands back anything else. Its replies and the
+			// traffic it forwards share the STUN byte range with every
+			// connectivity check on this socket.
+			if (__turn != null && __turn.receive(data, srcAddress, srcPort, now, message)) {
 				return;
 			}
 
-			data.position = 0;
-			agent.receive(data, srcAddress, srcPort, now);
+			agent.receive(data, srcAddress, srcPort, now, null, message);
 
 			// And the restart's, which checks with other credentials: each agent
 			// takes only checks addressed to its own and answers to its own.
 			if (__restartAgent != null) {
-				data.position = 0;
-				__restartAgent.receive(data, srcAddress, srcPort, now);
+				__restartAgent.receive(data, srcAddress, srcPort, now, null, message);
 			}
 
 			return;

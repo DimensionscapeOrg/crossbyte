@@ -148,6 +148,10 @@ class TurnClientTest extends utest.Test {
 		client.allocate(0);
 		relay.run(client, () -> client.active);
 
+		// Permitted first: a relay forwards nothing from anyone else.
+		client.permit("198.51.100.4", 1);
+		relay.pump(client, 1);
+
 		relay.deliver(client, "198.51.100.4", 40000, "through the relay");
 
 		Assert.equals("through the relay", received);
@@ -233,11 +237,13 @@ class TurnClientTest extends utest.Test {
 	/**
 		A permission asked for while a refresh is outstanding does not lose it.
 
-		Only one request is tracked at a time, so a second started underneath
-		the first would abandon it, and the one abandoned is whichever was
-		already running, which on a timer is the refresh. That does not fail
-		loudly: the allocation just stops being renewed and the connection dies
-		when it expires.
+		Only one request used to be tracked at a time, so a second started
+		underneath the first would have abandoned it, and the one abandoned
+		was whichever was already running, which on a timer is the refresh.
+		That does not fail loudly: the allocation just stops being renewed and
+		the connection dies when it expires. Each request is its own
+		transaction now, so the permission goes out beside the refresh and the
+		refresh's answer is still recognised when it comes.
 	**/
 	public function testARequestStartedDuringAnotherDoesNotAbandonIt():Void {
 		if (unsupported()) return;
@@ -259,14 +265,16 @@ class TurnClientTest extends utest.Test {
 		// A permission asked for while that refresh is still unanswered.
 		client.permit("198.51.100.4", now);
 		relay.pump(client, now);
-		Assert.equals(0, relay.permissionRequests, "the permission displaced the refresh in flight");
+		Assert.equals(1, relay.permissionRequests, "the permission was never sent");
 
 		relay.holdRefresh = false;
 		relay.answerHeld(client, now);
-		relay.run(client, () -> relay.permissionRequests > 0, now);
+		relay.pump(client, now);
+		client.poll(now + 0.1);
+		relay.pump(client, now + 0.1);
 
 		Assert.equals(1, relay.refreshRequests, "the refresh was retried, which means its answer was not matched");
-		Assert.equals(1, relay.permissionRequests, "the queued permission was never sent");
+		Assert.isTrue(client.active, "the allocation was lost with its refresh answered");
 	}
 
 	/**
@@ -424,6 +432,1201 @@ class TurnClientTest extends utest.Test {
 		Assert.raises(() -> new TurnClient(RELAY, RELAY_PORT, "user", null), crossbyte.errors.ArgumentError);
 		Assert.raises(() -> new TurnClient("", RELAY_PORT, "user", "secret"), crossbyte.errors.ArgumentError);
 	}
+
+	// ------------------------------------------------------------------
+	// Transactions: each request its own, and every answer matched to one
+	// ------------------------------------------------------------------
+
+	/**
+		A relay whose first answer takes longer than the first retransmission
+		still grants an allocation, and only one.
+
+		The signed retry after the 401 reused the unsigned request's
+		transaction. The unsigned Allocate had been sent twice by then, the
+		answer was late, so its second 401 arrived after the signed retry had
+		gone and matched it, which read as the relay rejecting the credentials.
+		Meanwhile the relay had granted the signed request, so it held an
+		allocation nobody would use or free: on a satellite link, a mobile
+		network or a first lookup, every allocation failed and leaked one.
+	**/
+	public function testAFirstAnswerSlowerThanTheRetransmissionStillAllocates():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.6;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 10);
+
+		Assert.isNull(failure, "a slow first answer failed the allocation: " + failure);
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(1, network.relay.allocations, "the relay should hold exactly the one allocation the client is using");
+		Assert.isTrue(network.relay.count("refused-401") >= 2, "the unsigned request was not answered twice, so this proved nothing");
+	}
+
+	/**
+		Datagrams held while the relay's name is looked up, then sent together,
+		do not fail the allocation either.
+
+		Natively a socket holds datagrams to a name until the lookup answers and
+		then sends them all at once, so a slow resolver on a fast path looks,
+		to the relay, like two copies of the unsigned Allocate, and to the old
+		client, like the slow path above.
+	**/
+	public function testAllocatesWhenTheFirstRequestsAreHeldAndSentTogether():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.holdUntil = 0.7;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 10);
+
+		Assert.isNull(failure, "two copies of the first request failed the allocation: " + failure);
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(1, network.relay.allocations);
+	}
+
+	/**
+		A CreatePermission success nobody asked for does not end an Allocate.
+
+		It cleared whatever request was in flight, whatever that was. If that
+		was the Allocate, nothing was left to retransmit or to time out, and
+		`allocated` never settled either way, from one datagram, from anyone.
+	**/
+	public function testAStrangersPermissionSuccessDoesNotStopTheAllocation():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.2;
+
+		var client = network.client();
+		var settled:Bool = false;
+		client.allocated.then(_ -> settled = true, _ -> settled = true);
+		client.allocate(network.now);
+
+		var stray = new StunMessage(StunMessage.CREATE_PERMISSION_SUCCESS, transaction(1), []);
+		network.inject(client, stray.encode(), network.relayAddress, network.relayPort);
+
+		network.run(() -> settled, 60);
+
+		Assert.isTrue(settled, "a stray success left the allocation pending with nothing retransmitting it");
+		Assert.isTrue(client.active, "the allocation did not complete after a stray success");
+	}
+
+	/**
+		A ChannelBind error nobody asked for does not cancel a bind in flight.
+
+		It did, and the real success then found nothing pending and was
+		dropped: the relay had bound the channel and would forward the peer's
+		traffic over it, while the client never marked it bound, so for the
+		ten minutes the binding lasted it dropped every ChannelData message
+		from that peer.
+	**/
+	public function testAStrangersChannelBindErrorDoesNotCancelTheBind():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		network.relay.delay = 0.3;
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+		network.advance(0.5);
+
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		var stray = new StunMessage(StunMessage.CHANNEL_BIND_ERROR, transaction(2), [StunMessage.errorCode(400, "Bad Request")]);
+		network.inject(client, stray.encode(), network.relayAddress, network.relayPort);
+
+		network.advance(2);
+
+		Assert.equals(1, network.relay.count("channel-bound"), "the relay never bound the channel, so this proved nothing");
+		Assert.isTrue(sendsOverAChannel(network, client), "the relay bound the channel and the client never used it");
+	}
+
+	/**
+		A second copy of an old success does not clear the request after it.
+
+		The auditor's case: a permission, then a channel, on a path that
+		duplicates. The duplicate success for the permission arrived while the
+		bind was in flight and cleared the bind, which the relay then granted
+		unheard.
+	**/
+	public function testADuplicateSuccessDoesNotClearTheNextRequest():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		network.relay.delay = 0.5;
+		network.relay.duplicatePermissionSuccess = 0.1;
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+
+		network.advance(4);
+
+		// At least once: an answer half a second late is retransmitted for.
+		Assert.isTrue(network.relay.count("permitted") >= 1, "the relay never permitted the peer, so this proved nothing");
+		Assert.isTrue(network.relay.count("channel-bound") >= 1, "the relay never bound the channel, so this proved nothing");
+		Assert.isTrue(sendsOverAChannel(network, client), "a duplicated permission success cancelled the channel bind behind it");
+	}
+
+	/**
+		A relay that never answers is given up on after 39.5 seconds.
+
+		RFC 8489 section 6.2.1: seven transmissions, doubling from half a
+		second, then sixteen times the first timeout for the last one to be
+		answered. This waited another doubling instead and gave up at 63.5.
+	**/
+	public function testASilentRelayIsGivenUpOnAtThirtyNineAndAHalfSeconds():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.dropAll = true;
+
+		var client = network.client();
+		var failedAt:Float = -1;
+		client.allocated.then(_ -> {}, _ -> failedAt = network.now);
+		client.allocate(network.now);
+		network.run(() -> failedAt >= 0, 120);
+
+		Assert.equals(TurnClient.MAX_ATTEMPTS, network.sent.length, "the request was not sent seven times");
+		Assert.isTrue(failedAt >= 39.4 && failedAt <= 39.6, "gave up at " + failedAt + " s rather than at 39.5");
+	}
+
+	// ------------------------------------------------------------------
+	// Permissions
+	// ------------------------------------------------------------------
+
+	/**
+		A relay refusing one peer refuses that peer, and nothing else.
+
+		Any CreatePermission error but 401 and 438 closed the client, so one
+		address the relay would not forward to took every other peer down with
+		it. That is the ordinary case, not an edge: a hardened relay refuses
+		private and loopback addresses, and ICE asks for the peer's host
+		addresses first.
+	**/
+	public function testARefusedPermissionRefusesOnlyThatPeer():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.denyPeers = [PRIVATE_PEER];
+
+		var client = network.client();
+		var lost:Array<String> = [];
+		var refused:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.onPermissionRefused = (peer, code, reason) -> refused.push(peer + " " + code + " " + reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PRIVATE_PEER, network.now);
+		network.run(() -> network.relay.count("permission-403") > 0, 5);
+		network.advance(0.1);
+
+		Assert.equals(1, network.relay.count("permission-403"), "the relay never refused the peer, so this proved nothing");
+		Assert.isTrue(client.active, "one refused permission ended the whole allocation");
+		Assert.equals(0, lost.length, "one refused peer was reported as the allocation lost: " + lost);
+		Assert.equals(1, refused.length, "the refusal was not reported for the peer it was about");
+
+		if (refused.length > 0) {
+			Assert.equals(PRIVATE_PEER + " 403 Forbidden IP", refused[0]);
+		}
+
+		// Every other peer still gets through.
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("still relaying");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(1, network.toPeers.length, "the relay forwarded nothing for a peer it had permitted");
+
+		// And the refused one is asked about once, however often it is
+		// permitted and however long the allocation lasts.
+		client.permit(PRIVATE_PEER, network.now);
+		network.advance(TurnClient.PERMISSION_REFRESH + 10, 0.25);
+
+		Assert.equals(1, network.relay.count("permission-403"), "a peer the relay refused was asked about again");
+		Assert.isTrue(client.active);
+	}
+
+	// ------------------------------------------------------------------
+	// Names, nonces and queues
+	// ------------------------------------------------------------------
+
+	/**
+		A relay named by hostname is sent to by name once, and after that at
+		the address that answered.
+
+		Every datagram went to the name, which natively is looked up again
+		every minute and on Node for every datagram. Against a round-robin pool
+		each lookup can name another relay, one that knows neither this
+		allocation nor its nonce, so the requests bounced between relays that
+		refused each other's nonces and nothing was ever allocated.
+	**/
+	public function testARelayNamedByHostnameIsAskedWhereItAnswered():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.names.set(RELAY_NAME, network.relayAddress);
+
+		var client = network.client(RELAY_NAME);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(RELAY_NAME, network.sent[0].address, "the first request did not go to the name it was given");
+
+		var byName:Int = 0;
+
+		for (i in 1...network.sent.length) {
+			if (network.sent[i].address == RELAY_NAME) {
+				byName++;
+			}
+		}
+
+		Assert.equals(0, byName, byName + " requests after the relay answered were sent to its name, to be looked up again");
+		Assert.equals(network.relayAddress, client.serverAddress);
+	}
+
+	/**
+		A relay that calls every nonce stale is given up on, not asked forever.
+
+		A 438 is answered by asking again with the new nonce, as it should be,
+		but without a limit, so a relay that refused every nonce it handed
+		out was asked some nine thousand times a second, for good.
+	**/
+	public function testARelayThatCallsEveryNonceStaleIsGivenUpOn():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.always438 = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 10);
+
+		var asked:Int = network.relay.requestsOf("allocate");
+		Assert.notNull(failure, "a relay refusing every nonce was asked " + asked + " times and never given up on");
+		Assert.isTrue(asked <= TurnClient.MAX_STALE_NONCES + 2, "a relay refusing every nonce was asked " + asked + " times");
+	}
+
+	/**
+		Asking for a permission before every datagram does not starve the
+		refresh.
+
+		The auditor's measurement, in memory: thirty datagrams a second, each
+		permitted first, on a path whose round trip the relay answers slower
+		than that. Every call queued another CreatePermission, the refresh was
+		sent only when nothing else was in flight, which was never, and the
+		allocation expired at ten minutes with ten thousand requests queued.
+	**/
+	public function testPermittingBeforeEveryDatagramDoesNotStarveTheRefresh():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.latency = 0.035;
+
+		var client = network.client();
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		var payload = new ByteArray();
+
+		for (i in 0...64) {
+			payload.writeByte(i);
+		}
+
+		network.onTick = function():Void {
+			client.permit(PEER, network.now);
+			client.sendTo(payload, PEER, PEER_PORT);
+		};
+
+		network.run(() -> !client.active, 1800, 1 / 30);
+		network.onTick = function():Void {};
+
+		Assert.isTrue(client.active, "the allocation was lost: " + lost);
+		Assert.equals(0, lost.length);
+
+		var permissions:Int = network.relay.requestsOf("permission");
+		Assert.isTrue(permissions <= Std.int(1800 / TurnClient.PERMISSION_REFRESH) + 2,
+			"one peer's permission was asked for " + permissions + " times in half an hour");
+		Assert.isTrue(network.relay.requestsOf("refresh") >= 5, "the allocation was refreshed only " + network.relay.requestsOf("refresh") + " times");
+	}
+
+	/**
+		A refresh goes when it is due, however many requests are waiting.
+	**/
+	public function testARefreshDoesNotWaitBehindPermissions():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		var due:Float = network.now + TurnClient.DEFAULT_LIFETIME / 2;
+
+		// A slow relay, and a new peer every second: there is always a
+		// permission in flight and more waiting.
+		network.relay.delay = 3;
+		var next:Float = network.now;
+		var peers:Int = 0;
+
+		network.onTick = function():Void {
+			if (network.now >= next) {
+				next += 1;
+				peers++;
+				client.permit("198.51." + (100 + (peers >> 8)) + "." + (peers & 0xFF), network.now);
+			}
+		};
+
+		network.run(() -> network.sentOfType(StunMessage.REFRESH_REQUEST).length > 0, 400, 0.25);
+		network.onTick = function():Void {};
+
+		var refreshes = network.sentOfType(StunMessage.REFRESH_REQUEST);
+		Assert.isTrue(refreshes.length > 0, "the refresh was never sent while permissions were waiting");
+
+		if (refreshes.length > 0) {
+			Assert.isTrue(refreshes[0].at - due < 1.0, "the refresh went " + (refreshes[0].at - due) + " s after it was due");
+		}
+	}
+
+	/**
+		Requests waiting behind those in flight are bounded.
+
+		A caller asking for more than the relay answers grew the queue without
+		limit, by thousands a minute in the auditor's measurement.
+	**/
+	public function testTheRequestsWaitingAreBounded():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		// Nothing answers from here, so nothing leaves the queue.
+		network.relay.dropAll = true;
+
+		for (i in 0...500) {
+			client.permit("198.51." + (100 + (i >> 8)) + "." + (i & 0xFF), network.now);
+		}
+
+		var queued:Int = @:privateAccess client.__queued.length;
+		Assert.isTrue(queued <= TurnClient.MAX_QUEUED, queued + " requests were queued");
+	}
+
+	/**
+		A stale nonce on a channel rebind is retried, and the channel stays up.
+
+		A 438 on a ChannelBind was neither retried nor used to take the new
+		nonce, and the channel stayed marked bound, while the relay, whose
+		binding lapsed at ten minutes, dropped everything sent on it. With a
+		600 second nonce, 58 of 300 simulated two-hour sessions lost their
+		channel that way, the worst for six minutes, with nothing reported.
+	**/
+	public function testAStaleNonceOnAChannelRebindIsRetried():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+		network.advance(10);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+
+		// A nonce lasts 485 s: still good for the permission's renewals at 240
+		// and 480 and the refresh at 300, and stale by the channel's rebind at
+		// 490, the first request to meet it.
+		network.relay.staleNonceAfter = 485;
+		network.advance(700 - network.now, 0.25);
+
+		Assert.isTrue(network.relay.count("refused-438") > 0, "no nonce went stale, so this proved nothing");
+		Assert.isTrue(network.relay.count("channel-bound") >= 2, "the rebind refused for its nonce was never retried");
+
+		var before:Int = network.toPeers.length;
+		var payload = new ByteArray();
+		payload.writeUTFBytes("input frame");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(0, network.relay.count("channeldata-dropped"), "the client went on sending on a channel the relay had let lapse");
+		Assert.equals(before + 1, network.toPeers.length, "the datagram never reached the peer");
+	}
+
+	/**
+		A rebind the relay refuses leaves the channel only until its binding
+		lapses, and the traffic goes back to indications then.
+	**/
+	public function testARebindTheRelayRefusesFallsBackToIndications():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+
+		// Every bind from here is refused, the rebind at 480 included; the
+		// binding the relay has lapses at 600.
+		network.relay.refuseChannels = true;
+		network.advance(700 - network.now, 0.25);
+
+		Assert.equals(1, network.relay.count("bind-400"), "the rebind was never refused, so this proved nothing");
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("input frame");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(0, network.relay.count("channeldata-dropped"), "the client went on sending on a channel the relay had let lapse");
+		Assert.isTrue(network.relay.count("send-relayed") > 0, "the traffic did not go back to indications");
+	}
+
+	// ------------------------------------------------------------------
+	// Redirections, reasons and credentials
+	// ------------------------------------------------------------------
+
+	/**
+		A relay that answers 300 Try Alternate is followed to the one it names.
+
+		It was a refusal like any other, so a deployment that balanced load by
+		redirecting turned every client away from all of its relays.
+	**/
+	public function testATryAlternateIsFollowed():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var second = network.addRelay(ALTERNATE, 3478);
+		network.relay.allocateError = {code: 300, reason: "Try Alternate", alternate: {address: ALTERNATE, port: 3478}};
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 10);
+
+		Assert.isNull(failure, "a redirection was taken for a refusal: " + failure);
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(ALTERNATE, client.serverAddress, "requests did not move to the relay named");
+		Assert.equals(1, second.allocations, "the relay redirected to holds no allocation");
+		Assert.equals(0, network.relay.allocations);
+	}
+
+	/**
+		A redirection back to a relay already asked ends the attempt, and says
+		where it pointed; two relays redirecting to each other would otherwise
+		hold a client between them for good (RFC 8489 section 10).
+	**/
+	public function testARedirectionBackIsNotFollowed():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var second = network.addRelay(ALTERNATE, 3478);
+		network.relay.allocateError = {code: 300, reason: "Try Alternate", alternate: {address: ALTERNATE, port: 3478}};
+		second.allocateError = {code: 300, reason: "Try Alternate", alternate: {address: network.relayAddress, port: 3478}};
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 10);
+
+		Assert.notNull(failure, "two relays redirecting to each other were followed for ever");
+
+		var cause:TurnError = Std.downcast(client.allocated.cause, TurnError);
+		Require.notNull(cause, "the failure carried no TurnError");
+		Assert.equals(300, cause.code);
+		Require.notNull(cause.alternate, "the failure did not say where the relay pointed");
+		Assert.equals(network.relayAddress, cause.alternate.address);
+	}
+
+	/**
+		A failure carries the relay's code and reason as well as a sentence.
+
+		Only the sentence was there, so deciding what to do next, another
+		relay for a 486 or a 508, new credentials for a 401, meant matching on
+		its wording.
+	**/
+	public function testAFailureCarriesTheRelaysCode():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.allocateError = {code: 486, reason: "Allocation Quota Reached"};
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 10);
+
+		Assert.notNull(failure, "a refused allocation neither failed nor succeeded");
+
+		var cause:TurnError = Std.downcast(client.allocated.cause, TurnError);
+		Require.notNull(cause, "the failure carried no TurnError");
+		Assert.equals(486, cause.code);
+		Assert.equals("Allocation Quota Reached", cause.reason);
+		Assert.isTrue(client.failure == cause, "failure and the future's cause should be the same");
+	}
+
+	/**
+		Credentials renewed while an allocation is held are used from then on.
+
+		A credential that expires, the TURN REST convention's hour-long
+		password, or one that is rotated had no way in: every refresh was
+		signed with the credentials the client was made with until the relay
+		refused them and the allocation was lost.
+	**/
+	public function testRenewedCredentialsAreUsedFromThenOn():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		// The relay's operator rotates the password, and the application is
+		// handed the new one before the refresh at five minutes.
+		network.relay.users.set("user", "rotated");
+		client.setCredentials("user", "rotated");
+		network.advance(TurnClient.DEFAULT_LIFETIME / 2 + 5, 0.25);
+
+		Assert.isTrue(client.active, "the allocation was lost: " + lost);
+		Assert.isTrue(network.relay.count("refreshed") >= 1, "the refresh never succeeded");
+
+		// And again, with the new password arriving only after a refresh signed
+		// with the old one was refused: RFC 8489 lets a client retry a 401 when
+		// its credentials changed, which is exactly this.
+		network.relay.users.set("user", "rotated-again");
+		network.relay.delay = 0.4;
+		network.run(() -> network.sentOfType(StunMessage.REFRESH_REQUEST).length >= 2, TurnClient.DEFAULT_LIFETIME, 0.05);
+		Assert.equals(2, network.sentOfType(StunMessage.REFRESH_REQUEST).length, "the second refresh was never sent");
+		client.setCredentials("user", "rotated-again");
+		network.advance(3, 0.05);
+
+		Assert.isTrue(client.active, "a 401 to a request signed with the old credentials was taken as final: " + lost);
+		Assert.isTrue(network.relay.count("refreshed") >= 2, "the second refresh never succeeded");
+	}
+
+	// ------------------------------------------------------------------
+	// IPv6, RFC 8489's credentials, and streams
+	// ------------------------------------------------------------------
+
+	/**
+		An IPv6 relayed address is an allocation, not "nothing".
+
+		The decoder read only the IPv4 family, so a relay granting an IPv6
+		address, XORed with the transaction as RFC 8489 has it, was
+		reported as having allocated nothing, and the allocation it held was
+		never used.
+	**/
+	public function testAnIPv6RelayedAddressIsTaken():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.relayIPv6Address = "2001:db8::10";
+		network.relay.ipv6Relayed = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isNull(failure, failure);
+		var relayed = Require.notNull(client.relayedAddress, "an IPv6 relayed address was read as none");
+		Assert.equals("2001:db8::10", relayed.address);
+	}
+
+	/**
+		An IPv6 allocation is asked for, and relays to IPv6 peers: permitted,
+		sent to however their address was spelled, and heard from.
+	**/
+	public function testAnIPv6AllocationRelaysToIPv6Peers():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.relayIPv6Address = "2001:db8::10";
+
+		var client = network.client();
+		client.requestIPv6 = true;
+		var heard:Array<String> = [];
+		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
+			payload.position = 0;
+			heard.push(address + " " + port + " " + payload.readUTFBytes(payload.length));
+		};
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		Require.notNull(client.relayedAddress);
+		Assert.equals("2001:db8::10", client.relayedAddress.address);
+
+		client.permit("2001:DB8:0:0::7", network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("to a v6 peer");
+		payload.position = 0;
+		client.sendTo(payload, "2001:db8::7", 5000);
+		network.advance(0.1);
+
+		Assert.equals(1, network.toPeers.length, "nothing was relayed to the IPv6 peer");
+
+		if (network.toPeers.length > 0) {
+			Assert.equals("2001:db8::7", network.toPeers[0].address);
+			Assert.equals(5000, network.toPeers[0].port);
+		}
+
+		network.peerSends(network.relay.allAllocations()[0].relayPort, "from a v6 peer", "2001:db8::7", 5000);
+		network.advance(0.1);
+		Assert.equals("2001:db8::7 5000 from a v6 peer", heard[0]);
+
+		// And its peers are its own family.
+		Assert.raises(() -> client.permit(PEER, network.now), crossbyte.errors.ArgumentError);
+	}
+
+	/** A relay that has no IPv6 address to give says so, with a code to decide on. **/
+	public function testARelayWithoutIPv6RefusesWithItsCode():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.requestIPv6 = true;
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 5);
+
+		var cause:TurnError = Require.notNull(Std.downcast(client.allocated.cause, TurnError));
+		Assert.equals(440, cause.code);
+	}
+
+	/**
+		A relay offering RFC 8489's password algorithms is answered with the
+		SHA-256 key it offered first and MESSAGE-INTEGRITY-SHA256 alone.
+
+		Only MD5 and SHA-1 were known, so a relay that required what it offered
+		refused every request.
+	**/
+	public function testOfferedPasswordAlgorithmsAreUsed():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.passwordAlgorithms = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isNull(failure, failure);
+		Assert.isTrue(client.active, "a relay offering SHA-256 would not allocate");
+
+		var requests = network.sentOfType(StunMessage.ALLOCATE_REQUEST);
+		var signed = Require.notNull(StunMessage.decode(requests[requests.length - 1].bytes));
+		Assert.notNull(signed.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY_SHA256), "the request was not signed with SHA-256");
+		Assert.isNull(signed.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY), "the request carried SHA-1 integrity as well");
+		Assert.equals(StunMessage.PASSWORD_ALGORITHM_SHA256, signed.attribute(StunMessage.ATTR_PASSWORD_ALGORITHM)[1]);
+
+		// The first the relay lists is the one taken, and the integrity is
+		// SHA-256 whichever it is.
+		var other = new TurnNetwork();
+		other.relay.passwordAlgorithms = true;
+		other.relay.offeredAlgorithms = [StunMessage.PASSWORD_ALGORITHM_MD5, StunMessage.PASSWORD_ALGORITHM_SHA256];
+		var md5 = other.client();
+		md5.allocated.then(_ -> {}, _ -> {});
+		md5.allocate(other.now);
+		other.run(() -> md5.active, 5);
+
+		Assert.isTrue(md5.active, "a relay offering MD5 first would not allocate");
+	}
+
+	/**
+		A nonce offering password algorithms on an answer that lists none is a
+		downgrade, and is not answered (RFC 8489 section 9.2.5). The client
+		retried with MD5, which is what whoever stripped the list wanted.
+	**/
+	public function testAStrippedAlgorithmListIsNotAnswered():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.passwordAlgorithms = true;
+		network.relay.stripPasswordAlgorithms = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 5);
+
+		Assert.notNull(failure, "a stripped list neither failed nor succeeded");
+		Assert.equals(1, network.relay.requestsOf("allocate"), "a request was signed for a relay whose list of algorithms had been stripped");
+	}
+
+	/**
+		A relay offering username anonymity is sent USERHASH and never the name.
+	**/
+	public function testUsernameAnonymityIsHonoured():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.usernameAnonymity = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isNull(failure, failure);
+		Assert.isTrue(client.active, "a relay offering username anonymity would not allocate");
+
+		for (sent in network.sent) {
+			var message = StunMessage.decode(sent.bytes);
+
+			if (message != null) {
+				Assert.isNull(message.attribute(StunMessage.ATTR_USERNAME), "the username crossed the network in the clear");
+			}
+		}
+	}
+
+	/**
+		Over a stream, messages are read however the bytes arrive, split
+		across reads, several run together, ChannelData is padded both ways,
+		and nothing is retransmitted.
+
+		The client framed whole datagrams only, so a relay reached over TCP,
+		the one way out of a network that allows nothing else, could not be
+		used at all.
+	**/
+	public function testAStreamIsReadHoweverItArrives():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.streamChunk = 7;
+		network.relay.padChannelData = true;
+		network.relay.delay = 1.0;
+
+		var client = network.client(null, "user", "secret", "192.0.2.10", 0, null, TCP);
+		client.useChannels = true;
+		var heard:Array<String> = [];
+		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
+			payload.position = 0;
+			heard.push(payload.readUTFBytes(payload.length));
+		};
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 10);
+
+		Assert.isTrue(client.active, "the allocation never completed over a stream");
+		Assert.equals(2, network.relay.requestsOf("allocate"), "a request over a stream was retransmitted");
+
+		network.relay.delay = 0;
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+		network.advance(0.1);
+
+		// Three lengths, so the padding is one, two and three bytes.
+		var relayPort:Int = network.relay.allAllocations()[0].relayPort;
+		for (text in ["a", "ab", "abc", "a longer one"]) {
+			network.peerSends(relayPort, text, PEER, PEER_PORT);
+		}
+
+		network.advance(0.1);
+		Assert.equals("a,ab,abc,a longer one", heard.join(","), "what arrived over the stream was not read message by message");
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("odd");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(1, network.relay.count("channeldata-relayed"), "padded ChannelData from the client was not relayed");
+	}
+
+	/** A stream that stops making sense ends the allocation, rather than being guessed at. **/
+	public function testAStreamOfNonsenseEndsTheAllocation():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client(null, "user", "secret", "192.0.2.10", 0, null, TCP);
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		var nonsense = new ByteArray();
+		for (_ in 0...8) {
+			nonsense.writeByte(0xFF);
+		}
+		nonsense.position = 0;
+		client.receiveStream(nonsense, network.now);
+
+		Assert.isFalse(client.active);
+		Assert.equals(1, lost.length);
+
+		// And a connection that closes is a loss too.
+		var other = network.client(null, "user", "secret", "192.0.2.11", 0, null, TCP);
+		var otherLost:Int = 0;
+		other.onLost = _ -> otherLost++;
+		other.allocated.then(_ -> {}, _ -> {});
+		other.allocate(network.now);
+		network.run(() -> other.active, 5);
+		other.streamClosed("reset by peer");
+
+		Assert.isFalse(other.active);
+		Assert.equals(1, otherLost);
+	}
+
+	// ------------------------------------------------------------------
+	// Closing
+	// ------------------------------------------------------------------
+
+	/**
+		Closing a client frees its allocation on the relay.
+
+		No Refresh with a lifetime of zero was sent, so the relay held the
+		allocation and its port for as long as it had been granted, up to an
+		hour on coturn. The next client on the same socket was refused with
+		437, since the 5-tuple still had one, and an application that
+		reconnected ran into the relay's quota.
+	**/
+	public function testClosingFreesTheAllocation():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+		Assert.equals(1, network.relay.allocations);
+
+		client.close();
+		network.advance(0.1);
+
+		Assert.equals(1, network.relay.count("deallocated"), "closing left the allocation on the relay");
+		Assert.equals(0, network.relay.allocations);
+		Assert.equals(0, network.relay.refreshLifetimes[network.relay.refreshLifetimes.length - 1]);
+
+		// So the socket can be used again.
+		var again = network.client(null, "user", "secret", "192.0.2.10", network.portOf(client));
+		var failure:String = null;
+		again.allocated.then(_ -> {}, error -> failure = error);
+		again.allocate(network.now);
+		network.run(() -> again.active || failure != null, 5);
+
+		Assert.isTrue(again.active, "a new client on the same socket could not allocate: " + failure);
+	}
+
+	/**
+		Closing mid-allocation frees whatever the relay grants the request
+		already sent, which would otherwise be held until it expired.
+	**/
+	public function testClosingDuringTheAllocationFreesWhatWasGranted():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.3;
+
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+
+		// The signed Allocate is out, and not yet answered.
+		network.run(() -> network.sentOfType(StunMessage.ALLOCATE_REQUEST).length >= 2, 5);
+		network.advance(0.05);
+		client.close();
+		network.advance(2);
+
+		Assert.equals(0, network.relay.allocations, "an allocation granted to a request sent before close() was left on the relay");
+	}
+
+	// ------------------------------------------------------------------
+	// Who is believed
+	// ------------------------------------------------------------------
+
+	/**
+		Relayed data comes from the relay, and nothing else is taken for it.
+
+		Any sender's Data indication, and ChannelData on a bound channel's
+		number, was delivered as the peer: anyone who could reach the socket
+		could put words in the peer's mouth.
+	**/
+	public function testRelayedDataFromAnyoneButTheRelayIsIgnored():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		var heard:Array<String> = [];
+		client.onData = function(payload:ByteArray, address:String, port:Int):Void {
+			payload.position = 0;
+			heard.push(payload.readUTFBytes(payload.length));
+		};
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+		network.advance(0.1);
+
+		// From a stranger: a Data indication naming the permitted peer, and
+		// ChannelData on the number the relay bound.
+		network.inject(client, dataIndication(PEER, PEER_PORT, "from a stranger, as the peer"), "192.0.2.99", network.relayPort);
+		network.inject(client, channelData(TurnClient.FIRST_CHANNEL, "from a stranger, on the channel"), "192.0.2.99", network.relayPort);
+
+		// And from the relay's address but another port, which is not the relay either.
+		network.inject(client, dataIndication(PEER, PEER_PORT, "from the relay's host"), network.relayAddress, 9999);
+
+		Assert.equals(0, heard.length, "relayed data was taken from somebody who is not the relay: " + heard);
+
+		// The relay itself is still heard.
+		network.peerSends(network.relay.allAllocations()[0].relayPort, "from the peer", PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(1, heard.length, "the relay's own forwarding was not delivered");
+	}
+
+	/**
+		A Data indication naming a peer this client never let through is not
+		delivered, whoever it seems to come from. A relay forwards nothing from
+		a peer without a permission, so one that claims to have was not
+		forwarded by it.
+	**/
+	public function testDataFromAPeerWithoutAPermissionIsDropped():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		var heard:Int = 0;
+		client.onData = (_, _, _) -> heard++;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		network.inject(client, dataIndication("198.51.100.77", 5000, "never permitted"), network.relayAddress, network.relayPort);
+		Assert.equals(0, heard, "data from a peer that was never permitted was delivered");
+
+		network.inject(client, dataIndication(PEER, PEER_PORT, "permitted"), network.relayAddress, network.relayPort);
+		Assert.equals(1, heard, "data from the permitted peer was not delivered");
+	}
+
+	/**
+		An answer that fails its integrity check is not believed.
+
+		A signed request's answer was taken without its MESSAGE-INTEGRITY being
+		looked at, so anyone who saw the request go by could answer it, here
+		with a relayed address of the forger's own, which peers would then be
+		told to send to. RFC 8489 has such an answer dropped as though it never
+		came, and the request goes on until a real one does.
+	**/
+	public function testAnAnswerThatFailsItsIntegrityCheckIsNotBelieved():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.3;
+
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> network.sentOfType(StunMessage.ALLOCATE_REQUEST).length >= 2, 5);
+
+		var requests = network.sentOfType(StunMessage.ALLOCATE_REQUEST);
+		var signed = StunMessage.decode(requests[requests.length - 1].bytes);
+		Require.notNull(signed);
+
+		// The right transaction, and a key that is not the credential's.
+		var forged = new StunMessage(StunMessage.ALLOCATE_SUCCESS, signed.transactionId, [
+			StunMessage.xorRelayed("192.0.2.66", 9999),
+			StunMessage.lifetime(600)
+		]).encodeSignedWithKey(StunMessage.longTermKey("user", network.relay.realm, "a guess"), false);
+		network.inject(client, forged, network.relayAddress, network.relayPort);
+
+		Assert.isFalse(client.active, "an answer signed with the wrong key granted an allocation");
+
+		network.run(() -> client.active, 5);
+
+		Assert.isTrue(client.active, "the relay's own answer was not taken after the forged one");
+
+		if (client.relayedAddress != null) {
+			Assert.notEquals("192.0.2.66", client.relayedAddress.address, "the forged relayed address was believed");
+		}
+	}
+
+	/**
+		A relay whose every answer fails its integrity check is reported as
+		that, not as silence and not as a success.
+	**/
+	public function testARelayWhoseAnswersNeverVerifyFailsSayingSo():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.badIntegrity = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 60, 0.25);
+
+		Assert.isFalse(client.active, "answers with a wrong MESSAGE-INTEGRITY granted an allocation");
+		Assert.notNull(failure, "the allocation neither succeeded nor failed");
+
+		if (failure != null) {
+			Assert.isTrue(failure.indexOf("integrity") >= 0, "the failure should say the answers did not verify: " + failure);
+		}
+	}
+
+	/**
+		A success carrying an attribute the relay requires understood, and this
+		client does not understand, is not an answer to act on (RFC 8489
+		section 7.3.3). It was taken as one.
+	**/
+	public function testASuccessCarryingARequiredAttributeNobodyUnderstandsIsRefused():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.unknownAttribute = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 5);
+
+		Assert.isFalse(client.active, "an answer the client could not fully read granted an allocation");
+		Assert.notNull(failure);
+
+		if (failure != null) {
+			Assert.isTrue(failure.indexOf("0x7FAA") >= 0, "the failure should name the attribute: " + failure);
+		}
+	}
+
+	// ------------------------------------------------------------------
+
+	private static inline var RELAY_NAME:String = "relay.example.test";
+
+	/** A second relay, for redirections. **/
+	private static inline var ALTERNATE:String = "203.0.113.20";
+
+	private static inline var PEER:String = "198.51.100.4";
+	private static inline var PEER_PORT:Int = 40000;
+
+	/** A private address, of the kind a hardened relay refuses to forward to. **/
+	private static inline var PRIVATE_PEER:String = "10.0.0.5";
+
+	/** A transaction id no request of the client's has. **/
+	private static function transaction(seed:Int):ByteArray {
+		var bytes = new ByteArray();
+
+		for (i in 0...12) {
+			bytes.writeByte((seed * 53 + i * 17 + 5) & 0xFF);
+		}
+
+		bytes.position = 0;
+		return bytes;
+	}
+
+	/** A Data indication, as a relay forwards a peer's datagram. **/
+	private static function dataIndication(peer:String, port:Int, text:String):ByteArray {
+		var payload = new ByteArray();
+		payload.writeUTFBytes(text);
+		payload.position = 0;
+
+		return new StunMessage(StunMessage.DATA_INDICATION, transaction(9), [
+			StunMessage.xorPeerAddress(peer, port),
+			StunMessage.data(payload)
+		]).encode();
+	}
+
+	/** A ChannelData message on `number`. **/
+	private static function channelData(number:Int, text:String):ByteArray {
+		var payload = new ByteArray();
+		payload.writeUTFBytes(text);
+
+		var framed = new ByteArray();
+		framed.writeByte((number >> 8) & 0xFF);
+		framed.writeByte(number & 0xFF);
+		framed.writeByte((payload.length >> 8) & 0xFF);
+		framed.writeByte(payload.length & 0xFF);
+		framed.writeBytes(payload, 0, payload.length);
+		framed.position = 0;
+		return framed;
+	}
+
+	/** Whether the client's next datagram to the peer goes over a channel rather than as a Send indication. **/
+	private static function sendsOverAChannel(network:TurnNetwork, client:TurnClient):Bool {
+		var payload = new ByteArray();
+		payload.writeUTFBytes("game state");
+		payload.position = 0;
+
+		var before:Int = network.sent.length;
+		client.sendTo(payload, PEER, PEER_PORT);
+
+		if (network.sent.length == before) {
+			return false;
+		}
+
+		var first:Int = network.sent[network.sent.length - 1].bytes[0];
+		return first >= 0x40 && first <= 0x7F;
+	}
 }
 
 /**
@@ -512,7 +1715,7 @@ private class Relay {
 
 		var reply = new StunMessage(StunMessage.REFRESH_SUCCESS, held.transactionId, [StunMessage.lifetime(600)]);
 		held = null;
-		client.receive(reply.encode(), "203.0.113.10", 3478, now);
+		client.receive(sign(reply), "203.0.113.10", 3478, now);
 	}
 
 	/** Hands the client a datagram as though a peer had sent it. **/
