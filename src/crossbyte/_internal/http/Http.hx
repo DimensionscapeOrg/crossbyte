@@ -199,6 +199,16 @@ class Http {
 	public function load():Void {
 		__redirect = false;
 
+		// A method is a token or it is not one, whichever version carries it.
+		// URLRequest.method takes any string, and HTTP/1.1 wrote it first on
+		// the request line as given: a "method" holding a line break and a
+		// request of its own put that request on the connection.
+		if (!HttpSyntax.isToken(__method)) {
+			__settled = false;
+			__fail("Refused the request: its method is not an HTTP token");
+			return;
+		}
+
 		if (!__usesBuiltInBackend()) {
 			__loadWithBackend();
 			return;
@@ -1265,10 +1275,16 @@ class Http {
 			var queryString:String = (combined.length > 0) ? ("?" + combined) : "";
 
 			var path:String = (__url.path != null && __url.path.length > 0) ? __url.path : "/";
-			__socket.output.writeString('${__method} ${path}${queryString} $__version${CRLF}');
-			__socket.output.writeString('User-Agent: ${__userAgent}${CRLF}');
+			// Encoded, and the header values below sanitised, for the reason
+			// the caller's own header lines are: each was written as given, so
+			// a space ended the target early, and a CR or LF in any of them,
+			// the URL's path, the user agent, the content type, ended its
+			// line and began one of the value's choosing.
+			var target:String = HttpSyntax.encodeRequestTarget(path + queryString);
+			__socket.output.writeString('${__method} ${target} $__version${CRLF}');
+			__socket.output.writeString('User-Agent: ${HttpSyntax.sanitizeHeaderValue(__userAgent)}${CRLF}');
 			var hostHeader:String = (__url.port != 80 && __url.port != 443) ? '${__url.host}:${__url.port}' : __url.host;
-			__socket.output.writeString('Host: ${hostHeader}${CRLF}');
+			__socket.output.writeString('Host: ${HttpSyntax.sanitizeHeaderValue(hostHeader)}${CRLF}');
 			if (__version == HttpVersion.HTTP_1_1 && __pooling()) {
 				// Kept for the next request to this origin if the response
 				// allows it: see HttpConnectionPool.
@@ -1332,8 +1348,10 @@ class Http {
 			}
 
 			if (body != null) {
-				if (!hasContentType) {
-					__socket.output.writeString('Content-Type: ${__contentType}${CRLF}');
+				// Bytes handed over with no type went out as "Content-Type:
+				// null"; a body with no Content-Type at all is the honest form.
+				if (!hasContentType && __contentType != null) {
+					__socket.output.writeString('Content-Type: ${HttpSyntax.sanitizeHeaderValue(__contentType)}${CRLF}');
 				}
 				if (!hasContentLength) {
 					__socket.output.writeString('$HEADER_CONTENT_LENGTH: ${body.length}${CRLF}');

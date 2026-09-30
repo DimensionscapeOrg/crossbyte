@@ -86,6 +86,20 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 	}
 
 	@:private @:noCompletion private function parseUri(uri:String):Void {
+		// No control character anywhere. The client writes the path, query
+		// and host into its request as they are, so a CR or LF kept here ended
+		// the request line and began a header of the URL's choosing:
+		// "http://host/a\r\nX-Injected: evil" put that header on the wire, and
+		// a longer one could smuggle a second request. WHATWG's parser strips
+		// tabs and line breaks and encodes the rest; this refuses them, which
+		// says so rather than requesting something the caller did not write.
+		for (i in 0...uri.length) {
+			var code:Int = StringTools.fastCodeAt(uri, i);
+			if (code < 0x20 || code == 0x7F) {
+				throw "Uri must be well-formed";
+			}
+		}
+
 		var schemeEnd:Int = uri.indexOf("://");
 		if (schemeEnd <= 0) {
 			throw "Uri must be well-formed";
@@ -109,7 +123,9 @@ abstract URL(URLAccess) from URLAccess to URLAccess {
 		}
 
 		var authority:String = rest.substr(0, authorityEnd);
-		if (authority.length == 0 || authority.indexOf("@") >= 0) {
+		// A space has no place in a host or a port. One in the path or the
+		// query is the client's to encode on the way out, as a browser does.
+		if (authority.length == 0 || authority.indexOf("@") >= 0 || authority.indexOf(" ") >= 0) {
 			throw "Uri must be well-formed";
 		}
 
