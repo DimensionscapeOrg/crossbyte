@@ -354,10 +354,14 @@ class Http {
 		return (status == 301 || status == 302 || status == 303) && method != "HEAD" ? "GET" : method;
 	}
 
-	/** `scheme://host:port`, which is what two URLs share when they share an origin. */
+	/**
+	 * `scheme://host:port`, which is what two URLs share when they share an
+	 * origin. An IPv6 host is bracketed, as it is written in a URL, so the
+	 * port cannot be read as part of it.
+	 */
 	@:allow(crossbyte.http.HTTP2Backend)
 	private static function __originOf(url:URL):String {
-		return url.scheme + "://" + url.host.toLowerCase() + ":" + url.port;
+		return url.scheme + "://" + HttpSyntax.authority(url.host.toLowerCase(), url.port, -1);
 	}
 
 	/**
@@ -1283,7 +1287,7 @@ class Http {
 			var target:String = HttpSyntax.encodeRequestTarget(path + queryString);
 			__socket.output.writeString('${__method} ${target} $__version${CRLF}');
 			__socket.output.writeString('User-Agent: ${HttpSyntax.sanitizeHeaderValue(__userAgent)}${CRLF}');
-			var hostHeader:String = (__url.port != 80 && __url.port != 443) ? '${__url.host}:${__url.port}' : __url.host;
+			var hostHeader:String = HttpSyntax.authority(__url.host, __url.port, __url.ssl ? 443 : 80);
 			__socket.output.writeString('Host: ${HttpSyntax.sanitizeHeaderValue(hostHeader)}${CRLF}');
 			if (__version == HttpVersion.HTTP_1_1 && __pooling()) {
 				// Kept for the next request to this origin if the response
@@ -1502,9 +1506,11 @@ class Http {
 		}
 
 		var scheme:String = base.scheme;
-		var host:String = base.host;
-		var port:Int = base.port;
-		var portPart:String = (port != 80 && port != 443) ? (":" + port) : "";
+		// Bracketed for an IPv6 host, and the port kept unless it is the
+		// scheme's own: the host went in bare, so a relative redirect from
+		// [::1]:8080 named http://::1:8080/, which is not a URL, and one from
+		// http://host:443/ lost its port.
+		var authority:String = HttpSyntax.authority(base.host, base.port, base.ssl ? 443 : 80);
 
 		if (StringTools.startsWith(loc, "//")) {
 			return scheme + ":" + loc;
@@ -1512,23 +1518,23 @@ class Http {
 
 		var basePath:String = (base.path != null && base.path.length > 0) ? base.path : "/";
 		if (StringTools.startsWith(loc, "?")) {
-			return scheme + "://" + host + portPart + __normalizeReferencePath(basePath + loc);
+			return scheme + "://" + authority + __normalizeReferencePath(basePath + loc);
 		}
 
 		if (StringTools.startsWith(loc, "#")) {
 			var baseQuery:String = (base.query != null && base.query.length > 0) ? ("?" + base.query) : "";
-			return scheme + "://" + host + portPart + __normalizeReferencePath(basePath + baseQuery + loc);
+			return scheme + "://" + authority + __normalizeReferencePath(basePath + baseQuery + loc);
 		}
 
 		if (loc.charAt(0) == "/") {
-			return scheme + "://" + host + portPart + __normalizeReferencePath(loc);
+			return scheme + "://" + authority + __normalizeReferencePath(loc);
 		}
 
 		var slash:Int = basePath.lastIndexOf("/");
 		var dir:String = (slash >= 0) ? basePath.substr(0, slash + 1) : "/";
 		var joined:String = dir + loc;
 
-		return scheme + "://" + host + portPart + __normalizeReferencePath(joined);
+		return scheme + "://" + authority + __normalizeReferencePath(joined);
 	}
 
 	private static function __normalizeReferencePath(pathWithQuery:String):String {
