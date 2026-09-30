@@ -1220,6 +1220,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A TURN relay refusing one peer refuses that peer, not the whole
+  allocation. Any CreatePermission error but 401 and 438 closed the
+  `TurnClient`, and ICE pairs a relayed candidate with every one of the
+  peer's candidates, private host addresses first -- which a hardened relay
+  (coturn's `denied-peer-ip`, loopback by default) answers with 403. So the
+  relay was gone before the relayed pair that would have worked was tried,
+  and neither peer connected. A refused peer is now reported through
+  `TurnClient.onPermissionRefused` and not asked about again, the allocation
+  carries on, and `PeerConnection` gives up on the pairs the relay refused
+  through the new `IceAgent.refusePairs` instead of checking into them for
+  half a minute. A 437, the relay saying it holds no such allocation, still
+  ends it.
 - A TURN allocation survives a relay whose first answer is slow. The signed
   retry after the relay's 401 reused the unsigned request's transaction, so
   once that request had been sent twice -- its answer took over half a
