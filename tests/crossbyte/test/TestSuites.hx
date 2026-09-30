@@ -293,6 +293,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
+		// Unguarded here for the interpreter above all, where none of the
+		// server suite runs and every upgrade used to throw.
+		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeTest());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
 		runner.addCase(new crossbyte.net.RUDPHardeningTest());
 		// Real sockets whose frames go through memory, so reordering, loss and

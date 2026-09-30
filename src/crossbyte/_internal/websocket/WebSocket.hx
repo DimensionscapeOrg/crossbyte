@@ -295,10 +295,15 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		__tickConnectListener = __onTickConnect;
 		__tickSSLHandshakeListener = __onTickSSLHandshake;
 		#end
-		__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 
 		if (__isClient == null) {
 			__isClient = true;
+			// A client's alone: a server answers the key it is sent, and needs
+			// no randomness of its own. This was drawn before the question was
+			// asked, so every session a server accepted drew one too, and
+			// SecureRandom refuses on eval, hl and neko, so there every
+			// upgrade threw in the accept tick and the peer was reset.
+			__key = Base64.encode(SecureRandom.getSecureRandomBytes(16));
 			__verifyCert = verifyCert;
 			__certAuthority = certAuthority;
 			this.url = url;
