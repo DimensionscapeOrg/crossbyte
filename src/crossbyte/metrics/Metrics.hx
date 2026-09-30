@@ -1,7 +1,7 @@
 package crossbyte.metrics;
 
 import crossbyte.errors.ArgumentError;
-#if (cpp || neko || hl || java || jvm)
+#if target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -68,7 +68,7 @@ class Metrics {
 	@:noCompletion private var __histograms:Map<String, Histogram>;
 	@:noCompletion private var __order:Array<String>;
 
-	#if (cpp || neko || hl || java || jvm)
+	#if target.threaded
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -78,7 +78,7 @@ class Metrics {
 		__histograms = new Map();
 		__order = [];
 
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock = new Mutex();
 		#end
 	}
@@ -385,13 +385,13 @@ class Metrics {
 	}
 
 	@:noCompletion private inline function __acquireLock():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.acquire();
 		#end
 	}
 
 	@:noCompletion private inline function __releaseLock():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.release();
 		#end
 	}

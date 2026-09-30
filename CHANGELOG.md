@@ -1292,6 +1292,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Metrics, `Future`, `ConnectionPool` and `ProcessLifecycle` take their locks
+  on eval too. Their locks were gated on neko, hl and the jvm by name, which
+  left out eval, threaded since workers became real threads there, so a
+  counter updated from several threads could lose a whole thread's increments
+  (a suite run counted 150,000 of 200,000), and a future completed on a worker
+  while the runtime was registering its handler could lose the handler. They
+  gate on `target.threaded` now; hxcpp keeps its lock-free paths.
 - The whole suite builds and runs on hl and neko, and CI does both
   (`ci/hl-tests.hxml`, `ci/neko-tests.hxml`, `.github/workflows/hl-neko.yml`):
   neither target had been built anywhere, which is how neither compiled for
