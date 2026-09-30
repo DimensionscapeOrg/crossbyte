@@ -119,6 +119,60 @@ class ReliableDatagramRelayTest extends utest.Test {
 	}
 
 	/**
+		The same with one server reaching the relay over TCP, as one behind a
+		network that lets nothing else out would: what the relay relays is UDP
+		either way, and the session does not know the difference.
+	**/
+	public function testOneSideReachesTheRelayOverTcp():Void {
+		if (unsupported()) return;
+
+		var relay = new FakeTurnRelaySocket();
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+
+		try {
+			relay.start();
+			relay.startTcp();
+			alice.bind(0, "127.0.0.2");
+			alice.listen();
+			bob.bind(0, "127.0.0.3");
+			bob.listen();
+
+			var granted:Int = 0;
+			alice.allocateRelay("127.0.0.1", relay.tcpPort, "user", "secret", false, TCP).then(_ -> granted++, _ -> {});
+			bob.allocateRelay("127.0.0.1", relay.port, "user", "secret").then(_ -> granted++, _ -> {});
+			pumpUntil(() -> granted == 2, 8.0);
+
+			if (granted != 2) {
+				Assert.fail("the relay never lent both addresses");
+				__closeAll(relay, [alice, bob]);
+				return;
+			}
+
+			bob.permitRelayedPeer(alice.relayedCandidate.address);
+
+			var accepted:ReliableDatagramSocket = null;
+			var heard:String = null;
+			bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
+				accepted = e.socket;
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, d -> heard = textOf(d.data));
+			});
+
+			var session = alice.connectRelayed(bob.relayedCandidate.address, bob.relayedCandidate.port);
+			pumpUntil(() -> session.connected && accepted != null, 8.0);
+			Assert.isTrue(session.connected, "the session from the side on TCP never connected");
+
+			session.send(bytesOf("down a TCP connection and out as UDP"));
+			pumpUntil(() -> heard != null, 5.0);
+			Assert.equals("down a TCP connection and out as UDP", heard);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAll(relay, [alice, bob]);
+	}
+
+	/**
 		A relay that loses the allocation ends the sessions that ran through
 		it, each saying why, rather than leaving them sending into nothing
 		until their timeout.

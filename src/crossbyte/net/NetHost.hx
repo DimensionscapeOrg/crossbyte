@@ -84,9 +84,9 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 
 		@throws IllegalOperationError On a TCP or WebSocket host.
 	**/
-	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String,
-			useChannels:Bool = false):Future<ReflexiveAddress> {
-		return __relayHost("allocateRelay").allocateRelay(server, port, username, password, useChannels);
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
+			?transport:TurnTransport):Future<ReflexiveAddress> {
+		return __relayHost("allocateRelay").allocateRelay(server, port, username, password, useChannels, transport);
 	}
 
 	/**
@@ -364,8 +364,9 @@ private class RUDPHost implements INetHost {
 	 * Through the socket this host listens on, so the relay's permissions
 	 * describe the traffic its sessions send.
 	 */
-	public function allocateRelay(server:String, port:Int, username:String, password:String, useChannels:Bool):Future<ReflexiveAddress> {
-		return __server.allocateRelay(server, port, username, password, useChannels);
+	public function allocateRelay(server:String, port:Int, username:String, password:String, useChannels:Bool,
+			transport:Null<TurnTransport>):Future<ReflexiveAddress> {
+		return __server.allocateRelay(server, port, username, password, useChannels, transport);
 	}
 
 	/**

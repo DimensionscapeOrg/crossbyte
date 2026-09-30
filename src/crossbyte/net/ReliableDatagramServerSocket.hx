@@ -6,6 +6,7 @@ package crossbyte.net;
 import crossbyte.Future;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunQuery;
+import crossbyte.net._internal.stun.TurnStream;
 import crossbyte.net.ice.IceAgent;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.core.CrossByte;
@@ -257,6 +258,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	public var relayedCandidate(default, null):Null<IceCandidate> = null;
 
 	@:noCompletion private var __relayTick:TickEvent->Void = null;
+
+	/** The connection `relay` reaches its server over, when that is TCP; null over UDP. **/
+	@:noCompletion private var __relayStream:TurnStream = null;
 
 	/** How the attached agent sends from `relayedCandidate`. **/
 	@:noCompletion private var __relaySend:(ByteArray, String, Int) -> Void = null;
@@ -864,10 +868,13 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		address, as RFC 8656 has it: the relay drops the rest.
 
 		@param useChannels See `TurnClient.useChannels`.
+		@param transport How the relay is reached: UDP when left out, or TCP
+		for a network that lets nothing else out, what it relays is UDP
+		either way, and a session's datagrams are the same datagrams.
 		@return The relayed address, or a failure whose `cause` is a `TurnError`.
 	**/
-	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String,
-			useChannels:Bool = false):Future<ReflexiveAddress> {
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
+			?transport:TurnTransport):Future<ReflexiveAddress> {
 		var future = new Future<ReflexiveAddress>();
 
 		if (__closed || !bound || !listening) {
@@ -892,22 +899,27 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			return future;
 		}
 
-		var client = new TurnClient(server, port, username, password);
+		var client = new TurnClient(server, port, username, password, transport);
 		client.useChannels = useChannels;
 		relay = client;
 
-		client.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
-			if (__closed) {
-				return;
-			}
+		if (client.transport != UDP) {
+			// Everything to and from the relay over a connection of its own.
+			__relayStream = new TurnStream(client);
+		} else {
+			client.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
+				if (__closed) {
+					return;
+				}
 
-			try {
-				__socket.send(payload, 0, payload.length, address, sendPort);
-			} catch (_:Dynamic) {
-				// A lost request is retransmitted; one that can never be sent
-				// ends in the relay's own timeout.
-			}
-		};
+				try {
+					__socket.send(payload, 0, payload.length, address, sendPort);
+				} catch (_:Dynamic) {
+					// A lost request is retransmitted; one that can never be
+					// sent ends in the relay's own timeout.
+				}
+			};
+		}
 
 		client.onData = function(payload:ByteArray, address:String, peerPort:Int):Void {
 			if (client == relay) {
@@ -1059,7 +1071,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		return found;
 	}
 
-	/** Stops driving the relay and forgets it; closing it is the caller's. **/
+	/**
+		Stops driving the relay and forgets it; closing the client is the
+		caller's. A connection it was reached over is closed here, which a
+		relay takes as the end of the allocation whatever was said on it.
+	**/
 	@:noCompletion private function __dropRelay():Void {
 		if (__relayTick != null) {
 			try {
@@ -1067,6 +1083,12 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			} catch (_:Dynamic) {}
 
 			__relayTick = null;
+		}
+
+		if (__relayStream != null) {
+			var stream = __relayStream;
+			__relayStream = null;
+			stream.close();
 		}
 
 		relay = null;

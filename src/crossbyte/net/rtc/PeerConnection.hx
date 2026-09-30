@@ -18,8 +18,10 @@ import crossbyte.net.ice.IceCredentials;
 import crossbyte.net.TurnClient;
 import crossbyte.net.TurnError;
 import crossbyte.net.TurnServer;
+import crossbyte.net.TurnTransport;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunQuery;
+import crossbyte.net._internal.stun.TurnStream;
 import crossbyte.net.rtc.PeerDescription;
 import crossbyte.net.rtc._internal.sctp.SctpAssociation;
 import crossbyte.net.rtc._internal.sctp.SctpDataTransfer;
@@ -971,6 +973,9 @@ class PeerConnection {
 			__turn.close();
 		}
 
+		// A relay reached over TCP is freed by the connection's end as well.
+		__closeTurnStream();
+
 		if (__tick != null) {
 			try {
 				CrossByte.current().removeEventListener(TickEvent.TICK, __tick);
@@ -1112,18 +1117,29 @@ class PeerConnection {
 		over it cannot say so, and the connection stops with nothing to report.
 		See `TurnClient` for the one that does exactly that.
 
+		@param transport How the relay is reached: UDP when left out, or TCP,
+		for a network that lets nothing else out. What it relays is UDP either
+		way.
 		@return The candidate that was added, or a failure naming why none was,
 		whose `cause` is a `TurnError` with the relay's code.
 	**/
-	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478,
-			useChannels:Bool = false):Future<IceCandidate> {
+	public function gatherRelayed(server:String, username:String, password:String, port:Int = 3478, useChannels:Bool = false,
+			?transport:TurnTransport):Future<IceCandidate> {
 		if (server == null || server == "") {
 			var future = new Future<IceCandidate>();
 			@:privateAccess future.__fail("A TURN server address is required.", new ArgumentError("server"));
 			return future;
 		}
 
-		return gatherRelayedFrom([{address: server, port: port, username: username, password: password}], useChannels);
+		return gatherRelayedFrom([
+			{
+				address: server,
+				port: port,
+				username: username,
+				password: password,
+				transport: transport
+			}
+		], useChannels);
 	}
 
 	/**
@@ -1192,7 +1208,8 @@ class PeerConnection {
 					address: server.address,
 					port: server.port != null ? server.port : 3478,
 					username: server.username,
-					password: server.password
+					password: server.password,
+					transport: server.transport != null ? server.transport : UDP
 				}
 		];
 		__relayUseChannels = useChannels;
@@ -1254,6 +1271,17 @@ class PeerConnection {
 	/** How to send from `__relayedCandidate`, handed to each agent with it. **/
 	@:noCompletion private var __relaySend:(ByteArray, String, Int) -> Void;
 
+	/** The connection `__turn` reaches its relay over, when that is TCP; null over UDP. **/
+	@:noCompletion private var __turnStream:TurnStream = null;
+
+	@:noCompletion private function __closeTurnStream():Void {
+		if (__turnStream != null) {
+			var stream = __turnStream;
+			__turnStream = null;
+			stream.close();
+		}
+	}
+
 	@:noCompletion private var __relayedFuture:Future<IceCandidate>;
 
 	/** The relays `gatherRelayedFrom` was given, asked again to replace one that goes. **/
@@ -1282,16 +1310,22 @@ class PeerConnection {
 		}
 
 		var server = __relayServers[index];
-		var relay = new TurnClient(server.address, server.port, server.username, server.password);
+		var relay = new TurnClient(server.address, server.port, server.username, server.password, server.transport);
 		relay.useChannels = __relayUseChannels;
 		__turn = relay;
 		__turnServer = server;
 
-		// Out to the server directly. The relay is reached the ordinary way; it
-		// is only traffic for a peer that gets wrapped.
-		relay.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
-			__send(payload, address, sendPort);
-		};
+		if (relay.transport != UDP) {
+			// Over a connection of its own, which carries everything to and
+			// from the relay; only what it relays is UDP.
+			__turnStream = new TurnStream(relay);
+		} else {
+			// Out to the server directly. The relay is reached the ordinary way;
+			// it is only traffic for a peer that gets wrapped.
+			relay.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
+				__send(payload, address, sendPort);
+			};
+		}
 
 		relay.onData = function(payload:ByteArray, fromAddress:String, fromPort:Int):Void {
 			if (relay == __turn) {
@@ -1329,6 +1363,7 @@ class PeerConnection {
 
 			__turn = null;
 			__turnServer = null;
+			__closeTurnStream();
 			failures.push(relay.failure != null ? relay.failure : new TurnError(0, error, server.address + ":" + server.port));
 			__allocateFrom(index + 1, failures);
 		});
@@ -1383,6 +1418,7 @@ class PeerConnection {
 
 		__turn = null;
 		__turnServer = null;
+		__closeTurnStream();
 
 		if (__relayedCandidate != null) {
 			__localCandidates.remove(__relayedCandidate);
