@@ -80,16 +80,31 @@ class URLLoader extends EventDispatcher {
 		dispatchEvent(event);
 	}
 
-	@:noCompletion private inline function __parseData(dataBytes:Bytes):Void {
-		switch (dataFormat) {
-			case URLLoaderDataFormat.TEXT:
-				data = dataBytes.getString(0, dataBytes.length);
-			case URLLoaderDataFormat.BINARY:
-				data = dataBytes;
-			case URLLoaderDataFormat.VARIABLES:
-				var s:String = dataBytes.getString(0, dataBytes.length);
-				data = new URLVariables(s);
+	/**
+		Reads `dataBytes` into `data` as `dataFormat` says, and answers why it
+		could not, or null when it could.
+
+		A body that is not UTF-8 read as text threw, on JavaScript a
+		RangeError out of `getString`, inside the loader's completion, which
+		on Node ended the process. It is an `IO_ERROR` now, and `data` holds
+		the bytes as they came.
+	**/
+	@:noCompletion private function __parseData(dataBytes:Bytes):Null<String> {
+		try {
+			switch (dataFormat) {
+				case URLLoaderDataFormat.TEXT:
+					data = dataBytes.getString(0, dataBytes.length);
+				case URLLoaderDataFormat.BINARY:
+					data = dataBytes;
+				case URLLoaderDataFormat.VARIABLES:
+					var s:String = dataBytes.getString(0, dataBytes.length);
+					data = new URLVariables(s);
+			}
+		} catch (error:Dynamic) {
+			data = dataBytes;
+			return "The response body could not be read as " + dataFormat + ": " + Std.string(error);
 		}
+		return null;
 	}
 
 	#if !js
@@ -115,8 +130,12 @@ class URLLoader extends EventDispatcher {
 				// Free before the event, not after: a COMPLETE listener that
 				// starts the next load on this loader was refused as busy.
 				__finish();
-				__parseData(bytes);
-				dispatchEvent(new Event(Event.COMPLETE));
+				var unreadable:Null<String> = __parseData(bytes);
+				if (unreadable != null) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, unreadable));
+				} else {
+					dispatchEvent(new Event(Event.COMPLETE));
+				}
 			case Failure(text, bytes):
 				__finish();
 				if (bytes != null) {
@@ -174,12 +193,16 @@ class URLLoader extends EventDispatcher {
 			dispatchEvent(new ProgressEvent(ProgressEvent.PROGRESS, loaded, total));
 		}, function(dataBytes:Bytes):Void {
 			__busy = false;
-			__parseData(dataBytes);
+			var unreadable:Null<String> = __parseData(dataBytes);
 			// The native client's contract, and AS3's: a 4xx or 5xx is an
 			// IO_ERROR, with its body in `data`. This completed, so one status
 			// meant two outcomes depending on the target.
 			if (finalStatus >= 400) {
 				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "HTTP error " + finalStatus));
+				return;
+			}
+			if (unreadable != null) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, unreadable));
 				return;
 			}
 			dispatchEvent(new Event(Event.COMPLETE));

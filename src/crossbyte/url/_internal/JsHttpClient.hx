@@ -261,6 +261,18 @@ class JsHttpClient {
 			headers.set("User-Agent", request.userAgent);
 		}
 
+		// What the native client asks for unless told otherwise. With none,
+		// RFC 9110 lets a server pick any coding.
+		var askedForCoding:Bool = false;
+		for (key in headers.keys()) {
+			if (key.toLowerCase() == "accept-encoding") {
+				askedForCoding = true;
+			}
+		}
+		if (!askedForCoding) {
+			headers.set("Accept-Encoding", "identity");
+		}
+
 		var origin:String = null;
 		var redirects:Int = 0;
 
@@ -379,11 +391,21 @@ class JsHttpClient {
 					}
 					settled = true;
 
-					var joined = js.node.Buffer.concat(chunks);
-					// Sliced by its own region: a Buffer can be a window onto a
-					// larger pooled allocation, and taking .buffer whole would
-					// carry bytes belonging to something else.
-					onComplete(Bytes.ofData(joined.buffer.slice(joined.byteOffset, joined.byteOffset + joined.byteLength)));
+					// Decoded as the native client decodes, within the same
+					// limits. The body was handed on as it came, so a gzip
+					// answer reached the caller as gzip, garbage as text, and
+					// the next such body ended the process in getString.
+					__decodeNode(js.node.Buffer.concat(chunks), response.headers.get("content-encoding"), request.maxDecompressedSize,
+						function(error:Null<String>, decoded:Null<js.node.Buffer>):Void {
+							if (error != null) {
+								onError(error);
+								return;
+							}
+							// Sliced by its own region: a Buffer can be a window
+							// onto a larger pooled allocation, and taking .buffer
+							// whole would carry bytes belonging to something else.
+							onComplete(Bytes.ofData(decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength)));
+						});
 				});
 
 				response.on("error", function(e) {
@@ -424,6 +446,96 @@ class JsHttpClient {
 		}
 
 		hop(target, method, body);
+	}
+
+	/**
+		Undoes the codings `header` names on `body`, the last applied first,
+		with Node's own zlib, and calls `done` with the body or with why it
+		could not be decoded.
+
+		The native client's rules: at most two stacked codings, and no more
+		than `limit` bytes out (`<= 0`, none), which zlib stops at itself
+		(`maxOutputLength`) rather than after allocating the lot. `deflate` is
+		zlib-wrapped as RFC 9110 defines it, or raw as CrossByte's own server
+		has sent it; both are read. LZ4, which Node has no codec for, goes
+		through the one every other target uses.
+	**/
+	static function __decodeNode(body:js.node.Buffer, header:Dynamic, limit:Int, done:(error:Null<String>, decoded:Null<js.node.Buffer>) -> Void):Void {
+		var codings:Array<String> = [];
+		if (header != null) {
+			for (raw in Std.string(header).split(",")) {
+				var token:String = StringTools.trim(raw);
+				var semi:Int = token.indexOf(";");
+				if (semi >= 0) {
+					token = StringTools.trim(token.substr(0, semi));
+				}
+				token = token.toLowerCase();
+				if (token != "" && token != "identity") {
+					codings.push(token);
+				}
+			}
+		}
+
+		if (codings.length == 0 || body.length == 0) {
+			done(null, body);
+			return;
+		}
+		if (codings.length > 2) {
+			done("Failed to decode response body: it stacked " + codings.length + " content codings, more than the 2 allowed", null);
+			return;
+		}
+
+		var zlib:Dynamic = js.Lib.require("zlib");
+		var options:Dynamic = limit > 0 ? {maxOutputLength: limit} : {};
+
+		function failed(error:Dynamic):Void {
+			var reason:Dynamic = error != null && error.message != null ? error.message : error;
+			done("Failed to decode response body: " + Std.string(reason), null);
+		}
+
+		function step(index:Int, current:js.node.Buffer):Void {
+			if (index < 0) {
+				done(null, current);
+				return;
+			}
+
+			var next = function(error:Dynamic, result:js.node.Buffer):Void {
+				if (error != null) {
+					failed(error);
+					return;
+				}
+				step(index - 1, result);
+			};
+
+			switch (codings[index]) {
+				case "gzip", "x-gzip":
+					zlib.gunzip(current, options, next);
+				case "br" if (zlib.brotliDecompress != null):
+					zlib.brotliDecompress(current, options, next);
+				case "deflate":
+					zlib.inflate(current, options, function(error:Dynamic, result:js.node.Buffer):Void {
+						if (error == null) {
+							step(index - 1, result);
+						} else {
+							zlib.inflateRaw(current, options, next);
+						}
+					});
+				case "lz4":
+					try {
+						var encoded:crossbyte.io.ByteArray = Bytes.ofData(current.buffer.slice(current.byteOffset, current.byteOffset + current.byteLength));
+						encoded.uncompress(crossbyte.utils.CompressionAlgorithm.LZ4, limit > 0 ? limit : 0);
+						var plain:Bytes = Bytes.alloc(encoded.length);
+						plain.blit(0, encoded, 0, encoded.length);
+						step(index - 1, js.node.Buffer.from(plain.getData()));
+					} catch (error:Dynamic) {
+						failed(error);
+					}
+				case unknown:
+					done("Unsupported content encoding: " + unknown, null);
+			}
+		}
+
+		step(codings.length - 1, body);
 	}
 
 	/** Removes a header whatever case the caller wrote it in. */
