@@ -1,9 +1,10 @@
 package crossbyte._internal.deflatex;
 
-import crossbyte._internal.deflatex.utils.BitsInput;
 import crossbyte._internal.deflatex.utils.BitsOutput;
+import crossbyte.errors.IOError;
 import haxe.io.Bytes;
-import haxe.Exception;
+import haxe.io.BytesInput;
+import haxe.io.Eof;
 
 /**
  * Implements the gzip file format for storing DEFLATE-compressed streams.
@@ -77,50 +78,52 @@ class GZCompressor {
 		       to name a ceiling.
 	**/
 	public static function decompress(stream:Bytes, maxOutputSize:Int = 0):Bytes {
-		var input:BitsInput = new BitsInput(stream);
-		var id1:Int = input.readByte();
-		var id2:Int = input.readByte();
-		if (id1 != 0x1f || id2 != 0x8b) {
-			throw new Exception("Invalid magic");
-		}
-		var method:Int = input.readByte();
-		if (method != M_DEFLATE) {
-			throw new Exception("Unsupported compression method");
-		}
-		var flags:Int = input.readByte();
-		if ((flags & (F_HCRC | F_EXTRA | F_COMMENT)) != 0) {
-			throw new Exception("Unsupported flags");
-		}
-		input.read(6);
+		var input:BytesInput = new BytesInput(stream);
+		try {
+			var id1:Int = input.readByte();
+			var id2:Int = input.readByte();
+			if (id1 != 0x1f || id2 != 0x8b) {
+				throw new IOError("Invalid gzip data: no gzip header");
+			}
+			var method:Int = input.readByte();
+			if (method != M_DEFLATE) {
+				throw new IOError("Invalid gzip data: compression method " + method);
+			}
+			var flags:Int = input.readByte();
+			if ((flags & (F_HCRC | F_EXTRA | F_COMMENT)) != 0) {
+				throw new IOError("Unsupported gzip data: header flags " + flags);
+			}
+			input.read(6);
 
-		if ((flags & F_NAME) != 0) {
-			var b:Int;
-			do {
-				b = input.readByte();
-			} while (b != 0);
+			if ((flags & F_NAME) != 0) {
+				var b:Int;
+				do {
+					b = input.readByte();
+				} while (b != 0);
+			}
+
+			// Inflated where it lies, so the trailer is read from where the
+			// deflate stream actually ends. It was taken to be the last eight
+			// bytes of the input, and everything before them copied out and
+			// inflated.
+			var result:Bytes = Inflater.inflate(input, false, maxOutputSize, "gzip");
+
+			var f_crc:Int = input.readInt32();
+			var f_size:Int = input.readInt32();
+
+			// Verify data
+			if (result.length != f_size) {
+				throw new IOError("Invalid gzip data: " + result.length + " bytes where the trailer says " + f_size);
+			}
+			var check:CRC32 = new CRC32();
+			check.updateBytes(result, 0, result.length);
+			if (check.value != f_crc) {
+				throw new IOError("Invalid gzip data: CRC " + StringTools.hex(check.value, 8) + " where the trailer says " + StringTools.hex(f_crc, 8));
+			}
+
+			return result;
+		} catch (e:Eof) {
+			throw new IOError("Invalid gzip data: the stream ends early");
 		}
-
-		var inflater:Inflater = new Inflater();
-		inflater.maxOutputSize = maxOutputSize;
-		var length:Int = input.length - input.position - 8;
-		var content:Bytes = Bytes.alloc(length);
-		input.readBytes(content, 0, length);
-		var result:Bytes = inflater.decompress(content);
-
-		var f_crc:Int = input.readInt32();
-		var f_size:Int = input.readInt32();
-
-		// Verify data
-		if (result.length != f_size) {
-			throw new Exception("Size mismatch, expected = " + f_size + ", actual = " + result.length);
-		}
-		var check:CRC32 = new CRC32();
-		check.updateBytes(result, 0, result.length);
-		var crc:Int = check.value;
-		if (crc != f_crc) {
-			throw new Exception("CRC mismatch, expected = " + StringTools.hex(f_crc) + ", actual = " + StringTools.hex(crc));
-		}
-
-		return result;
 	}
 }

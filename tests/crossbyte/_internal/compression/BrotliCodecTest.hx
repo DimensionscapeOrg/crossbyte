@@ -49,13 +49,13 @@ class BrotliCodecTest extends utest.Test {
 	 */
 	public function testAStreamEndingBeforeItsContextMapIsRefused():Void {
 		for (hex in ["1b500000", "1b5000"]) {
-			var refusal:String = null;
+			var refusal:Dynamic = null;
 			try {
 				Brotli.decompress(Bytes.ofHex(hex), 1 << 20);
 			} catch (e:Dynamic) {
-				refusal = Std.string(e);
+				refusal = e;
 			}
-			Assert.equals("Brotli decompression failed", refusal, hex);
+			Assert.isTrue(Std.isOfType(refusal, crossbyte.errors.IOError), hex + " refused as " + Std.string(refusal));
 		}
 	}
 
@@ -71,13 +71,13 @@ class BrotliCodecTest extends utest.Test {
 	 * is allocated for it.
 	 */
 	public function testAMetaBlockLongerThanTheLimitIsRefusedAtItsHeader():Void {
-		var refusal:String = null;
+		var refusal:Dynamic = null;
 		try {
 			Brotli.decompress(Bytes.ofHex("cfffffff"), 1 << 20);
 		} catch (e:Dynamic) {
-			refusal = Std.string(e);
+			refusal = e;
 		}
-		Assert.isTrue(refusal != null && refusal.indexOf("exceeded") >= 0, "refused as " + refusal);
+		Assert.isTrue(Std.isOfType(refusal, crossbyte.errors.RangeError), "refused as " + Std.string(refusal));
 	}
 
 	/**
