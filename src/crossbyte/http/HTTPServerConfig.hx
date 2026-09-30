@@ -45,6 +45,14 @@ class HTTPServerConfig {
 	public var maxRequestBodySize:Int = DEFAULT_MAX_REQUEST_BODY;
 
 	/**
+		What this server compresses, and how hard: text of a kilobyte or more,
+		for a client that asks, in a response that is not an error. See
+		`HTTPCompression`; set `compression.enabled = false` to send everything
+		as it is.
+	**/
+	public var compression:HTTPCompression = new HTTPCompression();
+
+	/**
 		Asked, with the request's method, path and headers, whether a request
 		carrying `Expect: 100-continue` may send its body. Return `true` to let
 		it; to refuse, answer with `handler.respond()`, a `401`, say, and

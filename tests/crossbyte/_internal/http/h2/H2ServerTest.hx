@@ -204,6 +204,32 @@ class H2ServerTest extends utest.Test {
 		Assert.notNull(firstResetFor(requestFields([new HpackHeader("X-Thing", "value")])));
 	}
 
+	public function testAControlCharacterInAFieldIsRejected():Void {
+		// RFC 9113 8.2.1 makes a CR, LF or NUL anywhere in a value malformed.
+		// HPACK carries any byte, so these reached the request middleware
+		// sees, where a CR LF could be written into an HTTP/1.1 request or a
+		// log line onward.
+		var cr:String = String.fromCharCode(13);
+		var lf:String = String.fromCharCode(10);
+		var nul:String = String.fromCharCode(0);
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + cr + lf + "injected: yes")])), "CR LF in a value was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + lf + "b")])), "LF in a value was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + cr)])), "CR in a value was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + nul + "b")])), "NUL in a value was taken");
+		Assert.notNull(firstResetFor([
+			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/a" + cr + lf + "b")
+		]), "CR LF in :path was taken");
+
+		// Names: nothing below 0x21 and no colon but a pseudo-header's first.
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x forward", "a")])), "a space in a name was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x:forward", "a")])), "a colon in a name was taken");
+
+		// Spaces and tabs are fine, and so is an empty value.
+		Assert.isNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a b" + String.fromCharCode(9) + "c")])), "an inner space was refused");
+		Assert.isNull(firstResetFor(requestFields([new HpackHeader("x-forward", " padded ")])), "a padded value was refused");
+		Assert.isNull(firstResetFor(requestFields([new HpackHeader("x-empty", "")])), "an empty value was refused");
+	}
+
 	public function testConnectionSpecificFieldIsRejected():Void {
 		// §8.2.2: HTTP/2 does its own framing, so these are malformed.
 		Assert.notNull(firstResetFor(requestFields([new HpackHeader("connection", "keep-alive")])));
@@ -214,6 +240,51 @@ class H2ServerTest extends utest.Test {
 		Assert.notNull(firstResetFor(requestFields([new HpackHeader("te", "gzip")])));
 		// The one permitted value must still get through.
 		Assert.isNull(firstResetFor(requestFields([new HpackHeader("te", "trailers")])));
+	}
+
+	/**
+		A request sent with trailers reaches the handler with its own header
+		section and body. The trailer block replaced the header section, so
+		the request was read from the trailers, found to have no `:method`,
+		and reset: one sent with trailers never arrived.
+	**/
+	public function testARequestWithTrailersArrivesWithItsOwnHeaders():Void {
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		var requests:Array<H2ServerRequest> = [];
+		server.onRequest = request -> requests.push(request);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		out.bytes();
+
+		var encoder = new HpackEncoder(4096);
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(requestFields([new HpackHeader("te", "trailers")]))));
+		server.receive(frame(H2FrameType.DATA, 0, 1, Bytes.ofString("body")));
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, encoder.encode([new HpackHeader("x-checksum", "abc")])));
+
+		var reset:Null<H2Frame> = null;
+		for (candidate in Collector.parse(out.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				reset = candidate;
+			}
+		}
+		Assert.isNull(reset, "a request with trailers was reset");
+		if (requests.length != 1) {
+			Assert.fail("delivered " + requests.length + " requests, not 1");
+			return;
+		}
+		Assert.equals("GET", requests[0].method);
+		Assert.equals("/x", requests[0].path);
+		Assert.equals("body", requests[0].body.toString());
+		Assert.isNull(requests[0].header("x-checksum"), "a trailer was read as a header");
+	}
+
+	public function testAMalformedTrailerSectionResetsTheStream():Void {
+		// RFC 9113 8.1: a trailer section ends the stream and carries no
+		// pseudo-header; 8.2.1 holds its fields as it holds any.
+		Assert.notNull(resetForTrailers([new HpackHeader("x-checksum", "abc")], false), "a trailer section that left the stream open was taken");
+		Assert.notNull(resetForTrailers([new HpackHeader(":path", "/elsewhere")], true), "a pseudo-header in a trailer section was taken");
+		Assert.notNull(resetForTrailers([new HpackHeader("x-checksum", "a" + String.fromCharCode(10) + "b")], true), "a line break in a trailer was taken");
+		Assert.isNull(resetForTrailers([new HpackHeader("x-checksum", "abc")], true), "a well-formed trailer section was refused");
 	}
 
 	public function testStatusPseudoHeaderOnARequestIsRejected():Void {
@@ -676,6 +747,61 @@ class H2ServerTest extends utest.Test {
 		Assert.isTrue(server.closed);
 	}
 
+	public function testTheHeaderListLimitIsAdvertised():Void {
+		// SETTINGS_MAX_HEADER_LIST_SIZE was never sent, which tells a client
+		// the list is unlimited; the decoder quietly allowed eight megabytes.
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+
+		var frames = Collector.parse(out.bytes());
+		Require.notNull(frames[0]);
+		var advertised:Int = -1;
+		var payload:Bytes = frames[0].payload;
+		var offset:Int = 0;
+		while (offset + 6 <= payload.length) {
+			var id:Int = (payload.get(offset) << 8) | payload.get(offset + 1);
+			var value:Int = (payload.get(offset + 2) << 24) | (payload.get(offset + 3) << 16) | (payload.get(offset + 4) << 8) | payload.get(offset + 5);
+			if (id == 0x6) {
+				advertised = value;
+			}
+			offset += 6;
+		}
+		Assert.equals(64 * 1024, advertised);
+	}
+
+	public function testAHeaderSectionPastTheLimitReachesNoHandlerAndTheConnectionCarriesOn():Void {
+		// 3,000 one-byte references to one cookie crumb: a block of about three
+		// kilobytes that decodes to 117 KB by the table's accounting. It was
+		// accepted, all of it, and joined; the HTTP/1.1 path refuses the same
+		// section at 64 KB. Refused now, and decoded to its end first, so the
+		// request after it on the same connection still decodes as sent.
+		var link = new Loopback();
+		var fieldsSeen:Array<Int> = [];
+		var probe:Null<String> = null;
+		link.serveWith((request, server) -> {
+			fieldsSeen.push(request.headers.length);
+			if (request.path == "/next") {
+				probe = request.header("x-ok");
+			}
+			server.respond(request.streamId, request.path == "/next" ? 200 : 431, []);
+		});
+
+		var crumbs:Array<HpackHeader> = [];
+		for (_ in 0...3000) {
+			crumbs.push(new HpackHeader("cookie", "a"));
+		}
+		var first = link.request("GET", "/big", crumbs);
+		var second = link.request("GET", "/next", [new HpackHeader("x-ok", "yes")]);
+
+		Assert.equals(2, fieldsSeen.length);
+		Assert.equals(0, fieldsSeen[0], fieldsSeen[0] + " fields of a section past the limit reached the handler");
+		Assert.equals(431, first.status);
+		Assert.equals("yes", probe);
+		Assert.equals(200, second.status);
+		Assert.isFalse(link.connection.closed);
+	}
+
 	public function testAHeaderBlockUnderTheLimitStillAssembles():Void {
 		var link = new Loopback();
 		var seen:String = null;
@@ -841,6 +967,29 @@ class H2ServerTest extends utest.Test {
 		return null;
 	}
 
+	/**
+		Sends a request, a body, and then `trailers`, ending the stream or
+		not, and returns the RST_STREAM it drew, if any.
+	**/
+	private static function resetForTrailers(trailers:Array<HpackHeader>, endStream:Bool):Null<H2Frame> {
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		out.bytes();
+
+		var encoder = new HpackEncoder(4096);
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(requestFields([]))));
+		server.receive(frame(H2FrameType.DATA, 0, 1, Bytes.ofString("body")));
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | (endStream ? H2Flags.END_STREAM : 0), 1, encoder.encode(trailers)));
+
+		for (candidate in Collector.parse(out.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				return candidate;
+			}
+		}
+		return null;
+	}
+
 	/** Opens `first` then `second` and returns the connection error, if any. */
 	private static function connectionFailureFor(first:Int, second:Int):Null<H2ConnectionError> {
 		var out = new Collector();
@@ -926,6 +1075,13 @@ private class Loopback {
 
 	public function serveWith(handler:(H2ServerRequest, H2ServerConnection) -> Void):Void {
 		__handler = handler;
+	}
+
+	/** The server half. */
+	public var connection(get, never):H2ServerConnection;
+
+	private inline function get_connection():H2ServerConnection {
+		return __server;
 	}
 
 	/** Lowers the client's view of the server frame limit, forcing CONTINUATION. */

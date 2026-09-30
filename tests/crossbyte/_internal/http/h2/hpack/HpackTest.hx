@@ -144,6 +144,61 @@ class HpackTest extends utest.Test {
 		Assert.equals(0, decoder.tableSize);
 	}
 
+	public function testStaticPairsAreFoundExactly():Void {
+		// Pairs were looked up by name and value joined with a NUL, and a
+		// HashLink string ends at its first NUL: every pair of one name read
+		// as the name alone, the last entry won, and hl sent `:method GET` as
+		// POST and `:status 200` as 500.
+		Assert.equals(2, HpackStaticTable.findPair(":method", "GET"));
+		Assert.equals(3, HpackStaticTable.findPair(":method", "POST"));
+		Assert.equals(6, HpackStaticTable.findPair(":scheme", "http"));
+		Assert.equals(7, HpackStaticTable.findPair(":scheme", "https"));
+		Assert.equals(8, HpackStaticTable.findPair(":status", "200"));
+		Assert.equals(13, HpackStaticTable.findPair(":status", "404"));
+		Assert.equals(14, HpackStaticTable.findPair(":status", "500"));
+		Assert.equals(16, HpackStaticTable.findPair("accept-encoding", "gzip, deflate"));
+		Assert.equals(-1, HpackStaticTable.findPair(":path", "/probe"));
+		Assert.equals(-1, HpackStaticTable.findPair(":method", "PUT"));
+		Assert.equals(-1, HpackStaticTable.findPair("x-unknown", ""));
+		Assert.equals(4, HpackStaticTable.findName(":path"));
+		Assert.equals(-1, HpackStaticTable.findName("x-unknown"));
+
+		// And end to end: the block names the right entries, and decodes back.
+		var fields = [
+			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/probe"),
+			new HpackHeader(":authority", "x")
+		];
+		var block:Bytes = new HpackEncoder(4096).encode(fields);
+		Assert.equals(0x82, block.get(0), "GET is static index 2");
+		Assert.equals(0x86, block.get(1), "http is static index 6");
+		assertHeaders(fields, new HpackDecoder(4096).decode(block));
+	}
+
+	/**
+		A NUL inside a string literal is decoded with the rest, plain or
+		Huffman-coded. JavaScript's `Bytes.toString` stops at a NUL, so the
+		field arrived as the part before it, the NUL that makes it malformed
+		never reached the rules that refuse it.
+	**/
+	public function testANulInAStringIsDecodedWithTheRest():Void {
+		var nul:String = String.fromCharCode(0);
+		// Long and repetitive enough that the encoder Huffman-codes it.
+		var coded:String = "aaaaaaaaaaaaaaaa" + nul + "eeeeeeeeeeeeeeee";
+		// Short and unusual enough that it does not.
+		var plain:String = "~" + nul + "~";
+		var block:Bytes = new HpackEncoder(4096).encode([new HpackHeader("x-coded", coded), new HpackHeader("x-" + nul, plain)]);
+		var fields:Array<HpackHeader> = new HpackDecoder(4096).decode(block);
+		if (fields.length != 2) {
+			Assert.fail("decoded " + fields.length + " fields, not 2");
+			return;
+		}
+		// Compared without printing either: a NUL in an assertion message
+		// hides every failure reported after it on cpp.
+		Assert.isTrue(fields[0].value == coded, "a Huffman-coded value lost its NUL or what followed it: " + fields[0].value.length + " of 33 characters");
+		Assert.isTrue(fields[1].value == plain, "a plain value lost its NUL or what followed it: " + fields[1].value.length + " of 3 characters");
+		Assert.isTrue(fields[1].name == "x-" + nul, "a name lost its NUL: " + fields[1].name.length + " of 3 characters");
+	}
+
 	// ------------------------------------------------------- decoder limits
 
 	public function testDecoderRejectsAnIndexPastTheTable():Void {
@@ -205,8 +260,43 @@ class HpackTest extends utest.Test {
 
 		// A few hundred bytes of block expanding into several kilobytes of
 		// headers is the whole HPACK-bomb shape, and it has to be refused on
-		// the decoded size rather than the encoded one.
-		Assert.raises(() -> decoder.decode(encoder.encode(many)), HpackError);
+		// the decoded size rather than the encoded one: nothing past the
+		// limit comes back, and the caller is told.
+		var decoded:Array<HpackHeader> = decoder.decode(encoder.encode(many));
+		Assert.isTrue(decoder.truncated);
+		var kept:Int = 0;
+		for (field in decoded) {
+			kept += field.tableSize;
+		}
+		Assert.isTrue(kept <= 200, "kept " + kept + " bytes of fields past a 200 byte limit");
+		Assert.isTrue(decoded.length < many.length);
+	}
+
+	public function testABlockPastTheListLimitStillAdvancesTheTable():Void {
+		// Refusing the block by throwing left it half read, so the table
+		// stopped wherever the limit fell and every later block on the
+		// connection decoded against the wrong entries: the connection had
+		// to die with the one request. Decoded to the end, the next block is
+		// read exactly as the peer wrote it.
+		var decoder = new HpackDecoder(4096, 300);
+		var encoder = new HpackEncoder(4096);
+
+		var crumbs:Array<HpackHeader> = [new HpackHeader(":method", "GET")];
+		for (i in 0...40) {
+			crumbs.push(new HpackHeader("cookie", "a"));
+		}
+		// The last field enters the dynamic table after the limit is passed.
+		crumbs.push(new HpackHeader("x-late", "entered-late"));
+		decoder.decode(encoder.encode(crumbs));
+		Assert.isTrue(decoder.truncated);
+		Assert.equals(encoder.tableSize, decoder.tableSize);
+
+		// The next block names that late entry by index alone.
+		var next:Array<HpackHeader> = decoder.decode(encoder.encode([new HpackHeader("x-late", "entered-late")]));
+		Assert.isFalse(decoder.truncated);
+		Assert.equals(1, next.length);
+		Assert.equals("x-late", next[0].name);
+		Assert.equals("entered-late", next[0].value);
 	}
 
 	// ------------------------------------------------------- dynamic table

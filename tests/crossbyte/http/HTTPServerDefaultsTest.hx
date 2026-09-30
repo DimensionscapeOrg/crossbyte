@@ -204,21 +204,35 @@ class HTTPServerDefaultsTest extends utest.Test {
 		Assert.pass();
 	}
 
+	/**
+		Closes the canary's store and removes its directory.
+
+		The directory is removed here, by name, rather than through an
+		asynchronous `clear()` that the `close()` beside it could overtake.
+		And more than once if need be: every full native run on Windows left
+		one canary behind, its value file still in place, a file just written
+		is often held a moment by something else there, the virus scanner
+		first among them, and a delete that meets it fails.
+	**/
 	private static function __removeStore(store:crossbyte.io.Store, name:String):Void {
 		try {
-			store.clear();
 			store.close();
 		} catch (_:Dynamic) {}
 
-		try {
-			var directory:String = haxe.io.Path.join([File.applicationStorageDirectory.nativePath, "stores", name]);
-			if (sys.FileSystem.exists(directory)) {
+		var directory:String = haxe.io.Path.join([File.applicationStorageDirectory.nativePath, "stores", name]);
+		for (_ in 0...40) {
+			try {
+				if (!sys.FileSystem.exists(directory)) {
+					return;
+				}
 				for (entry in sys.FileSystem.readDirectory(directory)) {
 					sys.FileSystem.deleteFile(haxe.io.Path.join([directory, entry]));
 				}
 				sys.FileSystem.deleteDirectory(directory);
-			}
-		} catch (_:Dynamic) {}
+				return;
+			} catch (_:Dynamic) {}
+			crossbyte.sys.System.sleep(0.05);
+		}
 	}
 
 	private function __makeServer():HTTPServer {

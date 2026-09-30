@@ -13,6 +13,37 @@ All notable changes to CrossByte will be documented in this file.
   system's authorities or one named in `TurnClient.certAuthority`,
   `TurnServer.certAuthority` or `ReliableDatagramServerSocket.
   relayCertAuthority`; `TurnClient.verifyCert` turns the check off.
+- TLS settings per request: `URLRequest.verifyCert`, `certAuthority`,
+  `clientCertificate` with `clientKey`, and `pinnedPublicKeys` (RFC 7469
+  `pin-sha256` digests, with or without `sha256/`). Trusting a private
+  authority meant setting a process-wide static through `@:privateAccess`,
+  and there was no way to present a client certificate or to pin a key.
+  A kept connection, HTTP/1.1 or HTTP/2, is reused only by a request with
+  the same settings, so one opened without checking its server never
+  carries a request that checks. The client certificate is left behind by
+  a redirect to another origin, as `Authorization` is. A pin is checked
+  after the handshake and before anything is sent, whether or not the
+  chain is, natively, on the jvm and on Node; hl, neko and a browser
+  cannot see the server's key, and refuse a pinned request rather than
+  send it unchecked. neko's TLS checks the server whatever it is told, so
+  `verifyCert = false` changes nothing there. `HTTPTLSOptions` carries the
+  settings, and `HTTPRequestContext.tls` hands them to an `HTTPBackend`.
+- `URLRequest.maxDecompressedSize`: the most a compressed response may
+  decode to before the load fails, 64 MB unless set, per request. The
+  ceiling was an internal static of the native client, one number for every
+  request, while what a response sends and what it decodes to have no fixed
+  ratio. `HTTPRequestContext.maxDecompressedSize` hands it to a backend,
+  and the HTTP/2 backend holds to it.
+- `HTTPServerConfig.compression`, an `HTTPCompression`: whether the server
+  compresses (`enabled`), from what size (`minimumSize`, 1 KB), which
+  `Content-Type`s (`types`), and how hard (`level`, Brotli's 0 to 11). A
+  static file is compressed once per coding and kept, up to `cacheSize`
+  (16 MB), while its size and modification time hold, it was compressed
+  again for every request, and a 150 KB script served 64 requests a second
+  as Brotli natively against 863 as it was, and a precompressed
+  `app.js.br` or `app.js.gz` beside `app.js` is sent in its place when it
+  is not older (`precompressed`), which is also how a file large enough to
+  stream goes out compressed.
 - `crossbyte.sys.System.sleep(seconds)`, a sleep that comes back on the
   interpreter on Windows, where `Sys.sleep` can sleep for 49 days: eval
   times a `Thread.yield()` in the process's CPU time, which Windows counts
@@ -975,6 +1006,23 @@ All notable changes to CrossByte will be documented in this file.
   dial. The refusals name the protocol through the new `Protocol.toString()`:
   joined to the text, the protocol was its number, and they read "A 0 host
   cannot dial".
+- The HTTP server compresses only what is worth it: a body of 1 KB or
+  more, of a text-like type, in a response that is not an error. Every
+  non-empty body was compressed, a 429 or a 404 cost the setup of a
+  Brotli encoder whenever the client listed br, which every browser does,
+  so the rate limiter did not bound what a flood of refused requests cost
+  (18.8 ms a refusal on Node rather than 0.57); a two-byte answer came
+  out as 22 bytes of gzip, and PNGs and archives grew. A response that
+  could have been encoded now says `Vary: Accept-Encoding`, which none
+  did, so a cache replayed br bodies to clients that had not asked for
+  them; an encoded variant's `ETag` is made weak, as nginx does, since one
+  strong tag went out on every coding of a body; and a `HEAD` is
+  negotiated as its `GET` is, naming the coding and leaving out a length
+  it cannot know, where it reported the identity length beside a br
+  `GET`: and a route's `HEAD` gives its `GET`'s length rather than 0.
+  What to change: to compress smaller bodies or other types, set
+  `HTTPServerConfig.compression.minimumSize` and `.types`; to compress
+  nothing, `compression.enabled = false`.
 - `ci/doc-examples.js` reads doc comments written with a ` * ` down the
   left, which it passed over as holding no examples: 49 of the 96 source
   files with examples are written that way. It checks 73 examples in 23
@@ -1458,6 +1506,167 @@ All notable changes to CrossByte will be documented in this file.
   had been read every page still waiting said it was complete, and off cpp
   the pages came back newest first. Four rows in pages of two read
   "1,2+ 3,4+" and now read "1,2 3,4+"; five read "1,2 3,4 5+".
+- `HTTPServerDefaultsTest` no longer leaves its canary store behind: every
+  full native run on Windows left an `http-root-canary-*` directory in
+  `%APPDATA%\stores`, its value file still there. It cleared the store
+  asynchronously and closed it at once, then deleted the directory a
+  single time, and a file just written is often held a moment on Windows;
+  it now closes the store and removes the directory, trying again for up
+  to two seconds.
+- On neko the HTTP server answers a conditional request dated past
+  January 2038 with a 304, as it does elsewhere. It read `If-Modified-Since`
+  through a local `Date`, which neko cannot make past 2038 (`new Date`
+  threw `std@date_set_hour`), so such a revalidation was answered with the
+  whole file. HTTP dates are read and written in UTC by arithmetic now,
+  both ways, the same on every target.
+- The HTTP client's request-target case passes on neko. It built its
+  non-ASCII path with `String.fromCharCode(0xE9)`, which on neko, whose
+  strings are bytes, is one Latin-1 byte rather than the UTF-8 a typed
+  URL carries, so the client rightly sent `%E9` where the case expected
+  `%C3%A9`.
+- A request whose connect times out says so, on every target: `Connection
+  Failed: host:port did not answer within 1 s` over HTTP/1.1, and
+  `Connecting to ... timed out after 1s` over HTTP/2. Natively the reason
+  given was `Blocked`, the read the TLS handshake waited on having timed
+  out; on the jvm, whose handshake now holds to the deadline, it came
+  wrapped as `Custom(Timeout: ...)`, and an HTTP/2 connect there was not
+  taken for a timeout at all.
+- On the interpreter, each thread serving HTTP keeps its own compiled
+  rewrite patterns and directory listings, as it does on every other
+  threaded target. They were held per thread only on cpp, neko, hl and the
+  jvm, so runtimes on two eval threads shared one map and one `EReg`,
+  which carries its last match: one could read the other's captures.
+- Closing an HTTP/2 client connection, the pool's idle sweep,
+  `H2ConnectionPool.closeAll`, a request discarding a failed one, no
+  longer closes its socket under the thread reading it. For TLS that
+  freed the socket's mbedTLS context mid-read, and when the read returned,
+  with the server answering the GOAWAY, mbedTLS went on with the freed
+  context: a segmentation fault in `mbedtls_ssl_read`, seen natively on
+  Linux. The connection is shut down instead, and the reading thread
+  closes the socket once its read has ended, as the HTTP/1.1 client
+  already did for a cancelled load.
+- The HTTP/2 server takes a request sent with trailers. The trailer
+  section, a second header block on the stream, replaced the request's
+  header section, so the request was read from the trailers, found to
+  have no `:method`, and reset: it never reached a handler. Trailers are
+  now checked and dropped, as the HTTP/1.1 server drops a chunked body's,
+  and a trailer section that does not end the stream, or that carries a
+  pseudo-header or a line break, resets the stream as RFC 9113 8.1 says.
+- The interpreter suite no longer hangs, now and then, in
+  `URLLoaderHttpTest`. The HTTP tests' pump loops slept a millisecond
+  between pumps with `Sys.sleep`, which on eval under Windows times a
+  yield in 15.6 ms ticks of CPU time and sleeps for what is left of the
+  millisecond, a negative remainder, when a tick lands in the yield,
+  that OCaml hands to `Sleep()` as about 49 days. One thread doing nothing
+  else stalled in five of six minute-long runs, and the case hung in 2 of
+  20. The pump loops sleep through `System.sleep` now.
+- An HTTP request that cannot connect says why, as in `Connection Failed:
+  X509 - Certificate verification failed` natively or the JDK's `PKIX path
+  building failed` on the jvm. Every failure, an untrusted or expired
+  certificate or a refused port alike, read `Connection Failed` and
+  nothing more.
+- HTTP/2 on Node and in the browser refuses a NUL in a field, as it does
+  on the other targets. The HPACK decoder read each string with
+  `Bytes.toString`, which on JavaScript stops at the first NUL, so a field
+  holding one arrived as the part before it: the NUL that RFC 9113 makes
+  it malformed for never reached the check, and the rest of the value was
+  dropped without a word.
+- `URLLoader` on Node decodes a compressed response, with Node's zlib and
+  within `maxDecompressedSize`, as the other targets' clients do: gzip, br,
+  deflate (zlib-wrapped or raw) and lz4, two stacked at most. It handed the
+  body on as it came, so a gzip JSON answer arrived as garbage, and it
+  sends `Accept-Encoding: identity` unless told otherwise, as the native
+  client does. A body that cannot be read as the loader's `dataFormat`,
+  text that is not UTF-8, is an `IO_ERROR` on every target, with the bytes
+  in `data`: on Node it threw a RangeError out of the completion, which
+  ended the process.
+- An HTTP/2 request's connect and TLS handshake are held to its timeout,
+  and its cancel reaches them. A server that accepted TCP and never
+  answered the handshake held the request for good, and every other
+  request to its origin, which waited behind the connect on a lock with no
+  deadline: three requests had no outcome in 15 seconds, and a cancel did
+  nothing. A request waiting on another's connect now leaves at its own
+  timeout, or at once when cancelled, and is told how that connect failed
+  rather than making it again in turn. A timed-out handshake says so,
+  where natively it read as "Blocked".
+- The HTTP/1.1 client holds a response's header section to 64 KB,
+  `Http.MAX_RESPONSE_HEADER_BYTES`, the limit the server holds a request's
+  to. It read header lines for as long as a server sent them, one line for
+  as long as it went without ending, and 1xx responses for as long as they
+  kept coming, during which the idle timeout never fired, so a server,
+  or one a redirect led to, chose how much memory and time the client
+  spent. Trailers are held to the same limit, a chunk-size line to 4 KB,
+  repeated fields are joined once rather than each onto everything before
+  it, and the cookie jar keeps 180 cookies a host and ignores one longer
+  than 4,096 characters, where it kept every one and read through all of
+  them on each request.
+- The cookies `URLRequest.manageCookies` carries across a redirect match
+  their host whatever its case, and are kept per host. A cookie set by
+  `Example.com` was not sent to `example.com`, so a redirect that changed
+  only the host's case kept the caller's credentials and lost the session;
+  a second host setting a cookie of the same name replaced the first
+  host's; and a host's cookies went back in an order that differed by
+  target. They go back in the order they were set.
+- HTTP/2 refuses a field holding a CR, LF or NUL in its value, or a name
+  that is not visible lowercase ASCII, as RFC 9113 8.2.1 says: on the
+  server the request's stream is reset, and in the client the response
+  fails, both leaving the connection to its other streams. HPACK carries
+  any byte, so a line break reached the request a middleware saw, and a
+  response header the caller might pass on over HTTP/1.1.
+- The HTTP/2 server sends `Set-Cookie`, `WWW-Authenticate`,
+  `Proxy-Authenticate` and any `Authorization` or `Cookie` a response
+  carries never-indexed. Every response field went into the HPACK dynamic
+  table, session tokens included, where RFC 7541 7.1.3 says an entry's
+  presence can be inferred from the compressed size of a later response an
+  attacker can influence, and one-off tokens evict the entries worth
+  keeping. The client already sent its own credentials this way.
+- HTTP/2 on hl sends the headers it was given. HPACK found a static-table
+  pair by its name and value joined with a NUL, and a HashLink string ends
+  at its first NUL, so every pair of one name looked the same and the last
+  one won: `:method GET` went out as POST, `:scheme http` as https and
+  `:status 200` as 500, both ways. The table is kept as a map per name now.
+- One HTTP/2 request can no longer hold the server for tens of seconds. A
+  header section could decode to eight megabytes, a limit never advertised,
+  and repeated fields were joined by appending each to everything before
+  it: 200,000 one-byte references to one cookie crumb, about 200 KB on the
+  wire, held the runtime's thread for 23.5 seconds, and every other client
+  with it. The server now advertises `SETTINGS_MAX_HEADER_LIST_SIZE` of 64
+  KB, the limit an HTTP/1.1 request's header block already had, and answers
+  a section past it `431` on that stream alone: the block is still decoded
+  to its end, so the connection and its other requests carry on (the same
+  request now takes 54 ms on the jvm, the 431 included). Repeated fields
+  are collected and joined once, on both versions. The HTTP/2 client holds
+  a response to the same 64 KB, advertised, and refuses one past it without
+  losing the connection, joins repeats once, and ends a connection whose
+  header block runs on through CONTINUATION frames past 256 KB, as the
+  server already did.
+- Requests to an IPv6 literal carry its brackets. `URL` takes them off
+  `[2001:db8::1]:8080`, and both clients put the host back bare, so `Host`
+  and `:authority` read `2001:db8::1:8080`, which no server can split, and
+  a relative redirect from such a host named `http://::1:8080/...`, which is
+  not a URL. And `Host`, and a relative redirect, dropped the port for 80
+  and 443 whatever the scheme: `http://host:443/` was sent as `Host: host`,
+  which means port 80.
+- A URL can no longer add a header to the request made from it. `URL` kept
+  control characters, and the HTTP/1.1 client wrote the path, query and host
+  into the request line and `Host` as they were, so
+  `http://host/a\r\nX-Injected: evil` put that header on the wire, and a
+  longer URL could smuggle a second request. `URL` now refuses a control
+  character anywhere, and a space in the host. The request target is
+  percent-encoded where it holds a space or anything past ASCII (a space ended
+  it early), `User-Agent`, `Host` and `Content-Type` are sanitised as the
+  caller's own header lines already were, and a method that is not an HTTP
+  token, `URLRequest.method` takes any string, is refused before anything
+  is sent. The HTTP/2 client encodes `:path` and sanitises its header values
+  the same way, the Node and browser clients report a method or header their
+  runtime refuses as an `IO_ERROR` rather than throwing out of `load()`, and
+  a `Set-Cookie` holding a control character other than a tab is ignored, as
+  RFC 6265bis says, instead of going back out in `Cookie`.
+- Concurrent first HTTP/2 requests all find the bundled backend. It marked
+  itself registered and was only added once the registry's lock was let go,
+  so a request arriving in between found the mark, no backend, and failed
+  with "HTTP/2 has no registered HTTPBackend": 5 of 6 concurrent first
+  requests on the jvm, and the http2 sample every time.
 - Metrics, `Future`, `ConnectionPool` and `ProcessLifecycle` take their locks
   on eval too. Their locks were gated on neko, hl and the jvm by name, which
   left out eval, threaded since workers became real threads there, so a

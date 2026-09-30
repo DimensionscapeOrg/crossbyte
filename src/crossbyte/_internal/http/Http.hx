@@ -63,6 +63,26 @@ class Http {
 	public static var MAX_DECOMPRESSED_BODY_SIZE:Int = 64 * 1024 * 1024;
 
 	/**
+	 * Bytes a response's header section may take, its status line, its
+	 * header lines, and any informational (1xx) responses ahead of it, and,
+	 * separately, the trailers after a chunked body. Defaults to 64 KB, the
+	 * limit the server holds a request's header block to; `<= 0` disables it.
+	 *
+	 * Nothing bounded it. The client read header lines for as long as a
+	 * server sent them, a single line for as long as it went without ending,
+	 * and 1xx responses for as long as they kept coming, so the server chose
+	 * how much memory and time the client spent before a byte of the body.
+	 */
+	public static var MAX_RESPONSE_HEADER_BYTES:Int = 64 * 1024;
+
+	/**
+	 * Bytes one chunk-size line may take, extensions included. A size is
+	 * seven hex digits at most here, and no extension anyone sends is long;
+	 * one that never ended was read for as long as the server kept it going.
+	 */
+	private static inline var MAX_CHUNK_LINE:Int = 4096;
+
+	/**
 	 * Content codings one response may stack. Defaults to 2.
 	 *
 	 * They multiply: each pass expands what the one before it produced, so
@@ -101,6 +121,23 @@ class Http {
 	 * reachable at all.
 	 */
 	public var cancelToken:HTTPCancelToken = new HTTPCancelToken();
+
+	/**
+		The most bytes this response may decode to; `<= 0` removes the limit.
+		`MAX_DECOMPRESSED_BODY_SIZE` unless the request says otherwise:
+		`URLRequest.maxDecompressedSize` sets it, per load.
+	**/
+	public var maxDecompressedSize:Int = MAX_DECOMPRESSED_BODY_SIZE;
+
+	/**
+		The TLS an `https` request asks for, or null for the defaults:
+		`URLRequest.verifyCert`, `certAuthority`, `clientCertificate`,
+		`clientKey` and `pinnedPublicKeys`, which `URLLoader` gathers here.
+	**/
+	public var tls:Null<crossbyte.http.HTTPTLSOptions> = null;
+
+	// Set once a redirect has left the origin the request was made to.
+	private var __leftOrigin:Bool = false;
 
 	private var __socket:FlexSocket;
 	private var __url:URL;
@@ -199,6 +236,16 @@ class Http {
 	public function load():Void {
 		__redirect = false;
 
+		// A method is a token or it is not one, whichever version carries it.
+		// URLRequest.method takes any string, and HTTP/1.1 wrote it first on
+		// the request line as given: a "method" holding a line break and a
+		// request of its own put that request on the connection.
+		if (!HttpSyntax.isToken(__method)) {
+			__settled = false;
+			__fail("Refused the request: its method is not an HTTP token");
+			return;
+		}
+
 		if (!__usesBuiltInBackend()) {
 			__loadWithBackend();
 			return;
@@ -232,6 +279,7 @@ class Http {
 	}
 
 	private function __load():Void {
+		__leftOrigin = false;
 		if (__isAborted()) {
 			// Cancelled before it started: the handler ran as it was added.
 			__fail(CANCELLED);
@@ -284,6 +332,9 @@ class Http {
 						if (!credentialsDropped && __originOf(url) != origin) {
 							credentialsDropped = true;
 							__headers = __withoutCredentials(__headers);
+							// The client certificate too, which was meant for the
+							// server the caller named.
+							__leftOrigin = true;
 						}
 
 						var method:String = __methodAfterRedirect(__status, __method);
@@ -344,10 +395,14 @@ class Http {
 		return (status == 301 || status == 302 || status == 303) && method != "HEAD" ? "GET" : method;
 	}
 
-	/** `scheme://host:port`, which is what two URLs share when they share an origin. */
+	/**
+	 * `scheme://host:port`, which is what two URLs share when they share an
+	 * origin. An IPv6 host is bracketed, as it is written in a URL, so the
+	 * port cannot be read as part of it.
+	 */
 	@:allow(crossbyte.http.HTTP2Backend)
 	private static function __originOf(url:URL):String {
-		return url.scheme + "://" + url.host.toLowerCase() + ":" + url.port;
+		return url.scheme + "://" + HttpSyntax.authority(url.host.toLowerCase(), url.port, -1);
 	}
 
 	/**
@@ -437,6 +492,8 @@ class Http {
 	 * as it did the close; so on eval under Windows only the writing side is
 	 * shut down, and the read ends when the peer closes in answer.
 	 */
+	@:allow(crossbyte.http.HTTP2Backend)
+	@:allow(crossbyte._internal.http.h2.H2ClientSession)
 	private static function __interrupt(socket:FlexSocket):Void {
 		try {
 			socket.shutdown(__shutDownReads, true);
@@ -612,6 +669,8 @@ class Http {
 				__url = new URL(location);
 				__redirect = true;
 			},
+			maxDecompressedSize: maxDecompressedSize,
+			tls: tls,
 			onProgress: onProgress,
 			onError: onError,
 			onComplete: onComplete,
@@ -709,7 +768,7 @@ class Http {
 				case "chunked":
 					var buffer:BytesBuffer = new BytesBuffer();
 					while (true) {
-						var sizeLine:String = __readLine();
+						var sizeLine:String = __readLine(MAX_CHUNK_LINE);
 						if (sizeLine == null) {
 							throw "Unexpected EOF while reading chunk size";
 						}
@@ -734,11 +793,19 @@ class Http {
 						}
 
 						if (chunkSize == 0) {
+							// Trailers are a header section of their own, held to
+							// the same limit; they were read for as long as the
+							// server sent them.
+							var budget:Int = MAX_RESPONSE_HEADER_BYTES > 0 ? MAX_RESPONSE_HEADER_BYTES : 0x7FFFFFFF;
 							var trailer:String = "";
 							do {
-								trailer = __readLine();
+								trailer = __readLine(budget);
 								if (trailer == null) {
 									throw "Unexpected EOF while reading trailers";
+								}
+								budget -= __lineBytes + 1;
+								if (budget < 0) {
+									throw new LineTooLong(MAX_RESPONSE_HEADER_BYTES);
 								}
 
 								trailer = StringTools.trim(trailer);
@@ -854,16 +921,21 @@ class Http {
 	}
 
 	@:noCompletion private function __decodeResponseBody(data:Bytes):Bytes {
-		return decodeResponseBody(data, __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null);
+		return decodeResponseBody(data, __responseHeaders.exists(HEADER_CONTENT_ENCODING) ? __responseHeaders.get(HEADER_CONTENT_ENCODING) : null,
+			maxDecompressedSize);
 	}
 
 	/**
 	 * Undoes a response's content codings, within `MAX_CONTENT_CODINGS` and
-	 * `MAX_DECOMPRESSED_BODY_SIZE`. Throws the coding's name, a `String`, for
-	 * one this build cannot decode, and an exception for a body past the
-	 * limits. Shared with the HTTP/2 backend, which did not decode at all.
+	 * `limit`: `MAX_DECOMPRESSED_BODY_SIZE` unless given. Throws the
+	 * coding's name, a `String`, for one this build cannot decode, and an
+	 * exception for a body past the limits. Shared with the HTTP/2 backend,
+	 * which did not decode at all.
 	 */
-	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>):Bytes {
+	@:noCompletion public static function decodeResponseBody(data:Bytes, header:Null<String>, ?limit:Int):Bytes {
+		if (limit == null) {
+			limit = MAX_DECOMPRESSED_BODY_SIZE;
+		}
 		if (data == null || data.length == 0) {
 			return data;
 		}
@@ -909,7 +981,7 @@ class Http {
 
 		var payload:ByteArray = data;
 		for (i in 0...encodings.length) {
-			payload.uncompress(encodings[encodings.length - 1 - i], MAX_DECOMPRESSED_BODY_SIZE);
+			payload.uncompress(encodings[encodings.length - 1 - i], limit > 0 ? limit : 0);
 		}
 
 		return payload;
@@ -929,7 +1001,9 @@ class Http {
 		var kept:Null<FlexSocket> = null;
 		#if (sys && !eval)
 		if (__pooling() && __repeatable()) {
-			kept = HttpConnectionPool.take(__originOf(__url));
+			// Only a connection opened under the same TLS: one that did not
+			// check its server must not carry a request that does.
+			kept = HttpConnectionPool.take(__originOf(__url), __poolTls());
 		}
 		#end
 
@@ -967,6 +1041,7 @@ class Http {
 			__responseHeaders = new StringMap();
 		}
 
+		var hopTls:Null<crossbyte.http.HTTPTLSOptions> = __poolTls();
 		try {
 			var socket:FlexSocket = new FlexSocket(__url.ssl);
 			if (!__adopt(socket)) {
@@ -977,11 +1052,19 @@ class Http {
 			// so a 30 second idle timeout waited 30,000 seconds. The same
 			// conversion, and the same 30 second fallback, as the HTTP/2 backend.
 			socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			if (hopTls != null) {
+				hopTls.configure(socket);
+			}
 			socket.connect(__url.host, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
 			__close();
-			__fail("Connection Failed");
+			// With the reason. Every failure read "Connection Failed" alone,
+			// an untrusted, expired or misnamed certificate, a refused port,
+			// where the WebSocket client beside this one said which. A timeout
+			// is said as one: natively it would read "Blocked".
+			__fail("Connection Failed: "
+				+ (__isTimeout(e) ? '${__url.host}:${__url.port} did not answer within ${__timeout > 0 ? __timeout / 1000 : 30} s' : __describe(e)));
 			return;
 		}
 
@@ -995,8 +1078,68 @@ class Http {
 			return;
 		}
 
+		// After the handshake and before a byte of the request.
+		if (hopTls != null) {
+			var refusal:Null<String> = hopTls.checkPins(__socket);
+			if (refusal != null) {
+				__close();
+				__fail(refusal);
+				return;
+			}
+		}
+
 		__handleRequest();
 		__handleResponse();
+	}
+
+	/**
+		The TLS this hop is made under, for an `https` URL, or null for a
+		plain one or the defaults: the request's, less its client certificate
+		once a redirect has left the origin it was made to.
+	**/
+	private function __poolTls():Null<crossbyte.http.HTTPTLSOptions> {
+		if (tls == null || !__url.ssl || tls.isDefault()) {
+			return null;
+		}
+		return __leftOrigin ? tls.withoutClientCertificate() : tls;
+	}
+
+	/**
+		Whether `error`, out of a connect, is the socket's timeout running
+		out: `Blocked` natively, the read the TLS handshake was waiting on
+		having timed out, and on the jvm a `Custom` naming the timeout, its
+		handshake holding to the deadline and saying so. Neither says what
+		happened to a caller as it stands.
+	**/
+	@:allow(crossbyte.http.HTTP2Backend)
+	private static function __isTimeout(error:Dynamic):Bool {
+		if (!Std.isOfType(error, haxe.io.Error)) {
+			return false;
+		}
+		return switch ((error : haxe.io.Error)) {
+			case Blocked: true;
+			case Custom(detail): StringTools.startsWith(Std.string(detail), "Timeout");
+			default: false;
+		}
+	}
+
+	/**
+		What an error says, for a message: a haxe.Exception's text, what a
+		`haxe.io.Error.Custom` carries rather than the wrapper around it, or
+		the value.
+	**/
+	private static function __describe(error:Dynamic):String {
+		if (Std.isOfType(error, haxe.Exception)) {
+			return (error : haxe.Exception).message;
+		}
+		if (Std.isOfType(error, haxe.io.Error)) {
+			switch ((error : haxe.io.Error)) {
+				case Custom(detail):
+					return Std.string(detail);
+				default:
+			}
+		}
+		return Std.string(error);
 	}
 
 	/** Whether connections are kept for reuse: everywhere with threads but eval. */
@@ -1034,7 +1177,7 @@ class Http {
 					// shut down under the response: not one to keep.
 					__closeQuietly(socket);
 				} else {
-					HttpConnectionPool.put(__originOf(__url), socket);
+					HttpConnectionPool.put(__originOf(__url), socket, __poolTls());
 				}
 			}
 			return;
@@ -1050,10 +1193,28 @@ class Http {
 
 		var line:String = '';
 		var first:Bool = true;
+		// What the section may still take. Interim responses count against it
+		// too: a server sending 1xx after 1xx held the client in this loop for
+		// as long as it liked, and the socket's idle timeout never fired,
+		// since the bytes kept coming.
+		var budget:Int = MAX_RESPONSE_HEADER_BYTES > 0 ? MAX_RESPONSE_HEADER_BYTES : 0x7FFFFFFF;
+		// Repeats of one field, joined once the block ends. Appending each to
+		// the whole value so far was quadratic in the repeats, and the server
+		// chooses how many there are.
+		var repeats:Null<StringMap<Array<String>>> = null;
 		while (true) {
 			try {
-				line = __readLine();
+				line = __readLine(budget);
+				budget -= __lineBytes + 1;
+				if (budget < 0) {
+					throw new LineTooLong(MAX_RESPONSE_HEADER_BYTES);
+				}
 			} catch (e:Dynamic) {
+				if (Std.isOfType(e, LineTooLong)) {
+					__close();
+					__fail("Response header section exceeded " + MAX_RESPONSE_HEADER_BYTES + " bytes");
+					return;
+				}
 				if (first && __reusedSocket) {
 					// A kept connection the server had already closed. Nothing
 					// of a response arrived, so the request goes again on a new
@@ -1091,6 +1252,7 @@ class Http {
 				if (__status >= 100 && __status < 200) {
 					__status = 0;
 					__responseHeaders = new StringMap();
+					repeats = null;
 					continue;
 				}
 				break;
@@ -1116,16 +1278,29 @@ class Http {
 				var key:String = line.substr(0, i).toLowerCase();
 				var value:String = StringTools.trim(line.substr(i + 1));
 
-				if (__responseHeaders.exists(key)) {
-					if (key == "set-cookie") {
-						var prev = __responseHeaders.get(key);
-						__responseHeaders.set(key, prev + "\n" + value);
-					} else {
-						__responseHeaders.set(key, __responseHeaders.get(key) + ", " + value);
-					}
-				} else {
+				var earlier:Null<String> = __responseHeaders.get(key);
+				if (earlier == null) {
 					__responseHeaders.set(key, value);
+					continue;
 				}
+				if (repeats == null) {
+					repeats = new StringMap();
+				}
+				var values:Null<Array<String>> = repeats.get(key);
+				if (values == null) {
+					values = [earlier];
+					repeats.set(key, values);
+				}
+				values.push(value);
+			}
+		}
+
+		if (repeats != null) {
+			// Set-Cookie with a newline, since a cookie's own Expires holds a
+			// comma; every other repeat with a comma, which RFC 9110 5.3 makes
+			// equivalent.
+			for (key => values in repeats) {
+				__responseHeaders.set(key, values.join(key == "set-cookie" ? "\n" : ", "));
 			}
 		}
 
@@ -1142,26 +1317,39 @@ class Http {
 		onHeaders(__responseHeaders);
 	}
 
+	/** Bytes the last `__readLine` took, its line ending's LF aside. */
+	private var __lineBytes:Int = 0;
+
 	/**
 	 * One line of the response without its line ending, or `Eof` when the
-	 * stream ends before any of it.
+	 * stream ends before any of it. Throws `LineTooLong` once more than
+	 * `limit` bytes have arrived without the line ending: this was
+	 * `Input.readLine`, which read a line for as long as the server kept it
+	 * going, into memory, with no bound at all.
 	 *
-	 * `Input.readLine`, except on eval, where a socket's `readByte` answers 0
-	 * at the end of the stream rather than throwing. A server closing without
-	 * an answer read there as endless NUL bytes, so the line never ended and
-	 * `load()` never returned. `readBytes` does report the end, so eval reads
-	 * through it, a byte at a time so nothing past the line is taken from the
-	 * body.
+	 * A byte at a time, as `readLine` read, so nothing past the line is taken
+	 * from the body. On eval through `readBytes`: a socket's `readByte` there
+	 * answers 0 at the end of the stream rather than throwing, so a server
+	 * closing without an answer read as endless NUL bytes, the line never
+	 * ended, and `load()` never returned.
 	 */
-	private function __readLine():String {
-		#if eval
+	private function __readLine(limit:Int):String {
 		var input:haxe.io.Input = __socket.input;
-		var one:Bytes = Bytes.alloc(1);
 		var line:BytesBuffer = new BytesBuffer();
+		var count:Int = 0;
 		var read:Bool = false;
+		#if eval
+		var one:Bytes = Bytes.alloc(1);
+		#end
 		while (true) {
+			var byte:Int;
 			try {
+				#if eval
 				input.readBytes(one, 0, 1);
+				byte = one.get(0);
+				#else
+				byte = input.readByte();
+				#end
 			} catch (e:haxe.io.Eof) {
 				if (!read) {
 					throw e;
@@ -1169,20 +1357,20 @@ class Http {
 				break;
 			}
 			read = true;
-			var byte:Int = one.get(0);
 			if (byte == "\n".code) {
 				break;
 			}
+			if (++count > limit) {
+				throw new LineTooLong(limit);
+			}
 			line.addByte(byte);
 		}
+		__lineBytes = count;
 		var text:String = line.getBytes().toString();
 		if (text.length > 0 && StringTools.fastCodeAt(text, text.length - 1) == "\r".code) {
 			text = text.substr(0, text.length - 1);
 		}
 		return text;
-		#else
-		return __socket.input.readLine();
-		#end
 	}
 
 	/**
@@ -1265,10 +1453,16 @@ class Http {
 			var queryString:String = (combined.length > 0) ? ("?" + combined) : "";
 
 			var path:String = (__url.path != null && __url.path.length > 0) ? __url.path : "/";
-			__socket.output.writeString('${__method} ${path}${queryString} $__version${CRLF}');
-			__socket.output.writeString('User-Agent: ${__userAgent}${CRLF}');
-			var hostHeader:String = (__url.port != 80 && __url.port != 443) ? '${__url.host}:${__url.port}' : __url.host;
-			__socket.output.writeString('Host: ${hostHeader}${CRLF}');
+			// Encoded, and the header values below sanitised, for the reason
+			// the caller's own header lines are: each was written as given, so
+			// a space ended the target early, and a CR or LF in any of them,
+			// the URL's path, the user agent, the content type, ended its
+			// line and began one of the value's choosing.
+			var target:String = HttpSyntax.encodeRequestTarget(path + queryString);
+			__socket.output.writeString('${__method} ${target} $__version${CRLF}');
+			__socket.output.writeString('User-Agent: ${HttpSyntax.sanitizeHeaderValue(__userAgent)}${CRLF}');
+			var hostHeader:String = HttpSyntax.authority(__url.host, __url.port, __url.ssl ? 443 : 80);
+			__socket.output.writeString('Host: ${HttpSyntax.sanitizeHeaderValue(hostHeader)}${CRLF}');
 			if (__version == HttpVersion.HTTP_1_1 && __pooling()) {
 				// Kept for the next request to this origin if the response
 				// allows it: see HttpConnectionPool.
@@ -1332,8 +1526,10 @@ class Http {
 			}
 
 			if (body != null) {
-				if (!hasContentType) {
-					__socket.output.writeString('Content-Type: ${__contentType}${CRLF}');
+				// Bytes handed over with no type went out as "Content-Type:
+				// null"; a body with no Content-Type at all is the honest form.
+				if (!hasContentType && __contentType != null) {
+					__socket.output.writeString('Content-Type: ${HttpSyntax.sanitizeHeaderValue(__contentType)}${CRLF}');
 				}
 				if (!hasContentLength) {
 					__socket.output.writeString('$HEADER_CONTENT_LENGTH: ${body.length}${CRLF}');
@@ -1484,9 +1680,11 @@ class Http {
 		}
 
 		var scheme:String = base.scheme;
-		var host:String = base.host;
-		var port:Int = base.port;
-		var portPart:String = (port != 80 && port != 443) ? (":" + port) : "";
+		// Bracketed for an IPv6 host, and the port kept unless it is the
+		// scheme's own: the host went in bare, so a relative redirect from
+		// [::1]:8080 named http://::1:8080/, which is not a URL, and one from
+		// http://host:443/ lost its port.
+		var authority:String = HttpSyntax.authority(base.host, base.port, base.ssl ? 443 : 80);
 
 		if (StringTools.startsWith(loc, "//")) {
 			return scheme + ":" + loc;
@@ -1494,23 +1692,23 @@ class Http {
 
 		var basePath:String = (base.path != null && base.path.length > 0) ? base.path : "/";
 		if (StringTools.startsWith(loc, "?")) {
-			return scheme + "://" + host + portPart + __normalizeReferencePath(basePath + loc);
+			return scheme + "://" + authority + __normalizeReferencePath(basePath + loc);
 		}
 
 		if (StringTools.startsWith(loc, "#")) {
 			var baseQuery:String = (base.query != null && base.query.length > 0) ? ("?" + base.query) : "";
-			return scheme + "://" + host + portPart + __normalizeReferencePath(basePath + baseQuery + loc);
+			return scheme + "://" + authority + __normalizeReferencePath(basePath + baseQuery + loc);
 		}
 
 		if (loc.charAt(0) == "/") {
-			return scheme + "://" + host + portPart + __normalizeReferencePath(loc);
+			return scheme + "://" + authority + __normalizeReferencePath(loc);
 		}
 
 		var slash:Int = basePath.lastIndexOf("/");
 		var dir:String = (slash >= 0) ? basePath.substr(0, slash + 1) : "/";
 		var joined:String = dir + loc;
 
-		return scheme + "://" + host + portPart + __normalizeReferencePath(joined);
+		return scheme + "://" + authority + __normalizeReferencePath(joined);
 	}
 
 	private static function __normalizeReferencePath(pathWithQuery:String):String {
@@ -1550,6 +1748,13 @@ class Http {
 		}
 
 		return normalized + suffix;
+	}
+}
+
+/** A line, or a section of lines, of a response ran past its limit. */
+private class LineTooLong extends haxe.Exception {
+	public function new(limit:Int) {
+		super("A line of the response ran past its " + limit + " byte limit");
 	}
 }
 #end
