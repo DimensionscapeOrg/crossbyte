@@ -1,5 +1,6 @@
 package crossbyte.fuzz;
 
+import crossbyte._internal.brotli.Brotli;
 import crossbyte._internal.deflatex.Deflater;
 import crossbyte._internal.deflatex.Inflater;
 import crossbyte._internal.http.h2.hpack.HpackDecoder;
@@ -136,13 +137,18 @@ class ParserFuzzTest extends utest.Test {
 		var bombs:Array<{name:String, run:Bytes->Int}> = [
 			{name: "Lz4", run: b -> Lz4.decompress(b, CEILING).length},
 			{name: "Inflater", run: b -> Inflater.apply(b, CEILING).length},
+			{name: "Brotli", run: b -> Brotli.decompress(b, CEILING).length},
 		];
 
 		var zeros:Bytes = Bytes.alloc(CEILING * 4);
 
 		for (bomb in bombs) {
 			// A real bomb first: four times the ceiling from a tiny stream.
-			var packed:Bytes = bomb.name == "Lz4" ? Lz4.compress(zeros) : Deflater.apply(zeros);
+			var packed:Bytes = switch (bomb.name) {
+				case "Lz4": Lz4.compress(zeros);
+				case "Brotli": Brotli.compress(zeros);
+				default: Deflater.apply(zeros);
+			}
 			Assert.raises(() -> bomb.run(packed), null, bomb.name + " decoded past its ceiling");
 
 			// Then nonsense, which must either refuse or stay inside it.
@@ -199,6 +205,15 @@ class ParserFuzzTest extends utest.Test {
 				name: "Lz4.decompress",
 				seed: () -> Lz4.compress(Bytes.ofString("the quick brown fox jumps over the lazy dog")),
 				run: b -> Lz4.decompress(b, CEILING)
+			},
+			{
+				// The one wire decoder this file did not have, and the one that
+				// hung: four bytes declaring a metadata block and then ending
+				// kept it looping for good. A mutation fuzzer finds that in a
+				// couple of hundred inputs, which is fewer than one pass here.
+				name: "Brotli.decompress",
+				seed: () -> Brotli.compress(Bytes.ofString("the quick brown fox jumps over the lazy dog, then the quick brown fox jumps again")),
+				run: b -> Brotli.decompress(b, CEILING)
 			},
 			{
 				name: "PostgresWire.decodeResult",
