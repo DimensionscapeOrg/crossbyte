@@ -21,6 +21,13 @@ final class NativeSocketRegistry {
 	@:noCompletion private var __writableSwap:Stack<Socket>;
 	@:noCompletion private var __readSnapshot:Array<Socket>;
 
+	// Sockets watched for becoming writable: a connect in flight, finished
+	// the moment the system says so rather than at the next tick. Polled from
+	// a copy, since a connect that finishes leaves the set from inside the
+	// dispatch that reports it.
+	@:noCompletion private var __writeSet:DenseSet<Socket>;
+	@:noCompletion private var __writeSnapshot:Array<Socket>;
+
 	public var capacity(get, null):Int;
 	public var size(get, null):Int;
 	public var isEmpty(get, null):Bool;
@@ -46,7 +53,7 @@ final class NativeSocketRegistry {
 	}
 
 	public inline function get_isEmpty():Bool {
-		return __set.isEmpty;
+		return __set.isEmpty && __writeSet.isEmpty;
 	}
 
 	private inline function get_size():Int {
@@ -62,6 +69,8 @@ final class NativeSocketRegistry {
 		__writableQueue = new Stack();
 		__writableSwap = new Stack();
 		__readSnapshot = [];
+		__writeSet = new DenseSet();
+		__writeSnapshot = null;
 	}
 
 	public inline function clear():Void {
@@ -72,6 +81,8 @@ final class NativeSocketRegistry {
 		__writableQueue.clear();
 		__writableSwap.clear();
 		__readSnapshot.resize(0);
+		__writeSet.clear();
+		__writeSnapshot = null;
 		__isDirty = true;
 	}
 
@@ -82,16 +93,34 @@ final class NativeSocketRegistry {
 
 		if (__set.add(socket)) {
 			__isDirty = true;
-
-			if (__set.length > capacity) {
-				__grow();
-			}
+			__ensureCapacity();
 		}
 	}
 
 	public inline function deregister(socket:Socket):Void {
 		if (__set.contains(socket) && __deregisterPending.add(socket)) {
 			__deregisterQueue.push(socket);
+		}
+		if (__writeSet.remove(socket)) {
+			__isDirty = true;
+		}
+	}
+
+	/**
+		Reports `socket` to its `registryOnWritable` once it can be written
+		to, until `unwatchWritable`: how a connect in flight is finished as
+		soon as the system finishes it.
+	**/
+	public inline function watchWritable(socket:Socket):Void {
+		if (__writeSet.add(socket)) {
+			__isDirty = true;
+			__ensureCapacity();
+		}
+	}
+
+	public inline function unwatchWritable(socket:Socket):Void {
+		if (__writeSet.remove(socket)) {
+			__isDirty = true;
 		}
 	}
 
@@ -125,13 +154,14 @@ final class NativeSocketRegistry {
 			__isDirty = true;
 		}
 
-		if (__set.isEmpty) {
+		if (__set.isEmpty && __writeSet.isEmpty) {
 			return;
 		}
 
 		if (__isDirty) {
 			__readSnapshot = __set.keys;
-			__poll.prepare(__readSnapshot, null);
+			__writeSnapshot = __writeSet.isEmpty ? null : __writeSet.toArray();
+			__poll.prepare(__readSnapshot, __writeSnapshot);
 			__isDirty = false;
 		}
 
@@ -150,6 +180,24 @@ final class NativeSocketRegistry {
 			}
 			__dispatchReadable(__readSnapshot[i]);
 		}
+
+		var watched:Array<Socket> = __writeSnapshot;
+		if (watched != null) {
+			for (i in __poll.writeIndexes) {
+				if (i == -1) {
+					break;
+				}
+				__dispatchWritable(watched[i]);
+			}
+		}
+	}
+
+	@:noCompletion private inline function __ensureCapacity():Void {
+		// Both lists count: a backend is prepared with the two together, and
+		// refuses more than it was made for.
+		if (__set.length + __writeSet.length > __capacity) {
+			__grow();
+		}
 	}
 
 	@:noCompletion private inline function __grow():Void {
@@ -166,6 +214,21 @@ final class NativeSocketRegistry {
 				cb.registryOnReadable();
 			} catch (error:Dynamic) {
 				__handlerThrew(error, cb);
+			}
+		}
+	}
+
+	@:noCompletion private inline function __dispatchWritable(socket:Socket):Void {
+		// Only while it is still watched: a connect finished by the readable
+		// dispatch above has already been announced.
+		if (__writeSet.contains(socket)) {
+			var cb:IPollableSocket = cast socket.custom;
+			if (cb != null && !cb.registryClosed) {
+				try {
+					cb.registryOnWritable();
+				} catch (error:Dynamic) {
+					__handlerThrew(error, cb);
+				}
 			}
 		}
 	}

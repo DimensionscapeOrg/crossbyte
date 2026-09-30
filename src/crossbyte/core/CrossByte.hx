@@ -1105,6 +1105,20 @@ final class CrossByte extends EventDispatcher {
 			__socketRegistry.queueWritable(socket);
 		}
 	}
+
+	// A connect in flight, reported once the socket is writable, so it is
+	// announced from the poll rather than at the next tick.
+	@:noCompletion private inline function watchWritable(socket:Socket):Void {
+		if (__socketRegistry != null) {
+			__socketRegistry.watchWritable(socket);
+		}
+	}
+
+	@:noCompletion private inline function unwatchWritable(socket:Socket):Void {
+		if (__socketRegistry != null) {
+			__socketRegistry.unwatchWritable(socket);
+		}
+	}
 	#end
 
 	@:noCompletion private inline function __setup():Void {

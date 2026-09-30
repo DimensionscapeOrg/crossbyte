@@ -259,6 +259,11 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	private var __registered:Bool = false;
 	private var __writeQueued:Bool = false;
 
+	// A client's connect in flight, and a TLS handshake in flight, either
+	// end: what the registry's calls step while they last, rather than read.
+	private var __dialing:Bool = false;
+	private var __handshaking:Bool = false;
+
 	// The ends of the connection, noted once it is open.
 	private var __remoteAddress:String = "";
 	private var __remotePort:Int = 0;
@@ -614,7 +619,21 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			// connection that could never come.
 			if (!BlockedError.isBlocked(e)) {
 				__connectFailure = Std.string(e);
+				return;
 			}
+		}
+
+		// Watched in the poll set, so the connect is taken up as soon as the
+		// system finishes it, as crossbyte.net.Socket's is: from the tick
+		// alone it waited for the next frame. For reading too, which is where
+		// a refused connect is reported on Windows. The tick stays, for the
+		// deadline.
+		if (__runtime != null && __socket != null) {
+			__dialing = true;
+			__socket.custom = this;
+			@:privateAccess __runtime.registerSocket(__socket);
+			@:privateAccess __runtime.watchWritable(__socket);
+			__registered = true;
 		}
 	}
 
@@ -637,12 +656,17 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			return;
 		}
 
-		if (!__connected) {
-			var sockets:Dynamic = FlexSocket.select(null, [__socket], null, 0);
+		if (!__connected && !__handshaking) {
+			// Asked about the exception set too: a refused connect is
+			// reported there on Windows and never becomes writable, so it sat
+			// here until the deadline, ten seconds by default for a refusal
+			// the system had reported at once.
+			var sockets:Dynamic = FlexSocket.select(null, [__socket], [__socket], 0);
 
 			if (sockets.write[0] == __socket) {
 				__onConnect();
-			} else if (haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
+			} else if ((sockets.others != null && sockets.others[0] == __socket)
+				|| haxe.Timer.stamp() - __timestamp > connectTimeout / 1000) {
 				// The reason first, then the close, so a listener that tears
 				// down on close has already been told why.
 				__onError("Failed to connect to server");
@@ -669,12 +693,35 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	 * read.
 	 */
 	public function registryOnReadable():Void {
+		#if !nodejs
+		// A connect or a TLS handshake still in flight is stepped rather than
+		// read: each was stepped only from the tick, so a connect waited for
+		// the next frame, and a handshake waited a frame per round trip.
+		if (__dialing) {
+			__onTickConnect(null);
+			return;
+		}
+		if (__handshaking) {
+			__onTickSSLHandshake(null);
+			return;
+		}
+		#end
 		__readAvailable();
 	}
 
 	/** A write that could not finish is retried. **/
 	public function registryOnWritable():Void {
 		__writeQueued = false;
+		#if !nodejs
+		if (__dialing) {
+			__onTickConnect(null);
+			return;
+		}
+		if (__handshaking) {
+			__onTickSSLHandshake(null);
+			return;
+		}
+		#end
 		__flushPendingOutput();
 	}
 
@@ -1669,8 +1716,17 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 
 	#if !nodejs
 	private function __onConnect():Void {
+		// Connected: from here the socket is watched for reading only.
+		__dialing = false;
+		if (__registered && __runtime != null) {
+			@:privateAccess __runtime.unwatchWritable(__socket);
+		}
+
 		if (__secure) {
 			__initSSLHandshake();
+			// The client speaks first: its hello goes now, where it waited
+			// for the next tick to be sent at all.
+			__onTickSSLHandshake(null);
 		} else {
 			__openConnection(__tickConnectListener);
 		}
@@ -1813,12 +1869,29 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	private function __initSSLHandshake():Void {
 		__timeout = 3000;
 		__timestamp = haxe.Timer.stamp();
+		__handshaking = true;
 
 		__runtime.removeEventListener(Event.TICK, __tickConnectListener);
 		__runtime.addEventListener(Event.TICK, __tickSSLHandshakeListener);
+
+		// In the poll set, so each flight the peer sends steps the handshake
+		// as it lands; the tick stays for the deadline, and for a flight of
+		// this side's own that could not all be written at once. A client's
+		// socket is there already, from its connect.
+		if (!__registered && __socket != null) {
+			__socket.custom = this;
+			@:privateAccess __runtime.registerSocket(__socket);
+			__registered = true;
+		}
 	}
 
 	private function __onTickSSLHandshake(e:Event):Void {
+		// Stepped from the tick and from the poll set alike, so one that has
+		// finished either way is not stepped again.
+		if (!__handshaking) {
+			return;
+		}
+
 		// Three outcomes, kept distinct: completed, needs more data, or
 		// failed. Previously a non-`Blocked` error left the "retry" flag
 		// clear and fell through to __openConnection(), treating a failed
@@ -1840,6 +1913,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		}
 
 		if (complete) {
+			__handshaking = false;
 			__openConnection(__tickSSLHandshakeListener);
 			return;
 		}
@@ -1850,6 +1924,7 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		// the client refused is the one failure here worth reading.
 		var expired:Bool = haxe.Timer.stamp() - __timestamp > __timeout / 1000;
 		if (failure != null || expired) {
+			__handshaking = false;
 			__runtime.removeEventListener(Event.TICK, __tickSSLHandshakeListener);
 			__onError(failure != null ? "TLS handshake failed: " + failure : "TLS handshake timed out");
 			__close(1015);
@@ -2000,6 +2075,8 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 		}
 
 		__closeWhenDrained = false;
+		__dialing = false;
+		__handshaking = false;
 		#if !nodejs
 		__resolving = false;
 		#end
