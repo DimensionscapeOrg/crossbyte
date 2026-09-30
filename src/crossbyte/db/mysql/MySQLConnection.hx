@@ -95,8 +95,9 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	/**
 		Connects and sets the session up: the character set, time zone and
 		SQL mode `cfg` names. Throws an `ArgumentError` for a charset it will
-		not send, before connecting, and an `IOError` when the server refuses
-		the connection or any of the settings.
+		not send, before connecting, and an `IOError` -- a
+		`MySQLConnectionError`, with the error number and SQLSTATE -- when the
+		server refuses the connection or any of the settings.
 
 		A connection whose setup failed is closed before the error leaves.
 		It was left open -- for the collector, or for good -- so a pool
@@ -206,6 +207,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		__inTransaction = false;
 		__autocommitOff = false;
 		__noBackslashEscapes = false;
+		__savepoints = [];
 		__config = null;
 		__threadId = 0;
 	}
