@@ -1245,6 +1245,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Socket.timeout` holds on Node: a connect not open by then is ended and
+  reported as an `ioError`, a secure one's TLS handshake counted with it,
+  as natively. Node gave a connect no deadline of its own, so one to a
+  server that took the connection and never answered its TLS hello was
+  waited on for good.
 - A `Socket` connected again on Node keeps the new connection. The socket
   given up went on reporting, and its reports were taken for the one that
   replaced it: a refused connect's close, which comes a turn after its
