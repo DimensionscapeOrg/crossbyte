@@ -1,0 +1,110 @@
+name: CrossByte MySQL
+run-name: CrossByte MySQL | ${{ github.event_name }} | ${{ github.ref_name }}
+
+# The native MySQL client against real servers: MySQL 8.4, whose defaults --
+# caching_sha2_password and TLS with a generated certificate -- are what the
+# client could not speak before, and MariaDB 11, whose defaults are the older
+# ones. Everything the driver does is also tested against a fake server in
+# the native suite; this is the check that the fake and a real server agree.
+#
+# It builds against the hxcpp fork's production branch, as ci.yml does, so it
+# needs the fork's MySQL client work (branch fix/mysql-client) merged there.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mysql-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  HAXE_VERSION: "4.3.7"
+  HXCPP_REPO: "https://github.com/dimensionscape/hxcpp.git"
+  HXCPP_REF: "production"
+
+jobs:
+  mysql:
+    name: Data | MySQL (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MySQL 8.4
+            image: mysql:8.4
+            health: "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          - name: MariaDB 11.4
+            image: mariadb:11.4
+            health: "healthcheck.sh --connect --innodb_initialized"
+
+    services:
+      database:
+        image: ${{ matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: crossbyte
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: crossbyte
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "${{ matrix.health }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install Haxe dependencies
+        run: |
+          haxelib install utest --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          # Every native extern includes its Build.xml through
+          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
+          # repository by name.
+          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+
+      - name: Bootstrap hxcpp tools
+        run: |
+          set -euo pipefail
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+
+      - name: Build MySQL integration suite
+        run: haxe ci/mysql-tests.hxml
+
+      # CROSSBYTE_MYSQL_REQUIRED makes an unreachable server a failure rather
+      # than a skip: without it a broken service container would skip every
+      # case and report a green run.
+      - name: Run MySQL integration suite
+        env:
+          CROSSBYTE_MYSQL_REQUIRED: "1"
+          CROSSBYTE_MYSQL_HOST: 127.0.0.1
+          CROSSBYTE_MYSQL_PORT: "3306"
+          CROSSBYTE_MYSQL_USER: root
+          CROSSBYTE_MYSQL_PASSWORD: root
+          CROSSBYTE_MYSQL_DATABASE: crossbyte
+        run: |
+          set -o pipefail
+          ./export/ci-mysql-tests/MySQLIntegrationMain | tee mysql-tests.log
+          # utest reports failures as FAILURE and ERROR, and the exit code of
+          # a run that dies before its report is not to be trusted alone.
+          grep -q "results: ALL TESTS OK" mysql-tests.log

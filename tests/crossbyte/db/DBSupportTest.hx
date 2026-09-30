@@ -323,6 +323,23 @@ class DBSupportTest extends utest.Test {
 	}
 	#end
 
+	#if !cpp
+	public function testAFailedSQLiteOpenIsAnIOError():Void {
+		// Off cpp there is no SQLite to open: on the jvm the JDBC driver is
+		// missing, and the ClassNotFoundException that says so was handed to
+		// IOError where a String belongs -- a ClassCastException instead.
+		var thrown:Dynamic = null;
+
+		try {
+			new SQLiteConnection().open(null, SQLiteMode.CREATE);
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, crossbyte.errors.IOError), "not an IOError: " + Std.string(thrown));
+	}
+	#end
+
 	private static function throwsDynamic(fn:Void->Void):Bool {
 		try {
 			fn();
