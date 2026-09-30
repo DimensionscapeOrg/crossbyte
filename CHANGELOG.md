@@ -796,6 +796,27 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- MySQL and SQLite column values come back exact on the native targets,
+  which changes their types. MySQL `BIGINT` and `INT UNSIGNED`, and every
+  SQLite `INTEGER`, are an `Int` when the value fits in 32 bits and a
+  `haxe.Int64` when it does not: BIGINT was a `Float`, exact only to 2^53,
+  INT UNSIGNED stopped at 2147483647, and SQLite kept only the low 32 bits
+  (1727600000000 read as 1023147008). `DECIMAL` is a `String` holding the
+  exact value, where it was a `Float`. `DATE`, `DATETIME` and `TIMESTAMP`
+  are read as UTC, fractional seconds included: they were read in the
+  local time zone through a 32-bit `mktime`, so a DATE past 2038 read as
+  1904 and one before 1970 as -1000 ms. The zero date `0000-00-00` reads as
+  `null`. A NULL column is in the row, holding `null`, instead of missing
+  from it; a column named by an expression keeps its name (`COUNT(*)` was
+  `???`); `Bytes` is for binary columns only, where a text column with a
+  `_bin` collation was `Bytes` too; `TIME` and `YEAR` are `String`. What to
+  change: take a BIGINT or INTEGER that can pass 2^31 as `var id:haxe.Int64
+  = row.id`, which accepts an `Int` as well; parse a DECIMAL with
+  `Std.parseFloat` where a `Float` is close enough; read a date's fields
+  with `getUTCHours()` and the other UTC getters, and set
+  `MySQLConfig.timeZone` to `"+00:00"` so the server renders TIMESTAMP
+  columns and `NOW()` in UTC as well; look for NULL with `== null` rather
+  than `Reflect.hasField`. From the hxcpp fork (`fix/mysql-client`).
 - `MySQLStatement.execute()` throws an `SQLError` when the server refuses
   the statement, after dispatching the `SQLErrorEvent` it always did. It
   returned normally, so a failed write read as a successful one to any
@@ -1226,6 +1247,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Windows, a `Date` before 1970 can be printed without ending the
+  process, and made from local fields. hxcpp's `Date` turned the CRT's
+  refusal of a time before 1970 into an all-zero date, which `strftime`
+  answered through the invalid-parameter handler that ends the process
+  (0xC0000409) -- a MySQL DATE of 1965, printed, did it -- and `new
+  Date(1965, ...)` read as one second before 1970. `DateTools.makeUtc` is
+  exact arithmetic for any year. From the hxcpp fork (`fix/mysql-client`).
 - A `ConnectionPool` rolls back a MySQL or SQLite transaction that was
   begun as SQL text or by turning autocommit off. `inTransaction` changed
   only in `begin()`, `commit()` and `rollback()`, so a connection released
