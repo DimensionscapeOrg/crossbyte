@@ -431,6 +431,23 @@ jobs:
           haxe compile.hxml
           Pop-Location
 
+      # One compiler cache for the three native builds below, the benchmark,
+      # the suite and the stress suite share the runtime and most of
+      # CrossByte, kept from run to run, so a run compiles what changed.
+      # hxcpp keys an object by its source and flags, so what an older commit
+      # left is simply not used. The key is new every run, so each run saves
+      # what it compiled; the restore takes the newest.
+      - name: Point hxcpp at a compiler cache
+        run: echo "HXCPP_COMPILE_CACHE=$env:RUNNER_TEMP\hxcpp-cache" >> $env:GITHUB_ENV
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\hxcpp-cache
+          key: hxcpp-native-smoke-${{ env.HXCPP_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            hxcpp-native-smoke-${{ env.HXCPP_REF }}-
+
       - name: Build browser (js) target
         run: haxe ci/js-build.hxml
 
@@ -573,6 +590,16 @@ jobs:
           Push-Location (Join-Path $hxcppDir "tools/hxcpp")
           haxe compile.hxml
           Pop-Location
+
+      # The cache the build below fills, kept from run to run as Native
+      # Smoke's is.
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\hxcpp-cache
+          key: hxcpp-native-samples-${{ env.HXCPP_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            hxcpp-native-samples-${{ env.HXCPP_REF }}-
 
       # haxe itself rather than `haxelib run aedifex task`: each sample task in
       # Aedifex.hx runs one hxml from the sample's own directory, which --cwd
