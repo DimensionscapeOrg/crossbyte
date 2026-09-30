@@ -1220,6 +1220,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A closed connection is let go of. The socket registry's writable queue is
+  a `Stack`, whose `clear()` only reset its count, so the backing array held
+  every connection that wrote in a busy pass, and through the system
+  socket's `custom` the whole `Socket`, its buffers and its `userData`,
+  until a later write happened to take its slot; and the select buffer held
+  the last connections polled once nothing was left to poll. 150 closed
+  connections carrying 64 KB of `userData` each all survived five
+  collections on the jvm. `Stack.clear()` empties the slots it counts out,
+  and the registry lets go of its select buffer when its set empties.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
