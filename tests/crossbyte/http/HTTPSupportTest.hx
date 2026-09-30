@@ -321,6 +321,33 @@ class HTTPSupportTest extends utest.Test {
 		Assert.equals("/x/users", RewriteEngine.backrefs("^/API/(.+)$", "/api/users", "/x/$1", true));
 	}
 
+	#if target.threaded
+	/**
+		A thread's compiled patterns and directory listings are its own, on
+		every target with threads. They were held per thread on cpp, neko, hl
+		and the jvm, and shared on eval, which has threads too: runtimes on two
+		threads used one map, and one `EReg`, which carries its last match, so
+		one could read the other's captures.
+	**/
+	public function testTheCachesAreHeldPerThread():Void {
+		var listings = crossbyte._internal.http.DirectoryListings.current();
+		var pattern:EReg = @:privateAccess RewriteEngine.__compile("^/per-thread/(.+)$", false);
+		var theirListings:Dynamic = null;
+		var theirPattern:Dynamic = null;
+		var done = new sys.thread.Lock();
+		sys.thread.Thread.create(() -> {
+			theirListings = crossbyte._internal.http.DirectoryListings.current();
+			theirPattern = @:privateAccess RewriteEngine.__compile("^/per-thread/(.+)$", false);
+			done.release();
+		});
+		Assert.isTrue(done.wait(10.0), "the other thread never finished");
+		Assert.isTrue(listings == crossbyte._internal.http.DirectoryListings.current(), "a thread's listings were not kept for it");
+		Assert.isTrue(pattern == @:privateAccess RewriteEngine.__compile("^/per-thread/(.+)$", false), "a thread's pattern was not kept for it");
+		Assert.isFalse(theirListings == listings, "two threads shared one set of directory listings");
+		Assert.isFalse(theirPattern == pattern, "two threads shared one compiled pattern");
+	}
+	#end
+
 	public function testTryFilesFallsBackToLiteralEntries():Void {
 		var root = File.createTempDirectory();
 		try {
