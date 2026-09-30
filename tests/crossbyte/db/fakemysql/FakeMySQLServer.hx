@@ -945,7 +945,7 @@ class FakeMySQLSession {
 		}
 
 		if (server.password == null) {
-			ok_seq(sequence);
+			__okAt(sequence);
 			return true;
 		}
 
@@ -1023,7 +1023,7 @@ class FakeMySQLSession {
 				return false;
 		}
 
-		ok_seq(sequence);
+		__okAt(sequence);
 		return true;
 	}
 
@@ -1039,7 +1039,7 @@ class FakeMySQLSession {
 		error(1045, "28000", "Access denied for user", sequence);
 	}
 
-	@:noCompletion private function ok_seq(sequence:Int):Void {
+	@:noCompletion private function __okAt(sequence:Int):Void {
 		var out:BytesBuffer = new BytesBuffer();
 		out.addByte(0x00);
 		out.addByte(0);
