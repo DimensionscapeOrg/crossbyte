@@ -18,9 +18,10 @@ enum abstract TurnTransport(String) to String {
 	var TCP = "tcp";
 
 	/**
-		TLS over TCP, usually to port 5349 or 443. `TurnClient` frames it as it
-		does TCP; the connection is the caller's to make, since a plain
-		`Socket` does not speak TLS on every target.
+		TLS over TCP, usually to port 5349 or 443, framed as TCP is. The
+		relay's certificate is checked against the name it was given, trusting
+		the system's authorities or `TurnClient.certAuthority`. Natively, on
+		the jvm and on Node.
 	**/
 	var TLS = "tls";
 }

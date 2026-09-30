@@ -17,9 +17,9 @@ import crossbyte.net.TurnTransport;
 
 	`TurnClient` owns no socket, which is what lets the whole exchange be
 	tested in memory; this is the socket, for the callers here that reach a
-	relay over TCP. TLS is framed exactly the same by the client, but a plain
-	`Socket` does not start TLS on every target, so a TLS relay is refused
-	here, saying so, and is for a caller holding a TLS stream of its own.
+	relay over TCP or TLS. TLS is framed exactly as TCP is; the socket is a
+	secure one, checking the relay's certificate against the name it was
+	given with the client's `verifyCert` and `certAuthority`.
 **/
 class TurnStream {
 	public var client(default, null):TurnClient;
@@ -42,14 +42,17 @@ class TurnStream {
 			__write(payload);
 		};
 
-		if (client.transport == TLS) {
-			__closed = true;
-			client.streamClosed("TURN over TLS needs a TLS client socket, and a plain Socket does not start TLS on every target; "
-				+ "reach this relay over UDP or TCP, or wire a TLS stream to TurnClient.receiveStream yourself");
-			return;
-		}
-
 		__socket = new Socket();
+
+		if (client.transport == TLS) {
+			// It refused a TLS relay, saying so, while a client Socket did not
+			// start TLS; it does now, natively, on the jvm and on Node.
+			__socket.secure = true;
+			__socket.verifyCert = client.verifyCert;
+			#if !(macro || (js && !nodejs))
+			__socket.certAuthority = client.certAuthority;
+			#end
+		}
 		__socket.addEventListener(Event.CONNECT, __onConnect);
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.addEventListener(Event.CLOSE, __onClose);
