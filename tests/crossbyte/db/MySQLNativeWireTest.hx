@@ -4,7 +4,11 @@ package crossbyte.db;
 import crossbyte.db.fakemysql.FakeMySQLServer;
 import crossbyte.db.mysql.MySQLConfig;
 import crossbyte.db.mysql.MySQLConnection;
+import crossbyte.db.mysql.MySQLError;
 import crossbyte.db.mysql.MySQLStatement;
+import crossbyte.errors.IOError;
+import crossbyte.events.SQLErrorEvent;
+import crossbyte.test.Require;
 import haxe.io.Bytes;
 import utest.Assert;
 
@@ -63,6 +67,172 @@ class MySQLNativeWireTest extends utest.Test {
 		Assert.equals("UPDATE users SET name = 'Zoë \u{1F680} it\\'s' WHERE id = 12345", __server.lastQuery());
 
 		connection.close();
+	}
+
+	public function testAServerThatNeverGreetsTimesOut():Void {
+		// The handshake waited 50 seconds, and a TCP connect as long as the
+		// operating system cared to.
+		__server.greetingDelay = 5;
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.connectTimeout = 0.3;
+		var started:Float = haxe.Timer.stamp();
+		var message:String = "";
+
+		try {
+			new MySQLConnection().open(config);
+		} catch (e:IOError) {
+			message = e.message;
+		}
+
+		Assert.isTrue(haxe.Timer.stamp() - started < 3.0, "the connect timeout was not applied");
+		Assert.isTrue(message.indexOf("Timed out") >= 0, message);
+	}
+
+	public function testAReadTimeoutFailsTheStatementAndClosesTheConnection():Void {
+		// After connecting the client waited five hours for any answer.
+		__server.onQuery = function(session, sql) {
+			if (sql == "SELECT SLOW") {
+				// Answers late, so a client with no limit returns eventually.
+				session.hang(5);
+				session.ok();
+				return true;
+			}
+			return false;
+		};
+		__server.start();
+		var config:MySQLConfig = __config();
+		config.readTimeout = 0.3;
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.open(config);
+
+		var started:Float = haxe.Timer.stamp();
+		var error:MySQLError = null;
+
+		try {
+			connection.request("SELECT SLOW");
+		} catch (e:MySQLError) {
+			error = e;
+		}
+
+		Assert.isTrue(haxe.Timer.stamp() - started < 3.0, "the read timeout was not applied");
+		Require.notNull(error);
+		Assert.equals(2013, error.code);
+		Assert.isTrue(error.message.indexOf("Timed out") >= 0, error.message);
+
+		// The answer it gave up on is still coming, so the connection is
+		// closed rather than left to read it as the next statement's.
+		var next:MySQLError = null;
+
+		try {
+			connection.request("SELECT 1");
+		} catch (e:MySQLError) {
+			next = e;
+		}
+
+		Require.notNull(next);
+		Assert.equals(2006, next.code);
+		connection.close();
+	}
+
+	public function testAnErrorCarriesItsNumberAndStateButNotTheStatement():Void {
+		// A duplicate-key error arrived as the whole INSERT with its values,
+		// so the token in this row went to whatever logged the error; and
+		// there was no number or SQLSTATE to tell it from a deadlock.
+		__server.onQuery = function(session, sql) {
+			if (sql.indexOf("api_token") >= 0) {
+				session.error(1062, "23000", "Duplicate entry 'zoe@example.com' for key 'users.email'");
+				return true;
+			}
+			return false;
+		};
+		__server.start();
+		var connection:MySQLConnection = __open();
+
+		var error:MySQLError = null;
+
+		try {
+			connection.request("INSERT INTO users (email, api_token) VALUES ('zoe@example.com', 'tok_live_9f8e7d6c5b4a')");
+		} catch (e:MySQLError) {
+			error = e;
+		}
+
+		Require.notNull(error);
+		Assert.equals(1062, error.code);
+		Assert.equals("23000", error.sqlState);
+		Assert.isTrue(error.message.indexOf("Duplicate entry") >= 0, error.message);
+		Assert.equals(-1, error.message.indexOf("tok_live"), error.message);
+		Assert.equals(-1, error.details().indexOf("tok_live"), error.details());
+
+		// A statement's error carries them too.
+		var statement:MySQLStatement = new MySQLStatement();
+		statement.sqlConnection = connection;
+		statement.text = "INSERT INTO users (email, api_token) VALUES ('zoe@example.com', :token)";
+		statement.parameters.token = "tok_live_9f8e7d6c5b4a";
+		var dispatched:Dynamic = null;
+		statement.addEventListener(SQLErrorEvent.ERROR, e -> dispatched = (cast e : SQLErrorEvent).error);
+
+		try {
+			statement.execute();
+		} catch (_:Dynamic) {}
+
+		Assert.isTrue(Std.isOfType(dispatched, MySQLError));
+		Assert.equals(1062, (dispatched : MySQLError).code);
+		Assert.equals(-1, (dispatched : MySQLError).message.indexOf("tok_live"));
+		connection.close();
+	}
+
+	public function testCancelStopsTheRunningStatement():Void {
+		// There was no way to stop a statement: the thread that sent it waits
+		// for its answer, and nothing else could reach the server for it.
+		__server.start();
+		var connection:MySQLConnection = __open();
+		var outcome:Null<Int> = null;
+		var done:sys.thread.Lock = new sys.thread.Lock();
+
+		sys.thread.Thread.create(function():Void {
+			try {
+				connection.request("SELECT SLEEP(10)");
+				outcome = 0;
+			} catch (e:MySQLError) {
+				outcome = e.code;
+			} catch (_:Dynamic) {
+				outcome = -1;
+			}
+
+			done.release();
+		});
+
+		// Once the statement is running on the server.
+		Assert.isTrue(__server.waitFor(events -> events.filter(e -> e.kind == "query" && e.text == "SELECT SLEEP(10)").length == 1));
+		var started:Float = haxe.Timer.stamp();
+		Assert.isTrue(connection.cancel());
+
+		if (!done.wait(5.0)) {
+			// Still running on the other thread, which owns the connection
+			// until it returns: stopping the server in teardown ends it.
+			Assert.fail("the statement ran on after the cancel");
+			return;
+		}
+
+		Assert.equals(1317, outcome);
+		Assert.isTrue(haxe.Timer.stamp() - started < 3.0);
+
+		// It went over a second connection, and this one is still usable.
+		Assert.isTrue(__server.queries().indexOf("KILL QUERY 100") >= 0, __server.queries().join(" | "));
+		Assert.isTrue(connection.ping());
+		connection.close();
+	}
+
+	public function testPingIsAComPing():Void {
+		__server.start();
+		var connection:MySQLConnection = __open();
+
+		Assert.isTrue(connection.ping());
+		Assert.equals(1, __server.eventsOf("ping").length);
+		Assert.equals(0, __server.queries().filter(q -> StringTools.startsWith(q, "SELECT 1")).length);
+		connection.close();
+		Assert.isFalse(connection.ping());
 	}
 
 	private function __open():MySQLConnection {

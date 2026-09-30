@@ -23,6 +23,12 @@ package crossbyte.db.mysql._internal;
 HXCPP_EXTERN_CLASS_ATTRIBUTES int _hx_mysql_server_status(Dynamic handle);
 HXCPP_EXTERN_CLASS_ATTRIBUTES bool _hx_mysql_is_tls(Dynamic handle);
 HXCPP_EXTERN_CLASS_ATTRIBUTES String _hx_mysql_auth_plugin(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES Dynamic _hx_mysql_create(Dynamic params);
+HXCPP_EXTERN_CLASS_ATTRIBUTES void _hx_mysql_open(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES bool _hx_mysql_ping(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES int _hx_mysql_errno(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES String _hx_mysql_sqlstate(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES Float _hx_mysql_thread_id(Dynamic handle);
 ')
 class NativeMySQL {
 	public static inline var STATUS_IN_TRANS:Int = 0x0001;
@@ -31,7 +37,11 @@ class NativeMySQL {
 
 	@:noCompletion private static var __conversionsSet:Bool = false;
 
-	public static function connect(params:Dynamic):Dynamic {
+	/**
+		A connection not yet open, so that when opening it fails the error
+		number and SQLSTATE can still be read from it before it is closed.
+	**/
+	public static function create(params:Dynamic):Dynamic {
 		if (!__conversionsSet) {
 			// How the client turns a BLOB into Bytes and a DATETIME into a
 			// Date; Haxe's own wrapper sets the same pair, so whichever runs
@@ -40,7 +50,27 @@ class NativeMySQL {
 			__conversionsSet = true;
 		}
 
-		return __connect(params);
+		return __create(params);
+	}
+
+	public static function open(handle:Dynamic):Void {
+		__open(handle);
+	}
+
+	public static function ping(handle:Dynamic):Bool {
+		return __ping(handle);
+	}
+
+	public static function errorCode(handle:Dynamic):Int {
+		return __errno(handle);
+	}
+
+	public static function sqlState(handle:Dynamic):String {
+		return __sqlstate(handle);
+	}
+
+	public static function threadId(handle:Dynamic):Float {
+		return __threadId(handle);
 	}
 
 	public static function selectDatabase(handle:Dynamic, database:String):Void {
@@ -107,8 +137,23 @@ class NativeMySQL {
 		return Date.fromTime(seconds * 1000);
 	}
 
-	@:native("_hx_mysql_connect")
-	extern private static function __connect(params:Dynamic):Dynamic;
+	@:native("_hx_mysql_create")
+	extern private static function __create(params:Dynamic):Dynamic;
+
+	@:native("_hx_mysql_open")
+	extern private static function __open(handle:Dynamic):Void;
+
+	@:native("_hx_mysql_ping")
+	extern private static function __ping(handle:Dynamic):Bool;
+
+	@:native("_hx_mysql_errno")
+	extern private static function __errno(handle:Dynamic):Int;
+
+	@:native("_hx_mysql_sqlstate")
+	extern private static function __sqlstate(handle:Dynamic):String;
+
+	@:native("_hx_mysql_thread_id")
+	extern private static function __threadId(handle:Dynamic):Float;
 
 	@:native("_hx_mysql_select_db")
 	extern private static function __selectDb(handle:Dynamic, db:String):Void;

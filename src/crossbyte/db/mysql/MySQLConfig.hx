@@ -40,4 +40,48 @@ typedef MySQLConfig = {
 	 * place can hand over a key of their own and read the password.
 	 */
 	@:optional var allowPublicKeyRetrieval:Bool;
+
+	/**
+	 * Seconds to reach the server and log in before `open()` gives up: 10 when
+	 * unset. A connect to a host that drops the packets otherwise waits for
+	 * the operating system, 21 seconds on Windows, over two minutes on
+	 * Linux, and a server that accepts and never greets waited 50.
+	 */
+	@:optional var connectTimeout:Float;
+
+	/**
+	 * Seconds any one read may wait for the server once connected, or unset
+	 * for no limit. It bounds a statement's whole run as the client sees it,
+	 * so set it above the slowest statement expected; a read that times out
+	 * closes the connection, since the answer it gave up on is still coming.
+	 * `MySQLConnection.cancel()` stops one statement on demand; a limit that
+	 * the server enforces is `SET SESSION max_execution_time` (MySQL, SELECT
+	 * only) or `max_statement_time` (MariaDB). The client used to wait five
+	 * hours.
+	 */
+	@:optional var readTimeout:Float;
+
+	/** Seconds any one write may wait, or unset for no limit. **/
+	@:optional var writeTimeout:Float;
+
+	/**
+	 * TCP keepalive, on unless set `false`, so a connection to a server that
+	 * has vanished, a partition, a host that died without closing, is
+	 * noticed instead of waited on: about two minutes with the timings
+	 * below, where a query sent to such a host waited the whole of the read
+	 * timeout.
+	 */
+	@:optional var keepAlive:Bool;
+
+	/** Idle seconds before the first keepalive probe: 60 when unset. **/
+	@:optional var keepAliveIdle:Int;
+
+	/** Seconds between unanswered probes: 10 when unset. **/
+	@:optional var keepAliveInterval:Int;
+
+	/**
+	 * Unanswered probes before the connection is dropped: 6 when unset.
+	 * Windows fixes the count at 10 and ignores this.
+	 */
+	@:optional var keepAliveCount:Int;
 }
