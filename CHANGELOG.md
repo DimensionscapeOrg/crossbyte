@@ -1410,6 +1410,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP client's request-target case passes on neko. It built its
+  non-ASCII path with `String.fromCharCode(0xE9)`, which on neko, whose
+  strings are bytes, is one Latin-1 byte rather than the UTF-8 a typed
+  URL carries, so the client rightly sent `%E9` where the case expected
+  `%C3%A9`.
 - A request whose connect times out says so, on every target: `Connection
   Failed: host:port did not answer within 1 s` over HTTP/1.1, and
   `Connecting to ... timed out after 1s` over HTTP/2. Natively the reason
