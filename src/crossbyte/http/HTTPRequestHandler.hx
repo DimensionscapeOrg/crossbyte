@@ -621,6 +621,12 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__requestPath = settled;
 		__filePath = null;
 
+		// Repeats of one name, collected and joined once the block has ended.
+		// Appending each to the whole value so far is quadratic in the
+		// repeats: the sixty-four kilobytes a block may take hold some
+		// thirteen thousand "a:b" lines, each copying everything before it.
+		var repeats:Null<Map<String, Array<String>>> = null;
+
 		while (true) {
 			var headerLine:Null<String> = __readLine(__incomingBuffer);
 			if (headerLine == null) {
@@ -666,14 +672,25 @@ final class HTTPRequestHandler extends EventDispatcher {
 			var key:String = name.toLowerCase();
 			var value:String = StringTools.trim(headerLine.substr(sep + 1));
 
-			if (__headers.exists(key)) {
-				if (key == "cookie") {
-					__headers.set(key, __headers.get(key) + "; " + value);
-				} else {
-					__headers.set(key, __headers.get(key) + ", " + value);
-				}
-			} else {
+			var first:Null<String> = __headers.get(key);
+			if (first == null) {
 				__headers.set(key, value);
+				continue;
+			}
+			if (repeats == null) {
+				repeats = new Map();
+			}
+			var values:Null<Array<String>> = repeats.get(key);
+			if (values == null) {
+				values = [first];
+				repeats.set(key, values);
+			}
+			values.push(value);
+		}
+
+		if (repeats != null) {
+			for (key => values in repeats) {
+				__headers.set(key, values.join(key == "cookie" ? "; " : ", "));
 			}
 		}
 
@@ -767,7 +784,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * where that finishes.
 	 */
 	@:noCompletion private function __serveDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
-			body:ByteArray, tooLarge:Bool = false):Void {
+			body:ByteArray, tooLarge:Bool = false, headersTooLarge:Bool = false):Void {
 		__method = method;
 		__queryString = queryString;
 		__headers = headers;
@@ -775,6 +792,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// HTTP/2 carries no version token; the value only reaches logging and
 		// the HTTP/1.1 keep-alive rules, neither of which applies here.
 		__httpVersion = "HTTP/2";
+
+		// A header section past the limit, answered as the HTTP/1.1 parser
+		// answers one: before anything reads the headers, since they are not
+		// all here.
+		if (headersTooLarge) {
+			__sendErrorResponse(431, "Request Header Fields Too Large");
+			return;
+		}
 
 		// The same settling the HTTP/1.1 parser applies, and for the same
 		// reasons: it is what keeps a request target inside the document

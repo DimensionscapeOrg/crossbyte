@@ -285,15 +285,33 @@ class HTTP2Backend implements HTTPBackend {
 	/**
 	 * A response's header fields by name, repeats joined as the HTTP/1 client
 	 * joins them, so a caller sees one shape whichever version served it.
+	 *
+	 * Collected, then joined once per name: each repeat was appended to the
+	 * whole value so far, which is quadratic in the repeats, and the server
+	 * chooses how many there are.
 	 */
 	private static function __fields(stream:H2Stream):Map<String, String> {
 		var fields:Map<String, String> = new Map();
+		var repeats:Null<Map<String, Array<String>>> = null;
 		for (header in stream.headers) {
-			if (fields.exists(header.name)) {
-				var joiner:String = header.name == "set-cookie" ? "\n" : ", ";
-				fields.set(header.name, fields.get(header.name) + joiner + header.value);
-			} else {
+			var first:Null<String> = fields.get(header.name);
+			if (first == null) {
 				fields.set(header.name, header.value);
+				continue;
+			}
+			if (repeats == null) {
+				repeats = new Map();
+			}
+			var values:Null<Array<String>> = repeats.get(header.name);
+			if (values == null) {
+				values = [first];
+				repeats.set(header.name, values);
+			}
+			values.push(header.value);
+		}
+		if (repeats != null) {
+			for (name => values in repeats) {
+				fields.set(name, values.join(name == "set-cookie" ? "\n" : ", "));
 			}
 		}
 		return fields;
@@ -352,6 +370,13 @@ class HTTP2Backend implements HTTPBackend {
 		// tested for a missing status, so a reset or a hang-up after the
 		// headers reported the response complete with a truncated body.
 		if (!stream.endOfStream) {
+			if (stream.failure != null) {
+				// Given up on here, for a reason of this side's own: a header
+				// section past the limit.
+				context.onError(stream.failure);
+				return;
+			}
+
 			if (stream.resetCode != null) {
 				var code:H2ErrorCode = stream.resetCode;
 				context.onError('Stream reset by peer: ${code.toString()}');
@@ -513,6 +538,9 @@ class HTTP2Backend implements HTTPBackend {
 		// Nothing here can consume a promised stream, and §8.4 lets us make
 		// one a connection error by saying so up front.
 		settings.enablePush = false;
+		// Said as well as enforced, so a server knows to keep under it rather
+		// than have its response refused.
+		settings.maxHeaderListSize = H2Connection.DEFAULT_MAX_HEADER_LIST_SIZE;
 		return settings;
 	}
 }

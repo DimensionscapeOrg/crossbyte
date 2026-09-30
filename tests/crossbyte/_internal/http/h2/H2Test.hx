@@ -223,6 +223,65 @@ class H2Test extends utest.Test {
 		Assert.raises(() -> connection.pumpUntilClosed(stream), H2ConnectionError);
 	}
 
+	public function testAnEndlessHeaderBlockFromTheServerIsRefused():Void {
+		// The server has refused this from a client for a while: a HEADERS
+		// with no END_HEADERS, then CONTINUATION frames for ever, each within
+		// the frame size limit, and a buffer that only grew. A server could do
+		// the same to this client, which set no bound at all.
+		var server = new ServerScript();
+		server.settings();
+		server.rawHeaders(1, [new HpackHeader(":status", "200")], false);
+		var filler = Bytes.alloc(16384);
+		for (_ in 0...20) {
+			server.frame(H2FrameType.CONTINUATION, 0, 1, filler);
+		}
+
+		var connection = server.connect();
+		var stream = connection.request("GET", "http", "example.com", "/", []);
+
+		var failure:Null<H2ConnectionError> = null;
+		try {
+			connection.pumpUntilClosed(stream);
+		} catch (e:H2ConnectionError) {
+			failure = e;
+		}
+		Require.notNull(failure, "320 KB of CONTINUATION was buffered without complaint");
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
+	}
+
+	public function testAResponseHeaderSectionPastTheLimitIsRefusedAndTheConnectionCarriesOn():Void {
+		// 3,000 one-byte references to one set-cookie entry: a block of about
+		// three kilobytes that decodes to 117 KB by the table's accounting. It
+		// was accepted under an eight megabyte limit and joined, quadratically;
+		// the stream is given up now, and the connection is not.
+		var crumbs:Array<HpackHeader> = [new HpackHeader(":status", "200")];
+		for (_ in 0...3000) {
+			crumbs.push(new HpackHeader("set-cookie", "a"));
+		}
+
+		var server = new ServerScript();
+		server.settings();
+		server.response(1, crumbs, "", true);
+		server.response(3, [new HpackHeader(":status", "200"), new HpackHeader("x-next", "yes")], "fine", true);
+
+		var connection = server.connect();
+		var first = connection.request("GET", "http", "example.com", "/big", []);
+		connection.pumpUntilClosed(first);
+
+		Assert.isTrue(first.isClosed());
+		Assert.equals(-1, first.status, "a response past the header limit was taken");
+		Assert.equals(0, first.headers.length, first.headers.length + " fields of it were kept");
+
+		// The table advanced through the whole block, so the next response,
+		// which names entries by index, decodes as the server wrote it.
+		var second = connection.request("GET", "http", "example.com", "/next", []);
+		connection.pumpUntilClosed(second);
+		Assert.equals(200, second.status);
+		Require.notNull(second.headers[0]);
+		Assert.equals("x-next", second.headers[0].name);
+		Assert.equals("fine", second.takeBody().toString());
+	}
+
 	public function testOversizedFrameIsRejectedBeforeItIsAllocated():Void {
 		var server = new ServerScript();
 		server.settings();

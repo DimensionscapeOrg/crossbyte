@@ -167,6 +167,36 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals("CrossByteTest", sent.get("user-agent"));
 	}
 
+	public function testAResponseHeaderSectionPastTheLimitIsAnError():Void {
+		// A server chooses how many fields it sends, and 3,000 one-byte
+		// references to one set-cookie crumb decode to 117 KB by HPACK's
+		// accounting. The client took them under an eight megabyte limit it
+		// never advertised and joined them quadratically; at 200,000 that is
+		// the 23.5 seconds the server half was shown to lose. Refused now at
+		// the HTTP/1.1 client's 64 KB, and the limit is said in SETTINGS.
+		var fields:Array<HpackHeader> = [new HpackHeader(":status", "200")];
+		for (_ in 0...3000) {
+			fields.push(new HpackHeader("set-cookie", "a=1"));
+		}
+		var server = new H2cServer();
+		server.respond(fields, "never read");
+		server.start();
+		HTTPBackendRegistry.register(new HTTP2Backend());
+
+		var completed:Null<Bytes> = null;
+		var error:Null<String> = null;
+		var http = new Http('http://127.0.0.1:${server.port}/crumbs', "GET", null, null, null, null, HttpVersion.HTTP_2, 5000);
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> error = message;
+		http.load();
+		server.waitDone();
+
+		Assert.isNull(completed, "a response past the header limit completed");
+		Require.notNull(error);
+		Assert.isTrue(error.indexOf("exceeded") >= 0, error);
+		Assert.equals(64 * 1024, server.clientSetting(0x6), "SETTINGS_MAX_HEADER_LIST_SIZE was not advertised");
+	}
+
 	public function testAnIpv6AuthorityKeepsItsBrackets():Void {
 		// URL takes the brackets off an IPv6 literal, and :authority put the
 		// host back bare: ::1:port, which no server can split.
@@ -1467,6 +1497,26 @@ private class H2cServer {
 
 	/** Where the fixture listens; set before `start`. */
 	public var bindAddress:String = "127.0.0.1";
+
+	/** The payload of the client's SETTINGS, once it has arrived. */
+	public var clientSettings:Null<Bytes> = null;
+
+	/** The value the client's SETTINGS gave `id`, or -1 when it gave none. */
+	public function clientSetting(id:Int):Int {
+		var payload:Null<Bytes> = clientSettings;
+		if (payload == null) {
+			return -1;
+		}
+		var found:Int = -1;
+		var offset:Int = 0;
+		while (offset + 6 <= payload.length) {
+			if (((payload.get(offset) << 8) | payload.get(offset + 1)) == id) {
+				found = (payload.get(offset + 2) << 24) | (payload.get(offset + 3) << 16) | (payload.get(offset + 4) << 8) | payload.get(offset + 5);
+			}
+			offset += 6;
+		}
+		return found;
+	}
 	public var requestHeaders:Map<String, String> = new Map();
 	public var requestBody:String = "";
 	public var decoderTableNames:Array<String> = [];
@@ -1626,8 +1676,10 @@ private class H2cServer {
 				if ((flags & H2Flags.END_STREAM) != 0) {
 					break;
 				}
+			} else if (type == (H2FrameType.SETTINGS : Int) && (flags & H2Flags.ACK) == 0) {
+				clientSettings = payload;
 			}
-			// SETTINGS, SETTINGS ACK and WINDOW_UPDATE are read and ignored.
+			// SETTINGS ACK and WINDOW_UPDATE are read and ignored.
 		}
 
 		if (bodyLength > 0) {
