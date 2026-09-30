@@ -55,7 +55,9 @@ class GZCompressor {
 		var result:Bytes = deflater.compress(stream);
 		output.write(result);
 
-		output.writeInt32(deflater.getCRCValue());
+		var crc:CRC32 = new CRC32();
+		crc.updateBytes(stream, 0, stream.length);
+		output.writeInt32(crc.value);
 		output.writeInt32(stream.length);
 
 		return output.getBytes();
@@ -112,7 +114,9 @@ class GZCompressor {
 		if (result.length != f_size) {
 			throw new Exception("Size mismatch, expected = " + f_size + ", actual = " + result.length);
 		}
-		var crc:Int = inflater.CRC;
+		var check:CRC32 = new CRC32();
+		check.updateBytes(result, 0, result.length);
+		var crc:Int = check.value;
 		if (crc != f_crc) {
 			throw new Exception("CRC mismatch, expected = " + StringTools.hex(f_crc) + ", actual = " + StringTools.hex(crc));
 		}

@@ -75,8 +75,6 @@ class Deflater {
 	private static final distanceBase:Vector<Int> = __tables.distanceBase;
 	private static final distanceExtra:Vector<Int> = __tables.distanceExtra;
 
-	private var crc:CRC32;
-
 	/*
 	 * Hash chains over the window. `head` holds the most recent position whose
 	 * three bytes hash to a bucket; `prev` links each position to the one
@@ -97,18 +95,17 @@ class Deflater {
 	/**
 	 * Create a new Deflater.
 	 */
-	public function new() {
-		crc = new CRC32();
-	}
+	public function new() {}
 
 	/**
-	 * Appplies the deflate compression on the suppliead stream.
+	 * Applies the deflate compression on the supplied stream.
+	 *
+	 * It computed a CRC of every input as well, which only gzip reads; gzip
+	 * computes its own.
+	 *
 	 * @return Bytes holding the compressed data
 	 */
 	public function compress(stream:Bytes):Bytes {
-		crc = new CRC32();
-		crc.updateBytes(stream, 0, stream.length);
-
 		var compressed:Bytes = deflateFixed(stream);
 		if (compressed.length < storedLength(stream.length)) {
 			return compressed;
@@ -117,14 +114,6 @@ class Deflater {
 		// Incompressible: a stored block costs five bytes per 64K and copies
 		// the input, which beats a Huffman block that found nothing to do.
 		return stored(stream);
-	}
-
-	/**
-	 * Get the current value of the checksum.
-	 * @return The current CRC value
-	 */
-	public function getCRCValue():Int {
-		return crc.value;
 	}
 
 	/**
