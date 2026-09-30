@@ -33,6 +33,7 @@ HXCPP_EXTERN_CLASS_ATTRIBUTES Dynamic _hx_mysql_request_stream(Dynamic handle, S
 HXCPP_EXTERN_CLASS_ATTRIBUTES Dynamic _hx_mysql_insert_id(Dynamic handle);
 HXCPP_EXTERN_CLASS_ATTRIBUTES Dynamic _hx_mysql_affected_rows(Dynamic handle);
 HXCPP_EXTERN_CLASS_ATTRIBUTES String _hx_mysql_server_version(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES Array<int> _hx_mysql_keepalive(Dynamic handle);
 ')
 class NativeMySQL {
 	public static inline var STATUS_IN_TRANS:Int = 0x0001;
@@ -127,6 +128,15 @@ class NativeMySQL {
 		return __authPlugin(handle);
 	}
 
+	/**
+		The TCP keepalive the connection's socket has, read back from the
+		socket: on (1 or 0), then the idle and interval in seconds and the
+		probe count, each -1 where the system does not report it.
+	**/
+	public static function keepAlive(handle:Dynamic):Array<Int> {
+		return __keepAlive(handle);
+	}
+
 	public static function resultLength(result:Dynamic):Int {
 		return __resultGetLength(result);
 	}
@@ -213,6 +223,9 @@ class NativeMySQL {
 
 	@:native("_hx_mysql_auth_plugin")
 	extern private static function __authPlugin(handle:Dynamic):String;
+
+	@:native("_hx_mysql_keepalive")
+	extern private static function __keepAlive(handle:Dynamic):Array<Int>;
 
 	@:native("_hx_mysql_result_get_length")
 	extern private static function __resultGetLength(handle:Dynamic):Int;

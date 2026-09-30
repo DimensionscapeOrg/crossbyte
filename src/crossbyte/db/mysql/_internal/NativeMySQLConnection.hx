@@ -193,6 +193,17 @@ class NativeMySQLConnection implements Connection {
 	private function get_authPlugin():String {
 		return NativeMySQL.authPlugin(__handle);
 	}
+
+	/**
+		The TCP keepalive as the socket reports it: on (1 or 0), then the idle
+		and interval in seconds and the probe count, each -1 where the system
+		does not report it.
+	**/
+	public var keepAlive(get, never):Array<Int>;
+
+	private function get_keepAlive():Array<Int> {
+		return NativeMySQL.keepAlive(__handle);
+	}
 }
 
 @:noCompletion
