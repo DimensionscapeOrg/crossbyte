@@ -464,11 +464,18 @@ class TurnClient {
 		retransmitted, the relay forwards it or it does not, exactly as a
 		datagram sent directly would arrive or not.
 
+		@param offset Where in `payload` the datagram starts.
+		@param length How many bytes it is; the rest of `payload` from
+		`offset` when negative.
 		@throws ArgumentError When `peerAddress` is not an IPv4 address.
 	**/
-	public function sendTo(payload:ByteArray, peerAddress:String, peerPort:Int):Void {
+	public function sendTo(payload:ByteArray, peerAddress:String, peerPort:Int, offset:Int = 0, length:Int = -1):Void {
 		if (__closed || !active) {
 			return;
+		}
+
+		if (length < 0) {
+			length = payload.length - offset;
 		}
 
 		var channel = __channelFor(peerAddress, peerPort);
@@ -476,13 +483,21 @@ class TurnClient {
 		// While the relay still holds the binding: one it refused to renew
 		// lapses at ten minutes, and past that it drops what arrives on it.
 		if (channel != null && channel.bound && __clock - channel.boundAt < CHANNEL_LIFETIME) {
-			onSend(__channelData(channel.number, payload), serverAddress, serverPort);
+			onSend(__channelData(channel.number, payload, offset, length), serverAddress, serverPort);
 			return;
 		}
 
+		var data = new ByteArray();
+
+		if (length > 0) {
+			data.writeBytes(payload, offset, length);
+		}
+
+		data.position = 0;
+
 		var indication = new StunMessage(StunMessage.SEND_INDICATION, __transaction(), [
 			StunMessage.xorPeerAddress(peerAddress, peerPort),
-			StunMessage.data(payload)
+			new StunAttribute(StunMessage.ATTR_DATA, data)
 		]);
 
 		// Indications carry no integrity: there is no response to correlate and
@@ -576,16 +591,17 @@ class TurnClient {
 		transport, where a reader has to find the end of one message to find the
 		start of the next; a datagram already has an end.
 	**/
-	@:noCompletion private function __channelData(number:Int, payload:ByteArray):ByteArray {
+	@:noCompletion private function __channelData(number:Int, payload:ByteArray, offset:Int, length:Int):ByteArray {
 		var out = new ByteArray();
 		out.writeByte((number >> 8) & 0xFF);
 		out.writeByte(number & 0xFF);
-		out.writeByte((payload.length >> 8) & 0xFF);
-		out.writeByte(payload.length & 0xFF);
+		out.writeByte((length >> 8) & 0xFF);
+		out.writeByte(length & 0xFF);
 
-		payload.position = 0;
-		out.writeBytes(payload, 0, payload.length);
-		payload.position = 0;
+		if (length > 0) {
+			out.writeBytes(payload, offset, length);
+		}
+
 		out.position = 0;
 		return out;
 	}

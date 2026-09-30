@@ -5,6 +5,24 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- Reliable datagram sessions can fall back to a TURN relay, for the peers
+  hole punching cannot reach, a symmetric NAT or a carrier's CGNAT at
+  either end. `ReliableDatagramServerSocket.allocateRelay` asks a relay for
+  an address through the port the server listens on; `relayedCandidate` is
+  that address for the peer to be told of, `connectRelayed` opens a session
+  that reaches its peer through the relay, a CONNECT arriving through it
+  opens one that answers the same way, and `permitRelayedPeer` lets a peer
+  that dials first through. An attached `IceAgent` checks from the relayed
+  candidate too, and no longer takes STUN that is not a connectivity check,
+  it took every STUN message on the socket, a relay's answers included.
+  A relay that goes away closes the sessions through it, each with an
+  `ioError` saying so; `releaseRelay` frees it. `NetHost` reaches all of
+  this through `allocateRelay`, `dialRelayed` and `permitRelayedPeer` on a
+  reliable datagram host. And for a protocol of the application's own on
+  the same port, `onDatagram` sees every datagram before anything else
+  does, and `sendDatagram` answers from the port: there was no way in,
+  since everything that was not a reliable frame was dropped as noise.
+  `TurnClient.sendTo` takes an offset and a length.
 - `PeerConnection.gatherRelayedFrom(servers)`, which asks each TURN relay in
   a list in turn until one lends an address, and keeps one for as long as
   the connection lasts: a relay that loses the allocation is replaced from

@@ -76,6 +76,50 @@ abstract NetHost(INetHost) from INetHost to INetHost {
 		return host;
 	}
 
+	/**
+		Asks a TURN relay for an address through the port this host listens on,
+		for the peers hole punching cannot reach. A reliable datagram host
+		only: its one socket both listens and dials, which is what a relay has
+		to be reached through. See `ReliableDatagramServerSocket.allocateRelay`.
+
+		@throws IllegalOperationError On a TCP or WebSocket host.
+	**/
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String,
+			useChannels:Bool = false):Future<ReflexiveAddress> {
+		return __relayHost("allocateRelay").allocateRelay(server, port, username, password, useChannels);
+	}
+
+	/**
+		Opens a session to a peer through the relay `allocateRelay` was granted.
+		See `ReliableDatagramServerSocket.connectRelayed`.
+
+		@throws IllegalOperationError On a TCP or WebSocket host.
+	**/
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+		return __relayHost("dialRelayed").dialRelayed(address, port, timeoutMs);
+	}
+
+	/**
+		Lets a peer reach this host through the relay before this host has sent
+		it anything. See `ReliableDatagramServerSocket.permitRelayedPeer`.
+
+		@throws IllegalOperationError On a TCP or WebSocket host.
+	**/
+	public function permitRelayedPeer(address:String):Void {
+		__relayHost("permitRelayedPeer").permitRelayedPeer(address);
+	}
+
+	@:noCompletion private function __relayHost(what:String):RUDPHost {
+		var host = Std.downcast(this, RUDPHost);
+
+		if (host == null) {
+			throw new crossbyte.errors.IllegalOperationError("A " + this.protocol + " host has no relay: " + what
+				+ " is for a reliable datagram host, whose one socket both listens and dials.");
+		}
+
+		return host;
+	}
+
 	private static inline function __isSecureWebSocketUri(uri:String):Bool {
 		if (uri == null) {
 			return false;
@@ -314,6 +358,26 @@ private class RUDPHost implements INetHost {
 	 */
 	public function localAddressFor(destination:String):Future<String> {
 		return __server.localAddressFor(destination);
+	}
+
+	/**
+	 * Through the socket this host listens on, so the relay's permissions
+	 * describe the traffic its sessions send.
+	 */
+	public function allocateRelay(server:String, port:Int, username:String, password:String, useChannels:Bool):Future<ReflexiveAddress> {
+		return __server.allocateRelay(server, port, username, password, useChannels);
+	}
+
+	/**
+	 * A session dialled through the relay, surfacing no more through
+	 * `onAccept` than one dialled directly.
+	 */
+	public function dialRelayed(address:String, port:Int, timeoutMs:Int = 0):INetConnection {
+		return NetConnection.fromReliableDatagramSocket(__server.connectRelayed(address, port, timeoutMs));
+	}
+
+	public function permitRelayedPeer(address:String):Void {
+		__server.permitRelayedPeer(address);
 	}
 
 	public var localAddress(get, never):String;
