@@ -1,5 +1,6 @@
 package crossbyte.net._internal.stun;
 
+import crossbyte._internal.net.IPv6;
 import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
@@ -10,6 +11,7 @@ import haxe.crypto.Crc32;
 import haxe.crypto.Hmac;
 import haxe.crypto.Hmac.HashMethod;
 import haxe.crypto.Md5;
+import haxe.crypto.Sha256;
 import haxe.io.Bytes;
 
 /**
@@ -48,6 +50,13 @@ class StunMessage {
 	public static inline var BINDING_ERROR:Int = 0x0111;
 
 	public static inline var ATTR_MAPPED_ADDRESS:Int = 0x0001;
+
+	// RFC 5780, NAT behaviour discovery: ask a server to answer from its
+	// other address or port, and learn what those are.
+	public static inline var ATTR_CHANGE_REQUEST:Int = 0x0003;
+	public static inline var ATTR_RESPONSE_ORIGIN:Int = 0x802B;
+	public static inline var ATTR_OTHER_ADDRESS:Int = 0x802C;
+
 	public static inline var ATTR_USERNAME:Int = 0x0006;
 	public static inline var ATTR_MESSAGE_INTEGRITY:Int = 0x0008;
 	public static inline var ATTR_ERROR_CODE:Int = 0x0009;
@@ -86,7 +95,33 @@ class StunMessage {
 	public static inline var ATTR_REALM:Int = 0x0014;
 	public static inline var ATTR_NONCE:Int = 0x0015;
 	public static inline var ATTR_XOR_RELAYED_ADDRESS:Int = 0x0016;
+	public static inline var ATTR_REQUESTED_ADDRESS_FAMILY:Int = 0x0017;
 	public static inline var ATTR_REQUESTED_TRANSPORT:Int = 0x0019;
+
+	// RFC 8489's long-term credential mechanism, section 9.2: a stronger
+	// integrity, a choice of password hash, and a username the relay need not
+	// see in the clear.
+	public static inline var ATTR_MESSAGE_INTEGRITY_SHA256:Int = 0x001C;
+	public static inline var ATTR_PASSWORD_ALGORITHM:Int = 0x001D;
+	public static inline var ATTR_USERHASH:Int = 0x001E;
+	public static inline var ATTR_PASSWORD_ALGORITHMS:Int = 0x8002;
+
+	/** The password algorithms RFC 8489 section 18.5 registers. **/
+	public static inline var PASSWORD_ALGORITHM_MD5:Int = 0x0001;
+
+	public static inline var PASSWORD_ALGORITHM_SHA256:Int = 0x0002;
+
+	/**
+		What a NONCE starting with `NONCE_COOKIE` says a server supports: the
+		first two of the 24 bits after it, the first the most significant --
+		PASSWORD-ALGORITHMS, and USERHASH in place of USERNAME.
+	**/
+	public static inline var FEATURE_PASSWORD_ALGORITHMS:Int = 0x800000;
+
+	public static inline var FEATURE_USERNAME_ANONYMITY:Int = 0x400000;
+
+	/** RFC 8489 section 9.2's "nonce cookie", followed by the features in four characters of base64. **/
+	public static inline var NONCE_COOKIE:String = "obMatJos2";
 
 	/** The IANA protocol number for UDP, which is the only transport TURN relays here. **/
 	public static inline var TRANSPORT_UDP:Int = 17;
@@ -98,6 +133,22 @@ class StunMessage {
 	public static inline var STALE_NONCE:Int = 438;
 
 	/**
+		A relay's answer for an allocation it does not hold: the 5-tuple has
+		none, or has another. Whatever the request was, the allocation it was
+		about is gone.
+	**/
+	public static inline var ALLOCATION_MISMATCH:Int = 437;
+
+	/** Ask the server named in ALTERNATE-SERVER instead. RFC 8489 section 10. **/
+	public static inline var TRY_ALTERNATE:Int = 300;
+
+	/**
+		`ALTERNATE-SERVER`: where a 300 points. An address in the MAPPED-ADDRESS
+		format, not XORed -- RFC 8489 section 14.15.
+	**/
+	public static inline var ATTR_ALTERNATE_SERVER:Int = 0x8023;
+
+	/**
 		XORed into the CRC so a STUN fingerprint cannot be mistaken for the
 		start of some other protocol that also begins with a checksum. RFC 5389
 		section 15.5 picks the ASCII of "STUN" for it.
@@ -107,11 +158,33 @@ class StunMessage {
 	/** SHA-1 output, and so the length of every MESSAGE-INTEGRITY value. **/
 	private static inline var INTEGRITY_LENGTH:Int = 20;
 
+	/** SHA-256 output: a MESSAGE-INTEGRITY-SHA256 value, untruncated. **/
+	private static inline var INTEGRITY_SHA256_LENGTH:Int = 32;
+
 	/** Type, length, cookie and transaction id: what every message begins with. **/
 	public static inline var HEADER_LENGTH:Int = 20;
 
+	/**
+		The most attributes a message may carry and still be read.
+
+		Every attribute read costs an allocation and a copy, and the count was
+		the sender's to choose: a 64 KB datagram of empty attributes is sixteen
+		thousand of them, 527 microseconds to decode on cpp and 4.4 ms on Node
+		against 24 and 39 for the same bytes as one attribute -- sent by anyone,
+		before anything is authenticated. Nothing any STUN, TURN or ICE peer
+		sends comes near this; a message past it is not read.
+	**/
+	public static inline var MAX_ATTRIBUTES:Int = 32;
+
+	/**
+		How many messages have been decoded, counted without a lock: how a
+		caller that should decode a datagram once can be seen to.
+	**/
+	@:noCompletion public static var __decoded:Int = 0;
+
 	private static inline var TRANSACTION_LENGTH:Int = 12;
 	private static inline var FAMILY_IPV4:Int = 0x01;
+	private static inline var FAMILY_IPV6:Int = 0x02;
 
 	public var type(default, null):Int;
 
@@ -212,6 +285,8 @@ class StunMessage {
 			return null;
 		}
 
+		__decoded++;
+
 		var transactionId = new ByteArray();
 		bytes.readBytes(transactionId, 0, TRANSACTION_LENGTH);
 
@@ -219,6 +294,11 @@ class StunMessage {
 		var read:Int = 0;
 
 		while (read + 4 <= length) {
+			// Bounded before the work, not after: see MAX_ATTRIBUTES.
+			if (attributes.length >= MAX_ATTRIBUTES) {
+				return null;
+			}
+
 			var attributeType:Int = bytes.readUnsignedShort();
 			var attributeLength:Int = bytes.readUnsignedShort();
 			read += 4;
@@ -318,6 +398,70 @@ class StunMessage {
 		return null;
 	}
 
+	/** The server a 300 Try Alternate names, or null. Plain, not XORed. **/
+	public function alternateServerAddress():Null<ReflexiveAddress> {
+		var value = attribute(ATTR_ALTERNATE_SERVER);
+		return value != null ? __readAddress(value, false) : null;
+	}
+
+	/**
+		`OTHER-ADDRESS`: the server's other address and port, which RFC 5780
+		has a server that can answer from two say, so a client can ask it
+		there. Plain, not XORed. Null from a server that cannot.
+	**/
+	public function otherAddress():Null<ReflexiveAddress> {
+		var value = attribute(ATTR_OTHER_ADDRESS);
+		return value != null ? __readAddress(value, false) : null;
+	}
+
+	/** `RESPONSE-ORIGIN`: where the server says it answered from. Plain, not XORed. **/
+	public function responseOrigin():Null<ReflexiveAddress> {
+		var value = attribute(ATTR_RESPONSE_ORIGIN);
+		return value != null ? __readAddress(value, false) : null;
+	}
+
+	/**
+		`CHANGE-REQUEST`: asks a server to answer from its other address, its
+		other port, or both -- how RFC 5780 tells what a NAT lets back in.
+	**/
+	public static function changeRequest(changeAddress:Bool, changePort:Bool):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.writeByte(0);
+		bytes.writeByte(0);
+		bytes.writeByte(0);
+		bytes.writeByte((changeAddress ? 0x04 : 0) | (changePort ? 0x02 : 0));
+		bytes.position = 0;
+		return new StunAttribute(ATTR_CHANGE_REQUEST, bytes);
+	}
+
+	/**
+		An address attribute in the MAPPED-ADDRESS format, not XORed: what
+		`OTHER-ADDRESS`, `RESPONSE-ORIGIN` and `ALTERNATE-SERVER` are written
+		as. IPv4 only, which is what the servers here are given.
+
+		@throws ArgumentError When `address` is not an IPv4 address.
+	**/
+	public static function plainAddress(type:Int, address:String, port:Int):StunAttribute {
+		var octets = ipv4Octets(address);
+
+		if (octets == null) {
+			throw new ArgumentError("\"" + address + "\" is not an IPv4 address.");
+		}
+
+		var value = new ByteArray();
+		value.endian = Endian.BIG_ENDIAN;
+		value.writeByte(0);
+		value.writeByte(FAMILY_IPV4);
+		value.writeShort(port);
+
+		for (octet in octets) {
+			value.writeByte(octet);
+		}
+
+		value.position = 0;
+		return new StunAttribute(type, value);
+	}
+
 	/** The value of a text attribute such as `REALM` or `NONCE`, or null. **/
 	public function textOf(attributeType:Int):Null<String> {
 		var value = attribute(attributeType);
@@ -372,9 +516,14 @@ class StunMessage {
 		value.readUnsignedByte();
 		var family:Int = value.readUnsignedByte();
 
-		// IPv4 only, and said rather than guessed at. An IPv6 reflexive address
-		// is decoded against the transaction id as well as the cookie, and
-		// there is nothing in CrossByte yet that would dial one.
+		// IPv6: sixteen bytes, XORed against the cookie and then the
+		// transaction id. It was read as no address at all, so a server
+		// answering over IPv6 reported "no mapped address" and a relay that
+		// allocated an IPv6 address "allocated nothing".
+		if (family == FAMILY_IPV6) {
+			return __readIPv6(value, xored);
+		}
+
 		if (family != FAMILY_IPV4) {
 			return null;
 		}
@@ -397,15 +546,167 @@ class StunMessage {
 		return {address: octets.join("."), port: port & 0xFFFF};
 	}
 
-	/**
-		An `XOR-MAPPED-ADDRESS` attribute for an IPv4 endpoint: what an ICE
-		agent answers a check with, and what a STUN server sends.
+	@:noCompletion private function __readIPv6(value:ByteArray, xored:Bool):Null<ReflexiveAddress> {
+		if (value.length < 20 || (xored && (transactionId == null || transactionId.length < TRANSACTION_LENGTH))) {
+			return null;
+		}
 
-		@throws ArgumentError When `address` is not an IPv4 address (see
-		`ipv4Octets`). This writes IPv4 alone.
+		var port:Int = ((value[2] << 8) | value[3]) ^ (xored ? (MAGIC_COOKIE >>> 16) & 0xFFFF : 0);
+		var groups:Array<String> = [];
+
+		for (group in 0...8) {
+			var high:Int = value[4 + group * 2];
+			var low:Int = value[5 + group * 2];
+
+			if (xored) {
+				high = high ^ __xorMask(group * 2);
+				low = low ^ __xorMask(group * 2 + 1);
+			}
+
+			groups.push(StringTools.hex((high << 8) | low).toLowerCase());
+		}
+
+		return {address: IPv6.compress(groups.join(":")), port: port & 0xFFFF};
+	}
+
+	/**
+		The byte an IPv6 address's byte `index` is XORed with: the four bytes of
+		the cookie, then the twelve of this message's transaction.
 	**/
-	public static function xorMappedAddress(address:String, port:Int):StunAttribute {
-		return new StunAttribute(ATTR_XOR_MAPPED_ADDRESS, __writeXorAddress(address, port));
+	@:noCompletion private inline function __xorMask(index:Int):Int {
+		return index < 4 ? (MAGIC_COOKIE >>> (24 - index * 8)) & 0xFF : transactionId[index - 4];
+	}
+
+	/**
+		The sixteen bytes of an IPv6 address written the usual way -- up to
+		eight groups of up to four hex digits, one `::` for a run of zeros, an
+		IPv4 tail allowed -- or null for anything else: a name, a zone suffix,
+		brackets, an IPv4 address.
+	**/
+	public static function ipv6Bytes(address:String):Null<Bytes> {
+		if (address == null || address.indexOf(":") < 0 || address.indexOf("%") >= 0 || address.indexOf("[") >= 0) {
+			return null;
+		}
+
+		var gap:Int = address.indexOf("::");
+
+		if (gap >= 0 && address.indexOf("::", gap + 1) >= 0) {
+			return null;
+		}
+
+		var head:Array<String> = gap >= 0 ? (gap == 0 ? [] : address.substr(0, gap).split(":")) : address.split(":");
+		var tail:Array<String> = gap >= 0 ? (gap + 2 >= address.length ? [] : address.substr(gap + 2).split(":")) : [];
+		var values:Array<Int> = [];
+		var tailValues:Array<Int> = [];
+
+		if (!__ipv6Groups(head, values, tail.length == 0 && gap < 0) || !__ipv6Groups(tail, tailValues, true)) {
+			return null;
+		}
+
+		var count:Int = values.length + tailValues.length;
+
+		if ((gap < 0 && count != 8) || (gap >= 0 && count > 7)) {
+			return null;
+		}
+
+		var bytes = Bytes.alloc(16);
+		bytes.fill(0, 16, 0);
+
+		for (i in 0...values.length) {
+			bytes.set(i * 2, values[i] >> 8);
+			bytes.set(i * 2 + 1, values[i] & 0xFF);
+		}
+
+		var from:Int = 8 - tailValues.length;
+
+		for (i in 0...tailValues.length) {
+			bytes.set((from + i) * 2, tailValues[i] >> 8);
+			bytes.set((from + i) * 2 + 1, tailValues[i] & 0xFF);
+		}
+
+		return bytes;
+	}
+
+	/**
+		An IPv6 address in RFC 5952's canonical form -- lowercase, no leading
+		zeros, the longest run of zero groups as `::` -- or null when it is not
+		one. The form a socket and a relay report an address in, so one peer
+		is one string however it was written.
+	**/
+	public static function canonicalIPv6(address:String):Null<String> {
+		var bytes = ipv6Bytes(address);
+
+		if (bytes == null) {
+			return null;
+		}
+
+		var groups:Array<String> = [];
+
+		for (group in 0...8) {
+			groups.push(StringTools.hex((bytes.get(group * 2) << 8) | bytes.get(group * 2 + 1)).toLowerCase());
+		}
+
+		return IPv6.compress(groups.join(":"));
+	}
+
+	/**
+		Reads groups of an IPv6 address into 16-bit values; the last may be an
+		IPv4 address, which is two.
+
+		@return Whether every group was one.
+	**/
+	@:noCompletion private static function __ipv6Groups(groups:Array<String>, into:Array<Int>, last:Bool):Bool {
+		for (i in 0...groups.length) {
+			var group:String = groups[i];
+
+			if (last && i == groups.length - 1 && group.indexOf(".") >= 0) {
+				var octets = ipv4Octets(group);
+
+				if (octets == null) {
+					return false;
+				}
+
+				into.push((octets[0] << 8) | octets[1]);
+				into.push((octets[2] << 8) | octets[3]);
+				continue;
+			}
+
+			if (group.length == 0 || group.length > 4) {
+				return false;
+			}
+
+			var value:Int = 0;
+
+			for (j in 0...group.length) {
+				var c:Int = StringTools.fastCodeAt(group, j);
+				var digit:Int = c >= "0".code && c <= "9".code ? c - "0".code : (c >= "a".code && c <= "f".code ? c - "a".code + 10 : (c >= "A".code
+					&& c <= "F".code ? c - "A".code + 10 : -1));
+
+				if (digit < 0) {
+					return false;
+				}
+
+				value = (value << 4) | digit;
+			}
+
+			into.push(value);
+		}
+
+		return true;
+	}
+
+	/**
+		An `XOR-MAPPED-ADDRESS` attribute: what an ICE agent answers a check
+		with, and what a STUN server sends.
+
+		@param transactionId The message's, which an IPv6 address is XORed
+		with as well as the cookie; an IPv4 address needs none.
+		@throws ArgumentError When `address` is not an IPv4 address (see
+		`ipv4Octets`), nor an IPv6 one (see `ipv6Bytes`) with a transaction id
+		to write it with.
+	**/
+	public static function xorMappedAddress(address:String, port:Int, ?transactionId:ByteArray):StunAttribute {
+		return new StunAttribute(ATTR_XOR_MAPPED_ADDRESS, __writeXorAddress(address, port, transactionId));
 	}
 
 	/**
@@ -446,11 +747,33 @@ class StunMessage {
 		return octets;
 	}
 
-	@:noCompletion private static function __writeXorAddress(address:String, port:Int):ByteArray {
+	@:noCompletion private static function __writeXorAddress(address:String, port:Int, ?transactionId:ByteArray):ByteArray {
 		var octets = ipv4Octets(address);
 
 		if (octets == null) {
-			throw new ArgumentError("\"" + address + "\" is not an IPv4 address, and only an IPv4 one can be written here.");
+			var bytes = ipv6Bytes(address);
+
+			if (bytes == null) {
+				throw new ArgumentError("\"" + address + "\" is neither an IPv4 nor an IPv6 address.");
+			}
+
+			if (transactionId == null || transactionId.length < TRANSACTION_LENGTH) {
+				throw new ArgumentError("\"" + address + "\" is an IPv6 address, which is XORed with the message's transaction as well as the cookie, "
+					+ "so writing one needs the transaction id.");
+			}
+
+			var value = new ByteArray();
+			value.endian = Endian.BIG_ENDIAN;
+			value.writeByte(0);
+			value.writeByte(FAMILY_IPV6);
+			value.writeShort(port ^ (MAGIC_COOKIE >>> 16));
+
+			for (i in 0...16) {
+				value.writeByte(bytes.get(i) ^ (i < 4 ? (MAGIC_COOKIE >>> (24 - i * 8)) & 0xFF : transactionId[i - 4]));
+			}
+
+			value.position = 0;
+			return value;
 		}
 
 		var value = new ByteArray();
@@ -554,6 +877,23 @@ class StunMessage {
 	}
 
 	/**
+		The reason phrase of an error response alone, without its code: empty
+		when the server gave none, null when there is no ERROR-CODE at all.
+	**/
+	public function errorReason():Null<String> {
+		for (attribute in attributes) {
+			if (attribute.type != ATTR_ERROR_CODE || attribute.value.length < 4) {
+				continue;
+			}
+
+			attribute.value.position = 4;
+			return attribute.value.length > 4 ? attribute.value.readUTFBytes(attribute.value.length - 4) : "";
+		}
+
+		return null;
+	}
+
+	/**
 		The numeric code of an error response, or zero.
 
 		`errorMessage` renders the code and reason together for a human;
@@ -617,10 +957,12 @@ class StunMessage {
 		that rewrote anything resembling an address in a passing packet would
 		otherwise corrupt the very field that says who to relay to.
 
-		@throws ArgumentError When `address` is not an IPv4 address.
+		@param transactionId The message's, needed for an IPv6 address.
+		@throws ArgumentError When `address` is not an address that can be
+		written with what was given: see `xorMappedAddress`.
 	**/
-	public static function xorPeerAddress(address:String, port:Int):StunAttribute {
-		return new StunAttribute(ATTR_XOR_PEER_ADDRESS, __writeXorAddress(address, port));
+	public static function xorPeerAddress(address:String, port:Int, ?transactionId:ByteArray):StunAttribute {
+		return new StunAttribute(ATTR_XOR_PEER_ADDRESS, __writeXorAddress(address, port, transactionId));
 	}
 
 	/**
@@ -630,8 +972,8 @@ class StunMessage {
 		`xorMappedAddress` is: so the parser can be tested against something
 		other than itself.
 	**/
-	public static function xorRelayed(address:String, port:Int):StunAttribute {
-		return new StunAttribute(ATTR_XOR_RELAYED_ADDRESS, __writeXorAddress(address, port));
+	public static function xorRelayed(address:String, port:Int, ?transactionId:ByteArray):StunAttribute {
+		return new StunAttribute(ATTR_XOR_RELAYED_ADDRESS, __writeXorAddress(address, port, transactionId));
 	}
 
 	/** `DATA`, the payload a relay carries in either direction. **/
@@ -728,6 +1070,109 @@ class StunMessage {
 		return Md5.make(Bytes.ofString(username + ":" + realm + ":" + password));
 	}
 
+	/**
+		The key a long-term credential signs with under RFC 8489's SHA-256
+		password algorithm: SHA-256 of username, realm and password, the same
+		three strings `longTermKey` takes MD5 of, and used exactly as given
+		for the same reason.
+	**/
+	public static function longTermKeySha256(username:String, realm:String, password:String):Bytes {
+		return Sha256.make(Bytes.ofString(username + ":" + realm + ":" + password));
+	}
+
+	/**
+		`USERHASH`'s value: SHA-256 of username and realm, which a server that
+		offers username anonymity takes in place of `USERNAME`, so the name
+		never crosses the network in the clear. RFC 8489 section 14.4.
+	**/
+	public static function userHash(username:String, realm:String):Bytes {
+		return Sha256.make(Bytes.ofString(username + ":" + realm));
+	}
+
+	/**
+		The security features a NONCE declares, as 24 bits with the first the
+		most significant, or 0 when it does not start with `NONCE_COOKIE` --
+		which is a server from before RFC 8489, offering none.
+	**/
+	public static function nonceFeatures(nonce:String):Int {
+		if (nonce == null || !StringTools.startsWith(nonce, NONCE_COOKIE) || nonce.length < NONCE_COOKIE.length + 4) {
+			return 0;
+		}
+
+		try {
+			var bits = haxe.crypto.Base64.decode(nonce.substr(NONCE_COOKIE.length, 4), false);
+
+			if (bits.length < 3) {
+				return 0;
+			}
+
+			return (bits.get(0) << 16) | (bits.get(1) << 8) | bits.get(2);
+		} catch (_:Dynamic) {
+			return 0;
+		}
+	}
+
+	/**
+		The algorithms a `PASSWORD-ALGORITHMS` attribute offers, in the order
+		offered, or null when there is none. Each entry is an algorithm number
+		and parameters padded to four bytes, which neither registered
+		algorithm has.
+	**/
+	public function passwordAlgorithms():Null<Array<Int>> {
+		var value = attribute(ATTR_PASSWORD_ALGORITHMS);
+
+		if (value == null) {
+			return null;
+		}
+
+		var offered:Array<Int> = [];
+		var at:Int = 0;
+
+		while (at + 4 <= value.length) {
+			offered.push((value[at] << 8) | value[at + 1]);
+			var parameters:Int = (value[at + 2] << 8) | value[at + 3];
+			at += 4 + parameters + ((4 - (parameters % 4)) % 4);
+		}
+
+		return offered;
+	}
+
+	/** `PASSWORD-ALGORITHM`: the one a request's key was derived with, and no parameters. **/
+	public static function passwordAlgorithm(algorithm:Int):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.endian = Endian.BIG_ENDIAN;
+		bytes.writeShort(algorithm);
+		bytes.writeShort(0);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_PASSWORD_ALGORITHM, bytes);
+	}
+
+	/** An attribute holding exactly `value`: a USERHASH, or a PASSWORD-ALGORITHMS echoed as it came. **/
+	public static function bytesAttribute(type:Int, value:Bytes):StunAttribute {
+		var bytes = new ByteArray();
+
+		if (value.length > 0) {
+			bytes.writeBytes(value, 0, value.length);
+		}
+
+		bytes.position = 0;
+		return new StunAttribute(type, bytes);
+	}
+
+	/**
+		`REQUESTED-ADDRESS-FAMILY`: which family of relayed address an Allocate
+		asks for. Left out, a relay allocates IPv4. RFC 8656 section 18.8.
+	**/
+	public static function requestedAddressFamily(ipv6:Bool):StunAttribute {
+		var bytes = new ByteArray();
+		bytes.writeByte(ipv6 ? FAMILY_IPV6 : FAMILY_IPV4);
+		bytes.writeByte(0);
+		bytes.writeByte(0);
+		bytes.writeByte(0);
+		bytes.position = 0;
+		return new StunAttribute(ATTR_REQUESTED_ADDRESS_FAMILY, bytes);
+	}
+
 	/** `SOFTWARE`, which is advisory and never covered by anything. **/
 	public static function software(name:String):StunAttribute {
 		var bytes = new ByteArray();
@@ -745,6 +1190,49 @@ class StunMessage {
 		}
 
 		return null;
+	}
+
+	/**
+		The first attribute here that a receiver must understand and this code
+		does not, or -1 when there is none.
+
+		RFC 8489 section 14: a type below 0x8000 is comprehension-required. A
+		success carrying one the receiver does not know is discarded and its
+		transaction taken as failed (section 7.3.3), since whatever it changes
+		about the answer is exactly what the receiver cannot see. Types from
+		0x8000 up may be ignored, and are.
+
+		Known means known to this stack: the STUN, TURN, ICE and RFC 5780
+		attributes, and the five RFC 3489 ones old servers still send beside
+		the rest.
+	**/
+	public function unknownRequiredAttribute():Int {
+		for (attribute in attributes) {
+			if (attribute.type < 0x8000 && !__understood(attribute.type)) {
+				return attribute.type;
+			}
+		}
+
+		return -1;
+	}
+
+	@:noCompletion private static function __understood(type:Int):Bool {
+		return switch (type) {
+			// MAPPED-ADDRESS, RFC 3489's RESPONSE-ADDRESS, CHANGE-REQUEST, RFC
+			// 3489's SOURCE-ADDRESS and CHANGED-ADDRESS, USERNAME, RFC 3489's
+			// PASSWORD, MESSAGE-INTEGRITY, ERROR-CODE, UNKNOWN-ATTRIBUTES, RFC
+			// 3489's REFLECTED-FROM.
+			case 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000A, 0x000B: true;
+			// CHANNEL-NUMBER, LIFETIME, XOR-PEER-ADDRESS, DATA, REALM, NONCE,
+			// XOR-RELAYED-ADDRESS, REQUESTED-ADDRESS-FAMILY, EVEN-PORT,
+			// REQUESTED-TRANSPORT, DONT-FRAGMENT.
+			case 0x000C, 0x000D, 0x0012, 0x0013, 0x0014, 0x0015, 0x0016, 0x0017, 0x0018, 0x0019, 0x001A: true;
+			// MESSAGE-INTEGRITY-SHA256, PASSWORD-ALGORITHM, USERHASH,
+			// XOR-MAPPED-ADDRESS, RESERVATION-TOKEN, PRIORITY, USE-CANDIDATE,
+			// PADDING, RESPONSE-PORT, CONNECTION-ID.
+			case 0x001C, 0x001D, 0x001E, 0x0020, 0x0022, 0x0024, 0x0025, 0x0026, 0x0027, 0x002A: true;
+			default: false;
+		}
 	}
 
 	/** Whether the controlling peer marked this check as the chosen pair. **/
@@ -804,6 +1292,83 @@ class StunMessage {
 
 		out.position = 0;
 		return out;
+	}
+
+	/**
+		Encodes, appending `MESSAGE-INTEGRITY-SHA256` and optionally
+		`FINGERPRINT`: RFC 8489's HMAC-SHA256 in place of HMAC-SHA1, all
+		thirty-two bytes of it, computed over the message as if it were
+		already there -- the same rule `encodeSignedWithKey` follows.
+
+		What a request carries once a server has offered PASSWORD-ALGORITHMS,
+		which RFC 8489 section 9.2.5 has sign "using MESSAGE-INTEGRITY-SHA256
+		only".
+	**/
+	public function encodeSignedSha256WithKey(key:Bytes, withFingerprint:Bool = true):ByteArray {
+		var out = encode();
+
+		__setLength(out, (out.length - HEADER_LENGTH) + 4 + INTEGRITY_SHA256_LENGTH);
+
+		var mac = new Hmac(HashMethod.SHA256).make(key, __copy(out, out.length));
+
+		out.endian = Endian.BIG_ENDIAN;
+		out.position = out.length;
+		out.writeShort(ATTR_MESSAGE_INTEGRITY_SHA256);
+		out.writeShort(INTEGRITY_SHA256_LENGTH);
+
+		for (i in 0...INTEGRITY_SHA256_LENGTH) {
+			out.writeByte(mac.get(i));
+		}
+
+		if (withFingerprint) {
+			__appendFingerprint(out);
+		}
+
+		out.position = 0;
+		return out;
+	}
+
+	/**
+		Whether this message carries a `MESSAGE-INTEGRITY-SHA256` that `key`
+		produces. A value truncated to no fewer than sixteen bytes, a multiple
+		of four, is checked as far as it goes, which RFC 8489 section 14.6
+		allows; anything shorter is not believed.
+	**/
+	public function verifyIntegritySha256WithKey(key:Bytes):Bool {
+		if (raw == null) {
+			return false;
+		}
+
+		var at = __attributeOffset(raw, ATTR_MESSAGE_INTEGRITY_SHA256);
+
+		if (at < 0 || at + 4 > raw.length) {
+			return false;
+		}
+
+		var length:Int = (raw[at + 2] << 8) | raw[at + 3];
+
+		if (length < 16 || length > INTEGRITY_SHA256_LENGTH || length % 4 != 0 || at + 4 + length > raw.length) {
+			return false;
+		}
+
+		var covered = __covered(raw, at, (at - HEADER_LENGTH) + 4 + length);
+		var expected = new Hmac(HashMethod.SHA256).make(key, covered);
+		var difference:Int = 0;
+
+		for (i in 0...length) {
+			difference = difference | (expected.get(i) ^ raw[at + 4 + i]);
+		}
+
+		return difference == 0;
+	}
+
+	/**
+		Whether this message's integrity checks out against `key`: the SHA-256
+		form when it carries one, the SHA-1 form otherwise. What an answer to a
+		signed request is believed by, whichever of the two its server writes.
+	**/
+	public function verifyAnyIntegrityWithKey(key:Bytes):Bool {
+		return attribute(ATTR_MESSAGE_INTEGRITY_SHA256) != null ? verifyIntegritySha256WithKey(key) : verifyIntegrityWithKey(key);
 	}
 
 	/**

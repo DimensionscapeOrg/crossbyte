@@ -2,6 +2,7 @@ package crossbyte.net._internal.stun;
 
 import crossbyte.io.ByteArray;
 import crossbyte.net.ReflexiveAddress;
+import crossbyte.net._internal.stun.StunMessage.StunAttribute;
 
 /**
 	One question to a STUN server: its transaction, its schedule, and what an
@@ -38,6 +39,18 @@ class StunQuery {
 	/** The request, whose transaction is what a reply is believed by. **/
 	public var request(default, null):StunMessage;
 
+	/**
+		The answer, once one has come: what a caller reads for more than the
+		mapped address -- RFC 5780's OTHER-ADDRESS and RESPONSE-ORIGIN.
+	**/
+	public var answer(default, null):Null<StunMessage> = null;
+
+	/**
+		How many answers to this question arrived damaged -- its transaction,
+		and a FINGERPRINT that did not match -- and were dropped.
+	**/
+	public var damaged(default, null):Int = 0;
+
 	@:noCompletion private var __deadline:Float;
 	@:noCompletion private var __nextAttempt:Float;
 	@:noCompletion private var __interval:Float;
@@ -46,9 +59,17 @@ class StunQuery {
 		@param now The caller's clock, whatever it consistently uses.
 		@param timeoutMs How long to keep asking. Non-positive means three
 		seconds, which is what every caller here passed for it.
+		@param attributes More for the request to carry: a CHANGE-REQUEST.
 	**/
-	public function new(now:Float, timeoutMs:Int) {
+	public function new(now:Float, timeoutMs:Int, ?attributes:Array<StunAttribute>) {
 		request = StunMessage.bindingRequest();
+
+		if (attributes != null) {
+			for (attribute in attributes) {
+				request.attributes.push(attribute);
+			}
+		}
+
 		__deadline = now + (timeoutMs > 0 ? timeoutMs / 1000 : 3.0);
 		__interval = RETRANSMIT_FIRST;
 		__nextAttempt = now + __interval;
@@ -57,6 +78,20 @@ class StunQuery {
 	/** Whether the time allowed has run out. **/
 	public inline function expired(now:Float):Bool {
 		return now >= __deadline;
+	}
+
+	/**
+		What a deadline passing should say about the answers that did come:
+		null when none did, and otherwise that they came damaged -- a different
+		thing to go looking for than a server that never answered.
+	**/
+	public function damage():Null<String> {
+		if (damaged == 0) {
+			return null;
+		}
+
+		return damaged + (damaged == 1 ? " answer" : " answers")
+			+ " came with a FINGERPRINT that did not match, so something on the way is altering them";
 	}
 
 	/**
@@ -87,10 +122,35 @@ class StunQuery {
 		advertise to peers as its own.
 	**/
 	public function interpret(payload:ByteArray):StunQueryOutcome {
-		var response = StunMessage.decode(payload);
+		return interpretMessage(StunMessage.decode(payload));
+	}
 
+	/**
+		The same, for a datagram the caller has already decoded -- or null, for
+		one that was not STUN. A socket carrying ICE and TURN as well decodes
+		each datagram once and shows the message to each of them.
+	**/
+	public function interpretMessage(response:Null<StunMessage>):StunQueryOutcome {
 		if (response == null || !request.matches(response)) {
 			return NOT_OURS;
+		}
+
+		// A FINGERPRINT that does not match: damaged on the way, or not a STUN
+		// message at all however it looks. Dropped, as RFC 8489 section 7.3
+		// has it, and the question still open. It was believed.
+		if (response.attribute(StunMessage.ATTR_FINGERPRINT) != null && !response.verifyFingerprint()) {
+			damaged++;
+			return NOT_OURS;
+		}
+
+		// An attribute the server requires understood and this client does
+		// not: whatever it changes about the answer is exactly what cannot be
+		// seen, so the answer cannot be used (section 7.3.3). It was.
+		var unknown:Int = response.unknownRequiredAttribute();
+
+		if (unknown >= 0 && (response.type == StunMessage.BINDING_SUCCESS || response.type == StunMessage.BINDING_ERROR)) {
+			return UNUSABLE("the server's answer carries an attribute it requires understood, 0x" + StringTools.hex(unknown, 4)
+				+ ", which this client does not understand");
 		}
 
 		if (response.type == StunMessage.BINDING_ERROR) {
@@ -103,6 +163,7 @@ class StunQuery {
 			return NOT_OURS;
 		}
 
+		answer = response;
 		var address = response.mappedAddress();
 
 		// A success with no address is a server that answered without
@@ -125,4 +186,7 @@ enum StunQueryOutcome {
 
 	/** A success carrying no mapped address. **/
 	ANSWERED_WITHOUT_ADDRESS;
+
+	/** An answer that cannot be acted on, and why. **/
+	UNUSABLE(reason:String);
 }

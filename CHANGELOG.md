@@ -61,6 +61,72 @@ All notable changes to CrossByte will be documented in this file.
   field order, which a command, a sort and an index key depend on and an
   anonymous object does not keep on most targets. `ExtendedJson` reads and
   writes MongoDB Extended JSON v2, binding `:name` placeholders as values.
+- `StunClient` asks through a socket it is given, and classifies the NAT in
+  front of it. `discover` takes the `DatagramSocket` to ask through --
+  bound, and left open and as it was found -- so the answer describes the
+  mapping of the socket an application actually uses. Each question used
+  to bind a socket of its own, so it answered for a port nothing used, and
+  comparing what two servers saw compared two mappings: every NAT, and
+  loopback too, read as symmetric. `classifyMapping` and
+  `classifyFiltering` run RFC 5780's tests through one socket against a
+  server with a second address, answering with a `NatBehavior`, and
+  `probe` asks one RFC 5780 question -- a CHANGE-REQUEST in, OTHER-ADDRESS,
+  RESPONSE-ORIGIN and where the answer came from out, as a `StunProbe` --
+  for the tests those two do not run. A server that gives no OTHER-ADDRESS,
+  or ignores CHANGE-REQUEST, is reported as unable to classify rather than
+  read as a NAT that lets everything in.
+- TURN over TCP, IPv6 relays, and RFC 8489's credentials. `TurnClient`
+  takes a `TurnTransport`: over TCP or TLS it frames every message for a
+  stream (RFC 8656 section 3.1) -- `receiveStream` takes what arrives,
+  split anywhere, and `streamClosed` ends the allocation with the
+  connection -- and sends each request once, waiting RFC 8489's 39.5
+  seconds, since a stream does not lose it. `PeerConnection.gatherRelayed`,
+  a `TurnServer`'s `transport` and `ReliableDatagramServerSocket.allocateRelay`
+  reach a relay over TCP for a network that lets nothing else out; what
+  the relay relays is UDP either way. TLS is framed the same, and needs a
+  TLS stream the caller holds, since a plain `Socket` does not start TLS on
+  every target. `requestIPv6` asks for an IPv6 relayed address
+  (REQUESTED-ADDRESS-FAMILY), whose peers are IPv6 and are written with the
+  transaction as RFC 8489 has it. A relay offering password algorithms is
+  answered with SHA-256 keys and MESSAGE-INTEGRITY-SHA256 alone, one
+  offering username anonymity with USERHASH in place of USERNAME, and one
+  whose nonce offers algorithms on an answer that lists none -- the list
+  stripped on the way, a downgrade -- is not answered at all. The SHA-256
+  arithmetic is pinned to values computed with Node's crypto.
+  `StunMessage` gains the attributes, `ipv6Bytes` and `canonicalIPv6`,
+  and IPv6 in `xorMappedAddress`, `xorPeerAddress` and `xorRelayed` given
+  the transaction id.
+- Reliable datagram sessions can fall back to a TURN relay, for the peers
+  hole punching cannot reach -- a symmetric NAT or a carrier's CGNAT at
+  either end. `ReliableDatagramServerSocket.allocateRelay` asks a relay for
+  an address through the port the server listens on; `relayedCandidate` is
+  that address for the peer to be told of, `connectRelayed` opens a session
+  that reaches its peer through the relay, a CONNECT arriving through it
+  opens one that answers the same way, and `permitRelayedPeer` lets a peer
+  that dials first through. An attached `IceAgent` checks from the relayed
+  candidate too, and no longer takes STUN that is not a connectivity check
+  -- it took every STUN message on the socket, a relay's answers included.
+  A relay that goes away closes the sessions through it, each with an
+  `ioError` saying so; `releaseRelay` frees it. `NetHost` reaches all of
+  this through `allocateRelay`, `dialRelayed` and `permitRelayedPeer` on a
+  reliable datagram host. And for a protocol of the application's own on
+  the same port, `onDatagram` sees every datagram before anything else
+  does, and `sendDatagram` answers from the port: there was no way in,
+  since everything that was not a reliable frame was dropped as noise.
+  `TurnClient.sendTo` takes an offset and a length.
+- `PeerConnection.gatherRelayedFrom(servers)`, which asks each TURN relay in
+  a list in turn until one lends an address, and keeps one for as long as
+  the connection lasts: a relay that loses the allocation is replaced from
+  the list and the new relayed candidate announced through
+  `onLocalCandidate`, and `restartIce` asks the relay whether it is still
+  there -- a network change costs the allocation -- and replaces one that is
+  not. `setRelayCredentials` renews the credentials relays are asked with,
+  for the TURN REST convention's expiring ones. A failed gather's `cause` is
+  a `TurnError` -- the relay's code, its reason, and where a 300 pointed --
+  where it was a sentence with no code in it. Underneath: `TurnClient`
+  follows 300 Try Alternate to the server it names (once per server, so two
+  relays redirecting to each other cannot hold it), and gains
+  `setCredentials`, `refresh` and `failure`.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -868,6 +934,11 @@ All notable changes to CrossByte will be documented in this file.
   PHP's `mongodb` extension, is removed; the wire client builds for php,
   and has not been run there. What to change: read `lastInsertId`, and
   expect the documents themselves from a `find` through `request()`.
+- `ReflexiveAddress.toString()` brackets an IPv6 address,
+  `[2001:db8::7]:3478`; unbracketed, the port reads as the address's last
+  group. And `preservesPort` no longer claims a kept port shows an
+  endpoint-independent mapping: it shows neither that nor the opposite,
+  and `StunClient.classifyMapping` finds the mapping itself.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -1509,6 +1580,107 @@ All notable changes to CrossByte will be documented in this file.
   each was a ClassCastException that escaped `execute()`, left the
   listeners unrun, and lost what had gone wrong. The cause now travels as
   text, and a server's refusal as the `MongoError` with its code.
+- A STUN answer whose FINGERPRINT does not match is dropped, and one
+  carrying a comprehension-required attribute this client does not
+  understand is not used (RFC 8489 sections 7.3 and 7.3.3). Both were
+  believed -- a damaged datagram settled the question with whatever
+  address it now carried, and an attribute that changed what the answer
+  meant was ignored -- by `StunClient`,
+  `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `PeerConnection`'s gathering alike, which share `StunQuery`. A deadline
+  that passes after damaged answers says they came damaged, rather than
+  that nothing answered.
+- An IPv6 address in a STUN or TURN message is read. The family byte for
+  IPv6 was taken for no address at all, so a STUN server answering over
+  IPv6 reported no mapped address and a relay granting an IPv6 allocation
+  had "allocated nothing" while it held one. Pinned to RFC 5769's IPv6
+  sample.
+- A TURN Send indication costs half what it did: its transaction id comes
+  from random bytes drawn sixteen ids at a time, and the peer's
+  XOR-PEER-ADDRESS is written once per peer rather than parsed from the
+  address for every datagram -- 610 to 350 ns for a 64-byte payload and
+  1.1 us to 540 ns for 1200 bytes, natively. ChannelData is unchanged.
+- A STUN message of more than 32 attributes (`StunMessage.MAX_ATTRIBUTES`)
+  is not read. The count was the sender's, and each attribute costs an
+  allocation and a copy, so one unauthenticated 64 KB datagram of empty
+  attributes cost 527 microseconds to decode on cpp and 4.4 ms on Node --
+  and a `PeerConnection` decoded every STUN-range datagram up to four times,
+  once each for its reflexive query, its relay, its agent and a restart's
+  agent. It decodes once now and shows the message to each, and a
+  `PeerConnectionHost` hands on the check it decoded to route.
+  `TurnClient.receive`, `IceAgent.receive` and `StunQuery.interpretMessage`
+  take a decoded message for that.
+- A `PeerConnection` whose relay refused, never answered or went away can
+  ask for another. The dead relay stayed attached for the life of the
+  connection, so asking again was refused as "already has a relay", and a
+  relay lost after a network change was never replaced.
+- Closing a `TurnClient`, or the `PeerConnection` holding one, frees the
+  allocation on the relay. No Refresh with a lifetime of zero was sent, so
+  the relay held the allocation and its port for as long as it had been
+  granted -- up to an hour on coturn -- the next client on the same socket
+  was refused with 437, and an application that reconnected ran into the
+  relay's quota. The release is sent once, signed, and also when the
+  Allocate is still unanswered, since the relay may have granted it.
+- `TurnClient` believes only its relay. Relayed data was taken from any
+  sender -- a Data indication naming a peer, or ChannelData on a bound
+  channel's number, from anyone who could reach the socket, was delivered as
+  that peer -- and a success answering a signed request was accepted without
+  its MESSAGE-INTEGRITY being checked, so whoever saw a request go by could
+  answer it with a relayed address of their own. Now only datagrams from
+  the relay's address and port are TURN traffic, a Data indication is
+  delivered only for a peer this client permitted, and an answer to a
+  signed request must be signed with the same key (a 401 or 438 excepted),
+  or carry a matching FINGERPRINT when it has one, or it is dropped as
+  though it never came, as RFC 8489 has it; a request answered only by such
+  messages fails saying so. A success carrying a comprehension-required
+  attribute the client does not understand fails its request rather than
+  being acted on.
+- A TURN relay named by hostname is looked up once per allocation. Every
+  request went to the name, which natively was looked up again every minute
+  and on Node for every datagram; against a round-robin pool the requests
+  bounced between relays that refused each other's nonces, and nothing was
+  allocated. `TurnClient` now sends to the address the relay first answered
+  from, and `serverAddress` says which. A relay that calls every nonce stale
+  is given up on after three (`MAX_STALE_NONCES`) rather than asked some
+  nine thousand times a second. Requests are transactions of their own, up
+  to eight in flight (`MAX_IN_FLIGHT`) and 64 waiting (`MAX_QUEUED`), and a
+  refresh never waits behind them: it was sent only when nothing else was
+  outstanding, so a caller asking for permissions faster than the relay
+  answered let the allocation expire. `permit` sends nothing for a
+  permission already in place or already asked for, so calling it before
+  every datagram, as `PeerConnection` now does, is cheap.
+- A stale nonce on a TURN channel rebind no longer blacks the channel out.
+  A 438 on a ChannelBind was neither retried nor used to take the new
+  nonce, and the channel stayed marked bound while the relay, whose binding
+  lapsed at ten minutes, dropped everything sent on it -- for up to six
+  minutes, with nothing reported. A ChannelBind is retried like any other
+  request, and a rebind the relay refuses, or never answers, sends the
+  traffic back to Send indications once the old binding has lapsed.
+- A TURN relay refusing one peer refuses that peer, not the whole
+  allocation. Any CreatePermission error but 401 and 438 closed the
+  `TurnClient`, and ICE pairs a relayed candidate with every one of the
+  peer's candidates, private host addresses first -- which a hardened relay
+  (coturn's `denied-peer-ip`, loopback by default) answers with 403. So the
+  relay was gone before the relayed pair that would have worked was tried,
+  and neither peer connected. A refused peer is now reported through
+  `TurnClient.onPermissionRefused` and not asked about again, the allocation
+  carries on, and `PeerConnection` gives up on the pairs the relay refused
+  through the new `IceAgent.refusePairs` instead of checking into them for
+  half a minute. A 437, the relay saying it holds no such allocation, still
+  ends it.
+- A TURN allocation survives a relay whose first answer is slow. The signed
+  retry after the relay's 401 reused the unsigned request's transaction, so
+  once that request had been sent twice -- its answer took over half a
+  second, or natively the relay's name took that long to resolve and both
+  copies left together -- the second 401 matched the signed retry and read
+  as the credentials being rejected, while the relay granted the signed
+  request and held an allocation nobody would use or free. Each
+  authenticated retry is a new transaction now, as RFC 8489 has it, and
+  answers to superseded ones are ignored. A CreatePermission success or a
+  ChannelBind error, from anyone or duplicated, no longer ends whatever
+  request is in flight: every answer is matched to its request by
+  transaction. And a relay that never answers is given up on after RFC
+  8489's 39.5 seconds rather than 63.5.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
