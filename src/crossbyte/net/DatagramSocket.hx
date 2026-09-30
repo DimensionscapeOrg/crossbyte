@@ -122,6 +122,19 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval)) true #else false #end;
 
 	/**
+		Whether `receiveBufferSize` and `sendBufferSize` reach the operating
+		system here: natively, on the jvm and on Node.
+
+		HashLink and Neko have UDP sockets and no way to ask a socket for its
+		buffers or to size them -- neither has a native for either option --
+		so there both read 0, which means not known rather than empty, and
+		setting either throws. It used to do nothing, silently, which left a
+		caller that sized its buffers for a burst no way to find out it had
+		not.
+	**/
+	public static var bufferSizeSupported(default, null):Bool = #if (cpp || java || jvm || nodejs) true #else false #end;
+
+	/**
 		Indicates whether the socket is currently bound to a local address and port.
 	**/
 	public var bound(get, never):Bool;
@@ -193,13 +206,14 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		`net.core.rmem_max` unless that is raised, and reports twice what it
 		keeps, counting its own bookkeeping; every system rounds. Read it back
 		to know. On Node it is applied once the socket is bound, and reads as
-		what was asked until then. It reads 0 on targets with no way to size
-		a socket's buffers -- eval, HashLink and Neko -- and setting it there
-		changes nothing.
+		what was asked until then. Where `bufferSizeSupported` is false --
+		HashLink and Neko -- it reads 0, meaning not known, and cannot be set.
 
 		@throws RangeError If set below 1.
 		@throws IOError If set once the socket is closed, or if the system
 		        refuses it.
+		@throws IllegalOperationError If set where `bufferSizeSupported` is
+		        false.
 	**/
 	public var receiveBufferSize(get, set):Int;
 
@@ -211,6 +225,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 		@throws RangeError If set below 1.
 		@throws IOError If set once the socket is closed, or if the system
 		        refuses it.
+		@throws IllegalOperationError If set where `bufferSizeSupported` is
+		        false.
 	**/
 	public var sendBufferSize(get, set):Int;
 
@@ -1426,6 +1442,8 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 			__sendBufferRequest = value;
 		}
 		__applyNodeBuffers();
+		#else
+		throw new IllegalOperationError('This target cannot size a socket\'s $which buffer: check DatagramSocket.bufferSizeSupported.');
 		#end
 	}
 
