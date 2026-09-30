@@ -155,6 +155,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
+		runner.addCase(new crossbyte.db.MySQLDriverTest());
 		#if !cpp
 		// The same failures on cpp go through libpq, and are covered against
 		// its stand-in by NativePostgresBridgeTest below.
@@ -170,6 +171,7 @@ class TestSuites {
 		// The native MySQL client against a server that logs every byte it
 		// is sent (fakemysql/FakeMySQLServer), so no database is needed.
 		runner.addCase(new crossbyte.db.MySQLNativeWireTest());
+		runner.addCase(new crossbyte.db.MySQLNativeResultTest());
 		#end
 	}
 
