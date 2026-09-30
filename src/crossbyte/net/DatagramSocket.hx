@@ -111,14 +111,15 @@ class DatagramSocket extends EventDispatcher #if !nodejs implements IPollableSoc
 	/**
 		Indicates whether UDP sockets are supported by the current target.
 
-		Neko is excluded despite being a sys target, because its
-		`sys.net.UdpSocket` constructor throws "Not available on this platform".
-		This said `true` there and then threw on the first socket, which is the
-		one thing a support flag exists to prevent, a caller checks it so it
-		can take the other path, and a flag that lies leaves no other path to
-		take.
+		The interpreter has no UDP socket. Neko has one of CrossByte's own:
+		Haxe's `sys.net.UdpSocket` constructor throws "Not available on this
+		platform" there, and this once said `true` and then threw on the first
+		socket, the one thing a support flag exists to prevent, since a
+		caller checks it so it can take the other path, and a flag that lies
+		leaves no other path to take. It then said `false` for a while after
+		neko's socket worked.
 	**/
-	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval && !neko)) true #else false #end;
+	public static var isSupported(default, null):Bool = #if (nodejs || (sys && !eval)) true #else false #end;
 
 	/**
 		Indicates whether the socket is currently bound to a local address and port.

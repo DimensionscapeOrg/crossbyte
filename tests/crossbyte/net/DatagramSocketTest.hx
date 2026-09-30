@@ -12,6 +12,30 @@ import utest.Assert;
 
 @:access(crossbyte.net.DatagramSocket)
 class DatagramSocketTest extends utest.Test {
+	/**
+		The flag says what the target's own UDP socket can do.
+
+		It said `false` on neko after neko was given a working
+		`sys.net.UdpSocket`, which skipped every case here there and left
+		`LocalAddress` refusing to answer; before that it said `true` while
+		the constructor threw. Either way the flag and the socket disagreed.
+	**/
+	public function testSupportMatchesWhatTheTargetsSocketCanDo():Void {
+		#if (sys && !js)
+		var works:Bool = try {
+			var socket = new sys.net.UdpSocket();
+			socket.bind(new sys.net.Host("127.0.0.1"), 0);
+			socket.close();
+			true;
+		} catch (_:Dynamic) {
+			false;
+		}
+		Assert.equals(works, DatagramSocket.isSupported, "a UDP socket " + (works ? "binds" : "cannot bind") + " here");
+		#else
+		Assert.pass();
+		#end
+	}
+
 	public function testAFailedSendDoesNotDeafenTheSocket():Void {
 		if (!DatagramSocket.isSupported) {
 			Assert.isFalse(DatagramSocket.isSupported);
