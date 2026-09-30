@@ -4,6 +4,40 @@ import utest.Assert;
 
 @:access(crossbyte.utils.Logger)
 class LoggerTest extends utest.Test {
+	#if (cpp && (windows || linux || mac || macos))
+	/**
+		A record reaches a redirected stdout within a frame of being logged,
+		not when the process ends.
+
+		hxcpp's develop line flushes `Sys.println` only to a console: to a pipe
+		or a file a flush per line is a syscall per line. A server's log piped
+		to a supervisor then arrived when a buffer filled or the process ended,
+		and not at all after a crash. The runtime flushes what was logged once
+		a frame, and a warning or an error at once.
+	**/
+	@:timeout(20000)
+	public function testARecordReachesAPipedStdoutWithinAFrame(async:utest.Async):Void {
+		var child = new crossbyte.sys.NativeProcess();
+		var output:String = "";
+		var started:Float = haxe.Timer.stamp();
+		var arrived:Float = -1;
+		child.addEventListener(crossbyte.events.NativeProcessEvent.STANDARD_OUTPUT_DATA, function(e) {
+			output += e.text;
+			if (arrived < 0 && output.indexOf("logged-info") >= 0) {
+				arrived = haxe.Timer.stamp() - started;
+			}
+		});
+		child.start(new crossbyte.sys.NativeProcessStartupInfo(Sys.programPath(), ["--crossbyte-child=logger"]));
+
+		crossbyte.net.NetPump.until(() -> arrived >= 0, 12.0, function(_) {
+			// The child logs, runs a frame, then waits 4s before it exits.
+			Assert.isTrue(arrived >= 0 && arrived < 2.5, 'the INFO record reached the pipe after ${arrived}s: at the exit, not the frame');
+			try child.exit() catch (_:Dynamic) {}
+			async.done();
+		});
+	}
+	#end
+
 	private var captured:Array<String>;
 
 	public function setup():Void {
