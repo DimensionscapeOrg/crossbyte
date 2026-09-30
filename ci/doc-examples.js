@@ -57,6 +57,7 @@ const STANDALONE = [
   'src/crossbyte/PrimitiveValue.hx',
   'src/crossbyte/core/Config.hx',
   'src/crossbyte/core/HostApplication.hx',
+  'src/crossbyte/db/AsyncDatabase.hx',
   'src/crossbyte/db/mongodb/MongoConfig.hx',
   'src/crossbyte/db/mongodb/MongoConnection.hx',
   'src/crossbyte/db/mongodb/MongoCursor.hx',
