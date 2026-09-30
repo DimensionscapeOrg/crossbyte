@@ -447,8 +447,12 @@ class IceAgent {
 			case StunMessage.BINDING_ERROR:
 				__refused(message, now);
 			default:
-				// Something else entirely. It was still a STUN message, so it is
-				// not the caller's to handle.
+				// STUN, but not a check: a relay's answer, a Data indication.
+				// Whatever else shares the socket may want it, and taking it
+				// here is what swallowed a TURN relay's answers on a reliable
+				// datagram server with an agent attached.
+				__arrivedVia = previous;
+				return false;
 		}
 
 		__arrivedVia = previous;

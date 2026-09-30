@@ -642,6 +642,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private var __remotePort:Int = 0;
 	@:noCompletion private var __remoteResponsePort:Int = 0;
 	@:noCompletion private var __server:ReliableDatagramServerSocket;
+
+	/**
+		The relay this session reaches its peer through, or null for a peer
+		reached directly: set by `ReliableDatagramServerSocket` for a session
+		accepted through its relay or dialled with `connectRelayed`, and never
+		changed. Every datagram then goes to the relay to forward.
+	**/
+	@:noCompletion private var __relay:TurnClient = null;
+
 	@:noCompletion private var __timeout:Int = 20000;
 	@:noCompletion private var __transport:DatagramSocket;
 	@:noCompletion private var __transportListenerReady:Bool = false;
@@ -1230,7 +1239,8 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		mode:ReliableDatagramSocketMode,
 		payload:ByteArray,
 		congestion:CongestionControl,
-		peerConnectionId:Int = 0
+		peerConnectionId:Int = 0,
+		?relay:TurnClient
 	):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
 		if (congestion != null) {
@@ -1243,6 +1253,9 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 		socket.__ownsTransport = false;
 		socket.__incoming = true;
+		// Before the handshake, whose first answer goes back the way the
+		// CONNECT came.
+		socket.__relay = relay;
 		socket.connectPayload = payload;
 		socket.__mode = mode;
 		socket.__server = server;
@@ -1283,11 +1296,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	 */
 	@:noCompletion private static function __createDialed(transport:DatagramSocket, remoteAddress:Null<String>, remotePort:Int,
 			server:ReliableDatagramServerSocket, mode:ReliableDatagramSocketMode, timeoutMs:Int, payload:ByteArray,
-			congestion:CongestionControl):ReliableDatagramSocket {
+			congestion:CongestionControl, ?relay:TurnClient):ReliableDatagramSocket {
 		var socket = new ReliableDatagramSocket();
 		if (congestion != null) {
 			socket.__congestion = congestion;
 		}
+		// Before the handshake, whose first CONNECT goes through it.
+		socket.__relay = relay;
 		var temporaryTransport = socket.__transport;
 		socket.__teardownTransportListener();
 
@@ -2867,13 +2882,30 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	@:noCompletion private function __sendDatagram(offset:Int, length:Int):Bool {
 		__sentSinceKeepAlive = true;
 		try {
-			__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
+			if (__relay != null) {
+				__sendRelayed(offset, length);
+			} else {
+				__transport.send(__scratch, offset, length, __remoteAddress, __remotePort);
+			}
 			return true;
 		} catch (e:Dynamic) {
 			dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, Std.string(e)));
 			__dispose(true);
 			return false;
 		}
+	}
+
+	/**
+		One datagram for the relay to forward. The peer is permitted first --
+		a relay forwards to an address only once it has been told to expect it,
+		and drops anything else without a word -- and bound to a channel when
+		the relay was asked to use them; both cost a lookup once in place.
+	**/
+	@:noCompletion private function __sendRelayed(offset:Int, length:Int):Void {
+		var now:Float = haxe.Timer.stamp();
+		__relay.permit(__remoteAddress, now);
+		__relay.bindChannel(__remoteAddress, __remotePort, now);
+		__relay.sendTo(__scratch, __remoteAddress, __remotePort, offset, length);
 	}
 
 	@:noCompletion private inline function __currentAck():Null<Seq32> {
