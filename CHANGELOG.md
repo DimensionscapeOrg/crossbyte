@@ -1220,6 +1220,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A Brotli stream that ends where its literal context map should begin is
+  refused rather than crashing a native process. The decoder scanned the
+  map before checking it had been read, so it walked one that was never
+  allocated: an exception from inside the decoder on eval and the jvm, and
+  natively a segfault, from the first four bytes of any stream.
 - Four bytes of Brotli no longer hang the decoder for good. A stream that
   declared a metadata block and ended before it did kept the decoder asking
   for input that was never coming, in a loop that allocated nothing, so no

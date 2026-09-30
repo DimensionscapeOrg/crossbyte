@@ -36,4 +36,26 @@ class BrotliCodecTest extends utest.Test {
 	public function testAMetadataBlockIsSkipped():Void {
 		Assert.equals(0, Brotli.decompress(Bytes.ofHex("2c01aabbcc03"), 1 << 20).length);
 	}
+
+	/**
+	 * A stream that ends where the literal context map should begin.
+	 *
+	 * The decoder scanned that map before asking whether it had been read, so
+	 * it walked a map that was never allocated: null. On eval and the jvm that
+	 * surfaced as an exception from inside the decoder, and natively as a
+	 * segfault, the fuzz suite took the whole native runner down with the
+	 * first four bytes of a valid stream. It must be refused as the codec
+	 * refuses any other damaged stream.
+	 */
+	public function testAStreamEndingBeforeItsContextMapIsRefused():Void {
+		for (hex in ["1b500000", "1b5000"]) {
+			var refusal:String = null;
+			try {
+				Brotli.decompress(Bytes.ofHex(hex), 1 << 20);
+			} catch (e:Dynamic) {
+				refusal = Std.string(e);
+			}
+			Assert.equals("Brotli decompression failed", refusal, hex);
+		}
+	}
 }
