@@ -317,6 +317,31 @@ class ServerSocketTLSTest extends utest.Test {
 	}
 
 	/**
+		The same default turned on is for the connections an application
+		makes, not for its servers. A jvm listener left its own `verifyCert`
+		unset, so once the default was honoured it followed it too, and a
+		server asked every client for a certificate -- every browser refused --
+		where a native one asks only after `requireClientCertificate()`.
+	**/
+	public function testTheDefaultVerifySettingLeavesServersAskingForNoCertificate():Void {
+		var previous = crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT;
+		crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT = true;
+		// The client itself does not verify, so only the server can refuse.
+		var outcome = try __readFromTlsServer(false, 5.0, "hi") catch (e:Dynamic) {
+			crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT = previous;
+			throw e;
+		}
+		crossbyte._internal.socket.FlexSocket.DEFAULT_VERIFY_CERT = previous;
+		if (outcome == null) {
+			return;
+		}
+
+		Assert.isTrue(outcome.finished, "the client never finished");
+		Assert.isNull(outcome.failure, "a server asked a client for a certificate nobody required: " + outcome.failure);
+		Assert.equals("h".code, outcome.firstByte);
+	}
+
+	/**
 		A CrossByte TLS server that greets with `greeting` (or says nothing),
 		and a client on another thread that reads one byte with `timeout` set.
 		`defaultVerify` leaves the client's own verifyCert unset; otherwise it
