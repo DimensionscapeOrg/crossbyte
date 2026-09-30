@@ -194,6 +194,10 @@ class ServerSocket extends EventDispatcher {
 	// `this_onTick` do not compare equal, so removing a fresh one removed
 	// nothing.
 	@:noCompletion private var __acceptTick:TickEvent->Void = null;
+	// The runtime the accept tick is attached to, or null while it is not.
+	// One attachment however many paths ask: the runtime's dispatcher keeps
+	// every add, and each remove takes one away.
+	@:noCompletion private var __tickRuntime:CrossByte = null;
 	// Whether the last accept failed, so a run of failures is reported once.
 	@:noCompletion private var __acceptFailing:Bool = false;
 	#end
@@ -628,9 +632,7 @@ class ServerSocket extends EventDispatcher {
 		bound = false;
 		__closed = true;
 		#if !nodejs
-		if (__cbInstance != null) {
-			__cbInstance.removeEventListener(TickEvent.TICK, __onAcceptTick());
-		}
+		__detachAcceptTick();
 		#end
 		__cbInstance = null;
 	}
@@ -698,7 +700,7 @@ class ServerSocket extends EventDispatcher {
 				__cbInstance.registerSocket(__serverSocket); */
 			listening = true;
 			if (__hasListener) {
-				__cbInstance.addEventListener(Event.TICK, __onAcceptTick());
+				__attachAcceptTick();
 			}
 			#end
 		}
@@ -882,7 +884,7 @@ class ServerSocket extends EventDispatcher {
 			__hasListener = true;
 			#if !nodejs
 			if (listening) {
-				__cbInstance.addEventListener(TickEvent.TICK, __onAcceptTick());
+				__attachAcceptTick();
 			}
 			#end
 		}
@@ -898,9 +900,7 @@ class ServerSocket extends EventDispatcher {
 		if (type == Event.CONNECT && !hasEventListener(Event.CONNECT)) {
 			__hasListener = false;
 			#if !nodejs
-			if (__cbInstance != null) {
-				__cbInstance.removeEventListener(TickEvent.TICK, __onAcceptTick());
-			}
+			__detachAcceptTick();
 			#end
 		}
 	}
@@ -912,6 +912,40 @@ class ServerSocket extends EventDispatcher {
 			__acceptTick = this_onTick;
 		}
 		return __acceptTick;
+	}
+
+	/**
+		Puts the accept tick on the runtime, unless it is there already.
+
+		Every path that wants it running comes here, `listen()` with a
+		`connect` listener, a `connect` listener added while listening, and
+		`ServerWebSocket`: and each used to add it again. The runtime's
+		dispatcher keeps every add and each remove takes out one, so a server
+		given its listener after `listen()` held two and closing it removed
+		one: the other ran on for good, calling `accept()` on the closed
+		listener every frame. Once its descriptor number went to a new
+		listener, that accept was on the new server's socket, taking its
+		connections, or on eval, whose sockets cannot be made non-blocking,
+		waiting forever for one and stopping the runtime.
+	**/
+	@:noCompletion private function __attachAcceptTick():Void {
+		if (__tickRuntime != null || __cbInstance == null) {
+			return;
+		}
+
+		__tickRuntime = __cbInstance;
+		__tickRuntime.addEventListener(TickEvent.TICK, __onAcceptTick());
+	}
+
+	/** Takes the accept tick off the runtime it was put on, if it is there. **/
+	@:noCompletion private function __detachAcceptTick():Void {
+		if (__tickRuntime == null) {
+			return;
+		}
+
+		var runtime:CrossByte = __tickRuntime;
+		__tickRuntime = null;
+		runtime.removeEventListener(TickEvent.TICK, __onAcceptTick());
 	}
 	#end
 
@@ -954,10 +988,7 @@ class ServerSocket extends EventDispatcher {
 
 		#if !nodejs
 		__dropPendingHandshakes();
-
-		if (__cbInstance != null) {
-			__cbInstance.removeEventListener(TickEvent.TICK, __onAcceptTick());
-		}
+		__detachAcceptTick();
 		#end
 
 		try {
