@@ -95,14 +95,17 @@ class MySQLStatement extends EventDispatcher {
 		if (__connection == null) {
 			throw "MySQLStatement: no connection set.";
 		}
+
+		// Before anything changes: a parameter with no literal (a NaN) throws
+		// an ArgumentError, and the statement is then simply not run.
+		var sql:String = __applyParameters(text);
+
 		__executing = true;
 		#if cpp
 		__resultQueue = new Deque();
 		#else
 		__resultQueue = [];
 		#end
-
-		var sql:String = __applyParameters(text);
 
 		__prefetch = prefetch;
 
