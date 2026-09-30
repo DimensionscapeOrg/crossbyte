@@ -665,7 +665,11 @@ class FileStreamTest extends utest.Test {
 			stream.close();
 		} catch (_:Dynamic) {}
 
-		var deadline:Float = haxe.Timer.stamp() + 5;
+		// An async stream's close waits for its worker to notice, and the handle
+		// is let go on the runtime's thread after that: on a loaded machine
+		// eval took longer than five seconds, and the file could not then be
+		// deleted. This returns as soon as it is closed.
+		var deadline:Float = haxe.Timer.stamp() + 30;
 
 		while (@:privateAccess stream.__isOpen && haxe.Timer.stamp() < deadline) {
 			__pump();
