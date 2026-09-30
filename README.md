@@ -202,9 +202,16 @@ never calls can be skipped with `HL_DISABLED_LIBS=sqlite,mysql` (HashLink
 `SecureRandom.isSupported` is false and everything that needs one refuses,
 saying so: `BCrypt.hash`, PKCE, WebSocket clients, STUN, TURN, ICE and WebRTC.
 Both are IPv4 only. `LocalConnection`, `SharedChannel` and `SharedObject`, the
-native crypto, ALPN (so HTTP/2 over TLS) and socket buffer sizes are native or
-jvm features. On neko an `Int` is 31 bits, so a value past 0x3FFFFFFF is not
-one there.
+native crypto and ALPN (so HTTP/2 over TLS) are native or jvm features, and a
+datagram socket's buffers cannot be sized (`DatagramSocket.bufferSizeSupported`
+is false: they read 0 and setting them throws).
+
+Two things about neko's numbers and clock. An `Int` there is 31 bits, and
+`Array.sort` is a native merge sort that takes a comparator's answer too large
+for one as "less", so a comparator written as a subtraction of large values
+sorts wrongly there; answer -1, 0 or 1. And on Windows `haxe.Timer.stamp()` is
+the time of day to the millisecond, moving once a system tick, so two readings
+a few microseconds apart are usually equal.
 
 ## Samples
 
