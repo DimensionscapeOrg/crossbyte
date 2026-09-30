@@ -5,6 +5,76 @@ import crossbyte.math.Rectangle;
 import utest.Assert;
 
 class CollectionsTest extends utest.Test {
+	/**
+		A miss in a large `Map<Int, T>` costs what a hit does.
+
+		Haxe 4.3.7's `IntMap` for the java targets never stopped probing at an
+		empty bucket, so every miss read the whole table, 110us a miss at
+		100,000 entries, where a hit took nothing measurable. CrossByte puts a
+		fixed copy ahead of it there (`std/java`, through `StdOverrides`).
+		Timed against the hits rather than a clock limit, so a loaded machine
+		slows both sides alike.
+	**/
+	public function testAMissInALargeIntMapCostsWhatAHitDoes():Void {
+		var map = new Map<Int, Int>();
+		for (i in 0...20000) {
+			map.set(i * 2, i);
+		}
+
+		var found = 0;
+		// Both paths once first, for a compiler that compiles as it goes.
+		for (i in 0...2000) {
+			if (map.exists(i * 2 + 1)) found++;
+			if (map.exists(i * 2)) found++;
+		}
+
+		var start = haxe.Timer.stamp();
+		for (i in 0...2000) {
+			if (map.exists(i * 2 + 1)) found++;
+		}
+		var misses = haxe.Timer.stamp() - start;
+		start = haxe.Timer.stamp();
+		for (i in 0...2000) {
+			if (map.exists(i * 2)) found++;
+		}
+		var hits = haxe.Timer.stamp() - start;
+
+		#if (java || jvm)
+		// The fixed copy is the one compiled; this does not compile otherwise.
+		Assert.isTrue(@:privateAccess haxe.ds.IntMap.__stopsAtEmptyBucket);
+		#end
+		Assert.equals(4000, found);
+		Assert.isTrue(misses < hits * 20 + 0.01,
+			"2000 misses took " + Math.round(misses * 1e6) / 1000 + "ms, 2000 hits " + Math.round(hits * 1e6) / 1000 + "ms");
+	}
+
+	/** Keys removed, and some put back, answer as they should: the probe stops at an empty bucket, never at a deleted one. **/
+	public function testAnIntMapAnswersForKeysRemovedAndPutBack():Void {
+		var map = new Map<Int, String>();
+		for (i in 0...5000) {
+			map.set(i, "v" + i);
+		}
+		for (i in 0...5000) {
+			if (i % 3 == 0) map.remove(i);
+		}
+		for (i in 0...5000) {
+			if (i % 9 == 0) map.set(i, "again" + i);
+		}
+
+		var wrong:Array<Int> = [];
+		for (i in 0...5000) {
+			var expected:Null<String> = i % 9 == 0 ? "again" + i : (i % 3 == 0 ? null : "v" + i);
+			if (map.get(i) != expected || map.exists(i) != (expected != null)) {
+				wrong.push(i);
+			}
+		}
+		for (i in 5000...6000) {
+			if (map.exists(i)) wrong.push(i);
+		}
+
+		Assert.equals(0, wrong.length, "wrong answers for " + wrong.slice(0, 10).join(", "));
+	}
+
 	public function testBloomFilterFindsAddedItems():Void {
 		var filter = new BloomFilter(128, 3);
 
