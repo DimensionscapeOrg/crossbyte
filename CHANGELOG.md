@@ -1220,6 +1220,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- HTTP/2 on hl sends the headers it was given. HPACK found a static-table
+  pair by its name and value joined with a NUL, and a HashLink string ends
+  at its first NUL, so every pair of one name looked the same and the last
+  one won: `:method GET` went out as POST, `:scheme http` as https and
+  `:status 200` as 500, both ways. The table is kept as a map per name now.
 - One HTTP/2 request can no longer hold the server for tens of seconds. A
   header section could decode to eight megabytes, a limit never advertised,
   and repeated fields were joined by appending each to everything before
