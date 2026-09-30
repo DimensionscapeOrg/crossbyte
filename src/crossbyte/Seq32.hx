@@ -9,7 +9,7 @@ package crossbyte;
  * Intended for sequence arithmetic.
  * 
  * Usage:
- *   var a:Seq32 = 0xFFFF_FFFF;
+ *   var a:Seq32 = 0xFFFFFFFF;
  *   var b:Seq32 = 0;
  *   trace(a < b);        // true, because (b - a) = 1 in modulo 2^32
  * 
@@ -42,11 +42,15 @@ abstract Seq32(Int) from Int to Int {
 		return a.toFloat() / b.toFloat();
 	}
 
+	// Unsigned, as the rest of the type is. Past the first case the operands
+	// go through Float, where every 32-bit value and the remainder of two are
+	// exact, and the remainder comes back through `__fromUnsigned`: `Std.int`
+	// of one of 2^31 or more saturated at 2147483647 on the jvm.
 	@:op(A % B) private static inline function mod(a:Seq32, b:Seq32):Seq32 {
 		var ai = (a : Int), bi = (b : Int);
 		if (ai >= 0 && bi > 0)
 			return ai % bi;
-		return Std.int(a.toFloat() % b.toFloat());
+		return __fromUnsigned(a.toFloat() % b.toFloat());
 	}
 
 	@:op(A & B) private static inline function and(a:Seq32, b:Seq32):Seq32 {
@@ -150,13 +154,30 @@ abstract Seq32(Int) from Int to Int {
 		return before;
 	}
 
+	/**
+		The value as an unsigned number: decimal, or eight hex digits for a
+		radix of 16. Both went through `toFloat`, so on the jvm a value of
+		2^31 or more printed as "4.294967295E9" and in hex as 7FFFFFFF.
+	**/
 	private inline function toString(?radix:Int):String {
-		var v:Float = toFloat();
-		return switch (radix) {
-			case 16: StringTools.hex(Std.int(v), 8);
-			case 10, null: Std.string(v);
-			default: Std.string(v);
+		return radix == 16 ? StringTools.hex(this, 8) : __unsignedDecimal(this);
+	}
+
+	// The last digit apart from the rest: the rest, below 2^29, is an Int,
+	// and u / 10 lands exactly on it since u is a whole number below 2^53.
+	private static function __unsignedDecimal(i:Int):String {
+		if (i >= 0) {
+			return Std.string(i);
 		}
+		var u:Float = i + 4294967296.0;
+		var rest:Int = Std.int(u / 10.0);
+		return Std.string(rest) + Std.string(Std.int(u - rest * 10.0));
+	}
+
+	// A remainder in [0, 2^32) back to the Int that holds it. A NaN, from a
+	// remainder by zero, is 0 here on every target.
+	private static inline function __fromUnsigned(r:Float):Int {
+		return !(r >= 0) ? 0 : (r >= 2147483648.0 ? Std.int(r - 4294967296.0) : Std.int(r));
 	}
 
 	private inline function toInt():Int {
