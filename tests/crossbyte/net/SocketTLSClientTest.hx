@@ -73,18 +73,16 @@ class SocketTLSClientTest extends utest.Test {
 	}
 	#end
 
-	#if (cpp || java || jvm)
+	#if (cpp || java || jvm || nodejs)
 	/**
 		A listener that takes the connection and never answers the hello: the
 		client gives up at its `timeout`, which counts the handshake, rather
-		than waiting on it for good.
+		than waiting on it for good. On Node too, where no connect had a
+		deadline at all.
 	**/
 	@:timeout(30000)
 	public function testAHandshakeNobodyAnswersEndsAtTheTimeout(async:Async):Void {
-		var listener = new sys.net.Socket();
-		listener.bind(new sys.net.Host("127.0.0.1"), 0);
-		listener.listen(4);
-		var port:Int = listener.host().port;
+		var silent = new SilentListener();
 
 		var client = new Socket();
 		client.secure = true;
@@ -92,33 +90,31 @@ class SocketTLSClientTest extends utest.Test {
 		var connected:Bool = false;
 		var failure:String = null;
 		var endedAfter:Float = -1;
-		var started:Float = haxe.Timer.stamp();
+		var started:Float = 0.0;
 		client.addEventListener(Event.CONNECT, _ -> connected = true);
 		client.addEventListener(IOErrorEvent.IO_ERROR, function(e:IOErrorEvent) {
 			failure = e.text;
 			endedAfter = haxe.Timer.stamp() - started;
 		});
-		client.connect("127.0.0.1", port);
 
-		var peer:sys.net.Socket = null;
-		NetPump.until(() -> {
-			if (peer == null && sys.net.Socket.select([listener], [], [], 0).read.length > 0) {
-				peer = listener.accept();
-			}
-			return failure != null || connected;
-		}, 10.0, function(_) {
-			Assert.isFalse(connected, "a handshake nobody answered was taken as done");
-			Assert.notNull(failure, "a handshake nobody answered was waited on for good");
-			Assert.isTrue(endedAfter >= 0.9 && endedAfter < 5.0, 'the attempt ended ${endedAfter} s in, for a 1 s timeout');
-			if (failure != null) {
-				Assert.isTrue(failure.indexOf("TLS") >= 0, "the failure does not say it was the handshake: " + failure);
-			}
-			try client.close() catch (_:Dynamic) {}
-			if (peer != null) {
-				try peer.close() catch (_:Dynamic) {}
-			}
-			try listener.close() catch (_:Dynamic) {}
-			async.done();
+		NetPump.until(() -> silent.port != 0, 5.0, function(_) {
+			started = haxe.Timer.stamp();
+			client.connect("127.0.0.1", silent.port);
+			NetPump.until(() -> {
+				silent.poll();
+				return failure != null || connected;
+			}, 10.0, function(_) {
+				Assert.isFalse(connected, "a handshake nobody answered was taken as done");
+				Assert.notNull(failure, "a handshake nobody answered was waited on for good");
+				Assert.isTrue(endedAfter >= 0.9 && endedAfter < 5.0, 'the attempt ended ${endedAfter} s in, for a 1 s timeout');
+				if (failure != null) {
+					Assert.isTrue(failure.indexOf("TLS") >= 0, "the failure does not say it was the handshake: " + failure);
+				}
+				Assert.equals(1, silent.taken, "the listener never took the connection, so no handshake was waited on");
+				try client.close() catch (_:Dynamic) {}
+				silent.close();
+				async.done();
+			});
 		});
 	}
 	#end
@@ -242,3 +238,67 @@ private typedef TLSClientOutcome = {
 	var clientHeard:String;
 	var serverSideSecure:Bool;
 }
+
+#if (cpp || java || jvm || nodejs)
+/**
+	A listener that takes connections and says nothing: a TLS client that
+	reaches it gets TCP and never a word of TLS back.
+**/
+private class SilentListener {
+	/** 0 until known: Node claims the port a turn after listen(). **/
+	public var port(default, null):Int = 0;
+
+	/** Connections taken. **/
+	public var taken(default, null):Int = 0;
+
+	#if nodejs
+	private var __server:Dynamic;
+	private var __held:Array<Dynamic> = [];
+	#else
+	private var __listener:sys.net.Socket;
+	private var __held:Array<sys.net.Socket> = [];
+	#end
+
+	public function new() {
+		#if nodejs
+		var server:Dynamic = js.Lib.require("net").createServer(function(socket:Dynamic) {
+			taken++;
+			__held.push(socket);
+			socket.on("error", function(_) {});
+		});
+		__server = server;
+		server.listen(0, "127.0.0.1", function() port = server.address().port);
+		#else
+		__listener = new sys.net.Socket();
+		__listener.bind(new sys.net.Host("127.0.0.1"), 0);
+		__listener.listen(4);
+		port = __listener.host().port;
+		#end
+	}
+
+	/** Takes what is waiting; Node takes it by itself. **/
+	public function poll():Void {
+		#if !nodejs
+		while (sys.net.Socket.select([__listener], [], [], 0).read.length > 0) {
+			__held.push(__listener.accept());
+			taken++;
+		}
+		#end
+	}
+
+	public function close():Void {
+		for (socket in __held) {
+			#if nodejs
+			try socket.destroy() catch (_:Dynamic) {}
+			#else
+			try socket.close() catch (_:Dynamic) {}
+			#end
+		}
+		#if nodejs
+		try __server.close() catch (_:Dynamic) {}
+		#else
+		try __listener.close() catch (_:Dynamic) {}
+		#end
+	}
+}
+#end

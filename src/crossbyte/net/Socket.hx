@@ -218,6 +218,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		Indicates the number of milliseconds to wait for a connection.
 		If the connection doesn't succeed within the specified time, the
 		connection fails. The default value is 20,000 (twenty seconds).
+
+		It counts a secure connection's TLS handshake, and a name's lookup,
+		with the connect. Not kept in a browser, whose WebSocket has its own.
 	**/
 	public var timeout:Int;
 
@@ -354,6 +357,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __nodeRuntime:CrossByte = null;
 	@:noCompletion private var __flushQueued:Bool = false;
 	@:noCompletion private var __ticking:Bool = false;
+	// The timer that ends a connect still not open at `timeout`; see
+	// __armNodeConnectDeadline.
+	@:noCompletion private var __nodeConnectDeadline:Dynamic = null;
 	#end
 
 	/**
@@ -700,6 +706,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__bindNodeSocket(node);
 			node.connect({port: port, host: host});
 		}
+		__armNodeConnectDeadline(node);
 
 		// Not ticked: a write asks for a flush at the end of the pass, and
 		// Node reports everything else as an event. See __syncNodeTick.
@@ -914,6 +921,48 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			options.ca = [certAuthority.__pem];
 		}
 		return cast js.node.Tls.connect(options, opened);
+	}
+
+	/**
+		Keeps `timeout` on Node, which had no deadline of its own for a
+		connect: one that had not opened -- a TLS one's handshake counted with
+		it, as natively -- was waited on for as long as the system kept
+		trying, and a handshake the server never answered for good. At the
+		deadline the attempt is ended and reported as an `ioError`, as a
+		refused one is.
+	**/
+	@:noCompletion private function __armNodeConnectDeadline(node:NodeSocket):Void {
+		__clearNodeConnectDeadline();
+		if (timeout <= 0) {
+			return;
+		}
+
+		var limit:Int = timeout;
+		__nodeConnectDeadline = js.Node.setTimeout(function() {
+			__nodeConnectDeadline = null;
+			if (__socket != node || __connected) {
+				return;
+			}
+			try {
+				node.destroy();
+			} catch (_:Dynamic) {}
+			__releaseNode();
+			// Contained, as every Node callback is: this runs from Node's own
+			// loop, where a listener that threw would end the process.
+			try {
+				__dispatchPooledIOError("Connection failed: " + __host + (secure ? " was not connected over TLS within " : " was not connected within ")
+					+ limit + " ms");
+			} catch (e:Dynamic) {
+				__contain(e, IOErrorEvent.IO_ERROR);
+			}
+		}, limit);
+	}
+
+	@:noCompletion private function __clearNodeConnectDeadline():Void {
+		if (__nodeConnectDeadline != null) {
+			js.Node.clearTimeout(__nodeConnectDeadline);
+			__nodeConnectDeadline = null;
+		}
 	}
 	#end
 
@@ -1619,6 +1668,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#if (js && !nodejs)
 		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 		#elseif nodejs
+		__clearNodeConnectDeadline();
 		__syncNodeTick();
 		#else
 		__closed = true;
@@ -1806,6 +1856,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 	@:noCompletion private function socket_onError(e):Void {
 		#if nodejs
+		// The attempt is over, if it was one: reported here, and not again
+		// by its deadline before Node's close arrives.
+		__clearNodeConnectDeadline();
 		// What Node says went wrong -- a refused connection, a certificate
 		// its TLS would not accept -- where the ioError said nothing.
 		var message:Dynamic = e == null ? null : Reflect.field(e, "message");
@@ -1955,6 +2008,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	@:noCompletion private function __releaseNode():Void {
 		__stopConnecting();
+		__clearNodeConnectDeadline();
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
@@ -2067,6 +2121,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#end
 
 	@:noCompletion private function socket_onOpen(_):Void {
+		#if nodejs
+		__clearNodeConnectDeadline();
+		#end
 		__connected = true;
 		__closed = false;
 		__dispatchPooledSimpleEvent(Event.CONNECT);
@@ -2699,6 +2756,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__isDirty = false;
 		flushFull = false;
 		__closed = true;
+		#if nodejs
+		__clearNodeConnectDeadline();
+		#end
 	}
 
 	@:noCompletion private inline function __isBlockedError(error:Dynamic):Bool {
