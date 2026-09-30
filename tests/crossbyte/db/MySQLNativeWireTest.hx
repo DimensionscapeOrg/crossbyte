@@ -248,6 +248,41 @@ class MySQLNativeWireTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testCancelReachesAConnectionIdPastTwoToTheThirtyOne():Void {
+		// Connection ids are unsigned 32-bit. Written through Std.int, one
+		// past 2^31 became -2147483648 and the KILL named no connection.
+		__server.nextConnectionId = -2; // 4294967294 on the wire
+		__server.start();
+		var connection:MySQLConnection = __open();
+		var done:sys.thread.Lock = new sys.thread.Lock();
+		var outcome:Null<Int> = null;
+
+		sys.thread.Thread.create(function():Void {
+			try {
+				connection.request("SELECT SLEEP(10)");
+				outcome = 0;
+			} catch (e:MySQLError) {
+				outcome = e.code;
+			} catch (_:Dynamic) {
+				outcome = -1;
+			}
+
+			done.release();
+		});
+
+		Assert.isTrue(__server.waitFor(events -> events.filter(e -> e.kind == "query" && e.text == "SELECT SLEEP(10)").length == 1));
+		Assert.isTrue(connection.cancel());
+
+		if (!done.wait(5.0)) {
+			Assert.fail("the KILL did not reach the connection");
+			return;
+		}
+
+		Assert.equals(1317, outcome);
+		Assert.isTrue(__server.queries().indexOf("KILL QUERY 4294967294") >= 0, __server.queries().join(" | "));
+		connection.close();
+	}
+
 	public function testPingIsAComPing():Void {
 		__server.start();
 		var connection:MySQLConnection = __open();

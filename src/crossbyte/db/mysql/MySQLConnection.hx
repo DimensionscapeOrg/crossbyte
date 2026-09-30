@@ -301,8 +301,10 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				writeTimeout: 10.0
 			});
 			// The id is a number the server gave, never text from anywhere
-			// else, so it is written as one.
-			killer.request("KILL QUERY " + Std.string(Std.int(id)));
+			// else, so it is written as one, through Int64, since a
+			// connection id is unsigned 32-bit and Std.int would overflow on
+			// a server that has handed out more than 2^31 of them.
+			killer.request("KILL QUERY " + haxe.Int64.toStr(haxe.Int64.fromFloat(id)));
 			killer.close();
 			return true;
 		} catch (_:Dynamic) {
