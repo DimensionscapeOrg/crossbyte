@@ -296,6 +296,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCoalescingTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLossRecoveryTest());
+		// Real sockets through a relay written for the tests, so like the rest
+		// of the reliable datagram cases it is not portable.
+		runner.addCase(new crossbyte.net.ReliableDatagramRelayTest());
 		runner.addCase(new crossbyte.net.CongestionControlTest());
 	}
 

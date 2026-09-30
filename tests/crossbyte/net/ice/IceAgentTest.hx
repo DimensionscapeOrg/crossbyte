@@ -554,6 +554,38 @@ class IceAgentTest extends utest.Test {
 	}
 
 	/**
+		STUN that is not a connectivity check is left for whatever else shares
+		the socket.
+
+		The agent took every STUN message there was. On a socket it shares
+		with a TURN client, a reliable datagram server with an agent attached
+		and a relay allocated, that swallowed the relay's answers, so the
+		allocation could never complete.
+	**/
+	public function testStunThatIsNotACheckIsLeftForOthers():Void {
+		if (unsupported()) return;
+
+		var agent = new IceAgent(true, credentials("alice"));
+		agent.addLocalCandidate(IceCandidate.host(ALICE_ADDRESS, PORT));
+		agent.addRemoteCandidate(IceCandidate.host(BOB_ADDRESS, PORT));
+		agent.start(credentials("bob"), 0);
+
+		var relayAnswer = new StunMessage(StunMessage.ALLOCATE_ERROR, StunMessage.bindingRequest().transactionId, [
+			StunMessage.errorCode(401, "Unauthorized"),
+			StunMessage.text(StunMessage.ATTR_REALM, "example.org"),
+			StunMessage.text(StunMessage.ATTR_NONCE, "nonce")
+		]);
+
+		Assert.isFalse(agent.receive(relayAnswer.encode(), "203.0.113.10", 3478, 0), "the agent took a relay's answer");
+
+		var indication = new StunMessage(StunMessage.DATA_INDICATION, StunMessage.bindingRequest().transactionId, [
+			StunMessage.xorPeerAddress(BOB_ADDRESS, PORT)
+		]);
+
+		Assert.isFalse(agent.receive(indication.encode(), "203.0.113.10", 3478, 0), "the agent took a relay's Data indication");
+	}
+
+	/**
 		Pairs a relay refused to carry fail when it says so, not half a minute
 		later.
 
