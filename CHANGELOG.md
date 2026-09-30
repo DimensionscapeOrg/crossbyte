@@ -1395,6 +1395,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A reliable datagram session on neko measures its round trips, probes a
+  silent tail and sends a lost frame again once. Its clock there is the time
+  of day to the millisecond, moving once a system tick, a millisecond at
+  best, 15.6 by default on Windows, so a frame acknowledged in the tick it
+  went out in measured a round trip of nothing, which is thrown away, and a
+  frame sent again in the tick it first went out in counted as sent before
+  the one whose arrival showed it lost, and was sent again for nothing. A
+  session's clock on hl, neko and the interpreter never repeats a reading
+  now, and stands still rather than going back when the time of day is set
+  back; elsewhere it is the monotonic clock it was.
 - `PostgresStatement` hands back a result paged ahead of `getResult()` in
   the order it was read, and calls only its last page complete, the last
   of a result that divides evenly into pages as well. Once the last page
