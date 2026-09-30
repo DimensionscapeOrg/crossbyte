@@ -1520,7 +1520,12 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		}
 
 		var limit:Int = maxMessageSize;
-		if (limit > 0 && payload.length > limit - __fragmentBytes) {
+		// The length as an Int. A limit lowered below what is already held
+		// makes the difference negative, and a UInt compared with a negative
+		// Int is unsigned on every target but HashLink: four billion, which
+		// nothing is past.
+		var length:Int = payload.length;
+		if (limit > 0 && length > limit - __fragmentBytes) {
 			var message:String = 'A reliable message from the peer passed the $limit byte maxMessageSize before it ended; '
 				+ 'the session was closed rather than hold more of it.';
 			__fragments.resize(0);
