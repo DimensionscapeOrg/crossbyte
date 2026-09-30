@@ -242,6 +242,8 @@ class TestSuites {
 		// natively measured by what the collector can take, elsewhere by
 		// searching the registry for it.
 		runner.addCase(new crossbyte.net.SocketRetentionTest());
+		// More sockets than one select can name, which neko refused.
+		runner.addCase(new crossbyte.net.SocketRegistryScaleTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
 		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());

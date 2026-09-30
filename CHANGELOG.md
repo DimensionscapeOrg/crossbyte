@@ -1220,6 +1220,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On neko a runtime services more than 64 sockets. Its registry selected
+  every socket it held at once, and neko's `select` takes at most 64 on
+  Windows and throws past them, so from the 65th connection no socket was
+  serviced at all: 39 of 100 connections timed out. neko now polls through
+  its poll natives, which size their sets to what they are given on
+  Windows and call `poll()` elsewhere -- so a descriptor of 1024 or more,
+  which overflowed `select`'s set on Linux, is watched too. hl's `select`
+  sizes its sets itself on Windows; on Linux it still cannot watch a
+  descriptor of 1024 or more.
 - A socket leaves its poll backend before it is closed, and a backend that
   fails no longer leaves a runtime polling nothing. `Socket` closed its
   descriptor and only then queued its deregistration, which a backend that
