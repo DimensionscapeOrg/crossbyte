@@ -88,7 +88,20 @@ class TurnClient {
 	/** Attempts before the allocation is given up on. **/
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
+	/**
+		How long the last transmission is given to be answered, in seconds:
+		RFC 8489's Rm of sixteen times the first timeout.
+
+		So a request nothing answers is given up on 39.5 seconds after it was
+		first sent, which is what section 6.2.1 works out. It waited one more
+		doubling instead, and gave up at 63.5.
+	**/
+	public static inline var FINAL_WAIT:Float = 8.0;
+
 	private static inline var TRANSACTION_LENGTH:Int = 12;
+
+	/** Superseded transactions remembered, so their late answers are known for what they are. **/
+	private static inline var RETIRED_KEPT:Int = 8;
 
 	/**
 		The range RFC 8656 reserves for channels.
@@ -174,6 +187,14 @@ class TurnClient {
 	@:noCompletion private var __lifetime:Int = DEFAULT_LIFETIME;
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __permitted:Array<TurnPermission> = [];
+
+	/**
+		Transactions a request has moved on from: the unsigned one a 401
+		answered, the one a stale nonce was refused on. Kept so that an answer
+		to one of them, arriving late, is recognised as this client's traffic
+		and ignored rather than taken for an answer to what replaced it.
+	**/
+	@:noCompletion private var __retired:Array<ByteArray> = [];
 
 	/** Peers with a channel bound, or one asked for. **/
 	/**
@@ -498,9 +519,30 @@ class TurnClient {
 			return false;
 		}
 
+		if (message.type == StunMessage.DATA_INDICATION) {
+			__deliver(message);
+			return true;
+		}
+
+		if (!__isTurnResponse(message.type)) {
+			// A binding response, most likely: this client and an ICE agent
+			// commonly share a socket. Not ours.
+			return false;
+		}
+
+		// Every answer is matched to the request it answers, by transaction,
+		// before anything is done with it. Two kinds were not, a
+		// CreatePermission success and a ChannelBind error cleared whatever was
+		// in flight, so a stray or duplicated one ended a request it had
+		// nothing to do with.
+		if (__pending == null || !__pending.matches(message)) {
+			// An answer to a transaction this client has moved on from: the
+			// unsigned request a 401 answered twice, say. Its own, and nothing
+			// to act on. Anything else is somebody else's.
+			return __isRetired(message);
+		}
+
 		switch (message.type) {
-			case StunMessage.DATA_INDICATION:
-				__deliver(message);
 			case StunMessage.ALLOCATE_SUCCESS:
 				__allocated(message, now);
 			case StunMessage.REFRESH_SUCCESS:
@@ -520,12 +562,51 @@ class TurnClient {
 			case StunMessage.ALLOCATE_ERROR, StunMessage.REFRESH_ERROR, StunMessage.CREATE_PERMISSION_ERROR:
 				__refused(message, now);
 			default:
-				// A binding response, most likely: this client and an ICE agent
-				// commonly share a socket. Not ours.
-				return false;
 		}
 
 		return true;
+	}
+
+	/** A success or an error for one of the four methods this client asks. **/
+	@:noCompletion private static function __isTurnResponse(type:Int):Bool {
+		return switch (type) {
+			case StunMessage.ALLOCATE_SUCCESS, StunMessage.ALLOCATE_ERROR, StunMessage.REFRESH_SUCCESS, StunMessage.REFRESH_ERROR,
+				StunMessage.CREATE_PERMISSION_SUCCESS, StunMessage.CREATE_PERMISSION_ERROR, StunMessage.CHANNEL_BIND_SUCCESS,
+				StunMessage.CHANNEL_BIND_ERROR:
+				true;
+			default:
+				false;
+		}
+	}
+
+	/** Whether `message` answers a transaction this client superseded. **/
+	@:noCompletion private function __isRetired(message:StunMessage):Bool {
+		for (retired in __retired) {
+			if (new StunMessage(0, retired).matches(message)) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+		Moves the request in flight to a new transaction, remembering the old.
+
+		RFC 8489 section 9.2.5: a request retried with credentials, or with a
+		fresh nonce, is a new transaction. Retrying under the old one meant a
+		second answer to the first attempt, a 401 to an unsigned request that
+		had been retransmitted, because its answer was slow, matched the
+		signed retry and read as the credentials being rejected.
+	**/
+	@:noCompletion private function __renew():Void {
+		__retired.push(__pending.transactionId);
+
+		if (__retired.length > RETIRED_KEPT) {
+			__retired.shift();
+		}
+
+		__pending = new StunMessage(__pending.type, __transaction(), __pending.attributes);
 	}
 
 	public function close():Void {
@@ -624,7 +705,10 @@ class TurnClient {
 		}
 
 		__attempts++;
-		__retryAt = now + RETRY_AFTER * Math.pow(2, __attempts - 1);
+
+		// Doubling from half a second, and the last transmission given
+		// sixteen times the first to be answered: RFC 8489 section 6.2.1.
+		__retryAt = now + (__attempts >= MAX_ATTEMPTS ? FINAL_WAIT : RETRY_AFTER * Math.pow(2, __attempts - 1));
 
 		// Signed only once the relay has said which realm and nonce to sign
 		// against. Before that there is nothing to key with, which is the whole
@@ -671,6 +755,7 @@ class TurnClient {
 			__realm = realm;
 			__nonce = nonce;
 			__key = StunMessage.longTermKey(__username, realm, __password);
+			__renew();
 			__attempts = 0;
 			__transmit(now);
 			return;
