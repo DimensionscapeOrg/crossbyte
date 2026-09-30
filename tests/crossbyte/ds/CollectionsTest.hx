@@ -797,6 +797,104 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(39, map.get("k39"), "the newest entry was the one dropped");
 	}
 
+	/**
+		`length` leaves out what has expired and not been swept, as its
+		documentation says. It counted them until a read or a sweep dropped
+		them.
+	**/
+	public function testLengthLeavesOutWhatHasExpiredUnswept():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(10, 0, function():Float return now);
+		map.set("a", 1);
+		now = 5;
+		map.set("b", 2);
+		Assert.equals(2, map.length);
+
+		now = 12;
+		Assert.equals(1, map.length, "an expired, unswept entry was counted");
+		now = 20;
+		Assert.equals(0, map.length);
+		Assert.equals(2, map.sweep());
+		Assert.equals(0, map.length);
+	}
+
+	/**
+		An entry touched goes to the back of the line: a sweep takes what is
+		due and stops, and `maxSize` evicts what is closest to expiring, even
+		when an idle entry sat ahead of a busy one for a long time.
+	**/
+	public function testTouchedEntriesExpireInTheOrderTheirDeadlinesFall():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(10, 3, function():Float return now);
+		var expired:Array<String> = [];
+		map.onExpire = (key, _) -> expired.push(key);
+
+		map.set("idle", 0);
+		now = 1;
+		map.set("a", 1);
+		now = 2;
+		map.set("b", 2);
+		// "a" is used for a long while; "idle" never is.
+		var t:Float = 2;
+		while (t < 9) {
+			t += 0.25;
+			now = t;
+			map.touch("a");
+		}
+		Assert.equals(1, map.sweep(10.5), "only the idle entry was due");
+		Assert.equals("idle", expired.join(","));
+		Assert.equals("b,a", [for (k in map.keys()) k].join(","));
+
+		now = 11;
+		map.set("c", 3);
+		map.set("d", 4);
+		// Over the bound of 3: "b" was the one closest to expiring.
+		Assert.equals("idle,b", expired.join(","));
+		Assert.equals("a,c,d", [for (k in map.keys()) k].join(","));
+
+		map.set("a", 10);
+		Assert.equals("c,d,a", [for (k in map.keys()) k].join(","));
+		Assert.equals(10, map.get("a"));
+		Assert.isTrue(map.remove("c"));
+		Assert.isFalse(map.remove("c"));
+		Assert.equals("d,a", [for (k in map.keys()) k].join(","));
+		map.clear();
+		Assert.equals(0, map.length);
+		Assert.equals(0, map.sweep(1000));
+	}
+
+	#if jvm
+	/**
+		Touching an entry costs nothing to hold. Every `set` and `touch` left
+		a queue position behind, collected only once everything ahead of it
+		had expired, so memory went with the touches times the ttl rather
+		than the entries: 1,000 sessions touched 20 times a second with a
+		120 s ttl held 2.4 million positions, 70 MB on the jvm.
+	**/
+	public function testTouchingAnEntryAllocatesNothing():Void {
+		var now:Float = 0;
+		var map = new ExpiringMap<String, Int>(120, 50000, function():Float return now);
+		var keys = [for (i in 0...1000) "tok" + i];
+		map.set("idle", 0);
+		for (k in keys) {
+			map.set(k, 1);
+		}
+		for (k in keys) {
+			map.touch(k);
+		}
+		var perTouch:Float = JvmAllocation.bytesBy(() -> {
+			for (step in 0...20) {
+				now += 0.05;
+				for (k in keys) {
+					map.touch(k);
+				}
+			}
+		}) / 20000;
+		Assert.isTrue(perTouch < 1, perTouch + " bytes allocated per touch");
+		Assert.equals(1001, map.length);
+	}
+	#end
+
 	public function testPackedSlotMapKeepsDenseIterationAndHonorsMaxCapacity():Void {
 		var map = new PackedSlotMap<String>(2, 3, 2);
 		var first = map.insert("alpha");
