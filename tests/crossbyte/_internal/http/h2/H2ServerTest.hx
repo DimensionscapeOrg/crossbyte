@@ -242,6 +242,51 @@ class H2ServerTest extends utest.Test {
 		Assert.isNull(firstResetFor(requestFields([new HpackHeader("te", "trailers")])));
 	}
 
+	/**
+		A request sent with trailers reaches the handler with its own header
+		section and body. The trailer block replaced the header section, so
+		the request was read from the trailers, found to have no `:method`,
+		and reset: one sent with trailers never arrived.
+	**/
+	public function testARequestWithTrailersArrivesWithItsOwnHeaders():Void {
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		var requests:Array<H2ServerRequest> = [];
+		server.onRequest = request -> requests.push(request);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		out.bytes();
+
+		var encoder = new HpackEncoder(4096);
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(requestFields([new HpackHeader("te", "trailers")]))));
+		server.receive(frame(H2FrameType.DATA, 0, 1, Bytes.ofString("body")));
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, 1, encoder.encode([new HpackHeader("x-checksum", "abc")])));
+
+		var reset:Null<H2Frame> = null;
+		for (candidate in Collector.parse(out.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				reset = candidate;
+			}
+		}
+		Assert.isNull(reset, "a request with trailers was reset");
+		if (requests.length != 1) {
+			Assert.fail("delivered " + requests.length + " requests, not 1");
+			return;
+		}
+		Assert.equals("GET", requests[0].method);
+		Assert.equals("/x", requests[0].path);
+		Assert.equals("body", requests[0].body.toString());
+		Assert.isNull(requests[0].header("x-checksum"), "a trailer was read as a header");
+	}
+
+	public function testAMalformedTrailerSectionResetsTheStream():Void {
+		// RFC 9113 8.1: a trailer section ends the stream and carries no
+		// pseudo-header; 8.2.1 holds its fields as it holds any.
+		Assert.notNull(resetForTrailers([new HpackHeader("x-checksum", "abc")], false), "a trailer section that left the stream open was taken");
+		Assert.notNull(resetForTrailers([new HpackHeader(":path", "/elsewhere")], true), "a pseudo-header in a trailer section was taken");
+		Assert.notNull(resetForTrailers([new HpackHeader("x-checksum", "a" + String.fromCharCode(10) + "b")], true), "a line break in a trailer was taken");
+		Assert.isNull(resetForTrailers([new HpackHeader("x-checksum", "abc")], true), "a well-formed trailer section was refused");
+	}
+
 	public function testStatusPseudoHeaderOnARequestIsRejected():Void {
 		// :status belongs to a response; §8.3 makes it malformed here.
 		Assert.notNull(firstResetFor(requestFields([new HpackHeader(":status", "200")])));
@@ -913,6 +958,29 @@ class H2ServerTest extends utest.Test {
 		var encoder = new HpackEncoder(4096);
 		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(fields)));
 		server.receive(frame(H2FrameType.DATA, H2Flags.END_STREAM, 1, body));
+
+		for (candidate in Collector.parse(out.bytes())) {
+			if (candidate.type == H2FrameType.RST_STREAM) {
+				return candidate;
+			}
+		}
+		return null;
+	}
+
+	/**
+		Sends a request, a body, and then `trailers` -- ending the stream or
+		not -- and returns the RST_STREAM it drew, if any.
+	**/
+	private static function resetForTrailers(trailers:Array<HpackHeader>, endStream:Bool):Null<H2Frame> {
+		var out = new Collector();
+		var server = new H2ServerConnection(out.write);
+		server.receive(Bytes.ofString(H2Connection.PREFACE));
+		out.bytes();
+
+		var encoder = new HpackEncoder(4096);
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS, 1, encoder.encode(requestFields([]))));
+		server.receive(frame(H2FrameType.DATA, 0, 1, Bytes.ofString("body")));
+		server.receive(frame(H2FrameType.HEADERS, H2Flags.END_HEADERS | (endStream ? H2Flags.END_STREAM : 0), 1, encoder.encode(trailers)));
 
 		for (candidate in Collector.parse(out.bytes())) {
 			if (candidate.type == H2FrameType.RST_STREAM) {
