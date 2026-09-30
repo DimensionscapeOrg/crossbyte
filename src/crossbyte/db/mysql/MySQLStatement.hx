@@ -13,10 +13,6 @@ import crossbyte.events.SQLEvent;
 import sys.db.Connection;
 import sys.db.ResultSet;
 
-#if cpp
-import sys.thread.Deque;
-#end
-
 /** Statement helper for executing MySQL queries and paging result rows. */
 @:access(crossbyte.db.mysql.MySQLConnection)
 class MySQLStatement extends EventDispatcher {
@@ -52,11 +48,11 @@ class MySQLStatement extends EventDispatcher {
 	private var __resultSet:ResultSet;
 	private var __prefetch:Int = 0;
 
-	#if cpp
-	private var __resultQueue:Deque<Array<Dynamic>>;
-	#else
-	private var __resultQueue:Array<Array<Dynamic>>;
-	#end
+	// Pages read and not yet taken by getResult(), oldest first. Only the
+	// thread running the statement touches it, so a plain Array serves every
+	// target. It was a Deque on cpp and, elsewhere, an Array read with pop(),
+	// which hands back the newest page first.
+	private var __resultQueue:Array<Array<Dynamic>> = [];
 
 	public function new() {
 		super();
@@ -71,11 +67,7 @@ class MySQLStatement extends EventDispatcher {
 		if (__executing) {
 			__executing = false;
 			__prefetch = 0;
-			#if cpp
-			__resultQueue = new Deque();
-			#else
 			__resultQueue = [];
-			#end
 			__resultSet = null;
 			text = "";
 			clearParameters();
@@ -101,12 +93,7 @@ class MySQLStatement extends EventDispatcher {
 		var sql:String = __applyParameters(text);
 
 		__executing = true;
-		#if cpp
-		__resultQueue = new Deque();
-		#else
 		__resultQueue = [];
-		#end
-
 		__prefetch = prefetch;
 
 		try {
@@ -262,14 +249,17 @@ class MySQLStatement extends EventDispatcher {
 		__dispatchEvent(new SQLEvent(SQLEvent.RESULT)); // the final one empty
 	}
 
-	public function getResult():SQLResult { // re-use your SQLiteResult container
-		#if cpp
-		var results = __resultQueue.pop(false);
-		#else
-		var results = __resultQueue.pop();
-		#end
-
-		var complete:Bool = !__executing;
+	/**
+		The oldest page not yet taken, or `null` when none is waiting. Pages
+		come back in the order they were read, and only the last is
+		`complete`.
+	**/
+	public function getResult():SQLResult {
+		var results:Array<Dynamic> = __resultQueue.shift();
+		// The last page is the one read as the rows ran out, with none behind
+		// it. This was !__executing alone, which called every page still
+		// waiting complete once the last had been read.
+		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
 			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
@@ -311,12 +301,8 @@ class MySQLStatement extends EventDispatcher {
 		__prefetch = 0;
 	}
 
-	@:noCompletion private inline function __push<T>(a:Array<T>):Void {
-		#if cpp
-		__resultQueue.add(a);
-		#else
-		__resultQueue.push(a);
-		#end
+	@:noCompletion private inline function __push(rows:Array<Dynamic>):Void {
+		__resultQueue.push(rows);
 	}
 
 	private function get_executing():Bool {

@@ -13,9 +13,6 @@ import crossbyte.db.sql.SQLResult;
 import crossbyte.db.sql._internal.ParamBinder;
 import sys.db.Connection;
 import sys.db.ResultSet;
-#if cpp
-import sys.thread.Deque;
-#end
 
 /**
  * ...
@@ -34,11 +31,13 @@ class SQLiteStatement extends EventDispatcher {
 	private var __connection:Connection;
 	private var __resultSet:ResultSet;
 	private var __prefetch:Int = 0;
-	#if cpp
-	private var __resultQueue:Deque<Array<Dynamic>>;
-	#else
-	private var __resultQueue:Array<Array<Dynamic>>;
-	#end
+	// Pages read and not yet taken by getResult(), oldest first. The
+	// asynchronous worker hands its result set back to the runtime thread,
+	// which reads the rows and queues them, so only one thread touches it
+	// and a plain Array serves every target. It was a Deque on cpp and,
+	// elsewhere, an Array read with pop(), which hands back the newest page
+	// first.
+	private var __resultQueue:Array<Array<Dynamic>> = [];
 	private var __async:Bool = false;
 
 	public function new() {
@@ -50,11 +49,7 @@ class SQLiteStatement extends EventDispatcher {
 		if (executing) {
 			__executing = false;
 			__prefetch = 0;
-			#if cpp
-			__resultQueue = new Deque();
-			#else
-			__resultQueue = new Array();
-			#end
+			__resultQueue = [];
 			__resultSet = null;
 			text = "";
 			clearParameters();
@@ -67,11 +62,7 @@ class SQLiteStatement extends EventDispatcher {
 
 	public function execute(prefetch:Int = -1):Void {
 		__executing = true;
-		#if cpp
-		__resultQueue = new Deque();
-		#else
-		__resultQueue = new Array();
-		#end
+		__resultQueue = [];
 
 		var sql:String = __applyParameters(text);
 		if (__async) {
@@ -142,14 +133,17 @@ class SQLiteStatement extends EventDispatcher {
 		__prefetch = 0;
 	}
 
+	/**
+		The oldest page not yet taken, or `null` when none is waiting. Pages
+		come back in the order they were read, and only the last is
+		`complete`.
+	**/
 	public function getResult():SQLResult {
-		#if cpp
-		var results = __resultQueue.pop(false);
-		#else
-		var results = __resultQueue.pop();
-		#end
-
-		var complete:Bool = !__executing;
+		var results:Array<Dynamic> = __resultQueue.shift();
+		// The last page is the one read as the rows ran out, with none behind
+		// it. This was !__executing alone, which called every page still
+		// waiting complete once the last had been read.
+		var complete:Bool = !__executing && __resultQueue.length == 0;
 
 		if (results != null) {
 			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
@@ -213,12 +207,8 @@ class SQLiteStatement extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion private inline function __resultQueuePush<T>(a:Array<T>):Void {
-		#if cpp
-		__resultQueue.add(a);
-		#else
-		__resultQueue.push(a);
-		#end
+	@:noCompletion private inline function __resultQueuePush(rows:Array<Dynamic>):Void {
+		__resultQueue.push(rows);
 	}
 
 	private function get_executing():Bool {
