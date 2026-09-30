@@ -918,6 +918,14 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `ci/doc-examples.js` reads doc comments written with a ` * ` down the
+  left, which it passed over as holding no examples: 49 of the 96 source
+  files with examples are written that way. It checks 73 examples in 23
+  files and the RPC guide, where it checked two files: the MongoDB
+  client's and BSON's, `Completer`, `Config`, `DtlsCertificate`,
+  `HostApplication`, `HTTP2Backend`, `LogCategory`, `Logger`,
+  `NetConnection`, `PrimitiveValue`, `Rectangle`, `Store`, `StunClient`
+  and `URLVariables` join `File` and `RPCCommands`.
 - `SlotHandle` no longer converts to `Int` by itself. A handle passed where
   an id belongs, `grid.set(entity.handle, x, y)` for `entity.slot`,
   compiled, and worked until the slot's first reuse made the handle
