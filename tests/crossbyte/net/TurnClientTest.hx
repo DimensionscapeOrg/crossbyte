@@ -424,6 +424,215 @@ class TurnClientTest extends utest.Test {
 		Assert.raises(() -> new TurnClient(RELAY, RELAY_PORT, "user", null), crossbyte.errors.ArgumentError);
 		Assert.raises(() -> new TurnClient("", RELAY_PORT, "user", "secret"), crossbyte.errors.ArgumentError);
 	}
+
+	// ------------------------------------------------------------------
+	// Transactions: each request its own, and every answer matched to one
+	// ------------------------------------------------------------------
+
+	/**
+		A relay whose first answer takes longer than the first retransmission
+		still grants an allocation, and only one.
+
+		The signed retry after the 401 reused the unsigned request's
+		transaction. The unsigned Allocate had been sent twice by then -- the
+		answer was late -- so its second 401 arrived after the signed retry had
+		gone and matched it, which read as the relay rejecting the credentials.
+		Meanwhile the relay had granted the signed request, so it held an
+		allocation nobody would use or free: on a satellite link, a mobile
+		network or a first lookup, every allocation failed and leaked one.
+	**/
+	public function testAFirstAnswerSlowerThanTheRetransmissionStillAllocates():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.6;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 10);
+
+		Assert.isNull(failure, "a slow first answer failed the allocation: " + failure);
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(1, network.relay.allocations, "the relay should hold exactly the one allocation the client is using");
+		Assert.isTrue(network.relay.count("refused-401") >= 2, "the unsigned request was not answered twice, so this proved nothing");
+	}
+
+	/**
+		Datagrams held while the relay's name is looked up, then sent together,
+		do not fail the allocation either.
+
+		Natively a socket holds datagrams to a name until the lookup answers and
+		then sends them all at once, so a slow resolver on a fast path looks,
+		to the relay, like two copies of the unsigned Allocate -- and to the old
+		client, like the slow path above.
+	**/
+	public function testAllocatesWhenTheFirstRequestsAreHeldAndSentTogether():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.holdUntil = 0.7;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> client.active || failure != null, 10);
+
+		Assert.isNull(failure, "two copies of the first request failed the allocation: " + failure);
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(1, network.relay.allocations);
+	}
+
+	/**
+		A CreatePermission success nobody asked for does not end an Allocate.
+
+		It cleared whatever request was in flight, whatever that was. If that
+		was the Allocate, nothing was left to retransmit or to time out, and
+		`allocated` never settled either way -- from one datagram, from anyone.
+	**/
+	public function testAStrangersPermissionSuccessDoesNotStopTheAllocation():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.delay = 0.2;
+
+		var client = network.client();
+		var settled:Bool = false;
+		client.allocated.then(_ -> settled = true, _ -> settled = true);
+		client.allocate(network.now);
+
+		var stray = new StunMessage(StunMessage.CREATE_PERMISSION_SUCCESS, transaction(1), []);
+		network.inject(client, stray.encode(), network.relayAddress, network.relayPort);
+
+		network.run(() -> settled, 60);
+
+		Assert.isTrue(settled, "a stray success left the allocation pending with nothing retransmitting it");
+		Assert.isTrue(client.active, "the allocation did not complete after a stray success");
+	}
+
+	/**
+		A ChannelBind error nobody asked for does not cancel a bind in flight.
+
+		It did, and the real success then found nothing pending and was
+		dropped: the relay had bound the channel and would forward the peer's
+		traffic over it, while the client never marked it bound -- so for the
+		ten minutes the binding lasted it dropped every ChannelData message
+		from that peer.
+	**/
+	public function testAStrangersChannelBindErrorDoesNotCancelTheBind():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		network.relay.delay = 0.3;
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+		network.advance(0.5);
+
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		var stray = new StunMessage(StunMessage.CHANNEL_BIND_ERROR, transaction(2), [StunMessage.errorCode(400, "Bad Request")]);
+		network.inject(client, stray.encode(), network.relayAddress, network.relayPort);
+
+		network.advance(2);
+
+		Assert.equals(1, network.relay.count("channel-bound"), "the relay never bound the channel, so this proved nothing");
+		Assert.isTrue(sendsOverAChannel(network, client), "the relay bound the channel and the client never used it");
+	}
+
+	/**
+		A second copy of an old success does not clear the request after it.
+
+		The auditor's case: a permission, then a channel, on a path that
+		duplicates. The duplicate success for the permission arrived while the
+		bind was in flight and cleared the bind, which the relay then granted
+		unheard.
+	**/
+	public function testADuplicateSuccessDoesNotClearTheNextRequest():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		network.relay.delay = 0.5;
+		network.relay.duplicatePermissionSuccess = 0.1;
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+
+		network.advance(4);
+
+		// At least once: an answer half a second late is retransmitted for.
+		Assert.isTrue(network.relay.count("permitted") >= 1, "the relay never permitted the peer, so this proved nothing");
+		Assert.isTrue(network.relay.count("channel-bound") >= 1, "the relay never bound the channel, so this proved nothing");
+		Assert.isTrue(sendsOverAChannel(network, client), "a duplicated permission success cancelled the channel bind behind it");
+	}
+
+	/**
+		A relay that never answers is given up on after 39.5 seconds.
+
+		RFC 8489 section 6.2.1: seven transmissions, doubling from half a
+		second, then sixteen times the first timeout for the last one to be
+		answered. This waited another doubling instead and gave up at 63.5.
+	**/
+	public function testASilentRelayIsGivenUpOnAtThirtyNineAndAHalfSeconds():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.dropAll = true;
+
+		var client = network.client();
+		var failedAt:Float = -1;
+		client.allocated.then(_ -> {}, _ -> failedAt = network.now);
+		client.allocate(network.now);
+		network.run(() -> failedAt >= 0, 120);
+
+		Assert.equals(TurnClient.MAX_ATTEMPTS, network.sent.length, "the request was not sent seven times");
+		Assert.isTrue(failedAt >= 39.4 && failedAt <= 39.6, "gave up at " + failedAt + " s rather than at 39.5");
+	}
+
+	// ------------------------------------------------------------------
+
+	private static inline var PEER:String = "198.51.100.4";
+	private static inline var PEER_PORT:Int = 40000;
+
+	/** A transaction id no request of the client's has. **/
+	private static function transaction(seed:Int):ByteArray {
+		var bytes = new ByteArray();
+
+		for (i in 0...12) {
+			bytes.writeByte((seed * 53 + i * 17 + 5) & 0xFF);
+		}
+
+		bytes.position = 0;
+		return bytes;
+	}
+
+	/** Whether the client's next datagram to the peer goes over a channel rather than as a Send indication. **/
+	private static function sendsOverAChannel(network:TurnNetwork, client:TurnClient):Bool {
+		var payload = new ByteArray();
+		payload.writeUTFBytes("game state");
+		payload.position = 0;
+
+		var before:Int = network.sent.length;
+		client.sendTo(payload, PEER, PEER_PORT);
+
+		if (network.sent.length == before) {
+			return false;
+		}
+
+		var first:Int = network.sent[network.sent.length - 1].bytes[0];
+		return first >= 0x40 && first <= 0x7F;
+	}
 }
 
 /**
