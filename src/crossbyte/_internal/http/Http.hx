@@ -129,6 +129,16 @@ class Http {
 	**/
 	public var maxDecompressedSize:Int = MAX_DECOMPRESSED_BODY_SIZE;
 
+	/**
+		The TLS an `https` request asks for, or null for the defaults:
+		`URLRequest.verifyCert`, `certAuthority`, `clientCertificate`,
+		`clientKey` and `pinnedPublicKeys`, which `URLLoader` gathers here.
+	**/
+	public var tls:Null<crossbyte.http.HTTPTLSOptions> = null;
+
+	// Set once a redirect has left the origin the request was made to.
+	private var __leftOrigin:Bool = false;
+
 	private var __socket:FlexSocket;
 	private var __url:URL;
 	private var __headers:Array<String>;
@@ -269,6 +279,7 @@ class Http {
 	}
 
 	private function __load():Void {
+		__leftOrigin = false;
 		if (__isAborted()) {
 			// Cancelled before it started: the handler ran as it was added.
 			__fail(CANCELLED);
@@ -321,6 +332,9 @@ class Http {
 						if (!credentialsDropped && __originOf(url) != origin) {
 							credentialsDropped = true;
 							__headers = __withoutCredentials(__headers);
+							// The client certificate too, which was meant for the
+							// server the caller named.
+							__leftOrigin = true;
 						}
 
 						var method:String = __methodAfterRedirect(__status, __method);
@@ -655,6 +669,7 @@ class Http {
 				__redirect = true;
 			},
 			maxDecompressedSize: maxDecompressedSize,
+			tls: tls,
 			onProgress: onProgress,
 			onError: onError,
 			onComplete: onComplete,
@@ -985,7 +1000,9 @@ class Http {
 		var kept:Null<FlexSocket> = null;
 		#if (sys && !eval)
 		if (__pooling() && __repeatable()) {
-			kept = HttpConnectionPool.take(__originOf(__url));
+			// Only a connection opened under the same TLS: one that did not
+			// check its server must not carry a request that does.
+			kept = HttpConnectionPool.take(__originOf(__url), __poolTls());
 		}
 		#end
 
@@ -1023,6 +1040,7 @@ class Http {
 			__responseHeaders = new StringMap();
 		}
 
+		var hopTls:Null<crossbyte.http.HTTPTLSOptions> = __poolTls();
 		try {
 			var socket:FlexSocket = new FlexSocket(__url.ssl);
 			if (!__adopt(socket)) {
@@ -1033,11 +1051,17 @@ class Http {
 			// so a 30 second idle timeout waited 30,000 seconds. The same
 			// conversion, and the same 30 second fallback, as the HTTP/2 backend.
 			socket.setTimeout(__timeout > 0 ? __timeout / 1000 : 30);
+			if (hopTls != null) {
+				hopTls.configure(socket);
+			}
 			socket.connect(__url.host, __url.port);
 			__connected = true;
 		} catch (e:Dynamic) {
 			__close();
-			__fail("Connection Failed");
+			// With the reason. Every failure read "Connection Failed" alone --
+			// an untrusted, expired or misnamed certificate, a refused port --
+			// where the WebSocket client beside this one said which.
+			__fail("Connection Failed: " + __describe(e));
 			return;
 		}
 
@@ -1051,8 +1075,38 @@ class Http {
 			return;
 		}
 
+		// After the handshake and before a byte of the request.
+		if (hopTls != null) {
+			var refusal:Null<String> = hopTls.checkPins(__socket);
+			if (refusal != null) {
+				__close();
+				__fail(refusal);
+				return;
+			}
+		}
+
 		__handleRequest();
 		__handleResponse();
+	}
+
+	/**
+		The TLS this hop is made under, for an `https` URL, or null for a
+		plain one or the defaults: the request's, less its client certificate
+		once a redirect has left the origin it was made to.
+	**/
+	private function __poolTls():Null<crossbyte.http.HTTPTLSOptions> {
+		if (tls == null || !__url.ssl || tls.isDefault()) {
+			return null;
+		}
+		return __leftOrigin ? tls.withoutClientCertificate() : tls;
+	}
+
+	/** What an error says, for a message: a haxe.Exception's text, or the value. */
+	private static function __describe(error:Dynamic):String {
+		if (Std.isOfType(error, haxe.Exception)) {
+			return (error : haxe.Exception).message;
+		}
+		return Std.string(error);
 	}
 
 	/** Whether connections are kept for reuse: everywhere with threads but eval. */
@@ -1090,7 +1144,7 @@ class Http {
 					// shut down under the response: not one to keep.
 					__closeQuietly(socket);
 				} else {
-					HttpConnectionPool.put(__originOf(__url), socket);
+					HttpConnectionPool.put(__originOf(__url), socket, __poolTls());
 				}
 			}
 			return;

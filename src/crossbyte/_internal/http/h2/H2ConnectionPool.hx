@@ -42,8 +42,9 @@ class H2ConnectionPool {
 	public static var idleTimeoutSeconds:Float = 90;
 
 	private static final __sessions:Map<String, Array<H2ClientSession>> = new Map();
-	// Connections being opened, by origin, and who waits on each.
-	private static final __connecting:Map<String, PendingConnect> = new Map();
+	// Connections being opened, by origin -- one for each set of TLS options
+	// asked for -- and who waits on each.
+	private static final __connecting:Map<String, Array<PendingConnect>> = new Map();
 	private static final __lock:Mutex = new Mutex();
 
 	/**
@@ -69,11 +70,15 @@ class H2ConnectionPool {
 	 * possibly a TLS handshake, and holding a shared lock across that would
 	 * serialize every origin behind the slowest.
 	 *
+	 * Only a session opened under the same TLS options is shared, by
+	 * `HTTPTLSOptions.same`, null being the defaults: a connection that did not
+	 * check its server never carries a request that asked it to.
+	 *
 	 * @param timeoutSeconds The longest this call waits on another request's
 	 *        connect; `<= 0` waits for it however long it takes.
 	 */
 	public static function acquire(origin:String, connect:Void->H2ClientSession, timeoutSeconds:Float = 0,
-			?cancelToken:crossbyte.http.HTTPCancelToken):H2ClientSession {
+			?cancelToken:crossbyte.http.HTTPCancelToken, ?tls:crossbyte.http.HTTPTLSOptions):H2ClientSession {
 		var deadline:Float = timeoutSeconds > 0 ? haxe.Timer.stamp() + timeoutSeconds : -1;
 
 		while (true) {
@@ -81,12 +86,17 @@ class H2ConnectionPool {
 			__lock.acquire();
 			// Looked for and, failing that, claimed under one hold, so a
 			// session opened the moment before is found rather than duplicated.
-			var usable:Null<H2ClientSession> = __findUsableLocked(origin, expired);
-			var pending:Null<PendingConnect> = usable == null ? __connecting.get(origin) : null;
+			var usable:Null<H2ClientSession> = __findUsableLocked(origin, expired, tls);
+			var pending:Null<PendingConnect> = usable == null ? __pendingFor(origin, tls) : null;
 			var mine:Bool = usable == null && pending == null;
 			if (mine) {
-				pending = new PendingConnect();
-				__connecting.set(origin, pending);
+				pending = new PendingConnect(tls);
+				var list:Null<Array<PendingConnect>> = __connecting.get(origin);
+				if (list == null) {
+					list = [];
+					__connecting.set(origin, list);
+				}
+				list.push(pending);
 			}
 			var wake:Null<sys.thread.Lock> = null;
 			if (usable == null && !mine) {
@@ -139,8 +149,12 @@ class H2ConnectionPool {
 		}
 		pending.failure = failure;
 		pending.finished = true;
-		if (__connecting.get(origin) == pending) {
-			__connecting.remove(origin);
+		var list:Null<Array<PendingConnect>> = __connecting.get(origin);
+		if (list != null) {
+			list.remove(pending);
+			if (list.length == 0) {
+				__connecting.remove(origin);
+			}
 		}
 		var waiters:Array<sys.thread.Lock> = pending.waiters;
 		pending.waiters = [];
@@ -201,12 +215,14 @@ class H2ConnectionPool {
 	 * where the busiest session comes back instead: the peer refuses a stream
 	 * it cannot take, which is a better answer than refusing to try.
 	 */
-	private static function __findUsableLocked(origin:String, expired:Array<H2ClientSession>):Null<H2ClientSession> {
+	private static function __findUsableLocked(origin:String, expired:Array<H2ClientSession>, ?tls:crossbyte.http.HTTPTLSOptions):Null<H2ClientSession> {
 		var list:Null<Array<H2ClientSession>> = __sessions.get(origin);
 		if (list == null) {
 			return null;
 		}
 
+		var matching:Int = 0;
+		var busiest:Null<H2ClientSession> = null;
 		var index:Int = list.length - 1;
 		while (index >= 0) {
 			var candidate:H2ClientSession = list[index];
@@ -220,8 +236,14 @@ class H2ConnectionPool {
 				// happen with a pool-wide lock held.
 				list.splice(index, 1);
 				expired.push(candidate);
-			} else if (candidate.hasCapacity()) {
-				return candidate;
+			} else if (crossbyte.http.HTTPTLSOptions.same(candidate.tls, tls)) {
+				if (candidate.hasCapacity()) {
+					return candidate;
+				}
+				matching++;
+				if (busiest == null) {
+					busiest = candidate;
+				}
 			}
 			index--;
 		}
@@ -231,10 +253,23 @@ class H2ConnectionPool {
 			return null;
 		}
 
-		if (list.length >= maxSessionsPerOrigin) {
-			return list[list.length - 1];
+		if (matching >= maxSessionsPerOrigin) {
+			return busiest;
 		}
 
+		return null;
+	}
+
+	/** The connect under way for `origin` under `tls`, if there is one. Under the lock. */
+	private static function __pendingFor(origin:String, tls:Null<crossbyte.http.HTTPTLSOptions>):Null<PendingConnect> {
+		var list:Null<Array<PendingConnect>> = __connecting.get(origin);
+		if (list != null) {
+			for (pending in list) {
+				if (crossbyte.http.HTTPTLSOptions.same(pending.tls, tls)) {
+					return pending;
+				}
+			}
+		}
 		return null;
 	}
 
@@ -360,6 +395,11 @@ private class PendingConnect {
 	/** What the connect failed with, for its waiters, or null. */
 	public var failure:Dynamic = null;
 
-	public function new() {}
+	/** The TLS options the connection is being opened under. */
+	public final tls:Null<crossbyte.http.HTTPTLSOptions>;
+
+	public function new(tls:Null<crossbyte.http.HTTPTLSOptions>) {
+		this.tls = tls;
+	}
 }
 #end
