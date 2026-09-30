@@ -58,7 +58,8 @@ class SysSocketContractTest extends utest.Test {
 		Both ends name the other by its address, as text and in `host`.
 
 		hl's standard library left `host` null on the hosts it built here, and
-		ServerWebSocket names a client by `peer().host.host`.
+		so did eval's branch of this module; ServerWebSocket names a client by
+		`peer().host.host`.
 	**/
 	public function testAPeerIsNamedByItsAddress():Void {
 		var pair = connectedPair();
@@ -72,24 +73,18 @@ class SysSocketContractTest extends utest.Test {
 		Assert.equals(pair.client.host().port, accepted.port);
 		Assert.equals(LOOPBACK, client.host.toString());
 		Assert.equals(pair.listener.host().port, client.port);
-		#if !eval
-		// eval's own sockets leave the text unset; theirs is a branch of its own.
 		Assert.equals(LOOPBACK, accepted.host.host);
 		Assert.equals(LOOPBACK, client.host.host);
 		Assert.equals(LOOPBACK, pair.client.host().host.host);
-		#end
 
 		pair.close();
 	}
 
-	#if !eval
 	/**
 		A second close does nothing. neko's native close throws when handed a
 		socket it already closed, and its standard library passed the same
-		handle every time.
-
-		Not on eval, whose branch of this module hands the second close to the
-		system and throws "not a socket".
+		handle every time; eval's branch of this module handed the second
+		close to the system, which threw "not a socket".
 	**/
 	public function testClosingTwiceIsHarmless():Void {
 		var pair = connectedPair();
@@ -111,7 +106,6 @@ class SysSocketContractTest extends utest.Test {
 		Assert.isNull(error, "closing a closed socket threw " + Std.string(error));
 		pair.close();
 	}
-	#end
 
 	#if (hl || neko || java || jvm)
 	/**
@@ -146,19 +140,14 @@ class SysSocketContractTest extends utest.Test {
 		answers -2 for each. neko's reported a reset seen by `readByte` as the
 		end too.
 
+		The cpp branch of this module reported every failure a byte read met as
+		`Eof`, as the standard library it came from does; it reads through
+		`readBytes` now, as the others do.
+
 		Not on eval, whose reset is a native error no Haxe catch intercepts.
-		And `readByte` is not asked natively: the cpp branch of this module
-		reports every failure a byte read meets as `Eof`, as the standard
-		library it came from does, so a reset there is told apart by
-		`readBytes` alone.
 	**/
 	public function testAResetIsAFailureRatherThanAnEnd():Void {
-		#if (cpp || hxcpp)
-		var modes:Array<Bool> = [false];
-		#else
-		var modes:Array<Bool> = [false, true];
-		#end
-		for (byByte in modes) {
+		for (byByte in [false, true]) {
 			var pair = connectedPair();
 			if (pair == null) {
 				return;
