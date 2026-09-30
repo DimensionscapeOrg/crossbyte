@@ -12,6 +12,13 @@ import haxe.ds.Map;
  * so order is not preserved. Designed for performance-critical use cases like
  * polling APIs, ECS systems, or socket sets.
  *
+ * **Removing while iterating.** Removing the element a loop is on is safe:
+ * the element moved into its place is visited next, and every other one
+ * once. The loop walked the array itself, so the moved element was skipped,
+ * four of six visited when every even one was removed. Removing an
+ * element the loop has already passed moves one it has not reached behind
+ * it, which is then skipped.
+ *
  * @param K The element type. Keys are compared using `Map` semantics.
  */
 @:generic
@@ -152,8 +159,9 @@ final class DenseSet<K:Dynamic> {
 	 *
 	 * @return An `Iterator<K>` for the set.
 	 */
-	public inline function iterator():Iterator<K>
-		return keys.iterator();
+	public inline function iterator():DenseSetIterator<K> {
+		return new DenseSetIterator<K>(this);
+	}
 
 	/**
 	 * Clears all elements from the set.
@@ -165,5 +173,50 @@ final class DenseSet<K:Dynamic> {
 
 	public inline function toString():String {
 		return pos.toString();
+	}
+}
+
+/**
+ * Walks a `DenseSet` in its current packed order, with the element just
+ * returned free to be removed: if another was swapped into its place, that
+ * place is visited again.
+ */
+@:generic
+@:noCompletion
+@:access(crossbyte.ds.DenseSet)
+class DenseSetIterator<K:Dynamic> {
+	private var __set:DenseSet<K>;
+	private var __next:Int = 0;
+	private var __returnedAt:Int = -1;
+	private var __returned:K;
+
+	public inline function new(set:DenseSet<K>) {
+		__set = set;
+	}
+
+	public inline function hasNext():Bool {
+		__settle();
+		return __next < __set.keys.length;
+	}
+
+	public inline function next():K {
+		__settle();
+		var key:K = __set.keys[__next];
+		__returned = key;
+		__returnedAt = __next++;
+		return key;
+	}
+
+	// The element returned last is no longer where it was: whatever is there
+	// now was swapped in from the end and has not been visited. Elements are
+	// distinct, so a different one there is a different element.
+	private inline function __settle():Void {
+		if (__returnedAt >= 0) {
+			var keys:Array<K> = __set.keys;
+			if (__returnedAt >= keys.length || keys[__returnedAt] != __returned) {
+				__next = __returnedAt;
+			}
+			__returnedAt = -1;
+		}
 	}
 }

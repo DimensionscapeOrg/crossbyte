@@ -43,6 +43,84 @@ class UtilsTest extends utest.Test {
 		Assert.equals(-1896865725, Random.nextU32());
 	}
 
+	/**
+		A range of more than 2^31 values draws from all of it.
+
+		How many values a range held was counted in Int, which overflowed from
+		2^31 up: Random.int(0, 0x7FFFFFFF) came out 0 every time on eval and
+		the jvm, and the full Int range gave only negative numbers everywhere.
+		The counts are known answers: every target draws the same ones.
+	**/
+	public function testAWideRangeDrawsFromAllOfIt():Void {
+		var random = new Random(99);
+		var zero:Int = 0;
+		var upperHalf:Int = 0;
+		for (_ in 0...2000) {
+			var x:Int = random.inti(0, 0x7FFFFFFF);
+			if (x < 0) {
+				Assert.fail("drew " + x + " from [0, 0x7FFFFFFF]");
+				return;
+			}
+			if (x == 0) {
+				zero++;
+			}
+			if (x >= 0x40000000) {
+				upperHalf++;
+			}
+		}
+		Assert.isTrue(zero < 2, zero + " of 2000 draws were 0");
+		Assert.equals(1016, upperHalf);
+
+		var negative:Int = 0;
+		for (_ in 0...2000) {
+			if (random.inti(0x80000000, 0x7FFFFFFF) < 0) {
+				negative++;
+			}
+		}
+		Assert.equals(979, negative);
+
+		Random.reseed(4242);
+		var staticZero:Int = 0;
+		for (_ in 0...200) {
+			if (Random.int(0, 0x7FFFFFFF) == 0) {
+				staticZero++;
+			}
+		}
+		Assert.isTrue(staticZero < 2, staticZero + " of 200 static draws were 0");
+	}
+
+	/**
+		Every range narrow enough to have worked draws exactly what it drew
+		before the wide ones were fixed, so a seeded sequence, a replay, a
+		generated world, still reads the same.
+	**/
+	public function testANarrowRangeDrawsWhatItAlwaysDid():Void {
+		Random.reseed(12345);
+		Assert.equals("52,54,78,67,47,72", [for (_ in 0...6) Random.int(0, 99)].join(","));
+		var random = new Random(777);
+		Assert.equals("502,-856,244,-791,16,557", [for (_ in 0...6) random.inti(-1000, 1000)].join(","));
+		Assert.equals("960454248,910322303,270330903,1030871650", [for (_ in 0...4) random.inti(0, 0x3FFFFFFF)].join(","));
+		Assert.equals("1038264881,1828833615,626482905,945631671", [for (_ in 0...4) random.inti(-5, 0x7FFFFFF0)].join(","));
+		Assert.equals(5, random.inti(5, 4), "an empty range answers its minimum");
+		Assert.equals(7, random.inti(7, 7));
+	}
+
+	/**
+		The shared generator's own seed differs from one moment to the next.
+
+		It was `Std.int(stamp * 1e6)`, which saturates on the jvm once its
+		boot-relative clock passes 2^31 microseconds, 36 minutes, so every
+		jvm run started from 0x7FFFFFFF and drew one sequence; hl and neko got
+		INT_MIN the same way.
+	**/
+	public function testTheUnseededSeedMovesWithTheClock():Void {
+		var first:Int = @:privateAccess Random.defaultSeed();
+		var until:Float = haxe.Timer.stamp() + 0.003;
+		while (haxe.Timer.stamp() < until) {}
+		var second:Int = @:privateAccess Random.defaultSeed();
+		Assert.notEquals(first, second, "two seeds 3 ms apart were both " + first);
+	}
+
 	public function testHashesAreTheSameNumberOnEveryTarget():Void {
 		// Known answers, not self-consistency. Every hash here multiplies by a
 		// constant chosen to overflow, and that overflow is the mixing step,
@@ -128,6 +206,22 @@ class UtilsTest extends utest.Test {
 		Assert.equals(50.0, MathUtil.remap(0, 10, 0, 100, 5));
 		Assert.equals(9, MathUtil.wrap(-1, 0, 10));
 		Assert.equals(2, MathUtil.wrap(12, 0, 10));
+	}
+
+	/**
+		`nextPow2` answers the same on every target at the top of the range.
+		Past 2^30 the answer is 2^31, which native targets wrapped to
+		-2147483648 and JavaScript, whose Int does not wrap, gave as
+		2147483648.
+	**/
+	public function testNextPow2AgreesAcrossTargetsAtTheTop():Void {
+		Assert.equals(1, MathUtil.nextPow2(1));
+		Assert.equals(1 << 30, MathUtil.nextPow2(1 << 30));
+		Assert.equals(1 << 31, MathUtil.nextPow2((1 << 30) + 1));
+		Assert.equals(1 << 31, MathUtil.nextPow2(0x7FFFFFFF));
+		Assert.equals(0, MathUtil.nextPow2(0));
+		Assert.equals(0, MathUtil.nextPow2(-5));
+		Assert.equals(1 << 31, MathUtil.nextPow2(MathUtil.INT32_MIN));
 	}
 
 	public function testMathUtilWrapHandlesWideRangesWithoutCollapsing():Void {
@@ -236,6 +330,52 @@ class UtilsTest extends utest.Test {
 		Assert.equals(2, resized);
 		Assert.equals(2, pool.capacity);
 		Assert.equals(1, pool.inUse);
+	}
+
+	/**
+		An object released twice is not lent to two owners. A release build
+		kept both releases, so the next two acquires returned one object.
+		Debug builds check every release and throw.
+	**/
+	public function testADoubleReleaseDoesNotLendOneObjectTwice():Void {
+		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
+		var a = pool.acquire();
+		pool.release(a);
+		#if debug
+		Assert.raises(() -> pool.release(a));
+		#else
+		pool.release(a);
+		#end
+		var x = pool.acquire();
+		var y = pool.acquire();
+		Assert.isFalse(x == y, "one object was lent twice");
+		Assert.equals(2, pool.inUse);
+
+		#if !debug
+		// A release when everything the pool made is free is refused too.
+		pool.release(x);
+		pool.release(y);
+		Assert.isFalse(pool.release({id: 99}), "a release past everything the pool made was kept");
+		Assert.equals(2, pool.freeCount);
+		#end
+	}
+
+	/** A burst leaves behind no more free objects than `maxFree`. **/
+	public function testMaxFreeBoundsWhatABurstLeavesBehind():Void {
+		var pool = new ObjectPool<{id:Int}>(() -> {id: 0});
+		var burst = [for (_ in 0...1000) pool.acquire()];
+		Assert.equals(1000, pool.capacity);
+		pool.maxFree = 16;
+		for (o in burst) {
+			Assert.isTrue(pool.release(o));
+		}
+		Assert.equals(16, pool.freeCount);
+		Assert.equals(16, pool.capacity, "objects let go still counted as made");
+		Assert.equals(0, pool.inUse);
+		var again = [for (_ in 0...20) pool.acquire()];
+		Assert.equals(20, pool.capacity);
+		Assert.equals(0, pool.freeCount);
+		Assert.equals(20, again.length);
 	}
 
 	public function testObjectRecyclerCachesLocallyAndDrainsToPool():Void {

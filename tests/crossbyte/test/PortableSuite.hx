@@ -95,11 +95,20 @@ class PortableSuite {
 		runner.addCase(new crossbyte.test.RequireTest());
 		runner.addCase(new crossbyte.FutureTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		// Specialised per element type, and Map keys that differ by target.
+		runner.addCase(new crossbyte.ds.PriorityQueueTest());
+		runner.addCase(new crossbyte.ds.OrderedMapTest());
+		runner.addCase(new crossbyte.ds.Array2DTest());
+		// Unsigned pixel comparison through the sign bit, where js differs.
+		runner.addCase(new crossbyte.ds.BitmapDataTest());
 		// Word arithmetic on the sign bit, which is where js differs.
 		runner.addCase(new crossbyte.ds.BitSetTest());
 		// Sequence numbers wrapping past 2^31 - 1, likewise.
 		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		runner.addCase(new crossbyte.ds.InterestSetTest());
+		// Vectors with counts where arrays boxed on the jvm and lost their
+		// store to V8 each round.
+		runner.addCase(new crossbyte.ds.IdListTest());
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		// Float cell arithmetic and Vector storage, which differ by target.
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
@@ -205,5 +214,8 @@ class PortableSuite {
 		runner.addCase(new crossbyte.cluster.SnowflakeIdTest());
 		// Where a Haxe Int does not wrap at 32 bits by itself.
 		runner.addCase(new crossbyte.foundation.Seq32Test());
+		// PrimitiveValue's numbers, which Std.parseInt and Std.int read
+		// differently on each target.
+		runner.addCase(new crossbyte.foundation.FoundationConstructsTest());
 	}
 }

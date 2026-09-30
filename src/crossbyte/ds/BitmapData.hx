@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
 import crossbyte.math.Point;
 import crossbyte.math.Rectangle;
@@ -154,37 +155,49 @@ class BitmapData {
 		return new Rectangle(xMin, yMin, xMax - xMin + 1, yMax - yMin + 1);
 	}
 
+	/**
+		Tests each pixel of `sourceRect` in `sourceBitmap` against `threshold`
+		and sets those that pass, at the same place relative to `destPoint`,
+		to `color`; those that fail are copied from the source when
+		`copySource` is set and left as they are otherwise.
+
+		The test is `(pixel & mask) operation (threshold & mask)`, compared
+		as unsigned 32-bit values as ActionScript's `uint`s are, so an alpha
+		of 0xFF is above one of 0x7F rather than below it. It returns the
+		number of pixels that passed, which was 0 on every call: each case
+		of the operation ended in `break`, which in Haxe leaves the loop the
+		switch is in, so the first pixel of each row ended the row.
+
+		@param operation One of `<`, `<=`, `>`, `>=`, `==` and `!=`.
+		@throws ArgumentError For any other `operation`.
+	**/
 	public function threshold(sourceBitmap:BitmapData, sourceRect:Rectangle, destPoint:Point, operation:String, threshold:Int, color:Int = 0,
 			mask:Int = 0xFFFFFFFF, copySource:Bool = false):Int {
 		__ensureNotDisposed();
 		sourceBitmap.__ensureNotDisposed();
+		var op:Int = switch (operation) {
+			case "<": 0;
+			case "<=": 1;
+			case ">": 2;
+			case ">=": 3;
+			case "==": 4;
+			case "!=": 5;
+			default: throw new ArgumentError('Unknown threshold operation "$operation".');
+		}
+		// Flipping the sign bit makes a signed comparison an unsigned one.
+		var limit:Int = (threshold & mask) ^ 0x80000000;
 		var hits = 0;
 		for (y in 0...Std.int(sourceRect.height)) {
 			for (x in 0...Std.int(sourceRect.width)) {
 				var sourceColor = sourceBitmap.getPixel32(Std.int(sourceRect.x + x), Std.int(sourceRect.y + y));
-				var test = (sourceColor & mask);
-				var passed = false;
-				switch (operation) {
-					case "==":
-						passed = (test == threshold);
-						break;
-					case "!=":
-						passed = (test != threshold);
-						break;
-					case "<":
-						passed = (test < threshold);
-						break;
-					case ">":
-						passed = (test > threshold);
-						break;
-					case "<=":
-						passed = (test <= threshold);
-						break;
-					case ">=":
-						passed = (test >= threshold);
-						break;
-					default:
-						throw "Unknown operation";
+				var test:Int = (sourceColor & mask) ^ 0x80000000;
+				var passed:Bool = switch (op) {
+					case 0: test < limit;
+					case 1: test <= limit;
+					case 2: test > limit;
+					case 3: test >= limit;
+					case 4: test == limit;
+					default: test != limit;
 				}
 				if (passed) {
 					setPixel32(Std.int(destPoint.x + x), Std.int(destPoint.y + y), color);

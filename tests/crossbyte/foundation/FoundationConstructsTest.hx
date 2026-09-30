@@ -145,6 +145,58 @@ class FoundationConstructsTest extends utest.Test {
 		Assert.equals(-2, negInt);
 	}
 
+	/**
+		A string reads as the same `Int` on every target, or not at all.
+		`Std.parseInt` gave "4294967396" as null on eval, as that number on
+		Node and as a thrown NumberFormatException on the jvm, and read
+		"12abc" as 12.
+	**/
+	public function testPrimitiveValueParsesIntegersTheSameOnEveryTarget():Void {
+		function int(text:String):Int {
+			var value:PrimitiveValue = text;
+			return value.toInt();
+		}
+		Assert.equals(42, int("42"));
+		Assert.equals(7, int(" 7 "));
+		Assert.equals(5, int("+5"));
+		Assert.equals(7, int("007"));
+		Assert.equals(2147483647, int("2147483647"));
+		Assert.equals(-2147483647 - 1, int("-2147483648"));
+		Assert.equals(-2147483647 - 1, int("-0002147483648"));
+		Assert.equals(31, int("0x1F"));
+		Assert.equals(-16, int("-0X10"));
+		Assert.equals(-2147483647 - 1, int("-0x80000000"));
+		for (bad in ["4294967396", "99999999999", "2147483648", "-2147483649", "abc", "12abc", "", "   ", "-", "0x", "1e3", "0x100000000", "--1"]) {
+			Assert.raises(() -> int(bad), String, '"$bad" was read as a number');
+		}
+	}
+
+	/**
+		A Float outside the range of `Int` does not become one. `Std.int` of
+		3e9 was 2147483647 on the jvm and -1294967296 on eval and Node.
+	**/
+	public function testPrimitiveValueFloatOutsideTheIntRangeThrows():Void {
+		function int(f:Float):Int {
+			var value:PrimitiveValue = f;
+			return value.toInt();
+		}
+		Assert.equals(2147483647, int(2147483647.9));
+		Assert.equals(-2147483647 - 1, int(-2147483648.9));
+		Assert.equals(-3, int(-3.99));
+		for (bad in [3e9, -3e9, 2147483648.0, -2147483649.0, Math.POSITIVE_INFINITY, Math.NEGATIVE_INFINITY]) {
+			Assert.raises(() -> int(bad), String, bad + " became an Int");
+		}
+	}
+
+	/** The documentation's example, as written there. **/
+	public function testPrimitiveValueDocumentedExample():Void {
+		var p:PrimitiveValue = 42;
+		var s:String = p; // Automatic conversion to "42"
+		var b:Bool = p.toBool(); // true
+		Assert.equals("42", s);
+		Assert.isTrue(b);
+	}
+
 	public function testPrimitiveValueToBoolNormalizesStringsAndNumbers():Void {
 		// Falsy strings (after trim + lowercase).
 		Assert.isFalse((("false" : PrimitiveValue)).toBool());
