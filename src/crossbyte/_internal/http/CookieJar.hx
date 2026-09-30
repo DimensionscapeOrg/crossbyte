@@ -22,6 +22,23 @@ import crossbyte.utils.IntParse;
 **/
 @:noCompletion
 class CookieJar {
+	/**
+		Cookies kept for one host. Past it the oldest goes to make room, as a
+		browser's jar drops them; Chrome keeps the same number.
+
+		Nothing bounded the jar, and every request looked through all of it:
+		a server could set as many cookies as it cared to send, and 20,000
+		were kept, each request then spending half a millisecond on eval
+		reading them back for every thousand.
+	**/
+	public static inline var MAX_COOKIES_PER_HOST:Int = 180;
+
+	/**
+		Characters a cookie's name and value may take together. A larger one
+		is ignored whole, which RFC 6265 6.1 allows and browsers do.
+	**/
+	public static inline var MAX_COOKIE_LENGTH:Int = 4096;
+
 	// By host, lowercased, and within a host in the order the cookies were
 	// set. The jar was one map by name: a host's cookies went back in a map's
 	// iteration order, which differs by target, a second host setting a name
@@ -110,7 +127,7 @@ class CookieJar {
 
 		var name:String = StringTools.trim(pair.substr(0, eq));
 		var value:String = StringTools.trim(pair.substr(eq + 1));
-		if (name.length == 0) {
+		if (name.length == 0 || name.length + value.length > MAX_COOKIE_LENGTH) {
 			return;
 		}
 
@@ -176,6 +193,9 @@ class CookieJar {
 		if (cookies == null) {
 			cookies = [];
 			__hosts.set(host, cookies);
+		}
+		if (cookies.length >= MAX_COOKIES_PER_HOST) {
+			cookies.shift();
 		}
 		cookies.push(cookie);
 	}
