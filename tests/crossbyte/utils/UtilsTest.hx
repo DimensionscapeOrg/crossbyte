@@ -208,6 +208,22 @@ class UtilsTest extends utest.Test {
 		Assert.equals(2, MathUtil.wrap(12, 0, 10));
 	}
 
+	/**
+		`nextPow2` answers the same on every target at the top of the range.
+		Past 2^30 the answer is 2^31, which native targets wrapped to
+		-2147483648 and JavaScript, whose Int does not wrap, gave as
+		2147483648.
+	**/
+	public function testNextPow2AgreesAcrossTargetsAtTheTop():Void {
+		Assert.equals(1, MathUtil.nextPow2(1));
+		Assert.equals(1 << 30, MathUtil.nextPow2(1 << 30));
+		Assert.equals(1 << 31, MathUtil.nextPow2((1 << 30) + 1));
+		Assert.equals(1 << 31, MathUtil.nextPow2(0x7FFFFFFF));
+		Assert.equals(0, MathUtil.nextPow2(0));
+		Assert.equals(0, MathUtil.nextPow2(-5));
+		Assert.equals(1 << 31, MathUtil.nextPow2(MathUtil.INT32_MIN));
+	}
+
 	public function testMathUtilWrapHandlesWideRangesWithoutCollapsing():Void {
 		// Normal range still wraps correctly.
 		Assert.equals(0, MathUtil.wrap(10, 0, 10));
