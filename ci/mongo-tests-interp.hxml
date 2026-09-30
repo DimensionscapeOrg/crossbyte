@@ -1,0 +1,6 @@
+-cp src
+-cp tests
+-lib utest
+-main MongoIntegrationMain
+--interp
+--macro crossbyte.test.SuiteCoverage.check()

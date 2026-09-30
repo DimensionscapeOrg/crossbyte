@@ -17,17 +17,23 @@ import haxe.ds.Vector;
  * ```haxe
  * // Once, with cells about the size of a view.
  * var grid = new SpatialGrid(0, 0, WORLD_WIDTH, WORLD_HEIGHT, VIEW_RADIUS);
+ * var found = new IdList();
  *
  * // Every tick: move what moved, then ask each observer's question.
  * for (entity in entities) {
  * 	grid.set(entity.slot, entity.x, entity.y);
  * }
- * found.resize(0);
- * grid.queryCircle(observer.x, observer.y, VIEW_RADIUS, found);
- * for (slot in found) {
- * 	observer.interest.add(slot);
- * }
+ * found.clear();
+ * grid.queryCircleIds(observer.x, observer.y, VIEW_RADIUS, found);
+ * observer.interest.addAll(found);
  * ```
+ *
+ * **What a query finds** goes into an `IdList` through `queryCircleIds` and
+ * `queryRectIds`, or into an `Array<Int>` through `queryCircle` and
+ * `queryRect`. The list is the one to use every tick: an array boxes every
+ * id above 127 on the jvm, and one emptied with `resize(0)` gives its
+ * storage back on JavaScript, so a round of views reallocates it -- 2.2 MB a
+ * tick for 1,000 views of 50 on either, where the list allocates nothing.
  *
  * **Grid or `QuadTree`.** A grid's cost follows how many things share the
  * cells a query touches, so it suits many things spread fairly evenly and
@@ -248,6 +254,43 @@ final class SpatialGrid {
 	}
 
 	/**
+	 * Adds to `found` every id within `radius` of (`x`, `y`), as
+	 * `queryCircle` does, into a list that allocates nothing on any target
+	 * once it has grown.
+	 *
+	 * @return `found`.
+	 */
+	public function queryCircleIds(x:Float, y:Float, radius:Float, found:IdList):IdList {
+		if (!(radius >= 0) || Math.isNaN(x) || Math.isNaN(y)) {
+			return found;
+		}
+
+		// The same walk as queryCircle's, written out again rather than
+		// shared through a call per id.
+		var firstColumn:Int = __column((x - radius - __left) * __inverse - SLACK);
+		var lastColumn:Int = __column((x + radius - __left) * __inverse + SLACK);
+		var firstRow:Int = __row((y - radius - __top) * __inverse - SLACK);
+		var lastRow:Int = __row((y + radius - __top) * __inverse + SLACK);
+		var radiusSquared:Float = radius * radius;
+
+		for (row in firstRow...lastRow + 1) {
+			var base:Int = row * columns;
+			for (column in firstColumn...lastColumn + 1) {
+				var id:Int = __heads[base + column];
+				while (id != -1) {
+					var dx:Float = __xs[id] - x;
+					var dy:Float = __ys[id] - y;
+					if (dx * dx + dy * dy <= radiusSquared) {
+						found.push(id);
+					}
+					id = __next[id];
+				}
+			}
+		}
+		return found;
+	}
+
+	/**
 	 * Adds to `found` every id inside the rectangle, by the rule
 	 * `Rectangle.contains` uses: its left and top edges included, its right
 	 * and bottom edges not.
@@ -258,6 +301,41 @@ final class SpatialGrid {
 		if (found == null) {
 			found = [];
 		}
+		if (!(width > 0) || !(height > 0) || Math.isNaN(x) || Math.isNaN(y)) {
+			return found;
+		}
+
+		var right:Float = x + width;
+		var bottom:Float = y + height;
+		var firstColumn:Int = __column((x - __left) * __inverse - SLACK);
+		var lastColumn:Int = __column((right - __left) * __inverse + SLACK);
+		var firstRow:Int = __row((y - __top) * __inverse - SLACK);
+		var lastRow:Int = __row((bottom - __top) * __inverse + SLACK);
+
+		for (row in firstRow...lastRow + 1) {
+			var base:Int = row * columns;
+			for (column in firstColumn...lastColumn + 1) {
+				var id:Int = __heads[base + column];
+				while (id != -1) {
+					var px:Float = __xs[id];
+					var py:Float = __ys[id];
+					if (px >= x && py >= y && px < right && py < bottom) {
+						found.push(id);
+					}
+					id = __next[id];
+				}
+			}
+		}
+		return found;
+	}
+
+	/**
+	 * Adds to `found` every id inside the rectangle, as `queryRect` does, into
+	 * a list that allocates nothing on any target once it has grown.
+	 *
+	 * @return `found`.
+	 */
+	public function queryRectIds(x:Float, y:Float, width:Float, height:Float, found:IdList):IdList {
 		if (!(width > 0) || !(height > 0) || Math.isNaN(x) || Math.isNaN(y)) {
 			return found;
 		}

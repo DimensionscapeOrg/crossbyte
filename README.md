@@ -164,6 +164,47 @@ For example:
 haxe -lib crossbyte -lib crossbyte-lz4 -D crossbyte_lz4_native -main Main --cpp bin
 ```
 
+## HashLink and Neko
+
+Both build and run the test suite, in CI on Windows and Linux. What they need,
+and what they do not have:
+
+**HashLink 1.13 or later, and say so.** Haxe 4.3 assumes HashLink 1.12 unless
+told otherwise, and `crossbyte.utils.Random` uses `haxe.atomic`, which will not
+compile for anything older -- the build stops inside the standard library with
+"Atomic operations require HL 1.13+". Pass the version you run on:
+
+```
+haxe -lib crossbyte -D hl-ver=1.13.0 -main Main --hl main.hl
+```
+
+**The `.hdll` files, next to `hl`.** HashLink resolves every native a program
+was compiled with when it loads, not when one is called, so a missing library
+stops the program before `main` -- and on Windows it says so in a dialog box,
+which on a service or a build machine nobody will ever click. Which ones a
+program needs depends on what it compiles in:
+
+| library | needed by |
+| --- | --- |
+| `ssl.hdll` | anything that uses the network, TLS or not: every socket type reaches `sys.ssl` |
+| `fmt.hdll` | `haxe.crypto.Md5` and `Sha1` (the WebSocket handshake, TURN credentials) and `haxe.zip` |
+| `sqlite.hdll` | `SQLiteConnection` |
+| `mysql.hdll` | `MySQLConnection` |
+
+The HashLink release for Windows ships all four. A Linux build from source
+makes them with `make libhl hl fmt ssl sqlite mysql`, given mbedTLS, zlib,
+libpng, libturbojpeg, libvorbis and SQLite's headers. A library a program
+never calls can be skipped with `HL_DISABLED_LIBS=sqlite,mysql` (HashLink
+1.14): its functions then throw when called rather than stopping the load.
+
+**What is not there.** Neither target has a secure random source, so
+`SecureRandom.isSupported` is false and everything that needs one refuses,
+saying so: `BCrypt.hash`, PKCE, WebSocket clients, STUN, TURN, ICE and WebRTC.
+Both are IPv4 only. `LocalConnection`, `SharedChannel` and `SharedObject`, the
+native crypto, ALPN (so HTTP/2 over TLS) and socket buffer sizes are native or
+jvm features. On neko an `Int` is 31 bits, so a value past 0x3FFFFFFF is not
+one there.
+
 ## Samples
 
 The repository includes small runnable samples for:
@@ -261,6 +302,7 @@ The repository CI covers:
 - hxcpp API audit builds
 - native smoke tests
 - native sample builds
+- the whole suite on HashLink and Neko, on Windows and Linux (`hl-neko.yml`)
 - sibling extension jobs for the optional native modules
 
 The CI is currently configured to use the `dimensionscape/hxcpp` `socket-fixes` branch so CrossByte can validate against the poll/index fixes it depends on.

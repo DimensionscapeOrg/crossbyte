@@ -3,7 +3,7 @@ package crossbyte.metrics;
 import crossbyte.errors.ArgumentError;
 #if cpp
 import crossbyte.metrics._internal.AtomicFloats;
-#elseif (neko || hl || java || jvm)
+#elseif target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -43,7 +43,7 @@ class Counter {
 	@:noCompletion private var __value:Float = 0;
 	#end
 
-	#if (neko || hl || java || jvm)
+	#if (target.threaded && !cpp)
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -53,7 +53,7 @@ class Counter {
 		this.labels = (labels == null) ? new Map() : labels;
 		this.help = help;
 
-		#if (neko || hl || java || jvm)
+		#if (target.threaded && !cpp)
 		__lock = new Mutex();
 		#end
 	}
@@ -75,7 +75,7 @@ class Counter {
 
 		#if cpp
 		AtomicFloats.add(__cells, 0, amount);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		__value += amount;
 		__lock.release();
@@ -90,7 +90,7 @@ class Counter {
 	public function value():Float {
 		#if cpp
 		return AtomicFloats.load(__cells, 0);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		var snapshot:Float = __value;
 		__lock.release();
@@ -107,7 +107,7 @@ class Counter {
 	public function reset():Void {
 		#if cpp
 		AtomicFloats.store(__cells, 0, 0);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		__value = 0;
 		__lock.release();

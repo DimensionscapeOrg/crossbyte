@@ -6,7 +6,9 @@ package crossbyte.net;
 import crossbyte.Future;
 import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunQuery;
+import crossbyte.net._internal.stun.TurnStream;
 import crossbyte.net.ice.IceAgent;
+import crossbyte.net.ice.IceCandidate;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
@@ -229,6 +231,41 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	@:noCompletion private var __socket:DatagramSocket;
 
 	/**
+		Offered every datagram that arrives, before anything else here looks at
+		it, with where it came from; return `true` to take it, and nothing else
+		sees it. Null by default, which costs nothing.
+
+		For a protocol of the application's own sharing this port -- a relay
+		client it drives itself, a probe, a second framing -- which had no way
+		in: every datagram went to the reliable decoder, and anything that was
+		not a reliable frame was dropped as noise. `sendDatagram` is the way out.
+
+		A hook that throws drops the datagram.
+	**/
+	public var onDatagram:Null<(data:ByteArray, address:String, port:Int) -> Bool> = null;
+
+	/**
+		The TURN relay this server reaches peers through, once `allocateRelay`
+		has asked for one; null before that, and once it is released or lost.
+	**/
+	public var relay(default, null):Null<TurnClient> = null;
+
+	/**
+		The address the relay lent, as an ICE candidate: what to tell a peer
+		that can reach this server only through the relay. Null until the relay
+		has lent one.
+	**/
+	public var relayedCandidate(default, null):Null<IceCandidate> = null;
+
+	@:noCompletion private var __relayTick:TickEvent->Void = null;
+
+	/** The connection `relay` reaches its server over, when that is TCP; null over UDP. **/
+	@:noCompletion private var __relayStream:TurnStream = null;
+
+	/** How the attached agent sends from `relayedCandidate`. **/
+	@:noCompletion private var __relaySend:(ByteArray, String, Int) -> Void = null;
+
+	/**
 		Creates a new reliable datagram server socket.
 	**/
 	public function new() {
@@ -297,6 +334,14 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			try {
 				connection.close();
 			} catch (_:Dynamic) {}
+		}
+
+		// After the sessions, whose FINs a relayed one sends through it, and
+		// before the socket, which carries the relay's own goodbye.
+		if (relay != null) {
+			var released = relay;
+			__dropRelay();
+			released.close();
 		}
 
 		try {
@@ -590,7 +635,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				// UDP reports nothing when it is dropped, so a silent network
 				// and a wrong server address look identical from here; the
 				// deadline is the only thing that ends this.
-				__settleStun(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs + "ms.");
+				var damage:Null<String> = query.damage();
+				__settleStun(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + server + ":" + port + " within "
+					+ timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
 				return;
 			}
 
@@ -747,6 +794,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		};
 
 		CrossByte.current().addEventListener(TickEvent.TICK, __iceTick);
+
+		// A relay already lending an address: the agent checks from it too.
+		if (relayedCandidate != null && __relaySend != null) {
+			agent.addLocalCandidate(relayedCandidate, __relaySend);
+		}
 	}
 
 	/**
@@ -768,6 +820,331 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			__ice.onSend = function(_, _, _):Void {};
 			__ice = null;
 		}
+	}
+
+	/**
+		Sends one datagram from the port this server listens on, as it is --
+		not a reliable frame, not through the relay.
+
+		For whatever `onDatagram` takes in: a protocol of the application's own
+		on this port has to answer from it, and the socket was not reachable.
+
+		@throws IOError If the server is closed or not bound, or the send fails.
+	**/
+	public function sendDatagram(bytes:ByteArray, offset:Int, length:Int, address:String, port:Int):Void {
+		if (__closed || !bound) {
+			throw new IOError("Operation attempted on invalid socket.");
+		}
+
+		__socket.send(bytes, offset, length, address, port);
+	}
+
+	/**
+		Asks a TURN relay for an address, through the port this server listens
+		on, and reaches through it the peers hole punching cannot.
+
+		The README offers hole punching on these sockets, and for most pairs of
+		peers it works. For a peer behind a symmetric NAT or a carrier's CGNAT --
+		a fresh mapping per destination, so the address one peer learns of the
+		other is never the one it would reach -- it does not, and there was no
+		relay to fall back to: wiring a `TurnClient` in meant reaching into this
+		class, and two steps could not be written at all, since the relay's
+		answers went to the reliable decoder (or to an attached agent, which
+		took every STUN message) and a session could only send straight to its
+		peer.
+
+		Once the relay lends an address:
+		- `relayedCandidate` is that address, for the peer to be told of;
+		- `connectRelayed` opens a session that reaches its peer through the
+		  relay, and a peer's CONNECT that arrives through it opens one that
+		  answers the same way;
+		- an attached `IceAgent` checks from the relayed candidate too, so a
+		  pair through the relay is found like any other -- dial the peer with
+		  `connectRelayed` when the pair ICE chose is the relayed one;
+		- the relay's requests, refreshes and permissions run on the runtime's
+		  tick, and a relay that goes away closes the sessions that ran through
+		  it, each with an `ioError` saying so.
+
+		A peer that has not been sent anything yet can reach this server
+		through the relay only once `permitRelayedPeer` has been given its
+		address, as RFC 8656 has it: the relay drops the rest.
+
+		@param useChannels See `TurnClient.useChannels`.
+		@param transport How the relay is reached: UDP when left out, or TCP
+		for a network that lets nothing else out -- what it relays is UDP
+		either way, and a session's datagrams are the same datagrams.
+		@return The relayed address, or a failure whose `cause` is a `TurnError`.
+	**/
+	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
+			?transport:TurnTransport):Future<ReflexiveAddress> {
+		var future = new Future<ReflexiveAddress>();
+
+		if (__closed || !bound || !listening) {
+			@:privateAccess future.__fail("A relay can only be allocated from a bound, listening server socket.",
+				new IOError("Operation attempted on invalid socket."));
+			return future;
+		}
+
+		if (server == null || server == "" || username == null || password == null) {
+			@:privateAccess future.__fail("A TURN server address, username and password are required.", new ArgumentError("server"));
+			return future;
+		}
+
+		if (!TurnClient.isSupported) {
+			@:privateAccess future.__fail("A relay needs a cryptographically secure random source for its transaction ids, which this target does not have.",
+				null);
+			return future;
+		}
+
+		if (relay != null) {
+			@:privateAccess future.__fail("This server socket already has a relay; releaseRelay first.", null);
+			return future;
+		}
+
+		var client = new TurnClient(server, port, username, password, transport);
+		client.useChannels = useChannels;
+		relay = client;
+
+		if (client.transport != UDP) {
+			// Everything to and from the relay over a connection of its own.
+			__relayStream = new TurnStream(client);
+		} else {
+			client.onSend = function(payload:ByteArray, address:String, sendPort:Int):Void {
+				if (__closed) {
+					return;
+				}
+
+				try {
+					__socket.send(payload, 0, payload.length, address, sendPort);
+				} catch (_:Dynamic) {
+					// A lost request is retransmitted; one that can never be
+					// sent ends in the relay's own timeout.
+				}
+			};
+		}
+
+		client.onData = function(payload:ByteArray, address:String, peerPort:Int):Void {
+			if (client == relay) {
+				__onRelayedData(client, payload, address, peerPort);
+			}
+		};
+
+		client.onLost = function(reason:String):Void {
+			__relayLost(client, reason);
+		};
+
+		// A peer address the relay will not forward to: pairs from the relayed
+		// candidate to it are dead, and the agent is told so.
+		client.onPermissionRefused = function(peerAddress:String, code:Int, reason:String):Void {
+			if (client == relay && __ice != null && relayedCandidate != null) {
+				__ice.refusePairs(relayedCandidate, peerAddress);
+			}
+		};
+
+		client.allocated.then(function(relayed:ReflexiveAddress):Void {
+			if (client != relay || __closed) {
+				return;
+			}
+
+			relayedCandidate = new IceCandidate(RELAYED, relayed.address, relayed.port);
+			__relaySend = function(payload:ByteArray, address:String, peerPort:Int):Void {
+				if (client == relay) {
+					__sendRelayed(client, payload, 0, payload.length, address, peerPort);
+				}
+			};
+
+			if (__ice != null) {
+				__ice.addLocalCandidate(relayedCandidate, __relaySend);
+			}
+
+			@:privateAccess future.__resolve(relayed);
+		}, function(error:String):Void {
+			if (client == relay) {
+				__dropRelay();
+			}
+
+			@:privateAccess future.__fail(error, client.failure);
+		});
+
+		__relayTick = function(_:TickEvent):Void {
+			client.poll(haxe.Timer.stamp());
+		};
+
+		CrossByte.current().addEventListener(TickEvent.TICK, __relayTick);
+		client.allocate(haxe.Timer.stamp());
+		return future;
+	}
+
+	/**
+		Lets a peer at `address` reach this server through the relay.
+
+		A relay forwards nothing from a peer it has not been told to expect. A
+		peer this server sends to -- a session dialled with `connectRelayed`, a
+		check the agent sent -- is permitted on the way; one that is to dial
+		first has to be named here, from whatever the signalling said.
+
+		@throws IOError When there is no relay holding an address.
+		@throws ArgumentError When `address` is not an IPv4 address.
+	**/
+	public function permitRelayedPeer(address:String):Void {
+		if (relay == null || !relay.active) {
+			throw new IOError("There is no relay to permit a peer on: allocateRelay first, and wait for it.");
+		}
+
+		relay.permit(address, haxe.Timer.stamp());
+	}
+
+	/**
+		Opens a reliable session to a peer through the relay: `connect`, with
+		every datagram the session sends forwarded by the relay and the peer's
+		arriving the same way.
+
+		For a peer no direct path reaches. `address` and `port` are where the
+		relay is to send -- the peer's own relayed address, or whatever address
+		of its a pair ICE chose through the relay names.
+
+		@throws IOError If this server is closed or not listening, or there is
+		no relay holding an address.
+		@throws ArgumentError If `address` is not an IPv4 address, or a session
+		to this endpoint already exists.
+		@throws RangeError if `payload` is larger than one frame.
+	**/
+	public function connectRelayed(address:String, port:Int, timeoutMs:Int = 0, ?payload:ByteArray):ReliableDatagramSocket {
+		if (__closed || !bound || !listening) {
+			throw new IOError("Cannot dial from a server socket that is not bound and listening.");
+		}
+
+		if (relay == null || !relay.active) {
+			throw new IOError("There is no relay to connect through: allocateRelay first, and wait for it.");
+		}
+
+		if (address == null || StunMessage.ipv4Octets(address) == null) {
+			throw new ArgumentError("A relay forwards to an IPv4 address, and \"" + address + "\" is not one.");
+		}
+
+		var outgoing:ByteArray = ReliableDatagramSocket.__connectPayloadOf(payload);
+		var key:String = __endpointKey(address, port);
+
+		if (__connections.exists(key)) {
+			throw new ArgumentError("A reliable datagram session to " + key + " already exists on this server.");
+		}
+
+		// The permission first, so the relay forwards the first CONNECT.
+		relay.permit(address, haxe.Timer.stamp());
+
+		var socket = ReliableDatagramSocket.__createDialed(__socket, address, port, this, socketMode, timeoutMs, outgoing,
+			congestionControlFor(address, port), relay);
+		__connections.set(key, socket);
+		return socket;
+	}
+
+	/**
+		Frees the relay's allocation, closing first each session that reached
+		its peer through it -- each with a FIN, while the relay can still carry
+		one.
+	**/
+	public function releaseRelay():Void {
+		var released = relay;
+
+		if (released == null) {
+			return;
+		}
+
+		for (connection in __relayedSessions(released)) {
+			try {
+				connection.close();
+			} catch (_:Dynamic) {}
+		}
+
+		__dropRelay();
+		released.close();
+	}
+
+	/** The sessions reaching their peers through `through`. **/
+	@:noCompletion private function __relayedSessions(through:TurnClient):Array<ReliableDatagramSocket> {
+		var found:Array<ReliableDatagramSocket> = [];
+
+		for (connection in __connections) {
+			if (connection.__relay == through) {
+				found.push(connection);
+			}
+		}
+
+		return found;
+	}
+
+	/**
+		Stops driving the relay and forgets it; closing the client is the
+		caller's. A connection it was reached over is closed here, which a
+		relay takes as the end of the allocation whatever was said on it.
+	**/
+	@:noCompletion private function __dropRelay():Void {
+		if (__relayTick != null) {
+			try {
+				CrossByte.current().removeEventListener(TickEvent.TICK, __relayTick);
+			} catch (_:Dynamic) {}
+
+			__relayTick = null;
+		}
+
+		if (__relayStream != null) {
+			var stream = __relayStream;
+			__relayStream = null;
+			stream.close();
+		}
+
+		relay = null;
+		relayedCandidate = null;
+		__relaySend = null;
+	}
+
+	/**
+		The relay lost its allocation. The sessions that ran through it end
+		with it, each told why and none sent a FIN -- what would carry it is
+		what just went.
+	**/
+	@:noCompletion private function __relayLost(client:TurnClient, reason:String):Void {
+		if (client != relay) {
+			return;
+		}
+
+		__dropRelay();
+
+		for (connection in __relayedSessions(client)) {
+			connection.dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "The relay this session reached its peer through went away: " + reason));
+			connection.__dispose(true);
+		}
+	}
+
+	/** One datagram for the relay to forward to a peer, permitting the peer first. **/
+	@:noCompletion private function __sendRelayed(client:TurnClient, bytes:ByteArray, offset:Int, length:Int, address:String, port:Int):Void {
+		var now:Float = haxe.Timer.stamp();
+		client.permit(address, now);
+		client.bindChannel(address, port, now);
+		client.sendTo(bytes, address, port, offset, length);
+	}
+
+	/**
+		What the relay forwarded, put back where it would have arrived: a check
+		to the agent, told it came in on the relayed candidate so its answer
+		goes back the same way, and anything else to the sessions, marked as
+		having come through the relay.
+	**/
+	@:noCompletion private function __onRelayedData(client:TurnClient, payload:ByteArray, address:String, port:Int):Void {
+		if (__closed || payload.length == 0) {
+			return;
+		}
+
+		if (payload[0] < 4 && __ice != null) {
+			var message = StunMessage.decode(payload);
+
+			if (message != null && __ice.receive(payload, address, port, haxe.Timer.stamp(), relayedCandidate, message)) {
+				return;
+			}
+		}
+
+		payload.position = 0;
+		__handleDatagram(payload, address, port, client);
 	}
 
 	@:noCompletion private function __settleStun(address:Null<ReflexiveAddress>, error:String):Void {
@@ -802,7 +1179,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		not one of those and would otherwise be dropped as noise -- which is
 		exactly what happened to it before this existed.
 	**/
-	@:noCompletion private function __takeStunReply(data:ByteArray):Bool {
+	@:noCompletion private function __takeStunReply(message:StunMessage):Bool {
 		if (__stunFuture == null || __stunQuery == null) {
 			return false;
 		}
@@ -810,7 +1187,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		// Not STUN, or an answer to somebody else's question, stays somebody
 		// else's: the transaction check is what stops an unrelated sender
 		// handing this server an address it would then publish to every peer.
-		switch (__stunQuery.interpret(data)) {
+		switch (__stunQuery.interpretMessage(message)) {
 			case NOT_OURS:
 				return false;
 			case ANSWERED(address):
@@ -819,6 +1196,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				__settleStun(null, "The STUN server refused the request" + (reason != null ? ": " + reason : "."));
 			case ANSWERED_WITHOUT_ADDRESS:
 				__settleStun(null, "The STUN server replied without a mapped address, so this socket's public address is still unknown.");
+			case UNUSABLE(reason):
+				__settleStun(null, "The STUN server's answer could not be used: " + reason + ".");
 		}
 
 		return true;
@@ -829,37 +1208,92 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	}
 
 	@:noCompletion private function __onData(e:DatagramSocketDataEvent):Void {
-		// Before the reliable decode: a STUN reply is not a reliable frame, so
-		// it would fall through as noise.
-		if (__takeStunReply(e.data)) {
-			return;
+		var data:ByteArray = e.data;
+
+		// First, whatever the application routes itself.
+		if (onDatagram != null) {
+			var taken:Bool = true;
+
+			try {
+				taken = onDatagram(data, e.srcAddress, e.srcPort);
+			} catch (_:Dynamic) {}
+
+			if (taken) {
+				return;
+			}
+
+			data.position = 0;
 		}
 
-		// Then the agent, which takes any other STUN message: a check from a
-		// peer, or an answer to one of its own. It reports whether it did, so
-		// everything else falls through to the session below rather than being
-		// swallowed by a component that had no use for it.
-		if (__ice != null && __ice.receive(e.data, e.srcAddress, e.srcPort, haxe.Timer.stamp())) {
-			return;
+		// Then by the first byte, as RFC 7983 has one port shared: below 4 is
+		// STUN and 64 to 127 a relay's ChannelData, where a reliable frame
+		// starts with 0xCB and is never either -- so a session's datagrams go
+		// straight past all of this.
+		if (data.length > 0) {
+			var first:Int = data[0];
+
+			if (first < 4 && (__stunFuture != null || relay != null || __ice != null)) {
+				// Decoded once, and shown to each that might want it in turn.
+				var message = StunMessage.decode(data);
+
+				if (message != null) {
+					// A reply to this server's own question about its address.
+					if (__takeStunReply(message)) {
+						return;
+					}
+
+					// The relay's: its answers, and what it forwards as Data
+					// indications. Before the agent, which used to take every
+					// STUN message there was, the relay's answers included.
+					if (relay != null && relay.receive(data, e.srcAddress, e.srcPort, haxe.Timer.stamp(), message)) {
+						return;
+					}
+
+					// A check from a peer, or an answer to one of the agent's
+					// own. It reports whether it did, so everything else falls
+					// through to the sessions rather than being swallowed by a
+					// component that had no use for it.
+					if (__ice != null && __ice.receive(data, e.srcAddress, e.srcPort, haxe.Timer.stamp(), null, message)) {
+						return;
+					}
+				}
+			} else if (first >= 0x40 && first <= 0x7F && relay != null) {
+				if (relay.receive(data, e.srcAddress, e.srcPort, haxe.Timer.stamp())) {
+					return;
+				}
+			}
+
+			data.position = 0;
 		}
 
-		var key:String = __endpointKey(e.srcAddress, e.srcPort);
+		__handleDatagram(data, e.srcAddress, e.srcPort, null);
+	}
+
+	/**
+		A datagram for the sessions: from the socket, or unwrapped from the
+		relay.
+
+		@param via The relay it came through, which a session it opens answers
+		through; null for one straight off the socket.
+	**/
+	@:noCompletion private function __handleDatagram(data:ByteArray, address:String, port:Int, via:Null<TurnClient>):Void {
+		var key:String = __endpointKey(address, port);
 		var connection:ReliableDatagramSocket = __connections.get(key);
 
 		// Several frames at once, and only ever from a session already here:
 		// a peer bundles once it has heard this side, so a bundle from an
 		// address with no session has nothing in it to open one with -- only
 		// a peer to tell its session is gone.
-		if (ReliableDatagramProtocol.isBundle(e.data)) {
+		if (ReliableDatagramProtocol.isBundle(data)) {
 			if (connection != null) {
-				connection.__acceptBundle(e.data);
+				connection.__acceptBundle(data);
 			} else {
-				__resetStranger(null, e.srcAddress, e.srcPort);
+				__resetStranger(null, address, port, via);
 			}
 			return;
 		}
 
-		var frame = ReliableDatagramProtocol.decode(e.data);
+		var frame = ReliableDatagramProtocol.decode(data);
 		if (frame == null) {
 			return;
 		}
@@ -888,7 +1322,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 
 		if (frame.type != ReliableDatagramFrameType.CONNECT) {
-			__resetStranger(frame, e.srcAddress, e.srcPort);
+			__resetStranger(frame, address, port, via);
 			return;
 		}
 
@@ -909,7 +1343,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var admitted:Bool = false;
 		try {
-			admitted = admit(e.srcAddress, e.srcPort, payload);
+			admitted = admit(address, port, payload);
 		} catch (_:Dynamic) {}
 		if (!admitted) {
 			return;
@@ -917,13 +1351,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var congestion:CongestionControl = null;
 		try {
-			congestion = congestionControlFor(e.srcAddress, e.srcPort);
+			congestion = congestionControlFor(address, port);
 		} catch (_:Dynamic) {
 			return;
 		}
 
 		payload.position = 0;
-		connection = ReliableDatagramSocket.__createAccepted(__socket, e.srcAddress, e.srcPort, this, socketMode, payload, congestion, frame.sequence);
+		// Through the relay, when that is how the CONNECT came: the peer is
+		// somewhere nothing but the relay reaches.
+		connection = ReliableDatagramSocket.__createAccepted(__socket, address, port, this, socketMode, payload, congestion, frame.sequence, via);
 		connection.__peerTakesBundles = frame.bundles;
 		__connections.set(key, connection);
 		__pending.set(key, true);
@@ -977,7 +1413,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		it could not send itself. Never sent for a FIN: two sides that each
 		thought the other a stranger would answer each other for good.
 	**/
-	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int):Void {
+	@:noCompletion private function __resetStranger(frame:Null<ReliableDatagramFrame>, address:String, port:Int, via:Null<TurnClient>):Void {
 		if (frame != null && frame.type == ReliableDatagramFrameType.FIN) {
 			return;
 		}
@@ -989,7 +1425,13 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var length:Int = ReliableDatagramProtocol.encodeInto(__resetScratch, ReliableDatagramFrameType.FIN, 0, null, 0, 0, false, null, false);
 		try {
-			__socket.send(__resetScratch, 0, length, address, port);
+			// Back the way it came: a frame from a peer only the relay reaches
+			// is answered through the relay.
+			if (via != null) {
+				__sendRelayed(via, __resetScratch, 0, length, address, port);
+			} else {
+				__socket.send(__resetScratch, 0, length, address, port);
+			}
 		} catch (_:Dynamic) {}
 	}
 

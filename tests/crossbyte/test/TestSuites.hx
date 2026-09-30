@@ -57,9 +57,11 @@ class TestSuites {
 	public static function addDataStructures(runner:Runner):Void {
 		runner.addCase(new crossbyte.ds.Array2DTest());
 		runner.addCase(new crossbyte.ds.CollectionsTest());
+		runner.addCase(new crossbyte.ds.PriorityQueueTest());
 		runner.addCase(new crossbyte.ds.BitSetTest());
 		runner.addCase(new crossbyte.ds.SequenceRingTest());
 		runner.addCase(new crossbyte.ds.InterestSetTest());
+		runner.addCase(new crossbyte.ds.IdListTest());
 		runner.addCase(new crossbyte.ds.QuadTreeTest());
 		runner.addCase(new crossbyte.ds.SpatialGridTest());
 		runner.addCase(new crossbyte.ds.SpatialGrid3DTest());
@@ -161,6 +163,16 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.SchemaMigratorTest());
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
+		// MongoDB: the codec, Extended JSON, SCRAM and connection strings need
+		// nothing but bytes, and are in PortableSuite too; the rest talk to
+		// FakeMongoServer, a thread speaking OP_MSG, so no server is needed.
+		runner.addCase(new crossbyte.db.mongodb.BsonTest());
+		runner.addCase(new crossbyte.db.mongodb.ExtendedJsonTest());
+		runner.addCase(new crossbyte.db.mongodb.ScramTest());
+		runner.addCase(new crossbyte.db.mongodb.MongoUriTest());
+		runner.addCase(new crossbyte.db.mongodb.MongoWireTest());
+		runner.addCase(new crossbyte.db.mongodb.MongoCrudTest());
+		runner.addCase(new crossbyte.db.mongodb.MongoTransactionTest());
 		#if !cpp
 		// The same failures on cpp go through libpq, and are covered against
 		// its stand-in by NativePostgresBridgeTest below.
@@ -302,7 +314,22 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.ReliableDatagramDeliveryTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramCoalescingTest());
 		runner.addCase(new crossbyte.net.ReliableDatagramLossRecoveryTest());
+		// Real sockets through a relay written for the tests, so like the rest
+		// of the reliable datagram cases it is not portable.
+		runner.addCase(new crossbyte.net.ReliableDatagramRelayTest());
 		runner.addCase(new crossbyte.net.CongestionControlTest());
+	}
+
+	/**
+		CrossByte's replacements for `sys.net.Socket` and `sys.net.UdpSocket`,
+		which every sys target compiles instead of its own: what each promises
+		on every target, hl's and neko's standard implementations included.
+	**/
+	public static function addSysNet(runner:Runner):Void {
+		runner.addCase(new crossbyte.net.SysSocketContractTest());
+		runner.addCase(new crossbyte.net.SocketSelectThreadsTest());
+		// hl's TLS client, whose waits its collector can see past.
+		runner.addCase(new crossbyte._internal.socket.HlTlsSocketTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {
@@ -370,6 +397,7 @@ class TestSuites {
 		addDatabase(runner);
 		addSystem(runner);
 		addNet(runner);
+		addSysNet(runner);
 		addRPC(runner);
 		addResources(runner);
 		addTimers(runner);
@@ -391,6 +419,7 @@ class TestSuites {
 		addHttp(runner);
 		addSystem(runner);
 		addNet(runner);
+		addSysNet(runner);
 		addRPC(runner);
 		addTimers(runner);
 		// These three carry `#if cpp` cases of their own — SQLite in

@@ -28,7 +28,10 @@ import crossbyte.io.ByteArrayOutput;
 import crossbyte.rpc._internal.RPCWire;
 import crossbyte.rpc._internal.RPCRuntimeCodec;
 import haxe.ds.IntMap;
-#if neko
+// haxe.atomic on hl needs HashLink 1.13, and Haxe 4.3 assumes 1.12 unless told
+// otherwise with -D hl-ver: the counter takes neko's lock there rather than
+// failing the build with "Atomic operations require HL 1.13+".
+#if (neko || (hl && hl_ver < version("1.13.0")))
 import sys.thread.Mutex;
 #elseif (cpp || hl || java || cs)
 import haxe.atomic.AtomicInt;
@@ -172,7 +175,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	@:noCompletion private static final __threadTokens:sys.thread.Tls<{}> = new sys.thread.Tls();
 	#end
 
-	#if neko
+	#if (neko || (hl && hl_ver < version("1.13.0")))
 	@:noCompletion private static var __sidCounter:Int = 0;
 	@:noCompletion private static var __sidLock:Null<Mutex> = new Mutex();
 	#elseif (cpp || hl || java || cs)
@@ -197,7 +200,7 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	@:noCompletion private static inline function __getSessionId():Int {
-		#if (neko)
+		#if (neko || (hl && hl_ver < version("1.13.0")))
 		__sidLock.acquire();
 		var id:Int = ++__sidCounter;
 		__sidLock.release();

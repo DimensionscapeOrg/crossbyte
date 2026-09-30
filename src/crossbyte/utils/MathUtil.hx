@@ -63,17 +63,23 @@ class MathUtil {
 	/**
 	 * Returns the next power of two greater than or equal to `n`.
 	 *
+	 * Above 2^30 the answer, 2^31, is not an `Int`: it comes back as its
+	 * bit pattern, `1 << 31`, which is 2^31 read as a `UInt` -- on every
+	 * target. JavaScript's Int does not wrap by itself, so it answered
+	 * 2147483648 there and -2147483648 everywhere else. Zero and below
+	 * answer 0.
+	 *
 	 * @param n Input integer (must be > 0).
 	 * @return  The next power of two ≥ `n`.
 	 */
 	@:pure public static inline function nextPow2(n:Int):Int {
-		var v:Int = n - 1;
+		var v:Int = (n - 1) | 0;
 		v |= v >>> 1;
 		v |= v >>> 2;
 		v |= v >>> 4;
 		v |= v >>> 8;
 		v |= v >>> 16;
-		return v + 1;
+		return (v + 1) | 0;
 	}
 
 	/**

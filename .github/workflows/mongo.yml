@@ -1,0 +1,157 @@
+name: CrossByte MongoDB
+run-name: CrossByte MongoDB | ${{ github.event_name }} | ${{ github.ref_name }}
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mongo-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  HAXE_VERSION: "4.3.7"
+  HXCPP_REPO: "https://github.com/dimensionscape/hxcpp.git"
+  HXCPP_REF: "production"
+
+jobs:
+  mongo:
+    name: Data | MongoDB
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    # The server the driver is mostly tested against: a standalone requiring
+    # authentication, with a root user in admin, as the official image makes
+    # one. Transactions need a replica set and TLS a certificate, so those two
+    # servers are started below, where a container can be given arguments.
+    services:
+      mongo:
+        image: mongo:7
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: example
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping: 1})'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+
+    env:
+      # CROSSBYTE_MONGO_REQUIRED is what makes this job mean anything: without
+      # a reachable server the suite would skip every case and report a green
+      # run, so a broken service container would look exactly like success.
+      CROSSBYTE_MONGO_REQUIRED: "1"
+      CROSSBYTE_MONGO_URI: mongodb://root:example@127.0.0.1:27017/?authSource=admin
+      CROSSBYTE_MONGO_RS_URI: mongodb://127.0.0.1:27018/?directConnection=true
+      CROSSBYTE_MONGO_TLS_URI: mongodb://localhost:27019/?tls=true
+      CROSSBYTE_MONGO_TLS_CA: ${{ github.workspace }}/export/mongo-certs/ca.pem
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      # Java 8, the floor the jvm suite is held to elsewhere.
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install Haxe dependencies
+        run: |
+          haxelib install utest --quiet
+          haxelib install hxjava --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          # The native externs include their Build.xml through
+          # ${haxelib:crossbyte}, so hxcpp has to be able to resolve this
+          # repository by name.
+          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+
+      - name: Bootstrap hxcpp tools
+        run: |
+          set -euo pipefail
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+
+      # A one-member replica set, for transactions, which a standalone server
+      # refuses. Its member is named as the container knows itself; the tests
+      # connect with directConnection, so that name is never followed.
+      - name: Start a replica set member
+        run: |
+          set -euo pipefail
+          docker run -d --name mongo-rs -p 27018:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 60); do
+            if docker exec mongo-rs mongosh --quiet --eval "db.adminCommand({ping: 1}).ok" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec mongo-rs mongosh --quiet --eval "rs.initiate({_id: 'rs0', members: [{_id: 0, host: '127.0.0.1:27017'}]})"
+          for i in $(seq 1 60); do
+            if [ "$(docker exec mongo-rs mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ]; then exit 0; fi
+            sleep 1
+          done
+          echo "The replica set member never became primary." >&2
+          exit 1
+
+      # A server that takes TLS only, with a certificate from an authority of
+      # the job's own making, for localhost and 127.0.0.1.
+      - name: Start a server requiring TLS
+        run: |
+          set -euo pipefail
+          mkdir -p export/mongo-certs
+          cd export/mongo-certs
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=CrossByte Test CA" \
+            -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -keyout ca.key -out ca.pem
+          openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" -keyout server.key -out server.csr
+          printf "subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n" > server.ext
+          openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile server.ext -out server.crt
+          cat server.crt server.key > server.pem
+          chmod 644 ca.pem server.pem
+          docker run -d --name mongo-tls -p 27019:27017 -v "$PWD:/certs:ro" mongo:7 \
+            --tlsMode requireTLS --tlsCertificateKeyFile /certs/server.pem --tlsCAFile /certs/ca.pem \
+            --tlsAllowConnectionsWithoutCertificates --bind_ip_all
+          for i in $(seq 1 60); do
+            if docker exec mongo-tls mongosh --quiet --tls --tlsCAFile /certs/ca.pem --host localhost --eval "db.adminCommand({ping: 1}).ok" >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          echo "The TLS server never answered." >&2
+          docker logs mongo-tls >&2
+          exit 1
+
+      # The same suite on three targets: the codec and the protocol are
+      # portable Haxe, and the socket and TLS layers under them are not.
+      - name: Run MongoDB integration suite (interpreter)
+        run: haxe ci/mongo-tests-interp.hxml
+
+      - name: Build MongoDB integration suite (native)
+        run: haxe ci/mongo-tests.hxml
+
+      - name: Run MongoDB integration suite (native)
+        run: ./export/ci-mongo-tests/MongoIntegrationMain
+
+      - name: Build MongoDB integration suite (jvm)
+        run: haxe ci/mongo-tests-jvm.hxml
+
+      - name: Run MongoDB integration suite (jvm)
+        run: java -jar export/jvm/MongoIntegration.jar
+
+      - name: Server logs
+        if: failure()
+        run: |
+          docker logs mongo-rs 2>&1 | tail -n 100 || true
+          docker logs mongo-tls 2>&1 | tail -n 100 || true

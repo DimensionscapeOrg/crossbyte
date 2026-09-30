@@ -1,0 +1,165 @@
+name: CrossByte hl and neko
+run-name: CrossByte hl and neko | ${{ github.event_name }} | ${{ github.ref_name }}
+
+# hl and neko are listed as targets, and neither was built here: from
+# 2026-04-28 neither compiled at all -- CrossByte's own sys.net.Socket had no
+# branch for them, and each target's sys.ssl.Socket extends it -- and nothing
+# said so for five months. These jobs build the whole suite for both and run
+# it wherever a runtime can be had: neko arrives with Haxe; HashLink comes
+# from its release zip on Windows and is built from the same tag on Linux,
+# since its releases carry no Linux binary.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hl-neko-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  HAXE_VERSION: "4.3.7"
+  # 1.13 is the floor: haxe.atomic does not compile for hl below it, and
+  # ci/hl-tests.hxml passes -D hl-ver=1.13.0 to match. 1.14 is what the suite
+  # was brought up on. Move the two together.
+  HASHLINK_TAG: "1.14"
+  HASHLINK_VERSION: "1.14.0"
+
+jobs:
+  neko:
+    name: Core | neko (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: windows-latest
+            label: Windows
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Neko comes with Haxe -- haxelib runs on it -- so there is nothing
+      # else to install for this target.
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install test dependencies
+        run: haxelib install utest --quiet
+
+      - name: Build neko suite
+        run: haxe ci/neko-tests.hxml
+
+      - name: Run neko suite
+        run: neko export/neko/CrossByteTests.n
+
+  hl-windows:
+    name: Core | HashLink (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install test dependencies
+        run: haxelib install utest --quiet
+
+      # Compiling needs no HashLink, so this says whether the suite builds
+      # for hl even when the runtime below cannot be had.
+      - name: Build hl suite
+        run: haxe ci/hl-tests.hxml
+
+      # A missing .hdll does not fail at the first call. HashLink resolves
+      # every native at load and, on Windows, reports one it cannot find in a
+      # dialog box -- which on a runner nobody can dismiss, so the job would
+      # sit there until it timed out. So the libraries the suite loads are
+      # checked for here, and a missing one fails the step by name.
+      - name: Install HashLink ${{ env.HASHLINK_VERSION }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "hashlink.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "hashlink"
+          Invoke-WebRequest -Uri "https://github.com/HaxeFoundation/hashlink/releases/download/$env:HASHLINK_TAG/hashlink-$env:HASHLINK_VERSION-win.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest
+          $hl = Get-ChildItem -Path $dest -Recurse -Filter hl.exe | Select-Object -First 1
+          if ($null -eq $hl) {
+            throw "hashlink-$env:HASHLINK_VERSION-win.zip has no hl.exe"
+          }
+          foreach ($lib in @("ssl", "fmt", "sqlite", "mysql")) {
+            if (-not (Test-Path (Join-Path $hl.DirectoryName "$lib.hdll"))) {
+              throw "HashLink $env:HASHLINK_VERSION has no $lib.hdll, which the suite loads"
+            }
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $hl.DirectoryName
+          & $hl.FullName --version
+
+      - name: Run hl suite
+        run: |
+          hl export/hl/CrossByteTests.hl
+          if ($LASTEXITCODE -ne 0) {
+            throw "hl suite failed (exit $LASTEXITCODE)"
+          }
+
+  hl-linux:
+    name: Core | HashLink (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install test dependencies
+        run: haxelib install utest --quiet
+
+      - name: Build hl suite
+        run: haxe ci/hl-tests.hxml
+
+      # Only the libraries the suite loads -- ssl, fmt, sqlite and mysql, all
+      # four resolved at load -- and what they link against: mbedTLS for ssl,
+      # zlib and the image and audio codecs fmt also carries, SQLite. uv is
+      # built too, and SDL, OpenAL and ui are left out.
+      - name: Build HashLink ${{ env.HASHLINK_TAG }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libmbedtls-dev libpng-dev libturbojpeg0-dev libvorbis-dev \
+            zlib1g-dev libuv1-dev libsqlite3-dev
+          git clone --depth 1 --branch "$HASHLINK_TAG" https://github.com/HaxeFoundation/hashlink.git "$RUNNER_TEMP/hashlink"
+          make -C "$RUNNER_TEMP/hashlink" -j"$(nproc)" libhl hl fmt ssl uv mysql sqlite
+          sudo make -C "$RUNNER_TEMP/hashlink" install
+          sudo ldconfig
+          hl --version
+
+      - name: Run hl suite
+        run: hl export/hl/CrossByteTests.hl

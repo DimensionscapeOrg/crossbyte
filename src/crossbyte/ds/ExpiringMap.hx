@@ -17,7 +17,15 @@ package crossbyte.ds;
 	Expiry is not a timer. Nothing happens on its own: `sweep` does the work
 	and a server calls it from its tick. Reading a single expired entry still
 	reports it gone, so correctness does not depend on how often you sweep --
-	only memory does.
+	only memory does, and then only by the entries that have expired unswept.
+
+	What it holds is one object per entry and nothing per `touch`. The
+	entries are kept on a list in the order their deadlines fall, and a
+	`touch` moves one to the end. It used to leave a queue position behind
+	for every `set` and `touch`, collected only once everything ahead of it
+	had expired, so a map held its touches times its ttl rather than its
+	entries: 1,000 sessions touched 20 times a second with a 120 s ttl held
+	2.4 million positions, 70 MB on the jvm, however small `maxSize` was.
 
 	```haxe
 	var sessions = new ExpiringMap<String, Session>(120, 50000);
@@ -31,8 +39,12 @@ package crossbyte.ds;
 **/
 @:generic
 final class ExpiringMap<K:Dynamic, V> {
-	/** How many entries are held, not counting any that have expired unswept. **/
-	public var length(default, null):Int = 0;
+	/**
+		How many entries are held, not counting any that have expired
+		unswept. Reading it walks the expired ones at the front, and drops
+		nothing: `sweep` does that.
+	**/
+	public var length(get, never):Int;
 
 	/** How long an entry lives from the moment it is set or touched. **/
 	public var ttl(default, null):Float;
@@ -48,23 +60,15 @@ final class ExpiringMap<K:Dynamic, V> {
 	**/
 	public dynamic function onExpire(key:K, value:V):Void {}
 
-	private var __entries:Map<K, ExpiringEntry<V>>;
+	private var __entries:Map<K, ExpiringEntry<K, V>>;
 
-	/**
-		Keys in the order their deadlines fall.
-
-		The deadline is always `ttl` from when the entry was stamped, so the
-		order entries are stamped in is the order they expire in and `sweep`
-		can stop at the first one still live. Touching a key stamps it again
-		and leaves the old position behind; that position is recognised as
-		stale by its stamp and skipped.
-	**/
-	private var __queue:Array<QueuedKey<K>>;
-
-	/** How far `__queue` has been consumed; see `__compact`. **/
-	private var __queueAt:Int = 0;
-
-	private var __stamp:Int = 0;
+	// Every entry held, expired or not, on a list in the order their
+	// deadlines fall. The deadline is always `ttl` from when the entry was
+	// set or touched, so that is the order they were last set or touched in,
+	// and keeping it costs a relink to the end.
+	private var __first:ExpiringEntry<K, V>;
+	private var __last:ExpiringEntry<K, V>;
+	private var __held:Int = 0;
 
 	private var __clock:Void->Float;
 
@@ -83,24 +87,38 @@ final class ExpiringMap<K:Dynamic, V> {
 		this.maxSize = maxSize < 0 ? 0 : maxSize;
 		this.__clock = clock == null ? function():Float return haxe.Timer.stamp() : clock;
 		this.__entries = new Map();
-		this.__queue = [];
+	}
+
+	private function get_length():Int {
+		var now:Float = __clock();
+		var expired:Int = 0;
+		var entry:ExpiringEntry<K, V> = __first;
+		while (entry != null && now >= entry.deadline) {
+			expired++;
+			entry = entry.next;
+		}
+		return __held - expired;
 	}
 
 	/** Adds or replaces a value, and starts its life over. **/
 	public function set(key:K, value:V):Void {
-		var existing = __entries.get(key);
+		var now:Float = __clock();
+		var entry = __entries.get(key);
 
-		if (existing == null) {
-			length++;
+		if (entry == null) {
+			entry = new ExpiringEntry(key, value, now + ttl);
+			__entries.set(key, entry);
+			__append(entry);
+			__held++;
+		} else {
+			entry.value = value;
+			entry.deadline = now + ttl;
+			__unlink(entry);
+			__append(entry);
 		}
 
-		__stamp++;
-		var now:Float = __clock();
-		__entries.set(key, new ExpiringEntry(value, now + ttl, __stamp));
-		__queue.push(new QueuedKey(key, __stamp));
-
-		if (maxSize > 0 && length > maxSize) {
-			__evictOldest(now);
+		if (maxSize > 0 && __held > maxSize) {
+			__evictOldest();
 		}
 	}
 
@@ -119,7 +137,7 @@ final class ExpiringMap<K:Dynamic, V> {
 		}
 
 		if (__clock() >= entry.deadline) {
-			__drop(key, entry);
+			__drop(entry);
 			return null;
 		}
 
@@ -142,14 +160,15 @@ final class ExpiringMap<K:Dynamic, V> {
 		var now:Float = __clock();
 
 		if (now >= entry.deadline) {
-			__drop(key, entry);
+			__drop(entry);
 			return false;
 		}
 
-		__stamp++;
 		entry.deadline = now + ttl;
-		entry.stamp = __stamp;
-		__queue.push(new QueuedKey(key, __stamp));
+		if (entry != __last) {
+			__unlink(entry);
+			__append(entry);
+		}
 		return true;
 	}
 
@@ -159,21 +178,23 @@ final class ExpiringMap<K:Dynamic, V> {
 		@return Whether anything was held, live or otherwise.
 	**/
 	public function remove(key:K):Bool {
-		if (!__entries.exists(key)) {
+		var entry = __entries.get(key);
+		if (entry == null) {
 			return false;
 		}
 
 		__entries.remove(key);
-		length--;
+		__unlink(entry);
+		__held--;
 		return true;
 	}
 
 	/**
 		Drops everything whose time has passed.
 
-		Walks only the entries that have expired, plus any positions left
-		behind by `touch`, rather than the whole map -- so calling it every
-		tick costs what has actually expired since the last one.
+		Walks only the entries that have expired, rather than the whole map --
+		so calling it every tick costs what has actually expired since the
+		last one.
 
 		@return How many went.
 	**/
@@ -181,120 +202,91 @@ final class ExpiringMap<K:Dynamic, V> {
 		var at:Float = now == null ? __clock() : now;
 		var dropped:Int = 0;
 
-		while (__queueAt < __queue.length) {
-			var queued = __queue[__queueAt];
-			var entry = __entries.get(queued.key);
-
-			// Gone already, or touched since and holding a later position.
-			if (entry == null || entry.stamp != queued.stamp) {
-				__queueAt++;
-				continue;
-			}
-
-			if (at < entry.deadline) {
-				break;
-			}
-
-			__queueAt++;
-			__drop(queued.key, entry);
+		while (__first != null && at >= __first.deadline) {
+			__drop(__first);
 			dropped++;
 		}
 
-		__compact();
 		return dropped;
 	}
 
-	/** Every key with a live entry. **/
+	/** Every key with a live entry, the one due soonest first. **/
 	public function keys():Iterator<K> {
 		var live:Array<K> = [];
 		var now:Float = __clock();
+		var entry:ExpiringEntry<K, V> = __last;
 
-		for (key in __entries.keys()) {
-			var entry = __entries.get(key);
-
-			if (entry != null && now < entry.deadline) {
-				live.push(key);
-			}
+		// From the newest back: the live ones are all after the expired.
+		while (entry != null && now < entry.deadline) {
+			live.push(entry.key);
+			entry = entry.previous;
 		}
-
+		live.reverse();
 		return live.iterator();
 	}
 
 	/** Drops everything, without calling `onExpire`. **/
 	public function clear():Void {
 		__entries = new Map();
-		__queue = [];
-		__queueAt = 0;
-		length = 0;
+		__first = null;
+		__last = null;
+		__held = 0;
 	}
 
 	// ------------------------------------------------------------------
 
-	private function __drop(key:K, entry:ExpiringEntry<V>):Void {
-		__entries.remove(key);
-		length--;
-		onExpire(key, entry.value);
+	private function __drop(entry:ExpiringEntry<K, V>):Void {
+		__entries.remove(entry.key);
+		__unlink(entry);
+		__held--;
+		onExpire(entry.key, entry.value);
 	}
 
 	/** Makes room by dropping whatever is closest to expiring. **/
-	private function __evictOldest(now:Float):Void {
-		while (length > maxSize && __queueAt < __queue.length) {
-			var queued = __queue[__queueAt];
-			var entry = __entries.get(queued.key);
-
-			__queueAt++;
-
-			if (entry == null || entry.stamp != queued.stamp) {
-				continue;
-			}
-
-			__drop(queued.key, entry);
+	private function __evictOldest():Void {
+		while (__held > maxSize && __first != null) {
+			__drop(__first);
 		}
-
-		__compact();
 	}
 
-	/**
-		Drops the consumed front of the queue.
-
-		A cursor rather than taking entries off the front, which would be a
-		pass over everything still queued for each entry that leaves.
-	**/
-	private function __compact():Void {
-		if (__queueAt == 0) {
-			return;
+	private inline function __append(entry:ExpiringEntry<K, V>):Void {
+		entry.previous = __last;
+		entry.next = null;
+		if (__last == null) {
+			__first = entry;
+		} else {
+			__last.next = entry;
 		}
+		__last = entry;
+	}
 
-		if (__queueAt >= __queue.length) {
-			__queue = [];
-			__queueAt = 0;
-		} else if (__queueAt > 32 && __queueAt * 2 >= __queue.length) {
-			__queue = __queue.slice(__queueAt);
-			__queueAt = 0;
+	private inline function __unlink(entry:ExpiringEntry<K, V>):Void {
+		if (entry.previous == null) {
+			__first = entry.next;
+		} else {
+			entry.previous.next = entry.next;
 		}
+		if (entry.next == null) {
+			__last = entry.previous;
+		} else {
+			entry.next.previous = entry.previous;
+		}
+		entry.previous = null;
+		entry.next = null;
 	}
 }
 
-/** One held value, with when it stops counting and which position is current. **/
-private class ExpiringEntry<V> {
+/** One held value, with when it stops counting and its neighbours in deadline order. **/
+private class ExpiringEntry<K, V> {
+	public var key:K;
 	public var value:V;
 	public var deadline:Float;
-	public var stamp:Int;
+	public var previous:ExpiringEntry<K, V>;
+	public var next:ExpiringEntry<K, V>;
 
-	public function new(value:V, deadline:Float, stamp:Int) {
+	public function new(key:K, value:V, deadline:Float) {
+		this.key = key;
 		this.value = value;
 		this.deadline = deadline;
-		this.stamp = stamp;
-	}
-}
-
-/** A key's place in expiry order, and the stamp that says whether it is current. **/
-private class QueuedKey<K> {
-	public var key:K;
-	public var stamp:Int;
-
-	public function new(key:K, stamp:Int) {
-		this.key = key;
-		this.stamp = stamp;
 	}
 }

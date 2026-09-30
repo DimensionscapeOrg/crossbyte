@@ -5,7 +5,11 @@ package crossbyte.ds;
  * 
  * PackedSlotMap maintains a densely packed array of values, suitable for iteration and cache-friendly access.
  * Handles are automatically invalidated when the slot is reused, protecting against use-after-free errors.
- * 
+ *
+ * Freed slots are reused oldest first, as in `SlotMap`, so a slot's
+ * generation comes round -- and a handle kept past its entry's death can
+ * alias -- only after 2048 times as many inserts as there are free slots,
+ * not after 2048 inserts. 
  * @param T The type of values stored in the map.
  */
 final class PackedSlotMap<T> {
@@ -34,9 +38,15 @@ final class PackedSlotMap<T> {
 
 	@:noCompletion private var __values:Array<T> = [];
 	@:noCompletion private var __denseToSlot:Array<Int> = [];
+	// Per slot: where its value sits in the dense arrays, or, for a free
+	// slot, a negative number -- -1 for the last free slot, and -2 - next
+	// for one the next free slot follows. So the free slots queue in the
+	// order they were freed without an array of their own, and a slot is
+	// free exactly when this is negative, as the rest of the class asks.
 	@:noCompletion private var __slotToDense:Array<Int> = [];
 	@:noCompletion private var __gen:Array<Int> = [];
-	@:noCompletion private var __free:Array<Int> = [];
+	@:noCompletion private var __freeHead:Int = -1;
+	@:noCompletion private var __freeTail:Int = -1;
 
 	@:noCompletion private inline function get_capacity():Int {
 		return __slotToDense.length;
@@ -80,13 +90,18 @@ final class PackedSlotMap<T> {
 	 * @throws Error if the map is full and cannot grow.
 	 */
 	public inline function insert(v:T):SlotHandle {
-		if (__free.length == 0) {
+		if (__freeHead == -1) {
 			__grow();
-			if (__free.length == 0) {
+			if (__freeHead == -1) {
 				throw "PackedSlotMap full";
 			}
 		}
-		var slot:Null<Int> = __free.pop();
+		var slot:Int = __freeHead;
+		var link:Int = __slotToDense[slot];
+		__freeHead = link == -1 ? -1 : -2 - link;
+		if (__freeHead == -1) {
+			__freeTail = -1;
+		}
 		var d:Int = __values.length;
 
 		__values.push(v);
@@ -175,31 +190,43 @@ final class PackedSlotMap<T> {
 		__values.pop();
 		__denseToSlot.pop();
 
-		__slotToDense[slot] = -1;
 		__gen[slot] = (__gen[slot] + 1) & SlotHandle.GEN_MASK;
-		__free.push(slot);
+		__queueFree(slot);
 		return true;
 	}
 
     /**
 	 * Returns an iterator over the values in the map.
-	 * 
+	 *
 	 * Order is not guaranteed to be stable over time due to compaction on removal.
+	 *
+	 * Removing the entry the loop is on is safe: the entry moved into its
+	 * place is visited next. It was the value array's own iterator, which
+	 * skipped that entry.
 	 */
-	public inline function iterator():Iterator<T> {
-		return __values.iterator();
+	public inline function iterator():PackedSlotMapIterator<T> {
+		return new PackedSlotMapIterator<T>(this);
 	}
 
     /**
 	 * Iterates over all elements and applies a callback, passing both the handle and the value.
-	 * 
+	 *
+	 * The callback may remove the entry it is given: the entry moved into its
+	 * place is called next. The loop counted the entries before it began, so
+	 * a removal left it reading past the end.
+	 *
 	 * @param f A callback function with signature (handle, value).
 	 */
 	public inline function forEach(f:(SlotHandle, T) -> Void):Void {
-		var vs:Array<T> = __values, d2s = __denseToSlot, g = __gen;
-		for (i in 0...vs.length) {
-			var slot:Int = d2s[i];
-			f(SlotHandle.make(slot, g[slot]), vs[i]);
+		var i:Int = 0;
+		while (i < __values.length) {
+			var slot:Int = __denseToSlot[i];
+			f(SlotHandle.make(slot, __gen[slot]), __values[i]);
+			// Still here: on to the next. Gone: whatever took its place, if
+			// anything did, has not been called yet.
+			if (i < __denseToSlot.length && __denseToSlot[i] == slot) {
+				i++;
+			}
 		}
 	}
 
@@ -224,21 +251,18 @@ final class PackedSlotMap<T> {
 	 * All handles are invalidated and future inserts will reuse freed slots.
 	 */
 	public function clear():Void {
-		for (slot in 0...__slotToDense.length) {
+		var cap:Int = this.capacity;
+		for (slot in 0...cap) {
 			if (__slotToDense[slot] >= 0) {
 				__gen[slot] = (__gen[slot] + 1) & SlotHandle.GEN_MASK;
 			}
 
-			__slotToDense[slot] = -1;
+			__slotToDense[slot] = slot + 1 < cap ? -2 - (slot + 1) : -1;
 		}
+		__freeHead = cap > 0 ? 0 : -1;
+		__freeTail = cap - 1;
 		__values.resize(0);
 		__denseToSlot.resize(0);
-
-		__free.resize(0);
-		var cap:Int = this.capacity;
-		for (i in 0...cap) {
-			__free.push(cap - 1 - i);
-		}
 	}
 
     /**
@@ -259,6 +283,16 @@ final class PackedSlotMap<T> {
 	 */
 	public inline function currentGen(slot:Int):Int {
 		return (slot >= 0 && slot < __gen.length) ? __gen[slot] : -1;
+	}
+
+	@:noCompletion private inline function __queueFree(slot:Int):Void {
+		__slotToDense[slot] = -1;
+		if (__freeTail == -1) {
+			__freeHead = slot;
+		} else {
+			__slotToDense[__freeTail] = -2 - slot;
+		}
+		__freeTail = slot;
 	}
 
 	@:noCompletion private inline function __grow():Void {
@@ -293,13 +327,49 @@ final class PackedSlotMap<T> {
 		__gen[want - 1] = 0;
 
 		for (i in old...want) {
-			__slotToDense[i] = -1;
 			__gen[i] = 0;
+			__queueFree(i);
 		}
+	}
+}
 
-		for (i in old...want) {
-			var s:Int = want - 1 - (i - old);
-			__free.push(s);
+/**
+ * Walks a `PackedSlotMap`'s values in their current dense order, with the
+ * entry just returned free to be removed: if another was moved into its
+ * place, that place is visited again. Slots, not values, say whether it was
+ * -- two entries can hold one value.
+ */
+@:noCompletion
+@:access(crossbyte.ds.PackedSlotMap)
+class PackedSlotMapIterator<T> {
+	private var __map:PackedSlotMap<T>;
+	private var __next:Int = 0;
+	private var __returnedAt:Int = -1;
+	private var __returnedSlot:Int = 0;
+
+	public inline function new(map:PackedSlotMap<T>) {
+		__map = map;
+	}
+
+	public inline function hasNext():Bool {
+		__settle();
+		return __next < __map.__values.length;
+	}
+
+	public inline function next():T {
+		__settle();
+		__returnedAt = __next;
+		__returnedSlot = __map.__denseToSlot[__next];
+		return __map.__values[__next++];
+	}
+
+	private inline function __settle():Void {
+		if (__returnedAt >= 0) {
+			var slots:Array<Int> = __map.__denseToSlot;
+			if (__returnedAt >= slots.length || slots[__returnedAt] != __returnedSlot) {
+				__next = __returnedAt;
+			}
+			__returnedAt = -1;
 		}
 	}
 }

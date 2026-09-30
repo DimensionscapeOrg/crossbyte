@@ -35,6 +35,128 @@ All notable changes to CrossByte will be documented in this file.
   `app.js.br` or `app.js.gz` beside `app.js` is sent in its place when it
   is not older (`precompressed`), which is also how a file large enough to
   stream goes out compressed.
+- `SwitchTable.make` takes any expression as a key -- `Opcode.PING`, a
+  variable -- where it took only literals, refuses two literal keys that are
+  the same, and takes a fallback, `(key, args) -> ...`, for a key no case
+  matches. Without one it still throws, now naming the key.
+- `RadixTree.longestPrefix` and `longestPrefixLength`: the longest key held
+  that a string starts with, and its length -- the route that serves
+  "/api/v1/users/123" when "/api/v1/users" is held. The tree could only
+  answer exact keys.
+- `crossbyte.ds.IdList`, a list of `Int` ids that holds them unboxed and
+  keeps its storage when emptied, and the queries that fill one:
+  `SpatialGrid.queryCircleIds` and `queryRectIds`, `SpatialGrid3D.
+  querySphereIds` and `queryBoxIds`. `InterestSet.addAll` takes one. A query
+  into an `Array<Int>` boxes every id above 127 on the jvm, and an array
+  emptied with `resize(0)` hands V8 its storage back, so the interest loop
+  the documentation showed allocated 2.2 MB a tick for 1,000 views of 50 on
+  either; through an `IdList` it allocates nothing on the jvm and Node, and
+  natively it went from 1.28 to about 1.0 ms a tick.
+- `crossbyte.ds.IntPriorityQueue`: a priority queue of `Int` ids, each held
+  with a priority given when it is enqueued -- lowest first, equals in the
+  order they came. `PriorityQueue<Int>` does not compile, its elements being
+  objects, so a matchmaker keyed on player ids had no queue to use. It calls
+  no comparator and looks nothing up while sifting, so it allocates nothing
+  per operation on any target, and it keeps its own id table: the jvm's
+  `IntMap` visits every bucket to find a missing key, which made 50,000 ids
+  take a second there rather than 10 ms.
+- A MongoDB client that speaks the server's wire protocol over CrossByte's
+  own sockets, on hxcpp, the jvm, the interpreter, hl and neko. MongoDB was
+  listed among CrossByte's databases and could be reached from none of
+  them: `MongoConnection` went through PHP's extension, embedded in a Haxe
+  string that had not compiled since a3239a7. It now opens a `mongodb://`
+  string or a config -- several hosts, a secondary followed to its primary,
+  TLS with a CA file or a client certificate -- says hello over OP_MSG, and
+  signs in with SCRAM-SHA-256 or SCRAM-SHA-1, their first step riding on
+  the hello, or with X.509 or PLAIN. It has `insert` (batched to the
+  server's limits, an `ObjectId` made for a document without an `_id`),
+  `find`, `findOne`, `update`, `delete`, `aggregate`, `count`,
+  `createIndexes`, `drop` and `runCommand`; `MongoCursor` fetches with
+  `getMore` as it is read, and `close` sends `killCursors`; write concern
+  is per connection or per write. `begin`, `commit` and `rollback` run a
+  transaction on the connection's session, and `MongoConnection` is an
+  `ITransactionalConnection`, so a pool rolls back one a borrower leaves
+  open. A refusal is a `MongoError`, an `SQLError` with the server's code
+  in `errorID`, its `codeName`, labels and write errors; a lost connection
+  is an `IOError`. Like the other drivers it blocks, for a worker, and it
+  is not built for JavaScript. Not done: `mongodb+srv://`, compression,
+  retryable writes, and reads from secondaries.
+- `crossbyte.db.mongodb.bson`: BSON, encoded and decoded on every target,
+  the browser included -- double, string, document, array, binary with its
+  subtype, ObjectId, bool, UTC datetime, null, regex, JavaScript, int32,
+  timestamp, int64 and Decimal128, the last two exactly, and MinKey and
+  MaxKey. A `Date` goes out as a BSON date, which is what a TTL index acts
+  on; `BsonDateTime` holds one exactly on hl and neko too, where `Date`
+  keeps whole seconds between 1901 and 2038. `BsonDocument` keeps its
+  field order, which a command, a sort and an index key depend on and an
+  anonymous object does not keep on most targets. `ExtendedJson` reads and
+  writes MongoDB Extended JSON v2, binding `:name` placeholders as values.
+- `StunClient` asks through a socket it is given, and classifies the NAT in
+  front of it. `discover` takes the `DatagramSocket` to ask through --
+  bound, and left open and as it was found -- so the answer describes the
+  mapping of the socket an application actually uses. Each question used
+  to bind a socket of its own, so it answered for a port nothing used, and
+  comparing what two servers saw compared two mappings: every NAT, and
+  loopback too, read as symmetric. `classifyMapping` and
+  `classifyFiltering` run RFC 5780's tests through one socket against a
+  server with a second address, answering with a `NatBehavior`, and
+  `probe` asks one RFC 5780 question -- a CHANGE-REQUEST in, OTHER-ADDRESS,
+  RESPONSE-ORIGIN and where the answer came from out, as a `StunProbe` --
+  for the tests those two do not run. A server that gives no OTHER-ADDRESS,
+  or ignores CHANGE-REQUEST, is reported as unable to classify rather than
+  read as a NAT that lets everything in.
+- TURN over TCP, IPv6 relays, and RFC 8489's credentials. `TurnClient`
+  takes a `TurnTransport`: over TCP or TLS it frames every message for a
+  stream (RFC 8656 section 3.1) -- `receiveStream` takes what arrives,
+  split anywhere, and `streamClosed` ends the allocation with the
+  connection -- and sends each request once, waiting RFC 8489's 39.5
+  seconds, since a stream does not lose it. `PeerConnection.gatherRelayed`,
+  a `TurnServer`'s `transport` and `ReliableDatagramServerSocket.allocateRelay`
+  reach a relay over TCP for a network that lets nothing else out; what
+  the relay relays is UDP either way. TLS is framed the same, and needs a
+  TLS stream the caller holds, since a plain `Socket` does not start TLS on
+  every target. `requestIPv6` asks for an IPv6 relayed address
+  (REQUESTED-ADDRESS-FAMILY), whose peers are IPv6 and are written with the
+  transaction as RFC 8489 has it. A relay offering password algorithms is
+  answered with SHA-256 keys and MESSAGE-INTEGRITY-SHA256 alone, one
+  offering username anonymity with USERHASH in place of USERNAME, and one
+  whose nonce offers algorithms on an answer that lists none -- the list
+  stripped on the way, a downgrade -- is not answered at all. The SHA-256
+  arithmetic is pinned to values computed with Node's crypto.
+  `StunMessage` gains the attributes, `ipv6Bytes` and `canonicalIPv6`,
+  and IPv6 in `xorMappedAddress`, `xorPeerAddress` and `xorRelayed` given
+  the transaction id.
+- Reliable datagram sessions can fall back to a TURN relay, for the peers
+  hole punching cannot reach -- a symmetric NAT or a carrier's CGNAT at
+  either end. `ReliableDatagramServerSocket.allocateRelay` asks a relay for
+  an address through the port the server listens on; `relayedCandidate` is
+  that address for the peer to be told of, `connectRelayed` opens a session
+  that reaches its peer through the relay, a CONNECT arriving through it
+  opens one that answers the same way, and `permitRelayedPeer` lets a peer
+  that dials first through. An attached `IceAgent` checks from the relayed
+  candidate too, and no longer takes STUN that is not a connectivity check
+  -- it took every STUN message on the socket, a relay's answers included.
+  A relay that goes away closes the sessions through it, each with an
+  `ioError` saying so; `releaseRelay` frees it. `NetHost` reaches all of
+  this through `allocateRelay`, `dialRelayed` and `permitRelayedPeer` on a
+  reliable datagram host. And for a protocol of the application's own on
+  the same port, `onDatagram` sees every datagram before anything else
+  does, and `sendDatagram` answers from the port: there was no way in,
+  since everything that was not a reliable frame was dropped as noise.
+  `TurnClient.sendTo` takes an offset and a length.
+- `PeerConnection.gatherRelayedFrom(servers)`, which asks each TURN relay in
+  a list in turn until one lends an address, and keeps one for as long as
+  the connection lasts: a relay that loses the allocation is replaced from
+  the list and the new relayed candidate announced through
+  `onLocalCandidate`, and `restartIce` asks the relay whether it is still
+  there -- a network change costs the allocation -- and replaces one that is
+  not. `setRelayCredentials` renews the credentials relays are asked with,
+  for the TURN REST convention's expiring ones. A failed gather's `cause` is
+  a `TurnError` -- the relay's code, its reason, and where a 300 pointed --
+  where it was a sentence with no code in it. Underneath: `TurnClient`
+  follows 300 Try Alternate to the server it names (once per server, so two
+  relays redirecting to each other cannot hold it), and gains
+  `setCredentials`, `refresh` and `failure`.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -843,6 +965,27 @@ All notable changes to CrossByte will be documented in this file.
   What to change: to compress smaller bodies or other types, set
   `HTTPServerConfig.compression.minimumSize` and `.types`; to compress
   nothing, `compression.enabled = false`.
+- `SlotHandle` no longer converts to `Int` by itself. A handle passed where
+  an id belongs -- `grid.set(entity.handle, x, y)` for `entity.slot` --
+  compiled, and worked until the slot's first reuse made the handle
+  1,048,576 or more, when `SpatialGrid` and `InterestSet` grew their arrays
+  to fit it: 117 MB by the third reuse. What to change: use `handle.index()`
+  for the slot, and `handle.toInt()` for the whole handle where it is
+  written down; an `Int` assigned to a `SlotHandle` still reads one back.
+- `MongoConnection.lastInsertRowID` is gone: MongoDB has no row ids, and it
+  read 0 whatever was inserted. `lastInsertId` is the `_id` of the last
+  document inserted. `request()` takes Extended JSON and answers a cursor
+  over the result's documents, where it answered the command's reply as
+  one row, and `MongoStatement` binds its `:name` parameters as BSON values
+  -- `parameters` takes any value, not only a string. The php backend,
+  PHP's `mongodb` extension, is removed; the wire client builds for php,
+  and has not been run there. What to change: read `lastInsertId`, and
+  expect the documents themselves from a `find` through `request()`.
+- `ReflexiveAddress.toString()` brackets an IPv6 address,
+  `[2001:db8::7]:3478`; unbracketed, the port reads as the address's last
+  group. And `preservesPort` no longer claims a kept port shows an
+  endpoint-independent mapping: it shows neither that nor the opposite,
+  and `StunClient.classifyMapping` finds the mapping itself.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -1402,6 +1545,324 @@ All notable changes to CrossByte will be documented in this file.
   so a request arriving in between found the mark, no backend, and failed
   with "HTTP/2 has no registered HTTPBackend": 5 of 6 concurrent first
   requests on the jvm, and the http2 sample every time.
+- Metrics, `Future`, `ConnectionPool` and `ProcessLifecycle` take their locks
+  on eval too. Their locks were gated on neko, hl and the jvm by name, which
+  left out eval -- threaded since workers became real threads there -- so a
+  counter updated from several threads could lose a whole thread's increments
+  (a suite run counted 150,000 of 200,000), and a future completed on a worker
+  while the runtime was registering its handler could lose the handler. They
+  gate on `target.threaded` now; hxcpp keeps its lock-free paths.
+- The whole suite builds and runs on hl and neko, and CI does both
+  (`ci/hl-tests.hxml`, `ci/neko-tests.hxml`, `.github/workflows/hl-neko.yml`):
+  neither target had been built anywhere, which is how neither compiled for
+  five months unnoticed. `RPCSession` also compiles for a HashLink older than
+  1.13, which is what Haxe assumes unless told otherwise with `-D hl-ver`: its
+  session counter takes a lock there, as on neko, rather than stopping the
+  build inside the standard library with "Atomic operations require HL
+  1.13+". Cases that cannot run on these targets say why and check what
+  happens instead: socket buffer sizes, which hl cannot read, and public
+  address discovery and WebSocket clients, which need a secure random source
+  neither has.
+- On hl, a thread waiting for a slow TLS server no longer stops every other
+  thread. HashLink's collector stops every thread and waits for each to
+  reach a safe point or say it is blocked; its TLS layer read the network
+  without saying so, so an HTTPS response that took six seconds held the
+  runtime for six (5,986 ms between two ticks, and 4.5 s of CPU spent
+  waiting), and a TLS client whose server ran in the same process waited
+  out its whole socket timeout, the server unable to answer until the
+  collection finished. `HlTlsSocket`, the TLS client `FlexSocket` makes on
+  hl, gives mbedTLS reads and writes through HashLink's plain socket
+  natives, which do say so: the same response held the runtime for 91 ms.
+- `NativeProcess` runs on hl and neko, and its `pid` is the child's
+  everywhere. It asked for an OS define before it would start anything,
+  and nothing gives one to hl or neko -- their bytecode runs unchanged on
+  any OS -- so both refused, though their `sys.io.Process` works wherever
+  they do. On hl a child's output is read, and its exit waited for, inside
+  a blocking section: HashLink's natives for both wait without telling its
+  collector, which stops every thread until each reaches a safe point, so a
+  child quiet for five seconds held the whole runtime for five. And the id
+  was looked up as a `pid` field, by reflection, which no target's
+  `sys.io.Process` has, so `pid` and every event's `pid` read -1 natively
+  too. It comes from `getPid()`, which they all have.
+- On neko, `File.createTempFile` and `createTempDirectory` work, and so
+  does every `Store.put`. Where there is no secure random source, both drew
+  names from `Std.random(0x7FFFFFFF)`, and neko's Int is 31 bits: that
+  bound is not an Int there, and the native under `Std.random` refused it,
+  so each threw before touching the disk -- a store could be opened and
+  read but never written. They draw sixteen bits at a time now.
+- hl and neko have sockets again. CrossByte replaces `sys.net.Socket` and
+  `sys.net.UdpSocket` on every target, and since 2026-04-28 neither target
+  had a branch there, so both got a stand-in that threw -- and each
+  target's own `sys.ssl.Socket` extends that class and reaches into its
+  private surface, so anything touching TLS, which is anything touching the
+  network, failed to compile inside Haxe's standard library with errors
+  that named nothing in CrossByte. Both now get their standard
+  implementations, with the changes callers here were written against: an
+  accept with nothing waiting is a would-block rather than null (hl); a
+  peer's `host` is its address, where hl left it null and neko named every
+  peer `127.0.0.1`; a second `close()` does nothing where neko's threw, and
+  so did an unconnected socket's `peer()`; and a connection reset is a
+  failure rather than the end of the stream -- hl read both as `Eof`, and
+  so did neko's `readByte`, so a body delimited by its connection's end was
+  reported complete when the connection was cut partway through it. hl's
+  `select` builds its descriptor sets per thread: the standard library kept
+  one buffer for every thread, and two threads selecting at once got an
+  answer for the wrong sockets up to one time in seven, or a failed select.
+  And on hl every received datagram threw before it was delivered, because
+  `Address.getHost` wrote an `ipv6` field hl's `Host` does not have: UDP,
+  RUDP, STUN and ICE received nothing there. Its `host` text is the sender's
+  address now wherever it is not converted natively, rather than `0.0.0.0`.
+- `IndexedMap` and `PackedSlotMap` can have the entry a loop is on removed,
+  as `ListedMap` and `DenseSet` now can. Both move their last entry into a
+  removed one's place, and iterated with the value array's own iterator, so
+  the entry moved in was skipped; `PackedSlotMap.forEach` counted its
+  entries before it began and read past the end after a removal.
+- `Array2D.clear()` empties the grid for every reference to it; it replaced
+  the rows, so the same grid held elsewhere kept them. `fill(value)` sets
+  every cell -- the way to give an `Array2D` of `Int`, `Float` or `Bool`
+  the same cells everywhere, since made without a value they are 0 on
+  static targets and null on eval and JavaScript, which the documentation
+  now says.
+- A `RadixTree` lookup reads the key in place and allocates nothing. It
+  built the common prefix of each label and the key a character at a time,
+  and a substring of the key at every level: 2.3 microseconds and 6.4 KB a
+  lookup on the jvm, now 0.1 microseconds.
+- `WeightedGraph` finds a node by hashing rather than a pass over every
+  node, so building a graph of n nodes no longer costs n^2 comparisons:
+  20,000 edges in a chain took 15 s on eval and now take tens of
+  milliseconds. Strings and integers are found by value and objects by
+  identity, as `==` finds them.
+- `Deque` keeps its items in a ring rather than a linked list, so adding
+  one allocates nothing once the ring has grown: it made a 24-byte node
+  for every item added on the jvm. It has `iterator()`, front to back, and
+  `clear()`, and takes a starting capacity.
+- `ObjectPool` no longer lends one object to two owners after a double
+  release in a release build. It kept both releases, so the next two
+  `acquire`s returned the same object; it now refuses an object released
+  twice in a row, and any release while everything it made is already free,
+  and `release` answers whether it took the object back. Debug builds
+  still check every release. `maxFree` bounds how many free objects it
+  keeps, where a burst of a hundred thousand used to stay for good.
+- `MathUtil.nextPow2` answers the same on every target above 2^30: 2^31's
+  bit pattern, `1 << 31`. JavaScript's Int does not wrap by itself, so it
+  answered 2147483648 there and -2147483648 elsewhere.
+- `Seq32` prints and divides as the unsigned number it is on the jvm. It
+  printed through a Float, which the jvm writes in scientific notation --
+  "4.294967295E9" -- and in hex saturated to 7FFFFFFF; and `%` passed a
+  remainder of 2^31 or more through `Std.int`, which saturated it at
+  2147483647. The documentation's example, `0xFFFF_FFFF`, did not compile.
+- `PrimitiveValue.toInt` reads a number the same way on every target, or
+  throws. It went through `Std.parseInt`, which read "4294967396" as null on
+  eval, as that number on Node and as a thrown `NumberFormatException` on
+  the jvm, and `Std.int`, which made the Float 3e9 2147483647 on the jvm
+  and -1294967296 elsewhere. A string is now spaces, an optional sign and
+  decimal or `0x` hex digits, within the range of `Int` -- "12abc" throws
+  rather than reading 12 -- and a Float outside that range throws. The
+  documentation's example named a type, `Primitive`, that does not exist.
+- `BloomFilter` packs its bits 32 to an `Int` and allocates nothing per
+  check. It held an array element per bit -- a 10-million-bit filter took 40
+  MB on the jvm and 76 MB on Node for 1.25 MB of bits -- and hashed a UTF-8
+  copy of each item and a second, concatenated copy, 336 bytes per check on
+  the jvm. It hashes the characters in place, mixes the second hash out of
+  the first, and steps through the positions without multiplying, so every
+  target sets the same bits. `clear()`, and `addInt`/`containsInt` and
+  `addBytes`/`containsBytes` for items that are not strings, are new.
+- `crossbyte.ds.Vector` works off hxcpp. `v[i]` threw on eval and the jvm
+  and on JavaScript set a property of that name, losing the write: it was a
+  class implementing `ArrayAccess`, which only hxcpp honours, and is now an
+  abstract with array access over it. As in ActionScript, reading at or past
+  the length throws `RangeError` and writing at it appends. Callbacks are
+  called once each with as many of `(item, index, vector)` as they take;
+  they were tried with two arguments and, on a throw, with one and none, so
+  a callback that threw ran again without its index. `fixed` is enforced:
+  what would change the length of a fixed Vector throws `RangeError`.
+- `BitmapData.threshold` returns the pixels that passed and recolours all of
+  them. Each case of the operation ended in `break`, which in Haxe leaves
+  the loop the switch is in, so every call returned 0. It compares unsigned,
+  as ActionScript's `uint`s do, so an alpha of 0xFF is above 0x7F.
+- Removing entries while iterating works in `ListedMap`, `DenseSet` and
+  `OrderedMap`. `ListedMap`'s value iterator counted the entries when it was
+  made and read past the end after a removal, throwing on every target; its
+  pair iterator and `DenseSet`'s skipped the entry swapped into the removed
+  one's place (4 of 6 visited); `OrderedMap`'s walked an array of keys that
+  a removal shifted under it (3 of 6). Removing the entry a loop is on now
+  visits every other entry once in all three, and `OrderedMap` allows any
+  removal. `OrderedMap` keeps its entries on a linked list, so `remove` is
+  constant time -- 20,000 removals took 332 ms on the jvm and 802 ms on
+  Node, now 3 ms -- and iterating reads no map; `ofIndex` walks to its
+  position.
+- `ExpiringMap` holds one object per entry, whatever it is touched. Every
+  `set` and `touch` left a queue position behind, collected only once
+  everything ahead of it had expired, so one idle session in front of 1,000
+  busy ones touched 20 times a second held 2.4 million positions -- 72 MB
+  on the jvm after two minutes -- however small `maxSize` was. Entries now
+  sit on a list in deadline order and a touch moves one to the end: the
+  same run retains 196 KB, and a touch allocates nothing. `length` leaves
+  out entries that have expired unswept, as it always said it did, and
+  `keys()` lists the one due soonest first.
+- `InterestSet` and `BitSet` allocate nothing per round on the jvm and
+  Node. Their lists and words were `Array<Int>`s: the jvm boxed every id
+  above 127 as it was added and every word as it changed, and emptying a
+  list with `resize(0)` gave V8 its store back each round -- 2,952 bytes a
+  round for a view of 50 on the jvm, and with the query's own array 2.2 MB
+  a tick for 1,000 views. They are unboxed vectors with counts now, and
+  iterating an `InterestSet` no longer copies its view.
+- `SlotMap` and `PackedSlotMap` reuse the slot freed longest ago. They
+  handed back the slot freed last, so one entity despawned and another
+  spawned each tick reused one slot every time and brought its 11-bit
+  generation round in 2048 ticks -- 34 seconds at 60 Hz -- after which a
+  handle kept to the first entity resolved to a newcomer. Now a slot's
+  generation comes round only after 2048 times as many inserts as there are
+  free slots. `SlotMap` also tracks whether a slot is held apart from its
+  value: an entry inserted as `null` was skipped by `forEach` and kept its
+  generation through `clear()`, so its old handle could still write, and a
+  handle made up for a free slot could `remove` it -- `length` went to -1
+  and the slot was handed to two inserts. Its generations and free list no
+  longer box on the jvm.
+- `Random.int` and `inti` draw from all of a range wider than 2^31 values.
+  Its size was counted in 32 bits and overflowed, so `Random.int(0,
+  0x7FFFFFFF)` was 0 every time on eval and the jvm, half of Node's answers
+  fell outside the range, and the full `Int` range gave only negative
+  numbers. Narrower ranges draw exactly what they drew before, so seeded
+  sequences are unchanged. The shared generator's unseeded start no longer
+  repeats between runs on the jvm, hl and neko: `Std.int(stamp * 1e6)`
+  saturated there -- on the jvm once the machine had been up 36 minutes --
+  so every run drew one sequence. And `Random` compiles on hl again, whose
+  default version has no atomics; hl before 1.13, neko and eval take a lock.
+- `GlobalTimer` locks its ids and its map wherever there are threads. It
+  locked them only on hxcpp, so on the jvm four threads setting and
+  clearing timers at once were issued 1,051 ids twice in 16,000 and left
+  entries behind, and a `clearTimeout` could stop another thread's timer;
+  hl, neko and eval were as exposed. An id is now reserved in the same
+  lock that picks it. The lock no longer allocates a closure per call, and
+  whether an id is in use is asked only once the counter has wrapped --
+  the jvm's `IntMap` answers that for a missing id by visiting every
+  bucket, so each `setTimeout` cost a pass over every live timer.
+- `Resources` reads only inside `resourcesDir`. Paths were joined to the
+  directory as given, so a server loading a map by a name a client sent --
+  `getText("maps/" + name)` -- read whatever `"../../config.json"` named,
+  and on Windows `"sample.txt::$DATA"` read through an NTFS stream name. A
+  path with a `..` segment, a leading `/` or `\`, or a `:` (a drive letter,
+  a stream name) is refused: `exists` answers `false`, `resourceSize` `-1`,
+  and the loaders, the listings and `getAbsolutePath` throw
+  `SecurityError`. `\` separates on every target, and empty and `.`
+  segments are dropped.
+- `PriorityQueue` serves equal priorities first come, first served. Each
+  dequeue moved the newest element to the root and a strict comparison
+  never sank it past an equal, so the newest was served next: a matchmaker
+  holding one priority left 29 of its first 30 tickets queued at tick
+  20,000, and 5,969 of 5,970 tickets were served out of turn. Ties now go
+  by the order elements were enqueued; `update` keeps an element's place.
+  The heap also sifts slot numbers rather than rewriting its element map at
+  every level an element moves, which makes it about two and a half times
+  faster on the jvm and seven on eval.
+- A `MongoStatement` that fails reaches its `SQLErrorEvent` listeners on the
+  jvm. Its failure paths, and `MongoConnection`'s, passed the caught
+  exception where `SQLError` and `IOError` take a `String`, so on the jvm
+  each was a ClassCastException that escaped `execute()`, left the
+  listeners unrun, and lost what had gone wrong. The cause now travels as
+  text, and a server's refusal as the `MongoError` with its code.
+- A STUN answer whose FINGERPRINT does not match is dropped, and one
+  carrying a comprehension-required attribute this client does not
+  understand is not used (RFC 8489 sections 7.3 and 7.3.3). Both were
+  believed -- a damaged datagram settled the question with whatever
+  address it now carried, and an attribute that changed what the answer
+  meant was ignored -- by `StunClient`,
+  `ReliableDatagramServerSocket.discoverPublicAddress` and
+  `PeerConnection`'s gathering alike, which share `StunQuery`. A deadline
+  that passes after damaged answers says they came damaged, rather than
+  that nothing answered.
+- An IPv6 address in a STUN or TURN message is read. The family byte for
+  IPv6 was taken for no address at all, so a STUN server answering over
+  IPv6 reported no mapped address and a relay granting an IPv6 allocation
+  had "allocated nothing" while it held one. Pinned to RFC 5769's IPv6
+  sample.
+- A TURN Send indication costs half what it did: its transaction id comes
+  from random bytes drawn sixteen ids at a time, and the peer's
+  XOR-PEER-ADDRESS is written once per peer rather than parsed from the
+  address for every datagram -- 610 to 350 ns for a 64-byte payload and
+  1.1 us to 540 ns for 1200 bytes, natively. ChannelData is unchanged.
+- A STUN message of more than 32 attributes (`StunMessage.MAX_ATTRIBUTES`)
+  is not read. The count was the sender's, and each attribute costs an
+  allocation and a copy, so one unauthenticated 64 KB datagram of empty
+  attributes cost 527 microseconds to decode on cpp and 4.4 ms on Node --
+  and a `PeerConnection` decoded every STUN-range datagram up to four times,
+  once each for its reflexive query, its relay, its agent and a restart's
+  agent. It decodes once now and shows the message to each, and a
+  `PeerConnectionHost` hands on the check it decoded to route.
+  `TurnClient.receive`, `IceAgent.receive` and `StunQuery.interpretMessage`
+  take a decoded message for that.
+- A `PeerConnection` whose relay refused, never answered or went away can
+  ask for another. The dead relay stayed attached for the life of the
+  connection, so asking again was refused as "already has a relay", and a
+  relay lost after a network change was never replaced.
+- Closing a `TurnClient`, or the `PeerConnection` holding one, frees the
+  allocation on the relay. No Refresh with a lifetime of zero was sent, so
+  the relay held the allocation and its port for as long as it had been
+  granted -- up to an hour on coturn -- the next client on the same socket
+  was refused with 437, and an application that reconnected ran into the
+  relay's quota. The release is sent once, signed, and also when the
+  Allocate is still unanswered, since the relay may have granted it.
+- `TurnClient` believes only its relay. Relayed data was taken from any
+  sender -- a Data indication naming a peer, or ChannelData on a bound
+  channel's number, from anyone who could reach the socket, was delivered as
+  that peer -- and a success answering a signed request was accepted without
+  its MESSAGE-INTEGRITY being checked, so whoever saw a request go by could
+  answer it with a relayed address of their own. Now only datagrams from
+  the relay's address and port are TURN traffic, a Data indication is
+  delivered only for a peer this client permitted, and an answer to a
+  signed request must be signed with the same key (a 401 or 438 excepted),
+  or carry a matching FINGERPRINT when it has one, or it is dropped as
+  though it never came, as RFC 8489 has it; a request answered only by such
+  messages fails saying so. A success carrying a comprehension-required
+  attribute the client does not understand fails its request rather than
+  being acted on.
+- A TURN relay named by hostname is looked up once per allocation. Every
+  request went to the name, which natively was looked up again every minute
+  and on Node for every datagram; against a round-robin pool the requests
+  bounced between relays that refused each other's nonces, and nothing was
+  allocated. `TurnClient` now sends to the address the relay first answered
+  from, and `serverAddress` says which. A relay that calls every nonce stale
+  is given up on after three (`MAX_STALE_NONCES`) rather than asked some
+  nine thousand times a second. Requests are transactions of their own, up
+  to eight in flight (`MAX_IN_FLIGHT`) and 64 waiting (`MAX_QUEUED`), and a
+  refresh never waits behind them: it was sent only when nothing else was
+  outstanding, so a caller asking for permissions faster than the relay
+  answered let the allocation expire. `permit` sends nothing for a
+  permission already in place or already asked for, so calling it before
+  every datagram, as `PeerConnection` now does, is cheap.
+- A stale nonce on a TURN channel rebind no longer blacks the channel out.
+  A 438 on a ChannelBind was neither retried nor used to take the new
+  nonce, and the channel stayed marked bound while the relay, whose binding
+  lapsed at ten minutes, dropped everything sent on it -- for up to six
+  minutes, with nothing reported. A ChannelBind is retried like any other
+  request, and a rebind the relay refuses, or never answers, sends the
+  traffic back to Send indications once the old binding has lapsed.
+- A TURN relay refusing one peer refuses that peer, not the whole
+  allocation. Any CreatePermission error but 401 and 438 closed the
+  `TurnClient`, and ICE pairs a relayed candidate with every one of the
+  peer's candidates, private host addresses first -- which a hardened relay
+  (coturn's `denied-peer-ip`, loopback by default) answers with 403. So the
+  relay was gone before the relayed pair that would have worked was tried,
+  and neither peer connected. A refused peer is now reported through
+  `TurnClient.onPermissionRefused` and not asked about again, the allocation
+  carries on, and `PeerConnection` gives up on the pairs the relay refused
+  through the new `IceAgent.refusePairs` instead of checking into them for
+  half a minute. A 437, the relay saying it holds no such allocation, still
+  ends it.
+- A TURN allocation survives a relay whose first answer is slow. The signed
+  retry after the relay's 401 reused the unsigned request's transaction, so
+  once that request had been sent twice -- its answer took over half a
+  second, or natively the relay's name took that long to resolve and both
+  copies left together -- the second 401 matched the signed retry and read
+  as the credentials being rejected, while the relay granted the signed
+  request and held an allocation nobody would use or free. Each
+  authenticated retry is a new transaction now, as RFC 8489 has it, and
+  answers to superseded ones are ignored. A CreatePermission success or a
+  ChannelBind error, from anyone or duplicated, no longer ends whatever
+  request is in flight: every answer is matched to its request by
+  transaction. And a relay that never answers is given up on after RFC
+  8489's 39.5 seconds rather than 63.5.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
@@ -3168,11 +3629,11 @@ All notable changes to CrossByte will be documented in this file.
   were unaffected.
 - Writing past the end of a `ByteArray` could expose bytes the caller never wrote. The zeroing of a skipped gap lived inside the reallocation branch and started from the old *capacity*, so a gap opened without a reallocation was never zeroed at all, and one opened with a reallocation was only zeroed above the capacity the old buffer had -- while the copy into the new buffer carried every stale byte beneath it across. Shrinking a buffer to reuse it and then writing past the new end handed back the previous contents: ninety-six of ninety-six bytes, measured. The existing case covered only the reallocating path, which is why it had always passed. Zeroing now runs against the old logical length in both paths, and two cases cover the gap that needs no growth.
 - An empty data channel message sent to a browser vanished without a word. RFC 8831 gives zero-length messages payload protocol identifiers of their own and has them travel as one byte of zero, because SCTP cannot carry a message of no bytes; the receive side here honoured that convention and the send side never did, shipping an actually-empty chunk that a real browser's SCTP discards silently. Every internal test passed, both ends of a homogeneous pair agreeing on the broken shape -- the browser interoperability run now exchanges binary and empty-binary messages with headless Chrome precisely so that class of agreement cannot survive review.
-- `StunClient.isSupported` lied on HashLink, python and lua. It derived from `DatagramSocket.isSupported` alone, and those targets have UDP but no CSPRNG -- so the flag said `true` while the first line of `discover()` threw, which is the one thing a support flag exists to prevent and the same bug class the neko UDP flag had. It now also requires `SecureRandom.isSupported`, since the transaction id is what a reply is believed by and one drawn from a weak generator would let an off-path party hand this host an address of its choosing. `discover()` and `ReliableDatagramServerSocket.discoverPublicAddress` fail their future with the reason named rather than throwing, and CI now runs a probe on python -- the one CSPRNG-less UDP target it can execute -- because every suite runs where a CSPRNG exists and an in-suite assertion of this could never fail.
+- `StunClient.isSupported` lied on python and lua, and would have on HashLink, which did not compile at the time and does now. It derived from `DatagramSocket.isSupported` alone, and those targets have UDP but no CSPRNG -- so the flag said `true` while the first line of `discover()` threw, which is the one thing a support flag exists to prevent and the same bug class the neko UDP flag had. It now also requires `SecureRandom.isSupported`, since the transaction id is what a reply is believed by and one drawn from a weak generator would let an off-path party hand this host an address of its choosing. `discover()` and `ReliableDatagramServerSocket.discoverPublicAddress` fail their future with the reason named rather than throwing, and CI now runs a probe on python -- the one CSPRNG-less UDP target it can execute -- because every suite runs where a CSPRNG exists and an in-suite assertion of this could never fail.
 - A browser offering a data channel to CrossByte could not complete a DTLS handshake. Chrome's ClientHello does not fit in one datagram and is sent in fragments; mbedtls reassembles fragmented handshake messages in general but not this one, because reassembly needs handshake state and the ClientHello is what creates it -- its parser says so in as many words. `ClientHelloAssembly` puts the message back together before mbedtls sees it, rebuilt as though it had arrived in one piece, which RFC 6347 requires because the handshake hash is computed over that form. Only a DTLS server ever reads a ClientHello, which is the whole of why a browser answering CrossByte connected and a browser being offered to did not.
 - `PeerConnection` drove the ICE role and the DTLS role from one bit, and they are two. The peer that offers is ICE-controlling; which peer sends the DTLS ClientHello is negotiated separately in the description, an offer proposing `actpass` and the answer choosing. Everything above DTLS follows the *DTLS* role rather than the ICE one: RFC 8831 has the DTLS client open the SCTP association and RFC 8832 gives it the even data channel streams. For two CrossByte peers the two roles land on opposite sides and one bit appeared to serve; a browser makes the difference unavoidable, since it offers -- taking the ICE role -- and offers `actpass`, leaving the peer answering it ICE-controlled and the DTLS client at once. A connection built on one bit has to be wrong about one of them, and wrong quietly, because the ICE half still connects and only the handshake afterwards stalls. `controlling` is now `iceControlling` and `dtlsClient`, the constructor takes `isOfferer`, `description()` states the role this peer has settled on, and `connect()` resolves it from what the peer proposed. A role conflict during checking now changes the ICE role alone, where before it rewrote the DTLS role too -- abandoning a handshake already agreed in the description over a detail settled afterwards. The interoperability run passed before this change because the answering peer happened to be both; a CrossByte peer *offering* to a browser could not have connected.
 - One failed `DatagramSocket.send()` permanently deafened the socket. The failure was routed into `__dispatchIoError`, which calls `stopReceiving`, so a single unroutable destination stopped every other peer being heard from -- silently, and for the life of the socket. That is the same fault the read path was already fixed for, on the other side of the same class, and it is worse here: ICE finds a path by trying every candidate a peer offered and expecting most of them to fail, so an IPv6 candidate arriving at a socket bound to IPv4 was enough to end the connection before it began. It was found by the browser interoperability run and by nothing else -- every existing test sent only to somewhere reachable, so the whole suite passed while no CrossByte peer could ever have completed a real WebRTC connection. Sends still throw and still dispatch the error event; what no longer happens is the socket going deaf over one datagram it could not deliver.
-- `DatagramSocket.isSupported` answered `true` on neko, where `sys.net.UdpSocket`'s constructor throws "Not available on this platform" -- so a caller that checked the flag first, which is the entire reason the flag exists, had been told the one lie it is there to prevent and was left with no other path to take. Found while building `LocalAddress` on the same primitive, and neko is in no CI matrix, which is why nothing had caught it. The new `LocalAddressTest` does not assert which answer is right for any target; it asserts that the flag and the behaviour agree, so the next target this happens on fails a test rather than a deployment.
+- `DatagramSocket.isSupported` answered `true` on neko, where `sys.net.UdpSocket`'s constructor threw "Not available on this platform" (the throw was CrossByte's own replacement for that class, which had no neko branch; neko's standard library has UDP, and the replacement has a neko branch now) -- so a caller that checked the flag first, which is the entire reason the flag exists, had been told the one lie it is there to prevent and was left with no other path to take. Found while building `LocalAddress` on the same primitive, and neko is in no CI matrix, which is why nothing had caught it. The new `LocalAddressTest` does not assert which answer is right for any target; it asserts that the flag and the behaviour agree, so the next target this happens on fails a test rather than a deployment.
 - Two reliable datagram peers dialling each other at the same moment never connected. That is not an exotic case: it is how hole punching works, and the only way two peers behind NAT reach each other, because each side's outbound datagram is what opens its own mapping for the other -- so both must dial and neither can wait. `__acceptFrame` answered an incoming `CONNECT` only when `__incoming` was set, which is true of an accepted session and false of a dialled one, so both peers sat retransmitting `CONNECT` at each other until the connection timeout fired. An unconnected session now answers with `HANDSHAKE` whichever side dialled it -- the same frame an accepted session already replied with, so the ordinary client-and-server exchange is untouched. This is what joins the STUN work to something usable: each peer discovers where it is reachable, advertises it, the super node hands each the other's address, and the simultaneous dial that follows now completes instead of expiring.
 
 - A `wss://` `ServerWebSocket` held a stalled handshake forever. `ServerSocket` bounds this by deferring TLS and sweeping deadlines from the tick, but `ServerWebSocket` overrides that tick and accepts through its own path, so it inherited `handshakeTimeout` as a setting and never as a sweep -- a peer could complete the TCP connection, say nothing, and occupy a socket until the operating system ran out of them. It now tracks accepted sessions whose upgrade has not completed and reaps them, which covers both ways one can stall: a peer silent during TLS, and a peer that completes TLS and never sends the upgrade. Zero still means no deadline. Node keeps the exposure for now, because its server hands connections to a callback rather than accepting in the tick; the reaper is target neutral and needs only that hook.
@@ -3180,7 +3641,7 @@ All notable changes to CrossByte will be documented in this file.
 - One datagram to a departed peer deafened a `DatagramSocket` permanently. A read that failed went to `__dispatchIoError`, which calls `stopReceiving()` -- but on a connectionless socket a read error describes one datagram, not the socket. Send to a port nothing listens on and the peer stack answers ICMP port unreachable, which Windows reports back to the sender as an error on a later read; the datagram it complains about is already gone and the socket is fine. Measured before changing anything: a socket that had just completed a STUN exchange stopped receiving entirely after a single knock on a closed local port, reporting `Custom(Socket operation failed)`. For a peer-to-peer mesh that is not an edge case -- dialling peers that have since left is ordinary -- and one departed peer should not silence every other. A failed read now ends that tick and nothing more, with a run counter so a socket that really has stopped working is still reported rather than swallowed.
 
 - An async `SQLiteConnection` could lose every event it had queued, including the `CLOSE` it was closing for. `close()` sent its `CLOSE` progress message and then called `Worker.cancel()`, which detaches the runtime listener and frees the message queue immediately, on the worker thread -- so anything the main thread had not yet drained was destroyed. Whether that happened turned on whether a runtime tick landed while the worker was still running, which is why it surfaced as an intermittent test failure rather than as a broken feature: roughly one run in four in the full suite, one in sixty in isolation. With no tick during the run at all it is not intermittent -- all six events of an open-through-close sequence were lost, every time, which is how it was finally pinned down. `close()` now finishes through `sendComplete()`, whose `Complete` message travels the same queue in order: everything sent before it is dispatched first, and the listener is detached when that message is drained on the main thread with nothing outstanding. The work loop leaves on a flag set from inside itself, so the worker thread ends rather than blocking on a queue nothing will add to.
-- Every platform decision made while running now asks the machine rather than the compiler. `#if windows` names the target Haxe was aimed at: it is set for cpp, hl and neko, and not for eval, the JVM or Node -- so three targets running on Windows took the branch written for POSIX, and nothing said so. `System.PLATFORM` read `"undefined"` on all three. `System.appStorageDir`, which is where `Store` keeps its files, read `HOME` instead of `APPDATA`: with `HOME` set, as Git Bash sets it, that is the profile root, so a store written by a native build was invisible to a Node one on the same machine; with `HOME` unset, which is the normal state for a Windows service, it became the literal string `"undefined"` relative to the working directory. `File.separator` and `File.lineEnding` answered for the wrong platform, `File` joined every path it built on the wrong character, `getRootDirectories` returned `/`, the temporary directory resolved to `/tmp`, `%VAR%` expansion was compiled out, and `isHidden` applied the dotfile convention on Windows. `HTTPRequestHandler` skipped the case fold in its document-root containment check, which is fail-closed -- a legitimate request refused rather than a forbidden one served -- and is why it went unnoticed. The affected sites use `System.isWindows`; the conditionals that genuinely select types, native includes and macro-time behaviour are unchanged.
+- Every platform decision made while running now asks the machine rather than the compiler. `#if windows` says what a build was told, not where it runs: Haxe sets it on no target by itself -- a native build gets it from its hxml, or from `HostPlatform` when CrossByte is a haxelib -- and eval, the JVM and Node never have it (nor do hl and neko, which were not compiling at the time) -- so three targets running on Windows took the branch written for POSIX, and nothing said so. `System.PLATFORM` read `"undefined"` on all three. `System.appStorageDir`, which is where `Store` keeps its files, read `HOME` instead of `APPDATA`: with `HOME` set, as Git Bash sets it, that is the profile root, so a store written by a native build was invisible to a Node one on the same machine; with `HOME` unset, which is the normal state for a Windows service, it became the literal string `"undefined"` relative to the working directory. `File.separator` and `File.lineEnding` answered for the wrong platform, `File` joined every path it built on the wrong character, `getRootDirectories` returned `/`, the temporary directory resolved to `/tmp`, `%VAR%` expansion was compiled out, and `isHidden` applied the dotfile convention on Windows. `HTTPRequestHandler` skipped the case fold in its document-root containment check, which is fail-closed -- a legitimate request refused rather than a forbidden one served -- and is why it went unnoticed. The affected sites use `System.isWindows`; the conditionals that genuinely select types, native includes and macro-time behaviour are unchanged.
 - The test for the storage directory carried the same `#if windows` as the code, so on eval it expected the wrong value and got it. A test that reproduces the bug it checks for cannot see it.
 - `File.spaceAvailable` was wrong on every target that could answer it, and wrong by answering rather than failing -- the worst shape for a caller asking "have I room to write this". On Windows it matched the `fsutil` line containing "Total bytes", which is the volume's capacity, so a 930 GB disk with 75 GB free reported 930 GB. On POSIX it required `df`'s first column to equal the path, but that column is the device, so the loop fell through and returned zero -- indistinguishable from a full disk. On Node it compiled cleanly and threw `ReferenceError: sys is not defined` when called, because `sys.io.Process` type-checks there (hxnodejs allows the `sys` package) and generates nothing. It also asked the process for its exit code after closing it, which raises `process_exit` on eval. Node now reads `fs.statfsSync` directly -- no shell, no output parsing -- and the shelling targets parse the right line and return bytes on both. Nothing had ever called this method, which is why all of it survived.
 - `File` chose its platform behaviour with `#if windows`, which says which target the compiler was aimed at rather than which machine is running. eval does not set it, so on Windows `spaceAvailable` took the `df` branch, found no `df`, and reported a full disk as empty. The disk-space path uses `Sys.systemName()` now. The same conditional still governs `lineEnding`, `isHidden`, `getRootDirectories`, the temporary directory and Windows environment-variable expansion in this class, and is wrong there in the same way on eval, Node and the JVM; those are left for a change of their own rather than swept in behind a bug fix.
@@ -3231,7 +3692,7 @@ OR 1=1 --` produced a query the server ran differently. All four drivers reach t
 
 - **a percent-encoded NUL in a request path could serve a blacklisted file.** Found while replacing the path decoder, and the more serious half of that change. Every filesystem call under `File` reaches a C API through the Haxe string's `char*` and therefore ends at the first NUL, while `blacklist` and `whitelist` compare whole strings, which do not — so `GET /secret.txt%00.html` was checked under the name `secret.txt\0.html`, matched no blacklist entry, and was then truncated by `exists()` and `load()` and served as `secret.txt`. The whitelist failed closed on the same request and the root containment check was never bypassed; it is the blacklist that failed open, which is the direction that matters. On cpp a *malformed* escape reached the same place without any `%00`: `urlDecode("/100%.html")` returned `/100`, a NUL, then `tml` — it consumed `.h` as the escape digits and emitted a zero byte, so a path did not even have to be trying. The decoder now refuses a decoded NUL with `400 Bad Request`, since no legitimate path carries one, rather than leaving every downstream use to defend itself. This is also why the same request now draws a `400` instead of a `404`
 - a literal `+` in a request path no longer becomes a space. Paths were decoded with `StringTools.urlDecode`, which is form decoding — under it `+` means space, a rule RFC 3986 confines to query strings; in a path `+` is an ordinary character. So `GET /a+b.html` looked up `a b.html`, a file whose name genuinely contains `+` was unreachable by any spelling — sending `%2B` decoded correctly in the handler and was then corrupted anyway, because the rewrite engine's `normalize()` ran `urlDecode` a second time on the already-decoded path. Both decodes are replaced: the handler now runs a dedicated decoder that handles `%XX` escapes and nothing else — adjacent escapes are decoded as one byte run and read back as UTF-8, so `%C3%A9` still arrives as one character — and `normalize()` stops decoding entirely, since its input is the handler's output and a second decode turns the `+` and `%` a correct single decode legitimately leaves behind into a different name (`/100%.html`, the single decode of `/100%25.html`, re-read as a truncated escape). A malformed escape — truncated, or with a non-hex digit — is now answered `400 Bad Request`, which it never was: the `try`/`catch` around the old decode was dead code, because `urlDecode` does not raise on bad input, it drops the `%` and keeps going. `/oops%zz.html` was served as `oopszz.html` and `/100%.html` as `100.html`, so two spellings of a path silently named one file and a request no standard considers valid was answered as though it were. Double-encoded traversal needs no second decode to stay caught: `%252e%252e` decodes once to the literal text `%2e%2e`, which no filesystem reads as dots — it now draws the 404 of a name that does not exist rather than a manufactured 403. Query strings are untouched and keep form semantics, raw through `queryString` with `URLVariables` still reading `+` as a space there, which is where that rule belongs
-- WebSockets could not work on the interpreter at all, and now can. The session drains its socket from a plain tick listener and never registers with the poll registry, so the very first read on an idle connection parked the interpreter — not on some unlucky payload size, but on every connection, immediately. `crossbyte.net.Socket` had the narrower form of the same fault: its read loop continues while a read exactly fills the 4096-byte buffer, so any message whose length was an exact multiple of 4096 blocked the runtime thread waiting for bytes that were not coming. Both loops are now gated on a zero-timeout `select` under `#if eval`. The root cause is that eval's `sys.net.Socket.setBlocking` is a no-op — it is a no-op in the Haxe standard library too, which is where this shim's copy came from, and it cannot be implemented on 4.3.7: eval exposes no per-socket blocking control and no bridge from a `NativeSocket` to the libuv handle that has one. That is now written down where the empty method body used to carry a `// TODO: Don't know how to implement this...`
+- WebSockets could not work on the interpreter at all, and this removed one of the reasons. (Not the last: every session, a server's included, also drew a client key from `SecureRandom`, which the interpreter does not have, so a `ServerWebSocket` there accepted nothing -- each upgrade threw in the accept tick and the peer was reset, as a raw handshake against eval, hl and neko showed.) The session drains its socket from a plain tick listener and never registers with the poll registry, so the very first read on an idle connection parked the interpreter — not on some unlucky payload size, but on every connection, immediately. `crossbyte.net.Socket` had the narrower form of the same fault: its read loop continues while a read exactly fills the 4096-byte buffer, so any message whose length was an exact multiple of 4096 blocked the runtime thread waiting for bytes that were not coming. Both loops are now gated on a zero-timeout `select` under `#if eval`. The root cause is that eval's `sys.net.Socket.setBlocking` is a no-op — it is a no-op in the Haxe standard library too, which is where this shim's copy came from, and it cannot be implemented on 4.3.7: eval exposes no per-socket blocking control and no bridge from a `NativeSocket` to the libuv handle that has one. That is now written down where the empty method body used to carry a `// TODO: Don't know how to implement this...`
 - data received before a peer's EOF is delivered before the close is announced. When a final burst and the peer's FIN arrived in the same tick, `Socket.this_onTick` cleaned the socket and dispatched `CLOSE` first, then dispatched the pending data — at which point the socket was already null, so any listener that did the obvious thing and called `readBytes` got `"Operation attempted on invalid socket."`, and that `IOError` escaped through the event dispatch into the socket registry and killed the runtime loop. One disconnecting peer could take down every other connection in the process. This is target-independent and predates the interpreter work above; the eval gate merely made it easy to reach, because a gated loop sees the FIN as readable and forces the EOF read inside the same tick
 - TLS on the interpreter is documented rather than fixed. The `select` gate is deliberately not applied to SSL-backed sockets: it sees the kernel socket, while mbedtls has already drained the TLS record and holds the decrypted plaintext in a buffer `select` cannot observe, so gating there would strand the tail of any record larger than the read buffer — permanently, since the descriptor never reads ready again. SSL sockets therefore keep read-until-short-read and its exact-multiple caveat. A `wss` handshake on interp can still park the runtime, and the obvious mitigation was measured and rejected: `setTimeout` does propagate and `SO_RCVTIMEO` expires on schedule, but eval raises the expiry as an OCaml `Unix_error` that no Haxe `catch` intercepts — not `haxe.Exception`, not `Dynamic` — so it would trade a stall for an uncatchable process death
 - the `sys.net.Socket` shim's fallback branch claimed support for "cpp, hxcpp, and eval" in all sixteen of its throw messages, while a fully implemented java/jvm branch sat directly above it

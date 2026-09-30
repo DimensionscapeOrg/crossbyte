@@ -405,17 +405,23 @@ class IceAgent {
 	/**
 		Offers an arriving datagram to the agent.
 
+		@param message The datagram already decoded, when the caller has done
+		that: a socket this agent shares with a relay client or a reflexive
+		query decodes each datagram once and shows the message to each, rather
+		than having each decode it again.
 		@return Whether this was a STUN message the agent took. False means the
 		datagram belongs to whatever else shares the socket, which is the normal
 		case once a session is carrying data -- so a caller should pass it on
 		rather than dropping it.
 	**/
-	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate):Bool {
+	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?via:IceCandidate, ?message:StunMessage):Bool {
 		if (state == CLOSED || payload == null) {
 			return false;
 		}
 
-		var message = StunMessage.decode(payload);
+		if (message == null) {
+			message = StunMessage.decode(payload);
+		}
 
 		if (message == null) {
 			return false;
@@ -441,8 +447,12 @@ class IceAgent {
 			case StunMessage.BINDING_ERROR:
 				__refused(message, now);
 			default:
-				// Something else entirely. It was still a STUN message, so it is
-				// not the caller's to handle.
+				// STUN, but not a check: a relay's answer, a Data indication.
+				// Whatever else shares the socket may want it, and taking it
+				// here is what swallowed a TURN relay's answers on a reliable
+				// datagram server with an agent attached.
+				__arrivedVia = previous;
+				return false;
 		}
 
 		__arrivedVia = previous;
@@ -470,6 +480,45 @@ class IceAgent {
 	/** Every pair that has answered, best first. **/
 	public function validPairs():Array<IceCandidatePair> {
 		return __valid.copy();
+	}
+
+	/**
+		Gives up on every pair from `local` to a peer at `remoteAddress` that
+		has not answered yet.
+
+		For a relay that will not forward there. RFC 8656 has a relay refuse a
+		permission it will not grant, with 403 most often, and a hardened one
+		refuses every private address -- which is what a peer's host candidates
+		usually are, and ICE pairs a relayed candidate with all of them. A relay
+		drops what it has no permission for without a word, so each of those
+		checks would otherwise be sent seven times over half a minute into
+		nothing, and an agent whose other pairs had all failed would wait that
+		long to say so.
+
+		A pair that has answered is left alone: it is a path that demonstrably
+		worked, whatever was said about it since.
+	**/
+	public function refusePairs(local:IceCandidate, remoteAddress:String):Void {
+		if (local == null || remoteAddress == null) {
+			return;
+		}
+
+		var changed:Bool = false;
+
+		for (check in __checks) {
+			if (check.state == SUCCEEDED || check.state == FAILED) {
+				continue;
+			}
+
+			if (check.pair.local.sameAs(local) && check.pair.remote.address == remoteAddress) {
+				check.state = FAILED;
+				changed = true;
+			}
+		}
+
+		if (changed) {
+			__settleIfFinished();
+		}
 	}
 
 	// ------------------------------------------------------------------

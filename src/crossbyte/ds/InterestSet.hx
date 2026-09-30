@@ -2,6 +2,7 @@ package crossbyte.ds;
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
+import haxe.ds.Vector;
 
 /**
  * What came into view and what left it, round to round.
@@ -15,15 +16,19 @@ import crossbyte.errors.IllegalOperationError;
  *
  * ```haxe
  * // For each observer, every tick.
- * found.resize(0);
- * world.queryCircle(observer.x, observer.y, VIEW_RADIUS, found);
- * for (node in found) {
- * 	observer.interest.add(node.value.slot);
- * }
- * observer.interest.commit(
- * 	slot -> spawnOn(observer, slot),
- * 	slot -> despawnOn(observer, slot));
+ * found.clear();
+ * grid.queryCircleIds(observer.x, observer.y, VIEW_RADIUS, found);
+ * observer.interest.addAll(found);
+ * observer.interest.commit(observer.spawn, observer.despawn);
  * ```
+ *
+ * Nothing here allocates once it has grown to its views, on any target: the
+ * lists it keeps are unboxed and keep their storage from round to round,
+ * and `found`, an `IdList`, is the same. Kept in `Array<Int>`s, 1,000 views
+ * of 50 cost 2.2 MB a tick on the jvm and Node -- every id above 127 boxed
+ * on the jvm, and every emptied array's store handed back to V8. Callbacks
+ * made once, as `spawn` and `despawn` are above, rather than closures made
+ * at each commit, keep it that way.
  *
  * **Ids** are small non-negative integers -- entity slots, say -- held as
  * bits, so an observer costs two bits per possible id. What a round costs
@@ -46,14 +51,19 @@ final class InterestSet {
 	// The committed view, and the round being gathered, each as bits to
 	// answer "is it in" and as a list to walk without visiting every bit.
 	// A forgotten id leaves the view's bits at once and its list at the next
-	// commit, so the list is walked with the bits as the judge.
+	// commit, so the list is walked with the bits as the judge. The lists are
+	// vectors with counts, emptied by resetting the count.
 	private var __view:BitSet;
-	private var __viewIds:Array<Int> = [];
+	private var __viewIds:Vector<Int>;
+	private var __viewCount:Int = 0;
 	private var __next:BitSet;
-	private var __nextIds:Array<Int> = [];
+	private var __nextIds:Vector<Int>;
+	private var __nextCount:Int = 0;
 
-	private var __left:Array<Int> = [];
-	private var __entered:Array<Int> = [];
+	private var __left:Vector<Int>;
+	private var __leftCount:Int = 0;
+	private var __entered:Vector<Int>;
+	private var __enteredCount:Int = 0;
 	private var __committing:Bool = false;
 
 	/**
@@ -66,6 +76,11 @@ final class InterestSet {
 		}
 		__view = new BitSet(capacity);
 		__next = new BitSet(capacity);
+		// Filled, so V8 holds them as packed arrays rather than holey ones.
+		__viewIds = new Vector<Int>(16, 0);
+		__nextIds = new Vector<Int>(16, 0);
+		__left = new Vector<Int>(16, 0);
+		__entered = new Vector<Int>(16, 0);
 	}
 
 	/**
@@ -78,7 +93,19 @@ final class InterestSet {
 		}
 		if (!__next.get(id)) {
 			__next.set(id, true);
-			__nextIds.push(id);
+			if (__nextCount == __nextIds.length) {
+				__nextIds = __grown(__nextIds, __nextCount);
+			}
+			__nextIds[__nextCount++] = id;
+		}
+	}
+
+	/**
+	 * Adds every id in `ids` to the round being gathered, as `add` does each.
+	 */
+	public function addAll(ids:IdList):Void {
+		for (id in ids) {
+			add(id);
 		}
 	}
 
@@ -109,34 +136,44 @@ final class InterestSet {
 		}
 
 		// Both lists before anything moves, judged by the bits as they stand.
-		__left.resize(0);
-		__entered.resize(0);
-		for (id in __viewIds) {
+		// Each can hold at most the list it is drawn from.
+		if (__left.length < __viewCount) {
+			__left = __roomFor(__viewCount, __left.length);
+		}
+		if (__entered.length < __nextCount) {
+			__entered = __roomFor(__nextCount, __entered.length);
+		}
+		__leftCount = 0;
+		__enteredCount = 0;
+		for (i in 0...__viewCount) {
+			var id:Int = __viewIds[i];
 			if (__view.get(id) && !__next.get(id)) {
-				__left.push(id);
+				__left[__leftCount++] = id;
 			}
 		}
-		for (id in __nextIds) {
+		for (i in 0...__nextCount) {
+			var id:Int = __nextIds[i];
 			if (!__view.get(id)) {
-				__entered.push(id);
+				__entered[__enteredCount++] = id;
 			}
 		}
 
 		// The gathered round becomes the view. The old view's bits are
 		// cleared id by id, through its own list, so the cost follows the
 		// size of the view and not the highest id ever seen.
-		for (id in __viewIds) {
-			__view.clear(id);
+		for (i in 0...__viewCount) {
+			__view.clear(__viewIds[i]);
 		}
 		var emptied:BitSet = __view;
 		__view = __next;
 		__next = emptied;
 
-		var emptiedIds:Array<Int> = __viewIds;
+		var emptiedIds:Vector<Int> = __viewIds;
 		__viewIds = __nextIds;
+		__viewCount = __nextCount;
 		__nextIds = emptiedIds;
-		__nextIds.resize(0);
-		length = __viewIds.length;
+		__nextCount = 0;
+		length = __viewCount;
 
 		if (left == null && entered == null) {
 			return;
@@ -145,13 +182,13 @@ final class InterestSet {
 		__committing = true;
 		try {
 			if (left != null) {
-				for (id in __left) {
-					left(id);
+				for (i in 0...__leftCount) {
+					left(__left[i]);
 				}
 			}
 			if (entered != null) {
-				for (id in __entered) {
-					entered(id);
+				for (i in 0...__enteredCount) {
+					entered(__entered[i]);
 				}
 			}
 		} catch (e:haxe.Exception) {
@@ -183,21 +220,72 @@ final class InterestSet {
 	 * nothing. At the next commit, everything added is reported as entering.
 	 */
 	public function clear():Void {
-		for (id in __viewIds) {
-			__view.clear(id);
+		for (i in 0...__viewCount) {
+			__view.clear(__viewIds[i]);
 		}
-		for (id in __nextIds) {
-			__next.clear(id);
+		for (i in 0...__nextCount) {
+			__next.clear(__nextIds[i]);
 		}
-		__viewIds.resize(0);
-		__nextIds.resize(0);
+		__viewCount = 0;
+		__nextCount = 0;
 		length = 0;
 	}
 
 	/**
 	 * Iterates the ids in the committed view, in the order they were added.
+	 *
+	 * It reads the view as it goes rather than a copy, so a `for` loop over
+	 * it allocates nothing; an id forgotten before the loop reaches it is
+	 * skipped, and a `commit` or `clear` inside the loop ends what it walks.
 	 */
-	public function iterator():Iterator<Int> {
-		return [for (id in __viewIds) if (__view.get(id)) id].iterator();
+	public inline function iterator():InterestSetIterator {
+		return new InterestSetIterator(this);
+	}
+
+	// The first position from `i` on whose id is still in the view.
+	@:noCompletion private function __stillInView(i:Int):Int {
+		while (i < __viewCount && !__view.get(__viewIds[i])) {
+			i++;
+		}
+		return i;
+	}
+
+	// Doubling, so a view that keeps growing reallocates a few times rather
+	// than at every new largest round.
+	private static function __roomFor(needed:Int, had:Int):Vector<Int> {
+		var size:Int = had * 2;
+		return new Vector<Int>(size < needed ? needed : size, 0);
+	}
+
+	private static function __grown(ids:Vector<Int>, count:Int):Vector<Int> {
+		var grown:Vector<Int> = new Vector<Int>(ids.length * 2, 0);
+		Vector.blit(ids, 0, grown, 0, count);
+		return grown;
+	}
+}
+
+/**
+ * Walks the committed view of an `InterestSet`. Made by
+ * `InterestSet.iterator()`; a `for` loop over the set is the usual way to use
+ * one.
+ */
+@:access(crossbyte.ds.InterestSet)
+class InterestSetIterator {
+	private var __set:InterestSet;
+	private var __at:Int;
+
+	public inline function new(set:InterestSet) {
+		__set = set;
+		__at = set.__stillInView(0);
+	}
+
+	public inline function hasNext():Bool {
+		return __at < __set.__viewCount;
+	}
+
+	public inline function next():Int {
+		var id:Int = __set.__viewIds[__at];
+		__at = __set.__stillInView(__at + 1);
+		return id;
 	}
 }

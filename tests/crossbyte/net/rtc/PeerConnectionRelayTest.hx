@@ -1,12 +1,10 @@
 package crossbyte.net.rtc;
 
+import crossbyte.Future;
 import crossbyte.core.CrossByte;
-import crossbyte.events.DatagramSocketDataEvent;
-import crossbyte.io.ByteArray;
-import crossbyte.net.DatagramSocket;
-import crossbyte.net._internal.stun.StunMessage;
-import crossbyte.net._internal.stun.StunMessage.StunAttribute;
+import crossbyte.net.FakeTurnRelaySocket;
 import crossbyte.net.ice.IceCandidate;
+import crossbyte.test.Require;
 import crossbyte.net.rtc.PeerDescription;
 import utest.Assert;
 
@@ -48,7 +46,7 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testARelayLendsAnAddressThatBecomesACandidate():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var connection = new PeerConnection(true);
 
 		try {
@@ -89,8 +87,8 @@ class PeerConnectionRelayTest extends utest.Test {
 			// One exchange refused for want of credentials, then one signed
 			// with them. A relay that granted the first would be one that
 			// relays for anybody who asks.
-			Assert.equals(1, server.refusedUnauthenticated);
-			Assert.equals(1, server.allocations);
+			Assert.equals(1, server.relay.count("refused-401"));
+			Assert.equals(1, server.relay.count("allocated"));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -109,7 +107,7 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testTwoPeersConnectThroughARelayAlone():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var alice = new PeerConnection(true);
 		var bob = new PeerConnection(false);
 
@@ -174,7 +172,7 @@ class PeerConnectionRelayTest extends utest.Test {
 
 			// Traffic went the long way round rather than the peers finding
 			// each other.
-			Assert.isTrue(server.forwarded > 0, "nothing was ever forwarded");
+			Assert.isTrue(forwarded(server) > 0, "nothing was ever forwarded");
 
 			// And the short way round was tried and refused, which is what makes
 			// the connection attributable to the relay. Each peer pairs its host
@@ -183,7 +181,7 @@ class PeerConnectionRelayTest extends utest.Test {
 			// relay socket from an address no permission covers, so the server
 			// drops it exactly as a real one would. That the connection came up
 			// anyway is the whole claim.
-			Assert.isTrue(server.refusedInbound > 0,
+			Assert.isTrue(server.relay.count("peer-dropped") > 0,
 				"nothing was refused, so the direct pair was never tried and the relay was not what carried this");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
@@ -206,7 +204,7 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testLosingTheRelayEndsAConnectionThatRanThroughIt():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var alice = new PeerConnection(true);
 		var bob = new PeerConnection(false);
 
@@ -246,7 +244,7 @@ class PeerConnectionRelayTest extends utest.Test {
 
 			// The relay stops renewing, and the next refresh is brought forward
 			// from five minutes to now rather than waited out.
-			server.refuseRefresh = true;
+			server.relay.refuseRefresh = true;
 			@:privateAccess alice.__turn.__refreshAt = 0;
 
 			pumpUntil(() -> reasons.length > 0, 5.0);
@@ -276,7 +274,7 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testAPeerIsPermittedBeforeAnythingIsSentToIt():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var connection = new PeerConnection(true);
 
 		try {
@@ -303,10 +301,10 @@ class PeerConnectionRelayTest extends utest.Test {
 			};
 
 			connection.connect(remote);
-			pumpUntil(() -> server.forwarded > 0, 5.0);
+			pumpUntil(() -> forwarded(server) > 0, 5.0);
 
-			Assert.isTrue(server.forwarded > 0, "no check was ever wrapped for the relay");
-			Assert.isTrue(server.permittedBeforeFirstSend, "traffic was sent to a peer the relay had not been told to expect");
+			Assert.isTrue(forwarded(server) > 0, "no check was ever wrapped for the relay");
+			Assert.equals(0, server.relay.count("send-unpermitted"), "traffic was sent to a peer the relay had not been told to expect");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -319,11 +317,10 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testCredentialsTheRelayRejectsAreReported():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var connection = new PeerConnection(true);
 
 		try {
-			server.rejectCredentials = true;
 			server.start();
 			connection.bind(0, "127.0.0.1");
 
@@ -347,7 +344,7 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testASecondRelayIsRefused():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var connection = new PeerConnection(true);
 
 		try {
@@ -371,11 +368,11 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testClosingEndsAnOutstandingAllocation():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var connection = new PeerConnection(true);
 
 		try {
-			server.ignoreEverything = true;
+			server.relay.dropAll = true;
 			server.start();
 			connection.bind(0, "127.0.0.1");
 
@@ -403,7 +400,7 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testChannelsCarryTheTrafficWhenAskedFor():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var alice = new PeerConnection(true);
 		var bob = new PeerConnection(false);
 
@@ -459,8 +456,8 @@ class PeerConnectionRelayTest extends utest.Test {
 
 			// Both peers bound one, and the traffic really went through them
 			// rather than the connection quietly staying on indications.
-			Assert.equals(2, server.channels);
-			Assert.isTrue(server.overChannel > 0, "a channel was bound and then never used");
+			Assert.equals(2, server.relay.count("channel-bound"));
+			Assert.isTrue(server.relay.count("channeldata-relayed") > 0, "a channel was bound and then never used");
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -474,7 +471,7 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testChannelsAreNotAskedForUnlessWanted():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var alice = new PeerConnection(true);
 		var bob = new PeerConnection(false);
 
@@ -493,8 +490,8 @@ class PeerConnectionRelayTest extends utest.Test {
 			pumpUntil(() -> alice.connected && bob.connected, 25.0);
 
 			Assert.isTrue(alice.connected, "the default path stopped working");
-			Assert.equals(0, server.channels);
-			Assert.equals(0, server.overChannel);
+			Assert.equals(0, server.relay.count("channel-bound"));
+			Assert.equals(0, server.relay.count("channeldata-relayed"));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -515,14 +512,14 @@ class PeerConnectionRelayTest extends utest.Test {
 	public function testARelayThatRefusesAChannelStillCarriesTheConnection():Void {
 		if (unsupported()) return;
 
-		var server = new FakeTurnServer();
+		var server = relayServer();
 		var alice = new PeerConnection(true);
 		var bob = new PeerConnection(false);
 
 		var heard:String = null;
 
 		try {
-			server.refuseChannels = true;
+			server.relay.refuseChannels = true;
 			server.start();
 			alice.bind(0, "127.0.0.2");
 			bob.bind(0, "127.0.0.3");
@@ -558,8 +555,402 @@ class PeerConnectionRelayTest extends utest.Test {
 			pumpUntil(() -> heard != null, 8.0);
 			Assert.equals("still going", heard);
 
-			Assert.equals(0, server.channels, "a refused bind was recorded as one");
-			Assert.equals(0, server.overChannel, "traffic went over a channel that was refused");
+			Assert.equals(0, server.relay.count("channel-bound"), "a refused bind was recorded as one");
+			Assert.equals(0, server.relay.count("channeldata-relayed"), "traffic went over a channel that was refused");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
+	/**
+		A relay that refuses one of the peer's addresses still carries the
+		connection.
+
+		The auditor's case, end to end. Alice binds a wildcard, so she records
+		no host candidate and her only way out is her relay. Bob offers his host
+		address and his relayed one, and the relay refuses to forward to the
+		host address, the way a hardened relay refuses a private or loopback one.
+		ICE pairs Alice's relayed candidate with Bob's host address first, and
+		the relay's 403 for it closed her whole allocation -- so the relayed pair
+		that would have worked was never tried, and neither peer connected.
+	**/
+	public function testARelayRefusingOneOfThePeersAddressesStillConnects():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		server.relay.denyPeers = ["127.0.0.3"];
+
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+
+		try {
+			server.start();
+			alice.bind(0, "0.0.0.0");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			var failure:String = null;
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			pumpUntil(() -> relays == 2 || failure != null, 10.0);
+
+			if (relays != 2) {
+				Assert.fail("the relay never allocated: " + failure);
+				alice.close();
+				bob.close();
+				server.close();
+				return;
+			}
+
+			// Bob's host address as well as his relayed one.
+			alice.connect(bob.description());
+			bob.connect(relayOnly(alice));
+			pumpUntil(() -> (alice.connected && bob.connected) || alice.closeReason != null || bob.closeReason != null, 20.0);
+
+			Assert.isTrue(server.relay.count("permission-403") > 0, "the relay never refused Bob's host address, so this proved nothing");
+			Assert.isTrue(alice.connected, "one refused address took Alice's relay down with it: " + alice.closeReason);
+			Assert.isTrue(bob.connected, "Bob never connected: " + bob.closeReason);
+
+			if (alice.connected) {
+				Assert.equals("relay", (alice.agent.selectedPair.local.type : String));
+				Assert.equals("relay", (alice.agent.selectedPair.remote.type : String));
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
+	/**
+		Closing a connection frees the allocation it made on the relay.
+
+		It did not: the relay held it for its whole lifetime, and a
+		reconnecting application ran into the relay's quota.
+	**/
+	public function testClosingFreesTheRelayAllocation():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> gathered = c, _ -> {});
+			pumpUntil(() -> gathered != null, 8.0);
+
+			Assert.equals(1, server.relay.allocations, "the relay never allocated, so this proved nothing");
+
+			connection.close();
+			pumpUntil(() -> server.relay.allocations == 0, 3.0);
+
+			Assert.equals(1, server.relay.count("deallocated"), "closing the connection left its allocation on the relay");
+			Assert.equals(0, server.relay.allocations);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
+	/**
+		A relay that refuses is followed by the next in the list, and the one
+		that allocates lends the candidate.
+	**/
+	public function testTheNextRelayIsAskedWhenOneRefuses():Void {
+		if (unsupported()) return;
+
+		var full = relayServer();
+		full.relay.allocateError = {code: 486, reason: "Allocation Quota Reached"};
+		var good = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			full.start();
+			good.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			var failure:String = null;
+			connection.gatherRelayedFrom([
+				{address: "127.0.0.1", port: full.port, username: USERNAME, password: PASSWORD},
+				{address: "127.0.0.1", port: good.port, username: USERNAME, password: PASSWORD}
+			]).then(c -> gathered = c, e -> failure = e);
+			pumpUntil(() -> gathered != null || failure != null, 10.0);
+
+			Assert.isNull(failure, failure);
+			Assert.notNull(gathered, "neither relay lent an address");
+			Assert.equals(1, full.relay.count("allocate-error"), "the first relay was never asked");
+			Assert.equals(1, good.relay.allocations, "the second relay holds no allocation");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		full.close();
+		good.close();
+	}
+
+	/**
+		A relay that refused is not in the way of asking another, and its
+		refusal says why in a form code can read.
+
+		The auditor's case. The first relay's 486 left the connection holding
+		a dead relay for good -- asking a second was refused as "already has a
+		relay" -- and the failure was a sentence with no code in it.
+	**/
+	public function testARelayThatRefusedIsNotInTheWayOfAnother():Void {
+		if (unsupported()) return;
+
+		var full = relayServer();
+		full.relay.allocateError = {code: 486, reason: "Allocation Quota Reached"};
+		var good = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			full.start();
+			good.start();
+			connection.bind(0, "127.0.0.1");
+
+			var refused:Future<IceCandidate> = connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, full.port);
+			pumpUntil(() -> refused.completed, 10.0);
+
+			Assert.isTrue(refused.completed && !refused.succeeded, "the full relay did not refuse");
+
+			var cause:crossbyte.net.TurnError = Std.downcast(refused.cause, crossbyte.net.TurnError);
+			Require.notNull(cause, "the refusal carried no TurnError");
+			Assert.equals(486, cause.code);
+
+			var gathered:IceCandidate = null;
+			var failure:String = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, good.port).then(c -> gathered = c, e -> failure = e);
+			pumpUntil(() -> gathered != null || failure != null, 10.0);
+
+			Assert.isNull(failure, "a relay that had refused was still in the way: " + failure);
+			Assert.notNull(gathered);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		full.close();
+		good.close();
+	}
+
+	/**
+		A relay that loses the allocation is asked for another, and the new
+		address announced for the peer to be told of.
+
+		A relay restarting, or a network change moving the 5-tuple it knew the
+		connection by, cost the connection its relayed candidate for good.
+	**/
+	public function testALostRelayIsReplaced():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.1");
+
+			var first:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> first = c, _ -> {});
+			pumpUntil(() -> first != null, 8.0);
+			Require.notNull(first, "the relay never allocated");
+
+			var announced:Array<CandidateDescription> = [];
+			connection.onLocalCandidate = candidate -> announced.push(candidate);
+
+			// The relay restarts and forgets every allocation; the next refresh
+			// finds out, brought forward from five minutes to now.
+			server.relay.forgetEverything();
+			@:privateAccess connection.__turn.refresh(haxe.Timer.stamp());
+			pumpUntil(() -> announced.length > 0, 8.0);
+
+			Assert.equals(1, announced.length, "no replacement relayed candidate was announced");
+
+			if (announced.length > 0) {
+				Assert.equals("relay", announced[0].type);
+				Assert.notEquals(first.port, announced[0].port, "the candidate announced is the lost one");
+			}
+
+			Require.notNull(connection.relayedCandidate, "the connection has no relayed candidate after the replacement");
+			Assert.equals(1, server.relay.allocations);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
+	/**
+		An ICE restart asks the relay whether it is still there, and replaces
+		one that is not, so the restart has a relayed candidate to offer.
+	**/
+	public function testAnIceRestartReplacesARelayThatWent():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.2");
+
+			var first:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> first = c, _ -> {});
+			pumpUntil(() -> first != null, 8.0);
+			Require.notNull(first, "the relay never allocated");
+
+			// A peer that exists nowhere: what matters is what the restart asks
+			// of the relay, not whether anybody answers.
+			connection.connect({
+				usernameFragment: "remoteufrag",
+				password: "remotepasswordlongenough",
+				fingerprint: connection.description().fingerprint,
+				candidates: [{address: "127.0.0.9", port: 40404, type: "host", priority: 2130706431}]
+			});
+
+			var announced:Array<CandidateDescription> = [];
+			connection.onLocalCandidate = candidate -> announced.push(candidate);
+
+			// The relay lost the allocation, and nothing here knows yet.
+			server.relay.forgetEverything();
+			connection.restartIce();
+			pumpUntil(() -> announced.length > 0, 8.0);
+
+			Assert.equals(1, announced.length, "the restart has no replacement relayed candidate");
+			Assert.isTrue(server.relay.count("refused-437") > 0, "the relay was never asked whether it still held the allocation");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
+	/**
+		A datagram in the STUN range is decoded once, however many things on
+		the socket might want it.
+
+		The reflexive query, the relay client, the agent and a restart's agent
+		each decoded it for themselves -- four decodes of every datagram, all
+		before any of them checked its integrity, which multiplied what one
+		datagram of junk attributes cost by four.
+	**/
+	public function testADatagramIsDecodedOnce():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var silent = relayServer();
+		silent.relay.dropAll = true;
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			silent.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> gathered = c, _ -> {});
+			pumpUntil(() -> gathered != null, 8.0);
+			Require.notNull(gathered, "the relay never allocated");
+
+			// All four listening: a reflexive question nobody answers, the relay,
+			// an agent checking, and a restart's agent.
+			connection.gatherReflexive("127.0.0.1", silent.port, 30000).then(_ -> {}, _ -> {});
+			connection.connect({
+				usernameFragment: "remoteufrag",
+				password: "remotepasswordlongenough",
+				fingerprint: connection.description().fingerprint,
+				candidates: [{address: "127.0.0.9", port: 40404, type: "host", priority: 2130706431}]
+			});
+			connection.restartIce();
+
+			// An answer to nothing anyone asked, from the relay's own address so
+			// even the relay client looks at it.
+			var stray = new crossbyte.net._internal.stun.StunMessage(crossbyte.net._internal.stun.StunMessage.BINDING_SUCCESS,
+				crossbyte.net._internal.stun.StunMessage.bindingRequest().transactionId, []).encode();
+
+			var before:Int = crossbyte.net._internal.stun.StunMessage.__decoded;
+			@:privateAccess connection.__receiveDatagram(stray, "127.0.0.1", server.port);
+			var decodes:Int = crossbyte.net._internal.stun.StunMessage.__decoded - before;
+
+			Assert.equals(1, decodes, "one datagram was decoded " + decodes + " times");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+		silent.close();
+	}
+
+	/**
+		Two peers connect through a relay one of them reaches over TCP -- the
+		only way out of a network that lets nothing but TCP out.
+
+		The client framed whole datagrams and nothing else, so the relay a
+		peer behind such a network needed most was one it could not use.
+	**/
+	public function testTwoPeersConnectThroughARelayReachedOverTcp():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var heard:String = null;
+
+		try {
+			server.start();
+			server.startTcp();
+			alice.bind(0, "127.0.0.2");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			var failure:String = null;
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.tcpPort, false, TCP).then(_ -> relays++, e -> failure = e);
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			pumpUntil(() -> relays == 2 || failure != null, 10.0);
+
+			if (relays != 2) {
+				Assert.fail("the relay never allocated over TCP: " + failure);
+				alice.close();
+				bob.close();
+				server.close();
+				return;
+			}
+
+			bob.onChannel = function(channel:DataChannel):Void {
+				channel.onMessage = text -> heard = text;
+			};
+
+			alice.connect(relayOnly(bob));
+			bob.connect(relayOnly(alice));
+			pumpUntil(() -> alice.connected && bob.connected, 25.0);
+
+			Assert.isTrue(alice.connected, "the peer on TCP never connected through the relay: " + alice.closeReason);
+			Assert.isTrue(bob.connected, "the peer on UDP never connected: " + bob.closeReason);
+
+			if (alice.connected && bob.connected) {
+				var chat = alice.createDataChannel("chat");
+				pumpUntil(() -> chat.open, 8.0);
+				chat.send("over a stream to the relay");
+				pumpUntil(() -> heard != null, 8.0);
+				Assert.equals("over a stream to the relay", heard);
+			}
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
@@ -617,359 +1008,29 @@ class PeerConnectionRelayTest extends utest.Test {
 			Sys.sleep(0.001);
 		}
 	}
-}
-
-/**
-	A TURN server that actually forwards, standing in memory.
-
-	Enough of RFC 8656 to be told apart from a stub: it refuses an
-	unauthenticated allocation, checks the integrity of the signed one against
-	the long-term key, lends a real socket as the relayed address, and forwards
-	between that socket and its client in both directions.
-
-	It enforces permissions, which is the part that gives the test its teeth. A
-	relay drops what it is asked to forward from an address no permission covers
-	and reports nothing, so a peer whose answers leave by the wrong route simply
-	never connects -- and a server that skipped this would let those answers
-	through and bless the bug.
-**/
-private class FakeTurnServer {
-	public var port(default, null):Int = 0;
-
-	/** Allocations granted, not counting the ones refused for credentials. **/
-	public var allocations(default, null):Int = 0;
-
-	/** Requests turned away because they carried no credentials. **/
-	public var refusedUnauthenticated(default, null):Int = 0;
-
-	/** Datagrams forwarded from a client out to a peer. **/
-	public var forwarded(default, null):Int = 0;
-
-	/** Datagrams that arrived for a client from an address it never permitted. **/
-	public var refusedInbound(default, null):Int = 0;
-
-	/** Whether every peer sent to had been permitted first. **/
-	public var permittedBeforeFirstSend(default, null):Bool = true;
-
-	/** Datagrams a client sent wrapped in a channel rather than an indication. **/
-	public var overChannel(default, null):Int = 0;
-
-	/** Channels bound. **/
-	public var channels(default, null):Int = 0;
 
 	/**
-		Refuse to bind a channel, as a relay without them would.
+		A TURN relay that actually forwards, on real sockets: `FakeTurnRelay`,
+		with this suite's realm and credential.
 
-		The safe half of getting channels wrong: a client told no keeps using
-		indications. The dangerous half -- agreeing and then dropping what
-		arrives -- is what `TurnClient` documents and why they are off by
-		default.
+		It refuses an unauthenticated allocation, checks the signed one against
+		the long-term key, signs what it answers, lends a real socket as the
+		relayed address and forwards between that socket and its client in both
+		directions. And it enforces permissions, which is the part that gives
+		these tests their teeth: a relay drops what it is asked to forward from
+		an address no permission covers and reports nothing, so a peer whose
+		answers leave by the wrong route never connects -- where a relay that
+		skipped this would let them through and bless the bug.
 	**/
-	public var refuseChannels:Bool = false;
-
-	/** Refuse even correctly signed requests, as a relay with other credentials would. **/
-	public var rejectCredentials:Bool = false;
-
-	/** Say nothing at all, as a relay that is not there would. **/
-	public var ignoreEverything:Bool = false;
-
-	/** Refuse to renew an allocation, as a relay that has dropped it would. **/
-	public var refuseRefresh:Bool = false;
-
-	private var __socket:DatagramSocket;
-	private var __allocations:Array<Allocation> = [];
-
-	public function new() {}
-
-	public function start():Void {
-		__socket = new DatagramSocket();
-		__socket.bind(0, "127.0.0.1");
-		port = __socket.localPort;
-		__socket.addEventListener(DatagramSocketDataEvent.DATA, __onControl);
-		__socket.receive();
+	private static function relayServer():FakeTurnRelaySocket {
+		var server = new FakeTurnRelaySocket();
+		server.relay.realm = REALM;
+		server.relay.users = [USERNAME => PASSWORD];
+		return server;
 	}
 
-	public function close():Void {
-		for (allocation in __allocations) {
-			try {
-				allocation.relay.close();
-			} catch (_:Dynamic) {}
-		}
-
-		__allocations = [];
-
-		if (__socket != null) {
-			try {
-				__socket.close();
-			} catch (_:Dynamic) {}
-
-			__socket = null;
-		}
-	}
-
-	private function __onControl(e:DatagramSocketDataEvent):Void {
-		if (ignoreEverything) {
-			return;
-		}
-
-		// Before the STUN parse, because ChannelData is not STUN: its first two
-		// bits are set, which is exactly what tells it apart. A relay that
-		// parses first and asks afterwards drops every one of these silently.
-		if (__forwardChannelData(e)) {
-			return;
-		}
-
-		var message = StunMessage.decode(e.data);
-
-		if (message == null) {
-			return;
-		}
-
-		switch (message.type) {
-			case StunMessage.ALLOCATE_REQUEST:
-				__allocate(message, e.srcAddress, e.srcPort);
-			case StunMessage.CREATE_PERMISSION_REQUEST:
-				__permit(message, e.srcAddress, e.srcPort);
-			case StunMessage.REFRESH_REQUEST:
-				if (refuseRefresh) {
-					__reply(new StunMessage(StunMessage.REFRESH_ERROR, message.transactionId, [
-						StunMessage.errorCode(437, "Allocation Mismatch")
-					]), e.srcAddress, e.srcPort);
-					return;
-				}
-
-				__reply(new StunMessage(StunMessage.REFRESH_SUCCESS, message.transactionId, [StunMessage.lifetime(600)]), e.srcAddress,
-					e.srcPort);
-			case StunMessage.SEND_INDICATION:
-				__forward(message, e.srcAddress, e.srcPort);
-			case StunMessage.CHANNEL_BIND_REQUEST:
-				__bind(message, e.srcAddress, e.srcPort);
-			default:
-		}
-	}
-
-	private function __allocate(message:StunMessage, from:String, fromPort:Int):Void {
-		// Unsigned: say which realm and nonce to sign against, and nothing else.
-		// A relay that allocated here would relay for anybody who asked.
-		if (message.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY) == null) {
-			refusedUnauthenticated++;
-			__reply(new StunMessage(StunMessage.ALLOCATE_ERROR, message.transactionId, [
-				StunMessage.errorCode(401, "Unauthorized"),
-				StunMessage.text(StunMessage.ATTR_REALM, PeerConnectionRelayTest.REALM),
-				StunMessage.text(StunMessage.ATTR_NONCE, "nonce-for-the-test")
-			]), from, fromPort);
-			return;
-		}
-
-		var username = message.textOf(StunMessage.ATTR_USERNAME);
-		var key = StunMessage.longTermKey(username != null ? username : "", PeerConnectionRelayTest.REALM, PeerConnectionRelayTest.PASSWORD);
-
-		if (rejectCredentials || !message.verifyIntegrityWithKey(key)) {
-			__reply(new StunMessage(StunMessage.ALLOCATE_ERROR, message.transactionId, [
-				StunMessage.errorCode(401, "Unauthorized"),
-				StunMessage.text(StunMessage.ATTR_REALM, PeerConnectionRelayTest.REALM),
-				StunMessage.text(StunMessage.ATTR_NONCE, "nonce-for-the-test")
-			]), from, fromPort);
-			return;
-		}
-
-		var allocation = new Allocation(from, fromPort);
-		allocation.relay = new DatagramSocket();
-		allocation.relay.bind(0, "127.0.0.1");
-		allocation.relay.addEventListener(DatagramSocketDataEvent.DATA, function(e:DatagramSocketDataEvent):Void {
-			__deliver(allocation, e);
-		});
-		allocation.relay.receive();
-
-		__allocations.push(allocation);
-		allocations++;
-
-		__reply(new StunMessage(StunMessage.ALLOCATE_SUCCESS, message.transactionId, [
-			StunMessage.xorRelayed("127.0.0.1", allocation.relay.localPort),
-			StunMessage.xorMappedAddress(from, fromPort),
-			StunMessage.lifetime(600)
-		]), from, fromPort);
-	}
-
-	/**
-		Binds a channel number to a peer, and permits it at the same time.
-
-		RFC 8656 section 12 has a ChannelBind do both, which is why a client
-		that has one still works without asking for a permission separately.
-	**/
-	private function __bind(message:StunMessage, from:String, fromPort:Int):Void {
-		var allocation = __find(from, fromPort);
-		var peer = message.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
-		var number = message.uintOf(StunMessage.ATTR_CHANNEL_NUMBER, 0) >> 16;
-
-		if (refuseChannels || allocation == null || peer == null || number < 0x4000 || number > 0x7FFE) {
-			__reply(new StunMessage(StunMessage.CHANNEL_BIND_ERROR, message.transactionId,
-				[StunMessage.errorCode(400, "Bad Request")]), from, fromPort);
-			return;
-		}
-
-		if (allocation.permitted.indexOf(peer.address) < 0) {
-			allocation.permitted.push(peer.address);
-		}
-
-		allocation.channels.set(number, peer.address + ":" + peer.port);
-		channels++;
-
-		__reply(new StunMessage(StunMessage.CHANNEL_BIND_SUCCESS, message.transactionId), from, fromPort);
-	}
-
-	/**
-		A client's ChannelData, unwrapped and sent on to the peer it stands for.
-
-		@return Whether that is what this was. A number outside the range or one
-		no channel was bound to belongs to somebody else on the socket.
-	**/
-	private function __forwardChannelData(e:DatagramSocketDataEvent):Bool {
-		if (e.data.length < 4) {
-			return false;
-		}
-
-		e.data.position = 0;
-		var number = (e.data.readUnsignedByte() << 8) | e.data.readUnsignedByte();
-		var length = (e.data.readUnsignedByte() << 8) | e.data.readUnsignedByte();
-
-		if (number < 0x4000 || number > 0x7FFE || 4 + length > e.data.length) {
-			e.data.position = 0;
-			return false;
-		}
-
-		var allocation = __find(e.srcAddress, e.srcPort);
-
-		if (allocation == null || !allocation.channels.exists(number)) {
-			e.data.position = 0;
-			return false;
-		}
-
-		var peer = allocation.channels.get(number).split(":");
-		var payload = new ByteArray();
-
-		if (length > 0) {
-			e.data.readBytes(payload, 0, length);
-		}
-
-		e.data.position = 0;
-		payload.position = 0;
-		overChannel++;
-		forwarded++;
-		allocation.relay.send(payload, 0, payload.length, peer[0], Std.parseInt(peer[1]));
-		return true;
-	}
-
-	private function __permit(message:StunMessage, from:String, fromPort:Int):Void {
-		var allocation = __find(from, fromPort);
-		var peer = message.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
-
-		if (allocation != null && peer != null && allocation.permitted.indexOf(peer.address) < 0) {
-			allocation.permitted.push(peer.address);
-		}
-
-		__reply(new StunMessage(StunMessage.CREATE_PERMISSION_SUCCESS, message.transactionId), from, fromPort);
-	}
-
-	/** Client to peer: unwrap and send it on from the allocation's own socket. **/
-	private function __forward(message:StunMessage, from:String, fromPort:Int):Void {
-		var allocation = __find(from, fromPort);
-		var peer = message.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
-		var payload = message.attribute(StunMessage.ATTR_DATA);
-
-		if (allocation == null || peer == null || payload == null) {
-			return;
-		}
-
-		if (allocation.permitted.indexOf(peer.address) < 0) {
-			permittedBeforeFirstSend = false;
-			return;
-		}
-
-		forwarded++;
-		payload.position = 0;
-		allocation.relay.send(payload, 0, payload.length, peer.address, peer.port);
-	}
-
-	/** Peer to client: wrap it up, if the client asked to hear from there. **/
-	private function __deliver(allocation:Allocation, e:DatagramSocketDataEvent):Void {
-		if (allocation.permitted.indexOf(e.srcAddress) < 0) {
-			refusedInbound++;
-			return;
-		}
-
-		e.data.position = 0;
-
-		// Over the channel if one stands for this peer, which is the direction
-		// that saves the bytes on the way back.
-		var key = e.srcAddress + ":" + e.srcPort;
-
-		for (number in allocation.channels.keys()) {
-			if (allocation.channels.get(number) == key) {
-				var framed = new ByteArray();
-				framed.writeByte((number >> 8) & 0xFF);
-				framed.writeByte(number & 0xFF);
-				framed.writeByte((e.data.length >> 8) & 0xFF);
-				framed.writeByte(e.data.length & 0xFF);
-				framed.writeBytes(e.data, 0, e.data.length);
-				framed.position = 0;
-
-				__socket.send(framed, 0, framed.length, allocation.address, allocation.port);
-				return;
-			}
-		}
-
-		__reply(new StunMessage(StunMessage.DATA_INDICATION, __transaction(), [
-			StunMessage.xorPeerAddress(e.srcAddress, e.srcPort),
-			StunMessage.data(e.data)
-		]), allocation.address, allocation.port);
-	}
-
-	private function __find(address:String, port:Int):Null<Allocation> {
-		for (allocation in __allocations) {
-			if (allocation.address == address && allocation.port == port) {
-				return allocation;
-			}
-		}
-
-		return null;
-	}
-
-	private function __reply(message:StunMessage, address:String, port:Int):Void {
-		if (__socket == null) {
-			return;
-		}
-
-		var payload = message.encode();
-		__socket.send(payload, 0, payload.length, address, port);
-	}
-
-	private var __counter:Int = 0;
-
-	private function __transaction():ByteArray {
-		var bytes = new ByteArray();
-
-		for (i in 0...12) {
-			bytes.writeByte((__counter + i * 7) & 0xFF);
-		}
-
-		__counter++;
-		bytes.position = 0;
-		return bytes;
-	}
-}
-
-private class Allocation {
-	public var address:String;
-	public var port:Int;
-	public var relay:DatagramSocket;
-	public var permitted:Array<String> = [];
-
-	/** Channel number to "address:port" of the peer it stands for. **/
-	public var channels:Map<Int, String> = new Map();
-
-	public function new(address:String, port:Int) {
-		this.address = address;
-		this.port = port;
+	/** Datagrams the relay forwarded from a client to a peer, either way they were wrapped. **/
+	private static function forwarded(server:FakeTurnRelaySocket):Int {
+		return server.relay.count("send-relayed") + server.relay.count("channeldata-relayed");
 	}
 }

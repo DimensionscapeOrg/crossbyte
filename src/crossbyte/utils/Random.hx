@@ -1,7 +1,9 @@
 package crossbyte.utils;
 
-#if (cpp || hl || java || cs)
+#if (cpp || (hl && hl_ver >= version("1.13.0")) || java || cs)
 import haxe.atomic.AtomicInt;
+#elseif target.threaded
+import sys.thread.Mutex;
 #end
 import crossbyte.utils.Hash;
 import haxe.io.Bytes;
@@ -33,19 +35,33 @@ final class Random {
 	//
 	// Private now. It was public and nothing outside this class ever read it;
 	// `reseed` is the supported way to set it, and it does not vary by target.
-	#if (cpp || hl || java || cs)
+	//
+	// hl has atomics from 1.13 only, and Haxe's AtomicInt refuses to compile
+	// for an older one, which is the default -- so naming it for every hl
+	// stopped this class compiling there at all. An hl without them, neko and
+	// eval have threads and no atomics, and take a lock instead.
+	#if (cpp || (hl && hl_ver >= version("1.13.0")) || java || cs)
 	@:noCompletion private static var __shared:AtomicInt = new AtomicInt(defaultSeed());
 	#else
 	@:noCompletion private static var __shared:Int = defaultSeed();
 	#end
+	#if (!(cpp || (hl && hl_ver >= version("1.13.0")) || java || cs) && target.threaded)
+	@:noCompletion private static final __sharedLock:Mutex = new Mutex();
+	#end
 
 	@:noCompletion private static inline function __takeSeed():Int {
-		#if (cpp || hl || java || cs)
+		#if (cpp || (hl && hl_ver >= version("1.13.0")) || java || cs)
 		// Fetch-and-add: the value before the increment.
 		return __shared.add(1);
 		#else
+		#if target.threaded
+		__sharedLock.acquire();
+		#end
 		var current:Int = __shared;
 		__shared = (current + 1) | 0;
+		#if target.threaded
+		__sharedLock.release();
+		#end
 		return current;
 		#end
 	}
@@ -58,10 +74,16 @@ final class Random {
 	public static inline function reseed(v:Int):Void {
 		var value:Int = v != 0 ? v : 0x9E3779B9;
 
-		#if (cpp || hl || java || cs)
+		#if (cpp || (hl && hl_ver >= version("1.13.0")) || java || cs)
 		__shared.store(value);
 		#else
+		#if target.threaded
+		__sharedLock.acquire();
+		#end
 		__shared = value;
+		#if target.threaded
+		__sharedLock.release();
+		#end
 		#end
 	}
 
@@ -271,9 +293,33 @@ final class Random {
 		return z;
 	}
 
-	@:noCompletion private static inline function defaultSeed():Int {
-		var t:Int = Std.int(haxe.Timer.stamp() * 1e6);
-		return (t ^ 0x9E3779B9);
+	/**
+		The shared generator's seed when nobody gives one: the monotonic clock
+		in microseconds, and the time of day, each taken modulo 2^32.
+
+		It was `Std.int(stamp * 1e6)`, which past 2^31 microseconds -- 36
+		minutes of uptime on the jvm, whose clock counts from boot -- saturated
+		at 2147483647 there and came out INT_MIN on hl and neko: every run on
+		those targets started from the one seed and drew one sequence.
+	**/
+	@:noCompletion private static function defaultSeed():Int {
+		var micros:Float = haxe.Timer.stamp() * 1e6;
+		// time of day: only to tell one run from another, never to time anything.
+		var millis:Float = Date.now().getTime();
+		return __low32(micros) ^ __low32(millis) ^ 0x9E3779B9;
+	}
+
+	// The low 32 bits of a non-negative whole-ish number, as an Int on every
+	// target: reduced in Float, so nothing is converted out of Int's range.
+	@:noCompletion private static inline function __low32(value:Float):Int {
+		var low:Float = value % 4294967296.0;
+		if (low < 0) {
+			low += 4294967296.0;
+		}
+		if (low >= 2147483648.0) {
+			low -= 4294967296.0;
+		}
+		return Std.int(low);
 	}
 
 	@:pure @:noCompletion private static inline function __u32ToFloat01(u:Int):Float {
@@ -299,23 +345,43 @@ final class Random {
 		return v;
 	}
 
+	// How many values [min, max] holds is counted in Float. Counted in Int it
+	// overflowed from 2^31 values up: Random.int(0, 0x7FFFFFFF) came out 0
+	// every time on eval and the jvm, and half of Node's answers fell outside
+	// the range. Up to 2^31 - 1 values -- every range that ever worked -- the
+	// draw is the one it always was, so a seeded sequence reads the same.
 	@:noCompletion private static inline function __int(next:() -> Int, min:Int, max:Int):Int {
-		var span:Int = max - min + 1;
+		var result:Int = min;
+		// `+ 0.0`, not a cast: eval keeps Int arithmetic for an Int typed as Float.
+		var span:Float = (max + 0.0) - (min + 0.0) + 1.0;
 		if (span <= 0) {
-			return min;
+			// An empty range, as it always answered.
+		} else if (span <= 2147483647.0) {
+			var count:Int = Std.int(span);
+			var mask:Int = __nextPow2Minus1(count);
+			if ((mask + 1) == count) {
+				result = min + (next() & mask);
+			} else {
+				var x:Int = next() & mask;
+				while (x >= count) {
+					x = next() & mask;
+				}
+				result = min + x;
+			}
+		} else {
+			// 2^31 to 2^32 values: every bit of a draw, read unsigned, and
+			// at least half of the draws land inside.
+			var u:Float = __unsigned(next());
+			while (u >= span) {
+				u = __unsigned(next());
+			}
+			result = Std.int(min + u);
 		}
+		return result;
+	}
 
-		var mask:Int = __nextPow2Minus1(span);
-		if ((mask + 1) == span) {
-			return min + (next() & mask);
-		}
-
-		var x:Int = next() & mask;
-		while (x >= span) {
-			x = next() & mask;
-		}
-
-		return min + x;
+	@:pure @:noCompletion private static inline function __unsigned(u:Int):Float {
+		return u < 0 ? u + 4294967296.0 : u + 0.0;
 	}
 
 	@:noCompletion private static inline function __randomString(next:() -> Int, len:Int, ab:String):String {

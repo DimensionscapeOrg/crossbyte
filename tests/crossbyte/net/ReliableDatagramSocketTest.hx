@@ -19,6 +19,7 @@ import crossbyte.net._internal.reliable.ReliableDatagramProtocol.ReliableDatagra
 class ReliableDatagramSocketTest extends utest.Test {
 	public function testAServerLearnsWhereItIsReachable():Void {
 		if (!requireDatagramSupport()) return;
+		if (!requireDiscovery()) return;
 
 		// A STUN server of our own, so this needs no network and no third
 		// party. It answers the binding request with an address of its
@@ -99,6 +100,7 @@ class ReliableDatagramSocketTest extends utest.Test {
 			Assert.isFalse(ReliableDatagramSocket.isSupported);
 			return;
 		}
+		if (!requireDiscovery()) return;
 
 		var stun = new DatagramSocket();
 		var requests = 0;
@@ -617,6 +619,15 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 	public function testSessionsAskForAWindowOfSocketBuffer():Void {
 		if (!requireDatagramSupport()) return;
+
+		#if hl
+		// HashLink cannot size a socket's buffers (they read 0 there), so a
+		// session has nothing to ask for and nothing to read back.
+		var unsized = new ReliableDatagramSocket();
+		Assert.equals(0, unsized.receiveBufferSize);
+		unsized.close();
+		return;
+		#end
 
 		// What this system grants a socket that asks for a window's worth:
 		// all of it on Windows and macOS, what net.core.rmem_max allows on
@@ -1375,6 +1386,36 @@ class ReliableDatagramSocketTest extends utest.Test {
 			return false;
 		}
 		return true;
+	}
+
+	/**
+		Whether public-address discovery can run here, checking what it does
+		where it cannot.
+
+		hl has UDP and no secure random source, and discovery refuses there on
+		purpose: a binding request's transaction id is what its answer is
+		believed by. So on such a target the case has nothing to discover, and
+		asserts the refusal instead -- promptly, and saying why.
+	**/
+	private static function requireDiscovery():Bool {
+		if (crossbyte.crypto.SecureRandom.isSupported) {
+			return true;
+		}
+
+		var server = new ReliableDatagramServerSocket();
+		var refusal:String = null;
+		try {
+			server.bind(0, "127.0.0.1");
+			server.listen();
+			server.discoverPublicAddress("127.0.0.1", 3478, 1000).then(_ -> {}, error -> refusal = error);
+			pumpUntil(() -> refusal != null, 2.0);
+		} catch (e:Dynamic) {
+			refusal = "threw " + Std.string(e);
+		}
+		try server.close() catch (_:Dynamic) {}
+
+		Assert.isTrue(refusal != null && refusal.indexOf("secure random") >= 0, "discovery without a secure random source: " + refusal);
+		return false;
 	}
 
 	// The whole of `bytes` as text, leaving its position where it was.

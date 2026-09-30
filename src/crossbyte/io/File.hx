@@ -1577,9 +1577,11 @@ final class File extends EventDispatcher {
 		only, or `CREATE_NEW` -- so a name that is taken, by a link or anything
 		else, is passed over for another.
 
-		The interpreter and neko have neither a secure source nor an exclusive
-		create, and fall back to an unguessable-in-practice name and a check;
-		neither is a deployment target.
+		The interpreter, hl and neko have neither a secure source nor an
+		exclusive create here, and fall back to a name drawn from `Std.random`
+		and a check. That is unguessable in practice and no more: on a shared
+		temporary directory with local users who cannot be trusted, prefer a
+		native build.
 	**/
 	@:noCompletion private static function __createTemp(directory:Bool):String {
 		#if (js && !nodejs)
@@ -1621,14 +1623,26 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	/** Sixteen hex digits from the secure source where there is one. **/
+	/**
+		Sixteen hex digits from the secure source where there is one.
+
+		Elsewhere four draws of sixteen bits. It was two draws below
+		0x7FFFFFFF, and neko's Int is 31 bits: that bound is not an Int there,
+		and the native under `Std.random` refused it, so every temporary file
+		and directory neko asked for threw -- and so did every `Store.put`,
+		which drew the same way.
+	**/
 	@:noCompletion private static function __tempNonce():String {
 		if (crossbyte.crypto.SecureRandom.isSupported) {
 			var bytes:haxe.io.Bytes = crossbyte.crypto.SecureRandom.getSecureRandomBytes(8);
 			return bytes.sub(0, 8).toHex();
 		}
 
-		return StringTools.hex(Std.random(0x7FFFFFFF), 8).toLowerCase() + StringTools.hex(Std.random(0x7FFFFFFF), 8).toLowerCase();
+		var nonce:String = "";
+		for (_ in 0...4) {
+			nonce += StringTools.hex(Std.random(0x10000), 4).toLowerCase();
+		}
+		return nonce;
 	}
 
 	/**
