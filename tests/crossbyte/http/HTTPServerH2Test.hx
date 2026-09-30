@@ -1158,10 +1158,18 @@ private class H2Session {
 	/**
 	 * Pumps for `seconds` without sending anything. Cut short if the server
 	 * ends the connection, since then there is nothing left to wait for.
+	 *
+	 * Each pump advances the runtime by a millisecond, the time pumpUntil
+	 * sleeps between them. At its default step of a sixtieth the runtime's
+	 * clock ran about fifteen times faster than the wall clock this waits on
+	 * wherever a millisecond's sleep takes one, Linux, not Windows, and
+	 * utest's timeout runs on the runtime's clock: the 1.5 s pause of the long
+	 * poll case came to some 24 s of it, and the case timed out on CI with its
+	 * answer on the way.
 	 */
 	public function pause(seconds:Float, then:Void->Void):Void {
 		var resumeAt:Float = haxe.Timer.stamp() + seconds;
-		until(() -> ended || haxe.Timer.stamp() >= resumeAt, then, seconds + 5.0);
+		HTTPTestSupport.pumpUntilAsync(() -> ended || haxe.Timer.stamp() >= resumeAt, seconds + 5.0, _ -> then(), 0.001);
 	}
 
 	/** The server this session talks to. */
