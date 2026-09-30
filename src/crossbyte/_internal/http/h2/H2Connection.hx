@@ -521,6 +521,20 @@ class H2Connection {
 			return;
 		}
 
+		// RFC 9113 8.2.1 holds a response to the rules a request is held to:
+		// a CR, LF or NUL in a value, or a name that is not visible lowercase
+		// ASCII, is a malformed response, a stream error (8.1.1). It reached
+		// the caller's headers, and a program passing them on over HTTP/1.1
+		// wrote the line break with them. Checked before any field is kept.
+		for (header in decoded) {
+			var problem:Null<String> = H2FieldRules.violation(header.name, header.value);
+			if (problem != null) {
+				target.failure = "Malformed response: " + problem;
+				resetStream(target.id, H2ErrorCode.PROTOCOL_ERROR);
+				return;
+			}
+		}
+
 		for (header in decoded) {
 			if (header.name == ":status") {
 				// Three digits (§8.3.2), read the same on every target. Past

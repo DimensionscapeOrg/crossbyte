@@ -1220,6 +1220,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- HTTP/2 refuses a field holding a CR, LF or NUL in its value, or a name
+  that is not visible lowercase ASCII, as RFC 9113 8.2.1 says: on the
+  server the request's stream is reset, and in the client the response
+  fails, both leaving the connection to its other streams. HPACK carries
+  any byte, so a line break reached the request a middleware saw, and a
+  response header the caller might pass on over HTTP/1.1.
 - The HTTP/2 server sends `Set-Cookie`, `WWW-Authenticate`,
   `Proxy-Authenticate` and any `Authorization` or `Cookie` a response
   carries never-indexed. Every response field went into the HPACK dynamic
