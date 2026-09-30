@@ -692,7 +692,9 @@ class URLLoaderHttpTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + timeoutSeconds;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			// Not Sys.sleep, which on eval now and then never returned: this
+			// loop was where testClosingALoadInFlightEndsItQuietly hung.
+			crossbyte.http.HTTPTestSupport.nap(0.001);
 		}
 	}
 
