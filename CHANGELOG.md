@@ -5,6 +5,27 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- A MongoDB client that speaks the server's wire protocol over CrossByte's
+  own sockets, on hxcpp, the jvm, the interpreter, hl and neko. MongoDB was
+  listed among CrossByte's databases and could be reached from none of
+  them: `MongoConnection` went through PHP's extension, embedded in a Haxe
+  string that had not compiled since a3239a7. It now opens a `mongodb://`
+  string or a config, several hosts, a secondary followed to its primary,
+  TLS with a CA file or a client certificate, says hello over OP_MSG, and
+  signs in with SCRAM-SHA-256 or SCRAM-SHA-1, their first step riding on
+  the hello, or with X.509 or PLAIN. It has `insert` (batched to the
+  server's limits, an `ObjectId` made for a document without an `_id`),
+  `find`, `findOne`, `update`, `delete`, `aggregate`, `count`,
+  `createIndexes`, `drop` and `runCommand`; `MongoCursor` fetches with
+  `getMore` as it is read, and `close` sends `killCursors`; write concern
+  is per connection or per write. `begin`, `commit` and `rollback` run a
+  transaction on the connection's session, and `MongoConnection` is an
+  `ITransactionalConnection`, so a pool rolls back one a borrower leaves
+  open. A refusal is a `MongoError`, an `SQLError` with the server's code
+  in `errorID`, its `codeName`, labels and write errors; a lost connection
+  is an `IOError`. Like the other drivers it blocks, for a worker, and it
+  is not built for JavaScript. Not done: `mongodb+srv://`, compression,
+  retryable writes, and reads from secondaries.
 - `crossbyte.db.mongodb.bson`: BSON, encoded and decoded on every target,
   the browser included, double, string, document, array, binary with its
   subtype, ObjectId, bool, UTC datetime, null, regex, JavaScript, int32,
@@ -806,6 +827,15 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `MongoConnection.lastInsertRowID` is gone: MongoDB has no row ids, and it
+  read 0 whatever was inserted. `lastInsertId` is the `_id` of the last
+  document inserted. `request()` takes Extended JSON and answers a cursor
+  over the result's documents, where it answered the command's reply as
+  one row, and `MongoStatement` binds its `:name` parameters as BSON values,
+  `parameters` takes any value, not only a string. The php backend,
+  PHP's `mongodb` extension, is removed; the wire client builds for php,
+  and has not been run there. What to change: read `lastInsertId`, and
+  expect the documents themselves from a `find` through `request()`.
 - `ReliableDatagramServerSocket.connect()` to a name, and so
   `NetHost.dial()` on a reliable-UDP host, looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -1230,6 +1260,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `MongoStatement` that fails reaches its `SQLErrorEvent` listeners on the
+  jvm. Its failure paths, and `MongoConnection`'s, passed the caught
+  exception where `SQLError` and `IOError` take a `String`, so on the jvm
+  each was a ClassCastException that escaped `execute()`, left the
+  listeners unrun, and lost what had gone wrong. The cause now travels as
+  text, and a server's refusal as the `MongoError` with its code.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of

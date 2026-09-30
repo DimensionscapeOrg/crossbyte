@@ -1,35 +1,61 @@
 package crossbyte.db.mongodb;
 
-// Not built for any JavaScript target (Node included, which has no threads): a database driver needs a socket or a file, and credentials do not belong in a page.
+// Not built for any JavaScript target: it runs on a blocking connection.
 #if !js
-
 import crossbyte.FieldStruct;
+import crossbyte.db.mongodb.bson.BsonDocument;
+import crossbyte.db.mongodb.bson.ExtendedJson;
 import crossbyte.db.sql.SQLResult;
-import crossbyte.db.sql._internal.ParamBinder;
+import crossbyte.errors.SQLError;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
-import crossbyte.errors.SQLError;
 #if cpp
 import sys.thread.Deque;
 #end
 
-/** Prepared-like command wrapper for issuing MongoDB JSON commands through `MongoConnection`. */
-typedef MongoResultSet = Dynamic;
+/**
+	A MongoDB command written as Extended JSON, run the way the other drivers'
+	statements run SQL: `execute`, then `getResult` a page at a time.
 
+	```haxe
+	var statement = new MongoStatement();
+	statement.sqlConnection = connection;
+	statement.text = '{"find": "sessions", "filter": {"userId": :user, "expiresAt": {"$gt": :now}}}';
+	statement.parameters.user = 42;
+	statement.parameters.now = Date.now();
+	statement.execute(100);
+	var page = statement.getResult();
+	```
+
+	`:name` placeholders are bound to `parameters` as values, a date stays a
+	BSON date, an `Int64` an int64, never spliced into the text, so no value
+	can change what the command does. A command answering with a cursor
+	(`find`, `aggregate`) pages through it: `execute(n)` and `next(n)` fetch `n`
+	documents at a time, sending `getMore` as the server's batches run out.
+	Any other command's result is its reply, as a single row.
+
+	A failure is dispatched as an `SQLErrorEvent`, whose error is the
+	`MongoError` with the server's code.
+**/
 @:access(crossbyte.db.mongodb.MongoConnection)
 class MongoStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
 	public var itemClass:Class<Dynamic>;
-	public var parameters(default, null):FieldStruct<String>;
+
+	/** Values for the `:name` placeholders in `text`, bound as BSON values. **/
+	public var parameters(default, null):FieldStruct<Dynamic>;
+
 	public var sqlConnection(get, set):MongoConnection;
+
+	/** The command, as Extended JSON. **/
 	public var text:String;
 
 	@:noCompletion private var __sqlConnection:MongoConnection;
-	@:noCompletion private var __connection:Dynamic;
-	@:noCompletion private var __resultSet:Dynamic;
+	@:noCompletion private var __cursor:MongoCursor;
 	@:noCompletion private var __prefetch:Int = 0;
 	@:noCompletion private var __executing:Bool = false;
+	@:noCompletion private var __affected:Int = 0;
 
 	#if cpp
 	@:noCompletion private var __resultQueue:Deque<Array<Dynamic>>;
@@ -40,121 +66,168 @@ class MongoStatement extends EventDispatcher {
 	public function new() {
 		super();
 		parameters = new FieldStruct();
+		__resetQueue();
 	}
 
 	public function clearParameters():Void {
 		parameters = new FieldStruct();
 	}
 
+	/**
+		Stops paging: the cursor, if one is open, is closed on the server, and
+		the results not yet taken are dropped.
+	**/
 	public function cancel():Void {
 		if (__executing) {
 			__executing = false;
 			__prefetch = 0;
-			#if cpp
-			__resultQueue = new Deque();
-			#else
-			__resultQueue = [];
-			#end
-			__resultSet = null;
+			__resetQueue();
+			__closeCursor();
 			text = "";
 			clearParameters();
 		}
 	}
 
+	/**
+		Runs the command. With `prefetch` of -1, the default, every document is
+		fetched at once; with a positive count, that many, and `next` fetches
+		more.
+
+		@throws String When no connection is set.
+	**/
 	public function execute(prefetch:Int = -1):Void {
-		if (__connection == null) {
+		if (__sqlConnection == null) {
 			throw "MongoStatement: no connection set.";
 		}
+
 		__executing = true;
-
-		#if cpp
-		__resultQueue = new Deque();
-		#else
-		__resultQueue = [];
-		#end
-
-		var payload = __resolvePayload(text);
+		__resetQueue();
+		__closeCursor();
 		__prefetch = prefetch;
 
 		try {
-			__resultSet = __connection.request(payload);
+			var params:FieldStruct<Dynamic> = parameters;
+			var command:Dynamic = ExtendedJson.parse(text, name -> FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null);
+
+			if (!Std.isOfType(command, BsonDocument)) {
+				throw new SQLError(SQLEvent.RESULT, "A command is a JSON object.", "Execution failed: a command is a JSON object.");
+			}
+
+			var reply:Dynamic = __sqlConnection.runCommand(command);
+			__affected = __affectedOf(reply);
+			__cursor = __sqlConnection.__cursorOf(reply, (command : BsonDocument).keyAt(0));
 			__queueResult();
 			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, e, "Execution failed")));
+			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, __asSQLError(e)));
 		}
 	}
 
+	/** Fetches the next `prefetch` documents, or all that remain with -1. **/
 	public function next(prefetch:Int = -1):Void {
-		if (__resultSet == null) {
+		if (__cursor == null) {
 			throw "MongoDB Error - invalid result set";
 		}
+
 		__prefetch = prefetch;
 
-		if (__resultSet.hasNext()) {
-			__queueResult();
+		try {
+			if (__cursor.hasNext()) {
+				__queueResult();
+			} else {
+				__executing = false;
+				__prefetch = 0;
+			}
+
 			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
-		} else {
+		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
-			__dispatchEvent(new SQLEvent(SQLEvent.RESULT));
+			__dispatchEvent(new SQLErrorEvent(SQLErrorEvent.ERROR, __asSQLError(e)));
 		}
 	}
 
+	/**
+		The next page fetched, or `null`. `rowsAffected` is what the command
+		reported writing, `n` from an insert, update or delete, and
+		`complete` whether the documents have all been taken.
+	**/
 	public function getResult():SQLResult {
 		#if cpp
 		var results = __resultQueue.pop(false);
 		#else
-		var results = __resultQueue.pop();
+		var results = __resultQueue.shift();
 		#end
 
-		var complete:Bool = !__executing;
-
 		if (results != null) {
-			var len:Int = (__resultSet != null) ? __resultSet.length : 0;
-			var lastId:Int = (__sqlConnection != null) ? __sqlConnection.lastInsertRowID : 0;
-
-			return new SQLResult(results, len, complete, lastId);
+			return new SQLResult(results, __affected, !__executing, 0);
 		}
+
 		return null;
 	}
 
-	private function __resolvePayload(source:String):String {
-		var params:FieldStruct<String> = parameters;
-		return ParamBinder.substitute(source, function(name:String):Null<Dynamic> {
-			return FieldStruct.exists(params, name) ? FieldStruct.get(params, name) : null;
-		}, __quoteValue);
-	}
-
-	private function __quoteValue(value:Dynamic):String {
-		// JSON-encode so a value containing `"` or `}` cannot alter command structure.
-		return haxe.Json.stringify(value);
-	}
-
-	private function __queueResult():Void {
+	@:noCompletion private function __queueResult():Void {
 		var rows:Array<Dynamic> = [];
 
 		if (__prefetch == -1) {
-			while (__resultSet.hasNext()) {
-				rows.push(__resultSet.next());
+			while (__cursor.hasNext()) {
+				rows.push(__cursor.next());
 			}
-			__push(rows);
+
 			__executing = false;
 		} else if (__prefetch > 0) {
-			for (i in 0...__prefetch) {
-				if (__resultSet.hasNext()) {
-					rows.push(__resultSet.next());
+			for (_ in 0...__prefetch) {
+				if (__cursor.hasNext()) {
+					rows.push(__cursor.next());
 				} else {
-					__executing = false;
 					break;
 				}
 			}
-			__push(rows);
+
+			// Spent when the last document is taken, whether or not this page
+			// filled: asking the cursor answers without a round trip unless
+			// the server holds more.
+			if (!__cursor.hasNext()) {
+				__executing = false;
+			}
 		}
 
+		__push(rows);
 		__prefetch = 0;
+	}
+
+	@:noCompletion private function __closeCursor():Void {
+		if (__cursor != null) {
+			var cursor:MongoCursor = __cursor;
+			__cursor = null;
+
+			try {
+				cursor.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+
+	@:noCompletion private static function __affectedOf(reply:Dynamic):Int {
+		var n:Dynamic = Reflect.field(reply, "n");
+		return n == null || Reflect.hasField(reply, "cursor") ? 0 : MongoConnection.__int(n);
+	}
+
+	/**
+		The failure as an `SQLError`, whatever was thrown. A `MongoError` is
+		one already and keeps its code; anything else is carried as text,
+		never as itself, a native exception where `SQLError` wants a
+		`String` was a ClassCastException on the jvm, which escaped `execute`
+		and left every listener unrun.
+	**/
+	@:noCompletion private static function __asSQLError(e:Dynamic):SQLError {
+		if (Std.isOfType(e, SQLError)) {
+			return e;
+		}
+
+		var detail:String = Std.string(e);
+		return new SQLError(SQLEvent.RESULT, detail, "Execution failed: " + detail);
 	}
 
 	private function get_executing():Bool {
@@ -163,11 +236,6 @@ class MongoStatement extends EventDispatcher {
 
 	private function set_sqlConnection(v:MongoConnection):MongoConnection {
 		__sqlConnection = v;
-		if (v != null) {
-			__connection = v;
-		} else {
-			__connection = null;
-		}
 		return v;
 	}
 
@@ -175,7 +243,15 @@ class MongoStatement extends EventDispatcher {
 		return __sqlConnection;
 	}
 
-	@:noCompletion private inline function __push<T>(a:Array<T>):Void {
+	@:noCompletion private inline function __resetQueue():Void {
+		#if cpp
+		__resultQueue = new Deque();
+		#else
+		__resultQueue = [];
+		#end
+	}
+
+	@:noCompletion private inline function __push(a:Array<Dynamic>):Void {
 		#if cpp
 		__resultQueue.add(a);
 		#else
