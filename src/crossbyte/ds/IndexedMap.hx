@@ -11,6 +11,9 @@ package crossbyte.ds;
  * Each value is associated with an integer key, but the internal array remains
  * dense for performance.
  *
+ * Removing the entry a loop is on is safe: the entry swapped into its place
+ * is visited next, where the array's own iterator skipped it.
+ *
  * @param T The type of the stored values.
  */
 class IndexedMap<T> {
@@ -151,7 +154,48 @@ class IndexedMap<T> {
 	 *
 	 * @return An iterator over the stored values.
 	 */
-	public function iterator():Iterator<T> {
-		return values.iterator();
+	public inline function iterator():IndexedMapIterator<T> {
+		return new IndexedMapIterator<T>(this);
+	}
+}
+
+/**
+ * Walks an `IndexedMap`'s values in their current order, with the entry just
+ * returned free to be removed: if another was swapped into its place, that
+ * place is visited again. Keys, not values, say whether it was, two keys
+ * can hold one value.
+ */
+@:noCompletion
+@:access(crossbyte.ds.IndexedMap)
+class IndexedMapIterator<T> {
+	private var __map:IndexedMap<T>;
+	private var __next:Int = 0;
+	private var __returnedAt:Int = -1;
+	private var __returnedKey:Int = 0;
+
+	public inline function new(map:IndexedMap<T>) {
+		__map = map;
+	}
+
+	public inline function hasNext():Bool {
+		__settle();
+		return __next < __map.values.length;
+	}
+
+	public inline function next():T {
+		__settle();
+		__returnedAt = __next;
+		__returnedKey = __map.indexToKey[__next];
+		return __map.values[__next++];
+	}
+
+	private inline function __settle():Void {
+		if (__returnedAt >= 0) {
+			var keys:Array<Int> = __map.indexToKey;
+			if (__returnedAt >= keys.length || keys[__returnedAt] != __returnedKey) {
+				__next = __returnedAt;
+			}
+			__returnedAt = -1;
+		}
 	}
 }

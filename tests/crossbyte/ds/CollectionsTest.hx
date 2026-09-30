@@ -642,6 +642,81 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(0, map.keys().length);
 	}
 
+	/**
+		`IndexedMap` swaps its last entry into a removed one's place too, and
+		its iterator was the array's: removing the entry a loop was on skipped
+		the one swapped in. Two keys hold the same value here, so the loop has
+		to tell entries apart by key.
+	**/
+	public function testIndexedMapRemovingWhileIteratingVisitsEachOnce():Void {
+		var map = new IndexedMap<String>();
+		for (i in 0...6) {
+			map.set(i, "same");
+		}
+		// The entry the loop is on is always first here: each removal swaps
+		// the last into its place, and the loop has to visit that one next.
+		var visits:Int = 0;
+		for (_ in map) {
+			visits++;
+			map.remove(map.keys()[0]);
+		}
+		Assert.equals(6, visits);
+		Assert.equals(0, map.length());
+
+		var distinct = new IndexedMap<String>();
+		for (i in 0...6) {
+			distinct.set(i, "v" + i);
+		}
+		var seen:Array<String> = [];
+		for (value in distinct) {
+			seen.push(value);
+			var key:Int = Std.parseInt(value.substr(1));
+			if (key % 2 == 0) {
+				distinct.remove(key);
+			}
+		}
+		seen.sort(Reflect.compare);
+		Assert.equals("v0,v1,v2,v3,v4,v5", seen.join(","));
+		Assert.equals(3, distinct.length());
+	}
+
+	/**
+		`PackedSlotMap` moves its last entry into a removed one's place. Its
+		iterator was the value array's, which skipped the entry moved in, and
+		`forEach` counted the entries before it began and read past the end
+		once one was removed.
+	**/
+	public function testPackedSlotMapRemovingWhileIteratingVisitsEachOnce():Void {
+		var map = new PackedSlotMap<String>(8);
+		for (_ in 0...6) {
+			map.insert("same");
+		}
+		// The entry the loop is on is always the first dense one here.
+		var visits:Int = 0;
+		for (_ in map) {
+			visits++;
+			var slot:Int = map.slotAtDense(0);
+			map.remove(SlotHandle.make(slot, map.currentGen(slot)));
+		}
+		Assert.equals(6, visits);
+		Assert.equals(0, map.length);
+
+		var numbers = new PackedSlotMap<Int>(8);
+		for (i in 0...6) {
+			numbers.insert(i);
+		}
+		var seen:Array<Int> = [];
+		numbers.forEach((handle, value) -> {
+			seen.push(value);
+			if (value % 2 == 0) {
+				numbers.remove(handle);
+			}
+		});
+		seen.sort((a, b) -> a - b);
+		Assert.equals("0,1,2,3,4,5", seen.join(","));
+		Assert.equals(3, numbers.length);
+	}
+
 	public function testDenseSetSupportsPackedRemovalAndLookup():Void {
 		var set = new DenseSet<String>();
 
