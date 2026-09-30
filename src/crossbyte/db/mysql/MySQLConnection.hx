@@ -24,7 +24,10 @@ import sys.db.Mysql;
  * statement; elsewhere it runs on Haxe's `sys.db.Mysql`.
  */
 class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
-	private static final ALLOWED_CHARSETS = ["utf8mb4", "utf8", "latin1", "ucs2", "utf16", "utf32"];
+	// The client character sets MySQL accepts that the escaping here is safe
+	// for. ucs2, utf16 and utf32 were listed too, and MySQL refuses them as a
+	// client character set, so SET NAMES failed on the server.
+	private static final ALLOWED_CHARSETS = ["utf8mb4", "utf8mb3", "utf8", "latin1", "ascii"];
 
 	public var connected(get, null):Bool;
 
@@ -855,7 +858,15 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		if (__connection == null) {
 			return IsolationLevel.REPEATABLE_READ;
 		}
-		var rs:ResultSet = __connection.request("SELECT @@transaction_isolation AS lvl;");
+		var rs:ResultSet;
+
+		try {
+			rs = request("SELECT @@transaction_isolation AS lvl;");
+		} catch (_:Dynamic) {
+			// The name MySQL before 5.7.20 and MariaDB before 11.1 give it;
+			// both refuse @@transaction_isolation as an unknown variable.
+			rs = request("SELECT @@tx_isolation AS lvl;");
+		}
 
 		if (rs != null && rs.hasNext()) {
 			var s:String = Std.string(Reflect.field(rs.next(), "lvl"));

@@ -22,7 +22,7 @@ import crossbyte.sys.TaskPool;
  * ```haxe
  * var db = new AsyncDatabase(pool, new TaskPool(4));
  *
- * db.submit(connection -> connection.query("SELECT count(*) FROM users"))
+ * db.submit(connection -> connection.request("SELECT count(*) FROM users"))
  *     .onComplete(result -> Logger.info("users counted"))
  *     .onError(error -> Logger.error('query failed: $error'));
  * ```
@@ -205,7 +205,7 @@ class AsyncDatabase<T> {
 	 *
 	 * ```haxe
 	 * db.transaction(c -> c.begin(), c -> c.commit(), c -> c.rollback(),
-	 *     connection -> connection.query("INSERT ..."));
+	 *     connection -> connection.request("INSERT ..."));
 	 * ```
 	 *
 	 * A failure in `rollback` does not mask the original error, which is
