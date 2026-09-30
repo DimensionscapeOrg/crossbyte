@@ -1,22 +1,38 @@
 package crossbyte.ds;
 
 import crossbyte.utils.Hash;
+import haxe.ds.Vector;
+import haxe.io.Bytes;
 
 /**
  * A simple Bloom Filter implementation.
  *
  * Membership is probabilistic: `contains` may return a false positive but never
  * a false negative. The `k` bit positions per item are derived from two
- * independent base hashes via the Kirsch-Mitzenmacher scheme (`h1 + i*h2`),
- * which spreads the bits across the whole array from just two hash computations
- * per call.
+ * base hashes via the Kirsch-Mitzenmacher scheme (`h1 + i*h2`), which spreads
+ * the bits across the whole array from one hash computation per call: the
+ * second hash is mixed out of the first.
+ *
+ * The bits are packed 32 to an `Int`, in a `haxe.ds.Vector`. They were an
+ * `Array<Bool>`, an element per bit: a 10-million-bit filter held 38 MB on
+ * the jvm and 76 MB on Node for 1.25 MB of bits. And each call hashed a UTF-8
+ * copy of the item and a second, concatenated copy, about 470 bytes
+ * allocated per check. It hashes the string's characters in place now, and
+ * `add` and `contains` allocate nothing.
+ *
+ * Items are strings, `Int`s (`addInt`, `containsInt`) or bytes (`addBytes`,
+ * `containsBytes`); the three kinds share one set of bits, so an `Int` and a
+ * string can collide as any two items can. The positions are stepped
+ * through without multiplying, so every target sets the same bits for the
+ * same item, a filter's bits can be compared, or written down, across
+ * targets.
  *
  * @author Christopher Speciale
  */
 class BloomFilter {
 	private var size:Int;
 	private var numHashFunctions:Int;
-	private var bitArray:Array<Bool>;
+	private var __words:Vector<Int>;
 
 	/**
 	 * Constructs a new BloomFilter.
@@ -34,10 +50,7 @@ class BloomFilter {
 
 		this.size = size;
 		this.numHashFunctions = numHashFunctions;
-		this.bitArray = [];
-		this.bitArray.resize(size);
-		for (i in 0...size)
-			bitArray[i] = false;
+		this.__words = new Vector<Int>(((size - 1) >>> 5) + 1, 0);
 	}
 
 	/**
@@ -46,11 +59,7 @@ class BloomFilter {
 	 * @param item The item to be added.
 	 */
 	public function add(item:String):Void {
-		var h1:Int = Hash.fnv1a32String(item) & 0x7fffffff;
-		var h2:Int = (Hash.fnv1a32String(item + "bloom") | 1) & 0x7fffffff;
-		for (i in 0...numHashFunctions) {
-			bitArray[__indexAt(h1, h2, i)] = true;
-		}
+		__set(__hashString(item));
 	}
 
 	/**
@@ -60,35 +69,100 @@ class BloomFilter {
 	 * @return True if the item is possibly in the set, false if definitely not.
 	 */
 	public function contains(item:String):Bool {
-		var h1:Int = Hash.fnv1a32String(item) & 0x7fffffff;
-		var h2:Int = (Hash.fnv1a32String(item + "bloom") | 1) & 0x7fffffff;
-		for (i in 0...numHashFunctions) {
-			if (!bitArray[__indexAt(h1, h2, i)])
+		return __test(__hashString(item));
+	}
+
+	/** Adds an `Int` item, a message id say, without making a string of it. **/
+	public function addInt(item:Int):Void {
+		__set(Hash.fmix32(item));
+	}
+
+	/** Whether an `Int` item is possibly in the filter. **/
+	public function containsInt(item:Int):Bool {
+		return __test(Hash.fmix32(item));
+	}
+
+	/** Adds the bytes `item[offset...offset + length]` as one item. **/
+	public function addBytes(item:Bytes, offset:Int = 0, length:Int = -1):Void {
+		__set(__hashBytes(item, offset, length));
+	}
+
+	/** Whether the bytes `item[offset...offset + length]` are possibly in the filter. **/
+	public function containsBytes(item:Bytes, offset:Int = 0, length:Int = -1):Bool {
+		return __test(__hashBytes(item, offset, length));
+	}
+
+	/** Forgets everything added. **/
+	public function clear():Void {
+		for (i in 0...__words.length) {
+			__words[i] = 0;
+		}
+	}
+
+	private function __set(h1:Int):Void {
+		var at:Int = __first(h1);
+		var step:Int = __step(h1);
+		for (_ in 0...numHashFunctions) {
+			__words[at >>> 5] |= 1 << (at & 31);
+			at = __next(at, step);
+		}
+	}
+
+	private function __test(h1:Int):Bool {
+		var at:Int = __first(h1);
+		var step:Int = __step(h1);
+		for (_ in 0...numHashFunctions) {
+			if ((__words[at >>> 5] & (1 << (at & 31))) == 0) {
 				return false;
+			}
+			at = __next(at, step);
 		}
 		return true;
 	}
 
-	// Derives the i-th bit position from two base hashes.
-	//
-	// `i * h2` overflows on a target whose Int is 32 bits, and the negative
-	// correction below is what puts it back in range. On JavaScript an Int is a
-	// double, so it does not overflow at all and the correction never fires,
-	// which means the two arrive at the same bit only when `size` divides 2^32,
-	// the amount they differ by. It does for a power of two, and both of this
-	// class's tests use one; at `size = 10000` the filters genuinely differ,
-	// measured.
-	//
-	// That is not a bug while the bits cannot leave this object, there is no
-	// serialization here, and what a caller can observe (never a false
-	// negative, and a spread good enough to keep false positives rare) holds on
-	// both. It becomes one the moment a filter is written to a file or a wire,
-	// so anything adding that has to make this arithmetic explicit first.
-	private inline function __indexAt(h1:Int, h2:Int, i:Int):Int {
-		var index:Int = (h1 + i * h2) % size;
-		if (index < 0) {
-			index += size;
+	// The positions are h1, h1 + h2, h1 + 2 h2, ... modulo `size`, stepped
+	// through by addition and kept below `size` at each step, so nothing
+	// overflows on any target and no product differs between one whose Int
+	// wraps at 32 bits and JavaScript's, whose does not.
+	private inline function __first(h1:Int):Int {
+		return (h1 & 0x7FFFFFFF) % size;
+	}
+
+	private inline function __step(h1:Int):Int {
+		// The second hash, mixed out of the first; never 0, or every
+		// position would be the same.
+		var step:Int = (Hash.fmix32(h1 ^ 0x5BD1E995) & 0x7FFFFFFF) % size;
+		return step == 0 ? 1 : step;
+	}
+
+	private inline function __next(at:Int, step:Int):Int {
+		// at + step, less size once it passes it, without forming a sum that
+		// could pass 2^31.
+		return at >= size - step ? at - (size - step) : at + step;
+	}
+
+	// FNV-1a over the string's character codes, in place.
+	private static function __hashString(s:String):Int {
+		var hash:Int = 0x811C9DC5;
+		for (i in 0...s.length) {
+			var code:Int = StringTools.fastCodeAt(s, i);
+			hash ^= code & 0xFF;
+			hash = Hash.mul32(hash, 0x01000193);
+			if (code > 0xFF) {
+				hash ^= code >>> 8;
+				hash = Hash.mul32(hash, 0x01000193);
+			}
 		}
-		return index;
+		return Hash.fmix32(hash);
+	}
+
+	private static function __hashBytes(bytes:Bytes, offset:Int, length:Int):Int {
+		var end:Int = length < 0 ? bytes.length : offset + length;
+		var hash:Int = 0x811C9DC5;
+		for (i in offset...end) {
+			hash ^= bytes.get(i);
+			hash = Hash.mul32(hash, 0x01000193);
+		}
+		return Hash.fmix32(hash);
 	}
 }

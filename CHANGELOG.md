@@ -1244,6 +1244,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `BloomFilter` packs its bits 32 to an `Int` and allocates nothing per
+  check. It held an array element per bit, a 10-million-bit filter took 40
+  MB on the jvm and 76 MB on Node for 1.25 MB of bits, and hashed a UTF-8
+  copy of each item and a second, concatenated copy, 336 bytes per check on
+  the jvm. It hashes the characters in place, mixes the second hash out of
+  the first, and steps through the positions without multiplying, so every
+  target sets the same bits. `clear()`, and `addInt`/`containsInt` and
+  `addBytes`/`containsBytes` for items that are not strings, are new.
 - `crossbyte.ds.Vector` works off hxcpp. `v[i]` threw on eval and the jvm
   and on JavaScript set a property of that name, losing the write: it was a
   class implementing `ArrayAccess`, which only hxcpp honours, and is now an
