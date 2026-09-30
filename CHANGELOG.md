@@ -1245,6 +1245,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A jvm runtime holding many TLS connections pumps faster: the registry asks
+  every TLS socket on every pump whether its TLS layer holds decrypted
+  bytes, and asked through a dynamic call, 150 to 245 us of each pump at
+  2,001 idle connections. It asks through the socket's type now, 16 to 43
+  us.
 - On neko a runtime services more than 64 sockets. Its registry selected
   every socket it held at once, and neko's `select` takes at most 64 on
   Windows and throws past them, so from the 65th connection no socket was
