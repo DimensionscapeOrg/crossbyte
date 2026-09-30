@@ -1236,6 +1236,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An LZ4 block cut short is refused rather than decoded as though whole.
+  A block carries no length, so one cut where a literal run ended read as
+  complete: half of a 20 KB block decoded to 10,133 bytes and said nothing.
+  The format's end rules, the last five bytes literals, the last match
+  starting twelve or more bytes from the end, which every conforming
+  encoder keeps, are now enforced, and they catch nearly every such cut;
+  no bytes at all is refused too, since even an empty block is a one-byte
+  token. `Lz4.compress` given a plain `Bytes` no longer allocates a copy
+  of the whole input per literal run, which natively crashed on 900 KB;
+  it and the decoder now write straight into `Bytes`, faster on every
+  target.
 - gzip is read as RFC 1952 has it: a header with an extra field, a
   comment or a header CRC (which is checked) is read rather than refused
   as unsupported, and a stream of several members, what concatenating
