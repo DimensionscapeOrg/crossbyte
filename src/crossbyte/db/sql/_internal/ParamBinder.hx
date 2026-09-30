@@ -67,7 +67,10 @@ class ParamBinder {
 	 * @return The substituted text.
 	 */
 	public static function substitute(text:String, lookup:String->Null<Dynamic>, escape:Dynamic->String):String {
-		return substituteWith(text, name -> lookup(name) != null, lookup, escape, false);
+		// One lookup per placeholder, as before: `has` keeps what it found for
+		// the `get` that follows it.
+		var found:Null<Dynamic> = null;
+		return substituteWith(text, name -> (found = lookup(name)) != null, _ -> found, escape, false);
 	}
 
 	/**
