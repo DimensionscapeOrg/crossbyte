@@ -326,8 +326,10 @@ class CompressionRoundTripTest extends utest.Test {
 	 * Inflater()` still allocated and cleared, and a CRC of every result that
 	 * only gzip reads. An 846-byte game message cost 96 us to inflate on Node,
 	 * 66 of them in the constructor; on eval it was 2.4 times the inflate
-	 * itself. Timed against the same inflate done directly, interleaved, so
-	 * load on the machine lands on both sides.
+	 * itself. Timed against the same inflate done directly, interleaved, and
+	 * each side by its fastest round: a collection or another process landing
+	 * on one round says nothing about either, and natively a whole side is a
+	 * few milliseconds, which a loaded machine can double.
 	 */
 	public function testInflatingCostsNoMoreThanTheInflate():Void {
 		var message:Bytes = Bytes.alloc(846);
@@ -336,23 +338,23 @@ class CompressionRoundTripTest extends utest.Test {
 		}
 		var packed:Bytes = Deflater.apply(message);
 
-		var viaInflater:Float = 0;
-		var direct:Float = 0;
-		for (round in 0...6) {
+		var viaInflater:Float = Math.POSITIVE_INFINITY;
+		var direct:Float = Math.POSITIVE_INFINITY;
+		for (round in 0...10) {
 			var started:Float = haxe.Timer.stamp();
 			for (i in 0...40) {
 				Inflater.apply(packed, 1 << 20);
 			}
-			viaInflater += haxe.Timer.stamp() - started;
+			viaInflater = Math.min(viaInflater, haxe.Timer.stamp() - started);
 
 			started = haxe.Timer.stamp();
 			for (i in 0...40) {
 				inflateDirectly(packed);
 			}
-			direct += haxe.Timer.stamp() - started;
+			direct = Math.min(direct, haxe.Timer.stamp() - started);
 		}
 
-		Assert.isTrue(viaInflater < direct * 1.6, "Inflater took " + viaInflater + "s against " + direct + "s for the inflate alone");
+		Assert.isTrue(viaInflater < direct * 1.6, "Inflater's fastest round took " + viaInflater + "s against " + direct + "s for the inflate alone");
 	}
 
 	/** What `Inflater.decompress` does, with nothing else. **/
