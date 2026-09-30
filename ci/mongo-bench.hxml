@@ -1,0 +1,11 @@
+# What the MongoDB driver costs per document and per round trip, natively.
+# Run export/mongo-bench/MongoBenchMain.exe once built; see
+# tests/crossbyte/db/mongodb/MongoBenchMain.hx for what each case measures.
+-cp src
+-cp tests
+-cp tests/bench
+-lib utest
+-D windows
+-D HXCPP_M64
+-main crossbyte.db.mongodb.MongoBenchMain
+--cpp export/mongo-bench
