@@ -147,9 +147,18 @@ class SysSocketContractTest extends utest.Test {
 		end too.
 
 		Not on eval, whose reset is a native error no Haxe catch intercepts.
+		And `readByte` is not asked natively: the cpp branch of this module
+		reports every failure a byte read meets as `Eof`, as the standard
+		library it came from does, so a reset there is told apart by
+		`readBytes` alone.
 	**/
 	public function testAResetIsAFailureRatherThanAnEnd():Void {
-		for (byByte in [false, true]) {
+		#if (cpp || hxcpp)
+		var modes:Array<Bool> = [false];
+		#else
+		var modes:Array<Bool> = [false, true];
+		#end
+		for (byByte in modes) {
 			var pair = connectedPair();
 			if (pair == null) {
 				return;
