@@ -1220,6 +1220,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, `select` keeps the sockets it is asked about registered from
+  one call to the next. It registered every socket it was handed, checked
+  every pair of them for duplicates and cancelled every key again, on each
+  call -- and the runtime makes that call on every pump with every socket it
+  holds: 0.61 ms for 1,000 idle sockets, 5.8 ms for 4,000, and on Windows,
+  past 1,023, a selector helper thread started and stopped on every call.
+  It also leaves a blocking socket blocking, as native `select` does; a
+  blocking reader met a read that answered "would block" at once rather
+  than waiting for data on its way.
 - A jvm connect no longer holds the thread that makes it. A non-blocking
   connect -- every `crossbyte.net.Socket` and wss client connect -- spun on
   `finishConnect()` until the connection came up, on the runtime's thread:
