@@ -1307,6 +1307,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `MySQLStatement` and `SQLiteStatement` return a result's pages in the
+  order they were read on every target. Off cpp the pages waited in an
+  Array read back with `pop()`, newest first, so a result paged ahead of
+  `getResult()` -- `execute(2)`, then `next(2)` twice -- came back last page
+  first on the jvm and the interpreter. And only the last page is
+  `complete`: it was taken to be complete whenever the result had been read
+  to the end, so every page still waiting said so, on cpp too.
 - `MySQLConnection.isolationLevel` reads on MariaDB before 11.1 and MySQL
   before 5.7.20, which name the variable `@@tx_isolation` and refused
   `@@transaction_isolation`. `MySQLConfig.charset` no longer accepts

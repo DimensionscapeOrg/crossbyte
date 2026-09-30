@@ -5,9 +5,9 @@ import sys.db.Connection;
 import sys.db.ResultSet;
 
 /**
- * A `sys.db.Connection` answering from a script, for the MySQL driver's logic
- * on targets with no native client: the interpreter, the jvm without a
- * Connector/J on its class path, hl and neko.
+ * A `sys.db.Connection` answering from a script, for the MySQL and SQLite
+ * drivers' logic on targets with no native client: the interpreter, the jvm
+ * without a Connector/J on its class path, hl and neko.
  *
  * Every statement is recorded in `sent`. One named in `failures` throws the
  * value mapped to it -- a string, or on the jvm a Java exception, which is

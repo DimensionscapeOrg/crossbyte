@@ -156,6 +156,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.PostgresWireTest());
 		runner.addCase(new crossbyte.db.PostgresConnInfoTest());
 		runner.addCase(new crossbyte.db.MySQLDriverTest());
+		runner.addCase(new crossbyte.db.SQLiteDriverTest());
 		#if !cpp
 		// The same failures on cpp go through libpq, and are covered against
 		// its stand-in by NativePostgresBridgeTest below.
