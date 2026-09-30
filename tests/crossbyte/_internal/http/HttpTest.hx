@@ -1131,7 +1131,12 @@ class HttpTest extends utest.Test {
 		// and a version of "b" to a server -- and a path past ASCII went out as
 		// raw bytes. Both are percent-encoded, as a browser sends them.
 		var fixture = serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-		var http = new Http('http://127.0.0.1:${fixture.port}/a b/caf' + String.fromCharCode(0xE9) + "?q=c d&r=%41");
+		// The e-acute as its UTF-8 bytes read back as text: one character
+		// where strings are Unicode, and those two bytes on neko, whose
+		// strings are bytes -- where String.fromCharCode(0xE9) is one byte,
+		// Latin-1, and no URL a user types.
+		var eAcute:String = Bytes.ofHex("c3a9").toString();
+		var http = new Http('http://127.0.0.1:${fixture.port}/a b/caf' + eAcute + "?q=c d&r=%41");
 		http.onError = (message, ?data) -> Assert.fail("request failed: " + message);
 		http.load();
 		fixture.waitDone();
