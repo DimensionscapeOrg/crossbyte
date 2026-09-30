@@ -1,5 +1,6 @@
 package crossbyte.ds;
 
+import crossbyte.test.Require;
 import utest.Assert;
 
 private class Ticket {
@@ -59,6 +60,23 @@ class PriorityQueueTest extends utest.Test {
 			}
 		}
 		Assert.equals(1990, oldest, "the tickets left waiting were not the last ten ticks' worth");
+	}
+
+	/**
+		`peek` answers the element `dequeue` would, for a class of element.
+		Inlined, it read the queue's storage as an array of that class on the
+		jvm, which the erased array is not: a ClassCastException.
+	**/
+	public function testPeekAnswersWhatDequeueWould():Void {
+		var queue = new PriorityQueue<Ticket>((a, b) -> a.priority - b.priority);
+		Assert.isNull(queue.peek());
+		queue.enqueue(new Ticket(1, 5, 0));
+		queue.enqueue(new Ticket(2, 3, 0));
+		queue.enqueue(new Ticket(3, 3, 1));
+		var next = Require.notNull(queue.peek());
+		Assert.equals(2, next.id);
+		Assert.equals(next, queue.dequeue());
+		Assert.equals(3, Require.notNull(queue.peek()).id);
 	}
 
 	/** Among equals the oldest goes first, whatever else is in the heap. **/
