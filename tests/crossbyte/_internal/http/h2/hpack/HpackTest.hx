@@ -144,6 +144,36 @@ class HpackTest extends utest.Test {
 		Assert.equals(0, decoder.tableSize);
 	}
 
+	public function testStaticPairsAreFoundExactly():Void {
+		// Pairs were looked up by name and value joined with a NUL, and a
+		// HashLink string ends at its first NUL: every pair of one name read
+		// as the name alone, the last entry won, and hl sent `:method GET` as
+		// POST and `:status 200` as 500.
+		Assert.equals(2, HpackStaticTable.findPair(":method", "GET"));
+		Assert.equals(3, HpackStaticTable.findPair(":method", "POST"));
+		Assert.equals(6, HpackStaticTable.findPair(":scheme", "http"));
+		Assert.equals(7, HpackStaticTable.findPair(":scheme", "https"));
+		Assert.equals(8, HpackStaticTable.findPair(":status", "200"));
+		Assert.equals(13, HpackStaticTable.findPair(":status", "404"));
+		Assert.equals(14, HpackStaticTable.findPair(":status", "500"));
+		Assert.equals(16, HpackStaticTable.findPair("accept-encoding", "gzip, deflate"));
+		Assert.equals(-1, HpackStaticTable.findPair(":path", "/probe"));
+		Assert.equals(-1, HpackStaticTable.findPair(":method", "PUT"));
+		Assert.equals(-1, HpackStaticTable.findPair("x-unknown", ""));
+		Assert.equals(4, HpackStaticTable.findName(":path"));
+		Assert.equals(-1, HpackStaticTable.findName("x-unknown"));
+
+		// And end to end: the block names the right entries, and decodes back.
+		var fields = [
+			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/probe"),
+			new HpackHeader(":authority", "x")
+		];
+		var block:Bytes = new HpackEncoder(4096).encode(fields);
+		Assert.equals(0x82, block.get(0), "GET is static index 2");
+		Assert.equals(0x86, block.get(1), "http is static index 6");
+		assertHeaders(fields, new HpackDecoder(4096).decode(block));
+	}
+
 	// ------------------------------------------------------- decoder limits
 
 	public function testDecoderRejectsAnIndexPastTheTable():Void {
