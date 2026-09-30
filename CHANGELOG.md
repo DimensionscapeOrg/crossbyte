@@ -1032,6 +1032,16 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `PostgresStatement` and `MongoStatement` throw a failed statement's
+  `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
+  does. They dispatched it and returned, so to a caller not listening, an
+  `AsyncDatabase` task among them, a failed statement read as one that
+  had run. What to change: a caller that listened for `SQLErrorEvent` and
+  expected `execute()` to return now catches too. `SQLEvent.RESULT` is
+  dispatched outside the statement's own error handling, so a listener that
+  throws is no longer reported as the statement failing. `MongoStatement`'s
+  pages read ahead say `complete` only for the last one, as the SQL
+  drivers' do now.
 - `INetHost` declares `allocateRelay`, `dialRelayed` and `permitRelayedPeer`.
   They were on the `NetHost` abstract alone, which found a relay by
   downcasting to the reliable datagram host it makes itself, so a host of an
