@@ -41,6 +41,26 @@ import haxe.io.Bytes;
 	the relay grants describe traffic from somewhere else, and it means the
 	whole exchange can be tested against a server standing in memory.
 
+	## A relay named by hostname is resolved once
+
+	The first request goes to `serverAddress` as given, and the relay's first
+	answer fixes where every later one goes: the address it came from. A name
+	sent to for the life of an allocation was looked up again under it,
+	natively every minute, on Node for every datagram, and a round-robin pool
+	of relays answers each lookup with another member, which knows neither the
+	allocation nor the nonce: 96,000 stale-nonce refusals in eleven seconds, and
+	nothing allocated.
+
+	## Requests in flight
+
+	Each request is a transaction of its own, matched to its answer by its id,
+	and several can be outstanding at once, up to `MAX_IN_FLIGHT`, with up to
+	`MAX_QUEUED` more waiting for room. A refresh never waits: it goes the
+	moment it is due. It used to be sent only when nothing else was in flight,
+	so a caller asking for permissions faster than the relay answered them kept
+	it waiting until the allocation expired. Asking for a permission that is
+	already in place, or already being asked for, sends nothing.
+
 	## Channels, and why they are off unless asked for
 
 	A Send indication costs thirty-six bytes of STUN wrapper on every datagram.
@@ -70,8 +90,10 @@ import haxe.io.Bytes;
 	the rest go as `ChannelData`. A relay that refuses the bind outright is the
 	safe case, the indications simply keep working.
 
-	Channels last ten minutes and are rebound well inside that. A binding that
-	lapses does not fail loudly either, so it is rebound at eight.
+	Channels last ten minutes and are rebound at eight. A rebind the relay
+	refuses leaves the binding it has until its ten minutes are up, and the
+	traffic goes back to indications then, rather than on into a channel the
+	relay has let lapse.
 **/
 class TurnClient {
 	/** How long an allocation is asked to last, in seconds. **/
@@ -85,7 +107,7 @@ class TurnClient {
 	**/
 	public static inline var RETRY_AFTER:Float = 0.5;
 
-	/** Attempts before the allocation is given up on. **/
+	/** Transmissions of one request before it is given up on. **/
 	public static inline var MAX_ATTEMPTS:Int = 7;
 
 	/**
@@ -98,10 +120,36 @@ class TurnClient {
 	**/
 	public static inline var FINAL_WAIT:Float = 8.0;
 
+	/**
+		Stale-nonce refusals one request takes before it is given up on.
+
+		A 438 is ordinary, a relay rotates its nonces, and is answered by
+		asking again with the new one. A relay that refuses the new one too,
+		and the next, is not rotating anything, and asking without a limit
+		asked it some nine thousand times a second.
+	**/
+	public static inline var MAX_STALE_NONCES:Int = 3;
+
+	/**
+		Requests outstanding at once, not counting a refresh or the Allocate.
+
+		RFC 8489 section 6.2 asks a client to keep to ten with one server. The
+		ones past this wait their turn.
+	**/
+	public static inline var MAX_IN_FLIGHT:Int = 8;
+
+	/**
+		Requests waiting for room, past which a new one is dropped: a
+		permission or a channel, which is asked for again the next time it is
+		wanted. The queue had no bound, and a caller asking faster than the
+		relay answered grew it by thousands a minute.
+	**/
+	public static inline var MAX_QUEUED:Int = 64;
+
 	private static inline var TRANSACTION_LENGTH:Int = 12;
 
 	/** Superseded transactions remembered, so their late answers are known for what they are. **/
-	private static inline var RETIRED_KEPT:Int = 8;
+	private static inline var RETIRED_KEPT:Int = 16;
 
 	/**
 		The range RFC 8656 reserves for channels.
@@ -137,7 +185,13 @@ class TurnClient {
 	**/
 	public static var isSupported(default, null):Bool = SecureRandom.isSupported;
 
+	/**
+		Where requests go: the relay as given, until it first answers, and from
+		then on the address that answer came from. See the class documentation
+		for why a name is not sent to for the life of an allocation.
+	**/
 	public var serverAddress(default, null):String;
+
 	public var serverPort(default, null):Int;
 
 	/** The address peers should be told to send to, once there is one. **/
@@ -192,19 +246,39 @@ class TurnClient {
 	**/
 	public dynamic function onPermissionRefused(peerAddress:String, code:Int, reason:String):Void {}
 
+	/**
+		Whether to ask for a channel per peer, trading thirty-two bytes a
+		datagram for a relay that has to implement RFC 8656 section 12 in both
+		directions. Off unless set; see the class documentation for what a
+		half-implementation does.
+	**/
+	public var useChannels:Bool = false;
+
 	@:noCompletion private var __username:String;
 	@:noCompletion private var __password:String;
 	@:noCompletion private var __realm:String;
 	@:noCompletion private var __nonce:String;
 	@:noCompletion private var __key:Bytes;
-	@:noCompletion private var __pending:StunMessage;
-	@:noCompletion private var __pendingType:Int = 0;
-	@:noCompletion private var __attempts:Int = 0;
-	@:noCompletion private var __retryAt:Float = 0;
 	@:noCompletion private var __refreshAt:Float = 0;
 	@:noCompletion private var __lifetime:Int = DEFAULT_LIFETIME;
 	@:noCompletion private var __closed:Bool = false;
-	@:noCompletion private var __permitted:Array<TurnPermission> = [];
+
+	/** Whether the relay has answered, and `serverAddress` is the address it answered from. **/
+	@:noCompletion private var __pinned:Bool = false;
+
+	/** Requests sent and not yet answered, given up on, or superseded. **/
+	@:noCompletion private var __inFlight:Array<TurnTransaction> = [];
+
+	/** Requests waiting for room among those in flight. **/
+	@:noCompletion private var __queued:Array<TurnTransaction> = [];
+
+	/** Whether an Allocate is in flight, and a Refresh. One of each at a time. **/
+	@:noCompletion private var __allocating:Bool = false;
+
+	@:noCompletion private var __refreshing:Bool = false;
+
+	/** Peers by address: what has been asked for each, and what the relay said. **/
+	@:noCompletion private var __permissions:Map<String, TurnPermission> = new Map();
 
 	/**
 		Transactions a request has moved on from: the unsigned one a 401
@@ -215,32 +289,12 @@ class TurnClient {
 	@:noCompletion private var __retired:Array<ByteArray> = [];
 
 	/** Peers with a channel bound, or one asked for. **/
-	/**
-		Whether to ask for a channel per peer, trading thirty-two bytes a
-		datagram for a relay that has to implement RFC 8656 section 12 in both
-		directions. Off unless set; see the class documentation for what a
-		half-implementation does.
-	**/
-	public var useChannels:Bool = false;
-
 	@:noCompletion private var __channels:Array<TurnChannel> = [];
 
 	@:noCompletion private var __nextChannel:Int = FIRST_CHANNEL;
 
 	/** The last time anything told this client, so `sendTo` can have one. **/
 	@:noCompletion private var __clock:Float = 0;
-
-	/**
-		Requests waiting for the one in flight to finish.
-
-		A relay correlates by transaction id and only one request is tracked at
-		a time, so starting a second while the first is outstanding would
-		abandon it, and the one most likely to be abandoned is the refresh,
-		since permissions are asked for at arbitrary moments and refreshes come
-		round on a timer. Losing a refresh does not fail loudly: the allocation
-		simply stops being renewed and the connection dies when it expires.
-	**/
-	@:noCompletion private var __queued:Array<{type:Int, attributes:Array<StunAttribute>}> = [];
 
 	/**
 		@param username Long-term credentials, which a relay always requires,
@@ -271,14 +325,16 @@ class TurnClient {
 		is how the exchange starts. RFC 8656 section 9.2.
 	**/
 	public function allocate(now:Float):Void {
-		if (__closed || active || __pending != null) {
+		if (__closed || active || __allocating) {
 			return;
 		}
 
-		__request(StunMessage.ALLOCATE_REQUEST, [
+		__clock = now;
+		__allocating = true;
+		__start(new TurnTransaction(StunMessage.ALLOCATE_REQUEST, [
 			StunMessage.requestedTransport(),
 			StunMessage.lifetime(DEFAULT_LIFETIME)
-		], now);
+		]), now);
 	}
 
 	/**
@@ -290,6 +346,11 @@ class TurnClient {
 		does not renew it (RFC 5766 section 8), `poll` asks again well inside
 		that, the way it does for a channel.
 
+		Cheap to call as often as a datagram is sent: a permission already in
+		place, or already being asked for, sends nothing, and neither does one
+		the relay has refused. It used to ask again on every call, and a caller
+		doing that had requests queued by the thousand.
+
 		@throws ArgumentError When `peerAddress` is not an IPv4 address: the
 		allocation is IPv4, and so are the peers it can reach.
 	**/
@@ -298,21 +359,27 @@ class TurnClient {
 			return;
 		}
 
-		var permission = __permissionFor(peerAddress);
+		__clock = now;
+		var permission = __permissions.get(peerAddress);
 
 		if (permission == null) {
 			// Before it is kept, or `poll` would renew it, and throw, for good.
 			__requireIPv4(peerAddress);
 			permission = new TurnPermission(peerAddress);
-			__permitted.push(permission);
-		} else if (permission.refused) {
-			// The relay said no, and asking again changes nothing.
+			__permissions.set(peerAddress, permission);
+		}
+
+		// The relay said no, and asking again changes nothing; or it is being
+		// asked already; or it said yes recently enough.
+		if (permission.refused || permission.pending || (permission.granted && now - permission.grantedAt < PERMISSION_REFRESH)) {
 			return;
 		}
 
-		permission.askedAt = now;
+		permission.pending = true;
 
-		__request(StunMessage.CREATE_PERMISSION_REQUEST, [StunMessage.xorPeerAddress(peerAddress, 0)], now);
+		var request = new TurnTransaction(StunMessage.CREATE_PERMISSION_REQUEST, [StunMessage.xorPeerAddress(peerAddress, 0)]);
+		request.permission = permission;
+		__start(request, now);
 	}
 
 	/**
@@ -331,7 +398,9 @@ class TurnClient {
 
 		var channel = __channelFor(peerAddress, peerPort);
 
-		if (channel != null && channel.bound) {
+		// While the relay still holds the binding: one it refused to renew
+		// lapses at ten minutes, and past that it drops what arrives on it.
+		if (channel != null && channel.bound && __clock - channel.boundAt < CHANNEL_LIFETIME) {
 			onSend(__channelData(channel.number, payload), serverAddress, serverPort);
 			return;
 		}
@@ -369,10 +438,6 @@ class TurnClient {
 		__clock = now;
 		var channel = __channelFor(peerAddress, peerPort);
 
-		if (channel != null && now - channel.askedAt < CHANNEL_REFRESH) {
-			return;
-		}
-
 		if (channel == null) {
 			// Here rather than first: this runs for every datagram relayed, and
 			// a channel already kept was checked when it was made.
@@ -389,12 +454,18 @@ class TurnClient {
 			__channels.push(channel);
 		}
 
-		channel.askedAt = now;
+		if (channel.refused || channel.pending || (channel.bound && now - channel.boundAt < CHANNEL_REFRESH)) {
+			return;
+		}
 
-		__request(StunMessage.CHANNEL_BIND_REQUEST, [
+		channel.pending = true;
+
+		var request = new TurnTransaction(StunMessage.CHANNEL_BIND_REQUEST, [
 			StunMessage.channelNumber(channel.number),
 			StunMessage.xorPeerAddress(peerAddress, peerPort)
-		], now);
+		]);
+		request.channel = channel;
+		__start(request, now);
 	}
 
 	/**
@@ -413,16 +484,6 @@ class TurnClient {
 	}
 
 	/** The channel bound to a peer, if one was ever asked for. **/
-	@:noCompletion private function __permissionFor(address:String):Null<TurnPermission> {
-		for (permission in __permitted) {
-			if (permission.address == address) {
-				return permission;
-			}
-		}
-
-		return null;
-	}
-
 	@:noCompletion private function __channelFor(address:String, port:Int):Null<TurnChannel> {
 		for (channel in __channels) {
 			if (channel.address == address && channel.port == port) {
@@ -462,28 +523,39 @@ class TurnClient {
 			return;
 		}
 
-		if (__pending != null && now >= __retryAt) {
-			if (__attempts >= MAX_ATTEMPTS) {
-				__fail("The relay at " + serverAddress + ":" + serverPort + " did not answer.");
-				return;
-			}
-
-			__transmit(now);
-		}
-
 		__clock = now;
 
+		for (request in __inFlight.copy()) {
+			// Finished meanwhile: an allocation that failed takes every request
+			// with it.
+			if (__closed || __inFlight.indexOf(request) < 0 || now < request.retryAt) {
+				continue;
+			}
+
+			if (request.attempts >= MAX_ATTEMPTS) {
+				__timedOut(request, now);
+			} else {
+				__transmit(request, now);
+			}
+		}
+
+		if (__closed) {
+			return;
+		}
+
 		// Refreshed at half the lifetime, so a lost refresh has one more chance
-		// before the allocation the whole connection rests on disappears.
-		if (active && __pending == null && now >= __refreshAt) {
-			__request(StunMessage.REFRESH_REQUEST, [StunMessage.lifetime(__lifetime)], now);
+		// before the allocation the whole connection rests on disappears, and
+		// the moment it is due, whatever else is waiting.
+		if (active && !__refreshing && now >= __refreshAt) {
+			__refreshing = true;
+			__start(new TurnTransaction(StunMessage.REFRESH_REQUEST, [StunMessage.lifetime(__lifetime)]), now);
 		}
 
 		// And every channel well inside its ten minutes. One that lapses is not
 		// reported: the relay simply stops recognising what it is sent.
 		if (active) {
 			for (channel in __channels) {
-				if (channel.bound && now - channel.askedAt >= CHANNEL_REFRESH) {
+				if (channel.bound && !channel.pending && !channel.refused && now - channel.boundAt >= CHANNEL_REFRESH) {
 					bindChannel(channel.address, channel.port, now);
 				}
 			}
@@ -494,24 +566,14 @@ class TurnClient {
 		// simply lapsed, after which the relay drops that peer's traffic
 		// without saying so.
 		if (active) {
-			for (permission in __permitted.copy()) {
-				if (!permission.refused && now - permission.askedAt >= PERMISSION_REFRESH) {
+			for (permission in __permissions) {
+				if (permission.granted && !permission.pending && !permission.refused && now - permission.grantedAt >= PERMISSION_REFRESH) {
 					permit(permission.address, now);
 				}
 			}
 		}
 
 		__drain(now);
-	}
-
-	/** Starts whatever was waiting on the request that just finished. **/
-	@:noCompletion private function __drain(now:Float):Void {
-		if (__pending != null || __queued.length == 0 || __closed) {
-			return;
-		}
-
-		var next = __queued.shift();
-		__request(next.type, next.attributes, now);
 	}
 
 	/**
@@ -552,37 +614,27 @@ class TurnClient {
 		}
 
 		// Every answer is matched to the request it answers, by transaction,
-		// before anything is done with it. Two kinds were not, a
-		// CreatePermission success and a ChannelBind error cleared whatever was
-		// in flight, so a stray or duplicated one ended a request it had
-		// nothing to do with.
-		if (__pending == null || !__pending.matches(message)) {
+		// before anything is done with it.
+		var request = __requestFor(message);
+
+		if (request == null) {
 			// An answer to a transaction this client has moved on from: the
 			// unsigned request a 401 answered twice, say. Its own, and nothing
 			// to act on. Anything else is somebody else's.
 			return __isRetired(message);
 		}
 
-		switch (message.type) {
-			case StunMessage.ALLOCATE_SUCCESS:
-				__allocated(message, now);
-			case StunMessage.REFRESH_SUCCESS:
-				__refreshed(message, now);
-			case StunMessage.CREATE_PERMISSION_SUCCESS:
-				__pending = null;
-				__drain(now);
-			case StunMessage.CHANNEL_BIND_SUCCESS:
-				__channelBound(message, now);
-			case StunMessage.CHANNEL_BIND_ERROR:
-				// The relay would not, so this peer keeps costing a wrapper.
-				// Not a failure of the connection: indications still work, and
-				// treating it as one would give up a working path over a
-				// saving.
-				__pending = null;
-				__drain(now);
-			case StunMessage.ALLOCATE_ERROR, StunMessage.REFRESH_ERROR, StunMessage.CREATE_PERMISSION_ERROR:
-				__refused(message, now);
-			default:
+		// Where requests go from here: the address the relay answered from,
+		// which is the one lookup of its name this allocation needs.
+		if (!__pinned && fromPort == serverPort) {
+			__pinned = true;
+			serverAddress = fromAddress;
+		}
+
+		if ((message.type & 0x0110) == 0x0110) {
+			__answeredWithError(request, message, now);
+		} else {
+			__answeredWithSuccess(request, message, now);
 		}
 
 		return true;
@@ -600,6 +652,19 @@ class TurnClient {
 		}
 	}
 
+	/** The request in flight that `message` answers, of the method it answers for. **/
+	@:noCompletion private function __requestFor(message:StunMessage):Null<TurnTransaction> {
+		var method:Int = message.type & 0x3EEF;
+
+		for (request in __inFlight) {
+			if (request.type == method && request.message.matches(message)) {
+				return request;
+			}
+		}
+
+		return null;
+	}
+
 	/** Whether `message` answers a transaction this client superseded. **/
 	@:noCompletion private function __isRetired(message:StunMessage):Bool {
 		for (retired in __retired) {
@@ -611,29 +676,11 @@ class TurnClient {
 		return false;
 	}
 
-	/**
-		Moves the request in flight to a new transaction, remembering the old.
-
-		RFC 8489 section 9.2.5: a request retried with credentials, or with a
-		fresh nonce, is a new transaction. Retrying under the old one meant a
-		second answer to the first attempt, a 401 to an unsigned request that
-		had been retransmitted, because its answer was slow, matched the
-		signed retry and read as the credentials being rejected.
-	**/
-	@:noCompletion private function __renew():Void {
-		__retired.push(__pending.transactionId);
-
-		if (__retired.length > RETIRED_KEPT) {
-			__retired.shift();
-		}
-
-		__pending = new StunMessage(__pending.type, __transaction(), __pending.attributes);
-	}
-
 	public function close():Void {
 		__closed = true;
 		active = false;
-		__pending = null;
+		__inFlight = [];
+		__queued = [];
 
 		// Same as the others in this stack: nothing settled `allocated` on a
 		// close, so a caller that closed a client mid-allocation waited on a
@@ -641,6 +688,310 @@ class TurnClient {
 		@:privateAccess allocated.__cancel("The client was closed before the relay answered.");
 	}
 
+	// ------------------------------------------------------------------
+	// Requests
+	// ------------------------------------------------------------------
+
+	/**
+		Sends a request, or queues it behind those in flight.
+
+		An Allocate and a Refresh are never queued. Nothing else can be in
+		flight before the Allocate is answered, and a Refresh queued behind
+		permissions was how an allocation expired while the client was busy
+		asking for them.
+	**/
+	@:noCompletion private function __start(request:TurnTransaction, now:Float):Void {
+		var exempt:Bool = request.type == StunMessage.ALLOCATE_REQUEST || request.type == StunMessage.REFRESH_REQUEST;
+
+		if (!exempt && __inFlight.length >= MAX_IN_FLIGHT) {
+			if (__queued.length >= MAX_QUEUED) {
+				// Dropped, and asked for again the next time it is wanted.
+				__abandon(request);
+				return;
+			}
+
+			__queued.push(request);
+			return;
+		}
+
+		request.message = new StunMessage(request.type, __transaction(), request.attributes);
+		__inFlight.push(request);
+		__transmit(request, now);
+	}
+
+	/** Starts what was waiting, as far as there is room. **/
+	@:noCompletion private function __drain(now:Float):Void {
+		while (!__closed && __queued.length > 0 && __inFlight.length < MAX_IN_FLIGHT) {
+			__start(__queued.shift(), now);
+		}
+	}
+
+	@:noCompletion private function __transmit(request:TurnTransaction, now:Float):Void {
+		request.attempts++;
+
+		// Doubling from half a second, and the last transmission given
+		// sixteen times the first to be answered: RFC 8489 section 6.2.1.
+		request.retryAt = now + (request.attempts >= MAX_ATTEMPTS ? FINAL_WAIT : RETRY_AFTER * Math.pow(2, request.attempts - 1));
+
+		if (request.encoded == null) {
+			request.encoded = __encode(request);
+		}
+
+		request.encoded.position = 0;
+		onSend(request.encoded, serverAddress, serverPort);
+	}
+
+	/**
+		The request's bytes, signed once the relay has said which realm and
+		nonce to sign against. Before that there is nothing to key with, which
+		is the whole point of the first exchange.
+	**/
+	@:noCompletion private function __encode(request:TurnTransaction):ByteArray {
+		if (__key != null && __realm != null && __nonce != null) {
+			request.signed = true;
+			request.nonce = __nonce;
+
+			var signed = new StunMessage(request.type, request.message.transactionId, request.attributes.concat([
+				StunMessage.text(StunMessage.ATTR_USERNAME, __username),
+				StunMessage.text(StunMessage.ATTR_REALM, __realm),
+				StunMessage.text(StunMessage.ATTR_NONCE, __nonce)
+			]));
+
+			return signed.encodeSignedWithKey(__key, false);
+		}
+
+		request.signed = false;
+		request.nonce = null;
+		return request.message.encode();
+	}
+
+	/**
+		Moves a request to a new transaction and sends it, remembering the old.
+
+		RFC 8489 section 9.2.5: a request retried with credentials, or with a
+		fresh nonce, is a new transaction. Retrying under the old one meant a
+		second answer to the first attempt, a 401 to an unsigned request that
+		had been retransmitted, because its answer was slow, matched the
+		signed retry and read as the credentials being rejected.
+	**/
+	@:noCompletion private function __retry(request:TurnTransaction, now:Float):Void {
+		__retired.push(request.message.transactionId);
+
+		if (__retired.length > RETIRED_KEPT) {
+			__retired.shift();
+		}
+
+		request.message = new StunMessage(request.type, __transaction(), request.attributes);
+		request.encoded = null;
+		request.attempts = 0;
+		__transmit(request, now);
+	}
+
+	/** Takes a request out of flight, answered or given up on. **/
+	@:noCompletion private function __finish(request:TurnTransaction):Void {
+		__inFlight.remove(request);
+
+		switch (request.type) {
+			case StunMessage.ALLOCATE_REQUEST:
+				__allocating = false;
+			case StunMessage.REFRESH_REQUEST:
+				__refreshing = false;
+			default:
+		}
+	}
+
+	/** Forgets a permission or a channel request that will not be sent, so it is asked for again when wanted. **/
+	@:noCompletion private function __abandon(request:TurnTransaction):Void {
+		if (request.permission != null) {
+			request.permission.pending = false;
+		}
+
+		if (request.channel != null) {
+			request.channel.pending = false;
+		}
+	}
+
+	@:noCompletion private function __timedOut(request:TurnTransaction, now:Float):Void {
+		__finish(request);
+
+		// A channel is a saving and not the path: the indications still work,
+		// so a bind nobody answered costs the channel and nothing else.
+		if (request.type == StunMessage.CHANNEL_BIND_REQUEST) {
+			request.channel.pending = false;
+			request.channel.refused = true;
+			__drain(now);
+			return;
+		}
+
+		__fail("The relay at " + serverAddress + ":" + serverPort + " did not answer.");
+	}
+
+	// ------------------------------------------------------------------
+	// Answers
+	// ------------------------------------------------------------------
+
+	@:noCompletion private function __answeredWithSuccess(request:TurnTransaction, message:StunMessage, now:Float):Void {
+		__finish(request);
+
+		switch (request.type) {
+			case StunMessage.ALLOCATE_REQUEST:
+				__allocated(message, now);
+			case StunMessage.REFRESH_REQUEST:
+				__refreshed(message, now);
+			case StunMessage.CREATE_PERMISSION_REQUEST:
+				request.permission.pending = false;
+				request.permission.granted = true;
+				request.permission.grantedAt = now;
+			case StunMessage.CHANNEL_BIND_REQUEST:
+				request.channel.pending = false;
+				request.channel.bound = true;
+				request.channel.boundAt = now;
+			default:
+		}
+
+		__drain(now);
+	}
+
+	@:noCompletion private function __answeredWithError(request:TurnTransaction, message:StunMessage, now:Float):Void {
+		var code = message.errorCodeValue();
+
+		// 401 the first time, 438 when the nonce a request was signed against
+		// has expired. Both mean the same thing: take the credentials offered
+		// and ask again, as a new transaction. For any request, a ChannelBind
+		// included, which was not retried, so a nonce that went stale between
+		// refreshes left the channel marked bound while the relay dropped
+		// everything sent on it.
+		if (code == StunMessage.UNAUTHORIZED || code == StunMessage.STALE_NONCE) {
+			var realm = message.textOf(StunMessage.ATTR_REALM);
+			var nonce = message.textOf(StunMessage.ATTR_NONCE);
+
+			if (realm == null || nonce == null) {
+				__requestFailed(request, code, "The relay refused the request without saying what credentials it wants.", true, now);
+				return;
+			}
+
+			// Only once for 401, so a relay that keeps refusing cannot hold
+			// this in a loop: a signed request refused is refused credentials.
+			if (code == StunMessage.UNAUTHORIZED && request.signed) {
+				__requestFailed(request, code, "The relay rejected these credentials.", true, now);
+				return;
+			}
+
+			// Counted only when the nonce refused was the newest this client
+			// had. Several requests in flight can each be refused a nonce that
+			// another's refusal has already replaced; that is the rotation
+			// catching up, not the relay refusing everything.
+			if (code == StunMessage.STALE_NONCE && request.signed && request.nonce == __nonce && ++request.staleNonces > MAX_STALE_NONCES) {
+				__requestFailed(request, code, "The relay refused every nonce it offered as stale.", true, now);
+				return;
+			}
+
+			if (realm != __realm || __key == null) {
+				__realm = realm;
+				__key = StunMessage.longTermKey(__username, realm, __password);
+			}
+
+			__nonce = nonce;
+			__retry(request, now);
+			return;
+		}
+
+		// 437: the relay holds no such allocation. Whatever the request was
+		// about, the allocation it was about is gone.
+		var phrase = message.errorReason();
+		__requestFailed(request, code, phrase != null ? phrase : "", code == StunMessage.ALLOCATION_MISMATCH, now);
+	}
+
+	/**
+		A request the relay will not grant.
+
+		@param reason The relay's reason phrase, or what went wrong in words
+		when the relay's answer was not the problem.
+		@param fatal Whether it ends the allocation whatever the request was:
+		credentials the relay will not take, or an allocation it says it does
+		not hold. Otherwise a permission refuses that peer and a bind that
+		channel, and only an Allocate or a Refresh ends anything.
+	**/
+	@:noCompletion private function __requestFailed(request:TurnTransaction, code:Int, reason:String, fatal:Bool, now:Float):Void {
+		__finish(request);
+
+		if (!fatal) {
+			switch (request.type) {
+				case StunMessage.CREATE_PERMISSION_REQUEST:
+					// A peer the relay will not forward to, which is that
+					// peer's problem and nobody else's.
+					request.permission.pending = false;
+					__refusePermission(request.permission, code, reason);
+					__drain(now);
+					return;
+				case StunMessage.CHANNEL_BIND_REQUEST:
+					// The relay would not, so this peer keeps costing a
+					// wrapper. Not a failure of the connection: indications
+					// still work, and treating it as one would give up a
+					// working path over a saving.
+					request.channel.pending = false;
+					request.channel.refused = true;
+					__drain(now);
+					return;
+				default:
+			}
+		}
+
+		// Credentials and nonces are this client's own words for what went
+		// wrong; anything else is the relay's code and phrase.
+		var credentials:Bool = fatal && code != StunMessage.ALLOCATION_MISMATCH;
+		__fail(credentials ? reason : "The relay refused the request: " + code + (reason.length > 0 ? " " + reason : ""));
+	}
+
+	/** Marks a peer refused, so it is neither asked for again nor renewed, and says so. **/
+	@:noCompletion private function __refusePermission(permission:TurnPermission, code:Int, reason:String):Void {
+		if (permission.refused) {
+			return;
+		}
+
+		permission.refused = true;
+		onPermissionRefused(permission.address, code, reason);
+	}
+
+	@:noCompletion private function __allocated(message:StunMessage, now:Float):Void {
+		var relayed = message.addressOf(StunMessage.ATTR_XOR_RELAYED_ADDRESS);
+
+		if (relayed == null) {
+			__fail("The relay allocated nothing: its reply carried no relayed address.");
+			return;
+		}
+
+		relayedAddress = relayed;
+		mappedAddress = message.addressOf(StunMessage.ATTR_XOR_MAPPED_ADDRESS);
+		__lifetime = message.uintOf(StunMessage.ATTR_LIFETIME, DEFAULT_LIFETIME);
+		__refreshAt = now + __lifetime / 2;
+		active = true;
+
+		@:privateAccess allocated.__resolve(relayed);
+	}
+
+	@:noCompletion private function __refreshed(message:StunMessage, now:Float):Void {
+		__lifetime = message.uintOf(StunMessage.ATTR_LIFETIME, __lifetime);
+
+		if (__lifetime <= 0) {
+			// A zero lifetime is how a relay says the allocation is gone. This
+			// client never asks for one, close() simply stops, so it is the
+			// relay's decision, and the caller has to hear it.
+			var wasActive:Bool = active;
+			active = false;
+
+			if (wasActive) {
+				onLost("The relay at " + serverAddress + ":" + serverPort + " ended the allocation.");
+			}
+
+			return;
+		}
+
+		__refreshAt = now + __lifetime / 2;
+	}
+
+	// ------------------------------------------------------------------
+	// Data
 	// ------------------------------------------------------------------
 
 	/**
@@ -690,183 +1041,6 @@ class TurnClient {
 		return true;
 	}
 
-	@:noCompletion private function __channelBound(message:StunMessage, now:Float):Void {
-		if (__pending == null || __pendingType != StunMessage.CHANNEL_BIND_REQUEST || !__pending.matches(message)) {
-			return;
-		}
-
-		var number = __pending.uintOf(StunMessage.ATTR_CHANNEL_NUMBER, 0) >> 16;
-
-		for (channel in __channels) {
-			if (channel.number == number) {
-				channel.bound = true;
-				channel.askedAt = now;
-			}
-		}
-
-		__pending = null;
-		__drain(now);
-	}
-
-	@:noCompletion private function __request(type:Int, attributes:Array<StunAttribute>, now:Float):Void {
-		if (__pending != null) {
-			__queued.push({type: type, attributes: attributes});
-			return;
-		}
-
-		__pendingType = type;
-		__pending = new StunMessage(type, __transaction(), attributes);
-		__attempts = 0;
-		__transmit(now);
-	}
-
-	@:noCompletion private function __transmit(now:Float):Void {
-		if (__pending == null) {
-			return;
-		}
-
-		__attempts++;
-
-		// Doubling from half a second, and the last transmission given
-		// sixteen times the first to be answered: RFC 8489 section 6.2.1.
-		__retryAt = now + (__attempts >= MAX_ATTEMPTS ? FINAL_WAIT : RETRY_AFTER * Math.pow(2, __attempts - 1));
-
-		// Signed only once the relay has said which realm and nonce to sign
-		// against. Before that there is nothing to key with, which is the whole
-		// point of the first exchange.
-		if (__key != null && __realm != null && __nonce != null) {
-			var signed = new StunMessage(__pending.type, __pending.transactionId, __pending.attributes.concat([
-				StunMessage.text(StunMessage.ATTR_USERNAME, __username),
-				StunMessage.text(StunMessage.ATTR_REALM, __realm),
-				StunMessage.text(StunMessage.ATTR_NONCE, __nonce)
-			]));
-
-			onSend(signed.encodeSignedWithKey(__key, false), serverAddress, serverPort);
-			return;
-		}
-
-		onSend(__pending.encode(), serverAddress, serverPort);
-	}
-
-	@:noCompletion private function __refused(message:StunMessage, now:Float):Void {
-		if (__pending == null || !__pending.matches(message)) {
-			return;
-		}
-
-		var code = message.errorCodeValue();
-
-		// 401 the first time, 438 when the nonce a request was signed against
-		// has expired. Both mean the same thing: take the credentials offered
-		// and ask again. Only once for 401, so a relay that keeps refusing
-		// cannot hold this in a loop.
-		if (code == StunMessage.UNAUTHORIZED || code == StunMessage.STALE_NONCE) {
-			var realm = message.textOf(StunMessage.ATTR_REALM);
-			var nonce = message.textOf(StunMessage.ATTR_NONCE);
-
-			if (realm == null || nonce == null) {
-				__fail("The relay refused the request without saying what credentials it wants.");
-				return;
-			}
-
-			if (code == StunMessage.UNAUTHORIZED && __key != null) {
-				__fail("The relay rejected these credentials.");
-				return;
-			}
-
-			__realm = realm;
-			__nonce = nonce;
-			__key = StunMessage.longTermKey(__username, realm, __password);
-			__renew();
-			__attempts = 0;
-			__transmit(now);
-			return;
-		}
-
-		// A peer the relay will not forward to, which is that peer's problem and
-		// nobody else's. Unless the relay says it holds no such allocation,
-		// 437, which is everyone's.
-		if (__pendingType == StunMessage.CREATE_PERMISSION_REQUEST && code != StunMessage.ALLOCATION_MISMATCH) {
-			var peer = __pending.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
-			__pending = null;
-
-			if (peer != null) {
-				__refusePermission(peer.address, code, __reasonOf(message, code));
-			}
-
-			__drain(now);
-			return;
-		}
-
-		__fail("The relay refused the request: " + (message.errorMessage() != null ? message.errorMessage() : Std.string(code)));
-	}
-
-	/** The reason phrase of an error, or its code when it gave none. **/
-	@:noCompletion private static function __reasonOf(message:StunMessage, code:Int):String {
-		var text = message.errorReason();
-		return text != null && text.length > 0 ? text : Std.string(code);
-	}
-
-	/** Marks a peer refused, so it is neither asked for again nor renewed, and says so. **/
-	@:noCompletion private function __refusePermission(address:String, code:Int, reason:String):Void {
-		var permission = __permissionFor(address);
-
-		if (permission == null || permission.refused) {
-			return;
-		}
-
-		permission.refused = true;
-		onPermissionRefused(address, code, reason);
-	}
-
-	@:noCompletion private function __allocated(message:StunMessage, now:Float):Void {
-		if (__pending == null || __pendingType != StunMessage.ALLOCATE_REQUEST || !__pending.matches(message)) {
-			return;
-		}
-
-		var relayed = message.addressOf(StunMessage.ATTR_XOR_RELAYED_ADDRESS);
-
-		if (relayed == null) {
-			__fail("The relay allocated nothing: its reply carried no relayed address.");
-			return;
-		}
-
-		__pending = null;
-		relayedAddress = relayed;
-		mappedAddress = message.addressOf(StunMessage.ATTR_XOR_MAPPED_ADDRESS);
-		__lifetime = message.uintOf(StunMessage.ATTR_LIFETIME, DEFAULT_LIFETIME);
-		__refreshAt = now + __lifetime / 2;
-		active = true;
-
-		@:privateAccess allocated.__resolve(relayed);
-		__drain(now);
-	}
-
-	@:noCompletion private function __refreshed(message:StunMessage, now:Float):Void {
-		if (__pending == null || !__pending.matches(message)) {
-			return;
-		}
-
-		__pending = null;
-		__lifetime = message.uintOf(StunMessage.ATTR_LIFETIME, __lifetime);
-
-		if (__lifetime <= 0) {
-			// A zero lifetime is how a relay says the allocation is gone. This
-			// client never asks for one, close() simply stops, so it is the
-			// relay's decision, and the caller has to hear it.
-			var wasActive:Bool = active;
-			active = false;
-
-			if (wasActive) {
-				onLost("The relay at " + serverAddress + ":" + serverPort + " ended the allocation.");
-			}
-
-			return;
-		}
-
-		__refreshAt = now + __lifetime / 2;
-		__drain(now);
-	}
-
 	@:noCompletion private function __deliver(message:StunMessage):Void {
 		var peer = message.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS);
 		var payload = message.attribute(StunMessage.ATTR_DATA);
@@ -882,7 +1056,10 @@ class TurnClient {
 	@:noCompletion private function __fail(reason:String):Void {
 		var wasActive:Bool = active;
 
-		__pending = null;
+		__inFlight = [];
+		__queued = [];
+		__allocating = false;
+		__refreshing = false;
 		active = false;
 
 		if (!__closed) {
@@ -904,16 +1081,52 @@ class TurnClient {
 }
 
 /**
-	One channel: a number the relay agreed stands for a peer.
-
-	`askedAt` is when the bind was last requested rather than when it was
-	granted, because that is what the retry and the refresh are both measured
-	against, and a bind that was never answered should not look fresh.
+	One request, and where it has got to: its transaction, which changes each
+	time it is retried with new credentials, and its retransmission schedule.
 **/
+private class TurnTransaction {
+	public var type(default, null):Int;
+	public var attributes(default, null):Array<StunAttribute>;
+
+	/** The request as it stands, unsigned: its type, its current transaction, its attributes. **/
+	public var message:StunMessage;
+
+	/** What goes on the wire, encoded once per transaction and resent as it is. **/
+	public var encoded:Null<ByteArray> = null;
+
+	public var attempts:Int = 0;
+	public var retryAt:Float = 0;
+
+	/** Whether the transaction in flight was signed, and against which nonce. **/
+	public var signed:Bool = false;
+
+	public var nonce:Null<String> = null;
+
+	/** Stale-nonce refusals counted against it; see `TurnClient.MAX_STALE_NONCES`. **/
+	public var staleNonces:Int = 0;
+
+	/** The peer a CreatePermission asks for, or the channel a ChannelBind binds. **/
+	public var permission:Null<TurnPermission> = null;
+
+	public var channel:Null<TurnChannel> = null;
+
+	public function new(type:Int, attributes:Array<StunAttribute>) {
+		this.type = type;
+		this.attributes = attributes;
+	}
+}
+
+/** A peer, and what the relay has said about letting it through. **/
 private class TurnPermission {
 	public var address(default, null):String;
 
-	public var askedAt:Float = 0;
+	/** Whether a CreatePermission for it is in flight or queued. **/
+	public var pending:Bool = false;
+
+	/** Whether the relay granted it, and when it last did. **/
+	public var granted:Bool = false;
+
+	public var grantedAt:Float = 0;
 
 	/** Whether the relay refused it, which it is not asked twice about. **/
 	public var refused:Bool = false;
@@ -923,6 +1136,12 @@ private class TurnPermission {
 	}
 }
 
+/**
+	One channel: a number the relay agreed stands for a peer.
+
+	`boundAt` is when the relay last agreed, which is what the rebind at eight
+	minutes and the lapse at ten are both measured from.
+**/
 private class TurnChannel {
 	public var number(default, null):Int;
 	public var address(default, null):String;
@@ -931,7 +1150,13 @@ private class TurnChannel {
 	/** Whether the relay has agreed. Until then traffic goes as indications. **/
 	public var bound:Bool = false;
 
-	public var askedAt:Float = 0;
+	public var boundAt:Float = 0;
+
+	/** Whether a ChannelBind for it is in flight or queued. **/
+	public var pending:Bool = false;
+
+	/** Whether the relay refused a bind, or never answered one; it is not asked again. **/
+	public var refused:Bool = false;
 
 	public function new(number:Int, address:String, port:Int) {
 		this.number = number;

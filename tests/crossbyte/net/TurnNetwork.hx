@@ -45,6 +45,9 @@ class TurnNetwork {
 	/** What the relay sent on to peers, in order. **/
 	public var toPeers(default, null):Array<PeerDatagram> = [];
 
+	/** Called every tick once the clients are polled: an application's own traffic, say. **/
+	public dynamic function onTick():Void {}
+
 	@:noCompletion private var __clients:Array<{client:TurnClient, address:String, port:Int}> = [];
 	@:noCompletion private var __queue:Array<InFlight> = [];
 	@:noCompletion private var __nextPort:Int = 50000;
@@ -125,6 +128,8 @@ class TurnNetwork {
 			for (entry in __clients) {
 				entry.client.poll(now);
 			}
+
+			onTick();
 		}
 	}
 

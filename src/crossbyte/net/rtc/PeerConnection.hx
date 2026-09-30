@@ -1211,18 +1211,9 @@ class PeerConnection {
 	@:noCompletion private var __turn:TurnClient;
 	@:noCompletion private var __relayedCandidate:IceCandidate;
 	@:noCompletion private var __relayedFuture:Future<IceCandidate>;
-	@:noCompletion private var __permitted:Map<String, Float> = new Map();
 
 	/** Whether the nominated pair reaches the peer through the relay. **/
 	@:noCompletion private var __peerRelayed:Bool = false;
-
-	/**
-		How long a permission is assumed to last before it is asked for again.
-
-		RFC 8656 gives one five minutes. Renewed well inside that, because a
-		permission that lapses does not fail loudly, the relay simply drops what
-		it is asked to forward, and the connection goes quiet for no stated reason.
-	**/
 
 	/**
 		Wraps one datagram for the relay to forward, permitting the peer first.
@@ -1238,16 +1229,13 @@ class PeerConnection {
 
 		var now = __clock();
 
-		// Once per address. Renewing it used to happen here too, on the same
-		// four minutes, which only renewed a permission while traffic was
-		// flowing, an idle-but-receiving connection lapsed and the relay
-		// began dropping the peer inbound. TurnClient renews on its own tick
-		// now, so keeping a second copy of that policy here would just send
-		// the relay a redundant request every cycle.
-		if (!__permitted.exists(address)) {
-			__permitted.set(address, now);
-			__turn.permit(address, now);
-		}
+		// Every time, which costs a lookup: TurnClient sends nothing for a
+		// permission already in place, already being asked for, or refused.
+		// It was asked once per address here, so a request the relay never
+		// answered, or one dropped from a full queue, was never asked again.
+		// Renewal is TurnClient's too, on its own tick, so that a connection
+		// that only receives keeps its peer permitted.
+		__turn.permit(address, now);
 
 		// And a channel, which costs four bytes a datagram where an indication
 		// costs thirty-six. Asked for every time and ignored when one is

@@ -233,11 +233,13 @@ class TurnClientTest extends utest.Test {
 	/**
 		A permission asked for while a refresh is outstanding does not lose it.
 
-		Only one request is tracked at a time, so a second started underneath
-		the first would abandon it, and the one abandoned is whichever was
-		already running, which on a timer is the refresh. That does not fail
-		loudly: the allocation just stops being renewed and the connection dies
-		when it expires.
+		Only one request used to be tracked at a time, so a second started
+		underneath the first would have abandoned it, and the one abandoned
+		was whichever was already running, which on a timer is the refresh.
+		That does not fail loudly: the allocation just stops being renewed and
+		the connection dies when it expires. Each request is its own
+		transaction now, so the permission goes out beside the refresh and the
+		refresh's answer is still recognised when it comes.
 	**/
 	public function testARequestStartedDuringAnotherDoesNotAbandonIt():Void {
 		if (unsupported()) return;
@@ -259,14 +261,16 @@ class TurnClientTest extends utest.Test {
 		// A permission asked for while that refresh is still unanswered.
 		client.permit("198.51.100.4", now);
 		relay.pump(client, now);
-		Assert.equals(0, relay.permissionRequests, "the permission displaced the refresh in flight");
+		Assert.equals(1, relay.permissionRequests, "the permission was never sent");
 
 		relay.holdRefresh = false;
 		relay.answerHeld(client, now);
-		relay.run(client, () -> relay.permissionRequests > 0, now);
+		relay.pump(client, now);
+		client.poll(now + 0.1);
+		relay.pump(client, now + 0.1);
 
 		Assert.equals(1, relay.refreshRequests, "the refresh was retried, which means its answer was not matched");
-		Assert.equals(1, relay.permissionRequests, "the queued permission was never sent");
+		Assert.isTrue(client.active, "the allocation was lost with its refresh answered");
 	}
 
 	/**
@@ -663,6 +667,266 @@ class TurnClientTest extends utest.Test {
 	}
 
 	// ------------------------------------------------------------------
+	// Names, nonces and queues
+	// ------------------------------------------------------------------
+
+	/**
+		A relay named by hostname is sent to by name once, and after that at
+		the address that answered.
+
+		Every datagram went to the name, which natively is looked up again
+		every minute and on Node for every datagram. Against a round-robin pool
+		each lookup can name another relay, one that knows neither this
+		allocation nor its nonce, so the requests bounced between relays that
+		refused each other's nonces and nothing was ever allocated.
+	**/
+	public function testARelayNamedByHostnameIsAskedWhereItAnswered():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.names.set(RELAY_NAME, network.relayAddress);
+
+		var client = network.client(RELAY_NAME);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+
+		Assert.isTrue(client.active, "the allocation never completed");
+		Assert.equals(RELAY_NAME, network.sent[0].address, "the first request did not go to the name it was given");
+
+		var byName:Int = 0;
+
+		for (i in 1...network.sent.length) {
+			if (network.sent[i].address == RELAY_NAME) {
+				byName++;
+			}
+		}
+
+		Assert.equals(0, byName, byName + " requests after the relay answered were sent to its name, to be looked up again");
+		Assert.equals(network.relayAddress, client.serverAddress);
+	}
+
+	/**
+		A relay that calls every nonce stale is given up on, not asked forever.
+
+		A 438 is answered by asking again with the new nonce, as it should be,
+		but without a limit, so a relay that refused every nonce it handed
+		out was asked some nine thousand times a second, for good.
+	**/
+	public function testARelayThatCallsEveryNonceStaleIsGivenUpOn():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.relay.always438 = true;
+
+		var client = network.client();
+		var failure:String = null;
+		client.allocated.then(_ -> {}, error -> failure = error);
+		client.allocate(network.now);
+		network.run(() -> failure != null, 10);
+
+		var asked:Int = network.relay.requestsOf("allocate");
+		Assert.notNull(failure, "a relay refusing every nonce was asked " + asked + " times and never given up on");
+		Assert.isTrue(asked <= TurnClient.MAX_STALE_NONCES + 2, "a relay refusing every nonce was asked " + asked + " times");
+	}
+
+	/**
+		Asking for a permission before every datagram does not starve the
+		refresh.
+
+		The auditor's measurement, in memory: thirty datagrams a second, each
+		permitted first, on a path whose round trip the relay answers slower
+		than that. Every call queued another CreatePermission, the refresh was
+		sent only when nothing else was in flight, which was never, and the
+		allocation expired at ten minutes with ten thousand requests queued.
+	**/
+	public function testPermittingBeforeEveryDatagramDoesNotStarveTheRefresh():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		network.latency = 0.035;
+
+		var client = network.client();
+		var lost:Array<String> = [];
+		client.onLost = reason -> lost.push(reason);
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		var payload = new ByteArray();
+
+		for (i in 0...64) {
+			payload.writeByte(i);
+		}
+
+		network.onTick = function():Void {
+			client.permit(PEER, network.now);
+			client.sendTo(payload, PEER, PEER_PORT);
+		};
+
+		network.run(() -> !client.active, 1800, 1 / 30);
+		network.onTick = function():Void {};
+
+		Assert.isTrue(client.active, "the allocation was lost: " + lost);
+		Assert.equals(0, lost.length);
+
+		var permissions:Int = network.relay.requestsOf("permission");
+		Assert.isTrue(permissions <= Std.int(1800 / TurnClient.PERMISSION_REFRESH) + 2,
+			"one peer's permission was asked for " + permissions + " times in half an hour");
+		Assert.isTrue(network.relay.requestsOf("refresh") >= 5, "the allocation was refreshed only " + network.relay.requestsOf("refresh") + " times");
+	}
+
+	/**
+		A refresh goes when it is due, however many requests are waiting.
+	**/
+	public function testARefreshDoesNotWaitBehindPermissions():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		var due:Float = network.now + TurnClient.DEFAULT_LIFETIME / 2;
+
+		// A slow relay, and a new peer every second: there is always a
+		// permission in flight and more waiting.
+		network.relay.delay = 3;
+		var next:Float = network.now;
+		var peers:Int = 0;
+
+		network.onTick = function():Void {
+			if (network.now >= next) {
+				next += 1;
+				peers++;
+				client.permit("198.51." + (100 + (peers >> 8)) + "." + (peers & 0xFF), network.now);
+			}
+		};
+
+		network.run(() -> network.sentOfType(StunMessage.REFRESH_REQUEST).length > 0, 400, 0.25);
+		network.onTick = function():Void {};
+
+		var refreshes = network.sentOfType(StunMessage.REFRESH_REQUEST);
+		Assert.isTrue(refreshes.length > 0, "the refresh was never sent while permissions were waiting");
+
+		if (refreshes.length > 0) {
+			Assert.isTrue(refreshes[0].at - due < 1.0, "the refresh went " + (refreshes[0].at - due) + " s after it was due");
+		}
+	}
+
+	/**
+		Requests waiting behind those in flight are bounded.
+
+		A caller asking for more than the relay answers grew the queue without
+		limit, by thousands a minute in the auditor's measurement.
+	**/
+	public function testTheRequestsWaitingAreBounded():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		// Nothing answers from here, so nothing leaves the queue.
+		network.relay.dropAll = true;
+
+		for (i in 0...500) {
+			client.permit("198.51." + (100 + (i >> 8)) + "." + (i & 0xFF), network.now);
+		}
+
+		var queued:Int = @:privateAccess client.__queued.length;
+		Assert.isTrue(queued <= TurnClient.MAX_QUEUED, queued + " requests were queued");
+	}
+
+	/**
+		A stale nonce on a channel rebind is retried, and the channel stays up.
+
+		A 438 on a ChannelBind was neither retried nor used to take the new
+		nonce, and the channel stayed marked bound, while the relay, whose
+		binding lapsed at ten minutes, dropped everything sent on it. With a
+		600 second nonce, 58 of 300 simulated two-hour sessions lost their
+		channel that way, the worst for six minutes, with nothing reported.
+	**/
+	public function testAStaleNonceOnAChannelRebindIsRetried():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		network.run(() -> network.relay.count("permitted") > 0, 5);
+		network.advance(10);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+
+		// A nonce lasts 485 s: still good for the permission's renewals at 240
+		// and 480 and the refresh at 300, and stale by the channel's rebind at
+		// 490, the first request to meet it.
+		network.relay.staleNonceAfter = 485;
+		network.advance(700 - network.now, 0.25);
+
+		Assert.isTrue(network.relay.count("refused-438") > 0, "no nonce went stale, so this proved nothing");
+		Assert.isTrue(network.relay.count("channel-bound") >= 2, "the rebind refused for its nonce was never retried");
+
+		var before:Int = network.toPeers.length;
+		var payload = new ByteArray();
+		payload.writeUTFBytes("input frame");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(0, network.relay.count("channeldata-dropped"), "the client went on sending on a channel the relay had let lapse");
+		Assert.equals(before + 1, network.toPeers.length, "the datagram never reached the peer");
+	}
+
+	/**
+		A rebind the relay refuses leaves the channel only until its binding
+		lapses, and the traffic goes back to indications then.
+	**/
+	public function testARebindTheRelayRefusesFallsBackToIndications():Void {
+		if (unsupported()) return;
+
+		var network = new TurnNetwork();
+		var client = network.client();
+		client.useChannels = true;
+		client.allocated.then(_ -> {}, _ -> {});
+		client.allocate(network.now);
+		network.run(() -> client.active, 5);
+
+		client.permit(PEER, network.now);
+		client.bindChannel(PEER, PEER_PORT, network.now);
+		network.run(() -> network.relay.count("channel-bound") > 0, 5);
+
+		// Every bind from here is refused, the rebind at 480 included; the
+		// binding the relay has lapses at 600.
+		network.relay.refuseChannels = true;
+		network.advance(700 - network.now, 0.25);
+
+		Assert.equals(1, network.relay.count("bind-400"), "the rebind was never refused, so this proved nothing");
+
+		var payload = new ByteArray();
+		payload.writeUTFBytes("input frame");
+		payload.position = 0;
+		client.sendTo(payload, PEER, PEER_PORT);
+		network.advance(0.1);
+
+		Assert.equals(0, network.relay.count("channeldata-dropped"), "the client went on sending on a channel the relay had let lapse");
+		Assert.isTrue(network.relay.count("send-relayed") > 0, "the traffic did not go back to indications");
+	}
+
+	// ------------------------------------------------------------------
+
+	private static inline var RELAY_NAME:String = "relay.example.test";
 
 	private static inline var PEER:String = "198.51.100.4";
 	private static inline var PEER_PORT:Int = 40000;
