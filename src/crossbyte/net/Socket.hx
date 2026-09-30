@@ -749,6 +749,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function __beginConnect(h:Host, port:Int):Void {
 		try {
 			__socket.setBlocking(false);
+			// Before the connect rather than once it is under way: Windows
+			// refuses TCP_NODELAY on a socket whose connect is in progress,
+			// and hxcpp does not report the refusal, so set afterwards it was
+			// lost on every connect that took any time -- every one over a
+			// network -- and Nagle's algorithm held each small write behind
+			// the acknowledgement of the last.
+			__socket.setFastSend(true);
 			__socket.connect(h, port);
 		} catch (e:Error) {
 			if (!__isBlockedError(e)) {
@@ -773,7 +780,6 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		}
 
-		__socket.setFastSend(true);
 		__socket.custom = this;
 
 		#if eval
