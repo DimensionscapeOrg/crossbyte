@@ -205,7 +205,10 @@ class MySQLDriverTest extends utest.Test {
 			wire.sent[wire.sent.length - 1]);
 
 		statement.parameters.ratio = Math.NaN;
+		var sent:Int = wire.sent.length;
 		Assert.raises(() -> statement.execute(), crossbyte.errors.ArgumentError);
+		Assert.equals(sent, wire.sent.length, "the statement went out with no literal for NaN");
+		Assert.isFalse(statement.executing);
 	}
 
 	public function testABackslashEscapedQuoteDoesNotEndALiteral():Void {
