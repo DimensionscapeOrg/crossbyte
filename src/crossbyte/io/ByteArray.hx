@@ -8,6 +8,7 @@ import crossbyte._internal.lz4.Lz4;
 import crossbyte._internal.deflatex.Deflater;
 import crossbyte._internal.deflatex.GZCompressor;
 import crossbyte._internal.deflatex.Inflater;
+import crossbyte._internal.deflatex.ZlibCompressor;
 import haxe.Exception;
 import haxe.Constraints.IMap;
 import haxe.ds.ObjectMap;
@@ -56,7 +57,7 @@ import format.amf3.Writer as AMF3Writer;
 	}
 	```
 	Compression support is limited to the algorithms available in
-	`CompressionAlgorithm`: `br`, `deflate`, `gzip`, and `lz4`.
+	`CompressionAlgorithm`: `br`, `deflate`, `gzip`, `lz4` and `zlib`.
 	Possible uses of the ByteArray class include the following:
 	* Creating a custom protocol to connect to a server.
 	* Writing your own URLEncoder/URLDecoder.
@@ -183,6 +184,11 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		open, because none of the metadata those formats require is there.
 		Where you want a file, use `GZIP`; where you want the bytes, use
 		`DEFLATE`.
+
+		`ZLIB` ([RFC 1950](https://www.ietf.org/rfc/rfc1950.txt)) is the third
+		wrapping of the same stream: a two-byte header and an Adler-32. It is
+		what HTTP's `deflate` content coding means, and what zlib, Node's
+		`zlib.deflateSync` and Java's `Deflater` produce and expect.
 	**/
 	public inline function compress(algorithm:CompressionAlgorithm = LZ4):Void {
 		this.compress(algorithm);
@@ -480,14 +486,18 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		A gzip or zip file is not a raw deflate stream, so `uncompress(DEFLATE)`
 		does not read one -- see `compress()` for why.
-		@throws IOError The data is not valid compressed data; it was not
-						compressed with the same compression algorithm used to
-						compress.
 
 		@param maxOutputSize Bytes the decoded result may reach before this
 		       gives up, or `0` for no limit. Compression ratios have no
 		       ceiling -- a megabyte of zeros returns as roughly a gigabyte --
 		       so anything decoding bytes it did not author wants to name one.
+		@throws crossbyte.errors.IOError The data is not valid for
+		        `algorithm`: damaged, cut short, or compressed with something
+		        else. Every algorithm throws this and only this for bad data,
+		        so a caller can tell a bad body from a fault in the code.
+		@throws crossbyte.errors.RangeError The result would be larger than
+		        `maxOutputSize`. It is thrown as the limit is reached, before
+		        the rest is decoded.
 	**/
 	public inline function uncompress(algorithm:CompressionAlgorithm = LZ4, maxOutputSize:Int = 0):Void {
 		this.uncompress(algorithm, maxOutputSize);
@@ -816,6 +826,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			case CompressionAlgorithm.DEFLATE: Deflater.apply(this);
 			case CompressionAlgorithm.GZIP: GZCompressor.compress(null, this);
 			case CompressionAlgorithm.LZ4: Lz4.compress(this);
+			case CompressionAlgorithm.ZLIB: ZlibCompressor.compress(this);
 			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 
@@ -1182,6 +1193,7 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 			case CompressionAlgorithm.DEFLATE: Inflater.apply(this, maxOutputSize);
 			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this, maxOutputSize);
 			case CompressionAlgorithm.LZ4: Lz4.decompress(this, maxOutputSize);
+			case CompressionAlgorithm.ZLIB: ZlibCompressor.decompress(this, maxOutputSize);
 			default: throw new Exception("Unsupported compression algorithm: " + algorithm);
 		}
 

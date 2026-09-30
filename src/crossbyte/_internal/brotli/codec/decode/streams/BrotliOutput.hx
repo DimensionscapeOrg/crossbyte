@@ -83,6 +83,6 @@ class BrotliOutput {
 
 	/** What a decode that would pass `limit` throws. **/
 	public static function exceeded(limit:Int):haxe.Exception {
-		return new haxe.Exception("Brotli stream exceeded " + limit + " bytes");
+		return new crossbyte.errors.RangeError("Brotli stream exceeded " + limit + " bytes");
 	}
 }

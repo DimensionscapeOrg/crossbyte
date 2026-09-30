@@ -25,7 +25,7 @@ class Brotli {
 
 	public static function compress(bytes:Bytes, quality:Int = 4):Bytes {
 		if (quality < 0 || quality > 11) {
-			throw "Brotli quality must be between 0 and 11";
+			throw new crossbyte.errors.ArgumentError("Brotli quality must be between 0 and 11, not " + quality);
 		}
 
 		#if crossbyte_brotli_native
@@ -50,13 +50,20 @@ class Brotli {
 		returns a finished buffer, so its result is measured after the fact and
 		the allocation has already happened. That path is opt-in and off by
 		default.
+
+		@throws crossbyte.errors.IOError The data is not a valid Brotli stream.
+		@throws crossbyte.errors.RangeError It decodes past `maxOutputSize`.
 	**/
 	public static function decompress(bytes:Bytes, maxOutputSize:UInt = 0):Bytes {
 		#if crossbyte_brotli_native
 		if (NativeBrotli.isAvailable()) {
-			var native:Bytes = NativeBrotli.decompress(bytes);
+			var native:Bytes = try {
+				NativeBrotli.decompress(bytes);
+			} catch (e:String) {
+				throw new crossbyte.errors.IOError("Invalid Brotli data: " + e);
+			}
 			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
-				throw new haxe.Exception("Brotli stream exceeded " + maxOutputSize + " bytes");
+				throw new crossbyte.errors.RangeError("Brotli stream exceeded " + maxOutputSize + " bytes");
 			}
 			return native;
 		}

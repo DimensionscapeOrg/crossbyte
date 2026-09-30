@@ -5,6 +5,12 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `CompressionAlgorithm.ZLIB` (`"zlib"`): the zlib format of RFC 1950, a
+  deflate stream behind a two-byte header with an Adler-32 of the data,
+  written and read by `ByteArray.compress` and `uncompress` under the same
+  output limit. It is what HTTP's `deflate` content coding is, and what
+  zlib, Node's `zlib.deflateSync` and Java's `Deflater` write; `DEFLATE`
+  stays the raw stream inside it.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -796,6 +802,16 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- Every compression codec now says a stream is bad the same way:
+  `ByteArray.uncompress` throws `crossbyte.errors.IOError` for data it
+  cannot read -- damaged, cut short, or in another format -- and
+  `crossbyte.errors.RangeError` for a result that would pass
+  `maxOutputSize`, whatever the algorithm. They threw bare strings
+  ("Brotli decompression failed", "Could not perform decompression",
+  "Invalid data"), `haxe.io.Eof`, or a plain `haxe.Exception`, so a caller
+  could not tell a bad body from a fault in the code, and the HTTP client
+  reported every such string as an unsupported content coding. Code that
+  caught a `String` from `uncompress` should catch these instead.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
