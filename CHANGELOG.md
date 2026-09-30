@@ -1252,6 +1252,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `IndexedMap` and `PackedSlotMap` can have the entry a loop is on removed,
+  as `ListedMap` and `DenseSet` now can. Both move their last entry into a
+  removed one's place, and iterated with the value array's own iterator, so
+  the entry moved in was skipped; `PackedSlotMap.forEach` counted its
+  entries before it began and read past the end after a removal.
 - `Array2D.clear()` empties the grid for every reference to it; it replaced
   the rows, so the same grid held elsewhere kept them. `fill(value)` sets
   every cell -- the way to give an `Array2D` of `Int`, `Float` or `Bool`
