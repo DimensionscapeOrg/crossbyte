@@ -1220,6 +1220,28 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- hl and neko have sockets again. CrossByte replaces `sys.net.Socket` and
+  `sys.net.UdpSocket` on every target, and since 2026-04-28 neither target
+  had a branch there, so both got a stand-in that threw, and each
+  target's own `sys.ssl.Socket` extends that class and reaches into its
+  private surface, so anything touching TLS, which is anything touching the
+  network, failed to compile inside Haxe's standard library with errors
+  that named nothing in CrossByte. Both now get their standard
+  implementations, with the changes callers here were written against: an
+  accept with nothing waiting is a would-block rather than null (hl); a
+  peer's `host` is its address, where hl left it null and neko named every
+  peer `127.0.0.1`; a second `close()` does nothing where neko's threw, and
+  so did an unconnected socket's `peer()`; and a connection reset is a
+  failure rather than the end of the stream, hl read both as `Eof`, and
+  so did neko's `readByte`, so a body delimited by its connection's end was
+  reported complete when the connection was cut partway through it. hl's
+  `select` builds its descriptor sets per thread: the standard library kept
+  one buffer for every thread, and two threads selecting at once got an
+  answer for the wrong sockets up to one time in seven, or a failed select.
+  And on hl every received datagram threw before it was delivered, because
+  `Address.getHost` wrote an `ipv6` field hl's `Host` does not have: UDP,
+  RUDP, STUN and ICE received nothing there. Its `host` text is the sender's
+  address now wherever it is not converted natively, rather than `0.0.0.0`.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of

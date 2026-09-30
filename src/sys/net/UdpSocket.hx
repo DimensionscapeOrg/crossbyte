@@ -22,7 +22,118 @@
 
 package sys.net;
 
-#if (cpp || hxcpp)
+// Each target's standard implementation, where this module replaces it. hl
+// and neko had none here and got the throwing class at the bottom, so
+// `new UdpSocket()` threw "Not available on this platform" on two targets
+// whose standard library has UDP. IPv4 only, as their natives are.
+#if hl
+
+import haxe.io.Error;
+import sys.net.Socket.SocketHandle;
+
+class UdpSocket extends Socket {
+	public function new() {
+		super();
+	}
+
+	override function init():Void {
+		__s = Socket.socket_new(true);
+		super.init();
+	}
+
+	public function sendTo(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
+		if (pos < 0 || len < 0 || pos + len > buf.length)
+			throw OutsideBounds;
+		var ret = socket_send_to(__s, (buf : hl.Bytes).offset(pos), len, addr.host, addr.port);
+		if (ret < 0) {
+			if (ret == -1)
+				throw Blocked;
+			throw new haxe.io.Eof();
+		}
+		return ret;
+	}
+
+	public function readFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
+		var host = 0, port = 0;
+		if (pos < 0 || len < 0 || pos + len > buf.length)
+			throw OutsideBounds;
+		var ret = socket_recv_from(__s, (buf : hl.Bytes).offset(pos), len, host, port);
+		if (ret <= 0) {
+			if (ret == -1)
+				throw Blocked;
+			throw new haxe.io.Eof();
+		}
+		addr.host = host;
+		addr.port = port;
+		return ret;
+	}
+
+	public function setBroadcast(b:Bool):Void {
+		if (!socket_set_broadcast(__s, b))
+			throw new Sys.SysError("setBroadcast() failure");
+	}
+
+	@:hlNative("std", "socket_send_to") static function socket_send_to(s:SocketHandle, bytes:hl.Bytes, len:Int, host:Int, port:Int):Int {
+		return 0;
+	}
+
+	@:hlNative("std", "socket_set_broadcast") static function socket_set_broadcast(s:SocketHandle, b:Bool):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_recv_from") static function socket_recv_from(s:SocketHandle, bytes:hl.Bytes, len:Int, host:hl.Ref<Int>,
+			port:hl.Ref<Int>):Int {
+		return 0;
+	}
+}
+
+#elseif neko
+
+import haxe.io.Error;
+
+@:coreApi
+class UdpSocket extends Socket {
+	private override function init():Void {
+		__s = Socket.socket_new(true);
+		super.init();
+	}
+
+	public function sendTo(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
+		return try {
+			socket_send_to(__s, buf.getData(), pos, len, addr);
+		} catch (e:Dynamic) {
+			if (e == "Blocking")
+				throw Blocked;
+			else
+				throw Custom(e);
+		}
+	}
+
+	public function readFrom(buf:haxe.io.Bytes, pos:Int, len:Int, addr:Address):Int {
+		var r;
+		try {
+			r = socket_recv_from(__s, buf.getData(), pos, len, addr);
+		} catch (e:Dynamic) {
+			if (e == "Blocking")
+				throw Blocked;
+			else
+				throw Custom(e);
+		}
+		if (r == 0)
+			throw new haxe.io.Eof();
+		return r;
+	}
+
+	public function setBroadcast(b:Bool):Void {
+		socket_set_broadcast(__s, b);
+	}
+
+	static var socket_recv_from = neko.Lib.loadLazy("std", "socket_recv_from", 5);
+	static var socket_send_to = neko.Lib.loadLazy("std", "socket_send_to", 5);
+	static var socket_set_broadcast = neko.Lib.loadLazy("std", "socket_set_broadcast", 2);
+}
+
+#elseif (cpp || hxcpp)
 
 import cpp.NativeSocket;
 import crossbyte._internal.net.NativeSocketAddress;
