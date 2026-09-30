@@ -1471,11 +1471,16 @@ class PeerConnection {
 		payload.position = 0;
 
 		if (first < 4) {
-			agent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+			var message = StunMessage.decode(payload);
+
+			if (message == null) {
+				return;
+			}
+
+			agent.receive(payload, fromAddress, fromPort, now, __relayedCandidate, message);
 
 			if (__restartAgent != null) {
-				payload.position = 0;
-				__restartAgent.receive(payload, fromAddress, fromPort, now, __relayedCandidate);
+				__restartAgent.receive(payload, fromAddress, fromPort, now, __relayedCandidate, message);
 			}
 
 			return;
@@ -1549,12 +1554,12 @@ class PeerConnection {
 		ninety-six bits chosen at random per request, which is what RFC 5389
 		gives an implementation to recognise its own replies by.
 	**/
-	@:noCompletion private function __receiveReflexive(payload:ByteArray, now:Float):Bool {
+	@:noCompletion private function __receiveReflexive(message:StunMessage, now:Float):Bool {
 		if (__reflexiveFuture == null || __reflexiveQuery == null) {
 			return false;
 		}
 
-		switch (__reflexiveQuery.interpret(payload)) {
+		switch (__reflexiveQuery.interpretMessage(message)) {
 			case NOT_OURS:
 				return false;
 			case ANSWERED(mapped):
@@ -1598,8 +1603,13 @@ class PeerConnection {
 		__receiveDatagram(e.data, e.srcAddress, e.srcPort);
 	}
 
-	/** A datagram from this connection's own socket, or routed here by its host. **/
-	@:noCompletion private function __receiveDatagram(data:ByteArray, srcAddress:String, srcPort:Int):Void {
+	/**
+		A datagram from this connection's own socket, or routed here by its host.
+
+		@param decoded The datagram as STUN, when the host already decoded it
+		to route it.
+	**/
+	@:noCompletion private function __receiveDatagram(data:ByteArray, srcAddress:String, srcPort:Int, ?decoded:StunMessage):Void {
 		if (__closed || data == null || data.length == 0) {
 			return;
 		}
@@ -1611,33 +1621,37 @@ class PeerConnection {
 		data.position = 0;
 
 		if (first < 4) {
+			// Decoded once, here, and the message shown to each of the three
+			// that might want it. Each used to decode it again for itself, up
+			// to four times a datagram, every one before any integrity check.
+			var message = decoded != null ? decoded : StunMessage.decode(data);
+
+			if (message == null) {
+				return;
+			}
+
 			// The answer to this connection's own question about its address,
 			// if that is what it is. Offered here first because it shares the
 			// socket and the byte range with everything ICE sends; the
 			// transaction says which, and the agent would only refuse it.
-			if (__receiveReflexive(data, now)) {
+			if (__receiveReflexive(message, now)) {
 				return;
 			}
 
-			// Then the relay, which recognises its own by message type and hands
-			// back anything else. Its replies and the traffic it forwards share the
-			// STUN byte range with every connectivity check on this socket, and
-			// where they came from cannot decide it, the server may have been
-			// named as a hostname, and it answers from whatever that resolved to.
-			data.position = 0;
-
-			if (__turn != null && __turn.receive(data, srcAddress, srcPort, now)) {
+			// Then the relay, which recognises its own by message type and where
+			// it came from, and hands back anything else. Its replies and the
+			// traffic it forwards share the STUN byte range with every
+			// connectivity check on this socket.
+			if (__turn != null && __turn.receive(data, srcAddress, srcPort, now, message)) {
 				return;
 			}
 
-			data.position = 0;
-			agent.receive(data, srcAddress, srcPort, now);
+			agent.receive(data, srcAddress, srcPort, now, null, message);
 
 			// And the restart's, which checks with other credentials: each agent
 			// takes only checks addressed to its own and answers to its own.
 			if (__restartAgent != null) {
-				data.position = 0;
-				__restartAgent.receive(data, srcAddress, srcPort, now);
+				__restartAgent.receive(data, srcAddress, srcPort, now, null, message);
 			}
 
 			return;
