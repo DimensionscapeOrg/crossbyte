@@ -1235,6 +1235,18 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SlotMap` and `PackedSlotMap` reuse the slot freed longest ago. They
+  handed back the slot freed last, so one entity despawned and another
+  spawned each tick reused one slot every time and brought its 11-bit
+  generation round in 2048 ticks -- 34 seconds at 60 Hz -- after which a
+  handle kept to the first entity resolved to a newcomer. Now a slot's
+  generation comes round only after 2048 times as many inserts as there are
+  free slots. `SlotMap` also tracks whether a slot is held apart from its
+  value: an entry inserted as `null` was skipped by `forEach` and kept its
+  generation through `clear()`, so its old handle could still write, and a
+  handle made up for a free slot could `remove` it -- `length` went to -1
+  and the slot was handed to two inserts. Its generations and free list no
+  longer box on the jvm.
 - `Random.int` and `inti` draw from all of a range wider than 2^31 values.
   Its size was counted in 32 bits and overflowed, so `Random.int(0,
   0x7FFFFFFF)` was 0 every time on eval and the jvm, half of Node's answers
