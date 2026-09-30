@@ -2,7 +2,6 @@ package crossbyte._internal.socket._jvm;
 
 #if (java || jvm)
 import crossbyte._internal.socket._jvm.JvmSslExterns;
-import crossbyte._internal.socket._jvm.JvmSslExterns.Certificate as JCertificate;
 import crossbyte._internal.socket._jvm.JvmSslExterns.ExtendedSSLSession;
 import crossbyte._internal.socket._jvm.JvmSslExterns.PrivateKey;
 import crossbyte._internal.socket._jvm.JvmSslExterns.Principal;
@@ -11,10 +10,13 @@ import crossbyte._internal.socket._jvm.JvmSslExterns.SSLEngine;
 import crossbyte._internal.socket._jvm.JvmSslExterns.X509Certificate;
 import crossbyte._internal.socket._jvm.JvmSslExterns.X509ExtendedKeyManager;
 
-/** One certificate and the test that decides whether it is the right one. **/
+/** One certificate chain and the test that decides whether it is the right one. **/
 typedef SniEntry = {
 	var matches:String->Bool;
-	var certificate:JCertificate;
+
+	/** Leaf first, then whatever intermediates came with it; never empty. **/
+	var chain:java.NativeArray<X509Certificate>;
+
 	var key:PrivateKey;
 }
 
@@ -50,6 +52,19 @@ class JvmSniKeyManager extends X509ExtendedKeyManager {
 	}
 
 	/**
+		Every certificate of `certificate`, typed the way a key manager hands
+		them over. An entry holding the leaf alone presented it without its
+		intermediate, which clients refuse.
+	**/
+	public static function chainOf(certificate:crossbyte._internal.socket._jvm.JvmSsl.JvmSslCertificate):java.NativeArray<X509Certificate> {
+		var chain:java.NativeArray<X509Certificate> = new java.NativeArray(certificate.chain.length);
+		for (i in 0...chain.length) {
+			chain[i] = cast certificate.chain[i];
+		}
+		return chain;
+	}
+
+	/**
 		The alias for whichever certificate answers this handshake.
 
 		@return An alias naming the entry to present, or the default when the
@@ -79,8 +94,12 @@ class JvmSniKeyManager extends X509ExtendedKeyManager {
 			return null;
 		}
 
-		var chain:java.NativeArray<X509Certificate> = new java.NativeArray(1);
-		chain[0] = cast entry.certificate;
+		// A copy, as the JDK's own key managers hand out: the array is the
+		// entry's, and nothing a handshake does to it should reach the next.
+		var chain:java.NativeArray<X509Certificate> = new java.NativeArray(entry.chain.length);
+		for (i in 0...chain.length) {
+			chain[i] = entry.chain[i];
+		}
 		return chain;
 	}
 
@@ -147,7 +166,7 @@ class JvmSniKeyManager extends X509ExtendedKeyManager {
 		peer then rejects.
 	**/
 	@:noCompletion private function __suits(entry:SniEntry, keyType:String):Bool {
-		if (entry == null || entry.key == null || entry.certificate == null) {
+		if (entry == null || entry.key == null || entry.chain == null || entry.chain.length == 0) {
 			return false;
 		}
 
