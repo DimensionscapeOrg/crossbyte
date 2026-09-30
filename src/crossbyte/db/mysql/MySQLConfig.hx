@@ -81,7 +81,7 @@ typedef MySQLConfig = {
 
 	/**
 	 * Unanswered probes before the connection is dropped: 6 when unset.
-	 * Windows fixes the count at 10 and ignores this.
+	 * Windows before 10 (1703) fixes the count at 10 and ignores this.
 	 */
 	@:optional var keepAliveCount:Int;
 }

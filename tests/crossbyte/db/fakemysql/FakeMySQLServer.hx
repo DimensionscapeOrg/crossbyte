@@ -119,6 +119,16 @@ class FakeMySQLServer {
 	public var greetingDelay:Float = 0;
 
 	/**
+	 * When not 0, a packet longer than this many bytes stops its session
+	 * reading as soon as the packet's header arrives -- a server that takes
+	 * no more of what it is sent, for write timeouts -- and the session
+	 * closes `stallSeconds` later.
+	 */
+	public var stallOnPacketsOver:Int = 0;
+
+	public var stallSeconds:Float = 5;
+
+	/**
 	 * Answers a COM_QUERY. Returns `false` to leave it to the default model,
 	 * which tracks transactions, autocommit and `NO_BACKSLASH_ESCAPES` the way
 	 * the server reports them in its status flags.
@@ -1073,6 +1083,13 @@ class FakeMySQLSession {
 		}
 
 		var length:Int = header.get(0) | (header.get(1) << 8) | (header.get(2) << 16);
+
+		if (server.stallOnPacketsOver > 0 && length > server.stallOnPacketsOver) {
+			server.__log({connection: id, kind: "stalled"});
+			hang(server.stallSeconds);
+			return null;
+		}
+
 		var payload:Null<Bytes> = length == 0 ? Bytes.alloc(0) : __readExact(length);
 
 		if (payload == null) {
