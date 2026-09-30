@@ -301,6 +301,33 @@ class MySQLDriverTest extends utest.Test {
 		Assert.raises(() -> connection.releaseSavepoint(), crossbyte.errors.ArgumentError);
 	}
 
+	public function testIsolationLevelReadsTheOlderVariableWhereTheNewOneIsMissing():Void {
+		// @@transaction_isolation is MySQL 5.7.20's name; MariaDB before 11.1
+		// knows only @@tx_isolation, and the getter failed there.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.failures.set("SELECT @@transaction_isolation AS lvl;", "Unknown system variable 'transaction_isolation'");
+		wire.results.set("SELECT @@tx_isolation AS lvl;", [{lvl: "READ-COMMITTED"}]);
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.__connection = wire;
+
+		Assert.equals("READ COMMITTED", (connection.isolationLevel : String));
+	}
+
+	public function testAClientCharsetMySQLRefusesIsRefusedBeforeConnecting():Void {
+		// ucs2, utf16 and utf32 were accepted, and MySQL refuses each as a
+		// client character set.
+		for (charset in ["ucs2", "utf16", "utf32"]) {
+			Assert.raises(() -> new MySQLConnection().open({
+				host: "127.0.0.1",
+				port: 1,
+				user: "app",
+				password: "secret",
+				database: "app",
+				charset: charset
+			}), crossbyte.errors.ArgumentError);
+		}
+	}
+
 	private function __statement(wire:ScriptedConnection):MySQLStatement {
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = wire;

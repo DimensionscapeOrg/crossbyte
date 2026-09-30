@@ -1307,6 +1307,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `MySQLConnection.isolationLevel` reads on MariaDB before 11.1 and MySQL
+  before 5.7.20, which name the variable `@@tx_isolation` and refused
+  `@@transaction_isolation`. `MySQLConfig.charset` no longer accepts
+  `ucs2`, `utf16` or `utf32`, which MySQL refuses as a client character
+  set; it takes `utf8mb4`, `utf8mb3`, `utf8`, `latin1` and `ascii`. The
+  `AsyncDatabase` examples call `request()`, where they called a `query()`
+  no driver has.
 - After a failed SQLite statement the connection's next one works, and the
   failure names its cause. The native binding left the failed statement to
   be finalized by the next request or `close()`, and SQLite answered that
