@@ -132,7 +132,7 @@ class IdListTest extends utest.Test {
 			}
 			set.commit();
 		}
-		var perRound:Float = __allocatedBy(() -> {
+		var perRound:Float = JvmAllocation.bytesBy(() -> {
 			for (r in 0...200) {
 				var first:Int = (r & 1) == 0 ? 5000 : 5025;
 				for (id in first...first + 50) {
@@ -159,7 +159,7 @@ class IdListTest extends utest.Test {
 			set.addAll(list);
 			set.commit();
 		}
-		var perTick:Float = __allocatedBy(() -> {
+		var perTick:Float = JvmAllocation.bytesBy(() -> {
 			for (t in 0...200) {
 				list.clear();
 				grid.queryCircleIds(50 + (t & 7) * 5.0, 50, 60, list);
@@ -171,34 +171,6 @@ class IdListTest extends utest.Test {
 		Assert.isTrue(set.length > 50, "the query found " + set.length);
 	}
 
-	// Bytes this thread allocated running `f`, less what measuring costs.
-	private static function __allocatedBy(f:Void->Void):Float {
-		var bean = java.lang.management.ManagementFactory.getThreadMXBean();
-		var method = java.lang.Class.forName("com.sun.management.ThreadMXBean").getMethod("getThreadAllocatedBytes", java.lang.Long.TYPE);
-		var thread = java.lang.Long.valueOf(java.lang.Thread.currentThread().getId());
-		function read():Float {
-			var bytes:Dynamic = method.invoke(bean, thread);
-			return (bytes : Float);
-		}
-		var cost:Float = 1e18;
-		for (_ in 0...5) {
-			var a:Float = read();
-			var b:Float = read();
-			if (b - a < cost) {
-				cost = b - a;
-			}
-		}
-		var best:Float = 1e18;
-		for (_ in 0...3) {
-			var before:Float = read();
-			f();
-			var used:Float = read() - before - cost;
-			if (used < best) {
-				best = used;
-			}
-		}
-		return best;
-	}
 	#end
 
 	private static function __same(array:Array<Int>, list:IdList):Bool {
