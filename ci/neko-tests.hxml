@@ -1,0 +1,10 @@
+# The whole suite on neko.
+#
+# Run from the repository root, where the suite's resources are found:
+#   neko export/neko/CrossByteTests.n
+-cp src
+-cp tests
+-lib utest
+-main TestMain
+--neko export/neko/CrossByteTests.n
+--macro crossbyte.test.SuiteCoverage.check()

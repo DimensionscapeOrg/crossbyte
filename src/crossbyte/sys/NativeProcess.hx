@@ -13,12 +13,16 @@ import haxe.io.Eof;
 import haxe.io.Input;
 import haxe.io.Output;
 
+// hl and neko without an OS define. Their bytecode runs unchanged on any OS, so
+// nothing names one when it is built -- and none is needed: their
+// sys.io.Process and threads work wherever the VM does. Asked for one, as cpp
+// is, both refused to start a process anywhere.
 #if nodejs
 import crossbyte.errors.IllegalOperationError;
 import crossbyte.sys._internal.NodeProcessOutput;
 import js.node.ChildProcess as ChildProcessModule;
 import js.node.child_process.ChildProcess as ChildProcessObject;
-#elseif (sys && (windows || linux || mac || macos))
+#elseif (hl || neko || (sys && (windows || linux || mac || macos)))
 import sys.io.Process;
 import sys.thread.Deque;
 import sys.thread.Thread;
@@ -26,7 +30,7 @@ import sys.thread.Thread;
 
 /** Launches and monitors a native operating-system process. */
 class NativeProcess extends EventDispatcher {
-	public static inline var isSupported:Bool = #if (nodejs || (sys && (windows || linux || mac || macos))) true #else false #end;
+	public static inline var isSupported:Bool = #if (nodejs || hl || neko || (sys && (windows || linux || mac || macos))) true #else false #end;
 
 	public var standardInput(get, never):Output;
 	public var standardOutput(get, never):Input;
@@ -41,7 +45,7 @@ class NativeProcess extends EventDispatcher {
 	#if nodejs
 	@:noCompletion private var __process:ChildProcessObject;
 	@:noCompletion private var __standardInput:NodeProcessOutput;
-	#elseif (sys && (windows || linux || mac || macos))
+	#elseif (hl || neko || (sys && (windows || linux || mac || macos)))
 	@:noCompletion private var __process:Process;
 	#else
 	@:noCompletion private var __process:Dynamic;
@@ -79,7 +83,7 @@ class NativeProcess extends EventDispatcher {
 		#if nodejs
 		__startNode(info);
 		#else
-		#if (sys && (windows || linux || mac || macos))
+		#if (hl || neko || (sys && (windows || linux || mac || macos)))
 		try {
 			var args = info.arguments == null ? [] : info.arguments;
 			__process = new Process(info.executable, args, false);
@@ -143,7 +147,7 @@ class NativeProcess extends EventDispatcher {
 
 	#if !nodejs
 	@:noCompletion private function __execute(info:Dynamic):Void {
-		#if (sys && (windows || linux || mac || macos))
+		#if (hl || neko || (sys && (windows || linux || mac || macos)))
 		try {
 			var readerCompletion = new Deque<String>();
 			Thread.create(() -> {
@@ -155,7 +159,7 @@ class NativeProcess extends EventDispatcher {
 				readerCompletion.add(STREAM_STDERR);
 			});
 
-			__exitCode = __process.exitCode();
+			__exitCode = __waitForExit();
 
 			readerCompletion.pop(true);
 			readerCompletion.pop(true);
@@ -189,9 +193,16 @@ class NativeProcess extends EventDispatcher {
 		}
 
 		var buffer:Bytes = Bytes.alloc(OUTPUT_BUFFER_SIZE);
+		#if hl
+		var handle = @:privateAccess __process.p;
+		#end
 		while (true) {
 			try {
+				#if hl
+				var bytesRead = __hlRead(handle, streamName == STREAM_STDOUT, buffer);
+				#else
 				var bytesRead = stream.readBytes(buffer, 0, OUTPUT_BUFFER_SIZE);
+				#end
 				if (bytesRead <= 0) {
 					if (!__running) {
 						break;
@@ -219,25 +230,70 @@ class NativeProcess extends EventDispatcher {
 		}
 	}
 
+	/** The child's exit code, once it has one. **/
+	@:noCompletion private function __waitForExit():Int {
+		#if hl
+		var handle = @:privateAccess __process.p;
+		hl.Gc.blocking(true);
+		var code:Int = __hlExit(handle, null);
+		hl.Gc.blocking(false);
+		return code;
+		#else
+		return __process.exitCode();
+		#end
+	}
+
+	#if hl
+	/**
+		The child's output, read inside a blocking section.
+
+		HashLink reads a child's output with a bare ReadFile or read, and waits
+		for it to exit with WaitForSingleObject or waitpid, none of which tells
+		its collector the thread is waiting -- and the collector stops every
+		thread until each reaches a safe point. So a child that said nothing for
+		five seconds held the whole runtime for five: 5,212 ms between two ticks
+		of a runtime that ticks sixty times a second. Its socket reads mark the
+		wait, and these now do the same. Nothing inside a blocking section may
+		allocate, and these natives do not; the buffer is resolved before
+		entering, and the answer interpreted after leaving.
+	**/
+	@:noCompletion private static function __hlRead(handle:hl.Abstract<"hl_process">, stdout:Bool, buffer:Bytes):Int {
+		var data:hl.Bytes = buffer;
+		var length:Int = buffer.length;
+		hl.Gc.blocking(true);
+		var read:Int = stdout ? __hlStdoutRead(handle, data, 0, length) : __hlStderrRead(handle, data, 0, length);
+		hl.Gc.blocking(false);
+		if (read < 0) {
+			throw new Eof();
+		}
+		return read;
+	}
+
+	@:hlNative("std", "process_stdout_read") private static function __hlStdoutRead(p:hl.Abstract<"hl_process">, bytes:hl.Bytes, pos:Int, len:Int):Int {
+		return 0;
+	}
+
+	@:hlNative("std", "process_stderr_read") private static function __hlStderrRead(p:hl.Abstract<"hl_process">, bytes:hl.Bytes, pos:Int, len:Int):Int {
+		return 0;
+	}
+
+	@:hlNative("std", "process_exit") private static function __hlExit(p:hl.Abstract<"hl_process">, running:hl.Ref<Bool>):Int {
+		return 0;
+	}
+	#end
+
+	/**
+		`getPid()`, which `sys.io.Process` has on every target.
+
+		This looked for a `pid` field instead, by reflection, and no target's
+		Process has one: the id read -1 natively as well as on neko.
+	**/
 	@:noCompletion private function __resolvePid():Int {
-		var value:Dynamic = null;
 		try {
 			if (__process != null) {
-				value = Reflect.field(__process, "pid");
-				if (Std.isOfType(value, Int)) {
-					return value;
-				}
-
-				if (Std.isOfType(value, String)) {
-					// -1 for anything that is not a plain number, as below.
-					return crossbyte.utils.IntParse.decimal(StringTools.trim(cast value));
-				}
-
-				if (value != null && Reflect.isFunction(value)) {
-					value = Reflect.callMethod(__process, value, []);
-					if (Std.isOfType(value, Int)) {
-						return value;
-					}
+				var pid:Null<Int> = __process.getPid();
+				if (pid != null && pid > 0) {
+					return pid;
 				}
 			}
 		} catch (_:Dynamic) {}
