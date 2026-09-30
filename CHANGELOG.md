@@ -1395,6 +1395,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PostgresStatement` hands back a result paged ahead of `getResult()` in
+  the order it was read, and calls only its last page complete -- the last
+  of a result that divides evenly into pages as well. Once the last page
+  had been read every page still waiting said it was complete, and off cpp
+  the pages came back newest first. Four rows in pages of two read
+  "1,2+ 3,4+" and now read "1,2 3,4+"; five read "1,2 3,4 5+".
 - Metrics, `Future`, `ConnectionPool` and `ProcessLifecycle` take their locks
   on eval too. Their locks were gated on neko, hl and the jvm by name, which
   left out eval -- threaded since workers became real threads there -- so a

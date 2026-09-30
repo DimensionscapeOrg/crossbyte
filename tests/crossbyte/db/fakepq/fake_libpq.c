@@ -9,6 +9,7 @@
  *   SELECT $1::text     echoes its first parameter as one row
  *   SELECT 1            one row holding "1"
  *   fake:conninfo       one row holding the connection string it was opened with
+ *   fake:count <n>      n rows of one column, "n", holding 1 to n, for paging
  *   fake:sleep <ms>     blocks for that long, or until PQcancel, the way a slow
  *                       query or a lock wait blocks inside PQexec
  *   fake:fail           fails, aborting any open transaction
@@ -98,6 +99,8 @@ typedef struct FakeResult {
 	char* name;
 	char* value;
 	int length;
+	/* One value per row, for fake:count; NULL for the one-row results. */
+	char** rowValues;
 	char command[32];
 	char tuples[16];
 } FakeResult;
@@ -141,6 +144,36 @@ static FakeResult* fakeRow(const char* name, const char* value, size_t length) {
 	result->value = fakeDup(value, length);
 	result->length = (int)length;
 	snprintf(result->tuples, sizeof(result->tuples), "1");
+	return result;
+}
+
+/* n rows of one column, holding 1 to n. */
+static FakeResult* fakeCount(int n) {
+	FakeResult* result = fakeResult(PGRES_TUPLES_OK, "SELECT");
+	int i;
+
+	if (result == NULL) {
+		return NULL;
+	}
+
+	result->rowValues = (char**)calloc((size_t)(n > 0 ? n : 1), sizeof(char*));
+
+	if (result->rowValues == NULL) {
+		free(result);
+		return NULL;
+	}
+
+	for (i = 0; i < n; i++) {
+		char text[16];
+		snprintf(text, sizeof(text), "%d", i + 1);
+		result->rowValues[i] = fakeDup(text, strlen(text));
+	}
+
+	result->fields = 1;
+	result->rows = n;
+	result->name = fakeDup("n", 1);
+	snprintf(result->command, sizeof(result->command), "SELECT %d", n);
+	snprintf(result->tuples, sizeof(result->tuples), "%d", n);
 	return result;
 }
 
@@ -235,6 +268,11 @@ static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const c
 
 	if (strcmp(sql, "fake:conninfo") == 0) {
 		return fakeRow("conninfo", conn->conninfo, strlen(conn->conninfo));
+	}
+
+	if (startsWith(sql, "fake:count ")) {
+		int n = atoi(sql + 11);
+		return fakeCount(n < 0 ? 0 : (n > 10000 ? 10000 : n));
 	}
 
 	if (strcmp(sql, "fake:fail") == 0) {
@@ -338,11 +376,21 @@ FAKEPQ_EXPORT char* PQfname(const void* res, int field) {
 
 FAKEPQ_EXPORT char* PQgetvalue(const void* res, int row, int field) {
 	const FakeResult* result = (const FakeResult*)res;
+
+	if (result != NULL && result->rowValues != NULL) {
+		return (field != 0 || row < 0 || row >= result->rows) ? (char*)"" : result->rowValues[row];
+	}
+
 	return (result == NULL || row != 0 || field != 0 || result->rows == 0) ? (char*)"" : result->value;
 }
 
 FAKEPQ_EXPORT int PQgetlength(const void* res, int row, int field) {
 	const FakeResult* result = (const FakeResult*)res;
+
+	if (result != NULL && result->rowValues != NULL) {
+		return (field != 0 || row < 0 || row >= result->rows) ? 0 : (int)strlen(result->rowValues[row]);
+	}
+
 	return (result == NULL || row != 0 || field != 0 || result->rows == 0) ? 0 : result->length;
 }
 
@@ -370,6 +418,16 @@ FAKEPQ_EXPORT void PQclear(void* res) {
 	FakeResult* result = (FakeResult*)res;
 
 	if (result != NULL) {
+		if (result->rowValues != NULL) {
+			int i;
+
+			for (i = 0; i < result->rows; i++) {
+				free(result->rowValues[i]);
+			}
+
+			free(result->rowValues);
+		}
+
 		free(result->name);
 		free(result->value);
 		free(result);
