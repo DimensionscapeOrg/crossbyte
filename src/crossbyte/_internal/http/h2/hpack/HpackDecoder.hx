@@ -212,7 +212,35 @@ class HpackDecoder {
 		var decoded:Bytes = huffman ? HpackHuffman.decode(cursor.bytes, cursor.position, length) : cursor.bytes.sub(cursor.position, length);
 		cursor.skip(length);
 
-		return decoded.toString();
+		return __text(decoded);
+	}
+
+	/**
+		`bytes` as text, every byte of it. On JavaScript `Bytes.toString`
+		stops at the first NUL, so a field holding one arrived as the part
+		before it: the NUL that makes the field malformed (RFC 9113, 8.2.1)
+		was never seen, and neither was the rest of the value.
+	**/
+	private static function __text(bytes:Bytes):String {
+		#if js
+		var text:Null<StringBuf> = null;
+		var start:Int = 0;
+		for (i in 0...bytes.length) {
+			if (bytes.get(i) == 0) {
+				if (text == null) {
+					text = new StringBuf();
+				}
+				text.add(bytes.getString(start, i - start));
+				text.addChar(0);
+				start = i + 1;
+			}
+		}
+		if (text != null) {
+			text.add(bytes.getString(start, bytes.length - start));
+			return text.toString();
+		}
+		#end
+		return bytes.toString();
 	}
 }
 
