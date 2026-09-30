@@ -1395,6 +1395,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A miss in a `Map<Int, T>` on the jvm costs what a hit does. Haxe 4.3.7's
+  `IntMap` for the java targets never stopped probing at an empty bucket,
+  so every miss read the whole table: 110us a miss at 100,000 entries,
+  where a hit took nothing measurable. CrossByte puts a fixed copy ahead of
+  it there (`std/java`, added to the class path by
+  `crossbyte._internal.macro.StdOverrides` from `extraParams.hxml`). A build
+  from `-cp` rather than `-lib crossbyte` adds
+  `--macro crossbyte._internal.macro.StdOverrides.use()` itself, before any
+  other macro, as the suites' build files do.
 - `PostgresStatement` hands back a result paged ahead of `getResult()` in
   the order it was read, and calls only its last page complete -- the last
   of a result that divides evenly into pages as well. Once the last page
