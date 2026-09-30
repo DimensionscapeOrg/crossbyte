@@ -106,7 +106,7 @@ jobs:
           if ($null -eq $hl) {
             throw "hashlink-$env:HASHLINK_VERSION-win.zip has no hl.exe"
           }
-          foreach ($lib in @("ssl", "fmt", "sqlite")) {
+          foreach ($lib in @("ssl", "fmt", "sqlite", "mysql")) {
             if (-not (Test-Path (Join-Path $hl.DirectoryName "$lib.hdll"))) {
               throw "HashLink $env:HASHLINK_VERSION has no $lib.hdll, which the suite loads"
             }
@@ -144,9 +144,10 @@ jobs:
       - name: Build hl suite
         run: haxe ci/hl-tests.hxml
 
-      # Only the libraries the suite loads, and what they link against:
-      # ssl (mbedTLS), fmt (zlib, and the image and audio codecs it also
-      # carries), sqlite, uv and mysql. SDL, OpenAL and ui are left out.
+      # Only the libraries the suite loads -- ssl, fmt, sqlite and mysql, all
+      # four resolved at load -- and what they link against: mbedTLS for ssl,
+      # zlib and the image and audio codecs fmt also carries, SQLite. uv is
+      # built too, and SDL, OpenAL and ui are left out.
       - name: Build HashLink ${{ env.HASHLINK_TAG }}
         run: |
           set -euo pipefail
