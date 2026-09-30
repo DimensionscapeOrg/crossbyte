@@ -1267,6 +1267,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The interpreter suite no longer hangs, now and then, in
+  `URLLoaderHttpTest`. The HTTP tests' pump loops slept a millisecond
+  between pumps with `Sys.sleep`, which on eval (Haxe 4.3.7 on Windows)
+  sometimes never returns when asked for a millisecond or two: one thread
+  doing nothing else stalled in five of six minute-long runs, and the case
+  hung in 2 of 20. They wait on a `Lock` there instead, and hung in none
+  of 20. The runtime's own frame loop still sleeps that way on eval.
 - An HTTP request that cannot connect says why, as in `Connection Failed:
   X509 - Certificate verification failed` natively or the JDK's `PKIX path
   building failed` on the jvm. Every failure, an untrusted or expired
