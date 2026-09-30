@@ -1404,6 +1404,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On neko, ICE tries a host pair before a relay, and `SchemaMigrator` runs
+  migrations numbered by date in order. neko's `Array.sort` is a native merge
+  sort that reads any comparison too large for neko's 31-bit Int as "less",
+  and both sorts answered with a difference: of two pair priorities' high
+  words, which run to 2^31, and of two versions, which for 2026093001 and 1
+  is past 2^30. Every pair list came back with the relay first and the host
+  last, and a date-stamped history ran out of order. Both compare now,
+  answering -1, 0 or 1; the migrator's subtraction could also wrap anywhere
+  versions of opposite sign meet.
 - A reliable datagram session on neko measures its round trips, probes a
   silent tail and sends a lost frame again once. Its clock there is the time
   of day to the millisecond, moving once a system tick, a millisecond at
