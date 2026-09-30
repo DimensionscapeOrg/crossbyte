@@ -1863,6 +1863,73 @@ All notable changes to CrossByte will be documented in this file.
   request is in flight: every answer is matched to its request by
   transaction. And a relay that never answers is given up on after RFC
   8489's 39.5 seconds rather than 63.5.
+- On the jvm, TLS sessions are resumed. Every connection built a TLS
+  context of its own -- key store, key and trust managers, a random source
+  -- and a context is where sessions are kept, so none was ever resumed and
+  each connection paid a full handshake. A listener now builds one for
+  everything it accepts, and client connections share one per way of
+  verifying, trusting and presenting a certificate, so a session made
+  without verification is never resumed by a connection that verifies.
+  Node's TLS 1.2 client now resumes 99 of 100 connections to a jvm server
+  (0 before), in half the handshake time; a jvm client resumes TLS 1.2
+  with a server that caches sessions (239 of 240, at 40% of the CPU) and
+  TLS 1.3 with one that issues tickets. The JDK 8 server does not resume
+  the TLS 1.3 sessions Node offers back, its own `SSLServerSocket`
+  included.
+- On the jvm, a TLS read takes every record that has already arrived, as
+  far as the caller's buffer goes, where it stopped after one: a large
+  upload was read 16 KB a pump, each pump paying a select over every
+  connection the runtime held, so 10 MB took 2.4 s beside 2,000 idle
+  connections. Records are decrypted straight into the reader's buffer, and
+  an idle TLS connection holds none of the engine's buffers: each held
+  three for its whole life, 64 KB a connection with its engine (15 KB now),
+  over half a gigabyte at 10,000. They come from a small per-thread pool as
+  reads and writes need them. And a handshake after the first is carried
+  through: a TLS 1.2 renegotiation, which nothing answered once the first
+  handshake was done, hung the connection with neither side told. A server
+  carries three through for its peer, as Node does, and closes the
+  connection at the fourth -- each is a private-key operation on a
+  connection already admitted. A handshake that fails now sends the peer its
+  alert before the close, so the peer reports the reason -- a certificate
+  refused, or not presented -- rather than "Remote host terminated the
+  handshake".
+- On the jvm, `select` keeps the sockets it is asked about registered from
+  one call to the next. It registered every socket it was handed, checked
+  every pair of them for duplicates and cancelled every key again, on each
+  call -- and the runtime makes that call on every pump with every socket it
+  holds: 0.61 ms for 1,000 idle sockets, 5.8 ms for 4,000, and on Windows,
+  past 1,023, a selector helper thread started and stopped on every call.
+  It also leaves a blocking socket blocking, as native `select` does; a
+  blocking reader met a read that answered "would block" at once rather
+  than waiting for data on its way.
+- A jvm connect no longer holds the thread that makes it. A non-blocking
+  connect -- every `crossbyte.net.Socket` and wss client connect -- spun on
+  `finishConnect()` until the connection came up, on the runtime's thread:
+  two seconds of nothing else running against a listener whose queue was
+  full, and the whole SYN-retry time, 21 s on Windows and two minutes on
+  Linux, against a host that never answers. It returns at once now, as it
+  does natively, and `select` finishes it: writable once it is up, and a
+  refusal in the exception set. A blocking connect is bounded by
+  `setTimeout`, as reads are, where only the system bounded it.
+- A jvm https request whose server stalls or resets the TLS handshake
+  fails at its timeout, with the reason. The handshake caught every error
+  -- a read that timed out, a reset -- slept 2 ms and tried again, ten
+  thousand times: a server that accepted and said nothing held the request,
+  and one of `URLLoader`'s pool threads, for ten thousand times its timeout
+  (83 hours at the default 30 seconds), and a reset took 25 seconds to
+  report as a handshake that "did not complete". Only a record that has
+  arrived in part is waited on now, within what is left of the timeout as
+  a whole; anything else is thrown as it came. A record larger than the
+  read buffer grows the buffer rather than waiting for ever.
+- On the jvm, a certificate file is read whole. Only its first certificate
+  was, so a server given the `fullchain.pem` an authority issues presented
+  its certificate without the intermediate, and curl, Node, browsers and
+  the JDK all refused it; and a CA bundle -- `setCA`, `DEFAULT_CA`,
+  `requireClientCertificate`, `certAuthority` -- trusted its first
+  authority alone. Native and Node read every certificate, and now so does
+  the jvm, for a server's own chain, an SNI entry's and every trust store.
+  A key in the same PEM file as the certificates no longer stops it being
+  read either.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
