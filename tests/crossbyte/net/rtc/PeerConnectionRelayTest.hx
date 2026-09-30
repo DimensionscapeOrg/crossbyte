@@ -626,6 +626,41 @@ class PeerConnectionRelayTest extends utest.Test {
 		server.close();
 	}
 
+	/**
+		Closing a connection frees the allocation it made on the relay.
+
+		It did not: the relay held it for its whole lifetime, and a
+		reconnecting application ran into the relay's quota.
+	**/
+	public function testClosingFreesTheRelayAllocation():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var connection = new PeerConnection(true);
+
+		try {
+			server.start();
+			connection.bind(0, "127.0.0.1");
+
+			var gathered:IceCandidate = null;
+			connection.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(c -> gathered = c, _ -> {});
+			pumpUntil(() -> gathered != null, 8.0);
+
+			Assert.equals(1, server.relay.allocations, "the relay never allocated, so this proved nothing");
+
+			connection.close();
+			pumpUntil(() -> server.relay.allocations == 0, 3.0);
+
+			Assert.equals(1, server.relay.count("deallocated"), "closing the connection left its allocation on the relay");
+			Assert.equals(0, server.relay.allocations);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+		server.close();
+	}
+
 	/** There is no socket to allocate through before `bind`. **/
 	public function testRelayingBeforeBindingIsRefused():Void {
 		if (unsupported()) return;

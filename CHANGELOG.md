@@ -1220,6 +1220,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Closing a `TurnClient`, or the `PeerConnection` holding one, frees the
+  allocation on the relay. No Refresh with a lifetime of zero was sent, so
+  the relay held the allocation and its port for as long as it had been
+  granted -- up to an hour on coturn -- the next client on the same socket
+  was refused with 437, and an application that reconnected ran into the
+  relay's quota. The release is sent once, signed, and also when the
+  Allocate is still unanswered, since the relay may have granted it.
 - `TurnClient` believes only its relay. Relayed data was taken from any
   sender -- a Data indication naming a peer, or ChannelData on a bound
   channel's number, from anyone who could reach the socket, was delivered as

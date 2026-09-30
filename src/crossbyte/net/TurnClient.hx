@@ -745,11 +745,37 @@ class TurnClient {
 		return false;
 	}
 
+	/**
+		Stops, and tells the relay to free the allocation.
+
+		The telling is a Refresh with a lifetime of zero, which is how RFC 8656
+		deletes an allocation, sent once and not retransmitted: nothing is left
+		to hear the answer. Without it the relay held the allocation and its
+		port for as long as it had been granted -- an hour on some relays --
+		so the next client on the same socket was refused with 437, and an
+		application that reconnected ran into the relay's quota. Sent too when
+		the Allocate is still unanswered but signed, since the relay may have
+		granted it already.
+	**/
 	public function close():Void {
+		if (__closed) {
+			return;
+		}
+
+		var holding:Bool = active || (__allocating && __key != null);
+
 		__closed = true;
 		active = false;
 		__inFlight = [];
 		__queued = [];
+		__allocating = false;
+		__refreshing = false;
+
+		if (holding && __key != null && __realm != null && __nonce != null) {
+			var release = new TurnTransaction(StunMessage.REFRESH_REQUEST, [StunMessage.lifetime(0)]);
+			release.message = new StunMessage(StunMessage.REFRESH_REQUEST, __transaction(), release.attributes);
+			onSend(__encode(release), serverAddress, serverPort);
+		}
 
 		// Same as the others in this stack: nothing settled `allocated` on a
 		// close, so a caller that closed a client mid-allocation waited on a
@@ -1054,8 +1080,9 @@ class TurnClient {
 
 		if (__lifetime <= 0) {
 			// A zero lifetime is how a relay says the allocation is gone. This
-			// client never asks for one -- close() simply stops -- so it is the
-			// relay's decision, and the caller has to hear it.
+			// client asks for one only from close(), which is not listening by
+			// the time the answer comes -- so one arriving here is the relay's
+			// decision, and the caller has to hear it.
 			var wasActive:Bool = active;
 			active = false;
 
