@@ -674,14 +674,19 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// nothing to register with the runtime.
 		// Half-open, so the peer's FIN is this socket's to act on; see
 		// socket_onEnd.
+		var node:NodeSocket = null;
 		var opened = function() {
+			// Only while this is the connection held: one given up for
+			// another, by close(), or connect() again, still opens.
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onOpen(null);
 			} catch (e:Dynamic) {
 				__contain(e, Event.CONNECT);
 			}
 		};
-		var node:NodeSocket;
 		if (secure) {
 			// Node's TLS, which starts connecting as it is made; opened once
 			// the handshake is done rather than when TCP is.
@@ -1865,7 +1870,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// anything of CrossByte's, so a listener that threw, a data handler
 		// meeting input it could not parse, say, threw into Node, which
 		// ended the process: every other connection with it.
+		//
+		// And each one only while `node` is the connection held. A socket let
+		// go of goes on reporting, its close comes a turn after its error,
+		// and after close() or connect() its end and close, and these were
+		// taken for the connection that replaced it: a connect retried from
+		// the ioError of a refused one was released by the refused one's
+		// close, and connected with nothing to write to.
 		node.on(SocketEvent.Data, function(chunk) {
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onMessage(chunk);
 			} catch (e:Dynamic) {
@@ -1873,6 +1888,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		});
 		node.on(SocketEvent.End, function() {
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onEnd();
 			} catch (e:Dynamic) {
@@ -1880,6 +1898,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		});
 		node.on(SocketEvent.Error, function(error:Dynamic) {
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onError(error);
 			} catch (e:Dynamic) {
@@ -1887,6 +1908,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		});
 		node.on(SocketEvent.Close, function(_) {
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onClose(null);
 			} catch (e:Dynamic) {
