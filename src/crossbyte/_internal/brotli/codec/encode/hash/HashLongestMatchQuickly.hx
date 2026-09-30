@@ -80,9 +80,14 @@ class HashLongestMatchQuickly
     var best_score:Float = best_score_out[0];
     var best_len:Int = best_len_in;
     var backward:Int = distance_cache[0];
-    var prev_ix:UInt = cur_ix - backward;
+    var prev_ix:Int = cur_ix - backward;
     var match_found:Bool = false;
-    if (prev_ix < cur_ix) {
+    // Only a match inside the input: what C's unsigned `prev_ix < cur_ix`
+    // says. That test, here a UInt against an Int, is signed on HashLink,
+    // where the first positions reached back past the start into the empty
+    // end of the ring buffer. Input beginning with zeros matched there, and
+    // came out undecodable or decoded wrong.
+    if (backward > 0 && prev_ix >= 0) {
       prev_ix &= ring_buffer_mask;
       if (compare_char == ring_buffer[prev_ix + best_len]) {
         var len:Int = FindMatchLengthWithLimit(ring_buffer,prev_ix,
