@@ -1245,6 +1245,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `Socket` connected again on Node keeps the new connection. The socket
+  given up went on reporting, and its reports were taken for the one that
+  replaced it: a refused connect's close, which comes a turn after its
+  error, released a connect retried from that `ioError`, which then
+  connected with nothing to write to; and a connect abandoned for another
+  still announced `connect` when it came up, and its end closed the
+  connection that replaced it.
 - A client `Socket` turns Nagle's algorithm off before it connects rather
   than once the connect is under way. Windows refuses TCP_NODELAY on a
   socket whose connect is in progress and hxcpp does not report it, so
