@@ -632,4 +632,40 @@ class StunMessageTest extends utest.Test {
 		Assert.isTrue(decoded.hasUseCandidate());
 		Assert.equals(0, decoded.attribute(StunMessage.ATTR_USE_CANDIDATE).length);
 	}
+
+	/**
+		A message of more attributes than anything sends is not read.
+
+		The count was the sender's: one unauthenticated 64 KB datagram of empty
+		attributes is sixteen thousand of them, each an allocation and a copy,
+		527 microseconds a decode on cpp, 4.4 ms on Node, twenty to a hundred
+		times an ordinary datagram of the same size. Up to `MAX_ATTRIBUTES` is
+		read as ever.
+	**/
+	public function testAMessageOfTooManyAttributesIsNotRead():Void {
+		Assert.isNull(StunMessage.decode(emptyAttributes(16000)), "sixteen thousand empty attributes were read");
+		Assert.isNull(StunMessage.decode(emptyAttributes(StunMessage.MAX_ATTRIBUTES + 1)), "one attribute past the limit was read");
+
+		var most = StunMessage.decode(emptyAttributes(StunMessage.MAX_ATTRIBUTES));
+		Require.notNull(most, "a message at the limit was refused");
+		Assert.equals(StunMessage.MAX_ATTRIBUTES, most.attributes.length);
+	}
+
+	/** A binding success of `count` empty SOFTWARE attributes. **/
+	private static function emptyAttributes(count:Int):ByteArray {
+		var out = new ByteArray();
+		out.endian = Endian.BIG_ENDIAN;
+		out.writeShort(StunMessage.BINDING_SUCCESS);
+		out.writeShort(count * 4);
+		out.writeInt(StunMessage.MAGIC_COOKIE);
+		out.writeBytes(transaction(), 0, 12);
+
+		for (_ in 0...count) {
+			out.writeShort(StunMessage.ATTR_SOFTWARE);
+			out.writeShort(0);
+		}
+
+		out.position = 0;
+		return out;
+	}
 }
