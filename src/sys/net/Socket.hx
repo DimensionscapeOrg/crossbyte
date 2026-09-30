@@ -686,21 +686,44 @@ class Socket {
 		output.writeString(content);
 	}
 
+	/**
+		Connects, or on a non-blocking socket starts connecting.
+
+		A non-blocking connect returns while the connection is still being made,
+		as it does natively, and `select` finishes it: the socket is reported
+		writable once it is up, and a refusal is reported in the exception set
+		(or as writable, POSIX's way, to a caller that did not ask for that set).
+		This used to spin on `finishConnect()` until the connection came up, on
+		whichever thread called it -- for `crossbyte.net.Socket` and the wss
+		client, the runtime's. Against a listener whose queue was full that was
+		two seconds of the runtime doing nothing else; against a host that never
+		answers, the system's whole SYN-retry time, 21 s on Windows and two
+		minutes on Linux.
+
+		A blocking connect is bounded by `setTimeout`, as reads are: it was
+		bounded only by the system, so an https request to a host that never
+		answered waited out the SYN retries whatever its timeout said.
+	**/
 	public function connect(host:Host, port:Int):Void {
-		try {
-			var addr = new InetSocketAddress(host.wrapped, port);
-			var sc = __sock();
+		var addr = new InetSocketAddress(host.wrapped, port);
+		var sc = __sock();
+
+		if (!sc.isBlocking()) {
+			// False while the connection is still being made; select finishes it.
 			sc.connect(addr);
-			// Non-blocking connect: drive it to completion.
-			while (!sc.finishConnect()) {
-				// busy-wait until the connection is established
-			}
-			var input = new SocketInput(sc);
-			input.timeout = __timeout;
-			this.input = input;
-			this.output = new SocketOutput(sc);
-		} catch (e:Dynamic)
-			throw e;
+		} else if (__timeout > 0) {
+			// The adaptor's timed connect: it polls for the connection for at
+			// most this long, and closes the channel if it does not come.
+			var millis:Float = Math.ceil(__timeout * 1000);
+			sc.socket().connect(addr, millis > 0x7FFFFFFF ? 0x7FFFFFFF : Std.int(millis));
+		} else {
+			sc.connect(addr);
+		}
+
+		var input = new SocketInput(sc);
+		input.timeout = __timeout;
+		this.input = input;
+		this.output = new SocketOutput(sc);
 	}
 
 	public function listen(connections:Int):Void {
@@ -834,11 +857,34 @@ class Socket {
 			throw e;
 	}
 
+	// TCP_NODELAY asked for while a connect was in progress, applied once it
+	// is up: Windows refuses the option on a connecting socket (WSAEINVAL),
+	// and crossbyte.net.Socket asks for it straight after connect().
+	@:noCompletion private var __fastSendPending:Bool = false;
+	@:noCompletion private var __fastSend:Bool = false;
+
 	public function setFastSend(b:Bool):Void {
-		try
-			__sock().setOption(java.net.StandardSocketOptions.TCP_NODELAY, b)
-		catch (e:Dynamic)
-			throw e;
+		if (!Std.isOfType(channel, SocketChannel)) {
+			// A datagram channel: there is no Nagle to turn off.
+			return;
+		}
+		var sc = __sock();
+		if (sc.isConnectionPending()) {
+			__fastSend = b;
+			__fastSendPending = true;
+			return;
+		}
+		sc.setOption(java.net.StandardSocketOptions.TCP_NODELAY, b);
+	}
+
+	/** What waited for a connect in progress to finish. **/
+	@:noCompletion private function __onConnected():Void {
+		if (__fastSendPending) {
+			__fastSendPending = false;
+			try {
+				__sock().setOption(java.net.StandardSocketOptions.TCP_NODELAY, __fastSend);
+			} catch (_:Dynamic) {}
+		}
 	}
 
 	/**
@@ -925,6 +971,65 @@ class Socket {
 		return cast existing;
 	}
 
+	/**
+		Not an NIO operation: marks a socket asked about in the exception set,
+		which NIO has no set for. Only a connect in progress has anything to
+		report there -- its refusal.
+	**/
+	@:noCompletion private static inline var OP_EXCEPT:Int = 1 << 30;
+
+	// What this socket was asked about in the current select call.
+	@:noCompletion private var __selectOps:Int = 0;
+
+	/**
+		The NIO interest for what a socket was asked about. A connect still in
+		progress is neither writable nor refused until it settles, and that is
+		what OP_CONNECT reports: asked about as either, it is watched for that.
+	**/
+	@:noCompletion private static function __interestFor(s:Socket, asked:Int):Int {
+		var ops:Int = asked & ~OP_EXCEPT;
+
+		if (s.serverChannel == null && Std.isOfType(s.channel, SocketChannel)) {
+			var sc:SocketChannel = cast s.channel;
+			if (sc.isConnectionPending() && (asked & (SelectionKey.OP_WRITE | OP_EXCEPT)) != 0) {
+				ops = (ops & ~SelectionKey.OP_WRITE) | SelectionKey.OP_CONNECT;
+			}
+		}
+
+		return ops;
+	}
+
+	/**
+		Finishes a connect `select` found settled, and files the socket where
+		native reports it: writable once it is up; refused, in the exception
+		set if it was asked about there -- Windows' way -- and otherwise as
+		writable, POSIX's, for the first read or write to report the failure.
+	**/
+	@:noCompletion private static function __settleConnect(s:Socket, write:Array<Socket>, others:Array<Socket>):Void {
+		var sc:SocketChannel = cast s.channel;
+		var refused:Bool = false;
+		var done:Bool = try {
+			sc.finishConnect();
+		} catch (_:Dynamic) {
+			// NIO has closed the channel; the socket's next use says so.
+			refused = true;
+			false;
+		}
+
+		if (done) {
+			s.__onConnected();
+			if ((s.__selectOps & SelectionKey.OP_WRITE) != 0) {
+				write.push(s);
+			}
+		} else if (refused) {
+			if ((s.__selectOps & OP_EXCEPT) != 0) {
+				others.push(s);
+			} else if ((s.__selectOps & SelectionKey.OP_WRITE) != 0) {
+				write.push(s);
+			}
+		}
+	}
+
 	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
 			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
 		var resRead:Array<Socket> = [];
@@ -960,17 +1065,25 @@ class Socket {
 			for (s in write)
 				addInterest(s, SelectionKey.OP_WRITE);
 		}
+		if (others != null) {
+			for (s in others)
+				addInterest(s, OP_EXCEPT);
+		}
 
 		try {
 			for (i in 0...sockets.length) {
 				var s = sockets[i];
+				s.__selectOps = interest[i];
 				var ch:java.nio.channels.SelectableChannel = s.serverChannel != null ? cast s.serverChannel : cast s.channel;
 				if (ch == null)
+					continue;
+				var ops:Int = __interestFor(s, interest[i]);
+				if (ops == 0)
 					continue;
 				// A channel must be non-blocking to register with a Selector.
 				if (ch.isBlocking())
 					ch.configureBlocking(false);
-				var key = ch.register(selector, interest[i]);
+				var key = ch.register(selector, ops);
 				key.attach(s);
 			}
 
@@ -987,6 +1100,8 @@ class Socket {
 					var key:SelectionKey = it.next();
 					var s:Socket = cast key.attachment();
 					var ready = key.readyOps();
+					if ((ready & SelectionKey.OP_CONNECT) != 0)
+						__settleConnect(s, resWrite, resOthers);
 					if ((ready & (SelectionKey.OP_READ | SelectionKey.OP_ACCEPT)) != 0)
 						resRead.push(s);
 					if ((ready & SelectionKey.OP_WRITE) != 0)
