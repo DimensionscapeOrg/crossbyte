@@ -1220,6 +1220,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A TURN allocation survives a relay whose first answer is slow. The signed
+  retry after the relay's 401 reused the unsigned request's transaction, so
+  once that request had been sent twice, its answer took over half a
+  second, or natively the relay's name took that long to resolve and both
+  copies left together, the second 401 matched the signed retry and read
+  as the credentials being rejected, while the relay granted the signed
+  request and held an allocation nobody would use or free. Each
+  authenticated retry is a new transaction now, as RFC 8489 has it, and
+  answers to superseded ones are ignored. A CreatePermission success or a
+  ChannelBind error, from anyone or duplicated, no longer ends whatever
+  request is in flight: every answer is matched to its request by
+  transaction. And a relay that never answers is given up on after RFC
+  8489's 39.5 seconds rather than 63.5.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
