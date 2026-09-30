@@ -1220,6 +1220,22 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A socket leaves its poll backend before it is closed, and a backend that
+  fails no longer leaves a runtime polling nothing. `Socket` closed its
+  descriptor and only then queued its deregistration, which a backend that
+  registers each descriptor with the system -- libuv's -- is not allowed:
+  libuv forbids closing a descriptor it is polling, and when a child
+  process had inherited the file its epoll registration outlived the
+  close, so the loop woke for it without sleeping for good. `PollBackend`
+  has a `remove(socket)` now, called as a socket is deregistered, while it
+  is still open, and every close deregisters first; the built-in backend
+  does nothing with it. A backend whose `prepare` or `events` throws is
+  replaced by the built-in one, which is prepared at once, where it failed
+  the same way every pass; a factory that throws gives the built-in one;
+  and a registry grows with the factory it was made with, making the
+  larger backend before disposing of the old, so installing a backend
+  later never moves a runtime onto it partway through its run. A backend
+  implementing `PollBackendGrowable` grows in place.
 - A half-open connection held by a server costs nothing while it waits.
   After the peer's FIN a `HALF_OPEN` socket stopped reading but stayed in
   the poll set, where end of stream is readable for good: it was reported

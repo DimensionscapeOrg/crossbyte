@@ -1400,6 +1400,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function __cleanSocket():Void {
+		#if !js
+		// Out of the poll set before the socket is closed, not after. A poll
+		// backend that holds each descriptor with the system -- libuv's --
+		// must let go of one while it is still open: closed first, a
+		// descriptor a child process had inherited kept its registration,
+		// and the loop woke for it without sleeping for good.
+		if (__cbInstance != null && __socket != null) {
+			@:privateAccess
+			__cbInstance.deregisterSocket(__socket);
+		}
+		#end
+
 		try {
 			#if nodejs
 			// A js.node.net.Socket has no close(). This called one anyway, and
@@ -1431,12 +1443,6 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__stopConnecting();
 		__resolving = false;
 
-		if (__cbInstance != null) {
-			#if !js
-			@:privateAccess
-			__cbInstance.deregisterSocket(this.__socket);
-			#end
-		}
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
@@ -2437,6 +2443,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private inline function __cleanupFailedConnect():Void {
+		#if !js
+		// Watched in the poll set once the connect was under way; out of it
+		// before the socket closes, as in __cleanSocket.
+		if (__cbInstance != null && __socket != null) {
+			@:privateAccess
+			__cbInstance.deregisterSocket(__socket);
+		}
+		#end
 		if (__socket != null) {
 			try {
 				#if nodejs
