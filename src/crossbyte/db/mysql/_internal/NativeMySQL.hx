@@ -29,6 +29,10 @@ HXCPP_EXTERN_CLASS_ATTRIBUTES bool _hx_mysql_ping(Dynamic handle);
 HXCPP_EXTERN_CLASS_ATTRIBUTES int _hx_mysql_errno(Dynamic handle);
 HXCPP_EXTERN_CLASS_ATTRIBUTES String _hx_mysql_sqlstate(Dynamic handle);
 HXCPP_EXTERN_CLASS_ATTRIBUTES Float _hx_mysql_thread_id(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES Dynamic _hx_mysql_request_stream(Dynamic handle, String req);
+HXCPP_EXTERN_CLASS_ATTRIBUTES Dynamic _hx_mysql_insert_id(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES Dynamic _hx_mysql_affected_rows(Dynamic handle);
+HXCPP_EXTERN_CLASS_ATTRIBUTES String _hx_mysql_server_version(Dynamic handle);
 ')
 class NativeMySQL {
 	public static inline var STATUS_IN_TRANS:Int = 0x0001;
@@ -79,6 +83,28 @@ class NativeMySQL {
 
 	public static function request(handle:Dynamic, sql:String):Dynamic {
 		return __request(handle, sql);
+	}
+
+	/**
+		A statement whose rows are read as they arrive, one per `resultNext`,
+		instead of all of them before the first is returned.
+	**/
+	public static function requestStream(handle:Dynamic, sql:String):Dynamic {
+		return __requestStream(handle, sql);
+	}
+
+	/** The id the last statement generated: an `Int`, or an `Int64` past 2^31. **/
+	public static function insertId(handle:Dynamic):Dynamic {
+		return __insertId(handle);
+	}
+
+	/** The rows the last statement changed: an `Int`, or an `Int64` past 2^31. **/
+	public static function affectedRows(handle:Dynamic):Dynamic {
+		return __affectedRows(handle);
+	}
+
+	public static function serverVersion(handle:Dynamic):String {
+		return __serverVersion(handle);
 	}
 
 	public static function close(handle:Dynamic):Void {
@@ -160,6 +186,18 @@ class NativeMySQL {
 
 	@:native("_hx_mysql_request")
 	extern private static function __request(handle:Dynamic, req:String):Dynamic;
+
+	@:native("_hx_mysql_request_stream")
+	extern private static function __requestStream(handle:Dynamic, req:String):Dynamic;
+
+	@:native("_hx_mysql_insert_id")
+	extern private static function __insertId(handle:Dynamic):Dynamic;
+
+	@:native("_hx_mysql_affected_rows")
+	extern private static function __affectedRows(handle:Dynamic):Dynamic;
+
+	@:native("_hx_mysql_server_version")
+	extern private static function __serverVersion(handle:Dynamic):String;
 
 	@:native("_hx_mysql_close")
 	extern private static function __close(handle:Dynamic):Dynamic;
