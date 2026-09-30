@@ -129,7 +129,7 @@ class JvmSslSocket extends sys.net.Socket {
 			__sni = [];
 		}
 
-		__sni.push({matches: cbServernameMatch, certificate: cert.native, key: key.native});
+		__sni.push({matches: cbServernameMatch, chain: JvmSniKeyManager.chainOf(cert), key: key.native});
 	}
 
 	public function peerCertificate():JvmSslCertificate {
@@ -139,7 +139,7 @@ class JvmSslSocket extends sys.net.Socket {
 
 		return try {
 			var chain = __engine.getSession().getPeerCertificates();
-			chain.length > 0 ? new JvmSslCertificate(chain[0]) : null;
+			chain.length > 0 ? new JvmSslCertificate(chain[0], chain) : null;
 		} catch (e:Dynamic) {
 			null;
 		}
@@ -372,9 +372,9 @@ class JvmSslSocket extends sys.net.Socket {
 			var store = KeyStore.getInstance(KeyStore.getDefaultType());
 			store.load(null, null);
 
-			var chain:java.NativeArray<JCertificate> = new java.NativeArray(1);
-			chain[0] = __certificate.native;
-			store.setKeyEntry("crossbyte", cast __key.native, blank, chain);
+			// The whole chain: the leaf and whatever intermediates came with
+			// it, which is what goes to the peer.
+			store.setKeyEntry("crossbyte", cast __key.native, blank, __certificate.chain);
 
 			if (__sni != null && __sni.length > 0) {
 				// One key manager of our own, rather than the default one built
@@ -382,7 +382,7 @@ class JvmSslSocket extends sys.net.Socket {
 				// only a key manager can do.
 				var picker = new crossbyte._internal.socket._jvm.JvmSniKeyManager({
 					matches: function(_) return true,
-					certificate: __certificate.native,
+					chain: JvmSniKeyManager.chainOf(__certificate),
 					key: __key.native
 				}, __sni);
 
@@ -410,9 +410,12 @@ class JvmSslSocket extends sys.net.Socket {
 		}
 
 		if (ca != null) {
+			// Every authority of a bundle, not only its first.
 			var store = KeyStore.getInstance(KeyStore.getDefaultType());
 			store.load(null, null);
-			store.setCertificateEntry("ca", ca.native);
+			for (i in 0...ca.chain.length) {
+				store.setCertificateEntry("ca" + i, ca.chain[i]);
+			}
 			var factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
 			factory.init(store);
 			trust = factory.getTrustManagers();
@@ -683,18 +686,39 @@ private class JvmSslOutput extends haxe.io.Output {
 }
 
 /**
-	An X.509 certificate, read from PEM.
+	X.509 certificates, read from PEM: one, or every one a file holds.
 
-	`CertificateFactory` reads PEM armour directly, so this is a thin wrapper
-	over the parsed certificate plus the text it came from, the text is kept
-	because a trust store is built from it later and re-parsing is cheaper than
-	holding a second representation.
+	A PEM file is often more than one certificate. What an authority issues is
+	`fullchain.pem`, the server's certificate followed by the intermediate that
+	issued it, and a server has to present both: a client trusts the root, and
+	the leaf alone cannot be traced to it. A trust file is often a bundle of
+	several authorities. So every certificate is kept, in file order, and
+	`native` is the first, the leaf of a chain.
+
+	Only the first used to be read, which is what the JDK's
+	`generateCertificate` does. A server given `fullchain.pem` presented the
+	leaf without its intermediate and every client refused it, curl, Node,
+	browsers, the JDK, and a bundle trusted its first authority alone. Native
+	and Node read the whole file.
 **/
 class JvmSslCertificate {
+	private static inline var BEGIN:String = "-----BEGIN CERTIFICATE-----";
+	private static inline var END:String = "-----END CERTIFICATE-----";
+
+	/** The first certificate: for a chain, the one it certifies. **/
 	@:noCompletion public var native(default, null):JCertificate;
 
-	public function new(native:JCertificate) {
+	/** Every certificate, in the order the text gave them; never empty. **/
+	@:noCompletion public var chain(default, null):java.NativeArray<JCertificate>;
+
+	public function new(native:JCertificate, ?chain:java.NativeArray<JCertificate>) {
 		this.native = native;
+
+		if (chain == null || chain.length == 0) {
+			chain = new java.NativeArray(1);
+			chain[0] = native;
+		}
+		this.chain = chain;
 	}
 
 	public static function loadFile(path:String):JvmSslCertificate {
@@ -706,13 +730,56 @@ class JvmSslCertificate {
 			throw "A certificate needs PEM text to read from.";
 		}
 
-		try {
+		var read:JCollection<JCertificate> = try {
 			var factory = CertificateFactory.getInstance("X.509");
-			var stream = new ByteArrayInputStream(haxe.io.Bytes.ofString(pem).getData());
-			return new JvmSslCertificate(factory.generateCertificate(stream));
+			factory.generateCertificates(new ByteArrayInputStream(haxe.io.Bytes.ofString(__certificateBlocks(pem)).getData()));
 		} catch (e:Dynamic) {
 			throw "The certificate could not be read: " + Std.string(e);
 		}
+
+		if (read.size() == 0) {
+			throw "The certificate could not be read: the text holds no certificate.";
+		}
+
+		var chain:java.NativeArray<JCertificate> = new java.NativeArray(read.size());
+		var at:Int = 0;
+		var it = read.iterator();
+		while (it.hasNext() && at < chain.length) {
+			chain[at++] = it.next();
+		}
+
+		return new JvmSslCertificate(chain[0], chain);
+	}
+
+	/**
+		The certificate blocks of `pem`, and nothing else in it.
+
+		A PEM file can hold a key beside its certificates, a combined key and
+		certificate file is a common way to ship one, and the JDK's reader
+		fails on the first block that is not a certificate, where native and
+		Node pass over it. Text with no certificate armour at all is handed on
+		as it is, for the reader to say what it makes of it.
+	**/
+	private static function __certificateBlocks(pem:String):String {
+		var from:Int = pem.indexOf(BEGIN);
+		if (from < 0) {
+			return pem;
+		}
+
+		var blocks = new StringBuf();
+		while (from >= 0) {
+			var to:Int = pem.indexOf(END, from);
+			if (to < 0) {
+				// Unterminated: handed on, so the reader reports it rather
+				// than the certificate silently going missing.
+				blocks.add(pem.substr(from));
+				break;
+			}
+			blocks.add(pem.substring(from, to + END.length));
+			blocks.add("\n");
+			from = pem.indexOf(BEGIN, to);
+		}
+		return blocks.toString();
 	}
 }
 
