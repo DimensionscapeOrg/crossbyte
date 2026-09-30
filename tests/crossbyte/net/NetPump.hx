@@ -66,7 +66,7 @@ class NetPump {
 		#else
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			step();
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 
 		then(done());

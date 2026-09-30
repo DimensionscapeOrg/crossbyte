@@ -12,8 +12,12 @@ All notable changes to CrossByte will be documented in this file.
   leaves a negative remainder that OCaml's `Unix.sleepf` hands to `Sleep()`
   as an unsigned count. With a second thread busy, a loop of
   `Sys.sleep(0.001)` hung in one run of three and `System.sleep` in none.
-  The runtime's frame loop, the other library waits and the tests' pump
-  loops still call `Sys.sleep`, and are what hung the interpreter suite.
+  Every sleep in the library, the tests and the samples goes through it
+  now -- the runtime's frame loop, `ConnectionPool`, `FileStream`,
+  `FileStore`, `LocalConnection`, `NativeProcess`, `ProcessLifecycle` and
+  the tests' pump loops were what hung the interpreter suite, in a
+  different test each run -- and a suite build fails on any other call to
+  `Sys.sleep`.
 - `SwitchTable.make` takes any expression as a key -- `Opcode.PING`, a
   variable -- where it took only literals, refuses two literal keys that are
   the same, and takes a fallback, `(key, args) -> ...`, for a key no case

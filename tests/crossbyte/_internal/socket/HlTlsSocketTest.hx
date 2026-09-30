@@ -48,10 +48,10 @@ class HlTlsSocketTest extends utest.Test {
 				peer.handshake();
 				var request = Bytes.alloc(4);
 				peer.input.readFullBytes(request, 0, 4);
-				Sys.sleep(DELAY);
+				crossbyte.sys.System.sleep(DELAY);
 				peer.output.writeString("done");
 				peer.output.flush();
-				Sys.sleep(0.2);
+				crossbyte.sys.System.sleep(0.2);
 				peer.close();
 			} catch (e:Dynamic) {
 				port.add(-1);
@@ -104,7 +104,7 @@ class HlTlsSocketTest extends utest.Test {
 			if (garbage.length > 100) {
 				garbage = [];
 			}
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 			var now:Float = haxe.Timer.stamp();
 			if (now - last > longest) {
 				longest = now - last;

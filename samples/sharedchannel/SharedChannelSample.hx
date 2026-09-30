@@ -58,13 +58,13 @@ class SharedChannelSample extends HostApplication {
 			Sys.println('send status -> level=${event.level} code=${event.code}');
 		});
 
-		Sys.sleep(0.05);
+		crossbyte.sys.System.sleep(0.05);
 		sender.send(name, "receive", {message: "hello from demo", value: 42});
 
 		var deadline = Sys.time() + 2.0;
 		while (!receiver.received && Sys.time() < deadline) {
 			advance(1 / 60, 0);
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 
 		if (!receiver.received) {
@@ -93,7 +93,7 @@ class SharedChannelSample extends HostApplication {
 				Sys.println('received -> "${receiver.message}" (${receiver.value})');
 				receiver.reset();
 			}
-			Sys.sleep(0.05);
+			crossbyte.sys.System.sleep(0.05);
 		}
 	}
 
@@ -104,7 +104,7 @@ class SharedChannelSample extends HostApplication {
 		});
 		sender.send(name, "receive", {message: message, value: value});
 		advance(1 / 60, 0);
-		Sys.sleep(0.05);
+		crossbyte.sys.System.sleep(0.05);
 		sender.close();
 	}
 }

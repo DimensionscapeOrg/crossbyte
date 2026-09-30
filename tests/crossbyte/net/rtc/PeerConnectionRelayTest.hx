@@ -1005,7 +1005,7 @@ class PeerConnectionRelayTest extends utest.Test {
 
 		while (!done() && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 

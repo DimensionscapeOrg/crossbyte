@@ -309,7 +309,7 @@ class JvmTlsTest extends utest.Test {
 				} catch (e:haxe.io.Error) {
 					switch (e) {
 						case Blocked:
-							Sys.sleep(0.001);
+							crossbyte.sys.System.sleep(0.001);
 						default:
 							throw e;
 					}
@@ -368,7 +368,7 @@ class JvmTlsTest extends utest.Test {
 			var accepted = listener.acceptAndHandshake(10);
 			sent.wait(10);
 			// Long enough for all of it to reach this end's socket.
-			Sys.sleep(0.3);
+			crossbyte.sys.System.sleep(0.3);
 			got = accepted.input.readBytes(haxe.io.Bytes.alloc(65536), 0, 65536);
 			finish.release();
 			accepted.close();
@@ -717,7 +717,7 @@ class JvmTlsTest extends utest.Test {
 					accepted.setBlocking(false);
 					return accepted;
 				} catch (e:haxe.io.Error) {
-					Sys.sleep(0.001);
+					crossbyte.sys.System.sleep(0.001);
 				}
 			}
 			throw "nothing connected within " + seconds + " s";
@@ -756,7 +756,7 @@ class JvmTlsTest extends utest.Test {
 				bDone = __stepped(b);
 			}
 			if (!(aDone && bDone)) {
-				Sys.sleep(0.0005);
+				crossbyte.sys.System.sleep(0.0005);
 			}
 		}
 	}
@@ -785,7 +785,7 @@ class JvmTlsTest extends utest.Test {
 			try {
 				written += from.output.writeBytes(bytes, written, bytes.length - written);
 			} catch (e:haxe.io.Error) {
-				Sys.sleep(0.0005);
+				crossbyte.sys.System.sleep(0.0005);
 			}
 			if (haxe.Timer.stamp() > deadline) {
 				throw "could not write";
@@ -798,7 +798,7 @@ class JvmTlsTest extends utest.Test {
 			try {
 				got += to.input.readBytes(buffer, got, bytes.length - got);
 			} catch (e:haxe.io.Error) {
-				Sys.sleep(0.0005);
+				crossbyte.sys.System.sleep(0.0005);
 			}
 			if (haxe.Timer.stamp() > deadline) {
 				throw "nothing arrived";
@@ -840,7 +840,7 @@ class JvmTlsTest extends utest.Test {
 		var runtime = java.lang.Runtime.getRuntime();
 		for (i in 0...3) {
 			java.lang.System.gc();
-			Sys.sleep(0.05);
+			crossbyte.sys.System.sleep(0.05);
 		}
 		return cast(runtime.totalMemory(), Float) - cast(runtime.freeMemory(), Float);
 	}
@@ -976,7 +976,7 @@ class JvmTlsTest extends utest.Test {
 			var settle = haxe.Timer.stamp() + 0.3;
 			while (haxe.Timer.stamp() < settle) {
 				runtime.pump(1 / 60, 0);
-				Sys.sleep(0.002);
+				crossbyte.sys.System.sleep(0.002);
 			}
 		} catch (e:Dynamic) {
 			if (failure == null) {

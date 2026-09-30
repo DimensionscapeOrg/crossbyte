@@ -194,12 +194,12 @@ class SignatureKeyTest extends utest.Test {
 			stopped.release();
 		});
 
-		Sys.sleep(0.05);
+		crossbyte.sys.System.sleep(0.05);
 		var busy:Array<Float> = [];
 		for (i in 0...15) {
 			// Out of step with the signatures, so the samples fall at different
 			// points in one.
-			Sys.sleep(0.011 + (i % 5) * 0.003);
+			crossbyte.sys.System.sleep(0.011 + (i % 5) * 0.003);
 			busy.push(timedCollection());
 		}
 		stop.add(true);

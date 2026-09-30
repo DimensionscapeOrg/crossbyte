@@ -116,7 +116,7 @@ class SharedChannelTest extends utest.Test {
 		channel.connect('__crossbyte_foreign_${Std.random(1000000)}');
 
 		Thread.create(() -> channel.__dispatchReceivedData(frame("receive", ["hello", 42])));
-		Sys.sleep(0.01);
+		crossbyte.sys.System.sleep(0.01);
 
 		Assert.equals(0, receiver.calls);
 		primordial.pump(1 / 60, 0);
@@ -225,7 +225,7 @@ class SharedChannelTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + timeoutSeconds;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 		#end
 	}

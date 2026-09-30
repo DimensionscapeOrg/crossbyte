@@ -296,7 +296,7 @@ class FileStore implements IStoreBackend {
 					throw e;
 				}
 
-				Sys.sleep(0.001);
+				crossbyte._internal.system.Sleep.sleep(0.001);
 			}
 		}
 	}

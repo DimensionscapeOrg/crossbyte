@@ -254,7 +254,7 @@ class MongoTransactionTest extends utest.Test {
 		var deadline:Float = haxe.Timer.stamp() + 5.0;
 
 		while (server.commands("endSessions").length == 0 && haxe.Timer.stamp() < deadline) {
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 
 		var end:ReceivedCommand = server.commands("endSessions")[0];

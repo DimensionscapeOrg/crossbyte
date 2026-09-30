@@ -1273,7 +1273,7 @@ final class CrossByte extends EventDispatcher {
 		var dtTotal:Float = 0.0;
 
 		for (i in 0...100) {
-			Sys.sleep(0.001);
+			crossbyte._internal.system.Sleep.sleep(0.001);
 			dtTotal += (Timer.stamp() - time);
 
 			time = Timer.stamp();
@@ -1754,7 +1754,7 @@ final class CrossByte extends EventDispatcher {
 				minSleep = 0;
 			}
 
-			Sys.sleep(minSleep);
+			crossbyte._internal.system.Sleep.sleep(minSleep);
 		}
 
 		__noteFrameEnd(overran);
@@ -1794,10 +1794,10 @@ final class CrossByte extends EventDispatcher {
 			if (bulk >= 0.001) {
 				__sleepUntilWoken(bulk);
 			} else {
-				Sys.sleep(0.001);
+				crossbyte._internal.system.Sleep.sleep(0.001);
 			}
 			#else
-			Sys.sleep(remaining > SLEEP_SLACK ? remaining - SLEEP_SLACK : 0.001);
+			crossbyte._internal.system.Sleep.sleep(remaining > SLEEP_SLACK ? remaining - SLEEP_SLACK : 0.001);
 			#end
 		}
 

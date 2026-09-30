@@ -40,7 +40,7 @@ class JvmSocketTest extends utest.Test {
 		while (!connected && failure == null && haxe.Timer.stamp() < deadline) {
 			busy.drain();
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.005);
+			crossbyte.sys.System.sleep(0.005);
 		}
 
 		try {
@@ -155,7 +155,7 @@ class JvmSocketTest extends utest.Test {
 
 		var writer = pairs.clients[0];
 		sys.thread.Thread.create(() -> {
-			Sys.sleep(0.1);
+			crossbyte.sys.System.sleep(0.1);
 			try {
 				writer.output.writeByte(7);
 			} catch (_:Dynamic) {}
@@ -256,7 +256,7 @@ class JvmSocketTest extends utest.Test {
 			filler.connect(new InetSocketAddress("127.0.0.1", port));
 			channels.push(filler);
 		}
-		Sys.sleep(0.2);
+		crossbyte.sys.System.sleep(0.2);
 
 		return {
 			port: port,

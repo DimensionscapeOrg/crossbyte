@@ -280,7 +280,7 @@ class HTTP2BackendTest extends utest.Test {
 		// Both requests are on the connection before either is answered, so
 		// this cancels one that is genuinely open.
 		while (!server.sawBothArrive()) {
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 		doomed.cancelToken.cancel();
 		server.releaseResponses();
@@ -314,7 +314,7 @@ class HTTP2BackendTest extends utest.Test {
 		// busy one was enough to spend three seconds and fail a working reset.
 		var deadline:Float = Sys.time() + 10;
 		while (!server.sawReset(doomedId) && Sys.time() < deadline) {
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 		Assert.isTrue(server.sawReset(doomedId),
 			"server never saw RST_STREAM for the cancelled stream " + doomedId);
@@ -394,7 +394,7 @@ class HTTP2BackendTest extends utest.Test {
 		});
 		var until:Float = haxe.Timer.stamp() + 5;
 		while (server.requests().length == 0 && haxe.Timer.stamp() < until) {
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 
 		var second:String = null;
@@ -542,7 +542,7 @@ class HTTP2BackendTest extends utest.Test {
 		var previous = H2ConnectionPool.idleTimeoutSeconds;
 		H2ConnectionPool.idleTimeoutSeconds = 1;
 		if (haxe.Timer.stamp() < 1.5) {
-			Sys.sleep(1.5 - haxe.Timer.stamp());
+			crossbyte.sys.System.sleep(1.5 - haxe.Timer.stamp());
 		}
 
 		var control = new Mutex();
@@ -1259,7 +1259,7 @@ private class H2EarlyResponseServer {
 					} else if (__ping) {
 						Thread.create(() -> {
 							for (_ in 0...120) {
-								Sys.sleep(0.05);
+								crossbyte.sys.System.sleep(0.05);
 								try {
 									__writeFrame(peer, H2FrameType.PING, 0, 0, Bytes.ofHex("0102030405060708"));
 								} catch (_:Dynamic) {
@@ -2335,7 +2335,7 @@ private class H2RouteServer {
 		__writeFrame(peer, H2FrameType.HEADERS, H2Flags.END_HEADERS | (chunks.length == 0 && ends ? H2Flags.END_STREAM : 0), id, encoder.encode(fields));
 		for (i in 0...chunks.length) {
 			if (answer.gap != null && answer.gap > 0) {
-				Sys.sleep(answer.gap);
+				crossbyte.sys.System.sleep(answer.gap);
 			}
 			var last:Bool = i == chunks.length - 1;
 			__writeFrame(peer, H2FrameType.DATA, last && ends ? H2Flags.END_STREAM : 0, id, Bytes.ofString(chunks[i]));

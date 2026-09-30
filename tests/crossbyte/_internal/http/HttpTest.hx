@@ -1012,10 +1012,10 @@ class HttpTest extends utest.Test {
 				// with it unread makes the close below a reset rather than an
 				// ending. Reading even a byte lets a buffered input take the
 				// rest, and the close becomes an ordinary one.
-				Sys.sleep(0.2);
+				crossbyte.sys.System.sleep(0.2);
 				peer.output.writeString("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npartial");
 				peer.output.flush();
-				Sys.sleep(0.3);
+				crossbyte.sys.System.sleep(0.3);
 				#if (java || jvm)
 				// The JDK closes gracefully even over unread data; a zero linger
 				// is how a Java socket is made to reset.
