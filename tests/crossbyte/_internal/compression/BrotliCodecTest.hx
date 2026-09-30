@@ -120,6 +120,91 @@ class BrotliCodecTest extends utest.Test {
 		Assert.equals(0, expected.compare(decoded), "decoded bytes differ");
 	}
 
+	/**
+	 * The window a stream declares, from its first bits (RFC 7932 9.1).
+	 */
+	private static function declaredWindowBits(stream:Bytes):Int {
+		var b:Int = stream.get(0) | (stream.length > 1 ? stream.get(1) << 8 : 0);
+		if (b & 1 == 0) {
+			return 16;
+		}
+		var n:Int = (b >> 1) & 7;
+		if (n != 0) {
+			return 17 + n;
+		}
+		n = (b >> 4) & 7;
+		return n != 0 ? 8 + n : 17;
+	}
+
+	/**
+	 * A stream says how much history its decoder must keep, and the encoder
+	 * said 4 MB (2^22) for everything, two bytes included. A window only has
+	 * to reach back over the input, so a small body now declares 2^16 and a
+	 * larger one the least that covers it -- never 2^17, whose header costs
+	 * three bits more than 2^18's.
+	 */
+	public function testTheWindowDeclaredFitsTheInput():Void {
+		var cases:Array<{length:Int, bits:Int}> = [
+			{length: 0, bits: 16}, {length: 2, bits: 16}, {length: 3000, bits: 16}, {length: 65520, bits: 16},
+			{length: 65521, bits: 18}, {length: 262128, bits: 18}, {length: 262129, bits: 19}
+		];
+		for (c in cases) {
+			var input:Bytes = Bytes.alloc(c.length);
+			for (i in 0...c.length) {
+				input.set(i, (i * 7 + (i >> 9)) & 0x3F);
+			}
+			var packed:Bytes = Brotli.compress(input);
+			Assert.equals(c.bits, declaredWindowBits(packed), c.length + " bytes");
+			var back:Bytes = Brotli.decompress(packed, c.length + 1);
+			Assert.equals(c.length, back.length, c.length + " bytes did not round-trip");
+			Assert.equals(0, back.compare(input), c.length + " bytes came back different");
+		}
+	}
+
+	/**
+	 * Every call built a ring buffer for the window whatever the input --
+	 * 2^23 entries for a two-byte body -- and allocated and cleared a hash
+	 * table of 2^17. A 2-byte response cost 20 ms on Node, so a server
+	 * answering browsers, which all ask for br, managed 45 a second. The
+	 * buffer is now the input's size and the table is kept, and only the
+	 * buckets the input uses are cleared.
+	 */
+	public function testCompressingSmallBodiesIsCheap():Void {
+		var body:Bytes = Bytes.ofString('{"ok":true}');
+		var started:Float = Timer.stamp();
+		for (i in 0...200) {
+			Brotli.compress(body);
+		}
+		var elapsed:Float = Timer.stamp() - started;
+		Assert.isTrue(elapsed < 3.0, "200 compressions took " + elapsed + "s");
+	}
+
+	/**
+	 * The hash table a thread keeps between calls must not carry anything
+	 * from one input into the next: the same input compresses to the same
+	 * bytes whatever came before it.
+	 */
+	public function testAKeptHashTableLeavesNoTraceBetweenCalls():Void {
+		var text:Bytes = Bytes.ofString(DICTIONARY_TEXT + " " + DICTIONARY_TEXT.toUpperCase());
+		var noise:Bytes = Bytes.alloc(3000);
+		var state:Int = 0x1234567;
+		for (i in 0...noise.length) {
+			state ^= state << 13;
+			state ^= state >>> 17;
+			state ^= state << 5;
+			noise.set(i, (state >>> 8) & 0xFF);
+		}
+
+		for (quality in [1, 2, 3, 4]) {
+			var first:Bytes = Brotli.compress(text, quality);
+			Brotli.compress(noise, quality);
+			Brotli.compress(Bytes.ofString(DICTIONARY_TEXT.substr(40)), quality);
+			var again:Bytes = Brotli.compress(text, quality);
+			Assert.equals(first.toHex(), again.toHex(), "quality " + quality);
+			Assert.equals(text.toString(), Brotli.decompress(again, 1 << 20).toString());
+		}
+	}
+
 	/** 174 bytes of English as Node's zlib writes them at quality 11: 53 bytes, mostly references into the static dictionary. **/
 	private static inline var DICTIONARY_TEXT:String = "The government information about the international community was available through the university library, although the development of the environment remained controversial.";
 
