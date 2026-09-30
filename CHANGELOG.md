@@ -1428,6 +1428,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `HTTPServerDefaultsTest` no longer leaves its canary store behind: every
+  full native run on Windows left an `http-root-canary-*` directory in
+  `%APPDATA%\stores`, its value file still there. It cleared the store
+  asynchronously and closed it at once, then deleted the directory a
+  single time, and a file just written is often held a moment on Windows;
+  it now closes the store and removes the directory, trying again for up
+  to two seconds.
 - On neko the HTTP server answers a conditional request dated past
   January 2038 with a 304, as it does elsewhere. It read `If-Modified-Since`
   through a local `Date`, which neko cannot make past 2038 (`new Date`
