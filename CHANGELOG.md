@@ -1220,6 +1220,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The cookies `URLRequest.manageCookies` carries across a redirect match
+  their host whatever its case, and are kept per host. A cookie set by
+  `Example.com` was not sent to `example.com`, so a redirect that changed
+  only the host's case kept the caller's credentials and lost the session;
+  a second host setting a cookie of the same name replaced the first
+  host's; and a host's cookies went back in an order that differed by
+  target. They go back in the order they were set.
 - HTTP/2 refuses a field holding a CR, LF or NUL in its value, or a name
   that is not visible lowercase ASCII, as RFC 9113 8.2.1 says: on the
   server the request's stream is reset, and in the client the response
