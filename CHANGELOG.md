@@ -1244,6 +1244,9 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `MathUtil.nextPow2` answers the same on every target above 2^30: 2^31's
+  bit pattern, `1 << 31`. JavaScript's Int does not wrap by itself, so it
+  answered 2147483648 there and -2147483648 elsewhere.
 - `Seq32` prints and divides as the unsigned number it is on the jvm. It
   printed through a Float, which the jvm writes in scientific notation --
   "4.294967295E9" -- and in hex saturated to 7FFFFFFF; and `%` passed a
