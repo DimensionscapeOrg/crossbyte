@@ -336,7 +336,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 					__connection.close();
 					event = new SQLEvent(SQLEvent.CLOSE);
 				} catch (e:Dynamic) {
-					event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.CLOSE, "Execution failed"));
+					event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.CLOSE, Std.string(e), "Execution failed: " + Std.string(e)));
 				}
 
 				__sqlWorker.sendProgress(event);
@@ -552,7 +552,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__connection.request('SAVEPOINT $name;');
 				event = new SQLEvent(SQLEvent.SET_SAVEPOINT);
 			} catch (e:Dynamic) {
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.SET_SAVEPOINT, "Execution failed"));
+				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.SET_SAVEPOINT, Std.string(e), "Execution failed: " + Std.string(e)));
 			}
 			__sqlWorker.sendProgress(event);
 		}
@@ -566,7 +566,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__connection.request('ROLLBACK TO $name;');
 				event = new SQLEvent(SQLEvent.ROLLBACK_TO_SAVEPOINT);
 			} catch (e:Dynamic) {
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Execution failed"));
+				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ROLLBACK_TO_SAVEPOINT, Std.string(e), "Execution failed: " + Std.string(e)));
 			}
 			__sqlWorker.sendProgress(event);
 		}
@@ -581,7 +581,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__savepoints = [];
 			event = new SQLEvent(SQLEvent.ROLLBACK);
 		} catch (e:Dynamic) {
-			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ROLLBACK, "Execution failed"));
+			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ROLLBACK, Std.string(e), "Execution failed: " + Std.string(e)));
 		}
 		__sqlWorker.sendProgress(event);
 	}
@@ -594,7 +594,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__connection.request('RELEASE $name;');
 				event = new SQLEvent(SQLEvent.RELEASE_SAVEPOINT);
 			} catch (e:Dynamic) {
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RELEASE_SAVEPOINT, "Execution failed"));
+				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RELEASE_SAVEPOINT, Std.string(e), "Execution failed: " + Std.string(e)));
 			}
 			__sqlWorker.sendProgress(event);
 		}
@@ -608,7 +608,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__open(reference, openMode, autoCompact, pageSize);
 				event = new SQLEvent(SQLEvent.OPEN);
 			} catch (e:Dynamic) {
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.OPEN, "Execution failed"));
+				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.OPEN, Std.string(e), "Execution failed: " + Std.string(e)));
 			}
 			__sqlWorker.sendProgress(event);
 		}
@@ -630,7 +630,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				try {
 					file = new File(reference);
 				} catch (e:Dynamic) {
-					throw new ArgumentError(e);
+					throw new ArgumentError(Std.string(e));
 				}
 			} else if (Std.isOfType(reference, File)) {
 				file = reference;
@@ -674,7 +674,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__connection.request("VACUUM;");
 			event = new SQLEvent(SQLEvent.COMPACT);
 		} catch (e:Dynamic) {
-			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.COMPACT, "Execution failed"));
+			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.COMPACT, Std.string(e), "Execution failed: " + Std.string(e)));
 		}
 
 		__sqlWorker.sendProgress(event);
@@ -689,7 +689,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__savepoints = [];
 			event = new SQLEvent(SQLEvent.COMMIT);
 		} catch (e:Dynamic) {
-			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.COMMIT, "Execution failed"));
+			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.COMMIT, Std.string(e), "Execution failed: " + Std.string(e)));
 		}
 
 		__sqlWorker.sendProgress(event);
@@ -702,7 +702,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__connection.close();
 			event = new SQLEvent(SQLEvent.CLOSE);
 		} catch (e:Dynamic) {
-			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.CLOSE, "Execution failed"));
+			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.CLOSE, Std.string(e), "Execution failed: " + Std.string(e)));
 		}
 
 		__sqlWorker.sendProgress(event);
@@ -716,7 +716,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			openAsync(__reference, __openMode, __initAutoCompact, __initPageSize);
 			event = new SQLEvent(SQLEvent.DEANALYZE);
 		} catch (e:Dynamic) {
-			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.DEANALYZE, "Execution failed"));
+			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.DEANALYZE, Std.string(e), "Execution failed: " + Std.string(e)));
 		}
 
 		__sqlWorker.sendProgress(event);
@@ -731,7 +731,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				__inTransaction = true;
 				event = new SQLEvent(SQLEvent.BEGIN);
 			} catch (e:Dynamic) {
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.BEGIN, e, "Execution failed"));
+				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.BEGIN, Std.string(e), "Execution failed: " + Std.string(e)));
 			}
 
 			__sqlWorker.sendProgress(event);
@@ -745,7 +745,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__connection.request("ANALYZE;");
 			event = new SQLEvent(SQLEvent.ANALYZE);
 		} catch (e:Dynamic) {
-			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ANALYZE, e, "Execution failed"));
+			event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.ANALYZE, Std.string(e), "Execution failed: " + Std.string(e)));
 		}
 
 		__sqlWorker.sendProgress(event);
@@ -842,7 +842,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__connection = Sqlite.open(path);
 			#end
 		} catch (e:Dynamic) {
-			throw new IOError(e);
+			throw new IOError(Std.string(e));
 		}
 	}
 
