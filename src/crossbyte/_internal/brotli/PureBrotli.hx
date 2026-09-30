@@ -7,7 +7,7 @@ import haxe.io.Bytes;
 class PureBrotli {
 	public static function compress(bytes:Bytes, quality:Int = 4):Bytes {
 		if (quality < 0 || quality > 11) {
-			throw "Brotli quality must be between 0 and 11";
+			throw new crossbyte.errors.ArgumentError("Brotli quality must be between 0 and 11, not " + quality);
 		}
 
 		return BrotliCodec.compress(bytes, quality);

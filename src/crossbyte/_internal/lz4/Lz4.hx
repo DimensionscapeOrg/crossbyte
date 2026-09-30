@@ -1,5 +1,7 @@
 package crossbyte._internal.lz4;
 
+import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 import crossbyte.io.ByteArray;
 import haxe.io.Bytes;
 import haxe.ds.Vector;
@@ -166,9 +168,13 @@ class Lz4 {
 	public static inline function decompress(b:Bytes, maxOutputSize:Int = 0):Bytes {
 		#if crossbyte_lz4_native
 		if (NativeLz4.isAvailable()) {
-			var native:Bytes = NativeLz4.decompress(b);
+			var native:Bytes = try {
+				NativeLz4.decompress(b);
+			} catch (e:String) {
+				throw new IOError("Invalid LZ4 data: " + e);
+			}
 			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
-				throw "Decoded stream exceeded " + maxOutputSize + " bytes";
+				throw new RangeError("Decoded stream exceeded " + maxOutputSize + " bytes");
 			}
 			return native;
 		}
@@ -186,7 +192,7 @@ class Lz4 {
 			if (clen == 15) {
 				while (true) {
 					if (iPos >= iLen) {
-						throw "Could not perform decompression";
+						throw new IOError("Invalid LZ4 data");
 					}
 					var l = __byte(b, iPos++);
 					clen += l;
@@ -198,14 +204,14 @@ class Lz4 {
 
 			var literalEnd = iPos + clen;
 			if (literalEnd > iLen) {
-				throw "Could not perform decompression";
+				throw new IOError("Invalid LZ4 data");
 			}
 			if (clen > 0) {
 				// `clen > max - oPos` rather than `oPos + clen > max`: the sum
 				// of two attacker-influenced Ints can wrap, and a wrapped sum
 				// passes the test it was meant to fail.
 				if (maxOutputSize > 0 && clen > maxOutputSize - oPos) {
-					throw "Decoded stream exceeded " + maxOutputSize + " bytes";
+					throw new RangeError("Decoded stream exceeded " + maxOutputSize + " bytes");
 				}
 				oBuf.position = oPos;
 				oBuf.writeBytes(b, iPos, clen);
@@ -218,12 +224,12 @@ class Lz4 {
 			}
 
 			if (iPos + 1 >= iLen) {
-				throw "Could not perform decompression";
+				throw new IOError("Invalid LZ4 data");
 			}
 
 			var mOffset = __byte(b, iPos + 0) | (__byte(b, iPos + 1) << 8);
 			if (mOffset == 0 || mOffset > oPos) {
-				throw "Could not perform decompression";
+				throw new IOError("Invalid LZ4 data");
 			}
 			iPos += 2;
 
@@ -231,7 +237,7 @@ class Lz4 {
 			if (clen == 19) {
 				while (true) {
 					if (iPos >= iLen) {
-						throw "Could not perform decompression";
+						throw new IOError("Invalid LZ4 data");
 					}
 					var l = __byte(b, iPos++);
 					clen += l;
@@ -244,7 +250,7 @@ class Lz4 {
 			// The amplifying half: a short match length replays window bytes,
 			// so this is where a bomb does its work.
 			if (maxOutputSize > 0 && clen > maxOutputSize - oPos) {
-				throw "Decoded stream exceeded " + maxOutputSize + " bytes";
+				throw new RangeError("Decoded stream exceeded " + maxOutputSize + " bytes");
 			}
 
 			var mPos = oPos - mOffset;

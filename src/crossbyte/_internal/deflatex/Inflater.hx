@@ -1,9 +1,11 @@
 package crossbyte._internal.deflatex;
 
+import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 import haxe.io.Bytes;
 import haxe.io.BytesBuffer;
 import haxe.io.BytesInput;
-import haxe.Exception;
+import haxe.io.Eof;
 
 /**
  * Inflates a raw deflate stream (RFC 1951), through `haxe.zip.InflateImpl`.
@@ -33,23 +35,51 @@ class Inflater {
 	 * @return Bytes with the uncompressed data
 	 */
 	public function decompress(stream:Bytes):Bytes {
-		var inflater = new haxe.zip.InflateImpl(new BytesInput(stream), false, false);
+		return inflate(new BytesInput(stream), false, maxOutputSize, "deflate");
+	}
+
+	/**
+		Inflates the stream `input` is at, raw deflate, or zlib (RFC 1950)
+		when `zlib` is set, its header parsed and its Adler-32 checked, and
+		leaves `input` just past it, where gzip finds its trailer and any
+		member after it.
+
+		@param maxOutputSize Bytes to produce before giving up, or `0` for no
+		       limit.
+		@param format Names the format in what is thrown.
+		@throws IOError The data is not a valid stream, or ends before the
+		        stream does.
+		@throws RangeError It would produce more than `maxOutputSize` bytes.
+	**/
+	public static function inflate(input:BytesInput, zlib:Bool, maxOutputSize:Int, format:String):Bytes {
 		var output = new BytesBuffer();
 		var buffer = Bytes.alloc(8192);
 		var produced:Int = 0;
 
-		while (true) {
-			var read = inflater.readBytes(buffer, 0, buffer.length);
+		// InflateImpl says what is wrong with a stream by throwing a String,
+		// and that it ran out by letting Eof through, which is how a caller
+		// that has to tell a damaged body from a bug could not: they reached
+		// it as a bare string, and the HTTP client reported every one as an
+		// unsupported content coding.
+		try {
+			var inflater = new haxe.zip.InflateImpl(input, zlib, zlib);
+			while (true) {
+				var read = inflater.readBytes(buffer, 0, buffer.length);
 
-			produced += read;
-			if (maxOutputSize > 0 && produced > maxOutputSize) {
-				throw new Exception("Inflated stream exceeded " + maxOutputSize + " bytes");
-			}
+				produced += read;
+				if (maxOutputSize > 0 && produced > maxOutputSize) {
+					throw new RangeError("Inflated stream exceeded " + maxOutputSize + " bytes");
+				}
 
-			output.addBytes(buffer, 0, read);
-			if (read < buffer.length) {
-				break;
+				output.addBytes(buffer, 0, read);
+				if (read < buffer.length) {
+					break;
+				}
 			}
+		} catch (e:Eof) {
+			throw new IOError("Invalid " + format + " data: the stream ends early");
+		} catch (e:String) {
+			throw new IOError("Invalid " + format + " data: " + e);
 		}
 
 		return output.getBytes();

@@ -10,6 +10,8 @@ import crossbyte._internal.brotli.codec.encode.static_dict_lut.DictWord;
 import crossbyte._internal.brotli.codec.dictionary.DictionaryBuckets;
 import crossbyte._internal.brotli.codec.dictionary.DictionaryHash;
 import crossbyte._internal.brotli.codec.dictionary.DictionaryWords;
+import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IOError;
 import haxe.ds.Vector;
 import haxe.io.Bytes;
 
@@ -64,7 +66,11 @@ class BrotliCodec {
 		// of memory per byte on every target, eight or more on Node.
 		var output = new BrotliOutput(maxOutputSize);
 		if (BrotliDecompress(input == null ? Bytes.alloc(0) : input, output) != 1) {
-			throw "Brotli decompression failed";
+			// An IOError, as every codec here throws for data it cannot read,
+			// so a caller can tell a damaged stream from a fault in the code.
+			// This was a bare String, which the HTTP client took for the name
+			// of an unsupported content coding.
+			throw new IOError("Invalid Brotli data");
 		}
 
 		return output.getBytes();
@@ -72,7 +78,7 @@ class BrotliCodec {
 
 	public static function compress(input:Bytes, quality:Int):Bytes {
 		if (quality < 0 || quality > 11) {
-			throw "Brotli quality must be between 0 and 11";
+			throw new ArgumentError("Brotli quality must be between 0 and 11, not " + quality);
 		}
 
 		ensureTables();

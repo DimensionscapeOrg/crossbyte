@@ -68,6 +68,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.ds.BitmapDataTest());
 		runner.addCase(new crossbyte._internal.compression.CompressionRoundTripTest());
 		runner.addCase(new crossbyte._internal.compression.BrotliCodecTest());
+		runner.addCase(new crossbyte._internal.compression.CodecFormatsTest());
 	}
 
 	public static function addHttp(runner:Runner):Void {
