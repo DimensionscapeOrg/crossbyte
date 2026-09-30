@@ -452,6 +452,85 @@ class CollectionsTest extends utest.Test {
 		Assert.isFalse(map.exists("b"));
 	}
 
+	/**
+		Removing the entry a loop is on visits the one swapped into its place
+		next. The value iterator counted the entries when it was made, so it
+		read past the end and threw on every target; the pair iterator
+		re-read the count and skipped the entry moved into the gap.
+	**/
+	public function testListedMapRemovingWhileIteratingVisitsEachOnce():Void {
+		var map = new ListedMap<String, Int>();
+		for (i in 0...6) {
+			map.set('k$i', i);
+		}
+		var seen:Array<Int> = [];
+		for (v in map) {
+			seen.push(v);
+			if (v % 2 == 0) {
+				map.remove('k$v');
+			}
+		}
+		seen.sort((a, b) -> a - b);
+		Assert.same([0, 1, 2, 3, 4, 5], seen);
+		Assert.equals(3, map.length);
+
+		for (i in 0...6) {
+			map.set('k$i', i);
+		}
+		var pairs:Array<Int> = [];
+		for (pair in map.keyValueIterator()) {
+			pairs.push(pair.value);
+			if (pair.value % 2 == 1) {
+				map.remove(pair.key);
+			}
+		}
+		pairs.sort((a, b) -> a - b);
+		Assert.same([0, 1, 2, 3, 4, 5], pairs);
+		Assert.equals(3, map.length);
+		// Without removals the order is insertion order, as before.
+		var fresh = new ListedMap<String, Int>();
+		for (i in 0...4) {
+			fresh.set('f$i', i);
+		}
+		Assert.same([0, 1, 2, 3], [for (v in fresh) v]);
+	}
+
+	/**
+		The same for `DenseSet`, which walked its array directly: removing
+		every even element visited 4 of 6.
+	**/
+	public function testDenseSetRemovingWhileIteratingVisitsEachOnce():Void {
+		var set = new DenseSet<Int>();
+		for (i in 0...6) {
+			set.add(i);
+		}
+		var seen:Array<Int> = [];
+		for (x in set) {
+			seen.push(x);
+			if (x % 2 == 0) {
+				set.remove(x);
+			}
+		}
+		seen.sort((a, b) -> a - b);
+		Assert.same([0, 1, 2, 3, 4, 5], seen);
+		var left = set.toArray();
+		left.sort((a, b) -> a - b);
+		Assert.same([1, 3, 5], left);
+
+		// Removing everything, one at a time, from inside the loop.
+		var all = new DenseSet<String>();
+		for (i in 0...50) {
+			all.add("s" + i);
+		}
+		var visited:Int = 0;
+		for (x in all) {
+			visited++;
+			all.remove(x);
+		}
+		Assert.equals(50, visited);
+		Assert.isTrue(all.isEmpty);
+	}
+
 	public function testSlotMapInvalidatesStaleHandlesAndReusesSlots():Void {
 		var map = new SlotMap<String>(2, 4, 1);
 		var first = map.insert("alpha");
