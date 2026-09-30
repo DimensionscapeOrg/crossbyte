@@ -16,26 +16,37 @@ package crossbyte.net;
 	somewhere no other peer can reach.
 **/
 class ReflexiveAddress {
-	/** The address as seen from outside, in dotted-quad form. */
+	/**
+		The address as seen from outside: dotted quad for IPv4, RFC 5952's
+		compressed form for IPv6.
+	**/
 	public var address:String;
 
 	/** The port as seen from outside, which a NAT may have translated. */
 	public var port:Int;
 
 	/**
-		Whether the port survived unchanged.
+		Whether the port survived unchanged, compared against the local port
+		that was asked about.
 
-		Worth knowing before attempting a direct connection: a NAT that keeps
-		the port has an endpoint-independent mapping and hole punching through
-		it works, while one that translates per destination will not let a
-		third party in on the mapping it made for somebody else. Compare
-		against the local port that was asked about.
+		That is all it says. It is not the NAT's mapping behaviour, which is
+		what decides whether a peer can reach this address, and it does not
+		predict it either way: a NAT can keep the port toward the first
+		destination and give the next one another, and one that renumbers
+		every port can still keep a single mapping for every destination,
+		carrier-grade NATs commonly do. `StunClient.classifyMapping` finds the
+		behaviour itself.
 	**/
 	public inline function preservesPort(localPort:Int):Bool {
 		return port == localPort;
 	}
 
+	/**
+		`address:port`, with an IPv6 address in brackets, RFC 5952 section
+		6's form, since `2001:db8::7:3478` is itself a valid IPv6 address and
+		says nothing about which part is the port.
+	**/
 	public function toString():String {
-		return address + ":" + port;
+		return (address != null && address.indexOf(":") >= 0 ? "[" + address + "]" : address) + ":" + port;
 	}
 }
