@@ -771,6 +771,49 @@ class StunMessage {
 		return null;
 	}
 
+	/**
+		The first attribute here that a receiver must understand and this code
+		does not, or -1 when there is none.
+
+		RFC 8489 section 14: a type below 0x8000 is comprehension-required. A
+		success carrying one the receiver does not know is discarded and its
+		transaction taken as failed (section 7.3.3), since whatever it changes
+		about the answer is exactly what the receiver cannot see. Types from
+		0x8000 up may be ignored, and are.
+
+		Known means known to this stack: the STUN, TURN, ICE and RFC 5780
+		attributes, and the five RFC 3489 ones old servers still send beside
+		the rest.
+	**/
+	public function unknownRequiredAttribute():Int {
+		for (attribute in attributes) {
+			if (attribute.type < 0x8000 && !__understood(attribute.type)) {
+				return attribute.type;
+			}
+		}
+
+		return -1;
+	}
+
+	@:noCompletion private static function __understood(type:Int):Bool {
+		return switch (type) {
+			// MAPPED-ADDRESS, RFC 3489's RESPONSE-ADDRESS, CHANGE-REQUEST, RFC
+			// 3489's SOURCE-ADDRESS and CHANGED-ADDRESS, USERNAME, RFC 3489's
+			// PASSWORD, MESSAGE-INTEGRITY, ERROR-CODE, UNKNOWN-ATTRIBUTES, RFC
+			// 3489's REFLECTED-FROM.
+			case 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x0009, 0x000A, 0x000B: true;
+			// CHANNEL-NUMBER, LIFETIME, XOR-PEER-ADDRESS, DATA, REALM, NONCE,
+			// XOR-RELAYED-ADDRESS, REQUESTED-ADDRESS-FAMILY, EVEN-PORT,
+			// REQUESTED-TRANSPORT, DONT-FRAGMENT.
+			case 0x000C, 0x000D, 0x0012, 0x0013, 0x0014, 0x0015, 0x0016, 0x0017, 0x0018, 0x0019, 0x001A: true;
+			// MESSAGE-INTEGRITY-SHA256, PASSWORD-ALGORITHM, USERHASH,
+			// XOR-MAPPED-ADDRESS, RESERVATION-TOKEN, PRIORITY, USE-CANDIDATE,
+			// PADDING, RESPONSE-PORT, CONNECTION-ID.
+			case 0x001C, 0x001D, 0x001E, 0x0020, 0x0022, 0x0024, 0x0025, 0x0026, 0x0027, 0x002A: true;
+			default: false;
+		}
+	}
+
 	/** Whether the controlling peer marked this check as the chosen pair. **/
 	public function hasUseCandidate():Bool {
 		for (candidate in attributes) {
