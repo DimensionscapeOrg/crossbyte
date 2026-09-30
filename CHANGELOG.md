@@ -1228,6 +1228,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `GlobalTimer` locks its ids and its map wherever there are threads. It
+  locked them only on hxcpp, so on the jvm four threads setting and
+  clearing timers at once were issued 1,051 ids twice in 16,000 and left
+  entries behind, and a `clearTimeout` could stop another thread's timer;
+  hl, neko and eval were as exposed. An id is now reserved in the same
+  lock that picks it. The lock no longer allocates a closure per call, and
+  whether an id is in use is asked only once the counter has wrapped,
+  the jvm's `IntMap` answers that for a missing id by visiting every
+  bucket, so each `setTimeout` cost a pass over every live timer.
 - `Resources` reads only inside `resourcesDir`. Paths were joined to the
   directory as given, so a server loading a map by a name a client sent,
   `getText("maps/" + name)`: read whatever `"../../config.json"` named,
