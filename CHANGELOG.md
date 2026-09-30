@@ -1220,6 +1220,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A jvm connect no longer holds the thread that makes it. A non-blocking
+  connect, every `crossbyte.net.Socket` and wss client connect, spun on
+  `finishConnect()` until the connection came up, on the runtime's thread:
+  two seconds of nothing else running against a listener whose queue was
+  full, and the whole SYN-retry time, 21 s on Windows and two minutes on
+  Linux, against a host that never answers. It returns at once now, as it
+  does natively, and `select` finishes it: writable once it is up, and a
+  refusal in the exception set. A blocking connect is bounded by
+  `setTimeout`, as reads are, where only the system bounded it.
 - A jvm https request whose server stalls or resets the TLS handshake
   fails at its timeout, with the reason. The handshake caught every error,
   a read that timed out, a reset, slept 2 ms and tried again, ten
