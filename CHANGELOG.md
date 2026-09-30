@@ -1042,6 +1042,15 @@ All notable changes to CrossByte will be documented in this file.
   throws is no longer reported as the statement failing. `MongoStatement`'s
   pages read ahead say `complete` only for the last one, as the SQL
   drivers' do now.
+- Setting `receiveBufferSize` or `sendBufferSize` on a `DatagramSocket`,
+  or on a reliable datagram session or server, which pass it on, throws
+  `IllegalOperationError` on HashLink and Neko, and the new
+  `DatagramSocket.bufferSizeSupported` says whether it can be set. Neither
+  target has a native for either socket option: the size read 0 and a size
+  set there was dropped without a word, so a socket sized for a burst had no
+  way to find out it was not. Both still read 0, which means not known. What
+  to change: check `bufferSizeSupported` before sizing a socket's buffers,
+  as reliable datagram sessions now do before asking for their window.
 - `INetHost` declares `allocateRelay`, `dialRelayed` and `permitRelayedPeer`.
   They were on the `NetHost` abstract alone, which found a relay by
   downcasting to the reliable datagram host it makes itself, so a host of an
@@ -1647,6 +1656,33 @@ All notable changes to CrossByte will be documented in this file.
   from `-cp` rather than `-lib crossbyte` adds
   `--macro crossbyte._internal.macro.StdOverrides.use()` itself, before any
   other macro, as the suites' build files do.
+- `Logger` leaves text past ASCII alone on neko. A string there is its UTF-8
+  bytes, and the escaping read them one at a time: the second or third byte
+  of the euro sign, of most Cyrillic, of CJK and of a C1 control all fall
+  between 0x80 and 0x9F, so each was written as an escape and the bytes
+  around it raw, "€100 за файл" was logged as a broken character, `\x82`,
+  another, and so on, and a control or line separator went out half
+  escaped. Those characters are recognised by their bytes now, and every
+  other byte goes out as it came.
+- On neko, ICE tries a host pair before a relay, and `SchemaMigrator` runs
+  migrations numbered by date in order. neko's `Array.sort` is a native merge
+  sort that reads any comparison too large for neko's 31-bit Int as "less",
+  and both sorts answered with a difference: of two pair priorities' high
+  words, which run to 2^31, and of two versions, which for 2026093001 and 1
+  is past 2^30. Every pair list came back with the relay first and the host
+  last, and a date-stamped history ran out of order. Both compare now,
+  answering -1, 0 or 1; the migrator's subtraction could also wrap anywhere
+  versions of opposite sign meet.
+- A reliable datagram session on neko measures its round trips, probes a
+  silent tail and sends a lost frame again once. Its clock there is the time
+  of day to the millisecond, moving once a system tick, a millisecond at
+  best, 15.6 by default on Windows, so a frame acknowledged in the tick it
+  went out in measured a round trip of nothing, which is thrown away, and a
+  frame sent again in the tick it first went out in counted as sent before
+  the one whose arrival showed it lost, and was sent again for nothing. A
+  session's clock on hl, neko and the interpreter never repeats a reading
+  now, and stands still rather than going back when the time of day is set
+  back; elsewhere it is the monotonic clock it was.
 - `PostgresStatement` hands back a result paged ahead of `getResult()` in
   the order it was read, and calls only its last page complete, the last
   of a result that divides evenly into pages as well. Once the last page
