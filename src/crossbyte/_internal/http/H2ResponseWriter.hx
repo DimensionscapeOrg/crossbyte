@@ -123,7 +123,7 @@ class H2ResponseWriter implements HTTPResponseWriter {
 				case _:
 			}
 
-			fields.push(new HpackHeader(name, HttpSyntax.sanitizeHeaderValue(header.value)));
+			fields.push(new HpackHeader(name, HttpSyntax.sanitizeHeaderValue(header.value), __isCredential(name)));
 		}
 
 		// content-length is legal on a response and worth sending when known,
@@ -139,6 +139,23 @@ class H2ResponseWriter implements HTTPResponseWriter {
 		var empty:Bool = !chunked && (head.contentLength == null || head.contentLength == 0);
 		__connection.sendHeaders(__streamId, head.statusCode, fields, empty);
 		__ended = empty;
+	}
+
+	/**
+	 * Whether a field carries a credential, and so goes out never-indexed
+	 * (RFC 7541 6.2.3) instead of into the dynamic table.
+	 *
+	 * Every response field was indexed, a session token in `set-cookie`
+	 * included. 7.1.3: an entry's presence can be inferred from the
+	 * compressed sizes of later responses an attacker can influence, and a
+	 * table filling with one-off tokens evicts the entries worth keeping. The
+	 * client already sends its `authorization` and `cookie` this way.
+	 */
+	private static inline function __isCredential(name:String):Bool {
+		return switch (name) {
+			case "set-cookie" | "cookie" | "authorization" | "proxy-authorization" | "www-authenticate" | "proxy-authenticate": true;
+			case _: false;
+		}
 	}
 
 	public function writeBody(data:ByteArray, offset:Int, length:Int):Void {
