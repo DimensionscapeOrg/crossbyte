@@ -22,7 +22,29 @@ import crossbyte.utils.IntParse;
 **/
 @:noCompletion
 class CookieJar {
-	private var __cookies:Map<String, StoredCookie> = new Map();
+	/**
+		Cookies kept for one host. Past it the oldest goes to make room, as a
+		browser's jar drops them; Chrome keeps the same number.
+
+		Nothing bounded the jar, and every request looked through all of it:
+		a server could set as many cookies as it cared to send, and 20,000
+		were kept, each request then spending half a millisecond on eval
+		reading them back for every thousand.
+	**/
+	public static inline var MAX_COOKIES_PER_HOST:Int = 180;
+
+	/**
+		Characters a cookie's name and value may take together. A larger one
+		is ignored whole, which RFC 6265 6.1 allows and browsers do.
+	**/
+	public static inline var MAX_COOKIE_LENGTH:Int = 4096;
+
+	// By host, lowercased, and within a host in the order the cookies were
+	// set. The jar was one map by name: a host's cookies went back in a map's
+	// iteration order, which differs by target, a second host setting a name
+	// replaced the first host's cookie of that name, and hosts were compared
+	// exactly, so Example.com's session was not sent to example.com.
+	private var __hosts:Map<String, Array<StoredCookie>> = new Map();
 
 	public function new() {}
 
@@ -38,14 +60,20 @@ class CookieJar {
 			return;
 		}
 
+		var key:String = host.toLowerCase();
 		for (line in setCookie.split("\n")) {
-			__storeOne(line, host);
+			__storeOne(line, key);
 		}
 	}
 
 	/**
 		The `Cookie` header value for a request to `host`, or `null` when there
 		is nothing to send.
+
+		Same host or nothing, whatever the case each is written in. A redirect
+		that leaves the site it came from leaves the cookies behind, which is
+		the conservative direction and the only one that needs no domain rules
+		to be safe.
 
 		@param secure Whether the request travels over TLS. A cookie marked
 			   `Secure` is withheld from a plaintext request, which is the
@@ -56,28 +84,34 @@ class CookieJar {
 			return null;
 		}
 
+		var cookies:Null<Array<StoredCookie>> = __hosts.get(host.toLowerCase());
+		if (cookies == null) {
+			return null;
+		}
+
 		var parts:Array<String> = [];
-
-		for (name => cookie in __cookies) {
-			// Same host or nothing. A redirect that leaves the site it came
-			// from leaves the cookies behind, which is the conservative
-			// direction and the only one that needs no domain rules to be
-			// safe.
-			if (cookie.host != host) {
-				continue;
-			}
-
+		for (cookie in cookies) {
 			if (cookie.secure && !secure) {
 				continue;
 			}
-
-			parts.push(name + "=" + cookie.value);
+			parts.push(cookie.name + "=" + cookie.value);
 		}
 
 		return parts.length > 0 ? parts.join("; ") : null;
 	}
 
 	private function __storeOne(line:String, host:String):Void {
+		// RFC 6265bis 5.6: a line holding a control character other than a
+		// tab is ignored whole. What is stored goes back out in a Cookie
+		// header, where a lone CR is a line break to some servers, so a cookie
+		// could have added a header to every later request.
+		for (i in 0...line.length) {
+			var code:Int = StringTools.fastCodeAt(line, i);
+			if ((code < 0x20 && code != 0x09) || code == 0x7F) {
+				return;
+			}
+		}
+
 		var attributes:Array<String> = line.split(";");
 		if (attributes.length == 0) {
 			return;
@@ -93,7 +127,7 @@ class CookieJar {
 
 		var name:String = StringTools.trim(pair.substr(0, eq));
 		var value:String = StringTools.trim(pair.substr(eq + 1));
-		if (name.length == 0) {
+		if (name.length == 0 || name.length + value.length > MAX_COOKIE_LENGTH) {
 			return;
 		}
 
@@ -130,12 +164,40 @@ class CookieJar {
 			}
 		}
 
+		var cookies:Null<Array<StoredCookie>> = __hosts.get(host);
+		var existing:Int = -1;
+		if (cookies != null) {
+			for (i in 0...cookies.length) {
+				if (cookies[i].name == name) {
+					existing = i;
+					break;
+				}
+			}
+		}
+
 		if (expired) {
-			__cookies.remove(name);
+			if (existing >= 0) {
+				cookies.splice(existing, 1);
+			}
 			return;
 		}
 
-		__cookies.set(name, {value: value, host: host, secure: secure});
+		var cookie:StoredCookie = {name: name, value: value, secure: secure};
+		if (existing >= 0) {
+			// Replaced where it stood: a new value is not a new cookie, and
+			// RFC 6265 5.3 keeps the first one's creation time, which is what
+			// the order it goes back in follows.
+			cookies[existing] = cookie;
+			return;
+		}
+		if (cookies == null) {
+			cookies = [];
+			__hosts.set(host, cookies);
+		}
+		if (cookies.length >= MAX_COOKIES_PER_HOST) {
+			cookies.shift();
+		}
+		cookies.push(cookie);
 	}
 
 	private static function __isDigits(text:String):Bool {
@@ -154,7 +216,7 @@ class CookieJar {
 }
 
 private typedef StoredCookie = {
+	var name:String;
 	var value:String;
-	var host:String;
 	var secure:Bool;
 }

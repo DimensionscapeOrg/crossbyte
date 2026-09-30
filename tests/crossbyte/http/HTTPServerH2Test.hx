@@ -307,6 +307,70 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testCredentialsInAResponseAreNeverIndexed(async:Async):Void {
+		// Every response field went into the HPACK dynamic table, session
+		// tokens in Set-Cookie included. RFC 7541 7.1.3: a credential in the
+		// table can be recovered from the compressed sizes of later responses
+		// an attacker can influence, and a table full of one-off tokens evicts
+		// what was worth keeping. The client already sent its own this way.
+		var session = new H2Session(config -> {
+			config.middleware = [
+				(handler, next) -> handler.respond(401, "text/plain", "sign in", [
+					new crossbyte.url.URLRequestHeader("Set-Cookie", "session=s3cr3t-token; HttpOnly"),
+					new crossbyte.url.URLRequestHeader("WWW-Authenticate", "Bearer realm=\"api\""),
+					new crossbyte.url.URLRequestHeader("X-Plain", "indexable")
+				])
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/account", true);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.close();
+				Assert.equals(401, session.status(1));
+				Assert.equals("session=s3cr3t-token; HttpOnly", session.header(1, "set-cookie"));
+				Assert.isTrue(session.neverIndexed(1, "set-cookie"), "set-cookie was not sent never-indexed");
+				Assert.isTrue(session.neverIndexed(1, "www-authenticate"), "www-authenticate was not sent never-indexed");
+				Assert.isFalse(session.tableHolds("set-cookie"), "a session token was entered into the HPACK table");
+				Assert.isFalse(session.tableHolds("www-authenticate"));
+				// Everything else is still worth indexing.
+				Assert.isFalse(session.neverIndexed(1, "x-plain"));
+				async.done();
+			});
+		});
+	}
+
+	public function testAHeaderSectionPastTheLimitIsAnswered431(async:Async):Void {
+		// 3,000 one-byte references to a single cookie crumb: about three
+		// kilobytes on the wire, 117 KB by HPACK's accounting. It was taken
+		// whole, under an eight megabyte limit nobody advertised, and the
+		// crumbs joined one by one -- at 200,000 of them that held the
+		// runtime's thread for 23.5 seconds. HTTP/1.1 answers the same section
+		// 431 at 64 KB, and so does HTTP/2 now, on that stream alone.
+		var session = new H2Session(config -> {
+			config.middleware = [(handler, next) -> handler.respond(200, "text/plain", "cookie=" + (handler.getCookie("a") != null))];
+		});
+
+		var crumbs:Array<HpackHeader> = [];
+		for (i in 0...3000) {
+			crumbs.push(new HpackHeader("cookie", "a=1"));
+		}
+
+		session.start(() -> {
+			session.request(1, "GET", "/big", true, crumbs);
+			session.until(() -> session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/next", true, [new HpackHeader("cookie", "a=2")]);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.equals(431, session.status(1));
+					Assert.equals(200, session.status(3), "the connection did not carry on past the refusal");
+					Assert.equals("cookie=true", session.body(3));
+					async.done();
+				});
+			});
+		});
+	}
+
 	public function testAGuardSeesTheSettledPathOverHttp2(async:Async):Void {
 		// The path settles the same way on both protocols, so a guard written
 		// once holds on both.
@@ -1007,6 +1071,8 @@ private class H2Session {
 	private final __finished:Map<Int, Bool> = new Map();
 	private final __headers:Map<Int, Map<String, String>> = new Map();
 	private final __resets:Map<Int, Int> = new Map();
+	// Names each stream's response sent never-indexed (RFC 7541 6.2.3).
+	private final __neverIndexed:Map<Int, Array<String>> = new Map();
 
 	// What the server lets this side send, for uploads that keep to flow
 	// control. Both start at the RFC 9113 default.
@@ -1124,6 +1190,22 @@ private class H2Session {
 	public function header(streamId:Int, name:String):Null<String> {
 		var fields:Null<Map<String, String>> = __headers.get(streamId);
 		return fields == null ? null : fields.get(name);
+	}
+
+	/** Whether the response on `streamId` sent `name` as a never-indexed literal. */
+	public function neverIndexed(streamId:Int, name:String):Bool {
+		var hidden:Null<Array<String>> = __neverIndexed.get(streamId);
+		return hidden != null && hidden.indexOf(name) >= 0;
+	}
+
+	/** Whether this side's HPACK table holds an entry named `name`: what the server indexed. */
+	public function tableHolds(name:String):Bool {
+		for (slot in 0...__decoder.tableLength) {
+			if (__decoder.dynamicEntry(slot).name == name) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** The error code of an RST_STREAM the server sent for `streamId`, or -1. */
@@ -1278,14 +1360,19 @@ private class H2Session {
 			// Every block is decoded, whichever stream it belongs to; see the
 			// decoder above.
 			var fields:Map<String, String> = new Map();
+			var hidden:Array<String> = [];
 			for (field in __decoder.decode(frame.payload)) {
 				if (field.name == ":status") {
 					__status.set(frame.streamId, Std.parseInt(field.value));
 				} else {
 					fields.set(field.name, field.value);
 				}
+				if (field.sensitive) {
+					hidden.push(field.name);
+				}
 			}
 			__headers.set(frame.streamId, fields);
+			__neverIndexed.set(frame.streamId, hidden);
 		} else if (frame.type == H2FrameType.DATA) {
 			__append(frame.streamId, frame.payload);
 		} else if (frame.type == H2FrameType.WINDOW_UPDATE) {

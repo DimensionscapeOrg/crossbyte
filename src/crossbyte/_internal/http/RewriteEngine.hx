@@ -10,7 +10,7 @@ import crossbyte.http.config.RewriteCondition;
 import crossbyte.http.config.RewriteConditionType;
 import crossbyte.http.config.RewriteFlag;
 import haxe.ds.StringMap;
-#if (cpp || neko || hl || java || jvm)
+#if target.threaded
 import sys.thread.Tls;
 #end
 
@@ -336,7 +336,7 @@ class RewriteEngine {
 	 * last `match()`, so two runtime threads serving requests through one
 	 * cached instance would read each other's captures.
 	 */
-	#if (cpp || neko || hl || java || jvm)
+	#if target.threaded
 	@:noCompletion private static final __patterns:Tls<PatternCache> = new Tls();
 	#else
 	@:noCompletion private static var __patterns:PatternCache;
@@ -350,11 +350,11 @@ class RewriteEngine {
 	@:noCompletion private static inline var PATTERN_LIMIT:Int = 256;
 
 	@:noCompletion private static function __compile(pattern:String, nocase:Bool):EReg {
-		var cache:PatternCache = #if (cpp || neko || hl || java || jvm) __patterns.value #else __patterns #end;
+		var cache:PatternCache = #if target.threaded __patterns.value #else __patterns #end;
 
 		if (cache == null) {
 			cache = new PatternCache();
-			#if (cpp || neko || hl || java || jvm)
+			#if target.threaded
 			__patterns.value = cache;
 			#else
 			__patterns = cache;

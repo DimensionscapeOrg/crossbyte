@@ -51,6 +51,8 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.HTTPRequestFramingTest());
 		runner.addCase(new crossbyte.http.HTTPRateLimitTest());
 		runner.addCase(new crossbyte.http.HTTPResponseStreamTest());
+		// What the server compresses, and what its answers say about it.
+		runner.addCase(new crossbyte.http.HTTPCompressionTest());
 		// What a listener takes and what it refuses, on every target that can
 		// listen -- Node included, whose TLS server asks on a different event.
 		runner.addCase(new crossbyte.net.ServerSocketAdmissionTest());
@@ -88,5 +90,11 @@ class ServerSuite {
 		runner.addCase(new crossbyte.http.RouterTest());
 		runner.addCase(new crossbyte._internal.php.PHPTimeoutTest());
 		runner.addCase(new crossbyte._internal.php.PHPExchangeTest());
+
+		#if nodejs
+		// URLLoader over Node's own http client, against Node's http server:
+		// the one client that did not decode a content coding.
+		runner.addCase(new crossbyte.url.URLLoaderNodeTest());
+		#end
 	}
 }

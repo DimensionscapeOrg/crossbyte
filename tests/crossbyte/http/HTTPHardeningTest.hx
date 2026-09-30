@@ -80,10 +80,12 @@ class HTTPHardeningTest extends utest.Test {
 	}
 
 	public function testHttpDateIsReadByPosition():Void {
-		var date:Date = HTTPRequestHandler.__parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
-		Require.notNull(date);
-		Assert.equals(784111777000.0, date.getTime());
+		var time:Null<Float> = HTTPRequestHandler.__parseHttpDate("Sun, 06 Nov 1994 08:49:37 GMT");
+		Require.notNull(time);
+		Assert.equals(784111777000.0, time);
 		Assert.notNull(HTTPRequestHandler.__parseHttpDate("  Sun, 06 Nov 1994 08:49:37 GMT  "));
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, 32 Nov 1994 08:49:37 GMT"));
+		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, 06 Nov 1994 24:49:37 GMT"));
 
 		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, 06 Foo 1994 08:49:37 GMT"));
 		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, 06 Nov 1994 08:49:37 UTC"));
@@ -91,6 +93,34 @@ class HTTPHardeningTest extends utest.Test {
 		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sun, +6 Nov 1994 08:49:37 GMT"));
 		Assert.isNull(HTTPRequestHandler.__parseHttpDate("Sunday, 06-Nov-94 08:49:37 GMT"));
 		Assert.isNull(HTTPRequestHandler.__parseHttpDate(""));
+	}
+
+	/**
+		An HTTP date is read and written in UTC by arithmetic, the same on
+		every target and in every time zone, past 2038 included. Both went
+		through a local `Date`: neko keeps its time in 32 bits, so 2100 read
+		back as a date long gone there, and the local offset was taken at one
+		instant and applied at another, an hour out around a daylight-saving
+		change.
+	**/
+	public function testHttpDatesRoundTripPast2038():Void {
+		var cases:Array<{text:String, time:Float}> = [
+			{text: "Thu, 01 Jan 1970 00:00:00 GMT", time: 0.0},
+			{text: "Sun, 06 Nov 1994 08:49:37 GMT", time: 784111777000.0},
+			{text: "Tue, 29 Feb 2000 12:00:00 GMT", time: 951825600000.0},
+			{text: "Tue, 19 Jan 2038 03:14:08 GMT", time: 2147483648000.0},
+			{text: "Fri, 01 Jan 2100 00:00:00 GMT", time: 4102444800000.0},
+			// Hours either side of the daylight-saving changes in the United
+			// States (10 March) and Europe (31 March) that year.
+			{text: "Sun, 10 Mar 2024 04:30:00 GMT", time: 1710045000000.0},
+			{text: "Sun, 31 Mar 2024 01:30:00 GMT", time: 1711848600000.0}
+		];
+		for (item in cases) {
+			Assert.equals(item.time, HTTPRequestHandler.__parseHttpDate(item.text), item.text);
+			Assert.equals(item.text, HTTPRequestHandler.__toHttpDate(item.time));
+		}
+		// Within a second, as a header is: the milliseconds are dropped.
+		Assert.equals("Sun, 06 Nov 1994 08:49:37 GMT", HTTPRequestHandler.__toHttpDate(784111777999.0));
 	}
 
 	private static function __range(start:Int, end:Int, range:{start:Int, end:Int}, ?pos:haxe.PosInfos):Void {

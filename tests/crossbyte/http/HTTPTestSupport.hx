@@ -2,6 +2,7 @@ package crossbyte.http;
 
 import crossbyte.core.CrossByte;
 import crossbyte.io.ByteArray;
+import crossbyte.sys.System;
 
 /**
  * Wire-level helpers shared by the HTTP server tests.
@@ -31,17 +32,31 @@ class HTTPTestSupport {
 	 */
 	public static function pumpUntil(done:Void->Bool, timeout:Float, step:Float = 1 / 60, sleepBetween:Float = 0.001):Bool {
 		var runtime:CrossByte = CrossByte.current();
-		var deadline:Float = Sys.time() + timeout;
+		var deadline:Float = haxe.Timer.stamp() + timeout;
 
-		while (!done() && Sys.time() < deadline) {
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(step, 0);
 
 			if (sleepBetween > 0) {
-				crossbyte.sys.System.sleep(sleepBetween);
+				nap(sleepBetween);
 			}
 		}
 
 		return done();
+	}
+
+	/**
+		Waits about `seconds`, for a pump loop to give the other side a turn.
+
+		Through `System.sleep`, not `Sys.sleep`: on the interpreter under
+		Windows a sleep of a millisecond or two can be left a negative
+		remainder, which OCaml hands to `Sleep()` as about 49 days. That was
+		the interpreter's intermittent hang in
+		`URLLoaderHttpTest.testClosingALoadInFlightEndsItQuietly`, which
+		stalled in its pump loop's sleep with every other thread idle.
+	**/
+	public static inline function nap(seconds:Float):Void {
+		System.sleep(seconds);
 	}
 
 	/**
@@ -65,7 +80,7 @@ class HTTPTestSupport {
 	public static function pumpUntilAsync(done:Void->Bool, timeout:Float, then:Bool->Void, step:Float = 1 / 60):Void {
 		#if nodejs
 		var runtime:CrossByte = CrossByte.current();
-		var deadline:Float = Sys.time() + timeout;
+		var deadline:Float = haxe.Timer.stamp() + timeout;
 
 		function turn():Void {
 			runtime.pump(step, 0);
@@ -75,7 +90,7 @@ class HTTPTestSupport {
 				return;
 			}
 
-			if (Sys.time() >= deadline) {
+			if (haxe.Timer.stamp() >= deadline) {
 				then(false);
 				return;
 			}

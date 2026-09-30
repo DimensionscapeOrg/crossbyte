@@ -173,6 +173,92 @@ class HttpSyntax {
 	}
 
 	/**
+	 * What `Host` and `:authority` carry: `host`, in brackets when it is an
+	 * IPv6 literal, then `:port` unless `port` is `defaultPort` -- the
+	 * scheme's own, or `-1` to always name it.
+	 *
+	 * `URL` takes the brackets off an IPv6 literal, and both clients put the
+	 * host back as it was: `[2001:db8::1]:8080` went out as
+	 * `2001:db8::1:8080`, which no server can split. And the port was left
+	 * out for 80 and 443 whatever the scheme, so `http://host:443/` was sent
+	 * as `Host: host`, which means port 80.
+	 */
+	public static function authority(host:String, port:Int, defaultPort:Int):String {
+		var name:String = host.indexOf(":") >= 0 ? "[" + host + "]" : host;
+		return port == defaultPort ? name : name + ":" + port;
+	}
+
+	/**
+	 * Whether `text` is an RFC 9110 5.6.2 token: one or more of the letters,
+	 * digits and ``!#$%&'*+-.^_`|~``. A method has to be one, and so does a
+	 * field name.
+	 */
+	public static function isToken(text:Null<String>):Bool {
+		if (text == null || text.length == 0) {
+			return false;
+		}
+
+		for (i in 0...text.length) {
+			if (!isTokenChar(StringTools.fastCodeAt(text, i))) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Whether `code` may appear in a token; see `isToken`. */
+	public static function isTokenChar(code:Int):Bool {
+		if ((code >= "a".code && code <= "z".code) || (code >= "A".code && code <= "Z".code) || (code >= "0".code && code <= "9".code)) {
+			return true;
+		}
+		return switch (code) {
+			case "!".code, "#".code, "$".code, "%".code, "&".code, "'".code, "*".code, "+".code, "-".code, ".".code, "^".code, "_".code, "`".code,
+				"|".code, "~".code:
+				true;
+			default:
+				false;
+		}
+	}
+
+	/**
+	 * `target` -- a path, with its query -- as a request line can carry it:
+	 * a space, a control character or DEL becomes its `%XX`, and anything
+	 * past ASCII its UTF-8 bytes, each as `%XX`. Everything else is left as it
+	 * is, `%` included, so a target already encoded is not encoded twice.
+	 *
+	 * A space ended the target early -- `GET /a b HTTP/1.1` gives a server a
+	 * version of `b` -- and a line break ended the request line. Returns
+	 * `target` itself, allocating nothing, when there is nothing to encode.
+	 */
+	public static function encodeRequestTarget(target:String):String {
+		var clean:Bool = true;
+		for (i in 0...target.length) {
+			var code:Int = StringTools.fastCodeAt(target, i);
+			if (code <= 0x20 || code >= 0x7F) {
+				clean = false;
+				break;
+			}
+		}
+		if (clean) {
+			return target;
+		}
+
+		// Through the bytes, so a character past ASCII is its UTF-8 encoding
+		// on every target, whatever each takes a String's units to be.
+		var bytes:haxe.io.Bytes = haxe.io.Bytes.ofString(target);
+		var out:StringBuf = new StringBuf();
+		for (i in 0...bytes.length) {
+			var byte:Int = bytes.get(i);
+			if (byte <= 0x20 || byte >= 0x7F) {
+				out.add("%" + StringTools.hex(byte, 2));
+			} else {
+				out.addChar(byte);
+			}
+		}
+		return out.toString();
+	}
+
+	/**
 	 * Strips from a header value everything that could end the header early.
 	 */
 	public static function sanitizeHeaderValue(v:String):String {

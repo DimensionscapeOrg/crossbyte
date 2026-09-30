@@ -91,6 +91,14 @@ class JsHttpClient {
 	static function __sendBrowser(request:URLRequest, method:String, url:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
 			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void):Void {
+		// The browser does its own TLS and tells a page nothing of the key it
+		// was shown, so a pin cannot be checked here. Refused rather than sent
+		// unchecked, as on the targets whose TLS cannot say either.
+		if (__pins(request).length > 0) {
+			onError("Public key pinning is not available in a browser: it gives a page no access to the server's certificate");
+			return;
+		}
+
 		var xhr = new js.html.XMLHttpRequest();
 		var settled:Bool = false;
 		var idle:haxe.Timer = null;
@@ -119,19 +127,28 @@ class JsHttpClient {
 			}
 		}
 
-		xhr.open(method, url, true);
-		xhr.responseType = ARRAYBUFFER;
+		// The browser refuses a method that is not a token, and a header name
+		// or value it will not send, by throwing -- out of URLLoader.load()
+		// rather than as the IO_ERROR every other failure is.
+		try {
+			xhr.open(method, url, true);
+			xhr.responseType = ARRAYBUFFER;
 
-		if (request.requestHeaders != null) {
-			for (header in request.requestHeaders) {
-				if (header != null && header.name != null) {
-					xhr.setRequestHeader(header.name, header.value);
+			if (request.requestHeaders != null) {
+				for (header in request.requestHeaders) {
+					if (header != null && header.name != null) {
+						xhr.setRequestHeader(header.name, header.value);
+					}
 				}
 			}
-		}
 
-		if (contentType != null && contentType != "") {
-			xhr.setRequestHeader("Content-Type", contentType);
+			if (contentType != null && contentType != "") {
+				xhr.setRequestHeader("Content-Type", contentType);
+			}
+		} catch (e:Dynamic) {
+			settled = true;
+			onError("HTTP request failed: " + Std.string(e));
+			return;
 		}
 
 		xhr.onreadystatechange = function() {
@@ -252,8 +269,21 @@ class JsHttpClient {
 			headers.set("User-Agent", request.userAgent);
 		}
 
+		// What the native client asks for unless told otherwise. With none,
+		// RFC 9110 lets a server pick any coding.
+		var askedForCoding:Bool = false;
+		for (key in headers.keys()) {
+			if (key.toLowerCase() == "accept-encoding") {
+				askedForCoding = true;
+			}
+		}
+		if (!askedForCoding) {
+			headers.set("Accept-Encoding", "identity");
+		}
+
 		var origin:String = null;
 		var redirects:Int = 0;
+		var leftOrigin:Bool = false;
 
 		function hop(target:String, method:String, body:Dynamic):Void {
 			var url:js.node.url.URL;
@@ -291,6 +321,9 @@ class JsHttpClient {
 				method: method,
 				headers: headers
 			};
+			if (secure) {
+				__applyTls(request, options, leftOrigin);
+			}
 
 			var handler = function(response:js.node.http.IncomingMessage):Void {
 				var code:Int = response.statusCode;
@@ -328,6 +361,8 @@ class JsHttpClient {
 						__removeHeader(headers, "authorization");
 						__removeHeader(headers, "proxy-authorization");
 						__removeHeader(headers, "cookie");
+						// And the client certificate, meant for the origin named.
+						leftOrigin = true;
 					}
 
 					var nextMethod:String = method;
@@ -370,11 +405,21 @@ class JsHttpClient {
 					}
 					settled = true;
 
-					var joined = js.node.Buffer.concat(chunks);
-					// Sliced by its own region: a Buffer can be a window onto a
-					// larger pooled allocation, and taking .buffer whole would
-					// carry bytes belonging to something else.
-					onComplete(Bytes.ofData(joined.buffer.slice(joined.byteOffset, joined.byteOffset + joined.byteLength)));
+					// Decoded as the native client decodes, within the same
+					// limits. The body was handed on as it came, so a gzip
+					// answer reached the caller as gzip -- garbage as text, and
+					// the next such body ended the process in getString.
+					__decodeNode(js.node.Buffer.concat(chunks), response.headers.get("content-encoding"), request.maxDecompressedSize,
+						function(error:Null<String>, decoded:Null<js.node.Buffer>):Void {
+							if (error != null) {
+								onError(error);
+								return;
+							}
+							// Sliced by its own region: a Buffer can be a window
+							// onto a larger pooled allocation, and taking .buffer
+							// whole would carry bytes belonging to something else.
+							onComplete(Bytes.ofData(decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength)));
+						});
 				});
 
 				response.on("error", function(e) {
@@ -382,7 +427,17 @@ class JsHttpClient {
 				});
 			};
 
-			var clientRequest = secure ? js.node.Https.request(options, handler) : js.node.Http.request(options, handler);
+			// Node refuses a method that is not a token, or a header value
+			// holding a line break, by throwing here, synchronously -- out of
+			// URLLoader.load() and into whoever called it, where every other
+			// failure arrives as an IO_ERROR.
+			var clientRequest:js.node.http.ClientRequest;
+			try {
+				clientRequest = secure ? js.node.Https.request(options, handler) : js.node.Http.request(options, handler);
+			} catch (e:Dynamic) {
+				fail("HTTP request failed: " + Std.string(e));
+				return;
+			}
 
 			clientRequest.on("error", function(e) {
 				fail("HTTP request failed: " + Std.string(e));
@@ -405,6 +460,208 @@ class JsHttpClient {
 		}
 
 		hop(target, method, body);
+	}
+
+	/**
+		`request`'s TLS options onto Node's request `options`: whether the
+		server is checked, the authority trusted, the client certificate --
+		not once a redirect has `leftOrigin` -- and the pinned keys.
+
+		Node's agent keeps its sockets by these same options, so a request
+		that checks its server is never handed a socket opened without the
+		check. Pins are not among them, and are not checked in
+		`checkServerIdentity` either: Node calls that only once the chain has
+		verified, so with `verifyCert` off a pin was never looked at. A pinned
+		request makes its own connection instead, and is given it only once
+		the server's key has been checked -- before a byte of the request.
+	**/
+	static function __applyTls(request:URLRequest, options:Dynamic, leftOrigin:Bool):Void {
+		if (!request.verifyCert) {
+			options.rejectUnauthorized = false;
+		}
+		if (request.certAuthority != null) {
+			options.ca = [@:privateAccess request.certAuthority.__pem];
+		}
+		if (!leftOrigin && request.clientCertificate != null && request.clientKey != null) {
+			options.cert = @:privateAccess request.clientCertificate.__pem;
+			options.key = @:privateAccess request.clientKey.__pem;
+			var passphrase:Null<String> = @:privateAccess request.clientKey.__passphrase;
+			if (passphrase != null) {
+				options.passphrase = passphrase;
+			}
+		}
+
+		var pins:Array<String> = __pins(request);
+		if (pins.length == 0) {
+			return;
+		}
+
+		// An IPv6 literal as a URL writes it, bracketed, which the request
+		// options take and a TLS connect does not.
+		var host:String = options.hostname;
+		if (StringTools.startsWith(host, "[") && StringTools.endsWith(host, "]")) {
+			host = host.substring(1, host.length - 1);
+		}
+		var connectOptions:Dynamic = {
+			host: host,
+			port: options.port != null ? options.port : 443,
+			rejectUnauthorized: request.verifyCert
+		};
+		// SNI for a name, as the agent sends it; RFC 6066 has none for an address.
+		if (js.node.Net.isIP(host) == 0) {
+			connectOptions.servername = host;
+		}
+		for (field in ["ca", "cert", "key", "passphrase"]) {
+			if (Reflect.field(options, field) != null) {
+				Reflect.setField(connectOptions, field, Reflect.field(options, field));
+			}
+		}
+
+		var idleTimeout:Int = request.idleTimeout;
+		// No agent is named, so the request takes the socket this hands it.
+		options.createConnection = function(_:Dynamic, oncreate:(error:Dynamic, ?socket:Dynamic) -> Void):Dynamic {
+			var socket:Dynamic = js.node.Tls.connect(connectOptions);
+			var settled:Bool = false;
+			function settle(error:Dynamic):Void {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				if (error != null) {
+					socket.destroy();
+					oncreate(error);
+					return;
+				}
+				socket.setTimeout(0);
+				oncreate(null, socket);
+			}
+
+			// Left attached once the socket is handed over: an error before the
+			// request has added its own listener would otherwise be uncaught.
+			socket.on("error", (error:Dynamic) -> settle(error));
+			if (idleTimeout > 0) {
+				socket.setTimeout(idleTimeout, () -> settle(new js.lib.Error("The TLS handshake timed out")));
+			}
+			socket.once("secureConnect", function():Void {
+				var certificate:Dynamic = socket.getPeerCertificate(false);
+				var raw:Null<js.node.Buffer> = certificate != null ? certificate.raw : null;
+				var pin:Null<String> = raw == null ? null : crossbyte._internal.http.PublicKeyPins.pinOf(Bytes.ofData(raw.buffer.slice(raw.byteOffset,
+					raw.byteOffset + raw.byteLength)));
+				if (pin != null && pins.indexOf(crossbyte._internal.http.PublicKeyPins.normalize(pin)) >= 0) {
+					settle(null);
+					return;
+				}
+				settle(new js.lib.Error(pin == null ? "The server presented no certificate to check its pinned public key against" : "The server's public key, "
+					+ pin + ", is not one this request pins"));
+			});
+			return js.Lib.undefined;
+		};
+	}
+	#end
+
+	/** `request`'s pins, as compared: none blank, none with a `sha256/` prefix. */
+	static function __pins(request:URLRequest):Array<String> {
+		var pins:Array<String> = [];
+		if (request.pinnedPublicKeys != null) {
+			for (pin in request.pinnedPublicKeys) {
+				if (pin != null && StringTools.trim(pin).length > 0) {
+					pins.push(crossbyte._internal.http.PublicKeyPins.normalize(pin));
+				}
+			}
+		}
+		return pins;
+	}
+
+	#if nodejs
+
+	/**
+		Undoes the codings `header` names on `body`, the last applied first,
+		with Node's own zlib, and calls `done` with the body or with why it
+		could not be decoded.
+
+		The native client's rules: at most two stacked codings, and no more
+		than `limit` bytes out (`<= 0`, none), which zlib stops at itself
+		(`maxOutputLength`) rather than after allocating the lot. `deflate` is
+		zlib-wrapped as RFC 9110 defines it, or raw as CrossByte's own server
+		has sent it; both are read. LZ4, which Node has no codec for, goes
+		through the one every other target uses.
+	**/
+	static function __decodeNode(body:js.node.Buffer, header:Dynamic, limit:Int, done:(error:Null<String>, decoded:Null<js.node.Buffer>) -> Void):Void {
+		var codings:Array<String> = [];
+		if (header != null) {
+			for (raw in Std.string(header).split(",")) {
+				var token:String = StringTools.trim(raw);
+				var semi:Int = token.indexOf(";");
+				if (semi >= 0) {
+					token = StringTools.trim(token.substr(0, semi));
+				}
+				token = token.toLowerCase();
+				if (token != "" && token != "identity") {
+					codings.push(token);
+				}
+			}
+		}
+
+		if (codings.length == 0 || body.length == 0) {
+			done(null, body);
+			return;
+		}
+		if (codings.length > 2) {
+			done("Failed to decode response body: it stacked " + codings.length + " content codings, more than the 2 allowed", null);
+			return;
+		}
+
+		var zlib:Dynamic = js.Lib.require("zlib");
+		var options:Dynamic = limit > 0 ? {maxOutputLength: limit} : {};
+
+		function failed(error:Dynamic):Void {
+			var reason:Dynamic = error != null && error.message != null ? error.message : error;
+			done("Failed to decode response body: " + Std.string(reason), null);
+		}
+
+		function step(index:Int, current:js.node.Buffer):Void {
+			if (index < 0) {
+				done(null, current);
+				return;
+			}
+
+			var next = function(error:Dynamic, result:js.node.Buffer):Void {
+				if (error != null) {
+					failed(error);
+					return;
+				}
+				step(index - 1, result);
+			};
+
+			switch (codings[index]) {
+				case "gzip", "x-gzip":
+					zlib.gunzip(current, options, next);
+				case "br" if (zlib.brotliDecompress != null):
+					zlib.brotliDecompress(current, options, next);
+				case "deflate":
+					zlib.inflate(current, options, function(error:Dynamic, result:js.node.Buffer):Void {
+						if (error == null) {
+							step(index - 1, result);
+						} else {
+							zlib.inflateRaw(current, options, next);
+						}
+					});
+				case "lz4":
+					try {
+						var encoded:crossbyte.io.ByteArray = Bytes.ofData(current.buffer.slice(current.byteOffset, current.byteOffset + current.byteLength));
+						encoded.uncompress(crossbyte.utils.CompressionAlgorithm.LZ4, limit > 0 ? limit : 0);
+						var plain:Bytes = Bytes.alloc(encoded.length);
+						plain.blit(0, encoded, 0, encoded.length);
+						step(index - 1, js.node.Buffer.from(plain.getData()));
+					} catch (error:Dynamic) {
+						failed(error);
+					}
+				case unknown:
+					done("Unsupported content encoding: " + unknown, null);
+			}
+		}
+
+		step(codings.length - 1, body);
 	}
 
 	/** Removes a header whatever case the caller wrote it in. */
