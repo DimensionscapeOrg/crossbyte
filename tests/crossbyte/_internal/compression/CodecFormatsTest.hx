@@ -109,6 +109,73 @@ class CodecFormatsTest extends utest.Test {
 		}
 	}
 
+	private static inline var GZIP_TEXT:String = "gzip members, extra fields, comments and header CRCs are all RFC 1952.";
+
+	/**
+	 * GZIP_TEXT through Node's gzipSync, with the header fields RFC 1952
+	 * allows added the way the gzip tool writes them, then as two members --
+	 * each accepted by Node's gunzipSync. ByteArray read a name and nothing
+	 * else: an extra field, a comment or a header CRC was refused as
+	 * unsupported, and a second member failed its CRC, since the trailer was
+	 * taken to be the input's last eight bytes.
+	 */
+	private static final NODE_GZIP_VARIANTS:Array<{name:String, hex:String}> = [
+		{
+			name: "extra field",
+			hex: "1f8b080400000000000a060041420200010205c1c10980301004c056b6802028f8f01db08074709a5503b928777988d53b737ee58152379a07f0ed26380a6bf680fd5665eb0e69191725d31053748811522bd21a312ef334fc47c761db46000000"
+		},
+		{
+			name: "comment",
+			hex: "1f8b081000000000000a6120636f6d6d656e740005c1c10980301004c056b6802028f8f01db08074709a5503b928777988d53b737ee58152379a07f0ed26380a6bf680fd5665eb0e69191725d31053748811522bd21a312ef334fc47c761db46000000"
+		},
+		{
+			name: "header CRC",
+			hex: "1f8b080200000000000a03cf05c1c10980301004c056b6802028f8f01db08074709a5503b928777988d53b737ee58152379a07f0ed26380a6bf680fd5665eb0e69191725d31053748811522bd21a312ef334fc47c761db46000000"
+		},
+		{
+			name: "every field",
+			hex: "1f8b081e00000000000a020078796e616d652e74787400636f6d6d656e7400d16105c1c10980301004c056b6802028f8f01db08074709a5503b928777988d53b737ee58152379a07f0ed26380a6bf680fd5665eb0e69191725d31053748811522bd21a312ef334fc47c761db46000000"
+		},
+		{
+			name: "two members",
+			hex: "1f8b080000000000000a4bafca2c50c84dcd4d4a2d2ad65148ad28294a5448cb4ccd4929d65148cecfcd4dcd2b010057cd1da4230000001f8b080000000000000a2b5648cc4b51c8484d4c492d52700e722e56482c4a5548ccc9510872735630b43435d20300f42f5ea323000000"
+		}
+	];
+
+	public function testGzipIsReadAsTheGzipFormatAllowsIt():Void {
+		for (variant in NODE_GZIP_VARIANTS) {
+			Assert.equals(GZIP_TEXT, uncompressed(variant.hex, CompressionAlgorithm.GZIP), variant.name);
+		}
+		// Zero padding after the last member is ignored, as gzip and Node do.
+		Assert.equals(GZIP_TEXT, uncompressed(NODE_GZIP_VARIANTS[4].hex + "00000000", CompressionAlgorithm.GZIP), "padded");
+	}
+
+	public function testDamagedGzipIsRefusedAsBadData():Void {
+		var one:String = NODE_GZIP_VARIANTS[0].hex;
+		var two:String = NODE_GZIP_VARIANTS[4].hex;
+		var cases:Array<{name:String, hex:String}> = [
+			// The header CRC's first byte flipped.
+			{name: "header CRC wrong", hex: "1f8b080200000000000a02cf" + NODE_GZIP_VARIANTS[2].hex.substr(24)},
+			{name: "reserved flag", hex: "1f8b0820" + one.substr(8)},
+			{name: "garbage after a member", hex: two + "78797a"},
+			{name: "half a second member", hex: two.substr(0, two.length - 20)},
+			{name: "extra field cut short", hex: one.substr(0, 26)}
+		];
+		for (c in cases) {
+			assertThrows(IOError, () -> uncompressed(c.hex, CompressionAlgorithm.GZIP), "gzip " + c.name);
+		}
+	}
+
+	/** The limit is on what every member inflates to together. **/
+	public function testGzipMembersShareOneLimit():Void {
+		var half:ByteArray = ByteArray.fromBytes(Bytes.alloc(20000));
+		half.compress(CompressionAlgorithm.GZIP);
+		var member:String = bytesOf(half).toHex();
+		var both:String = member + member;
+		Assert.equals(40000, decoded(Bytes.ofHex(both), CompressionAlgorithm.GZIP, 40000).length);
+		assertThrows(RangeError, () -> decoded(Bytes.ofHex(both), CompressionAlgorithm.GZIP, 30000), "two members past the limit");
+	}
+
 	/**
 	 * Every codec says a stream is bad the same way, with an IOError, and a
 	 * stream too big for the caller's limit with a RangeError. They threw bare

@@ -1236,6 +1236,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- gzip is read as RFC 1952 has it: a header with an extra field, a
+  comment or a header CRC (which is checked) is read rather than refused
+  as unsupported, and a stream of several members -- what concatenating
+  gzip files gives -- inflates to all of them together, under the one
+  limit. The second member failed its CRC, since the trailer was taken to
+  be the input's last eight bytes. Zero padding after the last member is
+  ignored and anything else there refused, as Node's gunzip does.
 - Inflating deflate or gzip no longer builds a decoder nothing uses.
   `Inflater` has decoded through `haxe.zip.InflateImpl` all along, but every
   call still allocated and cleared a 32K-entry window for a decoder of its
