@@ -254,6 +254,7 @@ class TestSuites {
 		// stack and raw NIO: chains, failures and what connections cost.
 		#if (java || jvm)
 		runner.addCase(new crossbyte.net.JvmTlsTest());
+		runner.addCase(new crossbyte.net.JvmSocketTest());
 		#end
 
 		// jvm as well as cpp. These were cpp-only, and running them on jvm was

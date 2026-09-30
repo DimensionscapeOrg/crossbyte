@@ -274,6 +274,21 @@ class JvmSslSocket extends sys.net.Socket {
 			return;
 		}
 
+		// A non-blocking connect returns while the connection is still being
+		// made, and until it is up there is no one to say anything to.
+		var connecting:java.nio.channels.SocketChannel = cast this.channel;
+		if (connecting.isConnectionPending()) {
+			var connected:Bool = try {
+				connecting.finishConnect();
+			} catch (e:Dynamic) {
+				throw haxe.io.Error.Custom(e);
+			}
+			if (!connected) {
+				throw haxe.io.Error.Blocked;
+			}
+			__onConnected();
+		}
+
 		// Anything a previous pass wrapped but could not send goes first. The
 		// peer is waiting on it, and wrapping more before it lands would put
 		// the records on the wire out of order.
