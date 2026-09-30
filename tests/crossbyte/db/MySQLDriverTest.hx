@@ -238,6 +238,69 @@ class MySQLDriverTest extends utest.Test {
 		Assert.equals("'it\\'s'", connection.quote("it's"));
 	}
 
+	public function testGeneratedSavepointNamesDoNotRepeat():Void {
+		// Named from haxe.Timer.stamp() in microseconds through Std.int, as
+		// SQLite's and Postgres's were before the same fix: names made back to
+		// back collided, and the value passes Int 36 minutes into a process.
+		var connection:MySQLConnection = new MySQLConnection();
+		var seen:Map<String, Bool> = new Map();
+		var distinct:Int = 0;
+
+		for (_ in 0...2000) {
+			var name:String = connection.__sanitizeSavePoint(null);
+
+			if (!seen.exists(name)) {
+				seen.set(name, true);
+				distinct++;
+			}
+		}
+
+		Assert.equals(2000, distinct);
+		Assert.equals("a__DROP_TABLE_t____", connection.__sanitizeSavePoint("a; DROP TABLE t; --"));
+	}
+
+	public function testSavepointsNestAndResolveWithoutANameToTheInnermost():Void {
+		// setSavepoint() returned nothing; releaseSavepoint(null) released a
+		// name it had just made up; rollbackToSavepoint(null) rolled the whole
+		// transaction back.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.__connection = wire;
+
+		connection.begin();
+		var outer:String = connection.setSavepoint();
+		var inner:String = connection.setSavepoint();
+		Assert.notEquals(outer, inner);
+
+		connection.rollbackToSavepoint();
+		Assert.equals("ROLLBACK TO SAVEPOINT " + inner + ";", wire.sent[wire.sent.length - 1]);
+
+		// Still active after a rollback to it, so the next nameless release
+		// is the same savepoint.
+		connection.releaseSavepoint();
+		Assert.equals("RELEASE SAVEPOINT " + inner + ";", wire.sent[wire.sent.length - 1]);
+		connection.releaseSavepoint();
+		Assert.equals("RELEASE SAVEPOINT " + outer + ";", wire.sent[wire.sent.length - 1]);
+
+		// With none held: a release has nothing to name, and a rollback rolls
+		// back the transaction.
+		Assert.raises(() -> connection.releaseSavepoint(), crossbyte.errors.ArgumentError);
+		connection.rollbackToSavepoint();
+		Assert.equals("ROLLBACK;", wire.sent[wire.sent.length - 1]);
+		Assert.isFalse(connection.inTransaction);
+	}
+
+	public function testAFailedSavepointIsNotRemembered():Void {
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.failures.set("SAVEPOINT keep;", "Lost connection to MySQL server during query");
+		var connection:MySQLConnection = new MySQLConnection();
+		connection.__connection = wire;
+
+		connection.begin();
+		Assert.raises(() -> connection.setSavepoint("keep"), SQLError);
+		Assert.raises(() -> connection.releaseSavepoint(), crossbyte.errors.ArgumentError);
+	}
+
 	private function __statement(wire:ScriptedConnection):MySQLStatement {
 		var connection:MySQLConnection = new MySQLConnection();
 		connection.__connection = wire;

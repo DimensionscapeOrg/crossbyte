@@ -1307,6 +1307,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- MySQL savepoints behave as SQLite's and Postgres's were fixed to.
+  `setSavepoint()` returns the savepoint's name, where it returned nothing;
+  names come from a counter, where they came from the clock, which gave
+  two made back to back the same name (8 distinct in 2000 on the
+  interpreter) and passed `Int` 36 minutes into a process;
+  `releaseSavepoint()` and `rollbackToSavepoint()` without a name act on
+  the innermost savepoint held, where the first released a name it had
+  just made up and the second rolled back the whole transaction. A
+  savepoint the server refused is not remembered.
 - On the jvm, a MySQL or SQLite failure arrives as the `SQLError` or
   `IOError` it is, not a `ClassCastException`. The driver's
   `java.sql.SQLException`: or the `ClassNotFoundException` when no JDBC
