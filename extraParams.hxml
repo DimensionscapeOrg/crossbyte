@@ -1,1 +1,2 @@
 --macro crossbyte._internal.macro.HostPlatform.define()
+--macro crossbyte._internal.macro.StdOverrides.use()
