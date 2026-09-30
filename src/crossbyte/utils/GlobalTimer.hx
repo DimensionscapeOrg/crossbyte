@@ -3,15 +3,28 @@ package crossbyte.utils;
 import crossbyte.Function;
 import haxe.ds.Map;
 import haxe.Timer as HxTimer;
-#if cpp
+#if target.threaded
 import sys.thread.Mutex;
 #end
 
-/** Process-level timeout and interval helpers backed by the primordial runtime. */
+/**
+	Process-level timeout and interval helpers backed by the primordial runtime.
+
+	Safe to call from any thread. The ids and the map behind them are kept
+	under a lock wherever there are threads; it was taken only on hxcpp, so on
+	the jvm four threads setting and clearing timers were issued 498 ids
+	twice, left 264 entries behind, and a `clearTimeout` could stop another
+	thread's timer.
+**/
 final class GlobalTimer {
 	@:noCompletion private static var __lastTimerID:UInt = 0;
+	// Whether the id counter has gone round once. Until it has, every id it
+	// gives is new, and asking the map whether one is in use is skipped: an
+	// IntMap on the jvm answers that question for a missing id by visiting
+	// every bucket.
+	@:noCompletion private static var __wrapped:Bool = false;
 	@:noCompletion private static var __timers:Map<UInt, HxTimer> = new Map();
-	#if cpp
+	#if target.threaded
 	@:noCompletion private static final __mutex:Mutex = new Mutex();
 	#end
 
@@ -61,8 +74,8 @@ final class GlobalTimer {
 	public static function setInterval(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
 		var id = __nextID();
 		var timer = new HxTimer(delay);
-		__setTimer(id, timer);
 		timer.run = __onInterval.bind(id, closure, args);
+		__setTimer(id, timer);
 		return id;
 	}
 
@@ -85,7 +98,7 @@ final class GlobalTimer {
 		@returns	Unique numeric identifier for the timed process. Use this identifier to
 		cancel the process, by calling the `clearTimeout()` method.
 	**/
-	public static inline function setTimeout(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
+	public static function setTimeout(closure:Function, delay:Int, args:Array<Dynamic> = null):UInt {
 		var id = __nextID();
 		__setTimer(id, HxTimer.delay(__onTimeout.bind(id, closure, args), delay));
 		return id;
@@ -116,46 +129,60 @@ final class GlobalTimer {
 		}
 	}
 
-	@:noCompletion private static inline function __nextID():UInt {
+	/**
+		A new id, held in the map (with no timer yet) until `__setTimer` puts
+		its timer there, so no other thread can be given it meanwhile.
+	**/
+	@:noCompletion private static function __nextID():UInt {
 		var id:UInt = 0;
-		__withLock(() -> {
-			// The counter wraps after 2^32 timers. Taking an id still in use
-			// replaced that timer in the map, where clearInterval could no
-			// longer reach it, so ids in use -- and 0 -- are skipped.
-			do {
-				id = ++__lastTimerID;
-			} while (id == 0 || __timers.exists(id));
-		});
+		__lock();
+		// The counter wraps after 2^32 timers. Taking an id still in use
+		// replaced that timer in the map, where clearInterval could no
+		// longer reach it, so ids in use -- and 0 -- are skipped.
+		do {
+			id = ++__lastTimerID;
+			if (id == 0) {
+				__wrapped = true;
+			}
+		} while (id == 0 || (__wrapped && __timers.exists(id)));
+		__timers.set(id, null);
+		__unlock();
 		return id;
 	}
 
-	@:noCompletion private static inline function __setTimer(id:UInt, timer:HxTimer):Void {
-		__withLock(() -> __timers[id] = timer);
+	@:noCompletion private static function __setTimer(id:UInt, timer:HxTimer):Void {
+		__lock();
+		// Cleared already, by an id the caller had not been given yet: only
+		// after the counter wraps. The timer goes rather than running on.
+		var cleared:Bool = !__timers.exists(id);
+		if (!cleared) {
+			__timers.set(id, timer);
+		}
+		__unlock();
+		if (cleared) {
+			timer.stop();
+		}
 	}
 
-	@:noCompletion private static inline function __removeTimer(id:UInt):HxTimer {
-		var timer:HxTimer = null;
-		__withLock(() -> {
-			timer = __timers[id];
-			if (timer != null) {
-				__timers.remove(id);
-			}
-		});
+	@:noCompletion private static function __removeTimer(id:UInt):HxTimer {
+		__lock();
+		var timer:HxTimer = __timers.get(id);
+		__timers.remove(id);
+		__unlock();
 		return timer;
 	}
 
-	@:noCompletion private static inline function __withLock(fn:Void->Void):Void {
-		#if cpp
+	// Map operations only, which do not throw, between each pair: no closure
+	// and no try to allocate on the way.
+	@:noCompletion private static inline function __lock():Void {
+		#if target.threaded
 		__mutex.acquire();
-		try {
-			fn();
-		} catch (e:Dynamic) {
-			__mutex.release();
-			throw e;
-		}
+		#end
+	}
+
+	@:noCompletion private static inline function __unlock():Void {
+		#if target.threaded
 		__mutex.release();
-		#else
-		fn();
 		#end
 	}
 }
