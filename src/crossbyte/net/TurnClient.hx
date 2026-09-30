@@ -1,6 +1,7 @@
 package crossbyte.net;
 
 import crossbyte.Future;
+import crossbyte._internal.net.IPv6;
 import crossbyte.crypto.SecureRandom;
 import crossbyte.errors.ArgumentError;
 import crossbyte.io.ByteArray;
@@ -314,6 +315,13 @@ class TurnClient {
 		this.__username = username;
 		this.__password = password;
 		this.allocated = new Future<ReflexiveAddress>();
+
+		// An address is where the relay's answers will come from, spelled the
+		// way a socket reports a source. A name waits for the first answer.
+		if (IPv6.isNumericAddress(serverAddress)) {
+			this.serverAddress = IPv6.compress(serverAddress);
+			__pinned = true;
+		}
 	}
 
 	/**
@@ -589,6 +597,17 @@ class TurnClient {
 
 		__clock = now;
 
+		// Only the relay speaks for the relay. Relayed data and answers were
+		// taken from any sender: anyone who could reach the socket could hand
+		// the application a datagram as though a peer had sent it, on the
+		// first channel number or wrapped as a Data indication. Once the relay
+		// has an address, given as one, or the first answer's, nothing from
+		// anywhere else is TURN traffic, and it is left for whoever else is on
+		// the socket.
+		if (fromPort != serverPort || (__pinned && fromAddress != serverAddress)) {
+			return false;
+		}
+
 		// Before decoding: a ChannelData message is not STUN, and its first two
 		// bytes are a channel number that would read as a message type nothing
 		// here has.
@@ -624,11 +643,32 @@ class TurnClient {
 			return __isRetired(message);
 		}
 
+		// An answer that fails its checks is dropped as though it never came,
+		// and the request goes on being retransmitted: RFC 8489 section 9.2.5.
+		// A signed request's answer was believed without its integrity being
+		// looked at, so whoever saw a request go by could answer it, with a
+		// relayed address of their own choosing.
+		if (!__authentic(request, message)) {
+			request.discarded++;
+			return true;
+		}
+
 		// Where requests go from here: the address the relay answered from,
 		// which is the one lookup of its name this allocation needs.
-		if (!__pinned && fromPort == serverPort) {
+		if (!__pinned) {
 			__pinned = true;
 			serverAddress = fromAddress;
+		}
+
+		// One the relay requires understood and this client does not, which
+		// changes the answer in a way it cannot see: not an answer it can act
+		// on (section 7.3.3).
+		var unknown:Int = message.unknownRequiredAttribute();
+
+		if (unknown >= 0) {
+			__requestFailed(request, 0, "The relay answered with an attribute it requires understood and this client does not: 0x"
+				+ StringTools.hex(unknown, 4) + ".", false, now);
+			return true;
 		}
 
 		if ((message.type & 0x0110) == 0x0110) {
@@ -638,6 +678,35 @@ class TurnClient {
 		}
 
 		return true;
+	}
+
+	/**
+		Whether an answer can be believed.
+
+		A FINGERPRINT, when there is one, has to match. And an answer to a
+		signed request has to be signed with the same key, except a 401 or a
+		438, which ask for credentials and cannot carry them. An unsigned
+		request's answer has nothing to be checked against, which is why the
+		first exchange only ever asks for credentials.
+	**/
+	@:noCompletion private function __authentic(request:TurnTransaction, message:StunMessage):Bool {
+		if (message.attribute(StunMessage.ATTR_FINGERPRINT) != null && !message.verifyFingerprint()) {
+			return false;
+		}
+
+		if (!request.signed) {
+			return true;
+		}
+
+		if ((message.type & 0x0110) == 0x0110) {
+			var code:Int = message.errorCodeValue();
+
+			if (code == StunMessage.UNAUTHORIZED || code == StunMessage.STALE_NONCE) {
+				return true;
+			}
+		}
+
+		return request.key != null && message.verifyIntegrityWithKey(request.key);
 	}
 
 	/** A success or an error for one of the four methods this client asks. **/
@@ -750,6 +819,7 @@ class TurnClient {
 		if (__key != null && __realm != null && __nonce != null) {
 			request.signed = true;
 			request.nonce = __nonce;
+			request.key = __key;
 
 			var signed = new StunMessage(request.type, request.message.transactionId, request.attributes.concat([
 				StunMessage.text(StunMessage.ATTR_USERNAME, __username),
@@ -762,6 +832,7 @@ class TurnClient {
 
 		request.signed = false;
 		request.nonce = null;
+		request.key = null;
 		return request.message.encode();
 	}
 
@@ -820,6 +891,14 @@ class TurnClient {
 			request.channel.pending = false;
 			request.channel.refused = true;
 			__drain(now);
+			return;
+		}
+
+		// Answered, but never by anything that could sign for the relay: RFC
+		// 8489 has that said as what it is rather than as a timeout.
+		if (request.discarded > 0) {
+			__fail("The relay at " + serverAddress + ":" + serverPort
+				+ " answered only with messages that failed their integrity check, so none of them could be believed.");
 			return;
 		}
 
@@ -1049,6 +1128,14 @@ class TurnClient {
 			return;
 		}
 
+		// Only from a peer this client let through. A relay forwards nothing
+		// else, so anything else claiming to be relayed was not.
+		var permission = __permissions.get(peer.address);
+
+		if (permission == null || permission.refused || !(permission.granted || permission.pending)) {
+			return;
+		}
+
 		payload.position = 0;
 		onData(payload, peer.address, peer.port);
 	}
@@ -1097,10 +1184,15 @@ private class TurnTransaction {
 	public var attempts:Int = 0;
 	public var retryAt:Float = 0;
 
-	/** Whether the transaction in flight was signed, and against which nonce. **/
+	/** Whether the transaction in flight was signed, against which nonce, and with which key. **/
 	public var signed:Bool = false;
 
 	public var nonce:Null<String> = null;
+
+	public var key:Null<Bytes> = null;
+
+	/** Answers dropped for failing their checks: what a request that then times out is reported as. **/
+	public var discarded:Int = 0;
 
 	/** Stale-nonce refusals counted against it; see `TurnClient.MAX_STALE_NONCES`. **/
 	public var staleNonces:Int = 0;
