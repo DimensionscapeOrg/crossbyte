@@ -15,6 +15,7 @@ import crossbyte.test.Require;
  * What the native MySQL client makes of the server's answers: rows, the OK
  * packet of a write, and errors. Against `fakemysql/FakeMySQLServer`.
  */
+@:cppFileCode('#include <locale.h>')
 class MySQLNativeResultTest extends utest.Test {
 	private var __server:FakeMySQLServer;
 
@@ -311,6 +312,40 @@ class MySQLNativeResultTest extends utest.Test {
 		Assert.isTrue(connection.ping());
 		Assert.equals(1, Require.notNull(connection.request("SELECT 1")).length);
 		connection.close();
+	}
+
+	public function testFloatsReadTheSameInAnyLocale():Void {
+		// The client parsed DOUBLE with atof, which reads the process's
+		// locale: under one with a decimal comma, 1.5 came back as 1.
+		var decimalComma:Bool = untyped __cpp__('(setlocale(LC_NUMERIC, "de-DE") != 0 || setlocale(LC_NUMERIC, "de_DE.UTF-8") != 0 || setlocale(LC_NUMERIC, "German") != 0)');
+
+		if (!decimalComma) {
+			Assert.pass("no locale with a decimal comma to test under");
+			return;
+		}
+
+		__server.onQuery = function(session, sql) {
+			if (sql == "SELECT RATIO") {
+				session.resultSet([{name: "ratio", type: FakeMySQLServer.TYPE_DOUBLE, charset: FakeMySQLServer.CHARSET_BINARY}], [["1.5"]]);
+				return true;
+			}
+
+			return false;
+		};
+
+		try {
+			__server.start();
+			var connection:MySQLConnection = __open();
+			var rows = connection.request("SELECT RATIO");
+			Assert.isTrue(rows.hasNext());
+			Assert.equals(1.5, (Reflect.field(rows.next(), "ratio") : Float));
+			connection.close();
+		} catch (e:Dynamic) {
+			untyped __cpp__('setlocale(LC_NUMERIC, "C")');
+			throw e;
+		}
+
+		untyped __cpp__('setlocale(LC_NUMERIC, "C")');
 	}
 
 	private function __open():MySQLConnection {

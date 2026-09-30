@@ -1307,6 +1307,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- MySQL `FLOAT` and `DOUBLE` columns read the same whatever the process's
+  locale. The native client parsed them with `atof`, which follows
+  `LC_NUMERIC`, so under a locale with a decimal comma 1.5 came back as 1.
+  From the hxcpp fork (`fix/mysql-client`).
 - A native `MySQLStatement` reads its rows as they are asked for, and costs
   no statements of its own. A result was read whole before its first page
   was returned, a million-row SELECT held 190 MB before `execute(1000)`
