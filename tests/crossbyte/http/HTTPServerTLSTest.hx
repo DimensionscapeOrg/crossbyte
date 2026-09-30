@@ -539,6 +539,91 @@ class HTTPServerTLSTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp || java || jvm)
+	/**
+		Closing an HTTP/2 session leaves its TLS socket to the reader thread,
+		rather than closing it under the reader's read.
+
+		`H2ClientSession.close` closed the socket from the calling thread --
+		the pool's sweep, a request discarding the session, `closeAll` --
+		while the session's reader sat in a read on it. That freed the
+		socket's mbedTLS context under the read, and when the read returned,
+		with the server answering the GOAWAY, mbedTLS carried on with it: a
+		SIGSEGV in `mbedtls_ssl_read`, seen on Linux in this class's own
+		pool clean-up. The socket stands in for the TLS one here and records
+		whether it was closed while a read was under way.
+	**/
+	public function testClosingAnHttp2SessionLeavesItsSocketToTheReader():Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null || !FlexSocket.alpnSupported) {
+			Assert.pass();
+			return;
+		}
+
+		var server = __tlsServer(fixture);
+		var socket = new TracingTlsSocket();
+		socket.setALPN(["h2"]);
+		socket.setCA(@:privateAccess fixture.certificate.__native);
+		socket.setTimeout(10);
+
+		var session:crossbyte._internal.http.h2.H2ClientSession = null;
+		var outcome:String = null;
+		var handoff = new sys.thread.Lock();
+		sys.thread.Thread.create(() -> {
+			try {
+				socket.connect(new sys.net.Host("127.0.0.1"), server.port);
+				socket.setTimeout(0);
+				socket.tracer = new TracingInput(socket.input);
+				var settings = new crossbyte._internal.http.h2.H2Settings();
+				settings.enablePush = false;
+				var connection = new crossbyte._internal.http.h2.H2Connection(socket.tracer, socket.output, settings);
+				session = new crossbyte._internal.http.h2.H2ClientSession('https://127.0.0.1:${server.port}', socket, connection);
+				var stream = session.execute("GET", "https", '127.0.0.1:${server.port}', "/who", [], null, 10);
+				outcome = "status " + stream.status;
+			} catch (e:Dynamic) {
+				outcome = "threw " + Std.string(e);
+			}
+			handoff.release();
+		});
+
+		var runtime = crossbyte.core.CrossByte.current();
+		var finished:Bool = false;
+		var deadline:Float = haxe.Timer.stamp() + 20;
+		while (!finished && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 60, 0);
+			finished = handoff.wait(0.002);
+		}
+		Assert.equals("status 200", outcome, "the request over the session did not complete");
+
+		if (session != null) {
+			// The reader back in a read, waiting on the next frame.
+			deadline = haxe.Timer.stamp() + 5;
+			while (!socket.tracer.reading && haxe.Timer.stamp() < deadline) {
+				runtime.pump(1 / 60, 0);
+				handoff.wait(0.002);
+			}
+			Assert.isTrue(socket.tracer.reading, "the reader never went back to reading");
+
+			session.close();
+			// The server sees the session end, closes, and the read returns.
+			deadline = haxe.Timer.stamp() + 10;
+			while (!socket.wasClosed && haxe.Timer.stamp() < deadline) {
+				runtime.pump(1 / 60, 0);
+				handoff.wait(0.002);
+			}
+			Assert.isTrue(socket.wasClosed, "the session's socket was never closed");
+			Assert.isFalse(socket.closedDuringRead, "the session's socket was closed under the reader's read");
+		}
+
+		if (!socket.wasClosed) {
+			try {
+				socket.close();
+			} catch (_:Dynamic) {}
+		}
+		server.close();
+	}
+	#end
+
 	/**
 		`tlsEnabled` follows both paths being set, not either.
 
@@ -566,3 +651,55 @@ class HTTPServerTLSTest extends utest.Test {
 		Assert.isFalse(config.tlsEnabled, "an empty certificate path claimed TLS");
 	}
 }
+
+#if (cpp || java || jvm)
+/** Reads through `inner`, and says while one of its reads is under way. */
+private class TracingInput extends haxe.io.Input {
+	public var reading(default, null):Bool = false;
+
+	private final __inner:haxe.io.Input;
+
+	public function new(inner:haxe.io.Input) {
+		__inner = inner;
+	}
+
+	override public function readByte():Int {
+		reading = true;
+		try {
+			var byte:Int = __inner.readByte();
+			reading = false;
+			return byte;
+		} catch (e:Dynamic) {
+			reading = false;
+			throw e;
+		}
+	}
+
+	override public function readBytes(buffer:Bytes, position:Int, length:Int):Int {
+		reading = true;
+		try {
+			var count:Int = __inner.readBytes(buffer, position, length);
+			reading = false;
+			return count;
+		} catch (e:Dynamic) {
+			reading = false;
+			throw e;
+		}
+	}
+}
+
+/** A TLS client socket that records whether it was closed while being read. */
+private class TracingTlsSocket extends #if cpp crossbyte._internal.socket.AlpnSocket #else crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket #end {
+	public var tracer:Null<TracingInput> = null;
+	public var wasClosed(default, null):Bool = false;
+	public var closedDuringRead(default, null):Bool = false;
+
+	override public function close():Void {
+		if (tracer != null && tracer.reading) {
+			closedDuringRead = true;
+		}
+		wasClosed = true;
+		super.close();
+	}
+}
+#end
