@@ -5,7 +5,7 @@ package crossbyte.db;
 
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IllegalOperationError;
-#if (cpp || neko || hl || java || jvm)
+#if target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -157,7 +157,7 @@ class ConnectionPool<T> {
 
 	@:noCompletion private static final LOG:crossbyte.utils.LogCategory = crossbyte.utils.Logger.category("db.pool");
 
-	#if (cpp || neko || hl || java || jvm)
+	#if target.threaded
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -183,7 +183,7 @@ class ConnectionPool<T> {
 		__idle = [];
 		__out = [];
 
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock = new Mutex();
 		#end
 
@@ -621,13 +621,13 @@ class ConnectionPool<T> {
 	}
 
 	@:noCompletion private inline function __acquireLock():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.acquire();
 		#end
 	}
 
 	@:noCompletion private inline function __releaseLock():Void {
-		#if (cpp || neko || hl || java || jvm)
+		#if target.threaded
 		__lock.release();
 		#end
 	}

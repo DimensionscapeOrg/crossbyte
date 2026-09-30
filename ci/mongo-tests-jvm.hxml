@@ -1,0 +1,6 @@
+-cp src
+-cp tests
+-lib utest
+-main MongoIntegrationMain
+--jvm export/jvm/MongoIntegration.jar
+--macro crossbyte.test.SuiteCoverage.check()
