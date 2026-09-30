@@ -541,6 +541,9 @@ class ServerSocket extends EventDispatcher {
 			}
 
 			var socket:CBSocket = @:privateAccess CBSocket.__adoptNodeSocket(connection, __cbInstance);
+			// Said, as a native server's accepted socket says it: on Node one
+			// a TLS listener accepted reported false.
+			socket.secure = secure;
 
 			// Contained: this runs from Node's event loop, and a connect
 			// listener that threw ended the process, every connection the

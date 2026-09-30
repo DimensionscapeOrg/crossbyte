@@ -5,6 +5,17 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- TLS for a client `Socket`: set `secure` before `connect()` and the socket
+  handshakes once TCP is up, stepped as the server's flights arrive, and
+  dispatches `connect` when the handshake is done, within `timeout`,
+  which counts it, on native, jvm and Node; on eval the handshake blocks,
+  as eval's connect does. `secure` was read only to report it, so a client
+  asking for TLS spoke plain TCP. `verifyCert` and `certAuthority`, which
+  were `WebSocket`'s, are `Socket`'s now and check a secure socket's server
+  the way they check a `wss://` one: a certificate from an authority the
+  client does not trust, or naming another host, is refused with an
+  `ioError` that says so. On Node, a socket a TLS `ServerSocket` accepted
+  says it is `secure`, and a socket's `ioError` carries Node's reason.
 - permessage-deflate (RFC 7692) for WebSocket, opt in with
   `ServerWebSocket.perMessageDeflate` or, on a client, with
   `WebSocket.perMessageDeflate` before `connect()`. A server declined every
