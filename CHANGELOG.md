@@ -1220,6 +1220,23 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, a TLS read takes every record that has already arrived, as
+  far as the caller's buffer goes, where it stopped after one: a large
+  upload was read 16 KB a pump, each pump paying a select over every
+  connection the runtime held, so 10 MB took 2.4 s beside 2,000 idle
+  connections. Records are decrypted straight into the reader's buffer, and
+  an idle TLS connection holds none of the engine's buffers: each held
+  three for its whole life, 64 KB a connection with its engine (15 KB now),
+  over half a gigabyte at 10,000. They come from a small per-thread pool as
+  reads and writes need them. And a handshake after the first is carried
+  through: a TLS 1.2 renegotiation, which nothing answered once the first
+  handshake was done, hung the connection with neither side told. A server
+  carries three through for its peer, as Node does, and closes the
+  connection at the fourth, each is a private-key operation on a
+  connection already admitted. A handshake that fails now sends the peer its
+  alert before the close, so the peer reports the reason, a certificate
+  refused, or not presented, rather than "Remote host terminated the
+  handshake".
 - On the jvm, `select` keeps the sockets it is asked about registered from
   one call to the next. It registered every socket it was handed, checked
   every pair of them for duplicates and cancelled every key again, on each
