@@ -1220,6 +1220,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A half-open connection held by a server costs nothing while it waits.
+  After the peer's FIN a `HALF_OPEN` socket stopped reading but stayed in
+  the poll set, where end of stream is readable for good: it was reported
+  on every poll, so a POLL loop spun a core per connection held that way
+  (3.1 to 3.5 s of CPU per 3 s), and each report flushed again, a write
+  that failed was reported every time, 25,566 ioErrors in half a second on
+  a TLS 1.2 connection, and the socket was never closed. It leaves the poll
+  set's reads once the peer has finished, or `shutdown(true, ...)` has shut
+  them, and can still be written to; and a write that fails for a reason
+  other than a full buffer closes a socket that reads nothing more, after
+  its one `ioError`, since its read side will never reap it.
 - Connections are taken, dialled and secured as the system reports them,
   not at the next tick. A POLL loop spends each frame blocked in poll,
   which only a socket in the poll set can end, and listeners were never in
