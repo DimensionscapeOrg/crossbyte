@@ -17,9 +17,22 @@ import haxe.io.Bytes;
 class HpackDecoder {
 	/**
 	 * Upper bound on the decoded header list, by the §4.1 accounting.
-	 * Exceeding it is fatal to the connection.
+	 *
+	 * A block past it is still decoded to its end, so the dynamic table stays
+	 * in step with the peer's, but fields past the limit are dropped rather
+	 * than returned, and `truncated` says so. RFC 9113 10.5.1 asks exactly
+	 * that of a receiver that means to keep the connection: the section is
+	 * processed, and the message refused -- a server answers `431`. Throwing
+	 * here instead made every oversized block fatal to the connection and to
+	 * every other request on it.
 	 */
 	public var maxHeaderListSize:Int;
+
+	/**
+	 * Whether the block `decode` last read went past `maxHeaderListSize`, so
+	 * what it returned is missing the fields after the limit.
+	 */
+	public var truncated(default, null):Bool = false;
 
 	/**
 	 * The largest table capacity the peer is allowed to select, from our
@@ -78,21 +91,19 @@ class HpackDecoder {
 		var listSize:Int = 0;
 		// §4.2: a size update is only legal at the very start of a block.
 		var updatesStillAllowed:Bool = true;
+		truncated = false;
 
 		while (!cursor.atEnd()) {
 			var first:Int = cursor.peek();
+			var field:HpackHeader;
 
 			if ((first & 0x80) != 0) {
 				// 1xxxxxxx -- indexed header field.
-				var index:Int = __readInteger(cursor, 7);
-				out.push(__resolve(index));
-				updatesStillAllowed = false;
+				field = __resolve(__readInteger(cursor, 7));
 			} else if ((first & 0x40) != 0) {
 				// 01xxxxxx -- literal, added to the dynamic table.
-				var header:HpackHeader = __readLiteral(cursor, 6, false);
-				__table.add(header);
-				out.push(header);
-				updatesStillAllowed = false;
+				field = __readLiteral(cursor, 6, false);
+				__table.add(field);
 			} else if ((first & 0x20) != 0) {
 				// 001xxxxx -- dynamic table size update.
 				if (!updatesStillAllowed) {
@@ -108,15 +119,22 @@ class HpackDecoder {
 				// 0000xxxx never-indexed, or 0001xxxx without indexing. Both
 				// decode identically; only the never-indexed marker has to
 				// survive if this list is ever re-encoded.
-				var neverIndexed:Bool = (first & 0x10) != 0;
-				out.push(__readLiteral(cursor, 4, neverIndexed));
-				updatesStillAllowed = false;
+				field = __readLiteral(cursor, 4, (first & 0x10) != 0);
+			}
+			updatesStillAllowed = false;
+
+			if (truncated) {
+				// Past the limit already: read on, since the table has to
+				// advance through the whole block, but keep nothing more.
+				continue;
 			}
 
-			listSize += out[out.length - 1].tableSize;
+			listSize += field.tableSize;
 			if (listSize > maxHeaderListSize) {
-				throw new HpackError('Decoded header list exceeds the $maxHeaderListSize byte limit');
+				truncated = true;
+				continue;
 			}
+			out.push(field);
 		}
 
 		return out;
@@ -129,8 +147,10 @@ class HpackDecoder {
 		}
 
 		if (index <= HpackStaticTable.LENGTH) {
-			var at:Int = index - 1;
-			return new HpackHeader(HpackStaticTable.NAMES[at], HpackStaticTable.VALUES[at]);
+			// Made once, not per reference: a static entry is the commonest
+			// field in a block, and each was a new object measuring its two
+			// strings again.
+			return HpackStaticTable.FIELDS[index - 1];
 		}
 
 		var entry:Null<HpackHeader> = __table.get(index - HpackStaticTable.LENGTH - 1);

@@ -25,6 +25,13 @@ class H2Stream {
 	/** Set when the peer reset this stream, so the caller can report why. */
 	public var resetCode:Null<H2ErrorCode> = null;
 
+	/**
+	 * Set when this side gave up on the stream for a reason of its own -- a
+	 * response whose header section went past the limit -- so the caller can
+	 * report that rather than a reset or a hang-up.
+	 */
+	public var failure:Null<String> = null;
+
 	/** How much the peer will still accept from us (§6.9). */
 	public var sendWindow:Int;
 

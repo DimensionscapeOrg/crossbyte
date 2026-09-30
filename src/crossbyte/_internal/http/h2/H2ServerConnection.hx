@@ -51,6 +51,19 @@ class H2ServerConnection {
 	public static inline var DEFAULT_MAX_HEADER_BLOCK:Int = 256 * 1024;
 
 	/**
+	 * What one request's header section may decode to, by RFC 7541 4.1's
+	 * accounting (each field's two strings and 32 more), before it is
+	 * answered `431`. Advertised as SETTINGS_MAX_HEADER_LIST_SIZE.
+	 *
+	 * The limit an HTTP/1.1 request's header block is held to. The decoder
+	 * allowed eight megabytes and nothing said so, and a block of 200,000
+	 * one-byte references to a single cookie crumb -- about 200 KB on the
+	 * wire -- decoded under it and then held the runtime's thread for 23.5
+	 * seconds while the crumbs were joined.
+	 */
+	public static inline var DEFAULT_MAX_HEADER_LIST_SIZE:Int = 64 * 1024;
+
+	/**
 	 * Streams the peer may abandon before their response within
 	 * `resetWindowSeconds`, after which the connection is closed with
 	 * ENHANCE_YOUR_CALM. Negative disables the check.
@@ -743,6 +756,7 @@ class H2ServerConnection {
 		// purpose: the table must advance even for a message we are about to
 		// reject, or the peer's encoder and our decoder diverge from here on.
 		var decoded:Array<HpackHeader> = __decoder.decode(block);
+		var tooLarge:Bool = __decoder.truncated;
 
 		var target:Null<H2Stream> = __streams.get(streamId);
 		if (target == null) {
@@ -751,9 +765,38 @@ class H2ServerConnection {
 
 		target.headers = decoded;
 
+		if (tooLarge) {
+			__refuseHeaders(target, endStream);
+			return;
+		}
+
 		if (endStream) {
 			target.endOfStream = true;
 			__deliver(streamId, target);
+		}
+	}
+
+	/**
+	 * Answers a request whose header section decoded past the list limit:
+	 * delivered at once, marked, to be answered `431`, as an HTTP/1.1 header
+	 * block past its limit is. The block was decoded to its end all the same,
+	 * so the connection and every other stream on it carry on. A body still
+	 * to come is refused as an oversized one is: the stream is reset with
+	 * NO_ERROR, and what arrives for it is counted and dropped.
+	 */
+	private function __refuseHeaders(target:H2Stream, endStream:Bool):Void {
+		target.overflowed = true;
+		if (endStream) {
+			target.endOfStream = true;
+		}
+
+		var request:H2ServerRequest = H2ServerRequest.withHeadersTooLarge(target.id, target.headers);
+		target.headers = [];
+		__markDelivered(target);
+		onRequest(request);
+
+		if (!endStream) {
+			resetStream(target.id, H2ErrorCode.NO_ERROR);
 		}
 	}
 
@@ -1088,6 +1131,11 @@ class H2ServerConnection {
 		// without limit -- and each one costs a handler and a buffer. A client
 		// that knows the number paces itself instead of being refused.
 		settings.maxConcurrentStreams = DEFAULT_MAX_CONCURRENT_STREAMS;
+
+		// Advertised for the same reason, and enforced by the decoder: a
+		// client told the limit keeps under it, and one that does not is
+		// answered 431 rather than holding the thread.
+		settings.maxHeaderListSize = DEFAULT_MAX_HEADER_LIST_SIZE;
 		return settings;
 	}
 
