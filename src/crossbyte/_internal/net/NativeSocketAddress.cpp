@@ -15,6 +15,7 @@ typedef int SocketLen;
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <fcntl.h>
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
 #define SOCKET_ERROR (-1)
@@ -191,10 +192,39 @@ Dynamic crossbyte_socket_accept(Dynamic socket) {
 	SocketLen addressLength = sizeof(address);
 
 	hx::EnterGCFreeZone();
-	SOCKET accepted = accept(nativeSocket, reinterpret_cast<sockaddr*>(&address), &addressLength);
+	SOCKET accepted;
+	// Not inherited by a process started while the connection is open: a
+	// child holding a copy keeps the connection open after it is closed
+	// here. Close-on-exec from accept4 where there is one, so a process
+	// another thread starts meanwhile cannot take it either.
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	accepted = accept(nativeSocket, reinterpret_cast<sockaddr*>(&address), &addressLength);
+#else
+	do {
+	#if defined(HX_LINUX) && defined(SOCK_CLOEXEC)
+		accepted = accept4(nativeSocket, reinterpret_cast<sockaddr*>(&address), &addressLength, SOCK_CLOEXEC);
+	#else
+		accepted = accept(nativeSocket, reinterpret_cast<sockaddr*>(&address), &addressLength);
+	#endif
+	} while (accepted == INVALID_SOCKET && errno == EINTR);
+#endif
 	if (accepted == INVALID_SOCKET) {
 		crossbyte_block_error();
 	}
+#if defined(HX_WINDOWS) || defined(NEKO_WINDOWS)
+	SetHandleInformation((HANDLE)accepted, HANDLE_FLAG_INHERIT, 0);
+#else
+	#if !(defined(HX_LINUX) && defined(SOCK_CLOEXEC))
+	int descriptorFlags = fcntl(accepted, F_GETFD, 0);
+	if (descriptorFlags >= 0) {
+		fcntl(accepted, F_SETFD, descriptorFlags | FD_CLOEXEC);
+	}
+	#endif
+	#ifdef __APPLE__
+	int noSigPipe = 1;
+	setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
+	#endif
+#endif
 	hx::ExitGCFreeZone();
 
 	SocketWrapper* wrapper = new SocketWrapper();

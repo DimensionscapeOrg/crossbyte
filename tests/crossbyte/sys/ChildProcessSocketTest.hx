@@ -34,11 +34,10 @@ class ChildProcessSocketTest extends utest.Test {
 	private static inline var DEADLINE:Float = 5.0;
 	private static inline var PROBES:Int = 20;
 
-	// Windows only for now. Elsewhere a server accepts through CrossByte's
-	// own crossbyte_socket_accept (NativeSocketAddress.cpp), not hxcpp's
-	// accept, and it does not yet set close-on-exec on what it accepts, so
-	// on Linux and macOS the connection still reaches the child.
-	#if windows
+	// A server accepts through CrossByte's own crossbyte_socket_accept
+	// (NativeSocketAddress.cpp), not hxcpp's accept. It set no close-on-exec
+	// on what it accepted, so on Linux and macOS the connection reached the
+	// child; this ran on Windows alone until it did.
 	@:timeout(30000)
 	public function testClosingAConnectionEndsItWhileAChildRuns(async:Async):Void {
 		var server = new ServerSocket();
@@ -77,7 +76,6 @@ class ChildProcessSocketTest extends utest.Test {
 			});
 		});
 	}
-	#end
 
 	@:timeout(30000)
 	public function testAClosedListenerFreesItsPortWhileAChildRuns(async:Async):Void {

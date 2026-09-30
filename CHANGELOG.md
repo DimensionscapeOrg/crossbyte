@@ -1599,6 +1599,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Linux and macOS, a process started while a server holds a connection
+  does not inherit the connection, so closing it ends it. A server accepts
+  through CrossByte's own `crossbyte_socket_accept`, which set no
+  close-on-exec; it does now, atomically through `accept4` on Linux, and
+  retries an accept a signal interrupted, and sets `SO_NOSIGPIPE` on macOS,
+  as hxcpp's own accept does. Windows was fixed in the hxcpp fork.
 - On the jvm, a runtime whose last connections close lets them go.
   `select` keeps what it asks about on its thread between calls, and
   emptied that list only as the next call began; a runtime with nothing
