@@ -370,6 +370,77 @@ class CompressionRoundTripTest extends utest.Test {
 		return output.getBytes();
 	}
 
+	/** Deterministic text with the repetition real text has. **/
+	private function words(length:Int):Bytes {
+		var vocabulary:Array<String> = "the of and to in is it that was for on are with as his they at be this from have or by one had not but what all were when we there can an your which their said if do will each about how up out them then she many some so these would other into has more her two like him see time could no make than first been its who now people".split(" ");
+		var out = new StringBuf();
+		var state:Int = 0x2468ACE1;
+		while (out.length < length) {
+			state ^= state << 13;
+			state ^= state >>> 17;
+			state ^= state << 5;
+			out.add(vocabulary[(state >>> 8) % vocabulary.length]);
+			out.add((state & 7) == 0 ? ". " : " ");
+		}
+		return Bytes.ofString(out.toString().substr(0, length));
+	}
+
+	/**
+	 * An LZ4 block has no length of its own, so one cut short where a literal
+	 * run happens to end read as complete: the auditor's block cut in half
+	 * decoded 10,133 bytes of 20,006 and nothing said so. The format's end
+	 * rules, the last five bytes literals, the last match starting twelve
+	 * or more from the end, are what a cut block almost never meets, and
+	 * are now enforced. Of every cut point of a 6 KB block, about a third
+	 * decoded; now almost none do.
+	 */
+	public function testAnLz4BlockCutShortIsRefused():Void {
+		var packed:Bytes = Lz4.compress(words(6000));
+		var decoded:Int = 0;
+		for (cut in 1...packed.length) {
+			try {
+				Lz4.decompress(packed.sub(0, cut), 1 << 20);
+				decoded++;
+			} catch (e:crossbyte.errors.IOError) {
+				// Refused, as a cut block should be.
+			}
+		}
+		Assert.isTrue(decoded * 100 < packed.length, decoded + " of " + packed.length + " cut points decoded as if whole");
+	}
+
+	/** Even an empty block is one byte, the token; no bytes at all is not a block. **/
+	public function testNoBytesIsNotAnLz4Block():Void {
+		Assert.raises(() -> Lz4.decompress(Bytes.alloc(0)), crossbyte.errors.IOError);
+		Assert.equals(0, Lz4.decompress(Lz4.compress(Bytes.alloc(0))).length);
+	}
+
+	/**
+	 * The encoder wrote through a ByteArray, whose writeBytes takes a
+	 * ByteArray. Given a plain Bytes, every literal run made one from it,
+	 * allocating and clearing a copy of the whole input per run, quadratic,
+	 * and natively 900 KB of it crashed the process. ByteArray.compress
+	 * passed itself and escaped it; any other caller did not.
+	 */
+	public function testCompressingPlainBytesCostsWhatAByteArrayDoes():Void {
+		var text:Bytes = words(48 * 1024);
+		var asByteArray:ByteArray = ByteArray.fromBytes(text.sub(0, text.length));
+
+		var plain:Float = 0;
+		var wrapped:Float = 0;
+		for (round in 0...3) {
+			var started:Float = haxe.Timer.stamp();
+			var a:Bytes = Lz4.compress(text);
+			plain += haxe.Timer.stamp() - started;
+
+			started = haxe.Timer.stamp();
+			var b:Bytes = Lz4.compress(asByteArray);
+			wrapped += haxe.Timer.stamp() - started;
+
+			Assert.equals(a.toHex(), b.toHex());
+		}
+		Assert.isTrue(plain < wrapped * 2 + 0.05, "plain Bytes took " + plain + "s against " + wrapped + "s as a ByteArray");
+	}
+
 	public function testUncompressCarriesTheLimitIntoTheLz4Decoder():Void {
 		// The limit used to be applied to the finished buffer, so the memory
 		// was taken before anything objected. This asserts the public path
