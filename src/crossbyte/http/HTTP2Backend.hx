@@ -380,10 +380,8 @@ class HTTP2Backend implements HTTPBackend {
 			if (token != null && token.cancelled) {
 				throw new H2ConnectionError(H2ErrorCode.CANCEL, "Request was cancelled while connecting to " + origin);
 			}
-			// A blocking socket's timeout surfaces as Blocked natively -- the
-			// read the handshake was waiting on would have blocked on -- which
-			// says nothing to a caller about what happened.
-			if (Std.isOfType(e, haxe.io.Error) && (e : haxe.io.Error).match(Blocked)) {
+			// Said as the timeout it was, the same way on every target.
+			if (Http.__isTimeout(e)) {
 				throw new H2ConnectionError(H2ErrorCode.CANCEL, 'Connecting to $origin timed out after ${timeout}s');
 			}
 			throw e;

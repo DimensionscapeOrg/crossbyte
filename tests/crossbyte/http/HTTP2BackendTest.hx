@@ -198,15 +198,16 @@ class HTTP2BackendTest extends utest.Test {
 		Assert.equals(64 * 1024, server.clientSetting(0x6), "SETTINGS_MAX_HEADER_LIST_SIZE was not advertised");
 	}
 
-	#if cpp
+	#if (cpp || java || jvm)
 	public function testATlsHandshakeThatNeverAnswersHasADeadline():Void {
 		// A server that accepts TCP and then says nothing. The connect had no
 		// deadline and the per-origin gate was held across it, so three
 		// requests to it had no outcome in 15 s, one TCP connection between
 		// them, and a cancel did nothing. Each is held to its own timeout now,
 		// and the waiters to theirs; they share the one connection attempt.
-		// Native only: the jvm's handshake loop retries a timeout 10,000
-		// times, which is its own finding (J2).
+		// On the jvm too since J2: its handshake loop retried a timeout
+		// 10,000 times, and now holds to the deadline, saying so in words of
+		// its own that the backend reports as the timeout it was.
 		if (!crossbyte._internal.socket.FlexSocket.alpnSupported) {
 			Assert.pass("this build has no ALPN, so no HTTP/2 over TLS");
 			return;

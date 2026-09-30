@@ -1289,6 +1289,49 @@ class HttpTest extends utest.Test {
 	}
 	#end
 
+	#if (cpp || java || jvm)
+	/**
+		A TLS handshake the server never answers fails at the request's
+		timeout, and says that is what happened. Natively the failure's
+		reason was "Blocked" -- the read the handshake waited on had timed
+		out -- and on the jvm it came wrapped, as `Custom(Timeout: ...)`.
+	**/
+	public function testAnUnansweredHandshakeSaysItTimedOut():Void {
+		var listener = new SysSocket();
+		listener.bind(new Host("127.0.0.1"), 0);
+		listener.listen(1);
+		var port:Int = listener.host().port;
+		var finished = new Lock();
+		var gone = new Lock();
+		Thread.create(() -> {
+			var peer:SysSocket = null;
+			try {
+				peer = listener.accept();
+			} catch (_:Dynamic) {}
+			// Held and silent until the request has given up.
+			finished.wait(15.0);
+			closeQuietly(peer);
+			closeQuietly(listener);
+			gone.release();
+		});
+
+		var failure:Null<String> = null;
+		var http = new Http('https://127.0.0.1:$port/silent', "GET", null, null, null, null, HttpVersion.HTTP_1_1, 1000);
+		http.onComplete = _ -> failure = "completed";
+		http.onError = (message, ?_) -> failure = message;
+		var started:Float = haxe.Timer.stamp();
+		http.load();
+		var took:Float = haxe.Timer.stamp() - started;
+		finished.release();
+		gone.wait(5.0);
+
+		Require.notNull(failure);
+		Assert.isTrue(StringTools.startsWith(failure, "Connection Failed: "), failure);
+		Assert.isTrue(failure.indexOf("did not answer within 1") >= 0, failure);
+		Assert.isTrue(took < 5.0, 'took $took s for a 1 s timeout');
+	}
+	#end
+
 	#if !eval
 	// Not on eval, where a read that times out raises a native Unix_error no
 	// Haxe catch can see, and so ends the process. On the jvm since
