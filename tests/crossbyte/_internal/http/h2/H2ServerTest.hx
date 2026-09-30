@@ -204,6 +204,32 @@ class H2ServerTest extends utest.Test {
 		Assert.notNull(firstResetFor(requestFields([new HpackHeader("X-Thing", "value")])));
 	}
 
+	public function testAControlCharacterInAFieldIsRejected():Void {
+		// RFC 9113 8.2.1 makes a CR, LF or NUL anywhere in a value malformed.
+		// HPACK carries any byte, so these reached the request middleware
+		// sees, where a CR LF could be written into an HTTP/1.1 request or a
+		// log line onward.
+		var cr:String = String.fromCharCode(13);
+		var lf:String = String.fromCharCode(10);
+		var nul:String = String.fromCharCode(0);
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + cr + lf + "injected: yes")])), "CR LF in a value was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + lf + "b")])), "LF in a value was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + cr)])), "CR in a value was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a" + nul + "b")])), "NUL in a value was taken");
+		Assert.notNull(firstResetFor([
+			new HpackHeader(":method", "GET"), new HpackHeader(":scheme", "http"), new HpackHeader(":path", "/a" + cr + lf + "b")
+		]), "CR LF in :path was taken");
+
+		// Names: nothing below 0x21 and no colon but a pseudo-header's first.
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x forward", "a")])), "a space in a name was taken");
+		Assert.notNull(firstResetFor(requestFields([new HpackHeader("x:forward", "a")])), "a colon in a name was taken");
+
+		// Spaces and tabs are fine, and so is an empty value.
+		Assert.isNull(firstResetFor(requestFields([new HpackHeader("x-forward", "a b" + String.fromCharCode(9) + "c")])), "an inner space was refused");
+		Assert.isNull(firstResetFor(requestFields([new HpackHeader("x-forward", " padded ")])), "a padded value was refused");
+		Assert.isNull(firstResetFor(requestFields([new HpackHeader("x-empty", "")])), "an empty value was refused");
+	}
+
 	public function testConnectionSpecificFieldIsRejected():Void {
 		// §8.2.2: HTTP/2 does its own framing, so these are malformed.
 		Assert.notNull(firstResetFor(requestFields([new HpackHeader("connection", "keep-alive")])));
