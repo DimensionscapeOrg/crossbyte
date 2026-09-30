@@ -1266,6 +1266,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `MySQLConfig.timeZone` and `sqlMode` work. Their values were escaped into
+  a buffer that was then dropped and the server was sent `SET time_zone =
+  :tz;`, a syntax error, so every `open()` naming either failed. A
+  connection whose session setup fails is now closed before `open()`
+  throws: it was left open, so a pool factory retrying an open that could
+  not succeed piled up server connections. An unsupported `charset` is
+  refused with an `ArgumentError` before connecting, where it connected and
+  then threw an `IOError`.
 - The native MySQL client logs in to a default MySQL 8 server. It spoke
   only `mysql_native_password`, which MySQL 8 does not use by default, 8.4
   disables and 9.0 removes; it took the server's switch to another auth
