@@ -46,6 +46,10 @@ class Address {
 		var ia:java.net.InetAddress = value.wrapped;
 		var raw:haxe.io.BytesData = (ia != null) ? ia.getAddress() : null;
 		ipv6 = (raw != null && raw.length == 16) ? raw : null;
+		#elseif (hl || neko)
+		// Neither target's Host has one, nor any other way to hold an IPv6
+		// address.
+		ipv6 = null;
 		#else
 		ipv6 = Reflect.field(value, "ipv6");
 		#end
@@ -75,9 +79,17 @@ class Address {
 		#else
 		var resolved:Host = Type.createEmptyInstance(Host);
 		untyped resolved.ip = host;
+		// Not on hl, whose Host has no such field: writing one threw, from
+		// DatagramSocket's receive, for every datagram, so UDP, RUDP, STUN
+		// and ICE on hl received nothing at all. Neither hl nor neko can hold
+		// an IPv6 address to write.
+		#if !(hl || neko)
 		untyped resolved.ipv6 = ipv6;
+		#end
+		// The address as text, as the jvm and cpp give it. Every other target
+		// named every sender "0.0.0.0" here.
 		untyped resolved.host = ipv6 == null
-			? #if (cpp || hxcpp) NativeSocket.host_to_string(host) #else "0.0.0.0" #end
+			? #if (cpp || hxcpp) NativeSocket.host_to_string(host) #else resolved.toString() #end
 			: #if (cpp || hxcpp) NativeSocket.host_to_string_ipv6(ipv6) #else "::1" #end;
 		return resolved;
 		#end

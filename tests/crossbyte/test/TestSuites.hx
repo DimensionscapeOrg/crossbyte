@@ -299,6 +299,18 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.CongestionControlTest());
 	}
 
+	/**
+		CrossByte's replacements for `sys.net.Socket` and `sys.net.UdpSocket`,
+		which every sys target compiles instead of its own: what each promises
+		on every target, hl's and neko's standard implementations included.
+	**/
+	public static function addSysNet(runner:Runner):Void {
+		runner.addCase(new crossbyte.net.SysSocketContractTest());
+		runner.addCase(new crossbyte.net.SocketSelectThreadsTest());
+		// hl's TLS client, whose waits its collector can see past.
+		runner.addCase(new crossbyte._internal.socket.HlTlsSocketTest());
+	}
+
 	public static function addRPC(runner:Runner):Void {
 		runner.addCase(new crossbyte.rpc.RPCTest());
 		runner.addCase(new crossbyte.rpc.RPCRobustnessTest());
@@ -364,6 +376,7 @@ class TestSuites {
 		addDatabase(runner);
 		addSystem(runner);
 		addNet(runner);
+		addSysNet(runner);
 		addRPC(runner);
 		addResources(runner);
 		addTimers(runner);
@@ -385,6 +398,7 @@ class TestSuites {
 		addHttp(runner);
 		addSystem(runner);
 		addNet(runner);
+		addSysNet(runner);
 		addRPC(runner);
 		addTimers(runner);
 		// These three carry `#if cpp` cases of their own, SQLite in
