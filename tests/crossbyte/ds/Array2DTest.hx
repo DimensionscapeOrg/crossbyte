@@ -35,4 +35,34 @@ class Array2DTest extends utest.Test {
 		grid.clear();
 		Assert.isTrue(grid.isEmpty());
 	}
+
+	/**
+		Clearing empties the grid for every reference to it. It replaced the
+		rows, so another reference -- the same grid held in two places --
+		still saw them.
+	**/
+	public function testClearIsSeenThroughEveryReference():Void {
+		var grid = new crossbyte.ds.Array2D<Int>(2, 2, 7);
+		var alias = grid;
+		var holder = {grid: grid};
+		grid.clear();
+		Assert.equals(0, alias.getHeight());
+		Assert.equals(0, holder.grid.getHeight());
+		Assert.isTrue(alias.isEmpty());
+	}
+
+	/**
+		`fill` sets every cell. Without a starting value the cells of an
+		`Array2D<Int>` are 0 on static targets and null elsewhere; filling
+		makes them the same everywhere.
+	**/
+	public function testFillSetsEveryCell():Void {
+		var grid = new crossbyte.ds.Array2D<Int>(3, 2);
+		grid.fill(0);
+		Assert.same([0, 0, 0, 0, 0, 0], grid.toFlatArray());
+		var x:Int = grid.get(2, 1);
+		Assert.equals(1, x + 1);
+		grid.fill(5);
+		Assert.same([5, 5, 5, 5, 5, 5], grid.toFlatArray());
+	}
 }

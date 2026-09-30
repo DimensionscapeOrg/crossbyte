@@ -1252,6 +1252,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Array2D.clear()` empties the grid for every reference to it; it replaced
+  the rows, so the same grid held elsewhere kept them. `fill(value)` sets
+  every cell -- the way to give an `Array2D` of `Int`, `Float` or `Bool`
+  the same cells everywhere, since made without a value they are 0 on
+  static targets and null on eval and JavaScript, which the documentation
+  now says.
 - A `RadixTree` lookup reads the key in place and allocates nothing. It
   built the common prefix of each label and the key a character at a time,
   and a substring of the key at every level: 2.3 microseconds and 6.4 KB a
