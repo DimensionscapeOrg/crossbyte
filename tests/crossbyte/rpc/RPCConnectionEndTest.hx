@@ -155,7 +155,7 @@ class RPCConnectionEndTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + timeout;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 

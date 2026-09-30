@@ -742,7 +742,7 @@ class ServerSocketTLSTest extends utest.Test {
 			var settle = Sys.time() + 0.5;
 			while (Sys.time() < settle) {
 				runtime.pump(1 / 60, 0);
-				Sys.sleep(0.002);
+				crossbyte.sys.System.sleep(0.002);
 			}
 
 			check(server, {error: error, accepted: accepted, agreed: agreed, reported: reported});

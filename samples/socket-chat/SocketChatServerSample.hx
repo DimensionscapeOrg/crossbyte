@@ -59,7 +59,7 @@ class SocketChatServerSample extends HostApplication {
 			while (running) {
 				drainConsole(consoleQueue, value -> running = value);
 				advance(SocketChatCommon.PUMP_INTERVAL, 0);
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 		} catch (error:Dynamic) {
 			for (peer in peers.copy()) {

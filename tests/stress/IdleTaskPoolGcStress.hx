@@ -51,7 +51,7 @@ class IdleTaskPoolGcStress implements StressCase {
 		}
 
 		// Give the workers a moment to finish that job and park.
-		Sys.sleep(0.25);
+		crossbyte.sys.System.sleep(0.25);
 
 		for (t in 0...ALLOCATOR_THREADS) {
 			Thread.create(function() {
@@ -82,7 +82,7 @@ class IdleTaskPoolGcStress implements StressCase {
 			if (completed == ALLOCATOR_THREADS) {
 				break;
 			}
-			Sys.sleep(0.02);
+			crossbyte.sys.System.sleep(0.02);
 		}
 
 		var elapsed:Float = TIMEOUT_SECONDS - (deadline - Sys.time());

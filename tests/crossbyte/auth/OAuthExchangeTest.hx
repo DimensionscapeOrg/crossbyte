@@ -173,7 +173,7 @@ class OAuthExchangeTest extends utest.Test {
 		#else
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 		then(done());
 		#end
@@ -233,7 +233,7 @@ class OAuthExchangeTest extends utest.Test {
 					// where the exchange runs inline, only this close ends it.
 					endpoint.released.wait(2.0);
 				} else {
-					Sys.sleep(delay);
+					crossbyte.sys.System.sleep(delay);
 					peer.output.writeString('HTTP/1.1 $status X\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body');
 					peer.output.flush();
 				}

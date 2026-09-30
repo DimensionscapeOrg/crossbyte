@@ -560,7 +560,7 @@ class PostgresIntegrationTest extends utest.Test {
 			done.release();
 		});
 
-		Sys.sleep(0.5);
+		crossbyte.sys.System.sleep(0.5);
 
 		var started:Float = haxe.Timer.stamp();
 		Assert.isTrue(connection.cancel());

@@ -115,7 +115,7 @@ class JvmTlsPeer {
 		// the connection down before that flight lands, the server then sees
 		// an end-of-file rather than the certificate it asked for. A real
 		// client goes on to send a request; this one just waits a moment.
-		Sys.sleep(0.25);
+		crossbyte.sys.System.sleep(0.25);
 		peer.close();
 		return (negotiated == null || negotiated == "") ? null : negotiated;
 	}

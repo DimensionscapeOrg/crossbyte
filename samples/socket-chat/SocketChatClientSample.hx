@@ -56,7 +56,7 @@ class SocketChatClientSample extends HostApplication {
 			while (running) {
 				drainConsole(consoleQueue, socket, connected, value -> running = value);
 				advance(SocketChatCommon.PUMP_INTERVAL, 0);
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 		} catch (error:Dynamic) {
 			try {

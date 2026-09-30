@@ -226,7 +226,7 @@ final class ProcessLifecycle {
 		// stop, which would block collection for every other thread.
 		var deadline:Float = haxe.Timer.stamp() + connectTimeoutMs / 1000;
 		while (NativeServiceControl.attachState() == NativeServiceControl.PENDING && haxe.Timer.stamp() < deadline) {
-			Sys.sleep(0.002);
+			crossbyte._internal.system.Sleep.sleep(0.002);
 		}
 
 		var state:Int = NativeServiceControl.attachState();

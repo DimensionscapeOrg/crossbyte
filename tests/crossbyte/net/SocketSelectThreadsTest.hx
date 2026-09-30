@@ -39,7 +39,7 @@ class SocketSelectThreadsTest extends utest.Test {
 			if (report != null) {
 				reports.push(report);
 			} else {
-				Sys.sleep(0.01);
+				crossbyte.sys.System.sleep(0.01);
 			}
 		}
 

@@ -129,7 +129,7 @@ class NativeProcessTest extends utest.Test {
 			if (garbage.length > 100) {
 				garbage = [];
 			}
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 			var now:Float = haxe.Timer.stamp();
 			if (now - last > longest) {
 				longest = now - last;
@@ -199,14 +199,14 @@ class NativeProcessTest extends utest.Test {
 		var deadline = Sys.time() + timeoutSeconds;
 		while (!predicate() && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0.0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 
 	@:noCompletion private static function waitUntil(predicate:Void->Bool, timeoutSeconds:Float):Void {
 		var deadline = Sys.time() + timeoutSeconds;
 		while (!predicate() && Sys.time() < deadline) {
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 

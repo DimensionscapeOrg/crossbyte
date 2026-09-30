@@ -142,7 +142,7 @@ class SoakMain {
 				report(Timer.stamp() - started, ticks, sent, echoed, bytesEchoed, entities.length, sessionKeys.length);
 			}
 
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 
 		for (socket in senders) {

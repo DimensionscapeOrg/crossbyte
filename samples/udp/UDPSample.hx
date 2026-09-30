@@ -41,7 +41,7 @@ class UDPSample extends HostApplication {
 		var deadline = Sys.time() + 2.0;
 		while (received == null && failed == null && Sys.time() < deadline) {
 			advance(1 / 60, 0);
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 
 		sender.close();

@@ -457,7 +457,7 @@ class DatagramSocketTest extends utest.Test {
 				sender.send(payload, 0, 0, "127.0.0.1", receiver.localPort);
 			}
 			// Into the receiver's buffer before the pass that reads it.
-			Sys.sleep(0.1);
+			crossbyte.sys.System.sleep(0.1);
 
 			CrossByte.current().pump(0, 0);
 			var firstPass:Int = received;
@@ -560,7 +560,7 @@ class DatagramSocketTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + timeout;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 

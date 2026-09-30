@@ -557,7 +557,7 @@ class FileStreamTest extends utest.Test {
 
 			while (haxe.Timer.stamp() < until) {
 				__pump();
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 
 			var held:Int = input.bytesAvailable;
@@ -586,7 +586,7 @@ class FileStreamTest extends utest.Test {
 				}
 
 				__pump();
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 
 			Assert.equals(size, consumed);
@@ -627,7 +627,7 @@ class FileStreamTest extends utest.Test {
 				}
 
 				__pump();
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 
 			input.position = 10;
@@ -673,7 +673,7 @@ class FileStreamTest extends utest.Test {
 
 		while (@:privateAccess stream.__isOpen && haxe.Timer.stamp() < deadline) {
 			__pump();
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 
@@ -733,7 +733,7 @@ class FileStreamTest extends utest.Test {
 		var deadline = Sys.time() + timeoutSeconds;
 		while (!done() && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 }

@@ -50,7 +50,7 @@ class TaskPoolTest extends utest.Test {
 						onCaller++;
 						guard.release();
 					}
-					Sys.sleep(0.2);
+					crossbyte.sys.System.sleep(0.2);
 				})
 		];
 		var submitted = haxe.Timer.stamp() - start;
@@ -220,7 +220,7 @@ class TaskPoolTest extends utest.Test {
 				maxRunning = running;
 			}
 			lock.release();
-			Sys.sleep(0.05);
+			crossbyte.sys.System.sleep(0.05);
 			lock.acquire();
 			running--;
 			lock.release();
@@ -243,13 +243,13 @@ class TaskPoolTest extends utest.Test {
 		var pool = makePool(1);
 		var cancelled = false;
 		pool.submit(() -> {
-			Sys.sleep(0.2);
+			crossbyte.sys.System.sleep(0.2);
 		});
 		var task = pool.submit(() -> {
-			Sys.sleep(0.2);
+			crossbyte.sys.System.sleep(0.2);
 		});
 
-		Sys.sleep(0.01);
+		crossbyte.sys.System.sleep(0.01);
 		task.onCancel(() -> cancelled = true);
 		Assert.isTrue(task.cancel());
 		Assert.isTrue(cancelled);
@@ -268,11 +268,11 @@ class TaskPoolTest extends utest.Test {
 		var started = false;
 		var task = pool.submit(() -> {
 			started = true;
-			Sys.sleep(0.1);
+			crossbyte.sys.System.sleep(0.1);
 		});
 
 		while (!started) {
-			Sys.sleep(0.005);
+			crossbyte.sys.System.sleep(0.005);
 		}
 
 		Assert.isFalse(task.cancel());
@@ -330,7 +330,7 @@ class TaskPoolTest extends utest.Test {
 
 	public function testShutdownRejectsNewSubmits():Void {
 		var pool = makePool(1);
-		pool.submit(() -> Sys.sleep(0.02));
+		pool.submit(() -> crossbyte.sys.System.sleep(0.02));
 		pool.shutdown();
 
 		Assert.isTrue(throws(() -> pool.submit(() -> 1)));
@@ -343,14 +343,14 @@ class TaskPoolTest extends utest.Test {
 
 		var first = pool.submit(() -> {
 			running = true;
-			Sys.sleep(0.1);
+			crossbyte.sys.System.sleep(0.1);
 			running = false;
 		});
 		var second = pool.submit(() -> {});
 		var third = pool.submit(() -> {});
 
 		while (!running) {
-			Sys.sleep(0.005);
+			crossbyte.sys.System.sleep(0.005);
 		}
 
 		pool.shutdownNow();
@@ -388,7 +388,7 @@ class TaskPoolTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + timeoutSeconds;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 		#end
 	}

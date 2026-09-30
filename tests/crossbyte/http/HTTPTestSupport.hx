@@ -37,7 +37,7 @@ class HTTPTestSupport {
 			runtime.pump(step, 0);
 
 			if (sleepBetween > 0) {
-				Sys.sleep(sleepBetween);
+				crossbyte.sys.System.sleep(sleepBetween);
 			}
 		}
 

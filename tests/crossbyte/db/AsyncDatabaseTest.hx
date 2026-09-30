@@ -55,7 +55,7 @@ class AsyncDatabaseTest extends utest.Test {
 			return 1;
 		});
 
-		Sys.sleep(0.3);
+		crossbyte.sys.System.sleep(0.3);
 		release();
 
 		Assert.raises(() -> late.await(), IllegalOperationError);

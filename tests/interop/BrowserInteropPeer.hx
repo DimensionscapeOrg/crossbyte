@@ -133,7 +133,7 @@ class BrowserInteropPeer {
 
 		while (waiting() && haxe.Timer.stamp() < deadline && connection.closeReason == null) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 
@@ -442,7 +442,7 @@ class BrowserInteropPeer {
 
 		while (!finished && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 
 			if (echoed) {
 				// One more turn so a reply is actually written before this stops
@@ -455,7 +455,7 @@ class BrowserInteropPeer {
 				while (Sys.time() < settle || (lossy != null && Sys.time() < deadline && @:privateAccess connection.__transfer != null
 					&& (@:privateAccess connection.__transfer.outstandingCount() > 0 || received.length < 5))) {
 					runtime.pump(1 / 60, 0);
-					Sys.sleep(0.001);
+					crossbyte.sys.System.sleep(0.001);
 				}
 
 				finished = true;

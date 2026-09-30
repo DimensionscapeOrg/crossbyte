@@ -226,7 +226,7 @@ class PasswordOffloadTest extends utest.Test {
 		});
 
 		inside.wait();
-		Sys.sleep(0.03);
+		crossbyte.sys.System.sleep(0.03);
 		var c0:Float = haxe.Timer.stamp();
 		cpp.vm.Gc.run(true);
 		var collectionMs:Float = (haxe.Timer.stamp() - c0) * 1000;
@@ -260,7 +260,7 @@ class PasswordOffloadTest extends utest.Test {
 		#else
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 		then(done());
 		#end

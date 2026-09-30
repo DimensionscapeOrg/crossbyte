@@ -207,7 +207,7 @@ class NativeProcess extends EventDispatcher {
 					if (!__running) {
 						break;
 					}
-					Sys.sleep(0.001);
+					crossbyte._internal.system.Sleep.sleep(0.001);
 					continue;
 				}
 

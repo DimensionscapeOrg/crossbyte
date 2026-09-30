@@ -20,7 +20,7 @@ import utest.Assert;
 class ClockTest extends utest.Test {
 	public function testTheClockAdvancesWithRealTime():Void {
 		var before = haxe.Timer.stamp();
-		Sys.sleep(0.05);
+		crossbyte.sys.System.sleep(0.05);
 		var elapsed = haxe.Timer.stamp() - before;
 		Assert.isTrue(elapsed >= 0.04 && elapsed < 2.0, 'a 50 ms sleep measured as $elapsed s');
 	}

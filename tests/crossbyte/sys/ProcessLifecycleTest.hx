@@ -42,7 +42,7 @@ class ProcessLifecycleTest extends utest.Test {
 		crossbyte.sys._internal.JvmSignals.JvmSignal.raise(new crossbyte.sys._internal.JvmSignals.JvmSignal("INT"));
 		var deadline = haxe.Timer.stamp() + 5;
 		while (!ProcessLifecycle.shutdownRequested && haxe.Timer.stamp() < deadline) {
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 		Assert.isTrue(ProcessLifecycle.shutdownRequested, "the signal did not reach the handler");
 	}

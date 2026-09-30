@@ -44,7 +44,7 @@ class PHPTimeoutTest extends utest.Test {
 
 		while (!future.completed && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0.0);
-			Sys.sleep(0.005);
+			crossbyte.sys.System.sleep(0.005);
 		}
 
 		var elapsed:Float = Sys.time() - started;
@@ -83,7 +83,7 @@ class PHPTimeoutTest extends utest.Test {
 
 		while (!future.completed && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0.0);
-			Sys.sleep(0.005);
+			crossbyte.sys.System.sleep(0.005);
 		}
 
 		runtime.removeEventListener(crossbyte.events.TickEvent.TICK, onTick);

@@ -615,7 +615,7 @@ class Future<T> implements IEventDispatcher {
 			cpp.vm.Gc.safePoint();
 			if (++tries >= 64) {
 				tries = 0;
-				Sys.sleep(0);
+				crossbyte._internal.system.Sleep.sleep(0);
 			}
 		}
 	}

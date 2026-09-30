@@ -51,7 +51,7 @@ class SocketBackpressureStress implements StressCase {
 				var client = new sys.net.Socket();
 				client.connect(new sys.net.Host("127.0.0.1"), port);
 				// Hold the connection open without draining it.
-				Sys.sleep(6);
+				crossbyte.sys.System.sleep(6);
 				client.close();
 			} catch (_:Dynamic) {}
 		});

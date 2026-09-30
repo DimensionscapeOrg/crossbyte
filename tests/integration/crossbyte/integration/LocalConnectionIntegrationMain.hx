@@ -101,7 +101,7 @@ class LocalConnectionIntegrationMain {
 			if (predicate()) {
 				return;
 			}
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 		throw 'Timed out waiting for $label';
 	}

@@ -73,7 +73,7 @@ class ConnectionPoolStress implements StressCase {
 						}
 						lock.release();
 
-						Sys.sleep(0.001);
+						crossbyte.sys.System.sleep(0.001);
 
 						lock.acquire();
 						concurrent--;

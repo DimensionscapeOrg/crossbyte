@@ -67,9 +67,9 @@ class LoadPoolTest extends utest.Test {
 			if (reached) {
 				break;
 			}
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
-		Sys.sleep(0.2);
+		crossbyte.sys.System.sleep(0.2);
 		lock.acquire();
 		var atOnce:Int = most;
 		lock.release();
@@ -100,7 +100,7 @@ class LoadPoolTest extends utest.Test {
 		// Others earlier cases left are on the wait they began with.
 		var until:Float = haxe.Timer.stamp() + 3.0;
 		while (LoadPool.threadCount() >= busy && haxe.Timer.stamp() < until) {
-			Sys.sleep(0.02);
+			crossbyte.sys.System.sleep(0.02);
 		}
 		var after:Int = LoadPool.threadCount();
 		LoadPool.idleSeconds = saved;

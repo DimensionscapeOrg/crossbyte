@@ -764,7 +764,7 @@ class PeerConnectionTest extends utest.Test {
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
 			peer.poll(haxe.Timer.stamp());
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 
@@ -1085,7 +1085,7 @@ class PeerConnectionTest extends utest.Test {
 
 		while (!done() && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 

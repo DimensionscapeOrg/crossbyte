@@ -203,7 +203,7 @@ class NativePostgresBridgeTest extends utest.Test {
 			done.release();
 		});
 
-		Sys.sleep(0.25);
+		crossbyte.sys.System.sleep(0.25);
 
 		var started:Float = haxe.Timer.stamp();
 		Assert.isTrue(connection.cancel());
@@ -428,7 +428,7 @@ class NativePostgresBridgeTest extends utest.Test {
 	 * full collection from this one.
 	 */
 	@:noCompletion private function __timeCollectionWhileBlocked():Float {
-		Sys.sleep(0.25);
+		crossbyte.sys.System.sleep(0.25);
 
 		var started:Float = haxe.Timer.stamp();
 		cpp.vm.Gc.run(true);

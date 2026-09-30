@@ -39,7 +39,7 @@ class ChildRuntimeTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + 3;
 		while (ranHere == null && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.005);
+			crossbyte.sys.System.sleep(0.005);
 		}
 		child.exit();
 

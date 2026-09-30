@@ -297,7 +297,7 @@ class ConnectionPool<T> {
 			// No condition variable is available across every supported
 			// target, so wait in small slices. Callers are worker threads,
 			// so this costs latency rather than throughput.
-			Sys.sleep(0.001);
+			crossbyte._internal.system.Sleep.sleep(0.001);
 		}
 	}
 

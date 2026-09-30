@@ -347,7 +347,7 @@ class FakeMongoServer {
 							throw e;
 						}
 
-						Sys.sleep(0.002);
+						crossbyte.sys.System.sleep(0.002);
 					}
 				}
 			}

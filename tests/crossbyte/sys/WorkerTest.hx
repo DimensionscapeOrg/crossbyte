@@ -36,7 +36,7 @@ class WorkerTest extends utest.Test {
 		worker.addEventListener(ThreadEvent.COMPLETE, (_:ThreadEvent) -> completed = true);
 		worker.doWork = _ -> {
 			onCaller = caller.value == true;
-			Sys.sleep(0.3);
+			crossbyte.sys.System.sleep(0.3);
 			worker.sendComplete("done");
 		};
 
@@ -295,7 +295,7 @@ class WorkerTest extends utest.Test {
 		#if target.threaded
 		var deadline = haxe.Timer.stamp() + timeoutSeconds;
 		while (!done() && haxe.Timer.stamp() < deadline) {
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 		#end
 	}
@@ -306,7 +306,7 @@ class WorkerTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + timeoutSeconds;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 		#end
 	}
