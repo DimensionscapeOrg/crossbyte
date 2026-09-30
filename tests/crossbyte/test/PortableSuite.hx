@@ -98,6 +98,8 @@ class PortableSuite {
 		// Specialised per element type, and Map keys that differ by target.
 		runner.addCase(new crossbyte.ds.PriorityQueueTest());
 		runner.addCase(new crossbyte.ds.OrderedMapTest());
+		// Unsigned pixel comparison through the sign bit, where js differs.
+		runner.addCase(new crossbyte.ds.BitmapDataTest());
 		// Word arithmetic on the sign bit, which is where js differs.
 		runner.addCase(new crossbyte.ds.BitSetTest());
 		// Sequence numbers wrapping past 2^31 - 1, likewise.
