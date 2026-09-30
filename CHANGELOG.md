@@ -1220,6 +1220,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The HTTP/1.1 client holds a response's header section to 64 KB,
+  `Http.MAX_RESPONSE_HEADER_BYTES`, the limit the server holds a request's
+  to. It read header lines for as long as a server sent them, one line for
+  as long as it went without ending, and 1xx responses for as long as they
+  kept coming -- during which the idle timeout never fired -- so a server,
+  or one a redirect led to, chose how much memory and time the client
+  spent. Trailers are held to the same limit, a chunk-size line to 4 KB,
+  repeated fields are joined once rather than each onto everything before
+  it, and the cookie jar keeps 180 cookies a host and ignores one longer
+  than 4,096 characters, where it kept every one and read through all of
+  them on each request.
 - The cookies `URLRequest.manageCookies` carries across a redirect match
   their host whatever its case, and are kept per host. A cookie set by
   `Example.com` was not sent to `example.com`, so a redirect that changed

@@ -63,6 +63,26 @@ class Http {
 	public static var MAX_DECOMPRESSED_BODY_SIZE:Int = 64 * 1024 * 1024;
 
 	/**
+	 * Bytes a response's header section may take -- its status line, its
+	 * header lines, and any informational (1xx) responses ahead of it -- and,
+	 * separately, the trailers after a chunked body. Defaults to 64 KB, the
+	 * limit the server holds a request's header block to; `<= 0` disables it.
+	 *
+	 * Nothing bounded it. The client read header lines for as long as a
+	 * server sent them, a single line for as long as it went without ending,
+	 * and 1xx responses for as long as they kept coming, so the server chose
+	 * how much memory and time the client spent before a byte of the body.
+	 */
+	public static var MAX_RESPONSE_HEADER_BYTES:Int = 64 * 1024;
+
+	/**
+	 * Bytes one chunk-size line may take, extensions included. A size is
+	 * seven hex digits at most here, and no extension anyone sends is long;
+	 * one that never ended was read for as long as the server kept it going.
+	 */
+	private static inline var MAX_CHUNK_LINE:Int = 4096;
+
+	/**
 	 * Content codings one response may stack. Defaults to 2.
 	 *
 	 * They multiply: each pass expands what the one before it produced, so
@@ -723,7 +743,7 @@ class Http {
 				case "chunked":
 					var buffer:BytesBuffer = new BytesBuffer();
 					while (true) {
-						var sizeLine:String = __readLine();
+						var sizeLine:String = __readLine(MAX_CHUNK_LINE);
 						if (sizeLine == null) {
 							throw "Unexpected EOF while reading chunk size";
 						}
@@ -748,11 +768,19 @@ class Http {
 						}
 
 						if (chunkSize == 0) {
+							// Trailers are a header section of their own, held to
+							// the same limit; they were read for as long as the
+							// server sent them.
+							var budget:Int = MAX_RESPONSE_HEADER_BYTES > 0 ? MAX_RESPONSE_HEADER_BYTES : 0x7FFFFFFF;
 							var trailer:String = "";
 							do {
-								trailer = __readLine();
+								trailer = __readLine(budget);
 								if (trailer == null) {
 									throw "Unexpected EOF while reading trailers";
+								}
+								budget -= __lineBytes + 1;
+								if (budget < 0) {
+									throw new LineTooLong(MAX_RESPONSE_HEADER_BYTES);
 								}
 
 								trailer = StringTools.trim(trailer);
@@ -1064,10 +1092,28 @@ class Http {
 
 		var line:String = '';
 		var first:Bool = true;
+		// What the section may still take. Interim responses count against it
+		// too: a server sending 1xx after 1xx held the client in this loop for
+		// as long as it liked, and the socket's idle timeout never fired,
+		// since the bytes kept coming.
+		var budget:Int = MAX_RESPONSE_HEADER_BYTES > 0 ? MAX_RESPONSE_HEADER_BYTES : 0x7FFFFFFF;
+		// Repeats of one field, joined once the block ends. Appending each to
+		// the whole value so far was quadratic in the repeats, and the server
+		// chooses how many there are.
+		var repeats:Null<StringMap<Array<String>>> = null;
 		while (true) {
 			try {
-				line = __readLine();
+				line = __readLine(budget);
+				budget -= __lineBytes + 1;
+				if (budget < 0) {
+					throw new LineTooLong(MAX_RESPONSE_HEADER_BYTES);
+				}
 			} catch (e:Dynamic) {
+				if (Std.isOfType(e, LineTooLong)) {
+					__close();
+					__fail("Response header section exceeded " + MAX_RESPONSE_HEADER_BYTES + " bytes");
+					return;
+				}
 				if (first && __reusedSocket) {
 					// A kept connection the server had already closed. Nothing
 					// of a response arrived, so the request goes again on a new
@@ -1105,6 +1151,7 @@ class Http {
 				if (__status >= 100 && __status < 200) {
 					__status = 0;
 					__responseHeaders = new StringMap();
+					repeats = null;
 					continue;
 				}
 				break;
@@ -1130,16 +1177,29 @@ class Http {
 				var key:String = line.substr(0, i).toLowerCase();
 				var value:String = StringTools.trim(line.substr(i + 1));
 
-				if (__responseHeaders.exists(key)) {
-					if (key == "set-cookie") {
-						var prev = __responseHeaders.get(key);
-						__responseHeaders.set(key, prev + "\n" + value);
-					} else {
-						__responseHeaders.set(key, __responseHeaders.get(key) + ", " + value);
-					}
-				} else {
+				var earlier:Null<String> = __responseHeaders.get(key);
+				if (earlier == null) {
 					__responseHeaders.set(key, value);
+					continue;
 				}
+				if (repeats == null) {
+					repeats = new StringMap();
+				}
+				var values:Null<Array<String>> = repeats.get(key);
+				if (values == null) {
+					values = [earlier];
+					repeats.set(key, values);
+				}
+				values.push(value);
+			}
+		}
+
+		if (repeats != null) {
+			// Set-Cookie with a newline, since a cookie's own Expires holds a
+			// comma; every other repeat with a comma, which RFC 9110 5.3 makes
+			// equivalent.
+			for (key => values in repeats) {
+				__responseHeaders.set(key, values.join(key == "set-cookie" ? "\n" : ", "));
 			}
 		}
 
@@ -1156,26 +1216,39 @@ class Http {
 		onHeaders(__responseHeaders);
 	}
 
+	/** Bytes the last `__readLine` took, its line ending's LF aside. */
+	private var __lineBytes:Int = 0;
+
 	/**
 	 * One line of the response without its line ending, or `Eof` when the
-	 * stream ends before any of it.
+	 * stream ends before any of it. Throws `LineTooLong` once more than
+	 * `limit` bytes have arrived without the line ending: this was
+	 * `Input.readLine`, which read a line for as long as the server kept it
+	 * going, into memory, with no bound at all.
 	 *
-	 * `Input.readLine`, except on eval, where a socket's `readByte` answers 0
-	 * at the end of the stream rather than throwing. A server closing without
-	 * an answer read there as endless NUL bytes, so the line never ended and
-	 * `load()` never returned. `readBytes` does report the end, so eval reads
-	 * through it, a byte at a time so nothing past the line is taken from the
-	 * body.
+	 * A byte at a time, as `readLine` read, so nothing past the line is taken
+	 * from the body. On eval through `readBytes`: a socket's `readByte` there
+	 * answers 0 at the end of the stream rather than throwing, so a server
+	 * closing without an answer read as endless NUL bytes, the line never
+	 * ended, and `load()` never returned.
 	 */
-	private function __readLine():String {
-		#if eval
+	private function __readLine(limit:Int):String {
 		var input:haxe.io.Input = __socket.input;
-		var one:Bytes = Bytes.alloc(1);
 		var line:BytesBuffer = new BytesBuffer();
+		var count:Int = 0;
 		var read:Bool = false;
+		#if eval
+		var one:Bytes = Bytes.alloc(1);
+		#end
 		while (true) {
+			var byte:Int;
 			try {
+				#if eval
 				input.readBytes(one, 0, 1);
+				byte = one.get(0);
+				#else
+				byte = input.readByte();
+				#end
 			} catch (e:haxe.io.Eof) {
 				if (!read) {
 					throw e;
@@ -1183,20 +1256,20 @@ class Http {
 				break;
 			}
 			read = true;
-			var byte:Int = one.get(0);
 			if (byte == "\n".code) {
 				break;
 			}
+			if (++count > limit) {
+				throw new LineTooLong(limit);
+			}
 			line.addByte(byte);
 		}
+		__lineBytes = count;
 		var text:String = line.getBytes().toString();
 		if (text.length > 0 && StringTools.fastCodeAt(text, text.length - 1) == "\r".code) {
 			text = text.substr(0, text.length - 1);
 		}
 		return text;
-		#else
-		return __socket.input.readLine();
-		#end
 	}
 
 	/**
@@ -1574,6 +1647,13 @@ class Http {
 		}
 
 		return normalized + suffix;
+	}
+}
+
+/** A line, or a section of lines, of a response ran past its limit. */
+private class LineTooLong extends haxe.Exception {
+	public function new(limit:Int) {
+		super("A line of the response ran past its " + limit + " byte limit");
 	}
 }
 #end
