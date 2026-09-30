@@ -1220,6 +1220,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerWebSocket` accepts sessions on eval, hl and neko. Each session
+  it accepted drew a client's handshake key from `SecureRandom` before
+  asking whether it was a client, and `SecureRandom` refuses on those
+  targets, so every upgrade threw in the accept tick and the peer was
+  reset: a server there accepted nothing, whatever this changelog said of
+  WebSockets on the interpreter. Only a client draws a key now. A client on
+  those targets still needs `SecureRandom`, for its key and its masks, and
+  is refused as before.
 - A closed connection is let go of. The socket registry's writable queue is
   a `Stack`, whose `clear()` only reset its count, so the backing array held
   every connection that wrote in a busy pass -- and through the system
