@@ -57,6 +57,15 @@ class JvmSslSocket extends sys.net.Socket {
 	@:noCompletion private var __alpn:Array<String>;
 	@:noCompletion private var __sni:Array<crossbyte._internal.socket._jvm.JvmSniKeyManager.SniEntry>;
 
+	// The context this connection's engine is made from: for an accepted
+	// connection, its listener's.
+	@:noCompletion private var __context:SSLContext;
+	// A listener's context, made on its first accept and handed to every
+	// connection after, with what it was made from; see __serverContext.
+	@:noCompletion private var __listenerContext:SSLContext;
+	@:noCompletion private var __listenerVerifies:Null<Bool>;
+	@:noCompletion private var __listenerDefaultCA:JvmSslCertificate;
+
 	/**
 		How many handshakes after the first a server connection carries through
 		for its peer before refusing the next. Each is a full handshake, a
@@ -119,10 +128,12 @@ class JvmSslSocket extends sys.net.Socket {
 	public function setCertificate(cert:JvmSslCertificate, key:JvmSslKey):Void {
 		__certificate = cert;
 		__key = key;
+		__listenerContext = null;
 	}
 
 	public function setCA(cert:JvmSslCertificate):Void {
 		__ca = cert;
+		__listenerContext = null;
 	}
 
 	public function setHostname(name:String):Void {
@@ -173,6 +184,7 @@ class JvmSslSocket extends sys.net.Socket {
 		}
 
 		__sni.push({matches: cbServernameMatch, chain: JvmSniKeyManager.chainOf(cert), key: key.native});
+		__listenerContext = null;
 	}
 
 	public function peerCertificate():JvmSslCertificate {
@@ -193,9 +205,13 @@ class JvmSslSocket extends sys.net.Socket {
 	/**
 		Accepts a connection and gives it a server-mode engine.
 
-		The certificate lives on the listener, so each accepted socket is handed
-		the same material and builds its own engine from it. Nothing is
-		negotiated here; the handshake is driven later, by the pump.
+		The certificate lives on the listener, and so does the context made
+		from it: every accepted connection's engine comes from the one context.
+		Each used to build its own, a key store, key and trust managers and a
+		random source per connection, some 9 ms of CPU, and a context is also
+		where the sessions a server issued are kept, so no client could resume
+		one: 0 of 900 did. Nothing is negotiated here; the handshake is driven
+		later, by the pump.
 	**/
 	override public function accept():sys.net.Socket {
 		var incoming:java.nio.channels.SocketChannel = try {
@@ -218,8 +234,25 @@ class JvmSslSocket extends sys.net.Socket {
 		accepted.__alpn = __alpn;
 		accepted.__sni = __sni;
 		accepted.verifyCert = verifyCert;
+		accepted.__context = __serverContext();
 		accepted.__startEngine(false);
 		return accepted;
+	}
+
+	/**
+		The context a listener hands every connection it accepts: made on the
+		first accept and kept, and made again only if what it was made from has
+		changed. `ServerSocket` refuses new material once it is bound, so in
+		practice that is never.
+	**/
+	@:noCompletion private function __serverContext():SSLContext {
+		var verifies:Null<Bool> = __verifies();
+		if (__listenerContext == null || __listenerVerifies != verifies || __listenerDefaultCA != DEFAULT_CA) {
+			__listenerContext = __buildContext();
+			__listenerVerifies = verifies;
+			__listenerDefaultCA = DEFAULT_CA;
+		}
+		return __listenerContext;
 	}
 
 	/**
@@ -405,9 +438,17 @@ class JvmSslSocket extends sys.net.Socket {
 		// sends no SNI, was refused as "Hostname or IP address is undefined"
 		// on the JDKs that fall back, the right connection refused along
 		// with the wrong one, for a reason naming neither.
+		//
+		// The host and port are also what the context's session cache is
+		// keyed by, so a client's next connection to them can resume.
+		var context:SSLContext = __context;
+		if (context == null) {
+			context = clientMode ? JvmSslContexts.client(this) : __buildContext();
+			__context = context;
+		}
 		__engine = clientMode && __hostname != null
-			? __buildContext().createSSLEngine(__hostname, __peerPort)
-			: __buildContext().createSSLEngine();
+			? context.createSSLEngine(__hostname, __peerPort)
+			: context.createSSLEngine();
 		__engine.setUseClientMode(clientMode);
 
 		// A trust store on its own only says which authorities are acceptable;
@@ -1179,6 +1220,87 @@ class JvmSslSocket extends sys.net.Socket {
 			throw haxe.io.Error.Blocked;
 		}
 		return consumed;
+	}
+}
+
+/**
+	The contexts client connections are made from: one for each way of
+	trusting and identifying, kept and shared.
+
+	Each connection used to build its own, key and trust managers, a random
+	source, and for the JDK's default trust store, the store itself read and
+	parsed, and a context is where a client's sessions are kept, so none was
+	ever resumed. A context is shared only between connections made the same
+	way: verifying or not, trusting the same authorities, presenting the same
+	certificate. A session made without verification is therefore never
+	resumed by a connection that verifies, nor one made trusting one
+	authority by a connection trusting another.
+
+	Kept by identity: a certificate or key read again is a new object, and
+	gets a context of its own. Only the most recent few are kept, so an
+	application that reads a new certificate for every request costs what it
+	did before, and no more.
+**/
+@:noCompletion @:access(crossbyte._internal.socket._jvm.JvmSslSocket)
+private class JvmSslContexts {
+	private static inline var KEEP:Int = 16;
+	private static var __lock:sys.thread.Mutex = new sys.thread.Mutex();
+	private static var __kept:Array<JvmSslContextEntry> = [];
+
+	/** The context a client connection made as `socket` is should come from. **/
+	public static function client(socket:JvmSslSocket):SSLContext {
+		var verifies:Bool = socket.__verifies() != false;
+		// The authorities trusted, or none named, for the JDK's own store.
+		// Not verifying, none are consulted, so none tell contexts apart.
+		var ca:Null<JvmSslCertificate> = verifies ? (socket.__ca != null ? socket.__ca : JvmSslSocket.DEFAULT_CA) : null;
+		var presenting:Bool = socket.__certificate != null && socket.__key != null;
+		var certificate:Null<JvmSslCertificate> = presenting ? socket.__certificate : null;
+		var key:Null<JvmSslKey> = presenting ? socket.__key : null;
+
+		__lock.acquire();
+		for (i in 0...__kept.length) {
+			var entry = __kept[i];
+			if (entry.verifies == verifies && entry.ca == ca && entry.certificate == certificate && entry.key == key) {
+				if (i > 0) {
+					// Most recently used first, so the oldest is what goes.
+					__kept.splice(i, 1);
+					__kept.unshift(entry);
+				}
+				__lock.release();
+				return entry.context;
+			}
+		}
+		__lock.release();
+
+		// Made outside the lock: reading the JDK's trust store takes a while,
+		// and a connection wanting a context already made should not wait on
+		// it. Two made at once for the same key both work; one is kept.
+		var context:SSLContext = socket.__buildContext();
+
+		__lock.acquire();
+		__kept.unshift(new JvmSslContextEntry(verifies, ca, certificate, key, context));
+		if (__kept.length > KEEP) {
+			__kept.pop();
+		}
+		__lock.release();
+		return context;
+	}
+}
+
+@:noCompletion private class JvmSslContextEntry {
+	public final verifies:Bool;
+	public final ca:Null<JvmSslCertificate>;
+	public final certificate:Null<JvmSslCertificate>;
+	public final key:Null<JvmSslKey>;
+	public final context:SSLContext;
+
+	public function new(verifies:Bool, ca:Null<JvmSslCertificate>, certificate:Null<JvmSslCertificate>, key:Null<JvmSslKey>,
+			context:SSLContext) {
+		this.verifies = verifies;
+		this.ca = ca;
+		this.certificate = certificate;
+		this.key = key;
+		this.context = context;
 	}
 }
 
