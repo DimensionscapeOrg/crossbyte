@@ -5,6 +5,15 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.ds.IdList`, a list of `Int` ids that holds them unboxed and
+  keeps its storage when emptied, and the queries that fill one:
+  `SpatialGrid.queryCircleIds` and `queryRectIds`, `SpatialGrid3D.
+  querySphereIds` and `queryBoxIds`. `InterestSet.addAll` takes one. A query
+  into an `Array<Int>` boxes every id above 127 on the jvm, and an array
+  emptied with `resize(0)` hands V8 its storage back, so the interest loop
+  the documentation showed allocated 2.2 MB a tick for 1,000 views of 50 on
+  either; through an `IdList` it allocates nothing on the jvm and Node, and
+  natively it went from 1.28 to about 1.0 ms a tick.
 - `crossbyte.ds.IntPriorityQueue`: a priority queue of `Int` ids, each held
   with a priority given when it is enqueued -- lowest first, equals in the
   order they came. `PriorityQueue<Int>` does not compile, its elements being
@@ -1235,6 +1244,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `InterestSet` and `BitSet` allocate nothing per round on the jvm and
+  Node. Their lists and words were `Array<Int>`s: the jvm boxed every id
+  above 127 as it was added and every word as it changed, and emptying a
+  list with `resize(0)` gave V8 its store back each round -- 2,952 bytes a
+  round for a view of 50 on the jvm, and with the query's own array 2.2 MB
+  a tick for 1,000 views. They are unboxed vectors with counts now, and
+  iterating an `InterestSet` no longer copies its view.
 - `SlotMap` and `PackedSlotMap` reuse the slot freed longest ago. They
   handed back the slot freed last, so one entity despawned and another
   spawned each tick reused one slot every time and brought its 11-bit

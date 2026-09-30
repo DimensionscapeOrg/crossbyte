@@ -1,5 +1,7 @@
 package crossbyte.ds;
 
+import haxe.ds.Vector;
+
 /**
  * ...
  * @author Christopher Speciale
@@ -24,9 +26,15 @@ package crossbyte.ds;
  * entity slots as bit indices, what came into view since the last tick is
  * `now.clone()` with `andNot(before)` applied, and what left it is the same
  * the other way round.
+ *
+ * The words are a `haxe.ds.Vector<Int>`, which is unboxed on every target.
+ * They were an `Array<Int>`, which the jvm holds as boxed `Integer`s, so
+ * every `set` or `clear` that left a word outside -128 to 127 allocated one.
  */
 class BitSet {
-	private var __bits:Array<Int>;
+	// Every bit at `__size` or past it is zero, in the last word used and in
+	// every word after it, which `get`, `countSetBits` and the rest rely on.
+	private var __bits:Vector<Int>;
 	private var __size:Int;
 
 	/**
@@ -43,9 +51,12 @@ class BitSet {
 		if (value < 0) {
 			throw "Index out of bounds";
 		}
-		__ensureCapacity(value);
-		__size = value;
-		__trimToSize();
+		if (value < __size) {
+			__size = value;
+			__trimToSize();
+		} else {
+			__resize(value);
+		}
 		return __size;
 	}
 
@@ -56,27 +67,30 @@ class BitSet {
 	 */
 	public function new(size:UInt = 32) {
 		this.__size = size;
-		this.__bits = new Array<Int>();
-		this.__bits.resize(Math.ceil(size / 32));
-		for (i in 0...__bits.length) {
-			__bits[i] = 0;
-		}
+		this.__bits = __zeroed(__wordCountForSize(size));
 	}
 
 	private inline function __ensureCapacity(bitIndex:Int):Void {
 		if (bitIndex >= __size) {
-			var newSize:Int = Std.int(Math.max(__size * 2, bitIndex + 1));
-			var newBits:Array<Int> = new Array<Int>();
-			newBits.resize(Math.ceil(newSize / 32));
-			for (i in 0...__bits.length) {
-				newBits[i] = __bits[i];
-			}
-			for (i in __bits.length...newBits.length) {
-				newBits[i] = 0;
-			}
-			__bits = newBits;
-			__size = newSize;
+			__resize(Std.int(Math.max(__size * 2, bitIndex + 1)));
 		}
+	}
+
+	// A new length, keeping the bits below it. The words past the old length
+	// are zero already, so growing within the vector writes nothing.
+	private function __resize(newSize:Int):Void {
+		var words:Int = __wordCountForSize(newSize);
+		if (words > __bits.length) {
+			var grown:Vector<Int> = __zeroed(words);
+			Vector.blit(__bits, 0, grown, 0, __bits.length);
+			__bits = grown;
+		}
+		__size = newSize;
+	}
+
+	// At least one word: a Vector of length 0 is unspecified.
+	private static function __zeroed(words:Int):Vector<Int> {
+		return new Vector<Int>(words < 1 ? 1 : words, 0);
 	}
 
 	private inline function __checkBounds(index:Int):Void {
@@ -97,10 +111,11 @@ class BitSet {
 		return (1 << bitsInLastWord) - 1;
 	}
 
+	// Clears every bit at `__size` or past it, after the length shrank.
 	private function __trimToSize():Void {
 		var words:Int = __wordCountForSize(__size);
-		if (__bits.length > words) {
-			__bits.resize(words);
+		for (i in words...__bits.length) {
+			__bits[i] = 0;
 		}
 
 		if (words > 0) {
