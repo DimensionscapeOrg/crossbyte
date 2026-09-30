@@ -822,11 +822,11 @@ class IceAgent {
 
 		__valid = revalued;
 		__valid.sort(function(a:IceCandidatePair, b:IceCandidatePair):Int {
-			return Int64.compare(b.priority, a.priority);
+			return IceCandidatePair.__higherFirst(a.priority, b.priority);
 		});
 
 		__checks.sort(function(a:IceCheck, b:IceCheck):Int {
-			return Int64.compare(b.pair.priority, a.pair.priority);
+			return IceCandidatePair.__higherFirst(a.pair.priority, b.pair.priority);
 		});
 
 		if (selectedPair != null) {
@@ -895,7 +895,7 @@ class IceAgent {
 		// Highest priority first, so `__nextWaiting` is a scan rather than a
 		// search and the order the two peers agreed on is the order used.
 		__checks.sort(function(a:IceCheck, b:IceCheck):Int {
-			return Int64.compare(b.pair.priority, a.pair.priority);
+			return IceCandidatePair.__higherFirst(a.pair.priority, b.pair.priority);
 		});
 	}
 
@@ -1043,7 +1043,7 @@ class IceAgent {
 
 		__valid.push(pair);
 		__valid.sort(function(a:IceCandidatePair, b:IceCandidatePair):Int {
-			return Int64.compare(b.priority, a.priority);
+			return IceCandidatePair.__higherFirst(a.priority, b.priority);
 		});
 	}
 

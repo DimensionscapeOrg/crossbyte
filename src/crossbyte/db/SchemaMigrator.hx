@@ -224,7 +224,12 @@ class SchemaMigrator<T> {
 
 		__versions.set(migration.version, true);
 		__migrations.push(migration);
-		__migrations.sort((a, b) -> a.version - b.version);
+		// Compared, not subtracted. Two versions stamped with a date, as
+		// 2026093001 is, differ by more than neko's 31-bit Int holds, and
+		// neko's native sort takes any answer that large for "less": it ran
+		// a date-stamped history in whatever order the sort ended with. A
+		// subtraction also wraps where versions of opposite sign meet.
+		__migrations.sort((a, b) -> a.version < b.version ? -1 : (a.version > b.version ? 1 : 0));
 		return this;
 	}
 
