@@ -10,13 +10,43 @@ import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import sys.db.Connection;
 import sys.db.ResultSet;
+#if cpp
+import crossbyte.db.mysql._internal.NativeMySQL;
+import crossbyte.db.mysql._internal.NativeMySQLConnection;
+#else
 import sys.db.Mysql;
+#end
 
-/** MySQL connection wrapper over Haxe's `sys.db.Mysql` support. */
+/**
+ * MySQL connection wrapper. On cpp it drives the client hxcpp bundles
+ * directly, and reads the session state the server reports after every
+ * statement; elsewhere it runs on Haxe's `sys.db.Mysql`.
+ */
 class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransactionalConnection {
 	private static final ALLOWED_CHARSETS = ["utf8mb4", "utf8", "latin1", "ucs2", "utf16", "utf32"];
 
 	public var connected(get, null):Bool;
+
+	/**
+		Whether a transaction is open. On cpp this is the server's own
+		account, from the status flags of its last reply, so a transaction
+		begun as SQL text -- `request("START TRANSACTION")` -- counts as
+		surely as one begun with `begin()`. So does a session with autocommit
+		turned off, which MySQL documents as always having a transaction
+		open: every statement joins it until a COMMIT or ROLLBACK, after
+		which the next one starts.
+
+		The flag used to change only in `begin()`, `commit()` and
+		`rollback()`. A connection handed back to a `ConnectionPool` after
+		`autocommit = false` or a `START TRANSACTION` sent as SQL read as idle,
+		was not rolled back, and the next borrower's `begin()` committed the
+		abandoned work -- MySQL commits an open transaction implicitly when a
+		new one starts.
+
+		Where the driver cannot read the server's flags (a target other than
+		cpp) it follows `begin()`, `commit()`, `rollback()`, the `autocommit`
+		setter, and those statements when they are sent as text.
+	**/
 	public var inTransaction(get, null):Bool;
 	public var lastInsertRowID(get, null):Int;
 	public var affectedRows(get, null):Int;
@@ -25,7 +55,15 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	public var isolationLevel(get, set):IsolationLevel;
 
 	@:noCompletion private var __connection:Connection;
+	#if cpp
+	// The same object as __connection when the native client is in use, and
+	// null when a test has put a connection of its own there.
+	@:noCompletion private var __native:NativeMySQLConnection;
+	#end
 	@:noCompletion private var __inTransaction:Bool = false;
+	// What the driver knows of autocommit where the server cannot be asked
+	// for its flags; MySQL starts every session with it on.
+	@:noCompletion private var __autocommitOff:Bool = false;
 
 	public function new() {
 		super();
@@ -33,6 +71,16 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 	public function open(cfg:MySQLConfig):Void {
 		try {
+			#if cpp
+			__native = NativeMySQLConnection.connect({
+				host: cfg.host,
+				port: cfg.port == null ? 3306 : cfg.port,
+				user: cfg.user,
+				pass: cfg.password,
+				socket: cfg.socket
+			}, cfg.database);
+			__connection = __native;
+			#else
 			__connection = Mysql.connect({
 				host: cfg.host,
 				port: cfg.port,
@@ -41,6 +89,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				database: cfg.database,
 				socket: cfg.socket
 			});
+			#end
 
 			if (cfg.charset != null && cfg.charset != "") {
 				var cs:String = cfg.charset.toLowerCase();
@@ -80,7 +129,11 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			}
 
 			__connection = null;
+			#if cpp
+			__native = null;
+			#end
 			__inTransaction = false;
+			__autocommitOff = false;
 		}
 	}
 
@@ -103,7 +156,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	// among them -- the way SQLiteConnection, which throws, never did.
 	public function begin():Void {
 		try {
-			__connection.request("START TRANSACTION;");
+			request("START TRANSACTION;");
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.BEGIN, "Begin failed", e);
 		}
@@ -124,7 +177,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	**/
 	public function commit():Void {
 		try {
-			__connection.request("COMMIT;");
+			request("COMMIT;");
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.COMMIT, "Commit failed", e);
 		}
@@ -137,7 +190,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		var failure:Dynamic = null;
 
 		try {
-			__connection.request("ROLLBACK;");
+			request("ROLLBACK;");
 		} catch (e:Dynamic) {
 			failure = e;
 		}
@@ -193,8 +246,86 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		__dispatch(SQLEvent.RELEASE_SAVEPOINT);
 	}
 
-	public inline function request(sql:String):ResultSet {
-		return __connection.request(sql);
+	public function request(sql:String):ResultSet {
+		#if cpp
+		if (__native != null) {
+			return __native.request(sql);
+		}
+		#end
+
+		var result:ResultSet = __connection.request(sql);
+		__noteStatement(sql);
+		return result;
+	}
+
+	/**
+		Follows the statements that open and close a transaction or switch
+		autocommit, for a connection whose server flags cannot be read. Only
+		after the statement succeeded, so one the server refused changes
+		nothing. Costs a look at the first character for any other statement.
+	**/
+	@:noCompletion private function __noteStatement(sql:String):Void {
+		if (sql == null) {
+			return;
+		}
+
+		var start:Int = 0;
+
+		while (start < sql.length && StringTools.isSpace(sql, start)) {
+			start++;
+		}
+
+		if (start >= sql.length) {
+			return;
+		}
+
+		var first:Int = StringTools.fastCodeAt(sql, start) | 0x20;
+
+		if (first != "s".code && first != "b".code && first != "c".code && first != "r".code) {
+			return;
+		}
+
+		var words:Array<String> = ~/[\s;=]+/g.split(StringTools.trim(sql).toUpperCase()).filter(w -> w != "");
+
+		if (words.length == 0) {
+			return;
+		}
+
+		switch (words[0]) {
+			case "BEGIN":
+				if (words.length == 1 || words[1] == "WORK") {
+					__inTransaction = true;
+				}
+			case "START":
+				if (words.length > 1 && words[1] == "TRANSACTION") {
+					__inTransaction = true;
+				}
+			case "COMMIT":
+				__inTransaction = false;
+			case "ROLLBACK":
+				if (words.length == 1 || words[1] == "WORK") {
+					__inTransaction = false;
+				}
+			case "SET":
+				var at:Int = words.indexOf("AUTOCOMMIT");
+
+				if (at < 0) {
+					at = words.indexOf("@@AUTOCOMMIT");
+				}
+
+				if (at >= 0 && at + 1 < words.length) {
+					var value:String = words[at + 1];
+
+					if (value == "0" || value == "OFF") {
+						__autocommitOff = true;
+					} else if (value == "1" || value == "ON") {
+						// Turning autocommit on commits whatever was open.
+						__autocommitOff = false;
+						__inTransaction = false;
+					}
+				}
+			default:
+		}
 	}
 
 	private function get_connected():Bool {
@@ -202,7 +333,14 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 	}
 
 	private function get_inTransaction():Bool {
-		return __inTransaction;
+		#if cpp
+		if (__native != null) {
+			var status:Int = __native.serverStatus;
+			return (status & NativeMySQL.STATUS_IN_TRANS) != 0 || (status & NativeMySQL.STATUS_AUTOCOMMIT) == 0;
+		}
+		#end
+
+		return __inTransaction || __autocommitOff;
 	}
 
 	private function get_lastInsertRowID():Int {
@@ -233,6 +371,13 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 			return true;
 		}
 
+		#if cpp
+		if (__native != null) {
+			// Reported with every reply, so there is nothing to ask.
+			return (__native.serverStatus & NativeMySQL.STATUS_AUTOCOMMIT) != 0;
+		}
+		#end
+
 		var rs:ResultSet = __connection.request("SELECT @@autocommit AS ac;");
 
 		return (rs != null && rs.hasNext()) ? (Std.parseInt(Std.string(Reflect.field(rs.next(), "ac"))) == 1) : true;
@@ -240,7 +385,7 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 
 	private function set_autocommit(v:Bool):Bool {
 		if (__connection != null) {
-			__connection.request("SET autocommit = " + (v ? "1" : "0") + ";");
+			request("SET autocommit = " + (v ? "1" : "0") + ";");
 		}
 
 		return v;

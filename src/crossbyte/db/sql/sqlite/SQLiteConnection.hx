@@ -19,6 +19,9 @@ import crossbyte.io.File;
 import crossbyte.sys.Worker;
 import sys.db.Connection;
 import sys.db.ResultSet;
+#if cpp
+import crossbyte.db.sql.sqlite._internal.NativeSQLiteConnection;
+#end
 #if !php
 import sys.thread.Deque;
 import sys.thread.Mutex;
@@ -39,6 +42,16 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	public var cacheSize(get, set):UInt;
 	// public var columnNameStyle(get, set):String;
 	public var connected(get, null):Bool;
+
+	/**
+		Whether a transaction is open. On cpp this is SQLite's own answer
+		(`sqlite3_get_autocommit`), so a transaction begun as SQL text --
+		`request("BEGIN")` -- counts, and one SQLite rolled back by itself
+		after an error does not. It used to change only in `begin()`,
+		`commit()` and `rollback()`, so a `ConnectionPool` handed a
+		connection with a `BEGIN` sent as SQL on to the next borrower with
+		its transaction still open.
+	**/
 	public var inTransaction(get, null):Bool;
 	public var lastInsertRowID(get, null):Int;
 	public var pageSize(get, null):UInt;
@@ -137,6 +150,10 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	@:noCompletion private var __openMode:SQLiteMode;
 	@:noCompletion private var __connection:Connection;
+	#if cpp
+	// The same object as __connection, typed, for what only it can answer.
+	@:noCompletion private var __native:NativeSQLiteConnection;
+	#end
 	@:noCompletion private var __sqlWorker:Worker;
 
 	// Set by the close job, on the worker thread, from inside the work loop --
@@ -818,7 +835,12 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	private function __createConnection(path:String):Void {
 		try {
+			#if cpp
+			__native = NativeSQLiteConnection.open(path);
+			__connection = __native;
+			#else
 			__connection = Sqlite.open(path);
+			#end
 		} catch (e:Dynamic) {
 			throw new IOError(e);
 		}
@@ -897,6 +919,17 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function get_inTransaction():Bool {
+		#if cpp
+		if (__native != null) {
+			try {
+				return !__native.autocommit;
+			} catch (_:Dynamic) {
+				// Closed: no transaction can be open on it.
+				return false;
+			}
+		}
+		#end
+
 		return __inTransaction;
 	}
 

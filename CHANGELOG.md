@@ -1226,6 +1226,26 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ConnectionPool` rolls back a MySQL or SQLite transaction that was
+  begun as SQL text or by turning autocommit off. `inTransaction` changed
+  only in `begin()`, `commit()` and `rollback()`, so a connection released
+  after `request("START TRANSACTION")` or `autocommit = false` read as idle
+  and nothing was rolled back -- and on MySQL the next borrower's `begin()`
+  committed the abandoned writes, since MySQL commits an open transaction
+  when a new one starts. Natively, `MySQLConnection.inTransaction` and
+  `autocommit` now come from the status flags of the server's last reply,
+  with no round trip, and a session with autocommit off counts as in a
+  transaction, as MySQL documents it; `SQLiteConnection.inTransaction` is
+  SQLite's own `sqlite3_get_autocommit`. Elsewhere the MySQL driver follows
+  those statements when they are sent as text. A pool retires a connection
+  that still reports a transaction after its rollback, which is what a
+  MySQL session with autocommit off does.
+- MySQL values are escaped by the session's current rules. The native
+  client read `NO_BACKSLASH_ESCAPES` from the server's greeting and never
+  again, so after `SET sql_mode = 'NO_BACKSLASH_ESCAPES'` a quote was still
+  escaped with a backslash, which that mode reads as a backslash and the
+  end of the string: the value `x' OR 1=1 -- ` ran as SQL. The client now
+  keeps the flags of every OK and EOF packet (hxcpp fork, `fix/mysql-client`).
 - `MySQLStatement` reports an INSERT, UPDATE or DELETE as the success it
   was. The native client threw "Invalid result" when the result of a write
   was iterated, as the statement does with every result, so each write
