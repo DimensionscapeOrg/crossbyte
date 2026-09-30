@@ -209,8 +209,10 @@ abstract FlexSocket(EitherType<Socket, SSLSocket>) from Socket to Socket from SS
 	}
 
 	public inline function listen(connections:Int = 0):Void {
+		// ServerSocket's default: past what any system grants, and within
+		// neko's 31-bit Int, which the largest Int is not.
 		if (connections == 0)
-			connections = 0x7FFFFFFF;
+			connections = 0x7FFFFFF;
 		(this : Socket).listen(connections);
 	}
 

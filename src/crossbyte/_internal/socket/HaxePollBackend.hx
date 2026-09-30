@@ -84,6 +84,12 @@ class HaxePollBackend implements PollBackend {
 		#end
 	}
 
+	/**
+		Nothing to let go of: the set is handed over whole at each `prepare`,
+		and a socket gone from it is simply not in the next one.
+	**/
+	public function remove(socket:Socket):Void {}
+
 	#if !cpp
 	/**
 	 * Position of each registered socket, rebuilt when the set it describes
