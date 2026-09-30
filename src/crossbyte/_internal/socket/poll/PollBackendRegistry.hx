@@ -22,11 +22,34 @@ class PollBackendRegistry {
 		return false;
 	}
 
+	/**
+		The factory registered now, or null for the built-in backend. A
+		registry takes it once, when it is made, and keeps making its
+		backends with it: installing a backend later does not move a runtime
+		already polling onto it partway through its run.
+	**/
+	public static function current():Null<Int->PollBackend> {
+		return __factory;
+	}
+
 	public static function create(capacity:Int):PollBackend {
-		if (__factory != null) {
-			var backend = __factory(capacity);
-			if (backend != null) {
-				return backend;
+		return createWith(__factory, capacity);
+	}
+
+	/**
+		A backend from `factory`, or the built-in one when there is none, or
+		when it answers null or throws: a backend that cannot be made must not
+		leave a runtime with nothing to poll with.
+	**/
+	public static function createWith(factory:Null<Int->PollBackend>, capacity:Int):PollBackend {
+		if (factory != null) {
+			try {
+				var backend = factory(capacity);
+				if (backend != null) {
+					return backend;
+				}
+			} catch (error:Dynamic) {
+				crossbyte.utils.Logger.warn("A poll backend could not be made, and the built-in one is used instead: " + Std.string(error));
 			}
 		}
 

@@ -132,4 +132,6 @@ private class FakePollBackend implements PollBackend {
 	}
 
 	public function dispose():Void {}
+
+	public function remove(socket:SysSocket):Void {}
 }
