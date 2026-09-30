@@ -446,6 +446,17 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				state = __native.sqlState;
 			} catch (_:Dynamic) {}
 		}
+		#elseif java
+		// JDBC's failure carries both, and was passed on whole where a String
+		// was expected: every MySQL failure on the jvm surfaced as a
+		// ClassCastException instead, and a listener never ran.
+		if (Std.isOfType(e, java.sql.SQLException)) {
+			var failure:java.sql.SQLException = cast e;
+			code = failure.getErrorCode();
+			state = failure.getSQLState();
+			var message:String = failure.getMessage();
+			detail = message == null ? detail : message;
+		}
 		#end
 
 		return new MySQLError(operation, detail, detail, code, state);

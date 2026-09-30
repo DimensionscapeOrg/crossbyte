@@ -3,7 +3,9 @@ package crossbyte.db;
 #if !js
 import crossbyte.db.fakemysql.ScriptedConnection;
 import crossbyte.db.mysql.MySQLConnection;
+import crossbyte.db.mysql.MySQLError;
 import crossbyte.db.mysql.MySQLStatement;
+import crossbyte.errors.IOError;
 import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
@@ -91,6 +93,94 @@ class MySQLDriverTest extends utest.Test {
 
 		Assert.raises(() -> connection.request("START TRANSACTION"));
 		Assert.isFalse(connection.inTransaction);
+	}
+
+	public function testAFailureThatIsNotAStringStillBecomesAnSQLError():Void {
+		// The driver's failure was handed to SQLError and IOError where they
+		// take a String. On the jvm that is a java.sql.SQLException, so every
+		// failure surfaced as a ClassCastException: no SQLError, no listener,
+		// and the error number and SQLSTATE JDBC had were lost.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		var sql:String = "INSERT INTO users (email) VALUES ('a@example.com')";
+		#if java
+		wire.failures.set(sql, new java.sql.SQLException("Duplicate entry 'a@example.com' for key 'users.email'", "23000", 1062));
+		#else
+		wire.failures.set(sql, new haxe.Exception("Duplicate entry 'a@example.com' for key 'users.email'"));
+		#end
+		var statement:MySQLStatement = __statement(wire);
+		var heard:Array<Dynamic> = [];
+		statement.addEventListener(SQLErrorEvent.ERROR, e -> heard.push((cast e : SQLErrorEvent).error));
+		statement.text = sql;
+
+		var thrown:Dynamic = null;
+
+		try {
+			statement.execute();
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, MySQLError), "not a MySQLError: " + Std.string(thrown));
+		Assert.equals(1, heard.length);
+
+		if (Std.isOfType(thrown, MySQLError)) {
+			var error:MySQLError = thrown;
+			Assert.isTrue(error.message.indexOf("Duplicate entry") >= 0, error.message);
+			#if java
+			Assert.equals(1062, error.code);
+			Assert.equals("23000", error.sqlState);
+			#end
+		}
+
+		// And through a transaction step.
+		var connection:MySQLConnection = new MySQLConnection();
+		var failing:ScriptedConnection = new ScriptedConnection();
+		#if java
+		failing.failures.set("COMMIT;", new java.sql.SQLException("Deadlock found when trying to get lock", "40001", 1213));
+		#else
+		failing.failures.set("COMMIT;", new haxe.Exception("Deadlock found when trying to get lock"));
+		#end
+		connection.__connection = failing;
+		connection.begin();
+		var commitError:Dynamic = null;
+
+		try {
+			connection.commit();
+		} catch (e:Dynamic) {
+			commitError = e;
+		}
+
+		Assert.isTrue(Std.isOfType(commitError, MySQLError), "not a MySQLError: " + Std.string(commitError));
+		#if java
+		if (Std.isOfType(commitError, MySQLError)) {
+			Assert.equals(1213, (commitError : MySQLError).code);
+			Assert.equals("40001", (commitError : MySQLError).sqlState);
+		}
+		#end
+	}
+
+	public function testAFailedOpenIsAnIOError():Void {
+		// Nothing listens on port 1. On the jvm there is not even a driver to
+		// try it with, and the ClassNotFoundException that says so became a
+		// ClassCastException on its way into IOError.
+		var connection:MySQLConnection = new MySQLConnection();
+		var thrown:Dynamic = null;
+
+		try {
+			connection.open({
+				host: "127.0.0.1",
+				port: 1,
+				user: "app",
+				password: "secret",
+				database: "app",
+				connectTimeout: 2.0
+			});
+		} catch (e:Dynamic) {
+			thrown = e;
+		}
+
+		Assert.isTrue(Std.isOfType(thrown, IOError), "not an IOError: " + Std.string(thrown));
+		Assert.isFalse(connection.connected);
 	}
 
 	private function __statement(wire:ScriptedConnection):MySQLStatement {
