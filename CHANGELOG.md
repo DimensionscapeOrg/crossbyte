@@ -1220,6 +1220,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On hl, a thread waiting for a slow TLS server no longer stops every other
+  thread. HashLink's collector stops every thread and waits for each to
+  reach a safe point or say it is blocked; its TLS layer read the network
+  without saying so, so an HTTPS response that took six seconds held the
+  runtime for six (5,986 ms between two ticks, and 4.5 s of CPU spent
+  waiting), and a TLS client whose server ran in the same process waited
+  out its whole socket timeout, the server unable to answer until the
+  collection finished. `HlTlsSocket`, the TLS client `FlexSocket` makes on
+  hl, gives mbedTLS reads and writes through HashLink's plain socket
+  natives, which do say so: the same response held the runtime for 91 ms.
 - `NativeProcess` runs on hl and neko, and its `pid` is the child's
   everywhere. It asked for an OS define before it would start anything,
   and nothing gives one to hl or neko -- their bytecode runs unchanged on

@@ -307,6 +307,8 @@ class TestSuites {
 	public static function addSysNet(runner:Runner):Void {
 		runner.addCase(new crossbyte.net.SysSocketContractTest());
 		runner.addCase(new crossbyte.net.SocketSelectThreadsTest());
+		// hl's TLS client, whose waits its collector can see past.
+		runner.addCase(new crossbyte._internal.socket.HlTlsSocketTest());
 	}
 
 	public static function addRPC(runner:Runner):Void {
