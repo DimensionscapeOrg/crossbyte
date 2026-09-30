@@ -1618,6 +1618,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- HTTP/2 on hl refuses a NUL in a field as well. `Bytes.toString` stops at
+  the first NUL there, as it does on JavaScript, and the HPACK decoder's
+  fix for JavaScript below left hl out: an hl server took `a`, NUL, `b` as
+  the value `a` and served a request RFC 9113 calls malformed, where it
+  now resets the stream.
 - On hl, a `MySQLConnection.open` that cannot reach its server no longer
   corrupts the process heap. When HashLink's mysql library fails to
   connect, it frees the connection it made and leaves the collector a

@@ -216,13 +216,14 @@ class HpackDecoder {
 	}
 
 	/**
-		`bytes` as text, every byte of it. On JavaScript `Bytes.toString`
-		stops at the first NUL, so a field holding one arrived as the part
-		before it: the NUL that makes the field malformed (RFC 9113, 8.2.1)
-		was never seen, and neither was the rest of the value.
+		`bytes` as text, every byte of it. On JavaScript and on hl
+		`Bytes.toString` stops at the first NUL, so a field holding one
+		arrived as the part before it: the NUL that makes the field malformed
+		(RFC 9113, 8.2.1) was never seen, and neither was the rest of the
+		value. An HTTP/2 server on hl took `a`, NUL, `b` as the value `a`.
 	**/
 	private static function __text(bytes:Bytes):String {
-		#if js
+		#if (js || hl)
 		var text:Null<StringBuf> = null;
 		var start:Int = 0;
 		for (i in 0...bytes.length) {
