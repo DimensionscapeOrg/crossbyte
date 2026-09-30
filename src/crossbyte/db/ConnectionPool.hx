@@ -106,9 +106,12 @@ typedef ConnectionPoolOptions<T> = {
  * next borrower was otherwise handed that transaction: its writes joined it,
  * and the locks it held stayed held, and `validate` could not tell, since an
  * open transaction answers a ping like any other. A rollback that fails
- * retires the connection. A connection released with its transaction open
- * is also logged as a warning under `db.pool`, since that is a bug in the
- * caller; one returned by `withConnection()` after its body threw is not.
+ * retires the connection, and so does one after which the connection still
+ * reports a transaction open: a MySQL session left with autocommit off,
+ * which starts the next transaction as the last one ends. A connection
+ * released with its transaction open is also logged as a warning under
+ * `db.pool`, since that is a bug in the caller; one returned by
+ * `withConnection()` after its body threw is not.
  */
 class ConnectionPool<T> {
 	/**
@@ -354,9 +357,19 @@ class ConnectionPool<T> {
 					}
 
 					open.rollback();
+
+					// A rollback that returns with a transaction still open
+					// has not reset the session. MySQL with autocommit turned
+					// off is the case: it opens the next transaction at once,
+					// so the next borrower's "autocommit" writes would sit in
+					// it uncommitted, and be rolled back in turn on release.
+					// Retired rather than guessed at.
+					if (open.inTransaction) {
+						reusable = false;
+					}
 				}
 
-				if (__reset != null) {
+				if (reusable && __reset != null) {
 					__reset(connection);
 				}
 			} catch (_:Dynamic) {
