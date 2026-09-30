@@ -22,7 +22,662 @@
 
 package sys.net;
 
-#if (cpp || hxcpp)
+// This module replaces the standard library's sys.net.Socket on every target,
+// so a target without a branch here falls into the one at the bottom, which
+// throws. hl and neko did, and their own sys.ssl.Socket extends this class and
+// reaches into it, SocketHandle, __s, init() and the socket_* primitives,
+// so the whole TLS stack failed to compile inside Haxe's std, with errors
+// naming nothing in CrossByte. The two branches below are each target's
+// standard implementation, private surface included, with the changes their
+// comments give. Both are IPv4 only, as the targets' natives are.
+#if hl
+
+import haxe.io.Error;
+
+#if doc_gen
+@:noDoc enum SocketHandle {}
+#else
+@:noDoc typedef SocketHandle = hl.Abstract<"hl_socket">;
+#end
+
+@:access(sys.net.Socket)
+private class SocketOutput extends haxe.io.Output {
+	var sock:Socket;
+
+	public function new(s) {
+		this.sock = s;
+	}
+
+	public override function writeByte(c:Int) {
+		var k = Socket.socket_send_char(sock.__s, c);
+		if (k < 0) {
+			if (k == -1)
+				throw Blocked;
+			throw new haxe.io.Eof();
+		}
+	}
+
+	public override function writeBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (pos < 0 || len < 0 || pos + len > buf.length)
+			throw haxe.io.Error.OutsideBounds;
+		var n = Socket.socket_send(sock.__s, buf.getData().bytes, pos, len);
+		if (n < 0) {
+			if (n == -1)
+				throw Blocked;
+			throw new haxe.io.Eof();
+		}
+		return n;
+	}
+
+	public override function close() {
+		sock.close();
+	}
+}
+
+@:access(sys.net.Socket)
+private class SocketInput extends haxe.io.Input {
+	var sock:Socket;
+	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+
+	public function new(s) {
+		sock = s;
+	}
+
+	/**
+		Through `readBytes`. The native `socket_recv_char` answers -2 both at
+		the end of the stream and on a failure, so a byte read could not tell
+		a peer that finished from one that was cut off.
+	**/
+	public override function readByte():Int {
+		readBytes(one, 0, 1);
+		return one.get(0);
+	}
+
+	/**
+		0 is the end of the stream and -2 a failure: a reset, or a socket
+		already closed. The standard library reported both as `Eof`, and a
+		body whose length is its connection's end, HTTP/1.0 style, came
+		back complete when the connection was reset partway through it. The
+		other targets raise the failure.
+	**/
+	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		if (pos < 0 || len < 0 || pos + len > buf.length)
+			throw haxe.io.Error.OutsideBounds;
+		var r = Socket.socket_recv(sock.__s, buf.getData().bytes, pos, len);
+		if (r <= 0) {
+			if (r == -1)
+				throw Blocked;
+			if (r == 0)
+				throw new haxe.io.Eof();
+			throw Custom("Connection failed while reading");
+		}
+		return r;
+	}
+
+	public override function close() {
+		sock.close();
+	}
+}
+
+/**
+	Where `select` builds its descriptor sets: one per thread.
+
+	The standard library keeps a single buffer in a static and grows it in
+	place, shared by every thread that selects. Each runtime selects on its own
+	thread, so two runtimes wrote their sets over each other's. Two runtimes on
+	two threads each saw `select` fail with "Error while waiting on socket"
+	about two hundred times in twelve seconds, every failure a tick whose
+	sockets went unserviced; two threads selecting as fast as they could got an
+	answer for the wrong sockets up to one time in seven.
+**/
+private class SelectScratch {
+	public var bytes:hl.Bytes = null;
+	public var size:Int = 0;
+
+	public function new() {}
+}
+
+@:coreApi
+@:keepInit
+class Socket {
+	private var __s:SocketHandle;
+
+	public var input(default, null):haxe.io.Input;
+	public var output(default, null):haxe.io.Output;
+	public var custom:Dynamic;
+
+	// socket_init is WSAStartup on Windows, and every call below fails
+	// without it, @:keepInit keeps this even where nothing names the class.
+	static function __init__():Void {
+		socket_init();
+	}
+
+	public function new():Void {
+		init();
+	}
+
+	function init():Void {
+		if (__s == null)
+			__s = socket_new(false);
+		input = new SocketInput(this);
+		output = new SocketOutput(this);
+	}
+
+	public function close():Void {
+		if (__s != null) {
+			socket_close(__s);
+			__s = null;
+		}
+	}
+
+	public function read():String {
+		return input.readAll().toString();
+	}
+
+	public function write(content:String):Void {
+		output.writeString(content);
+	}
+
+	public function connect(host:Host, port:Int):Void {
+		if (!socket_connect(__s, host.ip, port))
+			throw new Sys.SysError("Failed to connect on " + host.toString() + ":" + port);
+	}
+
+	public function listen(connections:Int):Void {
+		if (!socket_listen(__s, connections))
+			throw new Sys.SysError("listen() failure");
+	}
+
+	public function shutdown(read:Bool, write:Bool):Void {
+		if (!socket_shutdown(__s, read, write))
+			throw new Sys.SysError("shutdown() failure");
+	}
+
+	public function bind(host:Host, port:Int):Void {
+		if (!socket_bind(__s, host.ip, port))
+			throw new Sys.SysError("Cannot bind socket on " + host + ":" + port);
+	}
+
+	/**
+		The standard library answers null when nothing is waiting on a
+		non-blocking listener. Every caller here treats an accept as a socket or
+		a would-block, as the other targets report it, and null is neither: it
+		went on to be registered as a connection.
+
+		hl's accept answers null for any failure, so a real one, a process
+		out of descriptors, reads as nothing waiting too. The connection stays
+		queued and is asked for again, which is all a caller could do anyway.
+	**/
+	public function accept():Socket {
+		var c = socket_accept(__s);
+		if (c == null)
+			throw Blocked;
+		var s:Socket = Type.createEmptyInstance(Socket);
+		s.__s = c;
+		s.input = new SocketInput(s);
+		s.output = new SocketOutput(s);
+		return s;
+	}
+
+	public function peer():{host:Host, port:Int} {
+		var ip = 0, port = 0;
+		if (!socket_peer(__s, ip, port))
+			return null;
+		return {host: __hostOf(ip), port: port};
+	}
+
+	public function host():{host:Host, port:Int} {
+		var ip = 0, port = 0;
+		if (!socket_host(__s, ip, port))
+			return null;
+		return {host: __hostOf(ip), port: port};
+	}
+
+	public function setTimeout(timeout:Float):Void {
+		if (!socket_set_timeout(__s, timeout))
+			throw new Sys.SysError("setTimeout() failure");
+	}
+
+	public function waitForRead():Void {
+		select([this], null, null, null);
+	}
+
+	public function setBlocking(b:Bool):Void {
+		if (!socket_set_blocking(__s, b))
+			throw new Sys.SysError("setBlocking() failure");
+	}
+
+	public function setFastSend(b:Bool):Void {
+		if (!socket_set_fast_send(__s, b))
+			throw new Sys.SysError("setFastSend() failure");
+	}
+
+	/**
+		A Host for an address the system reported. The standard library leaves
+		its `host` text null here, and `peer().host.host` is how
+		ServerWebSocket names a client; every other target fills it in.
+	**/
+	private static function __hostOf(ip:Int):Host {
+		var h:Host = Type.createEmptyInstance(Host);
+		@:privateAccess h.ip = ip;
+		@:privateAccess h.host = h.toString();
+		return h;
+	}
+
+	private static var __scratch:sys.thread.Tls<SelectScratch> = new sys.thread.Tls();
+
+	static function makeArray(a:Array<Socket>):hl.NativeArray<SocketHandle> {
+		if (a == null)
+			return null;
+		var arr = new hl.NativeArray(a.length);
+		for (i in 0...a.length)
+			arr[i] = a[i].__s;
+		return arr;
+	}
+
+	static function outArray(a:hl.NativeArray<SocketHandle>, original:Array<Socket>):Array<Socket> {
+		var out = [];
+		if (a == null)
+			return out;
+		var i = 0, p = 0;
+		var max = original.length;
+		while (i < max) {
+			var sh = a[i++];
+			if (sh == null)
+				break;
+			while (original[p].__s != sh)
+				p++;
+			out.push(original[p++]);
+		}
+		return out;
+	}
+
+	static function setSize(a:hl.NativeArray<SocketHandle>):Int {
+		if (a == null)
+			return 0;
+		var size = socket_fd_size(a.length);
+		// More sockets than the system's descriptor set holds. Summed as it
+		// was, the -1 shrank the buffer, and the native select then built its
+		// sets past the end of it.
+		if (size < 0)
+			throw "Too many sockets in select: " + a.length;
+		return size;
+	}
+
+	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
+			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
+		var sread = makeArray(read);
+		var swrite = makeArray(write);
+		var sothers = makeArray(others);
+		var tmpSize = setSize(sread) + setSize(swrite) + setSize(sothers);
+		var scratch = __scratch.value;
+		if (scratch == null) {
+			scratch = new SelectScratch();
+			__scratch.value = scratch;
+		}
+		if (tmpSize > scratch.size) {
+			scratch.bytes = new hl.Bytes(tmpSize);
+			scratch.size = tmpSize;
+		}
+		if (!socket_select(sread, swrite, sothers, scratch.bytes, scratch.size, timeout == null ? -1 : timeout))
+			throw "Error while waiting on socket";
+		return {
+			read: outArray(sread, read),
+			write: outArray(swrite, write),
+			others: outArray(sothers, others),
+		};
+	}
+
+	@:hlNative("std", "socket_init") static function socket_init():Void {}
+
+	@:hlNative("std", "socket_new") static function socket_new(udp:Bool):SocketHandle {
+		return null;
+	}
+
+	@:hlNative("std", "socket_close") static function socket_close(s:SocketHandle):Void {}
+
+	@:hlNative("std", "socket_connect") static function socket_connect(s:SocketHandle, host:Int, port:Int):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_listen") static function socket_listen(s:SocketHandle, count:Int):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_bind") static function socket_bind(s:SocketHandle, host:Int, port:Int):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_accept") static function socket_accept(s:SocketHandle):SocketHandle {
+		return null;
+	}
+
+	@:hlNative("std", "socket_peer") static function socket_peer(s:SocketHandle, host:hl.Ref<Int>, port:hl.Ref<Int>):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_host") static function socket_host(s:SocketHandle, host:hl.Ref<Int>, port:hl.Ref<Int>):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_set_timeout") static function socket_set_timeout(s:SocketHandle, timeout:Float):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_shutdown") static function socket_shutdown(s:SocketHandle, read:Bool, write:Bool):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_set_blocking") static function socket_set_blocking(s:SocketHandle, b:Bool):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_set_fast_send") static function socket_set_fast_send(s:SocketHandle, b:Bool):Bool {
+		return true;
+	}
+
+	@:hlNative("std", "socket_fd_size") static function socket_fd_size(count:Int):Int {
+		return 0;
+	}
+
+	@:hlNative("std", "socket_select") static function socket_select(read:hl.NativeArray<SocketHandle>, write:hl.NativeArray<SocketHandle>,
+			other:hl.NativeArray<SocketHandle>, tmpData:hl.Bytes, tmpSize:Int, timeout:Float):Bool {
+		return false;
+	}
+
+	@:hlNative("std", "socket_send_char") static function socket_send_char(s:SocketHandle, c:Int):Int {
+		return 0;
+	}
+
+	@:hlNative("std", "socket_send") static function socket_send(s:SocketHandle, bytes:hl.Bytes, pos:Int, len:Int):Int {
+		return 0;
+	}
+
+	@:hlNative("std", "socket_recv") static function socket_recv(s:SocketHandle, bytes:hl.Bytes, pos:Int, len:Int):Int {
+		return 0;
+	}
+}
+
+#elseif neko
+
+import haxe.io.Error;
+
+@:callable
+@:coreType
+abstract SocketHandle {}
+
+private class SocketOutput extends haxe.io.Output {
+	var __s:SocketHandle;
+
+	public function new(s) {
+		__s = s;
+	}
+
+	public override function writeByte(c:Int) {
+		try {
+			socket_send_char(__s, c);
+		} catch (e:Dynamic) {
+			if (e == "Blocking")
+				throw Blocked;
+			else if (e == "EOF")
+				throw new haxe.io.Eof();
+			else
+				throw Custom(e);
+		}
+	}
+
+	public override function writeBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		return try {
+			socket_send(__s, buf.getData(), pos, len);
+		} catch (e:Dynamic) {
+			if (e == "Blocking")
+				throw Blocked;
+			else
+				throw Custom(e);
+		}
+	}
+
+	public override function close() {
+		super.close();
+		if (__s != null)
+			socket_close(__s);
+	}
+
+	private static var socket_close = neko.Lib.load("std", "socket_close", 1);
+	private static var socket_send_char = neko.Lib.load("std", "socket_send_char", 2);
+	private static var socket_send = neko.Lib.load("std", "socket_send", 4);
+}
+
+private class SocketInput extends haxe.io.Input {
+	var __s:SocketHandle;
+	var one:haxe.io.Bytes = haxe.io.Bytes.alloc(1);
+
+	public function new(s) {
+		__s = s;
+	}
+
+	/**
+		Through `readBytes`. neko's `socket_recv_char` raises the same error at
+		the end of the stream as on a failure, and the standard library read
+		every one of them as `Eof`: a connection reset mid-line looked like a
+		peer that had finished.
+	**/
+	public override function readByte():Int {
+		readBytes(one, 0, 1);
+		return one.get(0);
+	}
+
+	public override function readBytes(buf:haxe.io.Bytes, pos:Int, len:Int):Int {
+		var r;
+		try {
+			r = socket_recv(__s, buf.getData(), pos, len);
+		} catch (e:Dynamic) {
+			if (e == "Blocking")
+				throw Blocked;
+			else
+				throw Custom(e);
+		}
+		if (r == 0)
+			throw new haxe.io.Eof();
+		return r;
+	}
+
+	public override function close() {
+		super.close();
+		if (__s != null)
+			socket_close(__s);
+	}
+
+	private static var socket_recv = neko.Lib.load("std", "socket_recv", 4);
+	private static var socket_close = neko.Lib.load("std", "socket_close", 1);
+}
+
+@:coreApi
+class Socket {
+	private var __s:SocketHandle;
+
+	public var input(default, null):haxe.io.Input;
+	public var output(default, null):haxe.io.Output;
+	public var custom:Dynamic;
+
+	public function new():Void {
+		init();
+	}
+
+	private function init():Void {
+		if (__s == null)
+			__s = socket_new(false);
+		input = new SocketInput(__s);
+		output = new SocketOutput(__s);
+	}
+
+	/**
+		Once, however often it is called. neko's socket_close throws when
+		handed a socket it already closed, and the standard library passed it
+		the same handle every time; the other targets let a second close
+		through.
+	**/
+	public function close():Void {
+		var socket = __s;
+		__s = null;
+		if (socket != null)
+			socket_close(socket);
+		untyped {
+			input.__s = null;
+			output.__s = null;
+		}
+		input.close();
+		output.close();
+	}
+
+	public function read():String {
+		return new String(socket_read(__s));
+	}
+
+	public function write(content:String):Void {
+		socket_write(__s, untyped content.__s);
+	}
+
+	public function connect(host:Host, port:Int):Void {
+		try {
+			socket_connect(__s, host.ip, port);
+		} catch (s:String) {
+			if (s == "std@socket_connect")
+				throw "Failed to connect on " + host.toString() + ":" + port;
+			else if (s == "Blocking") {
+				// Do nothing, this is not a real error, it simply indicates
+				// that a non-blocking connect is in progress
+			} else
+				neko.Lib.rethrow(s);
+		}
+	}
+
+	public function listen(connections:Int):Void {
+		socket_listen(__s, connections);
+	}
+
+	public function shutdown(read:Bool, write:Bool):Void {
+		socket_shutdown(__s, read, write);
+	}
+
+	public function bind(host:Host, port:Int):Void {
+		socket_bind(__s, host.ip, port);
+	}
+
+	public function accept():Socket {
+		var c = socket_accept(__s);
+		var s = Type.createEmptyInstance(Socket);
+		s.__s = c;
+		s.input = new SocketInput(c);
+		s.output = new SocketOutput(c);
+		return s;
+	}
+
+	/**
+		Null when there is no peer, as on the other targets. neko's natives
+		throw there instead, which the standard library's own null check never
+		saw, and it named every peer 127.0.0.1, resolving that name to have a
+		Host to overwrite the address of.
+	**/
+	public function peer():{host:Host, port:Int} {
+		var a:Dynamic = try socket_peer(__s) catch (_:Dynamic) null;
+		if (a == null) {
+			return null;
+		}
+		return {host: __hostOf(a[0]), port: a[1]};
+	}
+
+	public function host():{host:Host, port:Int} {
+		var a:Dynamic = try socket_host(__s) catch (_:Dynamic) null;
+		if (a == null) {
+			return null;
+		}
+		return {host: __hostOf(a[0]), port: a[1]};
+	}
+
+	public function setTimeout(timeout:Float):Void {
+		socket_set_timeout(__s, timeout);
+	}
+
+	public function waitForRead():Void {
+		select([this], null, null, null);
+	}
+
+	public function setBlocking(b:Bool):Void {
+		socket_set_blocking(__s, b);
+	}
+
+	public function setFastSend(b:Bool):Void {
+		socket_set_fast_send(__s, b);
+	}
+
+	private static function __hostOf(ip:Int):Host {
+		var h:Host = Type.createEmptyInstance(Host);
+		untyped h.ip = ip;
+		untyped h.host = h.toString();
+		return h;
+	}
+
+	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
+			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
+		var c = untyped __dollar__hnew(1);
+		var f = function(a:Array<Socket>) {
+			if (a == null)
+				return null;
+			untyped {
+				var r = __dollar__amake(a.length);
+				var i = 0;
+				while (i < a.length) {
+					r[i] = a[i].__s;
+					__dollar__hadd(c, a[i].__s, a[i]);
+					i += 1;
+				}
+				return r;
+			}
+		}
+		var neko_array = socket_select(f(read), f(write), f(others), timeout);
+
+		var g = function(a):Array<Socket> {
+			if (a == null)
+				return null;
+
+			var r = new Array();
+			var i = 0;
+			while (i < untyped __dollar__asize(a)) {
+				var t = untyped __dollar__hget(c, a[i], null);
+				if (t == null)
+					throw "Socket object not found.";
+				r[i] = t;
+				i += 1;
+			}
+			return r;
+		}
+
+		return {
+			read: g(neko_array[0]),
+			write: g(neko_array[1]),
+			others: g(neko_array[2])
+		};
+	}
+
+	private static var socket_new = neko.Lib.load("std", "socket_new", 1);
+	private static var socket_close = neko.Lib.load("std", "socket_close", 1);
+	private static var socket_write = neko.Lib.load("std", "socket_write", 2);
+	private static var socket_read = neko.Lib.load("std", "socket_read", 1);
+	private static var socket_connect = neko.Lib.load("std", "socket_connect", 3);
+	private static var socket_listen = neko.Lib.load("std", "socket_listen", 2);
+	private static var socket_select = neko.Lib.load("std", "socket_select", 4);
+	private static var socket_bind = neko.Lib.load("std", "socket_bind", 3);
+	private static var socket_accept = neko.Lib.load("std", "socket_accept", 1);
+	private static var socket_peer = neko.Lib.load("std", "socket_peer", 1);
+	private static var socket_host = neko.Lib.load("std", "socket_host", 1);
+	private static var socket_set_timeout = neko.Lib.load("std", "socket_set_timeout", 2);
+	private static var socket_shutdown = neko.Lib.load("std", "socket_shutdown", 3);
+	private static var socket_set_blocking = neko.Lib.load("std", "socket_set_blocking", 2);
+	private static var socket_set_fast_send = neko.Lib.loadLazy("std", "socket_set_fast_send", 2);
+}
+
+#elseif (cpp || hxcpp)
 
 import haxe.io.Bytes;
 import haxe.io.Error;
@@ -1032,68 +1687,68 @@ class Socket {
 	public var custom:Dynamic;
 
 	public function new() {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function close():Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function read():String {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function write(content:String):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function connect(host:Host, port:Int):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function listen(connections:Int):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function shutdown(read:Bool, write:Bool):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function bind(host:Host, port:Int):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function accept():Socket {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function peer():{host:Host, port:Int} {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function host():{host:Host, port:Int} {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function setTimeout(timeout:Float):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function waitForRead():Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function setBlocking(b:Bool):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public function setFastSend(b:Bool):Void {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 
 	public static function select(read:Array<Socket>, write:Array<Socket>, others:Array<Socket>,
 			?timeout:Float):{read:Array<Socket>, write:Array<Socket>, others:Array<Socket>} {
-		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, java and jvm targets";
+		throw "sys.net.Socket shim is only supported on cpp, hxcpp, eval, hl, neko, java and jvm targets";
 	}
 }
 
