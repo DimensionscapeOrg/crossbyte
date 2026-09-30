@@ -1220,6 +1220,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A jvm https request whose server stalls or resets the TLS handshake
+  fails at its timeout, with the reason. The handshake caught every error
+  -- a read that timed out, a reset -- slept 2 ms and tried again, ten
+  thousand times: a server that accepted and said nothing held the request,
+  and one of `URLLoader`'s pool threads, for ten thousand times its timeout
+  (83 hours at the default 30 seconds), and a reset took 25 seconds to
+  report as a handshake that "did not complete". Only a record that has
+  arrived in part is waited on now, within what is left of the timeout as
+  a whole; anything else is thrown as it came. A record larger than the
+  read buffer grows the buffer rather than waiting for ever.
 - On the jvm, a certificate file is read whole. Only its first certificate
   was, so a server given the `fullchain.pem` an authority issues presented
   its certificate without the intermediate, and curl, Node, browsers and
