@@ -1244,6 +1244,10 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Deque` keeps its items in a ring rather than a linked list, so adding
+  one allocates nothing once the ring has grown: it made a 24-byte node
+  for every item added on the jvm. It has `iterator()`, front to back, and
+  `clear()`, and takes a starting capacity.
 - `ObjectPool` no longer lends one object to two owners after a double
   release in a release build. It kept both releases, so the next two
   `acquire`s returned the same object; it now refuses an object released
