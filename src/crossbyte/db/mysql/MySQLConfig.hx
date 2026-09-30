@@ -1,6 +1,12 @@
 package crossbyte.db.mysql;
 
-/** Connection settings for `MySQLConnection`. */
+/**
+ * Connection settings for `MySQLConnection`.
+ *
+ * The TLS, authentication, timeout and keepalive settings are the native
+ * client's (cpp). Elsewhere the target's own driver connects with its own
+ * defaults, and an `sslMode` that insists on TLS fails `open()`.
+ */
 typedef MySQLConfig = {
 	var host:String;
 	@:optional var port:Int;
@@ -14,7 +20,8 @@ typedef MySQLConfig = {
 
 	/**
 	 * How much TLS to insist on; `PREFERRED` when unset, which uses it
-	 * whenever the server offers it. See `MySQLSSLMode`. Native client only.
+	 * whenever the server offers it. See `MySQLSSLMode`. Only the native
+	 * client has TLS: elsewhere a mode that insists on it fails `open()`.
 	 */
 	@:optional var sslMode:MySQLSSLMode;
 

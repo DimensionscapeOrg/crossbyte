@@ -17,8 +17,9 @@ import crossbyte.errors.ArgumentError;
  *   `MySQLConfig.sslCa`.
  * - `VERIFY_IDENTITY`: as `VERIFY_CA`, and must name the host connected to.
  *
- * TLS applies to the native client; elsewhere the connection is what the
- * target's own driver makes it.
+ * TLS applies to the native client. Elsewhere the target's own driver makes
+ * the connection without it, so `REQUIRED` and the `VERIFY` modes fail
+ * `open()` there, with error 2026, before anything is sent.
  */
 enum abstract MySQLSSLMode(String) to String {
 	var DISABLED = "DISABLED";
