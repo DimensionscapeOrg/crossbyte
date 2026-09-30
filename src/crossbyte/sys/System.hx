@@ -32,11 +32,13 @@ class System {
 		lowercased.
 
 		This was `#if windows ... #elseif linux ... #else "undefined"`, which
-		is a question about the compiler rather than about the machine. Haxe
-		sets `windows` for cpp, hl and neko; it does not set it for eval, the
-		JVM or Node. So three of CrossByte's targets reported `"undefined"`
-		while running on Windows, and every conditional in this class that
-		followed the same pattern took the branch written for somebody else.
+		is a question about the build rather than about the machine. Haxe
+		sets `windows` for no target. A native build gets it from Lime or
+		Aedifex, or from CrossByte's `HostPlatform` macro, which names the
+		machine doing the building; hl, neko, eval, the JVM and Node get none.
+		So every target but native reported `"undefined"` while running on
+		Windows, and every conditional in this class that followed the same
+		pattern took the branch written for somebody else.
 	**/
 	public static var PLATFORM(get, never):String;
 
@@ -72,6 +74,43 @@ class System {
 	@:noCompletion private static inline function get_isWindows():Bool {
 		return PLATFORM == "windows";
 	}
+
+	/**
+		Pauses the calling thread for `seconds`, as `Sys.sleep` does, except
+		that it comes back on the interpreter on Windows.
+
+		There `Sys.sleep` can sleep for 49 days. Haxe 4.3's eval times a
+		`Thread.yield()` first and sleeps for `seconds` less what that took,
+		measured in the process's CPU time, which Windows counts in 15.6ms
+		ticks, so a tick landing inside the yield leaves a negative remainder,
+		and OCaml's Windows `Unix.sleepf` hands it to `Sleep()` unchecked, as
+		an unsigned count of milliseconds. Any sleep under about 15ms can do
+		it, the more often the busier the process's other threads are. It is
+		what hung the interpreter suite now and then, in a different test
+		each time. Here the interpreter on Windows sleeps through an empty
+		`select`, which OCaml turns into one plain `Sleep()` of the whole
+		duration.
+
+		Anywhere else this is `Sys.sleep`, with a negative or NaN duration
+		taken as zero. CrossByte itself sleeps through nothing else. Not in a
+		browser, which has no way to block a thread.
+	**/
+	#if !(js && !nodejs)
+	public static function sleep(seconds:Float):Void {
+		if (!(seconds > 0)) {
+			seconds = 0;
+		}
+		#if eval
+		if (isWindows) {
+			// Less than a millisecond is Sleep(0) there: the thread yields,
+			// as a sleep of nothing does elsewhere.
+			sys.net.Socket.select([], [], [], seconds > 0 ? seconds : 0.0001);
+			return;
+		}
+		#end
+		Sys.sleep(seconds);
+	}
+	#end
 
 	public static var appDir(get, never):String;
 

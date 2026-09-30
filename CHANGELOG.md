@@ -5,6 +5,15 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- `crossbyte.sys.System.sleep(seconds)`, a sleep that comes back on the
+  interpreter on Windows, where `Sys.sleep` can sleep for 49 days: eval
+  times a `Thread.yield()` in the process's CPU time, which Windows counts
+  in 15.6ms ticks, and sleeps for what is left, and a tick inside the yield
+  leaves a negative remainder that OCaml's `Unix.sleepf` hands to `Sleep()`
+  as an unsigned count. With a second thread busy, a loop of
+  `Sys.sleep(0.001)` hung in one run of three and `System.sleep` in none.
+  The runtime's frame loop, the other library waits and the tests' pump
+  loops still call `Sys.sleep`, and are what hung the interpreter suite.
 - `SwitchTable.make` takes any expression as a key, `Opcode.PING`, a
   variable, where it took only literals, refuses two literal keys that are
   the same, and takes a fallback, `(key, args) -> ...`, for a key no case
