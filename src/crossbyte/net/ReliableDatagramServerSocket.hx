@@ -635,7 +635,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				// UDP reports nothing when it is dropped, so a silent network
 				// and a wrong server address look identical from here; the
 				// deadline is the only thing that ends this.
-				__settleStun(null, "No reply from the STUN server at " + server + ":" + port + " within " + timeoutMs + "ms.");
+				var damage:Null<String> = query.damage();
+				__settleStun(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + server + ":" + port + " within "
+					+ timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
 				return;
 			}
 
@@ -1194,6 +1196,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 				__settleStun(null, "The STUN server refused the request" + (reason != null ? ": " + reason : "."));
 			case ANSWERED_WITHOUT_ADDRESS:
 				__settleStun(null, "The STUN server replied without a mapped address, so this socket's public address is still unknown.");
+			case UNUSABLE(reason):
+				__settleStun(null, "The STUN server's answer could not be used: " + reason + ".");
 		}
 
 		return true;
