@@ -66,7 +66,9 @@ class URLRequest {
 		request finishing. There is no `Domain` attribute, no path matching and
 		no persistence, if you need a session that outlives one call, hold the
 		cookie yourself and set it through `requestHeaders`, which also takes
-		precedence over this when you do.
+		precedence over this when you do. A host keeps 180 cookies at most, the
+		oldest going first, as a browser's do, and one longer than 4,096
+		characters is ignored.
 
 		The default comes from `URLRequestDefaults.manageCookies`.
 	**/

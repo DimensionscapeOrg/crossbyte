@@ -62,6 +62,35 @@ class CookieJarTest extends utest.Test {
 		Assert.equals("zeta=1; alpha=1; mid=1; beta=1", jar.headerFor("example.com", false));
 	}
 
+	public function testAHostKeepsABoundedNumberOfCookiesTheNewestFirst():Void {
+		// Nothing bounded the jar: a server could set as many cookies as it
+		// cared to send, and every request read through all of them.
+		var jar = new CookieJar();
+		for (i in 0...500) {
+			jar.store("c" + i + "=1", "example.com");
+		}
+		var header:Null<String> = jar.headerFor("example.com", false);
+		Require.notNull(header);
+		var parts:Array<String> = header.split("; ");
+		// 180, as a browser keeps: CookieJar.MAX_COOKIES_PER_HOST.
+		Assert.equals(180, parts.length);
+		// The oldest went to make room.
+		Assert.equals("c320=1", parts[0]);
+		Assert.equals("c499=1", parts[parts.length - 1]);
+	}
+
+	public function testAnOversizedCookieIsIgnored():Void {
+		var jar = new CookieJar();
+		var big:StringBuf = new StringBuf();
+		for (_ in 0...5000) {
+			big.add("x");
+		}
+		jar.store("big=" + big.toString(), "example.com");
+		jar.store("small=1", "example.com");
+		var header:Null<String> = jar.headerFor("example.com", false);
+		Assert.isTrue(header == "small=1", "a 5,000 character cookie was kept: " + (header == null ? "null" : header.length + " characters"));
+	}
+
 	public function testASecureCookieIsWithheldFromAPlaintextHop():Void {
 		var jar = new CookieJar();
 		jar.store("session=abc123; Secure", "example.com");

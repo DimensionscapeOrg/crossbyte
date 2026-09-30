@@ -328,6 +328,73 @@ class HttpTest extends utest.Test {
 		Assert.equals("one=1" + String.fromCharCode(10) + "two=2", headers.get("set-cookie"));
 	}
 
+	public function testAResponseHeaderSectionPastTheLimitIsRefused():Void {
+		// The client read header lines for as long as the server sent them;
+		// the server holds a request's block to 64 KB, and a response is
+		// held to the same now. About 70 KB of lines here: a little past the
+		// limit, and small enough to sit in the socket's buffers whole, so the
+		// fixture's write finishes whatever the client does next.
+		var fill:StringBuf = new StringBuf();
+		for (i in 0...1400) {
+			fill.add("X-Fill-" + i + ": 0123456789012345678901234567890123456789\r\n");
+		}
+		__expectRefusal("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n" + fill.toString() + "\r\nok", "exceeded");
+	}
+
+	public function testAHeaderLineThatNeverEndsIsRefused():Void {
+		// One line, read into memory for as long as it went on. A line with no
+		// colon was then ignored, so the response completed as though nothing
+		// had happened.
+		__expectRefusal("HTTP/1.1 200 OK\r\n" + __repeat("a".code, 70 * 1024) + "\r\nContent-Length: 2\r\n\r\nok", "exceeded");
+	}
+
+	public function testEndlessInterimResponsesAreRefused():Void {
+		// Each 1xx block was thrown away and the next read, for as long as they
+		// came, and while they kept coming the idle timeout never fired.
+		var interim:StringBuf = new StringBuf();
+		for (_ in 0...3000) {
+			interim.add("HTTP/1.1 100 Continue\r\n\r\n");
+		}
+		__expectRefusal(interim.toString() + "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok", "exceeded");
+	}
+
+	public function testAChunkLineThatNeverEndsIsRefused():Void {
+		// A chunk extension is ignored, so one that went on for ever was read
+		// into memory and then dropped, and the body completed.
+		__expectRefusal("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;" + __repeat("e".code, 8 * 1024) + "\r\nhello\r\n0\r\n\r\n", "limit");
+	}
+
+	public function testEndlessTrailersAreRefused():Void {
+		var trailers:StringBuf = new StringBuf();
+		for (i in 0...1400) {
+			trailers.add("X-Trailer-" + i + ": 012345678901234567890123456789012345678\r\n");
+		}
+		__expectRefusal("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n" + trailers.toString() + "\r\n", "limit");
+	}
+
+	/** Serves `response` and expects the load to fail with a message holding `expected`. */
+	private static function __expectRefusal(response:String, expected:String):Void {
+		var fixture = serveOnce(response);
+		var http = new Http('http://127.0.0.1:${fixture.port}/bounded');
+		var completed:Null<Bytes> = null;
+		var failure:Null<String> = null;
+		http.onComplete = data -> completed = data;
+		http.onError = (message, ?data) -> failure = message;
+		http.load();
+		fixture.waitDone();
+
+		Assert.isNull(completed, "the response was taken whole");
+		Require.notNull(failure);
+		Assert.isTrue(failure.indexOf(expected) >= 0, failure);
+	}
+
+	/** `count` copies of one ASCII character, in linear time. */
+	private static function __repeat(code:Int, count:Int):String {
+		var bytes:Bytes = Bytes.alloc(count);
+		bytes.fill(0, count, code);
+		return bytes.toString();
+	}
+
 	public function testLoadReportsOnlyTheFinalHeaderBlockAfterAnInformationalResponse():Void {
 		var fixture = serveOnce("HTTP/1.1 100 Continue\r\n\r\n" + "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Final: yes\r\n\r\nhi");
 		var reported:Array<Map<String, String>> = [];
