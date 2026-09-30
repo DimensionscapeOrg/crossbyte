@@ -111,11 +111,11 @@ class DBSupportTest extends utest.Test {
 		Assert.isFalse(mongo.executing);
 	}
 
-	public function testPhpBackedConnectionsStayUnsupportedOnCpp():Void {
+	public function testDriversWithClientsOfTheirOwnAreSupportedOnCpp():Void {
 		#if cpp
-		// Mongo is still PHP-only, so it must refuse to open here.
-		Assert.isFalse(MongoConnection.isSupported);
-		Assert.isTrue(throwsDynamic(() -> new MongoConnection().open({database: "app"})));
+		// Mongo was PHP-only and refused to open here; it speaks the wire
+		// protocol itself now, as MongoWireTest shows against a fake server.
+		Assert.isTrue(MongoConnection.isSupported);
 
 		// Postgres is not PHP-only any more — it has a native cpp bridge.
 		// This case asserted otherwise until the suite was actually run.
