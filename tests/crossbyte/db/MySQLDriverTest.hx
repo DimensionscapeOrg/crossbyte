@@ -3,13 +3,16 @@ package crossbyte.db;
 #if !js
 import crossbyte.db.fakemysql.ScriptedConnection;
 import crossbyte.db.mysql.MySQLConnection;
+import crossbyte.db.mysql.MySQLConnectionError;
 import crossbyte.db.mysql.MySQLError;
+import crossbyte.db.mysql.MySQLSSLMode;
 import crossbyte.db.mysql.MySQLStatement;
 import crossbyte.db.sql.SQLResult;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SQLError;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
+import crossbyte.test.Require;
 import utest.Assert;
 
 /**
@@ -331,6 +334,36 @@ class MySQLDriverTest extends utest.Test {
 			}), crossbyte.errors.ArgumentError);
 		}
 	}
+
+	#if !cpp
+	public function testAnSslModeThatNeedsTlsIsRefusedWhereTheClientHasNone():Void {
+		// Only the native client reads sslMode. Elsewhere REQUIRED and both
+		// VERIFY modes went unread, and the connection was made in the clear,
+		// password and all, with nothing said. Refused now, as the native
+		// client refuses a server offering no TLS: with 2026, and before
+		// connecting, a connect attempt to port 1 fails otherwise, and the
+		// jvm has no JDBC driver to try one with.
+		for (mode in [MySQLSSLMode.REQUIRED, MySQLSSLMode.VERIFY_CA, MySQLSSLMode.VERIFY_IDENTITY]) {
+			var error:MySQLConnectionError = null;
+
+			try {
+				new MySQLConnection().open({
+					host: "127.0.0.1",
+					port: 1,
+					user: "app",
+					password: "secret",
+					database: "app",
+					sslMode: mode
+				});
+			} catch (e:MySQLConnectionError) {
+				error = e;
+			}
+
+			Require.notNull(error);
+			Assert.equals(2026, error.code, error.message);
+		}
+	}
+	#end
 
 	public function testPagesComeBackInTheOrderTheyWereRead():Void {
 		// Off cpp the pages waited in an Array read with pop(), newest first,

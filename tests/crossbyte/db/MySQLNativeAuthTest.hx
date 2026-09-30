@@ -4,6 +4,7 @@ package crossbyte.db;
 import crossbyte.db.fakemysql.FakeMySQLServer;
 import crossbyte.db.mysql.MySQLConfig;
 import crossbyte.db.mysql.MySQLConnection;
+import crossbyte.db.mysql.MySQLConnectionError;
 import crossbyte.db.mysql.MySQLSSLMode;
 import crossbyte.db.mysql.MySQLStatement;
 import crossbyte.errors.IOError;
@@ -232,15 +233,18 @@ class MySQLNativeAuthTest extends utest.Test {
 		__server.start();
 		var config:MySQLConfig = __config();
 		config.sslMode = MySQLSSLMode.REQUIRED;
-		var message:String = "";
+		var error:MySQLConnectionError = null;
 
 		try {
 			new MySQLConnection().open(config);
-		} catch (e:IOError) {
-			message = e.message;
+		} catch (e:MySQLConnectionError) {
+			error = e;
 		}
 
-		Assert.isTrue(message.indexOf("does not support TLS") >= 0, message);
+		Require.notNull(error);
+		Assert.isTrue(error.message.indexOf("does not support TLS") >= 0, error.message);
+		// libmysqlclient's number for it, CR_SSL_CONNECTION_ERROR; it was 0.
+		Assert.equals(2026, error.code);
 		Assert.equals(0, __server.eventsOf("handshake").length, "the credentials went out anyway");
 	}
 
