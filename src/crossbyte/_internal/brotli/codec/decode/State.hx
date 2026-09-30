@@ -34,8 +34,8 @@ class State
 		s.code_lengths = null;
 		s.context_map_table = null;
 
-		s.custom_dict = null;
-		s.custom_dict_size = 0;
+		s.output_limit = 0;
+		s.produced = 0;
 	}
 
 	public function new() 

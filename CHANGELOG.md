@@ -241,6 +241,22 @@ All notable changes to CrossByte will be documented in this file.
   server offering none, and on every target but cpp, where the driver
   CrossByte connects through has none, before anything is sent. From the
   hxcpp fork (`fix/mysql-client`), on the mbedTLS hxcpp bundles.
+- `CompressionAlgorithm.LZ4_FRAME` (`"lz4-frame"`): the LZ4 frame format,
+  what the `lz4` tool writes and `.lz4` files hold, read and written by
+  `ByteArray.compress` and `uncompress` beside the bare block `LZ4` has
+  always meant. A frame carries its blocks' sizes, an end mark, its content
+  size and an xxHash32 of the content, so one cut short or damaged is
+  always refused, which a bare block cannot promise. Reading takes linked
+  or independent blocks of any size, block and content checksums,
+  concatenated and skippable frames; writing uses independent 4 MB blocks
+  with the content size and checksum. A frame whose stated size passes the
+  limit is refused before a block is decoded.
+- `CompressionAlgorithm.ZLIB` (`"zlib"`): the zlib format of RFC 1950, a
+  deflate stream behind a two-byte header with an Adler-32 of the data,
+  written and read by `ByteArray.compress` and `uncompress` under the same
+  output limit. It is what HTTP's `deflate` content coding is, and what
+  zlib, Node's `zlib.deflateSync` and Java's `Deflater` write; `DEFLATE`
+  stays the raw stream inside it.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -1194,6 +1210,16 @@ All notable changes to CrossByte will be documented in this file.
   can lose the last of it; `Logger` writes there by default, so set
   `Logger.sink` to a function that prints and flushes where each line
   must land at once.
+- Every compression codec now says a stream is bad the same way:
+  `ByteArray.uncompress` throws `crossbyte.errors.IOError` for data it
+  cannot read, damaged, cut short, or in another format, and
+  `crossbyte.errors.RangeError` for a result that would pass
+  `maxOutputSize`, whatever the algorithm. They threw bare strings
+  ("Brotli decompression failed", "Could not perform decompression",
+  "Invalid data"), `haxe.io.Eof`, or a plain `haxe.Exception`, so a caller
+  could not tell a bad body from a fault in the code, and the HTTP client
+  reported every such string as an unsupported content coding. Code that
+  caught a `String` from `uncompress` should catch these instead.
 - `ReliableDatagramServerSocket.connect()` to a name, and so
   `NetHost.dial()` on a reliable-UDP host, looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -2468,6 +2494,98 @@ All notable changes to CrossByte will be documented in this file.
   `merge/develop-into-production`). On Linux and macOS the sockets
   CrossByte accepts itself, in `NativeSocketAddress.cpp`, are not yet
   close-on-exec, so there an accepted connection still reaches a child.
+- The native Brotli and LZ4 backends (`-D crossbyte_brotli_native`,
+  `-D crossbyte_lz4_native`) are handed `maxOutputSize` and stop there.
+  They decoded the whole stream and left the limit to be checked
+  afterwards: refusing a 211-byte Brotli stream at 1 MB first took the
+  process 500 MB higher, and LZ4, which cannot tell what a block holds,
+  guessed and doubled its guess on every failure up to 256 MB, 200 MB to
+  learn that 100 bytes were garbage. Brotli is now given room for the
+  limit and stopped when it asks for more, and its own allocations are
+  held to what the limit could need, so four bytes announcing a 16 MB
+  meta-block no longer cost 16 MB; LZ4 adds up what the block's sequence
+  headers say before allocating anything, then decodes into exactly that,
+  which also holds a block to the format's end rules. Both
+  run in a GC-free zone, so compressing 2 MB at quality 11 on a worker no
+  longer holds every other thread's allocations for its 1.8 s, and native
+  Brotli compresses with the smallest window that holds its input. Their
+  errors are the same `IOError` and `RangeError` as the Haxe codecs'.
+  Building with either define now needs the extension as of this change,
+  whose `decompress` takes the limit.
+- An LZ4 block cut short is refused rather than decoded as though whole.
+  A block carries no length, so one cut where a literal run ended read as
+  complete: half of a 20 KB block decoded to 10,133 bytes and said nothing.
+  The format's end rules, the last five bytes literals, the last match
+  starting twelve or more bytes from the end, which every conforming
+  encoder keeps, are now enforced, and they catch nearly every such cut;
+  no bytes at all is refused too, since even an empty block is a one-byte
+  token. `Lz4.compress` given a plain `Bytes` no longer allocates a copy
+  of the whole input per literal run, which natively crashed on 900 KB;
+  it and the decoder now write straight into `Bytes`, faster on every
+  target.
+- gzip is read as RFC 1952 has it: a header with an extra field, a
+  comment or a header CRC (which is checked) is read rather than refused
+  as unsupported, and a stream of several members, what concatenating
+  gzip files gives, inflates to all of them together, under the one
+  limit. The second member failed its CRC, since the trailer was taken to
+  be the input's last eight bytes. Zero padding after the last member is
+  ignored and anything else there refused, as Node's gunzip does.
+- Inflating deflate or gzip no longer builds a decoder nothing uses.
+  `Inflater` has decoded through `haxe.zip.InflateImpl` all along, but every
+  call still allocated and cleared a 32K-entry window for a decoder of its
+  own that nothing called, and computed a CRC of every result that only
+  gzip reads, as `Deflater` did of every input. An 846-byte game message
+  took 115 us to inflate on Node and takes 28 us.
+- Brotli compression costs in proportion to what it compresses. Every call
+  built a ring buffer for a 4 MB window, 2^23 entries for a two-byte body,
+  and allocated and cleared a 2^17-entry hash table, so a server
+  answering browsers, which all ask for br, managed 45 two-byte responses a
+  second on Node and every error page paid the same. The window is now the
+  least that covers the input, the ring buffer is the input's size when it
+  fits one block, the hash tables for qualities 1 to 4 are kept per thread
+  and only the buckets an input uses are cleared, and input and output go
+  through `Bytes` rather than `Array<UInt>` copies. Output is byte for byte
+  what it was, bar a smaller window header. Node, served through
+  `HTTPServer` with br: 45 to 3,091 requests a second for a 2-byte body,
+  46 to 2,020 for 2.9 KB of JSON; compressing 700 KB of JSON takes 54 ms
+  rather than 81.
+- Decoding Brotli takes memory in proportion to what it produces. The
+  decoder allocated the whole window a stream's header named, 16 MB for
+  an eighteen-byte request body, which cost a Node server 33 ms a request,
+  and copied its input and output through `Array<UInt>` buffers at
+  several bytes per byte, so a 53-byte stream under the HTTP client's 64 MB
+  ceiling reached 1.4 GB on Node before the ceiling stopped it. The ring
+  buffer now grows with the output, the input is read where it lies, the
+  output is gathered in `Bytes`, and a meta-block announcing more than the
+  caller's limit is refused as its header is read. That stream now peaks
+  at about 160 MB on Node and is refused in 115 ms rather than 1.6 s, and
+  every Brotli decode measured got faster on Node and natively, a 2 KB
+  JSON body from 7.8 ms to 85 us on Node. Valid
+  streams with a small window over incompressible data, which were
+  refused, decode.
+- Several threads meeting the Brotli codec for the first time at once no
+  longer crash. Its dictionary tables were marked built before they were
+  built, so a thread arriving while another built them read a dictionary
+  that was null or half filled: natively a segfault, on the jvm a
+  NullPointerException. URLLoader decodes on up to sixteen pool threads,
+  so a burst of loads at startup was exactly that. The tables are now built
+  once, under a lock, and published only when complete, and no longer
+  decoded at startup by programs that never use Brotli. Deflate's symbol
+  tables are built as its class initialises, since their first-use build
+  could be seen half done on a weakly ordered CPU.
+- A Brotli stream that ends where its literal context map should begin is
+  refused rather than crashing a native process. The decoder scanned the
+  map before checking it had been read, so it walked one that was never
+  allocated: an exception from inside the decoder on eval and the jvm, and
+  natively a segfault, from the first four bytes of any stream.
+- Four bytes of Brotli no longer hang the decoder for good. A stream that
+  declared a metadata block and ended before it did kept the decoder asking
+  for input that was never coming, in a loop that allocated nothing, so no
+  output ceiling tripped: one request body sent with `Content-Encoding: br`
+  stopped a server answering anyone, and as a client response it froze a
+  native process at its next collection. It now fails at once, as the C
+  decoder it was ported from does, and the parser fuzz suite covers Brotli
+  too.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of

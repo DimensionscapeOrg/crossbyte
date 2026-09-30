@@ -3,7 +3,8 @@ package crossbyte.utils;
 /** Enumerates the generic compression codecs supported by CrossByte core. */
 enum abstract CompressionAlgorithm(Null<Int>) {
 	/**
-		Defines the string to use for the deflate compression algorithm.
+		Defines the string to use for the deflate compression algorithm: a raw
+		deflate stream (RFC 1951), with no header and no checksum.
 	**/
 	public var DEFLATE = 0;
 
@@ -23,6 +24,25 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 	public var LZ4 = 3;
 
 	/**
+		The zlib format (RFC 1950): a deflate stream behind a two-byte header,
+		followed by an Adler-32 of the data.
+
+		This is what HTTP's `deflate` content coding is (RFC 9110 8.4.1.2), and
+		what most other "deflate" APIs read and write, zlib itself, Node's
+		`zlib.deflateSync`, Java's `Deflater`. `DEFLATE` is the bare stream
+		inside it.
+	**/
+	public var ZLIB = 4;
+
+	/**
+		The LZ4 frame format: what the `lz4` tool writes and `.lz4` files hold.
+		`LZ4` blocks with their sizes, an end mark and checksums, so a frame
+		that is cut short or damaged is always caught, where a bare `LZ4` block
+		has no length to check against.
+	**/
+	public var LZ4_FRAME = 5;
+
+	/**
 		Converts a lowercase codec token into a supported generic compression
 		algorithm.
 	**/
@@ -36,6 +56,8 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 			case "gzip": GZIP;
 			case "br", "brotli": BROTLI;
 			case "lz4": LZ4;
+			case "zlib": ZLIB;
+			case "lz4-frame": LZ4_FRAME;
 			default: null;
 		}
 	}
@@ -50,6 +72,8 @@ enum abstract CompressionAlgorithm(Null<Int>) {
 			case CompressionAlgorithm.GZIP: "gzip";
 			case CompressionAlgorithm.BROTLI: "br";
 			case CompressionAlgorithm.LZ4: "lz4";
+			case CompressionAlgorithm.ZLIB: "zlib";
+			case CompressionAlgorithm.LZ4_FRAME: "lz4-frame";
 			default: null;
 		}
 	}

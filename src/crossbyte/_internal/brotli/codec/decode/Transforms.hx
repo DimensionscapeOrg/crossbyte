@@ -161,25 +161,26 @@ public static var kTransforms:Array<Transform> = [
 static public var kNumTransforms:Int = kTransforms.length;// sizeof(kTransforms) / sizeof(kTransforms[0]);
 
 
-static public function ToUpperCase(p:Vector<UInt>,p_off:Int):Int {
-  if (p[p_off+0] < 0xc0) {
-    if (p[p_off+0] >= 'a'.charCodeAt(0) && p[p_off+0] <= 'z'.charCodeAt(0)) {
-      p[p_off+0] ^= 32;
+static public function ToUpperCase(p:Bytes,p_off:Int):Int {
+  var first:Int = p.get(p_off);
+  if (first < 0xc0) {
+    if (first >= 'a'.code && first <= 'z'.code) {
+      p.set(p_off, first ^ 32);
     }
     return 1;
   }
   /* An overly simplified uppercasing model for utf-8. */
-  if (p[p_off+0] < 0xe0) {
-    p[p_off+1] ^= 32;
+  if (first < 0xe0) {
+    p.set(p_off + 1, p.get(p_off + 1) ^ 32);
     return 2;
   }
   /* An arbitrary transform for three byte characters. */
-  p[p_off+2] ^= 5;
+  p.set(p_off + 2, p.get(p_off + 2) ^ 5);
   return 3;
 }
 
 static public function TransformDictionaryWord(
-    dst:Vector<UInt>, dst_off:Int, word:Vector<UInt>, word_off:Int, len:Int, transform:Int):Int {
+    dst:Bytes, dst_off:Int, word:Vector<UInt>, word_off:Int, len:Int, transform:Int):Int {
   var prefix:Array<UInt> = kTransforms[transform].prefix;//const char*
   var prefix_off:Int = 0;//const char*
   var suffix:Array<UInt> = kTransforms[transform].suffix;//const char*
@@ -188,18 +189,18 @@ static public function TransformDictionaryWord(
   var skip:Int = t < kOmitFirst1 ? 0 : t - (kOmitFirst1 - 1);
   var idx:Int = 0;
   var i:Int = 0;
-  var uppercase:Vector<UInt>;
+  var uppercase:Bytes;
   var uppercase_off:Int;
   if (skip > len) {
     skip = len;
   }
-  for (prefix_off in 0...prefix.length) { dst[dst_off+(idx++)] = prefix[prefix_off]; }
+  for (prefix_off in 0...prefix.length) { dst.set(dst_off+(idx++), prefix[prefix_off]); }
   word_off += skip;
   len -= skip;
   if (t <= kOmitLast9) {
     len -= t;
   }
-  while (i < len) { dst[dst_off+(idx++)] = word[word_off+(i++)]; }
+  while (i < len) { dst.set(dst_off+(idx++), word[word_off+(i++)]); }
   uppercase = dst;
   uppercase_off = dst_off+(idx - len);//&
   if (t == kUppercaseFirst) {
@@ -211,7 +212,7 @@ static public function TransformDictionaryWord(
       len -= step;
     }
   }
-  for (suffix_off in 0...suffix.length) { dst[dst_off+(idx++)] = suffix[suffix_off]; }
+  for (suffix_off in 0...suffix.length) { dst.set(dst_off+(idx++), suffix[suffix_off]); }
   return idx;
 }
 

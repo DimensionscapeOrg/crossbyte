@@ -1,37 +1,24 @@
 package crossbyte._internal.brotli.codec.decode.bit_reader;
-import haxe.ds.Vector;
-import crossbyte._internal.brotli.codec.decode.streams.BrotliInput;
-import crossbyte._internal.brotli.codec.decode.BitReader.BROTLI_IBUF_SIZE;
+
+import haxe.io.Bytes;
 
 /**
- * ...
- * @author 
- */
-class BrotliBitReader
-{
-	public var val_:UInt;//uint32_t          /* pre-fetched bits */
-	public var pos_:UInt; //uint32_t         /* byte position in stream */
-	public var bit_pos_:UInt;//uint32_t      /* current bit-reading position in val_ */
-	public var bit_end_pos_:UInt;//uint32_t  /* bit-reading end position from LSB of val_ */
-	public var eos_:Int;          /* input stream is finished */
-	public var buf_ptr_:Vector<UInt>;//uint8_t*      /* next input will write here */
-	public var buf_ptr_off:Int;//
-	public var input_:BrotliInput;        /* input callback */
+	Reads bits LSB first straight out of the input.
 
-	/* Set to 0 to support partial data streaming. Set to 1 to expect full data or
-	 for the last chunk of partial data. */
-	public var finish_:Int;
-	/* indicates how much bytes already read when reading partial data */
-	public var tmp_bytes_read_:Int;
+	The C this was ported from streamed its input through an 8 KB ring and a
+	callback, 4 KB at a time. The decoder is only ever handed a whole stream,
+	so this reads it where it lies: `val_` holds the four bytes before `pos_`,
+	of which `bit_pos_` bits are spent. Bytes past the end read as zero, and
+	`BrotliReadMoreInput` says when a read went past it.
+**/
+class BrotliBitReader {
+	public var val_:UInt; /* pre-fetched bits */
+	public var pos_:Int; /* index of the next byte to load into val_ */
+	public var bit_pos_:UInt; /* bits of val_ already consumed */
 
-	/* Input byte buffer, consist of a ringbuffer and a "slack" region where */
-	/* bytes from the start of the ringbuffer are copied. */
-	public var buf_:Vector<UInt>=new Vector<UInt>(BROTLI_IBUF_SIZE);//uint8_t;
-	public var buf_off:Int=0;//
-	
-	public function new() 
-	{
-		
-	}
-	
+	/** The stream, and the index one past its last byte. **/
+	public var input_:Bytes;
+	public var end_:Int;
+
+	public function new() {}
 }
