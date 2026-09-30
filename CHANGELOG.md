@@ -1220,6 +1220,27 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A TURN relay named by hostname is looked up once per allocation. Every
+  request went to the name, which natively was looked up again every minute
+  and on Node for every datagram; against a round-robin pool the requests
+  bounced between relays that refused each other's nonces, and nothing was
+  allocated. `TurnClient` now sends to the address the relay first answered
+  from, and `serverAddress` says which. A relay that calls every nonce stale
+  is given up on after three (`MAX_STALE_NONCES`) rather than asked some
+  nine thousand times a second. Requests are transactions of their own, up
+  to eight in flight (`MAX_IN_FLIGHT`) and 64 waiting (`MAX_QUEUED`), and a
+  refresh never waits behind them: it was sent only when nothing else was
+  outstanding, so a caller asking for permissions faster than the relay
+  answered let the allocation expire. `permit` sends nothing for a
+  permission already in place or already asked for, so calling it before
+  every datagram, as `PeerConnection` now does, is cheap.
+- A stale nonce on a TURN channel rebind no longer blacks the channel out.
+  A 438 on a ChannelBind was neither retried nor used to take the new
+  nonce, and the channel stayed marked bound while the relay, whose binding
+  lapsed at ten minutes, dropped everything sent on it -- for up to six
+  minutes, with nothing reported. A ChannelBind is retried like any other
+  request, and a rebind the relay refuses, or never answers, sends the
+  traffic back to Send indications once the old binding has lapsed.
 - A TURN relay refusing one peer refuses that peer, not the whole
   allocation. Any CreatePermission error but 401 and 438 closed the
   `TurnClient`, and ICE pairs a relayed candidate with every one of the
