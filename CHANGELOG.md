@@ -1244,6 +1244,17 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Removing entries while iterating works in `ListedMap`, `DenseSet` and
+  `OrderedMap`. `ListedMap`'s value iterator counted the entries when it was
+  made and read past the end after a removal, throwing on every target; its
+  pair iterator and `DenseSet`'s skipped the entry swapped into the removed
+  one's place (4 of 6 visited); `OrderedMap`'s walked an array of keys that
+  a removal shifted under it (3 of 6). Removing the entry a loop is on now
+  visits every other entry once in all three, and `OrderedMap` allows any
+  removal. `OrderedMap` keeps its entries on a linked list, so `remove` is
+  constant time -- 20,000 removals took 332 ms on the jvm and 802 ms on
+  Node, now 3 ms -- and iterating reads no map; `ofIndex` walks to its
+  position.
 - `ExpiringMap` holds one object per entry, whatever it is touched. Every
   `set` and `touch` left a queue position behind, collected only once
   everything ahead of it had expired, so one idle session in front of 1,000
