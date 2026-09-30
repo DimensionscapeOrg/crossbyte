@@ -73,8 +73,11 @@ class ZlibCompressor {
 		if (stream == null || stream.length < 2) {
 			return false;
 		}
-		var cmf:Int = stream.get(0);
-		var flg:Int = stream.get(1);
+		return isHeader(stream.get(0), stream.get(1));
+	}
+
+	/** Whether two bytes are a zlib header: DEFLATE, a window it allows, a valid check. **/
+	public static inline function isHeader(cmf:Int, flg:Int):Bool {
 		return (cmf & 0x0F) == 8 && (cmf >> 4) <= 7 && ((cmf << 8) | flg) % 31 == 0;
 	}
 }
