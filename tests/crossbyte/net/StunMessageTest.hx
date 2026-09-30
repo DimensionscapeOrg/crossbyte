@@ -651,6 +651,122 @@ class StunMessageTest extends utest.Test {
 		Assert.equals(StunMessage.MAX_ATTRIBUTES, most.attributes.length);
 	}
 
+	// ------------------------------------------------------------------
+	// IPv6, and RFC 8489's credentials
+	// ------------------------------------------------------------------
+
+	/** RFC 5769 section 2.3: the sample response again, reporting an IPv6 address. **/
+	private static inline var RFC5769_IPV6_RESPONSE:String = "010100482112a442"
+		+ "b7e7a701bc34d686fa87dfae"
+		+ "8022000b" + "7465737420766563746f7220"
+		+ "00200014" + "0002a1470113a9faa5d3f179bc25f4b5bed2b9d9"
+		+ "00080014" + "a382954e4be67bf11784c97c8292c275bfe3ed41"
+		+ "80280004" + "c8fb0b4c";
+
+	/**
+		An IPv6 mapped address is read, pinned to RFC 5769's sample.
+
+		It was read as no address at all: the family byte was 2 and only 1 was
+		understood, so a STUN server answering over IPv6 reported "no mapped
+		address" and a TURN relay granting an IPv6 allocation had "allocated
+		nothing". An IPv6 address is XORed with the transaction id as well as
+		the cookie, which is the part a decoder that only knows IPv4 gets wrong.
+	**/
+	public function testTheRfcSampleIPv6ResponseVerifies():Void {
+		var message = StunMessage.decode(fromHex(RFC5769_IPV6_RESPONSE));
+
+		Require.notNull(message);
+		Assert.isTrue(message.verifyIntegrity(RFC5769_PASSWORD));
+		Assert.isTrue(message.verifyFingerprint());
+
+		var mapped = Require.notNull(message.mappedAddress(), "the IPv6 mapped address was read as none");
+		Assert.equals("2001:db8:1234:5678:11:2233:4455:6677", mapped.address);
+		Assert.equals(32853, mapped.port);
+	}
+
+	/**
+		An IPv6 address written with a transaction reads back as it was, in the
+		canonical form a socket reports; without the transaction it cannot be
+		written at all, since the XOR needs it.
+	**/
+	public function testAnIPv6AddressIsWrittenWithItsTransaction():Void {
+		var id = transaction();
+		var message = new StunMessage(StunMessage.SEND_INDICATION, id, [StunMessage.xorPeerAddress("2001:0DB8:0:0:0:0:0:7", 5000, id)]);
+		var decoded = Require.notNull(StunMessage.decode(message.encode()));
+		var peer = Require.notNull(decoded.addressOf(StunMessage.ATTR_XOR_PEER_ADDRESS));
+
+		Assert.equals("2001:db8::7", peer.address);
+		Assert.equals(5000, peer.port);
+
+		Assert.raises(() -> StunMessage.xorPeerAddress("2001:db8::7", 5000), crossbyte.errors.ArgumentError);
+	}
+
+	/** What reads as an IPv6 address, and what does not. **/
+	public function testIPv6AddressesAreReadStrictly():Void {
+		for (address in ["::", "::1", "2001:db8::7", "1:2:3:4:5:6:7:8", "1::", "::ffff:192.0.2.1", "fe80::1:2:3:4"]) {
+			Assert.notNull(StunMessage.ipv6Bytes(address), "\"" + address + "\" was refused");
+		}
+
+		for (address in ["1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9", "1::2::3", ":1:2:3:4:5:6:7", "12345::", "fe80::1%eth0", "[::1]", "::g",
+			"192.0.2.1", "::ffff:192.0.2.999", "", null]) {
+			Assert.isNull(StunMessage.ipv6Bytes(address), "\"" + address + "\" was read as an IPv6 address");
+		}
+
+		Assert.equals("::ffff:c000:201", StunMessage.canonicalIPv6("::ffff:192.0.2.1"));
+		Assert.equals("2001:db8::7", StunMessage.canonicalIPv6("2001:0DB8:0000:0000:0000:0000:0000:0007"));
+		Assert.equals("1::", StunMessage.canonicalIPv6("1:0:0:0:0:0:0:0"));
+	}
+
+	/**
+		RFC 8489's SHA-256 long-term credentials, pinned to arithmetic done
+		outside Haxe: the key, the USERHASH, and a whole signed request, each
+		computed with Node's crypto over the same attributes. Nothing here would
+		otherwise check the SHA-256 path against anything but itself -- the
+		suite's relay verifies with the code that signs.
+	**/
+	public function testSha256CredentialsMatchArithmeticDoneElsewhere():Void {
+		var key = StunMessage.longTermKeySha256("user", "example.org", "secret");
+		Assert.equals("bf9f8cc2da128fcb78077f794a818f9d3ccf550dab291cb21c82f29a153b3355", key.toHex());
+
+		var hash = StunMessage.userHash("user", "example.org");
+		Assert.equals("cf9fa894dfc9b7680968aec1efb3a6b8b2a1cac25c0461cab3b0c2f87c25eeaf", hash.toHex());
+
+		var algorithms = new ByteArray();
+		for (byte in [0, 2, 0, 0, 0, 1, 0, 0]) {
+			algorithms.writeByte(byte);
+		}
+
+		var request = new StunMessage(StunMessage.ALLOCATE_REQUEST, transaction(), [
+			StunMessage.requestedTransport(),
+			StunMessage.bytesAttribute(StunMessage.ATTR_USERHASH, hash),
+			StunMessage.text(StunMessage.ATTR_REALM, "example.org"),
+			StunMessage.text(StunMessage.ATTR_NONCE, "obMatJos2gAAAnonce-one"),
+			StunMessage.passwordAlgorithm(StunMessage.PASSWORD_ALGORITHM_SHA256),
+			StunMessage.bytesAttribute(StunMessage.ATTR_PASSWORD_ALGORITHMS, algorithms)
+		]);
+
+		var signed = request.encodeSignedSha256WithKey(key, false);
+		Assert.equals("000300902112a4420102030405060708090a0b0c0019000411000000001e0020cf9fa894dfc9b7680968aec1efb3a6b8b2a1cac25c0461cab3b0c2f87c25eeaf"
+			+ "0014000b6578616d706c652e6f726700001500166f624d61744a6f7332674141416e6f6e63652d6f6e650000001d000400020000800200080002000000010000"
+			+ "001c002096e0543436ff8a3e47cd6726e304d2a8517fb2ebb9b8512b11649f9109a63e24", toHex(signed, 0, signed.length));
+
+		var decoded = Require.notNull(StunMessage.decode(signed));
+		Assert.isTrue(decoded.verifyIntegritySha256WithKey(key));
+		Assert.isTrue(decoded.verifyAnyIntegrityWithKey(key));
+		Assert.isFalse(decoded.verifyIntegritySha256WithKey(StunMessage.longTermKeySha256("user", "example.org", "guess")));
+		Assert.equals("2,1", decoded.passwordAlgorithms().join(","));
+	}
+
+	/** RFC 8489's nonce cookie: the features it declares, and none without it. **/
+	public function testANonceSaysWhatTheServerOffers():Void {
+		Assert.equals(StunMessage.FEATURE_PASSWORD_ALGORITHMS, StunMessage.nonceFeatures("obMatJos2gAAAxyz"));
+		Assert.equals(StunMessage.FEATURE_USERNAME_ANONYMITY, StunMessage.nonceFeatures("obMatJos2QAAAxyz"));
+		Assert.equals(StunMessage.FEATURE_PASSWORD_ALGORITHMS | StunMessage.FEATURE_USERNAME_ANONYMITY, StunMessage.nonceFeatures("obMatJos2wAAA"));
+		Assert.equals(0, StunMessage.nonceFeatures("f//499k954d6OL34oL9FSTvy64sA"));
+		Assert.equals(0, StunMessage.nonceFeatures("obMatJos2"));
+		Assert.equals(0, StunMessage.nonceFeatures(null));
+	}
+
 	/** A binding success of `count` empty SOFTWARE attributes. **/
 	private static function emptyAttributes(count:Int):ByteArray {
 		var out = new ByteArray();

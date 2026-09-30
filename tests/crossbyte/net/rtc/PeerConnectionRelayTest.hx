@@ -898,6 +898,68 @@ class PeerConnectionRelayTest extends utest.Test {
 		silent.close();
 	}
 
+	/**
+		Two peers connect through a relay one of them reaches over TCP -- the
+		only way out of a network that lets nothing but TCP out.
+
+		The client framed whole datagrams and nothing else, so the relay a
+		peer behind such a network needed most was one it could not use.
+	**/
+	public function testTwoPeersConnectThroughARelayReachedOverTcp():Void {
+		if (unsupported()) return;
+
+		var server = relayServer();
+		var alice = new PeerConnection(true);
+		var bob = new PeerConnection(false);
+		var heard:String = null;
+
+		try {
+			server.start();
+			server.startTcp();
+			alice.bind(0, "127.0.0.2");
+			bob.bind(0, "127.0.0.3");
+
+			var relays = 0;
+			var failure:String = null;
+			alice.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.tcpPort, false, TCP).then(_ -> relays++, e -> failure = e);
+			bob.gatherRelayed("127.0.0.1", USERNAME, PASSWORD, server.port).then(_ -> relays++, e -> failure = e);
+			pumpUntil(() -> relays == 2 || failure != null, 10.0);
+
+			if (relays != 2) {
+				Assert.fail("the relay never allocated over TCP: " + failure);
+				alice.close();
+				bob.close();
+				server.close();
+				return;
+			}
+
+			bob.onChannel = function(channel:DataChannel):Void {
+				channel.onMessage = text -> heard = text;
+			};
+
+			alice.connect(relayOnly(bob));
+			bob.connect(relayOnly(alice));
+			pumpUntil(() -> alice.connected && bob.connected, 25.0);
+
+			Assert.isTrue(alice.connected, "the peer on TCP never connected through the relay: " + alice.closeReason);
+			Assert.isTrue(bob.connected, "the peer on UDP never connected: " + bob.closeReason);
+
+			if (alice.connected && bob.connected) {
+				var chat = alice.createDataChannel("chat");
+				pumpUntil(() -> chat.open, 8.0);
+				chat.send("over a stream to the relay");
+				pumpUntil(() -> heard != null, 8.0);
+				Assert.equals("over a stream to the relay", heard);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		alice.close();
+		bob.close();
+		server.close();
+	}
+
 	/** There is no socket to allocate through before `bind`. **/
 	public function testRelayingBeforeBindingIsRefused():Void {
 		if (unsupported()) return;

@@ -76,6 +76,36 @@ class FakeTurnRelay {
 	/** Sends each CreatePermission success again this many seconds later; 0 for never. **/
 	public var duplicatePermissionSuccess:Float = 0;
 
+	/**
+		The IPv6 address an allocation asking for one (REQUESTED-ADDRESS-FAMILY)
+		relays from; null for a relay with none, which refuses with 440.
+	**/
+	public var relayIPv6Address:Null<String> = null;
+
+	/** Relays from `relayIPv6Address` whatever the Allocate asked for. **/
+	public var ipv6Relayed:Bool = false;
+
+	/**
+		Offers RFC 8489's password algorithms, in `offeredAlgorithms`' order:
+		the nonce says so, a 401 lists them, and a request must then name one,
+		echo the list, and carry MESSAGE-INTEGRITY-SHA256.
+	**/
+	public var passwordAlgorithms:Bool = false;
+
+	public var offeredAlgorithms:Array<Int> = [StunMessage.PASSWORD_ALGORITHM_SHA256, StunMessage.PASSWORD_ALGORITHM_MD5];
+
+	/** Offers username anonymity: the nonce says so, and a request must carry USERHASH, not USERNAME. **/
+	public var usernameAnonymity:Bool = false;
+
+	/**
+		States a nonce offering password algorithms and leaves the list out of
+		its 401, as something stripping it on the way would.
+	**/
+	public var stripPasswordAlgorithms:Bool = false;
+
+	/** Pads ChannelData to four bytes, as a relay must over TCP or TLS. **/
+	public var padChannelData:Bool = false;
+
 	/** What happened, one word each, in order: "allocated", "refused-401", "deallocated" and so on. **/
 	public var events(default, null):Array<String> = [];
 
@@ -155,6 +185,18 @@ class FakeTurnRelay {
 	/** Every allocation it holds. **/
 	public function allAllocations():Array<FakeAllocation> {
 		return [for (allocation in __allocations) allocation];
+	}
+
+	/** Ends one client's allocation, as a relay does when its TCP connection closes. **/
+	public function forgetClient(address:String, port:Int):Void {
+		var key:String = address + ":" + port;
+		var allocation = __allocations.get(key);
+
+		if (allocation != null) {
+			__allocations.remove(key);
+			closeRelay(allocation.relayPort);
+			events.push("connection-closed");
+		}
 	}
 
 	/** Ends every allocation, as a relay restarting would. **/
@@ -274,14 +316,22 @@ class FakeTurnRelay {
 			framed.writeByte((data.length >> 8) & 0xFF);
 			framed.writeByte(data.length & 0xFF);
 			framed.writeBytes(data, 0, data.length);
+
+			if (padChannelData) {
+				for (_ in 0...((4 - (data.length % 4)) % 4)) {
+					framed.writeByte(0);
+				}
+			}
+
 			framed.position = 0;
 			events.push("to-client-channel");
 			__send(framed, allocation.clientAddress, allocation.clientPort, now);
 			return;
 		}
 
-		var indication = new StunMessage(StunMessage.DATA_INDICATION, __transaction(), [
-			StunMessage.xorPeerAddress(fromAddress, fromPort),
+		var transaction = __transaction();
+		var indication = new StunMessage(StunMessage.DATA_INDICATION, transaction, [
+			StunMessage.xorPeerAddress(fromAddress, fromPort, transaction),
 			StunMessage.data(data)
 		]);
 
@@ -327,16 +377,30 @@ class FakeTurnRelay {
 			return;
 		}
 
+		// IPv6 when asked for and there is one to give, or when told to give it
+		// regardless; 440 when asked for and there is none.
+		var family = message.attribute(StunMessage.ATTR_REQUESTED_ADDRESS_FAMILY);
+		var wantsIPv6:Bool = family != null && family.length >= 1 && family[0] == 0x02;
+
+		if (wantsIPv6 && relayIPv6Address == null) {
+			__refuseSigned(message, 440, "Address Family not Supported", credential, from, fromPort, now);
+			return;
+		}
+
 		var asked:Int = message.uintOf(StunMessage.ATTR_LIFETIME, 600);
 		var granted:Int = asked < maxLifetime ? asked : maxLifetime;
 		var endpoint = openRelay();
+
+		if ((wantsIPv6 || ipv6Relayed) && relayIPv6Address != null) {
+			endpoint = {address: relayIPv6Address, port: endpoint.port};
+		}
 
 		var allocation = new FakeAllocation(key, from, fromPort, credential.username, endpoint.address, endpoint.port);
 		allocation.expires = now + granted;
 		allocation.allocateTransaction = message.transactionId;
 		allocation.successAttributes = [
-			StunMessage.xorRelayed(endpoint.address, endpoint.port),
-			StunMessage.xorMappedAddress(from, fromPort),
+			StunMessage.xorRelayed(endpoint.address, endpoint.port, message.transactionId),
+			StunMessage.xorMappedAddress(from, fromPort, message.transactionId),
 			StunMessage.lifetime(granted)
 		];
 
@@ -530,14 +594,38 @@ class FakeTurnRelay {
 		that is not the current one.
 	**/
 	@:noCompletion private function __authenticate(key:String, from:String, fromPort:Int, message:StunMessage, now:Float):Null<FakeCredential> {
-		if (message.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY) == null) {
+		var sha1 = message.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY) != null;
+		var sha256 = message.attribute(StunMessage.ATTR_MESSAGE_INTEGRITY_SHA256) != null;
+
+		if (!sha1 && !sha256) {
 			__challenge(message, 401, "Unauthorized", key, from, fromPort, now);
 			return null;
 		}
 
-		var username = message.textOf(StunMessage.ATTR_USERNAME);
 		var askedRealm = message.textOf(StunMessage.ATTR_REALM);
 		var nonce = message.textOf(StunMessage.ATTR_NONCE);
+		var username:String = message.textOf(StunMessage.ATTR_USERNAME);
+
+		// Username anonymity: the name is found from its hash, and a request
+		// naming itself in the clear is not what was offered.
+		if (usernameAnonymity) {
+			var hash = message.attribute(StunMessage.ATTR_USERHASH);
+			username = null;
+
+			if (hash != null && askedRealm != null) {
+				for (candidate in users.keys()) {
+					if (__equal(StunMessage.userHash(candidate, askedRealm), hash)) {
+						username = candidate;
+					}
+				}
+			}
+
+			if (username == null || message.attribute(StunMessage.ATTR_USERNAME) != null) {
+				events.push("refused-userhash");
+				__challenge(message, 401, "Unauthorized", key, from, fromPort, now);
+				return null;
+			}
+		}
 
 		if (username == null || askedRealm == null || nonce == null) {
 			events.push("refused-400");
@@ -553,9 +641,28 @@ class FakeTurnRelay {
 			return null;
 		}
 
-		var credential = new FakeCredential(username, StunMessage.longTermKey(username, askedRealm, password));
+		// Password algorithms: the request names one it was offered, echoes the
+		// list as it was offered, and is signed with SHA-256 integrity alone.
+		var algorithm:Int = StunMessage.PASSWORD_ALGORITHM_MD5;
 
-		if (!message.verifyIntegrityWithKey(credential.key)) {
+		if (passwordAlgorithms) {
+			var named = message.attribute(StunMessage.ATTR_PASSWORD_ALGORITHM);
+			var echoed = message.attribute(StunMessage.ATTR_PASSWORD_ALGORITHMS);
+			algorithm = named != null && named.length >= 2 ? (named[0] << 8) | named[1] : -1;
+
+			if (algorithm < 0 || offeredAlgorithms.indexOf(algorithm) < 0 || echoed == null || !__equal(__algorithmsValue(), echoed) || !sha256
+				|| sha1) {
+				events.push("refused-algorithms");
+				__challenge(message, 401, "Unauthorized", key, from, fromPort, now);
+				return null;
+			}
+		}
+
+		var credential = new FakeCredential(username,
+			algorithm == StunMessage.PASSWORD_ALGORITHM_SHA256 ? StunMessage.longTermKeySha256(username, askedRealm,
+				password) : StunMessage.longTermKey(username, askedRealm, password), sha256);
+
+		if (!(sha256 ? message.verifyIntegritySha256WithKey(credential.key) : message.verifyIntegrityWithKey(credential.key))) {
 			__challenge(message, 401, "Unauthorized", key, from, fromPort, now);
 			return null;
 		}
@@ -580,16 +687,67 @@ class FakeTurnRelay {
 		var fresh:Bool = code == StunMessage.STALE_NONCE || current == null || (staleNonceAfter > 0 && now - current.issued > staleNonceAfter);
 
 		if (fresh) {
-			current = new FakeNonce("nonce-" + (++__nonceCount), now);
+			current = new FakeNonce(__nonceCookie() + "nonce-" + (++__nonceCount), now);
 			__nonces.set(key, current);
 		}
 
-		events.push("refused-" + code);
-		__send(new StunMessage(message.type | 0x0110, message.transactionId, [
+		var attributes:Array<StunAttribute> = [
 			StunMessage.errorCode(code, reason),
 			StunMessage.text(StunMessage.ATTR_REALM, realm),
 			StunMessage.text(StunMessage.ATTR_NONCE, current.nonce)
-		]).encode(), from, fromPort, now);
+		];
+
+		if (passwordAlgorithms && !stripPasswordAlgorithms) {
+			attributes.push(StunMessage.bytesAttribute(StunMessage.ATTR_PASSWORD_ALGORITHMS, __algorithmsValue()));
+		}
+
+		events.push("refused-" + code);
+		__send(new StunMessage(message.type | 0x0110, message.transactionId, attributes).encode(), from, fromPort, now);
+	}
+
+	/**
+		RFC 8489's nonce cookie and the features after it, when the relay
+		offers any: bit 0, the most significant of 24, for password
+		algorithms, bit 1 for username anonymity.
+	**/
+	@:noCompletion private function __nonceCookie():String {
+		if (!passwordAlgorithms && !usernameAnonymity) {
+			return "";
+		}
+
+		var features = Bytes.alloc(3);
+		features.set(0, (passwordAlgorithms ? 0x80 : 0) | (usernameAnonymity ? 0x40 : 0));
+		features.set(1, 0);
+		features.set(2, 0);
+		return StunMessage.NONCE_COOKIE + haxe.crypto.Base64.encode(features);
+	}
+
+	/** The PASSWORD-ALGORITHMS value offered: each algorithm, and no parameters. **/
+	@:noCompletion private function __algorithmsValue():Bytes {
+		var value = Bytes.alloc(offeredAlgorithms.length * 4);
+
+		for (i in 0...offeredAlgorithms.length) {
+			value.set(i * 4, offeredAlgorithms[i] >> 8);
+			value.set(i * 4 + 1, offeredAlgorithms[i] & 0xFF);
+			value.set(i * 4 + 2, 0);
+			value.set(i * 4 + 3, 0);
+		}
+
+		return value;
+	}
+
+	@:noCompletion private static function __equal(a:Bytes, b:ByteArray):Bool {
+		if (a.length != b.length) {
+			return false;
+		}
+
+		for (i in 0...a.length) {
+			if (a.get(i) != b[i]) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	@:noCompletion private function __refuseSigned(message:StunMessage, code:Int, reason:String, credential:FakeCredential, from:String, fromPort:Int,
@@ -615,7 +773,8 @@ class FakeTurnRelay {
 	}
 
 	@:noCompletion private function __sign(message:StunMessage, credential:FakeCredential, corrupt:Bool = false):ByteArray {
-		var bytes = message.encodeSignedWithKey(credential.key, false);
+		// With the integrity the request was signed with.
+		var bytes = credential.sha256 ? message.encodeSignedSha256WithKey(credential.key, false) : message.encodeSignedWithKey(credential.key, false);
 
 		if (corrupt) {
 			// The last byte of the integrity value, which is the last byte of
@@ -792,9 +951,13 @@ private class FakeCredential {
 	public var username(default, null):String;
 	public var key(default, null):Bytes;
 
-	public function new(username:String, key:Bytes) {
+	/** Whether the request was signed with MESSAGE-INTEGRITY-SHA256, which its answer is signed with too. **/
+	public var sha256(default, null):Bool;
+
+	public function new(username:String, key:Bytes, sha256:Bool = false) {
 		this.username = username;
 		this.key = key;
+		this.sha256 = sha256;
 	}
 }
 

@@ -52,6 +52,17 @@ import haxe.io.Bytes;
 	allocation nor the nonce: 96,000 stale-nonce refusals in eleven seconds, and
 	nothing allocated.
 
+	## Over TCP, over IPv6, and RFC 8489's credentials
+
+	A network that lets nothing out but TCP blocks the UDP a relay is usually
+	reached by; `transport` reaches it over a TCP or TLS connection instead,
+	with every message framed for a stream (RFC 8656 section 3.1) -- hand
+	what arrives to `receiveStream`, and `streamClosed` when the connection
+	ends. `requestIPv6` asks for an IPv6 relayed address, for peers on IPv6.
+	A relay that offers RFC 8489's password algorithms is answered with
+	SHA-256 keys and MESSAGE-INTEGRITY-SHA256, and one that offers username
+	anonymity with USERHASH in place of USERNAME.
+
 	## Requests in flight
 
 	Each request is a transaction of its own, matched to its answer by its id,
@@ -120,6 +131,13 @@ class TurnClient {
 		doubling instead, and gave up at 63.5.
 	**/
 	public static inline var FINAL_WAIT:Float = 8.0;
+
+	/**
+		How long a request over TCP or TLS is given to be answered: RFC 8489's
+		Ti, the same 39.5 seconds as over UDP, spent waiting rather than
+		retransmitting, since a stream already delivers or fails.
+	**/
+	public static inline var STREAM_TIMEOUT:Float = 39.5;
 
 	/**
 		Stale-nonce refusals one request takes before it is given up on.
@@ -265,6 +283,20 @@ class TurnClient {
 	**/
 	public var useChannels:Bool = false;
 
+	/**
+		How the relay is reached: datagrams, or a TCP or TLS stream whose
+		arriving bytes go to `receiveStream`. See `TurnTransport`.
+	**/
+	public var transport(default, null):TurnTransport;
+
+	/**
+		Whether to ask for an IPv6 relayed address, with RFC 8656's
+		REQUESTED-ADDRESS-FAMILY, rather than the IPv4 one a relay allocates
+		otherwise. Set before `allocate`. An allocation's peers are its own
+		family, so an IPv6 one permits and sends to IPv6 peers only.
+	**/
+	public var requestIPv6:Bool = false;
+
 	@:noCompletion private var __username:String;
 	@:noCompletion private var __password:String;
 	@:noCompletion private var __realm:String;
@@ -314,10 +346,51 @@ class TurnClient {
 	@:noCompletion private var __clock:Float = 0;
 
 	/**
+		RFC 8489's password algorithm the key is derived with -- MD5 unless the
+		relay offered SHA-256 -- and the PASSWORD-ALGORITHMS it offered, echoed
+		in every request as it came, or null when it offered none.
+	**/
+	@:noCompletion private var __algorithm:Int = StunMessage.PASSWORD_ALGORITHM_MD5;
+
+	@:noCompletion private var __offeredAlgorithms:Null<Bytes> = null;
+
+	/** Whether the relay asked for USERHASH in place of USERNAME. **/
+	@:noCompletion private var __anonymous:Bool = false;
+
+	/** Whether the relayed address, and so every peer, is IPv6. **/
+	@:noCompletion private var __relayedIPv6:Bool = false;
+
+	/** Bytes from the stream not yet read as whole messages, and how far they have been. **/
+	@:noCompletion private var __stream:ByteArray = null;
+
+	@:noCompletion private var __streamAt:Int = 0;
+
+	/**
+		The last IPv4 peer sent to, and its XOR-PEER-ADDRESS, which for IPv4
+		does not change with the transaction: a stream of datagrams to one peer
+		writes it once rather than parsing the address for each.
+	**/
+	@:noCompletion private var __lastPeer:String = null;
+
+	@:noCompletion private var __lastPeerPort:Int = 0;
+	@:noCompletion private var __lastPeerAttribute:StunAttribute = null;
+
+	/**
+		Random bytes for indications' transaction ids, drawn from the CSPRNG
+		sixteen ids at a time: RFC 8489 wants every one cryptographically
+		random, and asking the system for twelve bytes per datagram cost most
+		of what a Send indication did.
+	**/
+	@:noCompletion private var __indicationIds:ByteArray = null;
+
+	@:noCompletion private var __indicationAt:Int = 0;
+
+	/**
 		@param username Long-term credentials, which a relay always requires --
 		it is forwarding somebody's traffic and needs to know whose.
+		@param transport How the relay is reached; UDP when left out.
 	**/
-	public function new(serverAddress:String, serverPort:Int = 3478, username:String, password:String) {
+	public function new(serverAddress:String, serverPort:Int = 3478, username:String, password:String, ?transport:TurnTransport) {
 		if (serverAddress == null || serverAddress.length == 0) {
 			throw new ArgumentError("A relay address is required.");
 		}
@@ -330,12 +403,16 @@ class TurnClient {
 		this.serverPort = serverPort;
 		this.__username = username;
 		this.__password = password;
+		this.transport = transport != null ? transport : UDP;
 		this.allocated = new Future<ReflexiveAddress>();
 
 		// An address is where the relay's answers will come from, spelled the
-		// way a socket reports a source. A name waits for the first answer.
+		// way a socket reports a source. A name waits for the first answer --
+		// unless the relay is reached over a stream, which only it is on.
 		if (IPv6.isNumericAddress(serverAddress)) {
 			this.serverAddress = IPv6.compress(serverAddress);
+			__pinned = true;
+		} else if (this.transport != UDP) {
 			__pinned = true;
 		}
 
@@ -368,8 +445,14 @@ class TurnClient {
 		__generation++;
 
 		if (__realm != null) {
-			__key = StunMessage.longTermKey(username, __realm, password);
+			__deriveKey();
 		}
+	}
+
+	/** The key requests are signed with, from the credentials, the realm and the password algorithm in use. **/
+	@:noCompletion private function __deriveKey():Void {
+		__key = __algorithm == StunMessage.PASSWORD_ALGORITHM_SHA256 ? StunMessage.longTermKeySha256(__username, __realm, __password) : StunMessage.longTermKey(__username,
+			__realm, __password);
 	}
 
 	/**
@@ -406,10 +489,14 @@ class TurnClient {
 
 		__clock = now;
 		__allocating = true;
-		__start(new TurnTransaction(StunMessage.ALLOCATE_REQUEST, [
-			StunMessage.requestedTransport(),
-			StunMessage.lifetime(DEFAULT_LIFETIME)
-		]), now);
+
+		var attributes:Array<StunAttribute> = [StunMessage.requestedTransport(), StunMessage.lifetime(DEFAULT_LIFETIME)];
+
+		if (requestIPv6) {
+			attributes.push(StunMessage.requestedAddressFamily(true));
+		}
+
+		__start(new TurnTransaction(StunMessage.ALLOCATE_REQUEST, attributes), now);
 	}
 
 	/**
@@ -426,8 +513,9 @@ class TurnClient {
 		the relay has refused. It used to ask again on every call, and a caller
 		doing that had requests queued by the thousand.
 
-		@throws ArgumentError When `peerAddress` is not an IPv4 address: the
-		allocation is IPv4, and so are the peers it can reach.
+		@throws ArgumentError When `peerAddress` is not an address of the
+		allocation's own family: an IPv4 allocation reaches IPv4 peers, an IPv6
+		one IPv6 peers.
 	**/
 	public function permit(peerAddress:String, now:Float):Void {
 		if (__closed || !active || peerAddress == null) {
@@ -435,11 +523,12 @@ class TurnClient {
 		}
 
 		__clock = now;
+		peerAddress = __spelled(peerAddress);
 		var permission = __permissions.get(peerAddress);
 
 		if (permission == null) {
 			// Before it is kept, or `poll` would renew it -- and throw -- for good.
-			__requireIPv4(peerAddress);
+			__requirePeer(peerAddress);
 			permission = new TurnPermission(peerAddress);
 			__permissions.set(peerAddress, permission);
 		}
@@ -452,7 +541,9 @@ class TurnClient {
 
 		permission.pending = true;
 
-		var request = new TurnTransaction(StunMessage.CREATE_PERMISSION_REQUEST, [StunMessage.xorPeerAddress(peerAddress, 0)]);
+		// Its XOR-PEER-ADDRESS is written with each transaction it is sent
+		// under, which for an IPv6 peer is part of the XOR: see __attributesFor.
+		var request = new TurnTransaction(StunMessage.CREATE_PERMISSION_REQUEST, []);
 		request.permission = permission;
 		__start(request, now);
 	}
@@ -467,7 +558,8 @@ class TurnClient {
 		@param offset Where in `payload` the datagram starts.
 		@param length How many bytes it is; the rest of `payload` from
 		`offset` when negative.
-		@throws ArgumentError When `peerAddress` is not an IPv4 address.
+		@throws ArgumentError When `peerAddress` is not an address of the
+		allocation's own family.
 	**/
 	public function sendTo(payload:ByteArray, peerAddress:String, peerPort:Int, offset:Int = 0, length:Int = -1):Void {
 		if (__closed || !active) {
@@ -478,6 +570,7 @@ class TurnClient {
 			length = payload.length - offset;
 		}
 
+		peerAddress = __spelled(peerAddress);
 		var channel = __channelFor(peerAddress, peerPort);
 
 		// While the relay still holds the binding: one it refused to renew
@@ -495,8 +588,9 @@ class TurnClient {
 
 		data.position = 0;
 
-		var indication = new StunMessage(StunMessage.SEND_INDICATION, __transaction(), [
-			StunMessage.xorPeerAddress(peerAddress, peerPort),
+		var transaction = __indicationId();
+		var indication = new StunMessage(StunMessage.SEND_INDICATION, transaction, [
+			__peerAttribute(peerAddress, peerPort, transaction),
 			new StunAttribute(StunMessage.ATTR_DATA, data)
 		]);
 
@@ -518,7 +612,8 @@ class TurnClient {
 		separately, since it has to be in place for the indications that carry
 		the traffic in the meantime.
 
-		@throws ArgumentError When `peerAddress` is not an IPv4 address.
+		@throws ArgumentError When `peerAddress` is not an address of the
+		allocation's own family.
 	**/
 	public function bindChannel(peerAddress:String, peerPort:Int, now:Float):Void {
 		if (__closed || !active || !useChannels || peerAddress == null) {
@@ -526,12 +621,13 @@ class TurnClient {
 		}
 
 		__clock = now;
+		peerAddress = __spelled(peerAddress);
 		var channel = __channelFor(peerAddress, peerPort);
 
 		if (channel == null) {
 			// Here rather than first: this runs for every datagram relayed, and
 			// a channel already kept was checked when it was made.
-			__requireIPv4(peerAddress);
+			__requirePeer(peerAddress);
 
 			if (__nextChannel > LAST_CHANNEL) {
 				// Sixteen thousand peers on one allocation is not a case this
@@ -550,27 +646,99 @@ class TurnClient {
 
 		channel.pending = true;
 
-		var request = new TurnTransaction(StunMessage.CHANNEL_BIND_REQUEST, [
-			StunMessage.channelNumber(channel.number),
-			StunMessage.xorPeerAddress(peerAddress, peerPort)
-		]);
+		var request = new TurnTransaction(StunMessage.CHANNEL_BIND_REQUEST, []);
 		request.channel = channel;
 		__start(request, now);
 	}
 
 	/**
-		Refuses a peer that is not an IPv4 address, which XOR-PEER-ADDRESS is
-		written as here and an IPv4 allocation's peers are.
+		Refuses a peer that is not an address of the allocation's own family:
+		IPv4 for an IPv4 allocation, IPv6 for an IPv6 one, as RFC 8656 section
+		9.1 has a relay refuse the rest with 443.
 
-		Its octets were read with `Std.parseInt` and written modulo 256, so
-		1.2.3.999 was permitted as 1.2.3.231 and an IPv6 address as whatever
-		its first group read as, the relay then forwarding to a host nobody
-		named.
+		An IPv4 peer's octets were read with `Std.parseInt` and written modulo
+		256, so 1.2.3.999 was permitted as 1.2.3.231 and an IPv6 address as
+		whatever its first group read as, the relay then forwarding to a host
+		nobody named.
 	**/
-	@:noCompletion private static function __requireIPv4(peerAddress:String):Void {
-		if (StunMessage.ipv4Octets(peerAddress) == null) {
+	@:noCompletion private function __requirePeer(peerAddress:String):Void {
+		if (__relayedIPv6) {
+			if (StunMessage.ipv6Bytes(peerAddress) == null) {
+				throw new ArgumentError("The allocation relays to IPv6 peers, and \"" + peerAddress + "\" is not an IPv6 address.");
+			}
+		} else if (StunMessage.ipv4Octets(peerAddress) == null) {
 			throw new ArgumentError("The allocation relays to IPv4 peers, and \"" + peerAddress + "\" is not an IPv4 address.");
 		}
+	}
+
+	/**
+		A peer's address as the relay will report it: an IPv6 one in canonical
+		form, so the Data indications it forwards find the permission asked for
+		under whatever spelling. An IPv4 one, or anything that is not an IPv6
+		address, as it is -- the check that refuses it comes after.
+	**/
+	@:noCompletion private inline function __spelled(address:String):String {
+		if (!__relayedIPv6 || address.indexOf(":") < 0) {
+			return address;
+		}
+
+		var canonical = StunMessage.canonicalIPv6(address);
+		return canonical != null ? canonical : address;
+	}
+
+	/**
+		`XOR-PEER-ADDRESS` for a peer, under `transaction`, refusing one of the
+		other family. An IPv4 peer's does not depend on the transaction and is
+		kept for the next datagram to the same peer; an IPv6 peer's is written
+		each time.
+	**/
+	@:noCompletion private function __peerAttribute(address:String, port:Int, transaction:ByteArray):StunAttribute {
+		if (__relayedIPv6) {
+			__requirePeer(address);
+			return StunMessage.xorPeerAddress(address, port, transaction);
+		}
+
+		if (address == __lastPeer && port == __lastPeerPort) {
+			return __lastPeerAttribute;
+		}
+
+		__requirePeer(address);
+		__lastPeerAttribute = StunMessage.xorPeerAddress(address, port);
+		__lastPeer = address;
+		__lastPeerPort = port;
+		return __lastPeerAttribute;
+	}
+
+	/** A request's attributes under `transaction`: a peer's address is written with it. **/
+	@:noCompletion private function __attributesFor(request:TurnTransaction, transaction:ByteArray):Array<StunAttribute> {
+		return switch (request.type) {
+			case StunMessage.CREATE_PERMISSION_REQUEST:
+				[StunMessage.xorPeerAddress(request.permission.address, 0, transaction)];
+			case StunMessage.CHANNEL_BIND_REQUEST:
+				[
+					StunMessage.channelNumber(request.channel.number),
+					StunMessage.xorPeerAddress(request.channel.address, request.channel.port, transaction)
+				];
+			default:
+				request.attributes;
+		}
+	}
+
+	/**
+		Twelve cryptographically random bytes for an indication, from a pool
+		drawn sixteen ids at a time.
+	**/
+	@:noCompletion private function __indicationId():ByteArray {
+		if (__indicationIds == null || __indicationAt + TRANSACTION_LENGTH > __indicationIds.length) {
+			__indicationIds = SecureRandom.getSecureRandomBytes(TRANSACTION_LENGTH * 16);
+			__indicationAt = 0;
+		}
+
+		var id = new ByteArray();
+		id.writeBytes(__indicationIds, __indicationAt, TRANSACTION_LENGTH);
+		id.position = 0;
+		__indicationAt += TRANSACTION_LENGTH;
+		return id;
 	}
 
 	/** The channel bound to a peer, if one was ever asked for. **/
@@ -587,8 +755,8 @@ class TurnClient {
 	/**
 		`ChannelData`: two bytes of channel, two of length, then the payload.
 
-		No padding. RFC 8656 section 12.4 requires it only over a stream
-		transport, where a reader has to find the end of one message to find the
+		Padded to four bytes over a stream only. RFC 8656 section 12.5 requires
+		it there, where a reader has to find the end of one message to find the
 		start of the next; a datagram already has an end.
 	**/
 	@:noCompletion private function __channelData(number:Int, payload:ByteArray, offset:Int, length:Int):ByteArray {
@@ -600,6 +768,12 @@ class TurnClient {
 
 		if (length > 0) {
 			out.writeBytes(payload, offset, length);
+		}
+
+		if (transport != UDP) {
+			for (_ in 0...((4 - (length % 4)) % 4)) {
+				out.writeByte(0);
+			}
 		}
 
 		out.position = 0;
@@ -677,7 +851,8 @@ class TurnClient {
 		shares the socket -- an ICE check, or a session already running.
 	**/
 	public function receive(payload:ByteArray, fromAddress:String, fromPort:Int, now:Float, ?message:StunMessage):Bool {
-		if (__closed || payload == null) {
+		// A relay reached over a stream says everything over the stream.
+		if (__closed || payload == null || transport != UDP) {
 			return false;
 		}
 
@@ -694,6 +869,101 @@ class TurnClient {
 			return false;
 		}
 
+		return __handle(payload, message, fromAddress, now);
+	}
+
+	/**
+		Offers bytes that arrived on the stream to the relay, when `transport`
+		is TCP or TLS: any amount, split anywhere. Whole messages are taken out
+		as they complete -- a STUN message by the length in its header, a
+		ChannelData message by its own, padded to four bytes -- and the rest
+		kept for the next call.
+
+		A stream that carries something that is neither ends the allocation:
+		past it there is no telling where the next message starts.
+	**/
+	public function receiveStream(bytes:ByteArray, now:Float):Void {
+		if (__closed || transport == UDP || bytes == null || bytes.length == 0) {
+			return;
+		}
+
+		__clock = now;
+
+		if (__stream == null) {
+			__stream = new ByteArray();
+		}
+
+		__stream.position = __stream.length;
+		__stream.writeBytes(bytes, 0, bytes.length);
+
+		while (!__closed) {
+			var available:Int = __stream.length - __streamAt;
+
+			if (available < CHANNEL_HEADER) {
+				break;
+			}
+
+			var first:Int = __stream[__streamAt];
+			var length:Int = (__stream[__streamAt + 2] << 8) | __stream[__streamAt + 3];
+			var size:Int;
+			var framed:Int;
+
+			if (first < 0x40) {
+				if (available < StunMessage.HEADER_LENGTH) {
+					break;
+				}
+
+				size = StunMessage.HEADER_LENGTH + length;
+				framed = size;
+			} else if (first < 0x80) {
+				size = CHANNEL_HEADER + length;
+				framed = CHANNEL_HEADER + length + ((4 - (length % 4)) % 4);
+			} else {
+				__fail("The connection to the relay at " + __serverName() + " carried something that is neither STUN nor ChannelData.");
+				return;
+			}
+
+			if (available < framed) {
+				break;
+			}
+
+			var message = new ByteArray();
+			message.writeBytes(__stream, __streamAt, size);
+			message.position = 0;
+			__streamAt += framed;
+			__handle(message, null, serverAddress, now);
+		}
+
+		// Kept compact: what is read is let go, and a stream that only ever
+		// holds part of one message stays one message long.
+		if (__stream != null) {
+			if (__streamAt >= __stream.length) {
+				__stream = null;
+				__streamAt = 0;
+			} else if (__streamAt > 0) {
+				var rest = new ByteArray();
+				rest.writeBytes(__stream, __streamAt, __stream.length - __streamAt);
+				__stream = rest;
+				__streamAt = 0;
+			}
+		}
+	}
+
+	/**
+		Says the stream to the relay has ended, when `transport` is TCP or TLS.
+		The allocation ends with it -- a relay deletes an allocation whose
+		connection closes -- and is reported the way any other loss is.
+	**/
+	public function streamClosed(reason:String):Void {
+		if (__closed || transport == UDP) {
+			return;
+		}
+
+		__fail("The connection to the relay at " + __serverName() + " closed" + (reason != null && reason.length > 0 ? ": " + reason : "."));
+	}
+
+	/** A message from the relay, off the socket or out of the stream. **/
+	@:noCompletion private function __handle(payload:ByteArray, message:Null<StunMessage>, fromAddress:String, now:Float):Bool {
 		// Before decoding: a ChannelData message is not STUN, and its first two
 		// bytes are a channel number that would read as a message type nothing
 		// here has.
@@ -795,7 +1065,9 @@ class TurnClient {
 			}
 		}
 
-		return request.key != null && message.verifyIntegrityWithKey(request.key);
+		// Whichever integrity the relay wrote: SHA-256 once it offered its
+		// password algorithms, SHA-1 before.
+		return request.key != null && message.verifyAnyIntegrityWithKey(request.key);
 	}
 
 	/** A success or an error for one of the four methods this client asks. **/
@@ -898,7 +1170,8 @@ class TurnClient {
 			return;
 		}
 
-		request.message = new StunMessage(request.type, __transaction(), request.attributes);
+		var transaction = __transaction();
+		request.message = new StunMessage(request.type, transaction, __attributesFor(request, transaction));
 		__inFlight.push(request);
 		__transmit(request, now);
 	}
@@ -913,9 +1186,17 @@ class TurnClient {
 	@:noCompletion private function __transmit(request:TurnTransaction, now:Float):Void {
 		request.attempts++;
 
-		// Doubling from half a second, and the last transmission given
-		// sixteen times the first to be answered: RFC 8489 section 6.2.1.
-		request.retryAt = now + (request.attempts >= MAX_ATTEMPTS ? FINAL_WAIT : RETRY_AFTER * Math.pow(2, request.attempts - 1));
+		if (transport != UDP) {
+			// Sent once: a stream delivers or fails, and retransmitting over it
+			// only sends the relay the same request twice. The whole of Ti is
+			// then the wait for the answer.
+			request.attempts = MAX_ATTEMPTS;
+			request.retryAt = now + STREAM_TIMEOUT;
+		} else {
+			// Doubling from half a second, and the last transmission given
+			// sixteen times the first to be answered: RFC 8489 section 6.2.1.
+			request.retryAt = now + (request.attempts >= MAX_ATTEMPTS ? FINAL_WAIT : RETRY_AFTER * Math.pow(2, request.attempts - 1));
+		}
 
 		if (request.encoded == null) {
 			request.encoded = __encode(request);
@@ -937,13 +1218,26 @@ class TurnClient {
 			request.key = __key;
 			request.generation = __generation;
 
-			var signed = new StunMessage(request.type, request.message.transactionId, request.attributes.concat([
-				StunMessage.text(StunMessage.ATTR_USERNAME, __username),
+			// USERHASH in place of USERNAME where the relay offered username
+			// anonymity, so the name never crosses the network in the clear.
+			var credentials:Array<StunAttribute> = [
+				__anonymous ? StunMessage.bytesAttribute(StunMessage.ATTR_USERHASH,
+					StunMessage.userHash(__username, __realm)) : StunMessage.text(StunMessage.ATTR_USERNAME, __username),
 				StunMessage.text(StunMessage.ATTR_REALM, __realm),
 				StunMessage.text(StunMessage.ATTR_NONCE, __nonce)
-			]));
+			];
 
-			return signed.encodeSignedWithKey(__key, false);
+			// And where it offered password algorithms, the one chosen, the list
+			// echoed as it came -- which is what tells the relay nothing
+			// stripped it on the way -- and SHA-256 integrity alone, as RFC 8489
+			// section 9.2.5 has it.
+			if (__offeredAlgorithms != null) {
+				credentials.push(StunMessage.passwordAlgorithm(__algorithm));
+				credentials.push(StunMessage.bytesAttribute(StunMessage.ATTR_PASSWORD_ALGORITHMS, __offeredAlgorithms));
+			}
+
+			var signed = new StunMessage(request.type, request.message.transactionId, request.message.attributes.concat(credentials));
+			return __offeredAlgorithms != null ? signed.encodeSignedSha256WithKey(__key, false) : signed.encodeSignedWithKey(__key, false);
 		}
 
 		request.signed = false;
@@ -968,7 +1262,8 @@ class TurnClient {
 			__retired.shift();
 		}
 
-		request.message = new StunMessage(request.type, __transaction(), request.attributes);
+		var transaction = __transaction();
+		request.message = new StunMessage(request.type, transaction, __attributesFor(request, transaction));
 		request.encoded = null;
 		request.attempts = 0;
 		__transmit(request, now);
@@ -1087,9 +1382,52 @@ class TurnClient {
 				return;
 			}
 
-			if (realm != __realm || __key == null) {
+			// RFC 8489's security features, which the nonce declares. A nonce
+			// saying the relay offers password algorithms, on an answer that
+			// lists none, is the list stripped on the way -- a downgrade to
+			// MD5 -- and section 9.2.5 has the client not retry at all.
+			var features:Int = StunMessage.nonceFeatures(nonce);
+			var offered = message.attribute(StunMessage.ATTR_PASSWORD_ALGORITHMS);
+
+			if ((features & StunMessage.FEATURE_PASSWORD_ALGORITHMS) != 0 && offered == null) {
+				__requestFailed(request, code, "The relay's nonce offers password algorithms and its answer lists none, "
+					+ "which is what stripping them on the way looks like, so it was not answered.", true, now);
+				return;
+			}
+
+			var algorithm:Int = __algorithm;
+
+			if (offered != null) {
+				algorithm = -1;
+
+				// The first the relay lists that this client knows.
+				for (candidate in message.passwordAlgorithms()) {
+					if (candidate == StunMessage.PASSWORD_ALGORITHM_SHA256 || candidate == StunMessage.PASSWORD_ALGORITHM_MD5) {
+						algorithm = candidate;
+						break;
+					}
+				}
+
+				if (algorithm < 0) {
+					__requestFailed(request, code, "The relay offers no password algorithm this client supports.", true, now);
+					return;
+				}
+
+				var copy = Bytes.alloc(offered.length);
+				copy.blit(0, offered, 0, offered.length);
+				__offeredAlgorithms = copy;
+			} else if (code == StunMessage.UNAUTHORIZED) {
+				// A relay from before RFC 8489: MD5, SHA-1 integrity, as ever.
+				algorithm = StunMessage.PASSWORD_ALGORITHM_MD5;
+				__offeredAlgorithms = null;
+			}
+
+			__anonymous = (features & StunMessage.FEATURE_USERNAME_ANONYMITY) != 0;
+
+			if (realm != __realm || __key == null || algorithm != __algorithm) {
 				__realm = realm;
-				__key = StunMessage.longTermKey(__username, realm, __password);
+				__algorithm = algorithm;
+				__deriveKey();
 			}
 
 			__nonce = nonce;
@@ -1143,10 +1481,13 @@ class TurnClient {
 		serverPort = alternate.port;
 		__pinned = true;
 
-		// Another server's realm and nonce, which it will state.
+		// Another server's realm, nonce and features, which it will state.
 		__realm = null;
 		__nonce = null;
 		__key = null;
+		__offeredAlgorithms = null;
+		__algorithm = StunMessage.PASSWORD_ALGORITHM_MD5;
+		__anonymous = false;
 
 		__retry(request, now);
 	}
@@ -1215,6 +1556,9 @@ class TurnClient {
 		mappedAddress = message.addressOf(StunMessage.ATTR_XOR_MAPPED_ADDRESS);
 		__lifetime = message.uintOf(StunMessage.ATTR_LIFETIME, DEFAULT_LIFETIME);
 		__refreshAt = now + __lifetime / 2;
+
+		// The family every peer of this allocation is written in.
+		__relayedIPv6 = relayed.address.indexOf(":") >= 0;
 		active = true;
 
 		@:privateAccess allocated.__resolve(relayed);

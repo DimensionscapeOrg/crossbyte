@@ -5,6 +5,27 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- TURN over TCP, IPv6 relays, and RFC 8489's credentials. `TurnClient`
+  takes a `TurnTransport`: over TCP or TLS it frames every message for a
+  stream (RFC 8656 section 3.1) -- `receiveStream` takes what arrives,
+  split anywhere, and `streamClosed` ends the allocation with the
+  connection -- and sends each request once, waiting RFC 8489's 39.5
+  seconds, since a stream does not lose it. `PeerConnection.gatherRelayed`,
+  a `TurnServer`'s `transport` and `ReliableDatagramServerSocket.allocateRelay`
+  reach a relay over TCP for a network that lets nothing else out; what
+  the relay relays is UDP either way. TLS is framed the same, and needs a
+  TLS stream the caller holds, since a plain `Socket` does not start TLS on
+  every target. `requestIPv6` asks for an IPv6 relayed address
+  (REQUESTED-ADDRESS-FAMILY), whose peers are IPv6 and are written with the
+  transaction as RFC 8489 has it. A relay offering password algorithms is
+  answered with SHA-256 keys and MESSAGE-INTEGRITY-SHA256 alone, one
+  offering username anonymity with USERHASH in place of USERNAME, and one
+  whose nonce offers algorithms on an answer that lists none -- the list
+  stripped on the way, a downgrade -- is not answered at all. The SHA-256
+  arithmetic is pinned to values computed with Node's crypto.
+  `StunMessage` gains the attributes, `ipv6Bytes` and `canonicalIPv6`,
+  and IPv6 in `xorMappedAddress`, `xorPeerAddress` and `xorRelayed` given
+  the transaction id.
 - Reliable datagram sessions can fall back to a TURN relay, for the peers
   hole punching cannot reach -- a symmetric NAT or a carrier's CGNAT at
   either end. `ReliableDatagramServerSocket.allocateRelay` asks a relay for
@@ -1251,6 +1272,16 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An IPv6 address in a STUN or TURN message is read. The family byte for
+  IPv6 was taken for no address at all, so a STUN server answering over
+  IPv6 reported no mapped address and a relay granting an IPv6 allocation
+  had "allocated nothing" while it held one. Pinned to RFC 5769's IPv6
+  sample.
+- A TURN Send indication costs half what it did: its transaction id comes
+  from random bytes drawn sixteen ids at a time, and the peer's
+  XOR-PEER-ADDRESS is written once per peer rather than parsed from the
+  address for every datagram -- 610 to 350 ns for a 64-byte payload and
+  1.1 us to 540 ns for 1200 bytes, natively. ChannelData is unchanged.
 - A STUN message of more than 32 attributes (`StunMessage.MAX_ATTRIBUTES`)
   is not read. The count was the sender's, and each attribute costs an
   allocation and a copy, so one unauthenticated 64 KB datagram of empty
