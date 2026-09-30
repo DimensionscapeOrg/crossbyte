@@ -931,6 +931,17 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `INetHost` declares `allocateRelay`, `dialRelayed` and `permitRelayedPeer`.
+  They were on the `NetHost` abstract alone, which found a relay by
+  downcasting to the reliable datagram host it makes itself, so a host of an
+  application's own was refused whatever it could do, and code holding an
+  `INetHost` could not ask. Like `dial`, they are for a host whose one socket
+  both listens and dials; a TCP or WebSocket host refuses all three, where it
+  refused only `allocateRelay` before. What to change: an `INetHost` of your
+  own implements the three, refusing them as it refuses `dial` if it cannot
+  dial. The refusals name the protocol through the new `Protocol.toString()`:
+  joined to the text, the protocol was its number, and they read "A 0 host
+  cannot dial".
 - `ci/doc-examples.js` reads doc comments written with a ` * ` down the
   left, which it passed over as holding no examples: 49 of the 96 source
   files with examples are written that way. It checks 73 examples in 23
