@@ -57,7 +57,7 @@ class WebSocketEchoSample extends HostApplication {
 		var deadline = Timer.stamp() + TIMEOUT_SECONDS;
 		while (!done && Timer.stamp() < deadline) {
 			advance(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 
 		for (socket in accepted) {

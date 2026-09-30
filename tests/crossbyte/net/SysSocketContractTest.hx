@@ -170,7 +170,7 @@ class SysSocketContractTest extends utest.Test {
 				// an orderly end.
 				pair.client.output.writeString("never read");
 				pair.client.output.flush();
-				Sys.sleep(0.1);
+				crossbyte.sys.System.sleep(0.1);
 				#if (java || jvm)
 				// The JDK closes gracefully even over unread data; a zero linger
 				// is how a Java socket is made to reset.
@@ -178,7 +178,7 @@ class SysSocketContractTest extends utest.Test {
 				channel.socket().setSoLinger(true, 0);
 				#end
 				pair.accepted.close();
-				Sys.sleep(0.1);
+				crossbyte.sys.System.sleep(0.1);
 				pair.client.setTimeout(2.0);
 
 				if (byByte) {

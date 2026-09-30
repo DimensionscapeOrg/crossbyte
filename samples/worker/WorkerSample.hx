@@ -37,7 +37,7 @@ class WorkerSample extends HostApplication {
 			for (value in 1...6) {
 				total += value;
 				worker.sendProgress('added $value, total=$total');
-				Sys.sleep(0.02);
+				crossbyte.sys.System.sleep(0.02);
 			}
 			worker.sendComplete('sum(1..5)=$total');
 		};
@@ -46,7 +46,7 @@ class WorkerSample extends HostApplication {
 		var deadline = Sys.time() + 2.0;
 		while (!done && Sys.time() < deadline) {
 			advance(1 / 60, 0);
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 
 		worker.clean();

@@ -388,7 +388,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 				var bytesLoaded:Int = 0;
 
 				while (__fileStreamWorker != null) {
-					Sys.sleep(.001);
+					crossbyte._internal.system.Sleep.sleep(.001);
 
 					__fileStreamMutex.acquire();
 					while (isWriting) {
@@ -485,7 +485,7 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 			}
 
 			if (want <= 0) {
-				Sys.sleep(0.001);
+				crossbyte._internal.system.Sleep.sleep(0.001);
 				continue;
 			}
 

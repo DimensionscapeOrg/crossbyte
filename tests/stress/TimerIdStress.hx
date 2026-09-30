@@ -84,7 +84,7 @@ class TimerIdStress implements StressCase {
 					break;
 				}
 			}
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 
 		var seen:Map<Int, Bool> = new Map();

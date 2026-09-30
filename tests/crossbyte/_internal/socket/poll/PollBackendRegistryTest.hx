@@ -75,7 +75,7 @@ class PollBackendRegistryTest extends utest.Test {
 				if (readableIndex == 0) {
 					break;
 				}
-				Sys.sleep(0.01);
+				crossbyte.sys.System.sleep(0.01);
 			}
 			Assert.equals(0, readableIndex);
 

@@ -152,7 +152,7 @@ class PassFlushTest extends utest.Test {
 			// Already waiting when the pass begins, so the poll that follows
 			// the tick finds it.
 			sender.send(bytes("waiting"), 0, 0, "127.0.0.1", listener.localPort);
-			Sys.sleep(0.05);
+			crossbyte.sys.System.sleep(0.05);
 			runtime.addEventListener(crossbyte.events.TickEvent.TICK, onTick);
 
 			var deadline = haxe.Timer.stamp() + 3;

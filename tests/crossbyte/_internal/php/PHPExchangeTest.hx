@@ -253,7 +253,7 @@ class PHPExchangeTest extends utest.Test {
 				parsed = null;
 			}
 
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 
 		var request:FpmRequest = Require.notNull(parsed, "the request never arrived whole");
@@ -273,7 +273,7 @@ class PHPExchangeTest extends utest.Test {
 
 		while (!future.completed && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0.0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 
 		try {
@@ -366,7 +366,7 @@ class PHPExchangeTest extends utest.Test {
 
 		while (!future.completed && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0.0);
-			Sys.sleep(0.005);
+			crossbyte.sys.System.sleep(0.005);
 		}
 
 		bridge.stop();
@@ -413,7 +413,7 @@ class PHPExchangeTest extends utest.Test {
 			@:privateAccess runtime.__socketRegistry.update(0.1);
 
 			if (!done()) {
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 		}
 	}

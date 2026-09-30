@@ -600,7 +600,7 @@ class LocalConnection implements INetConnection implements CloseObservable {
 			}
 
 			idle = busy ? POLL_MIN : (idle * 2 > POLL_MAX ? POLL_MAX : idle * 2);
-			Sys.sleep(idle);
+			crossbyte._internal.system.Sleep.sleep(idle);
 		}
 
 		// Its own session's handles, if close() has not already had them.

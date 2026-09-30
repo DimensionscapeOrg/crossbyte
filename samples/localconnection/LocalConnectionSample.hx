@@ -60,7 +60,7 @@ class LocalConnectionSample extends HostApplication {
 		var deadline = Sys.time() + 2.0;
 		while ((!server.connected || !client.connected) && Sys.time() < deadline) {
 			advance(1 / 60, 0);
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 
 		client.send(makePayload("hello from demo", 42));
@@ -68,7 +68,7 @@ class LocalConnectionSample extends HostApplication {
 		deadline = Sys.time() + 2.0;
 		while (!receiver.received && Sys.time() < deadline) {
 			advance(1 / 60, 0);
-			Sys.sleep(0.01);
+			crossbyte.sys.System.sleep(0.01);
 		}
 
 		if (!receiver.received) {
@@ -98,7 +98,7 @@ class LocalConnectionSample extends HostApplication {
 				Sys.println('received -> "${receiver.message}" (${receiver.value})');
 				receiver.reset();
 			}
-			Sys.sleep(0.05);
+			crossbyte.sys.System.sleep(0.05);
 		}
 	}
 
@@ -107,7 +107,7 @@ class LocalConnectionSample extends HostApplication {
 		client.connect(name);
 		client.send(makePayload(message, value));
 		advance(1 / 60, 0);
-		Sys.sleep(0.05);
+		crossbyte.sys.System.sleep(0.05);
 		client.close();
 	}
 

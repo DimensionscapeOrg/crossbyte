@@ -54,6 +54,10 @@ class SuiteCoverage {
 	private static inline var MAYBE:Int = 2;
 
 	public static function check():Void {
+		// A different question, asked from here because every suite build
+		// already runs this: does anything still sleep with Sys.sleep.
+		SleepCheck.check();
+
 		if (!FileSystem.exists(SUITES) || !FileSystem.exists(ROOT)) {
 			// Compiled from somewhere other than the repository root; there
 			// is nothing to inspect, and guessing would be worse than

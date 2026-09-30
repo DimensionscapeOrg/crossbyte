@@ -311,7 +311,7 @@ class LocalConnectionTest extends utest.Test {
 			client.connect(name);
 			var acceptBy = haxe.Timer.stamp() + 2.0;
 			while (!LocalConnection.__accept(peer) && haxe.Timer.stamp() < acceptBy) {
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 			var frame = new ByteArray();
 			frame.length = 1024 * 1024;
@@ -475,7 +475,7 @@ class LocalConnectionTest extends utest.Test {
 				client.send(bytesOf('m$i'));
 			}
 			// The reader takes them in meanwhile, with the runtime not ticking.
-			Sys.sleep(0.3);
+			crossbyte.sys.System.sleep(0.3);
 			runtime.pump(1 / 60, 0);
 			afterOneTick = received.length;
 			pumpUntil(() -> received.length >= count, 5.0);
@@ -523,7 +523,7 @@ class LocalConnectionTest extends utest.Test {
 			var began = haxe.Timer.stamp();
 			while (sent < 64 && haxe.Timer.stamp() - began < 2.0) {
 				if (client.bytesPending > 512 * 1024) {
-					Sys.sleep(0.001);
+					crossbyte.sys.System.sleep(0.001);
 					continue;
 				}
 				client.send(numbered(sent, size));
@@ -566,7 +566,7 @@ class LocalConnectionTest extends utest.Test {
 			client.connect(name);
 			var acceptBy = haxe.Timer.stamp() + 2.0;
 			while (!LocalConnection.__accept(peer) && haxe.Timer.stamp() < acceptBy) {
-				Sys.sleep(0.001);
+				crossbyte.sys.System.sleep(0.001);
 			}
 			var parting = new ByteArray();
 			parting.writeInt(3);
@@ -658,7 +658,7 @@ class LocalConnectionTest extends utest.Test {
 			server.listen(name);
 			// Idle, the listener looks every few milliseconds; the client below
 			// is gone within microseconds.
-			Sys.sleep(0.05);
+			crossbyte.sys.System.sleep(0.05);
 			var brief = LocalConnection.__connect(name, 2000);
 			Assert.notNull(brief, "the brief client did not connect");
 			var frame = new ByteArray();
@@ -785,7 +785,7 @@ class LocalConnectionTest extends utest.Test {
 		var deadline = haxe.Timer.stamp() + timeout;
 		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 		#end
 	}

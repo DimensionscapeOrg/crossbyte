@@ -231,7 +231,7 @@ class MongoIntegrationTest extends utest.Test {
 		var deadline:Float = haxe.Timer.stamp() + 60.0;
 
 		while (connection.count("sessions", {_id: "s_expired"}) > 0 && haxe.Timer.stamp() < deadline) {
-			Sys.sleep(0.5);
+			crossbyte.sys.System.sleep(0.5);
 		}
 
 		// Deleted by the server for its date: the JSON path could only ever

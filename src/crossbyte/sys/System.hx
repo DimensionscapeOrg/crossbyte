@@ -96,19 +96,8 @@ class System {
 		browser, which has no way to block a thread.
 	**/
 	#if !(js && !nodejs)
-	public static function sleep(seconds:Float):Void {
-		if (!(seconds > 0)) {
-			seconds = 0;
-		}
-		#if eval
-		if (isWindows) {
-			// Less than a millisecond is Sleep(0) there: the thread yields,
-			// as a sleep of nothing does elsewhere.
-			sys.net.Socket.select([], [], [], seconds > 0 ? seconds : 0.0001);
-			return;
-		}
-		#end
-		Sys.sleep(seconds);
+	public static inline function sleep(seconds:Float):Void {
+		crossbyte._internal.system.Sleep.sleep(seconds);
 	}
 	#end
 

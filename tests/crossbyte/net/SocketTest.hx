@@ -844,7 +844,7 @@ class SocketTest extends utest.Test {
 		var deadline = Sys.time() + timeout;
 		while (!done() && Sys.time() < deadline) {
 			runtime.pump(1 / 60, 0);
-			Sys.sleep(0.001);
+			crossbyte.sys.System.sleep(0.001);
 		}
 	}
 
