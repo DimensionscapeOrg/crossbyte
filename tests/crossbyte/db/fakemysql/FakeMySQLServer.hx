@@ -228,6 +228,21 @@ class FakeMySQLServer {
 		return predicate(events());
 	}
 
+	/** The session with this connection id, while it is open. **/
+	public function session(id:Int):Null<FakeMySQLSession> {
+		__lock.acquire();
+		var found:Null<FakeMySQLSession> = null;
+
+		for (candidate in __sessions) {
+			if (candidate.id == id) {
+				found = candidate;
+			}
+		}
+
+		__lock.release();
+		return found;
+	}
+
 	@:noCompletion public function __log(event:FakeMySQLEvent):Void {
 		__lock.acquire();
 		__events.push(event);
@@ -433,6 +448,9 @@ class FakeMySQLSession {
 	/** Status flags sent with the next OK or EOF. **/
 	public var status:Int;
 
+	/** Set by a KILL QUERY naming this session, from another one. **/
+	public var killed:Bool = false;
+
 	public var server(default, null):FakeMySQLServer;
 
 	@:noCompletion public var __finished:Lock = new Lock();
@@ -576,6 +594,29 @@ class FakeMySQLSession {
 			status |= FakeMySQLServer.STATUS_IN_TRANS;
 		}
 
+		if (StringTools.startsWith(compact, "KILL QUERY ")) {
+			var target:Null<FakeMySQLSession> = server.session(Std.parseInt(compact.substr(11)));
+
+			if (target == null) {
+				error(1094, "HY000", "Unknown thread id");
+			} else {
+				target.killed = true;
+				ok();
+			}
+			return;
+		}
+
+		if (StringTools.startsWith(compact, "SELECT SLEEP(")) {
+			var seconds:Float = Std.parseFloat(compact.substr(13));
+
+			if (interruptible(seconds)) {
+				error(1317, "70100", "Query execution was interrupted");
+			} else {
+				resultSet([{name: "SLEEP", type: FakeMySQLServer.TYPE_LONGLONG, charset: FakeMySQLServer.CHARSET_BINARY}], [["0"]]);
+			}
+			return;
+		}
+
 		if (StringTools.startsWith(compact, "SELECT 1")) {
 			resultSet([{name: "1", type: FakeMySQLServer.TYPE_LONGLONG, charset: FakeMySQLServer.CHARSET_BINARY}], [["1"]]);
 			return;
@@ -715,6 +756,24 @@ class FakeMySQLSession {
 		}
 
 		send(sequence++, __eof());
+	}
+
+	/**
+		Waits `seconds`, or until a KILL QUERY names this session; says which.
+	**/
+	public function interruptible(seconds:Float):Bool {
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+
+		while (!__closed && haxe.Timer.stamp() < deadline) {
+			if (killed) {
+				killed = false;
+				return true;
+			}
+
+			Sys.sleep(0.005);
+		}
+
+		return false;
 	}
 
 	/** Never answers: for read timeouts and cancellation. **/
