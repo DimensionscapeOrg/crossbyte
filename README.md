@@ -204,7 +204,11 @@ saying so: `BCrypt.hash`, PKCE, WebSocket clients, STUN, TURN, ICE and WebRTC.
 Both are IPv4 only. `LocalConnection`, `SharedChannel` and `SharedObject`, the
 native crypto and ALPN (so HTTP/2 over TLS) are native or jvm features, and a
 datagram socket's buffers cannot be sized (`DatagramSocket.bufferSizeSupported`
-is false: they read 0 and setting them throws).
+is false: they read 0 and setting them throws). On Linux, hl polls its sockets
+through `select`, which cannot watch a descriptor numbered 1024 or above, and
+hl has no poll natives to move to: a server there fails its polling once that
+many descriptors are open. neko polls through its own natives and is not held
+to it.
 
 Two things about neko's numbers and clock. An `Int` there is 31 bits, and
 `Array.sort` is a native merge sort that takes a comparator's answer too large
