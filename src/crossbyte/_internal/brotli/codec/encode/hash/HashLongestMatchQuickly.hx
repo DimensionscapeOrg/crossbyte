@@ -22,6 +22,30 @@ class HashLongestMatchQuickly
     num_dict_lookups_ = 0;
     num_dict_matches_ = 0;
   }
+
+  /**
+   * Clears the table for a call whose input is in `data` from 0.
+   *
+   * An input small next to the table, the whole input known, and no more
+   * than a thirty-second of the buckets, only ever looks in the buckets
+   * its own positions hash to, so those are the ones cleared, as the C
+   * encoder does. The output is what a fully cleared table gives: every
+   * bucket read is one cleared here. Anything larger is cleared whole.
+   */
+  public function Prepare(size_hint:Int, data:Vector<UInt>, mask:Int) {
+    if (size_hint >= 0 && size_hint <= (kBucketSize >> 5)) {
+      for (i in 0...size_hint) {
+        var key:UInt = Hash_(kBucketBits, data, i & mask);
+        for (j in 0...kBucketSweep) {
+          buckets_[key + j] = 0;
+        }
+      }
+      num_dict_lookups_ = 0;
+      num_dict_matches_ = 0;
+    } else {
+      Reset();
+    }
+  }
   // Look at 4 bytes at data.
   // Compute a hash from these, and store the value somewhere within
   // [ix .. ix+3].

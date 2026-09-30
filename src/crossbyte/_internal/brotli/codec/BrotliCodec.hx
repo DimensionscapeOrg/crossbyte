@@ -3,12 +3,10 @@ package crossbyte._internal.brotli.codec;
 import crossbyte._internal.brotli.codec.decode.Decode.*;
 import crossbyte._internal.brotli.codec.decode.streams.BrotliOutput;
 import crossbyte._internal.brotli.codec.encode.Dictionary_hash;
-import crossbyte._internal.brotli.codec.encode.Encode.*;
 import crossbyte._internal.brotli.codec.encode.Static_dict_lut;
+import crossbyte._internal.brotli.codec.encode.encode.BrotliCompressor;
 import crossbyte._internal.brotli.codec.encode.encode.BrotliParams;
 import crossbyte._internal.brotli.codec.encode.static_dict_lut.DictWord;
-import crossbyte._internal.brotli.codec.encode.streams.BrotliMemIn;
-import crossbyte._internal.brotli.codec.encode.streams.BrotliMemOut;
 import crossbyte._internal.brotli.codec.dictionary.DictionaryBuckets;
 import crossbyte._internal.brotli.codec.dictionary.DictionaryHash;
 import crossbyte._internal.brotli.codec.dictionary.DictionaryWords;
@@ -79,16 +77,63 @@ class BrotliCodec {
 
 		ensureTables();
 
-		var content:Array<UInt> = __bytesToArray(input);
+		var length:Int = input == null ? 0 : input.length;
 		var params = new BrotliParams();
 		params.quality = quality;
+		params.lgwin = windowBitsFor(length);
 
-		var output = new BrotliMemOut(new Array<UInt>());
-		if (!BrotliCompress(params, new BrotliMemIn(content, content.length), output)) {
-			throw "Brotli compression failed";
+		// The whole input is here, so the compressor is told its size and
+		// sizes its ring buffer and tables to it, and is fed straight from
+		// the Bytes, a block at a time. It used to be handed an Array<UInt>
+		// copy through a reader that copied each block again, and to build a
+		// window's worth of everything whatever the input.
+		var compressor = new BrotliCompressor(params, length);
+		var blockSize:Int = compressor.input_block_size();
+		var output = new haxe.io.BytesBuffer();
+		var outSize:Array<Int> = [0];
+		var out:Array<Vector<UInt>> = [];
+		var offset:Int = 0;
+		var last:Bool = false;
+		while (!last) {
+			var n:Int = length - offset < blockSize ? length - offset : blockSize;
+			if (n > 0) {
+				compressor.CopyBytesToRingBuffer(input, offset, n);
+				offset += n;
+			}
+			last = offset >= length;
+			outSize[0] = 0;
+			if (!compressor.WriteBrotliData(last, false, outSize, out)) {
+				throw "Brotli compression failed";
+			}
+			var storage:Vector<UInt> = out.length > 0 ? out[0] : null;
+			for (i in 0...outSize[0]) {
+				output.addByte(storage[i] & 0xFF);
+			}
 		}
 
-		return __arrayToBytes(output.buf_, output.position());
+		return output.getBytes();
+	}
+
+	/**
+		The smallest window from 2^16 up that reaches back over all of `length`
+		bytes, and at most the 2^22 the encoder used for everything.
+
+		A window only has to cover the distances a stream can use, and in a
+		stream of `length` bytes none is longer than that. Every input got 2^22,
+		so every decoder was told to keep 4 MB to read two bytes. Not below
+		2^16, and never 2^17: the format spends one bit on 2^16, four on 2^18
+		and up, and seven on the others, and neither encoder nor decoder here
+		sizes its memory by the window any more.
+	**/
+	public static function windowBitsFor(length:Int):Int {
+		if (length <= (1 << 16) - 16) {
+			return 16;
+		}
+		var bits:Int = 18;
+		while (bits < 22 && (1 << bits) - 16 < length) {
+			bits++;
+		}
+		return bits;
 	}
 
 	/** Builds the dictionary tables if no thread has yet. **/
@@ -196,27 +241,6 @@ class BrotliCodec {
 		Dictionary_hash.kStaticDictionaryHash = staticDictionaryHash;
 		Static_dict_lut.kStaticDictionaryBuckets = staticDictionaryBuckets;
 		Static_dict_lut.kStaticDictionaryWords = staticDictionaryWords;
-	}
-
-	private static function __bytesToArray(bytes:Bytes):Array<UInt> {
-		if (bytes == null || bytes.length == 0) {
-			return [];
-		}
-
-		var out:Array<UInt> = [];
-		out.resize(bytes.length);
-		for (i in 0...bytes.length) {
-			out[i] = bytes.get(i);
-		}
-		return out;
-	}
-
-	private static function __arrayToBytes(values:Array<UInt>, length:Int):Bytes {
-		var out = Bytes.alloc(length);
-		for (i in 0...length) {
-			out.set(i, values[i] & 0xFF);
-		}
-		return out;
 	}
 
 	private static inline function __readByte(bytes:Bytes, offset:Int):UInt {

@@ -54,7 +54,13 @@ public function GetBrotliStorage(size:Int):Vector<UInt> {
   var storage_size_:Int;
   var storage_:Vector<UInt>;//unique_ptr
   
-	public function new(params:BrotliParams) 
+	/**
+	 * @param size_hint The whole input's length when it is known up front, as
+	 *        it is for BrotliCodec.compress, or -1. It lets the ring buffer,
+	 *        the literal costs and the hash tables be sized to the input
+	 *        rather than to the window.
+	 */
+	public function new(params:BrotliParams, size_hint:Int = -1)
 	{
       this.params_ = params;
       this.hashers_=new Hashers();
@@ -93,9 +99,19 @@ public function GetBrotliStorage(size:Int):Vector<UInt> {
   // read_block_size_bits + 1 bits because the copy tail length needs to be
   // smaller than ringbuffer size.
   var ringbuffer_bits:Int = Std.int(Math.max(params_.lgwin + 1, params_.lgblock + 1));
-  ringbuffer_=new RingBuffer(ringbuffer_bits, params_.lgblock);
+  ringbuffer_=new RingBuffer(ringbuffer_bits, params_.lgblock, size_hint);
   if (params_.quality > 9) {
-    literal_cost_mask_ = (1 << params_.lgblock) - 1;
+    // Indexed by position & mask, so a table as large as the input, rounded
+    // up to a power of two, never folds two positions together.
+    var cost_bits:Int = params_.lgblock;
+    if (size_hint >= 0) {
+      var fit:Int = 0;
+      while (fit < cost_bits && (1 << fit) < size_hint) {
+        fit++;
+      }
+      cost_bits = fit;
+    }
+    literal_cost_mask_ = (1 << cost_bits) - 1;
     literal_cost_ = FunctionMalloc.mallocFloat(literal_cost_mask_ + 1);//TODO:resize
   }
 
@@ -124,9 +140,25 @@ public function GetBrotliStorage(size:Int):Vector<UInt> {
   // emitting an uncompressed block.
   memcpy(saved_dist_cache_,0, dist_cache_,0, dist_cache_.length);
 
-  // Initialize hashers.
+  // Initialize hashers. They are cleared when the first block arrives,
+  // since a small input only needs its own buckets cleared.
   hash_type_ = Std.int(Math.min(9, params_.quality));
   hashers_.Init(hash_type_);
+  size_hint_ = size_hint;
+  hashers_prepared_ = false;
+	}
+
+  var size_hint_:Int;
+  var hashers_prepared_:Bool;
+	/** Pushes `input_size` bytes of `input` from `offset`, straight from Bytes. **/
+	public function CopyBytesToRingBuffer(input:haxe.io.Bytes, offset:Int, input_size:Int) {
+  ringbuffer_.WriteBytes(input, offset, input_size);
+  input_pos_ += input_size;
+  var pos:Int = ringbuffer_.position();
+  if (pos <= ringbuffer_.mask()) {
+    // As in CopyInputToRingBuffer.
+    memset(ringbuffer_.start(), 0+ pos, 0, 3);
+  }
 	}
 //212
 	public function CopyInputToRingBuffer(input_size:Int,
@@ -218,10 +250,15 @@ public function WriteBrotliData(is_last:Bool,
     }
   }
 
+  if (!hashers_prepared_) {
+    hashers_.Prepare(hash_type_, size_hint_, data, mask);
+    hashers_prepared_ = true;
+  }
+
   var last_insert_len = [last_insert_len_];
   var num_commands = [num_commands_];
   var num_literals = [num_literals_];
-  
+
   CreateBackwardReferences(bytes, last_processed_pos_, data, mask,
                            literal_cost_,
                            literal_cost_mask_,
@@ -396,8 +433,11 @@ public function WriteMetaBlockInternal(is_last:Bool,
   last_byte_bits_ = storage_ix[0] & 7;
   last_flush_pos_ = input_pos_;
   last_processed_pos_ = input_pos_;
-  prev_byte_ = data[(last_flush_pos_ - 1) & mask];
-  prev_byte2_ = data[(last_flush_pos_ - 2) & mask];
+  // Nothing precedes the start of the stream, which the C reads as the
+  // zeroes its buffer kept before it. A buffer sized to the input has no
+  // such bytes, and a window-sized one only had them until it wrapped.
+  prev_byte_ = last_flush_pos_ >= 1 ? data[(last_flush_pos_ - 1) & mask] : 0;
+  prev_byte2_ = last_flush_pos_ >= 2 ? data[(last_flush_pos_ - 2) & mask] : 0;
   num_commands_ = 0;
   num_literals_ = 0;
   // Save the state of the distance cache in case we need to restore it for
