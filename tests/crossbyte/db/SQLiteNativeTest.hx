@@ -3,6 +3,8 @@ package crossbyte.db;
 #if cpp
 import crossbyte.db.sql.sqlite.SQLiteConnection;
 import crossbyte.db.sql.sqlite.SQLiteMode;
+import crossbyte.events.SQLErrorEvent;
+import crossbyte.events.SQLEvent;
 import crossbyte.utils.Logger;
 import haxe.io.Path;
 import sys.FileSystem;
@@ -109,6 +111,101 @@ class SQLiteNativeTest extends utest.Test {
 		Assert.equals(5, (small : Int));
 
 		connection.close();
+	}
+
+	public function testAnAsyncBeginImmediateTakesItsLockAtOnce():Void {
+		// The asynchronous begin() ignored its option and always began a
+		// deferred transaction, which takes no lock until its first write,
+		// and can fail with SQLITE_BUSY there, part way through.
+		var path:String = __path("async-immediate");
+		var setup:SQLiteConnection = new SQLiteConnection();
+		setup.open(path, SQLiteMode.CREATE, false, 4096);
+		setup.request("CREATE TABLE t (x INTEGER)");
+		setup.close();
+
+		var holder:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+
+		for (type in [SQLEvent.OPEN, SQLEvent.BEGIN, SQLEvent.ROLLBACK, SQLEvent.CLOSE]) {
+			holder.addEventListener(type, e -> events.push(e.type));
+		}
+
+		holder.addEventListener(SQLErrorEvent.ERROR, e -> events.push("error"));
+		holder.openAsync(path, SQLiteMode.UPDATE, false, 4096);
+		holder.begin("IMMEDIATE");
+		__pumpUntil(() -> events.indexOf(SQLEvent.BEGIN) >= 0 || events.indexOf("error") >= 0);
+		Assert.isTrue(events.indexOf(SQLEvent.BEGIN) >= 0, events.join(","));
+
+		// A second connection cannot take the write lock now.
+		var other:SQLiteConnection = new SQLiteConnection();
+		other.open(path, SQLiteMode.UPDATE, false, 4096);
+		var locked:Bool = false;
+
+		try {
+			other.request("BEGIN IMMEDIATE");
+			other.request("ROLLBACK");
+		} catch (_:Dynamic) {
+			locked = true;
+		}
+
+		other.close();
+		Assert.isTrue(locked, "the asynchronous BEGIN IMMEDIATE began deferred, holding no lock");
+
+		holder.rollback();
+		holder.close();
+		__pumpUntil(() -> events.indexOf(SQLEvent.CLOSE) >= 0);
+	}
+
+	public function testAFailedStatementDoesNotFailTheNextOne():Void {
+		// A statement whose step failed was finalized only when the next one
+		// replaced it, and finalize returned the old failure again, which was
+		// thrown as "Could not finalize request": after one constraint
+		// violation, the connection's next statement failed too, and so did
+		// close(). And the failure itself said only "SQL logic error".
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE users (email TEXT UNIQUE)");
+		connection.request("INSERT INTO users VALUES ('a@example.com')");
+
+		var message:String = "";
+
+		try {
+			connection.request("INSERT INTO users VALUES ('a@example.com')");
+		} catch (e:Dynamic) {
+			message = Std.string(e);
+		}
+
+		Assert.isTrue(message.indexOf("UNIQUE") >= 0, message);
+
+		var rows = connection.request("SELECT COUNT(*) AS n FROM users");
+		Assert.isTrue(rows.hasNext());
+		Assert.equals(1, (Reflect.field(rows.next(), "n") : Int));
+
+		// The same through a failed step that leaves nothing after it.
+		try {
+			connection.request("INSERT INTO users VALUES ('a@example.com')");
+		} catch (_:Dynamic) {}
+
+		var closed:Bool = false;
+
+		try {
+			connection.close();
+			closed = true;
+		} catch (e:Dynamic) {
+			message = Std.string(e);
+		}
+
+		Assert.isTrue(closed, message);
+	}
+
+	private static function __pumpUntil(done:Void->Bool, seconds:Float = 10.0):Void {
+		var runtime = crossbyte.core.CrossByte.current();
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+
+		while (!done() && haxe.Timer.stamp() < deadline) {
+			runtime.pump(1 / 120, 0);
+			Sys.sleep(0.001);
+		}
 	}
 
 	private function __path(name:String):String {

@@ -282,16 +282,27 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		if (__async) {
 			__addToQueue(__beginAsync(options));
 		} else {
-			switch (options) {
-				case "IMMEDIATE":
-					__connection.request("BEGIN IMMEDIATE;");
-				case "EXCLUSIVE":
-					__connection.request("BEGIN EXCLUSIVE;");
-				default:
-					__connection.startTransaction();
-			}
+			__beginWith(options);
 			__inTransaction = true;
 			__dispatchSQLEvent(SQLEvent.BEGIN);
+		}
+	}
+
+	/**
+		`BEGIN IMMEDIATE` and `BEGIN EXCLUSIVE` take their locks when the
+		transaction starts, where a plain (deferred) one waits for its first
+		write, and can then fail with SQLITE_BUSY part way through. Both
+		paths take the option from here: the asynchronous one ignored it and
+		always began deferred.
+	**/
+	@:noCompletion private function __beginWith(options:String):Void {
+		switch (options) {
+			case "IMMEDIATE":
+				__connection.request("BEGIN IMMEDIATE;");
+			case "EXCLUSIVE":
+				__connection.request("BEGIN EXCLUSIVE;");
+			default:
+				__connection.startTransaction();
 		}
 	}
 
@@ -727,7 +738,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			var event:Event;
 
 			try {
-				__connection.startTransaction();
+				__beginWith(options);
 				__inTransaction = true;
 				event = new SQLEvent(SQLEvent.BEGIN);
 			} catch (e:Dynamic) {
