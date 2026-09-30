@@ -201,6 +201,7 @@ class TestSuites {
 	public static function addSystem(runner:Runner):Void {
 		runner.addCase(new crossbyte.sys.NativeProcessTest());
 		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
+		runner.addCase(new crossbyte.sys.ChildProcessSocketTest());
 		runner.addCase(new crossbyte.sys.SysSupportTest());
 		runner.addCase(new crossbyte.sys.WorkerTest());
 		runner.addCase(new crossbyte.sys.TaskPoolTest());

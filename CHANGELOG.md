@@ -1142,6 +1142,39 @@ All notable changes to CrossByte will be documented in this file.
   caller not listening: an `AsyncDatabase` task completed, with `null`. What
   to change: code that listens for `SQLErrorEvent.ERROR` and counts on
   `execute()` returning should catch the `SQLError` as well.
+- The hxcpp fork CrossByte builds on takes in its `develop` branch: the
+  June and July fixes for memory corruption, the moving collector, sockets
+  and TLS, processes and threads, and the performance work beside them
+  (fork branch `merge/develop-into-production`; CI builds the fork's
+  `production`, so it applies once that branch is merged there). What an
+  application can see, and what to change: `Std.string` of a `Float`
+  prints the shortest text that reads back as the same number, as the
+  other targets do -- `0.1 + 0.2` is `0.30000000000000004`, not `0.3` --
+  `NaN`, `Infinity` and `-Infinity` are spelled that way, an exponent has
+  no leading zeros (`1e-7`), and neither printing nor `parseFloat` follows
+  the process locale, so anything that compares or stores those strings
+  sees the new ones. TLS is 1.2 at least: a 1.0 or 1.1 peer is refused,
+  and one TLS read or write moves at most 16 KB, so a caller must use the
+  count it returns. `sys.net.Socket`'s `listen`, `setBlocking` and
+  `setTimeout` throw when the system call fails rather than carrying on,
+  `setTimeout` refuses a negative or NaN value, `shutdown` throws for any
+  failure but "not connected", and `select` refuses a closed socket (and,
+  on Linux and macOS, a descriptor past `FD_SETSIZE`). `Std.parseInt`
+  saturates a decimal outside the `Int` range, the same on every OS.
+  SQLite integers wider than 32 bits come back as `Float` instead of
+  wrapped. An exception that escapes a thread is printed as `Uncaught
+  exception in thread: ...` and ends that thread instead of aborting the
+  process. Maps iterate in a different order: their tables are sized
+  differently, and `Int`, `Int64` and object keys are mixed before they
+  are placed. `Math.floor`, `round` and `ceil` of `NaN` are 0 everywhere.
+  The exit code of a child process killed by a signal is 128 plus the
+  signal, not 0. Strings of eight characters or more are four bytes
+  larger, which is where their hash is kept. On Windows `Sys.println` to
+  a redirected stdout -- a file, a pipe, a service's log -- no longer
+  flushes each line, so the output arrives in 512-byte blocks and a crash
+  can lose the last of it; `Logger` writes there by default, so set
+  `Logger.sink` to a function that prints and flushes where each line
+  must land at once.
 - `ReliableDatagramServerSocket.connect()` to a name -- and so
   `NetHost.dial()` on a reliable-UDP host -- looks it up off the runtime's
   thread. It was looked up in the call, so every session the server
@@ -2363,6 +2396,18 @@ All notable changes to CrossByte will be documented in this file.
   1` and changed another row, and an escaped value lost its tail the same
   way. Fixed in the hxcpp fork (`src/hx/libs/mysql`, branch
   `fix/mysql-client`), which a native build needs.
+- A process a native program starts no longer gets its sockets. On
+  Windows every socket was inheritable and hxcpp started each child with
+  all of them, so a server that ran a command -- through `NativeProcess`,
+  `System` or `File` -- while a client was connected handed the command
+  that connection: closing it ended nothing, and the client saw the end
+  of the stream only when the command exited. A closed listener went on
+  taking connections on its port the same way. The fork's sockets are no
+  longer inheritable, and a child inherits its own three pipes and
+  nothing else (fork commit `2d91b834`, on
+  `merge/develop-into-production`). On Linux and macOS the sockets
+  CrossByte accepts itself, in `NativeSocketAddress.cpp`, are not yet
+  close-on-exec, so there an accepted connection still reaches a child.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of
