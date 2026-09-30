@@ -1192,10 +1192,9 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 
 		var bytes:Bytes = switch (algorithm) {
 			// Every one of these takes the ceiling down into the decode itself,
-			// so a stream that keeps expanding is abandoned partway and the
-			// memory is never taken. Only a native backend, which returns a
-			// finished buffer, has to be measured after the fact -- and each of
-			// those is opt-in and off by default.
+			// the opt-in native Brotli and LZ4 backends included, so a stream
+			// that keeps expanding is abandoned partway rather than decoded
+			// whole and measured afterwards.
 			case CompressionAlgorithm.BROTLI: Brotli.decompress(this, maxOutputSize);
 			case CompressionAlgorithm.DEFLATE: Inflater.apply(this, maxOutputSize);
 			case CompressionAlgorithm.GZIP: GZCompressor.decompress(this, maxOutputSize);
