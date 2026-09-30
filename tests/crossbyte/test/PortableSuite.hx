@@ -113,11 +113,14 @@ class PortableSuite {
 		// Nothing here owns a socket, every parser is handed bytes, so it
 		// runs wherever the code it fuzzes can be compiled, which is everywhere.
 		runner.addCase(new crossbyte.fuzz.ParserFuzzTest());
-		// MongoDB's BSON codec and Extended JSON: bytes only, so they run here too,
-		// and JavaScript is where an Int is a double and Haxe's own UTF-8 decoding
-		// stops at a NUL.
+		// The MongoDB driver's bytes: BSON, Extended JSON, SCRAM and connection
+		// strings. The driver itself blocks on a socket and is not built for
+		// JavaScript, but its codec is, and JavaScript is where an Int is a
+		// double and Haxe's own UTF-8 decoding stops at a NUL.
 		runner.addCase(new crossbyte.db.mongodb.BsonTest());
 		runner.addCase(new crossbyte.db.mongodb.ExtendedJsonTest());
+		runner.addCase(new crossbyte.db.mongodb.ScramTest());
+		runner.addCase(new crossbyte.db.mongodb.MongoUriTest());
 		// BCrypt is pure Haxe, so the published vectors hold it to the same
 		// answers on every target; hashes made on one have to verify on another.
 		runner.addCase(new crossbyte.crypto.password.BCryptHardeningTest());
