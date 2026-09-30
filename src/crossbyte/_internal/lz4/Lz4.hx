@@ -180,9 +180,12 @@ class Lz4 {
 
 		The limit is checked before each write rather than after the decode, so
 		a stream that keeps expanding is abandoned partway and the memory is
-		never taken. The native decoder cannot do that: it returns a finished
-		buffer, so its result is measured after the fact and the allocation has
-		already happened. That path is opt-in and off by default.
+		never taken. The native decoder, from `crossbyte-lz4` with
+		`-D crossbyte_lz4_native`, is handed the limit as well: it adds up what
+		the block's sequence headers say it decodes to before allocating
+		anything, and refuses it there. It used to guess, and double its guess
+		on every failure, up to 256 MB, leaving the measuring to this function
+		afterwards.
 
 		A block has no length of its own, so one cut short at the end of a
 		literal run would read as complete. The format's end rules catch most:
@@ -197,15 +200,8 @@ class Lz4 {
 	public static function decompress(b:Bytes, maxOutputSize:Int = 0):Bytes {
 		#if crossbyte_lz4_native
 		if (NativeLz4.isAvailable()) {
-			var native:Bytes = try {
-				NativeLz4.decompress(b);
-			} catch (e:String) {
-				throw new IOError("Invalid LZ4 data: " + e);
-			}
-			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
-				throw new RangeError("Decoded stream exceeded " + maxOutputSize + " bytes");
-			}
-			return native;
+			// It refuses at the limit itself, and throws the same two errors.
+			return NativeLz4.decompress(b, maxOutputSize);
 		}
 		#end
 

@@ -46,10 +46,13 @@ class Brotli {
 		its header is read, and otherwise stops partway, where every decoded
 		byte passes through. Its memory follows its output: the ring buffer
 		grows with what has been decoded rather than being allocated at the
-		window size the stream asks for. The native one cannot stop partway: it
-		returns a finished buffer, so its result is measured after the fact and
-		the allocation has already happened. That path is opt-in and off by
-		default.
+		window size the stream asks for.
+
+		The native one, from `crossbyte-brotli` with `-D crossbyte_brotli_native`,
+		is handed the limit as well: it is given room for that much output and
+		stopped when it asks for more, by which time it may have decoded up to
+		one window ahead into its ring buffer, 16 MB at most. It used to decode
+		the whole stream and leave the measuring to this function, afterwards.
 
 		@throws crossbyte.errors.IOError The data is not a valid Brotli stream.
 		@throws crossbyte.errors.RangeError It decodes past `maxOutputSize`.
@@ -57,15 +60,8 @@ class Brotli {
 	public static function decompress(bytes:Bytes, maxOutputSize:UInt = 0):Bytes {
 		#if crossbyte_brotli_native
 		if (NativeBrotli.isAvailable()) {
-			var native:Bytes = try {
-				NativeBrotli.decompress(bytes);
-			} catch (e:String) {
-				throw new crossbyte.errors.IOError("Invalid Brotli data: " + e);
-			}
-			if (maxOutputSize > 0 && native != null && native.length > maxOutputSize) {
-				throw new crossbyte.errors.RangeError("Brotli stream exceeded " + maxOutputSize + " bytes");
-			}
-			return native;
+			// It stops at the limit itself, and throws the same two errors.
+			return NativeBrotli.decompress(bytes, maxOutputSize);
 		}
 		#end
 
