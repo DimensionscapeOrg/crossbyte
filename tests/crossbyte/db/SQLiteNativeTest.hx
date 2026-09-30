@@ -83,6 +83,34 @@ class SQLiteNativeTest extends utest.Test {
 		pool.close();
 	}
 
+	public function testIntegersAreReadAtSixtyFourBits():Void {
+		// Every INTEGER column was read with sqlite3_column_int, which keeps
+		// the low 32 bits: a millisecond timestamp, 1727600000000, came back
+		// as 1023147008.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t (ms INTEGER, big INTEGER, small INTEGER, negative INTEGER)");
+		connection.request("INSERT INTO t VALUES (1727600000000, 9007199254740993, 5, -9223372036854775808)");
+
+		var rows = connection.request("SELECT ms, big, small, negative FROM t");
+		Assert.isTrue(rows.hasNext());
+		var row:Dynamic = rows.next();
+
+		var ms:haxe.Int64 = Reflect.field(row, "ms");
+		Assert.equals("1727600000000", haxe.Int64.toStr(ms));
+		// Past 2^53, where a Float would round it.
+		var big:haxe.Int64 = Reflect.field(row, "big");
+		Assert.equals("9007199254740993", haxe.Int64.toStr(big));
+		var negative:haxe.Int64 = Reflect.field(row, "negative");
+		Assert.equals("-9223372036854775808", haxe.Int64.toStr(negative));
+		// One that fits an Int stays one.
+		var small:Dynamic = Reflect.field(row, "small");
+		Assert.isTrue(Std.isOfType(small, Int));
+		Assert.equals(5, (small : Int));
+
+		connection.close();
+	}
+
 	private function __path(name:String):String {
 		var directory:String = Path.join([Sys.getCwd(), "export"]);
 
