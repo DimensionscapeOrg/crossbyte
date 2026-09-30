@@ -1618,6 +1618,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On hl, an HTTPS request waiting for a slow server no longer stops every
+  other thread: `FlexSocket`, the TLS client `URLLoader`, `Http` and the
+  HTTP/2 backend read through, makes an `HlTlsSocket` there, as the entry
+  about it below describes, where it made the standard library's socket. A
+  client waiting 1.5 s for a TLS server's answer held the rest of the
+  process for the whole of its 10 s timeout, the server included; it holds
+  it for a few milliseconds now.
 - A record `Logger` writes to stdout reaches a pipe or a file within a
   frame, and a warning or an error at once. The hxcpp fork's develop line
   flushes `Sys.println` only to a console, a flush per line being a syscall
