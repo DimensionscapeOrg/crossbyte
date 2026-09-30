@@ -1462,11 +1462,12 @@ All notable changes to CrossByte will be documented in this file.
   pseudo-header or a line break, resets the stream as RFC 9113 8.1 says.
 - The interpreter suite no longer hangs, now and then, in
   `URLLoaderHttpTest`. The HTTP tests' pump loops slept a millisecond
-  between pumps with `Sys.sleep`, which on eval (Haxe 4.3.7 on Windows)
-  sometimes never returns when asked for a millisecond or two: one thread
-  doing nothing else stalled in five of six minute-long runs, and the case
-  hung in 2 of 20. They wait on a `Lock` there instead, and hung in none
-  of 20. The runtime's own frame loop still sleeps that way on eval.
+  between pumps with `Sys.sleep`, which on eval under Windows times a
+  yield in 15.6 ms ticks of CPU time and sleeps for what is left of the
+  millisecond, a negative remainder, when a tick lands in the yield,
+  that OCaml hands to `Sleep()` as about 49 days. One thread doing nothing
+  else stalled in five of six minute-long runs, and the case hung in 2 of
+  20. The pump loops sleep through `System.sleep` now.
 - An HTTP request that cannot connect says why, as in `Connection Failed:
   X509 - Certificate verification failed` natively or the JDK's `PKIX path
   building failed` on the jvm. Every failure, an untrusted or expired

@@ -2,6 +2,7 @@ package crossbyte.http;
 
 import crossbyte.core.CrossByte;
 import crossbyte.io.ByteArray;
+import crossbyte.sys.System;
 
 /**
  * Wire-level helpers shared by the HTTP server tests.
@@ -47,28 +48,16 @@ class HTTPTestSupport {
 	/**
 		Waits about `seconds`, for a pump loop to give the other side a turn.
 
-		On eval this waits on a lock nothing releases rather than calling
-		`Sys.sleep`, which there, for a millisecond or two, now and then does
-		not come back (Haxe 4.3.7 on Windows). A lone thread doing nothing but
-		`Sys.sleep(0.001)` for a minute stalled in two runs of three, and
-		`Sys.sleep(0.002)` in three of three, where the same loop waiting on a
-		`Lock` finished every run. That was the interpreter's intermittent
-		hang in `URLLoaderHttpTest.testClosingALoadInFlightEndsItQuietly`,
-		which stalled in its pump loop's sleep with every other thread idle.
-		A timed wait is coarser there, about 15 ms for 1, which is the
-		price of one that returns.
+		Through `System.sleep`, not `Sys.sleep`: on the interpreter under
+		Windows a sleep of a millisecond or two can be left a negative
+		remainder, which OCaml hands to `Sleep()` as about 49 days. That was
+		the interpreter's intermittent hang in
+		`URLLoaderHttpTest.testClosingALoadInFlightEndsItQuietly`, which
+		stalled in its pump loop's sleep with every other thread idle.
 	**/
-	public static function nap(seconds:Float):Void {
-		#if eval
-		__nap.wait(seconds);
-		#else
-		Sys.sleep(seconds);
-		#end
+	public static inline function nap(seconds:Float):Void {
+		System.sleep(seconds);
 	}
-
-	#if eval
-	private static final __nap:sys.thread.Lock = new sys.thread.Lock();
-	#end
 
 	/**
 	 * Pumps until `done` reports true, then calls `then` with whether it
