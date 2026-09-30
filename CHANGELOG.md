@@ -1404,6 +1404,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Logger` leaves text past ASCII alone on neko. A string there is its UTF-8
+  bytes, and the escaping read them one at a time: the second or third byte
+  of the euro sign, of most Cyrillic, of CJK and of a C1 control all fall
+  between 0x80 and 0x9F, so each was written as an escape and the bytes
+  around it raw -- "€100 за файл" was logged as a broken character, `\x82`,
+  another, and so on, and a control or line separator went out half
+  escaped. Those characters are recognised by their bytes now, and every
+  other byte goes out as it came.
 - On neko, ICE tries a host pair before a relay, and `SchemaMigrator` runs
   migrations numbered by date in order. neko's `Array.sort` is a native merge
   sort that reads any comparison too large for neko's 31-bit Int as "less",
