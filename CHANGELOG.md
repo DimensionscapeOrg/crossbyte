@@ -1427,6 +1427,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On neko the HTTP server answers a conditional request dated past
+  January 2038 with a 304, as it does elsewhere. It read `If-Modified-Since`
+  through a local `Date`, which neko cannot make past 2038 (`new Date`
+  threw `std@date_set_hour`), so such a revalidation was answered with the
+  whole file. HTTP dates are read and written in UTC by arithmetic now,
+  both ways, the same on every target.
 - The HTTP client's request-target case passes on neko. It built its
   non-ASCII path with `String.fromCharCode(0xE9)`, which on neko, whose
   strings are bytes, is one Latin-1 byte rather than the UTF-8 a typed
