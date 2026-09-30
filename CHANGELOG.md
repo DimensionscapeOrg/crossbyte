@@ -1225,10 +1225,11 @@ All notable changes to CrossByte will be documented in this file.
   again, a `connect` listener added after `listen()`, as `NetHost` does,
   and `ServerWebSocket`'s own, and close removed one, so the rest ran on
   for good, a `ServerWebSocket`'s calling `accept()` on its closed listener
-  every frame. Once a new listener reused the descriptor number that was
-  the new server's socket: natively its connections could be taken, and on
-  eval, which cannot make a socket non-blocking, the runtime stopped for
-  good waiting on one. The interpreter suite hung on Linux that way. The
+  every frame and keeping the server alive. Natively those accepts fail on
+  the closed socket; eval keeps the closed socket's descriptor number, so
+  once a new listener took it the accept landed there, and since eval
+  cannot make a socket non-blocking it waited on it, stopping the runtime
+  for good. The interpreter suite hung on Linux that way. The
   tick is now attached once and removed once, a closed server's tick does
   nothing, and on eval a `ServerWebSocket` asks `select` before `accept`.
 - A jvm TLS client's engine is told the host and port it dialled. Made
