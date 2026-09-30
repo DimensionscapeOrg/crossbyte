@@ -544,6 +544,121 @@ class CollectionsTest extends utest.Test {
 		Assert.equals(-1, packedAliasedAt, "a dead entity's handle resolved to a new one after " + packedAliasedAt + " reuses");
 	}
 
+	/**
+		One entity despawned and another spawned every tick does not bring a
+		slot's generation round in 2048 ticks.
+
+		The free list handed back the slot freed last, so that churn reused
+		one slot every tick, and a handle kept to the first entity, a
+		missile's target, resolved to the 2048th newcomer 34 seconds later at
+		60 Hz. Freed slots now wait behind every other free one.
+	**/
+	public function testAChurnedSlotWaitsBehindTheOtherFreeOnes():Void {
+		var entities = new SlotMap<String>(16);
+		var packed = new PackedSlotMap<String>(16);
+		for (i in 0...8) {
+			entities.insert("resident " + i);
+			packed.insert("resident " + i);
+		}
+		var victim = entities.insert("goblin");
+		var packedVictim = packed.insert("goblin");
+		entities.remove(victim);
+		packed.remove(packedVictim);
+
+		var aliasedAt:Int = -1;
+		var packedAliasedAt:Int = -1;
+		var spawned = entities.insert("tick 0");
+		var packedSpawned = packed.insert("tick 0");
+		for (tick in 1...6000) {
+			entities.remove(spawned);
+			spawned = entities.insert("tick " + tick);
+			if (aliasedAt < 0 && entities.get(victim) != null) {
+				aliasedAt = tick;
+			}
+			packed.remove(packedSpawned);
+			packedSpawned = packed.insert("tick " + tick);
+			if (packedAliasedAt < 0 && packed.get(packedVictim) != null) {
+				packedAliasedAt = tick;
+			}
+		}
+
+		Assert.equals(-1, aliasedAt, "a dead entity's handle resolved to a newcomer at tick " + aliasedAt);
+		Assert.equals(-1, packedAliasedAt, "a dead entity's handle resolved to a newcomer at tick " + packedAliasedAt);
+		Assert.equals(9, entities.length);
+		Assert.equals(9, packed.length);
+	}
+
+	/**
+		An entry inserted as null is held like any other. Whether a slot was
+		held was read from its value, so a null entry was skipped by forEach,
+		kept its generation through clear() and could still be written
+		through its old handle afterwards.
+	**/
+	public function testANullEntryIsHeldLikeAnyOther():Void {
+		var map = new SlotMap<String>(4);
+		var handle = map.insert(null);
+		Assert.equals(1, map.length);
+
+		var visits:Int = 0;
+		map.forEach((h, v) -> {
+			visits++;
+			Assert.isTrue(h == handle);
+			Assert.isNull(v);
+		});
+		Assert.equals(1, visits, "forEach skipped a held null entry");
+
+		map.clear();
+		Assert.equals(0, map.length);
+		Assert.isFalse(map.set(handle, "written after clear"), "a handle survived clear()");
+		Assert.isNull(map.get(handle));
+		Assert.isFalse(map.remove(handle));
+	}
+
+	/**
+		A handle made up for a slot nobody holds cannot free it. It matched the
+		free slot's generation, so remove() freed it a second time: length went
+		to -1 and the slot was handed to two inserts.
+	**/
+	public function testAHandleToAFreeSlotFreesNothing():Void {
+		var map = new SlotMap<String>(4);
+		Assert.isFalse(map.remove(SlotHandle.make(2, 0)), "a slot nobody held was removed");
+		Assert.isFalse(map.set(SlotHandle.make(1, 0), "stray"), "a slot nobody held was written");
+		Assert.equals(0, map.length);
+
+		var handles = [for (i in 0...4) map.insert("e" + i)];
+		var slots = new Map<Int, Bool>();
+		for (h in handles) {
+			Assert.isFalse(slots.exists(h.index()), "slot " + h.index() + " was handed out twice");
+			slots.set(h.index(), true);
+		}
+		for (i in 0...4) {
+			Assert.equals("e" + i, map.get(handles[i]));
+		}
+
+		var packed = new PackedSlotMap<String>(4);
+		Assert.isFalse(packed.remove(SlotHandle.make(2, 0)));
+		Assert.equals(0, packed.length);
+	}
+
+	/** Growth and clear keep every slot reachable, in the order they queue. **/
+	public function testSlotsQueueInOrderThroughGrowthAndClear():Void {
+		var map = new SlotMap<Int>(2, null, 3);
+		var first = [for (i in 0...7) map.insert(i)];
+		Assert.equals(8, map.capacity);
+		Assert.equals("0,1,2,3,4,5,6", [for (h in first) h.index()].join(","));
+		map.remove(first[3]);
+		map.remove(first[1]);
+		// The slot never used goes first, then the freed ones in the order freed.
+		Assert.equals("7,3,1", [for (_ in 0...3) map.insert(0).index()].join(","));
+
+		map.clear();
+		Assert.equals("0,1,2,3,4,5,6,7", [for (_ in 0...8) map.insert(1).index()].join(","));
+		var grown = map.insert(2);
+		Assert.equals(8, grown.index());
+		Assert.equals(11, map.capacity);
+		Assert.equals(9, map.length);
+	}
+
 	public function testAHandleIsNeverNegative():Void {
 		// The sign bit was part of the generation, so past its halfway point
 		// every handle was negative, and at the top index a live handle was
