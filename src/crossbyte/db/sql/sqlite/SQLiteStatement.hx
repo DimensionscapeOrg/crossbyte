@@ -105,7 +105,7 @@ class SQLiteStatement extends EventDispatcher {
 				event = new SQLEvent(SQLEvent.RESULT);
 			} catch (e:Dynamic) {
 				results = null;
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, "Execution failed"));
+				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, Std.string(e), "Execution failed: " + Std.string(e)));
 			}
 
 			var message:Object = new Object();
@@ -173,7 +173,9 @@ class SQLiteStatement extends EventDispatcher {
 					__prefetch = 0;
 				}
 			} else {
-				new SQLError(SQLEvent.RESULT, "Invalid result set");
+				// Thrown: it was made and dropped, so next() on a statement that
+				// had not run did nothing at all, and said nothing.
+				throw new SQLError(SQLEvent.RESULT, "Invalid result set", "Invalid result set: execute() the statement first");
 			}
 		}
 	}
@@ -197,7 +199,7 @@ class SQLiteStatement extends EventDispatcher {
 				event = new SQLEvent(SQLEvent.RESULT);
 			} catch (e:Dynamic) {
 				isExecuting = false;
-				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, "Execution failed"));
+				event = new SQLErrorEvent(SQLErrorEvent.ERROR, new SQLError(SQLEvent.RESULT, Std.string(e), "Execution failed: " + Std.string(e)));
 			}
 
 			var message:Object = new Object();

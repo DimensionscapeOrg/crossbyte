@@ -1291,6 +1291,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, a MySQL or SQLite failure arrives as the `SQLError` or
+  `IOError` it is, not a `ClassCastException`. The driver's
+  `java.sql.SQLException`: or the `ClassNotFoundException` when no JDBC
+  driver is on the class path, was passed where a String belongs, so no
+  listener ran and the error number and SQLSTATE JDBC reported were lost;
+  `MySQLError` now carries both. SQLite's asynchronous operations say why
+  they failed, where every error event said only "Execution failed", and
+  `SQLiteStatement.next()` before `execute()` throws the error it used to
+  make and drop.
 - `MySQLConfig.timeZone` and `sqlMode` work. Their values were escaped into
   a buffer that was then dropped and the server was sent `SET time_zone =
   :tz;`, a syntax error, so every `open()` naming either failed. A
