@@ -1047,13 +1047,26 @@ class Socket {
 		init(new NativeSocket());
 	}
 
+	// Set here rather than where declared: an accepted socket is made with
+	// createEmptyInstance, which runs no initialisers.
+	@:noCompletion private var __closed:Bool;
+
 	private function init(socket:NativeSocket):Void {
 		this.socket = socket;
+		__closed = false;
 		input = new SocketInput(socket);
 		output = new SocketOutput(socket);
 	}
 
+	/**
+		A second close does nothing, as on every other target. This handed it
+		to the system, which threw "not a socket".
+	**/
 	public function close():Void {
+		if (__closed) {
+			return;
+		}
+		__closed = true;
 		socket.close();
 	}
 
@@ -1094,20 +1107,27 @@ class Socket {
 		return socket;
 	}
 
-	@:access(sys.net.Host.init)
 	public function peer():{host:Host, port:Int} {
 		var info = socket.peer();
-		var host:Host = Type.createEmptyInstance(Host);
-		host.init(info.ip);
-		return {host: host, port: info.port};
+		return {host: __named(info.ip), port: info.port};
 	}
 
-	@:access(sys.net.Host.init)
 	public function host():{host:Host, port:Int} {
 		var info = socket.host();
+		return {host: __named(info.ip), port: info.port};
+	}
+
+	/**
+		A `Host` for an address, named by its text as a resolved one is. This
+		branch built it from the number alone and left `host` null, which
+		ServerWebSocket names a client by.
+	**/
+	@:access(sys.net.Host)
+	private static function __named(ip:Int):Host {
 		var host:Host = Type.createEmptyInstance(Host);
-		host.init(info.ip);
-		return {host: host, port: info.port};
+		host.init(ip);
+		host.host = host.toString();
+		return host;
 	}
 
 	public function setTimeout(timeout:Float):Void {
