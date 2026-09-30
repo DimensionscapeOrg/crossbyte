@@ -20,6 +20,10 @@ import crossbyte.sys.TaskPool;
  * runtime thread that submitted it.
  *
  * ```haxe
+ * // Given pool:ConnectionPool<crossbyte.db.postgres.PostgresConnection>.
+ * import crossbyte.sys.TaskPool;
+ * import crossbyte.utils.Logger;
+ *
  * var db = new AsyncDatabase(pool, new TaskPool(4));
  *
  * db.submit(connection -> connection.request("SELECT count(*) FROM users"))
@@ -204,6 +208,7 @@ class AsyncDatabase<T> {
 	 * not share a common interface. With `PostgresConnection` for example:
 	 *
 	 * ```haxe
+	 * // Given db:AsyncDatabase<crossbyte.db.postgres.PostgresConnection>.
 	 * db.transaction(c -> c.begin(), c -> c.commit(), c -> c.rollback(),
 	 *     connection -> connection.request("INSERT ..."));
 	 * ```
