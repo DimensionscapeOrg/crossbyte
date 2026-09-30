@@ -1428,6 +1428,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On the jvm, a runtime whose last connections close lets them go.
+  `select` keeps what it asks about on its thread between calls, and
+  emptied that list only as the next call began; a runtime with nothing
+  left to poll made no next call, so the sockets of its last one stayed
+  reachable with their buffers and `userData`: 40 closed connections of
+  64 KB each survived five collections.
 - On the interpreter, a socket's second `close()` does nothing, where it
   threw "not a socket", and `peer()` and `host()` name their `Host` by its
   address as a resolved one is named; `host.host` was null, and
