@@ -467,6 +467,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	/** What the timeout is before a single round trip has been measured. **/
 	@:noCompletion private static inline var INITIAL_RTO:Float = 1.0;
 
+	#if (hl || neko || eval)
+	/**
+		How far `__clock` moves when the clock under it has not: a microsecond,
+		which is several of the smallest steps a double can take at a time of
+		day in seconds.
+	**/
+	@:noCompletion private static inline var CLOCK_STEP:Float = 0.000001;
+	#end
+
 	@:noCompletion private var __alive:Bool = false;
 	@:noCompletion private var __closed:Bool = false;
 	@:noCompletion private var __connected:Bool = false;
@@ -599,6 +608,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 
 	// The fastest round trip measured, -1 until one is.
 	@:noCompletion private var __minRtt:Float = -1;
+
+	#if (hl || neko || eval)
+	// The last reading `__clock` gave, which the next must pass.
+	@:noCompletion private var __lastClock:Float = -1;
+	#end
 
 	// The highest sequence known delivered, and whether a frame has ever
 	// arrived below it without having been sent again.
@@ -2704,8 +2718,36 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 		return oldest;
 	}
 
-	@:noCompletion private inline function __clock():Float {
+	/**
+		Now, for this session's round trips and losses: `haxe.Timer.stamp()`,
+		never repeating a reading or going back where that clock can.
+
+		A session reads the clock at every send and every acknowledgement, and
+		two readings the same say nothing happened between them. On neko under
+		Windows `haxe.Timer.stamp()` is the time of day to the millisecond, and
+		it moves once a system tick -- every millisecond at best, every 15.6 by
+		default. A frame acknowledged in the tick it went out in measured a
+		round trip of nothing, which is thrown away, so a session there never
+		had one: no probe of a silent tail, and no allowance for a straggler
+		before a frame was called lost. A frame sent again in the tick it first
+		went out in was taken for sent before the frame whose arrival showed it
+		lost, and so was lost again, and sent again, with nothing new to say so.
+		hl, neko and the interpreter all read the time of day, which can also
+		be set back; this clock stands still until the time of day passes it.
+
+		Everywhere else the clock is monotonic and finer than a send takes, and
+		this is the stamp and nothing more.
+	**/
+	@:noCompletion private #if !(hl || neko || eval) inline #end function __clock():Float {
+		#if (hl || neko || eval)
+		var now:Float = haxe.Timer.stamp();
+		if (!(now > __lastClock)) {
+			now = __lastClock + CLOCK_STEP;
+		}
+		return __lastClock = now;
+		#else
 		return haxe.Timer.stamp();
+		#end
 	}
 
 	// Owed rather than sent: the acknowledgement is cumulative, so however
