@@ -119,6 +119,102 @@ class ReliableDatagramRelayTest extends utest.Test {
 	}
 
 	/**
+		One side reaching the relay over TLS, as a network that lets out only
+		what looks like HTTPS needs. TurnStream refused a TLS relay while a
+		client Socket could not start TLS; the relay's certificate is checked
+		like any other, here against the fixture's own authority.
+	**/
+	public function testOneSideReachesTheRelayOverTls():Void {
+		if (unsupported()) return;
+
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the TURN over TLS case did not run");
+			return;
+		}
+
+		var relay = new FakeTurnRelaySocket();
+		var alice = new ReliableDatagramServerSocket();
+		var bob = new ReliableDatagramServerSocket();
+
+		try {
+			relay.start();
+			relay.startTcp(fixture.certificate, fixture.key);
+			alice.bind(0, "127.0.0.2");
+			alice.listen();
+			bob.bind(0, "127.0.0.3");
+			bob.listen();
+
+			var granted:Int = 0;
+			var failure:String = null;
+			alice.relayCertAuthority = fixture.certificate;
+			alice.allocateRelay("127.0.0.1", relay.tcpPort, "user", "secret", false, TLS).then(_ -> granted++, e -> failure = Std.string(e));
+			bob.allocateRelay("127.0.0.1", relay.port, "user", "secret").then(_ -> granted++, _ -> {});
+			pumpUntil(() -> granted == 2 || failure != null, 8.0);
+
+			if (granted != 2) {
+				Assert.fail("the relay never lent both addresses: " + failure);
+				__closeAll(relay, [alice, bob]);
+				return;
+			}
+
+			bob.permitRelayedPeer(alice.relayedCandidate.address);
+
+			var accepted:ReliableDatagramSocket = null;
+			var heard:String = null;
+			bob.addEventListener(ReliableDatagramSocketConnectEvent.CONNECT, function(e:ReliableDatagramSocketConnectEvent):Void {
+				accepted = e.socket;
+				accepted.addEventListener(DatagramSocketDataEvent.DATA, d -> heard = textOf(d.data));
+			});
+
+			var session = alice.connectRelayed(bob.relayedCandidate.address, bob.relayedCandidate.port);
+			pumpUntil(() -> session.connected && accepted != null, 8.0);
+			Assert.isTrue(session.connected, "the session from the side on TLS never connected");
+
+			session.send(bytesOf("down a TLS connection and out as UDP"));
+			pumpUntil(() -> heard != null, 5.0);
+			Assert.equals("down a TLS connection and out as UDP", heard);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAll(relay, [alice, bob]);
+	}
+
+	/** A relay whose certificate chains to nothing trusted is refused, not used. **/
+	public function testARelayOverTlsIsRefusedAnUntrustedCertificate():Void {
+		if (unsupported()) return;
+
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the TURN over TLS case did not run");
+			return;
+		}
+
+		var relay = new FakeTurnRelaySocket();
+		var alice = new ReliableDatagramServerSocket();
+
+		try {
+			relay.start();
+			relay.startTcp(fixture.certificate, fixture.key);
+			alice.bind(0, "127.0.0.2");
+			alice.listen();
+
+			var granted:Bool = false;
+			var failure:String = null;
+			alice.allocateRelay("127.0.0.1", relay.tcpPort, "user", "secret", false, TLS).then(_ -> granted = true, e -> failure = Std.string(e));
+			pumpUntil(() -> granted || failure != null, 8.0);
+
+			Assert.isFalse(granted, "a relay presenting an untrusted certificate lent an address");
+			Assert.notNull(failure, "the allocation neither succeeded nor failed");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		__closeAll(relay, [alice]);
+	}
+
+	/**
 		The same with one server reaching the relay over TCP, as one behind a
 		network that lets nothing else out would: what the relay relays is UDP
 		either way, and the session does not know the difference.

@@ -289,6 +289,25 @@ class TurnClient {
 	**/
 	public var transport(default, null):TurnTransport;
 
+	#if !(js && !nodejs)
+	/**
+		For a relay reached over TLS: whether its certificate is checked, which
+		it is unless this is turned off. Turn it off for a test against a
+		relay with a throwaway certificate, never otherwise, and prefer
+		`certAuthority` even then. As `Socket.verifyCert`.
+	**/
+	public var verifyCert:Bool = true;
+
+	#if !macro
+	/**
+		For a relay reached over TLS: the authority its certificate must chain
+		to, where that is not one the system trusts -- a private relay's own.
+		As `Socket.certAuthority`; `null` trusts the system's.
+	**/
+	public var certAuthority:Null<Certificate> = null;
+	#end
+	#end
+
 	/**
 		Whether to ask for an IPv6 relayed address, with RFC 8656's
 		REQUESTED-ADDRESS-FAMILY, rather than the IPv4 one a relay allocates

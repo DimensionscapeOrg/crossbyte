@@ -257,6 +257,16 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	**/
 	public var relayedCandidate(default, null):Null<IceCandidate> = null;
 
+	#if !(macro || (js && !nodejs))
+	/**
+		For a relay `allocateRelay` reaches over TLS: the authority its
+		certificate must chain to, where that is not one the system trusts --
+		a private relay's own. Read when `allocateRelay` is called. See
+		`TurnClient.certAuthority`.
+	**/
+	public var relayCertAuthority:Null<Certificate> = null;
+	#end
+
 	@:noCompletion private var __relayTick:TickEvent->Void = null;
 
 	/** The connection `relay` reaches its server over, when that is TCP; null over UDP. **/
@@ -871,8 +881,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		@param useChannels See `TurnClient.useChannels`.
 		@param transport How the relay is reached: UDP when left out, or TCP
-		for a network that lets nothing else out -- what it relays is UDP
-		either way, and a session's datagrams are the same datagrams.
+		or TLS for a network that lets nothing else out -- what it relays is
+		UDP either way, and a session's datagrams are the same datagrams. A
+		TLS relay's certificate is checked; see `relayCertAuthority`.
 		@return The relayed address, or a failure whose `cause` is a `TurnError`.
 	**/
 	public function allocateRelay(server:String, port:Int = 3478, username:String, password:String, useChannels:Bool = false,
@@ -903,6 +914,9 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var client = new TurnClient(server, port, username, password, transport);
 		client.useChannels = useChannels;
+		#if !(macro || (js && !nodejs))
+		client.certAuthority = relayCertAuthority;
+		#end
 		relay = client;
 
 		if (client.transport != UDP) {
