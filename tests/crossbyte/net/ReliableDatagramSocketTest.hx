@@ -620,14 +620,16 @@ class ReliableDatagramSocketTest extends utest.Test {
 	public function testSessionsAskForAWindowOfSocketBuffer():Void {
 		if (!requireDatagramSupport()) return;
 
-		#if hl
-		// HashLink cannot size a socket's buffers (they read 0 there), so a
-		// session has nothing to ask for and nothing to read back.
-		var unsized = new ReliableDatagramSocket();
-		Assert.equals(0, unsized.receiveBufferSize);
-		unsized.close();
-		return;
-		#end
+		if (!DatagramSocket.bufferSizeSupported) {
+			// HashLink and Neko cannot size a socket's buffers: a session opens
+			// without asking, reads 0, not known, and says so if asked to.
+			var unsized = new ReliableDatagramSocket();
+			Assert.equals(0, unsized.receiveBufferSize);
+			Assert.raises(() -> unsized.receiveBufferSize = ReliableDatagramSocket.WINDOW_BUFFER_SIZE,
+				crossbyte.errors.IllegalOperationError);
+			unsized.close();
+			return;
+		}
 
 		// What this system grants a socket that asks for a window's worth:
 		// all of it on Windows and macOS, what net.core.rmem_max allows on
@@ -666,8 +668,12 @@ class ReliableDatagramSocketTest extends utest.Test {
 
 		var socket = new DatagramSocket();
 		try {
-			socket.receiveBufferSize = ReliableDatagramSocket.WINDOW_BUFFER_SIZE * 2;
+			if (DatagramSocket.bufferSizeSupported) {
+				socket.receiveBufferSize = ReliableDatagramSocket.WINDOW_BUFFER_SIZE * 2;
+			}
 			var before = socket.receiveBufferSize;
+			// And where buffers cannot be sized, reserving asks for nothing,
+			// and so has nothing to fail at.
 			ReliableDatagramSocket.__reserveWindow(socket);
 			Assert.isTrue(socket.receiveBufferSize >= before, 'reserving a window took ${before} down to ${socket.receiveBufferSize}');
 		} catch (e:Dynamic) {

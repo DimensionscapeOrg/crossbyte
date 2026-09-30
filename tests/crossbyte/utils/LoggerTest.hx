@@ -173,6 +173,24 @@ class LoggerTest extends utest.Test {
 		Assert.isTrue(captured[0].indexOf('note="C:\\\\x \\"y\\""') > 0, captured[0]);
 	}
 
+	/**
+		Ordinary text past ASCII goes out as it came, escapes and all.
+
+		On neko a string is its UTF-8 bytes, and the escaping read them one at
+		a time: the second or third byte of the euro sign, of most Cyrillic and
+		of a C1 control all fall between 0x80 and 0x9F, so each was written as
+		an escape, and the bytes around it raw, a broken character for every
+		euro, and a control only half escaped.
+	**/
+	public function testTextPastAsciiIsLeftAlone():Void {
+		Logger.info("€100 за файл, naïve 日本 \u0085end");
+		Assert.equals("[INFO] €100 за файл, naïve 日本 \\x85end", captured[0]);
+
+		captured = [];
+		Logger.info("paid", ["amount" => "€5 ф"]);
+		Assert.isTrue(captured[0].indexOf('amount="€5 ф"') > 0, captured[0]);
+	}
+
 	public function testTimestampsAreUtcWithMilliseconds():Void {
 		// They were local time with no zone, and to the second.
 		Assert.equals("1970-01-01T00:00:00.000Z", Logger.__timestamp(0));

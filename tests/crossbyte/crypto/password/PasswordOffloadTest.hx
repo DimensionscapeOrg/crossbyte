@@ -38,6 +38,9 @@ class PasswordOffloadTest extends utest.Test {
 	/** "password" hashed by libsodium's crypto_pwhash_str, at the minimum limits. */
 	static inline final ARGON_FROM_LIBSODIUM:String = "$argon2id$v=19$m=8,t=1,p=1$zQl1prQFPad8oOomaRKHiw$qx7RzkrnVeQEsi0yk5T0pjPqHLuFZju0/HIqmMDYCa0";
 
+	// Three verifies and a hash at cost 4: a few milliseconds natively, and
+	// about 50 ms a verify where BCrypt is pure Haxe on a slow target, neko.
+	@:timeout(5000)
 	public function testBCryptAsyncAgreesWithVerify(async:Async):Void {
 		var good:Future<Bool> = BCrypt.verifyAsync("abc", STANDARD_ABC);
 		var bad:Future<Bool> = BCrypt.verifyAsync("abcabc", STANDARD_ABC);
@@ -240,6 +243,12 @@ class PasswordOffloadTest extends utest.Test {
 	 * Pumps the runtime until `done`, then calls `then` with whether it got there
 	 * inside `timeout` seconds. On JavaScript the waiting spans event loop turns,
 	 * since that is where Node's own argon2 reports.
+	 *
+	 * Elsewhere each pump moves the runtime on by the time that really passed.
+	 * It moved it a sixtieth of a second a pump, with a millisecond's sleep
+	 * between, so the runtime's clock, which utest's timeouts run on, went
+	 * some sixteen times faster than the wall, and neko's pure-Haxe BCrypt,
+	 * about 50 ms a verify, ran out a 250 ms timeout in some 20 ms of work.
 	 */
 	static function pumpUntil(done:Void->Bool, timeout:Float, then:Bool->Void):Void {
 		var runtime:CrossByte = CrossByte.current();
@@ -258,8 +267,11 @@ class PasswordOffloadTest extends utest.Test {
 		}
 		turn();
 		#else
+		var last:Float = haxe.Timer.stamp();
 		while (!done() && haxe.Timer.stamp() < deadline) {
-			runtime.pump(1 / 60, 0);
+			var now:Float = haxe.Timer.stamp();
+			runtime.pump(now - last, 0);
+			last = now;
 			crossbyte.sys.System.sleep(0.001);
 		}
 		then(done());

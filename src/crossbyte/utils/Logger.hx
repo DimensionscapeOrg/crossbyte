@@ -312,6 +312,7 @@ class Logger {
 	// itself: C0 and C1 controls, DEL, and the Unicode line and paragraph
 	// separators, which some viewers break lines on.
 	@:noCompletion private static function __needsEscape(text:String):Bool {
+		#if target.unicode
 		for (i in 0...text.length) {
 			var code:Int = StringTools.fastCodeAt(text, i);
 			if (code < 0x20 || (code >= 0x7F && code <= 0x9F) || code == 0x2028 || code == 0x2029) {
@@ -319,7 +320,46 @@ class Logger {
 			}
 		}
 		return false;
+		#else
+		var i:Int = 0;
+		while (i < text.length) {
+			if (__escapedWidth(text, i) > 0) {
+				return true;
+			}
+			i++;
+		}
+		return false;
+		#end
 	}
+
+	#if !target.unicode
+	/**
+		Where a string is its UTF-8 bytes, neko's are, how many bytes at
+		`i` start a character that is written as an escape, or 0.
+
+		Read a byte at a time as characters, a C1 control's second byte and
+		the separators' last two all fall in 0x80 to 0x9F, as does the second
+		or third byte of hundreds of ordinary characters, the euro sign, most
+		of Cyrillic. Every one of those was escaped and the byte before it left
+		alone, which wrote a broken character followed by an escape; the
+		controls this is for went out half raw.
+	**/
+	@:noCompletion private static function __escapedWidth(text:String, i:Int):Int {
+		var code:Int = StringTools.fastCodeAt(text, i);
+		if (code < 0x20 || code == 0x7F) {
+			return 1;
+		}
+		if (code == 0xC2 && i + 1 < text.length) {
+			var next:Int = StringTools.fastCodeAt(text, i + 1);
+			return next >= 0x80 && next <= 0x9F ? 2 : 0;
+		}
+		if (code == 0xE2 && i + 2 < text.length && StringTools.fastCodeAt(text, i + 1) == 0x80) {
+			var last:Int = StringTools.fastCodeAt(text, i + 2);
+			return last == 0xA8 || last == 0xA9 ? 3 : 0;
+		}
+		return 0;
+	}
+	#end
 
 	/**
 	 * `text` with every character `__needsEscape` looks for written as an
@@ -333,6 +373,7 @@ class Logger {
 		}
 
 		var buffer = new StringBuf();
+		#if target.unicode
 		for (i in 0...text.length) {
 			var code:Int = StringTools.fastCodeAt(text, i);
 			switch (code) {
@@ -358,6 +399,38 @@ class Logger {
 					}
 			}
 		}
+		#else
+		// Bytes, and each character the other branch escapes recognised by
+		// its UTF-8 bytes; every other byte goes out as it came.
+		var i:Int = 0;
+		while (i < text.length) {
+			var code:Int = StringTools.fastCodeAt(text, i);
+			var width:Int = __escapedWidth(text, i);
+			if (code == 0x0A) {
+				buffer.add("\\n");
+			} else if (code == 0x0D) {
+				buffer.add("\\r");
+			} else if (code == 0x09) {
+				buffer.add("\\t");
+			} else if (quoted && code == 0x22) {
+				buffer.add('\\"');
+			} else if (quoted && code == 0x5C) {
+				buffer.add("\\\\");
+			} else if (width == 1) {
+				buffer.add("\\x");
+				buffer.add(StringTools.hex(code, 2));
+			} else if (width == 2) {
+				buffer.add("\\x");
+				buffer.add(StringTools.hex(StringTools.fastCodeAt(text, i + 1), 2));
+			} else if (width == 3) {
+				buffer.add("\\u");
+				buffer.add(StringTools.fastCodeAt(text, i + 2) == 0xA8 ? "2028" : "2029");
+			} else {
+				buffer.addChar(code);
+			}
+			i += width > 1 ? width : 1;
+		}
+		#end
 		return buffer.toString();
 	}
 
