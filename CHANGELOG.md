@@ -1228,6 +1228,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Resources` reads only inside `resourcesDir`. Paths were joined to the
+  directory as given, so a server loading a map by a name a client sent,
+  `getText("maps/" + name)`: read whatever `"../../config.json"` named,
+  and on Windows `"sample.txt::$DATA"` read through an NTFS stream name. A
+  path with a `..` segment, a leading `/` or `\`, or a `:` (a drive letter,
+  a stream name) is refused: `exists` answers `false`, `resourceSize` `-1`,
+  and the loaders, the listings and `getAbsolutePath` throw
+  `SecurityError`. `\` separates on every target, and empty and `.`
+  segments are dropped.
 - `PriorityQueue` serves equal priorities first come, first served. Each
   dequeue moved the newest element to the root and a strict comparison
   never sank it past an equal, so the newest was served next: a matchmaker
