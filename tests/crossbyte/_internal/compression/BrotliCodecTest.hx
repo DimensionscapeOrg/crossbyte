@@ -58,4 +58,59 @@ class BrotliCodecTest extends utest.Test {
 			Assert.equals("Brotli decompression failed", refusal, hex);
 		}
 	}
+
+	/** 174 bytes of English as Node's zlib writes them at quality 11: 53 bytes, mostly references into the static dictionary. **/
+	private static inline var DICTIONARY_TEXT:String = "The government information about the international community was available through the university library, although the development of the environment remained controversial.";
+
+	private static inline var DICTIONARY_STREAM:String = "a215009c34884bd81d68c981536b4be449eb1e9a47af5771363226381b58c05bb1e9b80fa23021ed853645b28fb233a93a2d3b9a08";
+
+	public function testAStreamOfDictionaryReferencesDecodes():Void {
+		Assert.equals(DICTIONARY_TEXT, Brotli.decompress(Bytes.ofHex(DICTIONARY_STREAM), 1 << 20).toString());
+	}
+
+	#if target.threaded
+	/**
+	 * Eight threads meeting the codec for the first time at once.
+	 *
+	 * The dictionary tables were marked built before they were built, so a
+	 * thread arriving while another built them read a dictionary that was
+	 * null or half filled: on the jvm seven threads in eight threw, in six
+	 * runs of six, and natively about one run in nine crashed the process.
+	 * URLLoader decodes on up to sixteen pool threads, so a burst of loads at
+	 * startup is exactly this. Each thread decodes a stream made of dictionary
+	 * references, which reads the dictionary, and encodes text, which reads
+	 * the hash built from it.
+	 */
+	public function testThreadsMeetingTheCodecAtOnceAllSucceed():Void {
+		var threads:Int = 8;
+		var packed:Bytes = Bytes.ofHex(DICTIONARY_STREAM);
+
+		for (round in 0...10) {
+			crossbyte._internal.brotli.codec.BrotliCodec.__forgetTables();
+
+			var go = new sys.thread.Lock();
+			var results = new sys.thread.Deque<String>();
+			for (i in 0...threads) {
+				sys.thread.Thread.create(() -> {
+					go.wait();
+					try {
+						var decoded:String = Brotli.decompress(packed, 1 << 20).toString();
+						var again:String = Brotli.decompress(Brotli.compress(Bytes.ofString(DICTIONARY_TEXT)), 1 << 20).toString();
+						results.add(decoded == DICTIONARY_TEXT && again == DICTIONARY_TEXT ? "ok" : "decoded wrongly: " + decoded);
+					} catch (e:Dynamic) {
+						results.add("threw: " + Std.string(e));
+					}
+				});
+			}
+
+			for (i in 0...threads) {
+				go.release();
+			}
+			for (i in 0...threads) {
+				var result:String = results.pop(true);
+				Assert.equals("ok", result, "round " + round + ", thread " + i + ": " + result);
+			}
+		}
+	}
+	#end
 }

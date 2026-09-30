@@ -11,8 +11,8 @@ class Static_dict_lut
 public static inline var kDictNumBits:Int = 15;
 public static inline var kDictHashMul32:UInt = 0x1e35a7bd;
 
-public static var kStaticDictionaryBuckets:Array<UInt> = [
-];
+// Built by BrotliCodec on first use, as is kStaticDictionaryWords; null until then.
+public static var kStaticDictionaryBuckets:Array<UInt> = null;
 /*public static var kStaticDictionaryBuckets:Array<UInt> = [
  0x000002, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
  0x000000, 0x000203, 0x00050e, 0x000000, 0x000000, 0x000000, 0x000000, 0x000000,
@@ -4111,8 +4111,7 @@ public static var kStaticDictionaryBuckets:Array<UInt> = [
  0x000000, 0x000000, 0x7bc802, 0x7bca01, 0x7bcb02, 0x000000, 0x7bcd02, 0x000000,
  0x000000, 0x000000, 0x7bcf06, 0x000000, 0x7bd501, 0x000000, 0x7bd602, 0x000000,
 ];*/
-public static var kStaticDictionaryWords:Array<DictWord> = [
-];/*
+public static var kStaticDictionaryWords:Array<DictWord> = null;/*
 public static var kStaticDictionaryWords:Array<DictWord> = [
   new DictWord(  8,  0,  1002 ), new DictWord(  8,  0,  1015 ), new DictWord(  4,  0,   683 ), new DictWord(  4, 10,   325 ),
   new DictWord( 10, 10,   125 ), new DictWord(  7, 11,   572 ), new DictWord(  9, 11,   592 ), new DictWord( 11, 11,   680 ),
