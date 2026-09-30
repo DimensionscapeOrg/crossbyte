@@ -262,6 +262,104 @@ class CollectionsTest extends utest.Test {
 		Assert.equals("1,3", filtered.join(","));
 	}
 
+	/**
+		`v[i]` reads and writes on every target. It was a class implementing
+		`ArrayAccess`, which only hxcpp honours: it threw on eval and the jvm,
+		and on JavaScript a write set a property and was lost.
+	**/
+	public function testVectorIndexesOnEveryTarget():Void {
+		var vector = new Vector<Int>();
+		vector.push(10);
+		vector.push(20);
+		vector[1] = 25;
+		Assert.equals(25, vector[1]);
+		Assert.equals("10,25", vector.join(","));
+
+		// As in ActionScript: writing at the length appends, and anything
+		// further out, read or written, is out of range.
+		vector[2] = 30;
+		Assert.equals(3, vector.length);
+		Assert.equals(30, vector[2]);
+		Assert.raises(() -> vector[3], crossbyte.errors.RangeError);
+		Assert.raises(() -> vector[-1], crossbyte.errors.RangeError);
+		Assert.raises(() -> vector[5] = 1, crossbyte.errors.RangeError);
+
+		var sum:Int = 0;
+		for (i in 0...vector.length) {
+			sum += vector[i];
+		}
+		Assert.equals(65, sum);
+	}
+
+	/**
+		A callback is called once per element with as many of (item, index,
+		vector) as it takes. They were tried with two and, on a throw, with
+		one and then none, so a callback that threw ran again without its
+		index -- three times on eval.
+	**/
+	public function testVectorCallbacksRunOnceWithTheArgumentsTheyTake():Void {
+		var vector = new Vector<Int>();
+		vector.push(1);
+		vector.push(2);
+
+		var calls:Int = 0;
+		Assert.raises(() -> vector.forEach(function(x:Int, i:Int) {
+			calls++;
+			throw "fail";
+		}));
+		Assert.equals(1, calls, "a throwing callback ran " + calls + " times");
+
+		calls = 0;
+		Assert.raises(() -> vector.every(function(x:Int) {
+			calls++;
+			throw "fail";
+		}));
+		Assert.equals(1, calls, "a throwing one-argument callback ran " + calls + " times");
+
+		var seen:Array<String> = [];
+		vector.forEach(function() seen.push("none"));
+		vector.forEach(function(x:Int) seen.push("item " + x));
+		vector.forEach(function(x:Int, i:Int) seen.push("item " + x + " at " + i));
+		vector.forEach(function(x:Int, i:Int, v:Vector<Int>) seen.push("of " + v.length));
+		Assert.equals("none,none,item 1,item 2,item 1 at 0,item 2 at 1,of 2,of 2", seen.join(","));
+
+		Assert.equals("2,3", vector.map((x:Int) -> x + 1).join(","));
+		Assert.equals("1", vector.filter((x:Int, i:Int) -> i == 0).join(","));
+		Assert.isTrue(vector.some((x:Int, i:Int, v:Vector<Int>) -> v[i] == 2));
+	}
+
+	/**
+		A fixed Vector keeps its length: whatever would change it throws
+		`RangeError`, as in ActionScript. `fixed` was stored and ignored.
+	**/
+	public function testAFixedVectorKeepsItsLength():Void {
+		var vector = new Vector<Int>(2, true);
+		Assert.isTrue(vector.fixed);
+		Assert.equals(2, vector.length);
+		vector[0] = 7;
+		vector[1] = 8;
+		Assert.equals("7,8", vector.join(","));
+
+		Assert.raises(() -> vector.push(5), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.pop(), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.shift(), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.unshift(1), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.insertAt(0, 1), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.removeAt(0), crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.length = 3, crossbyte.errors.RangeError);
+		Assert.raises(() -> vector[2] = 9, crossbyte.errors.RangeError);
+		Assert.raises(() -> vector.splice(0, 1), crossbyte.errors.RangeError);
+		Assert.equals("7,8", vector.join(","));
+
+		// A splice that puts back as many as it takes out leaves the length.
+		Assert.equals("7", vector.splice(0, 1, 70).join(","));
+		Assert.equals("70,8", vector.join(","));
+
+		vector.fixed = false;
+		vector.push(9);
+		Assert.equals(3, vector.length);
+	}
+
 	public function testVectorConcatAndSortBehaveLikeArrayHelpers():Void {
 		var vector = new Vector<Int>();
 		vector.push(3);
