@@ -154,6 +154,33 @@ class ReliableDatagramDeliveryTest extends utest.Test {
 		pair.close();
 	}
 
+	/**
+		A limit lowered while a message is arriving holds for the rest of it.
+
+		The check compared the frame's UInt length with the limit less what
+		was already held, and a limit below what was held made that negative.
+		Every target but HashLink compares a UInt with an Int unsigned, so it
+		read as four billion, and nothing more of that message was refused.
+	**/
+	public function testALimitLoweredMidMessageStillHolds():Void {
+		var pair = Pair.make();
+		if (pair == null) return;
+
+		var errors:Array<String> = [];
+		pair.receiver.addEventListener(IOErrorEvent.IO_ERROR, e -> errors.push(e.text));
+		pair.sender.send(filled(5000));
+		var fragments = pair.sender.take();
+		Assert.isTrue(fragments.length > 2, "5000 bytes went as " + fragments.length + " frames");
+		pair.carry([fragments[0]]);
+		pair.receiver.maxMessageSize = 100;
+		pair.carry(fragments.slice(1));
+
+		Assert.same([], [for (m in pair.received) m.length], "the message was delivered past the lowered limit");
+		Assert.equals(1, errors.length, errors.join("; "));
+		Assert.isFalse(pair.receiver.connected);
+		pair.close();
+	}
+
 	public function testMaxMessageSizeIsInclusiveAndCoversASingleFrame():Void {
 		var exact = Pair.make();
 		if (exact == null) return;
