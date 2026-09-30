@@ -1220,6 +1220,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A WebSocket client dials an IPv6 literal. The host it was given had to be
+  a run of letters, digits, dots and hyphens, so
+  `WebSocket.connect("::1", port)` threw "Invalid host" before a socket
+  existed, on every target, and a page's `Socket` read the same pattern.
+  A literal is taken bracketed, as a URL writes one (`[::1]`,
+  `ws://[2001:db8::1]/chat`), or bare, and written bracketed into the URL
+  and the `Host` header; names and IPv4 addresses read as before.
 - A `ServerSocket`, and so an `HTTPServer`, listens on neko. With no
   backlog given, `listen()` asked for one of `0x7FFFFFFF`, which neko's
   31-bit integers cannot carry, so its natives threw and no server could

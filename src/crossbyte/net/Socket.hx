@@ -602,12 +602,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		var schema = secure ? "wss" : "ws";
-		var urlReg = ~/^(.*:\/\/)?([A-Za-z0-9\-\.]+)\/?(.*)/g;
-		urlReg.match(host);
-		var __webHost = urlReg.matched(2);
-		var __webPath = urlReg.matched(3);
+		// An IPv6 literal too, bracketed or bare, as crossbyte.net.WebSocket
+		// takes one; the pattern here took only names and IPv4 addresses.
+		var target = crossbyte._internal.websocket.WebSocketHost.split(host);
+		if (target == null) {
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+			}
+			return;
+		}
 
-		__socket = new WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath);
+		__socket = new WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(target.host) + ":" + port + "/" + target.path);
 		__socket.binaryType = "arraybuffer";
 		__socket.onopen = socket_onOpen;
 		__socket.onmessage = socket_onMessage;

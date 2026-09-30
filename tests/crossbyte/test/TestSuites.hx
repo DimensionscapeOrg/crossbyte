@@ -297,6 +297,9 @@ class TestSuites {
 		// Unguarded here for the interpreter above all, where none of the
 		// server suite runs and every upgrade used to throw.
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeTest());
+		// Also in PortableSuite: the host a page's Socket dials is read the
+		// same way.
+		runner.addCase(new crossbyte.net.WebSocketIPv6Test());
 		runner.addCase(new crossbyte._internal.websocket.WebSocketFrameTest());
 		runner.addCase(new crossbyte.net.RUDPHardeningTest());
 		// Real sockets whose frames go through memory, so reordering, loss and
