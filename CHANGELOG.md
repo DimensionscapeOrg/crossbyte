@@ -1410,6 +1410,13 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A request whose connect times out says so, on every target: `Connection
+  Failed: host:port did not answer within 1 s` over HTTP/1.1, and
+  `Connecting to ... timed out after 1s` over HTTP/2. Natively the reason
+  given was `Blocked`, the read the TLS handshake waited on having timed
+  out; on the jvm, whose handshake now holds to the deadline, it came
+  wrapped as `Custom(Timeout: ...)`, and an HTTP/2 connect there was not
+  taken for a timeout at all.
 - On the interpreter, each thread serving HTTP keeps its own compiled
   rewrite patterns and directory listings, as it does on every other
   threaded target. They were held per thread only on cpp, neko, hl and the
