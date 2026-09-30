@@ -1,6 +1,7 @@
 package crossbyte._internal.brotli.codec.decode.state;
 import crossbyte._internal.brotli.codec.FunctionMalloc;
 import haxe.ds.Vector;
+import haxe.io.Bytes;
 import crossbyte._internal.brotli.codec.decode.huffman.HuffmanTreeGroup;
 import crossbyte._internal.brotli.codec.decode.huffman.HuffmanCode;
 import crossbyte._internal.brotli.codec.decode.bit_reader.BrotliBitReader;
@@ -63,10 +64,16 @@ class BrotliState
 	public var max_distance:Int;
 	public var ringbuffer_size:Int;
 	public var ringbuffer_mask:Int;
-	public var ringbuffer:Vector<UInt>;//uint8_t*
-	public var ringbuffer_off:Int;//
-	public var ringbuffer_end:Vector<UInt>;//uint8_t*
+	// Allocated at the first meta-block that produces anything and grown as
+	// the output does, up to the window; see BrotliEnsureRingBuffer. Its end
+	// is ringbuffer_end_off bytes in, followed by a write-ahead slack.
+	public var ringbuffer:Bytes;//uint8_t*
 	public var ringbuffer_end_off:Int;//
+
+	/* Bytes the output may reach, or 0 for no limit. */
+	public var output_limit:Int = 0;
+	/* Bytes the meta-blocks read so far declare, while there is a limit. */
+	public var produced:Int = 0;
 	/* This ring buffer holds a few past copy distances that will be used by */
 	/* some special distance codes. */
 	public var dist_rb:Vector<Int>=new Vector<Int>(4);
@@ -126,13 +133,7 @@ class BrotliState
 	public var copy_length:Int;
 	public var distance_code:Int;
 	public var distance:Int;
-	public var copy_src:Vector<UInt>;//const uint8_t*
-	public var copy_src_off:Int;//
-	public var copy_dst:Vector<UInt>;//uint8_t*
 	public var copy_dst_off:Int;//
-
-	/* For CopyUncompressedBlockToOutput */
-	public var nbytes:Int;
 
 	/* For partial write operations */
 	public var partially_written:Int;
@@ -164,11 +165,7 @@ class BrotliState
 	public var max_run_length_prefix:Int;
 	public var context_map_table:Vector<HuffmanCode>;//*
 
-	/* For custom dictionaries */
-	public var custom_dict:Vector<UInt>;//const uint8_t*
-	public var custom_dict_off:Int;//
-	public var custom_dict_size:Int;
-	public function new() 
+	public function new()
 	{
 		
 	}

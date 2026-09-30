@@ -1,8 +1,6 @@
 package crossbyte._internal.brotli.codec;
 
 import crossbyte._internal.brotli.codec.decode.Decode.*;
-import crossbyte._internal.brotli.codec.decode.Streams.*;
-import crossbyte._internal.brotli.codec.decode.streams.BrotliInput;
 import crossbyte._internal.brotli.codec.decode.streams.BrotliOutput;
 import crossbyte._internal.brotli.codec.encode.Dictionary_hash;
 import crossbyte._internal.brotli.codec.encode.Encode.*;
@@ -63,16 +61,15 @@ class BrotliCodec {
 	public static function decompress(input:Bytes, maxOutputSize:Int = 0):Bytes {
 		ensureTables();
 
-		var content:Array<UInt> = __bytesToArray(input);
-		var output = new Array<UInt>();
-		var source:BrotliInput = BrotliInitMemInput(content, content.length);
-		var decoded:BrotliOutput = BrotliInitMemOutput(output, maxOutputSize);
-
-		if (BrotliDecompress(source, decoded) != 1) {
+		// Read where it lies and written to Bytes, where this used to copy the
+		// input into an Array<UInt> and the output out of one: several bytes
+		// of memory per byte on every target, eight or more on Node.
+		var output = new BrotliOutput(maxOutputSize);
+		if (BrotliDecompress(input == null ? Bytes.alloc(0) : input, output) != 1) {
 			throw "Brotli decompression failed";
 		}
 
-		return __arrayToBytes(decoded.data_.buffer, decoded.data_.pos);
+		return output.getBytes();
 	}
 
 	public static function compress(input:Bytes, quality:Int):Bytes {
