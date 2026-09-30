@@ -3,7 +3,7 @@ package crossbyte.metrics;
 import crossbyte.errors.ArgumentError;
 #if cpp
 import crossbyte.metrics._internal.AtomicFloats;
-#elseif (neko || hl || java || jvm)
+#elseif target.threaded
 import sys.thread.Mutex;
 #end
 
@@ -66,7 +66,7 @@ class Histogram {
 	// to.
 	@:noCompletion private var __cells:Array<Float>;
 
-	#if (neko || hl || java || jvm)
+	#if (target.threaded && !cpp)
 	@:noCompletion private var __lock:Mutex;
 	#end
 
@@ -88,7 +88,7 @@ class Histogram {
 		this.bounds = chosen;
 		__cells = [for (_ in 0...chosen.length + 2) 0.0];
 
-		#if (neko || hl || java || jvm)
+		#if (target.threaded && !cpp)
 		__lock = new Mutex();
 		#end
 	}
@@ -113,7 +113,7 @@ class Histogram {
 		#if cpp
 		AtomicFloats.add(__cells, bucket, 1);
 		AtomicFloats.add(__cells, last + 1, value);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		__cells[bucket] += 1;
 		__cells[last + 1] += value;
@@ -158,7 +158,7 @@ class Histogram {
 		for (i in 0...buckets) {
 			total += AtomicFloats.load(__cells, i);
 		}
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		for (i in 0...buckets) {
 			total += __cells[i];
@@ -178,7 +178,7 @@ class Histogram {
 	public function sum():Float {
 		#if cpp
 		return AtomicFloats.load(__cells, __cells.length - 1);
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		var snapshot:Float = __cells[__cells.length - 1];
 		__lock.release();
@@ -211,7 +211,7 @@ class Histogram {
 	@:noCompletion private function __snapshot():Array<Float> {
 		#if cpp
 		var cells:Array<Float> = [for (i in 0...__cells.length) AtomicFloats.load(__cells, i)];
-		#elseif (neko || hl || java || jvm)
+		#elseif target.threaded
 		__lock.acquire();
 		var cells:Array<Float> = __cells.copy();
 		__lock.release();
