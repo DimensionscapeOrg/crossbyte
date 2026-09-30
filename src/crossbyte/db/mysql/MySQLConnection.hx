@@ -3,6 +3,7 @@ package crossbyte.db.mysql;
 // Not built for any JavaScript target (Node included, which has no a database driver): a database driver needs a socket or a file, and credentials do not belong in a page.
 #if !js
 
+import crossbyte.errors.ArgumentError;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SQLError;
 import crossbyte.events.EventDispatcher;
@@ -76,7 +77,36 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 		super();
 	}
 
+	/**
+		Connects and sets the session up: the character set, time zone and
+		SQL mode `cfg` names. Throws an `ArgumentError` for a charset it will
+		not send, before connecting, and an `IOError` when the server refuses
+		the connection or any of the settings.
+
+		A connection whose setup failed is closed before the error leaves.
+		It was left open, for the collector, or for good, so a pool
+		factory retrying an open that could never succeed piled up server
+		connections. And `timeZone` and `sqlMode` could never succeed: their
+		values were escaped into a buffer that was then thrown away, and the
+		server was sent `SET time_zone = :tz;`.
+	**/
 	public function open(cfg:MySQLConfig):Void {
+		var charset:String = null;
+
+		if (cfg.charset != null && cfg.charset != "") {
+			charset = cfg.charset.toLowerCase();
+
+			if (ALLOWED_CHARSETS.indexOf(charset) == -1) {
+				throw new ArgumentError("Unsupported charset: " + cfg.charset);
+			}
+		}
+
+		if (__connection != null) {
+			// Opened again: the connection it had would otherwise stay open,
+			// unreachable.
+			close();
+		}
+
 		try {
 			#if cpp
 			var sslMode:MySQLSSLMode = cfg.sslMode == null ? MySQLSSLMode.PREFERRED : cfg.sslMode;
@@ -102,33 +132,45 @@ class MySQLConnection extends EventDispatcher implements crossbyte.db.ITransacti
 				socket: cfg.socket
 			});
 			#end
+		} catch (e:Dynamic) {
+			throw new IOError(Std.string(e));
+		}
 
-			if (cfg.charset != null && cfg.charset != "") {
-				var cs:String = cfg.charset.toLowerCase();
-				if (ALLOWED_CHARSETS.indexOf(cs) == -1) {
-					throw "Unsupported charset: " + cfg.charset;
-				}
-				__connection.request("SET NAMES " + cs + ";");
+		try {
+			if (charset != null) {
+				request("SET NAMES " + charset + ";");
 			}
 
 			if (cfg.timeZone != null && cfg.timeZone != "") {
-				var sb:StringBuf = new StringBuf();
-				sb.add("tz");
-				__connection.addValue(sb, cfg.timeZone);
-				__connection.request("SET time_zone = :tz;");
+				request("SET time_zone = " + __connection.quote(cfg.timeZone) + ";");
 			}
 
 			if (cfg.sqlMode != null && cfg.sqlMode != "") {
-				var sb2:StringBuf = new StringBuf();
-				sb2.add("sqlmode");
-				__connection.addValue(sb2, cfg.sqlMode);
-				__connection.request("SET SESSION sql_mode = :sqlmode;");
+				request("SET SESSION sql_mode = " + __connection.quote(cfg.sqlMode) + ";");
 			}
-
-			__dispatch(SQLEvent.OPEN);
 		} catch (e:Dynamic) {
-			throw new IOError(e);
+			__abandon();
+			throw new IOError(Std.string(e));
 		}
+
+		__dispatch(SQLEvent.OPEN);
+	}
+
+	/**
+		Closes a connection that never finished opening, so no `CLOSE` is
+		dispatched for an `OPEN` that was not.
+	**/
+	@:noCompletion private function __abandon():Void {
+		try {
+			__connection.close();
+		} catch (_:Dynamic) {}
+
+		__connection = null;
+		#if cpp
+		__native = null;
+		#end
+		__inTransaction = false;
+		__autocommitOff = false;
 	}
 
 	public function close():Void {
