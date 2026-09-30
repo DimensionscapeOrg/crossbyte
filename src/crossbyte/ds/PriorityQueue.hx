@@ -105,7 +105,10 @@ final class PriorityQueue<T:{}> {
 	 *
 	 * Returns `null` if the queue is empty.
 	 */
-	public inline function peek():Null<T> {
+	public function peek():Null<T> {
+		// Not inline: inlined where T is known, the jvm reads `__items` as an
+		// array of that type, which the erased Object[] it is cannot be cast
+		// to.
 		return __size > 0 ? __items[__heap[0]] : null;
 	}
 
