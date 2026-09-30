@@ -159,22 +159,68 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Whether this connection runs over TLS.
 
-		Set it before `connect()` on a `WebSocket` to dial `wss://` rather
-		than `ws://`; the server's certificate is then checked, see
-		`WebSocket.verifyCert`. In a browser a socket always uses `wss://` on
-		a page served over HTTPS, since the page may not open anything less.
-		On a socket a `ServerSocket` accepted, it says whether the listener
-		terminated TLS for it.
+		Set it before `connect()` to connect over TLS: once TCP is up the
+		client handshakes, and `connect` is dispatched when the handshake has
+		finished, within `timeout`, which counts it with the connect. The
+		server's certificate is checked against the host given to
+		`connect()`, see `verifyCert` and `certAuthority`, and a host name
+		goes to the server as SNI. A handshake that fails, a certificate
+		refused among the ways, is an `ioError`, as a refused connection is.
 
-		A plain `Socket` client on a native target does not start TLS from
-		this: it is a TCP connection, and reads the setting only to report it.
+		On a `WebSocket` it dials `wss://` rather than `ws://`. In a browser a
+		socket always uses `wss://` on a page served over HTTPS, since the
+		page may not open anything less. On a socket a `ServerSocket`
+		accepted, it says whether the listener terminated TLS for it.
+
+		On eval the handshake holds the runtime's thread until it is done,
+		as eval's connect already does: its sockets cannot be made
+		non-blocking, so a server on the same runtime cannot answer it.
 	**/
 	public var secure:Bool;
+
+	#if !(js && !nodejs)
+	/**
+		Whether a secure connection checks the server's certificate: that it
+		chains to an authority this client trusts, and that it names the host
+		being connected to. For a `Socket` with `secure` set, and for a
+		`wss://` `WebSocket`.
+
+		On by default. Turn it off only for a development server presenting a
+		self-signed certificate, and prefer `certAuthority` even then. With
+		verification off the traffic is still encrypted, but anyone able to
+		sit between the two ends can present a certificate of their own and
+		read all of it.
+
+		Read when `connect()` is called.
+	**/
+	public var verifyCert:Bool = true;
+
+	// Not in the macro context, where Socket is typed too: a Certificate is
+	// the jvm's own there, and naming it pulls in java.nio, which a macro
+	// cannot reach.
+	#if !macro
+	/**
+		The authority this client trusts, in place of the system's, for a
+		secure connection.
+
+		Set it to a private CA's certificate, or to a server's own self-signed
+		certificate, to verify a server the system's trust store does not know
+		without turning verification off. `null`, the default, trusts the
+		system's store.
+
+		Read when `connect()` is called.
+	**/
+	public var certAuthority:Certificate = null;
+	#end
+	#end
 
 	/**
 		Indicates the number of milliseconds to wait for a connection.
 		If the connection doesn't succeed within the specified time, the
 		connection fails. The default value is 20,000 (twenty seconds).
+
+		It counts a secure connection's TLS handshake, and a name's lookup,
+		with the connect. Not kept in a browser, whose WebSocket has its own.
 	**/
 	public var timeout:Int;
 
@@ -311,6 +357,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __nodeRuntime:CrossByte = null;
 	@:noCompletion private var __flushQueued:Bool = false;
 	@:noCompletion private var __ticking:Bool = false;
+	// The timer that ends a connect still not open at `timeout`; see
+	// __armNodeConnectDeadline.
+	@:noCompletion private var __nodeConnectDeadline:Dynamic = null;
 	#end
 
 	/**
@@ -417,6 +466,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private var __isConnecting:Bool;
 	// Whether the name connect() was given is still being looked up.
 	@:noCompletion private var __resolving:Bool = false;
+	// Whether a secure connect is up to its TLS handshake: TCP is connected,
+	// and CONNECT waits for the handshake to finish.
+	@:noCompletion private var __tlsHandshaking:Bool = false;
 	// The tick listener a connect in progress is driven by; see
 	// __startConnecting.
 	@:noCompletion private var __connectingTick:TickEvent->Void = null;
@@ -583,6 +635,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__isDirty = false;
 		flushFull = false;
 		__discardOnClose = false;
+		__tlsHandshaking = false;
 		// A new connection, which has neither ended nor been announced as
 		// ending; a socket reused after a half-close otherwise never read
 		// again.
@@ -602,12 +655,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		}
 
 		var schema = secure ? "wss" : "ws";
-		var urlReg = ~/^(.*:\/\/)?([A-Za-z0-9\-\.]+)\/?(.*)/g;
-		urlReg.match(host);
-		var __webHost = urlReg.matched(2);
-		var __webPath = urlReg.matched(3);
+		// An IPv6 literal too, bracketed or bare, as crossbyte.net.WebSocket
+		// takes one; the pattern here took only names and IPv4 addresses.
+		var target = crossbyte._internal.websocket.WebSocketHost.split(host);
+		if (target == null) {
+			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Invalid host"));
+			}
+			return;
+		}
 
-		__socket = new WebSocket(schema + "://" + __webHost + ":" + port + "/" + __webPath);
+		__socket = new WebSocket(schema + "://" + crossbyte._internal.websocket.WebSocketHost.forUrl(target.host) + ":" + port + "/" + target.path);
 		__socket.binaryType = "arraybuffer";
 		__socket.onopen = socket_onOpen;
 		__socket.onmessage = socket_onMessage;
@@ -622,23 +680,43 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// nothing to register with the runtime.
 		// Half-open, so the peer's FIN is this socket's to act on; see
 		// socket_onEnd.
-		var node = new NodeSocket({allowHalfOpen: true});
-		__socket = node;
-		node.on(SocketEvent.Connect, function() {
+		var node:NodeSocket = null;
+		var opened = function() {
+			// Only while this is the connection held: one given up for
+			// another, by close(), or connect() again, still opens.
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onOpen(null);
 			} catch (e:Dynamic) {
 				__contain(e, Event.CONNECT);
 			}
-		});
-		__bindNodeSocket(node);
-		node.connect({port: port, host: host});
+		};
+		if (secure) {
+			// Node's TLS, which starts connecting as it is made; opened once
+			// the handshake is done rather than when TCP is.
+			node = __connectNodeTls(host, port, opened);
+			__socket = node;
+			__bindNodeSocket(node);
+		} else {
+			node = new NodeSocket({allowHalfOpen: true});
+			__socket = node;
+			node.on(SocketEvent.Connect, opened);
+			__bindNodeSocket(node);
+			node.connect({port: port, host: host});
+		}
+		__armNodeConnectDeadline(node);
 
 		// Not ticked: a write asks for a flush at the end of the pass, and
 		// Node reports everything else as an event. See __syncNodeTick.
 		__nodeRuntime = CrossByte.current();
 		#else
+		#if macro
 		__socket = new SysSocket();
+		#else
+		__socket = secure ? __newTlsSocket(host) : new SysSocket();
+		#end
 		@:privateAccess
 		__cbInstance = CrossByte.current();
 		if (__cbInstance == null) {
@@ -683,6 +761,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function __beginConnect(h:Host, port:Int):Void {
 		try {
 			__socket.setBlocking(false);
+			// Before the connect rather than once it is under way: Windows
+			// refuses TCP_NODELAY on a socket whose connect is in progress,
+			// and hxcpp does not report the refusal, so set afterwards it was
+			// lost on every connect that took any time, every one over a
+			// network, and Nagle's algorithm held each small write behind
+			// the acknowledgement of the last.
+			__socket.setFastSend(true);
 			__socket.connect(h, port);
 		} catch (e:Error) {
 			if (!__isBlockedError(e)) {
@@ -696,14 +781,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// sockets: the connect is in flight, and the tick below waits for it to
 			// become writable. Nothing to record, both completions defer there.
 		} catch (e:Dynamic) {
-			__cleanupFailedConnect();
-			if (hasEventListener(IOErrorEvent.IO_ERROR)) {
-				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+			// A TLS socket's connect reports the would-block as its TLS layer
+			// spells it, a string, which is as ordinary; anything else failed.
+			if (!__isBlockedError(e)) {
+				__cleanupFailedConnect();
+				if (hasEventListener(IOErrorEvent.IO_ERROR)) {
+					dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, "Connection failed"));
+				}
+				return;
 			}
-			return;
 		}
 
-		__socket.setFastSend(true);
 		__socket.custom = this;
 
 		#if eval
@@ -714,6 +802,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// completion tick makes would block on a socket with nothing to say yet.
 		// Announce the connect here, which is what every target did before the
 		// deferral below and what eval still needs.
+		#if !macro
+		if (secure) {
+			// And the TLS handshake the same way, held until it is done.
+			__tlsHandshaking = true;
+			var failure:Null<String> = __stepTlsHandshake();
+			if (failure != null || __tlsHandshaking) {
+				__cleanupFailedConnect();
+				__dispatchPooledIOError("Connection failed: " + (failure != null ? failure : "the TLS handshake did not finish"));
+				return;
+			}
+		}
+		#end
 		__connected = true;
 		@:privateAccess
 		__cbInstance.registerSocket(__socket);
@@ -731,7 +831,138 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// event, instead of re-entering user code from inside connect() on a
 		// socket that has never been pumped.
 		__startConnecting();
+
+		// And watched in the poll set, so the connect is announced as soon as
+		// the system finishes it: the tick alone left every connect waiting
+		// for the next frame, 41 to 57 ms on average at twelve ticks a second.
+		// For reading too, which is where a refused connect is reported on
+		// Windows: in the exception set, which the native poll folds into
+		// the read results. The tick stays, for the deadline and as the
+		// check of last resort.
+		@:privateAccess __cbInstance.registerSocket(__socket);
+		@:privateAccess __cbInstance.watchWritable(__socket);
 		#end
+	}
+
+	#if !macro
+	// Kept from the macro context: on jvm the TLS socket is the jvm's own,
+	// and naming it pulls java.nio in, which a macro cannot reach.
+
+	/**
+		A TLS client socket for `host`: the name goes to the server as SNI,
+		and is the one its certificate has to carry unless `verifyCert` is
+		off.
+	**/
+	@:noCompletion private function __newTlsSocket(host:String):SysSocket {
+		var tls:crossbyte._internal.socket.FlexSocket = new crossbyte._internal.socket.FlexSocket(true);
+		tls.verifyCert = verifyCert;
+		if (certAuthority != null) {
+			tls.setCA(certAuthority.__native);
+		}
+		tls.setHostname(host);
+		return tls;
+	}
+
+	/**
+		TCP is up on a secure connect: the TLS handshake starts, and CONNECT
+		waits for it. From here the socket is watched for reading alone. Each
+		flight the server sends is what steps the handshake, and a socket
+		watched for writing would be reported writable the whole time,
+		spinning the loop; the tick stays, for the deadline and for a flight
+		of this side's that could not all be written at once.
+	**/
+	@:noCompletion private function __beginTlsHandshake():Void {
+		__tlsHandshaking = true;
+		if (__cbInstance != null) {
+			@:privateAccess __cbInstance.unwatchWritable(__socket);
+		}
+	}
+
+	/**
+		One step of the TLS handshake: null while it waits on the server, and
+		once it is done, when `__tlsHandshaking` is clear; otherwise why it
+		failed.
+	**/
+	@:noCompletion private function __stepTlsHandshake():Null<String> {
+		try {
+			(__socket : crossbyte._internal.socket.FlexSocket).handshake();
+		} catch (e:Dynamic) {
+			if (__isBlockedError(e)) {
+				return null;
+			}
+			__tlsHandshaking = false;
+			return "TLS handshake failed: " + Std.string(e);
+		}
+		__tlsHandshaking = false;
+		return null;
+	}
+	#end
+	#end
+
+	#if nodejs
+	/**
+		A TLS connection through Node's own TLS, checked as `verifyCert` and
+		`certAuthority` say, which Node starts as it is made; `opened` runs
+		once the handshake is done.
+	**/
+	@:noCompletion private function __connectNodeTls(host:String, port:Int, opened:Void->Void):NodeSocket {
+		var options:Dynamic = {
+			port: port,
+			host: host,
+			allowHalfOpen: true,
+			rejectUnauthorized: verifyCert
+		};
+		// The SNI name, which may not be an address (RFC 6066 3); for one,
+		// Node checks the certificate against `host` itself.
+		if (js.node.Net.isIP(host) == 0) {
+			options.servername = host;
+		}
+		if (certAuthority != null) {
+			options.ca = [certAuthority.__pem];
+		}
+		return cast js.node.Tls.connect(options, opened);
+	}
+
+	/**
+		Keeps `timeout` on Node, which had no deadline of its own for a
+		connect: one that had not opened, a TLS one's handshake counted with
+		it, as natively, was waited on for as long as the system kept
+		trying, and a handshake the server never answered for good. At the
+		deadline the attempt is ended and reported as an `ioError`, as a
+		refused one is.
+	**/
+	@:noCompletion private function __armNodeConnectDeadline(node:NodeSocket):Void {
+		__clearNodeConnectDeadline();
+		if (timeout <= 0) {
+			return;
+		}
+
+		var limit:Int = timeout;
+		__nodeConnectDeadline = js.Node.setTimeout(function() {
+			__nodeConnectDeadline = null;
+			if (__socket != node || __connected) {
+				return;
+			}
+			try {
+				node.destroy();
+			} catch (_:Dynamic) {}
+			__releaseNode();
+			// Contained, as every Node callback is: this runs from Node's own
+			// loop, where a listener that threw would end the process.
+			try {
+				__dispatchPooledIOError("Connection failed: " + __host + (secure ? " was not connected over TLS within " : " was not connected within ")
+					+ limit + " ms");
+			} catch (e:Dynamic) {
+				__contain(e, IOErrorEvent.IO_ERROR);
+			}
+		}, limit);
+	}
+
+	@:noCompletion private function __clearNodeConnectDeadline():Void {
+		if (__nodeConnectDeadline != null) {
+			js.Node.clearTimeout(__nodeConnectDeadline);
+			__nodeConnectDeadline = null;
+		}
 	}
 	#end
 
@@ -1385,6 +1616,18 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function __cleanSocket():Void {
+		#if !js
+		// Out of the poll set before the socket is closed, not after. A poll
+		// backend that holds each descriptor with the system, libuv's,
+		// must let go of one while it is still open: closed first, a
+		// descriptor a child process had inherited kept its registration,
+		// and the loop woke for it without sleeping for good.
+		if (__cbInstance != null && __socket != null) {
+			@:privateAccess
+			__cbInstance.deregisterSocket(__socket);
+		}
+		#end
+
 		try {
 			#if nodejs
 			// A js.node.net.Socket has no close(). This called one anyway, and
@@ -1415,13 +1658,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 
 		__stopConnecting();
 		__resolving = false;
+		__tlsHandshaking = false;
 
-		if (__cbInstance != null) {
-			#if !js
-			@:privateAccess
-			__cbInstance.deregisterSocket(this.__socket);
-			#end
-		}
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
@@ -1430,6 +1668,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		#if (js && !nodejs)
 		CrossByte.current().removeEventListener(TickEvent.TICK, this_onTick);
 		#elseif nodejs
+		__clearNodeConnectDeadline();
 		__syncNodeTick();
 		#else
 		__closed = true;
@@ -1477,8 +1716,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// registry drain, where an escape costs every other connection
 			// in the loop rather than this one. The IO error is dispatched
 			// so the owner can react; the connection is left for the read
-			// side to reap, exactly as before.
-			__dispatchPooledIOError(Std.string(e));
+			// side to reap, unless it has none, see __flushFailed.
+			__flushFailed(Std.string(e));
 			return;
 		}
 
@@ -1560,6 +1799,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// already pending, and its buffered data is stranded silently.
 		__isDirty = false;
 
+		#if !js
+		if (__isConnecting && !__resolving && !__connected) {
+			// The poll reporting a connect that has finished, one way or the
+			// other: the tick's own check decides which, as it would have
+			// at the next frame. Whatever was written meanwhile goes from
+			// there too.
+			this_onTick();
+			return;
+		}
+		#end
+
 		// __tryFlush rather than flush: flush() returns early while
 		// `flushFull` is set, so calling it here could never recover a
 		// fully blocked socket; only clearing that flag first does. That
@@ -1605,7 +1855,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private function socket_onError(e):Void {
+		#if nodejs
+		// The attempt is over, if it was one: reported here, and not again
+		// by its deadline before Node's close arrives.
+		__clearNodeConnectDeadline();
+		// What Node says went wrong, a refused connection, a certificate
+		// its TLS would not accept, where the ioError said nothing.
+		var message:Dynamic = e == null ? null : Reflect.field(e, "message");
+		__dispatchPooledIOError(message == null ? "" : Std.string(message));
+		#else
 		__dispatchPooledIOError();
+		#end
 	}
 
 	@:noCompletion private function socket_onMessage(msg:Dynamic):Void {
@@ -1663,7 +1923,17 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// anything of CrossByte's, so a listener that threw, a data handler
 		// meeting input it could not parse, say, threw into Node, which
 		// ended the process: every other connection with it.
+		//
+		// And each one only while `node` is the connection held. A socket let
+		// go of goes on reporting, its close comes a turn after its error,
+		// and after close() or connect() its end and close, and these were
+		// taken for the connection that replaced it: a connect retried from
+		// the ioError of a refused one was released by the refused one's
+		// close, and connected with nothing to write to.
 		node.on(SocketEvent.Data, function(chunk) {
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onMessage(chunk);
 			} catch (e:Dynamic) {
@@ -1671,20 +1941,29 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			}
 		});
 		node.on(SocketEvent.End, function() {
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onEnd();
 			} catch (e:Dynamic) {
 				__contain(e, Event.PEER_CLOSE);
 			}
 		});
-		node.on(SocketEvent.Error, function(_) {
+		node.on(SocketEvent.Error, function(error:Dynamic) {
+			if (__socket != node) {
+				return;
+			}
 			try {
-				socket_onError(null);
+				socket_onError(error);
 			} catch (e:Dynamic) {
 				__contain(e, IOErrorEvent.IO_ERROR);
 			}
 		});
 		node.on(SocketEvent.Close, function(_) {
+			if (__socket != node) {
+				return;
+			}
 			try {
 				socket_onClose(null);
 			} catch (e:Dynamic) {
@@ -1729,6 +2008,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	**/
 	@:noCompletion private function __releaseNode():Void {
 		__stopConnecting();
+		__clearNodeConnectDeadline();
 		__cbInstance = null;
 		__socket = null;
 		__connected = false;
@@ -1841,6 +2121,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	#end
 
 	@:noCompletion private function socket_onOpen(_):Void {
+		#if nodejs
+		__clearNodeConnectDeadline();
+		#end
 		__connected = true;
 		__closed = false;
 		__dispatchPooledSimpleEvent(Event.CONNECT);
@@ -1897,8 +2180,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		var doConnect = false;
 		var doClose = false;
 		var doPeerClose = false;
+		// Why a connect failed, where there is more to say than that it did.
+		var failure:Null<String> = null;
 
-		if (!connected) {
+		if (!connected && !__tlsHandshaking) {
 			// Asked about on both sets. A connect that fails is reported in the
 			// exception set on Windows and never becomes writable, so watching
 			// writability alone could not see it: a refused connection sat here
@@ -1912,14 +2197,42 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			var r = SysSocket.select([], [__socket], [__socket], 0);
 
 			if (r.write.length > 0 && r.write[0] == __socket) {
+				#if !macro
+				if (secure) {
+					// TCP is up, and TLS is next: CONNECT once it is done.
+					__beginTlsHandshake();
+				} else {
+					doConnect = true;
+				}
+				#else
 				doConnect = true;
+				#end
 			} else if (r.others.length > 0 && r.others[0] == __socket) {
 				// Never came up, so closeWasConnected stays false below and this
 				// leaves as an ioError rather than a CLOSE. A connection that
 				// failed is a different fact from one that hung up.
 				doClose = true;
-			} else if (haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+			}
+		}
+
+		#if !macro
+		if (!connected && __tlsHandshaking) {
+			// Stepped from the tick and from the poll alike; a failure is
+			// terminal, and closes the attempt now rather than at its deadline.
+			failure = __stepTlsHandshake();
+			if (failure != null) {
 				doClose = true;
+			} else if (!__tlsHandshaking) {
+				doConnect = true;
+			}
+		}
+		#end
+
+		if (!connected && !doConnect && !doClose && haxe.Timer.stamp() - __timestamp > timeout / 1000) {
+			// The deadline counts the TLS handshake with the connect.
+			doClose = true;
+			if (__tlsHandshaking) {
+				failure = "the TLS handshake did not finish within " + timeout + " ms";
 			}
 		}
 
@@ -2009,6 +2322,9 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			__stopConnecting();
 			@:privateAccess
 			__cbInstance.registerSocket(__socket);
+			// Connected: from here it is watched for reading only.
+			@:privateAccess
+			__cbInstance.unwatchWritable(__socket);
 			__dispatchPooledSimpleEvent(Event.CONNECT);
 		}
 
@@ -2028,6 +2344,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// last bytes and its FIN routinely arrive in one tick, and a listener
 		// that tears down here must have seen them first.
 		if (doPeerClose && !doClose) {
+			__dropReadInterest();
 			__dispatchPooledSimpleEvent(Event.PEER_CLOSE);
 		}
 
@@ -2036,7 +2353,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			if (closeWasConnected) {
 				__announceClose();
 			} else {
-				__dispatchPooledIOError("Connection failed");
+				__dispatchPooledIOError(failure != null ? "Connection failed: " + failure : "Connection failed");
 			}
 		}
 
@@ -2044,10 +2361,53 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			try {
 				flush();
 			} catch (e:IOError) {
-				__dispatchPooledIOError(e.message);
+				__flushFailed(e.message);
 			}
 		}
 		#end
+	}
+
+	#if !js
+	/**
+		Takes the socket out of the poll set's reads, once nothing more will
+		be read from it. It stays open, and what is written to it still goes:
+		the writable queue does not ask the poll set.
+
+		A peer's end of stream is readable for good, so a half-open socket
+		left in the set was reported on every poll, a POLL loop spun a whole
+		core per connection held that way, re-entering a handler that had
+		nothing to read, and each report flushed again, so a write that
+		failed was reported again every time: 25,566 ioErrors in half a second
+		on a TLS 1.2 connection.
+	**/
+	@:noCompletion private function __dropReadInterest():Void {
+		if (__cbInstance != null && __socket != null) {
+			@:privateAccess
+			__cbInstance.deregisterSocket(__socket);
+		}
+	}
+	#end
+
+	/**
+		A flush that failed for a reason other than a full send buffer, from
+		inside the runtime's own dispatch: the owner is told. A socket still
+		reading is left for its read side to reap, as it always was, that
+		side sees the same end and reads whatever arrived before it. One that
+		reads nothing more is closed here, since nothing else ever would: it
+		was reported again at every chance, and held for good.
+	**/
+	@:noCompletion private function __flushFailed(message:String):Void {
+		__dispatchPooledIOError(message);
+
+		if (__socket == null || !__peerShutdown) {
+			return;
+		}
+
+		var wasConnected:Bool = __connected;
+		__cleanSocket();
+		if (wasConnected) {
+			__announceClose();
+		}
 	}
 
 	#if eval
@@ -2335,25 +2695,28 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Whether the TLS layer is holding bytes `select` cannot see.
 
-		Asked dynamically rather than through the jvm socket's type: naming
-		`JvmSslSocket` here pulls `java.nio` into the init-macro context and the
-		build fails on "cannot access the java package while in a macro". The
-		same reason `alpnProtocol` asks the way it does.
+		Asked through the jvm socket's type. It was asked dynamically, since
+		naming `JvmSslSocket` pulls `java.nio` into the macro context, where
+		Socket is typed too and the build fails on "cannot access the java
+		package while in a macro"; but the registry asks every TLS socket this
+		on every pump, and at 2,001 idle ones the dynamic call cost 150 to 245
+		us a pump. Kept from the macro context instead, where no socket runs.
 	**/
 	@:noCompletion public function registryHasBufferedInput():Bool {
-		#if (java || jvm)
+		#if ((java || jvm) && !macro)
 		if (!secure || __socket == null) {
 			return false;
 		}
 
-		var holder:Dynamic = __socket;
-		var buffered:Dynamic = try {
-			holder.hasBufferedInput();
+		var tls = Std.downcast(__socket, crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		if (tls == null) {
+			return false;
+		}
+		return try {
+			tls.hasBufferedInput();
 		} catch (e:Dynamic) {
 			false;
 		}
-
-		return buffered == true;
 		#else
 		return false;
 		#end
@@ -2364,6 +2727,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	}
 
 	@:noCompletion private inline function __cleanupFailedConnect():Void {
+		#if !js
+		// Watched in the poll set once the connect was under way; out of it
+		// before the socket closes, as in __cleanSocket.
+		if (__cbInstance != null && __socket != null) {
+			@:privateAccess
+			__cbInstance.deregisterSocket(__socket);
+		}
+		#end
 		if (__socket != null) {
 			try {
 				#if nodejs
@@ -2381,9 +2752,13 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__connected = false;
 		__isConnecting = false;
 		__resolving = false;
+		__tlsHandshaking = false;
 		__isDirty = false;
 		flushFull = false;
 		__closed = true;
+		#if nodejs
+		__clearNodeConnectDeadline();
+		#end
 	}
 
 	@:noCompletion private inline function __isBlockedError(error:Dynamic):Bool {
@@ -2413,8 +2788,12 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		if (read) {
 			// Nothing more will be read, and the read loop must stop trying:
 			// on some targets a shut read direction reports Eof forever, which
-			// would otherwise re-enter the policy branch every tick.
+			// would otherwise re-enter the policy branch every tick, and
+			// readable for good, so it leaves the poll set's reads too.
 			__peerShutdown = true;
+			#if !js
+			__dropReadInterest();
+			#end
 		}
 
 		#if (js && !nodejs)

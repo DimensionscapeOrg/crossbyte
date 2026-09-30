@@ -140,6 +140,31 @@ All notable changes to CrossByte will be documented in this file.
   follows 300 Try Alternate to the server it names (once per server, so two
   relays redirecting to each other cannot hold it), and gains
   `setCredentials`, `refresh` and `failure`.
+- TLS for a client `Socket`: set `secure` before `connect()` and the socket
+  handshakes once TCP is up, stepped as the server's flights arrive, and
+  dispatches `connect` when the handshake is done, within `timeout`,
+  which counts it, on native, jvm and Node; on eval the handshake blocks,
+  as eval's connect does. `secure` was read only to report it, so a client
+  asking for TLS spoke plain TCP. `verifyCert` and `certAuthority`, which
+  were `WebSocket`'s, are `Socket`'s now and check a secure socket's server
+  the way they check a `wss://` one: a certificate from an authority the
+  client does not trust, or naming another host, is refused with an
+  `ioError` that says so. On Node, a socket a TLS `ServerSocket` accepted
+  says it is `secure`, and a socket's `ioError` carries Node's reason.
+- permessage-deflate (RFC 7692) for WebSocket, opt in with
+  `ServerWebSocket.perMessageDeflate` or, on a client, with
+  `WebSocket.perMessageDeflate` before `connect()`. A server declined every
+  browser's offer, so an 18 KB JSON snapshot went out at 5.7 times its
+  deflated size, and a compressed frame closed the connection with 1002.
+  Each message is compressed on its own, both ways: a server answers an
+  offer with `server_no_context_takeover; client_no_context_takeover`, and
+  a client asks for the same, refuses an answer that keeps a context it
+  cannot inflate, and sends uncompressed to a server that did not agree to
+  inflate each of its messages alone. Messages shorter than
+  `compressionThreshold` (1024 bytes by default) go as they are, and so
+  does one that compressing did not shrink; `WebSocket.compressed` says
+  whether a session agreed. What arrives compressed is inflated under
+  `MAX_MESSAGE_SIZE`, and a message inflating past it is refused with 1009.
 - `HTTPRequestContext.followInsecureRedirects`, `manageCookies` and
   `onRedirect`, all optional, so an `HTTPBackend` can follow redirects by the
   built-in client's rules and say where its response came from. The bundled
@@ -1800,6 +1825,114 @@ All notable changes to CrossByte will be documented in this file.
   the jvm, for a server's own chain, an SNI entry's and every trust store.
   A key in the same PEM file as the certificates no longer stops it being
   read either.
+- `Socket.timeout` holds on Node: a connect not open by then is ended and
+  reported as an `ioError`, a secure one's TLS handshake counted with it,
+  as natively. Node gave a connect no deadline of its own, so one to a
+  server that took the connection and never answered its TLS hello was
+  waited on for good.
+- A `Socket` connected again on Node keeps the new connection. The socket
+  given up went on reporting, and its reports were taken for the one that
+  replaced it: a refused connect's close, which comes a turn after its
+  error, released a connect retried from that `ioError`, which then
+  connected with nothing to write to; and a connect abandoned for another
+  still announced `connect` when it came up, and its end closed the
+  connection that replaced it.
+- A client `Socket` turns Nagle's algorithm off before it connects rather
+  than once the connect is under way. Windows refuses TCP_NODELAY on a
+  socket whose connect is in progress and hxcpp does not report it, so
+  natively on Windows a client kept Nagle's algorithm on every connect that
+  took any time, every one over a network, and a small write waited for
+  the acknowledgement of the last.
+- A jvm runtime holding many TLS connections pumps faster: the registry asks
+  every TLS socket on every pump whether its TLS layer holds decrypted
+  bytes, and asked through a dynamic call, 150 to 245 us of each pump at
+  2,001 idle connections. It asks through the socket's type now, 16 to 43
+  us.
+- On neko a runtime services more than 64 sockets. Its registry selected
+  every socket it held at once, and neko's `select` takes at most 64 on
+  Windows and throws past them, so from the 65th connection no socket was
+  serviced at all: 39 of 100 connections timed out. neko now polls through
+  its poll natives, which size their sets to what they are given on
+  Windows and call `poll()` elsewhere, so a descriptor of 1024 or more,
+  which overflowed `select`'s set on Linux, is watched too. hl's `select`
+  sizes its sets itself on Windows; on Linux it still cannot watch a
+  descriptor of 1024 or more.
+- A socket leaves its poll backend before it is closed, and a backend that
+  fails no longer leaves a runtime polling nothing. `Socket` closed its
+  descriptor and only then queued its deregistration, which a backend that
+  registers each descriptor with the system, libuv's, is not allowed:
+  libuv forbids closing a descriptor it is polling, and when a child
+  process had inherited the file its epoll registration outlived the
+  close, so the loop woke for it without sleeping for good. `PollBackend`
+  has a `remove(socket)` now, called as a socket is deregistered, while it
+  is still open, and every close deregisters first; the built-in backend
+  does nothing with it. A backend whose `prepare` or `events` throws is
+  replaced by the built-in one, which is prepared at once, where it failed
+  the same way every pass; a factory that throws gives the built-in one;
+  and a registry grows with the factory it was made with, making the
+  larger backend before disposing of the old, so installing a backend
+  later never moves a runtime onto it partway through its run. A backend
+  implementing `PollBackendGrowable` grows in place.
+- A half-open connection held by a server costs nothing while it waits.
+  After the peer's FIN a `HALF_OPEN` socket stopped reading but stayed in
+  the poll set, where end of stream is readable for good: it was reported
+  on every poll, so a POLL loop spun a core per connection held that way
+  (3.1 to 3.5 s of CPU per 3 s), and each report flushed again, a write
+  that failed was reported every time, 25,566 ioErrors in half a second on
+  a TLS 1.2 connection, and the socket was never closed. It leaves the poll
+  set's reads once the peer has finished, or `shutdown(true, ...)` has shut
+  them, and can still be written to; and a write that fails for a reason
+  other than a full buffer closes a socket that reads nothing more, after
+  its one `ioError`, since its read side will never reap it.
+- Connections are taken, dialled and secured as the system reports them,
+  not at the next tick. A POLL loop spends each frame blocked in poll,
+  which only a socket in the poll set can end, and listeners were never in
+  it: accepts ran from the tick, a connect in flight was watched from the
+  tick, and every TLS handshake, a `ServerSocket`'s, and both ends of a
+  `wss://` session, was stepped from the tick, a round trip a frame. So
+  connect to accept took 41 ms on eval and 52-57 ms on the jvm at the
+  default twelve ticks a second, a connect started from a data handler
+  waited 80 ms, and a jvm TLS client waited a median 132 ms to
+  secureConnect. Listeners are in the poll set now, and read when
+  connections are waiting, `maxAcceptsPerTick` at a time; a connect in
+  flight is watched for writing; and a handshake is stepped as its socket
+  turns readable. Measured at twelve ticks a second, connect to accept is
+  0.5 ms on eval and 0.9 ms on the jvm, and a connect from a data handler
+  1.2 ms. The tick stays for deadlines: a plain `ServerSocket` has none
+  now. A listener at `maxPendingHandshakes` leaves the poll set until one
+  finishes, so a full server does not spin.
+- A WebSocket client dials an IPv6 literal. The host it was given had to be
+  a run of letters, digits, dots and hyphens, so
+  `WebSocket.connect("::1", port)` threw "Invalid host" before a socket
+  existed, on every target, and a page's `Socket` read the same pattern.
+  A literal is taken bracketed, as a URL writes one (`[::1]`,
+  `ws://[2001:db8::1]/chat`), or bare, and written bracketed into the URL
+  and the `Host` header; names and IPv4 addresses read as before.
+- A `ServerSocket`, and so an `HTTPServer`, listens on neko. With no
+  backlog given, `listen()` asked for one of `0x7FFFFFFF`, which neko's
+  31-bit integers cannot carry, so its natives threw and no server could
+  start. The default is `0x7FFFFFF` on every target now, as
+  `ServerWebSocket`'s already was, and `FlexSocket.listen()`'s too; any
+  backlog past the system's maximum is granted as that maximum, so what a
+  server gets is unchanged, 200 connections on a client edition of
+  Windows, measured for each value.
+- A `ServerWebSocket` accepts sessions on eval, hl and neko. Each session
+  it accepted drew a client's handshake key from `SecureRandom` before
+  asking whether it was a client, and `SecureRandom` refuses on those
+  targets, so every upgrade threw in the accept tick and the peer was
+  reset: a server there accepted nothing, whatever this changelog said of
+  WebSockets on the interpreter. Only a client draws a key now. A client on
+  those targets still needs `SecureRandom`, for its key and its masks, and
+  is refused as before.
+- A closed connection is let go of. The socket registry's writable queue is
+  a `Stack`, whose `clear()` only reset its count, so the backing array held
+  every connection that wrote in a busy pass, and through the system
+  socket's `custom` the whole `Socket`, its buffers and its `userData`,
+  until a later write happened to take its slot; and the select buffer held
+  the last connections polled once nothing was left to poll. 150 closed
+  connections carrying 64 KB of `userData` each all survived five
+  collections on the jvm. `Stack.clear()` empties the slots it counts out,
+  and the registry lets go of its select buffer when its set empties.
 - A jvm TLS server asks for client certificates only after
   `requireClientCertificate()`, as a native one does. Once the jvm honoured
   `FlexSocket.DEFAULT_VERIFY_CERT`, a listener that set no `verifyCert` of

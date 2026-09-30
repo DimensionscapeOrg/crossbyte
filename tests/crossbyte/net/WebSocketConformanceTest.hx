@@ -80,7 +80,7 @@ class WebSocketConformanceTest extends utest.Test {
 		// case before it had produced.
 		var until:Float = Sys.time() + 0.2;
 		while (Sys.time() < until) {
-			@:privateAccess runtime.pump(1 / 240, 0);
+			RawWebSocketClient.pumpRuntime(runtime);
 		}
 	}
 
@@ -117,7 +117,7 @@ class WebSocketConformanceTest extends utest.Test {
 	private function pumpUntil(check:Void->Bool, seconds:Float = 5.0):Bool {
 		var deadline:Float = Sys.time() + seconds;
 		while (!check() && Sys.time() < deadline) {
-			@:privateAccess runtime.pump(1 / 240, 0);
+			RawWebSocketClient.pumpRuntime(runtime);
 		}
 		return check();
 	}
