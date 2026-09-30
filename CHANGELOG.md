@@ -1246,6 +1246,22 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The native Brotli and LZ4 backends (`-D crossbyte_brotli_native`,
+  `-D crossbyte_lz4_native`) are handed `maxOutputSize` and stop there.
+  They decoded the whole stream and left the limit to be checked
+  afterwards: refusing a 211-byte Brotli stream at 1 MB first took the
+  process 500 MB higher, and LZ4, which cannot tell what a block holds,
+  guessed and doubled its guess on every failure up to 256 MB, 200 MB to
+  learn that 100 bytes were garbage. Brotli is now given room for the
+  limit and stopped when it asks for more; LZ4 adds up what the block's
+  sequence headers say before allocating anything, then decodes into
+  exactly that, which also holds a block to the format's end rules. Both
+  run in a GC-free zone, so compressing 2 MB at quality 11 on a worker no
+  longer holds every other thread's allocations for its 1.8 s, and native
+  Brotli compresses with the smallest window that holds its input. Their
+  errors are the same `IOError` and `RangeError` as the Haxe codecs'.
+  Building with either define now needs the extension as of this change,
+  whose `decompress` takes the limit.
 - An LZ4 block cut short is refused rather than decoded as though whole.
   A block carries no length, so one cut where a literal run ended read as
   complete: half of a 20 KB block decoded to 10,133 bytes and said nothing.
