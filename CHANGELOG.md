@@ -1220,6 +1220,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On neko, `File.createTempFile` and `createTempDirectory` work, and so
+  does every `Store.put`. Where there is no secure random source, both drew
+  names from `Std.random(0x7FFFFFFF)`, and neko's Int is 31 bits: that
+  bound is not an Int there, and the native under `Std.random` refused it,
+  so each threw before touching the disk -- a store could be opened and
+  read but never written. They draw sixteen bits at a time now.
 - hl and neko have sockets again. CrossByte replaces `sys.net.Socket` and
   `sys.net.UdpSocket` on every target, and since 2026-04-28 neither target
   had a branch there, so both got a stand-in that threw -- and each
