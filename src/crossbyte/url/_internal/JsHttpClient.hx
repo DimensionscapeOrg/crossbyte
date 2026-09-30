@@ -91,6 +91,14 @@ class JsHttpClient {
 	static function __sendBrowser(request:URLRequest, method:String, url:String, body:Dynamic, contentType:String, onStatus:Int->Void,
 			onProgress:Int->Int->Void, onComplete:Bytes->Void, onError:String->Void,
 			onResponse:(Int, Array<URLRequestHeader>, String, Bool) -> Void):Void {
+		// The browser does its own TLS and tells a page nothing of the key it
+		// was shown, so a pin cannot be checked here. Refused rather than sent
+		// unchecked, as on the targets whose TLS cannot say either.
+		if (__pins(request).length > 0) {
+			onError("Public key pinning is not available in a browser: it gives a page no access to the server's certificate");
+			return;
+		}
+
 		var xhr = new js.html.XMLHttpRequest();
 		var settled:Bool = false;
 		var idle:haxe.Timer = null;
@@ -275,6 +283,7 @@ class JsHttpClient {
 
 		var origin:String = null;
 		var redirects:Int = 0;
+		var leftOrigin:Bool = false;
 
 		function hop(target:String, method:String, body:Dynamic):Void {
 			var url:js.node.url.URL;
@@ -312,6 +321,9 @@ class JsHttpClient {
 				method: method,
 				headers: headers
 			};
+			if (secure) {
+				__applyTls(request, options, leftOrigin);
+			}
 
 			var handler = function(response:js.node.http.IncomingMessage):Void {
 				var code:Int = response.statusCode;
@@ -349,6 +361,8 @@ class JsHttpClient {
 						__removeHeader(headers, "authorization");
 						__removeHeader(headers, "proxy-authorization");
 						__removeHeader(headers, "cookie");
+						// And the client certificate, meant for the origin named.
+						leftOrigin = true;
 					}
 
 					var nextMethod:String = method;
@@ -447,6 +461,118 @@ class JsHttpClient {
 
 		hop(target, method, body);
 	}
+
+	/**
+		`request`'s TLS options onto Node's request `options`: whether the
+		server is checked, the authority trusted, the client certificate,
+		not once a redirect has `leftOrigin`, and the pinned keys.
+
+		Node's agent keeps its sockets by these same options, so a request
+		that checks its server is never handed a socket opened without the
+		check. Pins are not among them, and are not checked in
+		`checkServerIdentity` either: Node calls that only once the chain has
+		verified, so with `verifyCert` off a pin was never looked at. A pinned
+		request makes its own connection instead, and is given it only once
+		the server's key has been checked, before a byte of the request.
+	**/
+	static function __applyTls(request:URLRequest, options:Dynamic, leftOrigin:Bool):Void {
+		if (!request.verifyCert) {
+			options.rejectUnauthorized = false;
+		}
+		if (request.certAuthority != null) {
+			options.ca = [@:privateAccess request.certAuthority.__pem];
+		}
+		if (!leftOrigin && request.clientCertificate != null && request.clientKey != null) {
+			options.cert = @:privateAccess request.clientCertificate.__pem;
+			options.key = @:privateAccess request.clientKey.__pem;
+			var passphrase:Null<String> = @:privateAccess request.clientKey.__passphrase;
+			if (passphrase != null) {
+				options.passphrase = passphrase;
+			}
+		}
+
+		var pins:Array<String> = __pins(request);
+		if (pins.length == 0) {
+			return;
+		}
+
+		// An IPv6 literal as a URL writes it, bracketed, which the request
+		// options take and a TLS connect does not.
+		var host:String = options.hostname;
+		if (StringTools.startsWith(host, "[") && StringTools.endsWith(host, "]")) {
+			host = host.substring(1, host.length - 1);
+		}
+		var connectOptions:Dynamic = {
+			host: host,
+			port: options.port != null ? options.port : 443,
+			rejectUnauthorized: request.verifyCert
+		};
+		// SNI for a name, as the agent sends it; RFC 6066 has none for an address.
+		if (js.node.Net.isIP(host) == 0) {
+			connectOptions.servername = host;
+		}
+		for (field in ["ca", "cert", "key", "passphrase"]) {
+			if (Reflect.field(options, field) != null) {
+				Reflect.setField(connectOptions, field, Reflect.field(options, field));
+			}
+		}
+
+		var idleTimeout:Int = request.idleTimeout;
+		// No agent is named, so the request takes the socket this hands it.
+		options.createConnection = function(_:Dynamic, oncreate:(error:Dynamic, ?socket:Dynamic) -> Void):Dynamic {
+			var socket:Dynamic = js.node.Tls.connect(connectOptions);
+			var settled:Bool = false;
+			function settle(error:Dynamic):Void {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				if (error != null) {
+					socket.destroy();
+					oncreate(error);
+					return;
+				}
+				socket.setTimeout(0);
+				oncreate(null, socket);
+			}
+
+			// Left attached once the socket is handed over: an error before the
+			// request has added its own listener would otherwise be uncaught.
+			socket.on("error", (error:Dynamic) -> settle(error));
+			if (idleTimeout > 0) {
+				socket.setTimeout(idleTimeout, () -> settle(new js.lib.Error("The TLS handshake timed out")));
+			}
+			socket.once("secureConnect", function():Void {
+				var certificate:Dynamic = socket.getPeerCertificate(false);
+				var raw:Null<js.node.Buffer> = certificate != null ? certificate.raw : null;
+				var pin:Null<String> = raw == null ? null : crossbyte._internal.http.PublicKeyPins.pinOf(Bytes.ofData(raw.buffer.slice(raw.byteOffset,
+					raw.byteOffset + raw.byteLength)));
+				if (pin != null && pins.indexOf(crossbyte._internal.http.PublicKeyPins.normalize(pin)) >= 0) {
+					settle(null);
+					return;
+				}
+				settle(new js.lib.Error(pin == null ? "The server presented no certificate to check its pinned public key against" : "The server's public key, "
+					+ pin + ", is not one this request pins"));
+			});
+			return js.Lib.undefined;
+		};
+	}
+	#end
+
+	/** `request`'s pins, as compared: none blank, none with a `sha256/` prefix. */
+	static function __pins(request:URLRequest):Array<String> {
+		var pins:Array<String> = [];
+		if (request.pinnedPublicKeys != null) {
+			for (pin in request.pinnedPublicKeys) {
+				if (pin != null && StringTools.trim(pin).length > 0) {
+					pins.push(crossbyte._internal.http.PublicKeyPins.normalize(pin));
+				}
+			}
+		}
+		return pins;
+	}
+
+	#if nodejs
 
 	/**
 		Undoes the codings `header` names on `body`, the last applied first,

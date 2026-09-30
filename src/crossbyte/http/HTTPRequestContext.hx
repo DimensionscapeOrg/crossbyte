@@ -93,6 +93,17 @@ typedef HTTPRequestContext = {
 	 */
 	@:optional var maxDecompressedSize:Int;
 
+	#if !(js && !nodejs)
+	/**
+	 * The TLS an `https` request asks for, or absent for the defaults: see
+	 * `HTTPTLSOptions`. A backend applies it to the connection it opens,
+	 * checks its pins once the handshake is done, and reuses a connection only
+	 * for a request whose options are `HTTPTLSOptions.same` as the ones it was
+	 * opened under.
+	 */
+	@:optional var tls:HTTPTLSOptions;
+	#end
+
 	/**
 	 * Signals that the caller has abandoned this request.
 	 *

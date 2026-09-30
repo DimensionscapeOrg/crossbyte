@@ -1,0 +1,24 @@
+<xml>
+	<!-- Keeps a second include of this file from adding its objects twice:
+	     two externs naming one Build.xml link it twice, which GNU ld refuses
+	     and MSVC only warns about. -->
+	<pragma once="true"/>
+
+	<!-- hxcpp's own mbedTLS build, for its headers and MBEDTLS_DIR. That file
+	     is `pragma once` too, so this is safe beside sys.ssl and NativeAlpn,
+	     which include it as well; see NativeAlpnBuild.xml. -->
+	<include name="${HXCPP}/src/hx/libs/ssl/Build.xml"/>
+
+	<files id="crossbyte-tls-peer-native">
+		<depend files="hxcpp-depends"/>
+		<compilerflag value="-I${this_dir}"/>
+		<compilerflag value="-I${MBEDTLS_DIR}/include"/>
+		<file name="${this_dir}/NativeTlsPeer.cpp">
+			<depend name="${this_dir}/NativeTlsPeer.h"/>
+		</file>
+	</files>
+
+	<target id="haxe">
+		<files id="crossbyte-tls-peer-native"/>
+	</target>
+</xml>

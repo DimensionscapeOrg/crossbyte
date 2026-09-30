@@ -5,6 +5,20 @@ All notable changes to CrossByte will be documented in this file.
 ## Unreleased
 
 ### Added
+- TLS settings per request: `URLRequest.verifyCert`, `certAuthority`,
+  `clientCertificate` with `clientKey`, and `pinnedPublicKeys` (RFC 7469
+  `pin-sha256` digests, with or without `sha256/`). Trusting a private
+  authority meant setting a process-wide static through `@:privateAccess`,
+  and there was no way to present a client certificate or to pin a key.
+  A kept connection, HTTP/1.1 or HTTP/2, is reused only by a request with
+  the same settings, so one opened without checking its server never
+  carries a request that checks. The client certificate is left behind by
+  a redirect to another origin, as `Authorization` is. A pin is checked
+  after the handshake and before anything is sent, whether or not the
+  chain is, natively, on the jvm and on Node; hl, neko and a browser
+  cannot see the server's key, and refuse a pinned request rather than
+  send it unchecked. `HTTPTLSOptions` carries the settings, and
+  `HTTPRequestContext.tls` hands them to an `HTTPBackend`.
 - `URLRequest.maxDecompressedSize`: the most a compressed response may
   decode to before the load fails, 64 MB unless set, per request. The
   ceiling was an internal static of the native client, one number for every
@@ -1253,6 +1267,11 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP request that cannot connect says why, as in `Connection Failed:
+  X509 - Certificate verification failed` natively or the JDK's `PKIX path
+  building failed` on the jvm. Every failure, an untrusted or expired
+  certificate or a refused port alike, read `Connection Failed` and
+  nothing more.
 - HTTP/2 on Node and in the browser refuses a NUL in a field, as it does
   on the other targets. The HPACK decoder read each string with
   `Bytes.toString`, which on JavaScript stops at the first NUL, so a field
