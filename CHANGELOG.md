@@ -1618,6 +1618,20 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On hl, a `MySQLConnection.open` that cannot reach its server no longer
+  corrupts the process heap. When HashLink's mysql library fails to
+  connect, it frees the connection it made and leaves the collector a
+  finalizer that frees it again; the next major collection did, into memory
+  the heap had by then given to someone else, and the process died at some
+  later allocation -- the hl suite, of heap corruption, four hundred cases
+  after the MySQL case that failed to connect. `open` now tries the server
+  with a connection of its own first, and refuses a server it cannot reach
+  (2003), a host it cannot resolve (2005) and a Unix socket, which the
+  library does not support, without asking the library. That covers what a
+  pool retrying against a restarting database meets again and again; a
+  login the server refuses still reaches the library, and only a fix there
+  spares it. The check costs a connection per open, which the server sees
+  close before it logs in.
 - On hl, an HTTPS request waiting for a slow server no longer stops every
   other thread: `FlexSocket` -- the TLS client `URLLoader`, `Http` and the
   HTTP/2 backend read through -- makes an `HlTlsSocket` there, as the entry
