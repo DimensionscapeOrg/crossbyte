@@ -447,7 +447,15 @@ class HTTPRequestHandlerTest extends utest.Test {
 			Assert.equals("Hello from middleware test", decompressed.toString());
 			Assert.notEquals("Hello from middleware test", response.body);
 			async.done();
-		}, null, true);
+		}, null, true, null, __compressEverything);
+	}
+
+	/**
+		Compression down to a byte, so a small fixture can show how a coding is
+		negotiated; the default leaves anything under a kilobyte as it is.
+	**/
+	private static function __compressEverything(config:HTTPServerConfig):Void {
+		config.compression.minimumSize = 0;
 	}
 
 	public function testWildcardNegotiationDoesNotReviveExplicitlyRejectedGzip(async:Async):Void {
@@ -461,7 +469,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			decompressed.uncompress(CompressionAlgorithm.DEFLATE);
 			Assert.equals("Hello from middleware test", decompressed.toString());
 			async.done();
-		}, null, true);
+		}, null, true, null, __compressEverything);
 	}
 
 	public function testResponseCompressionCanNegotiateLz4(async:Async):Void {
@@ -475,7 +483,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			decompressed.uncompress(CompressionAlgorithm.LZ4);
 			Assert.equals("Hello from middleware test", decompressed.toString());
 			async.done();
-		}, null, true);
+		}, null, true, null, __compressEverything);
 	}
 
 	public function testResponseCompressionCanNegotiateBrotli(async:Async):Void {
@@ -489,7 +497,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			decompressed.uncompress(CompressionAlgorithm.BROTLI);
 			Assert.equals("Hello from middleware test", decompressed.toString());
 			async.done();
-		}, null, true);
+		}, null, true, null, __compressEverything);
 	}
 
 	public function testRangeResponseSkipsCompressionNegotiation(async:Async):Void {
@@ -1351,7 +1359,7 @@ class HTTPRequestHandlerTest extends utest.Test {
 			Assert.equals(406, response.status);
 			Assert.equals(1, __countOccurrences(response.raw, "HTTP/1.1 "));
 			async.done();
-		});
+		}, null, false, null, __compressEverything);
 	}
 	public function testLiteralPlusInPathServesThePlusNamedFile(async:Async):Void {
 		// Form decoding read the `+` as a space, so this request used to

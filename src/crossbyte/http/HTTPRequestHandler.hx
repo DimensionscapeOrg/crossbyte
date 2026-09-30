@@ -1156,10 +1156,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 				}
 			}
 		} else {
+			// Encoded ahead of time where that is possible: a precompressed
+			// sibling, or a body kept from an earlier request.
+			if (__serveEncodedFile(file, mimeType, baseHeaders, total, lastModifiedTime, headOnly)) {
+				return;
+			}
+
+			// A file that streams goes out as it is on disk, and a HEAD for
+			// it says so rather than naming a coding the GET would not use.
+			var streams:Bool = __canStreamFile(200, baseHeaders, total);
 			if (headOnly) {
-				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, null, true, total);
+				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, null, true, total, false, !streams);
 			} else {
-				if (__canStreamFile(200, baseHeaders, total)) {
+				if (streams) {
 					// The stream owns the close (see the range path above).
 					__streamFileResponse(200, "OK", baseHeaders, mimeType, file, 0, total);
 					return;
@@ -1168,6 +1177,120 @@ final class HTTPRequestHandler extends EventDispatcher {
 				file.load();
 				__dispatchResponseBytes(200, "OK", baseHeaders, mimeType, file.data, false);
 			}
+		}
+	}
+
+	/**
+		Answers a whole-file request with a body encoded before the request
+		came, and says whether it did: the file's precompressed sibling, or a
+		body `HTTPServerConfig.compression` kept from an earlier request,
+		encoding and keeping one now if the file is small enough to hold.
+
+		A static file was compressed again on every request, on the runtime's
+		thread: a 150 KB script served 863 requests a second as it was and 64
+		as Brotli, natively.
+	**/
+	@:noCompletion private function __serveEncodedFile(file:File, mimeType:String, baseHeaders:Array<URLRequestHeader>, total:Int, modified:Float,
+			headOnly:Bool):Bool {
+		var policy:Null<HTTPCompression> = __config.compression;
+		if (policy == null || !__mayCompress(200, baseHeaders, mimeType, total, false)) {
+			return false;
+		}
+
+		// A refusal of every coding is the ordinary path's to answer, 406.
+		var decision:ResponseEncodingDecision = __resolveResponseEncoding(200, baseHeaders);
+		if (decision.encoding == null) {
+			return false;
+		}
+		var coding:Null<String> = __encodingToHeaderValue(decision.encoding);
+		if (coding == null) {
+			return false;
+		}
+		var headers:Array<URLRequestHeader> = baseHeaders.concat([
+			new URLRequestHeader("Content-Encoding", coding),
+			new URLRequestHeader("Vary", "Accept-Encoding")
+		]);
+
+		if (policy.precompressed) {
+			var sibling:Null<File> = __precompressedSibling(file, decision.encoding, modified);
+			if (sibling != null) {
+				var size:Int = -1;
+				try {
+					size = sibling.size;
+				} catch (_:Dynamic) {}
+				if (size >= 0) {
+					if (headOnly) {
+						__dispatchResponseBytes(200, "OK", headers, mimeType, null, true, size, false, false);
+					} else if (size > STREAM_THRESHOLD) {
+						__streamFileResponse(200, "OK", headers, mimeType, sibling, 0, size);
+					} else {
+						sibling.load();
+						__dispatchResponseBytes(200, "OK", headers, mimeType, sibling.data, false, null, false, false);
+					}
+					return true;
+				}
+			}
+		}
+
+		// A file past the streaming threshold is sent as it is on disk.
+		if (total > STREAM_THRESHOLD) {
+			return false;
+		}
+
+		var kept:Null<haxe.io.Bytes> = policy.cached(file.nativePath, decision.encoding, total, modified);
+		if (kept == null) {
+			if (headOnly) {
+				// Nothing is encoded for a HEAD; the ordinary path answers it
+				// with the coding named and the length left out.
+				return false;
+			}
+			file.load();
+			var encoded:Null<ByteArray> = __encodeBody(file.data, decision.encoding);
+			if (encoded == null) {
+				return false;
+			}
+			var bytes:haxe.io.Bytes = haxe.io.Bytes.alloc(encoded.length);
+			bytes.blit(0, encoded, 0, encoded.length);
+			policy.keep(file.nativePath, decision.encoding, total, modified, bytes);
+			kept = bytes;
+		}
+
+		if (headOnly) {
+			__dispatchResponseBytes(200, "OK", headers, mimeType, null, true, kept.length, false, false);
+		} else {
+			__dispatchResponseBytes(200, "OK", headers, mimeType, ByteArray.fromBytes(kept), false, null, false, false);
+		}
+		return true;
+	}
+
+	/**
+		The `.br` or `.gz` beside `file` for `algorithm`, when there is one the
+		server may send and it is not older than the file; null otherwise. The
+		blacklist and whitelist hold for it as for any file.
+	**/
+	@:noCompletion private function __precompressedSibling(file:File, algorithm:CompressionAlgorithm, modified:Float):Null<File> {
+		var suffix:Null<String> = switch (algorithm) {
+			case CompressionAlgorithm.BROTLI: ".br";
+			case CompressionAlgorithm.GZIP: ".gz";
+			default: null;
+		}
+		if (suffix == null) {
+			return null;
+		}
+
+		var path:String = file.nativePath + suffix;
+		if (__config.blacklist.indexOf(path) != -1 || (__config.whitelist.length > 0 && __config.whitelist.indexOf(path) == -1)) {
+			return null;
+		}
+
+		try {
+			var sibling:File = new File(path);
+			if (!sibling.exists || sibling.isDirectory || sibling.modificationDate.getTime() < modified) {
+				return null;
+			}
+			return sibling;
+		} catch (_:Dynamic) {
+			return null;
 		}
 	}
 
@@ -1511,7 +1634,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 *        with no length yet known: see `beginResponse`.
 	 */
 	@:noCompletion private function __dispatchResponseBytes(statusCode:Int, statusMessage:String, headers:Array<URLRequestHeader>, contentType:String,
-			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false):Void {
+			data:ByteArray, headOnly:Bool = false, ?contentLength:Int, open:Bool = false, mayEncode:Bool = true):Void {
 		// A response for this request slot has already been written (a
 		// middleware that called respond() and then next() anyway); a
 		// second one would corrupt the stream. Suppressed before the log
@@ -1544,26 +1667,44 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var responseData:ByteArray = data;
-		if (!headOnly && responseData != null && responseData.length > 0) {
+		// What a GET would send, which a HEAD is answered as: its body is not
+		// here, but its length is, and the two must be negotiated alike, a
+		// HEAD used to report the identity length while the GET beside it
+		// went out as br. Not a head whose body the pump streams after it,
+		// which goes as it is on disk.
+		var plainLength:Int = contentLength != null ? contentLength : (responseData != null ? responseData.length : 0);
+		var lengthUnknown:Bool = false;
+		if (mayEncode && !__streamPending && __mayCompress(statusCode, headers, contentType, plainLength, open)) {
+			// Whichever coding this client gets, the answer depends on what it
+			// asked for, and a cache keyed on the URL alone replayed a br body
+			// to clients that had not asked for one.
+			fields.push(new URLRequestHeader("Vary", "Accept-Encoding"));
+
 			var responseEncoding = __resolveResponseEncoding(statusCode, headers);
 			if (responseEncoding.reject) {
 				__sendErrorResponse(406, "Not Acceptable");
 				return;
 			}
 			if (responseEncoding.encoding != null) {
-				responseData = new ByteArray();
-				responseData.writeBytes(data, 0, data.length);
-				try {
-					responseData.compress(responseEncoding.encoding);
-				} catch (_:Dynamic) {
-					__sendErrorResponse(500, "Internal Server Error");
-					return;
+				if (headOnly) {
+					// The encoded length is known only by encoding, which a HEAD
+					// does not; RFC 9110 9.3.2 lets it leave out a field only
+					// generating the content would settle.
+					lengthUnknown = true;
+				} else {
+					var encoded:Null<ByteArray> = __encodeBody(data, responseEncoding.encoding);
+					if (encoded == null) {
+						__sendErrorResponse(500, "Internal Server Error");
+						return;
+					}
+					responseData = encoded;
 				}
 
 				var headerValue = __encodingToHeaderValue(responseEncoding.encoding);
 				if (headerValue != null) {
 					fields.push(new URLRequestHeader("Content-Encoding", headerValue));
 				}
+				__weakenETags(fields);
 			}
 		}
 
@@ -1586,8 +1727,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var length:Null<Int> = null;
-		if (!__statusOmitsBody(statusCode) && !open) {
-			length = (contentLength != null) ? contentLength : (responseData != null ? responseData.length : 0);
+		if (!__statusOmitsBody(statusCode) && !open && !lengthUnknown) {
+			// The encoded body's own length when there is one: a length given
+			// for the plain body would promise bytes the coding took away.
+			length = (contentLength != null && responseData == data) ? contentLength : (responseData != null ? responseData.length : 0);
 		}
 
 		// An open body is framed as it goes: chunked under HTTP/1.1, a stream
@@ -1922,7 +2065,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			bodyBytes.writeUTFBytes(content);
 		}
 
-		__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, bodyBytes, headOnly);
+		// A HEAD says what the GET would: its length, not the empty body it
+		// sends, which went out as "Content-Length: 0" beside a GET of 20 KB.
+		var headLength:Null<Int> = (headOnly && content != null && content.length > 0) ? haxe.io.Bytes.ofString(content).length : null;
+		__dispatchResponseBytes(statusCode, statusMessage, headers, contentType, bodyBytes, headOnly, headLength);
 	}
 
 
@@ -2222,6 +2368,80 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		return encodings;
+	}
+
+	/**
+		Whether a response is one `HTTPServerConfig.compression` compresses
+		for a client that asks: compression on, a status that is not an error
+		and has a body to speak of, a body of at least `minimumSize`, `length`,
+		what a GET would send, and a `contentType` the policy lists. Not a
+		range, nor a body encoded already, nor one written as it goes.
+
+		Every non-empty body used to be compressed, a `429` and a `404`
+		included, so each refusal of a flood cost the setup of a Brotli encoder
+		when the client listed `br`, which every browser does: 18.8 ms a
+		refusal on Node rather than 0.57.
+	**/
+	@:noCompletion private function __mayCompress(statusCode:Int, headers:Array<URLRequestHeader>, contentType:Null<String>, length:Int, open:Bool):Bool {
+		var policy:Null<HTTPCompression> = __config.compression;
+		if (policy == null || !policy.enabled || open) {
+			return false;
+		}
+		if (statusCode < 200 || statusCode >= 400 || statusCode == 204 || statusCode == 206 || statusCode == 304) {
+			return false;
+		}
+		if (length <= 0 || length < policy.minimumSize) {
+			return false;
+		}
+		if (__hasResponseHeader(headers, "Content-Range") || __hasResponseHeader(headers, "Content-Encoding")) {
+			return false;
+		}
+		return policy.compresses(contentType);
+	}
+
+	/**
+		`data` in `algorithm`, or null when the encoder failed. Brotli at the
+		policy's `level`; the other codings have one setting here.
+	**/
+	@:noCompletion private function __encodeBody(data:ByteArray, algorithm:CompressionAlgorithm):Null<ByteArray> {
+		try {
+			if (algorithm == CompressionAlgorithm.BROTLI) {
+				var level:Int = __config.compression != null ? __config.compression.level : 4;
+				var plain:haxe.io.Bytes = haxe.io.Bytes.alloc(data.length);
+				plain.blit(0, data, 0, data.length);
+				return ByteArray.fromBytes(crossbyte._internal.brotli.Brotli.compress(plain, level < 0 ? 0 : (level > 11 ? 11 : level)));
+			}
+			var encoded:ByteArray = new ByteArray();
+			encoded.writeBytes(data, 0, data.length);
+			encoded.compress(algorithm);
+			return encoded;
+		} catch (_:Dynamic) {
+			return null;
+		}
+	}
+
+	/**
+		The `ETag` fields in `fields` made weak, for an encoded variant.
+
+		A strong validator names one exact sequence of bytes, and the same tag
+		went out on the identity, gzip, br and deflate bodies of one route: a
+		cache or a range request could take one variant's bytes for another's.
+		Weak, as nginx sends it, a revalidation still matches by RFC 9110's
+		weak comparison, which `If-None-Match` uses, where a suffixed tag
+		would not.
+	**/
+	@:noCompletion private static function __weakenETags(fields:Array<URLRequestHeader>):Void {
+		for (i in 0...fields.length) {
+			var field:URLRequestHeader = fields[i];
+			if (field == null || field.name == null || field.name.toLowerCase() != "etag" || field.value == null) {
+				continue;
+			}
+			var value:String = StringTools.trim(field.value);
+			if (!StringTools.startsWith(value, "W/")) {
+				// Replaced rather than changed: the field may be the caller's.
+				fields[i] = new URLRequestHeader(field.name, "W/" + value);
+			}
+		}
 	}
 
 	@:noCompletion private function __resolveResponseEncoding(statusCode:Int, headers:Array<URLRequestHeader>):ResponseEncodingDecision {
