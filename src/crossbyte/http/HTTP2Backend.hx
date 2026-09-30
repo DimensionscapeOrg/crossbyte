@@ -116,7 +116,7 @@ class HTTP2Backend implements HTTPBackend {
 		var credentialsDropped:Bool = false;
 
 		while (true) {
-			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, data, contentType, cookies);
+			var exchange:Null<H2Exchange> = __exchange(context, url, method, headers, data, contentType, cookies, credentialsDropped);
 			if (exchange == null) {
 				// Reported already.
 				return;
@@ -194,7 +194,7 @@ class HTTP2Backend implements HTTPBackend {
 	 * not and answers null.
 	 */
 	private function __exchange(context:HTTPRequestContext, url:URL, method:String, headers:Array<String>, data:Dynamic, contentType:Null<String>,
-			cookies:Null<CookieJar>):Null<H2Exchange> {
+			cookies:Null<CookieJar>, leftOrigin:Bool):Null<H2Exchange> {
 		if (__cancelled(context)) {
 			// Between two hops, or before the first. Nothing is opened for it,
 			// and nothing already open is disturbed.
@@ -213,6 +213,12 @@ class HTTP2Backend implements HTTPBackend {
 		}
 
 		var session:H2ClientSession = null;
+		// The request's TLS, as the HTTP/1.1 client applies it: less its client
+		// certificate once a redirect has left the origin it was made to.
+		var tls:Null<HTTPTLSOptions> = null;
+		if (secure && context.tls != null && !context.tls.isDefault()) {
+			tls = leftOrigin ? context.tls.withoutClientCertificate() : context.tls;
+		}
 
 		try {
 			// Bracketed for an IPv6 host: 2001:db8::1:8080 cannot be split.
@@ -230,7 +236,7 @@ class HTTP2Backend implements HTTPBackend {
 			var stream:H2Stream = null;
 			var refused:Int = 0;
 			while (stream == null) {
-				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context), timeout, context.cancelToken);
+				session = H2ConnectionPool.acquire(origin, () -> __open(origin, url.host, port, secure, context, tls), timeout, context.cancelToken, tls);
 				try {
 					stream = session.execute(method, scheme, authority, __target(url), fields, body, timeout, context.cancelToken);
 				} catch (e:H2ConnectionError) {
@@ -333,13 +339,16 @@ class HTTP2Backend implements HTTPBackend {
 	 * a perfectly good connection for the crime of waiting; per-request
 	 * deadlines live on the stream instead.
 	 */
-	private function __open(origin:String, host:String, port:Int, secure:Bool, context:HTTPRequestContext):H2ClientSession {
+	private function __open(origin:String, host:String, port:Int, secure:Bool, context:HTTPRequestContext, ?tls:HTTPTLSOptions):H2ClientSession {
 		var socket:FlexSocket = new FlexSocket(secure);
 
 		if (secure) {
 			// Only h2 is offered. Accepting http/1.1 here would hand back a
 			// connection this backend cannot speak.
 			socket.setALPN(["h2"]);
+			if (tls != null) {
+				tls.configure(socket);
+			}
 		}
 
 		// An idle limit, as the HTTP/1.1 client sets on its socket: the
@@ -395,8 +404,18 @@ class HTTP2Backend implements HTTPBackend {
 			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, "Server did not negotiate h2 over ALPN");
 		}
 
+		// Once the handshake is done and before the preface: a server whose
+		// key is not pinned is sent nothing.
+		if (tls != null) {
+			var refusal:Null<String> = tls.checkPins(socket);
+			if (refusal != null) {
+				__closeQuietly(socket);
+				throw new H2ConnectionError(H2ErrorCode.CONNECT_ERROR, refusal);
+			}
+		}
+
 		socket.setTimeout(0);
-		return new H2ClientSession(origin, socket, new H2Connection(socket.input, socket.output, settings));
+		return new H2ClientSession(origin, socket, new H2Connection(socket.input, socket.output, settings), tls);
 	}
 
 	private static function __closeQuietly(socket:FlexSocket):Void {

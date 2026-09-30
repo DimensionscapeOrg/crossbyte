@@ -44,6 +44,12 @@ class H2ClientSession {
 	/** Set once the connection is unusable and the pool should drop it. */
 	public var dead(default, null):Bool = false;
 
+	/**
+		The TLS options the connection was opened under, null being the
+		defaults; the pool shares it only with requests asking for the same.
+	**/
+	public final tls:Null<crossbyte.http.HTTPTLSOptions>;
+
 	/** Requests currently in flight. */
 	public var active(get, never):Int;
 
@@ -68,8 +74,9 @@ class H2ClientSession {
 	private var __retired:Bool = false;
 	private var __failure:String = null;
 
-	public function new(origin:String, socket:FlexSocket, connection:H2Connection) {
+	public function new(origin:String, socket:FlexSocket, connection:H2Connection, ?tls:crossbyte.http.HTTPTLSOptions) {
 		this.origin = origin;
+		this.tls = tls;
 		__socket = socket;
 		this.connection = connection;
 
