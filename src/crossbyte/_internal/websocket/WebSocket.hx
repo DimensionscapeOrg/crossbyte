@@ -780,7 +780,8 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 	/**
 	 * Whether the TLS layer holds decrypted bytes the kernel no longer has.
 	 * Only the jvm's can, see `Socket.registryHasBufferedInput`, and it is
-	 * asked dynamically for the same reason.
+	 * asked through its type, not dynamically, since the registry asks every
+	 * TLS session on every pump.
 	 */
 	public function registryHasBufferedInput():Bool {
 		#if (java || jvm)
@@ -788,14 +789,15 @@ class WebSocket #if !nodejs implements IPollableSocket #end {
 			return false;
 		}
 
-		var holder:Dynamic = __socket;
-		var buffered:Dynamic = try {
-			holder.hasBufferedInput();
+		var tls = Std.downcast((__socket : sys.net.Socket), crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		if (tls == null) {
+			return false;
+		}
+		return try {
+			tls.hasBufferedInput();
 		} catch (e:Dynamic) {
 			false;
 		}
-
-		return buffered == true;
 		#else
 		return false;
 		#end

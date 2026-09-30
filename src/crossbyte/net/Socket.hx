@@ -2608,25 +2608,28 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	/**
 		Whether the TLS layer is holding bytes `select` cannot see.
 
-		Asked dynamically rather than through the jvm socket's type: naming
-		`JvmSslSocket` here pulls `java.nio` into the init-macro context and the
-		build fails on "cannot access the java package while in a macro". The
-		same reason `alpnProtocol` asks the way it does.
+		Asked through the jvm socket's type. It was asked dynamically, since
+		naming `JvmSslSocket` pulls `java.nio` into the macro context, where
+		Socket is typed too and the build fails on "cannot access the java
+		package while in a macro"; but the registry asks every TLS socket this
+		on every pump, and at 2,001 idle ones the dynamic call cost 150 to 245
+		us a pump. Kept from the macro context instead, where no socket runs.
 	**/
 	@:noCompletion public function registryHasBufferedInput():Bool {
-		#if (java || jvm)
+		#if ((java || jvm) && !macro)
 		if (!secure || __socket == null) {
 			return false;
 		}
 
-		var holder:Dynamic = __socket;
-		var buffered:Dynamic = try {
-			holder.hasBufferedInput();
+		var tls = Std.downcast(__socket, crossbyte._internal.socket._jvm.JvmSsl.JvmSslSocket);
+		if (tls == null) {
+			return false;
+		}
+		return try {
+			tls.hasBufferedInput();
 		} catch (e:Dynamic) {
 			false;
 		}
-
-		return buffered == true;
 		#else
 		return false;
 		#end
