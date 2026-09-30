@@ -35,6 +35,29 @@ class SchemaMigratorTest extends utest.Test {
 		Assert.equals("CREATE TABLE c (id INTEGER)", connection.executed[3]);
 	}
 
+	/**
+		Versions stamped with a date keep their order.
+
+		The sort subtracted one version from another, and on neko a difference
+		past 2^30 is not an Int it can pass back to its native sort, which read
+		it as "less": a history numbered by date ran out of order there.
+	**/
+	public function testDateStampedVersionsApplyInOrder():Void {
+		var connection = new FakeConnection();
+		var migrator = __migrator(connection);
+
+		migrator.addAll([
+			Migration.ofSql(2026093002, "later", "CREATE TABLE later (id INTEGER)"),
+			Migration.ofSql(1, "first", "CREATE TABLE first (id INTEGER)"),
+			Migration.ofSql(2026093001, "earlier", "CREATE TABLE earlier (id INTEGER)")
+		]);
+
+		var report = migrator.migrate(connection);
+
+		Assert.same([1, 2026093001, 2026093002], report.applied);
+		Assert.same([1, 2026093001, 2026093002], __recordedVersions(connection));
+	}
+
 	public function testSecondRunAppliesNothing():Void {
 		var connection = new FakeConnection();
 
