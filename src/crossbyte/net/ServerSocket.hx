@@ -185,6 +185,15 @@ class ServerSocket extends EventDispatcher {
 		return true;
 	}
 
+	/**
+		The backlog `listen()` asks for when given none: more than any system
+		grants, so the system's own maximum is what applies -- 200 on a client
+		edition of Windows, `somaxconn` on Linux, whichever value is asked.
+		`0x7FFFFFF` rather than the largest Int, which neko's 31-bit integers
+		cannot carry: `listen()` threw there, so no server could start.
+	**/
+	@:noCompletion private static inline var DEFAULT_BACKLOG:Int = 0x7FFFFFF;
+
 	@:noCompletion private var __serverSocket:#if nodejs NodeServer #else Socket #end;
 	@:noCompletion private var __closed:Bool;
 	@:noCompletion private var __cbInstance:CrossByte;
@@ -680,7 +689,7 @@ class ServerSocket extends EventDispatcher {
 			if (backlog < 0) {
 				throw new RangeError("The supplied index is out of bounds.");
 			} else if (backlog == 0) {
-				backlog = 0x7FFFFFFF;
+				backlog = DEFAULT_BACKLOG;
 			}
 
 			#if nodejs

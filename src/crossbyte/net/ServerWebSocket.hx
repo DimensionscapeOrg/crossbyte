@@ -653,7 +653,7 @@ class ServerWebSocket extends ServerSocket {
 		if (backlog < 0) {
 			throw new RangeError("The supplied index is out of bounds.");
 		} else if (backlog == 0) {
-			backlog = 0x7FFFFFF;
+			backlog = ServerSocket.DEFAULT_BACKLOG;
 		}
 
 		#if nodejs

@@ -242,6 +242,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.net.SocketRetentionTest());
 		runner.addCase(new crossbyte.net.NameLookupTest());
 		runner.addCase(new crossbyte.net.ServerSocketAcceptTest());
+		runner.addCase(new crossbyte.net.ServerSocketBacklogTest());
 		// Deliberately unguarded: the exact-buffer read-loop hang it protects
 		// against lives on the interpreter, where sockets cannot be made
 		// non-blocking. Guarding it to cpp would run it only where the bug
