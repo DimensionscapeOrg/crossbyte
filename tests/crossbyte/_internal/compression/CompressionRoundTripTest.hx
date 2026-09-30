@@ -6,6 +6,8 @@ import crossbyte.io.ByteArray;
 import crossbyte.utils.CompressionAlgorithm;
 import utest.Assert;
 import crossbyte._internal.lz4.Lz4;
+import crossbyte._internal.deflatex.Deflater;
+import crossbyte._internal.deflatex.Inflater;
 import crossbyte._internal.deflatex.HuffmanTree;
 import crossbyte._internal.deflatex.HuffmanTable;
 import crossbyte.test.Require;
@@ -314,6 +316,58 @@ class CompressionRoundTripTest extends utest.Test {
 
 		// And zero still means no limit, which every existing caller relies on.
 		Assert.equals(BOMB_SIZE, Lz4.decompress(packed).length);
+	}
+
+	/**
+	 * Inflating costs the inflate and nothing more.
+	 *
+	 * `Inflater` delegates to `haxe.zip.InflateImpl`, and beside that it kept a
+	 * decoder of its own nothing called, whose 32K-entry window every `new
+	 * Inflater()` still allocated and cleared, and a CRC of every result that
+	 * only gzip reads. An 846-byte game message cost 96 us to inflate on Node,
+	 * 66 of them in the constructor; on eval it was 2.4 times the inflate
+	 * itself. Timed against the same inflate done directly, interleaved, so
+	 * load on the machine lands on both sides.
+	 */
+	public function testInflatingCostsNoMoreThanTheInflate():Void {
+		var message:Bytes = Bytes.alloc(846);
+		for (i in 0...message.length) {
+			message.set(i, (i * 13 + (i >> 4)) & 0xFF);
+		}
+		var packed:Bytes = Deflater.apply(message);
+
+		var viaInflater:Float = 0;
+		var direct:Float = 0;
+		for (round in 0...6) {
+			var started:Float = haxe.Timer.stamp();
+			for (i in 0...40) {
+				Inflater.apply(packed, 1 << 20);
+			}
+			viaInflater += haxe.Timer.stamp() - started;
+
+			started = haxe.Timer.stamp();
+			for (i in 0...40) {
+				inflateDirectly(packed);
+			}
+			direct += haxe.Timer.stamp() - started;
+		}
+
+		Assert.isTrue(viaInflater < direct * 1.6, "Inflater took " + viaInflater + "s against " + direct + "s for the inflate alone");
+	}
+
+	/** What `Inflater.decompress` does, with nothing else. **/
+	private function inflateDirectly(packed:Bytes):Bytes {
+		var inflate = new haxe.zip.InflateImpl(new haxe.io.BytesInput(packed), false, false);
+		var output = new haxe.io.BytesBuffer();
+		var buffer = Bytes.alloc(8192);
+		while (true) {
+			var read = inflate.readBytes(buffer, 0, buffer.length);
+			output.addBytes(buffer, 0, read);
+			if (read < buffer.length) {
+				break;
+			}
+		}
+		return output.getBytes();
 	}
 
 	public function testUncompressCarriesTheLimitIntoTheLz4Decoder():Void {

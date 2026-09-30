@@ -1220,6 +1220,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Inflating deflate or gzip no longer builds a decoder nothing uses.
+  `Inflater` has decoded through `haxe.zip.InflateImpl` all along, but every
+  call still allocated and cleared a 32K-entry window for a decoder of its
+  own that nothing called, and computed a CRC of every result that only
+  gzip reads, as `Deflater` did of every input. An 846-byte game message
+  took 115 us to inflate on Node and takes 28 us.
 - Brotli compression costs in proportion to what it compresses. Every call
   built a ring buffer for a 4 MB window -- 2^23 entries for a two-byte body
   -- and allocated and cleared a 2^17-entry hash table, so a server
