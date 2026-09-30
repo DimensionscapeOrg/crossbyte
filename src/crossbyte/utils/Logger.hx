@@ -218,7 +218,32 @@ class Logger {
 			return;
 		}
 
-		__emit(line);
+		__emit(line, (recordLevel : Int) >= (LogLevel.WARN : Int));
+	}
+
+	#if !(js && !nodejs)
+	// Whether a record has gone to stdout since it was last flushed. Set by
+	// whichever thread logs and cleared before each flush, so a race costs a
+	// flush a frame early or late, never a record.
+	@:noCompletion private static var __unflushed:Bool = false;
+	#end
+
+	/**
+		Flushes stdout if a record went to it since the last flush. The runtime
+		calls this once a frame, and as it exits; a warning or an error is
+		flushed as it is written.
+
+		hxcpp flushes `Sys.println` only to a console now: to a pipe or a file
+		a flush per line is a syscall per line. Records to stdout are flushed
+		here instead, once for however many a frame wrote.
+	**/
+	@:noCompletion public static inline function __flushStdout():Void {
+		#if !(js && !nodejs)
+		if (__unflushed) {
+			__unflushed = false;
+			Sys.stdout().flush();
+		}
+		#end
 	}
 
 	@:noCompletion private static function __formatText(recordLevel:LogLevel, category:Null<String>, message:String, fields:Map<String, String>, time:Float):String {
@@ -384,7 +409,7 @@ class Logger {
 		return value < 10 ? "0" + value : Std.string(value);
 	}
 
-	@:noCompletion private static function __emit(line:String):Void {
+	@:noCompletion private static function __emit(line:String, urgent:Bool = false):Void {
 		var target = sink;
 		if (target != null) {
 			target(line);
@@ -398,6 +423,13 @@ class Logger {
 		js.Browser.console.log(line);
 		#else
 		Sys.println(line);
+		if (urgent) {
+			// A warning or an error is often the last thing a process says.
+			__unflushed = false;
+			Sys.stdout().flush();
+		} else {
+			__unflushed = true;
+		}
 		#end
 	}
 }

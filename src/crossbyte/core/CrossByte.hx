@@ -995,6 +995,9 @@ final class CrossByte extends EventDispatcher {
 	#end
 
 	@:noCompletion private function __flushHeld():Void {
+		// Once a frame, and as the runtime exits: what was logged to stdout.
+		Logger.__flushStdout();
+
 		if (__flushingPass || __passFlushAt >= __passFlushes.length) {
 			return;
 		}

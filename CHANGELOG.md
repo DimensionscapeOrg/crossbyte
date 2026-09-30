@@ -1609,6 +1609,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A record `Logger` writes to stdout reaches a pipe or a file within a
+  frame, and a warning or an error at once. The hxcpp fork's develop line
+  flushes `Sys.println` only to a console, a flush per line being a syscall
+  per line, so natively a server's log piped to a supervisor arrived when a
+  buffer filled or the process ended, and not at all after a crash: a
+  record logged four seconds before exit arrived at it. The runtime flushes
+  what was logged once a frame, one flush however many records the frame
+  wrote.
 - On Linux and macOS, a process started while a server holds a connection
   does not inherit the connection, so closing it ends it. A server accepts
   through CrossByte's own `crossbyte_socket_accept`, which set no
