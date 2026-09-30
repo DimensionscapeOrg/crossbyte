@@ -66,6 +66,9 @@ class PortableSuite {
 		#if !(js && !nodejs)
 		runner.addCase(new crossbyte.net.LocalAddressTest());
 		#end
+		// The host a WebSocket client dials, IPv6 included; on Node a session
+		// over the IPv6 loopback too.
+		runner.addCase(new crossbyte.net.WebSocketIPv6Test());
 		// A TLS WebSocket server and a client that has to decide whether to
 		// trust it, over loopback. Node only: a page can neither listen nor
 		// choose what its own WebSocket trusts.
