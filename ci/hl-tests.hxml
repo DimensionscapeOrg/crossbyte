@@ -1,0 +1,16 @@
+# The whole suite on HashLink.
+#
+# hl-ver says which HashLink the bytecode is for. Haxe 4.3 assumes 1.12, and
+# haxe.atomic -- which crossbyte.utils.Random uses -- will not compile for hl
+# below 1.13, so without this the build stops inside the standard library with
+# "Atomic operations require HL 1.13+". The runtime must be 1.13 or later.
+#
+# Run from the repository root, where the suite's resources are found:
+#   hl export/hl/CrossByteTests.hl
+-cp src
+-cp tests
+-lib utest
+-D hl-ver=1.13.0
+-main TestMain
+--hl export/hl/CrossByteTests.hl
+--macro crossbyte.test.SuiteCoverage.check()
