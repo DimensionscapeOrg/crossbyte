@@ -1276,6 +1276,33 @@ class SQLiteNativeTest extends utest.Test {
 		connection.close();
 	}
 
+	public function testCacheSizeSaysWhatSQLiteSays():Void {
+		// cacheSize was a UInt, and SQLite gives a cache size in KiB as a
+		// negative number, its own default is -2000, about 2 MB. -4096 set
+		// was written as 4294963200, which SQLite read as 0, and a negative
+		// size read back as four billion pages.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		// As open() leaves it: 2000 pages, as AIR's does.
+		var size:Float = connection.cacheSize;
+		Assert.equals(2000.0, size);
+
+		connection.cacheSize = -4096;
+		size = connection.cacheSize;
+		Assert.equals(-4096.0, size);
+		Assert.equals(-4096, Std.int(Reflect.field(connection.request("PRAGMA cache_size").next(), "cache_size")));
+
+		// Set as SQLite itself keeps it, and read back as such.
+		connection.request("PRAGMA cache_size = -2000");
+		size = connection.cacheSize;
+		Assert.equals(-2000.0, size);
+
+		connection.cacheSize = 500;
+		size = connection.cacheSize;
+		Assert.equals(500.0, size);
+		connection.close();
+	}
+
 	public function testCodeTheWorkerRunsCanAskTheConnection():Void {
 		// An itemClass is made on the worker, and its setters run there: one
 		// that asks the connection is answered at once, rather than queued
