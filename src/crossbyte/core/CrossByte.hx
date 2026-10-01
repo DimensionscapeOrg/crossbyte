@@ -622,9 +622,65 @@ final class CrossByte extends EventDispatcher {
 		}
 	}
 
-	@:noCompletion public function pump(delta:Float, socketTimeout:Float = 0.0):Void {
+	/**
+		Runs one frame of this runtime: what other threads posted, the timers
+		due once `delta` more seconds have passed, a `TickEvent` carrying
+		`delta`, the sockets -- waiting up to `socketTimeout` seconds for one
+		to be ready, or for something to be posted -- and what all of that
+		asked to send.
+
+		For a runtime that does not loop by itself. A `HostApplication`'s
+		host calls it through `HostApplication.advance`, from whichever
+		thread it runs on. A `MainLoopType.CUSTOM` loop body calls it on the
+		runtime's own thread, each time round:
+
+		```haxe
+		var last:Float = haxe.Timer.stamp();
+		var runtime:CrossByte = CrossByte.make(CUSTOM(() -> {
+			var now:Float = haxe.Timer.stamp();
+			CrossByte.current().pump(now - last, 0.005);
+			last = now;
+			// ...and whatever else the loop is for.
+		}));
+		```
+
+		The wait is the only one `pump` makes: a frame of work with no socket
+		ready and nothing posted ends as soon as its work is done, so a
+		custom loop that wants a steady rate waits the rest itself. On
+		JavaScript there is nothing to wait in, and `socketTimeout` is
+		ignored.
+
+		@param delta Seconds since the last frame, by which the timers and the
+		       tick advance. Pass what really elapsed, or timers fire early or
+		       late.
+		@param socketTimeout Seconds the sockets may be waited on; `0`, the
+		       default, looks at them without waiting.
+		@throws IllegalOperationError On a runtime that runs its own loop,
+		        `DEFAULT` or `POLL`, whose frames are its own; or on a
+		        `CUSTOM` runtime from any thread but its own.
+	**/
+	public function pump(delta:Float, socketTimeout:Float = 0.0):Void {
 		if (!__usesHostLoop) {
-			throw "CrossByte.pump(delta) is only available for host-driven application instances.";
+			// A custom loop body's frame. Its loop bound the thread and
+			// dispatched INIT before calling the body, and finishes the exit
+			// once the body returns, so this does only the frame. pump used
+			// to refuse it, and everything else that runs a frame is private,
+			// so a custom loop could run nothing but itself.
+			if (!__loopType.match(CUSTOM(_))) {
+				throw new IllegalOperationError("CrossByte.pump() runs a frame of a runtime that does not loop by itself -- a HostApplication's, or a MainLoopType.CUSTOM body's -- and this one runs its own.");
+			}
+			if (!__isOwnThread()) {
+				throw new IllegalOperationError("A MainLoopType.CUSTOM runtime is pumped by its own loop body, on its own thread.");
+			}
+			if (!__getRunning()) {
+				return;
+			}
+			try {
+				__stepHost(delta, socketTimeout);
+			} catch (error:Dynamic) {
+				__uncaught(error, UncaughtErrorEvent.LOOP);
+			}
+			return;
 		}
 
 		#if cpp
@@ -1440,8 +1496,10 @@ final class CrossByte extends EventDispatcher {
 
 		#if !js
 		// Made here, on the loop's own thread, since the registry is not
-		// thread-safe; see WakeSocket.
-		if (__loopType.match(POLL)) {
+		// thread-safe; see WakeSocket. A custom loop waits in pump's poll
+		// the way the POLL loop waits in its own, and a post has to end that
+		// wait too.
+		if (__loopType.match(POLL) || __loopType.match(CUSTOM(_))) {
 			__armWakeSocket();
 		}
 		#end
