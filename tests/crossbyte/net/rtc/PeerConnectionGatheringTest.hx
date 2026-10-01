@@ -80,6 +80,39 @@ class PeerConnectionGatheringTest extends utest.Test {
 	}
 
 	/**
+		What the class example says: a wildcard bind advertises no address at
+		all, and `LocalAddress` gives it the one to advertise.
+	**/
+	public function testAWildcardBindAdvertisesWhatLocalAddressFinds():Void {
+		if (unsupported()) return;
+
+		var connection = new PeerConnection(true);
+
+		try {
+			connection.bind(0, "0.0.0.0");
+			Assert.equals(0, connection.description().candidates.length, "a wildcard bind advertised an address by itself");
+
+			var found:String = null;
+			crossbyte.net.LocalAddress.primary().then(address -> found = address, _ -> {});
+			pumpUntil(() -> found != null, 3.0);
+
+			if (found == null) {
+				Assert.warn("this machine has no default route to ask about");
+			} else {
+				connection.addLocalCandidate(IceCandidate.host(found, connection.localPort));
+				var candidates = connection.description().candidates;
+				Assert.equals(1, candidates.length);
+				Assert.equals(found, candidates[0].address);
+				Assert.equals(connection.localPort, candidates[0].port);
+			}
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		connection.close();
+	}
+
+	/**
 		The address the server reports becomes a candidate, and one the peer
 		will be told about.
 	**/
