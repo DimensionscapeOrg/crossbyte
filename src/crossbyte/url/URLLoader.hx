@@ -1,6 +1,6 @@
 package crossbyte.url;
 
-// Not built for the browser. It loads over CrossByte's own raw-socket HTTP; a page issues requests through fetch or XMLHttpRequest, which is a separate implementation rather than a gate.
+// Built for every target. Off JavaScript a load runs CrossByte's own client on a pool thread (LoaderRun); on Node and in a browser it runs the platform's (JsHttpClient).
 
 import crossbyte.http.HTTPCancelToken;
 import crossbyte.events.Event;

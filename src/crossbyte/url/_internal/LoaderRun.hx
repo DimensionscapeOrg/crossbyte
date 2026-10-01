@@ -75,9 +75,12 @@ class LoaderRun {
 		try {
 			var request:URLRequest = __request;
 
+			// "Name: value", as HTTPRequestContext.headers promises a backend.
+			// They went as URLRequestHeader.toString() writes them, with no
+			// space, so a backend splitting at ": " as told found no value.
 			var requestHeaders:Array<String> = [];
 			for (header in request.requestHeaders) {
-				requestHeaders.push(header.toString());
+				requestHeaders.push(header.name + ": " + header.value);
 			}
 
 			var requestData:Dynamic = null;

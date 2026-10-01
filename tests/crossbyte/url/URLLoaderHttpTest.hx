@@ -520,6 +520,25 @@ Content-Length: ${body.length}
 		Assert.same(["complete ok", "complete ok"], events);
 	}
 
+	/**
+		A backend is handed the request's headers as `HTTPRequestContext`
+		says, each `"Name: value"`. They came as `URLRequestHeader.toString()`
+		wrote them, `"Name:value"`, so a backend splitting at ": " as told
+		found no value.
+	**/
+	public function testABackendIsHandedHeaderLinesAsItsContractSays():Void {
+		var backend = new HeaderRecordingBackend();
+		HTTPBackendRegistry.register(backend);
+		var request = new URLRequest("http://127.0.0.1/lines");
+		request.httpVersion = HTTPVersion.HTTP_3;
+		request.requestHeaders.push(new URLRequestHeader("X-Test", "yes"));
+		var result = load(request);
+		HTTPBackendRegistry.unregister(backend);
+
+		Assert.isTrue(result.complete, result.error);
+		Assert.same(["X-Test: yes"], backend.lines);
+	}
+
 	#if target.threaded
 	public function testLoadsReuseTheirThreadsAndStayOffTheRuntime():Void {
 		// Every load started a thread of its own and let it end: a hundred
@@ -845,6 +864,24 @@ private class ThreadRecordingBackend implements HTTPBackend {
 	}
 }
 #end
+
+/** Answers every HTTP/3 request at once, keeping the header lines it was handed. */
+private class HeaderRecordingBackend implements HTTPBackend {
+	public var lines:Array<String> = null;
+
+	public function new() {}
+
+	public function supports(version:HTTPVersion):Bool {
+		return version == HTTPVersion.HTTP_3;
+	}
+
+	public function load(context:HTTPRequestContext):Void {
+		lines = context.headers.copy();
+		context.onStatus(200);
+		context.onHeaders(new Map());
+		context.onComplete(Bytes.ofString("ok"));
+	}
+}
 
 typedef URLLoaderHttpResult = {
 	var complete:Bool;
