@@ -267,15 +267,23 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	@:noCompletion private var __sqlThread:Null<Thread> = null;
 	#end
 	// What a cancel() and the work it would stop decide between them, under
-	// __lockRuns(): the statement whose work is running on the connection
-	// now, on the worker, or on whichever thread executes a synchronous
-	// one, for its cancel() to interrupt SQLite only while it is, so it
-	// never stops another statement's work; whether work cancel() stops is
-	// running at all; and whether it has been stopped, so __leave() lets
-	// what runs next run. The lock on cpp is an atomic compare-and-swap, as
-	// Future's: a sys.thread.Mutex taken twice a statement cost the
-	// asynchronous path 15%. Apart from this object: see SQLiteRuns.
-	@:noCompletion private var __runs:SQLiteRuns = new SQLiteRuns();
+	// __lockRuns(). __runLock is that lock on cpp, 0 free and 1 held, taken
+	// by an atomic compare-and-swap, as Future's is: the thread running the
+	// work takes it twice for each statement, for a few instructions.
+	#if cpp
+	@:noCompletion private var __runLock:Int = 0;
+	#end
+	// The statement whose work is running on the connection now, on the
+	// worker, or on whichever thread executes a synchronous one, for its
+	// cancel() to interrupt SQLite only while it is, so that it never stops
+	// another statement's work.
+	@:noCompletion private var __runner:Null<SQLiteStatement> = null;
+	// Whether work that cancel() stops is running: a statement's, or the
+	// connection's own on the worker.
+	@:noCompletion private var __running:Bool = false;
+	// Whether that work has been stopped, so that __leave() lets what runs
+	// next run.
+	@:noCompletion private var __stopping:Bool = false;
 	// On the worker: the statement whose result was left with rows unread
 	// after its last page, until it is read to its end, run again or
 	// cancelled. A cancelled one's result is let go of before the next job,
@@ -910,7 +918,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 			__cancelEpoch++;
 		}
 
-		if (__runs.running) {
+		if (__running) {
 			__stopRunner();
 		} else {
 			__interrupt();
@@ -1582,8 +1590,8 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		} else if (statement.__cancels != epoch) {
 			verdict = ENTER_WITHDRAWN;
 		} else {
-			__runs.runner = statement;
-			__runs.running = true;
+			__runner = statement;
+			__running = true;
 		}
 
 		__unlockRuns();
@@ -1600,7 +1608,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		var current:Bool = job.epoch >= __cancelEpoch;
 
 		if (current) {
-			__runs.running = true;
+			__running = true;
 		}
 
 		__unlockRuns();
@@ -1621,7 +1629,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		interrupt, until `__leave()`.
 	**/
 	@:noCompletion private function __stopRunner():Void {
-		__runs.stopping = true;
+		__stopping = true;
 		#if cpp
 		var native:NativeSQLiteConnection = __native;
 
@@ -1639,7 +1647,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	**/
 	@:noCompletion private inline function __lockRuns():Void {
 		#if cpp
-		if ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __runs.lock) : Int) != 0) {
+		if ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __runLock) : Int) != 0) {
 			__contendRuns();
 		}
 		#elseif !php
@@ -1650,7 +1658,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/** Lets go of `__lockRuns()`: on cpp an atomic store, which publishes what was written under it. **/
 	@:noCompletion private inline function __unlockRuns():Void {
 		#if cpp
-		untyped __cpp__("_hx_atomic_store(&{0}, 0)", __runs.lock);
+		untyped __cpp__("_hx_atomic_store(&{0}, 0)", __runLock);
 		#elseif !php
 		__sqlMutex.release();
 		#end
@@ -1665,7 +1673,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	@:noCompletion private function __contendRuns():Void {
 		var tries:Int = 0;
 
-		while ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __runs.lock) : Int) != 0) {
+		while ((untyped __cpp__("_hx_atomic_compare_exchange(&{0}, 0, 1)", __runLock) : Int) != 0) {
 			cpp.vm.Gc.safePoint();
 
 			if (++tries >= 64) {
@@ -1679,11 +1687,11 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	/** After work `__enter` or `__admit` let run: nothing is running now. **/
 	@:noCompletion private function __leave():Void {
 		__lockRuns();
-		__runs.runner = null;
-		__runs.running = false;
+		__runner = null;
+		__running = false;
 
-		if (__runs.stopping) {
-			__runs.stopping = false;
+		if (__stopping) {
+			__stopping = false;
 			#if cpp
 			var native:NativeSQLiteConnection = __native;
 
@@ -1721,7 +1729,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	@:noCompletion private function __cancelStatement(statement:SQLiteStatement):Bool {
 		__lockRuns();
 		statement.__cancels++;
-		var running:Bool = __runs.runner == statement;
+		var running:Bool = __runner == statement;
 
 		if (running) {
 			__stopRunner();
