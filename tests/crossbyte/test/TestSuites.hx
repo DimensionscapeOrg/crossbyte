@@ -342,11 +342,16 @@ class TestSuites {
 		// Node's event loop, which only Node has; reached through PortableSuite.
 		#if nodejs
 		runner.addCase(new crossbyte.net.NodeListenerFailureTest());
+		// Registered above for the native targets; one case is Node's alone.
+		runner.addCase(new crossbyte.net.ServerWebSocketTLSTest());
 		#end
 		runner.addCase(new crossbyte.net.WebSocketTest());
 		// Unguarded here for the interpreter above all, where none of the
 		// server suite runs and every upgrade used to throw.
 		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeTest());
+		// Sessions still upgrading when the server stops, drains or closes,
+		// and what it counts. Also in PortableSuite, for Node.
+		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeLifecycleTest());
 		// Also in PortableSuite: the host a page's Socket dials is read the
 		// same way.
 		runner.addCase(new crossbyte.net.WebSocketIPv6Test());

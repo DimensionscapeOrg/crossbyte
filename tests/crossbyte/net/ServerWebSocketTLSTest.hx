@@ -200,6 +200,107 @@ class ServerWebSocketTLSTest extends utest.Test {
 		}, async);
 	}
 
+	/**
+		A peer that connects and never starts TLS is dropped at
+		`handshakeTimeout`, and counted in `handshakeFailures`.
+
+		Node's TLS server was never given `handshakeTimeout`, so it waited its
+		own default of two minutes; and natively the session was closed but
+		the failure never counted.
+	**/
+	@:timeout(20000)
+	public function testASilentPeerIsDroppedAtHandshakeTimeout(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+			server.handshakeTimeout = 0.3;
+		}, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			NetPump.until(() -> __ended(peer), 5.0, function(_) {
+				Assert.isTrue(peer.ended, "a peer that never started TLS was not dropped at handshakeTimeout");
+				Assert.equals(1, server.handshakeFailures, "the handshake given up on was not counted");
+				peer.close();
+				finish();
+			});
+		}, async);
+	}
+
+	/**
+		A TLS handshake is given the whole of `handshakeTimeout`, not the
+		three seconds an accepted session used to give itself whatever the
+		server said.
+	**/
+	@:timeout(20000)
+	public function testATlsHandshakeIsGivenAllOfHandshakeTimeout(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+			server.handshakeTimeout = 5.0;
+		}, function(server, sessions, finish) {
+			var peer = new WirePeer(server.localPort);
+			NetPump.wait(3.6, function() {
+				Assert.isFalse(__ended(peer), "a handshake was given up on before handshakeTimeout");
+				NetPump.until(() -> __ended(peer), 4.0, function(_) {
+					Assert.isTrue(peer.ended, "a handshake was not given up on at handshakeTimeout");
+					peer.close();
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	#if nodejs
+	/**
+		A TLS handshake that finishes after `stopAccepting()` opens no
+		session. Node carries a handshake in flight on past a server's close,
+		and hands the connection over when it is done: it was taken on and
+		upgraded, on a server that had stopped.
+	**/
+	@:timeout(20000)
+	public function testATlsHandshakeFinishingAfterStopAcceptingOpensNothing(async:Async):Void {
+		var fixture = TLSTestFixture.trusted();
+		if (fixture == null) {
+			Assert.warn("no certificate toolchain on this machine; the case did not run");
+			async.done();
+			return;
+		}
+
+		__serve(function(server) {
+			server.cert = {certificate: fixture.certificate, key: fixture.key};
+		}, function(server, sessions, finish) {
+			// Stopped the moment the connection arrives, before TLS has begun.
+			var listener:Dynamic = @:privateAccess server.__webServerSocket;
+			listener.on("connection", function(_) server.stopAccepting());
+
+			TlsProbe.run(server.localPort, {upgrade: true}, function(outcome) {
+				NetPump.wait(0.2, function() {
+					Assert.isFalse(__upgraded(outcome), "a server that had stopped upgraded a session: " + outcome.status);
+					Assert.equals(0, sessions.length, "a session opened on a server that had stopped");
+					finish();
+				});
+			});
+		}, async);
+	}
+	#end
+
+	/** Whether `peer` has been hung up on, reading what has arrived. **/
+	private static function __ended(peer:WirePeer):Bool {
+		peer.poll();
+		return peer.ended;
+	}
+
 	/** Whether the server answered a probe's upgrade with 101. **/
 	private static function __upgraded(outcome:TlsProbe.TlsProbeOutcome):Bool {
 		return outcome.status != null && outcome.status.indexOf(" 101 ") >= 0;
