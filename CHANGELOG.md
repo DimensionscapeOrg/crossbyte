@@ -1969,6 +1969,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ByteArray.fromBytes`, and assigning a `Bytes` to a `ByteArray`, say
+  what they make: a ByteArray over the `Bytes`' own storage, where a change
+  through either shows in the other until the ByteArray grows -- on every
+  target but the interpreter, which copies. The doc said "a new
+  ByteArray".
 - `ByteArrayOutput` grows as its doc says, in every writer. The
   fixed-size ones -- byte, short, int, float, double, bytes -- only
   checked, outside `final`, and threw, so a `new ByteArrayOutput()` could
