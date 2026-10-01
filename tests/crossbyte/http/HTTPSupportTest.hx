@@ -353,6 +353,28 @@ class HTTPSupportTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testATryFilesEntryCanNameTheRequestPath():Void {
+		// "$uri.html" -- the request path with .html added, as clean URLs are
+		// served -- was looked for as a file named "$uri.html". The entries
+		// after the first two name files, and $uri in them is the path.
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("about.html").save(ByteArray.fromBytes(Bytes.ofString("about")));
+			var cfg = new HTTPServerConfig("127.0.0.1", 0, root);
+			cfg.tryFiles = ["$uri", "$uri/", "$uri.html"];
+			cfg.validate();
+
+			var decision = RewriteEngine.decide(cfg, "/about", "", "GET", new StringMap<String>());
+			Require.notNull(decision, "$uri.html was not tried as the request path");
+			Assert.equals("/about.html", decision.finalPath);
+			Assert.isNull(RewriteEngine.decide(cfg, "/missing", "", "GET", new StringMap<String>()));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testBackrefExpansionDoesNotReprocessCapturedText():Void {
 		// Expansion used to run one String.replace per group, so a group whose
 		// captured value itself contained "$2" had that "$2" rewritten by the

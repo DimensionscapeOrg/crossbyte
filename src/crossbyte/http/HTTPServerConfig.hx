@@ -326,6 +326,10 @@ class HTTPServerConfig {
 		```haxe
 		config.tryFiles = ["$uri", "$uri/", "/index.html"];
 		```
+
+		In an entry after the first two, `$uri` is the request path, so
+		`"$uri.html"` serves `/about` from `about.html`, the way clean URLs
+		are served. It was looked for as a file named `$uri.html`.
 	**/
 	public var tryFiles:Array<String>;
 

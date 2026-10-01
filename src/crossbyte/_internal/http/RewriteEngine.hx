@@ -118,11 +118,20 @@ class RewriteEngine {
 				continue;
 			}
 
-			if (isFile(cfg, c)) {
-				return d(c, false, true, q, false);
+			// `$uri` in a later entry is the request path, as in nginx's
+			// try_files: "$uri.html" serves /about from about.html. It was
+			// looked for as a file named "$uri.html". Settled again, since a
+			// path joined to text is a new path.
+			var entry:Null<String> = c.indexOf("$uri") >= 0 ? normalize(StringTools.replace(c, "$uri", orig)) : c;
+			if (entry == null) {
+				continue;
 			}
 
-			var idx:String = dirIndex(cfg, c);
+			if (isFile(cfg, entry)) {
+				return d(entry, false, true, q, false);
+			}
+
+			var idx:String = dirIndex(cfg, entry);
 			if (idx != null) {
 				return d(idx, false, true, q, false);
 			}
