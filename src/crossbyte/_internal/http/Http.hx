@@ -1596,7 +1596,7 @@ class Http {
 		}
 	}
 
-	private inline function __encodeKV(k:String, v:String):String {
+	private static inline function __encodeKV(k:String, v:String):String {
 		return StringTools.urlEncode(k) + "=" + StringTools.urlEncode(v);
 	}
 
@@ -1625,7 +1625,13 @@ class Http {
 		return parsed;
 	}
 
-	private function __buildQuery(obj:Dynamic):String {
+	/**
+		`requestData` encoded as a form: a GET's or HEAD's query, any other
+		method's body. Shared with the HTTP/2 backend, which never read
+		`requestData` and sent a form as nothing at all.
+	**/
+	@:allow(crossbyte.http.HTTP2Backend)
+	private static function __buildQuery(obj:Dynamic):String {
 		// A URLVariables is a StringMap at run time, and its fields are the
 		// map's, not the caller's: a POST of one went out with an empty body.
 		var form:Null<String> = crossbyte.url.URLVariables.encodeData(obj);
@@ -1643,7 +1649,7 @@ class Http {
 		return parts.join("&");
 	}
 
-	private inline function buildQueryAdd(parts:Array<String>, k:String, v:Dynamic):Void {
+	private static function buildQueryAdd(parts:Array<String>, k:String, v:Dynamic):Void {
 		if (v == null) {
 			return;
 		}

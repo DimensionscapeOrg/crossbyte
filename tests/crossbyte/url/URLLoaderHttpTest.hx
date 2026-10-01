@@ -148,10 +148,10 @@ class URLLoaderHttpTest extends utest.Test {
 			var body:Bytes = Bytes.alloc(coded.length);
 			body.blit(0, coded, 0, coded.length);
 
-			var fixture = serveBytes('HTTP/1.1 200 OK
-Content-Encoding: deflate
-Content-Length: ${body.length}
-
+			var fixture = serveBytes('HTTP/1.1 200 OK
+Content-Encoding: deflate
+Content-Length: ${body.length}
+
 ', body);
 			var result = load(new URLRequest('http://127.0.0.1:${fixture.port}/coded'));
 			fixture.waitDone();
@@ -272,6 +272,56 @@ Content-Length: ${body.length}
 		Assert.isTrue(fixture.requests[0].body.indexOf("field=a%20b") >= 0);
 		Assert.isTrue(fixture.requests[0].body.indexOf("ok=false") >= 0);
 	}
+
+	#if !eval
+	/**
+		Form data reaches the server over HTTP/2 as it does over HTTP/1.1: a
+		GET's as its query, a POST's as a form body. The HTTP/2 backend never
+		read `requestData`, so a `URLVariables` or an object went nowhere,
+		a POST with an empty body and no Content-Type, a GET with no query,
+		though setting `httpVersion` is all a request is told to change.
+
+		Not on eval, where HTTP/2 is refused: see `HTTP2Backend.isSupported`.
+	**/
+	public function testFormDataGoesOutOverHttp2AsOverHttp11():Void {
+		var config = new crossbyte.http.HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		config.middleware = [
+			(handler, next) -> handler.respond(200, "text/plain",
+				handler.method + " ?" + handler.queryString + " [" + handler.getHeader("content-type") + "] " + handler.requestText)
+		];
+		var server = new crossbyte.http.HTTPServer(config);
+		pumpUntil(() -> server.localPort != 0);
+
+		var answers:Array<String> = [];
+		for (version in [HTTPVersion.HTTP_1_1, HTTPVersion.HTTP_2]) {
+			var form = new URLVariables();
+			form.set("user", "alice");
+			form.set("score", "42");
+			var post = new URLRequest('http://127.0.0.1:${server.localPort}/form');
+			post.httpVersion = version;
+			post.method = URLRequestMethod.POST;
+			post.data = form;
+			var posted = load(post);
+
+			var get = new URLRequest('http://127.0.0.1:${server.localPort}/form?page=2');
+			get.httpVersion = version;
+			get.data = {user: "bob"};
+			var got = load(get);
+
+			// Key order is the map's, which differs by target.
+			for (field in ["user=alice", "score=42"]) {
+				Assert.isTrue(posted.data != null && posted.data.indexOf(field) >= 0, '$version: $field is not in the POST: ${posted.data} ${posted.error}');
+			}
+			Assert.isTrue(posted.data != null && StringTools.startsWith(posted.data, "POST ? [application/x-www-form-urlencoded"),
+				'$version: the POST was not a form: ${posted.data}');
+			Assert.equals("GET ?page=2&user=bob [null] ", got.data, '$version: the GET did not carry its fields as its query');
+		}
+
+		server.close();
+		crossbyte._internal.http.h2.H2ConnectionPool.closeAll();
+	}
+	#end
 
 	public function testRelativeRedirectNormalizesDotSegments():Void {
 		var fixture = serveRequests(request -> {

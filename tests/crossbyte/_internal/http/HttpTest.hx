@@ -494,8 +494,7 @@ class HttpTest extends utest.Test {
 	}
 
 	public function testBuildQueryEncodesScalarsArraysAndNestedObjects():Void {
-		var http = new Http("http://example.com/");
-		var query = http.__buildQuery({
+		var query = Http.__buildQuery({
 			search: "hello world",
 			page: 2,
 			active: true,
