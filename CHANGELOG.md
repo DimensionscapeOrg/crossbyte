@@ -1836,6 +1836,14 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- On Linux, a datagram socket bound to port 0 could be given a port
+  another socket already held, and one of the two then received the
+  other's datagrams: hxcpp set SO_REUSEADDR on every socket it bound, and
+  Linux lets two datagram sockets that both set it share a port. 25 of a
+  thousand game clients connecting over reliable UDP never connected, each
+  sharing a port with another; any local process could have bound a UDP
+  server's port too. Fixed in the hxcpp fork's production (7ddf550b),
+  which now sets it on stream sockets only. Windows never set it.
 - On Node, logging no longer syncs stdout. The runtime's flush after each
   frame that logged, and every warning and error, called
   `Sys.stdout().flush()`, which is `fs.fsyncSync` there: Linux refuses it

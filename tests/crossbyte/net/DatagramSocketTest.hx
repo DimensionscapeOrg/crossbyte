@@ -37,6 +37,45 @@ class DatagramSocketTest extends utest.Test {
 	}
 
 	/**
+		A port one datagram socket holds is not given to another. hxcpp set
+		SO_REUSEADDR on every socket it bound, and on Linux two datagram
+		sockets that both set it may share a port: a bind to port 0 handed out
+		ports already in use, 25 of a thousand game clients over reliable
+		UDP shared one with another client, and never connected, and any
+		local process could bind a server's port as well. Fixed in hxcpp's
+		socket_bind (the fork's production); Windows never set it. The other
+		sys runtimes' own binds still do, and Node's is asynchronous.
+	**/
+	public function testAPortHeldIsNotGivenToAnother():Void {
+		#if (cpp || jvm)
+		if (!DatagramSocket.isSupported) {
+			Assert.isFalse(DatagramSocket.isSupported);
+			return;
+		}
+
+		var holder = new DatagramSocket();
+		var second = new DatagramSocket();
+		try {
+			holder.bind(0, "127.0.0.1");
+			var port:Int = holder.localPort;
+			var refused = false;
+			try {
+				second.bind(port, "127.0.0.1");
+			} catch (_:Dynamic) {
+				refused = true;
+			}
+			Assert.isTrue(refused, "a second socket was bound to port " + port + ", which another already held");
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+		try second.close() catch (_:Dynamic) {}
+		try holder.close() catch (_:Dynamic) {}
+		#else
+		Assert.pass();
+		#end
+	}
+
+	/**
 		A socket's own address is asked of the system once, and kept while
 		nothing can change it. Every read of `localAddress` or `localPort` was a
 		getsockname() call, and a reliable session reads both for every message
