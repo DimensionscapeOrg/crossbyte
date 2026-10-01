@@ -39,7 +39,9 @@ import sys.net.Host;
 	The accepted socket mode is controlled by `socketMode`, allowing the server to
 	accept either datagram-style or stream-style sessions.
 	@event close Dispatched when the server socket is closed.
-	@event connect Dispatched when a remote reliable session completes its handshake.
+	@event connect Dispatched when a session a peer opened completes its
+	       handshake. A session this server dials, with `connect` or
+	       `connectRelayed`, dispatches `Event.CONNECT` itself instead.
 **/
 class ReliableDatagramServerSocket extends EventDispatcher {
 	/**
@@ -404,10 +406,13 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		reachable on, and a NAT will only hold that mapping open for one socket.
 
 		The returned session is registered with this server, so its replies
-		arrive through the same data pump that feeds accepted sessions. It is
-		reported through `ReliableDatagramSocketConnectEvent.CONNECT` when the
-		handshake completes, exactly as an accepted one is, and it takes
-		`socketMode` for the same reason.
+		arrive through the same data pump that feeds accepted sessions, and it
+		takes `socketMode` as an accepted one does. It is not announced with
+		`ReliableDatagramSocketConnectEvent.CONNECT`, which is for sessions a
+		peer opened -- the caller holds this one already -- and dispatches
+		`Event.CONNECT` itself when the handshake completes, as a
+		`ReliableDatagramSocket` that called `connect()` does. Listen for that
+		on the returned session.
 
 		Requires `listen()`: the server's pump is what routes the replies, so a
 		session dialled from a bound-but-not-listening server would send its
