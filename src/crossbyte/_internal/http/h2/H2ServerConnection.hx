@@ -78,6 +78,11 @@ class H2ServerConnection {
 	 */
 	public var maxResetStreams:Int = DEFAULT_MAX_RESET_STREAMS;
 
+	/**
+	 * Seconds both `maxResetStreams` and `maxControlReplies` are counted
+	 * over. Zero or below ends every window as it starts, so nothing
+	 * accumulates and neither budget can trip.
+	 */
 	public var resetWindowSeconds:Float = DEFAULT_RESET_WINDOW;
 
 	/**

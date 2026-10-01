@@ -905,6 +905,32 @@ class H2ServerTest extends utest.Test {
 		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, failure.code);
 	}
 
+	public function testTheResetWindowAlsoTimesTheControlBudget():Void {
+		// One window measures both budgets, which HTTPServerConfig's
+		// http2ResetWindowSeconds now says: a PING flood is refused within it,
+		// and a window of zero, where every window ends as it starts, lets
+		// nothing accumulate and so refuses neither flood.
+		var flood = new ResetFlood(3, 60.0);
+		flood.connection.maxControlReplies = 3;
+		for (i in 0...8) {
+			flood.connection.receive(frame(H2FrameType.PING, 0, 0, Bytes.alloc(8)));
+		}
+		Require.notNull(flood.failure, "a PING flood inside a 60 s window was not refused");
+		Assert.equals(H2ErrorCode.ENHANCE_YOUR_CALM, flood.failure.code);
+
+		var open = new ResetFlood(3, 0.0);
+		open.connection.maxControlReplies = 3;
+		for (i in 0...8) {
+			open.connection.receive(frame(H2FrameType.PING, 0, 0, Bytes.alloc(8)));
+		}
+		var stream:Int = 1;
+		for (i in 0...8) {
+			open.openThenReset(stream);
+			stream += 2;
+		}
+		Assert.isNull(open.failure, "a zero window held a flood against the peer");
+	}
+
 	public function testAnAcknowledgementDoesNotSpendTheBudget():Void {
 		var out = new Collector();
 		var settings = new H2Settings();
