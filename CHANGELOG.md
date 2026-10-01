@@ -1961,6 +1961,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Timer.fromWallClock` and `toWallClock` convert at the present: the
+  scheduler's time now is the clock's now, and other times follow by the
+  difference. Both counted the scheduler's time on top of when it started,
+  so a runtime that had run for an hour put every wall time an hour out.
+  `Timer.stamp()` with no application throws an `IllegalOperationError`
+  that says so, where it was a null access, natively, in a release
+  build, a crash, and `Timer` on a thread with no runtime throws one, as
+  `CrossByte.current()` does there, where it threw a `String`. The class
+  doc pointed at a `CrossByte.runThread()` that does not exist.
 - `NativeProcess` starts a child process on the jvm. Its support check
   asked for an OS define, which only native builds have, so the jvm
   refused though it can; it asks for threads now. The jvm's `exitCode()`
