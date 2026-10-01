@@ -99,6 +99,41 @@ class ByteArrayIOTest extends utest.Test {
 		Assert.isTrue(input.eof());
 	}
 
+	/**
+		One name, one format. `ByteArray`'s unsigned varint was called
+		`readVarInt`/`writeVarInt`, the names `ByteArrayInput` and
+		`ByteArrayOutput` give ZigZag, so code moved from one class to the
+		other compiled and read every negative number wrong. It is
+		`readVarUInt`/`writeVarUInt` in all three now, and what one class
+		writes the others read.
+	**/
+	public function testVarUIntIsOneFormatInEveryClass():Void {
+		var values:Array<Int> = [0, 1, 0x7F, 0x80, 300, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF];
+
+		var fromByteArray = new ByteArray();
+		for (value in values) {
+			fromByteArray.writeVarUInt(value);
+		}
+		fromByteArray.position = 0;
+		var input:ByteArrayInput = fromByteArray;
+		for (value in values) {
+			var read:Int = input.readVarUInt();
+			Assert.equals(value, read, 'ByteArray wrote ${StringTools.hex(value, 8)}');
+		}
+
+		var fromOutput = new ByteArrayOutput();
+		for (value in values) {
+			fromOutput.writeVarUInt(value);
+		}
+		var bytes:Bytes = fromOutput;
+		var back:ByteArray = ByteArray.fromBytes(bytes);
+		for (value in values) {
+			var read:Int = back.readVarUInt();
+			Assert.equals(value, read, 'ByteArrayOutput wrote ${StringTools.hex(value, 8)}');
+		}
+		Assert.equals(0, back.bytesAvailable);
+	}
+
 	public function testReadBytesDefaultLengthFillsDestination():Void {
 		var input:ByteArrayInput = ByteArray.fromBytes(Bytes.ofString("abcdef"));
 		input.position = 2;
