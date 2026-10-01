@@ -925,7 +925,12 @@ class ServerSocketTLSTest extends utest.Test {
 				var node = new sys.io.Process("node", ["-e", script, Std.string(port)]);
 				launched = true;
 				output = StringTools.trim(node.stdout.readAll().toString());
-				node.exitCode();
+				// On POSIX a missing program still starts a process: the fork
+				// succeeds and the child exits 127 when exec finds nothing to
+				// run. That is no node, as a failed start is on Windows.
+				if (node.exitCode() == 127 && output == "") {
+					launched = false;
+				}
 				node.close();
 			} catch (e:Dynamic) {
 				output = "could not run node: " + Std.string(e);

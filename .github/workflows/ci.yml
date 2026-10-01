@@ -319,6 +319,70 @@ jobs:
       - name: Run system suite
         run: ./export/ci-posix-system/PosixSystemMain
 
+  posix-native:
+    name: Core | Native Suite (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    # The whole native suite, which Native Smoke runs on Windows only. Every
+    # networking class in it, sockets, TLS, HTTP/1.1 and HTTP/2, WebSocket,
+    # reliable UDP, had never run on the systems servers mostly use: the
+    # first Linux run (WSL, 2026-10-01) found a refused connect announced as
+    # CONNECT and then CLOSE, where Windows said ioError. A cold build is
+    # about five minutes on four Linux cores; the Intel macOS runner is
+    # slower, as the crypto job above shows.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          - os: macos-15-intel
+            label: macOS
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Haxe
+        uses: krdlab/setup-haxe@v2
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Install Haxe dependencies
+        run: |
+          haxelib install utest --quiet
+          haxelib git hxcpp ${{ env.HXCPP_REPO }} ${{ env.HXCPP_REF }}
+          haxelib dev crossbyte "$GITHUB_WORKSPACE"
+
+      - name: Bootstrap hxcpp tools
+        run: |
+          set -euo pipefail
+          HXCPP_DIR="$(haxelib path hxcpp | head -n 1)"
+          (cd "$HXCPP_DIR/tools/run" && haxe compile.hxml)
+          (cd "$HXCPP_DIR/tools/hxcpp" && haxe compile.hxml)
+
+      # As Native Smoke keeps one: a run compiles what changed.
+      - name: Point hxcpp at a compiler cache
+        run: echo "HXCPP_COMPILE_CACHE=$RUNNER_TEMP/hxcpp-cache" >> "$GITHUB_ENV"
+
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hxcpp-cache
+          key: hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_REF }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            hxcpp-posix-native-${{ matrix.os }}-${{ env.HXCPP_REF }}-
+
+      - name: Build native suite
+        run: haxe ci/posix-native-tests.hxml
+
+      - name: Run native suite
+        working-directory: export/ci-posix-native
+        run: ./NativeSmokeMain
+
   postgres:
     name: Data | Postgres
     runs-on: ubuntu-latest

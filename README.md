@@ -312,7 +312,7 @@ The repository CI covers:
 - fast interpreter tests
 - generated API documentation
 - hxcpp API audit builds
-- native smoke tests
+- the native suite on Windows, Linux and macOS
 - native sample builds
 - the whole suite on HashLink and Neko, on Windows and Linux (`hl-neko.yml`)
 - sibling extension jobs for the optional native modules
