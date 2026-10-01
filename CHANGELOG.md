@@ -76,6 +76,8 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- `ByteArrayInput.readVarUInt` reads values from 2^31 up, as a negative
+  `Int`, where it threw; check for one where the value is a length.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1932,6 +1934,21 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The varint writers write every value they take. `ByteArray.writeVarInt`
+  and `ByteArrayOutput.writeVarUInt` looped while a signed `v > 0x7F`, so a
+  value with bit 31 set went out as one byte: 0x80000000 read back as 0,
+  and 0xFFFFFFFF as a varint that never ended. `ByteArrayOutput.writeVarInt`
+  sent every ZigZag value from 2^30 up in magnitude that way, and
+  `varUIntSize` sized them at one byte. The readers refuse a value past 32
+  bits, where they shifted the extra bits off the top and read 2^32 + 1 as
+  1: a `RangeError` from a `ByteArray`, an `IOError` from
+  `ByteDelta.decode`, "varuint overflow" from a `ByteArrayInput`. And
+  `ByteArrayInput.readVarUInt` reads the whole unsigned range it is
+  documented for, where it stopped at 2^31 - 1, so `readVarInt` reads every
+  `Int` back. A varint a `ByteArray` holds only part of leaves its
+  `position` where it was, so it can be read again once the rest arrives;
+  one whose fifth byte asks for a sixth is a `RangeError`, not an
+  `EOFError` that says to wait for more.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

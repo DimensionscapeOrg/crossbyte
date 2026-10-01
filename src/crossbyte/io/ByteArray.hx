@@ -449,8 +449,15 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		Reads an **unsigned variable-length integer** that was written
 		using `writeVarInt()`.
 
-		@return The decoded integer (0 – 0xFFFFFFFF).
+		@return The decoded integer (0 – 0xFFFFFFFF). As an `Int`, a value
+				from 2^31 up reads as negative; check for that where the value
+				is a length or a count.
 		@throws EOFError If the buffer ends before the var-int terminates.
+				`position` is left where it was, so the read can be tried
+				again once the rest has arrived.
+		@throws RangeError If the var-int does not fit in 32 bits: its fifth
+				byte carries more than four bits, or asks for a sixth.
+				`position` is left where it was.
 	**/
 	public inline function readVarInt():Int {
 		return this.readVarInt();
@@ -653,15 +660,19 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		with Google Protocol Buffers “varint”).
 
 		```text
-		value range   encoded length
-		0 – 127        1 byte
-		128 – 16,383     2 bytes
-		16,384 – 2,097,151 3 bytes
+		value range                    encoded length
+		0 – 127                        1 byte
+		128 – 16,383                   2 bytes
+		16,384 – 2,097,151             3 bytes
+		2,097,152 – 268,435,455        4 bytes
+		268,435,456 – 4,294,967,295    5 bytes
 		```
 		Each byte stores the lower 7 bits; the high bit is set to 1
 		until the final byte, where it is 0.
 
-		@param value The non-negative integer to encode (0 – 0xFFFFFFFF)
+		@param value The unsigned integer to encode (0 – 0xFFFFFFFF). A
+			   negative `Int` is the unsigned value it holds: -1 is written
+			   as 0xFFFFFFFF, in five bytes.
 	**/
 	public inline function writeVarInt(value:Int):Void {
 		this.writeVarInt(value);
@@ -1140,18 +1151,34 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 		return crossbyte._internal.Utf8.stringOf(this, position - length, length);
 	}
 
-	@:keep public inline function readVarInt():Int {
-		var result = 0;
-		var shift = 0;
-		var byte:Int;
-		do {
-			byte = this.readUnsignedByte();
-			result |= (byte & 0x7F) << shift;
-			shift += 7;
-			if (shift > 35) {
+	@:keep public function readVarInt():Int {
+		// Through a cursor of its own, committed once the varint is whole: a
+		// varint cut short leaves `position` where it was, as a truncated
+		// readInt does, so a reader can try again when the rest arrives.
+		var at:Int = position;
+		var end:Int = __available();
+		var result:Int = 0;
+		var shift:Int = 0;
+		while (true) {
+			if (at >= end) {
 				throw new EOFError();
 			}
-		} while ((byte & 0x80) != 0);
+			var byte:Int = get(at++);
+			// The fifth byte carries the last four bits of 32 and has to end
+			// the varint. Anything above them was shifted off the top, so
+			// 2^32 + 1 read as 1; a continuation bit here asked for a sixth
+			// byte, which the old bound of 35 let in and folded back over
+			// the value.
+			if (shift == 28 && byte > 0x0F) {
+				throw new RangeError("A varint does not fit in 32 bits.");
+			}
+			result |= (byte & 0x7F) << shift;
+			if ((byte & 0x80) == 0) {
+				break;
+			}
+			shift += 7;
+		}
+		position = at;
 		return result;
 	}
 
@@ -1400,10 +1427,14 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	@:keep public inline function writeVarInt(value:Int):Void {
-		var v = value >>> 0;
-		while (v > 0x7F) {
+		// Tested and shifted as the unsigned value it is. A signed
+		// `v > 0x7F` was false for anything with bit 31 set, which went out
+		// as one byte: 0x80000000 read back as 0, 0xFFFFFFFF as a varint
+		// that never ended.
+		var v:Int = value;
+		while ((v & ~0x7F) != 0) {
 			writeByte((v & 0x7F) | 0x80);
-			v >>= 7;
+			v >>>= 7;
 		}
 		writeByte(v);
 	}

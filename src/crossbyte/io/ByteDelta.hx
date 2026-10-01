@@ -1,6 +1,7 @@
 package crossbyte.io;
 
 import crossbyte.errors.IOError;
+import crossbyte.errors.RangeError;
 
 /**
  * Encodes bytes as their difference from a baseline both ends already hold,
@@ -115,6 +116,18 @@ final class ByteDelta {
 	 * @throws EOFError If the delta ends inside one of its varints.
 	 */
 	public static function decode(delta:ByteArray, ?baseline:ByteArray, maxLength:Int = DEFAULT_MAX_LENGTH):ByteArray {
+		try {
+			return __decode(delta, baseline, maxLength);
+		} catch (error:RangeError) {
+			// A varint that does not fit in 32 bits, which the reader refuses
+			// as out of range; to the caller it is a malformed delta like any
+			// other. Its extra bits used to be shifted off the top, so a
+			// length of 2^32 + 3 decoded as 3.
+			throw new IOError("A delta holds a varint that does not fit in 32 bits.");
+		}
+	}
+
+	private static function __decode(delta:ByteArray, baseline:Null<ByteArray>, maxLength:Int):ByteArray {
 		var length:Int = delta.readVarInt();
 		if (length < 0 || length > maxLength) {
 			throw new IOError('A delta declared a length of $length bytes; the most accepted is $maxLength.');

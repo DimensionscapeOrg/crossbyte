@@ -1,6 +1,7 @@
 package crossbyte.io;
 
 import crossbyte.errors.EOFError;
+import crossbyte.errors.RangeError;
 import crossbyte.io.Endian;
 import haxe.io.Bytes;
 import utest.Assert;
@@ -318,12 +319,10 @@ class ByteArrayCorrectnessTest extends utest.Test {
 	}
 
 	public function testReadVarIntThrowsOnNeverTerminatingVarInt():Void {
-		#if final
-		Assert.pass();
-		return;
-		#end
-
 		// Every byte sets the continuation bit (0x80) and never terminates.
+		// Refused at the fifth, which has to end a 32-bit varint, as data that
+		// is wrong rather than data still to come: an EOFError tells a reader
+		// to wait for more, and no more would ever make this one valid.
 		var bytes = Bytes.alloc(8);
 		for (i in 0...8) {
 			bytes.set(i, 0x80);
@@ -332,7 +331,73 @@ class ByteArrayCorrectnessTest extends utest.Test {
 		var ba:ByteArray = ByteArray.fromBytes(bytes);
 		ba.position = 0;
 
+		Assert.raises(() -> ba.readVarInt(), RangeError);
+	}
+
+	/**
+		The whole unsigned range the doc promises, at each edge where the
+		encoded length changes and at the top bit. The writer looped while a
+		signed `v > 0x7F`, so a value with bit 31 set went out as a single
+		byte: 0x80000000 read back as 0, and 0xFFFFFFFF as a varint that
+		never ended.
+	**/
+	public function testVarIntRoundTripsTheWholeUnsignedRange():Void {
+		var values:Array<Int> = [0, 0x7F, 0x80, 0x3FFF, 0x4000, 1 << 30, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF];
+		var sizes:Array<Int> = [1, 1, 2, 2, 3, 5, 5, 5, 5];
+
+		for (i in 0...values.length) {
+			var ba = new ByteArray();
+			ba.writeVarInt(values[i]);
+			Assert.equals(sizes[i], ba.length, 'encoded length of ${StringTools.hex(values[i], 8)}');
+		}
+
+		var ba = new ByteArray();
+		for (value in values) {
+			ba.writeVarInt(value);
+		}
+		ba.position = 0;
+		for (value in values) {
+			Assert.equals(value, ba.readVarInt(), 'read back ${StringTools.hex(value, 8)}');
+		}
+		Assert.equals(0, ba.bytesAvailable);
+	}
+
+	/**
+		A fifth byte carries the last four bits of a 32-bit value and must
+		end the varint. Bits past those were shifted off the top, so 2^32 + 1
+		read as 1 and nothing said the value had not fitted.
+	**/
+	public function testReadVarIntRefusesAValuePast32Bits():Void {
+		// 2^32 + 1, 2^32, and the fifth byte asking for a sixth.
+		for (encoded in [[0x81, 0x80, 0x80, 0x80, 0x10], [0x80, 0x80, 0x80, 0x80, 0x10], [0xFF, 0xFF, 0xFF, 0xFF, 0x8F, 0x01]]) {
+			var ba = new ByteArray();
+			for (byte in encoded) {
+				ba.writeByte(byte);
+			}
+			ba.position = 0;
+			Assert.raises(() -> ba.readVarInt(), RangeError, 'read ${encoded} as a 32-bit value');
+			Assert.equals(0, ba.position, "a refused varint moved the position");
+		}
+	}
+
+	/**
+		A varint cut short is an EOFError that leaves the position where it
+		was, as a truncated readInt does, so a reader can try again once the
+		rest has arrived. It used to leave the position inside the varint.
+	**/
+	public function testATruncatedVarIntLeavesThePositionAlone():Void {
+		var ba = new ByteArray();
+		ba.writeByte(0x80);
+		ba.writeByte(0x80);
+		ba.position = 0;
+
 		Assert.raises(() -> ba.readVarInt(), EOFError);
+		Assert.equals(0, ba.position);
+
+		ba.position = ba.length;
+		ba.writeByte(0x01);
+		ba.position = 0;
+		Assert.equals(1 << 14, ba.readVarInt());
 	}
 
 	public function testWriteBytesClampsOutOfRangeOffsetAndLength():Void {

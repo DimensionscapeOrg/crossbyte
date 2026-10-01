@@ -413,17 +413,22 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	/**
 	 * Writes a variable-length unsigned integer (varuint) using LEB128 encoding.
 	 *
-	 * @param value    The `UInt` to write.
+	 * @param value    The `UInt` to write, 0 to 0xFFFFFFFF, in one to five bytes.
+	 *                 A negative `Int` is the unsigned value it holds: -1 is
+	 *                 written as 0xFFFFFFFF.
 	 * @param reserved Whether the space has already been reserved.
 	 */
 	public inline function writeVarUInt(value:Int, reserved:Bool = false):Void {
-		var v:Int = value >>> 0;
+		var v:Int = value;
 
 		if (!reserved) {
 			reserve(varUIntSize(v));
 		}
 
-		while (v > 0x7F) {
+		// Tested as the unsigned value it is. A signed `v > 0x7F` was false
+		// for anything with bit 31 set, which went out as a single byte,
+		// and so did a ZigZag value from 2^30 up in magnitude.
+		while ((v & ~0x7F) != 0) {
 			writeByte((v & 0x7F) | 0x80);
 			v >>>= 7;
 		}
@@ -473,20 +478,22 @@ abstract ByteArrayOutput(ByteArrayDataOutput) from ByteArrayDataOutput to ByteAr
 	 * @return 1–5 depending on value range.
 	 */
 	public static inline function varUIntSize(v:Int):Int {
-		v >>>= 0;
-		if (v < 0x80) {
+		// Masks, not `<`: `v >>>= 0` makes a value unsigned on JavaScript
+		// alone, and everywhere else a value with bit 31 set compared as
+		// negative and was sized at one byte.
+		if ((v & ~0x7F) == 0) {
 			return 1;
 		}
 
-		if (v < 0x4000) {
+		if ((v & ~0x3FFF) == 0) {
 			return 2;
 		}
 
-		if (v < 0x200000) {
+		if ((v & ~0x1FFFFF) == 0) {
 			return 3;
 		}
 
-		if (v < 0x10000000) {
+		if ((v & ~0xFFFFFFF) == 0) {
 			return 4;
 		}
 
