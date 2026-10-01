@@ -376,6 +376,30 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		sender.close();
 	}
 
+	/**
+		A policy changed while messages wait for the window takes over with
+		them still first in line. The setter left the queue where it was, so
+		a new policy with room let the next message out ahead of the ones
+		waiting -- RELIABLE out of order -- and with nothing in flight to be
+		acknowledged, nothing ever sent the waiting ones at all.
+	**/
+	public function testAPolicyChangedMidSessionKeepsTheOrder():Void {
+		var sender = RecordingSocket.make();
+		if (sender == null) return;
+
+		sender.congestionControl = new FixedWindow(2);
+		sendMessages(sender, 5);
+		Assert.same(["PACKET 1000", "PACKET 1001"], described(sender.take()));
+
+		// Room for everything, and then one more message.
+		sender.congestionControl = new FixedWindow(10);
+		sender.send(text("m5"));
+		var frames = sender.take();
+		Assert.same(["PACKET 1002", "PACKET 1003", "PACKET 1004", "PACKET 1005"], described(frames));
+		Assert.same(["m2", "m3", "m4", "m5"], [for (frame in frames) frame.payload.toString()], "a message overtook the ones waiting");
+		sender.abort();
+	}
+
 	public function testASessionCannotBeLeftWithoutAPolicy():Void {
 		var sender = RecordingSocket.make();
 		if (sender == null) return;
