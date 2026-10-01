@@ -37,7 +37,13 @@ class MySQLStatement extends EventDispatcher {
 		- `Bool` as `TRUE` or `FALSE`;
 		- `haxe.io.Bytes` as a hex literal, `X'00ff...'`, which carries a NUL
 		  byte, where a string is cut at its first one;
-		- `Date` as its UTC fields, as the driver reads DATETIME columns back;
+		- `Date` as its UTC fields, on every target. Natively the client reads
+		  `DATETIME` columns back as UTC too, so a `Date` makes the round
+		  trip. Haxe's drivers elsewhere do not: on hl and neko a `DATETIME`
+		  comes back in local time, shifted by the local offset from UTC
+		  unless the process runs in UTC, and on the jvm Haxe's JDBC binding
+		  makes a `Date` of `DATE` and `TIME` columns only, leaving a
+		  `DATETIME` the JDBC driver's own value;
 		- anything else as a string, quoted by the connection's `quote()`,
 		  which follows the session's `NO_BACKSLASH_ESCAPES`.
 
