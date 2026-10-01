@@ -125,7 +125,9 @@ class TestSuites {
 		runner.addCase(new crossbyte.io.ByteArrayIOTest());
 		runner.addCase(new crossbyte.io.ByteArrayOutputTest());
 		runner.addCase(new crossbyte.io.FileTest());
+		runner.addCase(new crossbyte.io.FilePathTest());
 		runner.addCase(new crossbyte.io.FileStreamTest());
+		runner.addCase(new crossbyte.io.FileStreamContractTest());
 		runner.addCase(new crossbyte.io.FileStreamAsyncRefusalTest());
 		runner.addCase(new crossbyte.io.ByteArrayCorrectnessTest());
 		runner.addCase(new crossbyte.io.ByteDeltaTest());
@@ -206,6 +208,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.sys.ProcessLifecycleTest());
 		runner.addCase(new crossbyte.sys.ChildProcessSocketTest());
 		runner.addCase(new crossbyte.sys.SysSupportTest());
+		runner.addCase(new crossbyte.sys.SystemTest());
 		runner.addCase(new crossbyte.sys.WorkerTest());
 		runner.addCase(new crossbyte.sys.TaskPoolTest());
 		// JavaScript's, reached there through PortableSuite; empty elsewhere.

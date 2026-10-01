@@ -62,6 +62,11 @@ class NoFileSystem {
 		return refuse("read " + path);
 	}
 
+	/** Stands in for `sys.io.File.read`: what reads a file a block at a time. **/
+	public static function read(path:String, binary:Bool = true):Dynamic {
+		return refuse("read " + path);
+	}
+
 	public static function saveBytes(path:String, bytes:Bytes):Void {
 		refuse("write " + path);
 	}
@@ -72,6 +77,14 @@ class NoFileSystem {
 
 	public static function copy(from:String, to:String):Void {
 		refuse("copy " + from + " to " + to);
+	}
+
+	public static function rename(from:String, to:String):Void {
+		refuse("rename " + from + " to " + to);
+	}
+
+	public static function absolutePath(path:String):String {
+		return refuse("resolve " + path + " against a working directory");
 	}
 
 	/**

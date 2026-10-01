@@ -10,7 +10,10 @@ import sys.io.File as SysFile;
  * A `Store` over a directory, for every target with a filesystem.
  *
  * One file per key, under a directory named for the store, inside the
- * application storage directory. A single index file was the alternative and
+ * application storage directory: `<storage>/stores/<name>`, where `<storage>`
+ * is `System.appStorageDir`, the application's own directory. It was the
+ * account's root, `%APPDATA%` or `$HOME`, which every CrossByte program on
+ * the account shared. A single index file was the alternative and
  * is worse: every write would rewrite the whole index, and a value larger than
  * memory could never be streamed in later without changing the format. A
  * directory is also inspectable, which matters the first time someone has to
@@ -316,42 +319,11 @@ class FileStore implements IStoreBackend {
 	}
 
 	/**
-	 * Renames `from` over `to`, replacing it, in one step.
-	 *
-	 * The standard library's rename does that on POSIX, and on Node and eval
-	 * everywhere, but on hxcpp for Windows it is `_wrename` and on the jvm
-	 * `File.renameTo`, and both refuse to replace a file there.
+	 * Renames `from` over `to`, replacing it, in one step: `FileOps.replace`,
+	 * which `File.moveTo` uses as well.
 	 */
-	private static function __replace(from:String, to:String):Void {
-		#if cpp
-		var failure:String = crossbyte.io._internal.NativeFileSync.replace(from, to);
-
-		if (failure != null && failure != "") {
-			throw failure;
-		}
-		#elseif jvm
-		// Cast: Haxe sees a Java enum as an enum, not as the interface it
-		// implements.
-		var replace:java.nio.file.CopyOption = cast java.nio.file.StandardCopyOption.REPLACE_EXISTING;
-		var atomic:java.nio.file.CopyOption = cast java.nio.file.StandardCopyOption.ATOMIC_MOVE;
-		java.nio.file.Files.move(java.nio.file.Paths.get(from), java.nio.file.Paths.get(to), replace, atomic);
-		#elseif (nodejs || eval)
-		FileSystem.rename(from, to);
-		#else
-		// No single-step replace to reach for here. The old two-step
-		// replacement, which is what every target did before, and only where
-		// the one step refused.
-		try {
-			FileSystem.rename(from, to);
-		} catch (e:Dynamic) {
-			if (!FileSystem.exists(to)) {
-				throw e;
-			}
-
-			FileSystem.deleteFile(to);
-			FileSystem.rename(from, to);
-		}
-		#end
+	private static inline function __replace(from:String, to:String):Void {
+		crossbyte.io._internal.FileOps.replace(from, to);
 	}
 
 	/** Flushes a file to stable storage, where the target can. **/
