@@ -471,15 +471,57 @@ class MySQLDriverTest extends utest.Test {
 		statement.execute();
 
 		Assert.equals(3000000000.0, statement.getResult().lastInsertRowID);
-		// The connection's Int holds at 2^31 - 1, as it does natively.
-		Assert.equals(2147483647, statement.sqlConnection.lastInsertRowID);
+		// The connection's own, whole as well: it was an Int, held at 2^31 - 1.
+		Assert.equals(3000000000.0, statement.sqlConnection.lastInsertRowID);
 
-		// One in range is taken as it is, with nothing more asked.
+		// One in range is taken as it is, with nothing more asked -- but on
+		// hl and neko, where it is always asked in SQL; see below.
 		wire.insertId = 7;
+		wire.results.set("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id", [{id: "7"}]);
 		var asked:Int = wire.sent.length;
 		statement.execute();
 		Assert.equals(7.0, statement.getResult().lastInsertRowID);
+		#if (hl || neko)
+		Assert.equals(asked + 2, wire.sent.length);
+		#else
 		Assert.equals(asked + 1, wire.sent.length, "an id in range was asked for in SQL");
+		#end
+	}
+
+	#if (hl || neko)
+	public function testAnInsertIdPastThirtyTwoBitsCannotWrapIntoRange():Void {
+		// hl's and neko's lastInsertId() is a SELECT LAST_INSERT_ID() read in
+		// 32 bits, so an id of 2^32 + 1 read as 1 -- in range, and taken as it
+		// was. Asked in SQL as text every time there: the same round trip
+		// their drivers made to answer it.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		wire.insertId = 1;
+		wire.results.set("SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id", [{id: "4294967297"}]);
+		var statement:MySQLStatement = __statement(wire);
+		statement.text = "INSERT INTO t (x) VALUES (1)";
+		statement.execute();
+
+		Assert.equals(4294967297.0, statement.getResult().lastInsertRowID);
+		Assert.equals(4294967297.0, statement.sqlConnection.lastInsertRowID);
+	}
+	#end
+
+	public function testAffectedRowsPastThirtyTwoBitsAreWhole():Void {
+		// Off the native client affectedRows asked SELECT ROW_COUNT() and read
+		// the answer with Std.parseInt, which past 2^31 answers differently on
+		// every target and never the number. It is asked as text now, and
+		// read whole. Both questions are scripted, as a driver hands a BIGINT
+		// back -- a number -- and as text.
+		var wire:ScriptedConnection = new ScriptedConnection();
+		var connection:MySQLConnection = __statement(wire).sqlConnection;
+		wire.results.set("SELECT ROW_COUNT() AS n;", [{n: 3000000000.0}]);
+		wire.results.set("SELECT CAST(ROW_COUNT() AS CHAR) AS n", [{n: "3000000000"}]);
+		Assert.equals(3000000000.0, connection.affectedRows);
+
+		// A statement that changes no rows, as MySQL counts it.
+		wire.results.set("SELECT ROW_COUNT() AS n;", [{n: -1}]);
+		wire.results.set("SELECT CAST(ROW_COUNT() AS CHAR) AS n", [{n: "-1"}]);
+		Assert.equals(-1.0, connection.affectedRows);
 	}
 
 	#if (java || jvm)

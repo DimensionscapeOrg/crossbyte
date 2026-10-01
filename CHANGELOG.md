@@ -163,8 +163,9 @@ entry below says how:
   `OPEN` event to `close()`.
 - `SQLiteConnection.cacheSize` is an `Int`, negative for a size in KiB,
   where it was a `UInt`.
-- `PostgresConnection.affectedRows` and `lastInsertRowID`, and
-  `PostgresRawResult`'s, are `Float`s, where they were `Int`s.
+- `affectedRows` and `lastInsertRowID` of `PostgresConnection` and
+  `MySQLConnection`, and `PostgresRawResult`'s, are `Float`s, where they
+  were `Int`s.
 
 ### Added
 - `SQLiteConnection.queueTimeout`: how long a call that answers at once --
@@ -2177,6 +2178,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- MySQL counts and ids are whole past 2^31, on every target.
+  `MySQLConnection.affectedRows` and `lastInsertRowID` are `Float`s, exact
+  to 2^53, as SQLite's and Postgres's are. Natively both were held at
+  2^31 - 1, and off the native client `affectedRows` was read with
+  `Std.parseInt`: null past 2^31 on the interpreter, other numbers
+  elsewhere. On hl and neko an insert id is asked for in SQL, as text,
+  every time -- the round trip their drivers' own 32-bit read made -- where
+  one past 2^32 wrapped back into range and was taken as it was.
 - Postgres counts are whole past 2^31. The native bridge read a
   statement's count with `atoi`, into 32 bits, on both of its paths: a
   write of three billion rows read 2147483647 on Windows and a negative
