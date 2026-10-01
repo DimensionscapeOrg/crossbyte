@@ -24,27 +24,63 @@ class ResourcesMacro {
 		return Context.getBuildFields();
 	}
 
+	/**
+		Copies the project's `resources` beside the program the build writes,
+		which is where `Resources` looks for it: `File.applicationDirectory`.
+
+		It went to the working directory -- onto itself -- except for a
+		Windows native build, which got `bin/windows/bin/`, a layout from an
+		older build tool that nothing writes a program into now. `Resources`
+		read the working directory's, so a program found its files only when
+		started from the project.
+	**/
 	private static function onAfterGenerate():Void {
 		if (projectDirectory == null) {
 			projectDirectory = getProjectResourcesDirectory();
 		}
 
-		var outputDir:String = Sys.getCwd();
-		#if (windows)
-		{
-			if (Context.defined("cpp")) {
-				outputDir += "/bin/windows/bin/";
-			}
-		}
-		#end
+		var outputDir:Null<String> = programDirectory();
 
-		var resourcesDir:String = outputDir + "resources/";
+		if (outputDir == null) {
+			return;
+		}
+
+		var resourcesDir:String = Path.addTrailingSlash(outputDir) + "resources/";
+
+		if (Path.normalize(FileSystem.absolutePath(resourcesDir)) == Path.normalize(FileSystem.absolutePath(projectDirectory))) {
+			return;
+		}
 
 		if (!FileSystem.exists(resourcesDir)) {
 			FileSystem.createDirectory(resourcesDir);
 		}
 
 		moveResources(projectDirectory, resourcesDir);
+	}
+
+	/**
+		Where the program this build writes will be, or null when it writes
+		none: the interpreter runs from here. hxcpp's output is a directory,
+		with the executable inside it; every other target's is the program's
+		own file.
+	**/
+	private static function programDirectory():Null<String> {
+		if (Context.defined("interp")) {
+			return null;
+		}
+
+		var output:Null<String> = haxe.macro.Compiler.getOutput();
+
+		if (output == null || output == "") {
+			return null;
+		}
+
+		if (Context.defined("cpp")) {
+			return output;
+		}
+
+		var directory:String = Path.directory(output);
+		return directory == "" ? Sys.getCwd() : directory;
 	}
 
 	private static function moveResources(from:String, to:String):Void {

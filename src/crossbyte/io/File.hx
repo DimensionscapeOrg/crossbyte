@@ -192,6 +192,17 @@ final class File extends EventDispatcher {
 		that works across platforms. In CrossByte this is exposed as a filesystem path, not
 		as a URL-backed virtual path.
 
+		It is the directory the program itself is in -- the executable natively, the jar on the
+		jvm, the script on Node, the bytecode file on neko and HashLink -- and not the working
+		directory, which is wherever the program was started from: `C:\Windows\System32` for a
+		Windows service. On the interpreter (`--interp`), which runs from source and has no
+		program file, it is the working directory. `System.appDir` says more.
+
+		Nothing stops a write here; it is read-only only by convention, and an installed
+		application's directory is often not writable by the user running it. Keep what the
+		application writes in `applicationStorageDirectory`.
+
+		@throws IllegalOperationError In a browser.
 	**/
 	public static var applicationDirectory(get, never):File;
 

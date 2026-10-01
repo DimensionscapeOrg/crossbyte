@@ -101,6 +101,23 @@ class System {
 	}
 	#end
 
+	/**
+		The directory the program is in, which `File.applicationDirectory`
+		refers to and `Resources` finds its `resources` directory in: the
+		executable's natively and on HashLink/C, the jar's on the jvm, the
+		script's on Node, and the bytecode file's on neko and HashLink.
+
+		Not the working directory, which is wherever the program happened to
+		be started from: `C:\Windows\System32` for a Windows service, `/` for
+		many daemons. It was that, so a program started from anywhere but its
+		own directory found none of its files.
+
+		On the interpreter (`--interp`), which runs from source and has no
+		program file of its own, it is the working directory -- the one the
+		compiler ran in, where its `-cp` and `resources` paths are read from.
+
+		@throws IllegalOperationError In a browser.
+	**/
 	public static var appDir(get, never):String;
 
 	/**
@@ -352,17 +369,50 @@ class System {
 		#end
 	}
 
-	@:noCompletion private static inline function get_appDir():String {
+	@:noCompletion private static function get_appDir():String {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("A browser has no working directory and no environment, so there is no such path to report.");
 		#else
 		if (__appDirPath == null) {
-			__appDirPath = Path.removeTrailingSlashes(Sys.getCwd());
+			__appDirPath = __programDirectory();
 		}
 
 		return __appDirPath;
 		#end
 	}
+
+	#if !(js && !nodejs)
+	/**
+		The directory of the program's own file, absolute and normalized; on
+		the interpreter, the working directory. The working directory was
+		used everywhere, and a service started from System32 looked for its
+		files there.
+	**/
+	@:noCompletion private static function __programDirectory():String {
+		#if eval
+		// Sys.programPath() is the main class's source file here, which is
+		// not where the program's files are: those are read from where the
+		// compiler ran.
+		return Path.removeTrailingSlashes(Sys.getCwd());
+		#else
+		var program:Null<String> = null;
+
+		try {
+			program = Sys.programPath();
+		} catch (_:Dynamic) {}
+
+		if (program == null || program == "") {
+			return Path.removeTrailingSlashes(Sys.getCwd());
+		}
+
+		var windows:Bool = isWindows;
+		var parts = crossbyte.io._internal.FilePath.parse(sys.FileSystem.absolutePath(program), windows);
+		var segments:Array<String> = crossbyte.io._internal.FilePath.walk([], parts.segments, parts.root != "", 0);
+		segments.pop();
+		return crossbyte.io._internal.FilePath.join(parts.root, segments, windows);
+		#end
+	}
+	#end
 
 	@:noCompletion private static function get_applicationId():String {
 		if (__applicationId == null) {

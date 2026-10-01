@@ -19,6 +19,16 @@ import crossbyte.io.File;
  * `Resources` resolves paths relative to the runtime resources root and offers
  * convenience helpers for loading bytes, text, JSON, and directory listings.
  *
+ * **The resources directory is beside the program.** `resourcesDir` is the
+ * `resources` directory inside `File.applicationDirectory`: next to the
+ * executable natively, the jar on the jvm, the script on Node and the
+ * bytecode file on neko and HashLink -- found wherever the program is started
+ * from, a Windows service's System32 included. It was the working
+ * directory's. The build puts it there: the project's `resources` directory
+ * is copied beside the program the build writes. A tool that moves the
+ * program afterwards must carry `resources` with it. On the interpreter,
+ * which has no program file, it is the working directory's `resources`.
+ *
  * **Paths stay inside `resourcesDir`.** A path is a relative one, separated by
  * `/` or `\`, with no `..` segment, no leading separator and no `:` -- so no
  * drive letter, no `C:` drive-relative path and no NTFS stream name. Anything
@@ -29,7 +39,10 @@ import crossbyte.io.File;
  * Empty and `.` segments are dropped, so `"./maps//a.txt"` is `"maps/a.txt"`.
  */
 final class Resources {
-	/** Absolute path to the runtime resources directory. */
+	/**
+		Absolute path to the runtime resources directory: `resources` inside
+		`File.applicationDirectory`, with a separator at the end.
+	**/
 	public static var resourcesDir(get, never):String;
 	/** Macro-generated tree that mirrors compile-time resources when available. */
 	public static var tree:ResourceTree = new ResourceTree();
@@ -188,7 +201,7 @@ final class Resources {
 		return path;
 	}
 
-	@:noCompletion private static var __resourcesDir:String = System.appDir + File.separator + "resources" + File.separator;
+	@:noCompletion private static var __resourcesDir:String = haxe.io.Path.removeTrailingSlashes(System.appDir) + File.separator + "resources" + File.separator;
 }
 
 @:build(crossbyte._internal.macro.ResourcesMacro.buildResourceTree())

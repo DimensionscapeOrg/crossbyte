@@ -89,6 +89,10 @@ entry below says how:
   any application's -- so move an application's own across once. Two
   applications with the same main class, such as `Main`, share a
   directory until one sets the define.
+- `File.applicationDirectory` and `Resources` read from the program's own
+  directory instead of the working directory. The build copies `resources`
+  beside the program; a tool that moves the program afterwards must carry
+  `resources` with it.
 
 ### Added
 - `System.applicationId`, the name an application's storage directory and
@@ -1158,6 +1162,16 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it -- so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `File.applicationDirectory`, `System.appDir` and `Resources` are the
+  program's own directory -- the executable's natively, the jar's on the
+  jvm, the script's on Node, the bytecode file's on neko and HashLink --
+  rather than the working directory, which is wherever the program was
+  started from: a Windows service, started in System32, looked for its
+  resources there and found none. The build copies the project's
+  `resources` beside the program it writes, where it copied it onto
+  itself, or for a Windows native build into a `bin/windows/bin` that
+  nothing ran from. The interpreter, which has no program file, keeps the
+  working directory.
 - `File.applicationStorageDirectory`, and every `Store` kept in it, is the
   application's own: `System.applicationId` inside `%APPDATA%` on Windows,
   `~/Library/Application Support` on macOS, and `$XDG_DATA_HOME` or
