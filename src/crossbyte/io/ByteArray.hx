@@ -227,9 +227,20 @@ abstract ByteArray(ByteArrayData) from ByteArrayData to ByteArrayData {
 	}
 
 	/**
-		Converts a Bytes object into a ByteArray.
-		@param	buffer	A Bytes instance
-		@returns	A new ByteArray
+		Converts a Bytes object into a ByteArray, which is also what
+		assigning a `Bytes` to a `ByteArray` does.
+
+		The ByteArray uses `bytes`' own storage rather than a copy: natively,
+		on the jvm, hl, neko and JavaScript, a change made through either
+		shows in the other, until the ByteArray grows past that storage and
+		takes a buffer of its own. The interpreter copies, so there the two
+		are independent from the start. For a ByteArray of its own on every
+		target, copy first: `ByteArray.fromBytes(bytes.sub(0, bytes.length))`.
+
+		A `ByteArray` passed in comes back as it is.
+
+		@param	bytes	A Bytes instance
+		@returns	A ByteArray over `bytes`, or null for null.
 	**/
 	@:from public static function fromBytes(bytes:Bytes):ByteArray {
 		if (bytes == null)
