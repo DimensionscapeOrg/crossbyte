@@ -946,6 +946,89 @@ class HTTPServerH2Test extends utest.Test {
 		});
 	}
 
+	public function testAnHttp2ProducerThatOutrunsItsClientHearsClose(async:Async):Void {
+		// At the output cap the stream is reset, which under HTTP/1.1 is the
+		// connection closing and so Event.CLOSE. Under HTTP/2 the connection
+		// stays, and the producer was never told: one writing on a timer kept
+		// writing into a stream that refused everything, for good.
+		var heardClose:Bool = false;
+		var accepted:Null<Bool> = null;
+		var session = new H2Session(config -> {
+			config.maxOutputBufferSize = 16 * 1024;
+			config.middleware = [
+				(handler, next) -> {
+					if (handler.requestPath != "/flood") {
+						next();
+						return;
+					}
+					handler.addEventListener(crossbyte.events.Event.CLOSE, _ -> heardClose = true);
+					var body = handler.beginResponse(200, "application/octet-stream");
+					var big = new ByteArray();
+					big.length = 128 * 1024;
+					accepted = body.write(big);
+				}
+			];
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/flood", true);
+			session.until(() -> heardClose || session.finished(1) || session.ended, () -> {
+				session.request(3, "GET", "/index.html", true);
+				session.until(() -> session.finished(3) || session.ended, () -> {
+					session.close();
+					Assert.isFalse(accepted);
+					Assert.isTrue(heardClose, "the producer was not told its response was ended");
+					Assert.equals(2, session.resetCode(1), "the stream was not reset");
+					Assert.equals(200, session.status(3));
+					async.done();
+				});
+			});
+		});
+	}
+
+	public function testAFileThatShrinksMidStreamEndsOnlyItsOwnStream(async:Async):Void {
+		// The file pump gave up on a file that came up short by closing the
+		// socket, which under HTTP/2 is the connection every other stream is
+		// on: one file changing under a download took down every request.
+		// A megabyte, so that most of it is still on disk, unread, when it is
+		// cut: the pump reads ahead only as far as its watermark.
+		var size:Int = 1024 * 1024;
+		var path:String = null;
+		var session = new H2Session(config -> {
+			var big = new ByteArray();
+			for (i in 0...size) {
+				big.writeByte(i & 0xFF);
+			}
+			var file = config.rootDirectory.resolvePath("big.bin");
+			file.save(big);
+			path = file.nativePath;
+		});
+
+		session.start(() -> {
+			session.request(1, "GET", "/big.bin", true);
+			// The first window's worth arrives, and the rest waits on the
+			// client, the pump paused at its watermark with the file open.
+			session.until(() -> session.received(1) >= 65535 || session.ended, () -> {
+				__truncate(path, 1024);
+				Assert.equals(1024, sys.FileSystem.stat(path).size, "the file could not be cut, so this case shows nothing");
+				session.windowUpdate(0, 1 << 20);
+				session.windowUpdate(1, 1 << 20);
+				session.until(() -> session.finished(1) || session.ended, () -> {
+					var endedWithIt:Bool = session.ended;
+					session.request(3, "GET", "/index.html", true);
+					session.until(() -> session.finished(3) || session.ended, () -> {
+						session.close();
+						Assert.isFalse(endedWithIt, "the connection went with the stream whose file shrank");
+						Assert.equals(2, session.resetCode(1), "the stream was not reset");
+						Assert.isTrue(session.received(1) < size, "a file that shrank was sent whole");
+						Assert.equals(200, session.status(3));
+						async.done();
+					});
+				});
+			});
+		});
+	}
+
 	public function testALongPollOutlivesTheRequestTimeout(async:Async):Void {
 		// Every open stream counted as a request still arriving, so a long
 		// poll answered after requestTimeout found its connection closed with
@@ -1235,6 +1318,22 @@ class HTTPServerH2Test extends utest.Test {
 				}
 			});
 		});
+	}
+
+	/**
+	 * Cuts the file at `path` to `length` bytes, where another handle has it
+	 * open for reading. `sys.io.File.saveBytes` does on every target but the
+	 * jvm, whose opens the file without truncating it and overwrites the
+	 * start.
+	 */
+	private static function __truncate(path:String, length:Int):Void {
+		#if (jvm || java)
+		var file = new java.io.RandomAccessFile(path, "rw");
+		file.setLength(haxe.Int64.ofInt(length));
+		file.close();
+		#else
+		sys.io.File.saveBytes(path, Bytes.alloc(length));
+		#end
 	}
 
 	private static function sendWindowUpdate(client:Socket, streamId:Int, increment:Int):Void {
@@ -1613,6 +1712,23 @@ private class H2Session {
 		var out = new BytesBuffer();
 		__writeFrame(out, H2FrameType.DATA, 0, streamId, Bytes.ofString(text));
 		__send(out);
+	}
+
+	/** Grants the server `increment` more bytes on `streamId`, or on the connection for 0. */
+	public function windowUpdate(streamId:Int, increment:Int):Void {
+		var payload:Bytes = Bytes.alloc(4);
+		payload.set(0, (increment >> 24) & 0x7F);
+		payload.set(1, (increment >> 16) & 0xFF);
+		payload.set(2, (increment >> 8) & 0xFF);
+		payload.set(3, increment & 0xFF);
+		var out = new BytesBuffer();
+		__writeFrame(out, H2FrameType.WINDOW_UPDATE, 0, streamId, payload);
+		__send(out);
+	}
+
+	/** Bytes of body the server has sent on `streamId` so far. */
+	public function received(streamId:Int):Int {
+		return __bodies.exists(streamId) ? __bodies.get(streamId).length : 0;
 	}
 
 	/** Sends a PING, which asks the server only for its acknowledgement. */
