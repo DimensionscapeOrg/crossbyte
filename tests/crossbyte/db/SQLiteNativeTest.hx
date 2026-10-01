@@ -566,6 +566,44 @@ class SQLiteNativeTest extends utest.Test {
 		other.close();
 	}
 
+	public function testCancelInterruptsAStatementRunningOnAnotherThread():Void {
+		// A synchronous connection queues nothing, so cancel() has only the
+		// statement running -- on whichever thread called it -- to stop.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		var cancels:Int = 0;
+		connection.addEventListener(SQLEvent.CANCEL, _ -> cancels++);
+		var failure:String = null;
+		var done:sys.thread.Lock = new sys.thread.Lock();
+
+		sys.thread.Thread.create(function() {
+			try {
+				connection.request("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100000000000) SELECT COUNT(*) AS c FROM n");
+			} catch (e:Dynamic) {
+				failure = Std.string(e);
+			}
+
+			done.release();
+		});
+
+		// Long enough for the statement to be stepping.
+		crossbyte.sys.System.sleep(0.3);
+		connection.cancel();
+		var stopped:Bool = done.wait(10.0);
+
+		if (!Assert.isTrue(stopped, "the statement was not interrupted")) {
+			// Still running on the other thread: nothing more is safe to ask.
+			return;
+		}
+
+		Assert.isTrue(failure != null && failure.indexOf("interrupt") >= 0, "it failed with " + failure);
+		Assert.equals(1, cancels);
+
+		// And the connection still answers.
+		Assert.equals(1, __count(connection, "(SELECT 1)"));
+		connection.close();
+	}
+
 	/** A statement whose result or failure is pushed to `events` as `name` or `name:error`. **/
 	private static function __watched(connection:SQLiteConnection, name:String, sql:String, events:Array<String>, errors:Map<String, SQLError>):SQLiteStatement {
 		var statement:SQLiteStatement = new SQLiteStatement();
@@ -678,6 +716,32 @@ class SQLiteNativeTest extends utest.Test {
 			Assert.isNull(keyed[0].rowid);
 		}
 		connection.close();
+	}
+
+	public function testWorkQueuedBehindAFailedOpenIsToldItWillNotRun():Void {
+		// An asynchronous open that fails leaves nothing for the work queued
+		// behind it to run on: each is refused, where it ran against no
+		// connection, and the connection can be opened again.
+		var missing:String = Path.join([Sys.getCwd(), "export", "sqlite-native-absent-" + Std.random(0x7FFFFFFF), "db.sqlite"]);
+		var connection:SQLiteConnection = new SQLiteConnection();
+		var events:Array<String> = [];
+		connection.addEventListener(SQLEvent.OPEN, _ -> events.push("open"));
+		connection.addEventListener(SQLErrorEvent.ERROR, e -> events.push("error:" + e.error.operation));
+		connection.openAsync(missing, SQLiteMode.CREATE, false, 4096);
+		var queued:SQLiteStatement = __watched(connection, "queued", "SELECT 1", events, new Map());
+		queued.execute();
+		connection.begin();
+
+		__pumpUntil(() -> events.length >= 3);
+		Assert.same(["error:" + SQLEvent.OPEN, "queued:error", "error:" + SQLEvent.BEGIN], events);
+		Assert.isFalse(queued.executing);
+
+		// Closed by the failure: it opens again.
+		connection.openAsync(null, SQLiteMode.CREATE, false, 4096);
+		__pumpUntil(() -> events.indexOf("open") >= 0);
+		Assert.isTrue(events.indexOf("open") >= 0, "the connection could not be opened again");
+		connection.close();
+		__pumpUntil(() -> false, 0.2);
 	}
 
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
