@@ -35,3 +35,11 @@ double crossbyte_file_created(::String path);
 // The file system's own path for `path`, links followed and names in their
 // case on disk, or an empty string if there is no such file.
 ::String crossbyte_file_real_path(::String path);
+
+// 1 if Windows marks the file at `path` hidden, 0 if not, -1 if it cannot be
+// examined -- or on POSIX, which keeps no such attribute.
+int crossbyte_file_hidden(::String path);
+
+// The bytes this process could still write on the volume the file or
+// directory at `path` is on, or -1 if it cannot be examined.
+double crossbyte_file_space_available(::String path);

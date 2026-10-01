@@ -449,6 +449,19 @@ final class File extends EventDispatcher {
 		return System.isWindows ? "\\" : "/";
 	}
 
+	/**
+		The space available at this File's location, in bytes: on the volume
+		a directory is on, or the room a file has to grow on its volume. 0 if
+		there is nothing at the path.
+
+		Natively, on the jvm and on Node the file system is asked directly.
+		The interpreter, neko and HashLink have no call for it and run
+		`fsutil` on Windows, `df` elsewhere, once per read; `fsutil` answers
+		in the system's language, and where that is not English its answer
+		is not understood and this is 0.
+
+		@throws IllegalOperationError In a browser, which has no file system.
+	**/
 	public var spaceAvailable(get, null):Float;
 
 	/**
@@ -2443,30 +2456,42 @@ final class File extends EventDispatcher {
 	@:noCompletion private function __winGetHiddenAttr():Bool {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Reading a file attribute means shelling out, and a browser has no shell.");
+		#elseif cpp
+		// GetFileAttributesW. It started `attrib` through cmd.exe for each
+		// question, and cmd expanded any %NAME% in the path, so a file with
+		// one in its name was asked about under another name.
+		return crossbyte.io._internal.NativeFileSync.hidden(__path) == 1;
+		#elseif (jvm || java)
+		// On Windows the JVM's isHidden is the attribute.
+		return new java.io.File(__path).isHidden();
 		#else
-		// Shelling out to `attrib` costs a process per call. GetFileAttributesW
-		// through a `@:cppInclude` bridge would not, in the style the sodium
-		// and blake3 bridges already use -- but only on cpp, and this is
-		// reachable from every target with a filesystem, so the shell stays
-		// until there is a path for the others.
-		#if nodejs
-		// Node has no sys.io.Process. It type-checks here, because hxnodejs
-		// allows the `sys` package, and generates nothing -- the same trap
-		// that made spaceAvailable throw `ReferenceError: sys is not defined`
-		// once anything called it.
-		var r:String = js.Syntax.code("require('child_process').execSync({0}).toString()", 'attrib "' + nativePath + '"');
-		#else
-		var process:Process = new Process('attrib "$nativePath"');
-		var r:String = process.stdout.readLine();
-
-		process.close();
+		// No call for the attribute here, so `attrib` still answers -- run
+		// directly, not through cmd.exe, which expanded any %NAME% in the
+		// path. Node has no sys.io.Process; System's helper runs it there
+		// through child_process.
+		return __attribSaysHidden(@:privateAccess System.__programOutput("attrib", [__path]));
 		#end
+	}
 
-		var s:String = r.split(nativePath)[0];
-		var flag:Bool = s.indexOf(" H ") > -1;
+	/**
+		Whether `attrib`'s answer for one file has the `H` attribute: a letter
+		among those before the path, which starts at a drive (`C:\`) or a
+		share (`\\`). "File not found - C:\x" has none.
+	**/
+	@:noCompletion private static function __attribSaysHidden(output:Null<String>):Bool {
+		if (output == null) {
+			return false;
+		}
 
-		return flag;
-		#end
+		var line:String = StringTools.trim(output.split("\n")[0]);
+		var drive:Int = line.indexOf(":\\");
+		var end:Int = drive > 0 ? drive - 1 : line.indexOf("\\\\");
+
+		if (end < 0) {
+			return false;
+		}
+
+		return line.substr(0, end).split(" ").indexOf("H") >= 0;
 	}
 
 	/**
@@ -2794,6 +2819,13 @@ final class File extends EventDispatcher {
 	@:noCompletion private function get_spaceAvailable():Float {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Free disk space means asking the filesystem, and a browser has neither a filesystem nor a disk to report on.");
+		#elseif cpp
+		// GetDiskFreeSpaceEx or statvfs, without starting fsutil or df.
+		var bytes:Float = crossbyte.io._internal.NativeFileSync.spaceAvailable(__path);
+		return bytes < 0 ? 0 : bytes;
+		#elseif (jvm || java)
+		// 0 for a path with nothing there, as documented.
+		return __longToFloat(new java.io.File(__path).getUsableSpace());
 		#elseif nodejs
 		// The syscall directly, no shell and no output parsing. Node has had
 		// statfsSync since 18.15; older ones are told so rather than handed a
@@ -2804,9 +2836,18 @@ final class File extends EventDispatcher {
 			throw new crossbyte.errors.IllegalOperationError("Reading free disk space needs fs.statfsSync, which arrived in Node 18.15; this is " + js.Node.process.version + ".");
 		}
 
+		if (!FileSystem.exists(__path)) {
+			// As documented, where statfs threw ENOENT.
+			return 0;
+		}
+
 		var stats:Dynamic = fs.statfsSync(__path);
 		return stats.bsize * stats.bavail;
 		#else
+		if (!FileSystem.exists(__path)) {
+			return 0;
+		}
+
 		// Sys.systemName(), not `#if windows`. That define says which target the
 		// compiler was aimed at, not which machine is running -- eval does not
 		// set it at all, so on Windows this took the `df` branch, found no df,
@@ -2814,8 +2855,12 @@ final class File extends EventDispatcher {
 		// four targets and silently wrong on the fifth is worse than a runtime
 		// check that is right on all of them.
 		var onWindows:Bool = Sys.systemName() == "Windows";
+		// fsutil takes a directory, and refused a file's path: every file read
+		// as having no room to grow. A file is asked about through the
+		// directory it is in.
+		var directory:String = !onWindows || FileSystem.isDirectory(__path) ? __path : Path.directory(FileSystem.absolutePath(__path));
 		var cmd:String = onWindows ? "fsutil" : "df";
-		var args:Array<String> = onWindows ? ["volume", "diskfree", Path.addTrailingSlash(__path)] : ["-k", __path];
+		var args:Array<String> = onWindows ? ["volume", "diskfree", Path.addTrailingSlash(directory)] : ["-k", __path];
 
 		var process:Process = new Process(cmd, args);
 		var output:String = process.stdout.readAll().toString();

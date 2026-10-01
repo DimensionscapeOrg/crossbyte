@@ -57,5 +57,19 @@ extern class NativeFileSync {
 	**/
 	@:native("crossbyte_file_real_path")
 	public static function realPath(path:String):String;
+
+	/**
+		`1` if Windows marks the file hidden, `0` if not, `-1` if it cannot be
+		examined -- and always on POSIX, which keeps no such attribute.
+	**/
+	@:native("crossbyte_file_hidden")
+	public static function hidden(path:String):Int;
+
+	/**
+		The bytes this process could still write on the volume the file or
+		directory is on, or `-1` if it cannot be examined.
+	**/
+	@:native("crossbyte_file_space_available")
+	public static function spaceAvailable(path:String):Float;
 }
 #end

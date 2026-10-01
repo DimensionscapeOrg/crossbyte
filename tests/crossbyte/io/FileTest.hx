@@ -71,6 +71,55 @@ class FileTest extends utest.Test {
 		try dir.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testIsHiddenAsksAboutTheFileItNames():Void {
+		var dir = File.createTempDirectory();
+
+		if (!System.isWindows) {
+			// The dot rule, there.
+			var dotted = dir.resolvePath(".hidden");
+			HaxeFile.saveContent(dotted.nativePath, "x");
+			Assert.isTrue(dotted.isHidden);
+			Assert.isFalse(dir.resolvePath("shown").isHidden);
+			try dir.deleteDirectory(true) catch (_:Dynamic) {}
+			return;
+		}
+
+		// isHidden ran `attrib "<path>"` through cmd.exe, which expanded a
+		// %NAME% in the path, so a hidden file whose name has one was asked
+		// about under another name -- one that was not there -- and read as
+		// not hidden. A path is taken literally everywhere else.
+		var named = dir.resolvePath("100%TEMP%.txt");
+		var plain = dir.resolvePath("plain.txt");
+		var every:String = dir.resolvePath("*").nativePath;
+		HaxeFile.saveContent(named.nativePath, "x");
+		HaxeFile.saveContent(plain.nativePath, "x");
+		Assert.isFalse(named.isHidden);
+		Assert.isFalse(plain.isHidden);
+		// Both hidden through a wildcard, which names neither: cmd.exe would
+		// expand the one name, and the interpreter quotes "+h" in an argument
+		// list, which attrib refuses.
+		Assert.equals(0, __quietlyThroughShell('attrib +h "$every"'));
+		Assert.isTrue(named.isHidden, "a hidden file named 100%TEMP%.txt read as not hidden");
+		Assert.isTrue(plain.isHidden);
+		Assert.isFalse(dir.isHidden);
+		Assert.isFalse(dir.resolvePath("missing.txt").isHidden);
+
+		__quietlyThroughShell('attrib -h "$every"');
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testSpaceAvailableForAFileAndForNothing():Void {
+		// fsutil took only a directory, so on Windows every file read as
+		// having no room to grow; and Node threw ENOENT for a path with
+		// nothing there, which is documented as 0.
+		var dir = File.createTempDirectory();
+		var file = dir.resolvePath("a.txt");
+		HaxeFile.saveContent(file.nativePath, "x");
+		Assert.isTrue(file.spaceAvailable > 1024 * 1024, "a file had " + file.spaceAvailable + " bytes of room");
+		Assert.equals(0.0, dir.resolvePath("missing").spaceAvailable);
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
 	public function testSpaceAvailableReportsFreeBytes():Void {
 		// Nothing ever called this, which is how it came to be wrong on every
 		// target at once: it reported a Windows volume's total capacity rather
