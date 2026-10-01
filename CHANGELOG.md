@@ -2163,6 +2163,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A request carried on from a later tick is answered `500` when serving it
+  throws, as one carried on at once is: a middleware calling `next()` from
+  a timer or a callback, and, over HTTP/1.1, a pipelined request parsed
+  behind an answer given that way. What the files or the rate limiter's
+  key threw went to the runtime's timer instead, and the request was never
+  answered at all, nor, for the pipelined one, any request after it on
+  that connection.
 - What serving an HTTP/2 request throws outside any middleware, the rate
   limiter's key, a listener on the response, the static files, is
   answered `500` on its stream, as over HTTP/1.1. The stream was reset
