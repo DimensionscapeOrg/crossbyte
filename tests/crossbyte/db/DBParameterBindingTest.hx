@@ -141,6 +141,31 @@ class DBParameterBindingTest extends utest.Test {
 		Assert.equals("a = NULL, b = :absent", result);
 	}
 
+	@:access(crossbyte.db.postgres.PostgresStatement)
+	@:access(crossbyte.db.sql.sqlite.SQLiteStatement)
+	public function testEveryDriverWritesANullParameterAsNull():Void {
+		// Postgres's and SQLite's statements took a parameter set to null for
+		// one never set, and left :email in the SQL, where MySQL's writes NULL.
+		// On Postgres the statement then failed at the server; SQLite reads an
+		// unbound :email as NULL, by luck. Mongo's refused it as "no parameter
+		// named email", though it was there (MongoCrudTest has that one).
+		var sql:String = "INSERT INTO users (name, email) VALUES (:name, :email)";
+
+		var postgres = new crossbyte.db.postgres.PostgresStatement();
+		postgres.parameters.name = "bob";
+		postgres.parameters.email = null;
+		Assert.equals("INSERT INTO users (name, email) VALUES ('bob', NULL)", postgres.__applyParameters(sql));
+
+		var sqlite = new crossbyte.db.sql.sqlite.SQLiteStatement();
+		sqlite.parameters.name = "bob";
+		sqlite.parameters.email = null;
+		Assert.equals("INSERT INTO users (name, email) VALUES ('bob', NULL)", sqlite.__applyParameters(sql));
+
+		// One never set is still left as it was written.
+		Assert.equals("SELECT :absent", sqlite.__applyParameters("SELECT :absent"));
+		Assert.equals("SELECT :absent", postgres.__applyParameters("SELECT :absent"));
+	}
+
 	public function testBackslashEscapesAreReadWhenTheDialectHasThem():Void {
 		var params = lookupOf(["name" => "alpha"]);
 		var sql:String = "x = 'it\\'s :name' AND y = :name";

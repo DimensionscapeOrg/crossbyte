@@ -1944,6 +1944,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A statement parameter set to `null` is written as `NULL` by Postgres's
+  and SQLite's statements, as MySQL's has been, and bound as BSON null by
+  MongoDB's. Postgres and SQLite took it for a parameter never set and left
+  `:name` in the SQL -- the server refused it, and SQLite read it as an
+  unbound parameter, NULL by luck -- and MongoDB refused it as "no
+  parameter named". `ExtendedJson.parse` takes whether a parameter exists
+  apart from its value for this, and `MongoConnection.request()` binds a
+  key mapped to null.
 - `PostgresConnection.autocommit` works: set `false`, a transaction begins
   before the next statement and lasts until `commit()` or `rollback()`, as
   on MySQL and in JDBC, and `inTransaction` reads true meanwhile, as

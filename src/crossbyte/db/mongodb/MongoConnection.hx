@@ -329,7 +329,9 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 		```
 	**/
 	public function request(command:String, ?parameters:Map<String, Dynamic>):MongoCursor {
-		var parsed:Dynamic = ExtendedJson.parse(command, parameters == null ? null : name -> parameters.get(name));
+		// A parameter mapped to null is bound as BSON null.
+		var parsed:Dynamic = ExtendedJson.parse(command, parameters == null ? null : name -> parameters.get(name),
+			parameters == null ? null : name -> parameters.exists(name));
 
 		if (!Std.isOfType(parsed, BsonDocument)) {
 			throw new ArgumentError("A command is a JSON object.");
