@@ -1019,19 +1019,19 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Reads a serialized object from the stream buffer.
-		Only `ObjectEncoding.HXSF` is currently supported.
-		@return The decoded object, or `null` for unsupported object encodings.
+		Reads a serialized object from the stream buffer, in `objectEncoding`:
+		any encoding a `ByteArray` reads, and one this build cannot do throws.
+		@return The decoded object.
 	**/
 	public function readObject():Dynamic {
 		__requireStreamMode();
 		__requireOpenConnection();
 
-		if (objectEncoding == HXSF) {
-			return Unserializer.run(readUTF());
-		}
-
-		return null;
+		// As a ByteArray reads one, in every encoding a ByteArray can, JSON
+		// always, AMF with -lib format, and one this build cannot do throws.
+		// Only HXSF was read: anything else read null, and said nothing.
+		__input.objectEncoding = objectEncoding;
+		return __input.readObject();
 	}
 
 	/**
@@ -1203,17 +1203,18 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Serializes and appends an object to the stream-mode output buffer.
-		Only `ObjectEncoding.HXSF` is currently supported.
+		Serializes and appends an object to the stream-mode output buffer, in
+		`objectEncoding`: any encoding a `ByteArray` writes.
 		@param object The object to serialize and queue for sending.
 	**/
 	public function writeObject(object:Dynamic):Void {
 		__requireStreamMode();
 		__requireOpenConnection();
 
-		if (objectEncoding == HXSF) {
-			__output.writeUTF(Serializer.run(object));
-		}
+		// As a ByteArray writes one; see readObject. Anything but HXSF wrote
+		// nothing, and said nothing.
+		__output.objectEncoding = objectEncoding;
+		__output.writeObject(object);
 	}
 
 	/**

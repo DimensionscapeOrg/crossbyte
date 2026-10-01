@@ -1840,6 +1840,12 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Socket`, `WebSocket` and `ReliableDatagramSocket` read and write objects
+  in every `objectEncoding` a `ByteArray` does: JSON always, AMF with
+  `-lib format`. They took only HXSF, and anything else read `null` and
+  wrote nothing without a word, the fault `ByteArray` had been fixed for,
+  left in its three siblings. An encoding the build cannot do now throws,
+  as it does on a `ByteArray`.
 - SQLite rowids past 32 bits read back whole, from the connection and from
   every statement's result. `sys.db.Connection.lastInsertId` is an Int,
   which hxcpp holds at 2^31 - 1 and the other drivers wrap, so a Snowflake
