@@ -28,6 +28,22 @@ class SctpParameter {
 	/** Lists the chunk types a sender understands beyond the base protocol. **/
 	public static inline var SUPPORTED_EXTENSIONS:Int = 0x8008;
 
+	// RFC 6525's, carried in a RE-CONFIG chunk.
+
+	/** Asks the receiver to reset streams the sender sends on: how a data channel is closed. **/
+	public static inline var OUTGOING_SSN_RESET:Int = 13;
+
+	/** Asks the receiver to reset streams it sends on. **/
+	public static inline var INCOMING_SSN_RESET:Int = 14;
+
+	public static inline var SSN_TSN_RESET:Int = 15;
+
+	/** The answer to one of the requests. **/
+	public static inline var RECONFIG_RESPONSE:Int = 16;
+
+	public static inline var ADD_OUTGOING_STREAMS:Int = 17;
+	public static inline var ADD_INCOMING_STREAMS:Int = 18;
+
 	public var type(default, null):Int;
 	public var value(default, null):ByteArray;
 

@@ -76,6 +76,9 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- A closed `DataChannel` resets its SCTP stream, so the peer's end closes
+  too. That needs RE-CONFIG at both ends: a peer on 1.0.0-rc.1 does not
+  advertise it, is not asked, and keeps its end open as before.
 
 ### Added
 - `IceAgent.onStateChanged`, called as the agent moves to CHECKING,
@@ -1937,6 +1940,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Closing a `DataChannel` closes it at both ends, by resetting its stream
+  as RFC 8831 section 6.7 has it (RFC 6525's RE-CONFIG), and a peer's
+  close -- a browser's `channel.close()` -- reaches `onClose` here. What
+  was sent before a close arrives before it. There was no stream reset:
+  `close()` was this end's alone, the peer went on sending into a channel
+  nothing read, a browser's channel never finished closing, and a
+  browser's close was never heard. Checked against Chrome in both
+  directions by `ci/interop/run.js`.
 - `PeerConnection.setRelayCredentials` with a new username leaves the
   allocation held on the username it was made with, as its documentation
   says, and uses the new one for the next relay asked. It compared the new

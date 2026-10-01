@@ -63,6 +63,12 @@ class SctpPacket {
 	public static inline var CHUNK_COOKIE_ACK:Int = 11;
 	public static inline var CHUNK_SHUTDOWN_COMPLETE:Int = 14;
 
+	/**
+		RFC 6525: reconfigure the association's streams. Here, to reset them,
+		which is how a data channel is closed (RFC 8831 section 6.7).
+	**/
+	public static inline var CHUNK_RECONFIG:Int = 130;
+
 	/** RFC 3758: move the cumulative acknowledgement past what the sender abandoned. **/
 	public static inline var CHUNK_FORWARD_TSN:Int = 192;
 
