@@ -1932,6 +1932,23 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.resolvePath` normalizes, as its documentation says: `.` is
+  dropped, `..` consumes its parent and never climbs past the file
+  system's root or the application storage directory, and an absolute
+  path is returned as that path. It concatenated, so
+  `File.applicationStorageDirectory.resolvePath(name)` climbed out of the
+  storage directory on a name holding `..`, and an absolute name came
+  back appended to the directory -- on Windows a path naming a stream on
+  a file called `C`. Windows drives, shares and `\\?\` paths keep their
+  roots. Its documentation now says plainly that it is not a sandbox, and
+  shows the check that is: `dir.getRelativePath(file) == null`.
+- `File.getRelativePath` answers as documented: null for a path that is
+  not the File's own or below it unless `useDotDot` is given, `/`
+  between segments on every platform, null across drives and shares
+  even with `useDotDot`, and an `ArgumentError` for a null reference. A
+  sibling came back as its bare name, which reads as a child; the answer
+  was joined with `\` on Windows; across two drives it named the other
+  drive; and a null reference was a null access.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
