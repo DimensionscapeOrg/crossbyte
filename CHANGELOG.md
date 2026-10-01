@@ -161,6 +161,8 @@ entry below says how:
   and the rows `request()` answers are read by name: its `getResult`,
   `getIntResult` and `getFloatResult` throw. `connected` is true from the
   `OPEN` event to `close()`.
+- `SQLiteConnection.cacheSize` is an `Int`, negative for a size in KiB,
+  where it was a `UInt`.
 
 ### Added
 - `SQLiteConnection.queueTimeout`: how long a call that answers at once,
@@ -2173,6 +2175,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SQLiteConnection.cacheSize` is an `Int`, and says what SQLite says: a
+  positive number of pages, or a negative number of KiB, SQLite's own
+  default is -2000, about 2 MB. As a `UInt` it could hold no negative:
+  `-4096` set was written as 4294963200, which SQLite took as 0, and a
+  size kept in KiB read back as four billion pages.
 - `SQLiteStatement.cancel()` stops the statement, and only it, as AIR's
   does. On an asynchronous connection its work not yet run is dropped, its
   work running now is interrupted, and the rows it left unread are let go
