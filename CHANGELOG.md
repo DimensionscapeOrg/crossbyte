@@ -1932,6 +1932,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A PHP backend that fails or does not answer in time is answered with a
+  whole `502` or `504`. Each went out as a `HEAD`'s answer, with a
+  `Content-Length` counting its text and no text after it, so the client
+  waited for a body that was never coming until the connection closed.
 - `HTTPServerConfig.blacklist` and `whitelist` hold for every request that
   ends at a file, whatever its method and however it got there. They were
   checked only where a static file is served, so a blacklisted PHP script
