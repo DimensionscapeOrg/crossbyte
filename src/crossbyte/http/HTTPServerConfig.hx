@@ -124,7 +124,33 @@ class HTTPServerConfig {
 
 	public var directoryIndex:Array<String>;
 	public var errorDocument:File;
+
+	/**
+		When not empty, the only files under `rootDirectory` this server serves
+		or runs: a request that ends at any other is answered `403 Forbidden`.
+		Empty by default, which keeps nothing back.
+
+		Held as `blacklist` is, to the file a request resolves to, whatever
+		the method and however it got there. A precompressed `.br` or `.gz`
+		sibling is sent in a file's place only if it is listed too.
+	**/
 	public var whitelist:Array<String>;
+
+	/**
+		Files under `rootDirectory` this server never serves or runs: a request
+		that ends at one is answered `403 Forbidden`. Empty by default.
+
+		Each entry is a file's `File.nativePath`, compared whole, so build it
+		from the root: `config.rootDirectory.resolvePath("admin.php").nativePath`.
+		It is checked against the file a request resolves to -- the one it
+		names, a directory's index, or a rewrite's target -- for every method,
+		so a blacklisted script is refused to a `POST`, and to a rewrite with
+		the `PHP` flag, as it is to a `GET`. It used to be checked for a static
+		`GET` or `HEAD` alone, and the script ran for the rest.
+
+		This decides what the filesystem answers with. Middleware and routes
+		run first and see every path.
+	**/
 	public var blacklist:Array<String>;
 	public var customHeaders:Array<URLRequestHeader>;
 	public var middleware:Array<Middleware>;

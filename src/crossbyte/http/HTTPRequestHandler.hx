@@ -1070,15 +1070,29 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 
+	/**
+	 * Whether `HTTPServerConfig.blacklist` or `whitelist` keeps back the file
+	 * at `nativePath`. Asked of the file each route ends at -- one served, one
+	 * posted to, a script a rewrite sends to PHP -- since the lists were asked
+	 * only where a file is served: a POST to a blacklisted script, or a PHP
+	 * rewrite onto one, ran it.
+	 */
+	@:noCompletion private function __keptBack(nativePath:String):Bool {
+		var blacklist:Array<String> = __config.blacklist;
+		var whitelist:Array<String> = __config.whitelist;
+		return (blacklist != null && blacklist.length > 0 && blacklist.indexOf(nativePath) != -1)
+			|| (whitelist != null && whitelist.length > 0 && whitelist.indexOf(nativePath) == -1);
+	}
+
+	@:noCompletion private inline function __sendForbidden():Void {
+		__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
+	}
+
 	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false):Void {
 		var file:File = new File(filePath);
 
-		if (__config.blacklist.indexOf(file.nativePath) != -1) {
-			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
-			return;
-		}
-		if (__config.whitelist.length > 0 && __config.whitelist.indexOf(file.nativePath) == -1) {
-			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
+		if (__keptBack(file.nativePath)) {
+			__sendForbidden();
 			return;
 		}
 
@@ -1326,7 +1340,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var path:String = file.nativePath + suffix;
-		if (__config.blacklist.indexOf(path) != -1 || (__config.whitelist.length > 0 && __config.whitelist.indexOf(path) == -1)) {
+		if (__keptBack(path)) {
 			return null;
 		}
 
@@ -3248,6 +3262,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __servePhp(absPhpPath:String, headOnly:Bool, ?body:ByteArray, ?overrideScriptName:String):Void {
+		// Here as well as where each route began, because a rewrite carrying
+		// the PHP flag comes straight here: the one door every script goes
+		// through.
+		if (__keptBack(absPhpPath)) {
+			__sendForbidden();
+			return;
+		}
+
 		if (__php == null) {
 			// A rewrite routed here with the PHP flag on a server that has no
 			// PHP bridge, which the shipped defaults do to every /api path
@@ -3837,6 +3859,13 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __handlePost(filePath:String):Void {
 		var file:File = new File(filePath);
+		// The same answer a GET for it gets, before anything says whether it
+		// is there or what it is.
+		if (__keptBack(file.nativePath)) {
+			__sendForbidden();
+			return;
+		}
+
 		if (!file.exists) {
 			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
 			return;
