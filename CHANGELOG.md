@@ -1932,6 +1932,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `URLLoader` on Node and in a browser sends a `ByteArray` body as the
+  bytes it holds. Both clients sent the buffer beneath it, which runs on
+  past `length` into the room it keeps to grow, and into whatever it held
+  before it was cleared: "hello" written after a cleared secret went out
+  as 69 bytes, the rest of the secret among them. Natively the body was
+  always `length` bytes.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
