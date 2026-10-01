@@ -642,6 +642,74 @@ class JvmTlsTest extends utest.Test {
 		}
 	}
 
+	/**
+		A connection refused in its handshake ends in an orderly close, not a
+		reset, even when the peer is still writing.
+
+		The server closed a refused connection at once, and whatever the peer
+		sent after that drew a reset. A reset throws away what the peer has
+		not read yet, the alert saying why included. On Linux CI the JDK's
+		client, still writing its half of the handshake when the reset came,
+		failed that write and reported "readHandshakeRecord" in place of the
+		alert; on Windows the alert was simply discarded. Here the late write
+		is made to happen.
+	**/
+	public function testARefusedConnectionClosesRatherThanResets():Void {
+		var chain = TLSChainFixture.get();
+		if (chain == null) {
+			Assert.pass();
+			return;
+		}
+
+		var ended:String = null;
+		var outcome = __serve(function(server) {
+			server.setCertificate(chain.direct, chain.directKey);
+		}, function(port) {
+			var socket = new java.net.Socket("127.0.0.1", port);
+			socket.setSoTimeout(5000);
+			var output = socket.getOutputStream();
+			var input = socket.getInputStream();
+
+			// Not TLS: refused at its first record.
+			output.write(haxe.io.Bytes.ofString("GET / HTTP/1.1\r\nHost: x\r\n\r\n").getData());
+			output.flush();
+			// Time for the server to refuse it and close, then more from the
+			// peer, as the rest of a handshake would come, and time for any
+			// reset that draws to arrive.
+			crossbyte.sys.System.sleep(0.3);
+			try {
+				output.write(haxe.io.Bytes.ofString("late").getData());
+				output.flush();
+			} catch (e:Dynamic) {
+				ended = "the late write failed: " + Std.string(e);
+			}
+			crossbyte.sys.System.sleep(0.3);
+
+			var received:Int = 0;
+			var chunk = haxe.io.Bytes.alloc(256).getData();
+			try {
+				while (true) {
+					var n:Int = input.read(chunk);
+					if (n < 0) {
+						break;
+					}
+					received += n;
+				}
+				if (ended == null) {
+					ended = "closed after " + received + " bytes";
+				}
+			} catch (e:Dynamic) {
+				if (ended == null) {
+					ended = "the read failed after " + received + " bytes: " + Std.string(e);
+				}
+			}
+			socket.close();
+		});
+
+		Assert.isTrue(outcome.finished, "the client neither finished nor failed");
+		Assert.isTrue(ended != null && StringTools.startsWith(ended, "closed after"), "the refused connection ended: " + ended);
+	}
+
 	/** And a client refusing a server's certificate tells the server. **/
 	public function testAClientRefusingACertificateSendsItsAlert():Void {
 		var chain = TLSChainFixture.get();
