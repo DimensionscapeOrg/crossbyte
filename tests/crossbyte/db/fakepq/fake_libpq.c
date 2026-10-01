@@ -10,6 +10,8 @@
  *   SELECT 1            one row holding "1"
  *   fake:conninfo       one row holding the connection string it was opened with
  *   fake:count <n>      n rows of one column, "n", holding 1 to n, for paging
+ *   fake:affect <n>     a write that changed n rows, n as the server writes it
+ *                       in the command tag, past 2^31 if asked
  *   fake:sleep <ms>     blocks for that long, or until PQcancel, the way a slow
  *                       query or a lock wait blocks inside PQexec
  *   fake:fail           fails, aborting any open transaction
@@ -114,8 +116,9 @@ typedef struct FakeResult {
 	int length;
 	/* One value per row, for fake:count; NULL for the one-row results. */
 	char** rowValues;
-	char command[32];
-	char tuples[16];
+	char command[48];
+	/* Room for any count PQcmdTuples can give: 2^64 - 1 is twenty digits. */
+	char tuples[24];
 } FakeResult;
 
 static char* fakeDup(const char* text, size_t length) {
@@ -297,6 +300,18 @@ static FakeResult* fakeRun(FakeConn* conn, const char* sql, int nParams, const c
 	if (startsWith(sql, "fake:count ")) {
 		int n = atoi(sql + 11);
 		return fakeCount(n < 0 ? 0 : (n > 10000 ? 10000 : n));
+	}
+
+	if (startsWith(sql, "fake:affect ")) {
+		const char* digits = sql + 12;
+		FakeResult* result = fakeResult(PGRES_COMMAND_OK, "");
+
+		if (result != NULL) {
+			snprintf(result->command, sizeof(result->command), "UPDATE %.20s", digits);
+			snprintf(result->tuples, sizeof(result->tuples), "%.20s", digits);
+		}
+
+		return result;
 	}
 
 	if (strcmp(sql, "fake:fail") == 0) {
