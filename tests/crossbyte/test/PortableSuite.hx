@@ -74,6 +74,8 @@ class PortableSuite {
 		// choose what its own WebSocket trusts.
 		#if nodejs
 		runner.addCase(new crossbyte.net.WebSocketTLSTest());
+		runner.addCase(new crossbyte.net.ServerWebSocketTLSTest());
+		runner.addCase(new crossbyte.net.ServerWebSocketUpgradeLifecycleTest());
 		// And a plain Socket over Node's TLS, checked the same way.
 		runner.addCase(new crossbyte.net.SocketTLSClientTest());
 		runner.addCase(new crossbyte.net.WebSocketClientTest());

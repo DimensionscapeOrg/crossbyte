@@ -22,6 +22,7 @@ import crossbyte.errors.RangeError;
 import crossbyte.errors.Error as CBError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
+import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.net.Socket as CBSocket;
 import crossbyte.io.ByteArray;
@@ -41,17 +42,33 @@ import sys.net.Host;
  * queue. On Node, which accepts as connections arrive and has no queue to
  * leave them in, a connection that would pass that bound is refused.
  *
+ * Here a handshake is the whole of a session's arrival, its TLS handshake
+ * and its upgrade together: `handshakeTimeout` bounds it from accept,
+ * `pendingHandshakeCount()` counts the sessions still in it, and
+ * `handshakeFailures` those that never came out of it, on a plain server
+ * too. `stopAccepting()`, `drain()` and `close()` drop the sessions still in
+ * it.
+ *
  * @author Christopher Speciale
  */
 class ServerWebSocket extends ServerSocket {
 	// Note: use chrome://flags/#allow-insecure-localhost to allow local host certificates in chrome!
 
-	// The TLS surface as a whole. A Node server cannot present a certificate,
-	// that needs sys.ssl, so the constructor refuses a secure server
-	// there and none of this is built, rather than standing as an API that
-	// takes types which do not exist.
 	/**
-		The Certificate Authoritiy responsible for signing the SSL Certificate for a Secure WebSocket Server.
+		The authority a client's certificate has to be issued by: mutual TLS.
+
+		Set, every client is asked for a certificate during the TLS handshake,
+		and one that presents none, or one this authority did not issue, fails
+		the handshake and never becomes a session. That is every browser,
+		unless its user has installed a certificate for this server. `null`,
+		the default, asks clients for nothing.
+
+		The same as `requireClientCertificate()`, and the same on every
+		target. Set it before `bind()`, where a native server builds its TLS
+		configuration; it is refused afterwards.
+
+		@throws Error When this server is not secure, unless the value is
+			`null`, or when it is already bound.
 	**/
 	public var certAuthority(default, set):Certificate;
 
@@ -59,13 +76,6 @@ class ServerWebSocket extends ServerSocket {
 		Indicates whether or not ServerSocket features are supported in the run-time environment.
 	**/
 	public static var isSupported(default, null):Bool = #if html5 false #else true #end;
-
-	#if !nodejs
-	/**
-		Determines whether or not the Websocket Server should verify the Certificate.
-	**/
-	public var verifyCert(default, set):Null<Bool>;
-	#end
 
 	/**
 		Applied to every session this server accepts as its
@@ -227,31 +237,58 @@ class ServerWebSocket extends ServerSocket {
 	@:noCompletion private var __pendingUpgrades:Array<PendingUpgrade> = [];
 
 	@:noCompletion private function set_certAuthority(value:Certificate):Certificate {
-		if (secure) {
-			#if nodejs
-			// Kept for listen(), which builds the server from it. __tlsAuthority
-			// is ServerSocket's, and requireClientCertificate() fills the same
-			// field, one place, so the two cannot disagree about which
-			// authority a client is checked against.
-			__tlsAuthority = value;
-			#else
-			__webServerSocket.setCA(value.__native);
-			#end
+		// Nothing asked of a plain server, so nothing to refuse.
+		if (value == null && !secure) {
+			return certAuthority = null;
 		}
+		__requireUnboundTls("certAuthority");
+
+		#if nodejs
+		// Kept for listen(), which builds the server from it: ca with
+		// requestCert and rejectUnauthorized.
+		__tlsAuthority = value;
+		#else
+		// The authority and the demand together. Natively the authority alone
+		// was installed, with verification left off as the constructor set
+		// it, so a server told to require client certificates let in a client
+		// that presented none, where Node asked and refused.
+		if (value != null) {
+			__webServerSocket.setCA(value.__native);
+		}
+		__webServerSocket.verifyCert = value != null;
+		#end
 
 		return certAuthority = value;
 	}
 
-	#if !nodejs
-	@:noCompletion private function set_verifyCert(value:Bool):Bool {
-		if (secure) {
-			return verifyCert = __webServerSocket.verifyCert = value;
-		}
+	/**
+		Requires connecting clients to present a certificate `ca` issued
+		(mutual TLS): the same as setting `certAuthority`, which see.
 
-		return verifyCert = value;
+		@param ca The authority client certificates must be issued by.
+		@throws Error When this server is not secure, when `ca` is `null`,
+			or when it is already bound.
+	**/
+	override public function requireClientCertificate(ca:Certificate):Void {
+		if (ca == null) {
+			throw new CBError("requireClientCertificate requires a certificate authority.");
+		}
+		certAuthority = ca;
 	}
 
-	#end
+	/**
+		Refuses TLS configuration on a plain server, and once this server is
+		bound: a native server builds its TLS configuration in `bind()`, so
+		anything assigned later would silently never apply.
+	**/
+	@:noCompletion private function __requireUnboundTls(field:String):Void {
+		if (!secure) {
+			throw new CBError('$field is only available on a ServerWebSocket constructed with secure = true.');
+		}
+		if (bound || listening || __listenerReleased || __closed) {
+			throw new CBError('$field must be set before bind(), where the TLS configuration is built.');
+		}
+	}
 
 	/**
 		Client connections that have completed their handshake and not yet
@@ -261,6 +298,23 @@ class ServerWebSocket extends ServerSocket {
 
 	private function get_clientCount():Int {
 		return __clients.length;
+	}
+
+	/**
+		Sessions accepted and still arriving: completing their TLS handshake
+		or their upgrade, together the WebSocket opening handshake. It is
+		what `maxPendingHandshakes` bounds, and `handshakeTimeout` times from
+		accept. On Node, which completes its own TLS handshakes, a session is
+		counted once Node hands it over.
+
+		One that never arrives, its TLS handshake or its upgrade request
+		failed, its peer left first, or `handshakeTimeout` ran out, is
+		counted in `handshakeFailures`, on a plain server too. One that
+		`upgrade` refused, or that `stopAccepting()`, `drain()` or `close()`
+		let go of, is not. Both used to stay at 0 on every `ServerWebSocket`.
+	**/
+	override public function pendingHandshakeCount():Int {
+		return __pendingUpgrades.length;
 	}
 
 	/**
@@ -274,7 +328,8 @@ class ServerWebSocket extends ServerSocket {
 		Creates a ServerWebSocket.
 
 		@param secure When `true`, the server terminates TLS (`wss://`) and
-			requires a certificate via `cert` before listening.
+			requires a certificate, through `cert` or `setCertificate()`,
+			before `bind()`.
 		@throws Error On the eval target, when `secure` is true. Inherited from
 			`ServerSocket`, which cannot install a certificate there.
 	**/
@@ -284,11 +339,6 @@ class ServerWebSocket extends ServerSocket {
 		// the property ServerSocket exposes and this class inherits, read
 		// false on a server that was terminating TLS. Two fields for one fact,
 		// and the public one was the wrong one.
-		//
-		// It also means a secure ServerWebSocket now refuses on the jvm target
-		// at construction, where before it was accepted and then had no TLS to
-		// give it. That refusal was always ServerSocket's, and skipping past
-		// it was never deliberate.
 		super(secure);
 
 		// The server dispatches CONNECT to itself once a handshake
@@ -344,11 +394,73 @@ class ServerWebSocket extends ServerSocket {
 	}
 	#end
 
-	@:noCompletion private function __clearPendingUpgrade(session:WebSocket):Void {
+	/** Takes `session` off the list of those upgrading; whether it was on it. **/
+	@:noCompletion private function __clearPendingUpgrade(session:WebSocket):Bool {
 		for (pending in __pendingUpgrades) {
 			if (pending.session == session) {
 				__pendingUpgrades.remove(pending);
-				return;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+		When a session accepted at `since` is given up on: `handshakeTimeout`
+		later, or never for a timeout of zero. Every session is listed either
+		way, it is what `maxPendingHandshakes` counts and what stopping drops,
+		where one with no deadline used to be left off, uncounted and
+		undroppable.
+	**/
+	@:noCompletion private inline function __upgradeDeadline(since:Float):Float {
+		return handshakeTimeout > 0 ? since + handshakeTimeout : Math.POSITIVE_INFINITY;
+	}
+
+	/**
+		A session that ended before its upgrade completed, told as it closes.
+
+		Nothing is owed for one this server let go of itself, at its
+		deadline, or in `stopAccepting()`, `drain()` or `close()`, which
+		takes it off the list first. Any other is counted in
+		`handshakeFailures`, unless `upgrade` refused it: a refusal is a
+		decision, not a failure.
+	**/
+	@:noCompletion private function __upgradeEnded(session:WebSocket):Void {
+		if (!__clearPendingUpgrade(session)) {
+			return;
+		}
+		if (!@:privateAccess session.__upgradeRefused) {
+			handshakeFailures++;
+		}
+		#if !nodejs
+		// And a listener set aside at the limit can take the next.
+		__syncListenerWatch();
+		#end
+	}
+
+	/**
+		Closes every session still upgrading: `stopAccepting()`, `drain()` and
+		`close()` each end this server's part in sessions not yet open.
+
+		None of them did. The reaper runs from the tick those calls take
+		away, so a session caught mid-upgrade was left with no deadline at
+		all, holding its descriptor for as long as its peer liked, and one
+		that finished upgrading afterwards opened, and was announced, on a
+		server that had stopped or was draining. Not counted as failures:
+		they were let go of, not lost.
+	**/
+	@:noCompletion private function __dropPendingUpgrades():Void {
+		if (__pendingUpgrades.length == 0) {
+			return;
+		}
+
+		var dropped:Array<PendingUpgrade> = __pendingUpgrades;
+		__pendingUpgrades = [];
+		for (pending in dropped) {
+			if (pending.session != null) {
+				try {
+					pending.session.close();
+				} catch (_:Dynamic) {}
 			}
 		}
 	}
@@ -360,6 +472,7 @@ class ServerWebSocket extends ServerSocket {
 
 		var now:Float = haxe.Timer.stamp();
 		var still:Array<PendingUpgrade> = [];
+		var expired:Array<WebSocket> = null;
 
 		for (pending in __pendingUpgrades) {
 			// Gone on its own, by close or by error. Nothing owed here.
@@ -385,12 +498,30 @@ class ServerWebSocket extends ServerSocket {
 				continue;
 			}
 
-			try {
-				pending.session.close();
-			} catch (_:Dynamic) {}
+			if (expired == null) {
+				expired = [];
+			}
+			expired.push(pending.session);
 		}
 
+		// Settled before anything is closed: closing a session tells this
+		// server, which would otherwise be changing the list it was walking.
 		__pendingUpgrades = still;
+		if (expired == null) {
+			return;
+		}
+
+		for (session in expired) {
+			// Given up on, so it failed to arrive, counted here, since it is
+			// off the list by the time its close is told.
+			handshakeFailures++;
+			try {
+				session.close();
+			} catch (_:Dynamic) {}
+		}
+		#if !nodejs
+		__syncListenerWatch();
+		#end
 	}
 
 	@:noCompletion private function __trackClient(e:ServerSocketConnectEvent):Void {
@@ -434,7 +565,11 @@ class ServerWebSocket extends ServerSocket {
 		__webServerSocket = new FlexSocket(secure);
 
 		if (secure) {
-			verifyCert = false;
+			// A TLS socket verifies its peer unless told otherwise, which on a
+			// server means demanding a certificate from every client, every
+			// browser refused. Clients are asked for one only once
+			// certAuthority says to.
+			__webServerSocket.verifyCert = false;
 		}
 
 		__webServerSocket.setBlocking(false);
@@ -447,6 +582,12 @@ class ServerWebSocket extends ServerSocket {
 
 	/**
 		Binds this socket to the specified local address and port.
+
+		On Node, which claims the address only once `listen()` starts, this
+		cannot know whether it will take: a port in use, or an address that is
+		not local, is reported then instead, as an `ioError` and then `close`.
+		And a `localPort` of 0 reads 0 until listening has begun.
+
 		@param localPort 	(default = 0) The number of the port to bind to on the local computer.
 							If localPort, is set to 0 (the default), the next available system port is bound. Permission
 							to connect to a port number below 1024 is subject to the system security policy. On Mac and
@@ -514,9 +655,11 @@ class ServerWebSocket extends ServerSocket {
 		open and usable.
 
 		The listening socket is released, so a successor process can bind
-		the port immediately during a deploy. Unlike `close()`, no `close`
-		event is dispatched and the server is not marked closed. Safe to
-		call more than once.
+		the port immediately during a deploy, and a session still completing
+		its TLS handshake or its upgrade is dropped, as `ServerSocket` drops
+		a handshake in flight: nothing opens on a server that has stopped.
+		Unlike `close()`, no `close` event is dispatched and the server is
+		not marked closed. Safe to call more than once.
 	**/
 	override public function stopAccepting():Void {
 		if (!listening && !bound) {
@@ -534,6 +677,7 @@ class ServerWebSocket extends ServerSocket {
 		listening = false;
 		bound = false;
 		__listenerReleased = true;
+		__dropPendingUpgrades();
 	}
 
 	/**
@@ -563,8 +707,17 @@ class ServerWebSocket extends ServerSocket {
 		@param closeCode WebSocket close code sent to clients. Defaults to
 			1001 ("going away"), the code meaning a server is shutting
 			down.
+		@throws ArgumentError If `closeCode` is not one that may be sent, as
+			`WebSocket.closeWith` says; nothing is stopped then.
 	**/
 	public function drain(timeoutSeconds:Float = 30.0, ?onComplete:Void->Void, closeCode:Int = 1001):Void {
+		// Asked before anything is stopped. Each session's closeWith refused a
+		// code like this, and the refusal was swallowed with the others, so
+		// no session was sent a close frame: they were dropped at the end of
+		// the wait with nothing to tell them why.
+		if (!@:privateAccess WebSocket.__isSendableCloseCode(closeCode)) {
+			throw new ArgumentError('$closeCode is not a close code that may be sent; use 1000, 1001, 1002-1014 (but 1004-1006), or 3000-4999.');
+		}
 		if (draining) {
 			return;
 		}
@@ -619,7 +772,9 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
-		Closes the socket and stops listening for connections.
+		Closes the socket and stops listening for connections, dropping any
+		session still completing its TLS handshake or its upgrade. Sessions
+		already open are left to their owners, or to `drain()`.
 		Closed sockets cannot be reopened. Create a new ServerSocket instance instead.
 		@throws Error This error occurs if the socket could not be closed, or the socket was not open.
 	**/
@@ -632,12 +787,15 @@ class ServerWebSocket extends ServerSocket {
 			__closed = true;
 			__detachTick();
 			__cbInstance = null;
+			__dropPendingUpgrades();
 			return;
 		}
 
 		// Out of the poll set before the listener is closed; see
 		// Socket.__cleanSocket.
 		__detachTick();
+		// Before the listener, whose close can throw.
+		__dropPendingUpgrades();
 		try {
 			__webServerSocket.close();
 		} catch (e:Dynamic) {
@@ -677,17 +835,25 @@ class ServerWebSocket extends ServerSocket {
 		if (__closed) {
 			throw new IOError("Operation attempted on invalid socket.");
 		}
+		// As ServerSocket asks. Natively nothing did: the server listened,
+		// and every handshake failed without a word.
+		if (secure && !__hasCertificate) {
+			throw new IOError("A secure ServerWebSocket requires a certificate, through cert or setCertificate(), before bind().");
+		}
 		if (backlog < 0) {
 			throw new RangeError("The supplied index is out of bounds.");
 		} else if (backlog == 0) {
 			backlog = ServerSocket.DEFAULT_BACKLOG;
 		}
 
-		#if nodejs
+		// Asked on every target, as the doc says. Natively nothing did: Windows
+		// refused the listen with an error of the socket's own, and Linux and
+		// macOS bound the socket to a port of their choosing and listened.
 		if (!bound) {
-			throw new IOError("Operation attempted on invalid socket.");
+			throw new IOError("Operation attempted on invalid socket: listen() needs bind() first.");
 		}
 
+		#if nodejs
 		__makeNodeServer();
 		__webServerSocket.listen({port: localPort, host: localAddress, backlog: backlog}, function():Void {
 			var assigned:Dynamic = __webServerSocket.address();
@@ -786,8 +952,8 @@ class ServerWebSocket extends ServerSocket {
 
 			var accepted = __fromSockettoWebsocket(socket);
 
-			if (accepted != null && handshakeTimeout > 0) {
-				__pendingUpgrades.push({session: accepted, deadline: haxe.Timer.stamp() + handshakeTimeout});
+			if (accepted != null) {
+				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(haxe.Timer.stamp())});
 			}
 		}
 		__syncListenerWatch();
@@ -823,62 +989,174 @@ class ServerWebSocket extends ServerSocket {
 	}
 
 	/**
-		Closes sessions that were accepted and never finished arriving.
+		Takes one connection from the listen queue, or `null` when none is
+		waiting or the system would not hand one over.
 
-		Without this a peer completes the TCP connection, stalls, and holds a
-		socket for as long as it likes, bounded only by the operating
-		system's own limits, which is a slow way to lose a server rather than
-		a fast one. `handshakeTimeout` is inherited from `ServerSocket` and
-		means the same thing here.
+		A refusal, the process out of descriptors (`EMFILE`), the system
+		out of memory, is `ServerSocket`'s accept failure: counted in
+		`acceptFailures`, reported once for a run of them, and the server
+		goes on listening, with the connection left in the kernel's queue to
+		be taken once a descriptor frees. Here hxcpp's refusal, a bare string,
+		was swallowed without a trace, and the jvm's, an I/O error, closed the
+		server.
 	**/
 	@:noCompletion private function __acceptPending():FlexSocket {
+		#if eval
+		// eval cannot make a socket non-blocking, its setBlocking does
+		// nothing, so an accept with no connection waiting would hold
+		// the runtime until one came. Asked first, as ServerSocket does.
 		try {
-			#if eval
-			// eval cannot make a socket non-blocking, its setBlocking does
-			// nothing, so an accept with no connection waiting would hold
-			// the runtime until one came. Asked first, as ServerSocket does.
 			if (sys.net.Socket.select([__webServerSocket], [], [], 0).read.length == 0) {
 				return null;
 			}
-			#end
-			return __webServerSocket.accept();
-		} catch (e:Error) {
-			// One predicate, and no per-target branch: the enum switch that
-			// needed a jvm workaround here (VerifyError: bad type on operand
-			// stack, from matching inside a catch) now lives in a plain
-			// static function where that mis-compile does not apply.
-			if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
-				close();
-				dispatchEvent(new Event(Event.CLOSE));
-			}
+		} catch (_:Dynamic) {
+			return null;
+		}
+		#end
+
+		// Answered from inside the try rather than through a local, for the
+		// jvm reason noted on this_onTick.
+		try {
+			var socket:FlexSocket = __takeConnection();
+			__acceptFailing = false;
+			return socket;
 		} catch (e:Dynamic) {
-			// Do nothing.
+			// One predicate for every spelling of "none waiting": the typed
+			// error, and the bare string a TLS layer raises.
+			if (!crossbyte._internal.socket.BlockedError.isBlocked(e)) {
+				__onAcceptFailed(e);
+			}
 		}
 		return null;
+	}
+
+	/** Takes one connection from this server's own listener. **/
+	@:noCompletion override private function __takeConnection():sys.net.Socket {
+		return __webServerSocket.accept();
 	}
 	#end
 
 	/**
-		The certificate for a Secure WebSocket Server.
+		The certificate this server presents to clients, with its private key.
+
+		Set it before `bind()`, where a native server builds its TLS
+		configuration: it is refused afterwards, where it used to be taken
+		and then never presented. A secure server will not `listen()`
+		without one.
+
+		@throws Error When this server is not secure, or is already bound.
+		@throws ArgumentError When the certificate or the key is missing.
 	**/
 	public var cert(default, set):{certificate:Certificate, key:Key};
 
 	@:noCompletion private function set_cert(value:{certificate:Certificate, key:Key}):{certificate:Certificate, key:Key} {
-		if (secure) {
-			#if nodejs
-			// Kept, not applied: listen() builds the server from it. Assigning
-			// after listen() therefore does nothing, which is the same as on a
-			// native server, where the TLS configuration is materialized when
-			// the listener is bound.
-			#else
-			__webServerSocket.setCertificate(value.certificate.__native, value.key.__native);
-			#end
-		}
-
+		__installCertificate("cert", value == null ? null : value.certificate, value == null ? null : value.key);
 		return cert = value;
 	}
 
+	/**
+		Installs the certificate this server presents, with its private key:
+		the same as setting `cert`, which see.
+
+		@throws Error When this server is not secure, or is already bound.
+		@throws ArgumentError When the certificate or the key is missing.
+	**/
+	override public function setCertificate(certificate:Certificate, key:Key):Void {
+		__installCertificate("setCertificate", certificate, key);
+		@:bypassAccessor cert = {certificate: certificate, key: key};
+	}
+
+	/**
+		Adds a certificate presented to a client that asks, through Server
+		Name Indication, for a name `serverNameMatch` accepts: one listener
+		for several host names. A name no entry claims gets `cert`.
+
+		Before `bind()`, as `cert` is.
+
+		@throws Error When this server is not secure, or is already bound.
+		@throws ArgumentError When the predicate, the certificate or the key
+			is missing.
+	**/
+	override public function addSNICertificate(serverNameMatch:String->Bool, certificate:Certificate, key:Key):Void {
+		__requireUnboundTls("addSNICertificate");
+		if (serverNameMatch == null || certificate == null || key == null) {
+			throw new ArgumentError("addSNICertificate needs a predicate, a certificate and its key.");
+		}
+
+		#if nodejs
+		__tlsSni.push({match: serverNameMatch, certificate: certificate, key: key});
+		#else
+		__webServerSocket.addSNICertificate(serverNameMatch, certificate.__native, key.__native);
+		#end
+		__hasCertificate = true;
+	}
+
+	/**
+		Advertises `protocols` to clients during the TLS handshake, most
+		preferred first, as `ServerSocket.setALPN` does; each session reports
+		what it agreed in `alpnProtocol`. Does nothing where `alpnSupported`
+		is `false`.
+
+		Before `bind()`, as `cert` is.
+
+		@throws Error When this server is not secure, or is already bound.
+	**/
+	override public function setALPN(protocols:Null<Array<String>>):Void {
+		__requireUnboundTls("setALPN");
+
+		#if nodejs
+		__tlsAlpn = protocols;
+		#else
+		__webServerSocket.setALPN(protocols);
+		#end
+	}
+
+	/**
+		The certificate and key, onto the listener natively and kept for
+		listen() on Node, which takes a TLS server's key and certificate when
+		it is created.
+
+		The TLS methods this class inherits from `ServerSocket` reached into
+		the listener that class builds, which this one never does: natively a
+		null dereference, and on Node a setting this server's listener never
+		read. They are overridden here, each onto this class's own listener.
+	**/
+	@:noCompletion private function __installCertificate(field:String, certificate:Certificate, key:Key):Void {
+		__requireUnboundTls(field);
+		if (certificate == null || key == null) {
+			throw new ArgumentError('$field needs a certificate and its key.');
+		}
+
+		#if nodejs
+		__tlsCertificate = certificate;
+		__tlsKey = key;
+		#else
+		__webServerSocket.setCertificate(certificate.__native, key.__native);
+		#end
+		__hasCertificate = true;
+	}
+
 	#if nodejs
+	// The longest a Node timer waits: past it Node fires at once instead.
+	@:noCompletion private static inline var NODE_TIMEOUT_MAX:Float = 2147483647;
+
+	// Where a raw TLS connection's arrival is noted, for the deadline its
+	// session is given once Node hands it over.
+	@:noCompletion private static inline var ACCEPTED_AT:String = "__crossbyteAcceptedAt";
+
+	/**
+		When `connection` arrived: for a TLS connection, when its raw
+		connection did, so its TLS handshake counts against
+		`handshakeTimeout` as it does natively, rather than earning the upgrade
+		a whole one of its own after it. A TLS socket keeps its raw one as
+		`_parent`; where it does not, the deadline counts from now.
+	**/
+	@:noCompletion private function __acceptedAt(connection:NodeSocket):Float {
+		var raw:Dynamic = (cast connection : Dynamic)._parent;
+		var at:Dynamic = raw == null ? null : Reflect.field(raw, ACCEPTED_AT);
+		return at == null ? haxe.Timer.stamp() : at;
+	}
+
 	/**
 	 * Builds the listener, plain or TLS. The mirror of
 	 * `ServerSocket.__makeNodeServer`, and deferred for the same reason: Node
@@ -891,6 +1169,16 @@ class ServerWebSocket extends ServerSocket {
 		}
 
 		var accept = function(connection:NodeSocket):Void {
+			// A connection that finishes arriving after this server stopped:
+			// a TLS handshake in flight at stopAccepting() or close(), which
+			// Node carries on with. It was taken on as a session, after
+			// close(), by a server with no runtime, and could open and be
+			// announced on a server that had stopped, or was draining.
+			if (__closed || __listenerReleased || !listening) {
+				connection.destroy();
+				return;
+			}
+
 			if (!__hasListener) {
 				// Node has already accepted this and there is no backlog to
 				// leave it sitting in, so a session nobody is listening for is
@@ -920,20 +1208,24 @@ class ServerWebSocket extends ServerSocket {
 			// Without it a peer could connect, send no upgrade request, and hold
 			// the descriptor for as long as it liked, the native path has been
 			// closing those for a while, and Node was the one serving the web.
-			if (accepted != null && handshakeTimeout > 0) {
-				__pendingUpgrades.push({session: accepted, deadline: haxe.Timer.stamp() + handshakeTimeout});
+			if (accepted != null) {
+				__pendingUpgrades.push({session: accepted, deadline: __upgradeDeadline(__acceptedAt(connection))});
 			}
 		};
 
 		if (secure) {
-			if (cert == null) {
-				throw new IOError("A secure ServerWebSocket requires cert before listen().");
-			}
+			// Everything the TLS methods were given, where only `cert` and the
+			// authority were read: a certificate installed with
+			// setCertificate(), the SNI entries and the ALPN list were kept
+			// where this listener never looked.
+			var options:Dynamic = {};
 
-			var options:Dynamic = {key: cert.key.__pem, cert: cert.certificate.__pem};
-
-			if (cert.key.__passphrase != null) {
-				options.passphrase = cert.key.__passphrase;
+			if (__tlsCertificate != null && __tlsKey != null) {
+				options.key = __tlsKey.__pem;
+				options.cert = __tlsCertificate.__pem;
+				if (__tlsKey.__passphrase != null) {
+					options.passphrase = __tlsKey.__passphrase;
+				}
 			}
 
 			if (__tlsAuthority != null) {
@@ -942,28 +1234,102 @@ class ServerWebSocket extends ServerSocket {
 				options.rejectUnauthorized = true;
 			}
 
+			if (__tlsAlpn != null && __tlsAlpn.length > 0) {
+				options.ALPNProtocols = __tlsAlpn;
+			}
+
+			if (__tlsSni.length > 0) {
+				// Each entry's context made once, here, rather than for every
+				// handshake that asks for its name: making one parses the
+				// certificate and the key, which is the costly part. And with
+				// the key's passphrase, which a context made from the key alone
+				// could not open.
+				var sni:Array<{match:String->Bool, context:Dynamic}> = [];
+				for (entry in __tlsSni) {
+					var settings:Dynamic = {key: entry.key.__pem, cert: entry.certificate.__pem};
+					if (entry.key.__passphrase != null) {
+						settings.passphrase = entry.key.__passphrase;
+					}
+					sni.push({match: entry.match, context: Tls.createSecureContext(settings)});
+				}
+
+				options.SNICallback = function(servername:String, callback:Dynamic):Void {
+					for (entry in sni) {
+						// A predicate that throws claims nothing: this runs from
+						// Node's own loop, where a throw ends the process.
+						var claimed:Bool = try entry.match(servername) catch (_:Dynamic) false;
+						if (claimed) {
+							callback(null, entry.context);
+							return;
+						}
+					}
+
+					// A name no entry claims gets the default certificate, as it
+					// does natively.
+					callback(null, null);
+				};
+			}
+
+			// Node's own bound on the TLS handshake, which was its default of
+			// two minutes: handshakeTimeout was never passed, so natively a
+			// peer that said nothing was dropped at it and here held its
+			// descriptor for 120 s. Node reads 0 as its default, so no deadline
+			// is the longest it will take.
+			options.handshakeTimeout = handshakeTimeout > 0 ? Math.min(Math.fceil(handshakeTimeout * 1000), NODE_TIMEOUT_MAX) : NODE_TIMEOUT_MAX;
+
 			// tls.Server extends net.Server, so listen, close and address are
 			// the same calls below this point.
 			__webServerSocket = Tls.createServer(options, accept);
 
 			// The raw TCP connection, before TLS starts on it: the point where
-			// a refusal still costs nothing.
+			// a refusal still costs nothing, and where the session's deadline
+			// starts, handshakeTimeout covers its TLS and its upgrade
+			// together, as natively.
 			__webServerSocket.on("connection", function(raw:NodeSocket):Void {
 				if (!__nodeAdmits(raw)) {
 					raw.destroy();
+					return;
 				}
+				Reflect.setField(raw, ACCEPTED_AT, haxe.Timer.stamp());
+			});
+
+			// A handshake that failed, or ran out of handshakeTimeout, which
+			// Node reports here and nowhere else: counted, as natively, and the
+			// connection let go, Node leaves that to whoever listens here.
+			__webServerSocket.on("tlsClientError", function(_:Dynamic, socket:NodeSocket):Void {
+				handshakeFailures++;
+				try {
+					socket.destroy();
+				} catch (_:Dynamic) {}
 			});
 		} else {
 			__webServerSocket = Net.createServer(accept);
 		}
 
-		__webServerSocket.on("error", function(_):Void {
+		// A port already in use, or an address that is not local, reaches a
+		// Node server here, once listen() has tried: reported as a
+		// DatagramSocket reports it on Node, an ioError and then close. It
+		// dispatched close alone, so a listener on ioError, which is where
+		// a native bind() failure arrives, never heard why.
+		__webServerSocket.on("error", function(error:Dynamic):Void {
 			if (__closed) {
 				return;
 			}
 
-			close();
-			dispatchEvent(new Event(Event.CLOSE));
+			var why:String = error != null && error.message != null ? Std.string(error.message) : Std.string(error);
+			var message:String = "Could not listen on " + localAddress + ":" + localPort + ": " + why;
+			try {
+				close();
+			} catch (_:Dynamic) {}
+
+			// Contained: this runs from Node's own loop, where a listener that
+			// threw would end the process.
+			try {
+				dispatchEvent(new IOErrorEvent(IOErrorEvent.IO_ERROR, message));
+				dispatchEvent(new Event(Event.CLOSE));
+			} catch (e:Dynamic) {
+				CrossByte.__socketListenerThrew(e, this, "A listener of a ServerWebSocket that could not listen threw");
+			}
 		});
 	}
 	#end
