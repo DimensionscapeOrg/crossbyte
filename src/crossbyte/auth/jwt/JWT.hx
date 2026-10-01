@@ -153,7 +153,7 @@ class JWT {
 	 * objects and arrays nest more than 32 deep is `MALFORMED`, refused before
 	 * it is parsed. A header with `crit` is `UNSUPPORTED_CRITICAL`: no
 	 * extension is implemented here, and RFC 7515 makes such a token invalid
-	 * where its extensions are not.
+	 * to a verifier that does not understand the extensions it names.
 	 *
 	 * @param now As for `verifyToken`.
 	 */
