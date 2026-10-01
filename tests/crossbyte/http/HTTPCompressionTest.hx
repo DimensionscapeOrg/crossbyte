@@ -292,6 +292,66 @@ class HTTPCompressionTest extends utest.Test {
 		});
 	}
 
+	public function testAGzSiblingIsServedToAClientThatAlsoTakesBrotli(async:Async):Void {
+		// A browser lists gzip, deflate and br, and Brotli was chosen first and
+		// only its sibling looked for: a file with only a .gz beside it went out
+		// as br encoded on the spot, and one too large to hold went out as it is
+		// on disk, 307,200 bytes where its .gz was 49,755.
+		var small:String = __text(8192);
+		var large:String = __text(300 * 1024);
+		var server:HTTPServer = __serve(null, root -> {
+			__write(root, "small.js", small);
+			__writeBytes(root, "small.js.gz", __encode(small + "/* prebuilt gz */", CompressionAlgorithm.GZIP));
+			__write(root, "large.js", large);
+			__writeBytes(root, "large.js.gz", __encode(large + "/* prebuilt gz */", CompressionAlgorithm.GZIP));
+		});
+
+		var browser:String = "Accept-Encoding: gzip, deflate, br\r\n";
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /small.js HTTP/1.1\r\nHost: x\r\n" + browser + "\r\n",
+			"GET /large.js HTTP/1.1\r\nHost: x\r\n" + browser + "\r\n",
+			"HEAD /large.js HTTP/1.1\r\nHost: x\r\n" + browser + "\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals("gzip", responses[0].headers.get("content-encoding"), "a .gz was passed over for a client that also takes br");
+			if (responses[0].headers.get("content-encoding") == "gzip") {
+				Assert.isTrue(__decode(responses[0].bodyBytes, CompressionAlgorithm.GZIP) == small + "/* prebuilt gz */", "the .gz sibling was not what went out");
+			}
+			Assert.equals("gzip", responses[1].headers.get("content-encoding"), "a file too large to hold went out raw beside its .gz");
+			if (responses[1].headers.get("content-encoding") == "gzip") {
+				Assert.isTrue(__decode(responses[1].bodyBytes, CompressionAlgorithm.GZIP) == large + "/* prebuilt gz */", "the large .gz sibling was not what went out");
+			}
+			Assert.equals("gzip", responses[2].headers.get("content-encoding"), "a HEAD named another coding than its GET");
+			async.done();
+		});
+	}
+
+	public function testSiblingsAreTriedInTheClientsOrder(async:Async):Void {
+		// Both siblings there: the client's q-values pick, and an equal pair
+		// goes to Brotli, the smaller.
+		var text:String = __text(8192);
+		var server:HTTPServer = __serve(null, root -> {
+			__write(root, "app.js", text);
+			__writeBytes(root, "app.js.br", __encode(text + "/* prebuilt br */", CompressionAlgorithm.BROTLI));
+			__writeBytes(root, "app.js.gz", __encode(text + "/* prebuilt gz */", CompressionAlgorithm.GZIP));
+		});
+
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /app.js HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip, br;q=0.5\r\n\r\n",
+			"GET /app.js HTTP/1.1\r\nHost: x\r\nAccept-Encoding: gzip, deflate, br\r\n\r\n",
+			// Brotli is never taken from a wildcard, as for any response.
+			"GET /app.js HTTP/1.1\r\nHost: x\r\nAccept-Encoding: *\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+
+			Assert.equals("gzip", responses[0].headers.get("content-encoding"), "a client preferring gzip did not get the .gz");
+			Assert.equals("br", responses[1].headers.get("content-encoding"), "an equal choice did not go to br");
+			Assert.equals("gzip", responses[2].headers.get("content-encoding"));
+			async.done();
+		});
+	}
+
 	// ---------------------------------------------------------------- utils
 
 	private function __serve(configure:Null<HTTPServerConfig->Void>, ?populate:File->Void):HTTPServer {

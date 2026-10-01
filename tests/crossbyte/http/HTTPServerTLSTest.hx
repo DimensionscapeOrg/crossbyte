@@ -667,6 +667,34 @@ class HTTPServerTLSTest extends utest.Test {
 		config.tlsCertificatePath = "";
 		Assert.isFalse(config.tlsEnabled, "an empty certificate path claimed TLS");
 	}
+
+	/**
+		One of the two paths, and not the other, is refused rather than served
+		as plain HTTP. `tlsEnabled` answered false for it, which the case above
+		pins, and the server went on to listen in plaintext for a caller who
+		had asked for HTTPS and been told nothing: a misspelt key variable was
+		an unencrypted server.
+	**/
+	public function testHalfATlsConfigurationIsRefused():Void {
+		for (half in [{certificate: "cert.pem", key: null}, {certificate: null, key: "key.pem"}, {certificate: "cert.pem", key: ""}]) {
+			var config = new HTTPServerConfig("127.0.0.1", 0);
+			config.tlsCertificatePath = half.certificate;
+			config.tlsKeyPath = half.key;
+			var refused:Bool = false;
+			try {
+				config.validate();
+			} catch (_:crossbyte.errors.ArgumentError) {
+				refused = true;
+			}
+			Assert.isTrue(refused, 'a certificate of ${half.certificate} with a key of ${half.key} was accepted as plain HTTP');
+		}
+
+		// Neither, which is plain HTTP on purpose, is fine.
+		var plain = new HTTPServerConfig("127.0.0.1", 0);
+		plain.tlsCertificatePath = "";
+		plain.validate();
+		Assert.isFalse(plain.tlsEnabled);
+	}
 }
 
 #if (cpp || java || jvm)

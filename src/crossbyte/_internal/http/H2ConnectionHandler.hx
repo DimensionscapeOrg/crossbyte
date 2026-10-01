@@ -9,6 +9,8 @@ import crossbyte._internal.http.h2.H2ErrorCode;
 import crossbyte._internal.http.h2.H2ServerConnection;
 import crossbyte._internal.http.h2.H2ServerRequest;
 import crossbyte._internal.php.PHPBridge;
+import crossbyte.core.CrossByte;
+import crossbyte.core._internal.PassFlush;
 import crossbyte.events.Event;
 import crossbyte.events.HTTPStatusEvent;
 import crossbyte.events.ProgressEvent;
@@ -32,7 +34,7 @@ import haxe.io.Bytes;
  * once on a single socket; sharing one would interleave them.
  */
 @:access(crossbyte.http.HTTPRequestHandler)
-class H2ConnectionHandler {
+class H2ConnectionHandler implements PassFlush {
 	private final __socket:Socket;
 	private final __config:HTTPServerConfig;
 	private final __php:PHPBridge;
@@ -43,15 +45,12 @@ class H2ConnectionHandler {
 	// response was ever counted.
 	private final __onResponse:Null<(HTTPStatusEvent, HTTPRequestHandler) -> Void>;
 
-	// Advanced on every read. An HTTP/2 connection is idle between requests
-	// by design, so silence alone means nothing, what matters is silence
-	// for longer than the configuration allows.
-	//
-	// On haxe.Timer.stamp(), the clock checkDeadline is handed. The sweep once
-	// handed it Sys.time() while this was stamped, and on cpp and Node, where
-	// those are different clocks, every connection read as idle since 1970
-	// and was closed at the first sweep, a request in flight or not.
-	private var __lastActivity:Float;
+	// Set while a close is waiting for the end of the pass: see __onDrained.
+	private var __closeQueued:Bool = false;
+
+	// What each stream pumping a body out asked the sweep to call, by stream:
+	// see HTTPResponseWriter.sweepWith. Made when the first is asked for.
+	private var __sweeps:Null<Map<Int, Float->Void>> = null;
 
 	/**
 	 * @param buffered Bytes already read off the socket, if this connection was
@@ -71,10 +70,13 @@ class H2ConnectionHandler {
 		// The limit an HTTP/1.1 body is held to. Without it DATA piled up for
 		// as long as a client sent it.
 		__connection.maxRequestBodySize = config.maxRequestBodySize;
+		// What HTTP/1.1 closes after: keepAliveMaxRequests responses, or one
+		// with keepAlive off. A GOAWAY says so here.
+		__connection.maxRequests = config.keepAlive ? config.keepAliveMaxRequests : 1;
 		__connection.onRequest = __serve;
+		__connection.onRequestHead = __admit;
+		__connection.onDrained = __onDrained;
 		__connection.onConnectionError = __onConnectionError;
-
-		__lastActivity = haxe.Timer.stamp();
 
 		__socket.addEventListener(ProgressEvent.SOCKET_DATA, __onData);
 		__socket.addEventListener(Event.CLOSE, __onClosed);
@@ -93,11 +95,6 @@ class H2ConnectionHandler {
 		if (!__socket.connected) {
 			return;
 		}
-
-		// A response going out is activity too: idle time counts from the
-		// last frame either way, so a connection that has just answered a
-		// long poll is not taken for one silent since the request came in.
-		__lastActivity = haxe.Timer.stamp();
 
 		__socket.writeBytes(bytes, 0, bytes.length);
 
@@ -122,7 +119,6 @@ class H2ConnectionHandler {
 			return;
 		}
 
-		__lastActivity = haxe.Timer.stamp();
 		__receive(inbound);
 	}
 
@@ -148,7 +144,7 @@ class H2ConnectionHandler {
 
 	/** A writer's flush: at once, unless a read is being answered, which flushes when it is done. **/
 	private function __flushUnlessReceiving():Void {
-		if (!__receiving) {
+		if (!__receiving && __socket.connected) {
 			__socket.flush();
 		}
 	}
@@ -161,14 +157,22 @@ class H2ConnectionHandler {
 	}
 
 	/**
-	 * Closes the connection if it has gone quiet for longer than allowed.
+	 * Holds the connection to its deadlines.
 	 *
-	 * Two deadlines, because silence means different things. With no stream
-	 * open the peer is simply between requests, which HTTP/2 is designed for,
-	 * so it gets the keep-alive idle allowance. With a request still arriving
-	 * it owes a body that never came, and that is the request timeout. With
-	 * every open stream's request in hand the wait is the application's, and
-	 * there is no deadline.
+	 * Two, because they bound different things. A request still arriving
+	 * owes the rest of itself within `requestTimeout` of its own HEADERS:
+	 * one that has not is answered `408` on its stream, and the connection
+	 * carries on with the rest. One that has arrived is the application's to
+	 * answer, for as long as that takes, a long poll, a slow upstream, as
+	 * an HTTP/1.1 request stops its clock once read. And a connection with no
+	 * stream open is between requests, which HTTP/2 is designed for, so it
+	 * has the keep-alive allowance, counted from when its last stream ended.
+	 *
+	 * Neither is moved by what does not advance a request. Every frame read
+	 * or written set one clock back, so a client trickling a byte of body
+	 * every 0.4 s, or sending nothing but PINGs, held a connection open past
+	 * both for as long as it cared to. A request late under that clock took
+	 * the whole connection with it, and every other stream on it.
 	 *
 	 * Without this an HTTP/2 connection was never reaped at all: the sweep
 	 * only walked HTTP/1.1 handlers, so a peer could open connections and go
@@ -184,28 +188,84 @@ class H2ConnectionHandler {
 			return;
 		}
 
-		// A request still arriving owes its bytes within requestTimeout. One
-		// that has arrived is the application's to answer, for as long as that
-		// takes, a long poll, a slow upstream, as an HTTP/1.1 request stops
-		// its clock once read. Open streams all counted as arriving, so a long
-		// poll answering after requestTimeout found its connection gone, and
-		// every other stream on it with it.
-		var limit:Float;
-		if (__connection.receivingStreams > 0) {
-			limit = __config.requestTimeout;
-		} else if (__connection.openStreams > 0) {
-			return;
-		} else {
-			limit = __config.keepAliveTimeout;
+		var timeout:Float = __config.requestTimeout;
+		if (timeout > 0 && __connection.receivingStreams > 0) {
+			// The 408s it writes go out together, as answers to a read do.
+			__receiving = true;
+			var going:Bool;
+			try {
+				going = __connection.expireRequests(now - timeout);
+			} catch (error:Dynamic) {
+				__receiving = false;
+				__flushOut();
+				throw error;
+			}
+			__receiving = false;
+			__flushOut();
+
+			if (!going) {
+				// A header block stalled partway: nothing else can be read
+				// until it ends, and it is not ending.
+				Logger.info('HTTP/2 header block still unfinished after ${timeout}s; closing.');
+				close();
+				return;
+			}
 		}
 
-		var idle:Float = now - __lastActivity;
+		if (__connection.openStreams > 0) {
+			// A body being pumped to a peer that has stopped taking it has a
+			// deadline of its own, which the HTTP/1.1 sweep enforced and this
+			// one never reached: a client that never opened its window held a
+			// file, and a pump, per stream for good.
+			if (__sweeps != null) {
+				var checks:Array<Float->Void> = [for (check in __sweeps) check];
+				for (check in checks) {
+					check(now);
+				}
+			}
+			return;
+		}
+
+		var limit:Float = __config.keepAliveTimeout;
+		var idle:Float = now - __connection.idleSince;
 		if (limit <= 0 || idle < limit) {
 			return;
 		}
 
 		Logger.info('HTTP/2 connection idle for ${Math.round(idle)}s; closing.');
 		close();
+	}
+
+	/**
+	 * The connection has said it will take no more streams and the last it
+	 * took has ended, which `keepAliveMaxRequests` and `keepAlive` off are
+	 * how it comes to say. Closed at the end of the pass, once what that
+	 * stream wrote has gone, rather than from inside the write that ended
+	 * it. Left to the sweep, it waited a quarter second, and with both
+	 * timeouts off, which leaves no sweep, for the client.
+	 */
+	private function __onDrained():Void {
+		if (__closeQueued || !__socket.connected) {
+			return;
+		}
+
+		var runtime:Null<CrossByte> = #if nodejs @:privateAccess __socket.__nodeRuntime #else @:privateAccess __socket.__cbInstance #end;
+		if (runtime == null) {
+			runtime = CrossByte.current();
+		}
+		if (runtime == null) {
+			return;
+		}
+
+		__closeQueued = true;
+		runtime.__queuePassFlush(this);
+	}
+
+	@:noCompletion public function __flushPass():Void {
+		__closeQueued = false;
+		if (drained) {
+			close();
+		}
 	}
 
 	/**
@@ -237,7 +297,55 @@ class H2ConnectionHandler {
 		}
 	}
 
+	/**
+	 * Weighs a request whose body is still to come, as `onRequestHead`: a
+	 * handler is made for it now, and it carries the request on once the
+	 * body has arrived.
+	 */
+	private function __admit(request:H2ServerRequest):Bool {
+		var handler:HTTPRequestHandler = __handlerFor(request);
+		var mark:Int = request.path.indexOf("?");
+		var admitted:Bool = false;
+		try {
+			admitted = handler.__admitDecodedRequest(request.method, mark >= 0 ? request.path.substr(0, mark) : request.path,
+				mark >= 0 ? request.path.substr(mark + 1) : "", __fieldsOf(request), request.startedAt, true, request.declaredLength);
+		} catch (error:Dynamic) {
+			// As the HTTP/1.1 parser answers what serving a request threw.
+			Logger.error("HTTP/2 request handling failed: " + error);
+			if (!handler.__responded) {
+				try {
+					handler.__sendErrorResponse(500, "Internal Server Error");
+				} catch (_:Dynamic) {}
+			}
+			admitted = false;
+		}
+
+		if (admitted) {
+			request.context = handler;
+		}
+		return admitted;
+	}
+
 	private function __serve(request:H2ServerRequest):Void {
+		var body:ByteArray = new ByteArray();
+		if (request.body.length > 0) {
+			body.writeBytes(request.body, 0, request.body.length);
+			body.position = 0;
+		}
+
+		// Admitted at its headers, so only the body is left to give it.
+		var admitted:Null<HTTPRequestHandler> = request.context;
+		if (admitted != null) {
+			request.context = null;
+			try {
+				admitted.__continueDecodedRequest(body, request.tooLarge, request.timedOut);
+			} catch (error:Dynamic) {
+				Logger.error("HTTP/2 request handling failed: " + error);
+				__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);
+			}
+			return;
+		}
+
 		// :path carries the query string; the pipeline below wants them apart,
 		// the same way the HTTP/1.1 parser splits a request target.
 		var target:String = request.path;
@@ -248,6 +356,43 @@ class H2ConnectionHandler {
 			target = target.substr(0, mark);
 		}
 
+		var handler:HTTPRequestHandler = __handlerFor(request);
+		try {
+			handler.__serveDecodedRequest(request.method, target, query, __fieldsOf(request), body, request.tooLarge, request.headersTooLarge,
+				request.timedOut, request.startedAt);
+		} catch (error:Dynamic) {
+			Logger.error("HTTP/2 request handling failed: " + error);
+			__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);
+		}
+	}
+
+	/** Registers, or with null drops, what the sweep calls for `streamId`: HTTPResponseWriter.sweepWith. */
+	private function __sweepWith(streamId:Int, check:Null<Float->Void>):Void {
+		if (check == null) {
+			if (__sweeps != null) {
+				__sweeps.remove(streamId);
+			}
+			return;
+		}
+		if (__sweeps == null) {
+			__sweeps = new Map();
+		}
+		__sweeps.set(streamId, check);
+	}
+
+	/** A handler answering on `request`'s stream, hooked to the server's per-response hook. */
+	private function __handlerFor(request:H2ServerRequest):HTTPRequestHandler {
+		var writer = new H2ResponseWriter(__connection, __socket, request.streamId, __flushUnlessReceiving, __sweepWith);
+		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
+		if (__onResponse != null) {
+			var onResponse = __onResponse;
+			handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> onResponse(e, handler));
+		}
+		return handler;
+	}
+
+	/** `request`'s fields by name, as the pipeline reads them. */
+	private function __fieldsOf(request:H2ServerRequest):Map<String, String> {
 		// Folded the way the HTTP/1.1 parser folds repeats, so a middleware
 		// sees one shape regardless of protocol, and cookie with "; ", which
 		// is how §8.2.3 says its split crumbs join. A comma made
@@ -288,25 +433,7 @@ class H2ConnectionHandler {
 			headers.set("host", request.authority);
 		}
 
-		var body:ByteArray = new ByteArray();
-		if (request.body.length > 0) {
-			body.writeBytes(request.body, 0, request.body.length);
-			body.position = 0;
-		}
-
-		var writer = new H2ResponseWriter(__connection, __socket, request.streamId, __flushUnlessReceiving);
-		var handler = new HTTPRequestHandler(__socket, __config, __php, writer);
-		if (__onResponse != null) {
-			var onResponse = __onResponse;
-			handler.addEventListener(HTTPStatusEvent.HTTP_RESPONSE_STATUS, e -> onResponse(e, handler));
-		}
-
-		try {
-			handler.__serveDecodedRequest(request.method, target, query, headers, body, request.tooLarge, request.headersTooLarge);
-		} catch (error:Dynamic) {
-			Logger.error("HTTP/2 request handling failed: " + error);
-			__connection.resetStream(request.streamId, H2ErrorCode.INTERNAL_ERROR);
-		}
+		return headers;
 	}
 
 	private function __onConnectionError(error:crossbyte._internal.http.h2.H2ConnectionError):Void {
