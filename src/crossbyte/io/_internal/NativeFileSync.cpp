@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -388,6 +389,78 @@ double crossbyte_file_created(::String path) {
 	}
 
 	return real.empty() ? ::String("") : ::String::create(real.c_str(), static_cast<int>(real.size()));
+#endif
+}
+
+int crossbyte_file_hidden(::String path) {
+	// Windows' hidden attribute, asked of the file system. File asked
+	// `attrib` through cmd.exe: a process for each question, and cmd
+	// expanded any %NAME% in the path, so a file with one in its name was
+	// asked about under another.
+#if defined(_WIN32)
+	std::wstring file = toWide(path);
+	DWORD attributes = INVALID_FILE_ATTRIBUTES;
+
+	{
+		hx::AutoGCFreeZone zone;
+		attributes = GetFileAttributesW(file.c_str());
+	}
+
+	if (attributes == INVALID_FILE_ATTRIBUTES) {
+		return -1;
+	}
+
+	return (attributes & FILE_ATTRIBUTE_HIDDEN) != 0 ? 1 : 0;
+#else
+	// POSIX keeps no such attribute; File asks the name there.
+	return -1;
+#endif
+}
+
+double crossbyte_file_space_available(::String path) {
+	// The bytes this process could still write on the volume `path` is on:
+	// a file's, a directory's. File started fsutil or df for each question,
+	// and fsutil refused a file's path, which read as a full disk.
+#if defined(_WIN32)
+	std::wstring file = toWide(path);
+	ULARGE_INTEGER available;
+	BOOL ok = FALSE;
+
+	{
+		hx::AutoGCFreeZone zone;
+		DWORD attributes = GetFileAttributesW(file.c_str());
+
+		if (attributes != INVALID_FILE_ATTRIBUTES) {
+			// It takes a directory: a file is asked about through the one
+			// it is in.
+			if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+				size_t cut = file.find_last_of(L"\\/");
+				file = cut == std::wstring::npos ? std::wstring(L".") : file.substr(0, cut + 1);
+			} else if (!file.empty() && file.back() != L'\\' && file.back() != L'/') {
+				// A share's root is named with its separator.
+				file += L'\\';
+			}
+
+			ok = GetDiskFreeSpaceExW(file.c_str(), &available, nullptr, nullptr);
+		}
+	}
+
+	return ok ? static_cast<double>(available.QuadPart) : -1.0;
+#else
+	std::string file = toNarrow(path);
+	struct statvfs info;
+	int status = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+		status = statvfs(file.c_str(), &info);
+	}
+
+	if (status != 0) {
+		return -1.0;
+	}
+
+	return static_cast<double>(info.f_bavail) * static_cast<double>(info.f_frsize);
 #endif
 }
 
