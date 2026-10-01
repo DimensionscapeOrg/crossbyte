@@ -8,6 +8,7 @@ import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunQuery;
 import crossbyte.net._internal.stun.TurnStream;
 import crossbyte.net.ice.IceAgent;
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
@@ -229,6 +230,34 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	// reflexive query above: that one asks a server a single question, this one
 	// runs an exchange with a peer for as long as it takes.
 	@:noCompletion private var __ice:IceAgent;
+
+	/**
+		The runtime this server's ticks run on -- an attached agent's, a
+		relay's, a waiting question's -- which its socket took when it began
+		receiving, as each of them needs it to have. They were added to and
+		taken off whichever runtime was current, so a close from another
+		thread could not take them off at all.
+	**/
+	@:noCompletion private function __tickRuntime():CrossByte {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		return runtime != null ? runtime : CrossByte.current();
+	}
+
+	/**
+		Takes one of this server's tick listeners off its runtime, from
+		wherever this is called: it does not throw on a thread with no
+		runtime, as asking for the current one did.
+	**/
+	@:noCompletion private function __untick(listener:TickEvent->Void):Void {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (runtime == null) {
+			runtime = CrossByte.__currentOrNull();
+		}
+		if (runtime != null) {
+			runtime.removeEventListener(TickEvent.TICK, listener);
+		}
+	}
+
 	@:noCompletion private var __iceTick:TickEvent->Void;
 	@:noCompletion private var __socket:DatagramSocket;
 
@@ -323,9 +352,21 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		this server's socket, which goes with this call, so none can wait for
 		its peer. For a graceful shutdown `close()` the sessions first and
 		close the server once each has dispatched `close`.
+
+		It may be called from any thread: from one that is not the server's
+		runtime's, it is handed to the runtime, as `CrossByte.post` hands work
+		over, and happens there after this returns. Made there, it took the
+		runtime its ticks are on from the calling thread, which had none: the
+		throw was swallowed, an attached agent's, a relay's or a waiting
+		question's tick stayed on the runtime for good, and the question was
+		failed on the closing thread.
 	**/
 	public function close():Void {
 		if (__closed) {
+			return;
+		}
+
+		if (RuntimeHandOff.elsewhere(@:privateAccess __socket.__cbInstance, close)) {
 			return;
 		}
 
@@ -646,7 +687,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__stunQuery = query;
 		__stunFuture = future;
 
-		var runtime:CrossByte = CrossByte.current();
+		var runtime:CrossByte = __tickRuntime();
 
 		// Where the question goes: `server`, or for a name the address it
 		// resolves to, null until then. The send used to be given the name,
@@ -845,7 +886,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			agent.poll(haxe.Timer.stamp());
 		};
 
-		CrossByte.current().addEventListener(TickEvent.TICK, __iceTick);
+		__tickRuntime().addEventListener(TickEvent.TICK, __iceTick);
 
 		// A relay already lending an address: the agent checks from it too.
 		if (relayedCandidate != null && __relaySend != null) {
@@ -861,9 +902,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	**/
 	public function detachIceAgent():Void {
 		if (__iceTick != null) {
-			try {
-				CrossByte.current().removeEventListener(TickEvent.TICK, __iceTick);
-			} catch (_:Dynamic) {}
+			__untick(__iceTick);
 
 			__iceTick = null;
 		}
@@ -1034,7 +1073,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			client.poll(haxe.Timer.stamp());
 		};
 
-		CrossByte.current().addEventListener(TickEvent.TICK, __relayTick);
+		__tickRuntime().addEventListener(TickEvent.TICK, __relayTick);
 		client.allocate(haxe.Timer.stamp());
 		return future;
 	}
@@ -1144,9 +1183,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	**/
 	@:noCompletion private function __dropRelay():Void {
 		if (__relayTick != null) {
-			try {
-				CrossByte.current().removeEventListener(TickEvent.TICK, __relayTick);
-			} catch (_:Dynamic) {}
+			__untick(__relayTick);
 
 			__relayTick = null;
 		}
@@ -1226,9 +1263,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__stunQuery = null;
 
 		if (__stunTick != null) {
-			try {
-				CrossByte.current().removeEventListener(TickEvent.TICK, __stunTick);
-			} catch (_:Dynamic) {}
+			__untick(__stunTick);
 
 			__stunTick = null;
 		}
