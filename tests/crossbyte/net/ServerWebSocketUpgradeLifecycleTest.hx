@@ -1,6 +1,7 @@
 package crossbyte.net;
 
 import crossbyte.errors.ArgumentError;
+import crossbyte.errors.IOError;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
 import crossbyte.events.ServerSocketConnectEvent;
@@ -174,6 +175,19 @@ class ServerWebSocketUpgradeLifecycleTest extends utest.Test {
 				async.done();
 			});
 		});
+	}
+
+	/**
+		`listen()` wants a bound server, as its doc says, and throws for one
+		that is not. Natively it never asked: Windows refused the listen
+		with an error of the socket's own, and Linux and macOS bound the
+		socket to a port of their choosing and listened there.
+	**/
+	public function testListenWantsABoundServer():Void {
+		var server = new ServerWebSocket();
+		Assert.raises(() -> server.listen(), IOError);
+		Assert.isFalse(server.listening, "a server that was never bound listened");
+		try server.close() catch (_:Dynamic) {}
 	}
 
 	#if !nodejs
