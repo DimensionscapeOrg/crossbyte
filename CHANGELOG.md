@@ -1991,6 +1991,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.size`, `modificationDate` and `creationDate` are read from the disk
+  when asked for, as `exists` always was. They were a snapshot taken when
+  the path was set, so a File made before its file was written reported a
+  size of 0 for good; and a missing file read a size of 0 and null dates
+  where an `IOError` is documented, which it is now. Making a File no
+  longer touches the disk at all. `creationDate` is the time the file was
+  made -- natively from `statx` on Linux and `st_birthtime` on macOS, on
+  Node its `birthtime`, on the jvm its `creationTime` -- where it was
+  POSIX's `ctime`, which a chmod or a write moves on; `null` where the
+  file system keeps none, and an `IllegalOperationError` on the
+  interpreter, neko and HashLink under Linux and macOS, whose `stat` has
+  no such time.
 - `FileStream` keeps the contract `IDataInput` and `IDataOutput` describe,
   and `ByteArray` keeps, opened either way. A synchronous stream's
   `readByte` returned the unsigned byte, `readBoolean` was true only for

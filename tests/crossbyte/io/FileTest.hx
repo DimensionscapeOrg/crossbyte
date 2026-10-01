@@ -1053,6 +1053,78 @@ class FileTest extends utest.Test {
 		try root.deleteDirectory(true) catch (_:Dynamic) {}
 	}
 
+	public function testSizeAndModificationDateAreReadLive():Void {
+		// A snapshot taken when the path was set, while `exists` was live: a
+		// File made before its file was written reported a size of 0 for good.
+		var dir = File.createTempDirectory();
+		var path:String = dir.resolvePath("live.txt").nativePath;
+		var probe = new File(path);
+
+		try {
+			HaxeFile.saveContent(path, "0123456789");
+			Assert.equals(10, probe.size);
+			var first:Float = probe.modificationDate.getTime();
+
+			HaxeFile.saveContent(path, "01234567890123456789");
+			Assert.equals(20, probe.size);
+			Assert.isTrue(probe.modificationDate.getTime() >= first);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testAMissingFileThrowsForItsSizeAndDates():Void {
+		// As documented. A missing file read a size of 0 -- the size of an
+		// empty one -- and null dates.
+		var dir = File.createTempDirectory();
+		var missing = dir.resolvePath("missing.txt");
+
+		Assert.raises(() -> missing.size, crossbyte.errors.IOError);
+		Assert.raises(() -> missing.modificationDate, crossbyte.errors.IOError);
+		Assert.raises(() -> missing.creationDate, crossbyte.errors.IOError);
+
+		try dir.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testCreationDateIsNotTheChangeTime():Void {
+		// It was stat's ctime, which on POSIX is when the file's status last
+		// changed: rewriting a file moved its "creation date" along with it.
+		var file = File.createTempFile();
+		HaxeFile.saveContent(file.nativePath, "a");
+
+		#if (eval || neko || hl)
+		if (!System.isWindows) {
+			// Their stat has no creation time, so they say so.
+			Assert.raises(() -> new File(file.nativePath).creationDate, crossbyte.errors.IllegalOperationError);
+			try file.deleteFile() catch (_:Dynamic) {}
+			return;
+		}
+		#end
+
+		var created:Null<Date> = new File(file.nativePath).creationDate;
+
+		if (created == null) {
+			// A file system that keeps no creation time; nothing to compare.
+			Assert.pass();
+			try file.deleteFile() catch (_:Dynamic) {}
+			return;
+		}
+
+		crossbyte.sys.System.sleep(1.1);
+		HaxeFile.saveContent(file.nativePath, "abc");
+		if (!System.isWindows) {
+			Sys.command("chmod", ["600", file.nativePath]);
+		}
+
+		var again = new File(file.nativePath);
+		Assert.equals(created.getTime(), Require.notNull(again.creationDate).getTime());
+		Assert.isTrue(again.modificationDate.getTime() > created.getTime(), "the file was written after it was made");
+
+		try file.deleteFile() catch (_:Dynamic) {}
+	}
+
 	/** Runs a command with its output kept out of the test report. **/
 	private static function __quietly(command:String, args:Array<String>):Int {
 		try {

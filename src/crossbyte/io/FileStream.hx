@@ -1305,7 +1305,6 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 
 		__output.writeFullBytes(bytes, offset, length);
-		__file.__fileStatsDirty = true;
 		__positionDirty = true;
 	}
 
@@ -1444,7 +1443,6 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 
 		__output.writeFullBytes(encoded, 0, encoded.length);
-		__file.__fileStatsDirty = true;
 		__positionDirty = true;
 	}
 
@@ -1596,7 +1594,6 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 		}
 
 		__output.writeFullBytes(bytes, 0, bytes.length);
-		__file.__fileStatsDirty = true;
 		__positionDirty = true;
 	}
 
@@ -1729,7 +1726,6 @@ class FileStream extends EventDispatcher implements IDataInput implements IDataO
 
 	@:noCompletion private inline function __writeScratch(count:Int):Void {
 		__output.writeFullBytes(__scratch, 0, count);
-		__file.__fileStatsDirty = true;
 		__positionDirty = true;
 	}
 
@@ -2057,10 +2053,7 @@ private class AsyncFile {
 			// disk yet, and reading "what is available" from a progress
 			// handler -- as this class's own documentation says to --
 			// returned zeros: 6.4 MB of them from a 10 MB file.
-			//
-			// Measured now, from a File of its own: the stream's File may be
-			// holding sizes from before the file was last written.
-			fileSize = new File(path).size;
+			fileSize = file.size;
 		}
 	}
 
@@ -2430,7 +2423,6 @@ private class AsyncFile {
 			}
 
 			writer.flush();
-			file.__fileStatsDirty = true;
 			return null;
 		} catch (e:Dynamic) {
 			return "The file could not be written: " + Std.string(e);
