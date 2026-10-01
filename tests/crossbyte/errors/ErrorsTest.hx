@@ -71,7 +71,7 @@ class ErrorsTest extends utest.Test {
 
 	/**
 		Whether this runtime puts the frame that makes an exception in its
-		stack. The HashLink 1.14.0 release CI installs leaves it out of every
+		stack. The HashLink 1.14.0 release CI used to install leaves it out of every
 		`haxe.Exception`'s, CrossByte's or not, so there no error can name its
 		own site; other builds of the same version keep it.
 	**/
