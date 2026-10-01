@@ -24,6 +24,13 @@ enum abstract JWTRejection(String) to String {
 	/** A supported `alg`, but not the one this verifier's keys are for. */
 	var ALGORITHM_MISMATCH = "algorithm-mismatch";
 
+	/**
+	 * A `crit` header: the token names extensions it must not be accepted
+	 * without, and this verifier implements none. RFC 7515 makes such a token
+	 * invalid for a verifier that does not understand them.
+	 */
+	var UNSUPPORTED_CRITICAL = "unsupported-critical";
+
 	/** A `typ` outside `JWT.acceptedTypes`, or none where `JWT.requireType` asks for one. */
 	var TYPE_NOT_ACCEPTED = "type-not-accepted";
 
