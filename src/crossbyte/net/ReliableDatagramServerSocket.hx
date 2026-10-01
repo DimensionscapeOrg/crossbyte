@@ -269,6 +269,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	public var relayCertAuthority:Null<Certificate> = null;
 	#end
 
+	/**
+		For a relay `allocateRelay` reaches over TLS: whether its certificate
+		is checked, which it is unless this is turned off. Turn it off for a
+		test against a relay with a throwaway certificate, never otherwise,
+		and prefer `relayCertAuthority` even then. Read when `allocateRelay`
+		is called. See `TurnClient.verifyCert`.
+	**/
+	public var relayVerifyCert:Bool = true;
+
 	@:noCompletion private var __relayTick:TickEvent->Void = null;
 
 	/** The connection `relay` reaches its server over, when that is TCP; null over UDP. **/
@@ -902,7 +911,8 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		@param transport How the relay is reached: UDP when left out, or TCP
 		or TLS for a network that lets nothing else out, what it relays is
 		UDP either way, and a session's datagrams are the same datagrams. A
-		TLS relay's certificate is checked; see `relayCertAuthority`.
+		TLS relay's certificate is checked; see `relayCertAuthority` and
+		`relayVerifyCert`.
 		@return The relayed address, or a failure: one whose `cause` is a
 		`TurnError` when the relay refused or never answered. A request that
 		cannot be made is not thrown but returned failed already: for a
@@ -939,6 +949,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 
 		var client = new TurnClient(server, port, username, password, transport);
 		client.useChannels = useChannels;
+		client.verifyCert = relayVerifyCert;
 		#if !(macro || (js && !nodejs))
 		client.certAuthority = relayCertAuthority;
 		#end

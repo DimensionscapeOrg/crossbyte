@@ -84,6 +84,11 @@ entry below says how:
 - `DatagramSocket.timeout` is gone; it did nothing, so delete what sets it.
 
 ### Added
+- `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
+  over TLS whose certificate should not be checked, a test against a
+  throwaway one. The server passed its relay client an authority
+  (`relayCertAuthority`) and nothing else, so `TurnClient.verifyCert`
+  could not be reached.
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
   `DETACH DATABASE`, and `loadSchema()` with `getSchemaResult()`: a
   database's tables with their columns, views, indices and triggers.
