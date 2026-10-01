@@ -83,6 +83,8 @@ entry below says how:
 - `ServerSocket.listen()` throws an `IOError` for a server never bound,
   on Linux and macOS too, where it listened on a port of the system's
   choosing: bind first, to port 0 for one the system picks.
+- `Socket.writeBytes` and the `Socket` constructor throw for arguments
+  out of range, as documented, where they clamped or did nothing.
 
 ### Added
 - `new NetHost("wss://...")` takes the certificate and key it presents,
@@ -1958,6 +1960,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Socket.close()` sends what was written first, as far as the system
+  takes it without waiting. Writes go at the end of the pass, so bytes
+  written just before `close()` were thrown away, on every target.
+- A `Socket`'s `timeout` of 0 means no deadline natively too, as it did
+  on Node; natively it failed every connect that took any time at all.
+- `Socket.writeBytes` throws the `RangeError` its doc promises for an
+  offset or length past the bytes given, as `DatagramSocket.send` does,
+  where it wrote whatever part of them there was; and `new Socket(host,
+  port)` throws the promised `SecurityError` for a port outside 0-65535,
+  where it made a socket that never connected. `flush()` and
+  `readMultiByte`/`writeMultiByte` say what they do: every write is sent
+  without a flush, and a character set is not used.
 - On Node a TLS `ServerSocket` drops a client that has not finished its
   handshake within `handshakeTimeout`; Node's own two minutes applied. A
   handshake that finished after `close()` or `stopAccepting()` is closed,
