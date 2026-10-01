@@ -4,12 +4,36 @@ import crossbyte.http.HTTPVersion;
 
 /** Mutable request descriptor consumed by `URLLoader` and related APIs. */
 class URLRequest {
+	/**
+		The `Content-Type` of the body `data` makes, or null, as it starts, for
+		the client's choice. Name the type of what `data` holds: nothing checks
+		that the two agree.
+
+		Left null, natively a `String` or `haxe.io.Bytes` body goes as
+		`application/octet-stream`, a number or `Bool` as
+		`text/plain; charset=utf-8`, and a form as
+		`application/x-www-form-urlencoded; charset=utf-8`. On Node and in a
+		browser a form goes as `application/x-www-form-urlencoded` and any
+		other body with no `Content-Type`, which RFC 9110 lets a server read as
+		`application/octet-stream` -- save that a browser labels a `String`
+		`text/plain;charset=UTF-8` itself.
+	**/
 	public var contentType:String;
 
 	/**
-		**Note**: The value of `contentType` must correspond to
-		the type of data in the `data` property. See the note in the
-		description of the `contentType` property.
+		What the request sends: a body, or a form's fields.
+
+		- A `String` or `haxe.io.Bytes` -- a `ByteArray` among them, sent as its
+		  `length` bytes -- is the body as it is, labelled with `contentType`.
+		- A `URLVariables`, or any other object, is a form: its fields go as the
+		  query of a GET or HEAD, and as an `application/x-www-form-urlencoded`
+		  body otherwise -- an array's items each as `name[]`, an object's
+		  fields as `name[field]`.
+		- A number or a `Bool` is sent as `Std.string` writes it.
+
+		A redirect that turns the request into a GET -- a 301, 302 or 303, for
+		anything but a HEAD -- leaves the body behind. In a browser a GET or
+		HEAD carries no body at all: the browser drops it.
 	**/
 	public var data:Dynamic;
 

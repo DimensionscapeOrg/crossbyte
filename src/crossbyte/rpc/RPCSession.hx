@@ -495,22 +495,6 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	}
 
 	/**
-	 * Told of whatever a handler threw that its caller will not hear about:
-	 * anything but an `RPCError` from a request, whose caller is told only
-	 * `RPCError.INTERNAL_MESSAGE`, and anything at all from a one-way call,
-	 * which nobody is waiting on. For either lane: `method` is the compiled
-	 * handler's method name, or `null` for a runtime handler, which has only
-	 * its `op`.
-	 *
-	 * The connection has stayed up. A handler failing is not the peer sending
-	 * something unreadable, and it used to be treated as if it were: the
-	 * connection closed and every call still waiting on it failed.
-	 *
-	 * Logs by default. Replace it to count failures, raise an alert or keep
-	 * the stack. Whatever it throws is ignored, so a report failing cannot
-	 * close the connection either.
-	 */
-	/**
 	 * Asked before each inbound call on the runtime lane -- to a handler
 	 * added with `register`, or to an op with none -- before its arguments are
 	 * read: the op, the request's id (0 for a one-way call) and the bytes its
@@ -535,6 +519,22 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 	 */
 	public var afterRuntimeCall:Null<(op:Int, requestId:Int, error:Dynamic) -> Void> = null;
 
+	/**
+	 * Told of whatever a handler threw that its caller will not hear about:
+	 * anything but an `RPCError` from a request, whose caller is told only
+	 * `RPCError.INTERNAL_MESSAGE`, and anything at all from a one-way call,
+	 * which nobody is waiting on. For either lane: `method` is the compiled
+	 * handler's method name, or `null` for a runtime handler, which has only
+	 * its `op`.
+	 *
+	 * The connection has stayed up. A handler failing is not the peer sending
+	 * something unreadable, and it used to be treated as if it were: the
+	 * connection closed and every call still waiting on it failed.
+	 *
+	 * Logs by default. Replace it to count failures, raise an alert or keep
+	 * the stack. Whatever it throws is ignored, so a report failing cannot
+	 * close the connection either.
+	 */
 	public dynamic function onHandlerError(op:Int, method:Null<String>, error:Dynamic):Void {
 		Logger.error('RPC handler ' + (method != null ? method : 'for op $op') + ' threw: ' + Std.string(error));
 	}
@@ -1356,7 +1356,14 @@ class RPCSession<C:RPCCommands = Dynamic, D = Dynamic> extends EventDispatcher {
 		return connected;
 	}
 
-	/** Stops heartbeat bookkeeping without closing the underlying connection. */
+	/**
+		Stops the heartbeat `start()` began, without closing the connection,
+		and fails every call this session has waiting on an answer -- on
+		both lanes -- with "RPC session stopped": an answer arriving for one
+		later is dropped. Calls made after this go out and are answered as
+		ever. A session with nothing else to read for stops reading its
+		connection.
+	**/
 	public function stop():Void {
 		__active = false;
 		__stopHeartbeat();
