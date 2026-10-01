@@ -249,12 +249,6 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	#end
 	@:noCompletion private var __sqlWorker:Worker;
 
-	// Set by the close job, or by an open that failed, on the worker thread
-	// from inside the work loop -- so the next pass of that loop exits without
-	// anyone needing to wake it. Not gated with the queue below: the close job
-	// and the work loop read and write it on every target, php included.
-	@:noCompletion private var __sqlClosing:Bool = false;
-
 	// Gated the same way the imports above are, not on cpp alone. The queue is
 	// written by whichever thread calls the connection and read by the worker,
 	// so it needs a structure built for that -- and neko, hl, java and jvm all
@@ -960,6 +954,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 			__closing = true;
 			var worker:Worker = __sqlWorker;
+			#if !php
+			var queue:SQLiteQueue = __sqlQueue;
+			#end
 			__addToQueue(function() {
 				var event:Event;
 				var connection:Connection = __connection;
@@ -988,7 +985,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				// being blocked in pop(true) waiting for work that will never
 				// arrive. The loop sends the worker's Complete once it has told
 				// what was queued behind this that it will not run.
-				__sqlClosing = true;
+				#if !php
+				queue.closing = true;
+				#end
 			}, SQLEvent.CLOSE, null, true);
 		} else {
 			var connection:Connection = __connection;
@@ -1277,6 +1276,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 
 	private function __openAsync(reference:Object = null, openMode:SQLiteMode = CREATE, autoCompact:Bool = false, pageSize:Int = 1024):Void->Void {
 		var worker:Worker = __sqlWorker;
+		#if !php
+		var queue:SQLiteQueue = __sqlQueue;
+		#end
 		return function() {
 			var event:Event;
 
@@ -1290,7 +1292,9 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 				// the worker stops, telling each it will not run, and the
 				// runtime's thread marks the connection closed when this error
 				// reaches it.
-				__sqlClosing = true;
+				#if !php
+				queue.closing = true;
+				#end
 			}
 			worker.sendProgress(event);
 		}
@@ -1417,7 +1421,6 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 	}
 
 	private function __initSQLWorker():Void {
-		__sqlClosing = false;
 		#if !php
 		__sqlQueue = new SQLiteQueue();
 		#end
@@ -1438,7 +1441,7 @@ class SQLiteConnection extends EventDispatcher implements crossbyte.db.ITransact
 		var queue:SQLiteQueue = __sqlQueue;
 		var worker:Worker = __sqlWorker;
 
-		while (!__sqlClosing) {
+		while (!queue.closing) {
 			// Blocks until there is work. The Array path this replaces spun:
 			// an empty queue fell through to haxe.Timer.delay(fn, 0), which
 			// schedules rather than waits, so an idle async connection burned
