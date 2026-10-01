@@ -1942,6 +1942,13 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerWebSocket` survives a connection the system will not hand over
+  -- the process out of descriptors, the system out of memory -- as
+  `ServerSocket` does: counted in `acceptFailures`, reported once as an
+  `ioError` for a run of them, and the server goes on listening, taking
+  the connection once a descriptor frees. It missed that fix: hxcpp's
+  refusal, a bare string, was swallowed without a trace, and the jvm's
+  closed the server.
 - A `WebSocket` client's failed connect ends one way, however it failed,
   as a browser's WebSocket does and as the class now says: `ioError` saying
   why, then `close` with 1006. A TLS failure closed with 1015 natively, an
