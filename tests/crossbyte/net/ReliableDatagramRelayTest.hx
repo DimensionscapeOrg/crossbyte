@@ -509,8 +509,13 @@ class ReliableDatagramRelayTest extends utest.Test {
 			Assert.fail(Std.string(e));
 		}
 
+		// A stream host says it through the Future, as every NetHost method
+		// that returns one does, and does not throw.
 		var tcp:NetHost = NetHost.fromServerSocket(new ServerSocket());
-		Assert.raises(() -> tcp.allocateRelay("127.0.0.1", relay.port, "user", "secret"), crossbyte.errors.IllegalOperationError);
+		var refused = tcp.allocateRelay("127.0.0.1", relay.port, "user", "secret");
+		Assert.isTrue(refused.completed && !refused.succeeded, "a stream host's relay allocation did not fail at once");
+		Assert.isTrue(Std.isOfType(refused.cause, crossbyte.errors.IllegalOperationError), "the failure was not an IllegalOperationError: "
+			+ Std.string(refused.cause));
 
 		__closeAll(relay, [alice, bob]);
 	}
