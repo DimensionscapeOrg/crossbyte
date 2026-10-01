@@ -1962,6 +1962,10 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `RateLimiter.reset(null)` resets the bucket a null key spends from, as
+  `tryAcquire(null)` spends it; it did nothing. Its doc says what it does
+  for a key sharing the overflow bucket: nothing, since refilling that
+  would refill every key sharing it.
 - A `socketData` event's `bytesLoaded` is the bytes that arrived for it,
   on Node and in a page as natively; there it was everything still
   unread, so an event for 4 bytes said 7 when 3 before them were unread.
