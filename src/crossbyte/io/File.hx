@@ -372,10 +372,12 @@ final class File extends EventDispatcher {
 		property by using the forward slash character or the backslash (\) character as the path separator,
 		and the forward slashes are replaced with the appropriate backslash character for you.
 
-		On Windows a path containing `%NAME%` has the first such reference expanded from the
-		process environment, so `"%APPDATA%/myapp"` resolves. A name that is not set is left
-		as written rather than expanding to nothing, and only the first reference in a path is
-		expanded.
+		A path is taken literally on every platform: `%NAME%` and `$NAME` are characters of a
+		name, as they are to the operating system's own file calls. It used to expand the first
+		`%NAME%` from the environment on Windows, which let a name a peer sent -- `"%SystemRoot%"`
+		-- reach a directory the program never named. Expand a variable yourself, from
+		`Sys.getEnv`, where one is meant; `File.applicationStorageDirectory` and the other
+		static directories are usually what was.
 
 		Before writing code to set the nativePath property directly, consider whether doing so may result
 		in platform-specific code. For example, a native path such as "C:\\Documents and Settings\\bob\\Desktop"
@@ -2320,36 +2322,6 @@ final class File extends EventDispatcher {
 		#end
 	}
 
-	@:noCompletion private function __replaceWindowsEnvVars(path:String):String {
-		#if (js && !nodejs)
-		throw new crossbyte.errors.IllegalOperationError("A browser has no process environment to expand a path against.");
-		#else
-		// Define the regular expression to match the path component to be replaced
-		var pattern:EReg = ~/%(.+?)%/;
-
-		// Find the first match of the regular expression in the path
-		var match:Bool = pattern.match(path);
-
-		if (match) {
-			// Extract the matched path component
-			var matchedPath:String = pattern.matched(0);
-
-			// Get the environment variable name by removing the first and last characters ("%")
-			var envVar:String = matchedPath.substring(1, matchedPath.length - 1);
-
-			// Get the value of the environment variable
-			var envVarValue:Null<String> = Sys.getEnv(envVar);
-
-			if (envVarValue == null) {
-				return path;
-			}
-			// Replace the matched path component with the environment variable value
-			return StringTools.replace(path, matchedPath, envVarValue);
-		}
-		return path;
-		#end
-	}
-
 	@:noCompletion private function __winGetHiddenAttr():Bool {
 		#if (js && !nodejs)
 		throw new crossbyte.errors.IllegalOperationError("Reading a file attribute means shelling out, and a browser has no shell.");
@@ -2596,9 +2568,12 @@ final class File extends EventDispatcher {
 	}
 
 	@:noCompletion private function set_nativePath(path:String):String {
-		if (System.isWindows && path.indexOf("%") > -1) {
-			path = __replaceWindowsEnvVars(path);
-		}
+		// Taken literally. On Windows the first %NAME% in a path was replaced
+		// by that environment variable, after resolvePath had normalized it --
+		// so a name sent by a peer, "%SystemRoot%" or "%USERPROFILE%",
+		// reached a directory the caller had never named, out of a server's
+		// root among them. AIR's File expands nothing, and neither does the
+		// operating system's own file API.
 		if (path.charAt(path.length - 1) == ":" /*|| FileSystem.isDirectory(path)*/) {
 			path = Path.addTrailingSlash(path);
 		}

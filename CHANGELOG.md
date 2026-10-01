@@ -93,6 +93,9 @@ entry below says how:
   directory instead of the working directory. The build copies `resources`
   beside the program; a tool that moves the program afterwards must carry
   `resources` with it.
+- `File` no longer expands `%NAME%` in a path on Windows: build the path
+  from `Sys.getEnv("NAME")`, or start from `File.applicationStorageDirectory`
+  and the other static directories, which are usually what was meant.
 - `FileStream` reads and writes in `ByteArray.defaultEndian`,
   little-endian unless changed. Set `endian = Endian.BIG_ENDIAN` on a
   stream reading numbers that rc.1's synchronous `FileStream` wrote. Its
@@ -1991,6 +1994,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `File` path is taken literally on every platform. On Windows the first
+  `%NAME%` in a path was replaced by that environment variable -- in
+  `nativePath`, the constructor and every `resolvePath`, after
+  `resolvePath` had normalized the path -- so a name sent by a peer,
+  `%SystemRoot%` or `%USERPROFILE%`, reached a directory nobody had named:
+  the HTTP server could be led by it to files outside its root. AIR's
+  `File` expands nothing, and neither does the operating system's own
+  file API.
 - `File` throws the `IOError` it documents, with AIR's error number where
   one applies -- 3003 for a path with nothing there, 3002 and 3011 for one
   in the way, 3007 for a file where a directory was wanted, 3010 for a
