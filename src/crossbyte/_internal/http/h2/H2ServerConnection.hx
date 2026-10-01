@@ -695,7 +695,7 @@ class H2ServerConnection {
 		} catch (_:Dynamic) {}
 	}
 
-	/** Whether `goAwayGracefully` has been called. */
+	/** Whether `goAwayGracefully` has been called, or the client has sent a GOAWAY of its own. */
 	public var goingAway(get, never):Bool;
 
 	private inline function get_goingAway():Bool {
@@ -778,7 +778,7 @@ class H2ServerConnection {
 				case WINDOW_UPDATE:
 					__onWindowUpdate(frame);
 				case GOAWAY:
-					closed = true;
+					__onGoAway(frame);
 				case PRIORITY:
 					// Deprecated by §5.3.2; still legal, still meaningless.
 				case PUSH_PROMISE:
@@ -1291,6 +1291,49 @@ class H2ServerConnection {
 			// WINDOW_UPDATE, and a stream sitting on a queue will not move
 			// again on its own.
 			notifyWritable();
+		}
+	}
+
+	/**
+		The client's GOAWAY (§6.8). Its last stream id names the last stream
+		*this* side opened that the client will process -- a push, which this
+		never sends -- so it says nothing about the streams the client opened:
+		those are still answered, and what the client sends on them still
+		read. It opens no more, one it opens anyway is refused as after a
+		GOAWAY of this side's, and once the last open one has ended
+		`onDrained` is called for the owner to close the connection. A GOAWAY
+		carrying an error says the client is closing the connection now
+		(§5.4.1), and it fails at once.
+
+		It was read as the end of the connection: `closed` was set, so nothing
+		the client sent after it was read and no response went out after it
+		-- not one being worked on, nor one whose body was still arriving --
+		while the socket itself was kept, for as long as a stream stayed open.
+	**/
+	private function __onGoAway(frame:H2Frame):Void {
+		if (frame.streamId != 0) {
+			throw new H2ConnectionError(H2ErrorCode.PROTOCOL_ERROR, 'GOAWAY on stream ${frame.streamId}');
+		}
+		if (frame.payload.length < 8) {
+			throw new H2ConnectionError(H2ErrorCode.FRAME_SIZE_ERROR, 'GOAWAY payload is ${frame.payload.length} bytes, under 8');
+		}
+
+		var code:H2ErrorCode = __readUInt32(frame.payload, 4);
+		if (code != H2ErrorCode.NO_ERROR) {
+			// Answered with a GOAWAY of this side's own, which has no error to
+			// report, and the connection ends.
+			goAway(H2ErrorCode.NO_ERROR);
+			onConnectionError(new H2ConnectionError(code, 'The client ended the connection: ${code.toString()}'));
+			return;
+		}
+
+		// As after goAwayGracefully, without sending one: the client knows.
+		if (!__goingAway) {
+			__goingAway = true;
+			__goAwayLastStreamId = __highestStreamId;
+		}
+		if (__openStreams == 0) {
+			onDrained();
 		}
 	}
 

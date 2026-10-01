@@ -2163,6 +2163,16 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An HTTP/2 client's `GOAWAY` ends its connection as RFC 9113 6.8 says:
+  the streams it opened are still answered, and what it sends on them
+  still read, and the connection closes once they have ended; a stream it
+  opens after it is refused with `REFUSED_STREAM`. It was taken as the end
+  of the connection there and then: nothing the client sent after it was
+  read and no response went out after it -- a request being worked on got
+  nothing, one whose body was still arriving was never served -- while
+  the socket stayed open for as long as a stream did. A `GOAWAY` carrying
+  an error closes the connection at once, and a malformed one is a
+  connection error.
 - An `Event.CLOSE` listener added to an `HTTPRequestHandler` after its
   client had gone -- the connection closed, or an HTTP/2 stream reset by
   either end -- hears it, once, in a later turn. It heard nothing, or only
