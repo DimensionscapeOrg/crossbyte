@@ -222,15 +222,20 @@ class NativeProcess extends EventDispatcher {
 		}
 
 		var buffer:Bytes = Bytes.alloc(OUTPUT_BUFFER_SIZE);
+		// The first bytes of a character the last read cut in two, kept at
+		// the front of the buffer for the next read to finish. Each read was
+		// decoded on its own, so a UTF-8 character split across two came out
+		// as replacement characters; Node decodes across reads already.
+		var carried:Int = 0;
 		#if hl
 		var handle = @:privateAccess __process.p;
 		#end
 		while (true) {
 			try {
 				#if hl
-				var bytesRead = __hlRead(handle, streamName == STREAM_STDOUT, buffer);
+				var bytesRead = __hlRead(handle, streamName == STREAM_STDOUT, buffer, carried, OUTPUT_BUFFER_SIZE - carried);
 				#else
-				var bytesRead = stream.readBytes(buffer, 0, OUTPUT_BUFFER_SIZE);
+				var bytesRead = stream.readBytes(buffer, carried, OUTPUT_BUFFER_SIZE - carried);
 				#end
 				if (bytesRead <= 0) {
 					if (!__running) {
@@ -240,12 +245,18 @@ class NativeProcess extends EventDispatcher {
 					continue;
 				}
 
-				if (__worker != null) {
+				var length:Int = carried + bytesRead;
+				var whole:Int = __wholeCharacters(buffer, length);
+				if (whole > 0 && __worker != null) {
 					__worker.sendProgress({
 						stream: streamName,
 						isError: streamName == STREAM_STDERR,
-						text: buffer.sub(0, bytesRead).toString()
+						text: buffer.getString(0, whole)
 					});
+				}
+				carried = length - whole;
+				if (carried > 0) {
+					buffer.blit(0, buffer, whole, carried);
 				}
 			} catch (e:Eof) {
 				break;
@@ -254,9 +265,40 @@ class NativeProcess extends EventDispatcher {
 			}
 		}
 
+		// Output that ends inside a character ends there: what there is of it
+		// goes as it is.
+		if (carried > 0 && __worker != null) {
+			__worker.sendProgress({
+				stream: streamName,
+				isError: streamName == STREAM_STDERR,
+				text: buffer.getString(0, carried)
+			});
+		}
+
 		if (__worker != null) {
 			__worker.sendProgress({stream: streamName, isClose: true});
 		}
+	}
+
+	/**
+		How many of the first `length` bytes of `bytes` end on a whole UTF-8
+		character: all of them, unless the last few begin a character whose
+		remaining bytes the next read will bring.
+	**/
+	@:noCompletion private static function __wholeCharacters(bytes:Bytes, length:Int):Int {
+		// Back over up to three continuation bytes to the last lead byte.
+		var lead:Int = length - 1;
+		var back:Int = 0;
+		while (lead >= 0 && back < 3 && (bytes.get(lead) & 0xC0) == 0x80) {
+			lead--;
+			back++;
+		}
+		if (lead < 0) {
+			return length;
+		}
+		var first:Int = bytes.get(lead);
+		var size:Int = if (first < 0x80) 1 else if ((first & 0xE0) == 0xC0) 2 else if ((first & 0xF0) == 0xE0) 3 else if ((first & 0xF8) == 0xF0) 4 else 1;
+		return length - lead < size ? lead : length;
 	}
 
 	/** The child's exit code, once it has one. **/
@@ -286,11 +328,10 @@ class NativeProcess extends EventDispatcher {
 		allocate, and these natives do not; the buffer is resolved before
 		entering, and the answer interpreted after leaving.
 	**/
-	@:noCompletion private static function __hlRead(handle:hl.Abstract<"hl_process">, stdout:Bool, buffer:Bytes):Int {
+	@:noCompletion private static function __hlRead(handle:hl.Abstract<"hl_process">, stdout:Bool, buffer:Bytes, offset:Int, length:Int):Int {
 		var data:hl.Bytes = buffer;
-		var length:Int = buffer.length;
 		hl.Gc.blocking(true);
-		var read:Int = stdout ? __hlStdoutRead(handle, data, 0, length) : __hlStderrRead(handle, data, 0, length);
+		var read:Int = stdout ? __hlStdoutRead(handle, data, offset, length) : __hlStderrRead(handle, data, offset, length);
 		hl.Gc.blocking(false);
 		if (read < 0) {
 			throw new Eof();
