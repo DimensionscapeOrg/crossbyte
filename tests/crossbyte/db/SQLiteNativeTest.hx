@@ -201,6 +201,50 @@ class SQLiteNativeTest extends utest.Test {
 		Assert.isTrue(closed, message);
 	}
 
+	public function testASelectKeepsItsRowsOnceARowIdHasPassedThirtyTwoBits():Void {
+		// A statement read the connection's last rowid as soon as it had
+		// started, and past 2^31 that is a query of its own, which hxcpp's
+		// glue answers by finalizing the statement before it: every SELECT
+		// after the first rowid past 2^31 came back with its first row only.
+		var connection:SQLiteConnection = new SQLiteConnection();
+		connection.open(null, SQLiteMode.CREATE, false, 4096);
+		connection.request("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)");
+
+		for (i in 0...50) {
+			connection.request('INSERT INTO t (v) VALUES ($i)');
+		}
+
+		connection.request("INSERT INTO t (id, v) VALUES (3000000000, 99)");
+
+		var select:SQLiteStatement = new SQLiteStatement();
+		select.sqlConnection = connection;
+		select.text = "SELECT v FROM t";
+		select.execute();
+		var whole = select.getResult();
+		Require.notNull(whole);
+		Assert.equals(51, whole.data.length);
+
+		// Paged, the rows still all arrive.
+		select.execute(20);
+		var rows:Int = select.getResult().data.length;
+
+		while (select.executing) {
+			select.next(20);
+			var page = select.getResult();
+			rows += page == null ? 0 : page.data.length;
+		}
+
+		Assert.equals(51, rows);
+
+		// And an insert's own rowid is still whole.
+		var insert:SQLiteStatement = new SQLiteStatement();
+		insert.sqlConnection = connection;
+		insert.text = "INSERT INTO t (id, v) VALUES (3000000001, 100)";
+		insert.execute();
+		Assert.equals(3000000001.0, insert.getResult().lastInsertRowID);
+		connection.close();
+	}
+
 	public function testWhatSQLiteRefusesIsAnSQLError():Void {
 		// Against the engine itself: what hxcpp's glue throws is a String,
 		// which escaped as one, and nothing was dispatched.

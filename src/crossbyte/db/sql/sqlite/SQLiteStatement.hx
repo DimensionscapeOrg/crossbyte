@@ -95,11 +95,12 @@ class SQLiteStatement extends EventDispatcher {
 		}
 
 		__prefetch = prefetch;
+		__rowId = 0;
 
 		try {
 			__resultSet = __sqlConnection.__connection.request(sql);
-			__rowId = __rowIdNow();
 			__queueResult();
+			__noteRowId();
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;
@@ -167,6 +168,20 @@ class SQLiteStatement extends EventDispatcher {
 	/** The connection's last rowid now, whole; see SQLiteConnection.__lastRowId. **/
 	@:noCompletion private function __rowIdNow():Float {
 		return __sqlConnection != null ? __sqlConnection.__lastRowId() : 0;
+	}
+
+	/**
+		Takes the rowid for this statement's results, once its rows are all
+		read, never while some remain. Past 2^31 the rowid is a query of its
+		own, and hxcpp's glue starts one by finalizing the statement before
+		it: read as soon as a SELECT had started, it cut the SELECT to the one
+		row already stepped. A write has no rows, so its rowid is taken at
+		once.
+	**/
+	@:noCompletion private function __noteRowId():Void {
+		if (!__executing) {
+			__rowId = __rowIdNow();
+		}
 	}
 
 	private function __queueResult():Void {
@@ -237,6 +252,7 @@ class SQLiteStatement extends EventDispatcher {
 				__executing = false;
 				__prefetch = 0;
 			}
+			__noteRowId();
 		} catch (e:Dynamic) {
 			__executing = false;
 			__prefetch = 0;

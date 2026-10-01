@@ -1935,6 +1935,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An SQLite SELECT returns all its rows once the connection's last rowid
+  has passed 2^31. A statement read that rowid as soon as it had started,
+  and past 2^31 reading it is a query of its own, which hxcpp's glue starts
+  by finalizing the statement before it: every SELECT came back with its
+  first row only. The rowid is read once the statement's rows are all read.
 - SQLite reports its failures as the other drivers do. An operation or
   statement SQLite refuses on a synchronous connection is dispatched as an
   `SQLErrorEvent` and thrown as an `SQLError`, and `request()` throws an
