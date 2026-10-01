@@ -18,6 +18,7 @@ import crossbyte.io.FileStream;
 import crossbyte.net.RateLimiter;
 import crossbyte.net.Socket;
 import crossbyte.http.HTTPContentCoding;
+import crossbyte.http.HTTPServerConfig.ErrorPage;
 import crossbyte.url.URL;
 import crossbyte.url.URLRequestHeader;
 import crossbyte.utils.CompressionAlgorithm;
@@ -173,7 +174,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 	// When the current request's first byte arrived; the duration metric
 	// measures from here, never from connection accept, so request N is
 	// not billed for the idle time since request N-1.
-	@:noCompletion private var __requestStartedAt:Float;
+	@:noCompletion private var __requestStartedAt:Float = 0;
+	// An HTTP/2 request weighed at its headers, ahead of its body: see
+	// __admitDecodedRequest. Its body then continues it.
+	@:noCompletion private var __admitted:Bool = false;
 	// Pushed in by the server's drain(): the in-flight response goes out
 	// with Connection: close so shutdown does not sever it mid-work.
 	@:noCompletion private var __closeAfterResponse:Bool = false;
@@ -258,15 +262,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__headers = new Map<String, String>();
 		__requestBody = new ByteArray();
 
+		__php = php;
+
 		// Only the HTTP/1.1 path parses this socket. Under HTTP/2 the frame
 		// layer owns every read and hands whole requests over already decoded,
-		// so subscribing here would have two readers racing one socket.
+		// so subscribing here would have two readers racing one socket. Its
+		// request is timed from its HEADERS, which the frame layer stamped,
+		// and its deadline is the stream's, which the frame layer keeps.
 		if (writer == null) {
 			__setup();
+			__requestStartedAt = haxe.Timer.stamp();
+			__receiveDeadline = config.requestTimeout > 0 ? __requestStartedAt + config.requestTimeout : 0;
 		}
-		__php = php;
-		__requestStartedAt = haxe.Timer.stamp();
-		__receiveDeadline = config.requestTimeout > 0 ? haxe.Timer.stamp() + config.requestTimeout : 0;
 	}
 
 	/** Returns the named cookie value, or `null` when the cookie is absent. */
@@ -526,7 +533,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private inline function __sendMethodNotAllowed():Void {
 		var hdrs:Array<URLRequestHeader> = [new URLRequestHeader("Allow", ALLOWED_METHODS.join(", "))];
-		__dispatchResponse(405, "Method Not Allowed", hdrs, "text/plain", "405 Method Not Allowed");
+		__sendError(405, "Method Not Allowed", "405 Method Not Allowed", hdrs);
 	}
 
 	/**
@@ -830,22 +837,43 @@ final class HTTPRequestHandler extends EventDispatcher {
 	 * where that finishes.
 	 */
 	@:noCompletion private function __serveDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
-			body:ByteArray, tooLarge:Bool = false, headersTooLarge:Bool = false):Void {
-		__method = method;
-		__queryString = queryString;
-		__headers = headers;
-		__requestBody = body != null ? body : new ByteArray();
-		// HTTP/2 carries no version token; the value only reaches logging and
-		// the HTTP/1.1 keep-alive rules, neither of which applies here.
-		__httpVersion = "HTTP/2";
-
+			body:ByteArray, tooLarge:Bool = false, headersTooLarge:Bool = false, timedOut:Bool = false, startedAt:Float = 0):Void {
 		// A header section past the limit, answered as the HTTP/1.1 parser
 		// answers one: before anything reads the headers, since they are not
 		// all here.
 		if (headersTooLarge) {
+			__takeDecodedRequest(method, queryString, headers, startedAt);
 			__sendErrorResponse(431, "Request Header Fields Too Large");
 			return;
 		}
+
+		// Nothing is left to arrive, so nothing is invited: no 100 Continue.
+		if (!__admitDecodedRequest(method, requestPath, queryString, headers, startedAt, false)) {
+			return;
+		}
+
+		__continueDecodedRequest(body, tooLarge, timedOut);
+	}
+
+	/**
+	 * Weighs a request the HTTP/2 layer has decoded the headers of, as the
+	 * HTTP/1.1 parser weighs one at the end of its header block: the path
+	 * settled (`400`), the rate limiter asked (`429`), the content codings
+	 * read (`415`), and, with a body still to come, its declared length held
+	 * to the limit (`413`) and an `Expect` answered -- `onExpectContinue`
+	 * asked, and `100 Continue` sent if it lets the body come.
+	 *
+	 * Called when the header section arrives, for a request with a body to
+	 * follow, and then `__continueDecodedRequest` when it has. HTTP/2 used to
+	 * see a request only once its body was in, so none of this could refuse
+	 * one before it was sent, and `onExpectContinue` was never asked at all.
+	 *
+	 * @return Whether the request may go on; false once it has been answered.
+	 */
+	@:noCompletion private function __admitDecodedRequest(method:String, requestPath:String, queryString:String, headers:Map<String, String>,
+			startedAt:Float, bodyToCome:Bool, declaredLength:Int = -1):Bool {
+		__takeDecodedRequest(method, queryString, headers, startedAt);
+		__admitted = true;
 
 		// The same settling the HTTP/1.1 parser applies, and for the same
 		// reasons: it is what keeps a request target inside the document
@@ -854,7 +882,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		var settled:Null<String> = __settlePath(requestPath);
 		if (settled == null) {
 			__sendErrorResponse(400, "Bad Request");
-			return;
+			return false;
 		}
 		__requestPath = settled;
 		__filePath = null;
@@ -864,6 +892,32 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// requests on one connection were all answered 200 where HTTP/1.1
 		// refused the fourth, and a gzip body reached middleware compressed.
 		if (__refusedByLimiter()) {
+			return false;
+		}
+
+		__requestContentEncodings = __parseContentEncodingHeader();
+		if (__requestContentEncodings == null) {
+			return false;
+		}
+
+		// Too big is said before a byte of it is sent, as over HTTP/1.1. The
+		// frame layer read the field already, so it arrives a number.
+		if (bodyToCome && declaredLength > __config.maxRequestBodySize) {
+			__sendErrorResponse(413, "Payload Too Large");
+			return false;
+		}
+
+		return __admitExpectation(bodyToCome);
+	}
+
+	/** The rest of a request `__admitDecodedRequest` let through: its body, decoded, then dispatch. */
+	@:noCompletion private function __continueDecodedRequest(body:ByteArray, tooLarge:Bool, timedOut:Bool):Void {
+		__requestBody = body != null ? body : new ByteArray();
+
+		// The body did not arrive within requestTimeout of the headers. The
+		// HTTP/1.1 answer, on this stream alone.
+		if (timedOut) {
+			__sendErrorResponse(408, "Request Timeout");
 			return;
 		}
 
@@ -872,12 +926,88 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return;
 		}
 
-		__requestContentEncodings = __parseContentEncodingHeader();
-		if (__requestContentEncodings == null || !__decodeRequestBody()) {
+		if (!__decodeRequestBody()) {
 			return;
 		}
 
 		__dispatchParsedRequest();
+	}
+
+	@:noCompletion private function __takeDecodedRequest(method:String, queryString:String, headers:Map<String, String>, startedAt:Float):Void {
+		__method = __uppercaseMethod(method);
+		__queryString = queryString;
+		__headers = headers;
+		// HTTP/2 carries no version token; the value only reaches logging and
+		// the HTTP/1.1 keep-alive rules, neither of which applies here.
+		__httpVersion = "HTTP/2";
+		if (startedAt > 0) {
+			__requestStartedAt = startedAt;
+		}
+	}
+
+	/**
+	 * `method` in capitals, as `method` promises and the HTTP/1.1 parser
+	 * reads one, and the same string when it already is, as nearly every one
+	 * is. HTTP/2 passed it on as it came, so `get` was refused `405` there and
+	 * served over HTTP/1.1.
+	 */
+	@:noCompletion private static function __uppercaseMethod(method:String):String {
+		for (i in 0...method.length) {
+			var code:Int = StringTools.fastCodeAt(method, i);
+			if (code >= "a".code && code <= "z".code) {
+				return method.toUpperCase();
+			}
+		}
+		return method;
+	}
+
+	/**
+	 * Answers an `Expect` the request carries: `417` for anything but
+	 * `100-continue`, then `HTTPServerConfig.onExpectContinue`, then, when the
+	 * body may come and is still to come, `100 Continue`.
+	 *
+	 * @return Whether the request may go on; false once it has been answered.
+	 */
+	@:noCompletion private function __admitExpectation(bodyToCome:Bool):Bool {
+		var expect:Null<String> = __headers.get("expect");
+		if (expect == null) {
+			return true;
+		}
+
+		if (StringTools.trim(expect.toLowerCase()) != "100-continue") {
+			__sendErrorResponse(417, "Expectation Failed");
+			return false;
+		}
+
+		// Asked before the client is told to send: the point of the
+		// expectation is that a request refused on its headers -- no
+		// credentials, say -- never has its body sent at all. The server
+		// used to say go ahead before any middleware had seen the request.
+		if (__config.onExpectContinue != null) {
+			var proceed:Bool = false;
+			try {
+				proceed = __config.onExpectContinue(this);
+			} catch (error:Dynamic) {
+				Logger.error("HTTPServerConfig.onExpectContinue threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
+			}
+
+			if (!proceed) {
+				if (!__responded) {
+					__sendErrorResponse(417, "Expectation Failed");
+				}
+				return false;
+			}
+		}
+
+		if (__responded || !__writer.connected) {
+			return false;
+		}
+
+		if (bodyToCome) {
+			__writer.writeContinue();
+			__writer.flush();
+		}
+		return true;
 	}
 
 	@:noCompletion private function __runMiddleware(index:Int, onComplete:Void->Void):Void {
@@ -1001,11 +1131,18 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		if (decision != null) {
+			// The rule's query, merged with the request's under QSA, whichever
+			// way the rule went: it reached a script only through the PHP
+			// flag, so a rule naming /index.php?route=$1 without it ran the
+			// script with the request's query and lost the route.
+			__queryString = decision.query;
 			if (decision.toPHP) {
-				__queryString = decision.query;
 				__servePhp(target, __method == "HEAD", __method == "POST" ? __requestBody : null, served);
 			} else if (__method == "POST") {
-				__handlePost(__filePath);
+				// Where the rules sent it. This was the path the request named,
+				// so a POST to a rewritten path was a 404 while its GET was
+				// served.
+				__handlePost(target);
 			} else if (decision.isStatic) {
 				__serveFile(target, __method == "HEAD");
 			} else {
@@ -1022,7 +1159,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private inline function __sendNotFound():Void {
-		__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+		__sendError(404, "Not Found", "404 Not Found");
 	}
 
 	/**
@@ -1070,22 +1207,54 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 
+	/**
+	 * Whether `HTTPServerConfig.blacklist` or `whitelist` keeps back the file
+	 * at `nativePath`. Asked of the file each route ends at -- one served, one
+	 * posted to, a script a rewrite sends to PHP -- since the lists were asked
+	 * only where a file is served: a POST to a blacklisted script, or a PHP
+	 * rewrite onto one, ran it.
+	 */
+	@:noCompletion private function __keptBack(nativePath:String):Bool {
+		var blacklist:Array<String> = __config.blacklist;
+		var whitelist:Array<String> = __config.whitelist;
+		return (blacklist != null && blacklist.length > 0 && blacklist.indexOf(nativePath) != -1)
+			|| (whitelist != null && whitelist.length > 0 && whitelist.indexOf(nativePath) == -1);
+	}
+
+	@:noCompletion private inline function __sendForbidden():Void {
+		__sendError(403, "Forbidden", "403 Forbidden");
+	}
+
+	/**
+	 * Whether `file`, made from `path`, names something other than `path`.
+	 *
+	 * On Windows a `File` reads `%NAME%` in its path from the environment,
+	 * and every check a request's path has been through -- its dotfiles, its
+	 * root -- was made on the path as written. So `/%25X%25` was checked as
+	 * `/%X%` and served as whatever `X` held: a dotfile's name, or `..` steps
+	 * out of the root. A path the `File` rewrote is not the path that was
+	 * checked, and is answered as one that is not there.
+	 */
+	@:noCompletion private static inline function __rewrittenByFile(file:File, path:String):Bool {
+		return file.nativePath != path;
+	}
+
 	@:noCompletion private function __serveFile(filePath:String, headOnly:Bool = false):Void {
 		var file:File = new File(filePath);
-
-		if (__config.blacklist.indexOf(file.nativePath) != -1) {
-			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
+		if (__rewrittenByFile(file, filePath)) {
+			__sendNotFound();
 			return;
 		}
-		if (__config.whitelist.length > 0 && __config.whitelist.indexOf(file.nativePath) == -1) {
-			__dispatchResponse(403, "Forbidden", null, "text/plain", "403 Forbidden");
+
+		if (__keptBack(file.nativePath)) {
+			__sendForbidden();
 			return;
 		}
 
 		if (!file.exists) {
 			// Keeps the connection: a routine 404 -- a page fetching a
 			// missing favicon -- must not cost the client a new handshake.
-			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+			__sendNotFound();
 			return;
 		}
 
@@ -1094,7 +1263,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (indexFile != null) {
 				__serveFile(indexFile, headOnly);
 			} else {
-				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+				__sendNotFound();
 			}
 			return;
 		} else {
@@ -1116,7 +1285,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 				if (__php == null) {
 					Logger.warn("Refusing to serve PHP source with no bridge configured; set phpEnabled to execute it, or move it out of the web root.",
 						["path" => __requestPath]);
-					__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+					__sendNotFound();
 					return;
 				}
 
@@ -1243,6 +1412,10 @@ final class HTTPRequestHandler extends EventDispatcher {
 			return false;
 		}
 
+		if (policy.precompressed && __servePrecompressed(file, mimeType, baseHeaders, modified, headOnly)) {
+			return true;
+		}
+
 		// A refusal of every coding is the ordinary path's to answer, 406.
 		// Kept once encoded, so Brotli first.
 		var decision:ResponseEncodingDecision = __resolveResponseEncoding(200, baseHeaders, false, true);
@@ -1257,27 +1430,6 @@ final class HTTPRequestHandler extends EventDispatcher {
 			new URLRequestHeader("Content-Encoding", coding),
 			new URLRequestHeader("Vary", "Accept-Encoding")
 		]);
-
-		if (policy.precompressed) {
-			var sibling:Null<File> = __precompressedSibling(file, decision.encoding, modified);
-			if (sibling != null) {
-				var size:Int = -1;
-				try {
-					size = sibling.size;
-				} catch (_:Dynamic) {}
-				if (size >= 0) {
-					if (headOnly) {
-						__dispatchResponseBytes(200, "OK", headers, mimeType, null, true, size, false, false);
-					} else if (size > STREAM_THRESHOLD) {
-						__streamFileResponse(200, "OK", headers, mimeType, sibling, 0, size);
-					} else {
-						sibling.load();
-						__dispatchResponseBytes(200, "OK", headers, mimeType, sibling.data, false, null, false, false);
-					}
-					return true;
-				}
-			}
-		}
 
 		// A file past the streaming threshold is sent as it is on disk.
 		if (total > STREAM_THRESHOLD) {
@@ -1311,6 +1463,90 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	/**
+		Answers a whole-file request with `file`'s precompressed sibling, and
+		says whether it did: the `.br` or `.gz` beside it in the coding the
+		client prefers of those it takes and that have one there. Brotli wins
+		a tie, being the smaller, and is taken only when named, as everywhere
+		here.
+
+		Only the one coding the client was going to be given used to be
+		looked for, and every browser lists gzip and br alike, so Brotli was
+		that coding: a file with only a `.gz` beside it went out as br
+		encoded on the spot, and one too large to hold went out as it is on
+		disk -- 307,200 bytes where its `.gz` held 49,755.
+	**/
+	@:noCompletion private function __servePrecompressed(file:File, mimeType:String, baseHeaders:Array<URLRequestHeader>, modified:Float,
+			headOnly:Bool):Bool {
+		var accept:Null<String> = getHeader("accept-encoding");
+		if (accept == null) {
+			return false;
+		}
+
+		var brotli:Float = -1;
+		var gzip:Float = -1;
+		var anything:Float = -1;
+		for (raw in accept.split(",")) {
+			var parts:Array<String> = raw.split(";");
+			var token:String = StringTools.trim(parts[0]).toLowerCase();
+			var q:Float = 1.0;
+			for (i in 1...parts.length) {
+				var param:String = StringTools.trim(parts[i]).toLowerCase();
+				if (StringTools.startsWith(param, "q=")) {
+					var parsed:Float = Std.parseFloat(StringTools.trim(param.substring(2)));
+					q = (parsed != parsed || parsed < 0 || parsed > 1) ? 0 : parsed;
+					break;
+				}
+			}
+			if (token == HTTPContentCoding.BR) {
+				brotli = q;
+			} else if (token == HTTPContentCoding.GZIP) {
+				gzip = q;
+			} else if (token == AcceptEncoding.DEFAULT) {
+				anything = q;
+			}
+		}
+		if (gzip < 0) {
+			gzip = anything;
+		}
+
+		var brotliFirst:Bool = brotli >= gzip;
+		for (pass in 0...2) {
+			var useBrotli:Bool = (pass == 0) == brotliFirst;
+			if ((useBrotli ? brotli : gzip) <= 0) {
+				continue;
+			}
+
+			var algorithm:CompressionAlgorithm = useBrotli ? CompressionAlgorithm.BROTLI : CompressionAlgorithm.GZIP;
+			var sibling:Null<File> = __precompressedSibling(file, algorithm, modified);
+			if (sibling == null) {
+				continue;
+			}
+			var size:Int = -1;
+			try {
+				size = sibling.size;
+			} catch (_:Dynamic) {}
+			if (size < 0) {
+				continue;
+			}
+
+			var headers:Array<URLRequestHeader> = baseHeaders.concat([
+				new URLRequestHeader("Content-Encoding", useBrotli ? HTTPContentCoding.BR : HTTPContentCoding.GZIP),
+				new URLRequestHeader("Vary", "Accept-Encoding")
+			]);
+			if (headOnly) {
+				__dispatchResponseBytes(200, "OK", headers, mimeType, null, true, size, false, false);
+			} else if (size > STREAM_THRESHOLD) {
+				__streamFileResponse(200, "OK", headers, mimeType, sibling, 0, size);
+			} else {
+				sibling.load();
+				__dispatchResponseBytes(200, "OK", headers, mimeType, sibling.data, false, null, false, false);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/**
 		The `.br` or `.gz` beside `file` for `algorithm`, when there is one the
 		server may send and it is not older than the file; null otherwise. The
 		blacklist and whitelist hold for it as for any file.
@@ -1326,13 +1562,19 @@ final class HTTPRequestHandler extends EventDispatcher {
 		}
 
 		var path:String = file.nativePath + suffix;
-		if (__config.blacklist.indexOf(path) != -1 || (__config.whitelist.length > 0 && __config.whitelist.indexOf(path) == -1)) {
+		if (__keptBack(path)) {
 			return null;
 		}
 
 		try {
+			// Most files have no sibling, and asking first costs one call where
+			// making a File to ask cost two: so looking for both codings costs
+			// what looking for one did.
+			if (!sys.FileSystem.exists(path) || sys.FileSystem.isDirectory(path)) {
+				return null;
+			}
 			var sibling:File = new File(path);
-			if (!sibling.exists || sibling.isDirectory || sibling.modificationDate.getTime() < modified) {
+			if (sibling.modificationDate.getTime() < modified) {
 				return null;
 			}
 			return sibling;
@@ -1472,8 +1714,36 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// not mid-transfer.
 		__writer.onDrain = __pumpStream;
 
+		// The stall deadline, from whichever sweep reaches this response, and
+		// the client giving up on it without closing the connection: an
+		// HTTP/2 reset of its stream, which drops the drain this pump waits
+		// on, so nothing else would ever stop it.
+		__writer.sweepWith(__checkStreamStall);
+		__watchClient();
+
 		// First burst goes out now rather than a drain later.
 		__pumpStream();
+	}
+
+	/**
+	 * Gives up on a response whose head has gone out, when the body cannot be
+	 * finished: the writer's `abort`, which under HTTP/1.1 closes the
+	 * connection -- the only way left to say the body is short -- and under
+	 * HTTP/2 resets the stream and leaves the connection's other streams be.
+	 * These paths closed the socket themselves, which under HTTP/2 is every
+	 * stream's: one file that shrank mid-transfer took down every request on
+	 * the connection.
+	 *
+	 * Whoever listens hears `Event.CLOSE` either way. Under HTTP/1.1 the
+	 * socket closing says so; under HTTP/2 nothing did, so a producer stopped
+	 * at the output cap was never told and, writing on a timer, wrote on for
+	 * good.
+	 */
+	@:noCompletion private function __abandonResponse():Void {
+		__writer.abort();
+		if (!__clientLeft) {
+			__clientGone();
+		}
 	}
 
 	@:noCompletion private function __onStreamSocketGone(_:Event):Void {
@@ -1562,9 +1832,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 						// one that is quietly wrong.
 						Logger.error('Streamed file ${__requestPath} ended early; closing rather than sending fabricated bytes.');
 						__stopStream();
-						if (__origin.connected) {
-							__origin.close();
-						}
+						__abandonResponse();
 						return;
 					}
 
@@ -1594,9 +1862,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// against the length it was promised.
 			Logger.error("Streamed file response failed mid-body: " + error);
 			__stopStream();
-			if (__origin.connected) {
-				__origin.close();
-			}
+			__abandonResponse();
 			return;
 		}
 
@@ -1638,9 +1904,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 		Logger.error('Streamed response to ${__requestPath} stalled; closing.');
 		__stopStream();
-		if (__origin.connected) {
-			__origin.close();
-		}
+		__abandonResponse();
 	}
 
 	/**
@@ -1666,6 +1930,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		// teardown would otherwise re-enter the pump with a half-released
 		// transfer.
 		__writer.onDrain = null;
+		__writer.sweepWith(null);
 		__origin.removeEventListener(Event.CLOSE, __onStreamSocketGone);
 		__origin.removeEventListener(IOErrorEvent.IO_ERROR, __onStreamSocketGone);
 
@@ -1801,9 +2066,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (ACCESS_LOG.isEnabled(LogLevel.INFO)) {
 			ACCESS_LOG.info('Client ' + __origin.remoteAddress + ' ' + __method + ' ' + __requestPath + ' - Status: ' + statusCode);
 		}
+		// What was answered, as HTTPStatusEvent says: the URL asked for and the
+		// fields the response carries. These were the client's address and
+		// only the fields a caller had added -- for a static file, no
+		// Content-Type, Date or Server. The client's address is
+		// remoteAddress. Both cost nothing for a request with no query.
 		var statusEvent:HTTPStatusEvent = new HTTPStatusEvent(HTTPStatusEvent.HTTP_RESPONSE_STATUS, statusCode, false);
-		statusEvent.responseURL = __origin.remoteAddress;
-		statusEvent.responseHeaders = headers;
+		statusEvent.responseURL = (__queryString == null || __queryString == "") ? __requestPath : __requestPath + "?" + __queryString;
+		statusEvent.responseHeaders = fields;
 		dispatchEvent(statusEvent);
 
 		// A body the output buffer cannot hold goes out as a file does, in
@@ -2033,7 +2303,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			Logger.error('A streamed response to ${__requestPath} outran its client: ' + (__writer.bufferedBytes + length)
 				+ ' bytes would be waiting, past maxOutputBufferSize ($cap). Ending it.');
 			__detachOpenStream();
-			__writer.abort();
+			__abandonResponse();
 			return false;
 		}
 
@@ -2155,6 +2425,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__clientLeft = true;
 		__unwatchClient();
 		__detachOpenStream();
+		// A file going out to it, too: the pump would wait on a drain that is
+		// not coming, with the file open.
+		__stopStream();
 		dispatchEvent(new Event(Event.CLOSE));
 	}
 
@@ -2363,6 +2636,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		__queryString = "";
 		__requestPath = "/";
 		__requestContentEncodings = null;
+		__admitted = false;
 		__awaitingBody = false;
 		__expectBody = 0;
 		__bodyBuf = null;
@@ -2396,7 +2670,53 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __sendErrorResponse(statusCode:Int, message:String):Void {
-		__dispatchResponse(statusCode, message, null, "text/plain", message);
+		__sendError(statusCode, message, message);
+	}
+
+	/**
+	 * Answers with an error the server writes itself: `text` as plain text,
+	 * or no body at all for a HEAD, whose answer says only what its GET's
+	 * would.
+	 *
+	 * These went out with their text whatever the method, so a HEAD for a
+	 * missing file had "404 Not Found" after its head, which a client reads
+	 * as the start of the next response on the connection -- and which
+	 * HTTP/2 makes a malformed response.
+	 */
+	@:noCompletion private function __sendError(statusCode:Int, statusMessage:String, text:String, ?headers:Array<URLRequestHeader>):Void {
+		var page:Null<ErrorPage> = __config.errorDocument != null ? __errorPage() : null;
+		if (page != null) {
+			// HTTPServerConfig.errorDocument, as read once. Never compressed:
+			// an error's body is not. Shared, so only read from here.
+			__dispatchResponseBytes(statusCode, statusMessage, headers, page.type, ByteArray.fromBytes(page.body), __method == "HEAD");
+			return;
+		}
+		__dispatchResponse(statusCode, statusMessage, headers, "text/plain", text, __method == "HEAD");
+	}
+
+	/**
+	 * `HTTPServerConfig.errorDocument` as read, the first time it is wanted,
+	 * and kept on the configuration for every connection after; null when it
+	 * cannot be read, which is logged once.
+	 *
+	 * Two runtimes sharing a configuration may both read it the first time;
+	 * each keeps the same bytes, so the race costs a read, not a wrong page.
+	 */
+	@:noCompletion private function __errorPage():Null<ErrorPage> {
+		var document:Null<File> = __config.errorDocument;
+		var kept:Null<ErrorPage> = @:privateAccess __config.__errorPage;
+		if (kept == null || kept.document != document) {
+			var body:Null<haxe.io.Bytes> = null;
+			try {
+				body = sys.io.File.getBytes(document.nativePath);
+			} catch (error:Dynamic) {
+				Logger.error('HTTPServerConfig.errorDocument could not be read, so errors are answered as text: ' + Std.string(error),
+					["path" => document.nativePath]);
+			}
+			kept = {document: document, body: body, type: __getMimeType(document.nativePath)};
+			@:privateAccess __config.__errorPage = kept;
+		}
+		return kept.body != null ? kept : null;
 	}
 
 	/**
@@ -2425,7 +2745,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			seconds = 1;
 		}
 
-		__dispatchResponse(429, "Too Many Requests", [new URLRequestHeader("Retry-After", Std.string(seconds))], "text/plain", "Too Many Requests");
+		__sendError(429, "Too Many Requests", "Too Many Requests", [new URLRequestHeader("Retry-After", Std.string(seconds))]);
 		return true;
 	}
 
@@ -3248,6 +3568,14 @@ final class HTTPRequestHandler extends EventDispatcher {
 	}
 
 	@:noCompletion private function __servePhp(absPhpPath:String, headOnly:Bool, ?body:ByteArray, ?overrideScriptName:String):Void {
+		// Here as well as where each route began, because a rewrite carrying
+		// the PHP flag comes straight here: the one door every script goes
+		// through.
+		if (__keptBack(absPhpPath)) {
+			__sendForbidden();
+			return;
+		}
+
 		if (__php == null) {
 			// A rewrite routed here with the PHP flag on a server that has no
 			// PHP bridge, which the shipped defaults do to every /api path
@@ -3359,14 +3687,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 			// `message.indexOf("did not respond within") >= 0`, so rewording
 			// PHPTimeout would have turned every gateway timeout into a bad
 			// gateway with nothing to say it had.
+			//
+			// With a body unless the request was a HEAD. Both went out as a
+			// HEAD's answer whatever the method, which once meant an empty
+			// body; since a HEAD's answer states the length the GET would
+			// have, they promised the text in Content-Length and never sent it.
+			var bodiless:Bool = __method == "HEAD" || headOnly;
 			if (Std.isOfType(exchange.cause, PHPTimeout)) {
 				Logger.error("PHP backend timed out: " + message, ["path" => __requestPath]);
-				__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", true);
+				__dispatchResponse(504, "Gateway Timeout", null, "text/plain", "Gateway Timeout", bodiless);
 				return;
 			}
 
 			Logger.error("PHP backend failed: " + message, ["path" => __requestPath]);
-			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", true);
+			__dispatchResponse(502, "Bad Gateway", null, "text/plain", "Bad Gateway", bodiless);
 		});
 	}
 
@@ -3529,7 +3863,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 		if (transferEncoding != null) {
 			var encodings = transferEncoding.toLowerCase().split(",");
 			if (encodings.length == 0 || StringTools.trim(encodings[encodings.length - 1]) != "chunked") {
-				__dispatchResponse(501, "Not Implemented", null, "text/plain", "Transfer-Encoding not supported");
+				__sendError(501, "Not Implemented", "Transfer-Encoding not supported");
 				return true;
 			}
 			chunked = true;
@@ -3553,39 +3887,9 @@ final class HTTPRequestHandler extends EventDispatcher {
 			}
 		}
 
-		var expect:String = __headers.exists("expect") ? __headers.get("expect") : null;
-		if (expect != null) {
-			var expectValue:String = StringTools.trim(expect.toLowerCase());
-			if (expectValue != "100-continue") {
-				__sendErrorResponse(417, "Expectation Failed");
-				return true;
-			}
-
-			// Asked before the client is told to send: the point of the
-			// expectation is that a request refused on its headers -- no
-			// credentials, say -- never has its body sent at all. The server
-			// used to say go ahead before any middleware had seen the request.
-			if (__config.onExpectContinue != null) {
-				var proceed:Bool = false;
-				try {
-					proceed = __config.onExpectContinue(this);
-				} catch (error:Dynamic) {
-					Logger.error("HTTPServerConfig.onExpectContinue threw: " + Std.string(error), ["method" => __method, "path" => __requestPath]);
-				}
-
-				if (!proceed) {
-					if (!__responded) {
-						__sendErrorResponse(417, "Expectation Failed");
-					}
-					return true;
-				}
-			}
-
-			if (__responded || !__origin.connected) {
-				return true;
-			}
-			__origin.writeUTFBytes("HTTP/1.1 100 Continue\r\n\r\n");
-			__origin.flush();
+		// The interim 100 goes out whatever the length, as it always has here.
+		if (!__admitExpectation(true)) {
+			return true;
 		}
 
 		if (!chunked && contentLength == 0) {
@@ -3837,8 +4141,20 @@ final class HTTPRequestHandler extends EventDispatcher {
 
 	@:noCompletion private function __handlePost(filePath:String):Void {
 		var file:File = new File(filePath);
+		if (__rewrittenByFile(file, filePath)) {
+			__sendNotFound();
+			return;
+		}
+
+		// The same answer a GET for it gets, before anything says whether it
+		// is there or what it is.
+		if (__keptBack(file.nativePath)) {
+			__sendForbidden();
+			return;
+		}
+
 		if (!file.exists) {
-			__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+			__sendNotFound();
 			return;
 		}
 
@@ -3847,7 +4163,7 @@ final class HTTPRequestHandler extends EventDispatcher {
 			if (indexFile != null) {
 				__handlePost(indexFile);
 			} else {
-				__dispatchResponse(404, "Not Found", null, "text/plain", "404 Not Found");
+				__sendNotFound();
 			}
 			return;
 		}

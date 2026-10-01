@@ -178,6 +178,48 @@ class HTTPStaticPathTest extends utest.Test {
 	}
 
 	/**
+		A path naming an environment variable is a name like any other.
+
+		On Windows a `File` reads `%NAME%` in its path from the environment,
+		and the server made one from the request path after the checks a path
+		is held to -- dotfiles, the root -- had been made on the path as it was
+		written. `/%25X%25` was checked as `/%X%` and served as whatever `X`
+		held: a dotfile, or a file outside the root.
+	**/
+	public function testAPathNamingAnEnvironmentVariableIsNotExpanded(async:Async):Void {
+		var server:HTTPServer = __serve(null);
+		var root:File = __roots[__roots.length - 1];
+		// Beside the root, where no path under it should reach.
+		var outsideName:String = "cb-outside-" + Std.random(1000000) + ".txt";
+		var outside:File = root.parent.resolvePath(outsideName);
+		__write(root.parent, outsideName, "OUTSIDE-THE-ROOT");
+
+		// The jvm cannot set one (Haxe throws there), and Linux and macOS do
+		// not expand one, so there the requests only name files that are not
+		// there; the case means something on Windows, natively and on Node.
+		// Not a warning: utest counts one against the run, and the jvm would
+		// fail every time.
+		try {
+			Sys.putEnv("CB_HTTP_PROBE_DOTFILE", ".env");
+			Sys.putEnv("CB_HTTP_PROBE_ESCAPE", ".." + (crossbyte.sys.System.isWindows ? "\\" : "/") + outsideName);
+		} catch (_:Dynamic) {}
+
+		HTTPTestSupport.exchangeEach(server, [
+			"GET /%25CB_HTTP_PROBE_DOTFILE%25 HTTP/1.1\r\nHost: x\r\n\r\n",
+			"GET /%25CB_HTTP_PROBE_ESCAPE%25 HTTP/1.1\r\nHost: x\r\n\r\n"
+		], function(responses:Array<HTTPTestResponse>):Void {
+			try server.close() catch (_:Dynamic) {}
+			try outside.deleteFile() catch (_:Dynamic) {}
+
+			Assert.equals(404, responses[0].status, "a path naming a variable that held a dotfile's name was served");
+			Assert.isTrue(responses[0].raw.indexOf("SECRET") < 0, "the .env contents reached the client");
+			Assert.equals(404, responses[1].status, "a path naming a variable that climbed out of the root was served");
+			Assert.isTrue(responses[1].raw.indexOf("OUTSIDE-THE-ROOT") < 0, "a file outside the root reached the client");
+			async.done();
+		});
+	}
+
+	/**
 		A `..` inside a segment is part of a name. Any `..` anywhere used to
 		throw out of the resolver, which ran before the router, so a route
 		whose parameter held one answered 500.

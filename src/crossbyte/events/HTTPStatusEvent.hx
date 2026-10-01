@@ -16,12 +16,21 @@ class HTTPStatusEvent extends Event {
 	/**
 		The response headers that the response returned, as an array of
 		URLRequestHeader objects.
+
+		From a server's `HTTPRequestHandler`, every field the response was
+		given, less the framing the protocol writes itself:
+		`Content-Length`, `Transfer-Encoding` and `Connection`. It used to be
+		only the fields a caller had added.
 	**/
 	public var responseHeaders:Array<URLRequestHeader>;
 
 	/**
 		The URL that the response was returned from. In the case of redirects,
 		this will be different from the request URL.
+
+		From a server's `HTTPRequestHandler`, the path and query the response
+		answers, as `requestPath` and `queryString` read: `/index.html?x=1`.
+		It used to be the client's address, which is `remoteAddress`.
 	**/
 	public var responseURL:String;
 

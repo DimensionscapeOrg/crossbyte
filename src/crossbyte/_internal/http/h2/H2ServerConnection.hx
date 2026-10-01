@@ -78,6 +78,11 @@ class H2ServerConnection {
 	 */
 	public var maxResetStreams:Int = DEFAULT_MAX_RESET_STREAMS;
 
+	/**
+	 * Seconds both `maxResetStreams` and `maxControlReplies` are counted
+	 * over. Zero or below ends every window as it starts, so nothing
+	 * accumulates and neither budget can trip.
+	 */
 	public var resetWindowSeconds:Float = DEFAULT_RESET_WINDOW;
 
 	/**
@@ -126,8 +131,54 @@ class H2ServerConnection {
 	 */
 	public var maxRequestBodySize:Int = -1;
 
+	/**
+	 * Streams this connection takes before it says it will take no more, or
+	 * `0` and below for no limit. The stream that reaches it is answered as
+	 * any other; a GOAWAY naming it goes out as it opens, any the peer opens
+	 * after are refused with REFUSED_STREAM, which tells it they are safe to
+	 * send elsewhere, and `onDrained` is called once the last open one ends.
+	 *
+	 * `HTTPServerConfig.keepAliveMaxRequests`, and `1` for `keepAlive` off:
+	 * HTTP/2 took no notice of either, so a connection lived for as long as
+	 * its client kept it.
+	 */
+	public var maxRequests:Int = 0;
+
 	/** Called once per complete request. */
 	public var onRequest:H2ServerRequest->Void = _ -> {};
+
+	/**
+	 * Called when a request's header section has arrived and its body has
+	 * not, so it can be refused before the body is sent: answered, and
+	 * `false` returned. The stream is then reset with NO_ERROR, which asks the
+	 * client to stop sending it, as for a body past `maxRequestBodySize`.
+	 * `true` lets the body come, and the request reaches `onRequest` once it
+	 * has, carrying whatever this put in its `context`.
+	 *
+	 * HTTP/1.1 refuses a request on its headers -- too large by its
+	 * `Content-Length`, or turned away by `Expect: 100-continue` -- before a
+	 * byte of the body is read. HTTP/2 had no such moment: a request was seen
+	 * only once its body was in.
+	 */
+	public var onRequestHead:H2ServerRequest->Bool = _ -> true;
+
+	/**
+	 * Called once the connection is going away and the last stream it let
+	 * finish has ended, so its owner can close it. Called from inside
+	 * whatever ended that stream -- a response's last write, a reset -- so
+	 * the owner closes it later rather than there.
+	 */
+	public var onDrained:Void->Void = () -> {};
+
+	/**
+	 * `haxe.Timer.stamp()` when the connection last had no stream open: when
+	 * it was made, or when the last open stream ended. Only streams count.
+	 * A PING, a SETTINGS or a WINDOW_UPDATE asks nothing of the server, and a
+	 * peer sending only those is as idle as one sending nothing; counting
+	 * them let one hold a connection past its idle allowance for as long as
+	 * it kept pinging.
+	 */
+	public var idleSince(default, null):Float;
 
 	/** Called when the connection fails fatally; the caller closes the socket. */
 	public var onConnectionError:H2ConnectionError->Void = _ -> {};
@@ -161,6 +212,8 @@ class H2ServerConnection {
 	private var __connectionSendWindow:Int;
 	private var __connectionUnacknowledged:Int = 0;
 	private var __openStreams:Int = 0;
+	// Every stream opened, for maxRequests.
+	private var __streamsTaken:Int = 0;
 	// Open streams already delivered: `openStreams - receivingStreams`.
 	private var __answering:Int = 0;
 	private var __resetCount:Int = 0;
@@ -202,6 +255,7 @@ class H2ServerConnection {
 
 		__prefaceRemaining = H2Connection.PREFACE.length;
 		__connectionSendWindow = H2Settings.DEFAULT_INITIAL_WINDOW_SIZE;
+		idleSince = haxe.Timer.stamp();
 	}
 
 	private inline function get_openStreams():Int {
@@ -487,7 +541,92 @@ class H2ServerConnection {
 				__answering--;
 			}
 			__abandoned.remove(streamId);
+
+			if (__openStreams == 0) {
+				// Between requests from here, which is what the idle
+				// allowance measures.
+				idleSince = haxe.Timer.stamp();
+				if (__goingAway) {
+					onDrained();
+				}
+			}
 		}
+	}
+
+	/**
+	 * Answers every request whose HEADERS arrived at or before `cutoff` and
+	 * whose body has still not all arrived: each is delivered marked
+	 * `timedOut`, with no body, to be answered `408`, and its stream is then
+	 * reset with NO_ERROR to stop the rest of it. The connection and its
+	 * other streams carry on.
+	 *
+	 * The deadline is the stream's own, fixed when it opened. The connection
+	 * had one clock, which every frame read or written set back, so a client
+	 * sending a byte of body every 0.4 s held a request open under a
+	 * `requestTimeout` of one second for as long as it liked, where HTTP/1.1
+	 * answered it 408.
+	 *
+	 * @return false when one of them is a header block still arriving: no
+	 *         other frame may be read until it ends (6.10), so the connection
+	 *         can go no further, and its owner closes it.
+	 */
+	public function expireRequests(cutoff:Float):Bool {
+		if (closed || __openStreams == __answering) {
+			return true;
+		}
+
+		// Gathered first: answering one removes it from the map being walked.
+		var late:Null<Array<H2Stream>> = null;
+		for (target in __streams) {
+			if (!target.delivered && target.openedAt <= cutoff) {
+				if (late == null) {
+					late = [];
+				}
+				late.push(target);
+			}
+		}
+		if (late == null) {
+			return true;
+		}
+
+		for (target in late) {
+			if (!target.headerSectionReceived) {
+				return false;
+			}
+			if (target.delivered || !__streams.exists(target.id)) {
+				continue;
+			}
+			__refuseLate(target);
+			if (closed) {
+				break;
+			}
+		}
+		return true;
+	}
+
+	private function __refuseLate(target:H2Stream):Void {
+		target.overflowed = true;
+		target.takeBody();
+
+		var request:Null<H2ServerRequest> = target.request;
+		if (request == null) {
+			try {
+				request = H2ServerRequest.fromHeaders(target.id, target.headers, null, true);
+			} catch (e:H2StreamError) {
+				resetStream(e.streamId, e.code);
+				return;
+			}
+			request.startedAt = target.openedAt;
+		}
+
+		request.timedOut = true;
+		request.body = Bytes.alloc(0);
+		__markDelivered(target);
+		onRequest(request);
+
+		// As for a body past the limit: the answer has ended the stream on
+		// this side, and this asks the client to stop sending the rest.
+		resetStream(target.id, H2ErrorCode.NO_ERROR);
 	}
 
 	/** Resets one stream, leaving the connection running. */
@@ -681,8 +820,18 @@ class H2ServerConnection {
 				// and every one of them costs a handler and a buffer.
 				refusal = H2ErrorCode.REFUSED_STREAM;
 			} else {
-				__streams.set(frame.streamId, new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize));
+				var opened:H2Stream = new H2Stream(frame.streamId, remoteSettings.initialWindowSize, localSettings.initialWindowSize);
+				opened.openedAt = haxe.Timer.stamp();
+				__streams.set(frame.streamId, opened);
 				__openStreams++;
+				__streamsTaken++;
+
+				if (maxRequests > 0 && __streamsTaken >= maxRequests) {
+					// The last this connection takes. Said now, as it opens,
+					// so the client sends what comes next elsewhere instead of
+					// learning it from a refusal.
+					goAwayGracefully();
+				}
 			}
 		}
 
@@ -777,6 +926,32 @@ class H2ServerConnection {
 		if (endStream) {
 			target.endOfStream = true;
 			__deliver(streamId, target);
+			return;
+		}
+
+		__admit(target);
+	}
+
+	/**
+	 * Reads a request whose body is still to come, and asks `onRequestHead`
+	 * whether it may come. Read here rather than when the body ends, so a
+	 * malformed one is refused before its body is sent as well.
+	 */
+	private function __admit(target:H2Stream):Void {
+		var request:H2ServerRequest;
+		try {
+			request = H2ServerRequest.fromHeaders(target.id, target.headers, null, true);
+		} catch (e:H2StreamError) {
+			resetStream(e.streamId, e.code);
+			return;
+		}
+		request.startedAt = target.openedAt;
+		target.request = request;
+
+		if (!onRequestHead(request)) {
+			// Answered, or turned away, before its body. What arrives of it is
+			// counted and dropped once the stream is gone.
+			resetStream(target.id, H2ErrorCode.NO_ERROR);
 		}
 	}
 
@@ -830,6 +1005,7 @@ class H2ServerConnection {
 		}
 
 		var request:H2ServerRequest = H2ServerRequest.withHeadersTooLarge(target.id, target.headers);
+		request.startedAt = target.openedAt;
 		target.headers = [];
 		__markDelivered(target);
 		onRequest(request);
@@ -853,6 +1029,13 @@ class H2ServerConnection {
 		var content:Bytes = frame.has(H2Flags.PADDED) ? H2Frame.stripPadding(frame.payload, frame.streamId) : frame.payload;
 
 		var target:Null<H2Stream> = __streams.get(frame.streamId);
+		if (target != null && target.endOfStream) {
+			// 5.1: the peer ended this stream, so it is half-closed on its
+			// side and DATA on it is a stream error. It was appended, and a
+			// second END_STREAM delivered the request again -- a second
+			// handler answering a stream the first was answering.
+			throw new H2StreamError(frame.streamId, H2ErrorCode.STREAM_CLOSED, "DATA after the end of the stream");
+		}
 		if (target != null && !target.overflowed) {
 			if (maxRequestBodySize >= 0 && target.bodyLength + content.length > maxRequestBodySize) {
 				__refuseOversized(target);
@@ -881,15 +1064,19 @@ class H2ServerConnection {
 		// Released now rather than kept for a request that will never use it.
 		target.takeBody();
 
-		var request:H2ServerRequest;
-		try {
-			request = H2ServerRequest.fromHeaders(target.id, target.headers, null, true);
-		} catch (e:H2StreamError) {
-			resetStream(e.streamId, e.code);
-			return;
+		var request:Null<H2ServerRequest> = target.request;
+		if (request == null) {
+			try {
+				request = H2ServerRequest.fromHeaders(target.id, target.headers, null, true);
+			} catch (e:H2StreamError) {
+				resetStream(e.streamId, e.code);
+				return;
+			}
+			request.startedAt = target.openedAt;
 		}
 
 		request.tooLarge = true;
+		request.body = Bytes.alloc(0);
 		__markDelivered(target);
 		onRequest(request);
 
@@ -901,7 +1088,14 @@ class H2ServerConnection {
 	private function __deliver(streamId:Int, target:H2Stream):Void {
 		var request:H2ServerRequest;
 		try {
-			request = H2ServerRequest.fromHeaders(streamId, target.headers, target.takeBody());
+			if (target.request != null) {
+				// Read and admitted at its headers; only the body is new.
+				request = target.request;
+				request.attachBody(target.takeBody());
+			} else {
+				request = H2ServerRequest.fromHeaders(streamId, target.headers, target.takeBody());
+				request.startedAt = target.openedAt;
+			}
 		} catch (e:H2StreamError) {
 			resetStream(e.streamId, e.code);
 			return;

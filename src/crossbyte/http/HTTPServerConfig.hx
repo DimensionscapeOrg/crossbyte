@@ -35,7 +35,8 @@ class HTTPServerConfig {
 		Bytes a request body may reach, on the wire and once decoded, over
 		HTTP/1.1 and HTTP/2 alike. A larger one is answered `413 Payload Too
 		Large` -- as soon as a `Content-Length` says so, before any of the body
-		is read. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
+		is read, on either protocol; over HTTP/2 it was found only once that
+		much had arrived. Defaults to `DEFAULT_MAX_REQUEST_BODY`.
 
 		The limit used to be fixed at a megabyte that counted the request's
 		headers too, and a `Content-Length` past it was answered `400`, which
@@ -63,6 +64,11 @@ class HTTPServerConfig {
 		request, so an unauthenticated upload was invited and read in full
 		before it could be refused. Left `null`, a request within
 		`maxRequestBodySize` is told to go ahead, as before.
+
+		Over HTTP/2 too, when the request's headers arrive: a refusal answers
+		its stream and resets it, which asks the client not to send the body,
+		and going ahead sends an interim `100`. It used not to be asked of an
+		HTTP/2 request at all.
 	**/
 	public var onExpectContinue:(handler:HTTPRequestHandler) -> Bool = null;
 
@@ -123,8 +129,53 @@ class HTTPServerConfig {
 	public var serveDotFiles:Bool = false;
 
 	public var directoryIndex:Array<String>;
+
+	/**
+		A page sent as the body of every error this server answers by itself,
+		in place of the line of plain text each carries, with the status it
+		would have had: a file that is not there (`404`), one kept back
+		(`403`), a method the files are not served to (`405`), a request
+		refused, limited or late, and a server error. `null`, the default,
+		keeps the text. An answer middleware or a route gives with `respond()`
+		is its own, and is never replaced.
+
+		Its `Content-Type` is the one its extension names, as for any file
+		served. It is read when first needed and kept, so a change to it is
+		seen after a restart, and `validate` refuses one that is not there.
+
+		It used to be accepted and kept and never read.
+	**/
 	public var errorDocument:File;
+
+	// The error document's bytes, read once: see errorDocument.
+	@:noCompletion private var __errorPage:Null<ErrorPage> = null;
+
+	/**
+		When not empty, the only files under `rootDirectory` this server serves
+		or runs: a request that ends at any other is answered `403 Forbidden`.
+		Empty by default, which keeps nothing back.
+
+		Held as `blacklist` is, to the file a request resolves to, whatever
+		the method and however it got there. A precompressed `.br` or `.gz`
+		sibling is sent in a file's place only if it is listed too.
+	**/
 	public var whitelist:Array<String>;
+
+	/**
+		Files under `rootDirectory` this server never serves or runs: a request
+		that ends at one is answered `403 Forbidden`. Empty by default.
+
+		Each entry is a file's `File.nativePath`, compared whole, so build it
+		from the root: `config.rootDirectory.resolvePath("admin.php").nativePath`.
+		It is checked against the file a request resolves to -- the one it
+		names, a directory's index, or a rewrite's target -- for every method,
+		so a blacklisted script is refused to a `POST`, and to a rewrite with
+		the `PHP` flag, as it is to a `GET`. It used to be checked for a static
+		`GET` or `HEAD` alone, and the script ran for the rest.
+
+		This decides what the filesystem answers with. Middleware and routes
+		run first and see every path.
+	**/
 	public var blacklist:Array<String>;
 	public var customHeaders:Array<URLRequestHeader>;
 	public var middleware:Array<Middleware>;
@@ -262,10 +313,16 @@ class HTTPServerConfig {
 		4. the remaining entries here, in order
 
 		The consequence worth knowing is that **an existing file wins over a
-		rewrite**, whatever the rules say. This is Apache's `RewriteCond !-f`
-		idiom applied for you rather than written out; to invert it for a
-		given rule, give that rule a `FileExists` condition with `negate` set
-		and it will run before the file is looked for. It is not nginx's
+		rewrite** unless the rule asks about files. For a request that names
+		a file or a directory with an index, every rule without a
+		`FileExists` or `DirExists` condition is passed over and the file is
+		served: Apache's `RewriteCond !-f` idiom applied for you rather than
+		written out. A rule with one of those conditions asks for itself and
+		is tried in its place even then, so to have a rule win over a file
+		that exists, give it a `FileExists` condition without `negate`: it
+		then applies to exactly the requests that name an existing file.
+		(This doc used to say `negate` set, which asks the opposite, and no
+		rule could win over an existing file at all.) It is not nginx's
 		model, where `try_files` runs after the rewrite phase in the order
 		written.
 
@@ -288,12 +345,18 @@ class HTTPServerConfig {
 		```haxe
 		config.tryFiles = ["$uri", "$uri/", "/index.html"];
 		```
+
+		In an entry after the first two, `$uri` is the request path, so
+		`"$uri.html"` serves `/about` from `about.html`, the way clean URLs
+		are served. It was looked for as a file named `$uri.html`.
 	**/
 	public var tryFiles:Array<String>;
 
 	/**
-		Rewrite rules, applied in order after `tryFiles` has failed to resolve
-		the request against an existing file or directory index.
+		Rewrite rules, applied in order to a request that names no existing
+		file or directory index. One that does is tried only against the rules
+		that ask about files -- a `FileExists` or `DirExists` condition -- and
+		served its file when none of them applies; see `tryFiles`.
 
 		Empty by default. A rule carrying the `PHP` flag needs `phpEnabled`,
 		and the two shipped out of step until 1.0.0-rc.2: the defaults rewrote
@@ -317,23 +380,18 @@ class HTTPServerConfig {
 		that misses the deadline is answered with `408 Request Timeout`
 		and closed.
 
+		Over HTTP/2 each request has its own deadline, counted from its
+		HEADERS, and nothing sent after them moves it: a request whose body
+		has not all arrived by then is answered `408` on its stream, which is
+		then reset, and the connection carries its other requests on. A header
+		block still unfinished then closes the connection, since nothing else
+		on it can be read until the block ends.
+
 		Enforced by the owning server's sweep, which runs a few times a
 		second, so the deadline is precise to roughly a quarter second.
 	**/
 	public var requestTimeout:Float;
 
-	/**
-		Whether one connection may carry more than one request.
-
-		Off, every response ends its connection, so every request pays TCP
-		setup — and a full TLS handshake when `tlsEnabled` is set — to be
-		answered: a page, its stylesheet and its favicon are three
-		handshakes. On, a response whose framing allows it leaves the
-		connection open for the next request, which is what HTTP/1.1
-		specifies and what every client already expects. Defaults to
-		`true`; `false` restores the one-shot close-per-request behavior
-		exactly.
-	**/
 	/**
 		Offer HTTP/2 on this listener, alongside HTTP/1.1.
 
@@ -366,9 +424,40 @@ class HTTPServerConfig {
 	**/
 	public var http2MaxResetStreams:Int;
 
-	/** Seconds the `http2MaxResetStreams` budget is measured over. **/
+	/**
+		Seconds the `http2MaxResetStreams` budget is measured over. Defaults
+		to 30.
+
+		The same window measures a second budget: the PING and SETTINGS frames
+		a peer may make the server answer, a hundred in a window, past which
+		the connection is closed with `ENHANCE_YOUR_CALM` (the ping and
+		settings floods, CVE-2019-9512 and CVE-2019-9515). Each obliges a
+		reply, and none opens a stream, so no other limit sees them.
+
+		`0` or below makes every window end as it starts, so nothing
+		accumulates and both defences are off. To turn off the reset check
+		alone, make `http2MaxResetStreams` negative instead.
+	**/
 	public var http2ResetWindowSeconds:Float;
 
+	/**
+		Whether one connection may carry more than one request.
+
+		Off, every response ends its connection, so every request pays TCP
+		setup — and a full TLS handshake when `tlsEnabled` is set — to be
+		answered: a page, its stylesheet and its favicon are three
+		handshakes. On, a response whose framing allows it leaves the
+		connection open for the next request, which is what HTTP/1.1
+		specifies and what every client already expects. Defaults to
+		`true`; `false` restores the one-shot close-per-request behavior
+		exactly.
+
+		Off, an HTTP/2 connection takes one stream: a GOAWAY naming it goes
+		out as it opens, a stream opened after it is refused with
+		`REFUSED_STREAM` -- safe for the client to send again elsewhere --
+		and the connection closes once that one has been answered. It used to
+		make no difference to HTTP/2 at all.
+	**/
 	public var keepAlive:Bool;
 
 	/**
@@ -382,6 +471,11 @@ class HTTPServerConfig {
 		deadline is the normal end of its life, not a client fault, so it
 		is closed without a `408`. Enforced by the same sweep as
 		`requestTimeout`, so precision is roughly a quarter second.
+
+		An HTTP/2 connection is idle while it has no stream open, counted
+		from when its last one ended. Its PINGs, SETTINGS and WINDOW_UPDATEs
+		ask nothing of the server and do not count: they used to, so a client
+		sending only PINGs held a connection for as long as it liked.
 	**/
 	public var keepAliveTimeout:Float;
 
@@ -394,6 +488,11 @@ class HTTPServerConfig {
 		a load balancer a periodic chance to rebalance. A limit of 1,000
 		yields exactly 1,000 responses, the 1,000th carrying
 		`Connection: close`.
+
+		Over HTTP/2, the streams one connection takes: the GOAWAY goes out as
+		the last of them opens and names it, a stream opened after it is
+		refused with `REFUSED_STREAM`, and the connection closes once the
+		ones it took have been answered. HTTP/2 used to take no notice of it.
 
 		Each close costs the client a new connection, and over HTTPS a new
 		handshake. It defaulted to 100, and a native HTTPS server with 64
@@ -456,7 +555,8 @@ class HTTPServerConfig {
 
 	/**
 		Path to the PEM certificate chain this server presents. Set together
-		with `tlsKeyPath` to serve HTTPS.
+		with `tlsKeyPath` to serve HTTPS; `validate` refuses one without the
+		other, which used to be served as plain HTTP.
 	**/
 	public var tlsCertificatePath:String;
 
@@ -521,18 +621,26 @@ class HTTPServerConfig {
 	}
 
 	/**
-		Throws if this configuration describes a resolution order the server
-		will not follow. Called by `HTTPServer` on construction.
+		Throws an `ArgumentError` if this configuration says something the
+		server would not do. Called by `HTTPServer` on construction.
 
-		Two things are checked: the shape of `tryFiles`, and that nothing which
-		resolves files under `rootDirectory` -- PHP, `rewrites`, `tryFiles`
-		entries past the first two -- is asked for without one.
+		Checked:
+
+		- the shape of `tryFiles`, below;
+		- that nothing which resolves files under `rootDirectory` -- PHP,
+		  `rewrites`, `tryFiles` entries past the first two -- is asked for
+		  without one;
+		- that `corsAllowCredentials` is not paired with an
+		  `corsAllowedOrigins` of `"*"`;
+		- that an `errorDocument` is a file that is there;
+		- that `tlsCertificatePath` and `tlsKeyPath` are set together or not
+		  at all.
 
 		`$uri` and `$uri/` are
 		tested by the resolver before it reads this list at all — before the
-		rewrite rules, and whether or not the list mentions them — so any
-		spelling other than those two first describes something that does not
-		happen. Listing a literal ahead of them does not give it priority;
+		rewrite rules look at the request, and whether or not the list
+		mentions them — so any spelling other than those two first describes
+		something that does not happen. Listing a literal ahead of them does not give it priority;
 		leaving them out does not switch direct file serving off, which is the
 		reading most likely to be mistaken for a restriction.
 
@@ -577,8 +685,32 @@ class HTTPServerConfig {
 				throw new ArgumentError("tryFiles entries after \"$uri/\" need a rootDirectory: each names a file under it. Set rootDirectory, or remove them.");
 			}
 		}
+
+		// Read only when the first error is answered, which is too late to
+		// say it is missing.
+		if (errorDocument != null && (!errorDocument.exists || errorDocument.isDirectory)) {
+			throw new ArgumentError("errorDocument " + errorDocument.nativePath + " is not a file that is there.");
+		}
+
+		// One path without the other is not HTTPS, so tlsEnabled is false, and
+		// the server listened in plaintext for a caller who had asked for
+		// HTTPS: a key variable misspelt was an unencrypted server.
+		var certificate:Bool = tlsCertificatePath != null && tlsCertificatePath != "";
+		var key:Bool = tlsKeyPath != null && tlsKeyPath != "";
+		if (certificate != key) {
+			throw new ArgumentError(certificate
+				? "tlsCertificatePath is set and tlsKeyPath is not: HTTPS needs both, and this server would have listened in plain HTTP. Set tlsKeyPath, or clear tlsCertificatePath for plain HTTP."
+				: "tlsKeyPath is set and tlsCertificatePath is not: HTTPS needs both, and this server would have listened in plain HTTP. Set tlsCertificatePath, or clear tlsKeyPath for plain HTTP.");
+		}
 	}
 }
 
 typedef Middleware = (HTTPRequestHandler, ?Dynamic->Void) -> Void;
+
+/** `HTTPServerConfig.errorDocument` as read: `body` is null when it could not be. */
+@:noCompletion typedef ErrorPage = {
+	var document:File;
+	var body:Null<haxe.io.Bytes>;
+	var type:String;
+}
 #end

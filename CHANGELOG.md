@@ -153,6 +153,9 @@ entry below says how:
 - `PostgresConnection.autocommit = false` takes effect, where it did
   nothing: statements then wait for `commit()`. Remove it from code that
   set it and relied on each statement committing.
+- `HTTPServerConfig.validate()`, and so `new HTTPServer`, refuses a
+  `tlsCertificatePath` without a `tlsKeyPath` or the reverse, which was
+  served as plain HTTP, and an `errorDocument` that is not there.
 
 ### Added
 - `ReliableDatagramServerSocket.relayVerifyCert`, for a TURN relay reached
@@ -2918,6 +2921,143 @@ entry below says how:
   one kept across a `close()` and `open()` held the closed one. A second
   `close()` does nothing, and a savepoint SQLite refused is not the one a
   nameless release reaches for next.
+- The HTTP/2 client keeps an interim response -- `100 Continue`, `103 Early
+  Hints` -- apart from the response. Every header block's fields were
+  added to the stream's, so a 200 after a 103 came back carrying the 103's
+  `link`. An interim block is now dropped and the final one waited for, and
+  one that ends the stream is a malformed response, its stream reset
+  `PROTOCOL_ERROR` while the connection carries on (RFC 9113 8.1); it was
+  taken as the response, a `100`.
+- On Windows, a request path that names an environment variable --
+  `/%25X%25` -- reaches no file but one of that name. A `File` reads
+  `%NAME%` in its path from the environment, and the server made one from
+  the request path after the dotfile and root checks had been made on the
+  path as written, so the request was served whatever `X` held: a
+  dotfile's name, or `..` steps to a file outside the root. A path the
+  `File` rewrites is now answered as one that is not there.
+- An HTTP/2 file download lets go of its file when its client resets the
+  stream, and is held to the 30 s stall deadline when its client stops
+  taking it. The pump waits on its stream's writable callback, which a
+  reset drops, and only the socket closing stopped it, so each download a
+  client reset or simply never opened its window for held a file open
+  until the connection closed; the stall deadline was checked by the
+  HTTP/1.1 sweep alone. A stalled one is reset, and the connection
+  carries on.
+- `Router.head()` says what `respond()` does for a `HEAD`: states the
+  length of the body it is given and sends none of it. It said a `HEAD`
+  was framed as zero-length, which has not been so since `HEAD` answers
+  began stating their `GET`'s length.
+- A server's `HTTPStatusEvent.HTTP_RESPONSE_STATUS` says what was answered,
+  as the event's doc has it: `responseURL` is the request's path and
+  query, where it was the client's address (`remoteAddress` has that), and
+  `responseHeaders` every field the response carries but its framing,
+  where it was only the fields a caller had added -- for a static file, no
+  `Content-Type`, `Date` or `Server`.
+- A `POST` goes where the rewrite rules send it, as a `GET` does: it was
+  resolved against the path it named, so a form posting to a rewritten
+  path was answered 404. And a rule's query -- merged with the request's
+  under `QSA` -- reaches a script whether or not the rule has the `PHP`
+  flag: without it the script was given the request's query and lost the
+  route the rule had captured. `RewriteRule.target` no longer says it can
+  name a route, which rules, running after middleware, cannot reach.
+- `HTTPServerConfig.http2ResetWindowSeconds` says that it also measures the
+  budget of PING and SETTINGS frames a peer may make the server answer, a
+  hundred a window, and that `0` turns both defences off: it read as the
+  reset budget's window alone.
+- An `HTTPServer` given a TLS certificate path and no key path, or a key
+  and no certificate, is refused at construction. `tlsEnabled` asks for
+  both, so it was false, and the server listened in plain HTTP for a
+  caller who had asked for HTTPS and been told nothing: one misspelt
+  environment variable was an unencrypted server.
+- `HTTPServerConfig.errorDocument` is the body of every error the server
+  answers by itself -- a missing file's 404, a 403, a 405, a refused or
+  late request, a 500 -- with the status each would have had, and the
+  `Content-Type` its extension names. It was accepted and kept and never
+  read, so every error went out as a line of plain text. It is read once,
+  when first wanted, and `validate` refuses one that is not there. An
+  answer middleware or a route gives with `respond()` is never replaced.
+- The server's own error answers -- a 404 for a missing file, a 403, 405,
+  429, 501 and the rest -- carry no body for a `HEAD`. They went out with
+  their text whatever the method, so a `HEAD` for a missing file had
+  "404 Not Found" after its head, which a client keeping the connection
+  reads as the start of the next response, and which HTTP/2 makes a
+  malformed one.
+- A precompressed `.gz` beside a static file is sent to a client that also
+  takes Brotli, which every browser does. Only the sibling for the coding
+  the client was going to be given was looked for, and that was Brotli, so
+  a file with only a `.gz` went out as br encoded on the spot -- or, too
+  large to hold, as it is on disk: 307,200 bytes where its `.gz` held
+  49,755. Siblings are tried in the client's order of preference now, and
+  an absent one costs one filesystem call rather than two, so looking for
+  both costs what looking for one did.
+- `$uri` in a `tryFiles` entry after the first two is the request path, as
+  in nginx's `try_files`: `"$uri.html"` serves `/about` from `about.html`.
+  It was looked for as a file named `$uri.html`.
+- A rewrite rule with a `FileExists` or `DirExists` condition can win over
+  a file the request names, as `HTTPServerConfig.tryFiles` says: it is
+  tried in its place even then, and with `FileExists` (not negated) it
+  applies to exactly those requests. Every rule ran only once the request
+  had been found to name no file or directory index, so none could, and
+  the doc's recipe -- `negate` set -- asked the opposite. Rules without such
+  a condition are passed over for a request naming a file, as before.
+- A rewrite's `Header` condition matches its field in any case, as HTTP
+  names one. Both parsers store a request's fields lowercase, and the key
+  was looked up as written, so `X-Test` matched nothing a client could
+  send and only `x-test` worked.
+- DATA on an HTTP/2 stream its client has already ended is refused with
+  `STREAM_CLOSED`, as RFC 9113 5.1 has it. It was taken as more body, and
+  a second END_STREAM delivered the request again, so a second handler
+  answered a stream the first was answering.
+- An HTTP/2 response the server has to give up on partway -- a file that
+  came up short, a read that failed, a stream written faster than its
+  client takes it -- resets its own stream and leaves the connection's
+  others be. The file pump closed the socket, which under HTTP/2 is every
+  stream's, so one file changing under a download took down every request
+  on the connection. And a producer stopped at `maxOutputBufferSize` hears
+  `Event.CLOSE` over HTTP/2 as it does over HTTP/1.1: nothing told it, so
+  one writing on a timer wrote on for good.
+- An HTTP/2 request's method is read in capitals, as an HTTP/1.1 one is and
+  as `HTTPRequestHandler.method` says. It was taken as it came, so `get`
+  was refused `405` over HTTP/2 and served over HTTP/1.1, and a route
+  matched one and not the other.
+- An HTTP/2 request is held to `requestTimeout` from its own HEADERS. Every
+  frame read or written set the connection's one clock back, so a client
+  sending a byte of body every 0.4 s held a request open under a
+  `requestTimeout` of one second for as long as it liked, and was answered
+  200, where HTTP/1.1 answered 408 at 1.05 s. A late request is answered
+  `408` on its stream, which is then reset, and the connection carries its
+  other requests on; it used to be the whole connection that went. And an
+  HTTP/2 connection is idle, for `keepAliveTimeout`, while it has no stream
+  open: PINGs, SETTINGS and WINDOW_UPDATEs counted as activity, so a client
+  sending only PINGs held a connection for good.
+- `keepAliveMaxRequests` and `keepAlive = false` hold for HTTP/2, which took
+  no notice of either. The stream that reaches the limit -- the first, with
+  keep-alive off -- is the last the connection takes: a GOAWAY naming it
+  goes out as it opens, a stream opened after it is refused with
+  `REFUSED_STREAM`, which tells the client it is safe to send elsewhere, and
+  the connection closes once the streams it took have been answered.
+- An HTTP/2 request is weighed when its headers arrive, as an HTTP/1.1 one
+  is at the end of its header block, rather than once the whole body has.
+  A `content-length` past `maxRequestBodySize` is answered `413` before a
+  byte of the body is sent -- one was refused only once that much had
+  arrived -- the rate limiter and the content codings are asked then, and
+  `onExpectContinue`, which was never asked over HTTP/2, is asked of a
+  request carrying `expect: 100-continue`: a refusal answers its stream and
+  resets it, and going ahead sends an interim `100`.
+- An HTTP/2 request's duration, in the server's `_request_seconds`
+  histogram, is measured from its HEADERS, as an HTTP/1.1 request's is from
+  its first byte. It was measured from when its body had all arrived, so an
+  upload that took a second was recorded as taking none.
+- A PHP backend that fails or does not answer in time is answered with a
+  whole `502` or `504`. Each went out as a `HEAD`'s answer, with a
+  `Content-Length` counting its text and no text after it, so the client
+  waited for a body that was never coming until the connection closed.
+- `HTTPServerConfig.blacklist` and `whitelist` hold for every request that
+  ends at a file, whatever its method and however it got there. They were
+  checked only where a static file is served, so a blacklisted PHP script
+  was refused to a `GET` and run for a `POST`, or for a rewrite with the
+  `PHP` flag onto it. A `POST` to a listed file is answered `403` as a
+  `GET` is. Both fields had no documentation, and now say this.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened

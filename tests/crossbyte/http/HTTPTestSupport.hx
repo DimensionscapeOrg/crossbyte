@@ -109,6 +109,57 @@ class HTTPTestSupport {
 	}
 
 	/**
+	 * `pumpUntilAsync`, each pump advancing the runtime by the wall time since
+	 * the one before, so the runtime's clock keeps to the wall's on every
+	 * system.
+	 *
+	 * A fixed step cannot: what a millisecond's sleep takes differs, a
+	 * millisecond on Linux and up to a timer tick of 15.6 ms on Windows, so a
+	 * step of a millisecond ran the runtime's clock fifteen times slower than
+	 * the wall there and a sixtieth fifteen times faster on Linux. The server's
+	 * sweep runs on that clock and its deadlines on the wall's, so a case
+	 * waiting for a deadline to be enforced saw the sweep come seconds late on
+	 * one system, and spent utest's timeout, which also runs on that clock,
+	 * fifteen times over on the other.
+	 */
+	public static function pumpWallUntilAsync(done:Void->Bool, timeout:Float, then:Bool->Void):Void {
+		var runtime:CrossByte = CrossByte.current();
+		var last:Float = haxe.Timer.stamp();
+		var deadline:Float = last + timeout;
+
+		#if nodejs
+		function turn():Void {
+			var now:Float = haxe.Timer.stamp();
+			runtime.pump(now - last, 0);
+			last = now;
+
+			if (done()) {
+				then(true);
+				return;
+			}
+
+			if (now >= deadline) {
+				then(false);
+				return;
+			}
+
+			js.Node.setTimeout(turn, 1);
+		}
+
+		turn();
+		#else
+		while (!done() && haxe.Timer.stamp() < deadline) {
+			var now:Float = haxe.Timer.stamp();
+			runtime.pump(now - last, 0);
+			last = now;
+			nap(0.001);
+		}
+
+		then(done());
+		#end
+	}
+
+	/**
 	 * Waits for `server` to have a port, connects `client` to it, then calls
 	 * `then`.
 	 *

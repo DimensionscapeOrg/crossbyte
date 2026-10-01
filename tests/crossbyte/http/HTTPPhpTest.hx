@@ -208,6 +208,117 @@ class HTTPPhpTest extends utest.Test {
 		world.close();
 	}
 
+	public function testABlacklistedScriptIsRefusedHoweverItIsReached():Void {
+		// The lists were checked where a file is served and nowhere else, so a
+		// GET for a blacklisted script was refused while a POST to it, and a
+		// rewrite carrying the PHP flag onto it, ran it.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, root) -> {
+			config.blacklist = [root.resolvePath("admin.php").nativePath];
+			config.rewrites = [{pattern: "^/panel$", target: "/admin.php", flags: [crossbyte.http.config.RewriteFlag.PHP]}];
+		}, ["admin.php" => "<?php echo 'secret'; ?>"]);
+
+		var asked:Array<String> = [
+			"GET /admin.php HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"POST /admin.php HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 3\r\n\r\na=1",
+			"GET /panel HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			"POST /panel HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 3\r\n\r\na=1"
+		];
+		var statuses:Array<Int> = world.answersTo(asked);
+
+		Assert.same([403, 403, 403, 403], statuses, "GET, POST, and a PHP rewrite of each, onto a blacklisted script");
+		Assert.isFalse(backend.received, "a blacklisted script reached the PHP backend");
+		world.close();
+	}
+
+	public function testAWhitelistHoldsForEveryMethodAndEveryRewrite():Void {
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, root) -> {
+			config.whitelist = [root.resolvePath("index.php").nativePath, root.resolvePath("static.html").nativePath];
+			config.rewrites = [{pattern: "^/panel$", target: "/admin.php", flags: [crossbyte.http.config.RewriteFlag.PHP]}];
+		}, ["admin.php" => "<?php echo 'secret'; ?>"]);
+
+		var statuses:Array<Int> = world.answersTo([
+			"POST /admin.php HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\na=1",
+			"GET /panel HTTP/1.1\r\nHost: localhost\r\n\r\n",
+			// Listed, and not a script: refused as a POST to a static file is.
+			"POST /static.html HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\na=1",
+			"GET /static.html HTTP/1.1\r\nHost: localhost\r\n\r\n"
+		]);
+
+		Assert.same([403, 403, 405, 200], statuses);
+		Assert.isFalse(backend.received, "a script off the whitelist reached the PHP backend");
+		world.close();
+	}
+
+	public function testAPostFollowsARewrite():Void {
+		// A POST was resolved against the path it named, whatever a rule
+		// rewrote it to: a form posting to /submit, rewritten onto
+		// /index.php, was answered 404 while the GET beside it ran the script.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, _) -> {
+			config.rewrites = [{pattern: "^/submit$", target: "/index.php"}];
+		});
+
+		world.send("POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 7\r\n\r\nname=ab");
+		Assert.isTrue(backend.received, "a POST rewritten onto a script did not reach it");
+		Assert.isTrue(backend.request.indexOf("name=ab") >= 0, "the script was not given the POST's body");
+
+		backend.answer(201, "text/plain", "stored");
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 3.0);
+		Assert.equals(201, HTTPTestSupport.parseResponse(world.raw).status);
+		world.close();
+	}
+
+	public function testARewritesQueryReachesTheScriptWithoutThePhpFlag():Void {
+		// A rule's query, and QSA's merging of the request's into it, were
+		// used only with the PHP flag. A rule naming a script without it --
+		// resolved as the file it names, then run -- gave the script the
+		// request's own query, and the route the rule captured was lost.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, _) -> {
+			config.rewrites = [{pattern: "^/r/(.*)$", target: "/index.php?route=$1", flags: [crossbyte.http.config.RewriteFlag.QSA]}];
+		});
+
+		world.send("GET /r/abc?x=1 HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		Assert.isTrue(backend.received, "the rewritten request did not reach the script");
+		// FastCGI writes a parameter's name straight before its value.
+		Assert.isTrue(backend.request.indexOf("QUERY_STRINGx=1&route=abc") >= 0, "the script was not given the rule's query");
+		world.close();
+	}
+
+	public function testABackendThatFailsIsAnsweredWithAWholeResponse():Void {
+		// The 502 and the 504 were written as a HEAD's answer: a Content-Length
+		// counting the text, and no text. The client was left waiting for
+		// bytes that never came until the connection closed under it.
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend);
+
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		backend.hangUp();
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 3.0);
+
+		var response = HTTPTestSupport.parseResponse(world.raw);
+		Assert.equals(502, response.status, "not the 502: " + world.raw);
+		Assert.equals("Bad Gateway", response.body);
+		Assert.equals("11", response.headers.get("content-length"));
+		world.close();
+	}
+
+	public function testABackendThatTimesOutIsAnsweredWithAWholeResponse():Void {
+		var backend = new FakeFastCGI();
+		var world = new PhpWorld(backend, (config, _) -> config.phpTimeout = 0.5);
+
+		// Never answered: the bridge's own deadline ends the exchange.
+		world.send("GET /index.php HTTP/1.1\r\nHost: localhost\r\n\r\n");
+		HTTPTestSupport.pumpUntil(() -> world.responseCount() > 0, 5.0, 0.001);
+
+		var response = HTTPTestSupport.parseResponse(world.raw);
+		Assert.equals(504, response.status, "not the 504: " + world.raw);
+		Assert.equals("Gateway Timeout", response.body);
+		world.close();
+	}
+
 	/**
 	 * Every Set-Cookie value in the first response, in order.
 	 *
@@ -302,6 +413,15 @@ private class FakeFastCGI {
 		peer.flush();
 	}
 
+	/** Closes the connection the bridge opened, before any answer. */
+	public function hangUp():Void {
+		if (peer != null) {
+			try {
+				peer.close();
+			} catch (_:Dynamic) {}
+		}
+	}
+
 	public function close():Void {
 		try {
 			listener.close();
@@ -337,11 +457,20 @@ private class PhpWorld {
 	private var client:Socket;
 	private var extras:Array<ClientView> = [];
 
-	public function new(backend:FakeFastCGI) {
+	/**
+	 * @param configure Applied to the configuration last, with the document
+	 *        root, which holds `files` as well as the two every case has.
+	 */
+	public function new(backend:FakeFastCGI, ?configure:(HTTPServerConfig, File) -> Void, ?files:Map<String, String>) {
 		this.backend = backend;
 		root = File.createTempDirectory();
 		__write("index.php", "<?php echo 1; ?>");
 		__write("static.html", "static fallback");
+		if (files != null) {
+			for (name => contents in files) {
+				__write(name, contents);
+			}
+		}
 
 		var config = new HTTPServerConfig("127.0.0.1", 0, root, null, ["index.php", "index.html"]);
 		config.phpEnabled = true;
@@ -352,6 +481,9 @@ private class PhpWorld {
 		config.phpAddress = "127.0.0.1";
 		config.phpPort = backend.localPort;
 		config.phpTimeout = 10;
+		if (configure != null) {
+			configure(config, root);
+		}
 		config.validate();
 
 		server = new HTTPServer(config);
@@ -392,6 +524,16 @@ private class PhpWorld {
 		var view = new ClientView(server.localPort, text);
 		extras.push(view);
 		return view;
+	}
+
+	/**
+	 * Sends each of `requests` on a connection of its own, all at once, and
+	 * answers each one's status, or 0 for one not answered in time.
+	 */
+	public function answersTo(requests:Array<String>):Array<Int> {
+		var views:Array<ClientView> = [for (request in requests) freshClient(request)];
+		HTTPTestSupport.pumpUntil(() -> Lambda.foreach(views, view -> HTTPTestSupport.isResponseComplete(view.text())), 5.0);
+		return [for (view in views) HTTPTestSupport.parseResponse(view.text()).status];
 	}
 
 	public function close():Void {

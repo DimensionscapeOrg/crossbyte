@@ -268,15 +268,106 @@ class HTTPSupportTest extends utest.Test {
 				}]
 			);
 
+			// Lowercase, as both parsers store a request's fields. This case
+			// stored "User-Agent" as written, which no request ever has, and so
+			// passed while the condition matched nothing a client sent.
 			var headers = new StringMap<String>();
-			headers.set("User-Agent", "Mobile Safari");
+			headers.set("user-agent", "Mobile Safari");
 			var allowed = RewriteEngine.decide(cfg, "/content/mobile", "", "GET", headers);
 			Require.notNull(allowed);
 			Assert.equals("/mobile.html", allowed.finalPath);
 
-			headers.set("User-Agent", "Desktop");
+			headers.set("user-agent", "Desktop");
 			var fallback = RewriteEngine.decide(cfg, "/content/mobile", "", "GET", headers);
 			Assert.isNull(fallback);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testAHeaderConditionMatchesWhateverCaseItsKeyIsWrittenIn():Void {
+		// A field's name has no case (RFC 9110 5.1), and both parsers store a
+		// request's fields lowercase. The condition looked its key up as
+		// written, so "X-Test" -- how a header is written, and how the doc's
+		// example would be -- matched nothing a client could send.
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("a.txt").save(ByteArray.fromBytes(Bytes.ofString("A")));
+			var cfg = new HTTPServerConfig("127.0.0.1", 0, root);
+			cfg.rewrites = [{
+				pattern: "^/x$",
+				target: "/a.txt",
+				conditions: [{type: RewriteConditionType.Header, key: "X-Test", pattern: "^yes$", negate: false}]
+			}];
+
+			var headers = new StringMap<String>();
+			headers.set("x-test", "yes");
+			var matched = RewriteEngine.decide(cfg, "/x", "", "GET", headers);
+			Require.notNull(matched, "a Header condition keyed X-Test did not see x-test");
+			Assert.equals("/a.txt", matched.finalPath);
+
+			headers.set("x-test", "no");
+			Assert.isNull(RewriteEngine.decide(cfg, "/x", "", "GET", headers));
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testARuleThatAsksAboutFilesCanWinOverAnExistingFile():Void {
+		// tryFiles' doc said a rule given a FileExists condition runs before
+		// the file is looked for, which is how a rewrite wins over a file that
+		// exists. Every rule ran only once the request had been found to name
+		// no file at all, so none could.
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("a.txt").save(ByteArray.fromBytes(Bytes.ofString("A")));
+			root.resolvePath("b.txt").save(ByteArray.fromBytes(Bytes.ofString("B")));
+			var cfg = new HTTPServerConfig("127.0.0.1", 0, root);
+			var none = new StringMap<String>();
+
+			// Asks, and the file exists: the rewrite wins.
+			cfg.rewrites = [{pattern: "^/a\\.txt$", target: "/b.txt", conditions: [{type: RewriteConditionType.FileExists, key: null, pattern: null, negate: false}]}];
+			var overridden = RewriteEngine.decide(cfg, "/a.txt", "", "GET", none);
+			Require.notNull(overridden);
+			Assert.equals("/b.txt", overridden.finalPath, "a rule asking for an existing file did not win over it");
+
+			// Asks for the file not to exist: it does, so the file is served.
+			cfg.rewrites[0].conditions[0].negate = true;
+			Assert.equals("/a.txt", RewriteEngine.decide(cfg, "/a.txt", "", "GET", none).finalPath);
+
+			// Does not ask: an existing file wins, as it always has.
+			cfg.rewrites[0].conditions = null;
+			Assert.equals("/a.txt", RewriteEngine.decide(cfg, "/a.txt", "", "GET", none).finalPath);
+
+			// And a rule for a path that is not a file runs as it always has.
+			cfg.rewrites = [{pattern: "^/gone$", target: "/b.txt"}];
+			Assert.equals("/b.txt", RewriteEngine.decide(cfg, "/gone", "", "GET", none).finalPath);
+		} catch (e:Dynamic) {
+			Assert.fail(Std.string(e));
+		}
+
+		try root.deleteDirectory(true) catch (_:Dynamic) {}
+	}
+
+	public function testATryFilesEntryCanNameTheRequestPath():Void {
+		// "$uri.html" -- the request path with .html added, as clean URLs are
+		// served -- was looked for as a file named "$uri.html". The entries
+		// after the first two name files, and $uri in them is the path.
+		var root = File.createTempDirectory();
+		try {
+			root.resolvePath("about.html").save(ByteArray.fromBytes(Bytes.ofString("about")));
+			var cfg = new HTTPServerConfig("127.0.0.1", 0, root);
+			cfg.tryFiles = ["$uri", "$uri/", "$uri.html"];
+			cfg.validate();
+
+			var decision = RewriteEngine.decide(cfg, "/about", "", "GET", new StringMap<String>());
+			Require.notNull(decision, "$uri.html was not tried as the request path");
+			Assert.equals("/about.html", decision.finalPath);
+			Assert.isNull(RewriteEngine.decide(cfg, "/missing", "", "GET", new StringMap<String>()));
 		} catch (e:Dynamic) {
 			Assert.fail(Std.string(e));
 		}
