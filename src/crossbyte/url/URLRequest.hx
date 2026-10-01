@@ -87,7 +87,8 @@ class URLRequest {
 
 	/**
 		How long, in milliseconds, the request may go with nothing arriving,
-		connecting, waiting for the response, reading its body, before it is
+		waiting for the response, reading its body, and connecting too but on
+		Node, where it starts once the connection is made, before it is
 		abandoned with an `IO_ERROR`. Time without progress, not a deadline on
 		the whole exchange: a large download that keeps moving is waited for.
 
