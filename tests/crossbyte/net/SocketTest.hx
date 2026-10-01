@@ -4,6 +4,7 @@ import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.io.ByteArray;
@@ -356,6 +357,105 @@ class SocketTest extends utest.Test {
 		Assert.equals(0, wrong, '$wrong bytes arrived as something other than what was sent in their place');
 		Assert.equals(total, offset, "the flood was not all read");
 		return delivered;
+	}
+
+	/**
+		A writer is told, as what it wrote reaches the network, how much is
+		still waiting: once a pass, down to none.
+
+		`bytesPending` is documented to be read in an OUTPUT_PROGRESS
+		handler, and the event was never dispatched, so a writer streaming to
+		a slow reader had nothing to wait on but a timer.
+	**/
+	public function testAWriterIsToldAsWhatItWroteReachesTheNetwork():Void {
+		var size:Int = 256 * 1024;
+		var chunk:Int = 64 * 1024;
+		var socket = progressSocket();
+		var throttled = new ThrottledOutput(chunk, 0);
+		var raw:SysSocket = socket.__socket;
+		var original = raw.output;
+		@:privateAccess raw.output = throttled;
+
+		var pending:Array<Float> = [];
+		var totals:Array<Float> = [];
+		socket.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, function(e:OutputProgressEvent) {
+			pending.push(e.bytesPending);
+			totals.push(e.bytesTotal);
+		});
+		for (i in 0...size) {
+			socket.__output.writeByte(i & 0xFF);
+		}
+
+		var runtime = CrossByte.current();
+		for (_ in 0...4) {
+			throttled.room = chunk;
+			socket.flushFull = false;
+			socket.flush();
+			@:privateAccess runtime.__flushHeld();
+		}
+
+		socket.__socket = null;
+		@:privateAccess raw.output = original;
+		try raw.close() catch (_:Dynamic) {}
+
+		Assert.same([3. * chunk, 2. * chunk, 1. * chunk, 0.], pending, "bytesPending as the backlog drained: " + pending);
+		Assert.same([1. * size, 1. * size, 1. * size, 1. * size], totals, "bytesTotal as the backlog drained: " + totals);
+	}
+
+	/**
+		What an OUTPUT_PROGRESS handler sends is reported at the next pass,
+		not this one. Told from inside the pass that sent it, a writer
+		feeding a socket that never fills -- TLS, slower to encrypt than its
+		reader is to read -- was told and wrote again until it had nothing
+		left, with every other connection waiting.
+	**/
+	public function testWhatAProgressHandlerSendsIsReportedAtTheNextPass():Void {
+		var chunk:Int = 64 * 1024;
+		var socket = progressSocket();
+		var throttled = new ThrottledOutput(chunk, 0x7FFFFFFF);
+		var raw:SysSocket = socket.__socket;
+		var original = raw.output;
+		@:privateAccess raw.output = throttled;
+
+		var told:Int = 0;
+		var piece = new ByteArray();
+		piece.length = chunk;
+		socket.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, function(_) {
+			told++;
+			if (told < 5) {
+				socket.writeBytes(piece, 0, chunk);
+				socket.flush();
+			}
+		});
+		socket.writeBytes(piece, 0, chunk);
+		socket.flush();
+
+		var runtime = CrossByte.current();
+		var perPass:Array<Int> = [];
+		for (_ in 0...6) {
+			var before:Int = told;
+			@:privateAccess runtime.__flushHeld();
+			perPass.push(told - before);
+		}
+
+		socket.__socket = null;
+		@:privateAccess raw.output = original;
+		try raw.close() catch (_:Dynamic) {}
+
+		Assert.same([1, 1, 1, 1, 1, 0], perPass, "OUTPUT_PROGRESS each pass, as a handler wrote again: " + perPass);
+		Assert.equals(5 * chunk, throttled.taken.length, "not every piece was sent");
+	}
+
+	/** A connected socket over an unconnected system socket, its runtime this thread's, ready to buffer writes. **/
+	private function progressSocket():Socket {
+		var socket = new Socket();
+		socket.__connected = true;
+		socket.__output = new ByteArray();
+		socket.__output.endian = socket.__endian;
+		socket.__input = new ByteArray();
+		socket.__input.endian = socket.__endian;
+		socket.__socket = new SysSocket();
+		return socket;
 	}
 
 	public function testZeroByteFlushRetainsAllBytes():Void {

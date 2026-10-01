@@ -1836,6 +1836,19 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `Socket` and `WebSocket` dispatch `OutputProgressEvent.OUTPUT_PROGRESS`.
+  `bytesPending` is documented to be read in that event's handler, and the
+  event was never dispatched, so a writer streaming to a slow reader had
+  nothing to wait on but a timer, and one waiting for its last bytes to go
+  before closing waited for ever. It now follows each pass in which bytes
+  reached the network, once a pass however many writes moved them, with
+  `bytesPending` still waiting and `bytesTotal` written since the
+  connection opened; the last of a backlog says 0. On Node it follows
+  Node's handing the bytes to the system, and in a page the page's
+  WebSocket sending what it held. What a progress handler writes is
+  reported at the next pass, not the one it was written in, so a writer
+  feeding a socket that never fills -- TLS to a fast reader -- cannot
+  hold the runtime by answering each event with another write.
 - A WebSocket server receiving large messages spent its time copying, not
   receiving. After every 64 KB parsed, the session copied the whole unread
   rest of its input into a new buffer, so a burst cost the square of its

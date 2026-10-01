@@ -17,7 +17,9 @@ import crossbyte.core.CrossByte;
 import crossbyte.errors.IOError;
 import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
+import crossbyte.events.EventType;
 import crossbyte.events.IOErrorEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
@@ -990,6 +992,7 @@ class WebSocket extends Socket {
 		__webSocket.onmessage = socket_onMessage;
 		__webSocket.onclose = socket_onClose;
 		__webSocket.onerror = socket_onError;
+		__syncProgressHook();
 
 		// A server's session asks its server about its upgrade -- through
 		// the hook as it stands when the request arrives, not as it stood
@@ -1000,6 +1003,40 @@ class WebSocket extends Socket {
 				return server.upgrade(request);
 			};
 		}
+	}
+
+	override public function addEventListener<T>(type:EventType<T>, listener:T->Void, priority:Int = 0):Void {
+		super.addEventListener(type, listener, priority);
+		if (type == OutputProgressEvent.OUTPUT_PROGRESS) {
+			__syncProgressHook();
+		}
+	}
+
+	override public function removeEventListener<T>(type:EventType<T>, listener:T->Void):Void {
+		super.removeEventListener(type, listener);
+		if (type == OutputProgressEvent.OUTPUT_PROGRESS) {
+			__syncProgressHook();
+		}
+	}
+
+	/**
+		Asks the session to report bytes reaching the system while anyone
+		listens for OUTPUT_PROGRESS, and not otherwise: on Node each report
+		is a callback on a write.
+	**/
+	@:noCompletion private function __syncProgressHook():Void {
+		if (__webSocket != null) {
+			__webSocket.onprogress = hasEventListener(OutputProgressEvent.OUTPUT_PROGRESS) ? __noteProgress : null;
+		}
+	}
+
+	// Sent and still held are the session's, which frames and sends.
+	@:noCompletion override private function __sentTotal():Float {
+		return __webSocket == null ? super.__sentTotal() : __webSocket.bytesSent;
+	}
+
+	@:noCompletion override private function __unsentOwn():Int {
+		return __webSocket == null ? super.__unsentOwn() : __webSocket.ownPending;
 	}
 
 	@:noCompletion private var __localHost:String = "";
