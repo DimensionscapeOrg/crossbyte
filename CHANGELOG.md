@@ -1942,6 +1942,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A `ServerWebSocket` takes the TLS methods it inherits from `ServerSocket`:
+  `setCertificate()`, `addSNICertificate()` and `setALPN()`, as well as
+  `requireClientCertificate()`. Each reached into the listener
+  `ServerSocket` builds, which a `ServerWebSocket` never does, natively a
+  null dereference, which on hxcpp ends the process, and on Node each was
+  kept where this server's listener never looked: a certificate given to
+  `setCertificate()` left `listen()` refusing for want of one, and the SNI
+  entries and ALPN list were ignored. A session reports what its handshake
+  agreed in `alpnProtocol`, which read `null` on every `WebSocket`.
 - A `ServerWebSocket`'s `cert` is wanted before `bind()`, as its documentation
   now says, and a secure server will not `listen()` without one. A native
   server builds its TLS configuration in `bind()`, so a certificate
