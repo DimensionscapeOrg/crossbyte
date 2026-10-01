@@ -56,7 +56,12 @@ class HTTPSupportTest extends utest.Test {
 		// removes the per-request handshake without client changes.
 		Assert.isTrue(first.keepAlive);
 		Assert.equals(5.0, first.keepAliveTimeout);
-		Assert.equals(100, first.keepAliveMaxRequests);
+		// A thousand responses a connection, as nginx: at a hundred, HTTPS
+		// spent two thirds of its time on the handshakes of reconnecting.
+		Assert.equals(1000, first.keepAliveMaxRequests);
+		// Ten thousand connections: 256 refused the 257th, which a few dozen
+		// browser users reach at six connections each.
+		Assert.equals(10000, first.maxConnections);
 
 		first.directoryIndex.push("fallback.htm");
 		first.customHeaders.push(new URLRequestHeader("X-Test", "one"));

@@ -1057,6 +1057,19 @@ All notable changes to CrossByte will be documented in this file.
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `HTTPServerConfig.keepAliveMaxRequests` defaults to 1,000, as nginx's
+  does, where it was 100. Every close costs the client a new connection,
+  and over HTTPS a full handshake: a native HTTPS server with 64 clients
+  spent two thirds of its time on them and served 18,900 requests a second,
+  where 1,000 serves 55,800. Plain HTTP serves 14% more as well. What to
+  change: nothing, unless a load balancer relied on connections recycling
+  every hundred responses, then set it back.
+- `HTTPServerConfig.maxConnections` defaults to 10,000, where it was 256,
+  and is documented. At 256 the 257th connection was closed as it was
+  accepted, and a few dozen browser users at six connections each reach
+  that. A held connection costs a few kilobytes on native, so the default
+  is tens of megabytes at most. What to change: a server that relied on the
+  old cap to bound its memory sets it.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening, an

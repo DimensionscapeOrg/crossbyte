@@ -209,6 +209,17 @@ class HTTPServerConfig {
 	**/
 	public var corsAllowedHeaders:Array<String>;
 	public var corsMaxAge:Int;
+
+	/**
+		Connections the server holds at once. Past it, a new connection is
+		closed as it is accepted, and logged. Defaults to 10,000.
+
+		A held connection costs a few kilobytes, under 2 KB for a bare one,
+		around 6 KB as a WebSocket, measured on native, so the default is
+		tens of megabytes at most. It was 256, which refused the 257th
+		connection: a few dozen browser users reach that, at six connections
+		each.
+	**/
 	public var maxConnections:Int;
 	public var backlog:Int;
 	public var phpEnabled:Bool;
@@ -226,8 +237,8 @@ class HTTPServerConfig {
 		timeout either, so a php-fpm that accepted a connection and then said
 		nothing held the runtime for as long as it liked. That is not one slow
 		request: a CrossByte runtime serves all of its connections from one
-		tick, and `maxConnections` defaults to 256, so an unresponsive backend
-		stopped the server for every client at once and stayed stopped.
+		tick, so an unresponsive backend stopped the server for every client
+		at once and stayed stopped.
 
 		Note that `requestTimeout` does not cover this window, it stops the
 		moment a request has been read, on the principle that the time a
@@ -301,8 +312,8 @@ class HTTPServerConfig {
 		The rate limiter cannot cover this window: it runs once a complete
 		header block exists, so a client trickling one byte at a time was
 		never rate limited and held a connection slot for as long as it
-		cared to. With `maxConnections` at its default of 256, tying up
-		every slot this way cost an attacker almost nothing. A connection
+		cared to. Tying up every one of `maxConnections` slots this way cost
+		an attacker almost nothing. A connection
 		that misses the deadline is answered with `408 Request Timeout`
 		and closed.
 
@@ -376,13 +387,18 @@ class HTTPServerConfig {
 
 	/**
 		Responses one connection may carry before the server closes it.
-		Defaults to 100; `0` and below means unlimited.
+		Defaults to 1,000, as nginx's does; `0` and below means unlimited.
 
 		Bounds how long any single connection's accumulated state, peer
 		buffers, handler bookkeeping, can live, and gives a server behind
-		a load balancer a periodic chance to rebalance. A limit of 100
-		yields exactly 100 responses, the 100th carrying
+		a load balancer a periodic chance to rebalance. A limit of 1,000
+		yields exactly 1,000 responses, the 1,000th carrying
 		`Connection: close`.
+
+		Each close costs the client a new connection, and over HTTPS a new
+		handshake. It defaulted to 100, and a native HTTPS server with 64
+		clients spent two thirds of its time on those handshakes: 18,900
+		requests a second, where 1,000 serves 55,800.
 	**/
 	public var keepAliveMaxRequests:Int;
 
@@ -463,9 +479,9 @@ class HTTPServerConfig {
 			directoryIndex:Array<String> = null, whitelist:Array<String> = null, blacklist:Array<String> = null, customHeaders:Array<URLRequestHeader> = null,
 			middleware:Array<Middleware> = null, rateLimiter:RateLimiter = null, corsEnabled:Bool = false, corsAllowedOrigins:Array<String> = null,
 			corsAllowedMethods:Array<String> = null, corsAllowedHeaders:Array<String> = null, corsMaxAge:Int = 600, corsAllowCredentials:Bool = false,
-			maxConnections:Int = 256, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
+			maxConnections:Int = 10000, backlog:Int = 0, phpEnabled:Bool = false, phpAddress:String = "127.0.0.1", phpPort:Int = 8080,
 			phpCGIPath:String = "php-cgi", phpINIPath:String = "php.ini", phpMode:Int = 1, phpTimeout:Float = 30, tryFiles:Array<String> = null, rewrites:Array<RewriteRule> = null, requestTimeout:Float = 60,
-			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 100, http2Enabled:Bool = false) {
+			keepAlive:Bool = true, keepAliveTimeout:Float = 5, keepAliveMaxRequests:Int = 1000, http2Enabled:Bool = false) {
 		this.address = address;
 		this.port = port;
 		// Null means no static files at all. See `rootDirectory`.
