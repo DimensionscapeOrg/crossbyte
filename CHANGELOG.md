@@ -1944,6 +1944,15 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `PostgresConnection.autocommit` works: set `false`, a transaction begins
+  before the next statement and lasts until `commit()` or `rollback()`, as
+  on MySQL and in JDBC, and `inTransaction` reads true meanwhile, as
+  MySQL's does, so `ConnectionPool` rolls back and retires a connection
+  handed back that way. Set back to `true` it commits what is open.
+  PostgreSQL has no such setting on the server, and the flag was stored
+  and never read: every statement committed on its own. And setting
+  `isolationLevel` throws the `SQLError` the server refused it with,
+  where the refusal was swallowed and the level read as set.
 - `PostgresConnection.request()` throws an `SQLError` for a statement the
   server refuses, as `requestParams()` and the other drivers' `request()`
   do, and for a connection that is not open. It threw an `IOError` for the

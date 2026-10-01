@@ -43,7 +43,26 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	public var lastInsertRowID(get, null):Int;
 	public var affectedRows(get, null):Int;
 	public var serverVersion(get, null):String;
+
+	/**
+		Whether each statement commits on its own, as it does by default.
+		Set `false`, a transaction begins before the next statement and stays
+		open until `commit()` or `rollback()` ends it, and the statement after
+		that begins another -- as `autocommit` does on MySQL and in JDBC.
+		PostgreSQL has no such setting on the server, so the driver sends the
+		`BEGIN` itself. Set back to `true`, a transaction that is open is
+		committed first, as MySQL commits it. A new connection starts with it
+		on: `close()` resets it.
+
+		It was stored and never read: set `false`, every statement still
+		committed on its own.
+	**/
 	public var autocommit(get, set):Bool;
+
+	/**
+		The isolation level of the session's transactions, from the next one
+		on. Setting it throws the `SQLError` the server refused it with.
+	**/
 	public var isolationLevel(get, set):PostgresIsolationLevel;
 
 	@:noCompletion private var __connection:Dynamic;
@@ -166,6 +185,8 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 			NativePostgres.close(handle);
 			__inTransaction = false;
+			// The session it belonged to is gone; the next starts with it on.
+			__autocommit = true;
 			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
 		#end
@@ -173,6 +194,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		if (__connection != null) {
 			__connection = null;
 			__inTransaction = false;
+			__autocommit = true;
 			__dispatchEvent(new SQLEvent(SQLEvent.CLOSE));
 		}
 	}
@@ -184,7 +206,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		// every connection answered false without the server being asked --
 		// and a pool validating with ping() would discard each one it made.
 		try {
-			request("SELECT 1;");
+			__request("SELECT 1;", false);
 			return true;
 		} catch (_:Dynamic) {
 			return false;
@@ -204,7 +226,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	**/
 	public function begin():Void {
 		try {
-			request("BEGIN;");
+			__request("BEGIN;", false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.BEGIN, "Begin failed", e);
 		}
@@ -226,13 +248,13 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		Either way the transaction is over afterwards -- PostgreSQL ends it on
 		a failed COMMIT as surely as on a successful one -- so `inTransaction`
-		is `false` whichever way this returns.
+		is `false` whichever way this returns, unless `autocommit` is off.
 	**/
 	public function commit():Void {
 		var failure:Dynamic = null;
 
 		try {
-			request("COMMIT;");
+			__request("COMMIT;", false);
 
 			if (__lastCommand == "ROLLBACK") {
 				failure = "a statement in the transaction had failed, so the server rolled it back instead of committing it";
@@ -255,7 +277,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var failure:Dynamic = null;
 
 		try {
-			request("ROLLBACK;");
+			__request("ROLLBACK;", false);
 		} catch (e:Dynamic) {
 			failure = e;
 		}
@@ -283,7 +305,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var sp:String = __sanitizeSavePoint(name);
 
 		try {
-			request('SAVEPOINT ' + sp + ';');
+			__request('SAVEPOINT ' + sp + ';', false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.SET_SAVEPOINT, "Savepoint failed", e);
 		}
@@ -310,7 +332,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 		var sp:String = __takeSavepoint(name, true);
 		try {
-			request('ROLLBACK TO SAVEPOINT ' + sp + ';');
+			__request('ROLLBACK TO SAVEPOINT ' + sp + ';', false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.ROLLBACK_TO_SAVEPOINT, "Rollback to savepoint failed", e);
 		}
@@ -328,7 +350,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		var sp:String = __takeSavepoint(name, false);
 
 		try {
-			request('RELEASE SAVEPOINT ' + sp + ';');
+			__request('RELEASE SAVEPOINT ' + sp + ';', false);
 		} catch (e:Dynamic) {
 			__fail(SQLEvent.RELEASE_SAVEPOINT, "Release savepoint failed", e);
 		}
@@ -344,7 +366,21 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		caught neither.
 	**/
 	public function request(sql:String):Dynamic {
+		return __request(sql, true);
+	}
+
+	/**
+		`request()`, and the connection's own statements -- its transaction
+		control, `ping()`, the settings it reads and writes -- which pass
+		`implicitBegin` false: none of them may begin a transaction for
+		`autocommit` off.
+	**/
+	@:noCompletion private function __request(sql:String, implicitBegin:Bool):Dynamic {
 		__requireConnected();
+
+		if (implicitBegin && !__autocommit && !__inTransaction) {
+			__beginImplicitly();
+		}
 
 		#if cpp
 		var rawJson = NativePostgres.requestJson(__nativeHandle, sql);
@@ -422,6 +458,10 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	**/
 	public function requestParams(sql:String, ?params:Array<PostgresParameter>):PostgresRawResult {
 		__requireConnected();
+
+		if (!__autocommit && !__inTransaction) {
+			__beginImplicitly();
+		}
 
 		#if cpp
 		var encoded:Bytes = PostgresWire.encodeParameters(params == null ? [] : params);
@@ -510,8 +550,26 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		#end
 	}
 
+	/**
+		True while `autocommit` is off as well, as MySQL documents a session
+		with autocommit off: every statement is part of a transaction that
+		only `commit()` or `rollback()` ends, and the next statement begins
+		another. `ConnectionPool` therefore rolls back, and retires, a
+		connection handed back that way.
+	**/
 	private function get_inTransaction():Bool {
-		return __inTransaction;
+		return __inTransaction || !__autocommit;
+	}
+
+	/**
+		Begins the transaction a statement runs in while `autocommit` is off.
+		PostgreSQL has had no setting for that on the server since 7.4, so
+		the client begins it, as JDBC and psql do.
+	**/
+	@:noCompletion private function __beginImplicitly():Void {
+		__request("BEGIN;", false);
+		__inTransaction = true;
+		__savepoints = [];
 	}
 
 	#if cpp
@@ -552,7 +610,7 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 
 	private function get_serverVersion():String {
 		try {
-			var rs = request("SHOW server_version;");
+			var rs = __request("SHOW server_version;", false);
 			if (!rs.hasNext()) {
 				return "";
 			}
@@ -581,13 +639,20 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 	}
 
 	private function set_autocommit(v:Bool):Bool {
+		if (v && !__autocommit && __inTransaction) {
+			// Turned back on: what is open is committed, as MySQL commits it
+			// when autocommit is set again. A commit the server refused
+			// throws, and autocommit stays off.
+			commit();
+		}
+
 		__autocommit = v;
 		return v;
 	}
 
 	private function get_isolationLevel():PostgresIsolationLevel {
 		try {
-			var rs = request("SHOW transaction_isolation;");
+			var rs = __request("SHOW transaction_isolation;", false);
 			if (!rs.hasNext()) {
 				return __isolationLevel;
 			}
@@ -604,13 +669,19 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		return __isolationLevel;
 	}
 
+	/**
+		Sets the level of the session's transactions from the next one on,
+		as MySQL's setter does. Throws the `SQLError` when the server refuses
+		-- inside a transaction a failed statement has aborted, say -- where
+		it swallowed the refusal, so the level read as set while the session
+		went on at the old one. Never begins a transaction itself: one that
+		`autocommit` off began and then rolled back would take the setting
+		with it.
+	**/
 	private function set_isolationLevel(v:PostgresIsolationLevel):PostgresIsolationLevel {
-		try {
-			request("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + v + ";");
-			__isolationLevel = v;
-		} catch (_:Dynamic) {}
-
-		return __isolationLevel;
+		__request("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL " + v + ";", false);
+		__isolationLevel = v;
+		return v;
 	}
 
 	/**
