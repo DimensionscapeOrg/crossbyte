@@ -109,9 +109,10 @@ class MongoConnection extends EventDispatcher implements ITransactionalConnectio
 
 	/**
 		The `_id` of the last document this connection inserted, the one it
-		had, or the `ObjectId` made for it, or `null`. MongoDB has no row ids;
-		this replaces the `lastInsertRowID` the other drivers have, which here
-		could only ever have read 0.
+		had, or the `ObjectId` made for it, or `null`. MongoDB has no row ids,
+		so this stands where SQLite's and MySQL's `lastInsertRowID` does; one
+		here could only ever have read 0, as Postgres's does on PostgreSQL 12
+		and later.
 	**/
 	public var lastInsertId(get, null):Dynamic;
 
