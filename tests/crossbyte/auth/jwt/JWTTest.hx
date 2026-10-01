@@ -40,7 +40,7 @@ class JWTTest extends utest.Test {
 		});
 
 		var parts = token.split(".");
-		var payload:Dynamic = Json.parse(JWT.safeBase64UrlEncodeString(parts[1]));
+		var payload:Dynamic = Json.parse(JWT.safeBase64UrlDecodeString(parts[1]));
 		payload.sub = "tampered";
 		var tamperedPayload = JWT.base64UrlEncodeString(Json.stringify(payload));
 		Assert.isNull(base.verifyToken(parts[0] + "." + tamperedPayload + "." + parts[2]));
@@ -130,8 +130,8 @@ class JWTTest extends utest.Test {
 		Assert.isTrue(encoded.indexOf("+") == -1);
 		Assert.isTrue(encoded.indexOf("/") == -1);
 		Assert.isTrue(encoded.indexOf("=") == -1);
-		Assert.equals('{"value":"+/="}', JWT.safeBase64UrlEncodeString(encoded));
-		Assert.isNull(JWT.safeBase64UrlEncodeString("a"));
+		Assert.equals('{"value":"+/="}', JWT.safeBase64UrlDecodeString(encoded));
+		Assert.isNull(JWT.safeBase64UrlDecodeString("a"));
 		Assert.equals("TQ==", JWT.normalizeBase64Url("TQ"));
 
 		Assert.isTrue(JWT.secureCompare("abc", "abc"));
