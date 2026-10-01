@@ -2181,6 +2181,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `SharedObject` and `SharedChannel` refuse a payload whose values nest
+  more than 256 deep, before reading it gives the stack out. Unserializing
+  takes a frame or two per level, so natively a region, or a message's
+  arguments, nested 6,000 deep -- 12 KB, which any process writing the
+  region or sending to the channel could leave -- overflowed the stack and
+  ended the reading process, past any catch. `sync()` throws an `IOError`
+  for such a region, the constructor starts from `defaultData`, and the
+  channel drops the message.
 - `ProcessLifecycle.installDefaultHandlers()` handles SIGHUP -- the
   terminal a server was started from going away -- with the same graceful
   shutdown as SIGTERM: natively on Linux and macOS, on the jvm, and on

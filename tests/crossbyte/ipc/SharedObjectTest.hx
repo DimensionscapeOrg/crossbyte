@@ -264,6 +264,52 @@ class SharedObjectTest extends utest.Test {
 	}
 
 	/**
+		A payload whose values nest more than 256 deep cannot be read: `sync()`
+		throws and keeps `data`, and the constructor starts from `defaultData`.
+		Reading takes a frame or two per level, and natively a payload nested
+		6,000 deep -- 12 KB, which any process writing the region could leave
+		-- overflowed the stack and ended the process reading it, past any
+		catch.
+	**/
+	public function testAPayloadNestedPastTheBoundCannotBeRead():Void {
+		#if (cpp && (windows || linux || mac || macos))
+		var name:String = uniqueName("nested");
+		var holder = new SharedObject(name, 65536);
+		var reader = new SharedObject(name, 65536);
+		function leave(levels:Int):Void {
+			var payload = haxe.io.Bytes.ofString(StringTools.lpad("", "a", levels) + StringTools.lpad("", "h", levels));
+			Assert.isTrue(SharedObject.__write(holder.__handle, payload.getData(), payload.length, holder.lockTimeout));
+		}
+
+		leave(256);
+		reader.sync();
+		Assert.isTrue(Std.isOfType(reader.data, Array), "256 levels were not read");
+
+		for (levels in [257, 6000]) {
+			leave(levels);
+			var raised:Dynamic = null;
+			try {
+				reader.sync();
+			} catch (e:Dynamic) {
+				raised = e;
+			}
+			Assert.isTrue(Std.isOfType(raised, crossbyte.errors.IOError), '$levels levels: sync() threw ' + raised);
+			Assert.isTrue(Std.string(raised).indexOf("nested more than 256 levels deep") >= 0, '$levels levels: ' + raised);
+			Assert.isTrue(Std.isOfType(reader.data, Array), '$levels levels: data was replaced');
+
+			var opened = new SharedObject(name, 65536, {fallback: true});
+			Assert.equals(true, opened.data.fallback, '$levels levels: the constructor did not start from defaultData');
+			opened.close();
+		}
+
+		reader.close();
+		holder.close();
+		#else
+		Assert.isFalse(SharedObject.isSupported);
+		#end
+	}
+
+	/**
 		The constructor starts from `defaultData` when the region's payload
 		cannot be read, as it does when the region is empty. It started from
 		`{}` and dropped what it was given.
