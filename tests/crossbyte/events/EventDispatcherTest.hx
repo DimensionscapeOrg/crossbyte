@@ -37,6 +37,27 @@ class EventDispatcherTest extends utest.Test {
 		Assert.same(["high", "mid", "default"], order);
 	}
 
+	/**
+		What the doc says `priority` is: an ordering, not the insertion index
+		it used to call it. Ties run in the order added, a negative priority
+		runs after the default, and a large one is not clamped to anything.
+	**/
+	public function testEqualPrioritiesRunInTheOrderAddedAndNegativesRunLast():Void {
+		var dispatcher = new EventDispatcher();
+		var order:Array<String> = [];
+
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("0a"));
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("5a"), 5);
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("-1"), -1);
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("5b"), 5);
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("0b"));
+		dispatcher.addEventListener("demo", (_:Event) -> order.push("1000"), 1000);
+
+		dispatcher.dispatchEvent(new Event("demo"));
+
+		Assert.same(["1000", "5a", "5b", "0a", "0b", "-1"], order);
+	}
+
 	public function testDelegatedDispatcherSetsTargetAndCurrentTargetToOwner():Void {
 		var owner = new DispatcherOwner();
 		var event = new Event("demo");

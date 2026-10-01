@@ -72,14 +72,16 @@ class EventDispatcher implements IEventDispatcher {
 	/**
 	 * Adds an event listener for the specified event `type`.
 	 *
-	 * Listeners are stored in an ordered list and invoked in order of their priority.
-	 * Lower priority values are inserted earlier (i.e. called later).
-	 * 
-	 * If `priority` is out of bounds, it will be clamped to `[0, listeners.length]`.
-	 * 
+	 * Listeners are invoked in order of their priority, the highest first.
+	 * Listeners of equal priority are invoked in the order they were added,
+	 * so with every priority left at `0` the order is simply the order of
+	 * the calls. Any `Int` is a priority, negative ones included, which run
+	 * after those at `0`.
+	 *
 	 * @param type The `EventType<T>` representing the string type of the event (e.g. `EventType.create<T>("my_event")`)
 	 * @param listener A callback of type `T -> Void` to be invoked when the event is dispatched.
-	 * @param priority Optional insertion index for ordering. Defaults to `0` (append).
+	 * @param priority Where the listener runs among the others for `type`:
+	 *        higher runs earlier. Defaults to `0`.
 	 * @throws String If `listener` is null.
 	 *
 	 * @example
@@ -212,7 +214,8 @@ class EventDispatcher implements IEventDispatcher {
 	 * Dispatches an event to all listeners registered for its type.
 	 *
 	 * Automatically sets the `target` (if not already set) and `currentTarget` to this dispatcher.
-	 * Listeners are invoked in the order they were registered (respecting `priority`).
+	 * Listeners are invoked highest `priority` first, and those of equal priority in the
+	 * order they were added.
 	 *
 	 * @param event The event to dispatch. Must be a subclass of `Event`.
 	 * @return `true` if the event was handled by one or more listeners, `false` otherwise.
