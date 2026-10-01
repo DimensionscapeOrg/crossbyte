@@ -225,6 +225,30 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 	// see __flushPendingOutput.
 	private var __pendingSent:Int = 0;
 
+	/**
+	 * What the network has taken from this session since it opened, on
+	 * Node, what was handed to Node's queue, which `outputBufferLength` counts
+	 * as still pending.
+	 */
+	public var bytesSent(default, null):Float = 0;
+
+	/**
+	 * What this session holds that is not yet handed to the system, or on
+	 * Node to Node's queue: with `bytesSent`, every byte sent, each once.
+	 */
+	public var ownPending(get, never):Int;
+
+	private inline function get_ownPending():Int {
+		return __pendingOutput == null ? 0 : __pendingOutput.length - __pendingSent;
+	}
+
+	/**
+	 * Told as sent bytes reach the system, for whoever reports progress,
+	 * `crossbyte.net.WebSocket`'s OUTPUT_PROGRESS, and only while it is
+	 * set: on Node it costs a write callback.
+	 */
+	public var onprogress:Void->Void = null;
+
 	private static inline var CONNECT_TIMEOUT_MS:Int = 10000;
 
 	/**
@@ -1090,6 +1114,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				return -1;
 			}
 		}
+		if (accepted > 0) {
+			bytesSent += accepted;
+			if (onprogress != null) {
+				onprogress();
+			}
+		}
 		return accepted;
 	}
 	#end
@@ -1129,11 +1159,12 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 		var frame:ByteArray = new ByteArray();
 		frame.writeBytes(__pendingOutput, __pendingSent, pending);
 		try {
-			__socket.write(Buffer.hxFromBytes(frame));
+			__socket.write(Buffer.hxFromBytes(frame), null, onprogress);
 		} catch (e:Dynamic) {
 			__close(1006, null);
 			return;
 		}
+		bytesSent += pending;
 		__pendingOutput.clear();
 		__pendingSent = 0;
 
@@ -2531,7 +2562,8 @@ class WebSocket implements crossbyte.core._internal.PassFlush #if !nodejs implem
 				__pendingOutput.clear();
 				__pendingSent = 0;
 				try {
-					__socket.write(Buffer.hxFromBytes(held));
+					__socket.write(Buffer.hxFromBytes(held), null, onprogress);
+					bytesSent += held.length;
 				} catch (_:Dynamic) {}
 			}
 			#else

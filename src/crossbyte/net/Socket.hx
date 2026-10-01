@@ -35,6 +35,7 @@ import crossbyte.errors.SecurityError;
 import crossbyte.events.Event;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.IOErrorEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ProgressEvent;
 import crossbyte.io.ByteArray;
 import crossbyte.io.Endian;
@@ -484,6 +485,26 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	// How much of the front of __output the system has already taken; see
 	// __retainPendingOutput.
 	@:noCompletion private var __outputSent:Int = 0;
+	// What the network has taken from this socket since it connected, on
+	// Node and in a page, what was handed to the platform's own queue, which
+	// outputBufferLength counts as still pending, for
+	// OutputProgressEvent.bytesTotal.
+	@:noCompletion private var __bytesSent:Float = 0;
+	// An OUTPUT_PROGRESS owed for bytes that moved; whether one is queued for
+	// the end of the pass, or being dispatched now. See __noteProgress.
+	@:noCompletion private var __progressOwed:Bool = false;
+	@:noCompletion private var __progressQueued:Bool = false;
+	@:noCompletion private var __progressRunning:Bool = false;
+	@:noCompletion private var __progressFlush:SocketProgressFlush = null;
+	#if nodejs
+	// Handed to Node's write for as long as anyone listens for progress:
+	// Node calls it once the bytes have gone to the system.
+	@:noCompletion private var __nodeWritten:Void->Void = null;
+	#elseif js
+	// What the page's WebSocket still held at the last tick: progress is it
+	// shrinking, which the page reports no other way.
+	@:noCompletion private var __pageBuffered:Int = 0;
+	#end
 	@:noCompletion private var __port:Int;
 	@:noCompletion private var __socket:#if sys SysSocket #else Dynamic #end;
 	@:noCompletion private var __timestamp:Float;
@@ -671,6 +692,8 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__output = new ByteArray();
 		__output.endian = __endian;
 		__outputSent = 0;
+		__bytesSent = 0;
+		__progressOwed = false;
 
 		__input = new ByteArray();
 		__input.endian = __endian;
@@ -1045,6 +1068,7 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// copies what it is given, so a view is enough.
 				var pending:Int = __output.length;
 				__socket.send(new js.lib.Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending));
+				__bytesSent += pending;
 				__retainPendingOutput(pending, pending);
 		#elseif nodejs
 				// Copied, not viewed. Node holds what it is handed until the
@@ -1063,13 +1087,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 				// starting a new one was slower than either.
 				var pending:Int = __output.length;
 				var view = new Uint8Array((__output : haxe.io.Bytes).getData(), 0, pending);
+				// Told when Node has passed them on to the system, which is
+				// the progress a listener is waiting for; asked only while
+				// someone listens, since it costs Node a callback a write.
+				var written:Void->Void = null;
+				if (hasEventListener(OutputProgressEvent.OUTPUT_PROGRESS)) {
+					if (__nodeWritten == null) {
+						__nodeWritten = __noteProgress;
+					}
+					written = __nodeWritten;
+				}
 				if (pending < 1024) {
 					var copy:js.node.Buffer = js.node.Buffer.allocUnsafe(pending);
 					copy.set(view);
-					__socket.write(copy);
+					__socket.write(copy, null, written);
 				} else {
-					__socket.write(view.slice());
+					__socket.write(view.slice(), null, written);
 				}
+				__bytesSent += pending;
 				__retainPendingOutput(pending, pending);
 				#else
 				// From where the last partial write stopped; the JavaScript
@@ -1099,6 +1134,10 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 					}
 				}
 				__retainPendingOutput(bytesWritten, pendingLength);
+				if (bytesWritten > 0) {
+					__bytesSent += bytesWritten;
+					__noteProgress();
+				}
 				#end
 			} catch (e:Dynamic) {
 				var throwError = false;
@@ -1721,6 +1760,88 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		__cbInstance.addEventListener(TickEvent.TICK, __connectingTick);
 	}
 
+	/**
+		Bytes have left this socket's buffer for the network, so an
+		OUTPUT_PROGRESS is owed. It goes out once the pass ends, one for the
+		pass, rather than from inside the flush that moved them: a handler
+		that answers by writing the next piece flushes again, and told from
+		inside that flush it would write again, as deep as the stack went.
+
+		What a progress handler itself sends is reported at the next pass,
+		not this one. The runtime finishes everything a pass asked for before
+		it polls again, so otherwise a writer feeding a socket that never
+		fills, TLS, slower to encrypt than its reader is to read, was
+		told and wrote again until it had nothing left, with every other
+		connection waiting.
+	**/
+	@:noCompletion private function __noteProgress():Void {
+		if (!hasEventListener(OutputProgressEvent.OUTPUT_PROGRESS)) {
+			return;
+		}
+
+		__progressOwed = true;
+		if (__progressQueued) {
+			return;
+		}
+
+		var runtime:CrossByte = #if nodejs __nodeRuntime #else __cbInstance #end;
+		if (runtime == null) {
+			runtime = CrossByte.current();
+		}
+		if (runtime == null) {
+			return;
+		}
+
+		__progressQueued = true;
+		if (__progressFlush == null) {
+			__progressFlush = new SocketProgressFlush(this);
+		}
+		if (__progressRunning) {
+			runtime.__queueNextPassFlush(__progressFlush);
+		} else {
+			runtime.__queuePassFlush(__progressFlush);
+		}
+	}
+
+	/** The end of a pass that owes OUTPUT_PROGRESS. **/
+	@:noCompletion private function __dispatchProgress():Void {
+		__progressQueued = false;
+		if (!__progressOwed || __closed) {
+			return;
+		}
+		__progressOwed = false;
+
+		if (!hasEventListener(OutputProgressEvent.OUTPUT_PROGRESS)) {
+			return;
+		}
+
+		var pending:Int = bytesPending;
+		__progressRunning = true;
+		try {
+			dispatchEvent(new OutputProgressEvent(OutputProgressEvent.OUTPUT_PROGRESS, pending, __sentTotal() + __unsentOwn()));
+		} catch (e:Dynamic) {
+			__progressRunning = false;
+			throw e;
+		}
+		__progressRunning = false;
+	}
+
+	/**
+		What the network has taken since the connection opened, on Node
+		and in a page, what the platform's queue has, for bytesTotal.
+	**/
+	@:noCompletion private function __sentTotal():Float {
+		return __bytesSent;
+	}
+
+	/**
+		What this side still holds, not yet handed to the system or to the
+		platform's queue: with __sentTotal, every byte written, each once.
+	**/
+	@:noCompletion private function __unsentOwn():Int {
+		return __output == null ? 0 : __output.length - __outputSent;
+	}
+
 	@:noCompletion private function __tryFlush():Void {
 		flushFull = false;
 
@@ -2157,7 +2278,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 	@:noCompletion private function this_onTick(?event:TickEvent):Void {
 		#if (js && !nodejs)
 		if (__socket != null) {
+			// The page sends what its WebSocket holds without a word, so
+			// progress is that shrinking between ticks: read before this
+			// tick's flush adds to it.
+			if (__socket.bufferedAmount < __pageBuffered) {
+				__noteProgress();
+			}
 			flush();
+			__pageBuffered = __socket.bufferedAmount;
 		}
 		#elseif nodejs
 		// Data arrives on Node through the data event, not by polling, and a
@@ -2887,5 +3015,24 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 			// down a dead connection is not itself an error path.
 			close();
 		}
+	}
+}
+
+/**
+	Sends a socket's owed OUTPUT_PROGRESS when the runtime's pass ends; see
+	`Socket.__noteProgress`. A holder of its own, so that on Node, where the
+	socket already flushes its writes at the end of the pass, the two stay
+	apart.
+**/
+@:noCompletion @:dox(hide)
+private class SocketProgressFlush implements crossbyte.core._internal.PassFlush {
+	private final __socket:Socket;
+
+	public function new(socket:Socket) {
+		__socket = socket;
+	}
+
+	public function __flushPass():Void {
+		@:privateAccess __socket.__dispatchProgress();
 	}
 }

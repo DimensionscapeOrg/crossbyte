@@ -432,6 +432,9 @@ final class CrossByte extends EventDispatcher {
 	@:noCompletion private var __passFlushes:Array<PassFlush> = [];
 	@:noCompletion private var __passFlushAt:Int = 0;
 	@:noCompletion private var __flushingPass:Bool = false;
+	// Asked for from inside a pass's flush, for the next; see __queueNextPassFlush.
+	@:noCompletion private var __laterFlushes:Array<PassFlush> = [];
+	@:noCompletion private var __laterSpare:Array<PassFlush> = [];
 
 	// What another thread handed this runtime to run on its own; see __post.
 	// The flag is read each tick without the lock: a stale false costs one
@@ -666,7 +669,7 @@ final class CrossByte extends EventDispatcher {
 		// As the runtime's own loops do: a socket that stopped with its share
 		// of the pass taken is read again while the host's frame lasts, not
 		// at its next one.
-		while (__socketRegistry.__moreToRead && Timer.stamp() - frameStart < delta && __getRunning()) {
+		while ((__socketRegistry.__moreToRead || __flushesWaiting()) && Timer.stamp() - frameStart < delta && __getRunning()) {
 			__socketRegistry.update(0);
 			__flushHeld();
 		}
@@ -994,6 +997,28 @@ final class CrossByte extends EventDispatcher {
 		#end
 	}
 
+	/**
+		As `__queuePassFlush`, but asked from inside this pass's flush for the
+		next one: the walk takes in whatever is queued while it runs, so an
+		item that keeps asking from its own flush, a progress handler that
+		writes the next piece of a stream to a socket that never fills, was
+		flushed again and again before the loop polled anything else. Held
+		until the walk ends, then queued; the loops poll again, without
+		waiting, before they flush it (see `__flushesWaiting`).
+	**/
+	@:noCompletion public function __queueNextPassFlush(item:PassFlush):Void {
+		if (__flushingPass) {
+			__laterFlushes.push(item);
+		} else {
+			__queuePassFlush(item);
+		}
+	}
+
+	/** Whether anything is queued for a pass flush the loop has not run yet. **/
+	@:noCompletion private inline function __flushesWaiting():Bool {
+		return __passFlushes.length > __passFlushAt;
+	}
+
 	#if js
 	@:noCompletion private function __flushPassFromTurn():Void {
 		__passFlushScheduled = false;
@@ -1029,6 +1054,18 @@ final class CrossByte extends EventDispatcher {
 		__passFlushes.resize(0);
 		__passFlushAt = 0;
 		__flushingPass = false;
+
+		if (__laterFlushes.length > 0) {
+			// Swapped rather than copied: queueing one can schedule a turn,
+			// never ask for another later flush, since the walk is over.
+			var later:Array<PassFlush> = __laterFlushes;
+			__laterFlushes = __laterSpare;
+			__laterSpare = later;
+			for (item in later) {
+				__queuePassFlush(item);
+			}
+			later.resize(0);
+		}
 	}
 
 	@:noCompletion private inline function get_uptime():Float {
@@ -1663,7 +1700,7 @@ final class CrossByte extends EventDispatcher {
 		// next frame with the frame slept out in between: polled once a
 		// frame, a socket at the default 12 ticks a second would be read a
 		// megabyte every 84 ms however fast its data came.
-		while (__socketRegistry.__moreToRead && Timer.stamp() < __frameDeadline && __getRunning()) {
+		while ((__socketRegistry.__moreToRead || __flushesWaiting()) && Timer.stamp() < __frameDeadline && __getRunning()) {
 			__socketRegistry.update();
 			if (__hasPosted) {
 				__runPosted();
@@ -1736,10 +1773,11 @@ final class CrossByte extends EventDispatcher {
 		// the rest, so at 1,000 ticks a second an upload was read a megabyte
 		// a sleep.
 		var polled:Bool = false;
-		while ((remaining >= MIN_POLL_WAIT || !polled || (__socketRegistry.__moreToRead && remaining > 0)) && __getRunning()) {
+		while ((remaining >= MIN_POLL_WAIT || !polled || ((__socketRegistry.__moreToRead || __flushesWaiting()) && remaining > 0)) && __getRunning()) {
 			polled = true;
 			#if !js
-			__socketRegistry.update(remaining >= MIN_POLL_WAIT ? remaining : 0);
+			// Not blocking while a flush waits for its turn: it is work in hand.
+			__socketRegistry.update(remaining >= MIN_POLL_WAIT && !__flushesWaiting() ? remaining : 0);
 			#end
 			// Handed over from another thread, which wrote to the wake socket
 			// so that the poll above returned for it.

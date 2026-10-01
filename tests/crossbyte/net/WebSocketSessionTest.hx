@@ -3,6 +3,7 @@ package crossbyte.net;
 import crossbyte.core.CrossByte;
 import crossbyte.events.Event;
 import crossbyte.events.IOErrorEvent;
+import crossbyte.events.OutputProgressEvent;
 import crossbyte.events.ServerSocketConnectEvent;
 import crossbyte.events.TickEvent;
 import crossbyte.events.WebSocketCloseEvent;
@@ -293,6 +294,58 @@ class WebSocketSessionTest extends utest.Test {
 				NetPump.until(() -> number != null, 5.0, function(_) {
 					Assert.equals(0x01020304, number, "the int came back as " + StringTools.hex(number == null ? 0 : number, 8));
 					Assert.equals(-1.25, fraction);
+					try client.close() catch (_:Dynamic) {}
+					finish();
+				});
+			});
+		}, async);
+	}
+
+	/**
+		A WebSocket tells its writer as what it sent reaches the network,
+		down to nothing left waiting, as a Socket does: it is one, and the
+		event was never dispatched for either.
+	**/
+	@:timeout(15000)
+	public function testAWriterIsToldAsWhatItSentReachesTheNetwork(async:Async):Void {
+		__serve(null, function(server, sessions, finish) {
+			var count:Int = 16;
+			var size:Int = 60 * 1024;
+			var client = new WebSocket();
+			var opened:Bool = false;
+			var received:Int = 0;
+			var pending:Array<Float> = [];
+			var total:Float = 0;
+			client.addEventListener(Event.CONNECT, function(_) opened = true);
+			client.addEventListener(OutputProgressEvent.OUTPUT_PROGRESS, function(e:OutputProgressEvent) {
+				pending.push(e.bytesPending);
+				total = e.bytesTotal;
+			});
+			client.connect("127.0.0.1", server.localPort);
+
+			NetPump.until(() -> opened && sessions.length > 0, 5.0, function(_) {
+				if (sessions.length == 0) {
+					Assert.fail("no session");
+					finish();
+					return;
+				}
+				sessions[0].addEventListener(WebSocketMessageEvent.MESSAGE, function(e:WebSocketMessageEvent) received += e.data.length);
+
+				var message = new ByteArray();
+				message.length = size;
+				for (_ in 0...count) {
+					client.writeBytes(message, 0, size);
+					client.flush();
+				}
+
+				NetPump.until(() -> received >= count * size && pending.length > 0 && pending[pending.length - 1] == 0, 10.0, function(_) {
+					Assert.equals(count * size, received, "not everything sent arrived");
+					Assert.isTrue(pending.length > 0, "nothing said what was sent had gone");
+					if (pending.length > 0) {
+						Assert.equals(0., pending[pending.length - 1], "the last OUTPUT_PROGRESS left " + pending[pending.length - 1] + " bytes waiting");
+					}
+					// Each message's frame header and mask are sent too.
+					Assert.isTrue(total >= count * size, "bytesTotal " + total + " is less than the " + (count * size) + " bytes of payload");
 					try client.close() catch (_:Dynamic) {}
 					finish();
 				});
