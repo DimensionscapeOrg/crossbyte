@@ -1991,6 +1991,18 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `File.cancel()` cancels. With nothing pending it was a null access; with
+  something pending the work went on -- a 64 MB `copyToAsync` finished
+  after it had been cancelled -- because nothing in it asked. Each
+  asynchronous operation now asks between steps and stops: a copy between
+  blocks, removing a destination it had made (or, copying onto one that
+  was there, the file it was part way through); a move across volumes
+  putting the source and whatever it was replacing back; a recursive
+  delete between entries; a load between blocks. A cancelled operation
+  dispatches nothing more, and the File dispatches `cancel` once. Two
+  operations at once on one File both report now: they shared one worker
+  field, so the first to finish disposed of the other's worker, whose
+  result was never heard, or found the field empty.
 - `File.openWithDefaultApplication()` opens the file -- or a directory, in
   the file manager -- with the application the operating system has
   registered for it: through `explorer.exe` on Windows, `open` on macOS

@@ -557,7 +557,10 @@ final class File extends EventDispatcher {
 		"S:\\", "T:\\", "U:\\", "V:\\", "W:\\", "X:\\", "Y:\\", "Z:\\"
 	];
 
-	@:noCompletion private var __fileWorker:Worker;
+	// Each asynchronous operation's own worker, while it runs. There was one
+	// field for all of them, so a second operation started before the first
+	// had finished was disposed of by the first one's completion.
+	@:noCompletion private var __pending:Array<Worker> = [];
 	@:noCompletion private var __path:String;
 
 	/**
@@ -605,10 +608,79 @@ final class File extends EventDispatcher {
 
 	/**
 		Cancels any pending asynchronous operation.
+
+		Each stops where it is and reports nothing more -- no `complete`, no `ioError` -- and the File
+		dispatches `cancel`, once. What is left behind:
+
+		- `copyToAsync` stops between blocks. A destination that did not exist before the copy began is
+		  removed; copying onto one that did, the file it was part way through is removed, and the files
+		  it had finished stay.
+		- `moveToAsync` is a rename on one volume, done before there is anything to cancel; across
+		  volumes the copy stops and is removed, and the source and whatever the move was replacing are
+		  as they were.
+		- `deleteDirectoryAsync` stops between entries: what it had deleted stays deleted.
+		- `loadAsync` stops reading, and `data` is as it was.
+		- `getDirectoryListingAsync` and `deleteFileAsync` dispatch nothing more.
+
+		With nothing pending this does nothing, and dispatches nothing.
+
+		@event cancel An asynchronous operation was cancelled.
 	**/
 	public function cancel():Void {
-		__fileWorker.cancel();
+		// It cancelled a worker without asking whether there was one: with
+		// nothing pending, a null access. And the work went on -- a 64 MB
+		// copy finished after it had been cancelled -- because nothing in it
+		// ever asked.
+		if (__pending.length == 0) {
+			return;
+		}
+
+		var workers:Array<Worker> = __pending;
+		__pending = [];
+
+		for (worker in workers) {
+			worker.removeAllListeners();
+			worker.cancel();
+		}
+
 		dispatchEvent(new Event(Event.CANCEL));
+	}
+
+	/**
+		Runs `work` on a worker of its own, then `done` with what it returned
+		on this File's thread, or an ioError with what it threw. `work` is
+		handed what it asks, between steps, to learn whether it has been
+		cancelled; a cancelled one ends by throwing FileCancelled.
+	**/
+	@:noCompletion private function __startAsync(work:(Void->Bool)->Dynamic, done:Dynamic->Void):Void {
+		var worker:Worker = new Worker();
+		__pending.push(worker);
+
+		worker.addEventListener(ThreadEvent.COMPLETE, (event:ThreadEvent) -> {
+			__pending.remove(worker);
+			done(event.message);
+		});
+		worker.addEventListener(ThreadEvent.ERROR, (event:ThreadEvent) -> {
+			__pending.remove(worker);
+			__dispatchIoError(event.message);
+		});
+
+		worker.doWork = function(_:Dynamic):Void {
+			var result:Dynamic = null;
+
+			try {
+				result = work(() -> worker.cancelRequested);
+			} catch (_:FileCancelled) {
+				return;
+			} catch (e:Dynamic) {
+				worker.sendError(e);
+				return;
+			}
+
+			worker.sendComplete(result);
+		};
+
+		worker.run();
 	}
 
 	/**
@@ -688,6 +760,8 @@ final class File extends EventDispatcher {
 			clone.__targetDispatcher = null;
 			clone.__nextListenerOrder = 0;
 			clone.__walking = 0;
+			// Its own operations: the original's are not the clone's to cancel.
+			clone.__pending = [];
 		}
 		return clone;
 	}
@@ -748,6 +822,11 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function copyTo(newLocation:File, overwrite:Bool = false):Void {
+		__copyTo(newLocation, overwrite, null);
+	}
+
+	/** copyTo, which `cancelled`, when given, can stop between blocks. **/
+	@:noCompletion private function __copyTo(newLocation:File, overwrite:Bool, cancelled:Null<Void->Bool>):Void {
 		if (newLocation == null) {
 			throw new ArgumentError("copyTo needs a destination.");
 		}
@@ -777,12 +856,38 @@ final class File extends EventDispatcher {
 			throw __ioError('Cannot copy "$__path" into itself, as "$newPath".', 3014);
 		}
 
-		__copyPath(__path, newPath, overwrite);
+		if (cancelled == null) {
+			__copyPath(__path, newPath, overwrite, null);
+			return;
+		}
+
+		// A destination that is all this copy's own goes as a whole if it is
+		// cancelled; one that was there already keeps what it had.
+		var fresh:Bool = !FileSystem.exists(newPath);
+
+		try {
+			__copyPath(__path, newPath, overwrite, cancelled);
+		} catch (stopped:FileCancelled) {
+			if (fresh && FileSystem.exists(newPath)) {
+				try {
+					__removePath(newPath);
+				} catch (_:Dynamic) {}
+			}
+			throw stopped;
+		}
 	}
 
-	/** The copy itself, once copyTo has checked the two ends. **/
-	@:noCompletion private static function __copyPath(source:String, target:String, overwrite:Bool):Void {
+	/**
+		The copy itself, once copyTo has checked the two ends. `cancelled`,
+		when given, is asked before each entry and each block, and a file cut
+		short by it is removed.
+	**/
+	@:noCompletion private static function __copyPath(source:String, target:String, overwrite:Bool, cancelled:Null<Void->Bool>):Void {
 		try {
+			if (cancelled != null && cancelled()) {
+				throw new FileCancelled();
+			}
+
 			if (FileSystem.isDirectory(source)) {
 				FileSystem.createDirectory(target);
 				for (item in __listPath(source)) {
@@ -792,15 +897,22 @@ final class File extends EventDispatcher {
 						throw __ioError('"$child" exists, and overwrite is false.', 3011);
 					}
 
-					__copyPath(Path.join([source, item]), child, overwrite);
+					__copyPath(Path.join([source, item]), child, overwrite, cancelled);
 				}
 			} else {
 				var newDirectory:String = Path.directory(target);
 				if (newDirectory != "" && !FileSystem.exists(newDirectory)) {
 					FileSystem.createDirectory(newDirectory);
 				}
-				HaxeFile.copy(source, target);
+
+				if (cancelled == null) {
+					HaxeFile.copy(source, target);
+				} else {
+					__copyFileInBlocks(source, target, cancelled);
+				}
 			}
+		} catch (e:FileCancelled) {
+			throw e;
 		} catch (e:Error) {
 			// A recursive call has already described the failure against the
 			// path it actually happened on. Re-wrapping it here would bury both.
@@ -814,6 +926,66 @@ final class File extends EventDispatcher {
 			throw __ioError('Unable to copy "$source" to "$target": ${Std.string(e)}', 3006);
 		}
 	}
+
+	/**
+		A file's copy, a block at a time, asking `cancelled` before each;
+		stopped, what it had written is removed. The standard library's copy
+		is one call nothing can interrupt, so a cancelled copy ran to its end.
+	**/
+	@:noCompletion private static function __copyFileInBlocks(source:String, target:String, cancelled:Void->Bool):Void {
+		var input = HaxeFile.read(source, true);
+		var output = try HaxeFile.write(target, true) catch (e:Dynamic) {
+			input.close();
+			throw e;
+		};
+		var block:Bytes = Bytes.alloc(__COPY_BLOCK);
+		var stopped:Bool = false;
+		var copied:Float = 0;
+
+		try {
+			while (true) {
+				if (cancelled()) {
+					stopped = true;
+					break;
+				}
+
+				var read:Int = 0;
+				try {
+					read = input.readBytes(block, 0, block.length);
+				} catch (_:haxe.io.Eof) {}
+
+				if (read <= 0) {
+					break;
+				}
+
+				output.writeFullBytes(block, 0, read);
+				copied += read;
+				__copiedBlock(target, copied);
+			}
+		} catch (e:Dynamic) {
+			input.close();
+			output.close();
+			throw e;
+		}
+
+		input.close();
+		output.close();
+
+		if (stopped) {
+			try {
+				FileSystem.deleteFile(target);
+			} catch (_:Dynamic) {}
+			throw new FileCancelled();
+		}
+	}
+
+	@:noCompletion private static inline var __COPY_BLOCK:Int = 1 << 20;
+
+	/**
+		Told of each block a cancellable copy writes. Does nothing; dynamic so
+		that a test can slow a copy down enough to cancel it part way through.
+	**/
+	@:noCompletion private static dynamic function __copiedBlock(target:String, copied:Float):Void {}
 
 	/**
 		Whether a rename reaches from `path` into `directory`. Dynamic so that
@@ -881,40 +1053,10 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function copyToAsync(newLocation:File, overwrite:Bool = false):Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncCopyWork;
-		__fileWorker.run({"newLocation": newLocation, "overwrite": overwrite});
-	}
-
-	private function __onWorkerError(e:ThreadEvent):Void {
-		__disposeFileWorker();
-		__dispatchIoError(e.message);
-	}
-
-	private function __onWorkerComplete(e:ThreadEvent):Void {
-		__disposeFileWorker();
-		dispatchEvent(new Event(Event.COMPLETE));
-	}
-
-	private function __asyncCopyWork(m:Dynamic) {
-		try {
-			copyTo(m.newLocation, m.overwrite);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-
-		__fileWorker.sendComplete();
-	}
-
-	private function __disposeFileWorker():Void {
-		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onWorkerError);
-		__fileWorker.cancel();
-		__fileWorker = null;
+		__startAsync(cancelled -> {
+			__copyTo(newLocation, overwrite, cancelled);
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
@@ -966,13 +1108,18 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function deleteDirectory(deleteDirectoryContents:Bool = false):Void {
+		__deleteDirectory(deleteDirectoryContents, null);
+	}
+
+	/** deleteDirectory, which `cancelled`, when given, can stop between entries. **/
+	@:noCompletion private function __deleteDirectory(deleteDirectoryContents:Bool, cancelled:Null<Void->Bool>):Void {
 		if (!FileSystem.exists(__path)) {
 			throw new Error("File or directory does not exist.", 3003);
 		}
 
 		if (deleteDirectoryContents) {
 			for (item in __listPath(__path)) {
-				__deletePath(Path.join([__path, item]));
+				__removePath(Path.join([__path, item]), cancelled);
 			}
 		}
 
@@ -996,23 +1143,10 @@ final class File extends EventDispatcher {
 
 	**/
 	public function deleteDirectoryAsync(deleteDirectoryContents:Bool = false):Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncDeleteDirWork;
-		__fileWorker.run(deleteDirectoryContents);
-	}
-
-	private function __asyncDeleteDirWork(deleteDirectoryContents:Bool):Void {
-		try {
-			deleteDirectory(deleteDirectoryContents);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-
-		__fileWorker.sendComplete();
+		__startAsync(cancelled -> {
+			__deleteDirectory(deleteDirectoryContents, cancelled);
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
@@ -1046,22 +1180,10 @@ final class File extends EventDispatcher {
 		@throws SecurityError The application does not have the necessary permissions to delete the directory.
 	**/
 	public function deleteFileAsync():Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncDeleteFileWork;
-		__fileWorker.run();
-	}
-
-	private function __asyncDeleteFileWork(m:Dynamic):Void {
-		try {
+		__startAsync(_ -> {
 			deleteFile();
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-		__fileWorker.sendComplete();
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
@@ -1131,48 +1253,18 @@ final class File extends EventDispatcher {
 			throw new Error("Not a directory.", 3007);
 		}
 
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onAsyncGetDirectoryListingWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onAsyncGetDirectoryListingWorkerError);
+		__startAsync(cancelled -> {
+			var files:Array<File> = [];
 
-		__fileWorker.doWork = __asyncGetDirectoryListingWork;
-		__fileWorker.run();
-	}
-
-	private function __asyncGetDirectoryListingWork(m:Dynamic):Void {
-		var files:Array<File> = [];
-
-		try {
-			var directoryItems:Array<String> = __listPath(__path);
-
-			for (item in directoryItems) {
+			for (item in __listPath(__path)) {
+				if (cancelled()) {
+					throw new FileCancelled();
+				}
 				files.push(new File(Path.join([__path, item])));
 			}
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
 
-		__fileWorker.sendComplete(files);
-	}
-
-	private function __onAsyncGetDirectoryListingWorkerError(e:ThreadEvent):Void {
-		__disposeAsyncGetDirectoryListingWorker();
-		__dispatchIoError(e.message);
-	}
-
-	private function __onAsyncGetDirectoryListingWorkerComplete(e:ThreadEvent):Void {
-		var files:Array<File> = e.message;
-
-		__disposeAsyncGetDirectoryListingWorker();
-		dispatchEvent(new FileListEvent(FileListEvent.DIRECTORY_LISTING, files));
-	}
-
-	private function __disposeAsyncGetDirectoryListingWorker():Void {
-		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onAsyncGetDirectoryListingWorkerComplete);
-		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onAsyncGetDirectoryListingWorkerError);
-		__fileWorker.cancel();
-		__fileWorker = null;
+			return files;
+		}, (files:Array<File>) -> dispatchEvent(new FileListEvent(FileListEvent.DIRECTORY_LISTING, files)));
 	}
 
 	/**
@@ -1244,39 +1336,48 @@ final class File extends EventDispatcher {
 		`complete` event is dispatched when loading finishes.
 	**/
 	public function loadAsync():Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onAsyncLoadWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onAsyncLoadWorkerError);
+		__startAsync(cancelled -> {
+			// A block at a time, so that a cancel stops it, into one buffer of
+			// the file's size.
+			var size:Float = __sizeNow();
 
-		__fileWorker.doWork = __asyncLoadWork;
-		__fileWorker.run();
-	}
+			if (size > 2147483647.0) {
+				throw __ioError('"$__path" is larger than 2 GB, more than one ByteArray holds.', 3005);
+			}
 
-	private function __asyncLoadWork(m:Dynamic):Void {
-		try {
-			var bytes:Bytes = HaxeFile.getBytes(__path);
-			__fileWorker.sendComplete(bytes);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-		}
-	}
+			var data:Bytes = Bytes.alloc(Std.int(size));
+			var input = HaxeFile.read(__path, true);
+			var got:Int = 0;
 
-	private function __onAsyncLoadWorkerError(e:ThreadEvent):Void {
-		__disposeAsyncLoadWorker();
-		__dispatchIoError(e.message);
-	}
+			try {
+				while (got < data.length) {
+					if (cancelled()) {
+						throw new FileCancelled();
+					}
 
-	private function __onAsyncLoadWorkerComplete(e:ThreadEvent):Void {
-		__data = ByteArray.fromBytes(cast e.message);
-		__disposeAsyncLoadWorker();
-		dispatchEvent(new Event(Event.COMPLETE));
-	}
+					var want:Int = data.length - got < __COPY_BLOCK ? data.length - got : __COPY_BLOCK;
+					var read:Int = 0;
+					try {
+						read = input.readBytes(data, got, want);
+					} catch (_:haxe.io.Eof) {}
 
-	private function __disposeAsyncLoadWorker():Void {
-		__fileWorker.removeEventListener(ThreadEvent.COMPLETE, __onAsyncLoadWorkerComplete);
-		__fileWorker.removeEventListener(ThreadEvent.ERROR, __onAsyncLoadWorkerError);
-		__fileWorker.cancel();
-		__fileWorker = null;
+					if (read <= 0) {
+						break;
+					}
+
+					got += read;
+				}
+			} catch (e:Dynamic) {
+				input.close();
+				throw e;
+			}
+
+			input.close();
+			return got == data.length ? data : data.sub(0, got);
+		}, (bytes:Bytes) -> {
+			__data = ByteArray.fromBytes(bytes);
+			dispatchEvent(new Event(Event.COMPLETE));
+		});
 	}
 
 	/**
@@ -1331,6 +1432,11 @@ final class File extends EventDispatcher {
 		```
 	**/
 	public function moveTo(newLocation:File, overwrite:Bool = false):Void {
+		__moveTo(newLocation, overwrite, null);
+	}
+
+	/** moveTo, whose copy across volumes `cancelled`, when given, can stop. **/
+	@:noCompletion private function __moveTo(newLocation:File, overwrite:Bool, cancelled:Null<Void->Bool>):Void {
 		// It was a copy followed by a delete, always. Onto itself that copy
 		// emptied the file; a rename of a name's case -- the same file to
 		// Windows and to macOS by default -- copied the file onto itself and
@@ -1420,14 +1526,16 @@ final class File extends EventDispatcher {
 
 		try {
 			if (across) {
-				__copyPath(source, target, false);
+				__copyPath(source, target, false, cancelled);
 			} else {
 				FileSystem.rename(source, target);
 			}
 		} catch (e:Dynamic) {
+			// Cancelled or failed alike: what the copy made goes, and what the
+			// move was replacing comes back.
 			if (across && FileSystem.exists(target)) {
 				try {
-					__deletePath(target);
+					__removePath(target);
 				} catch (_:Dynamic) {}
 			}
 
@@ -1437,7 +1545,7 @@ final class File extends EventDispatcher {
 				} catch (_:Dynamic) {}
 			}
 
-			if (Std.isOfType(e, Error)) {
+			if (Std.isOfType(e, Error) || Std.isOfType(e, FileCancelled)) {
 				throw e;
 			}
 
@@ -1447,7 +1555,7 @@ final class File extends EventDispatcher {
 		if (across) {
 			// The copy is whole; only now does the source go.
 			try {
-				__deletePath(source);
+				__removePath(source);
 			} catch (e:Dynamic) {
 				throw __ioError('Copied "$source" to "$target", on another volume, but could not then delete it: ${Std.string(e)}', 3012);
 			}
@@ -1455,7 +1563,7 @@ final class File extends EventDispatcher {
 
 		if (aside != null) {
 			try {
-				__deletePath(aside);
+				__removePath(aside);
 			} catch (e:Dynamic) {
 				throw __ioError('Moved "$source" to "$target", but the "$target" it replaced is still at "$aside": ${Std.string(e)}', 3012);
 			}
@@ -1507,23 +1615,10 @@ final class File extends EventDispatcher {
 			```
 	**/
 	public function moveToAsync(newLocation:File, overwrite:Bool = false):Void {
-		__fileWorker = new Worker();
-		__fileWorker.addEventListener(ThreadEvent.COMPLETE, __onWorkerComplete);
-		__fileWorker.addEventListener(ThreadEvent.ERROR, __onWorkerError);
-
-		__fileWorker.doWork = __asyncMoveWork;
-		__fileWorker.run({"newLocation": newLocation, "overwrite": overwrite});
-	}
-
-	private function __asyncMoveWork(m:Dynamic):Void {
-		try {
-			moveTo(m.newLocation, m.overwrite);
-		} catch (e:Dynamic) {
-			__fileWorker.sendError(e);
-			return;
-		}
-
-		__fileWorker.sendComplete();
+		__startAsync(cancelled -> {
+			__moveTo(newLocation, overwrite, cancelled);
+			return null;
+		}, _ -> dispatchEvent(new Event(Event.COMPLETE)));
 	}
 
 	/**
@@ -1949,10 +2044,19 @@ final class File extends EventDispatcher {
 		return items;
 	}
 
-	@:noCompletion private function __deletePath(path:String):Void {
+	/**
+		Deletes `path`, and everything in it if it is a directory. `cancelled`,
+		when given, is asked before each entry; what is deleted by then stays
+		deleted.
+	**/
+	@:noCompletion private static function __removePath(path:String, ?cancelled:Void->Bool):Void {
+		if (cancelled != null && cancelled()) {
+			throw new FileCancelled();
+		}
+
 		if (FileSystem.isDirectory(path)) {
 			for (item in __listPath(path)) {
-				__deletePath(Path.join([path, item]));
+				__removePath(Path.join([path, item]), cancelled);
 			}
 			FileSystem.deleteDirectory(path);
 		} else {
@@ -2591,4 +2695,10 @@ final class File extends EventDispatcher {
 		#end
 	}
 	// #end
+}
+
+/** What a cancelled operation throws, to stop where it is; never seen outside File. **/
+@:noCompletion
+private class FileCancelled {
+	public function new() {}
 }
