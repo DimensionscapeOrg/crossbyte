@@ -76,6 +76,9 @@ entry below says how:
   `ThreadEvent.UPDATE` are gone.
 - `BCrypt.hash` makes `$2b$` hashes, and Postgres, MySQL and MongoDB
   statements throw what the server refused.
+- `HTTPServerConfig.validate()`, and so `new HTTPServer`, refuses a
+  `tlsCertificatePath` without a `tlsKeyPath` or the reverse, which was
+  served as plain HTTP, and an `errorDocument` that is not there.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1932,6 +1935,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An `HTTPServer` given a TLS certificate path and no key path, or a key
+  and no certificate, is refused at construction. `tlsEnabled` asks for
+  both, so it was false, and the server listened in plain HTTP for a
+  caller who had asked for HTTPS and been told nothing: one misspelt
+  environment variable was an unencrypted server.
 - `HTTPServerConfig.errorDocument` is the body of every error the server
   answers by itself -- a missing file's 404, a 403, a 405, a refused or
   late request, a 500 -- with the status each would have had, and the
