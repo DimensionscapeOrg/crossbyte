@@ -167,9 +167,9 @@ class ServerWebSocketDrainTest extends utest.Test {
 	/** Pumps the runtime until `done`, or until `timeout` seconds pass. **/
 	private function pumpUntil(done:Void->Bool, timeout:Float):Void {
 		var runtime = CrossByte.current();
-		var deadline = Sys.time() + timeout;
+		var deadline = haxe.Timer.stamp() + timeout;
 
-		while (!done() && Sys.time() < deadline) {
+		while (!done() && haxe.Timer.stamp() < deadline) {
 			runtime.pump(1 / 120, 0);
 			crossbyte.sys.System.sleep(0.002);
 		}
