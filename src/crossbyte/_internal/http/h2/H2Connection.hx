@@ -535,6 +535,26 @@ class H2Connection {
 			}
 		}
 
+		// An interim response, 100 Continue, 103 Early Hints, is a header
+		// block of its own ahead of the final one (RFC 9113 8.1). Its fields
+		// are not the response's and its status is not the response's, so the
+		// block is dropped and the final one waited for. Every block's fields
+		// were added to the stream's, so a 200 after a 103 carried the 103's
+		// link. One that ends the stream is malformed: the response it
+		// promises cannot follow.
+		for (header in decoded) {
+			if (header.name == ":status") {
+				if (__informational(header.value)) {
+					if (endStream) {
+						target.failure = "Malformed response: an informational status ended the stream";
+						resetStream(target.id, H2ErrorCode.PROTOCOL_ERROR);
+					}
+					return;
+				}
+				break;
+			}
+		}
+
 		for (header in decoded) {
 			if (header.name == ":status") {
 				// Three digits (§8.3.2), read the same on every target. Past
@@ -867,5 +887,14 @@ class H2Connection {
 
 	private static inline function __readUInt32(source:Bytes, offset:Int):Int {
 		return (source.get(offset) << 24) | (source.get(offset + 1) << 16) | (source.get(offset + 2) << 8) | source.get(offset + 3);
+	}
+
+	/** Whether a `:status` value is a 1xx: three digits, the first a 1. */
+	private static function __informational(status:String):Bool {
+		if (status.length != 3) {
+			return false;
+		}
+		var parsed:Int = IntParse.decimal(status);
+		return parsed >= 100 && parsed < 200;
 	}
 }
