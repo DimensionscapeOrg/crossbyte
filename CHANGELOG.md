@@ -1932,6 +1932,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An ICE candidate pair nothing answers is given up on 39.5 seconds after
+  its first check, as RFC 8489 gives up a transaction: seven transmissions
+  over 31.5 seconds, and sixteen times the first timeout for the last to be
+  answered. `IceAgent` waited one more doubling after the last and gave up
+  at 63.5, where its documentation said half a minute.
 - The metrics compile wherever hxcpp does. Their lock-free updates use
   `std::atomic` in code that was inlined into each caller without
   `<atomic>`, so they compiled only where the hxcpp fork's headers happened
