@@ -30,5 +30,13 @@ extern class NativeFileSync {
 	/** `0` created, `1` something was already there, `-1` any other failure. **/
 	@:native("crossbyte_file_create_exclusive")
 	public static function createExclusive(path:String, directory:Bool):Int;
+
+	/**
+		The file at `path` as `"<volume>:<index>"`, the same for every name it
+		has, or `""` if it cannot be examined. hxcpp's `stat` has no index on
+		Windows: it reports 0 for every file.
+	**/
+	@:native("crossbyte_file_identity")
+	public static function identity(path:String):String;
 }
 #end

@@ -208,6 +208,58 @@ void crossbyte_file_sync_directory(::String path) {
 #endif
 }
 
+::String crossbyte_file_identity(::String path) {
+	// What a file is, rather than what it is called: its volume and its
+	// index on that volume. Two names with the same identity are one file,
+	// a case-only difference, a hard link, a junction, a short name, which
+	// comparing the names cannot see. Copying a file onto another name for
+	// itself truncates the destination before reading it, which is the
+	// source, and the data is gone.
+#if defined(_WIN32)
+	std::wstring file = toWide(path);
+	BY_HANDLE_FILE_INFORMATION info;
+	BOOL ok = FALSE;
+
+	{
+		hx::AutoGCFreeZone zone;
+		// No access asked for, and every share mode granted, so a file open
+		// elsewhere is still examined; BACKUP_SEMANTICS opens a directory.
+		HANDLE handle = CreateFileW(file.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+
+		if (handle != INVALID_HANDLE_VALUE) {
+			ok = GetFileInformationByHandle(handle, &info);
+			CloseHandle(handle);
+		}
+	}
+
+	if (!ok) {
+		return ::String("");
+	}
+
+	std::string key = std::to_string(static_cast<unsigned long>(info.dwVolumeSerialNumber)) + ":"
+		+ std::to_string((static_cast<unsigned long long>(info.nFileIndexHigh) << 32) | info.nFileIndexLow);
+	return ::String::create(key.c_str(), static_cast<int>(key.size()));
+#else
+	std::string file = toNarrow(path);
+	struct stat info;
+	int status = 0;
+
+	{
+		hx::AutoGCFreeZone zone;
+		status = stat(file.c_str(), &info);
+	}
+
+	if (status != 0) {
+		return ::String("");
+	}
+
+	std::string key = std::to_string(static_cast<unsigned long long>(info.st_dev)) + ":"
+		+ std::to_string(static_cast<unsigned long long>(info.st_ino));
+	return ::String::create(key.c_str(), static_cast<int>(key.size()));
+#endif
+}
+
 int crossbyte_file_create_exclusive(::String path, bool directory) {
 #if defined(_WIN32)
 	std::wstring target = toWide(path);
