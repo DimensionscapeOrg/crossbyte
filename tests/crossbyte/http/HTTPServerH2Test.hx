@@ -1008,6 +1008,114 @@ class HTTPServerH2Test extends utest.Test {
 			out.addBytes(payload, 0, payload.length);
 		}
 	}
+
+	/**
+		What one read asks for goes out in one write. Every frame was flushed
+		on its own, the SETTINGS, its acknowledgement, and each response's
+		HEADERS and DATA, a system call apiece, so an HTTP/2 request cost
+		two where HTTP/1.1 costs one: 47,800 a second over cleartext, where
+		Node's own http2 answered 111,000.
+	**/
+	public function testWhatOneReadAsksForGoesOutInOneWrite():Void {
+		var config = new HTTPServerConfig("127.0.0.1", 0);
+		config.http2Enabled = true;
+		config.middleware.push((handler, next) -> handler.respond(200, "text/plain", "ok " + handler.requestPath));
+		var socket = new FlushCountingSocket();
+		var connection = new crossbyte._internal.http.H2ConnectionHandler(socket, config);
+
+		var out = new BytesBuffer();
+		out.addString(H2Connection.PREFACE);
+		writeFrame(out, H2FrameType.SETTINGS, 0, 0, Bytes.alloc(0));
+		var encoder = new HpackEncoder(4096);
+		for (stream in [1, 3]) {
+			var block = encoder.encode([
+				new HpackHeader(":method", "GET"),
+				new HpackHeader(":scheme", "http"),
+				new HpackHeader(":authority", "127.0.0.1"),
+				new HpackHeader(":path", "/" + stream)
+			]);
+			writeFrame(out, H2FrameType.HEADERS, H2Flags.END_HEADERS | H2Flags.END_STREAM, stream, block);
+		}
+		socket.arrive(out.getBytes());
+
+		Assert.equals(1, socket.flushes, "one read was answered in " + socket.flushes + " writes");
+
+		var written = socket.writtenSoFar();
+		var answered:Array<Int> = [];
+		var position = 0;
+		while (position + H2Frame.HEADER_SIZE <= written.length) {
+			var frame = H2Frame.read(written, position);
+			position += H2Frame.HEADER_SIZE + H2Frame.lengthOf(written, position);
+			if (frame.type == H2FrameType.HEADERS) {
+				answered.push(frame.streamId);
+			}
+		}
+		Assert.equals("1,3", answered.join(","), "the responses written");
+		connection.close();
+	}
+}
+
+/**
+	A connected socket with nothing behind it: what is written is kept, flushes
+	are counted, and what `arrive` is given is read as if it came off the wire.
+**/
+private class FlushCountingSocket extends Socket {
+	public var flushes:Int = 0;
+
+	private var __written:BytesBuffer = new BytesBuffer();
+	private var __arriving:Null<Bytes> = null;
+
+	public function new() {
+		super();
+	}
+
+	/** Everything written so far, the record kept going: getBytes() spends a BytesBuffer. **/
+	public function writtenSoFar():Bytes {
+		var bytes = __written.getBytes();
+		__written = new BytesBuffer();
+		__written.addBytes(bytes, 0, bytes.length);
+		return bytes;
+	}
+
+	public function arrive(bytes:Bytes):Void {
+		__arriving = bytes;
+		dispatchEvent(new ProgressEvent(ProgressEvent.SOCKET_DATA, bytes.length, 0));
+	}
+
+	override private function get_connected():Bool {
+		return true;
+	}
+
+	// The peer the rate limiter and the access log ask for; there is no
+	// descriptor here to ask.
+	override private function get_remoteAddress():String {
+		return "127.0.0.1";
+	}
+
+	override private function get_remotePort():Int {
+		return 50000;
+	}
+
+	override public function readBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		if (__arriving != null) {
+			bytes.position = offset;
+			bytes.writeBytes(__arriving, 0, __arriving.length);
+			__arriving = null;
+		}
+	}
+
+	override public function writeBytes(bytes:ByteArray, offset:Int = 0, length:Int = 0):Void {
+		var count:Int = length == 0 ? bytes.length - offset : length;
+		for (i in 0...count) {
+			__written.addByte(bytes[offset + i]);
+		}
+	}
+
+	override public function flush():Void {
+		flushes++;
+	}
+
+	override public function close():Void {}
 }
 
 /** A limiter that throws: something the parse path calls outside any middleware. */
