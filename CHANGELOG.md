@@ -91,6 +91,9 @@ entry below says how:
   the audience it is; with none, those tokens are refused.
 - `JWTAlgorithm.HS384` and `HS512` are gone; nothing could use them.
 - `JWT.safeBase64UrlEncodeString` is renamed `safeBase64UrlDecodeString`.
+- `SecureRandom.getSecureRandomBytes`, and so everything that needs secure
+  random bytes, throws an `IllegalOperationError` on the interpreter, neko
+  and HashLink, where it threw a String.
 
 ### Added
 - `OAuthToken.idToken`, the OpenID Connect ID token a sign-in with the
@@ -1163,6 +1166,10 @@ entry below says how:
 - `StunClient.discoverFor`. It bound a fresh socket to the port it was asked about, and the only reason to name a port is that something is already using it, so the bind failed with "Operation attempted on invalid socket" in exactly the case the method existed for, and succeeded only for ports whose mapping tells you nothing. `ReliableDatagramServerSocket.discoverPublicAddress` asks through the socket that already holds the port, which is what that question needs. Removed rather than deprecated: it was a day old and could not do what its signature promised.
 
 ### Changed
+- `SecureRandom.getSecureRandomBytes` throws an `IllegalOperationError`
+  naming the target where there is no secure random source, the
+  interpreter, neko, HashLink, where it threw a String, as the other
+  crypto members now do.
 - `JWT.safeBase64UrlEncodeString` is `safeBase64UrlDecodeString`: it
   decodes, and was named for the opposite. The auth docs were corrected
   besides: `OAuth.getAccessToken` said the exchange ran inline on the jvm

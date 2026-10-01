@@ -12,7 +12,8 @@ class CryptoTest extends utest.Test {
 		Assert.equals(0, SecureRandom.getSecureRandomBytes(0).length);
 		Assert.equals(32, SecureRandom.getSecureRandomBytes(32).length);
 		#else
-		Assert.isTrue(throwsDynamic(() -> SecureRandom.getSecureRandomBytes(1)));
+		// An IllegalOperationError naming the target: it threw a String.
+		Assert.isTrue(throwsIllegalOperation(() -> SecureRandom.getSecureRandomBytes(1)));
 		#end
 	}
 
