@@ -1591,10 +1591,14 @@ class Socket extends EventDispatcher implements IDataInput implements IDataOutpu
 		// Checked as DatagramSocket.send checks, against what is left after
 		// the offset, `offset + length` overflows. ByteArray.writeBytes
 		// clamps, so an offset or length past the bytes wrote whatever part
-		// of them there was, where a RangeError was promised.
-		var available:Int = bytes.length;
-		if (offset < 0 || offset > available || length < 0 || length > available - offset) {
-			throw new RangeError("The supplied index is out of bounds.");
+		// of them there was, where a RangeError was promised. The whole of
+		// `bytes`, the usual call, has nothing to check; and the length is
+		// the field itself, not ByteArray's getter, which is a call.
+		if (offset != 0 || length != 0) {
+			var available:Int = (bytes : ByteArrayData).length;
+			if (offset < 0 || length < 0 || offset > available || length > available - offset) {
+				throw new RangeError("The supplied index is out of bounds.");
+			}
 		}
 
 		__output.writeBytes(bytes, offset, length);
