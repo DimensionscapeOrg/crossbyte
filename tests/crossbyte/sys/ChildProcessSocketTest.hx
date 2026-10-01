@@ -24,12 +24,17 @@ import utest.Async;
 	The child here outlives every wait by far, so a socket it holds is still
 	open when the wait gives up.
 
-	Native builds that start processes only: `NativeProcess` is compiled out
-	of a cpp build that names no OS, and has no native implementation on
-	the other targets.
+	Natively, built for any OS, and on the jvm, whose sockets no child is
+	handed. This said native builds that named an OS only, as `NativeProcess`
+	was compiled out of the rest and had no implementation off cpp; it runs
+	on any cpp build, the jvm, hl and neko now. Not on neko, where it does
+	not hold and cannot be made to: its sockets are inheritable and its
+	processes are started inheriting, and Haxe can change neither -- both
+	cases fail there, the listener and the connection held by the child. hl
+	makes its sockets and processes the same way, and is not run here.
 **/
 class ChildProcessSocketTest extends utest.Test {
-	#if (cpp && (windows || linux || mac || macos))
+	#if (cpp || java || jvm)
 	private static inline var CHILD_SECONDS:Int = 30;
 	private static inline var DEADLINE:Float = 5.0;
 	private static inline var PROBES:Int = 20;
@@ -114,13 +119,15 @@ class ChildProcessSocketTest extends utest.Test {
 		});
 	}
 
+	// Asked of the system rather than of the build: only a cpp build names
+	// the OS it is for, and the jvm's runs on any.
 	private static function startChild():NativeProcess {
 		var child = new NativeProcess();
-		#if windows
-		child.start(new NativeProcessStartupInfo("ping", ["-n", Std.string(CHILD_SECONDS + 1), "127.0.0.1"]));
-		#else
-		child.start(new NativeProcessStartupInfo("sleep", [Std.string(CHILD_SECONDS)]));
-		#end
+		if (Sys.systemName() == "Windows") {
+			child.start(new NativeProcessStartupInfo("ping", ["-n", Std.string(CHILD_SECONDS + 1), "127.0.0.1"]));
+		} else {
+			child.start(new NativeProcessStartupInfo("sleep", [Std.string(CHILD_SECONDS)]));
+		}
 		return child;
 	}
 

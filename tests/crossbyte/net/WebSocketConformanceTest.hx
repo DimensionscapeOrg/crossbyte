@@ -78,8 +78,8 @@ class WebSocketConformanceTest extends utest.Test {
 		// that test's outcome — which is exactly how every case in this
 		// class failed on its first run, one reporting the close code the
 		// case before it had produced.
-		var until:Float = Sys.time() + 0.2;
-		while (Sys.time() < until) {
+		var until:Float = haxe.Timer.stamp() + 0.2;
+		while (haxe.Timer.stamp() < until) {
 			RawWebSocketClient.pumpRuntime(runtime);
 		}
 	}
@@ -115,8 +115,8 @@ class WebSocketConformanceTest extends utest.Test {
 
 	/** Runs the server until `check` holds or the deadline passes. */
 	private function pumpUntil(check:Void->Bool, seconds:Float = 5.0):Bool {
-		var deadline:Float = Sys.time() + seconds;
-		while (!check() && Sys.time() < deadline) {
+		var deadline:Float = haxe.Timer.stamp() + seconds;
+		while (!check() && haxe.Timer.stamp() < deadline) {
 			RawWebSocketClient.pumpRuntime(runtime);
 		}
 		return check();

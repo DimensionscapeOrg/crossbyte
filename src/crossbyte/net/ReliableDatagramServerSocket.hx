@@ -8,6 +8,7 @@ import crossbyte.net._internal.stun.StunMessage;
 import crossbyte.net._internal.stun.StunQuery;
 import crossbyte.net._internal.stun.TurnStream;
 import crossbyte.net.ice.IceAgent;
+import crossbyte.net._internal.RuntimeHandOff;
 import crossbyte.net.ice.IceCandidate;
 import crossbyte.core.CrossByte;
 import crossbyte.errors.ArgumentError;
@@ -229,6 +230,34 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	// reflexive query above: that one asks a server a single question, this one
 	// runs an exchange with a peer for as long as it takes.
 	@:noCompletion private var __ice:IceAgent;
+
+	/**
+		The runtime this server's ticks run on -- an attached agent's, a
+		relay's, a waiting question's -- which its socket took when it began
+		receiving, as each of them needs it to have. They were added to and
+		taken off whichever runtime was current, so a close from another
+		thread could not take them off at all.
+	**/
+	@:noCompletion private function __tickRuntime():CrossByte {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		return runtime != null ? runtime : CrossByte.current();
+	}
+
+	/**
+		Takes one of this server's tick listeners off its runtime, from
+		wherever this is called: it does not throw on a thread with no
+		runtime, as asking for the current one did.
+	**/
+	@:noCompletion private function __untick(listener:TickEvent->Void):Void {
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (runtime == null) {
+			runtime = CrossByte.__currentOrNull();
+		}
+		if (runtime != null) {
+			runtime.removeEventListener(TickEvent.TICK, listener);
+		}
+	}
+
 	@:noCompletion private var __iceTick:TickEvent->Void;
 	@:noCompletion private var __socket:DatagramSocket;
 
@@ -323,9 +352,22 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		this server's socket, which goes with this call, so none can wait for
 		its peer. For a graceful shutdown `close()` the sessions first and
 		close the server once each has dispatched `close`.
+
+		It may be called from any thread: from one that is not the server's
+		runtime's, it is handed to the runtime, as `CrossByte.post` hands work
+		over, and happens there after this returns. Made there, it took the
+		runtime its ticks are on from the calling thread, which had none: the
+		throw was swallowed, an attached agent's, a relay's or a waiting
+		question's tick stayed on the runtime for good, and the question was
+		failed on the closing thread.
 	**/
 	public function close():Void {
 		if (__closed) {
+			return;
+		}
+
+		var runtime:Null<CrossByte> = @:privateAccess __socket.__cbInstance;
+		if (RuntimeHandOff.offThread(runtime) && runtime.post(close)) {
 			return;
 		}
 
@@ -599,6 +641,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		looks the name up for each request itself, and one that does not
 		resolve leaves the question to its deadline.
 
+		`timeoutMs` is how long to keep asking. 0 or less asks for the
+		default, three seconds: not for no deadline, as 0 is for a
+		connection's `timeout`, since nothing else ends a question over UDP
+		that nobody answers.
+
 		@return The address and port this socket appears as, or a failure. A
 		       question that cannot be asked is not thrown but returned
 		       failed already: for a server closed, unbound or not listening,
@@ -641,7 +688,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__stunQuery = query;
 		__stunFuture = future;
 
-		var runtime:CrossByte = CrossByte.current();
+		var runtime:CrossByte = __tickRuntime();
 
 		// Where the question goes: `server`, or for a name the address it
 		// resolves to, null until then. The send used to be given the name,
@@ -671,10 +718,11 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			if (query.expired(now)) {
 				// UDP reports nothing when it is dropped, so a silent network
 				// and a wrong server address look identical from here; the
-				// deadline is the only thing that ends this.
+				// deadline is the only thing that ends this. The time the
+				// question had: a timeout of 0 is the default's.
 				var damage:Null<String> = query.damage();
 				__settleStun(null, (damage != null ? "No usable reply" : "No reply") + " from the STUN server at " + server + ":" + port + " within "
-					+ timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
+					+ query.timeoutMs + "ms" + (damage != null ? ": " + damage + "." : "."));
 				return;
 			}
 
@@ -784,13 +832,24 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		its session is already carrying data.
 
 		```haxe
+		// Given server:ReliableDatagramServerSocket, controlling:Bool.
+		import crossbyte.net.ice.IceAgent;
+
 		var agent = new IceAgent(controlling);
 		server.attachIceAgent(agent);
 
 		agent.connected.then(function(pair) {
 			var session = server.connect(pair.remote.address, pair.remote.port);
+		}, function(reason) {
+			trace("no path to the peer: " + reason);
 		});
 		```
+
+		The agent still needs its candidates and the peer's credentials, and
+		`start`, as `IceAgent` describes. `connected` fails when every pair
+		has, and when no pair has been selected `agent.timeout` seconds after
+		`start` -- `IceAgent.DEFAULT_TIMEOUT`, 80, unless set -- so code that
+		dials on it hears when it never will.
 
 		@param agent The agent to run. Its `onSend` is replaced.
 		@throws IOError if this server is closed, unbound, or not listening --
@@ -831,7 +890,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			agent.poll(haxe.Timer.stamp());
 		};
 
-		CrossByte.current().addEventListener(TickEvent.TICK, __iceTick);
+		__tickRuntime().addEventListener(TickEvent.TICK, __iceTick);
 
 		// A relay already lending an address: the agent checks from it too.
 		if (relayedCandidate != null && __relaySend != null) {
@@ -847,9 +906,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	**/
 	public function detachIceAgent():Void {
 		if (__iceTick != null) {
-			try {
-				CrossByte.current().removeEventListener(TickEvent.TICK, __iceTick);
-			} catch (_:Dynamic) {}
+			__untick(__iceTick);
 
 			__iceTick = null;
 		}
@@ -1020,7 +1077,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 			client.poll(haxe.Timer.stamp());
 		};
 
-		CrossByte.current().addEventListener(TickEvent.TICK, __relayTick);
+		__tickRuntime().addEventListener(TickEvent.TICK, __relayTick);
 		client.allocate(haxe.Timer.stamp());
 		return future;
 	}
@@ -1130,9 +1187,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 	**/
 	@:noCompletion private function __dropRelay():Void {
 		if (__relayTick != null) {
-			try {
-				CrossByte.current().removeEventListener(TickEvent.TICK, __relayTick);
-			} catch (_:Dynamic) {}
+			__untick(__relayTick);
 
 			__relayTick = null;
 		}
@@ -1166,11 +1221,15 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		}
 	}
 
-	/** One datagram for the relay to forward to a peer, permitting the peer first. **/
+	/**
+		One datagram for the relay to forward to a peer, permitting the peer
+		first. A channel, where the relay was asked to use them, is the
+		client's own business: `sendTo` asks for one with the first datagram
+		to a peer, and `poll` renews it. This asked as well, before every
+		datagram, which cost a second lookup of the peer's channel each time.
+	**/
 	@:noCompletion private function __sendRelayed(client:TurnClient, bytes:ByteArray, offset:Int, length:Int, address:String, port:Int):Void {
-		var now:Float = haxe.Timer.stamp();
-		client.permit(address, now);
-		client.bindChannel(address, port, now);
+		client.permit(address, haxe.Timer.stamp());
 		client.sendTo(bytes, address, port, offset, length);
 	}
 
@@ -1208,9 +1267,7 @@ class ReliableDatagramServerSocket extends EventDispatcher {
 		__stunQuery = null;
 
 		if (__stunTick != null) {
-			try {
-				CrossByte.current().removeEventListener(TickEvent.TICK, __stunTick);
-			} catch (_:Dynamic) {}
+			__untick(__stunTick);
 
 			__stunTick = null;
 		}
