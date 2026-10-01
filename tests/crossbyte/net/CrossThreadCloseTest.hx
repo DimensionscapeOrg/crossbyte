@@ -310,6 +310,76 @@ class CrossThreadCloseTest extends utest.Test {
 	}
 
 	/**
+		A reliable datagram server closed from another thread stops what it
+		runs on its runtime's tick, there: here a public-address question
+		still waiting, which it fails, on the runtime's thread.
+
+		Its close took the runtime from the calling thread to take its tick
+		listeners off, which threw there and was swallowed: the question's
+		tick stayed on the runtime for good, and the question was failed on
+		the closing thread.
+	**/
+	@:timeout(30000)
+	public function testAReliableServerClosedFromAnotherThreadStopsItsTicksOnItsRuntime(async:Async):Void {
+		if (!ReliableDatagramSocket.isSupported || !crossbyte.crypto.SecureRandom.isSupported) {
+			Assert.isFalse(ReliableDatagramSocket.isSupported && crossbyte.crypto.SecureRandom.isSupported);
+			async.done();
+			return;
+		}
+
+		var runtime:CrossByte = CrossByte.current();
+		// A STUN server that never answers, so the question waits.
+		var silent = new DatagramSocket();
+		silent.bind(0, "127.0.0.1");
+		silent.receive();
+
+		var server = new ReliableDatagramServerSocket();
+		server.bind(0, "127.0.0.1");
+		server.listen();
+
+		var failure:String = null;
+		var failedOnRuntime:Bool = false;
+		server.discoverPublicAddress("127.0.0.1", silent.localPort, 20000).then(_ -> {}, function(error:String) {
+			failure = error;
+			failedOnRuntime = CrossByte.__currentOrNull() == runtime;
+		});
+
+		NetPump.wait(0.2, function() {
+			var tick = @:privateAccess server.__stunTick;
+			Assert.isTrue(__listening(runtime, tick), "the question is not on the runtime's tick, so its absence says nothing");
+
+			var thrown:String = __fromAnotherThread(() -> server.close());
+			Assert.isNull(thrown, "close() threw on another thread: " + thrown);
+
+			NetPump.until(() -> failure != null, DEADLINE, function(_) {
+				Assert.notNull(failure, "the waiting question was never failed");
+				Assert.isTrue(failedOnRuntime, "the question was failed off the runtime's thread");
+				Assert.isFalse(__listening(runtime, tick), "the closed server's question is still on the runtime's tick");
+				try silent.close() catch (_:Dynamic) {}
+				async.done();
+			});
+		});
+	}
+
+	/** Whether `listener` is among `runtime`'s tick listeners. **/
+	@:access(crossbyte.events.EventDispatcher)
+	private static function __listening(runtime:CrossByte, listener:Dynamic):Bool {
+		if (listener == null || runtime.__eventMap == null) {
+			return false;
+		}
+		var listeners:Array<Dynamic> = runtime.__eventMap.get(crossbyte.events.TickEvent.TICK);
+		if (listeners == null) {
+			return false;
+		}
+		for (entry in listeners) {
+			if (Reflect.compareMethods(entry.listener, listener)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 		A WebSocket client and the session a server accepted for it, both
 		open, handed to `then` with a `finish` that closes what is left.
 	**/
