@@ -1947,6 +1947,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- An SQLite statement read a page at a time keeps its rows when other
+  statements run on the same connection between its pages -- a cursor
+  whose rows are each written elsewhere. hxcpp's glue keeps one live
+  result per connection and finalizes it as the next request starts, so
+  the statement stopped after the page in hand, and its next page read as
+  the empty, complete last one: 10 rows of 100. The result still live now
+  reads what it has left into its own hands first; only a result
+  interleaved that way pays for it.
 - Postgres statement parameters are not substituted into a dollar-quoted
   string or past an escaped quote in an `E'...'` string. The scan did not
   know either: it substituted a `:name` the server reads as inside the
