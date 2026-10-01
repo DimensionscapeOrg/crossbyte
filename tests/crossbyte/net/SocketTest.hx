@@ -282,6 +282,27 @@ class SocketTest extends utest.Test {
 	}
 
 	/**
+		A TLS socket reads on past a full record, as a plain one reads on past
+		a full buffer.
+
+		A TLS read returns one record at most, 16 KB of plaintext, which
+		never fills the 64 KB read buffer, so every TLS read was taken for the
+		last of its pass: a TLS upload was read one record a pass -- 16 MB a
+		second at 1,000 passes a second, whatever the link could carry.
+	**/
+	public function testATlsStreamIsReadMoreThanARecordAPass():Void {
+		var total:Int = 1024 * 1024;
+		var delivered:Array<Int> = readFlood(true, total, 16 * 1024);
+
+		var sum:Int = 0;
+		for (n in delivered) {
+			sum += n;
+		}
+		Assert.equals(total, sum, "not everything sent was delivered");
+		Assert.equals(1, delivered.length, 'a megabyte of full TLS records took ${delivered.length} passes to read');
+	}
+
+	/**
 		What a connected socket delivers, pass by pass, from a peer flooding
 		`total` bytes `perCall` at a time: one entry per SOCKET_DATA, each
 		checked against what was sent in its place.
