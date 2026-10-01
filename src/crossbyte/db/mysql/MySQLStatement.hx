@@ -6,6 +6,7 @@ package crossbyte.db.mysql;
 import crossbyte.errors.ArgumentError;
 import crossbyte.errors.SQLError;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
@@ -17,6 +18,13 @@ import sys.db.ResultSet;
 @:access(crossbyte.db.mysql.MySQLConnection)
 class MySQLStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
+
+	/**
+		A class each row is made an instance of, as AIR's `itemClass`: made
+		with no arguments, and each field set from the column of its name. A
+		column the class has no field for fails the statement with an
+		`SQLError`. Null, the default, leaves rows anonymous objects.
+	**/
 	public var itemClass:Class<Dynamic>;
 	/**
 		Named values substituted into `text` by `execute()`, as `:name`, each
@@ -301,8 +309,9 @@ class MySQLStatement extends EventDispatcher {
 		__prefetch = 0;
 	}
 
+	/** Queues a page, its rows made instances of `itemClass` when it is set. **/
 	@:noCompletion private inline function __push(rows:Array<Dynamic>):Void {
-		__resultQueue.push(rows);
+		__resultQueue.push(ItemRows.make(rows, itemClass));
 	}
 
 	private function get_executing():Bool {

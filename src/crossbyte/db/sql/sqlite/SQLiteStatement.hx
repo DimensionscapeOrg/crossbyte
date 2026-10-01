@@ -10,6 +10,7 @@ import crossbyte.events.EventDispatcher;
 import crossbyte.events.SQLErrorEvent;
 import crossbyte.events.SQLEvent;
 import crossbyte.db.sql.SQLResult;
+import crossbyte.db.sql._internal.ItemRows;
 import crossbyte.db.sql._internal.ParamBinder;
 import crossbyte.db.sql.sqlite._internal.SQLiteJob;
 import sys.db.Connection;
@@ -22,6 +23,13 @@ import sys.db.ResultSet;
 @:access(crossbyte.db.sql.sqlite.SQLiteConnection)
 class SQLiteStatement extends EventDispatcher {
 	public var executing(get, null):Bool;
+
+	/**
+		A class each row is made an instance of, as AIR's `itemClass`: made
+		with no arguments, and each field set from the column of its name. A
+		column the class has no field for fails the statement with an
+		`SQLError`. Null, the default, leaves rows anonymous objects.
+	**/
 	public var itemClass:Class<Dynamic>;
 	public var parameters(default, null):FieldStruct<String>;
 	public var sqlConnection(get, set):SQLiteConnection;
@@ -228,7 +236,8 @@ class SQLiteStatement extends EventDispatcher {
 
 	/**
 		Up to `prefetch` rows of `result`, all of them for `-1`, read on the
-		thread running the statement. Sets `__pageDone` when none remain.
+		thread running the statement, and made instances of `itemClass` when
+		it is set. Sets `__pageDone` when none remain.
 	**/
 	@:noCompletion private function __readRows(result:ResultSet, prefetch:Int):Array<Dynamic> {
 		var rows:Array<Dynamic> = [];
@@ -254,7 +263,7 @@ class SQLiteStatement extends EventDispatcher {
 			__pageDone = !result.hasNext();
 		}
 
-		return rows;
+		return ItemRows.make(rows, itemClass);
 	}
 
 	/**

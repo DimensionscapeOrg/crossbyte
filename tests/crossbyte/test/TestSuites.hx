@@ -177,6 +177,7 @@ class TestSuites {
 		runner.addCase(new crossbyte.db.mongodb.MongoTransactionTest());
 		runner.addCase(new crossbyte.db.MySQLDriverTest());
 		runner.addCase(new crossbyte.db.SQLiteDriverTest());
+		runner.addCase(new crossbyte.db.ItemClassTest());
 		#if !cpp
 		// The same failures on cpp go through libpq, and are covered against
 		// its stand-in by NativePostgresBridgeTest below.
