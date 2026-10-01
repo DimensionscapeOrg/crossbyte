@@ -1932,6 +1932,14 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- A precompressed `.gz` beside a static file is sent to a client that also
+  takes Brotli, which every browser does. Only the sibling for the coding
+  the client was going to be given was looked for, and that was Brotli, so
+  a file with only a `.gz` went out as br encoded on the spot, or, too
+  large to hold, as it is on disk: 307,200 bytes where its `.gz` held
+  49,755. Siblings are tried in the client's order of preference now, and
+  an absent one costs one filesystem call rather than two, so looking for
+  both costs what looking for one did.
 - `$uri` in a `tryFiles` entry after the first two is the request path, as
   in nginx's `try_files`: `"$uri.html"` serves `/about` from `about.html`.
   It was looked for as a file named `$uri.html`.

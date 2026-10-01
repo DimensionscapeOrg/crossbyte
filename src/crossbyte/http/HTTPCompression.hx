@@ -73,6 +73,12 @@ class HTTPCompression {
 		level, and costs nothing to serve; it is also the only way a static
 		file too large to hold in memory, which is streamed, goes out
 		compressed.
+
+		With both there, the client's preference picks, and Brotli an equal
+		one; with one, it is sent to any client that takes its coding. Only a
+		Brotli sibling used to be looked for by a client that took Brotli, so
+		every browser was sent a file with only a `.gz` beside it as Brotli
+		encoded on the spot, or, too large to hold, as it is on disk.
 	**/
 	public var precompressed:Bool = true;
 
