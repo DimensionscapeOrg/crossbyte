@@ -1945,6 +1945,12 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- The native HTTP/1.1 client reports no informational status, as the
+  client contract says: `URLLoader` dispatched `HTTP_STATUS` for a
+  `100 Continue` ahead of the 200. And a body of unknown length, chunked
+  or ended by the close, reports a `bytesTotal` of 0, as on JavaScript,
+  where it reported -1, which `ProgressEvent.bytesTotal`, a `UInt`, read
+  as 4294967295.
 - `RPCResponse.respond()` replaces the responder, as it says it does:
   only the one bound last hears the outcome. It added one each time, so a
   response bound to one responder and then another told both, the one
