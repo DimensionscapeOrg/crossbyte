@@ -1942,6 +1942,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `WebSocket.writeBytes` and `sendBinary` refuse a range outside the bytes
+  given, with a `RangeError` (an `ArgumentError` for `null`), as
+  `writeBytes` promised and as `DatagramSocket.send` does. They wrote
+  whatever part of the range fell inside and said nothing, so a message
+  cut short went out as if whole.
 - A `WebSocket`'s output limit honours `outputOverflowPolicy`, as a
   `Socket`'s does: `CLOSE` dispatches an `ioError` saying why and then
   closes the session with 1011, and `THROW` throws an `IOError` from the
