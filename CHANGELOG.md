@@ -79,6 +79,8 @@ entry below says how:
 - `URLRequest.idleTimeout = 0` is no idle limit natively too, where it was
   30 seconds. On Node a request for any version but HTTP/1.1 fails, and in
   a browser one with `followRedirects = false` does.
+- `RPCResponse.respond()` replaces the responder bound before, as it says,
+  where it added one: add with `then`.
 
 ### Added
 - `SQLiteConnection.attach()` and `detach()`, as SQLite's `ATTACH` and
@@ -1943,6 +1945,11 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `RPCResponse.respond()` replaces the responder, as it says it does:
+  only the one bound last hears the outcome. It added one each time, so a
+  response bound to one responder and then another told both, the one
+  passed to the constructor included. One bound after the call has been
+  answered is told at once, and `then` still adds.
 - `URLLoader` on Node and in a browser sends an object's fields as a
   form, as it does natively: a POST's as its body, a GET's as its query.
   Only a `URLVariables` was encoded there, and an object went out as

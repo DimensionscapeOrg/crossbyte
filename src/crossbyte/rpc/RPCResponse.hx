@@ -43,6 +43,13 @@ class RPCResponse<T> extends Future<T> {
 	// TimerHandle.INVALID while there is none.
 	@:noCompletion private var __deadline:Int = TimerHandle.INVALID;
 
+	// The responder bound now, which `respond` replaces, under the future's
+	// lock; ANSWERED once the outcome has been handed to one, after which
+	// another bound is told at once. One field, which a call with no
+	// responder never touches.
+	@:noCompletion private var __responder:Null<Responder<T>> = null;
+	@:noCompletion private static final ANSWERED:Responder<Dynamic> = new Responder<Dynamic>();
+
 	public function new(requestId:Int, op:Int, ?responder:Responder<T>) {
 		super();
 
@@ -54,14 +61,67 @@ class RPCResponse<T> extends Future<T> {
 		}
 	}
 
-	/** Binds or replaces the responder that should receive the final result. */
+	/**
+		Binds the responder that receives the outcome, replacing any bound
+		before, the one passed to the constructor included: only the last
+		one bound hears it. One bound after the call has been answered is told
+		at once, as `then` tells a handler added late. `null` changes nothing.
+
+		It added one each time, so a responder replaced was told as well.
+		`then` is the way to add: every handler added with it runs, beside
+		whichever responder is bound.
+	**/
 	public function respond(responder:Responder<T>):RPCResponse<T> {
 		if (responder == null) {
 			return this;
 		}
 
-		then(value -> responder.result(value), message -> responder.error(message));
+		__acquire();
+		final previous:Null<Responder<T>> = __responder;
+		final answered:Bool = previous == cast ANSWERED;
+		if (!answered) {
+			__responder = responder;
+		}
+		__release();
+
+		if (previous == null) {
+			// One pair of handlers for the life of the call, which tells
+			// whichever responder is bound when the outcome comes, at once,
+			// should it have come already.
+			then(__toResponder, __errorToResponder);
+		} else if (answered) {
+			// The responder bound before has been told; this one is told now.
+			then(value -> responder.result(value), message -> responder.error(message));
+		}
 		return this;
+	}
+
+	/** The outcome, to the responder bound now. **/
+	@:noCompletion private function __toResponder(value:T):Void {
+		final responder:Null<Responder<T>> = __takeResponder();
+		if (responder != null) {
+			responder.result(value);
+		}
+	}
+
+	@:noCompletion private function __errorToResponder(message:String):Void {
+		final responder:Null<Responder<T>> = __takeResponder();
+		if (responder != null) {
+			responder.error(message);
+		}
+	}
+
+	/**
+		The responder bound now, read as the outcome is handed to it: from
+		then on `respond` tells a responder itself, so none is told twice and
+		none is missed whichever thread binds it.
+	**/
+	@:noCompletion private function __takeResponder():Null<Responder<T>> {
+		__acquire();
+		final responder:Null<Responder<T>> = __responder;
+		__responder = cast ANSWERED;
+		__release();
+		return responder;
 	}
 
 	/**

@@ -108,6 +108,34 @@ class RPCTest extends utest.Test {
 		Assert.equals("player-9", response.result);
 	}
 
+	/**
+		`respond()` binds or replaces the responder, as it says: the one bound
+		last hears the outcome, and only it. It added one each time, so a
+		responder replaced was told as well, the one passed to the
+		constructor included. Handlers added with `then` all run beside it.
+	**/
+	public function testRespondReplacesTheResponder():Void {
+		var heard:Array<String> = [];
+		var response = new RPCResponse<Int>(1, 7, new Responder<Int>(v -> heard.push("constructed " + v)));
+		response.respond(new Responder<Int>(v -> heard.push("first " + v)));
+		response.respond(new Responder<Int>(v -> heard.push("replacement " + v), m -> heard.push("replacement error " + m)));
+		response.then(v -> heard.push("then " + v));
+		@:privateAccess response.__resolve(42);
+		Assert.same(["replacement 42", "then 42"], heard);
+
+		// One bound after the answer hears it at once, as `then` does.
+		response.respond(new Responder<Int>(v -> heard.push("late " + v)));
+		Assert.same(["replacement 42", "then 42", "late 42"], heard);
+
+		// A failure goes to the responder bound last the same way.
+		var failed:Array<String> = [];
+		var failing = new RPCResponse<Int>(2, 7);
+		failing.respond(new Responder<Int>(null, m -> failed.push("first " + m)));
+		failing.respond(new Responder<Int>(null, m -> failed.push("second " + m)));
+		@:privateAccess failing.__fail("refused");
+		Assert.same(["second refused"], failed);
+	}
+
 	public function testResponseDispatchesResultEventWhenObserved():Void {
 		var response = new RPCResponse<String>(7, 11);
 		var resultEvents = 0;
