@@ -109,7 +109,10 @@ class ReliableDatagramLossRecoveryTest extends utest.Test {
 		waitFor(0.005);
 		sender.__checkRetransmits();
 
-		Assert.same(["PACKET 1000 resend"], described(sender.take()));
+		// Named in the message: neko on a Linux runner once saw two frames
+		// here, and "expected 1 elements but they are 2" said which no more.
+		var frames = described(sender.take());
+		Assert.same(["PACKET 1000 resend"], frames, "the frames sent: " + frames.join(", "));
 		Assert.equals(0, sender.__timeoutResends);
 		sender.close();
 	}

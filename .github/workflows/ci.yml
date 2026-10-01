@@ -247,7 +247,10 @@ jobs:
   posix-crypto:
     name: Core | Crypto, System (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Two native builds from cold: on the Intel macOS runner they take ten to
+    # thirteen minutes each, and at 25 the job was cancelled at the very end
+    # with both suites green (2026-10-01, 25:00 exactly).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
