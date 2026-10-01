@@ -252,6 +252,45 @@ class FileStreamContractTest extends utest.Test {
 		}
 	}
 
+	public function testAnObjectNestedTooDeepIsRefused():Void {
+		// Bounded as ByteArray's readObject is: a file's object can be anyone's,
+		// and natively one nested a few thousand deep overflowed the stack
+		// reading it and ended the process.
+		for (encoding in [crossbyte.net.ObjectEncoding.HXSF, crossbyte.net.ObjectEncoding.JSON]) {
+			var open:String = encoding == crossbyte.net.ObjectEncoding.JSON ? "[" : "a";
+			var close:String = encoding == crossbyte.net.ObjectEncoding.JSON ? "]" : "h";
+			var text = new StringBuf();
+			for (_ in 0...6000) {
+				text.add(open);
+			}
+			for (_ in 0...6000) {
+				text.add(close);
+			}
+			var body:String = text.toString();
+
+			for (async in __modes()) {
+				var how = (async ? "openAsync" : "open") + ", encoding " + encoding;
+				var file = File.createTempFile();
+				try {
+					var writer = new FileStream();
+					writer.open(file, WRITE);
+					writer.writeUnsignedInt(body.length);
+					writer.writeUTFBytes(body);
+					writer.close();
+
+					var reader = new FileStream();
+					reader.objectEncoding = encoding;
+					__open(reader, file, async);
+					Assert.raises(() -> reader.readObject(), crossbyte.errors.IOError, how);
+					__close(reader);
+				} catch (e:Dynamic) {
+					Assert.fail(how + ": " + Std.string(e));
+				}
+				__delete(file);
+			}
+		}
+	}
+
 	public function testObjectEncodingAppliesToAnAsynchronousStream():Void {
 		// The asynchronous stream read and wrote through its buffer, which was
 		// a plain ByteArray: HXSF and little-endian, whatever the stream said.
