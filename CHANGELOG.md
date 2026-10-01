@@ -1942,6 +1942,9 @@ entry below says how:
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- `ReliableDatagramSocket.readMultiByte` and `writeMultiByte` say they
+  read and write UTF-8 and ignore the character set named, as
+  `ByteArray`'s already do; they promised the named set.
 - `DeliveryMode.RELIABLE` and `ReliableDatagramSocket.send()` say how
   large a reliable message can be: as large as the receiving session's
   `maxMessageSize`, eight megabytes unless changed, past which the

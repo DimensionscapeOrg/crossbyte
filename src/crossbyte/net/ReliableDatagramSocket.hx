@@ -1220,9 +1220,13 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Reads a multibyte string from the stream buffer using the specified character set.
+		Reads `length` bytes from the stream buffer and decodes them as UTF-8.
 		@param length The number of bytes to consume from the stream buffer.
-		@param charSet The character set to use when decoding the bytes.
+		@param charSet Accepted for source compatibility and **ignored**. No
+		       character set conversion happens: the bytes are decoded as
+		       UTF-8, exactly as `readUTFBytes` would. Passing `"shift-jis"`
+		       does not decode Shift-JIS. Transcode the bytes yourself if you
+		       need another encoding.
 		@return The decoded string.
 	**/
 	public function readMultiByte(length:UInt, charSet:String):String {
@@ -1408,9 +1412,11 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	}
 
 	/**
-		Appends a multibyte string to the stream-mode output buffer using the specified character set.
+		Appends a string to the stream-mode output buffer as UTF-8.
 		@param value The string to queue for sending.
-		@param charSet The character set to use when encoding the string.
+		@param charSet Accepted for source compatibility and **ignored**. The
+		       string is encoded as UTF-8, exactly as `writeUTFBytes` would.
+		       Transcode the bytes yourself if you need another encoding.
 	**/
 	public function writeMultiByte(value:String, charSet:String):Void {
 		__requireStreamMode();
