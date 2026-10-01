@@ -1220,6 +1220,20 @@ All notable changes to CrossByte will be documented in this file.
   portable code's. MSVC's build already worked all this out. Its 546
   lines of "compiled using an undocumented method" warnings are gone from
   every native build log.
+- Every socket's byte order is `ByteArray.defaultEndian` when it is made,
+  little-endian unless the application changed it, as a ByteArray it
+  makes is, and a WebSocket's messages arrive in its `endian`.
+  `DatagramSocket` and `ReliableDatagramSocket` payloads came big-endian,
+  and a WebSocket message big-endian whatever its socket's `endian` said,
+  while TCP sockets, `FrameCodec` and every new ByteArray were
+  little-endian. A game sending snapshots written into a `new ByteArray()`
+  over reliable UDP or a WebSocket, CrossByte at both ends, read every
+  tick and position byte-swapped, where the same code over TCP worked.
+  `Socket`'s documentation said its default was big-endian; it was
+  little. What to change: code that reads datagram or WebSocket payloads
+  in network byte order sets `endian = Endian.BIG_ENDIAN` on the socket,
+  or `ByteArray.defaultEndian = Endian.BIG_ENDIAN` once for the whole
+  application.
 - `PostgresStatement` and `MongoStatement` throw a failed statement's
   `SQLError` after dispatching it as an `SQLErrorEvent`, as `MySQLStatement`
   does. They dispatched it and returned, so to a caller not listening, an

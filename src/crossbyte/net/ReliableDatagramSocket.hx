@@ -117,7 +117,15 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	public var connected(get, never):Bool;
 
 	/**
-		The byte order used by stream-mode `ByteArray` serialization.
+		The byte order of the messages this socket dispatches, and of its
+		stream-mode reads and writes.
+
+		`ByteArray.defaultEndian` when the socket is made, little-endian
+		unless the application changed it, as a ByteArray it makes is, so a
+		number written into a new ByteArray reads back as itself from the
+		message that carried it. Set `Endian.BIG_ENDIAN` for a protocol in
+		network byte order. Messages came big-endian whatever the rest of the
+		application did.
 	**/
 	public var endian(get, set):Endian;
 
@@ -523,7 +531,7 @@ class ReliableDatagramSocket extends EventDispatcher implements IDataInput imple
 	// only the latest one's answer is acted on.
 	@:noCompletion private var __lookingUp:Bool = false;
 	@:noCompletion private var __lookups:Int = 0;
-	@:noCompletion private var __endian:Endian = Endian.BIG_ENDIAN;
+	@:noCompletion private var __endian:Endian = ByteArray.defaultEndian;
 	// Out-of-order frames, kept whole: a fragment's `more` flag is as much a
 	// part of it as its bytes.
 	@:noCompletion private var __inFrameCache:IntMap<ReliableDatagramFrame>;

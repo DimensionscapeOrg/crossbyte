@@ -926,6 +926,10 @@ class WebSocket extends Socket {
 		// one ended and the next began was lost.
 		if (hasEventListener(WebSocketMessageEvent.MESSAGE)) {
 			newData.position = 0;
+			// In this socket's byte order, as its stream is read. The buffer
+			// the frame parser filled is big-endian, for the frame's own
+			// fields, and a message used to arrive so whatever `endian` said.
+			newData.endian = endian;
 			dispatchEvent(new WebSocketMessageEvent(WebSocketMessageEvent.MESSAGE, newData, message.isText));
 			return;
 		}
