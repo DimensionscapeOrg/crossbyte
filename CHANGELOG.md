@@ -1653,6 +1653,15 @@ All notable changes to CrossByte will be documented in this file.
 - rewrote `crossbyte.http.RateLimiter` as a configurable token bucket (burst capacity, continuous refill, per-key isolation, idle-bucket eviction, injectable clock) replacing the fixed-window placeholder with its hard-coded 10-request limit
 
 ### Fixed
+- Converting `Bytes` to a `ByteArray`, `ByteArray.fromBytes`, and every
+  implicit conversion, no longer allocates and zero-fills a buffer the
+  size of the bytes only to drop it for theirs. Every socket read went
+  through that conversion with its 64 KB scratch, so each one, however
+  small, allocated and cleared 64 KB. An HTTP server answering a small JSON
+  body on native serves 74,600 requests a second on 8 connections where it
+  served 65,900, at 12.9 microseconds of CPU each rather than 15.7, with
+  0.4 MB of heap in use rather than 40 MB; at 4,096 connections, 43,300
+  where it served 33,300.
 - Brotli on hl no longer writes broken streams for input with zero bytes
   in its first four places, at qualities 1 to 4, 4 being the default, for
   `Brotli.compress` and `ByteArray.compress`. Some came out undecodable,
