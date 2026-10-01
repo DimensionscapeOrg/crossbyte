@@ -68,11 +68,30 @@ class PostgresConnection extends EventDispatcher implements crossbyte.db.ITransa
 		super();
 	}
 
+	/**
+		Connects, and dispatches `SQLEvent.OPEN`. On a connection already
+		open, the connection it had is closed first, dispatching `CLOSE`, as
+		`MySQLConnection.open()` does. It was replaced and left open,
+		unreachable, a server connection held for the life of the process
+		each time a reconnect or a pool factory opened twice.
+
+		@throws IOError When the server cannot be reached or refuses.
+	**/
 	public function open(cfg:PostgresConfig):Void {
 		__requireSupported();
 		if (cfg == null) {
 			throw "PostgresConnection: config is required.";
 		}
+
+		#if cpp
+		if (__nativeHandle != null) {
+			close();
+		}
+		#else
+		if (__connection != null) {
+			close();
+		}
+		#end
 
 		#if cpp
 		// Outside the try: a setting that cannot be expressed is a mistake in
